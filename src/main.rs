@@ -98,6 +98,12 @@ enum Command {
         /// `--assert` to get free spec-derived coverage.
         #[arg(long)]
         auto_thread_asserts: bool,
+        /// Only emit constructs from the original input .arch files, not
+        /// from dependency files auto-discovered via `inst` / `use`.
+        /// Avoids MODDUP when sub-modules are also built as standalone
+        /// .sv files and linked together downstream.
+        #[arg(long)]
+        no_inline_deps: bool,
     },
     /// Compile ARCH + C++ testbench and run simulation
     ///
@@ -473,7 +479,7 @@ fn main() -> miette::Result<()> {
                 other => return Err(miette::miette!("--thread-sim: expected `fsm`, `parallel`, or `both`, got `{}`", other)),
             }
         }
-        Command::Build { files, o, auto_thread_asserts } => {
+        Command::Build { files, o, auto_thread_asserts, no_inline_deps } => {
             let files_for_learn = files.clone();
             learn_wrap(&files_for_learn, move || {
             let all_files = resolve_use_imports(&files)?;
@@ -482,16 +488,46 @@ fn main() -> miette::Result<()> {
 
             let comments = lexer::extract_comments(&ms.combined);
 
+            // --no-inline-deps: only emit constructs from the original
+            // input files, not from auto-discovered dependency files.
+            let original_names: std::collections::HashSet<String> = if no_inline_deps {
+                files.iter()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .collect()
+            } else {
+                std::collections::HashSet::new()
+            };
+
             if files.len() == 1 || o.is_some() {
                 // Single file or explicit -o: emit one combined SV file
-                let codegen = Codegen::new(&symbols, &ast, overload_map).with_comments(comments);
-                let sv = codegen.generate();
+                let sv = if no_inline_deps {
+                    // Only items from the original input files
+                    let file_items: Vec<_> = ast.items.iter()
+                        .filter(|item| {
+                            let s = item.span().start;
+                            ms.segments.iter().any(|(seg_start, seg_end, fname, _)| {
+                                s >= *seg_start && s < *seg_end
+                                    && original_names.contains(fname)
+                            })
+                        })
+                        .cloned()
+                        .collect();
+                    let mut codegen = Codegen::new(&symbols, &ast, overload_map).with_comments(comments);
+                    codegen.generate_items(&file_items)
+                } else {
+                    let codegen = Codegen::new(&symbols, &ast, overload_map).with_comments(comments);
+                    codegen.generate()
+                };
                 let out_path = o.unwrap_or_else(|| files[0].with_extension("sv"));
                 fs::write(&out_path, &sv).into_diagnostic()?;
                 eprintln!("Wrote {}", out_path.display());
             } else {
                 // Multi-file: emit one .sv per .arch input file
                 for (seg_start, seg_end, filename, _) in &ms.segments {
+                    // --no-inline-deps: skip dependency files not in the original input set
+                    if no_inline_deps && !original_names.contains(filename.as_str()) {
+                        continue;
+                    }
                     // Collect items whose span falls within this file's segment
                     let file_items: Vec<_> = ast.items.iter()
                         .filter(|item| {
