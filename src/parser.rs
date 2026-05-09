@@ -1236,6 +1236,14 @@ impl Parser {
 
         // Parse `=> VALUE` — required reset value
         self.expect(TokenKind::FatArrow)?;
+        // Catch `Vec::splat(...)` — SV broadcasts scalars to arrays
+        // natively, so a plain scalar value is all that's needed.
+        if self.check(TokenKind::KwVec) {
+            return Err(CompileError::general(
+                "SV broadcasts scalars to all array elements natively — use a plain scalar value (e.g. `0`) instead",
+                self.peek_span(),
+            ));
+        }
         let reset_value = self.parse_expr()?;
 
         // Accept token (Sync/Async) or lowercase ident (sync/async).
