@@ -7701,6 +7701,47 @@ fn test_if_wait_both_branches() {
 }
 
 #[test]
+fn test_thread_wait_ifelse_fuses_dispatch_and_first_branch_action() {
+    // Micro-architecture pattern from arch-ibex multdiv: a thread waits for
+    // a request, dispatches on an opcode, then performs the first cycle of
+    // branch-specific work before the next wait boundary. The lowering should
+    // match a hand-written FSM shape by doing branch selection and the first
+    // seq action on the same edge that exits the wait state.
+    let source = r#"
+        module M
+          port clk:    in Clock<SysDomain>;
+          port rst:    in Reset<Sync, High>;
+          port req:    in Bool;
+          port is_mul: in Bool;
+          port reg phase: out UInt<4> reset rst => 4'd0;
+
+          thread on clk rising, rst high
+            wait until req;
+            if is_mul
+              phase <= 4'd1;
+              wait 1 cycle;
+              phase <= 4'd2;
+              wait 1 cycle;
+            else
+              phase <= 4'd3;
+              wait 1 cycle;
+              phase <= 4'd4;
+              wait 1 cycle;
+            end if
+          end thread
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+
+    assert!(sv.contains("if (req && is_mul) begin\n          phase <= 4'd1;"),
+        "then-branch first action should be hoisted onto the wait-exit edge:\n{sv}");
+    assert!(sv.contains("if (req && !is_mul) begin\n          phase <= 4'd3;"),
+        "else-branch first action should be hoisted onto the wait-exit edge:\n{sv}");
+    assert!(!sv.contains("_t0_state == 3"),
+        "fused lowering should not emit old wait->dispatch->prefix state chain:\n{sv}");
+}
+
+#[test]
 fn test_if_wait_with_auto_asserts() {
     // Verify --auto-thread-asserts still emits a coherent set of properties
     // when the thread contains a wait-bearing if/else. The dispatch state's

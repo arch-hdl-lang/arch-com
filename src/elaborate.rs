@@ -2041,24 +2041,49 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
             span: sp,
         }));
 
-        // Pre-process: add counter loads to states preceding wait_cycles states
+        // Pre-process: add counter loads on every transition edge into a
+        // wait_cycles state. Older lowering only looked at the lexically
+        // preceding state, which missed dispatch edges that jump into the
+        // first state of a later branch.
         let cnt_name = format!("_t{}_cnt", ti);
         // Collect (state_idx, count_expr, transition_cond) tuples first to avoid borrow conflicts
         let mut counter_loads: Vec<(usize, Expr, Option<Expr>)> = Vec::new();
-        for si in 0..raw_states.len() {
-            let next = if si + 1 < raw_states.len() { si + 1 } else { 0 };
-            if next < raw_states.len() {
-                if let Some(ref count_expr) = raw_states[next].wait_cycles {
-                    // Find the guard: either transition_cond or multi_transition that targets `next`
-                    let cond = if let Some(ref c) = raw_states[si].transition_cond {
-                        Some(c.clone())
-                    } else {
-                        // Check multi_transitions for one targeting `next`
-                        raw_states[si].multi_transitions.iter()
-                            .find(|(_, tgt)| *tgt == next || (*tgt >= raw_states.len() && next == si + 1))
-                            .map(|(c, _)| c.clone())
-                    };
-                    counter_loads.push((si, count_expr.clone(), cond));
+        for wait_idx in 0..raw_states.len() {
+            let Some(count_expr) = raw_states[wait_idx].wait_cycles.clone() else {
+                continue;
+            };
+            for si in 0..raw_states.len() {
+                let natural_next = if si + 1 < raw_states.len() {
+                    si + 1
+                } else if t.once {
+                    si
+                } else {
+                    0
+                };
+                if !raw_states[si].multi_transitions.is_empty() {
+                    for (cond, target) in &raw_states[si].multi_transitions {
+                        let resolved = if *target >= raw_states.len() {
+                            if t.once { raw_states.len() - 1 } else { 0 }
+                        } else { *target };
+                        if resolved == wait_idx {
+                            counter_loads.push((si, count_expr.clone(), Some(cond.clone())));
+                        }
+                    }
+                } else if raw_states[si].transition_cond.is_some() {
+                    if natural_next == wait_idx {
+                        counter_loads.push((si, count_expr.clone(), raw_states[si].transition_cond.clone()));
+                    }
+                } else if raw_states[si].wait_cycles.is_some() {
+                    if natural_next == wait_idx {
+                        let cnt_id = Expr::new(ExprKind::Ident(cnt_name.clone()), sp);
+                        let cnt_zero = Expr::new(ExprKind::Binary(
+                            BinOp::Eq, Box::new(cnt_id),
+                            Box::new(make_zero_expr(sp)),
+                        ), sp);
+                        counter_loads.push((si, count_expr.clone(), Some(cnt_zero)));
+                    }
+                } else if natural_next == wait_idx {
+                    counter_loads.push((si, count_expr.clone(), None));
                 }
             }
         }
@@ -3042,6 +3067,166 @@ fn contains_wait(stmts: &[ThreadStmt]) -> bool {
     })
 }
 
+fn expr_and(a: Expr, b: Expr, span: Span) -> Expr {
+    Expr::new(ExprKind::Binary(BinOp::And, Box::new(a), Box::new(b)), span)
+}
+
+fn expr_not(e: Expr, span: Span) -> Expr {
+    Expr::new(ExprKind::Unary(UnaryOp::Not, Box::new(e)), span)
+}
+
+fn try_hoist_initial_thread_state(states: &mut Vec<ThreadFsmState>) -> Option<Vec<Stmt>> {
+    let first = states.first()?;
+    if !first.comb_stmts.is_empty()
+        || first.seq_stmts.is_empty()
+        || first.transition_cond.is_some()
+        || first.wait_cycles.is_some()
+        || !first.multi_transitions.is_empty()
+    {
+        return None;
+    }
+
+    // Only remove the first state if no later local transition targets it.
+    // This keeps loop/fork products that intentionally branch to state 0
+    // on the conservative path.
+    if states.iter().skip(1).any(|s| {
+        s.multi_transitions
+            .iter()
+            .any(|(_, target)| *target == 0)
+    }) {
+        return None;
+    }
+
+    let first = states.remove(0);
+    for s in states {
+        for (_, target) in &mut s.multi_transitions {
+            if *target != usize::MAX {
+                *target -= 1;
+            }
+        }
+    }
+    Some(first.seq_stmts)
+}
+
+fn offset_thread_state_targets(states: &mut [ThreadFsmState], base: usize, len: usize) {
+    for fs in states {
+        for (_, target) in &mut fs.multi_transitions {
+            if *target == usize::MAX {
+                *target = base + len;
+            } else {
+                *target += base;
+            }
+        }
+    }
+}
+
+/// Optimize the common micro-architecture shape:
+///
+///   wait until req;
+///   if op_a
+///     first_cycle_a <= ...;
+///     wait 1 cycle;
+///   else
+///     first_cycle_b <= ...;
+///     wait 1 cycle;
+///   end if
+///
+/// The conservative lowering emits `wait -> dispatch -> branch-prefix`.
+/// A hand-written FSM usually folds the dispatch and first-cycle branch
+/// work onto the edge that exits the wait state. This helper performs that
+/// fusion when the immediately preceding state is a plain `wait until` and
+/// the branch's first state is an unconditional seq-only action.
+fn try_fuse_wait_ifelse(
+    states: &mut Vec<ThreadFsmState>,
+    ie: &ThreadIfElse,
+    cnt_width: u32,
+) -> Result<bool, CompileError> {
+    let Some(wait_idx) = states.len().checked_sub(1) else {
+        return Ok(false);
+    };
+    if states[wait_idx].transition_cond.is_none()
+        || states[wait_idx].wait_cycles.is_some()
+        || !states[wait_idx].multi_transitions.is_empty()
+    {
+        return Ok(false);
+    }
+
+    let wait_cond = states[wait_idx].transition_cond.clone().unwrap();
+
+    let mut then_states = if ie.then_stmts.is_empty() {
+        Vec::new()
+    } else {
+        partition_thread_body(&ie.then_stmts, ie.span, cnt_width)?
+    };
+    let mut else_states = if ie.else_stmts.is_empty() {
+        Vec::new()
+    } else {
+        partition_thread_body(&ie.else_stmts, ie.span, cnt_width)?
+    };
+
+    let then_hoisted = try_hoist_initial_thread_state(&mut then_states);
+    let else_hoisted = try_hoist_initial_thread_state(&mut else_states);
+
+    let then_base = states.len();
+    let then_len = then_states.len();
+    offset_thread_state_targets(&mut then_states, then_base, then_len);
+    states.extend(then_states);
+
+    let else_base = states.len();
+    let else_len = else_states.len();
+    offset_thread_state_targets(&mut else_states, else_base, else_len);
+    states.extend(else_states);
+
+    let rejoin_idx = states.len();
+
+    if then_base < else_base {
+        for s_idx in then_base..else_base {
+            for (_, t) in &mut states[s_idx].multi_transitions {
+                if *t == else_base {
+                    *t = rejoin_idx;
+                }
+            }
+        }
+    }
+
+    if then_base < else_base {
+        redirect_fallthrough_to(&mut states[..], else_base - 1, rejoin_idx, ie.span);
+    }
+    if else_base < rejoin_idx {
+        redirect_fallthrough_to(&mut states[..], rejoin_idx - 1, rejoin_idx, ie.span);
+    }
+
+    let then_guard = expr_and(wait_cond.clone(), ie.cond.clone(), ie.span);
+    let else_guard = expr_and(wait_cond.clone(), expr_not(ie.cond.clone(), ie.span), ie.span);
+
+    if let Some(seq) = then_hoisted {
+        states[wait_idx].seq_stmts.push(Stmt::IfElse(IfElse {
+            cond: then_guard.clone(),
+            then_stmts: seq,
+            else_stmts: Vec::new(),
+            unique: false,
+            span: ie.span,
+        }));
+    }
+    if let Some(seq) = else_hoisted {
+        states[wait_idx].seq_stmts.push(Stmt::IfElse(IfElse {
+            cond: else_guard.clone(),
+            then_stmts: seq,
+            else_stmts: Vec::new(),
+            unique: false,
+            span: ie.span,
+        }));
+    }
+
+    let then_target = if then_base == else_base { rejoin_idx } else { then_base };
+    let else_target = if else_base == rejoin_idx { rejoin_idx } else { else_base };
+
+    states[wait_idx].transition_cond = None;
+    states[wait_idx].multi_transitions = vec![(then_guard, then_target), (else_guard, else_target)];
+
+    Ok(true)
+}
+
 /// Partition thread body into FSM states.
 fn partition_thread_body(
     body: &[ThreadStmt],
@@ -3142,6 +3327,13 @@ fn partition_thread_body(
                 let then_has_wait = contains_wait(&ie.then_stmts);
                 let else_has_wait = contains_wait(&ie.else_stmts);
                 if then_has_wait || else_has_wait {
+                    if cur_comb.is_empty()
+                        && cur_seq.is_empty()
+                        && try_fuse_wait_ifelse(&mut states, ie, cnt_width)?
+                    {
+                        continue;
+                    }
+
                     // Dispatch-and-rejoin (see doc/thread_lowering_proof.md §II.10).
                     // Step 1: flush pending comb/seq into a predecessor state so
                     // `cond` reads post-flush register values.

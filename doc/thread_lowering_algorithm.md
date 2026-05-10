@@ -120,7 +120,8 @@ ThreadStmt              Action
 x = expr                CombAssign → append to cur_comb  (no boundary)
 x <= expr               SeqAssign  → append to cur_seq   (no boundary)
 if/else (no waits)      Converted to CombIfElse / IfElse → appended to cur_*
-if/else (with waits)    Dispatch state + recursive partition + rejoin (see §4d)
+if/else (with waits)    Dispatch state + recursive partition + rejoin (see §4d);
+                        may fuse with immediately preceding wait (see §4d.1)
 wait until cond         Flush pending → new state with transition_cond=cond
 wait N cycle            Flush pending → new state with wait_cycles=N
 do { … } until cond     Flush pending → new hold-state with transition_cond=cond
@@ -139,6 +140,35 @@ trailing state.  Optimisation: if the previous state is a `wait until` / `do..un
 state (has `transition_cond`) and `cur_comb` is empty, the seq assigns are merged
 into the previous state guarded by `transition_cond`.  This eliminates one dead
 cycle.  Similarly for `for`-loop exit transitions.
+
+---
+
+### 4d.1 — Wait/Dispatch Fusion
+
+The lowering includes a local performance optimization for a common
+micro-architecture pattern:
+
+```
+wait until req;
+if op_a
+  first_cycle_a <= ...;
+  wait 1 cycle;
+else
+  first_cycle_b <= ...;
+  wait 1 cycle;
+end if
+```
+
+When the `if/else` immediately follows a plain `wait until`, and a branch starts
+with an unconditional seq-only state, that first branch state is hoisted onto the
+same clock edge that exits the wait state. The wait state becomes a
+multi-transition state guarded by `req && op_a` / `req && !op_a`.
+
+This avoids the conservative `wait -> dispatch -> branch-prefix` state chain and
+matches the timing shape a hand-written FSM would normally use for opcode
+dispatch. The optimization is deliberately local: branches with leading comb
+outputs, loops/fork products that target the first branch state, locks, or other
+non-hoistable prefixes stay on the conservative dispatch-and-rejoin path.
 
 ---
 
