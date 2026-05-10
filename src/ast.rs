@@ -537,6 +537,10 @@ pub struct ThreadBlock {
     /// When `cond` is true in any state, the listed seq assigns fire and the
     /// thread returns to state 0, taking priority over normal transitions.
     pub default_when: Option<(Expr, Vec<ThreadStmt>)>,
+    /// `default comb ... end default` — comb assignments active in every
+    /// state, including dead-skid sub-states inserted by lowering. Prevents
+    /// outputs from silently dropping to 0 during wait cycles.
+    pub default_comb: Vec<Stmt>,
     /// Set when the thread is a TLM method target body:
     ///   `thread PORT.METHOD(ARG1, ARG2, ...) on clk rising, rst high`.
     /// Captured at parse time (PR-tlm-3); lowering to an FSM (entry gate

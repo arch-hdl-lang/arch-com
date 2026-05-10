@@ -1579,24 +1579,44 @@ impl Parser {
             None
         };
 
-        // Optional `default when <cond> ... end default` — must come first in the body.
-        let default_when = if self.check(TokenKind::Default) {
-            let _kw = self.advance(); // consume `default`
-            self.expect(TokenKind::When)?;
-            let cond = self.parse_expr()?;
-            let mut dw_stmts = Vec::new();
-            while !(self.pos + 1 < self.tokens.len()
-                && self.tokens[self.pos].kind == TokenKind::End
-                && self.tokens[self.pos + 1].kind == TokenKind::Default)
-            {
-                dw_stmts.push(self.parse_thread_stmt()?);
+        // Optional `default when <cond> ... end default` or
+        // `default comb ... end default` — must come first in the body.
+        let mut default_when = None;
+        let mut default_comb = Vec::new();
+        if self.check(TokenKind::Default) && self.pos + 1 < self.tokens.len() {
+            match self.tokens[self.pos + 1].kind {
+                TokenKind::When => {
+                    self.advance(); // consume `default`
+                    self.advance(); // consume `when`
+                    let cond = self.parse_expr()?;
+                    let mut dw_stmts = Vec::new();
+                    while !(self.pos + 1 < self.tokens.len()
+                        && self.tokens[self.pos].kind == TokenKind::End
+                        && self.tokens[self.pos + 1].kind == TokenKind::Default)
+                    {
+                        dw_stmts.push(self.parse_thread_stmt()?);
+                    }
+                    self.expect(TokenKind::End)?;
+                    self.expect(TokenKind::Default)?;
+                    default_when = Some((cond, dw_stmts));
+                }
+                TokenKind::Comb => {
+                    self.advance(); // consume `default`
+                    self.advance(); // consume `comb`
+                    let mut stmts = Vec::new();
+                    while !(self.pos + 1 < self.tokens.len()
+                        && self.tokens[self.pos].kind == TokenKind::End
+                        && self.tokens[self.pos + 1].kind == TokenKind::Default)
+                    {
+                        stmts.push(self.parse_comb_stmt()?);
+                    }
+                    self.expect(TokenKind::End)?;
+                    self.expect(TokenKind::Default)?;
+                    default_comb = stmts;
+                }
+                _ => {} // not a default block
             }
-            self.expect(TokenKind::End)?;
-            self.expect(TokenKind::Default)?;
-            Some((cond, dw_stmts))
-        } else {
-            None
-        };
+        }
 
         // Body
         let mut body = Vec::new();
@@ -1647,6 +1667,7 @@ impl Parser {
             reset_level,
             once,
             default_when,
+            default_comb,
             tlm_target,
             reentrant,
             implement,

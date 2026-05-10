@@ -1082,6 +1082,7 @@ fn subst_thread(t: &ThreadBlock, var: &str, val: i64) -> ThreadBlock {
             subst_expr_names(cond.clone(), var, val),
             stmts.iter().map(|s| subst_thread_stmt(s, var, val)).collect(),
         )),
+        default_comb: t.default_comb.iter().map(|s| subst_comb_stmt(s, var, val)).collect(),
         tlm_target: t.tlm_target.as_ref().map(|tb| TlmTargetBinding {
             port: tb.port.clone(),
             method: tb.method.clone(),
@@ -1651,6 +1652,14 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
             all_read.extend(dw_ar);
             collect_expr_reads(dw_cond, &mut all_read);
         }
+        // Collect comb-driven targets from `default comb`
+        for s in &t.default_comb {
+            if let Stmt::Assign(a) = s {
+                if let ExprKind::Ident(ref name) = a.target.kind {
+                    all_comb_driven.insert(name.clone());
+                }
+            }
+        }
     }
 
     // Clock and reset ports (from first thread)
@@ -1724,8 +1733,12 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
         }
     }
 
-    // Output ports (seq-driven) — these are port-regs in the merged module
-    let mut sorted_seq: Vec<&String> = all_seq_driven.iter().collect();
+    // Output ports (seq-driven) — these are port-regs in the merged module.
+    // Exclude signals also driven by comb (e.g. via default_comb) — those
+    // are wires, not regs.
+    let mut sorted_seq: Vec<&String> = all_seq_driven.iter()
+        .filter(|n| !all_comb_driven.contains(*n))
+        .collect();
     sorted_seq.sort();
     for name in sorted_seq {
         if let Some(info) = type_map.get(name.as_str()) {
@@ -2429,6 +2442,14 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                 value: make_zero_expr(sp),
                 span: sp,
             }));
+        }
+    }
+    // default_comb from each thread — runs unconditionally before
+    // per-state comb, providing explicit default values for outputs
+    // during dead-skid sub-states.
+    for (_, t) in &threads {
+        for s in &t.default_comb {
+            merged_comb.push(s.clone());
         }
     }
     // Per-thread state-guarded comb assigns

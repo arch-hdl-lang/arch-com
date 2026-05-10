@@ -778,6 +778,15 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     walk_thread(&t.body, &mut driven);
+                    // default_comb assignments — mark targets as driven
+                    // (comb), so the reg/wire check doesn't flag them.
+                    for s in &t.default_comb {
+                        if let crate::ast::Stmt::Assign(a) = s {
+                            if let crate::ast::ExprKind::Ident(n) = &a.target.kind {
+                                driven.insert(n.clone());
+                            }
+                        }
+                    }
                 }
                 ModuleBodyItem::Resource(_) => {
                     // Resources are lowered before typecheck.
