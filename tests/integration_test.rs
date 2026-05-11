@@ -8842,6 +8842,43 @@ fn test_sim_codegen_match_arm_local_param_const_emits_case_with_literal() {
 }
 
 #[test]
+fn test_sim_codegen_concat_with_local_param_uses_declared_width() {
+    // Companion to the match-arm `local param` test. Pre-fix, `build_widths`
+    // and `collect_wide_names` only walked ports + regs + wires + let
+    // bindings — module-level params were excluded. `infer_expr_width`
+    // then fell back to its 8-bit default for any concat / shift
+    // expression that named a param, emitting bit offsets one position
+    // wider than the param's declared width. The result was a silent
+    // 1-bit gap in the emitted C++ where the next concat element
+    // should start.
+    //
+    // Bug origin: arch-ibex IbexCompressedDecoder OPCODE_* conversion
+    // from `let` to `local param` produced wrong `instr_o` values for
+    // every compressed-instruction expansion that placed an opcode in
+    // an `instr_d = {imm, rs1, funct3, rd, OPCODE_X}` concat.
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        module M
+          local param OPCODE[6:0]: const = 7'h13;
+          port instr_o: out UInt<32>;
+          let instr_d: UInt<32> = {20'h12345, 5'h7, OPCODE};
+          let instr_o = instr_d;
+        end module M
+    ";
+    let cpp = compile_to_sim_h(source, false);
+    // The next concat element after OPCODE (7 bits) must shift by 7,
+    // not 8. Look for `<< 7` in the concat — pre-fix it was `<< 8`.
+    assert!(cpp.contains("<< 7"),
+        "param OPCODE[6:0] must be treated as 7 bits wide in concat offsets; cpp lacks `<< 7`:\n{cpp}");
+    // And the 7+5=12-bit boundary should produce `<< 12` for the 20-bit
+    // imm field, not `<< 13`.
+    assert!(cpp.contains("<< 12"),
+        "7-bit OPCODE + 5-bit rd must place 20-bit imm at offset 12, not 13:\n{cpp}");
+}
+
+#[test]
 fn test_sim_codegen_bit_slice_lhs_compiles_and_uses_param_width() {
     // Regression: pre-fix, `name[hi:lo] = val` in a seq block lowered to
     // the read-side bit-slice form `((name >> lo) & MASK) = val`, an

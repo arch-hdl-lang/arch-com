@@ -404,7 +404,7 @@ impl<'a> SimCodegen<'a> {
         let vec_port_names: HashSet<String> = vec_port_infos.iter().map(|v| v.0.clone()).collect();
 
         // Wide signal names
-        let wide_names = collect_wide_names(&m.ports, &m.body);
+        let wide_names = collect_wide_names(&m.ports, &m.body, &m.params);
 
         // Regular scalar ports
         for p in &m.ports {
@@ -3411,10 +3411,32 @@ fn resolve_enum_variant(
 }
 
 /// Build a name→width map from module ports, regs, and lets.
-fn build_widths(ports: &[PortDecl], body: &[ModuleBodyItem]) -> HashMap<String, u32> {
+fn build_widths(ports: &[PortDecl], body: &[ModuleBodyItem], params: &[ParamDecl]) -> HashMap<String, u32> {
     let mut m = HashMap::new();
     for p in ports {
         m.insert(p.name.name.clone(), type_bits_te(&p.ty));
+    }
+    // Compile-time-constant params participate in width inference the same
+    // way let bindings do. Without this, `infer_expr_width` falls back to
+    // its 8-bit default for any concat / shift expression that names a
+    // param, silently producing 1-bit-off bit positions in emitted C++.
+    for p in params {
+        let bits = match &p.kind {
+            ParamKind::WidthConst(hi, lo) => {
+                let h = eval_width(hi);
+                let l = eval_width(lo);
+                h - l + 1
+            }
+            ParamKind::Logic(ty) | ParamKind::Type(ty) => type_bits_te(ty),
+            // `param X: const = N` (untyped). Pre-existing call sites treat
+            // this as an int-typed parameter (32 bits), so match.
+            ParamKind::Const => 32,
+            // Enum / Vec params: width depends on the underlying type. Skip
+            // — concat-of-enum isn't a valid construct; concat-of-Vec is
+            // handled elsewhere via vec_array_info_with_params.
+            ParamKind::EnumConst(_) | ParamKind::ConstVec(_) => continue,
+        };
+        m.insert(p.name.name.clone(), bits);
     }
     for item in body {
         match item {
@@ -3467,7 +3489,7 @@ fn type_bits_te(ty: &TypeExpr) -> u32 {
 }
 
 /// Collect names whose bit width exceeds 64 (require wide handling).
-fn collect_wide_names(ports: &[PortDecl], body: &[ModuleBodyItem]) -> HashSet<String> {
+fn collect_wide_names(ports: &[PortDecl], body: &[ModuleBodyItem], params: &[ParamDecl]) -> HashSet<String> {
     let mut s = HashSet::new();
     for p in ports {
         if type_bits_te(&p.ty) > 64 { s.insert(p.name.name.clone()); }
@@ -3486,7 +3508,7 @@ fn collect_wide_names(ports: &[PortDecl], body: &[ModuleBodyItem]) -> HashSet<St
         }
     }
     // Resolve pipe_reg wide from source
-    let widths = build_widths(ports, body);
+    let widths = build_widths(ports, body, params);
     for item in body {
         if let ModuleBodyItem::PipeRegDecl(p) = item {
             let w = widths.get(&p.source.name).copied().unwrap_or(32);
@@ -3896,8 +3918,8 @@ impl<'a> SimCodegen<'a> {
         let let_values  = collect_let_values(&m.body, &m.params);
         let inst_names  = collect_inst_names(&m.body);
         let inst_out    = collect_inst_output_signals(&m.body);
-        let mut wide_names  = collect_wide_names(&m.ports, &m.body);
-        let mut widths      = build_widths(&m.ports, &m.body);
+        let mut wide_names  = collect_wide_names(&m.ports, &m.body, &m.params);
+        let mut widths      = build_widths(&m.ports, &m.body, &m.params);
 
         // Add bus flattened signals to wide_names and widths
         for (flat_name, flat_ty) in &bus_flat {
