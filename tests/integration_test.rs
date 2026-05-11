@@ -8879,6 +8879,58 @@ fn test_sim_codegen_concat_with_local_param_uses_declared_width() {
 }
 
 #[test]
+fn test_lower_threads_clones_parent_params_into_threads_submodule() {
+    // Regression: pre-fix, `lower_module_threads` built the synthetic
+    // `_<mod>_threads` submodule with `params: Vec::new()`, so parent-
+    // module `local param`s were invisible inside thread bodies. Any
+    // thread reference to a parent constant (match arm, comparison,
+    // concat) emitted as `use of undeclared identifier <NAME>` in the
+    // standalone threads compilation unit.
+    //
+    // Bug origin: arch-ibex IbexMultdivFast attempting `local param
+    // MD_OP_DIV[1:0]: const = 2'd2` — every thread-body `operator_i ==
+    // MD_OP_DIV` comparison broke the threads cpp build. The let-form
+    // sidesteps this because lets are local to a body and get inlined
+    // before any submodule lift.
+    //
+    // Post-fix the lowering pass clones parent params into the
+    // submodule's `params`, so SV emit and archsim see them.
+    let source = r#"
+        module M
+          local param OP_GO[1:0]: const = 2'd2;
+          port clk:    in Clock<SysDomain>;
+          port rst:    in Reset<Sync, High>;
+          port op_i:   in UInt<2>;
+          port reg phase: out UInt<4> reset rst => 4'd0;
+
+          thread on clk rising, rst high
+            wait until op_i == OP_GO;
+            phase <= 4'd1;
+            wait 1 cycle;
+          end thread
+        end module M
+    "#;
+    // The full module compiles end-to-end. Pre-fix this raised a
+    // compile error because the synthetic `_M_threads` SV referenced
+    // `OP_GO` without a declaration. Post-fix the submodule has its
+    // own `localparam [1:0] OP_GO = 2'd2`.
+    let sv = compile_to_sv(source);
+    // Parent module still declares OP_GO.
+    assert!(sv.contains("localparam [1:0] OP_GO = 2'd2"),
+        "parent module must keep its localparam OP_GO:\n{sv}");
+    // Synthetic threads submodule should ALSO declare OP_GO, not refer
+    // to an undeclared identifier. The emit places submodule decls
+    // ahead of the parent module, but both must contain it.
+    let occurrences = sv.matches("localparam [1:0] OP_GO = 2'd2").count();
+    assert!(occurrences >= 2,
+        "both parent and `_M_threads` submodule should declare OP_GO; only {occurrences} occurrence(s):\n{sv}");
+    // And the thread body's predicate must reference OP_GO (proves the
+    // identifier survived lowering).
+    assert!(sv.contains("OP_GO") && sv.matches("OP_GO").count() >= 3,
+        "thread body should compare op_i against OP_GO:\n{sv}");
+}
+
+#[test]
 fn test_sim_codegen_bit_slice_lhs_compiles_and_uses_param_width() {
     // Regression: pre-fix, `name[hi:lo] = val` in a seq block lowered to
     // the read-side bit-slice form `((name >> lo) & MASK) = val`, an
