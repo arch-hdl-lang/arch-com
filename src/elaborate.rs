@@ -1549,6 +1549,12 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
     // that calls a parent-module function emits as an unresolved
     // task/function reference inside the threads submodule.
     let mut parent_functions: Vec<ModuleBodyItem> = Vec::new();
+    // Module-scope params (e.g. `local param X[W-1:0]: const = N`) are
+    // similarly visible to thread bodies. Without cloning them into the
+    // submodule, any thread-body reference (match arm, concat, comparison)
+    // emits as an unresolved identifier in the threads codegen. Clone the
+    // whole list — params are cheap, and any unused ones are inert.
+    let parent_params: Vec<ParamDecl> = m.params.clone();
 
     for item in m.body {
         match item {
@@ -2480,7 +2486,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
 
     let merged_module = ModuleDecl {
         name: Ident::new(merged_name.clone(), sp),
-        params: Vec::new(),
+        params: parent_params,
         ports: merged_ports.clone(),
         body: merged_body,
         implements: None,
