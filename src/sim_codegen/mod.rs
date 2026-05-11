@@ -3145,12 +3145,23 @@ fn collect_let_names(body: &[ModuleBodyItem]) -> HashSet<String> {
 /// memory/feedback_archsim_match_pattern_ident_default_collision.md).
 /// Destructure-let bindings (`let {a, b} = ...;`) are skipped — those
 /// don't have a single RHS and aren't referenceable from match patterns.
-fn collect_let_values(body: &[ModuleBodyItem]) -> HashMap<String, Expr> {
+fn collect_let_values(body: &[ModuleBodyItem], params: &[ParamDecl]) -> HashMap<String, Expr> {
     let mut out = HashMap::new();
     for item in body {
         if let ModuleBodyItem::LetBinding(l) = item {
             if l.destructure_fields.is_empty() {
                 out.insert(l.name.name.clone(), l.value.clone());
+            }
+        }
+    }
+    // Compile-time-constant params (`param X: const = N`, `param X[hi:lo]: const = N`,
+    // `local param X: T = N`) participate in the same fold so `unique match` arms
+    // whose LHS names a param resolve to `case <literal>:` rather than collapsing to
+    // `default:`. Required for operator-decoder-style match blocks.
+    for p in params {
+        if let Some(expr) = &p.default {
+            if matches!(&expr.kind, ExprKind::Literal(_)) {
+                out.insert(p.name.name.clone(), expr.clone());
             }
         }
     }
@@ -3882,7 +3893,7 @@ impl<'a> SimCodegen<'a> {
         let mut reg_names = collect_reg_names(&m.body, &m.ports);
         reg_names.extend(collect_pipe_reg_names(&m.body));
         let let_names   = collect_let_names(&m.body);
-        let let_values  = collect_let_values(&m.body);
+        let let_values  = collect_let_values(&m.body, &m.params);
         let inst_names  = collect_inst_names(&m.body);
         let inst_out    = collect_inst_output_signals(&m.body);
         let mut wide_names  = collect_wide_names(&m.ports, &m.body);
