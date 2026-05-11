@@ -3075,7 +3075,12 @@ fn expr_not(e: Expr, span: Span) -> Expr {
     Expr::new(ExprKind::Unary(UnaryOp::Not, Box::new(e)), span)
 }
 
-fn try_hoist_initial_thread_state(states: &mut Vec<ThreadFsmState>) -> Option<Vec<Stmt>> {
+struct HoistedThreadState {
+    comb_stmts: Vec<Stmt>,
+    seq_stmts: Vec<Stmt>,
+}
+
+fn try_hoist_initial_thread_state(states: &mut Vec<ThreadFsmState>) -> Option<HoistedThreadState> {
     let first = states.first()?;
     if !first.comb_stmts.is_empty()
         || first.seq_stmts.is_empty()
@@ -3105,7 +3110,10 @@ fn try_hoist_initial_thread_state(states: &mut Vec<ThreadFsmState>) -> Option<Ve
             }
         }
     }
-    Some(first.seq_stmts)
+    Some(HoistedThreadState {
+        comb_stmts: Vec::new(),
+        seq_stmts: first.seq_stmts,
+    })
 }
 
 fn offset_thread_state_targets(states: &mut [ThreadFsmState], base: usize, len: usize) {
@@ -3117,6 +3125,32 @@ fn offset_thread_state_targets(states: &mut [ThreadFsmState], base: usize, len: 
                 *target += base;
             }
         }
+    }
+}
+
+fn flatten_thread_ifelse_chain<'a>(
+    ie: &'a ThreadIfElse,
+) -> (Vec<(Expr, &'a [ThreadStmt])>, &'a [ThreadStmt]) {
+    let mut arms = vec![(ie.cond.clone(), ie.then_stmts.as_slice())];
+    let mut else_stmts = ie.else_stmts.as_slice();
+    while let [ThreadStmt::IfElse(nested)] = else_stmts {
+        arms.push((nested.cond.clone(), nested.then_stmts.as_slice()));
+        else_stmts = nested.else_stmts.as_slice();
+    }
+    (arms, else_stmts)
+}
+
+fn guarded_stmt(cond: Expr, stmts: Vec<Stmt>, span: Span) -> Option<Stmt> {
+    if stmts.is_empty() {
+        None
+    } else {
+        Some(Stmt::IfElse(IfElse {
+            cond,
+            then_stmts: stmts,
+            else_stmts: Vec::new(),
+            unique: false,
+            span,
+        }))
     }
 }
 
@@ -3153,76 +3187,75 @@ fn try_fuse_wait_ifelse(
 
     let wait_cond = states[wait_idx].transition_cond.clone().unwrap();
 
-    let mut then_states = if ie.then_stmts.is_empty() {
-        Vec::new()
-    } else {
-        partition_thread_body(&ie.then_stmts, ie.span, cnt_width)?
-    };
-    let mut else_states = if ie.else_stmts.is_empty() {
-        Vec::new()
-    } else {
-        partition_thread_body(&ie.else_stmts, ie.span, cnt_width)?
-    };
+    let (arms, default_body) = flatten_thread_ifelse_chain(ie);
+    let mut branch_meta: Vec<(usize, usize, Option<HoistedThreadState>)> = Vec::new();
 
-    let then_hoisted = try_hoist_initial_thread_state(&mut then_states);
-    let else_hoisted = try_hoist_initial_thread_state(&mut else_states);
-
-    let then_base = states.len();
-    let then_len = then_states.len();
-    offset_thread_state_targets(&mut then_states, then_base, then_len);
-    states.extend(then_states);
-
-    let else_base = states.len();
-    let else_len = else_states.len();
-    offset_thread_state_targets(&mut else_states, else_base, else_len);
-    states.extend(else_states);
+    let mut branch_bodies: Vec<&[ThreadStmt]> = arms.iter().map(|(_, body)| *body).collect();
+    branch_bodies.push(default_body);
+    for body in branch_bodies {
+        let mut branch_states = if body.is_empty() {
+            Vec::new()
+        } else {
+            partition_thread_body(body, ie.span, cnt_width)?
+        };
+        let hoisted = try_hoist_initial_thread_state(&mut branch_states);
+        let base = states.len();
+        let len = branch_states.len();
+        offset_thread_state_targets(&mut branch_states, base, len);
+        states.extend(branch_states);
+        branch_meta.push((base, len, hoisted));
+    }
 
     let rejoin_idx = states.len();
 
-    if then_base < else_base {
-        for s_idx in then_base..else_base {
-            for (_, t) in &mut states[s_idx].multi_transitions {
-                if *t == else_base {
-                    *t = rejoin_idx;
+    for (base, len, _) in &branch_meta {
+        let end = *base + *len;
+        if *len == 0 {
+            continue;
+        }
+        if end != rejoin_idx {
+            for s_idx in *base..end {
+                for (_, t) in &mut states[s_idx].multi_transitions {
+                    if *t == end {
+                        *t = rejoin_idx;
+                    }
                 }
+            }
+        }
+        redirect_fallthrough_to(&mut states[..], end - 1, rejoin_idx, ie.span);
+    }
+
+    let mut guards = Vec::new();
+    let mut prior = wait_cond.clone();
+    for (cond, _) in &arms {
+        let guard = expr_and(prior.clone(), cond.clone(), ie.span);
+        guards.push(guard);
+        prior = expr_and(prior, expr_not(cond.clone(), ie.span), ie.span);
+    }
+    guards.push(prior);
+
+    for (guard, (_, _, hoisted)) in guards.iter().cloned().zip(branch_meta.iter_mut()) {
+        if let Some(h) = hoisted.take() {
+            if let Some(stmt) = guarded_stmt(guard.clone(), h.comb_stmts, ie.span) {
+                states[wait_idx].comb_stmts.push(stmt);
+            }
+            if let Some(stmt) = guarded_stmt(guard, h.seq_stmts, ie.span) {
+                states[wait_idx].seq_stmts.push(stmt);
             }
         }
     }
 
-    if then_base < else_base {
-        redirect_fallthrough_to(&mut states[..], else_base - 1, rejoin_idx, ie.span);
-    }
-    if else_base < rejoin_idx {
-        redirect_fallthrough_to(&mut states[..], rejoin_idx - 1, rejoin_idx, ie.span);
-    }
-
-    let then_guard = expr_and(wait_cond.clone(), ie.cond.clone(), ie.span);
-    let else_guard = expr_and(wait_cond.clone(), expr_not(ie.cond.clone(), ie.span), ie.span);
-
-    if let Some(seq) = then_hoisted {
-        states[wait_idx].seq_stmts.push(Stmt::IfElse(IfElse {
-            cond: then_guard.clone(),
-            then_stmts: seq,
-            else_stmts: Vec::new(),
-            unique: false,
-            span: ie.span,
-        }));
-    }
-    if let Some(seq) = else_hoisted {
-        states[wait_idx].seq_stmts.push(Stmt::IfElse(IfElse {
-            cond: else_guard.clone(),
-            then_stmts: seq,
-            else_stmts: Vec::new(),
-            unique: false,
-            span: ie.span,
-        }));
-    }
-
-    let then_target = if then_base == else_base { rejoin_idx } else { then_base };
-    let else_target = if else_base == rejoin_idx { rejoin_idx } else { else_base };
+    let transitions = guards
+        .into_iter()
+        .zip(branch_meta.iter())
+        .map(|(guard, (base, len, _))| {
+            let target = if *len == 0 { rejoin_idx } else { *base };
+            (guard, target)
+        })
+        .collect();
 
     states[wait_idx].transition_cond = None;
-    states[wait_idx].multi_transitions = vec![(then_guard, then_target), (else_guard, else_target)];
+    states[wait_idx].multi_transitions = transitions;
 
     Ok(true)
 }

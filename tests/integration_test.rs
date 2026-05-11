@@ -7742,6 +7742,52 @@ fn test_thread_wait_ifelse_fuses_dispatch_and_first_branch_action() {
 }
 
 #[test]
+fn test_thread_wait_elsif_chain_fuses_to_single_dispatch() {
+    // An `elsif` parses as a nested `else { if ... }`. The wait-dispatch
+    // fusion should flatten that chain so later arms do not pay an extra
+    // dispatch-only state before their first seq action.
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          port req: in Bool;
+          port sel: in UInt<2>;
+          port reg phase: out UInt<4> reset rst => 4'd0;
+
+          thread on clk rising, rst high
+            wait until req;
+            if sel == 2'd0
+              phase <= 4'd1;
+              wait 1 cycle;
+            elsif sel == 2'd1
+              phase <= 4'd2;
+              wait 1 cycle;
+            else
+              phase <= 4'd3;
+              wait 1 cycle;
+            end if
+          end thread
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+
+    assert!(sv.contains("phase <= 4'd1;"),
+        "first arm should keep its first action:\n{sv}");
+    assert!(sv.contains("phase <= 4'd2;"),
+        "elsif arm should keep its first action:\n{sv}");
+    assert!(sv.contains("phase <= 4'd3;"),
+        "else arm should keep its first action:\n{sv}");
+    assert!(sv.contains("req && sel == 2'd0"),
+        "first arm guard should include the wait condition:\n{sv}");
+    assert!(sv.contains("req && !(sel == 2'd0) && sel == 2'd1"),
+        "elsif guard should be flattened onto the original wait state:\n{sv}");
+    assert!(sv.contains("req && !(sel == 2'd0) && !(sel == 2'd1)"),
+        "else guard should be flattened onto the original wait state:\n{sv}");
+    assert!(!sv.contains("_t0_state == 3"),
+        "flattened three-arm dispatch should not leave a nested dispatch state:\n{sv}");
+}
+
+#[test]
 fn test_if_wait_with_auto_asserts() {
     // Verify --auto-thread-asserts still emits a coherent set of properties
     // when the thread contains a wait-bearing if/else. The dispatch state's
