@@ -6886,12 +6886,17 @@ fn test_tlm_target_thread_parses_return_stmt() {
 fn test_return_in_regular_thread_errors_in_lower_threads() {
     // `return` outside a TLM target thread is a user error — hit by
     // lower_threads with a targeted message.
+    // The thread includes a `wait until` so the regular thread-without-
+    // wait check doesn't shadow the more specific return-outside-TLM
+    // diagnostic this test is targeting.
     let source = "
         module M
           port clk: in Clock<SysDomain>;
           port rst: in Reset<Sync>;
+          port go:  in Bool;
           port reg out_r: out UInt<8> reset rst => 0;
           thread stray on clk rising, rst high
+            wait until go;
             out_r <= 8'h1;
             return 8'h2;
           end thread stray
@@ -7698,6 +7703,91 @@ fn test_if_wait_both_branches() {
     // the else branch. Verify both arms land at distinct branch bases.
     assert!(sv.contains("is_wr") && sv.contains("!"),
         "expected dispatch to use `is_wr` and `!is_wr` arms:\n{sv}");
+}
+
+#[test]
+fn test_thread_without_wait_or_do_until_errors_with_seq_hint() {
+    // A `thread` body with no `wait` / `wait until` / `do until` (anywhere —
+    // directly or nested in if/else/for/lock/fork) collapses to a single FSM
+    // state and is structurally indistinguishable from a `seq on clk` block.
+    // The elaborator must surface this loudly with a hint that points at the
+    // right construct, instead of silently emitting the single-state thread
+    // (which wastes a state-register flop for no benefit and obscures intent).
+    //
+    // Project memory: feedback_thread_single_state_idiom.md (A9 lesson).
+    let cases = [
+        // 1. Single seq assign, no wait at all.
+        r#"
+            module M
+              port clk: in Clock<SysDomain>;
+              port rst: in Reset<Sync, High>;
+              port reg flag: out Bool reset rst => false;
+              thread on clk rising, rst high
+                flag <= true;
+              end thread
+            end module M
+        "#,
+        // 2. Seq assign inside an `if/else` — still no wait.
+        r#"
+            module M
+              port clk: in Clock<SysDomain>;
+              port rst: in Reset<Sync, High>;
+              port sel: in Bool;
+              port reg flag: out Bool reset rst => false;
+              thread on clk rising, rst high
+                if sel
+                  flag <= true;
+                else
+                  flag <= false;
+                end if
+              end thread
+            end module M
+        "#,
+    ];
+    for source in cases.iter() {
+        let tokens = arch::lexer::tokenize(source).expect("lexer error");
+        let mut parser = arch::parser::Parser::new(tokens, source);
+        let parsed_ast = parser.parse_source_file().expect("parse error");
+        let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
+        let ast = arch::elaborate::lower_tlm_target_threads(ast)
+            .expect("tlm target lowering");
+        let ast = arch::elaborate::lower_tlm_initiator_calls(ast)
+            .expect("tlm initiator lowering");
+        let result = arch::elaborate::lower_threads(ast);
+        let errs = result.expect_err(
+            "thread with no wait / do until should fail lower_threads"
+        );
+        assert!(!errs.is_empty(), "expected at least one error");
+        let msg = errs[0].to_string();
+        assert!(msg.contains("must contain at least one `wait` or `do until`"),
+            "error should mention wait + do until: {msg}");
+        assert!(msg.contains("seq on clk"),
+            "error should suggest `seq on clk` alternative: {msg}");
+    }
+}
+
+#[test]
+fn test_thread_with_do_until_only_is_accepted() {
+    // `do { ... } until cond;` is a valid yield boundary on its own — the
+    // body produces ≥1 state, distinct from a single-state seq block. The
+    // no-wait error from the companion test above must NOT fire here.
+    let source = r#"
+        module M
+          port clk:  in Clock<SysDomain>;
+          port rst:  in Reset<Sync, High>;
+          port go:   in Bool;
+          port done: in Bool;
+          port reg flag: out Bool reset rst => false;
+          thread on clk rising, rst high
+            do
+              flag <= go;
+            until done;
+          end thread
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("always_ff"),
+        "do/until thread should still compile to SV:\n{sv}");
 }
 
 #[test]

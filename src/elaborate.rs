@@ -1971,6 +1971,25 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
 
     for (ti, (_tname, t)) in threads.iter().enumerate() {
         let cnt_width = infer_for_cnt_width(&t.body, &type_map);
+        // A `thread` body with no `wait` / `wait until` / `do until`
+        // (anywhere — directly or nested inside if/else/for/lock/fork)
+        // collapses to a single FSM state and is structurally
+        // indistinguishable from a `seq on clk` block. Surface this
+        // loudly so users get the construct hint instead of the
+        // silent single-state thread (which wastes a state-register
+        // flop and obscures intent). The check is applied at the
+        // top-level thread body — sub-body recursive calls into
+        // `partition_thread_body` (e.g. if/else branches) are
+        // permitted to lack waits as long as the outer body has one.
+        if !contains_wait(&t.body) {
+            errors.push(CompileError::general(
+                "thread block must contain at least one `wait` or `do until` statement; \
+                 use `seq on clk` for single-cycle logic (and `comb` at module scope \
+                 for combinational outputs)",
+                t.span,
+            ));
+            continue;
+        }
         let mut raw_states = match partition_thread_body(&t.body, sp, cnt_width) {
             Ok(s) => s,
             Err(e) => { errors.push(e); continue; }
