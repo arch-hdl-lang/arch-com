@@ -12002,3 +12002,83 @@ fn test_interface_module_treated_as_opaque() {
     assert!(ws.iter().any(|m| m.contains("combinational feedback cycle")),
         "expected opaque-interface module to participate in a detected cycle; warnings: {:?}", ws);
 }
+
+#[test]
+fn test_opaque_interface_pipe_reg_output_does_not_close_cycle() {
+    // Regression: in the opaque-stub path the MVP treated EVERY output of
+    // an interface stub as combinationally driven, even outputs that
+    // carry `reg_info: Some(_)` (i.e. `port reg out`/`port out pipe_reg<T,N>`).
+    // Two stubs with `pipe_reg` outputs cross-wired through their inputs
+    // do NOT form a comb cycle — the registers break the path at the seq
+    // boundary. The filter on `registered_outs` excludes them from the
+    // parent-level comb-edge synthesis.
+    //
+    // Without the filter, every arch-ibex module that exposes pipe_reg
+    // outputs through an `.archi` stub (IbexCore, IbexIdStage, IbexTop)
+    // gets flagged with massive over-approximation SCCs (126 nodes etc.).
+    // With the filter, only modules with actually-comb outputs participate.
+    let source = r#"
+        module Stub
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port i:   in  UInt<1>;
+          port reg o: out UInt<1> reset rst => 1'd0;
+        end module Stub
+
+        module Top
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port s:   in  UInt<1>;
+          port q:   out UInt<1>;
+          wire w1: UInt<1>;
+          wire w2: UInt<1>;
+
+          inst a: Stub
+            clk <- clk;
+            rst <- rst;
+            i   <- w2;
+            o   -> w1;
+          end inst a
+
+          inst b: Stub
+            clk <- clk;
+            rst <- rst;
+            i   <- w1;
+            o   -> w2;
+          end inst b
+
+          comb
+            q = w1;
+          end comb
+        end module Top
+    "#;
+    let tokens = arch::lexer::tokenize(source).expect("lexer error");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let mut parsed_ast = parser.parse_source_file().expect("parse error");
+    for item in parsed_ast.items.iter_mut() {
+        if let arch::ast::Item::Module(m) = item {
+            if m.name.name == "Stub" {
+                m.is_interface = true;
+            }
+        }
+    }
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let mut ast = ast;
+    for item in ast.items.iter_mut() {
+        if let arch::ast::Item::Module(m) = item {
+            if m.name.name.starts_with("Stub") {
+                m.is_interface = true;
+            }
+        }
+    }
+    let symbols = arch::resolve::resolve(&ast).expect("resolve error");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let (warnings, _) = checker.check().expect("type check error");
+    let ws: Vec<String> = warnings.into_iter().map(|w| w.message).collect();
+    let cycle_msgs: Vec<_> = ws.iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(cycle_msgs.is_empty(),
+        "pipe_reg / port reg outputs on an opaque stub must not close a comb cycle; got: {:?}",
+        cycle_msgs);
+}

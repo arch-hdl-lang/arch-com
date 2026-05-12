@@ -827,11 +827,35 @@ impl GraphBuilder {
         // For the MVP we use the existing CombInfo over-approximation: any
         // output port in `comb_outputs` is assumed to depend on every input
         // in `comb_dep_inputs`.
+        // Build a set of registered output port names from the child module's
+        // declarations. Ports declared `port reg ... : out T` or
+        // `port X: out pipe_reg<T, N>` carry `reg_info: Some(_)` and produce
+        // flopped outputs — they break combinational cycles at the seq
+        // boundary and must not contribute parent-level comb edges. This
+        // filter applies in BOTH the opaque and non-opaque branches
+        // (defensive: comb_info_for_module already excludes them, but make
+        // the rule explicit so future regressions don't leak in).
+        let registered_outs: HashSet<&str> = child_mod
+            .map(|cm| cm.ports.iter()
+                .filter(|p| p.reg_info.is_some())
+                .map(|p| p.name.name.as_str())
+                .collect())
+            .unwrap_or_default();
+
         let comb_outs: Vec<&String> = if treat_as_opaque {
-            // Opaque: every declared output port that's connected.
-            output_conn.keys().collect()
+            // Opaque: every declared output port that's connected AND not
+            // flopped via `port reg` / `pipe_reg<T,N>`. Without the
+            // registered-out filter, every comb-input → pipe_reg-output
+            // edge becomes a phantom comb-dep that closes false cycles
+            // through any module that exposes registered outputs (e.g.
+            // arch-ibex's IbexCore decoded fields, IbexIdStage outputs).
+            output_conn.keys()
+                .filter(|k| !registered_outs.contains(k.as_str()))
+                .collect()
         } else {
-            info.comb_outputs.iter().collect()
+            info.comb_outputs.iter()
+                .filter(|k| !registered_outs.contains(k.as_str()))
+                .collect()
         };
         let comb_ins: Vec<&String> = if treat_as_opaque {
             input_conn.keys().collect()
