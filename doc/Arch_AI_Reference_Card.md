@@ -513,6 +513,13 @@ module M
   resource ar_ch;                       // mutex resource for lock blocks
 
   thread MyThread on clk rising, rst high
+    // Optional comb defaults — applied in every lowered state before
+    // state-specific comb assigns; useful for protocol outputs.
+    default comb
+      ar_valid = false;
+      ar_addr  = 0;
+    end default
+
     // Optional soft-reset clause — fires from ANY state, resets to S0.
     // Only seq assigns allowed inside default when.
     default when start and not active_r
@@ -571,6 +578,7 @@ end module M
 
 **Rules:**
 - `thread Name on clk rising, rst high` — clock edge and reset polarity required
+- `default comb … end default` must appear **before** the thread body; it may drive only comb outputs, not signals also assigned with `<=`
 - `default when cond … end default` must appear **before** the thread body; only seq assigns inside
 - `lock` blocks must **not** be nested — compile error (mutual exclusion guarantee)
 - `thread once` — FSM holds in terminal state instead of looping back to S0

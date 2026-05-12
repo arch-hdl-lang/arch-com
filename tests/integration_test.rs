@@ -7883,6 +7883,79 @@ fn test_thread_wait_elsif_chain_fuses_to_single_dispatch() {
 }
 
 #[test]
+fn test_thread_default_comb_applies_before_state_comb_and_collects_reads() {
+    let source = r#"
+        module M
+          port clk:     in Clock<SysDomain>;
+          port rst:     in Reset<Async, Low>;
+          port start:   in Bool;
+          port ready:   in Bool;
+          port done_i:  in Bool;
+          port kill:    in Bool;
+          port payload: in UInt<8>;
+          port valid:   out Bool;
+          port data:    out UInt<8>;
+          port reg phase: out UInt<4> reset rst => 4'd0;
+
+          thread on clk rising, rst low
+            default comb
+              valid = false;
+              data = payload;
+            end default
+            default when kill
+              phase <= 4'd0;
+            end default
+
+            wait until start;
+            phase <= 4'd1;
+            wait until ready;
+            valid = true;
+            data = 8'hff;
+            wait until done_i;
+          end thread
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("input logic [7:0] payload"),
+        "`default comb` RHS-only signal must be wired into the lowered thread module:\n{sv}");
+    let default_pos = sv.find("data = payload;")
+        .expect("expected unconditional default data assignment");
+    let state_pos = sv.find("if (_t0_state")
+        .expect("expected state-guarded comb assignments");
+    assert!(default_pos < state_pos,
+        "`default comb` assignments must precede state-specific comb assignments:\n{sv}");
+    assert!(sv.contains("data = 8'd255;"),
+        "state-specific comb assignment should still override the default later in the block:\n{sv}");
+}
+
+#[test]
+fn test_thread_default_comb_rejects_seq_driven_target() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port reg done: out Bool reset rst => false;
+
+          thread on clk rising, rst low
+            default comb
+              done = false;
+            end default
+            done <= true;
+            wait 1 cycle;
+          end thread
+        end module M
+    "#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let err = elaborate::lower_threads(ast).expect_err("default comb must not drive seq target");
+    let msg = format!("{err:?}");
+    assert!(msg.contains("default comb") && msg.contains("done") && msg.contains("<="),
+        "expected targeted diagnostic for default-comb/seq-driver conflict, got: {msg}");
+}
+
+#[test]
 fn test_if_wait_with_auto_asserts() {
     // Verify --auto-thread-asserts still emits a coherent set of properties
     // when the thread contains a wait-bearing if/else. The dispatch state's
