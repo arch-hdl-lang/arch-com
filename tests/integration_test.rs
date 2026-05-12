@@ -7481,12 +7481,15 @@ fn test_wait_1_cycle_between_seq_writes_takes_one_cycle() {
         "should not emit counter-decrement state for `wait 1 cycle`:\n{sv}");
     // Three phase writes appear, each transitioning to the next state.
     // State numbering after elision: 0=initial wait, 1=phase=1,
-    // 2=phase=2, 3=phase=3, then loop back to 0.
+    // 2=phase=2, 3=phase=3, then loop back to 0. Issue #247 changed
+    // state assignments to reference per-state `localparam` names
+    // (`_t0_S<N>_<role>`) instead of bare numeric literals.
     assert!(sv.contains("phase <= 2'd1;") && sv.contains("phase <= 2'd2;")
             && sv.contains("phase <= 2'd3;"),
         "expected three phase writes:\n{sv}");
-    assert!(sv.contains("_t0_state <= 2;") && sv.contains("_t0_state <= 3;"),
-        "expected state transitions 1->2 and 2->3:\n{sv}");
+    assert!(sv.contains("_t0_state <= _t0_S2_action;")
+            && sv.contains("_t0_state <= _t0_S3_action;"),
+        "expected state transitions 1->2 and 2->3 via state-name localparams:\n{sv}");
 }
 
 #[test]
@@ -7545,11 +7548,13 @@ fn test_auto_thread_asserts_wait_cycles_and_until() {
     let opts = elaborate::ThreadLowerOpts { auto_asserts: true };
     let sv = compile_to_sv_with_opts(source, &opts);
 
-    // Wait-until: state 0 transitions on `start`.
+    // Wait-until: state 0 transitions on `start`. Issue #247 changed
+    // state comparisons in auto-asserts to reference per-state
+    // `localparam` names (`_t0_S<N>_<role>`) instead of bare literals.
     assert!(sv.contains("_auto_thread_t0_wait_until_s0:"),
         "expected wait_until property at state 0:\n{sv}");
-    assert!(sv.contains("|=> _t0_state == 1"),
-        "expected next-cycle implication to state 1:\n{sv}");
+    assert!(sv.contains("|=> _t0_state == _t0_S1_wait_cycles"),
+        "expected next-cycle implication to state 1 (wait_cycles) via state-name localparam:\n{sv}");
 
     // Wait-cycles: stay + done assertions.
     assert!(sv.contains("_auto_thread_t0_wait_stay_s1:"),
@@ -11600,4 +11605,105 @@ fn test_uint_48_literal_width_emits_uint64_storage() {
             "UInt<48> reg should be uint64_t; got:\n{out}");
     assert!(out.contains("0xFFFFFFFFFFFFULL"),
             "expected 48-bit mask; got:\n{out}");
+}
+
+// ── Thread state-name localparams (issue #247) ──────────────────────────────
+
+#[test]
+fn test_thread_state_localparams_emitted() {
+    // Issue #247: thread lowering emits one `localparam [W-1:0] _t{ti}_S{N}_<role>`
+    // per state and rewrites every state comparison / state-register assignment
+    // to reference the name instead of a bare numeric literal.
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          port req: in Bool;
+          port reg done: out Bool reset rst => false;
+          thread on clk rising, rst high
+            wait until req;
+            done <= true;
+            wait 2 cycle;
+            done <= false;
+          end thread
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+
+    // (1) One `localparam` per state with the expected role suffix.
+    //     S0 = wait_until (transition_cond = `req`), S1 = action (seq write),
+    //     S2 = wait_cycles (wait 2 cycle), S3 = action (final seq write).
+    assert!(sv.contains("localparam [1:0] _t0_S0_wait_until = 0"),
+        "expected S0 wait_until localparam:\n{sv}");
+    assert!(sv.contains("localparam [1:0] _t0_S1_action = 1"),
+        "expected S1 action localparam:\n{sv}");
+    assert!(sv.contains("localparam [1:0] _t0_S2_wait_cycles = 2"),
+        "expected S2 wait_cycles localparam:\n{sv}");
+    assert!(sv.contains("localparam [1:0] _t0_S3_action = 3"),
+        "expected S3 action localparam:\n{sv}");
+
+    // (2) Localparams declared in the merged threads module's parameter list,
+    //     not inside the procedural block.
+    assert!(sv.contains("module _M_threads #("),
+        "merged threads module should have a parameter list:\n{sv}");
+
+    // (3) State comparisons use the name, not a bare literal.
+    assert!(sv.contains("_t0_state == _t0_S0_wait_until"),
+        "expected name-form state comparison for S0:\n{sv}");
+    assert!(sv.contains("_t0_state == _t0_S2_wait_cycles"),
+        "expected name-form state comparison for S2:\n{sv}");
+
+    // (4) State-register assignments use the name, not a bare literal.
+    assert!(sv.contains("_t0_state <= _t0_S1_action"),
+        "expected name-form state assignment to S1:\n{sv}");
+    assert!(sv.contains("_t0_state <= _t0_S2_wait_cycles"),
+        "expected name-form state assignment to S2:\n{sv}");
+
+    // (5) No bare `_t0_state == N` or `_t0_state <= N` numeric-literal forms
+    //     should remain. The synchronous-reset path emits `_t0_state <= 0`
+    //     as the reset value (not a state-transition); that one stays as 0.
+    for n in 0..4 {
+        let bad_cmp = format!("_t0_state == {}", n);
+        let bad_assign = format!("_t0_state <= {};", n);
+        // Reset assigns to literal 0 (acceptable). All other uses must be name-form.
+        if n != 0 {
+            assert!(!sv.contains(&bad_cmp),
+                "state comparison should use name-form, found bare `{}`:\n{}", bad_cmp, sv);
+            assert!(!sv.contains(&bad_assign),
+                "state assignment should use name-form, found bare `{}`:\n{}", bad_assign, sv);
+        }
+    }
+}
+
+#[test]
+fn test_thread_state_names_distinguish_wait_until_vs_wait_cycles() {
+    // Issue #247: the structural classification must produce distinct role
+    // suffixes for a `wait until cond` state vs a `wait 1 cycle` state, so
+    // the localparam names are diagnostic (not just unique).
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          port go: in Bool;
+          port done: out Bool;
+          thread on clk rising, rst high
+            wait until go;
+            done = 1;
+            wait 2 cycle;
+            done = 0;
+          end thread
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    // The wait-until state and the wait-cycles state must carry distinct
+    // role suffixes so a waveform reader can tell at a glance what kind
+    // of wait the FSM is sitting in.
+    assert!(sv.contains("_t0_S0_wait_until"),
+        "expected wait_until role suffix on S0:\n{sv}");
+    assert!(sv.contains("_wait_cycles"),
+        "expected wait_cycles role suffix on the wait-cycles state:\n{sv}");
+    // Sanity: the two roles are NOT collapsed to the same name.
+    assert!(sv.matches("_t0_S0_wait_until").count() >= 1
+            && sv.matches("_wait_cycles =").count() >= 1,
+        "wait_until and wait_cycles must produce distinct localparam decls:\n{sv}");
 }
