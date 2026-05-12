@@ -970,7 +970,7 @@ fn collect_trace_signals(
         if p.bus_info.is_some() { continue; }
         if matches!(p.ty, TypeExpr::Vec(..) | TypeExpr::Named(_)) { continue; }
         let name = &p.name.name;
-        let width = type_width(&p.ty);
+        let width = type_width_with_params(&p.ty, params);
         let is_wide = wide_names.contains(name.as_str());
         sigs.push(TraceSignal {
             vcd_name: name.clone(),
@@ -982,7 +982,7 @@ fn collect_trace_signals(
     // Flattened bus signals
     for (flat_name, flat_ty) in bus_flat {
         if matches!(flat_ty, TypeExpr::Vec(..) | TypeExpr::Named(_)) { continue; }
-        let width = type_width(flat_ty);
+        let width = type_width_with_params(flat_ty, params);
         let is_wide = wide_names.contains(flat_name.as_str());
         sigs.push(TraceSignal {
             vcd_name: flat_name.clone(),
@@ -1004,7 +1004,7 @@ fn collect_trace_signals(
                 // Skip Vec-of-named (struct/enum element); per-element
                 // bit-shift only works for scalar elements.
                 if matches!(elem.as_ref(), TypeExpr::Named(_)) { continue; }
-                let elem_width = type_width(elem);
+                let elem_width = type_width_with_params(elem, params);
                 if elem_width == 0 || elem_width > 64 { continue; }
                 // Use params-aware count (matches the field-decl path
                 // at line 4091); bare eval_const_expr returns 0 for
@@ -1020,7 +1020,7 @@ fn collect_trace_signals(
                     });
                 }
             } else {
-                let width = type_width(&r.ty);
+                let width = type_width_with_params(&r.ty, params);
                 sigs.push(TraceSignal {
                     vcd_name: name.clone(),
                     cpp_expr: format!("_{name}"),
@@ -1042,7 +1042,7 @@ fn collect_trace_signals(
                 let name = &l.name.name;
                 if l.ty.as_ref().map_or(false,
                     |t| matches!(t, TypeExpr::Vec(..) | TypeExpr::Named(_))) { continue; }
-                let width = l.ty.as_ref().map(|t| type_width(t)).unwrap_or(
+                let width = l.ty.as_ref().map(|t| type_width_with_params(t, params)).unwrap_or(
                     widths.get(name.as_str()).copied().unwrap_or(32)
                 );
                 sigs.push(TraceSignal {
@@ -1055,7 +1055,7 @@ fn collect_trace_signals(
             ModuleBodyItem::WireDecl(w) => {
                 if matches!(w.ty, TypeExpr::Vec(..) | TypeExpr::Named(_)) { continue; }
                 let name = &w.name.name;
-                let width = type_width(&w.ty);
+                let width = type_width_with_params(&w.ty, params);
                 sigs.push(TraceSignal {
                     vcd_name: name.clone(),
                     cpp_expr: format!("_let_{name}"),
@@ -1102,13 +1102,21 @@ fn collect_trace_signals(
 /// - `type_bits_te(ty)`: scalar-only width (does NOT recurse into Vec), defaults to 32 —
 ///   used for inst port width tracking where Vec is handled separately via flat fields
 fn type_width(ty: &TypeExpr) -> u32 {
+    type_width_with_params(ty, &[])
+}
+
+/// Param-aware variant of [`type_width`]. Resolves `UInt<PARAM>` /
+/// `SInt<PARAM>` widths via param defaults. Used by trace-signal emission
+/// (`build_trace_signals`) so VCD `$var wire N` widths reflect the actual
+/// HDL bit width rather than the legacy 32-default. arch-com#330.
+fn type_width_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> u32 {
     match ty {
-        TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width(w),
+        TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width_with_params(w, params),
         TypeExpr::Bool => 1,
         TypeExpr::Bit => 1,
         TypeExpr::Clock(_) => 1,
         TypeExpr::Reset { .. } => 1,
-        TypeExpr::Vec(elem, count) => type_width(elem) * eval_width(count),
+        TypeExpr::Vec(elem, count) => type_width_with_params(elem, params) * eval_width_with_params(count, params),
         _ => 32,
     }
 }
@@ -1201,20 +1209,46 @@ fn is_wide_bits(bits: u32) -> bool { bits > 64 }
 
 /// C++ type for a public port field.
 fn cpp_port_type(ty: &TypeExpr) -> String {
+    cpp_port_type_with_params(ty, &[])
+}
+
+/// Param-aware variant of [`cpp_port_type`]. Resolves param identifiers in
+/// `UInt<W>` / `SInt<W>` widths via [`eval_const_expr_with_params`] so a
+/// `UInt<ACC_WIDTH>` declaration (with `param ACC_WIDTH: const = 48`) gets
+/// the right C++ bucket (e.g. `uint64_t` for 33..=64 bits). The legacy
+/// `cpp_port_type` falls back to `eval_width`, which returns 32 for any
+/// non-literal width and silently truncates 33..=64-bit fields to
+/// `uint32_t`. arch-com#330.
+fn cpp_port_type_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> String {
     match ty {
         TypeExpr::UInt(w) => {
-            let b = eval_width(w);
+            let b = eval_width_with_params(w, params);
             if is_wide_bits(b) { format!("VlWide<{}>", wide_words(b)) }
             else { cpp_uint(b).to_string() }
         }
         TypeExpr::SInt(w) => {
-            let b = eval_width(w);
+            let b = eval_width_with_params(w, params);
             if is_wide_bits(b) { format!("VlWide<{}>", wide_words(b)) }
             else { cpp_sint(b).to_string() }
         }
         TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(..) => "uint8_t".to_string(),
         TypeExpr::Named(n) => n.name.clone(),
         TypeExpr::Vec(_, _) => "uint32_t".to_string(),
+    }
+}
+
+/// Param-aware width eval used by the type-emission helpers. Folds bare
+/// `Ident` and basic arithmetic over `params` defaults; falls back to the
+/// legacy literal-only `eval_width` for shapes the const evaluator can't
+/// fold (preserving prior conservative-32 behavior). arch-com#330.
+fn eval_width_with_params(expr: &Expr, params: &[ParamDecl]) -> u32 {
+    let folded = eval_const_expr_with_params(expr, params);
+    if folded != 0 || matches!(&expr.kind,
+        ExprKind::Literal(LitKind::Dec(0)) | ExprKind::Literal(LitKind::Hex(0)))
+    {
+        folded as u32
+    } else {
+        eval_width(expr)
     }
 }
 
@@ -1392,15 +1426,22 @@ fn expand_bus_connections(
 /// 65–128 bits → _arch_u128
 /// >128 bits   → VlWide<N>  (same as port type, no conversion needed)
 fn cpp_internal_type(ty: &TypeExpr) -> String {
+    cpp_internal_type_with_params(ty, &[])
+}
+
+/// Param-aware variant of [`cpp_internal_type`]. See [`cpp_port_type_with_params`]
+/// for rationale — without param resolution, `UInt<ACC_WIDTH>` regs/lets
+/// get the wrong C++ scalar type. arch-com#330.
+fn cpp_internal_type_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> String {
     match ty {
         TypeExpr::UInt(w) => {
-            let b = eval_width(w);
+            let b = eval_width_with_params(w, params);
             if b > 128 { format!("VlWide<{}>", wide_words(b)) }
             else if b > 64 { "_arch_u128".to_string() }
             else { cpp_uint(b).to_string() }
         }
         TypeExpr::SInt(w) => {
-            let b = eval_width(w);
+            let b = eval_width_with_params(w, params);
             if b > 128 { format!("VlWide<{}>", wide_words(b)) }
             else if b > 64 { "_arch_u128".to_string() }
             else { cpp_sint(b).to_string() }
@@ -1415,7 +1456,7 @@ fn cpp_field_decl(name: &str, ty: &TypeExpr, params: &[ParamDecl]) -> String {
     if let Some((elem_ty, count)) = vec_array_info_with_params(ty, params) {
         format!("{elem_ty} {name}[{count}]")
     } else {
-        format!("{} {name}", cpp_internal_type(ty))
+        format!("{} {name}", cpp_internal_type_with_params(ty, params))
     }
 }
 
@@ -1844,7 +1885,7 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
         }
         ExprKind::MethodCall(_, method, args) if method.name == "trunc" || method.name == "zext" || method.name == "sext" || method.name == "resize" => {
             if let Some(w) = args.first() {
-                eval_width(w)
+                eval_width_in(w, ctx)
             } else {
                 8
             }
@@ -1857,8 +1898,8 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
         ExprKind::PartSelect(_, _, width, _) => eval_width_in(width, ctx),
         ExprKind::Cast(_, ty) => {
             match ty.as_ref() {
-                TypeExpr::UInt(w) => eval_width(w),
-                TypeExpr::SInt(w) => eval_width(w),
+                TypeExpr::UInt(w) => eval_width_in(w, ctx),
+                TypeExpr::SInt(w) => eval_width_in(w, ctx),
                 _ => 8,
             }
         }
@@ -2205,7 +2246,7 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
 
         ExprKind::Cast(inner, ty) => {
             let e = cpp_expr(inner, ctx);
-            let t = cpp_port_type(ty);
+            let t = cpp_port_type_with_params(ty, ctx.params);
             // For SInt casts whose source is narrower than the target
             // C++ int, sign-extend the value: a plain `(int64_t)x`
             // bit-cast leaves the upper bits zero, which makes a
@@ -2220,7 +2261,7 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             // For UInt casts and same-width SInt casts, the bit-cast
             // is correct and we keep the original simple form.
             if let TypeExpr::SInt(w) = &**ty {
-                let w_hdl = eval_width(w);
+                let w_hdl = eval_width_in(w, ctx);
                 let w_cpp: u32 = if w_hdl <= 8 { 8 }
                                  else if w_hdl <= 16 { 16 }
                                  else if w_hdl <= 32 { 32 }
@@ -2538,7 +2579,7 @@ fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &Ctx) -> Str
     match method.name.as_str() {
         "trunc" => {
             if let Some(w_expr) = args.first() {
-                let bits = eval_width(w_expr);
+                let bits = eval_width_in(w_expr, ctx);
                 let base_w = infer_expr_width(base, ctx);
                 if base_w > 128 && bits <= 64 {
                     // VlWide → narrow: extract low bits via word array
@@ -2552,7 +2593,7 @@ fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &Ctx) -> Str
         }
         "zext" => {
             if let Some(w_expr) = args.first() {
-                let bits = eval_width(w_expr);
+                let bits = eval_width_in(w_expr, ctx);
                 let base_w = infer_expr_width(base, ctx);
                 if bits > 128 {
                     // Narrow → VlWide: use uint64_t constructor
@@ -2569,7 +2610,7 @@ fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &Ctx) -> Str
         }
         "sext" => {
             if let Some(w_expr) = args.first() {
-                let dst_bits = eval_width(w_expr);
+                let dst_bits = eval_width_in(w_expr, ctx);
                 let src_bits = infer_expr_width(base, ctx);
                 if src_bits >= dst_bits || src_bits == 0 {
                     // No extension needed or unknown source width
@@ -2587,7 +2628,7 @@ fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &Ctx) -> Str
         "resize" => {
             // Direction-agnostic: sign-extend if narrowing to signed, zero-pad if widening unsigned
             if let Some(w_expr) = args.first() {
-                let dst_bits = eval_width(w_expr);
+                let dst_bits = eval_width_in(w_expr, ctx);
                 let src_bits = infer_expr_width(base, ctx);
                 if src_bits >= dst_bits || src_bits == 0 {
                     // Narrowing or equal: just cast (C++ truncates)
@@ -2602,7 +2643,7 @@ fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &Ctx) -> Str
         }
         "reverse" => {
             let base_w = infer_expr_width(base, ctx);
-            let chunk = if let Some(c) = args.first() { eval_width(c) } else { 1 };
+            let chunk = if let Some(c) = args.first() { eval_width_in(c, ctx) } else { 1 };
             if chunk == 1 {
                 // Bit-reverse: build at compile time
                 if base_w <= 64 {
@@ -3414,7 +3455,7 @@ fn resolve_enum_variant(
 fn build_widths(ports: &[PortDecl], body: &[ModuleBodyItem], params: &[ParamDecl]) -> HashMap<String, u32> {
     let mut m = HashMap::new();
     for p in ports {
-        m.insert(p.name.name.clone(), type_bits_te(&p.ty));
+        m.insert(p.name.name.clone(), type_bits_te_with_params(&p.ty, params));
     }
     // Compile-time-constant params participate in width inference the same
     // way let bindings do. Without this, `infer_expr_width` falls back to
@@ -3440,7 +3481,7 @@ fn build_widths(ports: &[PortDecl], body: &[ModuleBodyItem], params: &[ParamDecl
     }
     for item in body {
         match item {
-            ModuleBodyItem::RegDecl(r) => { m.insert(r.name.name.clone(), type_bits_te(&r.ty)); }
+            ModuleBodyItem::RegDecl(r) => { m.insert(r.name.name.clone(), type_bits_te_with_params(&r.ty, params)); }
             ModuleBodyItem::WireDecl(w) => {
                 // Wires need width registration too — without this, downstream
                 // sites that consult ctx.widths (the Bool `~` masking check
@@ -3448,7 +3489,7 @@ fn build_widths(ports: &[PortDecl], body: &[ModuleBodyItem], params: &[ParamDecl
                 // …) silently fall back to "32" and produce broken codegen.
                 // Symptom: `if ~bool_wire == false` emitted as
                 // `(~(uint8_t)1) == 0` → `0xFE == 0` → never true.
-                m.insert(w.name.name.clone(), type_bits_te(&w.ty));
+                m.insert(w.name.name.clone(), type_bits_te_with_params(&w.ty, params));
             }
             ModuleBodyItem::LetBinding(l) => {
                 // Destructuring: widths come from struct field types; these
@@ -3458,7 +3499,7 @@ fn build_widths(ports: &[PortDecl], body: &[ModuleBodyItem], params: &[ParamDecl
                     continue;
                 }
                 if let Some(ty) = &l.ty {
-                    m.insert(l.name.name.clone(), type_bits_te(ty));
+                    m.insert(l.name.name.clone(), type_bits_te_with_params(ty, params));
                 }
             }
             _ => {}
@@ -3481,8 +3522,17 @@ fn build_widths(ports: &[PortDecl], body: &[ModuleBodyItem], params: &[ParamDecl
 }
 
 fn type_bits_te(ty: &TypeExpr) -> u32 {
+    type_bits_te_with_params(ty, &[])
+}
+
+/// Param-aware variant of [`type_bits_te`]. Resolves param idents in
+/// `UInt<W>` / `SInt<W>` width positions so that `is_wide_bits` /
+/// `collect_wide_names` classification works for `param`-derived widths
+/// (e.g. `UInt<W>` with `param W = 96` must be classified wide, not 32).
+/// arch-com#330.
+fn type_bits_te_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> u32 {
     match ty {
-        TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width(w),
+        TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width_with_params(w, params),
         TypeExpr::Bool | TypeExpr::Bit => 1,
         _ => 32,
     }
@@ -3492,16 +3542,16 @@ fn type_bits_te(ty: &TypeExpr) -> u32 {
 fn collect_wide_names(ports: &[PortDecl], body: &[ModuleBodyItem], params: &[ParamDecl]) -> HashSet<String> {
     let mut s = HashSet::new();
     for p in ports {
-        if type_bits_te(&p.ty) > 64 { s.insert(p.name.name.clone()); }
+        if type_bits_te_with_params(&p.ty, params) > 64 { s.insert(p.name.name.clone()); }
     }
     for item in body {
         match item {
             ModuleBodyItem::RegDecl(r) => {
-                if type_bits_te(&r.ty) > 64 { s.insert(r.name.name.clone()); }
+                if type_bits_te_with_params(&r.ty, params) > 64 { s.insert(r.name.name.clone()); }
             }
             ModuleBodyItem::LetBinding(l) => {
                 if let Some(ty) = &l.ty {
-                    if type_bits_te(ty) > 64 { s.insert(l.name.name.clone()); }
+                    if type_bits_te_with_params(ty, params) > 64 { s.insert(l.name.name.clone()); }
                 }
             }
             _ => {}
@@ -4445,13 +4495,13 @@ impl<'a> SimCodegen<'a> {
                     h.push_str(&format!("  {} {}_{i};\n", vi.elem_ty, vi.name));
                 }
             } else {
-                let ty = cpp_port_type(&p.ty);
+                let ty = cpp_port_type_with_params(&p.ty, &m.params);
                 h.push_str(&format!("  {ty} {};\n", p.name.name));
             }
         }
         for (flat_name, flat_ty) in &bus_flat {
             if bus_flat_vec_names.contains(flat_name) { continue; }
-            let ty = cpp_port_type(flat_ty);
+            let ty = cpp_port_type_with_params(flat_ty, &m.params);
             h.push_str(&format!("  {ty} {flat_name};\n"));
         }
         for vi in &vec_port_infos {
@@ -4693,7 +4743,7 @@ impl<'a> SimCodegen<'a> {
                 if let Some((elem_ty, count)) = vec_array_info_with_params(&r.ty, &m.params) {
                     h.push_str(&format!("  {elem_ty} _{}[{count}];\n", r.name.name));
                 } else {
-                    let ty = cpp_internal_type(&r.ty);
+                    let ty = cpp_internal_type_with_params(&r.ty, &m.params);
                     h.push_str(&format!("  {ty} _{};\n", r.name.name));
                 }
             }
@@ -4706,7 +4756,7 @@ impl<'a> SimCodegen<'a> {
                     // Vec port-reg: internal C array
                     h.push_str(&format!("  {} _{}[{}];\n", vi.elem_ty, vi.name, vi.count));
                 } else {
-                    let ty = cpp_internal_type(&p.ty);
+                    let ty = cpp_internal_type_with_params(&p.ty, &m.params);
                     h.push_str(&format!("  {ty} _{};\n", p.name.name));
                 }
             } else if vec_port_names.contains(&p.name.name) {
@@ -4751,7 +4801,7 @@ impl<'a> SimCodegen<'a> {
                 if p.bus_info.is_none() {
                     if !uninit_inputs.contains(&p.name.name) { continue; }
                     let pname = &p.name.name;
-                    let ty = cpp_port_type(&p.ty);
+                    let ty = cpp_port_type_with_params(&p.ty, &m.params);
                     h.push_str(&format!(
                         "  void set_{pname}({ty} v) {{ {pname} = v; _{pname}_vinit = true; }}\n"
                     ));
@@ -4780,7 +4830,7 @@ impl<'a> SimCodegen<'a> {
                     }
                     let flat = format!("{}_{}", p.name.name, sname);
                     if !uninit_inputs.contains(&flat) { continue; }
-                    let ty = cpp_port_type(&sty);
+                    let ty = cpp_port_type_with_params(&sty, &m.params);
                     h.push_str(&format!(
                         "  void set_{flat}({ty} v) {{ {flat} = v; _{flat}_vinit = true; }}\n"
                     ));
@@ -4799,7 +4849,7 @@ impl<'a> SimCodegen<'a> {
                         for bind in &l.destructure_fields {
                             let ty = sname.as_ref()
                                 .and_then(|n| self.lookup_struct_field_ty(n, &bind.name))
-                                .map(|t| cpp_internal_type(&t))
+                                .map(|t| cpp_internal_type_with_params(&t, &m.params))
                                 .unwrap_or_else(|| "uint32_t".to_string());
                             h.push_str(&format!("  {ty} _let_{};\n", bind.name));
                         }
@@ -4807,7 +4857,7 @@ impl<'a> SimCodegen<'a> {
                     }
                     // ty=None: assignment to existing port/wire — no new field needed
                     if l.ty.is_none() { continue; }
-                    let ty = l.ty.as_ref().map(|t| cpp_internal_type(t))
+                    let ty = l.ty.as_ref().map(|t| cpp_internal_type_with_params(t, &m.params))
                         .unwrap_or_else(|| "uint32_t".to_string());
                     h.push_str(&format!("  {ty} _let_{};\n", l.name.name));
                 }
@@ -4815,7 +4865,7 @@ impl<'a> SimCodegen<'a> {
                     if let Some((elem_ty, count)) = vec_array_info_with_params(&w.ty, &m.params) {
                         h.push_str(&format!("  {elem_ty} _let_{}[{count}];\n", w.name.name));
                     } else {
-                        let ty = cpp_internal_type(&w.ty);
+                        let ty = cpp_internal_type_with_params(&w.ty, &m.params);
                         h.push_str(&format!("  {ty} _let_{};\n", w.name.name));
                     }
                 }
@@ -5395,7 +5445,7 @@ impl<'a> SimCodegen<'a> {
                 if let Some((elem_ty, count)) = vec_array_info_with_params(&rd.ty, &m.params) {
                     cpp.push_str(&format!("  {elem_ty} _n_{n}[{count}]; memcpy(_n_{n}, _{n}, sizeof(_{n}));\n"));
                 } else {
-                    let ty = cpp_internal_type(&rd.ty);
+                    let ty = cpp_internal_type_with_params(&rd.ty, &m.params);
                     cpp.push_str(&format!("  {ty} _n_{n} = _{n};\n"));
                 }
             }
@@ -5407,7 +5457,7 @@ impl<'a> SimCodegen<'a> {
                         // Vec port-reg: _n_ is an array, initialized by memcpy
                         cpp.push_str(&format!("  {} _n_{n}[{}]; memcpy(_n_{n}, _{n}, sizeof(_{n}));\n", vi.elem_ty, vi.count));
                     } else {
-                        let ty = cpp_internal_type(&p.ty);
+                        let ty = cpp_internal_type_with_params(&p.ty, &m.params);
                         cpp.push_str(&format!("  {ty} _n_{n} = _{n};\n"));
                     }
                 }
@@ -5659,7 +5709,7 @@ impl<'a> SimCodegen<'a> {
                 for rd in &reg_decls {
                     let n = &rd.name.name;
                     if is_thread_fsm_state_reg(n) {
-                        let ty = cpp_internal_type(&rd.ty);
+                        let ty = cpp_internal_type_with_params(&rd.ty, &m.params);
                         cpp.push_str(&format!("  {ty} _dbg_old_{n} = _{n};\n"));
                     }
                 }
