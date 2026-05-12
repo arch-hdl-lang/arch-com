@@ -375,7 +375,7 @@ fn elaborate_module_variant(
         p
     }).collect();
 
-    Ok(ModuleDecl { name: new_name, params: new_params, ports: all_ports, body: new_body, implements: m.implements, hooks: m.hooks, cdc_safe: m.cdc_safe, rdc_safe: m.rdc_safe, span: m.span, doc: m.doc, inner_doc: m.inner_doc, is_interface: m.is_interface })
+    Ok(ModuleDecl { name: new_name, params: new_params, ports: all_ports, body: new_body, implements: m.implements, hooks: m.hooks, cdc_safe: m.cdc_safe, rdc_safe: m.rdc_safe, comb_loops_allowed: m.comb_loops_allowed, span: m.span, doc: m.doc, inner_doc: m.inner_doc, is_interface: m.is_interface })
 }
 
 /// Rewrite an inst's `module_name` to the correct variant name.
@@ -2610,6 +2610,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
         hooks: Vec::new(),
         cdc_safe: false,
         rdc_safe: false,
+        comb_loops_allowed: false,
         span: sp,
         doc: None,
         inner_doc: None,

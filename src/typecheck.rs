@@ -99,10 +99,83 @@ impl<'a> TypeChecker<'a> {
                 self.check_latch_regfile_writes(m);
             }
         }
+        // Whole-design comb-loop analysis (issue #246). Walks the full
+        // instance hierarchy starting from top-level modules and runs
+        // Tarjan's SCC over a unified `(inst_path, signal)` graph. The
+        // existing per-module analyzer (`comb_graph::analyze_module`)
+        // only catches sibling-instance cycles within one parent and
+        // silently absorbs them as settle_depth=2; this surfaces them
+        // as warnings and also catches cycles that span hierarchy.
+        self.check_whole_design_comb_loops();
         if self.errors.is_empty() {
             Ok((self.warnings, self.overload_map))
         } else {
             Err(self.errors)
+        }
+    }
+
+    /// Issue #246 MVP: warn on every comb-feedback SCC found in the
+    /// whole-design instance-flat graph. Blessed-by-pragma SCCs are
+    /// silently suppressed.
+    fn check_whole_design_comb_loops(&mut self) {
+        let analysis = crate::comb_graph::analyze_whole_design(self.source, self.symbols);
+        if analysis.sccs.is_empty() && analysis.total_sccs == 0 {
+            return;
+        }
+        for scc in &analysis.sccs {
+            // Pick a span for the warning: the span of the first owning
+            // module in the SCC (top-level module if vec![]). Fall back
+            // to the first item's span.
+            let span: Span = scc.owning_modules.iter()
+                .filter_map(|mn| {
+                    self.source.items.iter().find_map(|it| {
+                        if let Item::Module(m) = it {
+                            if &m.name.name == mn { return Some(m.span); }
+                        }
+                        None
+                    })
+                })
+                .next()
+                .unwrap_or_else(|| {
+                    self.source.items.first()
+                        .map(|it| it.span())
+                        .unwrap_or(Span { start: 0, end: 0 })
+                });
+
+            let path_str: Vec<String> = scc.nodes.iter().map(|n| n.display()).collect();
+            let module_list: Vec<String> = {
+                let mut v: Vec<String> = scc.owning_modules.iter().cloned().collect();
+                v.sort();
+                v
+            };
+            let msg = format!(
+                "whole-design combinational feedback cycle ({} nodes) involving modules [{}]; cycle: {}{}",
+                scc.nodes.len(),
+                module_list.join(", "),
+                path_str.join(" -> "),
+                if path_str.is_empty() { String::new() } else { format!(" -> {}", path_str[0]) },
+            );
+            self.warnings.push(CompileWarning {
+                message: msg,
+                span,
+            });
+        }
+        // Summary line emitted as a single warning so it shows up in the
+        // standard warning stream.
+        if analysis.total_sccs > 0 {
+            let span = self.source.items.first()
+                .map(|it| it.span())
+                .unwrap_or(Span { start: 0, end: 0 });
+            let summary = format!(
+                "arch check: {} comb SCC(s) found; {} suppressed by pragma; {} unblessed (warnings)",
+                analysis.total_sccs,
+                analysis.suppressed,
+                analysis.sccs.len(),
+            );
+            self.warnings.push(CompileWarning {
+                message: summary,
+                span,
+            });
         }
     }
 
