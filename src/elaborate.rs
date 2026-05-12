@@ -1954,6 +1954,13 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
     // ── Per-thread state machines ──────────────────────────────────────
     let mut all_thread_comb: Vec<Stmt> = Vec::new();
     let mut all_thread_seq: Vec<Stmt> = Vec::new();
+    // Per-state `localparam` decls (one set per thread). Issue #247: make
+    // thread-lowered FSMs debuggable by giving each state a descriptive
+    // SV-level name (e.g. `_t0_S2_wait_until`) and emitting state
+    // comparisons / assignments as `_t0_state == _t0_S2_wait_until`
+    // instead of bare `_t0_state == 2`. Appended to the merged-threads
+    // module's `params` list at construction time.
+    let mut state_name_params: Vec<ParamDecl> = Vec::new();
     // Auto-emitted SVA spec-contract properties (gated by `opts.auto_asserts`).
     // Reset-guarded antecedent so they don't fire during reset.
     let mut auto_asserts: Vec<AssertDecl> = Vec::new();
@@ -2052,6 +2059,64 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
         let n_states = raw_states.len();
         let state_reg = format!("_t{}_state", ti);
         let state_bits = crate::width::index_width(n_states as u64) as u64;
+
+        // Derive a descriptive name per state from structural shape (issue #247).
+        // Role categories (checked in order, first match wins):
+        //   - dispatch:    >1 multi_transitions  (fork/join product or if-dispatch)
+        //   - wait_cycles: counter-driven stay-then-advance (`wait N cycle`)
+        //   - wait_until:  transition_cond is Some (`wait until cond`)
+        //   - entry:       state 0 with none of the above (clean entry state)
+        //   - action:      everything else (unconditional advance with body work)
+        // Per-thread prefix `_t{ti}_` keeps the names unique within the
+        // merged-threads module across multiple threads; the state register
+        // itself is also `_t{ti}_state`.
+        let state_names: Vec<String> = (0..n_states)
+            .map(|si| {
+                let s = &raw_states[si];
+                let role = if s.multi_transitions.len() > 1 {
+                    "dispatch"
+                } else if s.wait_cycles.is_some() {
+                    "wait_cycles"
+                } else if s.transition_cond.is_some() {
+                    "wait_until"
+                } else if si == 0 {
+                    "entry"
+                } else {
+                    "action"
+                };
+                format!("_t{}_S{}_{}", ti, si, role)
+            })
+            .collect();
+
+        // Emit one `localparam [W-1:0] _t{ti}_S{N}_<role> = N;` per state, so
+        // SV waveform viewers and source readers can decode the state register
+        // by name. The width matches the state register's UInt<W> type; W is
+        // `state_bits.max(1)` (clog2-of-N with a floor of 1 for the
+        // single-state edge case).
+        let w_hi = if state_bits == 0 { 0 } else { state_bits - 1 };
+        for si in 0..n_states {
+            let hi_lit = Expr::new(ExprKind::Literal(LitKind::Dec(w_hi)), sp);
+            let lo_lit = Expr::new(ExprKind::Literal(LitKind::Dec(0)), sp);
+            state_name_params.push(ParamDecl {
+                name: Ident::new(state_names[si].clone(), sp),
+                kind: ParamKind::WidthConst(hi_lit, lo_lit),
+                default: Some(Expr::new(ExprKind::Literal(LitKind::Dec(si as u64)), sp)),
+                is_local: true,
+                span: sp,
+                unpacked_size: None,
+            });
+        }
+
+        // Helper: build an Expr that references the state-N localparam by name
+        // instead of emitting a bare numeric literal. Replaces the previous
+        // `ExprKind::Literal(LitKind::Dec(N))` pattern at every state-reference
+        // site below — state == N comparisons, state <= N transition assigns,
+        // and the SVA auto-assert state_lit closure. Bare literals would still
+        // be correct SV (the localparam evaluates to the same N) but the
+        // name-form is the whole point of #247.
+        let state_name_expr = |id: usize| -> Expr {
+            Expr::new(ExprKind::Ident(state_names[id].clone()), sp)
+        };
 
         // State register
         merged_body.push(ModuleBodyItem::RegDecl(RegDecl {
@@ -2153,7 +2218,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
             let state_cond = Expr::new(ExprKind::Binary(
                 BinOp::Eq,
                 Box::new(Expr::new(ExprKind::Ident(state_reg.clone()), sp)),
-                Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(si as u64)), sp)),
+                Box::new(state_name_expr(si)),
             ), sp);
 
             let mut body: Vec<Stmt> = Vec::new();
@@ -2202,7 +2267,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                         cond: cond.clone(),
                         then_stmts: vec![Stmt::Assign(RegAssign {
                             target: Expr::new(ExprKind::Ident(state_reg.clone()), sp),
-                            value: Expr::new(ExprKind::Literal(LitKind::Dec(tgt as u64)), sp),
+                            value: state_name_expr(tgt),
                             span: sp,
                         })],
                         else_stmts: Vec::new(), unique: false, span: sp,
@@ -2213,7 +2278,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                     cond: cond.clone(),
                     then_stmts: vec![Stmt::Assign(RegAssign {
                         target: Expr::new(ExprKind::Ident(state_reg.clone()), sp),
-                        value: Expr::new(ExprKind::Literal(LitKind::Dec(next_state as u64)), sp),
+                        value: state_name_expr(next_state),
                         span: sp,
                     })],
                     else_stmts: Vec::new(), unique: false, span: sp,
@@ -2230,7 +2295,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                     cond: cnt_zero,
                     then_stmts: vec![Stmt::Assign(RegAssign {
                         target: Expr::new(ExprKind::Ident(state_reg.clone()), sp),
-                        value: Expr::new(ExprKind::Literal(LitKind::Dec(next_state as u64)), sp),
+                        value: state_name_expr(next_state),
                         span: sp,
                     })],
                     else_stmts: Vec::new(), unique: false, span: sp,
@@ -2239,7 +2304,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                 // Unconditional transition
                 body.push(Stmt::Assign(RegAssign {
                     target: Expr::new(ExprKind::Ident(state_reg.clone()), sp),
-                    value: Expr::new(ExprKind::Literal(LitKind::Dec(next_state as u64)), sp),
+                    value: state_name_expr(next_state),
                     span: sp,
                 }));
             }
@@ -2256,7 +2321,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                 let mk_bin = |op: BinOp, a: Expr, b: Expr| -> Expr {
                     Expr::new(ExprKind::Binary(op, Box::new(a), Box::new(b)), sp)
                 };
-                let state_lit = |id: usize| Expr::new(ExprKind::Literal(LitKind::Dec(id as u64)), sp);
+                let state_lit = |id: usize| state_name_expr(id);
                 let state_id = || Expr::new(ExprKind::Ident(state_reg.clone()), sp);
                 let state_eq = |id: usize| mk_bin(BinOp::Eq, state_id(), state_lit(id));
                 let rst_g = rst_inactive.clone().unwrap();
@@ -2334,10 +2399,10 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                     }
                 })
                 .collect();
-            // Reset state to 0
+            // Reset state to 0 (the entry state — name-form for #247).
             dw_then.push(Stmt::Assign(RegAssign {
                 target: Expr::new(ExprKind::Ident(state_reg.clone()), sp),
-                value: make_zero_expr(sp),
+                value: state_name_expr(0),
                 span: sp,
             }));
             all_thread_seq.push(Stmt::IfElse(IfElse {
@@ -2357,7 +2422,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
             let state_cond = Expr::new(ExprKind::Binary(
                 BinOp::Eq,
                 Box::new(Expr::new(ExprKind::Ident(state_reg.clone()), sp)),
-                Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(si as u64)), sp)),
+                Box::new(state_name_expr(si)),
             ), sp);
 
             // This state's own comb outputs
@@ -2503,9 +2568,17 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
         merged_body.push(ModuleBodyItem::Assert(a));
     }
 
+    // Append per-thread state-name localparams (issue #247) AFTER parent
+    // params so the inst-site parameter override order (which matches
+    // parent's param list) is preserved. The state-name params are all
+    // `is_local: true` → emit as SV `localparam`, not overridable from
+    // the inst site, so they don't appear in the connection list anyway.
+    let mut merged_params = parent_params;
+    merged_params.extend(state_name_params);
+
     let merged_module = ModuleDecl {
         name: Ident::new(merged_name.clone(), sp),
-        params: parent_params,
+        params: merged_params,
         ports: merged_ports.clone(),
         body: merged_body,
         implements: None,
