@@ -11780,3 +11780,225 @@ fn test_thread_state_names_distinguish_wait_until_vs_wait_cycles() {
             && sv.matches("_wait_cycles =").count() >= 1,
         "wait_until and wait_cycles must produce distinct localparam decls:\n{sv}");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #246: whole-design combinational feedback-loop detection (MVP).
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn comb_loop_warnings(source: &str) -> Vec<String> {
+    warnings_from(source)
+        .into_iter()
+        .filter(|m| m.contains("combinational feedback cycle")
+                 || m.starts_with("arch check:"))
+        .collect()
+}
+
+#[test]
+fn test_comb_loop_within_module_detected() {
+    // Self-driving comb cycle inside a single module: a depends on b,
+    // b depends on a. The whole-design check should surface it as a
+    // warning.
+    let source = r#"
+        module M
+          port i: in UInt<1>;
+          port o: out UInt<1>;
+          wire a: UInt<1>;
+          wire b: UInt<1>;
+          comb
+            a = b or i;
+            b = a;
+            o = a;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    assert!(ws.iter().any(|m| m.contains("combinational feedback cycle")),
+        "expected a comb-loop warning, got: {:?}", ws);
+}
+
+#[test]
+fn test_comb_loop_across_two_instances_detected() {
+    // Cross-instance loop: A.out -> B.in -> B.out -> A.in.
+    // The current per-module analyzer silently absorbs this as
+    // settle_depth=2; the new whole-design analyzer should warn.
+    let source = r#"
+        module Cell
+          port i: in UInt<1>;
+          port o: out UInt<1>;
+          comb
+            o = i;
+          end comb
+        end module Cell
+
+        module Top
+          port s: in UInt<1>;
+          port q: out UInt<1>;
+          wire w1: UInt<1>;
+          wire w2: UInt<1>;
+
+          inst a: Cell
+            i <- w2;
+            o -> w1;
+          end inst a
+
+          inst b: Cell
+            i <- w1;
+            o -> w2;
+          end inst b
+
+          comb
+            q = w1;
+          end comb
+        end module Top
+    "#;
+    let ws = comb_loop_warnings(source);
+    assert!(ws.iter().any(|m| m.contains("combinational feedback cycle")),
+        "expected a comb-loop warning, got: {:?}", ws);
+}
+
+#[test]
+fn test_comb_loop_suppressed_by_pragma() {
+    // Same setup as cross-instance test, but parent has the bless pragma.
+    let source = r#"
+        module Cell
+          port i: in UInt<1>;
+          port o: out UInt<1>;
+          comb
+            o = i;
+          end comb
+        end module Cell
+
+        module Top
+          pragma comb_loops_allowed;
+          port s: in UInt<1>;
+          port q: out UInt<1>;
+          wire w1: UInt<1>;
+          wire w2: UInt<1>;
+
+          inst a: Cell
+            i <- w2;
+            o -> w1;
+          end inst a
+
+          inst b: Cell
+            i <- w1;
+            o -> w2;
+          end inst b
+
+          comb
+            q = w1;
+          end comb
+        end module Top
+    "#;
+    let ws = comb_loop_warnings(source);
+    // No cycle warnings should remain; the summary line MAY still fire
+    // mentioning suppression — but no "combinational feedback cycle (…)"
+    // node-listing warning should be present.
+    let cycle_msgs: Vec<_> = ws.iter().filter(|m| m.contains("combinational feedback cycle (")).collect();
+    assert!(cycle_msgs.is_empty(),
+        "expected pragma to suppress cycle warning, got: {:?}", ws);
+    // Sanity: the summary should report 1 SCC found / 1 suppressed.
+    let summary: Vec<_> = ws.iter().filter(|m| m.starts_with("arch check:")).collect();
+    assert!(summary.iter().any(|m| m.contains("1 comb SCC(s) found") && m.contains("1 suppressed")),
+        "expected suppression-summary line, got: {:?}", ws);
+}
+
+#[test]
+fn test_comb_loop_through_register_not_flagged() {
+    // Cycle goes a -> reg -> b -> a. The register breaks the comb path,
+    // so no warning should fire.
+    let source = r#"
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+
+        module M
+          port clk:  in Clock<SysDomain>;
+          port rst:  in Reset<Async, Low>;
+          port i:    in UInt<1>;
+          port o:    out UInt<1>;
+          wire a: UInt<1>;
+          wire b: UInt<1>;
+          reg r: UInt<1> reset rst => 0;
+          comb
+            a = r or i;
+            b = a;
+            o = b;
+          end comb
+          seq on clk rising
+            r <= b;
+          end seq
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws.iter().filter(|m| m.contains("combinational feedback cycle (")).collect();
+    assert!(cycle_msgs.is_empty(),
+        "register should break the cycle, but got: {:?}", ws);
+}
+
+#[test]
+fn test_interface_module_treated_as_opaque() {
+    // A module loaded purely as an `.archi` interface stub (no body) is
+    // treated as opaque: every output assumed to depend on every input.
+    // We simulate that here by setting `is_interface` post-parse on the
+    // stub-like declaration.
+    //
+    // Setup: Stub has ports (i, o). The user's "stub" module body is
+    // present in source but we will mark it as interface to mimic the
+    // .archi path. With Stub opaque, the wire path through it closes a
+    // cycle: a -> Stub.in -> Stub.out -> a.
+    let source = r#"
+        module Stub
+          port i: in UInt<1>;
+          port o: out UInt<1>;
+        end module Stub
+
+        module Top
+          port s: in UInt<1>;
+          port q: out UInt<1>;
+          wire w1: UInt<1>;
+          wire w2: UInt<1>;
+
+          inst a: Stub
+            i <- w2;
+            o -> w1;
+          end inst a
+
+          inst b: Stub
+            i <- w1;
+            o -> w2;
+          end inst b
+
+          comb
+            q = w1;
+          end comb
+        end module Top
+    "#;
+    // Manually run the pipeline and mark Stub as interface.
+    let tokens = arch::lexer::tokenize(source).expect("lexer error");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let mut parsed_ast = parser.parse_source_file().expect("parse error");
+    for item in parsed_ast.items.iter_mut() {
+        if let arch::ast::Item::Module(m) = item {
+            if m.name.name == "Stub" {
+                m.is_interface = true;
+            }
+        }
+    }
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
+    // Re-mark after elaborate (variant rewrites may have renamed).
+    let mut ast = ast;
+    for item in ast.items.iter_mut() {
+        if let arch::ast::Item::Module(m) = item {
+            if m.name.name.starts_with("Stub") {
+                m.is_interface = true;
+            }
+        }
+    }
+    let symbols = arch::resolve::resolve(&ast).expect("resolve error");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let (warnings, _) = checker.check().expect("type check error");
+    let ws: Vec<String> = warnings.into_iter().map(|w| w.message).collect();
+    assert!(ws.iter().any(|m| m.contains("combinational feedback cycle")),
+        "expected opaque-interface module to participate in a detected cycle; warnings: {:?}", ws);
+}

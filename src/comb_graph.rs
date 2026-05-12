@@ -501,3 +501,556 @@ pub fn analyze_module(
     Ok(ModuleAnalysis { sorted_inst_indices: sorted, settle_depth })
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Whole-design comb-loop analysis (issue #246, MVP)
+//
+// Builds ONE directed combinational-dependency graph that spans the entire
+// elaborated design starting from each top-level module (modules that are
+// never instantiated anywhere). Nodes are keyed by `(inst_path, signal)` so
+// signals at different hierarchy levels are distinct.
+//
+// Tarjan's SCC is then run over the graph and any SCC with size > 1 (or a
+// single-node SCC with a self-loop) is reported as a combinational feedback
+// cycle. SCCs that pass through any instance OWNED by a module with
+// `pragma comb_loops_allowed;` are suppressed.
+//
+// Limitations of this MVP (deferred to a follow-up PR):
+//   - Extern / interface-only modules (`.archi` stubs) are treated as
+//     opaque: every output is assumed to depend on every input. This is the
+//     safe over-approximation and may produce spurious cycle reports when
+//     the SV-side body is actually pipelined.
+//   - Module-level CombInfo is the existing port-set over-approximation
+//     (any comb-driven output is assumed to depend on every comb-read
+//     input). Per-output dep precision is left to a follow-up.
+//   - Per-signal-pair blessing (e.g. `pragma comb_loop a, b;`) is not
+//     supported; only the module-level pragma is.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Path through the instance hierarchy from a top-level module to a
+/// particular instance. Empty vec = top-level module itself.
+pub type InstPath = Vec<String>;
+
+/// Identifier for a node in the whole-design comb graph:
+///   - `path`: instance path (parent inst names, from top-level)
+///   - `signal`: signal name at the given level (port / wire / let / inst-output)
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct NodeKey {
+    pub path: InstPath,
+    pub signal: String,
+}
+
+impl NodeKey {
+    pub fn display(&self) -> String {
+        if self.path.is_empty() {
+            self.signal.clone()
+        } else {
+            format!("{}.{}", self.path.join("."), self.signal)
+        }
+    }
+}
+
+/// One combinational SCC found in the whole-design graph.
+pub struct CombScc {
+    /// Nodes in the SCC (declaration / discovery order — Tarjan emits them
+    /// in reverse-finish order which is fine for diagnostic display).
+    pub nodes: Vec<NodeKey>,
+    /// Owning-parent inst paths (i.e. each unique `path` of nodes in the
+    /// SCC). Used by the suppression rule: if any owning-parent module has
+    /// `pragma comb_loops_allowed;`, the SCC is suppressed.
+    pub owning_paths: HashSet<InstPath>,
+    /// Owning module name per `owning_path` — populated during graph build
+    /// so the pragma lookup doesn't have to re-walk the hierarchy. The
+    /// path with `vec![]` maps to the top-level module name.
+    pub owning_modules: HashSet<String>,
+}
+
+/// Result of running whole-design comb-loop analysis on a source file.
+pub struct WholeDesignAnalysis {
+    pub sccs: Vec<CombScc>,
+    /// Number of SCCs after running Tarjan (size > 1, OR size==1-with-self-loop).
+    pub total_sccs: usize,
+    /// Number of SCCs suppressed by `pragma comb_loops_allowed;` on at
+    /// least one owning module.
+    pub suppressed: usize,
+}
+
+/// Run whole-design comb-loop analysis.
+///
+/// 1. Identify top-level modules (modules not instantiated anywhere).
+/// 2. For each top-level, recursively flatten the instance hierarchy into
+///    a directed node-and-edge set, where each node is `(inst_path, signal)`.
+/// 3. Run Tarjan's SCC.
+/// 4. Tag each non-trivial SCC with the set of owning-parent paths;
+///    classify as suppressed if any owning module has the pragma.
+pub fn analyze_whole_design(
+    source: &SourceFile,
+    symbols: &SymbolTable,
+) -> WholeDesignAnalysis {
+    // ── Step 1: collect inst counts to find top-level modules ─────────────
+    let mut inst_count: HashMap<String, usize> = HashMap::new();
+    let mut module_by_name: HashMap<&str, &ModuleDecl> = HashMap::new();
+    for item in &source.items {
+        if let Item::Module(m) = item {
+            module_by_name.insert(m.name.name.as_str(), m);
+            // Pre-seed so "never instantiated" still appears
+            inst_count.entry(m.name.name.clone()).or_insert(0);
+        }
+    }
+    for item in &source.items {
+        if let Item::Module(m) = item {
+            for sub in collect_insts(m) {
+                *inst_count.entry(sub.module_name.name.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let top_levels: Vec<&ModuleDecl> = module_by_name
+        .iter()
+        .filter(|(name, _)| inst_count.get(**name).copied().unwrap_or(0) == 0)
+        .map(|(_, m)| *m)
+        .collect();
+
+    // ── Step 2: build the flat graph ──────────────────────────────────────
+    let mut builder = GraphBuilder::default();
+    for top in &top_levels {
+        builder.expand_module(top, vec![], symbols, source);
+    }
+
+    // ── Step 3: Tarjan SCC ────────────────────────────────────────────────
+    let sccs_raw = tarjan_scc(&builder.adj, builder.next_id);
+
+    // ── Step 4: classify SCCs ─────────────────────────────────────────────
+    let mut out_sccs: Vec<CombScc> = Vec::new();
+    let mut suppressed = 0usize;
+    let mut total = 0usize;
+    for scc in sccs_raw {
+        // Filter: size > 1 OR (size == 1 with self-loop)
+        let is_cycle = scc.len() > 1
+            || (scc.len() == 1 && builder.adj[scc[0]].contains(&scc[0]));
+        if !is_cycle {
+            continue;
+        }
+        total += 1;
+
+        let mut owning_paths: HashSet<InstPath> = HashSet::new();
+        let mut owning_modules: HashSet<String> = HashSet::new();
+        let mut nodes: Vec<NodeKey> = Vec::with_capacity(scc.len());
+        for nid in &scc {
+            let key = builder.node_by_id[*nid].clone();
+            owning_paths.insert(key.path.clone());
+            if let Some(mname) = builder.owning_module(&key.path) {
+                owning_modules.insert(mname);
+            }
+            nodes.push(key);
+        }
+        // Suppression: any owning module has `pragma comb_loops_allowed;`.
+        let blessed = owning_modules
+            .iter()
+            .any(|mn| module_by_name.get(mn.as_str())
+                .map(|m| m.comb_loops_allowed)
+                .unwrap_or(false));
+        if blessed {
+            suppressed += 1;
+            continue;
+        }
+        out_sccs.push(CombScc { nodes, owning_paths, owning_modules });
+    }
+
+    WholeDesignAnalysis {
+        sccs: out_sccs,
+        total_sccs: total,
+        suppressed,
+    }
+}
+
+// ── GraphBuilder ─────────────────────────────────────────────────────────────
+
+#[derive(Default)]
+struct GraphBuilder {
+    node_id: HashMap<NodeKey, usize>,
+    node_by_id: Vec<NodeKey>,
+    adj: Vec<Vec<usize>>,
+    next_id: usize,
+    /// path → owning module name. `vec![]` is special-cased per top entry.
+    path_owner: HashMap<InstPath, String>,
+}
+
+impl GraphBuilder {
+    fn intern(&mut self, key: NodeKey) -> usize {
+        if let Some(id) = self.node_id.get(&key) {
+            return *id;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.node_id.insert(key.clone(), id);
+        self.node_by_id.push(key);
+        self.adj.push(Vec::new());
+        id
+    }
+
+    fn add_edge(&mut self, from: usize, to: usize) {
+        // Tarjan tolerates parallel edges, but dedupe for cleaner display.
+        if !self.adj[from].contains(&to) {
+            self.adj[from].push(to);
+        }
+    }
+
+    fn owning_module(&self, path: &InstPath) -> Option<String> {
+        self.path_owner.get(path).cloned()
+    }
+
+    /// Recursively build the graph for `m` at the given instance path.
+    fn expand_module(
+        &mut self,
+        m: &ModuleDecl,
+        path: InstPath,
+        symbols: &SymbolTable,
+        source: &SourceFile,
+    ) {
+        self.path_owner.insert(path.clone(), m.name.name.clone());
+
+        // Helper to make a node at the current path.
+        let mk = |gb: &mut GraphBuilder, name: &str| -> usize {
+            gb.intern(NodeKey { path: path.clone(), signal: name.to_string() })
+        };
+
+        // Ensure all port/wire/let/reg/inst-output names exist as nodes.
+        // We don't strictly need to pre-intern, but having them helps when
+        // a wire is read but never written (still appears as an isolated
+        // node — harmless for SCC).
+        for p in &m.ports {
+            // Skip clock/reset — they participate only in seq logic.
+            if is_clk_or_rst(&p.ty) { continue; }
+            mk(self, &p.name.name);
+        }
+
+        // 1) Parent-level comb blocks + let bindings + wire decls
+        let (input_names, output_names) = port_sets(&m.ports);
+        for item in &m.body {
+            match item {
+                ModuleBodyItem::WireDecl(w) => { mk(self, &w.name.name); }
+                ModuleBodyItem::RegDecl(_) => {
+                    // Regs are seq-driven; skip — they break comb cycles.
+                }
+                ModuleBodyItem::PipeRegDecl(_) => {
+                    // pipe_reg outputs are registered.
+                }
+                ModuleBodyItem::CombBlock(cb) => {
+                    self.scan_assignments(&cb.stmts, &path, &input_names, &output_names);
+                }
+                ModuleBodyItem::LetBinding(lb) => {
+                    // Edge: each RHS ident → lb.name
+                    let lhs = mk(self, &lb.name.name);
+                    let mut ids = HashSet::new();
+                    collect_expr_idents(&lb.value, &mut ids);
+                    for id in &ids {
+                        let from = mk(self, id);
+                        self.add_edge(from, lhs);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // 2) Sub-instances
+        for inst in collect_insts(m) {
+            self.expand_inst(inst, &path, symbols, source);
+        }
+    }
+
+    /// Add edges and recurse for one sub-instance.
+    fn expand_inst(
+        &mut self,
+        inst: &InstDecl,
+        parent_path: &InstPath,
+        symbols: &SymbolTable,
+        source: &SourceFile,
+    ) {
+        let child_path = {
+            let mut p = parent_path.clone();
+            p.push(inst.name.name.clone());
+            p
+        };
+
+        // Look up the child module (if any) and its CombInfo.
+        let child_mod: Option<&ModuleDecl> = source.items.iter().find_map(|it| {
+            if let Item::Module(cm) = it {
+                if cm.name.name == inst.module_name.name {
+                    return Some(cm);
+                }
+            }
+            None
+        });
+
+        // CombInfo for the sub-instance's construct (any kind).
+        let info = comb_info_for_symbol(&inst.module_name.name, symbols, source);
+
+        // Map each connection's port-name → parent signal name (if a bare ident).
+        // Direction is "from the parent's perspective" via ConnectDir.
+        let mut input_conn: HashMap<String, String> = HashMap::new();  // port → parent signal (signal feeds INTO inst)
+        let mut output_conn: HashMap<String, String> = HashMap::new(); // port → parent signal (inst drives this signal)
+        for conn in &inst.connections {
+            let parent_sig = match &conn.signal.kind {
+                ExprKind::Ident(n) => n.clone(),
+                _ => continue, // complex connection expression — skip
+            };
+            match conn.direction {
+                ConnectDir::Input  => { input_conn.insert(conn.port_name.name.clone(), parent_sig); }
+                ConnectDir::Output => { output_conn.insert(conn.port_name.name.clone(), parent_sig); }
+            }
+        }
+
+        // Recurse into the child if it is a regular module.
+        // Interface-only / opaque modules are treated as fully cross-connected
+        // (any output depends on any input) — that's already the shape of
+        // `comb_info_for_module` over interface stubs (empty body → empty
+        // CombInfo), so we explicitly OVERRIDE here to the conservative
+        // every-out-depends-on-every-in interpretation when the module is
+        // an interface stub OR is missing entirely (extern).
+        let treat_as_opaque = match child_mod {
+            None => true,
+            Some(cm) => cm.is_interface,
+        };
+
+        if let Some(cm) = child_mod {
+            if !treat_as_opaque {
+                self.expand_module(cm, child_path.clone(), symbols, source);
+            }
+        }
+
+        // Add cross-boundary edges from sub-inst's CombInfo to parent signals.
+        //
+        // For each comb output port `q` connected to parent signal `out_sig`:
+        //   For each comb input port `p` connected to parent signal `in_sig`:
+        //     If `q` depends on `p` (in the child's CombInfo) → add edge in_sig → out_sig.
+        //
+        // For the MVP we use the existing CombInfo over-approximation: any
+        // output port in `comb_outputs` is assumed to depend on every input
+        // in `comb_dep_inputs`.
+        let comb_outs: Vec<&String> = if treat_as_opaque {
+            // Opaque: every declared output port that's connected.
+            output_conn.keys().collect()
+        } else {
+            info.comb_outputs.iter().collect()
+        };
+        let comb_ins: Vec<&String> = if treat_as_opaque {
+            input_conn.keys().collect()
+        } else {
+            info.comb_dep_inputs.iter().collect()
+        };
+
+        for out_port in &comb_outs {
+            let out_sig = match output_conn.get(out_port.as_str()) {
+                Some(s) => s.clone(),
+                None => continue,
+            };
+            // Parent-side node receiving the inst's output.
+            let to = self.intern(NodeKey { path: parent_path.clone(), signal: out_sig });
+
+            // Also: if we DID recurse, link the deeper inst-internal output port
+            // node to the parent-side wire so cycles that close via the
+            // hierarchy show the full path. We add edge child.q → parent.out_sig.
+            if !treat_as_opaque {
+                let child_q = self.intern(NodeKey { path: child_path.clone(), signal: (*out_port).clone() });
+                self.add_edge(child_q, to);
+            }
+
+            for in_port in &comb_ins {
+                let in_sig = match input_conn.get(in_port.as_str()) {
+                    Some(s) => s.clone(),
+                    None => continue,
+                };
+                let from = self.intern(NodeKey { path: parent_path.clone(), signal: in_sig });
+
+                // Direct over-approximation edge in_sig → out_sig at parent level.
+                // (Captures the loop even when we don't recurse into the child.)
+                self.add_edge(from, to);
+
+                // And, if we recursed, also link parent.in_sig → child.in_port
+                // so the cycle path display shows the descent.
+                if !treat_as_opaque {
+                    let child_p = self.intern(NodeKey { path: child_path.clone(), signal: (*in_port).clone() });
+                    self.add_edge(from, child_p);
+                }
+            }
+        }
+    }
+
+    /// Walk a comb-block's statements and add edges from RHS identifiers to
+    /// LHS base names. Conditions count as reads of every then/else target.
+    fn scan_assignments(
+        &mut self,
+        stmts: &[Stmt],
+        path: &InstPath,
+        _input_names: &HashSet<String>,
+        _output_names: &HashSet<String>,
+    ) {
+        let mut cond_stack: Vec<HashSet<String>> = Vec::new();
+        self.scan_assignments_inner(stmts, path, &mut cond_stack);
+    }
+
+    fn scan_assignments_inner(
+        &mut self,
+        stmts: &[Stmt],
+        path: &InstPath,
+        cond_stack: &mut Vec<HashSet<String>>,
+    ) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Assign(a) => {
+                    let lhs = match lhs_base_name(&a.target) {
+                        Some(n) => n,
+                        None => continue,
+                    };
+                    let mut rhs = HashSet::new();
+                    collect_expr_idents(&a.value, &mut rhs);
+                    // RHS for index/bit-slice on LHS also contributes to deps.
+                    collect_lhs_index_reads(&a.target, &mut rhs);
+                    let to = self.intern(NodeKey {
+                        path: path.clone(),
+                        signal: lhs,
+                    });
+                    for id in &rhs {
+                        let from = self.intern(NodeKey {
+                            path: path.clone(),
+                            signal: id.clone(),
+                        });
+                        self.add_edge(from, to);
+                    }
+                    for conds in cond_stack.iter() {
+                        for id in conds {
+                            let from = self.intern(NodeKey {
+                                path: path.clone(),
+                                signal: id.clone(),
+                            });
+                            self.add_edge(from, to);
+                        }
+                    }
+                }
+                Stmt::IfElse(ife) => {
+                    let mut cond_ids = HashSet::new();
+                    collect_expr_idents(&ife.cond, &mut cond_ids);
+                    cond_stack.push(cond_ids);
+                    self.scan_assignments_inner(&ife.then_stmts, path, cond_stack);
+                    self.scan_assignments_inner(&ife.else_stmts, path, cond_stack);
+                    cond_stack.pop();
+                }
+                Stmt::Match(m) => {
+                    let mut scrut_ids = HashSet::new();
+                    collect_expr_idents(&m.scrutinee, &mut scrut_ids);
+                    cond_stack.push(scrut_ids);
+                    for arm in &m.arms {
+                        self.scan_assignments_inner(&arm.body, path, cond_stack);
+                    }
+                    cond_stack.pop();
+                }
+                Stmt::For(f) => {
+                    self.scan_assignments_inner(&f.body, path, cond_stack);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// LHS index/slice expressions can read other signals (e.g. `x[i] = ...`
+/// reads `i`). Collect those identifier reads so they become dep edges.
+fn collect_lhs_index_reads(target: &crate::ast::Expr, out: &mut HashSet<String>) {
+    use ExprKind::*;
+    match &target.kind {
+        Ident(_) => {}
+        BitSlice(base, hi, lo) => {
+            collect_lhs_index_reads(base, out);
+            collect_expr_idents(hi, out);
+            collect_expr_idents(lo, out);
+        }
+        PartSelect(base, start, width, _) => {
+            collect_lhs_index_reads(base, out);
+            collect_expr_idents(start, out);
+            collect_expr_idents(width, out);
+        }
+        Index(base, idx) => {
+            collect_lhs_index_reads(base, out);
+            collect_expr_idents(idx, out);
+        }
+        FieldAccess(base, _) => collect_lhs_index_reads(base, out),
+        _ => {}
+    }
+}
+
+// ── Tarjan's SCC algorithm ───────────────────────────────────────────────────
+
+/// Iterative Tarjan's strongly-connected-components algorithm.
+/// Returns SCCs in reverse topological order (sink components first), each
+/// SCC being a Vec<NodeId>.
+fn tarjan_scc(adj: &[Vec<usize>], n: usize) -> Vec<Vec<usize>> {
+    // Iterative variant to avoid blowing the stack on large designs.
+    let mut index_of: Vec<i64> = vec![-1; n];
+    let mut lowlink: Vec<i64> = vec![-1; n];
+    let mut on_stack: Vec<bool> = vec![false; n];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut sccs: Vec<Vec<usize>> = Vec::new();
+    let mut index: i64 = 0;
+
+    // Frame holds the recursion state for one node.
+    struct Frame {
+        v: usize,
+        iter_pos: usize, // next adj index to visit
+    }
+    let mut call_stack: Vec<Frame> = Vec::new();
+
+    for v_start in 0..n {
+        if index_of[v_start] != -1 { continue; }
+        // Push initial frame
+        call_stack.push(Frame { v: v_start, iter_pos: 0 });
+        index_of[v_start] = index;
+        lowlink[v_start] = index;
+        index += 1;
+        stack.push(v_start);
+        on_stack[v_start] = true;
+
+        while let Some(frame) = call_stack.last_mut() {
+            let v = frame.v;
+            let neighbors = &adj[v];
+            if frame.iter_pos < neighbors.len() {
+                let w = neighbors[frame.iter_pos];
+                frame.iter_pos += 1;
+                if index_of[w] == -1 {
+                    // Recurse
+                    index_of[w] = index;
+                    lowlink[w] = index;
+                    index += 1;
+                    stack.push(w);
+                    on_stack[w] = true;
+                    call_stack.push(Frame { v: w, iter_pos: 0 });
+                } else if on_stack[w] {
+                    if index_of[w] < lowlink[v] {
+                        lowlink[v] = index_of[w];
+                    }
+                }
+            } else {
+                // All neighbors processed — possibly emit SCC.
+                if lowlink[v] == index_of[v] {
+                    let mut comp: Vec<usize> = Vec::new();
+                    loop {
+                        let w = stack.pop().expect("tarjan stack underflow");
+                        on_stack[w] = false;
+                        comp.push(w);
+                        if w == v { break; }
+                    }
+                    sccs.push(comp);
+                }
+                call_stack.pop();
+                // Propagate lowlink up to parent.
+                if let Some(parent) = call_stack.last_mut() {
+                    if lowlink[v] < lowlink[parent.v] {
+                        lowlink[parent.v] = lowlink[v];
+                    }
+                }
+            }
+        }
+    }
+
+    sccs
+}
+

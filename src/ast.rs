@@ -208,6 +208,12 @@ pub struct ModuleDecl {
     /// disables phase 1's structural cross-clock async-reset rule
     /// (which sits at the CDC/RDC boundary).
     pub rdc_safe: bool,
+    /// `pragma comb_loops_allowed;` — suppress whole-design combinational
+    /// feedback-cycle warnings emitted by the cross-instance comb-graph
+    /// analyzer (issue #246). When set, any SCC that passes through an
+    /// instance OWNED by this module (i.e. this module is the parent that
+    /// declares the inst) is treated as blessed and suppressed.
+    pub comb_loops_allowed: bool,
     pub span: Span,
     /// Outer doc comment from `///` lines preceding the `module` keyword.
     /// See `doc/plan_arch_doc_comments.md`.
