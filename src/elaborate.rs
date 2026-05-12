@@ -1082,6 +1082,7 @@ fn subst_thread(t: &ThreadBlock, var: &str, val: i64) -> ThreadBlock {
             subst_expr_names(cond.clone(), var, val),
             stmts.iter().map(|s| subst_thread_stmt(s, var, val)).collect(),
         )),
+        default_comb: t.default_comb.iter().map(|s| subst_comb_stmt(s, var, val)).collect(),
         tlm_target: t.tlm_target.as_ref().map(|tb| TlmTargetBinding {
             port: tb.port.clone(),
             method: tb.method.clone(),
@@ -1657,6 +1658,23 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
             all_read.extend(dw_ar);
             collect_expr_reads(dw_cond, &mut all_read);
         }
+    }
+    for (_, t) in &threads {
+        let (dc_targets, dc_reads) = collect_comb_stmt_signals(&t.default_comb);
+        for target in &dc_targets {
+            if all_seq_driven.contains(target) {
+                return Err(vec![CompileError::general(
+                    &format!(
+                        "thread `default comb` drives `{target}`, but that signal is also \
+                         assigned with `<=` in a thread. Use `default comb` only for \
+                         combinational thread outputs."
+                    ),
+                    t.span,
+                )]);
+            }
+        }
+        all_comb_driven.extend(dc_targets);
+        all_read.extend(dc_reads);
     }
 
     // Clock and reset ports (from first thread)
@@ -2546,6 +2564,13 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
             }));
         }
     }
+    // Thread-level `default comb` assignments run unconditionally before
+    // state-specific comb assignments. This preserves explicit protocol
+    // defaults during compiler-inserted dead-skid states while still letting
+    // the active state override them later in the same always_comb block.
+    for (_, t) in &threads {
+        merged_comb.extend(t.default_comb.iter().cloned());
+    }
     // Per-thread state-guarded comb assigns
     merged_comb.extend(all_thread_comb);
     if !merged_comb.is_empty() {
@@ -2813,6 +2838,66 @@ fn build_module_reg_map(m: &ModuleDecl) -> HashMap<String, RegDecl> {
 }
 
 // ── Signal analysis ─────────────────────────────────────────────────────────
+
+fn collect_comb_stmt_signals(stmts: &[Stmt]) -> (HashSet<String>, HashSet<String>) {
+    let mut comb_driven = HashSet::new();
+    let mut all_read = HashSet::new();
+
+    fn walk(stmts: &[Stmt], comb_driven: &mut HashSet<String>, all_read: &mut HashSet<String>) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Assign(a) => {
+                    if let Some(name) = expr_root_name(&a.target) {
+                        comb_driven.insert(name);
+                    }
+                    collect_expr_reads(&a.value, all_read);
+                    collect_expr_index_reads(&a.target, all_read);
+                }
+                Stmt::IfElse(ie) => {
+                    collect_expr_reads(&ie.cond, all_read);
+                    walk(&ie.then_stmts, comb_driven, all_read);
+                    walk(&ie.else_stmts, comb_driven, all_read);
+                }
+                Stmt::Match(m) => {
+                    collect_expr_reads(&m.scrutinee, all_read);
+                    for arm in &m.arms {
+                        walk(&arm.body, comb_driven, all_read);
+                    }
+                }
+                Stmt::Log(l) => {
+                    for arg in &l.args {
+                        collect_expr_reads(arg, all_read);
+                    }
+                }
+                Stmt::For(f) => {
+                    match &f.range {
+                        ForRange::Range(start, end) => {
+                            collect_expr_reads(start, all_read);
+                            collect_expr_reads(end, all_read);
+                        }
+                        ForRange::ValueList(values) => {
+                            for value in values {
+                                collect_expr_reads(value, all_read);
+                            }
+                        }
+                    }
+                    walk(&f.body, comb_driven, all_read);
+                }
+                Stmt::Init(ib) => {
+                    walk(&ib.body, comb_driven, all_read);
+                }
+                Stmt::WaitUntil(expr, _) => collect_expr_reads(expr, all_read),
+                Stmt::DoUntil { body, cond, .. } => {
+                    walk(body, comb_driven, all_read);
+                    collect_expr_reads(cond, all_read);
+                }
+            }
+        }
+    }
+
+    walk(stmts, &mut comb_driven, &mut all_read);
+    (comb_driven, all_read)
+}
 
 fn collect_thread_signals(body: &[ThreadStmt]) -> (HashSet<String>, HashSet<String>, HashSet<String>) {
     let mut comb_driven = HashSet::new();
@@ -5627,7 +5712,7 @@ fn direct_tlm_threads(
     port_buses: &std::collections::HashMap<String, String>,
     bus_methods: &std::collections::HashMap<String, Vec<TlmMethodMeta>>,
 ) -> Vec<DirectTlmThread> {
-    if t.default_when.is_some() || t.once || t.body.len() != 1 {
+    if t.default_when.is_some() || !t.default_comb.is_empty() || t.once || t.body.len() != 1 {
         return Vec::new();
     }
     match &t.body[0] {

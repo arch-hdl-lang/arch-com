@@ -1579,24 +1579,56 @@ impl Parser {
             None
         };
 
-        // Optional `default when <cond> ... end default` — must come first in the body.
-        let default_when = if self.check(TokenKind::Default) {
-            let _kw = self.advance(); // consume `default`
-            self.expect(TokenKind::When)?;
-            let cond = self.parse_expr()?;
-            let mut dw_stmts = Vec::new();
-            while !(self.pos + 1 < self.tokens.len()
-                && self.tokens[self.pos].kind == TokenKind::End
-                && self.tokens[self.pos + 1].kind == TokenKind::Default)
-            {
-                dw_stmts.push(self.parse_thread_stmt()?);
+        // Optional leading default clauses. `default when` is the thread's
+        // soft-reset escape; `default comb` is an unconditional comb prelude
+        // applied in every lowered state before state-specific comb assigns.
+        let mut default_when = None;
+        let mut default_comb = Vec::new();
+        while self.check(TokenKind::Default) {
+            let default_span = self.advance().span;
+            if self.check(TokenKind::When) {
+                if default_when.is_some() {
+                    return Err(CompileError::general(
+                        "thread may contain at most one `default when` clause",
+                        default_span,
+                    ));
+                }
+                self.advance(); // consume `when`
+                let cond = self.parse_expr()?;
+                let mut dw_stmts = Vec::new();
+                while !(self.pos + 1 < self.tokens.len()
+                    && self.tokens[self.pos].kind == TokenKind::End
+                    && self.tokens[self.pos + 1].kind == TokenKind::Default)
+                {
+                    dw_stmts.push(self.parse_thread_stmt()?);
+                }
+                self.expect(TokenKind::End)?;
+                self.expect(TokenKind::Default)?;
+                default_when = Some((cond, dw_stmts));
+            } else if self.check(TokenKind::Comb) {
+                if !default_comb.is_empty() {
+                    return Err(CompileError::general(
+                        "thread may contain at most one `default comb` clause",
+                        default_span,
+                    ));
+                }
+                self.advance(); // consume `comb`
+                while !(self.pos + 1 < self.tokens.len()
+                    && self.tokens[self.pos].kind == TokenKind::End
+                    && self.tokens[self.pos + 1].kind == TokenKind::Default)
+                {
+                    default_comb.push(self.parse_comb_stmt()?);
+                }
+                self.expect(TokenKind::End)?;
+                self.expect(TokenKind::Default)?;
+            } else {
+                return Err(CompileError::unexpected_token(
+                    "`when` or `comb` after thread `default`",
+                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                    self.peek_span(),
+                ));
             }
-            self.expect(TokenKind::End)?;
-            self.expect(TokenKind::Default)?;
-            Some((cond, dw_stmts))
-        } else {
-            None
-        };
+        }
 
         // Body
         let mut body = Vec::new();
@@ -1647,6 +1679,7 @@ impl Parser {
             reset_level,
             once,
             default_when,
+            default_comb,
             tlm_target,
             reentrant,
             implement,

@@ -1,15 +1,29 @@
-// Thread-based multi-outstanding MM2S read engine.
-//
-// Architecture: single ArIssuer thread + 4 RCollect threads.
-//   - ArIssuer: single state machine drives all AR outputs — no 4-way mux needed.
-//     Address maintained in next_ar_addr_r (increment-only, no multiply).
-//   - RCollect_i: each thread collects R beats for its assigned ID.
-//     Only drives 1-bit r_ready/push_valid — narrow mux overhead.
-//   - push_data = r_data unconditionally (all threads push same source).
-//
-// Work assignment: xfer k → AR ID k%4, handled by RCollect_{k%4}.
-// Done when sum of thread_complete[i] == total_xfers.
-module _ThreadMm2s_threads (
+//! ---
+//! spec_md: doc/axi_dma_case_study.md
+//! tags: [dma, axi4, mm2s, multi_outstanding, thread]
+//! refs:
+//!   - "AXI4 spec ARM IHI 0022, §A3 Single Interface Requirements"
+//!   - "Xilinx PG021 (LogiCORE IP AXI DMA) — MM2S read path"
+//! ---
+//!
+//! Multi-outstanding AXI4 MM2S (read) engine — issues up to NUM_OUTSTANDING
+//! parallel AR transactions and collects R beats per AXI ID, pushing data to
+//! a downstream FIFO. The thread-based decomposition replaces what would be
+//! a 4-state hand-written FSM in the FsmMm2sMulti.arch baseline.
+/// Multi-outstanding AXI4 MM2S read engine.
+///
+/// Architecture: a single `ArIssuer` thread owns the AR channel and a
+/// `generate_for` block spawns NUM_OUTSTANDING `RCollect_i` threads, one
+/// per AXI ID. The single-issuer + per-ID-collector split is the central
+/// design choice — see the inner doc on `ArIssuer` and on the `RCollect_i`
+/// generate for the rationale.
+///
+/// Work assignment: transfer `k` is issued with `ar_id = k % NUM_OUTSTANDING`
+/// and collected by `RCollect_{k % NUM_OUTSTANDING}`. The engine is "done"
+/// when `Σ thread_complete[i] == total_xfers`.
+module _ThreadMm2s_threads #(
+  parameter int NUM_OUTSTANDING = 4
+) (
   input logic clk,
   input logic rst,
   input logic active,
@@ -37,6 +51,15 @@ module _ThreadMm2s_threads (
   output logic [15:0] xfer_ctr_r
 );
 
+  logic [0:0] _t0_state = 0;
+  logic [0:0] _t1_state = 0;
+  logic [0:0] _t2_state = 0;
+  logic [0:0] _t3_state = 0;
+  logic [0:0] _t4_state = 0;
+  logic [7:0] _t1_loop_cnt = 0;
+  logic [7:0] _t2_loop_cnt = 0;
+  logic [7:0] _t3_loop_cnt = 0;
+  logic [7:0] _t4_loop_cnt = 0;
   always_comb begin
     ar_addr = 0;
     ar_burst = 0;
@@ -46,13 +69,44 @@ module _ThreadMm2s_threads (
     ar_valid = 0;
     push_valid = 0;
     r_ready = 0;
+    // Control latches — owned by ArIssuer (reset via default when)
+    // AR issuer state: xfer_ctr_r counts issued ARs; next_ar_addr_r is current address.
+    // Per-thread completion counts — each owned exclusively by RCollect_i
+    // Completion handler — clears active when all responses received
+    // ── AR issuer ─────────────────────────────────────────────────────────────
+    //! Single thread drives all AR outputs — no resource lock, no 4-way
+    //! mux. Address is maintained in `next_ar_addr_r` (increment-only, no
+    //! multiply); ID rotates via `xfer_ctr_r[1:0]` so transfer `k` lands
+    //! on AXI ID `k % 4`. The `default when start and not active_r` clause
+    //! is the soft-reset arm — kicks off a new run synchronously without
+    //! a separate idle state.
+    ar_valid = 1'b0;
+    ar_addr = 32'd0;
+    ar_id = 2'd0;
+    ar_len = 8'd0;
+    ar_size = 3'd0;
+    ar_burst = 2'd0;
+    // ── R collectors ─────────────────────────────────────────────────────────
+    //! Per-ID R-channel collector. Only drives 1-bit `r_ready` and
+    //! `push_valid` (both `shared(or)` — collector `i` asserts only
+    //! when `r_id == i`), so the OR-reduction in the merged comb block
+    //! is a narrow mux. `push_data = r_data` unconditionally (all
+    //! collectors source the same wire), which is why `push_data` is
+    //! NOT `shared(or)` — see the comb block above for the
+    //! unconditional drive.
+    //!
+    //! Backpressure: each collector waits for its `(thread_complete[i]
+    //! << 2) + i < xfer_ctr_r` window to open before consuming a beat.
+    //! This couples to the issuer's round-robin ID rotation.
+    r_ready = 1'b0;
+    push_valid = 1'b0;
+    r_ready = 1'b0;
+    push_valid = 1'b0;
+    r_ready = 1'b0;
+    push_valid = 1'b0;
+    r_ready = 1'b0;
+    push_valid = 1'b0;
     if (_t0_state == 1) begin
-      // Control latches — owned by ArIssuer (reset via default when)
-      // AR issuer state: xfer_ctr_r counts issued ARs; next_ar_addr_r is current address.
-      // Per-thread completion counts — each owned exclusively by RCollect_i
-      // Completion handler — clears active when all responses received
-      // ── AR issuer ─────────────────────────────────────────────────────────────
-      // Single thread drives all AR outputs — no resource lock, no 4-way mux.
       ar_valid = 1;
       ar_addr = next_ar_addr_r;
       ar_id = xfer_ctr_r[1:0];
@@ -61,7 +115,6 @@ module _ThreadMm2s_threads (
       ar_burst = 2'd1;
     end
     if (_t1_state == 1) begin
-      // ── R collectors ─────────────────────────────────────────────────────────
       r_ready = r_ready | 1;
       push_valid = push_valid | (r_valid && r_id == 0);
     end
@@ -78,11 +131,6 @@ module _ThreadMm2s_threads (
       push_valid = push_valid | (r_valid && r_id == 3);
     end
   end
-  logic [0:0] _t0_state = 0;
-  logic [0:0] _t1_state = 0;
-  logic [0:0] _t2_state = 0;
-  logic [0:0] _t3_state = 0;
-  logic [0:0] _t4_state = 0;
   always_ff @(posedge clk) begin
     if (rst) begin
       _t0_state <= 0;
@@ -129,15 +177,11 @@ module _ThreadMm2s_threads (
         _t1_state <= 0;
       end else begin
         if (_t1_state == 0) begin
-          _t1_loop_cnt <= 0;
           if (active && (thread_complete[0] << 2) + 0 < xfer_ctr_r) begin
             _t1_state <= 1;
           end
         end
         if (_t1_state == 1) begin
-          if (r_valid && r_id == 0 && push_ready) begin
-            _t1_loop_cnt <= 8'(_t1_loop_cnt + 8'd1);
-          end
           if (r_valid && r_id == 0 && push_ready && _t1_loop_cnt >= 8'(burst_len_r - 1)) begin
             thread_complete[0] <= 16'(thread_complete[0] + 1);
           end
@@ -154,15 +198,11 @@ module _ThreadMm2s_threads (
         _t2_state <= 0;
       end else begin
         if (_t2_state == 0) begin
-          _t2_loop_cnt <= 0;
           if (active && (thread_complete[1] << 2) + 1 < xfer_ctr_r) begin
             _t2_state <= 1;
           end
         end
         if (_t2_state == 1) begin
-          if (r_valid && r_id == 1 && push_ready) begin
-            _t2_loop_cnt <= 8'(_t2_loop_cnt + 8'd1);
-          end
           if (r_valid && r_id == 1 && push_ready && _t2_loop_cnt >= 8'(burst_len_r - 1)) begin
             thread_complete[1] <= 16'(thread_complete[1] + 1);
           end
@@ -179,15 +219,11 @@ module _ThreadMm2s_threads (
         _t3_state <= 0;
       end else begin
         if (_t3_state == 0) begin
-          _t3_loop_cnt <= 0;
           if (active && (thread_complete[2] << 2) + 2 < xfer_ctr_r) begin
             _t3_state <= 1;
           end
         end
         if (_t3_state == 1) begin
-          if (r_valid && r_id == 2 && push_ready) begin
-            _t3_loop_cnt <= 8'(_t3_loop_cnt + 8'd1);
-          end
           if (r_valid && r_id == 2 && push_ready && _t3_loop_cnt >= 8'(burst_len_r - 1)) begin
             thread_complete[2] <= 16'(thread_complete[2] + 1);
           end
@@ -204,15 +240,11 @@ module _ThreadMm2s_threads (
         _t4_state <= 0;
       end else begin
         if (_t4_state == 0) begin
-          _t4_loop_cnt <= 0;
           if (active && (thread_complete[3] << 2) + 3 < xfer_ctr_r) begin
             _t4_state <= 1;
           end
         end
         if (_t4_state == 1) begin
-          if (r_valid && r_id == 3 && push_ready) begin
-            _t4_loop_cnt <= 8'(_t4_loop_cnt + 8'd1);
-          end
           if (r_valid && r_id == 3 && push_ready && _t4_loop_cnt >= 8'(burst_len_r - 1)) begin
             thread_complete[3] <= 16'(thread_complete[3] + 1);
           end
@@ -226,10 +258,52 @@ module _ThreadMm2s_threads (
       end
     end
   end
-  logic [7:0] _t1_loop_cnt = 0;
-  logic [7:0] _t2_loop_cnt = 0;
-  logic [7:0] _t3_loop_cnt = 0;
-  logic [7:0] _t4_loop_cnt = 0;
+  always_ff @(posedge clk) begin
+    if (start && !active_r) begin
+    end else begin
+      if (_t1_state == 0) begin
+        _t1_loop_cnt <= 0;
+      end
+      if (_t1_state == 1) begin
+        if (r_valid && r_id == 0 && push_ready) begin
+          _t1_loop_cnt <= 8'(_t1_loop_cnt + 8'd1);
+        end
+      end
+    end
+    if (start && !active_r) begin
+    end else begin
+      if (_t2_state == 0) begin
+        _t2_loop_cnt <= 0;
+      end
+      if (_t2_state == 1) begin
+        if (r_valid && r_id == 1 && push_ready) begin
+          _t2_loop_cnt <= 8'(_t2_loop_cnt + 8'd1);
+        end
+      end
+    end
+    if (start && !active_r) begin
+    end else begin
+      if (_t3_state == 0) begin
+        _t3_loop_cnt <= 0;
+      end
+      if (_t3_state == 1) begin
+        if (r_valid && r_id == 2 && push_ready) begin
+          _t3_loop_cnt <= 8'(_t3_loop_cnt + 8'd1);
+        end
+      end
+    end
+    if (start && !active_r) begin
+    end else begin
+      if (_t4_state == 0) begin
+        _t4_loop_cnt <= 0;
+      end
+      if (_t4_state == 1) begin
+        if (r_valid && r_id == 3 && push_ready) begin
+          _t4_loop_cnt <= 8'(_t4_loop_cnt + 8'd1);
+        end
+      end
+    end
+  end
 
 endmodule
 
@@ -263,10 +337,10 @@ module ThreadMm2s #(
 );
 
   logic [15:0] total_complete;
-  assign total_complete = 16'(16'(16'(thread_complete[0] + thread_complete[1]) + thread_complete[2]) + thread_complete[3]);
   logic all_done;
-  assign all_done = active_r && total_xfers_r != 0 && total_complete == total_xfers_r;
   logic active;
+  assign total_complete = 16'((16'((16'(thread_complete[0] + thread_complete[1])) + thread_complete[2])) + thread_complete[3]);
+  assign all_done = active_r && total_xfers_r != 0 && total_complete == total_xfers_r;
   assign active = active_r || start && !active_r;
   assign halted = 1'b0;
   assign idle_out = !active;

@@ -335,7 +335,14 @@ if (_t{ti}_state == si) begin
 end
 ```
 
-All outputs default to `0` before the per-thread blocks.
+All outputs default to `0` before the per-thread blocks. If a thread declares
+`default comb ... end default`, those comb statements are emitted after the
+compiler zero defaults and before the state-guarded comb statements. A
+state-specific comb assignment therefore overrides the thread default in the
+active state, while compiler-inserted empty/dead-skid states still get explicit
+protocol defaults instead of only zero. The lowering rejects `default comb`
+targets that are also assigned with `<=` in any thread; use it only for
+combinational thread outputs.
 
 ### always_ff (merged, single block)
 

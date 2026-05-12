@@ -102,6 +102,14 @@ module ThreadMm2s
       xfer_ctr_r     <= 0;
       next_ar_addr_r <= base_addr;
     end default
+    default comb
+      ar_valid = false;
+      ar_addr  = 32'h0000_0000;
+      ar_id    = 2'd0;
+      ar_len   = 8'd0;
+      ar_size  = 3'd0;
+      ar_burst = 2'd0;
+    end default
     wait until active and xfer_ctr_r < total_xfers_r;
     do
       ar_valid = 1;
@@ -132,6 +140,10 @@ module ThreadMm2s
 
       default when start and not active_r
         thread_complete[i] <= 0;
+      end default
+      default comb
+        r_ready    = false;
+        push_valid = false;
       end default
       wait until active and ((thread_complete[i] << 2) + i < xfer_ctr_r);
       for b in 0..burst_len_r-1
