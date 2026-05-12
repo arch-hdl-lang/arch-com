@@ -11376,3 +11376,138 @@ end module Top
     let _symbols = resolve::resolve(&ast)
         .expect("resolve should succeed when an .archi stub coexists with the real .arch");
 }
+
+// ── arch-com#330: 33..=64-bit UInt fields must emit uint64_t (not uint32_t) ──
+//
+// Pre-fix, `cpp_internal_type` / `cpp_port_type` evaluated UInt widths via
+// `eval_width`, which falls back to 32 for any non-literal expression (such
+// as a bare param ident `ACC_WIDTH`). That silently truncated 33..=64-bit
+// fields to `uint32_t` storage and applied a 32-bit `0xFFFFFFFFULL` mask in
+// truncating arithmetic — corrupting upper bits of accumulators / wide
+// data paths.
+//
+// The fix threads params through the type-emission helpers so a width
+// expression that references a `param N: const = ...;` resolves to the
+// param's literal default. These tests pin the four boundary cases plus
+// the original issue's `UInt<ACC_WIDTH>` shape.
+
+#[test]
+fn test_uint_48_param_width_emits_uint64_storage() {
+    // Repro from arch-com#330.
+    let source = r#"
+        module QkDotEngine
+          param ACC_WIDTH: const = 48;
+
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port score_out: out UInt<ACC_WIDTH>;
+          port inc_in: in UInt<ACC_WIDTH>;
+
+          reg accumulator: UInt<ACC_WIDTH> reset rst => 0;
+          reg score_reg:   UInt<ACC_WIDTH> reset rst => 0;
+
+          comb
+            score_out = score_reg;
+          end comb
+
+          seq on clk rising
+            accumulator <= (accumulator + inc_in).trunc<ACC_WIDTH>();
+            score_reg <= accumulator;
+          end seq
+        end module QkDotEngine
+    "#;
+    let out = compile_to_sim_h(source, false);
+
+    // Storage types: ports + internal regs all 48 bits → uint64_t.
+    assert!(out.contains("uint64_t score_out"),
+            "score_out port should be uint64_t for UInt<48>; got:\n{out}");
+    assert!(out.contains("uint64_t inc_in"),
+            "inc_in port should be uint64_t for UInt<48>; got:\n{out}");
+    assert!(out.contains("uint64_t _accumulator"),
+            "accumulator reg should be uint64_t for UInt<48>; got:\n{out}");
+    assert!(out.contains("uint64_t _score_reg"),
+            "score_reg reg should be uint64_t for UInt<48>; got:\n{out}");
+
+    // _n_ shadow should match.
+    assert!(out.contains("uint64_t _n_accumulator"),
+            "_n_accumulator shadow should be uint64_t; got:\n{out}");
+
+    // Truncating arithmetic should mask to 48 bits (12 F's), not 32.
+    assert!(out.contains("0xFFFFFFFFFFFFULL"),
+            "expected 48-bit mask 0xFFFFFFFFFFFFULL; got:\n{out}");
+    assert!(!out.contains(" 0xFFFFFFFFULL"),
+            "must not emit 32-bit mask 0xFFFFFFFFULL for 48-bit accumulator; got:\n{out}");
+
+    // The seq-assign cast must be (uint64_t), not (uint32_t).
+    assert!(out.contains("(uint64_t)((((_accumulator + inc_in))"),
+            "trunc cast should be (uint64_t)(...); got:\n{out}");
+}
+
+#[test]
+fn test_uint_width_boundary_buckets_with_param() {
+    // Boundary check: 32 → uint32_t, 33 → uint64_t, 64 → uint64_t, 65 → wide.
+    // Use param-derived widths to exercise the param-aware path.
+    let source = r#"
+        module W
+          param W32:  const = 32;
+          param W33:  const = 33;
+          param W64:  const = 64;
+          param W65:  const = 65;
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a32: out UInt<W32>;
+          port a33: out UInt<W33>;
+          port a64: out UInt<W64>;
+          port a65: out UInt<W65>;
+          comb
+            a32 = 0;
+            a33 = 0;
+            a64 = 0;
+            a65 = (0).zext<W65>();
+          end comb
+        end module W
+    "#;
+    let out = compile_to_sim_h(source, false);
+    assert!(out.contains("uint32_t a32"),
+            "UInt<32> port should be uint32_t; got:\n{out}");
+    assert!(out.contains("uint64_t a33"),
+            "UInt<33> port should be uint64_t; got:\n{out}");
+    assert!(out.contains("uint64_t a64"),
+            "UInt<64> port should be uint64_t; got:\n{out}");
+    // 65 bits → wide (VlWide). Don't pin the exact word count here — just
+    // assert it isn't the legacy uint32_t bucket.
+    assert!(out.contains("VlWide") && out.contains("a65"),
+            "UInt<65> port should be VlWide<...>; got:\n{out}");
+    assert!(!out.contains("uint32_t a65"),
+            "UInt<65> must not be uint32_t; got:\n{out}");
+}
+
+#[test]
+fn test_uint_48_literal_width_emits_uint64_storage() {
+    // Same as the boundary test, but with a literal `UInt<48>` (no param)
+    // to confirm both code paths share the same fix.
+    let source = r#"
+        module Acc
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: out UInt<48>;
+          port inc: in UInt<48>;
+          reg r: UInt<48> reset rst => 0;
+          comb
+            a = r;
+          end comb
+          seq on clk rising
+            r <= (r + inc).trunc<48>();
+          end seq
+        end module Acc
+    "#;
+    let out = compile_to_sim_h(source, false);
+    assert!(out.contains("uint64_t a"),
+            "UInt<48> port should be uint64_t; got:\n{out}");
+    assert!(out.contains("uint64_t inc"),
+            "UInt<48> port should be uint64_t; got:\n{out}");
+    assert!(out.contains("uint64_t _r"),
+            "UInt<48> reg should be uint64_t; got:\n{out}");
+    assert!(out.contains("0xFFFFFFFFFFFFULL"),
+            "expected 48-bit mask; got:\n{out}");
+}
