@@ -12665,3 +12665,344 @@ fn test_comb_loop_bodied_per_output_cache_handles_repeated_insts() {
         "per-output precision must hold across 3 cross-wired insts; got: {:?}",
         cycle_msgs);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #246 Phase 4: per-output comb-dep precision for `fsm` bodies.
+// Phase 2 (PR #338) added the precision for `module` body emit + .archi parse
+// of `comb_dep_on(...)`. Phase 3 (PR #339) wired the bodied-module branch of
+// the whole-design analyzer to consume the same per-output map. Phase 4
+// extends both pieces to FSMs (bodied + .archi emit) so an FSM child no
+// longer collapses to the aggregate-every-out-feeds-every-in shape that
+// was closing arch-ibex's residual `ibex_id_stage` SCC through the
+// `ibex_controller` fsm.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_comb_loop_fsm_per_output_precision_eliminates_false_positive() {
+    // FSM with two independent comb paths: out_a depends only on in_x;
+    // out_b depends only on in_y. Aggregate-only analysis would close a
+    // phantom cycle through `w1 → w2 → w1` because every out is treated
+    // as depending on every in. Per-output FSM precision must eliminate
+    // it.
+    let source = r#"
+        fsm Cell
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port in_x: in  UInt<1>;
+          port in_y: in  UInt<1>;
+          port out_a: out UInt<1> default 1'd0;
+          port out_b: out UInt<1> default 1'd0;
+          state [S0]
+          default state S0;
+          state S0
+            comb
+              out_a = in_x;
+              out_b = in_y;
+            end comb
+            -> S0 when true;
+          end state S0
+        end fsm Cell
+
+        module Top
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in UInt<1>;
+          port q: out UInt<1>;
+          wire w1: UInt<1>;
+          wire w2: UInt<1>;
+          wire dead1: UInt<1>;
+          wire dead2: UInt<1>;
+
+          inst u1: Cell
+            clk   <- clk;
+            rst   <- rst;
+            in_x  <- a;
+            in_y  <- w2;
+            out_a -> w1;
+            out_b -> dead1;
+          end inst u1
+
+          inst u2: Cell
+            clk   <- clk;
+            rst   <- rst;
+            in_x  <- w1;
+            in_y  <- a;
+            out_a -> dead2;
+            out_b -> w2;
+          end inst u2
+
+          comb
+            q = w1;
+          end comb
+        end module Top
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws.iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(cycle_msgs.is_empty(),
+        "fsm per-output precision must eliminate the aggregate-only \
+         phantom cycle; got: {:?}", cycle_msgs);
+}
+
+#[test]
+fn test_comb_loop_fsm_real_cycle_still_detected() {
+    // Same shape, but now out_b genuinely reads in_x too — the real
+    // cycle u1.out_b (← in_y = w2) and u2.out_b (← in_x = w1, in_y = a)
+    // closes w1 → w2 → w1 via u2.out_b's true dep on in_x.
+    let source = r#"
+        fsm Cell
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port in_x: in  UInt<1>;
+          port in_y: in  UInt<1>;
+          port out_a: out UInt<1> default 1'd0;
+          port out_b: out UInt<1> default 1'd0;
+          state [S0]
+          default state S0;
+          state S0
+            comb
+              out_a = in_x;
+              out_b = in_x or in_y;
+            end comb
+            -> S0 when true;
+          end state S0
+        end fsm Cell
+
+        module Top
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in UInt<1>;
+          port q: out UInt<1>;
+          wire w1: UInt<1>;
+          wire w2: UInt<1>;
+          wire dead1: UInt<1>;
+          wire dead2: UInt<1>;
+
+          inst u1: Cell
+            clk   <- clk;
+            rst   <- rst;
+            in_x  <- w2;
+            in_y  <- a;
+            out_a -> w1;
+            out_b -> dead1;
+          end inst u1
+
+          inst u2: Cell
+            clk   <- clk;
+            rst   <- rst;
+            in_x  <- w1;
+            in_y  <- a;
+            out_a -> dead2;
+            out_b -> w2;
+          end inst u2
+
+          comb
+            q = w1;
+          end comb
+        end module Top
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws.iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(!cycle_msgs.is_empty(),
+        "real cycle (u1.out_a ← w2; u2.out_b ← w1) through fsm \
+         must still fire; warnings: {:?}", ws);
+}
+
+#[test]
+fn test_archi_fsm_emit_includes_comb_dep_on() {
+    // Compile a small FSM body and assert `.archi` carries per-output
+    // `comb_dep_on(...)` annotations (mirror of the module emit path).
+    let source = r#"
+        fsm M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in  UInt<8>;
+          port b: in  UInt<8>;
+          port x: out UInt<8> default 8'd0;
+          port y: out UInt<8> default 8'd0;
+          port z: out UInt<8> default 8'd0;
+          state [S0]
+          default state S0;
+          state S0
+            comb
+              x = a;
+              y = a + b;
+              z = 8'd0;
+            end comb
+            -> S0 when true;
+          end state S0
+        end fsm M
+    "#;
+    let tokens = lexer::tokenize(source).expect("lexer");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse");
+    let item = parsed.items.iter()
+        .find(|i| matches!(i, arch::ast::Item::Fsm(_)))
+        .expect("fsm");
+    let body = arch::interface::emit_interface(item).expect("emit_interface");
+    assert!(body.contains("port x: out UInt<8> comb_dep_on(a);"),
+        "x must depend only on a: {body}");
+    assert!(body.contains("port y: out UInt<8> comb_dep_on(a, b);"),
+        "y must depend on a and b: {body}");
+    assert!(body.contains("port z: out UInt<8> comb_dep_on();"),
+        "z is pure (constant): {body}");
+}
+
+#[test]
+fn test_comb_loop_fsm_default_comb_deps_included() {
+    // `default_comb` is applied before the state case (the FSM codegen
+    // emits it as part of the comb block). Any input reads in
+    // `default_comb` must contribute to per-output deps.
+    //
+    // Here out_a's only assignment is in `default_comb`, sourced from
+    // in_z. A cross-wire from out_a → another inst's in_y_other_inst
+    // does NOT close a cycle (out_a doesn't read in_y). But a cross-
+    // wire through in_z DOES — exercise the legitimate path.
+    let source = r#"
+        fsm Cell
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port in_y: in  UInt<1>;
+          port in_z: in  UInt<1>;
+          port out_a: out UInt<1> default 1'd0;
+          default
+            comb
+              out_a = in_z;
+            end comb
+          end default
+          state [S0]
+          default state S0;
+          state S0
+            -> S0 when true;
+          end state S0
+        end fsm Cell
+
+        module Top
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in UInt<1>;
+          port q: out UInt<1>;
+          wire w1: UInt<1>;
+
+          inst u1: Cell
+            clk   <- clk;
+            rst   <- rst;
+            in_y  <- a;
+            in_z  <- w1;
+            out_a -> w1;
+          end inst u1
+
+          comb
+            q = w1;
+          end comb
+        end module Top
+    "#;
+    // The cross-wire w1 → in_z → out_a → w1 is a legitimate cycle.
+    // Per-output FSM walker must include in_z in out_a's dep set.
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws.iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(!cycle_msgs.is_empty(),
+        "default_comb reads in_z driving out_a; w1 → in_z → out_a → w1 \
+         must fire as a comb cycle; warnings: {:?}", ws);
+}
+
+#[test]
+fn test_comb_loop_fsm_output_default_expr_deps_included() {
+    // FSM output port default expression (`default in_x + in_y`) is
+    // emitted by the FSM codegen as the comb-block default before the
+    // state case. Identifier reads in the default expression are real
+    // comb deps for that output and must appear in the per-output map.
+    //
+    // Here out_a's value is the default expression `in_x + in_y` (and
+    // S0 has no per-state assignment to out_a). Wire w1 → in_y → out_a
+    // → w1 must close as a real cycle.
+    let source = r#"
+        fsm Cell
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port in_x: in  UInt<1>;
+          port in_y: in  UInt<1>;
+          port out_a: out UInt<1> default in_x or in_y;
+          state [S0]
+          default state S0;
+          state S0
+            -> S0 when true;
+          end state S0
+        end fsm Cell
+
+        module Top
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in UInt<1>;
+          port q: out UInt<1>;
+          wire w1: UInt<1>;
+
+          inst u1: Cell
+            clk   <- clk;
+            rst   <- rst;
+            in_x  <- a;
+            in_y  <- w1;
+            out_a -> w1;
+          end inst u1
+
+          comb
+            q = w1;
+          end comb
+        end module Top
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws.iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(!cycle_msgs.is_empty(),
+        "out_a's default expression reads in_y; w1 → in_y → out_a → w1 \
+         must fire as a comb cycle; warnings: {:?}", ws);
+
+    // And the dual: with cross-wire through in_a (NOT a dep), no cycle.
+    let source2 = r#"
+        fsm Cell
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port in_x: in  UInt<1>;
+          port in_y: in  UInt<1>;
+          port out_a: out UInt<1> default in_x;
+          state [S0]
+          default state S0;
+          state S0
+            -> S0 when true;
+          end state S0
+        end fsm Cell
+
+        module Top
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in UInt<1>;
+          port q: out UInt<1>;
+          wire w1: UInt<1>;
+
+          inst u1: Cell
+            clk   <- clk;
+            rst   <- rst;
+            in_x  <- a;
+            in_y  <- w1;
+            out_a -> w1;
+          end inst u1
+
+          comb
+            q = w1;
+          end comb
+        end module Top
+    "#;
+    let ws2 = comb_loop_warnings(source2);
+    let cycle_msgs2: Vec<_> = ws2.iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(cycle_msgs2.is_empty(),
+        "out_a's default reads only in_x; w1 → in_y is NOT a dep, \
+         so no cycle should fire; got: {:?}", cycle_msgs2);
+}
