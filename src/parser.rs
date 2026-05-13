@@ -438,6 +438,7 @@ impl Parser {
             reg_info: None,
             bus_info: None,
             shared: None, unpacked: false, unpacked_ascending: false,
+            comb_deps: None,
             span: parent_span.merge(end_span),
         })
     }
@@ -639,6 +640,7 @@ impl Parser {
             reg_info: None,
             bus_info: None,
             shared: None, unpacked: false, unpacked_ascending: false,
+            comb_deps: None,
             span: sp,
         };
         // Control signals (payload-direction = `dir`, back-signal = `opposite`).
@@ -1029,6 +1031,7 @@ impl Parser {
                 reg_info: None,
                 bus_info: Some(BusPortInfo { bus_name, perspective, params }),
                 shared: None, unpacked: false, unpacked_ascending: false,
+                comb_deps: None,
                 span: start.merge(end_span),
             });
         }
@@ -1176,6 +1179,49 @@ impl Parser {
         } else {
             None
         };
+        // Optional `comb_dep_on(in_a, in_b, ...)` per-output combinational
+        // dependency annotation. Carries through .archi files to give
+        // downstream consumers (whole-design comb-loop analyzer) precise
+        // input → output edges instead of the opaque every-in-feeds-
+        // every-out over-approximation. Issue #246 Phase 2.
+        //
+        // Constraints:
+        //   - Only legal on `out` ports.
+        //   - Not legal on registered outputs (`port reg ...` or
+        //     `port X: out pipe_reg<T,N> ...`) — those don't have a
+        //     combinational dep relationship; their outputs are flopped.
+        //   - Body is a comma-separated list of bare identifiers naming
+        //     this module's own input ports. Empty list (`comb_dep_on()`)
+        //     means PURE — comb-driven but reads no inputs.
+        let comb_deps = if self.check_ident("comb_dep_on") {
+            let kw_span = self.peek_span();
+            self.advance();
+            if direction != Direction::Out {
+                return Err(CompileError::general(
+                    "`comb_dep_on(...)` is only valid on output ports",
+                    kw_span,
+                ));
+            }
+            if is_reg {
+                return Err(CompileError::general(
+                    "`comb_dep_on(...)` is not valid on registered outputs (`port reg ...` / `port X: out pipe_reg<T,N> ...`); registered outputs are not combinationally driven",
+                    kw_span,
+                ));
+            }
+            self.expect(TokenKind::LParen)?;
+            let mut deps: Vec<Ident> = Vec::new();
+            if !self.check(TokenKind::RParen) {
+                loop {
+                    let dep_id = self.expect_ident()?;
+                    deps.push(dep_id);
+                    if !self.eat(TokenKind::Comma) { break; }
+                }
+            }
+            self.expect(TokenKind::RParen)?;
+            Some(deps)
+        } else {
+            None
+        };
         self.expect(TokenKind::Semi)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
         if unpacked && !matches!(ty, TypeExpr::Vec(..)) {
@@ -1194,6 +1240,7 @@ impl Parser {
             shared,
             unpacked,
             unpacked_ascending,
+            comb_deps,
             span: start.merge(end_span),
         })
     }
@@ -4375,7 +4422,7 @@ impl Parser {
         let ty = self.parse_type_expr()?;
         self.expect(TokenKind::Semi)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
-        Ok(PortDecl { name, direction, ty, default: None, reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: start.merge(end_span) })
+        Ok(PortDecl { name, direction, ty, default: None, reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, comb_deps: None, span: start.merge(end_span) })
     }
 
     fn parse_ram_init(&mut self) -> Result<RamInit, CompileError> {

@@ -11347,7 +11347,9 @@ end module UpkPort
     let body = arch::interface::emit_interface(item).expect("emit_interface");
     assert!(body.contains("port a: in unpacked Vec<UInt<W>, N>;"),
             "unpacked input port should round-trip into .archi: {body}");
-    assert!(body.contains("port b: out unpacked Vec<UInt<W>, N>;"),
+    // Issue #246 Phase 2: output ports may pick up a `comb_dep_on(...)`
+    // suffix listing the precise input ports that feed each output.
+    assert!(body.contains("port b: out unpacked Vec<UInt<W>, N>"),
             "unpacked output port should round-trip into .archi: {body}");
     // Packed Vec port (no `unpacked` modifier) still emits without it.
     assert!(body.contains("port c: in Vec<UInt<W>, N>;"),
@@ -12081,4 +12083,309 @@ fn test_opaque_interface_pipe_reg_output_does_not_close_cycle() {
     assert!(cycle_msgs.is_empty(),
         "pipe_reg / port reg outputs on an opaque stub must not close a comb cycle; got: {:?}",
         cycle_msgs);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #246 Phase 2: per-output `comb_dep_on(...)` annotation.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_archi_comb_dep_annotation_parses() {
+    // A `.archi`-shaped module declaration carrying `comb_dep_on(...)`
+    // on an output port. The parser should populate the new
+    // `PortDecl::comb_deps` field with the listed input idents.
+    let source = "
+        module Stub
+          port a: in  UInt<8>;
+          port b: in  UInt<8>;
+          port x: out UInt<8> comb_dep_on(a);
+          port y: out UInt<8> comb_dep_on(a, b);
+          port z: out UInt<8> comb_dep_on();
+          port w: out UInt<8>;
+        end module Stub
+    ";
+    let tokens = lexer::tokenize(source).expect("lexer");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse");
+    let m = parsed.items.iter().find_map(|i| match i {
+        arch::ast::Item::Module(m) => Some(m),
+        _ => None,
+    }).expect("module");
+
+    let by_name: std::collections::HashMap<&str, &arch::ast::PortDecl> =
+        m.ports.iter().map(|p| (p.name.name.as_str(), p)).collect();
+
+    let x_deps: Vec<&str> = by_name["x"].comb_deps.as_ref()
+        .expect("x must carry comb_deps")
+        .iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(x_deps, vec!["a"], "x deps");
+
+    let y_deps: Vec<&str> = by_name["y"].comb_deps.as_ref()
+        .expect("y must carry comb_deps")
+        .iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(y_deps, vec!["a", "b"], "y deps");
+
+    let z_deps: &Vec<arch::ast::Ident> = by_name["z"].comb_deps.as_ref()
+        .expect("z must carry comb_deps (empty list = pure)");
+    assert!(z_deps.is_empty(), "z must be pure (empty deps)");
+
+    assert!(by_name["w"].comb_deps.is_none(),
+        "w must carry no annotation (opaque fallback)");
+}
+
+#[test]
+fn test_archi_comb_dep_annotation_round_trip() {
+    // Compile a module body that drives `x` only from input `a` and
+    // `y` from both `a` and `b`. The `.archi` emit should reflect that
+    // precise per-output dependency shape via `comb_dep_on(...)`.
+    let source = "
+        module M
+          port a: in  UInt<8>;
+          port b: in  UInt<8>;
+          port x: out UInt<8>;
+          port y: out UInt<8>;
+          port z: out UInt<8>;
+          comb
+            x = a;
+            y = a + b;
+            z = 8'd0;
+          end comb
+        end module M
+    ";
+    let tokens = lexer::tokenize(source).expect("lexer");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse");
+    let item = parsed.items.iter()
+        .find(|i| matches!(i, arch::ast::Item::Module(_)))
+        .expect("module");
+    let body = arch::interface::emit_interface(item).expect("emit_interface");
+    assert!(body.contains("port x: out UInt<8> comb_dep_on(a);"),
+        "x must depend only on a: {body}");
+    assert!(body.contains("port y: out UInt<8> comb_dep_on(a, b);"),
+        "y must depend on a and b: {body}");
+    assert!(body.contains("port z: out UInt<8> comb_dep_on();"),
+        "z is pure (constant): {body}");
+}
+
+#[test]
+fn test_archi_comb_dep_precise_eliminates_false_positive() {
+    // Two stubs cross-wired through TWO separate input/output port pairs.
+    // The `comb_dep_on(...)` annotation says `out_x` depends only on `in_a`
+    // (NOT in_b). The cross-wired cycle would only close THROUGH `in_b`,
+    // so no SCC should fire. Without the annotation (opaque fallback)
+    // the analyzer would treat every out as depending on every in and
+    // would flag this as a comb cycle.
+    let source = r#"
+        module Stub
+          port in_a: in  UInt<1>;
+          port in_b: in  UInt<1>;
+          port out_x: out UInt<1> comb_dep_on(in_a);
+          port out_y: out UInt<1> comb_dep_on(in_a);
+        end module Stub
+
+        module Top
+          port a: in UInt<1>;
+          port q: out UInt<1>;
+          wire w1: UInt<1>;
+          wire w2: UInt<1>;
+          wire w3: UInt<1>;
+          wire w4: UInt<1>;
+
+          inst u1: Stub
+            in_a  <- a;
+            in_b  <- w2;
+            out_x -> w1;
+            out_y -> w3;
+          end inst u1
+
+          inst u2: Stub
+            in_a  <- a;
+            in_b  <- w1;
+            out_x -> w2;
+            out_y -> w4;
+          end inst u2
+
+          comb
+            q = w1;
+          end comb
+        end module Top
+    "#;
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let mut parsed_ast = parser.parse_source_file().expect("parse");
+    // Mark `Stub` as an interface to mimic the .archi path.
+    for item in parsed_ast.items.iter_mut() {
+        if let arch::ast::Item::Module(m) = item {
+            if m.name.name == "Stub" { m.is_interface = true; }
+        }
+    }
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate");
+    let mut ast = ast;
+    for item in ast.items.iter_mut() {
+        if let arch::ast::Item::Module(m) = item {
+            if m.name.name.starts_with("Stub") { m.is_interface = true; }
+        }
+    }
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let (warnings, _) = checker.check().expect("type check");
+    let ws: Vec<String> = warnings.into_iter().map(|w| w.message).collect();
+    let cycle_msgs: Vec<_> = ws.iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(cycle_msgs.is_empty(),
+        "comb_dep_on(in_a) should restrict edges so no cycle fires; got: {:?}", cycle_msgs);
+}
+
+#[test]
+fn test_archi_comb_dep_empty_marks_output_pure() {
+    // A stub whose output port is marked `comb_dep_on()` (empty) should
+    // contribute NO incoming comb edges. Cross-wiring two such stubs
+    // through their inputs cannot close a cycle.
+    let source = r#"
+        module Stub
+          port i: in  UInt<1>;
+          port o: out UInt<1> comb_dep_on();
+        end module Stub
+
+        module Top
+          port a: in UInt<1>;
+          port q: out UInt<1>;
+          wire w1: UInt<1>;
+          wire w2: UInt<1>;
+
+          inst u1: Stub
+            i <- w2;
+            o -> w1;
+          end inst u1
+          inst u2: Stub
+            i <- w1;
+            o -> w2;
+          end inst u2
+
+          comb
+            q = w1;
+          end comb
+        end module Top
+    "#;
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let mut parsed_ast = parser.parse_source_file().expect("parse");
+    for item in parsed_ast.items.iter_mut() {
+        if let arch::ast::Item::Module(m) = item {
+            if m.name.name == "Stub" { m.is_interface = true; }
+        }
+    }
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate");
+    let mut ast = ast;
+    for item in ast.items.iter_mut() {
+        if let arch::ast::Item::Module(m) = item {
+            if m.name.name.starts_with("Stub") { m.is_interface = true; }
+        }
+    }
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let (warnings, _) = checker.check().expect("type check");
+    let ws: Vec<String> = warnings.into_iter().map(|w| w.message).collect();
+    let cycle_msgs: Vec<_> = ws.iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(cycle_msgs.is_empty(),
+        "comb_dep_on() (pure) must produce no incoming comb edges; got: {:?}", cycle_msgs);
+}
+
+#[test]
+fn test_archi_comb_dep_absent_falls_back_to_opaque() {
+    // A stub WITHOUT the annotation must keep today's opaque "every
+    // output depends on every input" behavior. Two such stubs cross-
+    // wired should fire the cycle warning (regression guard for the
+    // pre-annotation behavior).
+    let source = r#"
+        module Stub
+          port i: in  UInt<1>;
+          port o: out UInt<1>;
+        end module Stub
+
+        module Top
+          port a: in UInt<1>;
+          port q: out UInt<1>;
+          wire w1: UInt<1>;
+          wire w2: UInt<1>;
+
+          inst u1: Stub
+            i <- w2;
+            o -> w1;
+          end inst u1
+          inst u2: Stub
+            i <- w1;
+            o -> w2;
+          end inst u2
+
+          comb
+            q = w1;
+          end comb
+        end module Top
+    "#;
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let mut parsed_ast = parser.parse_source_file().expect("parse");
+    for item in parsed_ast.items.iter_mut() {
+        if let arch::ast::Item::Module(m) = item {
+            if m.name.name == "Stub" { m.is_interface = true; }
+        }
+    }
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate");
+    let mut ast = ast;
+    for item in ast.items.iter_mut() {
+        if let arch::ast::Item::Module(m) = item {
+            if m.name.name.starts_with("Stub") { m.is_interface = true; }
+        }
+    }
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let (warnings, _) = checker.check().expect("type check");
+    let ws: Vec<String> = warnings.into_iter().map(|w| w.message).collect();
+    assert!(ws.iter().any(|m| m.contains("combinational feedback cycle")),
+        "absent annotation must keep opaque fallback that fires cycle: {:?}", ws);
+}
+
+#[test]
+fn test_archi_comb_dep_on_registered_output_rejected_at_parse() {
+    // `port reg out_x: ... comb_dep_on(in_a);` is illegal — registered
+    // outputs are not combinationally driven. The parser must reject.
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        module M
+          port clk:  in Clock<SysDomain>;
+          port rst:  in Reset<Async, Low>;
+          port in_a: in UInt<1>;
+          port reg out_x: out UInt<1> reset rst => 1'd0 comb_dep_on(in_a);
+        end module M
+    ";
+    let tokens = lexer::tokenize(source).expect("lexer");
+    let mut parser = Parser::new(tokens, source);
+    let err = parser.parse_source_file()
+        .expect_err("must reject comb_dep_on on registered output");
+    let msg = format!("{:?}", err);
+    assert!(msg.contains("comb_dep_on") && msg.contains("registered"),
+        "error should mention comb_dep_on + registered; got: {}", msg);
+}
+
+#[test]
+fn test_archi_comb_dep_on_input_port_rejected_at_parse() {
+    // `comb_dep_on(...)` is only legal on output ports.
+    let source = "
+        module M
+          port in_a: in UInt<1> comb_dep_on(in_a);
+        end module M
+    ";
+    let tokens = lexer::tokenize(source).expect("lexer");
+    let mut parser = Parser::new(tokens, source);
+    let err = parser.parse_source_file()
+        .expect_err("must reject comb_dep_on on input port");
+    let msg = format!("{:?}", err);
+    assert!(msg.contains("comb_dep_on"),
+        "error should mention comb_dep_on; got: {}", msg);
 }

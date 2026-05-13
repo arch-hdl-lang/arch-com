@@ -303,6 +303,22 @@ pub struct PortDecl {
     /// (`name[i]`) is unchanged — `0` is always the first element. Only
     /// legal when `unpacked` is also set.
     pub unpacked_ascending: bool,
+    /// Per-output combinational-dependency annotation (issue #246
+    /// Phase 2). Only legal on output ports without `reg_info` (i.e.
+    /// comb-driven outputs). Three states:
+    ///   - `None`           — no annotation. Analyzer falls back to
+    ///                        the opaque "every comb input feeds this
+    ///                        output" over-approximation.
+    ///   - `Some(vec![])`   — pure: comb-driven but depends on no
+    ///                        inputs (e.g. constant). No incoming
+    ///                        comb edges.
+    ///   - `Some(vec![..])` — precise: depends only on the listed
+    ///                        input port names.
+    /// Carried verbatim through `.archi` emit / parse so consumers
+    /// (`comb_graph::expand_inst`) can synthesize precise cross-
+    /// boundary edges instead of the opaque every-in-feeds-every-out
+    /// shape.
+    pub comb_deps: Option<Vec<Ident>>,
     pub span: Span,
 }
 
