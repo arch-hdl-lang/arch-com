@@ -818,6 +818,12 @@ struct GraphBuilder {
     next_id: usize,
     /// path → owning module name. `vec![]` is special-cased per top entry.
     path_owner: HashMap<InstPath, String>,
+    /// Memoized per-output comb-dep maps keyed by child module name.
+    /// Computed lazily on first `expand_inst` reference to a bodied child;
+    /// reused across all instantiation sites of the same module so the
+    /// O(body) walk in `per_output_comb_deps` runs once per module. Issue
+    /// #246 Phase 3.
+    per_output_cache: HashMap<String, HashMap<String, HashSet<String>>>,
 }
 
 impl GraphBuilder {
@@ -842,6 +848,20 @@ impl GraphBuilder {
 
     fn owning_module(&self, path: &InstPath) -> Option<String> {
         self.path_owner.get(path).cloned()
+    }
+
+    /// Memoized accessor for a child module's per-output comb-dep map.
+    /// The first call computes via `per_output_comb_deps`; subsequent calls
+    /// for the same module name return a cached reference. Used by the
+    /// non-opaque branch of `expand_inst` so the same module instantiated
+    /// at multiple sites pays the body-walk cost exactly once. Issue #246
+    /// Phase 3.
+    fn per_output_for(&mut self, m: &ModuleDecl) -> &HashMap<String, HashSet<String>> {
+        if !self.per_output_cache.contains_key(&m.name.name) {
+            let map = per_output_comb_deps(m);
+            self.per_output_cache.insert(m.name.name.clone(), map);
+        }
+        &self.per_output_cache[&m.name.name]
     }
 
     /// Recursively build the graph for `m` at the given instance path.
@@ -987,22 +1007,66 @@ impl GraphBuilder {
                 .collect())
             .unwrap_or_default();
 
-        // Per-output comb-dep annotations from the child module's port
-        // decls (issue #246 Phase 2). Carried verbatim through `.archi`,
-        // populated by the parser when reading `comb_dep_on(...)`.
+        // Per-output comb-dep map. Two precision sources, both produce the
+        // same `Option<HashSet<input-port-name>>` shape per output port:
+        //
+        //   * Opaque (interface stub / extern): from the child module's
+        //     port-decl `comb_dep_on(...)` annotation (issue #246 Phase 2).
+        //   * Bodied (recursed-into): from `per_output_comb_deps(child)`
+        //     which walks the child's comb blocks + let bindings building a
+        //     transitive LHS→input map (issue #246 Phase 3). Cached by
+        //     module name in `self.per_output_cache` so a child instantiated
+        //     N times pays the walk once.
+        //
+        // Semantics in either case:
         //   `Some(set)` — precise: out depends only on the listed inputs.
         //                  Empty set = PURE (no incoming comb edges).
-        //   `None`      — opaque: fall back to every-input over-approx.
-        let per_output_deps: HashMap<&str, Option<HashSet<&str>>> = child_mod
-            .map(|cm| cm.ports.iter()
-                .filter(|p| p.direction == crate::ast::Direction::Out && p.reg_info.is_none())
-                .map(|p| {
-                    let set = p.comb_deps.as_ref().map(|v|
-                        v.iter().map(|i| i.name.as_str()).collect::<HashSet<&str>>());
-                    (p.name.name.as_str(), set)
-                })
-                .collect())
-            .unwrap_or_default();
+        //   `None`      — opaque fallback for this output port: every
+        //                 declared input is assumed to feed it.
+        //
+        // Bodied fallback policy (Option C from issue #246 Phase 3):
+        //   If the output IS in `info.comb_outputs` (aggregate) but the
+        //   per-output walker returned no entry for it, treat as opaque
+        //   (None). If it's not in `comb_outputs` either, no entries get
+        //   emitted in the loop below — the output is registered or
+        //   instance-driven and the inner inst's recursive expand handles
+        //   any edges. In practice the bodied walker emits an entry for
+        //   every non-registered output port so this fallback rarely
+        //   triggers, but we keep it explicit so a future walker change
+        //   degrades gracefully rather than silently dropping edges.
+        let per_output_deps: HashMap<String, Option<HashSet<String>>> =
+            if treat_as_opaque {
+                child_mod
+                    .map(|cm| cm.ports.iter()
+                        .filter(|p| p.direction == crate::ast::Direction::Out
+                                    && p.reg_info.is_none())
+                        .map(|p| {
+                            let set = p.comb_deps.as_ref().map(|v|
+                                v.iter().map(|i| i.name.clone())
+                                    .collect::<HashSet<String>>());
+                            (p.name.name.clone(), set)
+                        })
+                        .collect())
+                    .unwrap_or_default()
+            } else if let Some(cm) = child_mod {
+                let map = self.per_output_for(cm);
+                let mut out: HashMap<String, Option<HashSet<String>>> =
+                    HashMap::with_capacity(map.len());
+                for (k, v) in map {
+                    out.insert(k.clone(), Some(v.clone()));
+                }
+                // Option C: any aggregate-driven output missing from the
+                // per-output map falls back to opaque (every input). Will
+                // virtually never trigger given `per_output_comb_deps`'s
+                // current "always emit an entry per non-registered output"
+                // contract, but cheap to encode defensively.
+                for o in &info.comb_outputs {
+                    out.entry(o.clone()).or_insert(None);
+                }
+                out
+            } else {
+                HashMap::new()
+            };
 
         let comb_outs: Vec<&String> = if treat_as_opaque {
             // Opaque: every declared output port that's connected AND not
@@ -1041,11 +1105,14 @@ impl GraphBuilder {
                 self.add_edge(child_q, to);
             }
 
-            // Per-output precision: if the child's port-decl carries a
-            // `comb_dep_on(...)` annotation, restrict incoming edges
-            // exactly to that input set (empty set = no incoming edges).
-            // Otherwise fall back to the broad `comb_ins` list.
-            let precise_deps: Option<&HashSet<&str>> = per_output_deps
+            // Per-output precision: if we have a precise dep set for this
+            // output (either from `.archi` annotation on an opaque stub, or
+            // from `per_output_comb_deps` walked over a bodied child),
+            // restrict incoming edges exactly to that input set (empty set
+            // = no incoming edges = pure). Otherwise (`None`) fall back to
+            // the broad `comb_ins` list — the old opaque every-input
+            // over-approximation.
+            let precise_deps: Option<&HashSet<String>> = per_output_deps
                 .get(out_port.as_str())
                 .and_then(|opt| opt.as_ref());
 
