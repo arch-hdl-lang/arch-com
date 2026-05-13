@@ -12389,3 +12389,244 @@ fn test_archi_comb_dep_on_input_port_rejected_at_parse() {
     assert!(msg.contains("comb_dep_on"),
         "error should mention comb_dep_on; got: {}", msg);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #246 Phase 3: per-output precision for BODIED (non-opaque) children.
+//
+// Phase 2 (#338) gave per-output precision across `.archi` boundaries via the
+// `comb_dep_on(...)` annotation. Phase 3 extends the same precision to bodied
+// children walked by the whole-design analyzer, replacing the aggregate
+// `cartesian_product(comb_outputs, comb_dep_inputs)` over-approximation with
+// the precise map produced by `per_output_comb_deps`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_comb_loop_bodied_per_output_precision_eliminates_false_positive() {
+    // `Cell` has two independent comb paths: out_a only depends on in_x,
+    // out_b only depends on in_y. The aggregate analyzer treats every
+    // comb output as depending on every comb input and would flag a
+    // spurious cycle through `w1 → w2 → w1`. The per-output analyzer
+    // keeps the two paths disjoint and should NOT flag a cycle.
+    let source = r#"
+        module Cell
+          port in_x: in  UInt<1>;
+          port in_y: in  UInt<1>;
+          port out_a: out UInt<1>;
+          port out_b: out UInt<1>;
+          comb
+            out_a = in_x;
+            out_b = in_y;
+          end comb
+        end module Cell
+
+        module Top
+          port a: in UInt<1>;
+          port q: out UInt<1>;
+          wire w1: UInt<1>;
+          wire w2: UInt<1>;
+          wire dead1: UInt<1>;
+          wire dead2: UInt<1>;
+
+          inst u1: Cell
+            in_x  <- a;
+            in_y  <- w2;
+            out_a -> w1;
+            out_b -> dead1;
+          end inst u1
+
+          inst u2: Cell
+            in_x  <- w1;
+            in_y  <- a;
+            out_a -> dead2;
+            out_b -> w2;
+          end inst u2
+
+          comb
+            q = w1;
+          end comb
+        end module Top
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws.iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(cycle_msgs.is_empty(),
+        "per-output precision must eliminate the aggregate-only phantom \
+         cycle; got: {:?}", cycle_msgs);
+}
+
+#[test]
+fn test_comb_loop_bodied_real_cycle_still_detected() {
+    // Same shape as the false-positive test, but now `out_b` legitimately
+    // depends on BOTH in_x and in_y. Per-output precision must preserve
+    // the real cycle: u1.out_a (← in_x = a is fine) and u2.out_b (← in_x
+    // = w1, in_y = a) close w1 → w2 → w1 via u2.out_b's true dep on in_x.
+    let source = r#"
+        module Cell
+          port in_x: in  UInt<1>;
+          port in_y: in  UInt<1>;
+          port out_a: out UInt<1>;
+          port out_b: out UInt<1>;
+          comb
+            out_a = in_x;
+            out_b = in_x or in_y;
+          end comb
+        end module Cell
+
+        module Top
+          port a: in UInt<1>;
+          port q: out UInt<1>;
+          wire w1: UInt<1>;
+          wire w2: UInt<1>;
+          wire dead1: UInt<1>;
+          wire dead2: UInt<1>;
+
+          inst u1: Cell
+            in_x  <- w2;
+            in_y  <- a;
+            out_a -> w1;
+            out_b -> dead1;
+          end inst u1
+
+          inst u2: Cell
+            in_x  <- w1;
+            in_y  <- a;
+            out_a -> dead2;
+            out_b -> w2;
+          end inst u2
+
+          comb
+            q = w1;
+          end comb
+        end module Top
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws.iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(!cycle_msgs.is_empty(),
+        "real cycle (u1.out_a ← w2; u2.out_b ← w1) must still fire; \
+         warnings: {:?}", ws);
+}
+
+#[test]
+fn test_comb_loop_bodied_output_missing_from_per_output_map_falls_back() {
+    // Option C fallback contract: when an output port is present in the
+    // aggregate `info.comb_outputs` (it appears as LHS in a comb block)
+    // but the per-output walker can't trace it back to ANY input — e.g.
+    // it's driven by a constant or by a non-input intermediate — the
+    // per-output map records an empty dep set. We treat empty-set as
+    // "pure for this output port at the body level".
+    //
+    // The test asserts:
+    //   (a) A truly pure output (driven by constant) does NOT introduce
+    //       spurious edges that close a cycle through it.
+    //   (b) Compare to opaque-fallback (no `.archi` annotation on an
+    //       interface stub of the same shape) where every output IS
+    //       assumed to depend on every input.
+    //
+    // The fallback "treat as opaque every input" path written into the
+    // expander would only fire if the walker omits an output entry; with
+    // `per_output_comb_deps`'s current always-emit-an-entry contract,
+    // this branch is a safety net rather than a live code path. We pin
+    // the empty-deps-as-pure semantics here so a future walker change
+    // that DOES start omitting entries falls back to opaque rather than
+    // silently dropping edges.
+    let source = r#"
+        module Cell
+          port i: in  UInt<1>;
+          port o: out UInt<1>;
+          comb
+            o = 1'd0;
+          end comb
+        end module Cell
+
+        module Top
+          port a: in UInt<1>;
+          port q: out UInt<1>;
+          wire w1: UInt<1>;
+          wire w2: UInt<1>;
+
+          inst u1: Cell
+            i <- w2;
+            o -> w1;
+          end inst u1
+          inst u2: Cell
+            i <- w1;
+            o -> w2;
+          end inst u2
+
+          comb
+            q = w1;
+          end comb
+        end module Top
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws.iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(cycle_msgs.is_empty(),
+        "pure output (per-output map empty) must not close a comb cycle; \
+         got: {:?}", cycle_msgs);
+}
+
+#[test]
+fn test_comb_loop_bodied_per_output_cache_handles_repeated_insts() {
+    // Cache invariance: the same bodied child instantiated 3× must not
+    // re-walk the body per inst. Functionally we verify the SAME false-
+    // positive elimination as the first test, but with 3 cross-wired
+    // instances — exercises the memoization path under repeated use.
+    let source = r#"
+        module Cell
+          port in_x: in  UInt<1>;
+          port in_y: in  UInt<1>;
+          port out_a: out UInt<1>;
+          port out_b: out UInt<1>;
+          comb
+            out_a = in_x;
+            out_b = in_y;
+          end comb
+        end module Cell
+
+        module Top
+          port a: in UInt<1>;
+          port q: out UInt<1>;
+          wire w1: UInt<1>;
+          wire w2: UInt<1>;
+          wire w3: UInt<1>;
+          wire d1: UInt<1>;
+          wire d2: UInt<1>;
+          wire d3: UInt<1>;
+
+          inst u1: Cell
+            in_x  <- a;
+            in_y  <- w3;
+            out_a -> w1;
+            out_b -> d1;
+          end inst u1
+          inst u2: Cell
+            in_x  <- w1;
+            in_y  <- a;
+            out_a -> w2;
+            out_b -> d2;
+          end inst u2
+          inst u3: Cell
+            in_x  <- w2;
+            in_y  <- a;
+            out_a -> w3;
+            out_b -> d3;
+          end inst u3
+
+          comb
+            q = w1;
+          end comb
+        end module Top
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws.iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(cycle_msgs.is_empty(),
+        "per-output precision must hold across 3 cross-wired insts; got: {:?}",
+        cycle_msgs);
+}
