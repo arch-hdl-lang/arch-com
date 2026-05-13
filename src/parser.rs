@@ -694,6 +694,7 @@ impl Parser {
             variant: variant_ident,
             role_dir: dir,
             payload_names,
+            array_count: None,
             span: block_span,
             legacy_handshake_kw: is_legacy,
         };
@@ -727,7 +728,7 @@ impl Parser {
     /// machinery exists; today arbiter ports have no such concept).
     ///
     /// See doc/plan_handshake_construct.md for the variant catalog.
-    fn parse_handshake_channel_construct_port(&mut self) -> Result<(Vec<PortDecl>, Option<PortArrayDecl>), CompileError> {
+    fn parse_handshake_channel_construct_port(&mut self) -> Result<(Vec<PortDecl>, Option<PortArrayDecl>, HandshakeMeta), CompileError> {
         let is_legacy = self.check(TokenKind::Handshake);
         let opening_tok = if is_legacy { TokenKind::Handshake } else { TokenKind::HandshakeChannel };
         let start = self.expect(opening_tok)?.span;
@@ -856,6 +857,37 @@ impl Parser {
             signals.push(mk_port(port_name, dir, ty, f_span));
         }
 
+        // Build the HandshakeMeta so callers (arbiter today) can drive
+        // Tier-2 protocol-SVA emission. Mirrors the bus-body path's
+        // HandshakeMeta exactly, with `array_count` set for the `[N]`
+        // shape so codegen can wrap the assertion in `generate for`.
+        let payload_names: Vec<Ident> = signals.iter()
+            // Skip the control signals (valid/ready/stall/req/ack) — those
+            // are unconditionally added by the variant arms above. Anything
+            // beyond that is a user-declared payload field.
+            .filter(|p| {
+                let bare = if prefix.is_empty() { p.name.name.as_str() } else {
+                    p.name.name.strip_prefix(&prefix).unwrap_or(p.name.name.as_str())
+                };
+                !matches!(bare, "valid" | "ready" | "stall" | "req" | "ack")
+            })
+            .map(|p| {
+                let bare = if prefix.is_empty() { p.name.name.clone() } else {
+                    p.name.name.strip_prefix(&prefix).unwrap_or(&p.name.name).to_string()
+                };
+                Ident { name: bare, span: p.span }
+            })
+            .collect();
+        let meta = HandshakeMeta {
+            name: ch_name.clone(),
+            variant: variant_ident,
+            role_dir: dir,
+            payload_names,
+            array_count: array_count.clone(),
+            span: block_span,
+            legacy_handshake_kw: is_legacy,
+        };
+
         if let Some(count_expr) = array_count {
             let arr = PortArrayDecl {
                 count_expr,
@@ -863,9 +895,9 @@ impl Parser {
                 signals,
                 span: block_span,
             };
-            Ok((Vec::new(), Some(arr)))
+            Ok((Vec::new(), Some(arr), meta))
         } else {
-            Ok((signals, None))
+            Ok((signals, None, meta))
         }
     }
 
@@ -4850,6 +4882,7 @@ impl Parser {
         let mut params = Vec::new();
         let mut ports = Vec::new();
         let mut port_arrays = Vec::new();
+        let mut handshakes: Vec<HandshakeMeta> = Vec::new();
         let mut policy: Option<ArbiterPolicy> = None;
         let mut hook: Option<crate::ast::ArbiterHookDecl> = None;
         let mut latency: u32 = 1;
@@ -4918,11 +4951,12 @@ impl Parser {
                     // PortDecls (no `[N]`) or a PortArrayDecl (with `[N]`).
                     // Reuses the same payload/variant/direction parser as the
                     // bus-body path; see doc/plan_handshake_construct.md.
-                    let (decls, opt_array) = self.parse_handshake_channel_construct_port()?;
+                    let (decls, opt_array, meta) = self.parse_handshake_channel_construct_port()?;
                     ports.extend(decls);
                     if let Some(arr) = opt_array {
                         port_arrays.push(arr);
                     }
+                    handshakes.push(meta);
                 }
                 Some(TokenKind::Hook) => {
                     hook = Some(self.parse_arbiter_hook()?);
@@ -4952,6 +4986,7 @@ impl Parser {
             policy: policy.unwrap_or(ArbiterPolicy::RoundRobin),
             hook,
             latency,
+            handshakes,
         })
     }
 
