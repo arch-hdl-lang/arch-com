@@ -1031,6 +1031,7 @@ fn subst_port(p: &PortDecl, var: &str, val: i64) -> PortDecl {
         shared: p.shared,
         unpacked: p.unpacked,
         unpacked_ascending: p.unpacked_ascending,
+        comb_deps: p.comb_deps.clone(),
         span: p.span,
     }
 }
@@ -1687,12 +1688,12 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
             name: t.clock.clone(), direction: Direction::In,
             ty: type_map.get(&t.clock.name).map(|si| si.ty.clone())
                 .unwrap_or(TypeExpr::Clock(Ident::new("SysDomain".to_string(), sp))),
-            default: None, reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: sp,
+            default: None, reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, comb_deps: None, span: sp,
         });
         merged_ports.push(PortDecl {
             name: t.reset.clone(), direction: Direction::In,
             ty: TypeExpr::Reset(rk, t.reset_level),
-            default: None, reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: sp,
+            default: None, reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, comb_deps: None, span: sp,
         });
         (t.clock.name.clone(), t.reset.name.clone(), t.reset_level)
     };
@@ -1724,6 +1725,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                 default: None, reg_info: None, bus_info: None, shared: None,
                 unpacked: info.unpacked,
                 unpacked_ascending: info.unpacked_ascending,
+                comb_deps: None,
                 span: sp,
             });
         }
@@ -1743,6 +1745,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                 reg_info: None, bus_info: None, shared: info.shared,
                 unpacked: info.unpacked,
                 unpacked_ascending: info.unpacked_ascending,
+                comb_deps: None,
                 span: sp,
             });
         }
@@ -1763,7 +1766,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                     // don't deprecate internal artifacts.
                     legacy_port_reg: false,
                 }),
-                bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: sp,
+                bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, comb_deps: None, span: sp,
             });
         }
     }
@@ -2694,24 +2697,24 @@ fn synthesize_lock_arbiter(
         PortDecl {
             name: Ident::new("clk".to_string(), sp),
             direction: Direction::In, ty: clk_ty, default: None,
-            reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: sp,
+            reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, comb_deps: None, span: sp,
         },
         PortDecl {
             name: Ident::new("rst".to_string(), sp),
             direction: Direction::In, ty: rst_ty, default: None,
-            reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: sp,
+            reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, comb_deps: None, span: sp,
         },
         PortDecl {
             name: Ident::new("grant_valid".to_string(), sp),
             direction: Direction::Out, ty: TypeExpr::Bool, default: None,
-            reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: sp,
+            reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, comb_deps: None, span: sp,
         },
         PortDecl {
             name: Ident::new("grant_requester".to_string(), sp),
             direction: Direction::Out,
             ty: TypeExpr::UInt(Box::new(Expr::new(
                 ExprKind::Literal(LitKind::Dec(gr_width as u64)), sp))),
-            default: None, reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: sp,
+            default: None, reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, comb_deps: None, span: sp,
         },
     ];
 
@@ -2722,12 +2725,12 @@ fn synthesize_lock_arbiter(
             PortDecl {
                 name: Ident::new("valid".to_string(), sp),
                 direction: Direction::In, ty: TypeExpr::Bool, default: None,
-                reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: sp,
+                reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, comb_deps: None, span: sp,
             },
             PortDecl {
                 name: Ident::new("ready".to_string(), sp),
                 direction: Direction::Out, ty: TypeExpr::Bool, default: None,
-                reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: sp,
+                reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, comb_deps: None, span: sp,
             },
         ],
         span: sp,

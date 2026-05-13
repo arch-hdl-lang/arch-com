@@ -284,6 +284,151 @@ fn comb_info_for_module(m: &ModuleDecl) -> CombInfo {
     CombInfo { comb_outputs: driven, comb_dep_inputs: read }
 }
 
+/// Per-output combinational dependencies for a module.
+///
+/// For each output port that is combinationally driven (i.e. appears as LHS
+/// in any comb block, or is directly bound via a let binding whose name
+/// matches an output port), returns the set of input port names that
+/// transitively feed it through let/wire intermediates inside the body.
+///
+/// This is the precise version of `comb_info_for_module`, which only
+/// tracks aggregate `{driven, read_inputs}` sets and so over-approximates
+/// every driven output as depending on every read input.
+///
+/// Used by `.archi` interface emit (`interface::emit_ports`) to attach a
+/// `comb_dep_on(...)` annotation to each comb-driven output, and by
+/// `expand_inst` (whole-design analyzer) when the inst's child module has
+/// a body available.
+///
+/// Returns a map keyed by **output port name** (only — wire / let
+/// intermediates are not exposed). Returns an empty map for modules with
+/// no comb-driven outputs. Issue #246 Phase 2.
+pub fn per_output_comb_deps(m: &ModuleDecl) -> HashMap<String, HashSet<String>> {
+    use crate::ast::Direction;
+
+    // 1. Identify input and output port names (clk/rst excluded — those
+    //    are seq-only).
+    let mut input_names: HashSet<String> = HashSet::new();
+    let mut output_names: HashSet<String> = HashSet::new();
+    for p in &m.ports {
+        if is_clk_or_rst(&p.ty) { continue; }
+        match p.direction {
+            Direction::In  => { input_names.insert(p.name.name.clone()); }
+            Direction::Out => {
+                // Skip registered outputs — they're flopped, not comb.
+                if p.reg_info.is_none() {
+                    output_names.insert(p.name.name.clone());
+                }
+            }
+        }
+    }
+
+    // 2. Walk the body building a direct-dep map: LHS → set of RHS idents.
+    //    Multiple assignments to the same LHS union their deps (covers
+    //    conditional-branch shapes — same LHS in then + else).
+    let mut direct: HashMap<String, HashSet<String>> = HashMap::new();
+    for item in &m.body {
+        match item {
+            ModuleBodyItem::CombBlock(cb) => {
+                collect_comb_deps(&cb.stmts, &mut direct, &mut Vec::new());
+            }
+            ModuleBodyItem::LetBinding(lb) => {
+                let mut ids = HashSet::new();
+                collect_expr_idents(&lb.value, &mut ids);
+                direct.entry(lb.name.name.clone())
+                    .or_default()
+                    .extend(ids);
+            }
+            _ => {}
+        }
+    }
+
+    // 3. Transitive closure from inputs to each output, restricted to
+    //    input port names. For each output, BFS over `direct` chasing
+    //    deps until we hit fixpoint, collecting visited names that are
+    //    in `input_names`.
+    let mut out: HashMap<String, HashSet<String>> = HashMap::new();
+    for out_name in &output_names {
+        // Only emit an entry if this output is actually comb-driven
+        // (i.e. appears as LHS in `direct`). Outputs that never appear
+        // as LHS are not comb-driven (could be unconnected — emit
+        // empty, meaning "no inputs feed me").
+        if !direct.contains_key(out_name) {
+            // Unconnected output — treat as pure (no deps).
+            out.insert(out_name.clone(), HashSet::new());
+            continue;
+        }
+
+        let mut deps: HashSet<String> = HashSet::new();
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut stack: Vec<String> = vec![out_name.clone()];
+        while let Some(cur) = stack.pop() {
+            if !visited.insert(cur.clone()) { continue; }
+            if let Some(rhs_ids) = direct.get(&cur) {
+                for id in rhs_ids {
+                    if input_names.contains(id) {
+                        deps.insert(id.clone());
+                    } else if direct.contains_key(id) {
+                        // Intermediate (wire / let / another driven sig).
+                        stack.push(id.clone());
+                    }
+                    // Else: probably a reg / param / unknown — ignore.
+                }
+            }
+        }
+        out.insert(out_name.clone(), deps);
+    }
+    out
+}
+
+/// Helper for `per_output_comb_deps`: walk a list of comb statements,
+/// updating `direct[LHS] |= rhs idents | enclosing-condition idents`.
+fn collect_comb_deps(
+    stmts: &[Stmt],
+    direct: &mut HashMap<String, HashSet<String>>,
+    cond_stack: &mut Vec<HashSet<String>>,
+) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Assign(a) => {
+                let lhs = match lhs_base_name(&a.target) {
+                    Some(n) => n,
+                    None => continue,
+                };
+                let mut rhs = HashSet::new();
+                collect_expr_idents(&a.value, &mut rhs);
+                // LHS index/slice expressions also read identifiers.
+                collect_lhs_index_reads(&a.target, &mut rhs);
+                for conds in cond_stack.iter() {
+                    for id in conds { rhs.insert(id.clone()); }
+                }
+                direct.entry(lhs).or_default().extend(rhs);
+            }
+            Stmt::IfElse(ife) => {
+                let mut cond_ids = HashSet::new();
+                collect_expr_idents(&ife.cond, &mut cond_ids);
+                cond_stack.push(cond_ids);
+                collect_comb_deps(&ife.then_stmts, direct, cond_stack);
+                collect_comb_deps(&ife.else_stmts, direct, cond_stack);
+                cond_stack.pop();
+            }
+            Stmt::Match(m) => {
+                let mut scrut_ids = HashSet::new();
+                collect_expr_idents(&m.scrutinee, &mut scrut_ids);
+                cond_stack.push(scrut_ids);
+                for arm in &m.arms {
+                    collect_comb_deps(&arm.body, direct, cond_stack);
+                }
+                cond_stack.pop();
+            }
+            Stmt::For(f) => {
+                collect_comb_deps(&f.body, direct, cond_stack);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Compute CombInfo for a RAM declaration.
 fn comb_info_for_ram(ram: &RamDecl) -> CombInfo {
     // latency = 0 (async): read data output is combinationally driven by
@@ -842,6 +987,23 @@ impl GraphBuilder {
                 .collect())
             .unwrap_or_default();
 
+        // Per-output comb-dep annotations from the child module's port
+        // decls (issue #246 Phase 2). Carried verbatim through `.archi`,
+        // populated by the parser when reading `comb_dep_on(...)`.
+        //   `Some(set)` — precise: out depends only on the listed inputs.
+        //                  Empty set = PURE (no incoming comb edges).
+        //   `None`      — opaque: fall back to every-input over-approx.
+        let per_output_deps: HashMap<&str, Option<HashSet<&str>>> = child_mod
+            .map(|cm| cm.ports.iter()
+                .filter(|p| p.direction == crate::ast::Direction::Out && p.reg_info.is_none())
+                .map(|p| {
+                    let set = p.comb_deps.as_ref().map(|v|
+                        v.iter().map(|i| i.name.as_str()).collect::<HashSet<&str>>());
+                    (p.name.name.as_str(), set)
+                })
+                .collect())
+            .unwrap_or_default();
+
         let comb_outs: Vec<&String> = if treat_as_opaque {
             // Opaque: every declared output port that's connected AND not
             // flopped via `port reg` / `pipe_reg<T,N>`. Without the
@@ -879,7 +1041,18 @@ impl GraphBuilder {
                 self.add_edge(child_q, to);
             }
 
+            // Per-output precision: if the child's port-decl carries a
+            // `comb_dep_on(...)` annotation, restrict incoming edges
+            // exactly to that input set (empty set = no incoming edges).
+            // Otherwise fall back to the broad `comb_ins` list.
+            let precise_deps: Option<&HashSet<&str>> = per_output_deps
+                .get(out_port.as_str())
+                .and_then(|opt| opt.as_ref());
+
             for in_port in &comb_ins {
+                if let Some(allow) = precise_deps {
+                    if !allow.contains(in_port.as_str()) { continue; }
+                }
                 let in_sig = match input_conn.get(in_port.as_str()) {
                     Some(s) => s.clone(),
                     None => continue,

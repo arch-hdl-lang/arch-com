@@ -4,6 +4,7 @@
 //! (params + ports, no body) for use in separate compilation.
 
 use crate::ast::*;
+use std::collections::{HashMap, HashSet};
 
 /// Emit `.archi` content for a single AST item.
 /// Returns `Some(content)` for items that have an external interface
@@ -25,7 +26,12 @@ pub(crate) fn emit_module_interface(m: &ModuleDecl) -> String {
     let name = &m.name.name;
     let mut s = format!("module {name}\n");
     emit_params(&mut s, &m.params);
-    emit_ports(&mut s, &m.ports);
+    // Compute precise per-output comb-dep sets from the module body so
+    // the .archi reflects the actual dataflow shape (issue #246 Phase 2).
+    // The opaque "every comb input feeds every comb output" over-
+    // approximation is avoided as long as the module has a body.
+    let deps = crate::comb_graph::per_output_comb_deps(m);
+    emit_ports_with_deps(&mut s, &m.ports, Some(&deps));
     s.push_str(&format!("end module {name}\n"));
     s
 }
@@ -327,6 +333,20 @@ pub(crate) fn emit_params(s: &mut String, params: &[ParamDecl]) {
 }
 
 pub(crate) fn emit_ports(s: &mut String, ports: &[PortDecl]) {
+    emit_ports_with_deps(s, ports, None)
+}
+
+/// Like `emit_ports` but augments comb-driven output ports with an
+/// optional `comb_dep_on(...)` annotation computed by
+/// `comb_graph::per_output_comb_deps`. Module-shaped constructs pass
+/// `Some(&deps)`; constructs without a comb-driven body shape (counter,
+/// arbiter, regfile, ...) pass `None`, in which case the annotation is
+/// not emitted (so consumers fall back to the opaque interpretation).
+pub(crate) fn emit_ports_with_deps(
+    s: &mut String,
+    ports: &[PortDecl],
+    per_output_deps: Option<&HashMap<String, HashSet<String>>>,
+) {
     for p in ports {
         let dir = match p.direction {
             Direction::In => "in",
@@ -368,7 +388,40 @@ pub(crate) fn emit_ports(s: &mut String, ports: &[PortDecl]) {
                     }
                 }
             } else {
-                s.push_str(&format!("  port {name}: {dir} {unpacked_kw}{ty};\n"));
+                // Compute comb_dep_on(...) annotation for comb-driven
+                // outputs when a per-output dep map is available.
+                // Priority: caller-supplied (computed) map > preserved
+                // user-written `p.comb_deps`. The preserved field path
+                // covers .archi round-trip (parse → re-emit) without
+                // recomputing.
+                let dep_suffix = if p.direction == Direction::Out {
+                    if let Some(map) = per_output_deps {
+                        if let Some(set) = map.get(name) {
+                            let mut sorted: Vec<&String> = set.iter().collect();
+                            sorted.sort();
+                            let inner: String = sorted.iter()
+                                .map(|s| s.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            format!(" comb_dep_on({inner})")
+                        } else {
+                            String::new()
+                        }
+                    } else if let Some(deps) = &p.comb_deps {
+                        let mut sorted: Vec<&String> = deps.iter().map(|i| &i.name).collect();
+                        sorted.sort();
+                        let inner: String = sorted.iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!(" comb_dep_on({inner})")
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+                s.push_str(&format!("  port {name}: {dir} {unpacked_kw}{ty}{dep_suffix};\n"));
             }
         }
     }
