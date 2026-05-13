@@ -2473,48 +2473,176 @@ impl<'a> Codegen<'a> {
                 TypeExpr::Reset(_, ResetLevel::Low) => format!("!{}", p.name.name),
                 _ => p.name.name.clone(),
             });
-        let disable = rst_active.as_ref()
-            .map(|r| format!(" disable iff ({r})"))
-            .unwrap_or_default();
 
         self.line("// synopsys translate_off");
         self.line("// Auto-generated handshake protocol assertions (Tier 2)");
+        let mod_name = m.name.name.clone();
         for (port_name, hs) in &emissions {
-            let ch = &hs.name.name;
-            let variant = hs.variant.name.as_str();
-            let sig = |s: &str| format!("{}_{}_{}", port_name, ch, s);
-            let mod_name = &m.name.name;
-            let emit_property = |cg: &mut Codegen, rule: &str, predicate: String, message: &str| {
-                let label = format!("_auto_hs_{}_{}_{}", port_name, ch, rule);
-                cg.line(&format!(
-                    "{label}: assert property (@(posedge {clk}){disable} {predicate})"
+            let label_stem = format!("{}_{}", port_name, hs.name.name);
+            let sig_prefix = format!("{}_{}", port_name, hs.name.name);
+            self.emit_handshake_channel_asserts(
+                &hs,
+                &clk,
+                rst_active.as_deref(),
+                &sig_prefix,
+                &label_stem,
+                &mod_name,
+            );
+        }
+        self.line("// synopsys translate_on");
+    }
+
+    /// Construct-agnostic helper: emit Tier-2 protocol-SVA for a single
+    /// `handshake_channel`. Shared between the bus-port path
+    /// (`emit_handshake_asserts`) and the arbiter port-list path
+    /// (`emit_arbiter_handshake_asserts`).
+    ///
+    /// Parameters:
+    /// - `hs`        — channel metadata (variant, name, array shape).
+    /// - `clk`       — already-resolved clock signal name (no edge keyword).
+    /// - `rst_active`— already-resolved active-level reset expression
+    ///                 (e.g. `rst` or `!rst_n`); `None` skips `disable iff`.
+    /// - `sig_prefix`— prefix for the per-variant control signals; the
+    ///                 helper appends `_valid`/`_ready`/etc. For the bus
+    ///                 path this is `<port>_<chname>`; for arbiters it is
+    ///                 just `<chname>` (signals are top-level).
+    /// - `label_stem`— middle of `_auto_hs_<stem>_<rule>` for SV labels.
+    ///                 Bus-path stem is `<port>_<chname>`; arbiter is
+    ///                 `<chname>` (plus a per-lane suffix when arrayed).
+    /// - `mod_name`  — enclosing construct name for the `$fatal` message.
+    ///
+    /// When `hs.array_count` is `Some(expr)`, the property is wrapped in
+    /// an SV `generate for (genvar i = 0; i < <expr>; i++) ... end
+    /// endgenerate` block and signal references are indexed with `[i]`,
+    /// so the assertion fires once per request lane. The bus path never
+    /// sets `array_count`, so the bare-signal form is preserved
+    /// byte-for-byte with prior emission.
+    fn emit_handshake_channel_asserts(
+        &mut self,
+        hs: &crate::ast::HandshakeMeta,
+        clk: &str,
+        rst_active: Option<&str>,
+        sig_prefix: &str,
+        label_stem: &str,
+        mod_name: &str,
+    ) {
+        let variant = hs.variant.name.as_str();
+        let disable = rst_active
+            .map(|r| format!(" disable iff ({r})"))
+            .unwrap_or_default();
+
+        // Vector channels (arbiter `handshake_channel name[N]: ...`) get a
+        // genvar-indexed wrapper. The bus-body path always passes
+        // `array_count = None`, so this branch is dead for buses and the
+        // emitted SV is byte-identical to pre-refactor behaviour.
+        let (open_gen, close_gen, idx, lane_label_suffix) = match &hs.array_count {
+            Some(count_expr) => {
+                let count_str = self.emit_expr_str(count_expr);
+                self.line(&format!(
+                    "generate for (genvar i = 0; i < {count_str}; i++) begin: g_auto_hs_{label_stem}"
                 ));
-                cg.line(&format!(
-                    "  else $fatal(1, \"HANDSHAKE VIOLATION ({message}): {mod_name}.{label}\");"
-                ));
-            };
-            match variant {
-                "valid_ready" => {
-                    let v = sig("valid"); let r = sig("ready");
-                    emit_property(self, "valid_stable",
-                        format!("({v} && !{r}) |=> {v}"),
-                        "valid must stay asserted until ready");
-                }
-                "valid_stall" => {
-                    let v = sig("valid"); let s = sig("stall");
-                    emit_property(self, "valid_stable_while_stall",
-                        format!("({v} && {s}) |=> {v}"),
-                        "valid must not change while stalled");
-                }
-                "req_ack_4phase" => {
-                    let rq = sig("req"); let ak = sig("ack");
-                    emit_property(self, "req_holds_until_ack",
-                        format!("({rq} && !{ak}) |=> {rq}"),
-                        "req must stay asserted until ack");
-                }
-                // Variants with no Tier-2 v1 property are silently skipped.
-                _ => {}
+                self.indent += 1;
+                ("", "", "[i]", "__lane")
             }
+            None => ("", "", "", ""),
+        };
+        let _ = (open_gen, close_gen); // generate-for header already emitted
+
+        let sig = |s: &str| format!("{}_{}{}", sig_prefix, s, idx);
+        let mk_label = |rule: &str| {
+            format!("_auto_hs_{}{}_{}", label_stem, lane_label_suffix, rule)
+        };
+        let emit_property = |cg: &mut Codegen, rule: &str, predicate: String, message: &str| {
+            let label = mk_label(rule);
+            cg.line(&format!(
+                "{label}: assert property (@(posedge {clk}){disable} {predicate})"
+            ));
+            cg.line(&format!(
+                "  else $fatal(1, \"HANDSHAKE VIOLATION ({message}): {mod_name}.{label}\");"
+            ));
+        };
+        match variant {
+            "valid_ready" => {
+                let v = sig("valid"); let r = sig("ready");
+                emit_property(self, "valid_stable",
+                    format!("({v} && !{r}) |=> {v}"),
+                    "valid must stay asserted until ready");
+            }
+            "valid_stall" => {
+                let v = sig("valid"); let s = sig("stall");
+                emit_property(self, "valid_stable_while_stall",
+                    format!("({v} && {s}) |=> {v}"),
+                    "valid must not change while stalled");
+            }
+            "req_ack_4phase" => {
+                let rq = sig("req"); let ak = sig("ack");
+                emit_property(self, "req_holds_until_ack",
+                    format!("({rq} && !{ak}) |=> {rq}"),
+                    "req must stay asserted until ack");
+            }
+            // Variants with no Tier-2 v1 property are silently skipped.
+            _ => {}
+        }
+
+        if hs.array_count.is_some() {
+            self.indent -= 1;
+            self.line("end endgenerate");
+        }
+    }
+
+    /// Tier 2 of the handshake primitive for `arbiter` constructs: for
+    /// every `handshake_channel` declared in the arbiter's port list,
+    /// emit the same per-variant SVA the bus path emits, wrapped in
+    /// `generate for` blocks when the channel has an explicit `[N]`
+    /// array shape (the typical `request[NUM_REQ]` case).
+    ///
+    /// PR #343 desugars `handshake_channel` to underlying valid/ready/
+    /// payload ports — the same Tier-2 property templates apply, only
+    /// the signal-name convention differs: top-level `<chname>_<sig>`
+    /// (or array-element `<chname>_<sig>[i]`) instead of bus-port
+    /// `<port>_<chname>_<sig>`. Labels follow `_auto_hs_<chname>_<rule>`
+    /// (with `__lane` appended inside generate blocks).
+    pub(crate) fn emit_arbiter_handshake_asserts(&mut self, a: &crate::ast::ArbiterDecl) {
+        if a.handshakes.is_empty() { return; }
+
+        // Pick clock/reset the same way emit_arbiter does.
+        let clk = a.ports.iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.clone());
+        let Some(clk) = clk else { return; };
+        let rst_active = a.ports.iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)))
+            .map(|p| match &p.ty {
+                TypeExpr::Reset(_, ResetLevel::Low) => format!("!{}", p.name.name),
+                _ => p.name.name.clone(),
+            });
+
+        // Filter to variants the shared helper actually emits property
+        // text for, so we don't emit a translate-off block whose body is
+        // empty (matches the bus side, which skips the wrapper when no
+        // emission would land).
+        let any_emits = a.handshakes.iter().any(|hs| matches!(
+            hs.variant.name.as_str(),
+            "valid_ready" | "valid_stall" | "req_ack_4phase"
+        ));
+        if !any_emits { return; }
+
+        self.line("");
+        self.line("// synopsys translate_off");
+        self.line("// Auto-generated handshake protocol assertions (Tier 2)");
+        let mod_name = a.name.name.clone();
+        let handshakes = a.handshakes.clone();
+        for hs in &handshakes {
+            let label_stem = hs.name.name.clone();
+            let sig_prefix = hs.name.name.clone();
+            self.emit_handshake_channel_asserts(
+                hs,
+                &clk,
+                rst_active.as_deref(),
+                &sig_prefix,
+                &label_stem,
+                &mod_name,
+            );
         }
         self.line("// synopsys translate_on");
     }

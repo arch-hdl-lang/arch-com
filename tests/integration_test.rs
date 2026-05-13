@@ -9,6 +9,52 @@ fn compile_to_sv(source: &str) -> String {
     compile_to_sv_with_opts(source, &elaborate::ThreadLowerOpts::default())
 }
 
+/// Strip every `// synopsys translate_off ... // synopsys translate_on`
+/// block from emitted SV. Used by structural equivalence tests that
+/// compare a hand-rolled arbiter (no HandshakeMeta → no auto-SVA)
+/// against the `handshake_channel` form (HandshakeMeta present → Tier-2
+/// SVA emitted). Both forms must match in port + arbiter-logic shape;
+/// the SVA-only delta is expected. Applied to both sides so any
+/// incidental translate-off blocks (auto-bounds, etc.) cancel out.
+fn strip_auto_handshake_sva(sv: &str) -> String {
+    let lines: Vec<&str> = sv.lines().collect();
+    let mut out = String::with_capacity(sv.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim_start();
+        if trimmed == "// synopsys translate_off" {
+            // Skip the entire block (translate_off..translate_on).
+            while i < lines.len()
+                && lines[i].trim_start() != "// synopsys translate_on"
+            {
+                i += 1;
+            }
+            // Consume the translate_on line too.
+            if i < lines.len() { i += 1; }
+            // Retroactively swallow exactly one leading blank-ish line
+            // (whitespace only — `Codegen::line("")` at indent>0 emits a
+            // fully-indented empty line). The corresponding leading
+            // blank is emitted by the auto-handshake helper just before
+            // the block; the trailing blank lives outside the helper.
+            let bytes = out.as_bytes();
+            if !bytes.is_empty() && bytes.last() == Some(&b'\n') {
+                let without_nl = &out[..out.len() - 1];
+                let last_nl = without_nl.rfind('\n').map(|p| p + 1).unwrap_or(0);
+                let last_line = &without_nl[last_nl..];
+                if last_line.trim().is_empty() && !without_nl.is_empty() {
+                    out.truncate(last_nl);
+                }
+            }
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+        i += 1;
+    }
+    out
+}
+
 fn compile_to_sv_with_opts(source: &str, opts: &elaborate::ThreadLowerOpts) -> String {
     let tokens = lexer::tokenize(source).expect("lexer error");
     let mut parser = Parser::new(tokens, source);
@@ -566,7 +612,12 @@ end arbiter HsArbA
 "#;
     let sv_h = compile_to_sv(hand_rolled);
     let sv_n = compile_to_sv(hs_form);
-    assert_eq!(sv_h, sv_n, "handshake_channel array port shape must match hand-rolled ports[N] form");
+    // The `handshake_channel` form now additionally emits Tier-2 protocol
+    // SVA (the hand-rolled `ports[N]` form has no HandshakeMeta so emits
+    // nothing). Compare structural SV with the auto-SVA block elided so
+    // the port-shape equivalence claim still holds.
+    assert_eq!(strip_auto_handshake_sva(&sv_h), strip_auto_handshake_sva(&sv_n),
+        "handshake_channel array port shape must match hand-rolled ports[N] form (modulo Tier-2 SVA)");
     // Sanity: ensure we actually went through the new path by checking shape.
     assert!(sv_n.contains("input logic [NUM_REQ-1:0] request_valid"));
     assert!(sv_n.contains("output logic [NUM_REQ-1:0] request_ready"));
@@ -603,6 +654,201 @@ end arbiter HsArbB
     assert!(sv.contains("request_qos"),
         "expected request_qos payload port:\n{sv}");
 }
+
+// ── Tier-2 auto-SVA for arbiter handshake_channel ────────────────────────────
+
+/// A `valid_ready` `handshake_channel[N]` in an arbiter port list must
+/// emit the same `valid_stable` SVA the bus side emits, vectorized once
+/// per request lane via an SV `generate for (genvar i ...)` block. The
+/// block must be wrapped in `synopsys translate_off / on` so synthesis
+/// tools elide it. Mirrors `test_handshake_tier2_valid_ready_assertion`.
+#[test]
+fn test_arbiter_handshake_channel_array_emits_sva_generate() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter HsArbSvaArr
+  policy round_robin;
+  param NUM_REQ: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  handshake_channel request[NUM_REQ]: receive kind: valid_ready
+  end handshake_channel request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+end arbiter HsArbSvaArr
+"#;
+    let sv = compile_to_sv(source);
+    // Wrapper + structural shape.
+    assert!(sv.contains("// synopsys translate_off"),
+        "expected translate_off wrapper:\n{sv}");
+    assert!(sv.contains("// synopsys translate_on"),
+        "expected translate_on wrapper:\n{sv}");
+    assert!(sv.contains("// Auto-generated handshake protocol assertions"),
+        "expected Tier-2 header comment:\n{sv}");
+    assert!(sv.contains("generate for (genvar i = 0; i < NUM_REQ; i++) begin: g_auto_hs_request"),
+        "expected genvar-indexed generate block over NUM_REQ:\n{sv}");
+    assert!(sv.contains("end endgenerate"),
+        "expected generate block close:\n{sv}");
+    // Property uses lane-indexed signals + disable iff (rst) + the same
+    // `(v && !r) |=> v` predicate as the bus-side emitter.
+    assert!(sv.contains("_auto_hs_request__lane_valid_stable"),
+        "expected per-lane valid_stable label:\n{sv}");
+    assert!(sv.contains("disable iff (rst)"),
+        "expected reset-disable clause:\n{sv}");
+    assert!(sv.contains("(request_valid[i] && !request_ready[i]) |=> request_valid[i]"),
+        "expected lane-indexed valid-stable predicate:\n{sv}");
+}
+
+/// A non-array `handshake_channel` (no `[N]` shape, e.g. an arbiter's
+/// `grant` output) must emit the SVA at the top level — *not* wrapped
+/// in a `generate for` block — because there's only one channel
+/// instance. The bare-signal form is also what the bus-side path
+/// emits today.
+#[test]
+fn test_arbiter_handshake_channel_non_array_emits_sva_bare() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter HsArbSvaBare
+  policy round_robin;
+  param NUM_REQ: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[NUM_REQ] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  handshake_channel grant: send kind: valid_ready
+    requester: UInt<2>;
+  end handshake_channel grant
+end arbiter HsArbSvaBare
+"#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("_auto_hs_grant_valid_stable"),
+        "expected bare grant valid_stable label:\n{sv}");
+    // Crucially, no generate-for wrapper for the non-array channel.
+    assert!(!sv.contains("g_auto_hs_grant"),
+        "non-array handshake_channel must not be wrapped in generate-for:\n{sv}");
+    // And the predicate uses unindexed signal names.
+    assert!(sv.contains("(grant_valid && !grant_ready) |=> grant_valid"),
+        "expected unindexed grant valid-stable predicate:\n{sv}");
+}
+
+/// A `valid_only` `handshake_channel` has no ready signal to gate
+/// stability on. The bus-side Tier-2 emitter (current v1) emits nothing
+/// for `valid_only`; the arbiter path must mirror that — no
+/// `valid_stable` property, no `_auto_hs_*` label for the channel.
+#[test]
+fn test_arbiter_handshake_channel_valid_only_omits_ready_gate() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter HsArbSvaVOnly
+  policy round_robin;
+  param NUM_REQ: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[NUM_REQ] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  handshake_channel grant: send kind: valid_only
+    requester: UInt<2>;
+  end handshake_channel grant
+end arbiter HsArbSvaVOnly
+"#;
+    let sv = compile_to_sv(source);
+    // No SVA label for `grant` should appear — mirrors the bus side's
+    // v1 silent-skip for variants without a back-signal.
+    assert!(!sv.contains("_auto_hs_grant"),
+        "valid_only handshake_channel must not emit Tier-2 SVA:\n{sv}");
+    // The Tier-2 wrapper itself must be elided too when no channel
+    // produced any property (matches bus-side emit_handshake_asserts).
+    assert!(!sv.contains("Auto-generated handshake protocol assertions"),
+        "Tier-2 wrapper must not be emitted when no property applies:\n{sv}");
+}
+
+/// A `valid_ready` `handshake_channel` declared *without* any payload
+/// fields must still emit the control-signal `valid_stable` property
+/// (the protocol invariant binds on valid/ready alone). This mirrors
+/// the bus side: Tier-2 v1 emits *only* the control-signal property —
+/// it never emits per-payload `$stable` checks, regardless of whether
+/// payload fields are present. The test pins that contract: payload
+/// presence/absence doesn't change the emitted SVA shape, only the
+/// declared port set.
+#[test]
+fn test_arbiter_handshake_channel_no_payload_emits_only_valid_stability() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter HsArbSvaNoPL
+  policy round_robin;
+  param NUM_REQ: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  handshake_channel request[NUM_REQ]: receive kind: valid_ready
+  end handshake_channel request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+end arbiter HsArbSvaNoPL
+"#;
+    let sv = compile_to_sv(source);
+    // Exactly one property — valid_stable — for the channel, lane-indexed.
+    assert!(sv.contains("_auto_hs_request__lane_valid_stable"),
+        "expected valid_stable property:\n{sv}");
+    // No `$stable` payload-stability check (Tier-2 v1 scope explicitly
+    // doesn't include payload-stability, matching bus-side behaviour).
+    assert!(!sv.contains("$stable"),
+        "Tier-2 v1 must not emit payload-stability $stable checks:\n{sv}");
+}
+
+/// Regression: the bus-side handshake_channel Tier-2 SVA path is
+/// unaffected by the arbiter-side addition. The shared helper still
+/// produces the exact same label / predicate / wrapper text the
+/// dedicated bus path produced before the refactor.
+#[test]
+fn test_existing_bus_handshake_sva_unaffected() {
+    // Same source as test_handshake_tier2_valid_ready_assertion.
+    let source = "
+        bus BusLite
+          handshake aw: send kind: valid_ready
+            addr: UInt<32>;
+          end handshake aw
+        end bus BusLite
+
+        module Producer
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port bus_p: initiator BusLite;
+          comb
+            bus_p.aw_valid = 1'b0;
+            bus_p.aw_addr  = 32'h0;
+          end comb
+        end module Producer
+    ";
+    let sv = compile_to_sv(source);
+    // Same checks as the original bus-side test.
+    assert!(sv.contains("// Auto-generated handshake protocol assertions"));
+    assert!(sv.contains("_auto_hs_bus_p_aw_valid_stable"));
+    assert!(sv.contains("(bus_p_aw_valid && !bus_p_aw_ready) |=> bus_p_aw_valid"));
+    assert!(sv.contains("disable iff (rst)"));
+    assert!(sv.contains("synopsys translate_off"));
+    assert!(sv.contains("synopsys translate_on"));
+    // Bus path is non-array, so no generate-for wrapper.
+    assert!(!sv.contains("g_auto_hs_aw"),
+        "bus-path Tier-2 SVA must remain non-generate-wrapped:\n{sv}");
+}
+
+// ── (Existing) handshake_channel port-shape tests ────────────────────────────
 
 /// A `valid_only` handshake_channel as a non-array port should expand to
 /// just the valid wire + payload wires, both at the top level (no array
@@ -646,8 +892,11 @@ end arbiter HsArbC
 "#;
     let sv_h = compile_to_sv(hand_rolled);
     let sv_n = compile_to_sv(hs_form);
-    assert_eq!(sv_h, sv_n,
-        "valid_only handshake_channel + receive valid_ready array must match hand-rolled shape");
+    // Same caveat as test_arbiter_handshake_channel_port_shape: the
+    // handshake_channel form now emits Tier-2 SVA the hand-rolled form
+    // can't see (no HandshakeMeta). Strip it before structural compare.
+    assert_eq!(strip_auto_handshake_sva(&sv_h), strip_auto_handshake_sva(&sv_n),
+        "valid_only handshake_channel + receive valid_ready array must match hand-rolled shape (modulo Tier-2 SVA)");
     assert!(sv_n.contains("output logic grant_valid"),
         "expected grant_valid top-level port:\n{sv_n}");
     assert!(sv_n.contains("output logic [2-1:0] grant_requester")

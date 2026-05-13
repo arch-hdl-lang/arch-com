@@ -139,6 +139,14 @@ pub struct HandshakeMeta {
     /// for documentation in generated SV comments — directions/types are
     /// already materialized as PortDecls in BusDecl::signals.
     pub payload_names: Vec<Ident>,
+    /// When this `handshake_channel` was declared inside a *construct*
+    /// (arbiter today) port list with an explicit `[N]` array shape, the
+    /// count expression that drives the SV generate-for vectorization.
+    /// `None` for the bus-body path (which has no array shape) and for
+    /// non-array channels inside an arbiter port list. Codegen wraps SVA
+    /// in `generate for (genvar i ...) ... end endgenerate` when this is
+    /// `Some(...)` and emits the bare property otherwise.
+    pub array_count: Option<Expr>,
     pub span: Span,
 }
 
@@ -1762,6 +1770,16 @@ pub struct ArbiterDecl {
     pub policy: ArbiterPolicy,
     pub hook: Option<ArbiterHookDecl>,
     pub latency: u32,
+    /// Metadata for each `handshake_channel` declared in this arbiter's
+    /// port list. Parallels `BusDecl::handshakes`: the underlying valid /
+    /// ready / payload signals already live in `common.ports` (non-array
+    /// channels) or `port_arrays` (channels with an `[N]` shape); this
+    /// list preserves the grouping so codegen can emit Tier-2 SVA
+    /// protocol assertions, wrapped in `generate for` blocks for the
+    /// array form. Populated by `parse_arbiter`; empty for arbiters
+    /// declared with the pre-PR#343 hand-rolled `port` / `ports[N]`
+    /// shape.
+    pub handshakes: Vec<HandshakeMeta>,
 }
 impl std::ops::Deref for ArbiterDecl {
     type Target = ConstructCommon;

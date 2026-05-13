@@ -205,6 +205,15 @@ impl<'a> Codegen<'a> {
             self.emit_asserts_for_construct(&asserts, &aname, &clk);
         }
 
+        // Tier-2 protocol SVA for any `handshake_channel` declared in the
+        // arbiter's port list. Skips silently when the arbiter was
+        // declared with the pre-PR#343 hand-rolled `port` / `ports[N]`
+        // shape (which carries no HandshakeMeta), preserving today's
+        // emission byte-for-byte for those arbiters. The blank-line
+        // separator lives inside the emitter so it is also elided when
+        // every channel's variant has no Tier-2 v1 property to emit.
+        self.emit_arbiter_handshake_asserts(a);
+
         self.indent -= 1;
         self.line("");
         self.line("endmodule");

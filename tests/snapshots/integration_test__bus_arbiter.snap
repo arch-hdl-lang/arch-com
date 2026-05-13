@@ -1,5 +1,6 @@
 ---
 source: tests/integration_test.rs
+assertion_line: 473
 expression: sv
 ---
 module BusArbiter #(
@@ -36,5 +37,13 @@ module BusArbiter #(
       end
     end
   end
+  
+  // synopsys translate_off
+  // Auto-generated handshake protocol assertions (Tier 2)
+  generate for (genvar i = 0; i < NUM_REQ; i++) begin: g_auto_hs_request
+    _auto_hs_request__lane_valid_stable: assert property (@(posedge clk) disable iff (rst) (request_valid[i] && !request_ready[i]) |=> request_valid[i])
+      else $fatal(1, "HANDSHAKE VIOLATION (valid must stay asserted until ready): BusArbiter._auto_hs_request__lane_valid_stable");
+  end endgenerate
+  // synopsys translate_on
 
 endmodule
