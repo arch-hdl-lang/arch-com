@@ -40,7 +40,13 @@ pub(crate) fn emit_fsm_interface(f: &FsmDecl) -> String {
     let name = &f.name.name;
     let mut s = format!("fsm {name}\n");
     emit_params(&mut s, &f.params);
-    emit_ports(&mut s, &f.ports);
+    // Compute precise per-output comb-dep sets from the FSM body so
+    // the .archi reflects the actual dataflow shape (issue #246 Phase 4,
+    // mirror of the module path in `emit_module_interface`). The
+    // opaque "every comb input feeds every comb output" over-
+    // approximation is avoided as long as the fsm has a body.
+    let deps = crate::comb_graph::per_output_comb_deps_fsm(f);
+    emit_ports_with_deps(&mut s, &f.ports, Some(&deps));
     s.push_str(&format!("end fsm {name}\n"));
     s
 }

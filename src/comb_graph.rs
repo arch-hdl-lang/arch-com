@@ -220,6 +220,7 @@ fn port_sets(ports: &[PortDecl]) -> (HashSet<String>, HashSet<String>) {
 
 /// Compute CombInfo for an FSM declaration.
 fn comb_info_for_fsm(fsm: &FsmDecl) -> CombInfo {
+    use crate::ast::Direction;
     let (inputs, outputs) = port_sets(&fsm.ports);
     let mut driven = HashSet::new();
     let mut read   = HashSet::new();
@@ -232,6 +233,26 @@ fn comb_info_for_fsm(fsm: &FsmDecl) -> CombInfo {
         collect_expr_idents(&lb.value, &mut ids);
         for id in &ids {
             if inputs.contains(id) { read.insert(id.clone()); }
+        }
+    }
+
+    // Output port `default <expr>`: the FSM codegen emits this as the
+    // comb-block default before the state case, so an output WITH a
+    // default expression is comb-driven (even if no state assigns it),
+    // and identifier reads in the default expression are real comb
+    // deps. Issue #246 Phase 4.
+    for p in &fsm.ports {
+        if p.direction != Direction::Out { continue; }
+        if p.reg_info.is_some() { continue; }
+        if let Some(def_expr) = &p.default {
+            if outputs.contains(&p.name.name) {
+                driven.insert(p.name.name.clone());
+            }
+            let mut ids = HashSet::new();
+            collect_expr_idents(def_expr, &mut ids);
+            for id in &ids {
+                if inputs.contains(id) { read.insert(id.clone()); }
+            }
         }
     }
 
@@ -379,6 +400,153 @@ pub fn per_output_comb_deps(m: &ModuleDecl) -> HashMap<String, HashSet<String>> 
         out.insert(out_name.clone(), deps);
     }
     out
+}
+
+/// Per-output combinational dependencies for an FSM declaration.
+///
+/// Same shape and contract as [`per_output_comb_deps`] for modules, but
+/// the body walk covers FSM-shaped scopes:
+///   - `fsm.default_comb` (default block applied before the state case)
+///   - each `fsm.states[*].comb_stmts` (per-state comb assignments)
+///   - `fsm.lets` (FSM-scope `let` bindings)
+///   - each output port's `default <expr>` (the FSM codegen emits these
+///     as the comb-block default before the state case, so identifier
+///     reads in the default expression are real comb dependencies on
+///     that output).
+///
+/// Per-output union policy: any state that drives an output contributes
+/// to that output's dep set, and the port-default expression contributes
+/// too. State transitions read inputs but only affect `state_r` (a
+/// register), so they do NOT propagate into any output's comb deps.
+///
+/// Returns a map keyed by **output port name** (only — wire / let
+/// intermediates are not exposed). Used by `.archi` interface emit for
+/// FSMs (`interface::emit_fsm_interface`) and by `expand_inst` when the
+/// child symbol is a bodied `Symbol::Fsm`. Issue #246 Phase 4.
+pub fn per_output_comb_deps_fsm(fsm: &FsmDecl) -> HashMap<String, HashSet<String>> {
+    use crate::ast::Direction;
+
+    // 1. Identify input and output port names (clk/rst excluded — those
+    //    are seq-only).
+    let mut input_names: HashSet<String> = HashSet::new();
+    let mut output_names: HashSet<String> = HashSet::new();
+    for p in &fsm.ports {
+        if is_clk_or_rst(&p.ty) { continue; }
+        match p.direction {
+            Direction::In  => { input_names.insert(p.name.name.clone()); }
+            Direction::Out => {
+                if p.reg_info.is_none() {
+                    output_names.insert(p.name.name.clone());
+                }
+            }
+        }
+    }
+
+    // 2. Walk all comb-shaped sources building a direct-dep map.
+    //    LHS → set of RHS idents. Multiple assignments union (covers
+    //    per-state branches that drive the same output).
+    let mut direct: HashMap<String, HashSet<String>> = HashMap::new();
+
+    // 2a. FSM-scope let bindings.
+    for lb in &fsm.lets {
+        let mut ids = HashSet::new();
+        collect_expr_idents(&lb.value, &mut ids);
+        direct.entry(lb.name.name.clone())
+            .or_default()
+            .extend(ids);
+    }
+
+    // 2b. Output port defaults — emitted by `codegen::fsm` as the
+    //     comb-block default before the state case, so their identifier
+    //     reads ARE real comb deps for the output.
+    for p in &fsm.ports {
+        if p.direction != Direction::Out { continue; }
+        if p.reg_info.is_some() { continue; }
+        if let Some(def_expr) = &p.default {
+            let mut ids = HashSet::new();
+            collect_expr_idents(def_expr, &mut ids);
+            direct.entry(p.name.name.clone())
+                .or_default()
+                .extend(ids);
+        }
+    }
+
+    // 2c. default_comb.
+    collect_comb_deps(&fsm.default_comb, &mut direct, &mut Vec::new());
+
+    // 2d. Per-state comb_stmts. Transition conditions are excluded —
+    //     they feed `state_r` (a register), not any comb output.
+    for state in &fsm.states {
+        collect_comb_deps(&state.comb_stmts, &mut direct, &mut Vec::new());
+    }
+
+    // 3. Transitive closure from inputs to each output, restricted to
+    //    input port names. Same shape as `per_output_comb_deps`.
+    let mut out: HashMap<String, HashSet<String>> = HashMap::new();
+    for out_name in &output_names {
+        if !direct.contains_key(out_name) {
+            out.insert(out_name.clone(), HashSet::new());
+            continue;
+        }
+
+        let mut deps: HashSet<String> = HashSet::new();
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut stack: Vec<String> = vec![out_name.clone()];
+        while let Some(cur) = stack.pop() {
+            if !visited.insert(cur.clone()) { continue; }
+            if let Some(rhs_ids) = direct.get(&cur) {
+                for id in rhs_ids {
+                    if input_names.contains(id) {
+                        deps.insert(id.clone());
+                    } else if direct.contains_key(id) {
+                        stack.push(id.clone());
+                    }
+                }
+            }
+        }
+        out.insert(out_name.clone(), deps);
+    }
+    out
+}
+
+/// Per-output comb-dep map for any bodied symbol (module / fsm) by name.
+/// Returns an empty map for unknown symbols and for symbol kinds without
+/// a body-shaped comb path (counter, arbiter, ram, ...). Issue #246
+/// Phase 4: shared dispatch between Phase 3 (`Module`) and Phase 4
+/// (`Fsm`) so the analyzer's per-symbol cache can store either via one
+/// uniform key.
+pub fn per_output_comb_deps_for_symbol(
+    sym_name: &str,
+    symbols: &SymbolTable,
+    source: &SourceFile,
+) -> HashMap<String, HashSet<String>> {
+    let sym = match symbols.globals.get(sym_name) {
+        Some((s, _)) => s,
+        None => return HashMap::new(),
+    };
+    match sym {
+        Symbol::Module(_) => {
+            for item in &source.items {
+                if let Item::Module(m) = item {
+                    if m.name.name == sym_name {
+                        return per_output_comb_deps(m);
+                    }
+                }
+            }
+            HashMap::new()
+        }
+        Symbol::Fsm(_) => {
+            for item in &source.items {
+                if let Item::Fsm(f) = item {
+                    if f.name.name == sym_name {
+                        return per_output_comb_deps_fsm(f);
+                    }
+                }
+            }
+            HashMap::new()
+        }
+        _ => HashMap::new(),
+    }
 }
 
 /// Helper for `per_output_comb_deps`: walk a list of comb statements,
@@ -864,6 +1032,17 @@ impl GraphBuilder {
         &self.per_output_cache[&m.name.name]
     }
 
+    /// FSM analog of `per_output_for`. Same memoization keyed by the
+    /// FSM's name (names are globally unique across symbol kinds, so
+    /// sharing `per_output_cache` is safe). Issue #246 Phase 4.
+    fn per_output_for_fsm(&mut self, f: &FsmDecl) -> &HashMap<String, HashSet<String>> {
+        if !self.per_output_cache.contains_key(&f.name.name) {
+            let map = per_output_comb_deps_fsm(f);
+            self.per_output_cache.insert(f.name.name.clone(), map);
+        }
+        &self.per_output_cache[&f.name.name]
+    }
+
     /// Recursively build the graph for `m` at the given instance path.
     fn expand_module(
         &mut self,
@@ -937,7 +1116,11 @@ impl GraphBuilder {
             p
         };
 
-        // Look up the child module (if any) and its CombInfo.
+        // Look up the child construct (module or FSM) by name. Both
+        // shapes expose ports + an `is_interface` flag and can carry
+        // per-output comb-dep precision; treat them uniformly below
+        // via `child_ports` / `child_is_interface`. Issue #246 Phase 4
+        // adds the FSM branch alongside the Phase 3 module branch.
         let child_mod: Option<&ModuleDecl> = source.items.iter().find_map(|it| {
             if let Item::Module(cm) = it {
                 if cm.name.name == inst.module_name.name {
@@ -946,6 +1129,24 @@ impl GraphBuilder {
             }
             None
         });
+        let child_fsm: Option<&FsmDecl> = if child_mod.is_some() {
+            None
+        } else {
+            source.items.iter().find_map(|it| {
+                if let Item::Fsm(cf) = it {
+                    if cf.name.name == inst.module_name.name {
+                        return Some(cf);
+                    }
+                }
+                None
+            })
+        };
+        let child_ports: Option<&[PortDecl]> = child_mod
+            .map(|cm| cm.ports.as_slice())
+            .or_else(|| child_fsm.map(|cf| cf.ports.as_slice()));
+        let child_is_interface: Option<bool> = child_mod
+            .map(|cm| cm.is_interface)
+            .or_else(|| child_fsm.map(|cf| cf.common.is_interface));
 
         // CombInfo for the sub-instance's construct (any kind).
         let info = comb_info_for_symbol(&inst.module_name.name, symbols, source);
@@ -965,23 +1166,37 @@ impl GraphBuilder {
             }
         }
 
-        // Recurse into the child if it is a regular module.
-        // Interface-only / opaque modules are treated as fully cross-connected
-        // (any output depends on any input) — that's already the shape of
-        // `comb_info_for_module` over interface stubs (empty body → empty
-        // CombInfo), so we explicitly OVERRIDE here to the conservative
-        // every-out-depends-on-every-in interpretation when the module is
-        // an interface stub OR is missing entirely (extern).
-        let treat_as_opaque = match child_mod {
-            None => true,
-            Some(cm) => cm.is_interface,
+        // Treat the child as opaque (every-out-depends-on-every-in,
+        // modulo any port-level `comb_dep_on(...)` annotations) when
+        // either: (1) we couldn't find a declaration for it at all
+        // (extern), or (2) the declaration we found is an interface
+        // stub (no body, no per-output dep info beyond port-level
+        // annotations). For a real bodied module or fsm, we have a
+        // walker that produces precise per-output deps. Issue #246
+        // Phase 3 = bodied module, Phase 4 = bodied fsm.
+        let treat_as_opaque = match child_is_interface {
+            None => true,            // extern — no decl found
+            Some(is_iface) => is_iface,
         };
 
+        // Track whether we actually recursed into a child body. The
+        // "link inner-node ↔ parent-wire" edges below only make sense
+        // when there ARE inner nodes (a Module body has comb-block and
+        // let-binding edges that connect inner ports; an FSM body
+        // currently doesn't get expanded into inner nodes — its per-
+        // output dep map already captures every cross-boundary edge).
+        let mut recursed_into_body = false;
         if let Some(cm) = child_mod {
             if !treat_as_opaque {
                 self.expand_module(cm, child_path.clone(), symbols, source);
+                recursed_into_body = true;
             }
         }
+        // FSMs are not recursively expanded into inner nodes; their
+        // per-output dep map fully captures cross-boundary edges and
+        // they have no sub-instances. Cycle detection at the parent
+        // level still fires via the direct in_sig → out_sig edges
+        // added below. Issue #246 Phase 4.
 
         // Add cross-boundary edges from sub-inst's CombInfo to parent signals.
         //
@@ -1000,8 +1215,8 @@ impl GraphBuilder {
         // filter applies in BOTH the opaque and non-opaque branches
         // (defensive: comb_info_for_module already excludes them, but make
         // the rule explicit so future regressions don't leak in).
-        let registered_outs: HashSet<&str> = child_mod
-            .map(|cm| cm.ports.iter()
+        let registered_outs: HashSet<&str> = child_ports
+            .map(|ports| ports.iter()
                 .filter(|p| p.reg_info.is_some())
                 .map(|p| p.name.name.as_str())
                 .collect())
@@ -1036,8 +1251,11 @@ impl GraphBuilder {
         //   degrades gracefully rather than silently dropping edges.
         let per_output_deps: HashMap<String, Option<HashSet<String>>> =
             if treat_as_opaque {
-                child_mod
-                    .map(|cm| cm.ports.iter()
+                // Opaque branch (extern stub or `is_interface` declaration):
+                // precision comes from port-level `comb_dep_on(...)`
+                // annotations. Works uniformly for module + fsm shapes.
+                child_ports
+                    .map(|ports| ports.iter()
                         .filter(|p| p.direction == crate::ast::Direction::Out
                                     && p.reg_info.is_none())
                         .map(|p| {
@@ -1049,6 +1267,7 @@ impl GraphBuilder {
                         .collect())
                     .unwrap_or_default()
             } else if let Some(cm) = child_mod {
+                // Bodied module — Phase 3.
                 let map = self.per_output_for(cm);
                 let mut out: HashMap<String, Option<HashSet<String>>> =
                     HashMap::with_capacity(map.len());
@@ -1060,6 +1279,19 @@ impl GraphBuilder {
                 // virtually never trigger given `per_output_comb_deps`'s
                 // current "always emit an entry per non-registered output"
                 // contract, but cheap to encode defensively.
+                for o in &info.comb_outputs {
+                    out.entry(o.clone()).or_insert(None);
+                }
+                out
+            } else if let Some(cf) = child_fsm {
+                // Bodied FSM — Phase 4. Same Option C fallback policy
+                // as the bodied-module branch.
+                let map = self.per_output_for_fsm(cf);
+                let mut out: HashMap<String, Option<HashSet<String>>> =
+                    HashMap::with_capacity(map.len());
+                for (k, v) in map {
+                    out.insert(k.clone(), Some(v.clone()));
+                }
                 for o in &info.comb_outputs {
                     out.entry(o.clone()).or_insert(None);
                 }
@@ -1100,7 +1332,7 @@ impl GraphBuilder {
             // Also: if we DID recurse, link the deeper inst-internal output port
             // node to the parent-side wire so cycles that close via the
             // hierarchy show the full path. We add edge child.q → parent.out_sig.
-            if !treat_as_opaque {
+            if recursed_into_body {
                 let child_q = self.intern(NodeKey { path: child_path.clone(), signal: (*out_port).clone() });
                 self.add_edge(child_q, to);
             }
@@ -1132,7 +1364,7 @@ impl GraphBuilder {
 
                 // And, if we recursed, also link parent.in_sig → child.in_port
                 // so the cycle path display shows the descent.
-                if !treat_as_opaque {
+                if recursed_into_body {
                     let child_p = self.intern(NodeKey { path: child_path.clone(), signal: (*in_port).clone() });
                     self.add_edge(from, child_p);
                 }
