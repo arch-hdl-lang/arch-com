@@ -521,6 +521,140 @@ fn test_arbiter_latency2() {
     insta::assert_snapshot!(sv);
 }
 
+// ── Arbiter handshake_channel port-list desugaring ───────────────────────────
+
+/// `handshake_channel name[N]: receive kind: valid_ready` in an arbiter
+/// port list should desugar to the same `ports[N] name { valid: in Bool;
+/// ready: out Bool; }` shape that arbiters use today. The emitted SV must
+/// be byte-identical to the hand-rolled equivalent (matching
+/// examples/bus_arbiter.sv shape).
+#[test]
+fn test_arbiter_handshake_channel_port_shape() {
+    let hand_rolled = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter HsArbA
+  policy round_robin;
+  param NUM_REQ: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[NUM_REQ] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+end arbiter HsArbA
+"#;
+    let hs_form = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter HsArbA
+  policy round_robin;
+  param NUM_REQ: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  handshake_channel request[NUM_REQ]: receive kind: valid_ready
+  end handshake_channel request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+end arbiter HsArbA
+"#;
+    let sv_h = compile_to_sv(hand_rolled);
+    let sv_n = compile_to_sv(hs_form);
+    assert_eq!(sv_h, sv_n, "handshake_channel array port shape must match hand-rolled ports[N] form");
+    // Sanity: ensure we actually went through the new path by checking shape.
+    assert!(sv_n.contains("input logic [NUM_REQ-1:0] request_valid"));
+    assert!(sv_n.contains("output logic [NUM_REQ-1:0] request_ready"));
+}
+
+/// A handshake_channel with a payload field should expand its payload to
+/// a parallel array port alongside valid/ready, all of `[N]` width.
+#[test]
+fn test_arbiter_handshake_channel_with_payload() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter HsArbB
+  policy round_robin;
+  param NUM_REQ: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  handshake_channel request[NUM_REQ]: receive kind: valid_ready
+    qos: UInt<3>;
+  end handshake_channel request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+end arbiter HsArbB
+"#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("input logic [NUM_REQ-1:0] request_valid"),
+        "expected request_valid array port:\n{sv}");
+    assert!(sv.contains("output logic [NUM_REQ-1:0] request_ready"),
+        "expected request_ready array port:\n{sv}");
+    // Payload flows in the same direction as `receive` (in to the arbiter).
+    // Width comes from the field type; SV declares one wire per index slot.
+    assert!(sv.contains("request_qos"),
+        "expected request_qos payload port:\n{sv}");
+}
+
+/// A `valid_only` handshake_channel as a non-array port should expand to
+/// just the valid wire + payload wires, both at the top level (no array
+/// shape). This is the grant-output shape: `grant_valid + grant_<f>`.
+#[test]
+fn test_arbiter_handshake_channel_grant_output() {
+    let hand_rolled = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter HsArbC
+  policy round_robin;
+  param NUM_REQ: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[NUM_REQ] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+end arbiter HsArbC
+"#;
+    let hs_form = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter HsArbC
+  policy round_robin;
+  param NUM_REQ: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  handshake_channel request[NUM_REQ]: receive kind: valid_ready
+  end handshake_channel request
+  handshake_channel grant: send kind: valid_only
+    requester: UInt<2>;
+  end handshake_channel grant
+end arbiter HsArbC
+"#;
+    let sv_h = compile_to_sv(hand_rolled);
+    let sv_n = compile_to_sv(hs_form);
+    assert_eq!(sv_h, sv_n,
+        "valid_only handshake_channel + receive valid_ready array must match hand-rolled shape");
+    assert!(sv_n.contains("output logic grant_valid"),
+        "expected grant_valid top-level port:\n{sv_n}");
+    assert!(sv_n.contains("output logic [2-1:0] grant_requester")
+        || sv_n.contains("output logic [1:0] grant_requester"),
+        "expected grant_requester top-level port:\n{sv_n}");
+}
+
 // ── Template ─────────────────────────────────────────────────────────────────
 
 #[test]

@@ -700,6 +700,175 @@ impl Parser {
         Ok((out, generates, meta))
     }
 
+    /// Parse a `handshake_channel` block appearing in a *construct* port
+    /// list (currently: `arbiter`). Differs from the bus-body form only in
+    /// that the channel name may be followed by an optional `[N]` array
+    /// shape, matching the `ports[N] name ... end ports name` group syntax
+    /// that arbiters use today:
+    ///
+    /// ```text
+    ///   handshake_channel <name>[N]: <direction> kind: <variant>
+    ///     <field>: <Type>;
+    ///     ...
+    ///   end handshake_channel <name>
+    /// ```
+    ///
+    /// Returns `(flat_ports, optional_port_array)`. When `[N]` is present,
+    /// the desugared signals are bundled into a `PortArrayDecl` so the
+    /// arbiter codegen path (which expects `ports[N]` array signals to
+    /// flow through `port_arrays`) emits the same SV as today's hand-rolled
+    /// `ports[NUM_REQ] request { valid: in Bool; ready: out Bool; }` form.
+    /// When `[N]` is absent, the desugared signals are returned as flat
+    /// `PortDecl`s.
+    ///
+    /// Variants and direction rules match the bus-body path exactly. The
+    /// `generate_if` payload form is not currently accepted in this
+    /// position (a future extension could lift it once arbiter generate-if
+    /// machinery exists; today arbiter ports have no such concept).
+    ///
+    /// See doc/plan_handshake_construct.md for the variant catalog.
+    fn parse_handshake_channel_construct_port(&mut self) -> Result<(Vec<PortDecl>, Option<PortArrayDecl>), CompileError> {
+        let is_legacy = self.check(TokenKind::Handshake);
+        let opening_tok = if is_legacy { TokenKind::Handshake } else { TokenKind::HandshakeChannel };
+        let start = self.expect(opening_tok)?.span;
+        let ch_name = self.expect_ident()?;
+        // Optional `[N]` array-count.
+        let array_count: Option<Expr> = if self.check(TokenKind::LBracket) {
+            self.advance();
+            let e = self.parse_expr()?;
+            self.expect(TokenKind::RBracket)?;
+            Some(e)
+        } else {
+            None
+        };
+        self.expect(TokenKind::Colon)?;
+        let dir = if self.eat_contextual("send") {
+            Direction::Out
+        } else if self.eat_contextual("receive") {
+            Direction::In
+        } else {
+            return Err(CompileError::unexpected_token(
+                "send or receive",
+                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                self.peek_span(),
+            ));
+        };
+        self.expect(TokenKind::Kind)?;
+        self.expect(TokenKind::Colon)?;
+        let variant_ident = self.expect_ident()?;
+        let variant = variant_ident.name.as_str();
+        let known = matches!(
+            variant,
+            "valid_ready" | "valid_only" | "ready_only" | "valid_stall"
+              | "req_ack_4phase" | "req_ack_2phase"
+        );
+        if !known {
+            return Err(CompileError::unexpected_token(
+                "one of valid_ready, valid_only, ready_only, valid_stall, req_ack_4phase, req_ack_2phase",
+                &variant_ident.name,
+                variant_ident.span,
+            ));
+        }
+        // Parse payload fields until `end handshake[_channel]`. Unlike the
+        // bus form, we do NOT accept `generate_if` here — arbiter ports
+        // have no per-instance conditional shape today.
+        let mut payload: Vec<(Ident, TypeExpr, Span)> = Vec::new();
+        loop {
+            if self.check(TokenKind::End) { break; }
+            if self.check(TokenKind::GenerateIf) {
+                return Err(CompileError::general(
+                    "`generate_if` is not supported inside a handshake_channel in an arbiter port list",
+                    self.peek_span(),
+                ));
+            }
+            let f_name = self.expect_ident()?;
+            self.expect(TokenKind::Colon)?;
+            let ty = self.parse_type_expr()?;
+            self.expect(TokenKind::Semi)?;
+            let f_span_end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+            let f_span = f_name.span.merge(f_span_end);
+            payload.push((f_name, ty, f_span));
+        }
+        self.expect(TokenKind::End)?;
+        if is_legacy {
+            self.expect(TokenKind::Handshake)?;
+        } else {
+            self.expect(TokenKind::HandshakeChannel)?;
+        }
+        let closing = self.expect_ident()?;
+        if closing.name != ch_name.name {
+            return Err(CompileError::mismatched_closing(
+                &ch_name.name,
+                &closing.name,
+                closing.span,
+            ));
+        }
+        let block_span = start.merge(closing.span);
+
+        let opposite = match dir { Direction::In => Direction::Out, Direction::Out => Direction::In };
+        // When inside a port array `request[N]`, the signals carry the
+        // *relative* short names (`valid`, `ready`, `<payload>`) — the
+        // surrounding array prepends `request_` at SV emission, matching
+        // the hand-rolled `ports[N] request { valid: in Bool; ... }`
+        // shape. Outside an array, signals carry the full `<ch>_<sig>`
+        // name so they land as top-level ports identical to today's
+        // hand-rolled `port grant_valid: out Bool;` form.
+        let in_array = array_count.is_some();
+        let prefix = if in_array { String::new() } else { format!("{}_", ch_name.name) };
+
+        let mk_port = |n: String, d: Direction, ty: TypeExpr, sp: Span| PortDecl {
+            name: Ident { name: n, span: sp },
+            direction: d,
+            ty,
+            default: None,
+            reg_info: None,
+            bus_info: None,
+            shared: None, unpacked: false, unpacked_ascending: false,
+            comb_deps: None,
+            span: sp,
+        };
+
+        // Control signals (payload-direction = `dir`, back-signal = `opposite`).
+        let mut signals: Vec<PortDecl> = Vec::new();
+        match variant {
+            "valid_ready" => {
+                signals.push(mk_port(format!("{prefix}valid"), dir, TypeExpr::Bool, block_span));
+                signals.push(mk_port(format!("{prefix}ready"), opposite, TypeExpr::Bool, block_span));
+            }
+            "valid_only" => {
+                signals.push(mk_port(format!("{prefix}valid"), dir, TypeExpr::Bool, block_span));
+            }
+            "ready_only" => {
+                signals.push(mk_port(format!("{prefix}ready"), opposite, TypeExpr::Bool, block_span));
+            }
+            "valid_stall" => {
+                signals.push(mk_port(format!("{prefix}valid"), dir, TypeExpr::Bool, block_span));
+                signals.push(mk_port(format!("{prefix}stall"), opposite, TypeExpr::Bool, block_span));
+            }
+            "req_ack_4phase" | "req_ack_2phase" => {
+                signals.push(mk_port(format!("{prefix}req"), dir, TypeExpr::Bool, block_span));
+                signals.push(mk_port(format!("{prefix}ack"), opposite, TypeExpr::Bool, block_span));
+            }
+            _ => unreachable!(),
+        }
+        for (f_name, ty, f_span) in payload {
+            let port_name = format!("{}{}", prefix, f_name.name);
+            signals.push(mk_port(port_name, dir, ty, f_span));
+        }
+
+        if let Some(count_expr) = array_count {
+            let arr = PortArrayDecl {
+                count_expr,
+                name: ch_name,
+                signals,
+                span: block_span,
+            };
+            Ok((Vec::new(), Some(arr)))
+        } else {
+            Ok((signals, None))
+        }
+    }
+
     // --- Enum ---
     fn parse_enum(&mut self) -> Result<EnumDecl, CompileError> {
         let start = self.expect(TokenKind::Enum)?.span;
@@ -4744,6 +4913,17 @@ impl Parser {
             match self.peek_kind() {
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Ports) => port_arrays.push(self.parse_port_array()?),
+                Some(TokenKind::Handshake) | Some(TokenKind::HandshakeChannel) => {
+                    // `handshake_channel` desugars to either a flat group of
+                    // PortDecls (no `[N]`) or a PortArrayDecl (with `[N]`).
+                    // Reuses the same payload/variant/direction parser as the
+                    // bus-body path; see doc/plan_handshake_construct.md.
+                    let (decls, opt_array) = self.parse_handshake_channel_construct_port()?;
+                    ports.extend(decls);
+                    if let Some(arr) = opt_array {
+                        port_arrays.push(arr);
+                    }
+                }
                 Some(TokenKind::Hook) => {
                     hook = Some(self.parse_arbiter_hook()?);
                 }
@@ -4751,7 +4931,7 @@ impl Parser {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => return Err(CompileError::unexpected_token(
-                    "port, ports, hook, assert, or cover",
+                    "port, ports, handshake_channel, hook, assert, or cover",
                     &other.to_string(),
                     self.peek_span(),
                 )),
