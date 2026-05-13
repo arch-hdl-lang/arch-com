@@ -264,14 +264,21 @@ impl<'a> Codegen<'a> {
             return format!(".{}({})", pa.name.name, self.emit_expr_str(&pa.value));
         };
         let width = self.type_expr_data_width(te).unwrap_or_else(|| "0".to_string());
-        // Map T → DATA_WIDTH for fifo children.
+        // Map T → DATA_WIDTH for constructs that erase type params into a
+        // synthesized packed payload width.
         let is_fifo_type_param = self.source.items.iter().any(|it| match it {
             Item::Fifo(f) if f.name.name == child => f.params.iter().any(|p|
                 p.name.name == pa.name.name
                 && matches!(p.kind, crate::ast::ParamKind::Type(_))),
             _ => false,
         });
-        if is_fifo_type_param {
+        let is_ram_type_param = self.source.items.iter().any(|it| match it {
+            Item::Ram(r) if r.name.name == child => r.params.iter().any(|p|
+                p.name.name == pa.name.name
+                && matches!(p.kind, crate::ast::ParamKind::Type(_))),
+            _ => false,
+        });
+        if is_fifo_type_param || is_ram_type_param {
             format!(".DATA_WIDTH({width})")
         } else {
             format!(".{}({width})", pa.name.name)

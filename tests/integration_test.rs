@@ -346,6 +346,41 @@ fn test_rom_lut() {
 }
 
 #[test]
+fn test_rom_lut_type_param_ports_lower_to_data_width() {
+    let source = r#"
+domain CoreDomain
+  freq_mhz: 100
+end domain CoreDomain
+
+ram TypedRom
+  kind rom;
+  latency 1;
+  init: [0x00000000, 0x00000001, 0x00000002, 0x00000003];
+
+  param DEPTH: const = 4;
+  param T: type = UInt<32>;
+
+  port clk: in Clock<CoreDomain>;
+
+  store
+    data: Vec<T, DEPTH>;
+  end store
+
+  ports rd
+    addr: in UInt<2>;
+    en:   in Bool;
+    data: out T;
+  end ports rd
+end ram TypedRom
+"#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("parameter int DATA_WIDTH = 32"));
+    assert!(sv.contains("output logic [DATA_WIDTH-1:0] rd_data"));
+    assert!(sv.contains("logic [DATA_WIDTH-1:0] mem [0:DEPTH-1]"));
+    assert!(!sv.contains("output T rd_data"));
+}
+
+#[test]
 fn test_simple_dual_ram() {
     let source = include_str!("../examples/simple_dual_ram.arch");
     let sv = compile_to_sv(source);

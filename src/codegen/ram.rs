@@ -9,6 +9,24 @@ use super::*;
 impl<'a> Codegen<'a> {
     pub(crate) fn emit_ram(&mut self, r: &RamDecl) {
         use crate::ast::{RamKind, RamInit};
+        use std::collections::HashMap;
+
+        let type_params: HashMap<String, TypeExpr> = r.params.iter()
+            .filter_map(|p| match &p.kind {
+                crate::ast::ParamKind::Type(ty) => Some((p.name.name.clone(), ty.clone())),
+                _ => None,
+            })
+            .collect();
+
+        let resolve_type_param = |ty: TypeExpr| -> TypeExpr {
+            match ty {
+                TypeExpr::Named(ident) => type_params
+                    .get(&ident.name)
+                    .cloned()
+                    .unwrap_or(TypeExpr::Named(ident)),
+                other => other,
+            }
+        };
 
         // Resolve DATA_WIDTH. Three sources, in priority order:
         //   1. `param WIDTH: type = T` — legacy explicit element type.
@@ -18,13 +36,15 @@ impl<'a> Codegen<'a> {
         //   3. Fallback to `[7:0]` / "8" so legacy ram declarations
         //      that omit both still emit something compilable.
         let store_elem_ty: Option<TypeExpr> = r.store_vars.first().and_then(|sv| match &sv.ty {
-            TypeExpr::Vec(elem, _) => Some((**elem).clone()),
+            TypeExpr::Vec(elem, _) => Some(resolve_type_param((**elem).clone())),
             _ => None,
         });
         let data_width_ty = r.params.iter()
             .find(|p| p.name.name == "WIDTH")
             .and_then(|p| match &p.kind {
-                crate::ast::ParamKind::Type(ty) => Some(self.emit_port_type_str(ty)),
+                crate::ast::ParamKind::Type(ty) => {
+                    Some(self.emit_port_type_str(&resolve_type_param(ty.clone())))
+                }
                 _ => None,
             })
             .or_else(|| store_elem_ty.as_ref().map(|ty| self.emit_port_type_str(ty)))
@@ -34,7 +54,9 @@ impl<'a> Codegen<'a> {
         let data_width_num = r.params.iter()
             .find(|p| p.name.name == "WIDTH")
             .and_then(|p| match &p.kind {
-                crate::ast::ParamKind::Type(ty) => self.type_expr_data_width(ty),
+                crate::ast::ParamKind::Type(ty) => {
+                    self.type_expr_data_width(&resolve_type_param(ty.clone()))
+                }
                 _ => None,
             })
             .or_else(|| store_elem_ty.as_ref().and_then(|ty| self.type_expr_data_width(ty)))
@@ -109,7 +131,7 @@ impl<'a> Codegen<'a> {
         for pg in &r.port_groups {
             for s in &pg.signals {
                 let dir = match s.direction { Direction::In => "input", Direction::Out => "output" };
-                let ty_str = self.emit_ram_signal_type(&s.ty);
+                let ty_str = self.emit_ram_signal_type(&s.ty, &type_params);
                 all_ports.push(format!("{dir} {ty_str} {}_{}", pg.name.name, s.name.name));
             }
         }
@@ -195,9 +217,12 @@ impl<'a> Codegen<'a> {
 
     // ── Counter ───────────────────────────────────────────────────────────────
 
-    fn emit_ram_signal_type(&self, ty: &TypeExpr) -> String {
+    fn emit_ram_signal_type(&self, ty: &TypeExpr, type_params: &std::collections::HashMap<String, TypeExpr>) -> String {
         match ty {
             TypeExpr::Named(ident) if ident.name == "WIDTH" => {
+                "logic [DATA_WIDTH-1:0]".to_string()
+            }
+            TypeExpr::Named(ident) if type_params.contains_key(&ident.name) => {
                 "logic [DATA_WIDTH-1:0]".to_string()
             }
             other => self.emit_port_type_str(other),
