@@ -206,25 +206,12 @@ impl<'a> Codegen<'a> {
     /// purposes (the synth tool ignores it).
     ///
     /// SDC convention: a `multicycle N` reg has a setup budget of N cycles
-    /// and a hold budget of N-1 cycles. The emitted form is
-    /// `set_multicycle_path N -setup -to [get_cells {<Mod/reg_reg*>}]`
-    /// paired with `set_multicycle_path N-1 -hold -to [get_cells {...}]`
-    /// (both relative to the destination flop). Without the matched -hold
-    /// relaxation the tool would tighten the hold check to the new setup
-    /// window's last cycle and report false hold violations.
-    ///
-    /// Notes on the target syntax:
-    ///   * `[get_cells {...}]` is an SDC primitive supported by DC, Genus,
-    ///     Vivado, Quartus, and OpenSTA — universally portable.
-    ///   * The pattern `<reg>_reg*` (trailing `*`, no `[*]` bit-select) is
-    ///     used instead of the DC shortcut `<reg>_reg[*]`. OpenSTA's `-to`
-    ///     parser interprets `[*]` as a bit-index (`stoi: no conversion`
-    ///     error); the trailing-`*` glob matches both scalar (`foo_reg`) and
-    ///     bus-element (`foo_reg_0`, `foo_reg_1`, ...) flop names produced
-    ///     by every tool we tested.
-    ///   * `get_registers` is intentionally NOT used: OpenSTA 3.1.0 does
-    ///     not implement it (only DC/Genus/Vivado do). `get_cells` is the
-    ///     largest common subset across the five-tool set.
+    /// and a hold budget of N-1 cycles. The canonical Synopsys SDC idiom
+    /// is `set_multicycle_path N -setup -to {<path>}` paired with
+    /// `set_multicycle_path N-1 -hold -to {<path>}` (both relative to the
+    /// destination flop). Without the matched -hold relaxation the tool
+    /// would tighten the hold check to the new setup window's last cycle
+    /// and report false hold violations.
     pub fn emit_sdc(&self, source_filename: &str) -> Option<String> {
         if self.multicycle_regs.is_empty() {
             return None;
@@ -240,13 +227,20 @@ impl<'a> Codegen<'a> {
                 "# Module {}: multicycle reg {}\n",
                 mc.module_name, mc.reg_name
             ));
+            // `[get_cells {*<reg>_reg*}]` is the largest common subset across
+            // OpenSTA, DC, Genus, Vivado, and Quartus. Bare-path `[*]` only
+            // works on DC/Genus; `get_registers` is missing from OpenSTA. The
+            // leading `*` glob handles both flat synth (reg at top level, no
+            // module instance prefix) and hierarchical synth (the wildcard
+            // absorbs `top/.../<module>/`). The module name remains in the
+            // header comment above for human readers.
             s.push_str(&format!(
-                "set_multicycle_path {} -setup -to [get_cells {{{}/{}_reg*}}]\n",
-                mc.latency, mc.module_name, mc.reg_name
+                "set_multicycle_path {} -setup -to [get_cells {{*{}_reg*}}]\n",
+                mc.latency, mc.reg_name
             ));
             s.push_str(&format!(
-                "set_multicycle_path {} -hold -to [get_cells {{{}/{}_reg*}}]\n",
-                mc.latency.saturating_sub(1), mc.module_name, mc.reg_name
+                "set_multicycle_path {} -hold -to [get_cells {{*{}_reg*}}]\n",
+                mc.latency.saturating_sub(1), mc.reg_name
             ));
             s.push('\n');
         }
