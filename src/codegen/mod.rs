@@ -140,6 +140,25 @@ pub struct Codegen<'a> {
     /// emits the wire name instead of the per-call inline `FN(args)`
     /// form. Populated per-module by `collect_shared_calls`.
     shared_call_sites: std::collections::HashMap<usize, String>,
+    /// Multicycle reg annotations collected from the items emitted by
+    /// `generate` / `generate_items`. Populated by `collect_multicycle_regs`
+    /// (called at the start of each `generate*` invocation). Phase A only
+    /// affects SDC output — the SV `always_ff` for a multicycle reg is
+    /// byte-identical to a plain reg.
+    multicycle_regs: Vec<MulticycleReg>,
+}
+
+/// One `multicycle <N>` reg discovered during SV emission. Captures
+/// enough to emit a `set_multicycle_path` constraint in the companion
+/// `.sdc` file. `module_name` is the enclosing module/fsm name; `reg_name`
+/// is the reg identifier exactly as it appears in the emitted SV (no
+/// transformation — see codegen/module.rs:368 where reg decls emit as
+/// `r.name.name` verbatim).
+#[derive(Debug, Clone)]
+pub struct MulticycleReg {
+    pub module_name: String,
+    pub reg_name: String,
+    pub latency: u32,
 }
 
 impl<'a> Codegen<'a> {
@@ -168,6 +187,93 @@ impl<'a> Codegen<'a> {
             vec_params: std::collections::HashMap::new(),
             find_first_widths: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             shared_call_sites: std::collections::HashMap::new(),
+            multicycle_regs: Vec::new(),
+        }
+    }
+
+    /// Multicycle regs collected from the most recent `generate*` call.
+    /// Empty if no `.arch` source declared `multicycle <N>`. Callers (the
+    /// `arch build` driver, integration tests) inspect this to decide
+    /// whether to write a `.sdc` file alongside the `.sv` output.
+    pub fn multicycle_regs(&self) -> &[MulticycleReg] {
+        &self.multicycle_regs
+    }
+
+    /// Emit the SDC-constraint text matching the multicycle regs collected
+    /// during the last `generate*` call. Returns `None` when no multicycle
+    /// regs were seen — callers should skip writing the `.sdc` file in
+    /// that case. `source_filename` is recorded in the header for trace
+    /// purposes (the synth tool ignores it).
+    ///
+    /// SDC convention: a `multicycle N` reg has a setup budget of N cycles
+    /// and a hold budget of N-1 cycles. The canonical Synopsys SDC idiom
+    /// is `set_multicycle_path N -setup -to {<path>}` paired with
+    /// `set_multicycle_path N-1 -hold -to {<path>}` (both relative to the
+    /// destination flop). Without the matched -hold relaxation the tool
+    /// would tighten the hold check to the new setup window's last cycle
+    /// and report false hold violations.
+    pub fn emit_sdc(&self, source_filename: &str) -> Option<String> {
+        if self.multicycle_regs.is_empty() {
+            return None;
+        }
+        let mut s = String::new();
+        s.push_str("# Auto-generated SDC constraints from arch HDL multicycle reg annotations.\n");
+        s.push_str(&format!("# Source: {}\n", source_filename));
+        s.push_str("# Each `multicycle <N>` reg becomes one matched setup/hold pair.\n");
+        s.push_str("# Setup budget = N cycles, hold budget = N-1 cycles (Synopsys SDC idiom).\n");
+        s.push('\n');
+        for mc in &self.multicycle_regs {
+            s.push_str(&format!(
+                "# Module {}: multicycle reg {}\n",
+                mc.module_name, mc.reg_name
+            ));
+            s.push_str(&format!(
+                "set_multicycle_path {} -setup -to {{{}/{}_reg[*]}}\n",
+                mc.latency, mc.module_name, mc.reg_name
+            ));
+            s.push_str(&format!(
+                "set_multicycle_path {} -hold -to {{{}/{}_reg[*]}}\n",
+                mc.latency.saturating_sub(1), mc.module_name, mc.reg_name
+            ));
+            s.push('\n');
+        }
+        Some(s)
+    }
+
+    /// Walk the given items and record every `multicycle` reg into
+    /// `self.multicycle_regs`. Cleared at the start of each call so
+    /// repeated `generate_items` invocations on a single Codegen produce
+    /// the right set per output file.
+    fn collect_multicycle_regs(&mut self, items: &[Item]) {
+        self.multicycle_regs.clear();
+        for item in items {
+            match item {
+                Item::Module(m) => {
+                    for bi in &m.body {
+                        if let ModuleBodyItem::RegDecl(r) = bi {
+                            if let Some(n) = r.multicycle {
+                                self.multicycle_regs.push(MulticycleReg {
+                                    module_name: m.name.name.clone(),
+                                    reg_name: r.name.name.clone(),
+                                    latency: n,
+                                });
+                            }
+                        }
+                    }
+                }
+                Item::Fsm(f) => {
+                    for r in &f.regs {
+                        if let Some(n) = r.multicycle {
+                            self.multicycle_regs.push(MulticycleReg {
+                                module_name: f.common.name.name.clone(),
+                                reg_name: r.name.name.clone(),
+                                latency: n,
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
@@ -188,15 +294,20 @@ impl<'a> Codegen<'a> {
         self
     }
 
-    pub fn generate(mut self) -> String {
-        let items: &[Item] = self.source.items.as_slice();
-        self.generate_items(items)
+    pub fn generate(&mut self) -> String {
+        // `source.items` is borrowed for the whole call but `generate_items`
+        // only needs an `&[Item]` slice — clone the Vec into a local so we
+        // can pass an owned-borrow without colliding with `&mut self`. The
+        // clone cost is negligible vs the SV emit it precedes.
+        let items: Vec<Item> = self.source.items.clone();
+        self.generate_items(&items)
     }
 
     /// Generate SV for a specific subset of items (used for per-file output).
     pub fn generate_items(&mut self, items: &[Item]) -> String {
         self.out.clear();
         self.comment_idx = 0;
+        self.collect_multicycle_regs(items);
         // Pre-collect all functions so they can be emitted inside each module.
         self.pending_functions = items.iter()
             .flat_map(|i| match i {

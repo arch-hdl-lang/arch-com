@@ -356,6 +356,7 @@ fn flatten_for_formal(
                                 init: new_init,
                                 reset: new_reset,
                                 guard: rd.guard.clone(),
+                                multicycle: rd.multicycle,
                                 span: rd.span,
                             }));
                         }
