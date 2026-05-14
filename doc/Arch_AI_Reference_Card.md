@@ -1087,7 +1087,33 @@ This elaborates to a private bus wire plus ordinary whole-bus inst connections. 
 
 TLM calls are not general expressions. They are legal only in `thread` bodies as `dst <= port.method(args);` or `dst <= fork port.method(args);`; `comb`, `seq`, module-level `let`, module-local `function`, `pipeline`, and `fsm` contexts reject them.
 
-Do not put TLM calls inside runtime `for` loops. Use `generate_for` worker threads for compile-time replication.
+Literal counted `for` loops inside initiator threads may contain direct TLM assignments; the compiler unrolls them before TLM lowering:
+
+```
+thread driver on clk rising, rst high
+  for i in 0..7
+    ack <= m.read(i.zext<32>());
+  end for
+end thread driver
+```
+
+Do not put TLM calls inside non-literal/runtime `for` loops. Use `generate_for` worker threads for compile-time replication of independent workers.
+
+Shared method call sites lower to one physical method driver, not multiple SV drivers. Use `lock` plus `resource ... mutex<round_robin>;` when independent workers share a method and require round-robin request arbitration:
+
+```
+resource mem_ch: mutex<round_robin>;
+
+generate_for lane in 0..3
+  thread Worker_lane on clk rising, rst high
+    lock mem_ch
+      ack[lane] <= m.read(lane.zext<32>());
+    end lock mem_ch
+  end thread Worker_lane
+end generate_for
+```
+
+Unprotected grouped call sites are still electrically single-driver, but use the compiler's default priority selection. In one sequential thread they are normally mutually exclusive FSM states.
 
 **Concurrent initiator cohorts** — multiple direct worker calls on one method lower to an arbiter plus response router:
 
@@ -1128,9 +1154,11 @@ Bounded burst-like payloads: use a static max vector return and a runtime length
 
 `arch build` emits TLM protocol SVA in `translate_off/on`: request payload/tag must stay stable while `req_valid && !req_ready`; response payload/tag must stay stable while `rsp_valid && !rsp_ready`. Validate these with Verilator `--assert`.
 
-Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); no TLM calls inside runtime `for` loops; one call per worker/branch/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; no nested/composed TLM calls; no dynamic-length TLM return types; no `pipelined`; no first-class `burst`; no `Future<T>`/`await`.
+Generated code shape: grouped/looped initiator call sites emit one generated driver per TLM method signal. Large request-valid reductions, response-ready reductions, payload muxes, default-priority grants, and round-robin grant terms are split into intermediate wires so generated SV lines stay bounded.
 
-Full spec: `doc/ARCH_HDL_Specification.md` §18d. Design + v2 roadmap: `doc/plan_tlm_method.md`.
+Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); TLM calls in `for` loops require literal bounds and direct assignments; one call per worker/branch/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; no nested/composed TLM calls; no dynamic-length TLM return types; no `pipelined`; no first-class `burst`; no `Future<T>`/`await`.
+
+Full spec: `doc/ARCH_HDL_Specification.md` §22. Design + v2 roadmap: `doc/plan_tlm_method.md`.
 
 ### Standard bus library (zero-setup `use`)
 
@@ -1289,7 +1317,7 @@ Levels: `Always`, `Low`, `Medium`, `High`, `Full`, `Debug`
 
 | Mode | Return type | Use case |
 |------|-------------|----------|
-| `blocking` | `ret: T` directly | Caller waits for one response. Multiple workers can still be in flight via thread cohorts; responses route by issue-order FIFO. |
+| `blocking` | `ret: T` directly | Caller waits for one response. Multiple workers or literal looped call sites can still be in flight via thread cohorts; responses route by issue-order FIFO. |
 | `out_of_order tags N` | `ret: T` directly + hidden tag wires | Multiple direct workers can complete out of order; compiler assigns worker tags and routes responses by `<method>_rsp_tag`. |
 
 ```
@@ -1303,7 +1331,7 @@ let f = m.read(addr);           // no Future<T>
 await f;                        // no await
 ```
 
-`pipelined` and `burst` are not current TLM modes. Use worker threads, `generate_for` workers, direct-call `fork ... and ... join`, or RHS-fork groups for multiple outstanding requests.
+`pipelined` and `burst` are not current TLM modes. Use worker threads, `generate_for` workers, direct-call `fork ... and ... join`, RHS-fork groups, or literal looped call sites for multiple outstanding requests. Use `lock`/`resource mutex<round_robin>` when independent workers share a method and need fair request arbitration.
 
 ---
 
