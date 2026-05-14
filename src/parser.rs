@@ -1594,6 +1594,53 @@ impl Parser {
             None
         };
 
+        // Optional `multicycle <N>` — timing annotation declaring the reg has a
+        // multi-cycle setup budget. Stays a single flop; codegen emits an SDC
+        // `set_multicycle_path` constraint alongside the SV output. Position:
+        // between the type/guard and the init/reset clauses (timing is a
+        // structural qualifier about the reg, like `guard`).
+        let multicycle = if self.check(TokenKind::Multicycle) {
+            let mc_span = self.advance().span;
+            let lit_tok = self.tokens.get(self.pos).cloned().ok_or_else(|| {
+                CompileError::general(
+                    "expected positive integer after `multicycle`",
+                    mc_span,
+                )
+            })?;
+            let n_parsed: Option<u128> = match &lit_tok.kind {
+                TokenKind::DecLiteral(s) => s.replace('_', "").parse().ok(),
+                _ => None,
+            };
+            let n = match n_parsed {
+                Some(n) => {
+                    self.advance();
+                    n
+                }
+                None => {
+                    return Err(CompileError::unexpected_token(
+                        "positive integer literal after `multicycle`",
+                        &lit_tok.kind.to_string(),
+                        lit_tok.span,
+                    ));
+                }
+            };
+            if n < 1 {
+                return Err(CompileError::general(
+                    "`multicycle <N>` requires N >= 1 (got 0); the annotation is meaningless for N=0",
+                    mc_span.merge(lit_tok.span),
+                ));
+            }
+            if n > u32::MAX as u128 {
+                return Err(CompileError::general(
+                    "`multicycle <N>` value too large (must fit in u32)",
+                    mc_span.merge(lit_tok.span),
+                ));
+            }
+            Some(n as u32)
+        } else {
+            None
+        };
+
         // `init` clause is optional — provides SV declaration initializer only.
         let init = if self.check(TokenKind::Init) {
             self.advance();
@@ -1623,6 +1670,7 @@ impl Parser {
             init,
             reset,
             guard,
+            multicycle,
             span: start.merge(end_span),
         })
     }

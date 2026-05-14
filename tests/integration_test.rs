@@ -68,7 +68,7 @@ fn compile_to_sv_with_opts(source: &str, opts: &elaborate::ThreadLowerOpts) -> S
     let symbols = resolve::resolve(&ast).expect("resolve error");
     let checker = TypeChecker::new(&symbols, &ast);
     let (_warnings, overload_map) = checker.check().expect("type check error");
-    let codegen = Codegen::new(&symbols, &ast, overload_map);
+    let mut codegen = Codegen::new(&symbols, &ast, overload_map);
     codegen.generate()
 }
 
@@ -2902,7 +2902,7 @@ fn test_linklist_inst_in_module() {
     let symbols = resolve::resolve(&ast).expect("resolve error");
     let checker = TypeChecker::new(&symbols, &ast);
     let (_warnings, overload_map) = checker.check().expect("type check error");
-    let codegen = Codegen::new(&symbols, &ast, overload_map);
+    let mut codegen = Codegen::new(&symbols, &ast, overload_map);
     let sv = codegen.generate();
     insta::assert_snapshot!(sv);
 }
@@ -4011,7 +4011,7 @@ fn test_bus_wire_sv_flattens_to_individual_signals() {
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     let (_w, overload_map) = checker.check().expect("type check");
-    let cg = Codegen::new(&symbols, &ast, overload_map);
+    let mut cg = Codegen::new(&symbols, &ast, overload_map);
     let sv = cg.generate();
 
     // Bus wire must decompose into flat signals.
@@ -4113,7 +4113,7 @@ fn test_package_nested_bus_used_as_wire_and_port() {
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     let (_w, overload_map) = checker.check().expect("type check");
-    let cg = Codegen::new(&symbols, &ast, overload_map);
+    let mut cg = Codegen::new(&symbols, &ast, overload_map);
     let sv = cg.generate();
     assert!(sv.contains("logic b_cmd_valid;"),
             "bus wire should flatten to b_cmd_valid:\n{sv}");
@@ -11163,7 +11163,7 @@ end module Parent
     let checker = TypeChecker::new(&symbols, &ast);
     let (_warnings, overload_map) = checker.check()
         .expect("typecheck must not report 'output port out_o is not driven' on interface stub");
-    let codegen = Codegen::new(&symbols, &ast, overload_map);
+    let mut codegen = Codegen::new(&symbols, &ast, overload_map);
     let sv = codegen.generate();
     assert!(sv.contains("module Parent"), "parent module should be emitted");
     assert!(!sv.contains("module ChildStub"),
@@ -11233,7 +11233,7 @@ end module Parent
     let checker = TypeChecker::new(&symbols, &ast);
     let (_warnings, overload_map) = checker.check()
         .expect("typecheck must skip body checks on fsm interface stub");
-    let codegen = Codegen::new(&symbols, &ast, overload_map);
+    let mut codegen = Codegen::new(&symbols, &ast, overload_map);
     let sv = codegen.generate();
     assert!(sv.contains("module Parent"), "parent module should be emitted");
     assert!(!sv.contains("module ChildFsm"),
@@ -13388,4 +13388,251 @@ fn test_comb_loop_fsm_output_default_expr_deps_included() {
     assert!(cycle_msgs2.is_empty(),
         "out_a's default reads only in_x; w1 → in_y is NOT a dep, \
          so no cycle should fire; got: {:?}", cycle_msgs2);
+}
+
+// ─── multicycle reg annotation (Phase A) ─────────────────────────────────────
+//
+// Parse + AST + SDC emission only. Phase B will add input-feeding-tree
+// analysis for the `--check-uninit` valid-tracking codegen pass.
+//
+// Phase A invariants:
+//   - SV emission is byte-identical to a control case without the annotation
+//     (a multicycle reg is still a single flop).
+//   - An adjacent `.sdc` file (returned by `Codegen::emit_sdc`) carries one
+//     matched setup/hold pair per multicycle reg.
+//   - `multicycle 0` is a parse/typecheck error (N must be >= 1).
+//   - Modules with no multicycle regs produce `None` SDC (no file written).
+
+/// Compile `.arch` source → (SV string, optional SDC string). Same pipeline
+/// as `compile_to_sv`, exposed because `emit_sdc` is the only way to observe
+/// the multicycle reg's effect from a test.
+fn compile_to_sv_with_sdc(source: &str) -> (String, Option<String>) {
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let ast = elaborate::lower_tlm_target_threads(ast).expect("tlm_target lowering error");
+    let ast = elaborate::lower_tlm_initiator_calls(ast).expect("tlm_initiator lowering error");
+    let ast = elaborate::lower_threads_with_opts(ast, &elaborate::ThreadLowerOpts::default())
+        .expect("lower_threads error");
+    let ast = elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg_ports error");
+    let ast = elaborate::lower_credit_channel_dispatch(ast).expect("credit_channel dispatch error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let (_warnings, overload_map) = checker.check().expect("type check error");
+    let mut codegen = Codegen::new(&symbols, &ast, overload_map);
+    let sv = codegen.generate();
+    let sdc = codegen.emit_sdc("test_source.arch");
+    (sv, sdc)
+}
+
+#[test]
+fn test_multicycle_reg_parses_and_emits_sv_unchanged() {
+    // Control: same module, no annotation. Used to byte-compare the SV
+    // body — adding `multicycle 3` must not change any emitted flop logic.
+    let control = r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port y: out UInt<32>;
+  reg x: UInt<32> reset rst => 0;
+  seq on clk rising
+    if en
+      x <= (x + 1).trunc<32>();
+    end if
+  end seq
+  comb
+    y = x;
+  end comb
+end module M
+"#;
+    let mc = r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port y: out UInt<32>;
+  reg x: UInt<32> multicycle 3 reset rst => 0;
+  seq on clk rising
+    if en
+      x <= (x + 1).trunc<32>();
+    end if
+  end seq
+  comb
+    y = x;
+  end comb
+end module M
+"#;
+    let (sv_ctrl, sdc_ctrl) = compile_to_sv_with_sdc(control);
+    let (sv_mc, sdc_mc) = compile_to_sv_with_sdc(mc);
+    assert_eq!(sv_ctrl, sv_mc,
+        "multicycle annotation must not alter SV emission");
+    assert!(sdc_ctrl.is_none(), "control case: no .sdc expected");
+    assert!(sdc_mc.is_some(),  "multicycle case: .sdc expected");
+}
+
+#[test]
+fn test_multicycle_reg_emits_sdc_file() {
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port y: out UInt<32>;
+  reg result: UInt<32> multicycle 3 reset rst => 0;
+  seq on clk rising
+    if en
+      result <= (result + 1).trunc<32>();
+    end if
+  end seq
+  comb
+    y = result;
+  end comb
+end module M
+"#;
+    let (_sv, sdc) = compile_to_sv_with_sdc(source);
+    let sdc = sdc.expect(".sdc expected when multicycle reg is present");
+    assert!(sdc.contains("set_multicycle_path 3 -setup -to {M/result_reg[*]}"),
+        "expected setup constraint with N=3; got:\n{}", sdc);
+    assert!(sdc.contains("set_multicycle_path 2 -hold -to {M/result_reg[*]}"),
+        "expected hold constraint with N-1=2; got:\n{}", sdc);
+    assert!(sdc.contains("Module M: multicycle reg result"),
+        "expected per-reg header comment; got:\n{}", sdc);
+}
+
+#[test]
+fn test_multicycle_reg_zero_rejected_at_parse_or_typecheck() {
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port y: out UInt<32>;
+  reg result: UInt<32> multicycle 0 reset rst => 0;
+  comb
+    y = result;
+  end comb
+end module M
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let err = parser.parse_source_file().err();
+    // Parser rejects at the literal — verify the error text mentions the
+    // N >= 1 requirement so the diagnostic is actionable.
+    let msg = format!("{:?}", err);
+    assert!(
+        msg.contains("multicycle") && (msg.contains(">= 1") || msg.contains("N=0") || msg.contains("meaningless")),
+        "expected an N >= 1 diagnostic mentioning `multicycle`; got: {}",
+        msg
+    );
+}
+
+#[test]
+fn test_multicycle_reg_with_no_consumers_still_emits_sdc() {
+    // Unused multicycle reg — common during incremental development. The
+    // SDC constraint is structural (it pins the path through the flop) and
+    // must be emitted even when nothing reads the reg.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port y: out UInt<32>;
+  reg _unused: UInt<32> multicycle 4 reset rst => 0;
+  comb
+    y = 0;
+  end comb
+end module M
+"#;
+    let (_sv, sdc) = compile_to_sv_with_sdc(source);
+    let sdc = sdc.expect("unused multicycle reg still emits SDC");
+    assert!(sdc.contains("set_multicycle_path 4 -setup -to {M/_unused_reg[*]}"),
+        "got:\n{}", sdc);
+    assert!(sdc.contains("set_multicycle_path 3 -hold -to {M/_unused_reg[*]}"),
+        "got:\n{}", sdc);
+}
+
+#[test]
+fn test_module_without_multicycle_reg_does_not_write_sdc() {
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port y: out UInt<32>;
+  reg x: UInt<32> reset rst => 0;
+  seq on clk rising
+    x <= (x + 1).trunc<32>();
+  end seq
+  comb
+    y = x;
+  end comb
+end module M
+"#;
+    let (sv, sdc) = compile_to_sv_with_sdc(source);
+    assert!(sv.contains("module M"));
+    assert!(sdc.is_none(),
+        "no multicycle annotation → `emit_sdc` must return None so the driver \
+         skips writing a `.sdc` companion file");
+}
+
+#[test]
+fn test_multicycle_reg_in_fsm_body() {
+    // `fsm` bodies declare regs in `regs: Vec<RegDecl>`; the multicycle
+    // annotation must propagate there too. Test name picks `result` to
+    // make the SDC target path human-checkable.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+fsm F
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port y: out UInt<32> default 0;
+  reg result: UInt<32> reset rst => 0;
+  reg slow_r: UInt<32> multicycle 5 reset rst => 0;
+  state [Idle, Run]
+  default state Idle;
+  state Idle
+    comb
+      y = 0;
+    end comb
+    seq on clk rising
+      if en
+        slow_r <= (result + 1).trunc<32>();
+      end if
+    end seq
+    -> Run when en;
+  end state Idle
+  state Run
+    comb
+      y = slow_r;
+    end comb
+    -> Idle when true;
+  end state Run
+end fsm F
+"#;
+    let (_sv, sdc) = compile_to_sv_with_sdc(source);
+    let sdc = sdc.expect(".sdc expected for multicycle reg inside fsm");
+    assert!(sdc.contains("set_multicycle_path 5 -setup -to {F/slow_r_reg[*]}"),
+        "got:\n{}", sdc);
+    assert!(sdc.contains("set_multicycle_path 4 -hold -to {F/slow_r_reg[*]}"),
+        "got:\n{}", sdc);
 }

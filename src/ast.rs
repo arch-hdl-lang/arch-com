@@ -509,6 +509,12 @@ pub struct RegDecl {
     /// Optional valid-signal guard — documents that this reg is intentionally
     /// uninitialized as long as the guard signal is low.
     pub guard: Option<Ident>,
+    /// Optional `multicycle <N>` annotation. When `Some(N)` (N >= 1) the reg
+    /// is still emitted as a single flop in SV, but an SDC
+    /// `set_multicycle_path` constraint is emitted alongside the SV output.
+    /// Phase A (this lands): parse + AST + SDC emit. Phase B will add
+    /// `--check-uninit` valid tracking via input-feeding-tree analysis.
+    pub multicycle: Option<u32>,
     pub span: Span,
 }
 

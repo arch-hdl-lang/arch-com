@@ -2149,6 +2149,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                 make_zero_expr(sp),
             ),
             guard: None,
+            multicycle: None,
             span: sp,
         }));
 
@@ -2495,7 +2496,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                 name: Ident::new(format!("_t{}_cnt", ti), sp),
                 ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(32)), sp))),
                 init: Some(make_zero_expr(sp)),
-                reset: RegReset::None, guard: None, span: sp,
+                reset: RegReset::None, guard: None, multicycle: None, span: sp,
             }));
         }
         let has_for = thread_has_for(&t.body);
@@ -2505,7 +2506,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                 name: Ident::new(format!("_t{}_loop_cnt", ti), sp),
                 ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(for_cnt_width as u64)), sp))),
                 init: Some(make_zero_expr(sp)),
-                reset: RegReset::None, guard: None, span: sp,
+                reset: RegReset::None, guard: None, multicycle: None, span: sp,
             }));
         }
     }
@@ -4785,6 +4786,7 @@ fn lower_pipe_reg_module(mut m: ModuleDecl) -> Result<ModuleDecl, Vec<CompileErr
                 init: pp.init.clone(),
                 reset: pp.reset.clone(),
                 guard: None,
+                multicycle: None,
                 span: pp.span,
             }));
         }
@@ -5868,6 +5870,7 @@ fn lower_tlm_initiator_cohort(
             init: None,
             reset: RegReset::Inherit(rst.clone(), zero()),
             guard: None,
+            multicycle: None,
             span,
         }));
     }
@@ -5877,6 +5880,7 @@ fn lower_tlm_initiator_cohort(
         init: None,
         reset: RegReset::Inherit(rst.clone(), zero()),
         guard: None,
+        multicycle: None,
         span,
     }));
     for ptr in [&head_name, &tail_name] {
@@ -5886,6 +5890,7 @@ fn lower_tlm_initiator_cohort(
             init: None,
             reset: RegReset::Inherit(rst.clone(), zero()),
             guard: None,
+            multicycle: None,
             span,
         }));
     }
@@ -5895,6 +5900,7 @@ fn lower_tlm_initiator_cohort(
         init: None,
         reset: RegReset::Inherit(rst.clone(), zero()),
         guard: None,
+        multicycle: None,
         span,
     }));
 
@@ -6369,6 +6375,7 @@ fn inline_lower_tlm_fork_join_all(
             init: None,
             reset: RegReset::Inherit(t.reset.clone(), zero()),
             guard: None,
+            multicycle: None,
             span,
         }));
     }
@@ -6385,6 +6392,7 @@ fn inline_lower_tlm_fork_join_all(
             init: None,
             reset: RegReset::Inherit(t.reset.clone(), zero()),
             guard: None,
+            multicycle: None,
             span,
         }));
     }
@@ -6724,6 +6732,7 @@ fn inline_lower_tlm_initiator(
         init: None,
         reset: RegReset::Inherit(t.reset.clone(), Expr::new(ExprKind::Literal(LitKind::Dec(0)), span)),
         guard: None,
+        multicycle: None,
         span,
     };
 
@@ -7302,6 +7311,7 @@ fn inline_lower_tlm_target_with_io(
             init: None,
             reset: RegReset::Inherit(t.reset.clone(), Expr::new(ExprKind::Literal(LitKind::Dec(0)), span)),
             guard: None,
+            multicycle: None,
             span,
         });
         latch_name
@@ -7314,6 +7324,7 @@ fn inline_lower_tlm_target_with_io(
             init: None,
             reset: RegReset::Inherit(t.reset.clone(), Expr::new(ExprKind::Literal(LitKind::Dec(0)), span)),
             guard: None,
+            multicycle: None,
             span,
         });
         arg_renames.push((user_arg.name.clone(), latch_name));
@@ -7400,6 +7411,7 @@ fn inline_lower_tlm_target_with_io(
         init: None,
         reset: RegReset::Inherit(t.reset.clone(), Expr::new(ExprKind::Literal(LitKind::Dec(0)), span)),
         guard: None,
+        multicycle: None,
         span,
     };
 

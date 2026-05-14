@@ -526,6 +526,17 @@ impl<'a> TypeChecker<'a> {
                     self.check_snake_case(&r.name);
                     let ty = self.resolve_type_expr(&r.ty, &m.name.name, &local_types);
                     local_types.insert(r.name.name.clone(), ty);
+                    // Defensive: parser rejects `multicycle 0`, but if the AST
+                    // is ever constructed programmatically (elaboration, tests)
+                    // surface the constraint here too. Phase A landing point;
+                    // Phase B will add input-feeding-tree analysis for the
+                    // `--check-uninit` valid-tracking codegen pass.
+                    if let Some(0) = r.multicycle {
+                        self.errors.push(CompileError::general(
+                            "`multicycle <N>` requires N >= 1",
+                            r.span,
+                        ));
+                    }
                 }
                 ModuleBodyItem::RegBlock(rb) => {
                     // Check stmts

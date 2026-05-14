@@ -500,7 +500,7 @@ fn main() -> miette::Result<()> {
 
             if files.len() == 1 || o.is_some() {
                 // Single file or explicit -o: emit one combined SV file
-                let sv = if no_inline_deps {
+                let (sv, sdc) = if no_inline_deps {
                     // Only items from the original input files
                     let file_items: Vec<_> = ast.items.iter()
                         .filter(|item| {
@@ -513,14 +513,27 @@ fn main() -> miette::Result<()> {
                         .cloned()
                         .collect();
                     let mut codegen = Codegen::new(&symbols, &ast, overload_map).with_comments(comments);
-                    codegen.generate_items(&file_items)
+                    let sv = codegen.generate_items(&file_items);
+                    let out_path_hint = o.clone().unwrap_or_else(|| files[0].with_extension("sv"));
+                    let sdc = codegen.emit_sdc(&out_path_hint.to_string_lossy());
+                    (sv, sdc)
                 } else {
-                    let codegen = Codegen::new(&symbols, &ast, overload_map).with_comments(comments);
-                    codegen.generate()
+                    let mut codegen = Codegen::new(&symbols, &ast, overload_map).with_comments(comments);
+                    let sv = codegen.generate();
+                    let out_path_hint = o.clone().unwrap_or_else(|| files[0].with_extension("sv"));
+                    let sdc = codegen.emit_sdc(&out_path_hint.to_string_lossy());
+                    (sv, sdc)
                 };
                 let out_path = o.unwrap_or_else(|| files[0].with_extension("sv"));
                 fs::write(&out_path, &sv).into_diagnostic()?;
                 eprintln!("Wrote {}", out_path.display());
+                // Companion .sdc file: only written if any module contained
+                // a `multicycle <N>` reg. No-op for legacy `.arch` sources.
+                if let Some(sdc_text) = sdc {
+                    let sdc_path = out_path.with_extension("sdc");
+                    fs::write(&sdc_path, &sdc_text).into_diagnostic()?;
+                    eprintln!("Wrote {}", sdc_path.display());
+                }
             } else {
                 // Multi-file: emit one .sv per .arch input file
                 for (seg_start, seg_end, filename, _) in &ms.segments {
@@ -553,6 +566,13 @@ fn main() -> miette::Result<()> {
                     let out_path = std::path::Path::new(filename).with_extension("sv");
                     fs::write(&out_path, &sv).into_diagnostic()?;
                     eprintln!("Wrote {}", out_path.display());
+                    // Companion .sdc per-file: only if this file's items
+                    // declared `multicycle <N>` regs.
+                    if let Some(sdc_text) = codegen.emit_sdc(&out_path.to_string_lossy()) {
+                        let sdc_path = out_path.with_extension("sdc");
+                        fs::write(&sdc_path, &sdc_text).into_diagnostic()?;
+                        eprintln!("Wrote {}", sdc_path.display());
+                    }
                 }
             }
 
