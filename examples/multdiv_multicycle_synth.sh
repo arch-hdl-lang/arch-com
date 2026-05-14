@@ -62,12 +62,23 @@ else
   echo "WARN: Liberty $LIB not found; running generic-cell synth (cell counts only, no ns timing)."
 fi
 
-# Synth one design. $1 = top, $2 = .sv file, $3 = stat-output file.
+# Synth one design. $1 = top, $2 = .sv file, $3 = stat-output file,
+# $4 = optional `rename` to apply the wire->reg cell-rename TCL helper
+# (so arch-com's emitted SDC `Module/<wire>_reg*` glob resolves
+# against the post-synth netlist).
 synth_one() {
   local top=$1
   local src=$2
   local stat_out=$3
+  local rename=${4:-}
   echo "=== Synthesizing $top from $src ==="
+  local rename_step=""
+  if [[ "$rename" == "rename" ]]; then
+    # splitnets converts bus-indexed Q nets (`mul_result[3]`) into
+    # per-bit wires so the TCL pass can give each DFF cell a name
+    # derived from its full Q net.
+    rename_step="splitnets; tcl $SCRIPT_DIR/multdiv_multicycle_yosys_rename.tcl;"
+  fi
   if [[ "$LIBERTY_AVAILABLE" == "1" ]]; then
     yosys -p "
       read_verilog $src
@@ -79,6 +90,7 @@ synth_one() {
       dfflibmap -liberty $LIB
       abc -liberty $LIB
       clean
+      $rename_step
       stat -liberty $LIB
       ltp -noff
       write_verilog $OUT_DIR/${top}_synth.v
@@ -99,7 +111,7 @@ synth_one() {
 }
 
 synth_one MultdivMulticycle "$OUT_DIR/multdiv_multicycle.v" \
-  "$OUT_DIR/multdiv_multicycle.stat.log"
+  "$OUT_DIR/multdiv_multicycle.stat.log" rename
 synth_one ibex_multdiv_fast "$OUT_DIR/ibex_multdiv_fast_fixed.v" \
   "$OUT_DIR/ibex_multdiv_fast.stat.log"
 

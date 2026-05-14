@@ -105,11 +105,19 @@ proc; opt; fsm; opt; memory; opt; techmap; opt
 dfflibmap -liberty <sky130_lib>
 abc -liberty <sky130_lib>
 clean
+# Only for MultdivMulticycle: rename DFF cells to <wire>_reg_<bit>
+# so arch-com's SDC `<reg>_reg*` glob resolves. See the STA section
+# for why this is needed.
+splitnets
+tcl examples/multdiv_multicycle_yosys_rename.tcl
+# ----
 stat -liberty <sky130_lib>
 ltp -noff
+write_verilog <design>_synth.v
 ```
 
-Both designs run through the same flow.
+Both designs run through the same flow (FSM design skips the
+`splitnets` + `tcl <rename>` step — it has no arch-com SDC to satisfy).
 
 ## Results
 
@@ -161,8 +169,8 @@ find the smallest target clock period that still produces WNS = 0.
 | Design                                  | Critical path (ns) | Fmax (MHz) | Critical-path endpoint                              |
 |-----------------------------------------|--------------------|------------|-----------------------------------------------------|
 | `ibex_multdiv_fast` (FSM)               | 11.372             |    ~87     | `op_b_i[1]` → `imd_val_d_o[32]` (combinational out) |
-| `MultdivMulticycle`, multicycle honored | 1.447 (control)    |   ~264     | `start` → `op_is_mul` flop                          |
-| `MultdivMulticycle`, NO multicycle      | 136.235            |     ~7.3   | `operand_b[17]` → `div_result[0]` flop              |
+| `MultdivMulticycle`, multicycle honored | 1.447 (control)    |   ~264     | `start` → `op_is_mul_reg` flop                      |
+| `MultdivMulticycle`, NO multicycle      | 136.235            |     ~7.3   | `operand_b[17]` → `div_result_reg_0` flop           |
 
 (Bracket period sweeps: FSM passes at 11.5 ns and fails at 11.4 ns;
 multicycle-honored passes at 3.79 ns and fails at 3.78 ns;
@@ -199,44 +207,78 @@ respected, multicycle gives ~3x the FSM's Fmax in this example
 (264 vs 87 MHz). With the SDC dropped, the FSM wins by an order of
 magnitude.
 
-### arch-com SDC parser issue (filed)
+### arch-com SDC + post-synth flop naming
 
-While running this experiment, OpenSTA 3.1.0 **rejected** the literal
-SDC arch-com emits. The line
+Three integration issues were encountered going from arch-com's
+emitted SDC to a working OpenSTA flow. Two are now resolved; one
+remains as an open arch-com SDC-emission issue.
 
-```sdc
-set_multicycle_path 3 -setup -to {MultdivMulticycle/mul_result_reg[*]}
-```
+**Issue 1 (resolved upstream, arch-com PR #347)**: OpenSTA 3.1.0
+rejects the original `-to {Mod/reg_reg[*]}` form with
+`Error: stoi: no conversion` — OpenSTA's `-to` parser does not accept
+the DC-style brace-pattern object form and requires
+`-to [get_cells {...}]`. PR #347 switched arch-com's SDC emission to
+`set_multicycle_path 3 -setup -to [get_cells {Mod/reg_reg*}]`. That
+form parses cleanly across DC / Genus / Vivado / Quartus / OpenSTA.
+This PR's branch carries the PR #347 merge.
 
-fails OpenSTA with `Error: stoi: no conversion`. The brace-pattern
-shorthand for the `-to` object form is not part of the OpenSTA `-to`
-grammar; OpenSTA expects `-to [get_pins ...]` or `-to [get_cells ...]`.
-A SECOND issue is that yosys's flop-instance renaming (`_NNNN_`
-anonymized) means even a corrected SDC syntax referencing
-`mul_result_reg[*]` would not resolve against the post-synth netlist.
+**Issue 2 (resolved in this PR's synth flow)**: even with the
+correct syntax, Yosys 0.64's `dfflibmap` produces flop-cell
+instances with anonymous `_NNNN_` names (technically internal
+`$auto$ff.cc:...` names that `write_verilog` renumbers). The
+arch-com SDC glob `<reg>_reg*` then matches nothing in the
+post-synth netlist. The fix is in
+`examples/multdiv_multicycle_yosys_rename.tcl` — a small TCL pass
+that runs after `dfflibmap` + `abc` + `clean` + `splitnets`, parses
+the textual dump of all flop cells, and renames each cell to
+`<wire>_reg_<bit>` (or `<wire>_reg` for scalars), where `<wire>` is
+the Q-net name. The arch-com SDC's `<reg>_reg*` glob then resolves
+cleanly. Why a TCL pass instead of `rename -wire`: Yosys 0.64's
+`rename -wire` is a no-op for cells driving public bus-indexed nets
+(`\mul_result[3]`); we tried it and it silently did nothing.
 
-The numbers in row 2 of the STA table above come from a manual
-translation of arch-com's SDC: a small TCL helper in
-`examples/multdiv_multicycle_sta.tcl` walks all DFF D-pins, looks at
-the cell's Q-net, and collects D-pins whose Q drives a net matching
-the original signal name. It then issues
-`set_multicycle_path 3 -setup -to <pin_list>` against that list. This
-demonstrates the *value* of multicycle when honored, but it does
-**not** validate arch-com's emitted SDC on OpenSTA — that SDC is
-currently not consumable by OpenSTA 3.1.0 as-emitted.
+Synthesis area is unchanged by the rename pass (still 39,207.6 µm²)
+— it's purely post-synth name preservation.
 
-Tracking item: file arch-com issue for SDC format compatibility with
-OpenSTA's `-to` grammar (likely needs to switch to
-`-to [get_pins ...]` form, or emit an alternative SDC variant for
-open-source flows).
+**Issue 3 (still open)**: arch-com's SDC emits cell names with the
+module-name prefix: `[get_cells {MultdivMulticycle/mul_result_reg*}]`.
+That form is correct for HIERARCHICAL synthesis (where MultdivMulticycle
+is instantiated as a submodule of a larger design). For STANDALONE /
+flat synthesis — the common open-source flow — the top-level cells
+appear at the root of the netlist with no `MultdivMulticycle/`
+prefix. OpenSTA's glob matching does not implicitly strip the
+top-module name, so the glob resolves to nothing and the
+multicycle constraints fail silently (only emit `Warning 349:
+instance 'MultdivMulticycle/mul_result_reg*' not found`).
+
+Workaround in `examples/multdiv_multicycle_sta.tcl`: read arch-com's
+emitted SDC, strip the `MultdivMulticycle/` prefix via regsub, then
+source the rewritten SDC. The `mul_with_mc` numbers in the table
+above come from this flow.
+
+Three possible upstream fixes (file as arch-com follow-up):
+
+1. Drop the module prefix entirely: emit `<reg>_reg*`. Works for
+   flat synth, ambiguous for hierarchical (could collide with same
+   reg name in a different module).
+2. Emit a wildcard prefix: `*<reg>_reg*`. Works in both flat and
+   hierarchical; slightly broader-matching than necessary.
+3. Emit two variants in the SDC, separated by `if {[get_cells …] !=
+   {}}` guards. Most correct but most verbose.
+
+Recommendation: option 2 (`*` prefix) is the least invasive and
+widest-compatible.
 
 ## Caveats
 
 These numbers come with limits worth flagging:
 
-- **arch-com SDC not directly consumable by OpenSTA**. The values in
-  the "multicycle honored" row come from a manual TCL translation of
-  the SDC; see the section above.
+- **arch-com SDC needs a `MultdivMulticycle/`-prefix strip for
+  standalone synth**. The `mul_with_mc` STA flow rewrites the SDC
+  in-place before sourcing; see Issue 3 above. The multicycle paths
+  ARE applied correctly after this rewrite (verified: `op_is_mul_reg`
+  endpoint replaces the formerly-anonymous `_11925_`, and the
+  3.79 ns / 264 MHz Fmax is reproduced).
 
 - **FSM is more featureful**. ibex_multdiv_fast handles MULH, signed
   mode, REM, and divide-by-zero. The multicycle design covers only

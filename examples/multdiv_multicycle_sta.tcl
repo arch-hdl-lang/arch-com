@@ -7,8 +7,9 @@
 # Runs ONE design at a time, picked via the env var DESIGN:
 #   DESIGN=mul_nosdc      — multicycle netlist, no SDC (worst case)
 #   DESIGN=mul_with_mc    — multicycle netlist, multicycle paths
-#                            applied via manual get_pins fallback
-#                            (see note below on arch-com SDC parse fail)
+#                            applied (sources arch-com's emitted .sdc,
+#                            with a small flat-prefix translation; see
+#                            note below)
 #   DESIGN=fsm            — ibex_multdiv_fast FSM netlist, no SDC
 #
 # CLOCK_NS picks the target clock period.
@@ -50,45 +51,34 @@ create_clock -name clk -period $clk_ns $clk_port
 set_input_delay  -clock clk 0.1 [all_inputs]
 set_output_delay -clock clk 0.1 [all_outputs]
 
-# For mul_with_mc: arch-com's .sdc emits
-#     set_multicycle_path 3 -setup -to {MultdivMulticycle/mul_result_reg[*]}
-# which OpenSTA 3.1.0 rejects with "stoi: no conversion" — its parser
-# does not accept the brace-pattern object form for -to/-from, and
-# requires `-to [get_pins/get_cells ...]`. Additionally, yosys renames
-# flop instances to anonymous `_NNNN_`, so a pattern matching the
-# original `mul_result_reg[*]` name would not resolve either. The
-# helper below walks all flop D-pins, looks at the cell's Q-net, and
-# collects D-pins whose Q drives a net matching the original signal
-# name. This is the manual translation of the arch-com SDC onto the
-# post-synth netlist.
-proc collect_flop_d_pins {net_pattern} {
-    set d_pins {}
-    foreach pin [get_pins -hier *] {
-        set pname [get_full_name $pin]
-        if {![string match "*/D" $pname]} continue
-        set cell_name [string range $pname 0 [expr {[string last / $pname]-1}]]
-        set q_net [get_net -of_objects [get_pins ${cell_name}/Q]]
-        if {$q_net eq ""} continue
-        if {[string match $net_pattern [get_full_name $q_net]]} {
-            lappend d_pins $pin
-        }
-    }
-    return $d_pins
-}
-
+# arch-com's emitted SDC uses cell names with the module-name prefix:
+#     set_multicycle_path 3 -setup -to [get_cells {MultdivMulticycle/mul_result_reg*}]
+# That form is correct for HIERARCHICAL synth (where MultdivMulticycle
+# is instantiated under a wrapper). For our STANDALONE / flat synth,
+# the top-level cells have no `MultdivMulticycle/` prefix — they
+# appear at the root of the netlist. OpenSTA's `get_cells` glob does
+# not implicitly strip the top-module name, so `Mod/<reg>*` matches
+# nothing and the multicycle constraints fail silently.
+#
+# Workaround for the comparison: read arch-com's SDC, but rewrite the
+# `MultdivMulticycle/` prefix to a flat pattern before sourcing.
+# Documented as the second open arch-com SDC compat issue (the first
+# was the `[*]`→`get_cells` syntax, fixed in PR #347).
 if {$design eq "mul_with_mc"} {
-    set mul_dpins [collect_flop_d_pins {mul_result\[*\]}]
-    set div_dpins [collect_flop_d_pins {div_result\[*\]}]
-    puts "mul_result D-pins: [llength $mul_dpins]"
-    puts "div_result D-pins: [llength $div_dpins]"
-    if {[llength $mul_dpins] > 0} {
-        set_multicycle_path 3 -setup -to $mul_dpins
-        set_multicycle_path 2 -hold  -to $mul_dpins
+    set sdc_path "$out_dir/multdiv_multicycle.sdc"
+    if {![file exists $sdc_path]} {
+        error "arch-com SDC not at $sdc_path; run multdiv_multicycle_synth.sh first"
     }
-    if {[llength $div_dpins] > 0} {
-        set_multicycle_path 36 -setup -to $div_dpins
-        set_multicycle_path 35 -hold  -to $div_dpins
-    }
+    set fp [open $sdc_path]
+    set sdc [read $fp]
+    close $fp
+    # Strip "MultdivMulticycle/" hierarchical prefix from get_cells globs.
+    set sdc_flat [regsub -all {MultdivMulticycle/} $sdc {}]
+    set tmpfp [open "$out_dir/multdiv_multicycle.sdc.flat" w]
+    puts $tmpfp $sdc_flat
+    close $tmpfp
+    puts "=== Sourcing arch-com SDC (flat-prefix translated) ==="
+    source "$out_dir/multdiv_multicycle.sdc.flat"
 }
 
 puts "=== DESIGN=$design  CLOCK_NS=$clk_ns ==="
