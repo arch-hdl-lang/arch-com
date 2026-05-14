@@ -1,0 +1,96 @@
+//! ---
+//! tags: [multicycle, multdiv, sdc, alu, retime]
+//! refs:
+//!   - "RISC-V Unprivileged ISA Specification, Volume I — RV32M extension"
+//!   - "arch-com PR #345 — multicycle reg annotation (Phase A)"
+//! ---
+//!
+//! Minimal 32x32 multiplier / 32-by-32 unsigned divider that uses the
+//! `multicycle N` reg annotation (Phase A) to declare that the heavy
+//! arithmetic result regs are allowed N clock periods of combinational
+//! settling time. The companion `.sdc` emitted alongside the SV carries
+//! `set_multicycle_path` for downstream synth tools.
+//!
+//! Counterpoint design: `ibex_multdiv_fast` (upstream Ibex) uses an
+//! explicit thread + shared-adder FSM to schedule the partial products
+//! and restoring-divide steps across cycles. This example shows the
+//! "single flat expression, let synth retime" alternative for the same
+//! arithmetic.
+//!
+//! INTENTIONAL SCOPE LIMITS (vs. ibex_multdiv_fast):
+//!   - Unsigned only — no sign extension, no MULHSU.
+//!   - MUL low-32 only — no MULH (high-32 of 64-bit product).
+//!   - Quotient only — no remainder, no divide-by-zero handling.
+//! These omissions keep the example readable; the `multicycle` mechanism
+//! is orthogonal to whether the operation is signed or returns a hi-half.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+/// 32x32 -> 32 multiplier (low half) and 32/32 -> 32 unsigned quotient
+/// divider sharing a result register and a countdown valid counter.
+///
+/// Timing contract (the spec the `multicycle` SDC reflects):
+///   - On the cycle where `start` is high, the operands are captured and
+///     the heavy arithmetic begins. `valid_o` is LOW that cycle.
+///   - For multiply, `valid_o` rises 3 cycles after `start`.
+///   - For divide, `valid_o` rises 36 cycles after `start`.
+///   - `result_o` is only meaningful when `valid_o` is high. The
+///     `multicycle N` annotation tells synth: any downstream flop that
+///     samples the result regs has N periods of slack to do so.
+///
+/// The SDC emission for `mul_result` is
+///     set_multicycle_path 3 -setup -to {MultdivMulticycle/mul_result_reg[*]}
+///     set_multicycle_path 2 -hold  -to {MultdivMulticycle/mul_result_reg[*]}
+/// and similarly for `div_result` with N=36 / N-1=35.
+module MultdivMulticycle
+  param XLEN: const = 32;
+
+  port clk:       in Clock<SysDomain>;
+  port rst:       in Reset<Sync>;
+  port start:     in Bool;
+  port is_mul:    in Bool;        // 1 = multiply, 0 = divide
+  port operand_a: in UInt<XLEN>;
+  port operand_b: in UInt<XLEN>;
+  port valid_o:   out Bool;
+  port result_o:  out UInt<XLEN>;
+
+  // Heavy regs. The `multicycle N` annotation declares the maximum
+  // number of clock periods this reg's data path is allowed to take to
+  // settle. Synth tools that honor the companion SDC may retime / share
+  // arithmetic resources across those N cycles. The reg itself remains
+  // a single flop in the emitted SV — the annotation only affects the
+  // SDC file.
+  reg mul_result: UInt<XLEN> multicycle 3  reset rst => 0;
+  reg div_result: UInt<XLEN> multicycle 36 reset rst => 0;
+
+  // Lightweight regs (no multicycle annotation — single-cycle paths).
+  reg op_is_mul: Bool   reset rst => false;
+  reg cnt:       UInt<6> reset rst => 0;   // valid countdown
+
+  seq on clk rising
+    if start
+      op_is_mul <= is_mul;
+      if is_mul
+        cnt <= 6'd3;
+        // 32x32 product, take low XLEN bits. Synth retimes this across
+        // the 3-cycle multicycle window declared above.
+        mul_result <= (operand_a.zext<64>() * operand_b.zext<64>()).trunc<XLEN>();
+      else
+        cnt <= 6'd36;
+        // Unsigned 32/32 quotient. Synth turns `/` into whatever
+        // structure it prefers; the multicycle 36 SDC gives it 36
+        // periods to do so.
+        div_result <= operand_a / operand_b;
+      end if
+    elsif cnt != 6'd0
+      cnt <= (cnt - 1).trunc<6>();
+    end if
+  end seq
+
+  comb
+    valid_o  = (cnt == 6'd0);
+    result_o = op_is_mul ? mul_result : div_result;
+  end comb
+end module MultdivMulticycle
