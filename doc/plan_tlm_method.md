@@ -1,6 +1,6 @@
 # Plan: `tlm_method` — transaction-level bus sub-construct
 
-*Author: session of 2026-04-22. Status: implemented in stages; updated 2026-05-02 for RHS-fork issue groups and implemented-only call-site documentation.*
+*Author: session of 2026-04-22. Status: implemented in stages; updated 2026-05-13 for looped/locked initiator call-site lowering and bounded generated mux trees.*
 
 > **Implemented surface.** Current `tlm_method` syntax is only:
 > `tlm_method name(args) -> Ret: blocking;` or
@@ -9,12 +9,18 @@
 > `thread port.method(args) on clk rising, rst high ... return expr; end thread port.method`.
 > Initiator calls are legal only inside `thread` bodies as a direct RHS
 > assignment (`dst <= port.method(args);`) or as an RHS-fork issue
-> (`dst <= fork port.method(args); ... join all;`). The compiler rejects TLM
-> calls in `comb`, `seq`, module-level `let`, module-local `function`,
-> `pipeline`, `fsm`, and runtime `for` loop contexts. Use `generate_for`
-> worker threads when a compile-time number of TLM calls is needed. There is
-> no current `Future<T>`, `await`, user-visible `Token<T>`, `pipelined`, or
-> `burst` API.
+> (`dst <= fork port.method(args); ... join all;`). Literal counted `for`
+> loops inside initiator threads may contain direct TLM assignments; the
+> compiler unrolls them during lowering. `lock RESOURCE ... end lock RESOURCE`
+> is accepted around initiator TLM calls and uses the matching
+> `resource RESOURCE: mutex<POLICY>;` declaration for shared-method
+> arbitration (`mutex<round_robin>` emits a rotating grant pointer; otherwise
+> the compiler uses default priority). The compiler rejects TLM calls in
+> `comb`, `seq`, module-level `let`, module-local `function`, `pipeline`,
+> `fsm`, and non-literal/runtime `for` loop contexts. Use `generate_for`
+> worker threads when a compile-time number of independent workers is needed.
+> There is no current `Future<T>`, `await`, user-visible `Token<T>`,
+> `pipelined`, or `burst` API.
 
 Cross-refs:
 - `doc/plan_bus_unification.md` — sets the unified-bus frame. `tlm_method` is
@@ -166,6 +172,40 @@ declared `tlm_method` on that bus. Inside a thread, the call lowers to
 a state-machine fragment that blocks on the request-ready and
 response-valid handshakes.
 
+Literal counted loops are unrolled before this state-machine lowering:
+
+```
+thread driver on clk rising, rst high
+  for i in 0..7
+    ack <= m.read(i.zext<32>());
+  end for
+end thread driver
+```
+
+The unrolled call sites still drive one physical request/response interface
+for `m.read`; they do not create multiple SystemVerilog drivers.
+
+When multiple thread call sites share a method, use `lock` plus a `resource`
+declaration to make the arbitration policy explicit:
+
+```
+resource mem_ch: mutex<round_robin>;
+
+generate_for lane in 0..3
+  thread Worker_lane on clk rising, rst high
+    lock mem_ch
+      ack[lane] <= m.read(lane.zext<32>());
+    end lock mem_ch
+  end thread Worker_lane
+end generate_for
+```
+
+The compiler emits a single method driver and selects the active call site.
+`mutex<round_robin>` emits round-robin arbitration for simultaneous workers.
+Unprotected grouped call sites are still electrically single-driver, but use
+the compiler's default priority selection; in a single sequential thread those
+call sites are normally mutually exclusive FSM states.
+
 ## Wire protocol (v1, blocking)
 
 Per `tlm_method name(args...) -> ret: blocking;` the compiler flattens
@@ -216,6 +256,12 @@ WAIT_method_N:
 Each call site gets a monotonically-numbered pair of states. The
 existing `wait until` machinery is reused, so no new scheduling
 primitive is needed.
+
+For grouped/looped initiator call sites, the generated request-valid,
+response-ready, payload mux, and arbitration expressions are split into
+intermediate wires. This keeps generated SystemVerilog line lengths bounded
+for large unrolled TLM traces and avoids simulator/preprocessor limits such
+as Verilator's per-line token cap.
 
 ### Target side
 
