@@ -7255,12 +7255,18 @@ fn test_tlm_initiator_call_inside_lock_lowers() {
         end module M
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_tlm_init_driver_state"),
-        "locked TLM call should lower to the inline initiator FSM:\n{sv}");
-    assert!(sv.contains("m_read_req_valid"),
-        "locked TLM call should still drive request valid:\n{sv}");
-    assert!(sv.contains("m_read_rsp_ready"),
-        "locked TLM call should still drive response ready:\n{sv}");
+    assert!(
+        sv.contains("_tlm_init_driver_state"),
+        "locked TLM call should lower to the inline initiator FSM:\n{sv}"
+    );
+    assert!(
+        sv.contains("m_read_req_valid"),
+        "locked TLM call should still drive request valid:\n{sv}"
+    );
+    assert!(
+        sv.contains("m_read_rsp_ready"),
+        "locked TLM call should still drive response ready:\n{sv}"
+    );
 }
 
 #[test]
@@ -7293,15 +7299,25 @@ fn test_locked_tlm_generated_workers_share_one_method_driver() {
     let req_valid_drives = sv.matches("assign m_read_req_valid").count();
     let tile_drives = sv.matches("assign m_read_tile").count();
     let rsp_ready_drives = sv.matches("assign m_read_rsp_ready").count();
-    assert_eq!(req_valid_drives, 1, "expected one shared req_valid driver:\n{sv}");
+    assert_eq!(
+        req_valid_drives, 1,
+        "expected one shared req_valid driver:\n{sv}"
+    );
     assert_eq!(tile_drives, 1, "expected one shared payload driver:\n{sv}");
-    assert_eq!(rsp_ready_drives, 1, "expected one shared rsp_ready driver:\n{sv}");
-    assert!(sv.contains("_tlm_init_Worker_0_state")
-        && sv.contains("_tlm_init_Worker_1_state")
-        && sv.contains("_tlm_init_Worker_2_state"),
-        "each generated worker should keep its own state register:\n{sv}");
-    assert!(sv.contains("_tlm_init_m_read_rr_ptr"),
-        "round-robin locked TLM sharing should emit a rotating grant pointer:\n{sv}");
+    assert_eq!(
+        rsp_ready_drives, 1,
+        "expected one shared rsp_ready driver:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_init_Worker_0_state")
+            && sv.contains("_tlm_init_Worker_1_state")
+            && sv.contains("_tlm_init_Worker_2_state"),
+        "each generated worker should keep its own state register:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_init_m_read_rr_ptr"),
+        "round-robin locked TLM sharing should emit a rotating grant pointer:\n{sv}"
+    );
 }
 
 #[test]
@@ -7331,13 +7347,19 @@ fn test_round_robin_tlm_grants_split_into_intermediate_wires() {
         end module M
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_tlm_init_m_read_rr_s0_g"),
-        "round-robin grant terms should be emitted as intermediate wires:\n{sv}");
-    assert!(sv.contains("_tlm_init_m_read_rr_grant_0_or_l0_"),
-        "round-robin per-grant OR reductions should be chunked:\n{sv}");
+    assert!(
+        sv.contains("_tlm_init_m_read_rr_s0_g"),
+        "round-robin grant terms should be emitted as intermediate wires:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_init_m_read_rr_grant_0_or_l0_"),
+        "round-robin per-grant OR reductions should be chunked:\n{sv}"
+    );
     let longest = sv.lines().map(str::len).max().unwrap_or(0);
-    assert!(longest < 6000,
-        "round-robin TLM grants should not emit Verilator-hostile long lines; longest was {longest}");
+    assert!(
+        longest < 6000,
+        "round-robin TLM grants should not emit Verilator-hostile long lines; longest was {longest}"
+    );
 }
 
 #[test]
@@ -7363,13 +7385,19 @@ fn test_looped_tlm_initiator_muxes_split_into_intermediate_wires() {
         end module M
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_tlm_init_m_read_req_valid_or_l0_"),
-        "large request-valid reduction should be chunked into intermediate wires:\n{sv}");
-    assert!(sv.contains("_tlm_init_m_read_a_mux_data_l0_"),
-        "large payload mux should be chunked into intermediate wires:\n{sv}");
+    assert!(
+        sv.contains("_tlm_init_m_read_req_valid_or_l0_"),
+        "large request-valid reduction should be chunked into intermediate wires:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_init_m_read_a_mux_data_l0_"),
+        "large payload mux should be chunked into intermediate wires:\n{sv}"
+    );
     let longest = sv.lines().map(str::len).max().unwrap_or(0);
-    assert!(longest < 6000,
-        "looped TLM initiator should not emit Verilator-hostile long lines; longest was {longest}");
+    assert!(
+        longest < 6000,
+        "looped TLM initiator should not emit Verilator-hostile long lines; longest was {longest}"
+    );
 }
 
 #[test]

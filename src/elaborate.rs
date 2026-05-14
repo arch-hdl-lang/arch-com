@@ -1171,28 +1171,51 @@ fn fold_literal_bit_slices_thread_stmt(stmt: ThreadStmt) -> ThreadStmt {
             value: fold_literal_bit_slices_expr(ra.value),
             span: ra.span,
         }),
-        ThreadStmt::WaitUntil(cond, sp) => ThreadStmt::WaitUntil(fold_literal_bit_slices_expr(cond), sp),
-        ThreadStmt::WaitCycles(n, sp) => ThreadStmt::WaitCycles(fold_literal_bit_slices_expr(n), sp),
+        ThreadStmt::WaitUntil(cond, sp) => {
+            ThreadStmt::WaitUntil(fold_literal_bit_slices_expr(cond), sp)
+        }
+        ThreadStmt::WaitCycles(n, sp) => {
+            ThreadStmt::WaitCycles(fold_literal_bit_slices_expr(n), sp)
+        }
         ThreadStmt::IfElse(mut ie) => {
             ie.cond = fold_literal_bit_slices_expr(ie.cond);
-            ie.then_stmts = ie.then_stmts.into_iter().map(fold_literal_bit_slices_thread_stmt).collect();
-            ie.else_stmts = ie.else_stmts.into_iter().map(fold_literal_bit_slices_thread_stmt).collect();
+            ie.then_stmts = ie
+                .then_stmts
+                .into_iter()
+                .map(fold_literal_bit_slices_thread_stmt)
+                .collect();
+            ie.else_stmts = ie
+                .else_stmts
+                .into_iter()
+                .map(fold_literal_bit_slices_thread_stmt)
+                .collect();
             ThreadStmt::IfElse(ie)
         }
         ThreadStmt::ForkJoin(branches, sp) => ThreadStmt::ForkJoin(
-            branches.into_iter()
+            branches
+                .into_iter()
                 .map(|br| br.into_iter().map(fold_literal_bit_slices_thread_stmt).collect())
                 .collect(),
             sp,
         ),
-        ThreadStmt::For { var, start, end, body, span } => ThreadStmt::For {
+        ThreadStmt::For {
+            var,
+            start,
+            end,
+            body,
+            span,
+        } => ThreadStmt::For {
             var,
             start: fold_literal_bit_slices_expr(start),
             end: fold_literal_bit_slices_expr(end),
             body: body.into_iter().map(fold_literal_bit_slices_thread_stmt).collect(),
             span,
         },
-        ThreadStmt::Lock { resource, body, span } => ThreadStmt::Lock {
+        ThreadStmt::Lock {
+            resource,
+            body,
+            span,
+        } => ThreadStmt::Lock {
             resource,
             body: body.into_iter().map(fold_literal_bit_slices_thread_stmt).collect(),
             span,
@@ -1220,7 +1243,11 @@ fn fold_literal_bit_slices_expr(expr: Expr) -> Expr {
             {
                 if hi_v >= lo_v && hi_v < 64 {
                     let width = (hi_v - lo_v + 1) as u32;
-                    let mask = if width >= 64 { u64::MAX } else { (1u64 << width) - 1 };
+                    let mask = if width >= 64 {
+                        u64::MAX
+                    } else {
+                        (1u64 << width) - 1
+                    };
                     ExprKind::Literal(LitKind::Sized(width, (v >> lo_v) & mask))
                 } else {
                     ExprKind::BitSlice(Box::new(base), Box::new(hi), Box::new(lo))
@@ -1234,8 +1261,12 @@ fn fold_literal_bit_slices_expr(expr: Expr) -> Expr {
             Box::new(fold_literal_bit_slices_expr(*l)),
             Box::new(fold_literal_bit_slices_expr(*r)),
         ),
-        ExprKind::Unary(op, e) => ExprKind::Unary(op, Box::new(fold_literal_bit_slices_expr(*e))),
-        ExprKind::FieldAccess(e, f) => ExprKind::FieldAccess(Box::new(fold_literal_bit_slices_expr(*e)), f),
+        ExprKind::Unary(op, e) => {
+            ExprKind::Unary(op, Box::new(fold_literal_bit_slices_expr(*e)))
+        }
+        ExprKind::FieldAccess(e, f) => {
+            ExprKind::FieldAccess(Box::new(fold_literal_bit_slices_expr(*e)), f)
+        }
         ExprKind::MethodCall(e, m, args) => ExprKind::MethodCall(
             Box::new(fold_literal_bit_slices_expr(*e)),
             m,
@@ -1246,7 +1277,9 @@ fn fold_literal_bit_slices_expr(expr: Expr) -> Expr {
             Box::new(fold_literal_bit_slices_expr(*idx)),
         ),
         ExprKind::Cast(e, ty) => ExprKind::Cast(Box::new(fold_literal_bit_slices_expr(*e)), ty),
-        ExprKind::Concat(exprs) => ExprKind::Concat(exprs.into_iter().map(fold_literal_bit_slices_expr).collect()),
+        ExprKind::Concat(exprs) => {
+            ExprKind::Concat(exprs.into_iter().map(fold_literal_bit_slices_expr).collect())
+        }
         ExprKind::Ternary(c, t, f) => ExprKind::Ternary(
             Box::new(fold_literal_bit_slices_expr(*c)),
             Box::new(fold_literal_bit_slices_expr(*t)),
@@ -1254,7 +1287,11 @@ fn fold_literal_bit_slices_expr(expr: Expr) -> Expr {
         ),
         other => other,
     };
-    Expr { kind, span, parenthesized }
+    Expr {
+        kind,
+        span,
+        parenthesized,
+    }
 }
 
 /// Like `subst_expr` but also applies `subst_name` to all identifiers (for thread
@@ -6578,31 +6615,48 @@ fn inline_lower_tlm_initiator_group(
                         span,
                     }));
                 }
-                TlmInitGroupStateKind::TlmIssue { port, method, args, method_meta, lock_resource } => {
-                    aggs.entry(format!("{port}.{method}")).or_insert_with(|| GroupAgg {
-                        port: port.clone(),
-                        method: method.clone(),
-                        arg_decls: method_meta.args.clone(),
-                        tag_width: method_meta.out_of_order_tags.clone(),
-                        issues: Vec::new(),
-                        waits: Vec::new(),
-                    }).issues.push((
-                        state_eq(cur_idx),
-                        args.clone(),
-                        state_expr.clone(),
-                        state_lit(next_idx),
-                        lock_resource.clone(),
-                    ));
+                TlmInitGroupStateKind::TlmIssue {
+                    port,
+                    method,
+                    args,
+                    method_meta,
+                    lock_resource,
+                } => {
+                    aggs.entry(format!("{port}.{method}"))
+                        .or_insert_with(|| GroupAgg {
+                            port: port.clone(),
+                            method: method.clone(),
+                            arg_decls: method_meta.args.clone(),
+                            tag_width: method_meta.out_of_order_tags.clone(),
+                            issues: Vec::new(),
+                            waits: Vec::new(),
+                        })
+                        .issues
+                        .push((
+                            state_eq(cur_idx),
+                            args.clone(),
+                            state_expr.clone(),
+                            state_lit(next_idx),
+                            lock_resource.clone(),
+                        ));
                 }
-                TlmInitGroupStateKind::TlmWait { port, method, method_meta, dest } => {
-                    aggs.entry(format!("{port}.{method}")).or_insert_with(|| GroupAgg {
-                        port: port.clone(),
-                        method: method.clone(),
-                        arg_decls: method_meta.args.clone(),
-                        tag_width: method_meta.out_of_order_tags.clone(),
-                        issues: Vec::new(),
-                        waits: Vec::new(),
-                    }).waits.push(state_eq(cur_idx));
+                TlmInitGroupStateKind::TlmWait {
+                    port,
+                    method,
+                    method_meta,
+                    dest,
+                } => {
+                    aggs.entry(format!("{port}.{method}"))
+                        .or_insert_with(|| GroupAgg {
+                            port: port.clone(),
+                            method: method.clone(),
+                            arg_decls: method_meta.args.clone(),
+                            tag_width: method_meta.out_of_order_tags.clone(),
+                            issues: Vec::new(),
+                            waits: Vec::new(),
+                        })
+                        .waits
+                        .push(state_eq(cur_idx));
                     let mut then_stmts = Vec::new();
                     if let Some(dest_expr) = dest {
                         then_stmts.push(Stmt::Assign(RegAssign {
@@ -6619,14 +6673,20 @@ fn inline_lower_tlm_initiator_group(
                     let mut advance_rhs = port_member(port, format!("{method}_rsp_valid"));
                     if let Some(tag_w_expr) = &method_meta.out_of_order_tags {
                         let tag_w = literal_expr_u64(tag_w_expr)
-                            .ok_or_else(|| CompileError::general(
-                                "`out_of_order tags` must be a literal width in the first implementation",
-                                tag_w_expr.span,
-                            ))? as u32;
+                            .ok_or_else(|| {
+                                CompileError::general(
+                                    "`out_of_order tags` must be a literal width in the first implementation",
+                                    tag_w_expr.span,
+                                )
+                            })? as u32;
                         advance_rhs = bin(
                             BinOp::And,
                             advance_rhs,
-                            bin(BinOp::Eq, port_member(port, format!("{method}_rsp_tag")), sized(tag_w, 0)),
+                            bin(
+                                BinOp::Eq,
+                                port_member(port, format!("{method}_rsp_tag")),
+                                sized(tag_w, 0),
+                            ),
                         );
                     }
                     seq_body.push(Stmt::IfElse(IfElseOf {
@@ -6642,9 +6702,15 @@ fn inline_lower_tlm_initiator_group(
     }
 
     let or_expr = |exprs: &[Expr]| -> Expr {
-        let mut acc = exprs.first().cloned().unwrap_or_else(|| Expr::new(ExprKind::Bool(false), span));
+        let mut acc = exprs
+            .first()
+            .cloned()
+            .unwrap_or_else(|| Expr::new(ExprKind::Bool(false), span));
         for e in &exprs[1..] {
-            acc = Expr::new(ExprKind::Binary(BinOp::Or, Box::new(acc), Box::new(e.clone())), span);
+            acc = Expr::new(
+                ExprKind::Binary(BinOp::Or, Box::new(acc), Box::new(e.clone())),
+                span,
+            );
         }
         acc
     };
@@ -6706,7 +6772,10 @@ fn inline_lower_tlm_initiator_group(
                     unpacked_ascending: false,
                     span,
                 }));
-                let mut value = chunk.first().cloned().unwrap_or_else(|| Expr::new(ExprKind::Bool(true), span));
+                let mut value = chunk
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| Expr::new(ExprKind::Bool(true), span));
                 for e in &chunk[1..] {
                     value = bin(BinOp::And, value, e.clone());
                 }
@@ -6720,7 +6789,10 @@ fn inline_lower_tlm_initiator_group(
             cur = next;
             level += 1;
         }
-        let mut value = cur.first().cloned().unwrap_or_else(|| Expr::new(ExprKind::Bool(true), span));
+        let mut value = cur
+            .first()
+            .cloned()
+            .unwrap_or_else(|| Expr::new(ExprKind::Bool(true), span));
         for e in &cur[1..] {
             value = bin(BinOp::And, value, e.clone());
         }
@@ -6806,11 +6878,16 @@ fn inline_lower_tlm_initiator_group(
             }));
             want_refs.push(id(want_name));
         }
-        let rr_resource = agg.issues.iter()
+        let rr_resource = agg
+            .issues
+            .iter()
             .filter_map(|(_, _, _, _, r)| r.as_ref())
-            .find(|name| resource_decls.get(*name)
-                .map(|rd| matches!(rd.policy, ArbiterPolicy::RoundRobin))
-                .unwrap_or(false));
+            .find(|name| {
+                resource_decls
+                    .get(*name)
+                    .map(|rd| matches!(rd.policy, ArbiterPolicy::RoundRobin))
+                    .unwrap_or(false)
+            });
         let use_round_robin = rr_resource.is_some() && agg.issues.len() > 1;
         let grant_exprs: Vec<Expr> = if use_round_robin {
             let n = agg.issues.len();
@@ -6834,11 +6911,17 @@ fn inline_lower_tlm_initiator_group(
                     let mut term_inputs = vec![rr_eq_start.clone(), want_refs[i].clone()];
                     let mut j = start;
                     while j != i {
-                        term_inputs.push(Expr::new(ExprKind::Unary(UnaryOp::Not, Box::new(want_refs[j].clone())), span));
+                        term_inputs.push(Expr::new(
+                            ExprKind::Unary(UnaryOp::Not, Box::new(want_refs[j].clone())),
+                            span,
+                        ));
                         j = (j + 1) % n;
                     }
                     let term = emit_bool_and_tree(
-                        &format!("_tlm_init_{}_{}_rr_s{}_g{}", agg.port, agg.method, start, i),
+                        &format!(
+                            "_tlm_init_{}_{}_rr_s{}_g{}",
+                            agg.port, agg.method, start, i
+                        ),
                         &term_inputs,
                         &mut items,
                         &mut comb_stmts,
@@ -6846,13 +6929,17 @@ fn inline_lower_tlm_initiator_group(
                     grant_terms_by_i[i].push(term);
                 }
             }
-            grant_terms_by_i.into_iter().enumerate()
-                .map(|(i, terms)| emit_bool_or_tree(
-                    &format!("_tlm_init_{}_{}_rr_grant_{}", agg.port, agg.method, i),
-                    &terms,
-                    &mut items,
-                    &mut comb_stmts,
-                ))
+            grant_terms_by_i
+                .into_iter()
+                .enumerate()
+                .map(|(i, terms)| {
+                    emit_bool_or_tree(
+                        &format!("_tlm_init_{}_{}_rr_grant_{}", agg.port, agg.method, i),
+                        &terms,
+                        &mut items,
+                        &mut comb_stmts,
+                    )
+                })
                 .collect()
         } else {
             let mut grants = Vec::new();
@@ -6905,7 +6992,11 @@ fn inline_lower_tlm_initiator_group(
             let ptr_w = clog2_width(n as u64);
             let rr_name = format!("_tlm_init_{}_{}_rr_ptr", agg.port, agg.method);
             let rr_id = id(rr_name);
-            let req_fire = bin(BinOp::And, or_expr(&grants), port_member(&agg.port, format!("{}_req_ready", agg.method)));
+            let req_fire = bin(
+                BinOp::And,
+                or_expr(&grants),
+                port_member(&agg.port, format!("{}_req_ready", agg.method)),
+            );
             let mut rr_then = Vec::new();
             for (i, grant) in grants.iter().enumerate() {
                 let next = if i + 1 == n { 0 } else { i + 1 };
@@ -6959,7 +7050,8 @@ fn inline_lower_tlm_initiator_group(
             span,
         }));
         for (arg_i, (arg_ident, arg_ty)) in agg.arg_decls.iter().enumerate() {
-            let pairs: Vec<(Expr, Expr)> = grants.iter()
+            let pairs: Vec<(Expr, Expr)> = grants
+                .iter()
                 .zip(agg.issues.iter())
                 .filter_map(|(grant, (_, args, _, _, _))| {
                     args.get(arg_i).map(|arg| (grant.clone(), arg.clone()))
@@ -7006,7 +7098,10 @@ fn inline_lower_tlm_initiator_group(
         stmts: seq_body,
         span,
     }));
-    items.push(ModuleBodyItem::CombBlock(CombBlock { stmts: comb_stmts, span }));
+    items.push(ModuleBodyItem::CombBlock(CombBlock {
+        stmts: comb_stmts,
+        span,
+    }));
     Ok(items)
 }
 
