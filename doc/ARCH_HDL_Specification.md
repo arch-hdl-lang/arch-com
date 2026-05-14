@@ -6898,7 +6898,7 @@ Achievable speedup depends on the design\'s inherent parallelism --- the ratio o
 
 **22. Transaction Level Modeling (TLM)**
 
-> **Compiler-supported subset (2026-05-02).** Current ARCH TLM is a cycle-accurate RTL-lowered method interface, not a separate LT/AT simulation API. The implemented syntax is `tlm_method name(args) -> Ret: blocking;` and `tlm_method name(args) -> Ret: out_of_order tags N;` inside `bus`. Initiator calls appear only inside `thread` bodies as direct RHS assignments (`dst <= port.method(args);`) or RHS-fork issues (`dst <= fork port.method(args); ... join all;`). Multiple direct worker threads, `generate_for` workers, direct-call `fork ... and ... join` cohorts, and RHS-fork groups lower to request arbitration and response routing. There is no supported `Future<T>`, `await`, user-visible `Token<T>`, `pipelined`, or `burst` API today.
+> **Compiler-supported subset (2026-05-13).** Current ARCH TLM is a cycle-accurate RTL-lowered method interface, not a separate LT/AT simulation API. The implemented syntax is `tlm_method name(args) -> Ret: blocking;` and `tlm_method name(args) -> Ret: out_of_order tags N;` inside `bus`. Initiator calls appear only inside `thread` bodies as direct RHS assignments (`dst <= port.method(args);`) or RHS-fork issues (`dst <= fork port.method(args); ... join all;`). Literal counted `for` loops inside initiator threads may contain direct TLM assignments; the compiler unrolls them during lowering. Multiple direct worker threads, `generate_for` workers, direct-call `fork ... and ... join` cohorts, RHS-fork groups, and `lock`-protected TLM calls lower to one generated method driver with request arbitration and response routing. There is no supported `Future<T>`, `await`, user-visible `Token<T>`, `pipelined`, or `burst` API today.
 
 Arch supports Transaction Level Modeling (TLM) as a first-class abstraction layer above RTL. At the TLM level, modules communicate by calling methods on typed interfaces rather than by driving individual signals cycle by cycle. A memory read is membus.read(addr) → data --- one call, one response --- rather than a sequence of valid/ready handshake cycles. TLM enables fast architectural simulation, software/hardware co-simulation, and performance modeling, all from the same Arch source as the RTL implementation.
 
@@ -6973,6 +6973,42 @@ The current compiler keeps each returned value direct (`T`, not `Future<T>`) and
 
 The same cohort lowering is available for multiple direct named worker threads and for `generate_for` worker arrays. Current shape restriction: each worker/branch is exactly one assignment, `dst <= port.method(args);`, and all workers use the same clock/reset.
 
+Literal counted loops inside one initiator thread are unrolled before TLM
+state-machine lowering:
+
+```
+thread driver on clk rising, rst high
+  for i in 0..7
+    ack <= mem.read(i.zext<32>());
+  end for
+end thread driver
+```
+
+The unrolled call sites still drive one physical request/response interface for
+`mem.read`. They do not create multiple SystemVerilog drivers. If the call
+sites are in one sequential thread, they are normally mutually exclusive FSM
+states and the compiler's default priority selection is only the generated mux
+shape.
+
+For independent workers sharing one method, a `lock` block plus a matching
+`resource` declaration makes the request-side arbitration policy explicit:
+
+```
+resource mem_ch: mutex<round_robin>;
+
+generate_for lane in 0..3
+  thread Worker_lane on clk rising, rst high
+    lock mem_ch
+      ack[lane] <= mem.read(lane.zext<32>());
+    end lock mem_ch
+  end thread Worker_lane
+end generate_for
+```
+
+`mutex<round_robin>` emits a rotating grant pointer. Other grouped direct
+initiator call sites that do not name a resource are still electrically
+single-driver, but use the compiler's default priority selection.
+
 RHS-fork groups express timed issue inside one thread without introducing `Future<T>`:
 
 ```
@@ -7017,7 +7053,16 @@ end thread driver
 
 For `out_of_order tags N`, the bus flattens two extra wires per method: `<method>_req_tag` and `<method>_rsp_tag`. The initiator cohort assigns one tag per worker and routes response data by `rsp_tag`. A target TLM thread latches `req_tag` with the method arguments and echoes it on `rsp_tag`.
 
-**22.2.4 Unsupported APIs**
+**22.2.4 Generated Code Shape**
+
+Grouped/looped initiator call sites are lowered to one generated driver per
+TLM method signal. The compiler splits large request-valid reductions,
+response-ready reductions, payload muxes, default-priority grants, and
+round-robin grant terms into intermediate wires. This keeps generated
+SystemVerilog line lengths bounded for large unrolled TLM traces and avoids
+simulator/preprocessor limits such as Verilator's per-line token cap.
+
+**22.2.5 Unsupported APIs**
 
 `Future<T>`, `await`, user-visible `Token<T>`, `pipelined`, and `burst` are not part of the current language surface. Current RTL-backed TLM intentionally uses worker threads, RHS-fork groups, and hidden compiler-managed tags instead.
 
@@ -7041,6 +7086,8 @@ Use the implemented forms above for all current RTL-backed TLM work:
 - Declare `tlm_method ... : blocking;` or `tlm_method ... : out_of_order tags N;` inside a `bus`.
 - Implement a target as `thread port.method(args) on clk rising, rst high ... return expr; end thread port.method`.
 - Call from an initiator only inside a `thread`, as `dst <= port.method(args);` or `dst <= fork port.method(args); ... join all;`.
+- Use literal counted `for` loops for repeated direct call sites inside one initiator thread; non-literal/runtime TLM loops are rejected.
+- Use `lock RESOURCE ... end lock RESOURCE` plus `resource RESOURCE: mutex<round_robin>;` when independent workers share a TLM method and require round-robin request arbitration.
 - Express multiple outstanding requests with worker threads, `generate_for` workers, direct-call `fork ... and ... join`, or RHS-fork groups.
 
 **25. AI-Assisted Hardware Design Workflow**

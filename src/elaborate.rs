@@ -1154,6 +1154,146 @@ fn subst_thread_stmt(stmt: &ThreadStmt, var: &str, val: i64) -> ThreadStmt {
     }
 }
 
+fn fold_literal_bit_slices_thread_stmt(stmt: ThreadStmt) -> ThreadStmt {
+    match stmt {
+        ThreadStmt::CombAssign(ca) => ThreadStmt::CombAssign(CombAssign {
+            target: fold_literal_bit_slices_expr(ca.target),
+            value: fold_literal_bit_slices_expr(ca.value),
+            span: ca.span,
+        }),
+        ThreadStmt::SeqAssign(ra) => ThreadStmt::SeqAssign(RegAssign {
+            target: fold_literal_bit_slices_expr(ra.target),
+            value: fold_literal_bit_slices_expr(ra.value),
+            span: ra.span,
+        }),
+        ThreadStmt::ForkTlmAssign(ra) => ThreadStmt::ForkTlmAssign(RegAssign {
+            target: fold_literal_bit_slices_expr(ra.target),
+            value: fold_literal_bit_slices_expr(ra.value),
+            span: ra.span,
+        }),
+        ThreadStmt::WaitUntil(cond, sp) => {
+            ThreadStmt::WaitUntil(fold_literal_bit_slices_expr(cond), sp)
+        }
+        ThreadStmt::WaitCycles(n, sp) => {
+            ThreadStmt::WaitCycles(fold_literal_bit_slices_expr(n), sp)
+        }
+        ThreadStmt::IfElse(mut ie) => {
+            ie.cond = fold_literal_bit_slices_expr(ie.cond);
+            ie.then_stmts = ie
+                .then_stmts
+                .into_iter()
+                .map(fold_literal_bit_slices_thread_stmt)
+                .collect();
+            ie.else_stmts = ie
+                .else_stmts
+                .into_iter()
+                .map(fold_literal_bit_slices_thread_stmt)
+                .collect();
+            ThreadStmt::IfElse(ie)
+        }
+        ThreadStmt::ForkJoin(branches, sp) => ThreadStmt::ForkJoin(
+            branches
+                .into_iter()
+                .map(|br| br.into_iter().map(fold_literal_bit_slices_thread_stmt).collect())
+                .collect(),
+            sp,
+        ),
+        ThreadStmt::For {
+            var,
+            start,
+            end,
+            body,
+            span,
+        } => ThreadStmt::For {
+            var,
+            start: fold_literal_bit_slices_expr(start),
+            end: fold_literal_bit_slices_expr(end),
+            body: body.into_iter().map(fold_literal_bit_slices_thread_stmt).collect(),
+            span,
+        },
+        ThreadStmt::Lock {
+            resource,
+            body,
+            span,
+        } => ThreadStmt::Lock {
+            resource,
+            body: body.into_iter().map(fold_literal_bit_slices_thread_stmt).collect(),
+            span,
+        },
+        ThreadStmt::DoUntil { body, cond, span } => ThreadStmt::DoUntil {
+            body: body.into_iter().map(fold_literal_bit_slices_thread_stmt).collect(),
+            cond: fold_literal_bit_slices_expr(cond),
+            span,
+        },
+        ThreadStmt::Return(e, sp) => ThreadStmt::Return(fold_literal_bit_slices_expr(e), sp),
+        other => other,
+    }
+}
+
+fn fold_literal_bit_slices_expr(expr: Expr) -> Expr {
+    let span = expr.span;
+    let parenthesized = expr.parenthesized;
+    let kind = match expr.kind {
+        ExprKind::BitSlice(base, hi, lo) => {
+            let base = fold_literal_bit_slices_expr(*base);
+            let hi = fold_literal_bit_slices_expr(*hi);
+            let lo = fold_literal_bit_slices_expr(*lo);
+            if let (Some(v), Some(hi_v), Some(lo_v)) =
+                (literal_expr_u64(&base), literal_expr_u64(&hi), literal_expr_u64(&lo))
+            {
+                if hi_v >= lo_v && hi_v < 64 {
+                    let width = (hi_v - lo_v + 1) as u32;
+                    let mask = if width >= 64 {
+                        u64::MAX
+                    } else {
+                        (1u64 << width) - 1
+                    };
+                    ExprKind::Literal(LitKind::Sized(width, (v >> lo_v) & mask))
+                } else {
+                    ExprKind::BitSlice(Box::new(base), Box::new(hi), Box::new(lo))
+                }
+            } else {
+                ExprKind::BitSlice(Box::new(base), Box::new(hi), Box::new(lo))
+            }
+        }
+        ExprKind::Binary(op, l, r) => ExprKind::Binary(
+            op,
+            Box::new(fold_literal_bit_slices_expr(*l)),
+            Box::new(fold_literal_bit_slices_expr(*r)),
+        ),
+        ExprKind::Unary(op, e) => {
+            ExprKind::Unary(op, Box::new(fold_literal_bit_slices_expr(*e)))
+        }
+        ExprKind::FieldAccess(e, f) => {
+            ExprKind::FieldAccess(Box::new(fold_literal_bit_slices_expr(*e)), f)
+        }
+        ExprKind::MethodCall(e, m, args) => ExprKind::MethodCall(
+            Box::new(fold_literal_bit_slices_expr(*e)),
+            m,
+            args.into_iter().map(fold_literal_bit_slices_expr).collect(),
+        ),
+        ExprKind::Index(base, idx) => ExprKind::Index(
+            Box::new(fold_literal_bit_slices_expr(*base)),
+            Box::new(fold_literal_bit_slices_expr(*idx)),
+        ),
+        ExprKind::Cast(e, ty) => ExprKind::Cast(Box::new(fold_literal_bit_slices_expr(*e)), ty),
+        ExprKind::Concat(exprs) => {
+            ExprKind::Concat(exprs.into_iter().map(fold_literal_bit_slices_expr).collect())
+        }
+        ExprKind::Ternary(c, t, f) => ExprKind::Ternary(
+            Box::new(fold_literal_bit_slices_expr(*c)),
+            Box::new(fold_literal_bit_slices_expr(*t)),
+            Box::new(fold_literal_bit_slices_expr(*f)),
+        ),
+        other => other,
+    };
+    Expr {
+        kind,
+        span,
+        parenthesized,
+    }
+}
+
 /// Like `subst_expr` but also applies `subst_name` to all identifiers (for thread
 /// signal name substitution: `valid_i` → `valid_0`).
 fn subst_expr_names(expr: Expr, var: &str, val: i64) -> Expr {
@@ -5350,7 +5490,6 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
                     .filter_map(|p| p.bus_info.as_ref().map(|bi|
                         (p.name.name.clone(), bi.bus_name.name.clone())))
                     .collect();
-
                 // Detect multi-implementer target cases. Indexed target
                 // lanes (`thread s.read[t](...)`) are handled below by
                 // generating private lane endpoints plus one shared mux.
@@ -5476,6 +5615,9 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
                 // CombBlock items directly into new_body; no additional
                 // accumulation needed.
                 let _ = latch_regs;
+                if !new_body.iter().any(|item| matches!(item, ModuleBodyItem::Thread(_))) {
+                    new_body.retain(|item| !matches!(item, ModuleBodyItem::Resource(_)));
+                }
                 m.body = new_body;
                 out_items.push(Item::Module(m));
             }
@@ -5525,6 +5667,12 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                 let port_buses: HashMap<String, String> = m.ports.iter()
                     .filter_map(|p| p.bus_info.as_ref().map(|bi|
                         (p.name.name.clone(), bi.bus_name.name.clone())))
+                    .collect();
+                let resource_decls: HashMap<String, ResourceDecl> = m.body.iter()
+                    .filter_map(|item| match item {
+                        ModuleBodyItem::Resource(r) => Some((r.name.name.clone(), r.clone())),
+                        _ => None,
+                    })
                     .collect();
 
                 let mut direct_groups: HashMap<(String, String), Vec<DirectTlmThread>> = HashMap::new();
@@ -5612,8 +5760,28 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                     }
                 }
 
+                let mut inline_tlm_threads: Vec<ThreadBlock> = Vec::new();
+                let mut inline_tlm_thread_spans: std::collections::HashSet<(usize, usize)> =
+                    std::collections::HashSet::new();
+                for item in &m.body {
+                    if let ModuleBodyItem::Thread(t) = item {
+                        let t_key = (t.span.start, t.span.end);
+                        if t.tlm_target.is_some()
+                            || cohort_thread_spans.contains(&t_key)
+                            || thread_has_fork_tlm_assign(&t.body)
+                        {
+                            continue;
+                        }
+                        if thread_body_has_tlm_call(&t.body, &port_buses, &bus_methods) {
+                            inline_tlm_thread_spans.insert(t_key);
+                            inline_tlm_threads.push(t.clone());
+                        }
+                    }
+                }
+
                 let mut new_body: Vec<ModuleBodyItem> = Vec::new();
                 let mut emitted_cohorts: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+                let mut emitted_inline_tlm_group = false;
                 for item in std::mem::take(&mut m.body) {
                     if let ModuleBodyItem::Thread(t) = &item {
                         let t_key = (t.span.start, t.span.end);
@@ -5628,6 +5796,21 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                                         }
                                     }
                                 }
+                            }
+                            continue;
+                        }
+                        if inline_tlm_thread_spans.contains(&t_key) {
+                            if !emitted_inline_tlm_group {
+                                match inline_lower_tlm_initiator_group(
+                                    inline_tlm_threads.clone(),
+                                    &port_buses,
+                                    &bus_methods,
+                                    &resource_decls,
+                                ) {
+                                    Ok(items) => new_body.extend(items),
+                                    Err(e) => errors.push(e),
+                                }
+                                emitted_inline_tlm_group = true;
                             }
                             continue;
                         }
@@ -5685,6 +5868,14 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                         }
                     }
                     new_body.push(item);
+                }
+                // If every TLM-bearing thread in this module was consumed
+                // by the in-place initiator lowering, any resource
+                // declarations that only existed for those locks must not
+                // leak to codegen. Regular thread lowering consumes
+                // resources only when Thread items remain.
+                if !new_body.iter().any(|item| matches!(item, ModuleBodyItem::Thread(_))) {
+                    new_body.retain(|item| !matches!(item, ModuleBodyItem::Resource(_)));
                 }
                 m.body = new_body;
                 out_items.push(Item::Module(m));
@@ -6172,6 +6363,10 @@ fn thread_body_has_tlm_call(
             contains_tlm_call(e, port_buses, bus_methods),
         ThreadStmt::ForkJoin(branches, _) =>
             branches.iter().any(|branch| thread_body_has_tlm_call(branch, port_buses, bus_methods)),
+        ThreadStmt::For { body, .. }
+        | ThreadStmt::Lock { body, .. }
+        | ThreadStmt::DoUntil { body, .. } =>
+            thread_body_has_tlm_call(body, port_buses, bus_methods),
         _ => false,
     })
 }
@@ -6187,6 +6382,727 @@ fn thread_has_fork_tlm_assign(stmts: &[ThreadStmt]) -> bool {
         | ThreadStmt::DoUntil { body, .. } => thread_has_fork_tlm_assign(body),
         _ => false,
     })
+}
+
+enum TlmInitGroupStateKind {
+    Compute {
+        seq_on_exit: Vec<Stmt>,
+    },
+    TlmIssue {
+        port: String,
+        method: String,
+        args: Vec<Expr>,
+        method_meta: TlmMethodMeta,
+        lock_resource: Option<String>,
+    },
+    TlmWait {
+        port: String,
+        method: String,
+        method_meta: TlmMethodMeta,
+        dest: Option<Expr>,
+    },
+}
+
+struct TlmInitThreadPlan {
+    thread: ThreadBlock,
+    tag: String,
+    states: Vec<TlmInitGroupStateKind>,
+}
+
+fn build_tlm_init_thread_plan(
+    t: ThreadBlock,
+    port_buses: &std::collections::HashMap<String, String>,
+    bus_methods: &std::collections::HashMap<String, Vec<TlmMethodMeta>>,
+) -> Result<TlmInitThreadPlan, CompileError> {
+    fn lower_stmts(
+        stmts: Vec<ThreadStmt>,
+        states: &mut Vec<TlmInitGroupStateKind>,
+        pending_seq: &mut Vec<Stmt>,
+        port_buses: &std::collections::HashMap<String, String>,
+        bus_methods: &std::collections::HashMap<String, Vec<TlmMethodMeta>>,
+        span: Span,
+        current_lock: Option<&str>,
+    ) -> Result<(), CompileError> {
+        for stmt in stmts {
+            match stmt {
+                ThreadStmt::SeqAssign(ra) => {
+                    if match_tlm_call(&ra.value, port_buses, bus_methods).is_none()
+                        && contains_tlm_call(&ra.value, port_buses, bus_methods)
+                    {
+                        return Err(CompileError::general(
+                            "TLM method call must be the direct right-hand side of `<=` in a thread body — nested or composed uses are not supported in v1",
+                            ra.span,
+                        ));
+                    }
+                    if contains_tlm_call(&ra.target, port_buses, bus_methods) {
+                        return Err(CompileError::general(
+                            "TLM method calls cannot appear on the LHS of an assignment",
+                            ra.span,
+                        ));
+                    }
+                    if let Some(call) = match_tlm_call(&ra.value, port_buses, bus_methods) {
+                        if !pending_seq.is_empty() {
+                            states.push(TlmInitGroupStateKind::Compute {
+                                seq_on_exit: std::mem::take(pending_seq),
+                            });
+                        }
+                        let has_ret = call.method_meta.ret.is_some();
+                        states.push(TlmInitGroupStateKind::TlmIssue {
+                            port: call.port.clone(),
+                            method: call.method.clone(),
+                            args: call.args.clone(),
+                            method_meta: call.method_meta.clone(),
+                            lock_resource: current_lock.map(|s| s.to_string()),
+                        });
+                        states.push(TlmInitGroupStateKind::TlmWait {
+                            port: call.port,
+                            method: call.method,
+                            method_meta: call.method_meta.clone(),
+                            dest: if has_ret { Some(ra.target) } else { None },
+                        });
+                    } else {
+                        pending_seq.push(Stmt::Assign(ra));
+                    }
+                }
+                ThreadStmt::Lock { resource, body, .. } => {
+                    lower_stmts(body, states, pending_seq, port_buses, bus_methods, span, Some(&resource.name))?;
+                }
+                ThreadStmt::For { var, start, end, body, span: for_span } => {
+                    let start_v = literal_expr_u64(&start).ok_or_else(|| {
+                        CompileError::general(
+                            "v1 TLM initiator `for` loops require a literal start bound",
+                            start.span,
+                        )
+                    })?;
+                    let end_v = literal_expr_u64(&end).ok_or_else(|| {
+                        CompileError::general(
+                            "v1 TLM initiator `for` loops require a literal end bound",
+                            end.span,
+                        )
+                    })?;
+                    if end_v < start_v {
+                        return Err(CompileError::general(
+                            "v1 TLM initiator `for` loop end must be >= start",
+                            for_span,
+                        ));
+                    }
+                    for i in start_v..=end_v {
+                        let expanded: Vec<ThreadStmt> = body
+                            .iter()
+                            .map(|s| subst_thread_stmt(s, &var.name, i as i64))
+                            .map(fold_literal_bit_slices_thread_stmt)
+                            .collect();
+                        lower_stmts(expanded, states, pending_seq, port_buses, bus_methods, span, current_lock)?;
+                    }
+                }
+                other => {
+                    return Err(CompileError::general(
+                        &format!(
+                            "v1 TLM initiator thread body only supports SeqAssign statements, literal `for` loops, and `lock` blocks around them (found {:?}). Refactor more complex control flow into a `thread` without TLM calls.",
+                            std::mem::discriminant(&other),
+                        ),
+                        span,
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let span = t.span;
+    let tag = t.name.as_ref().map(|n| n.name.clone()).unwrap_or_else(|| "tlm_init".to_string());
+    let mut states = Vec::new();
+    let mut pending_seq = Vec::new();
+    lower_stmts(t.body.clone(), &mut states, &mut pending_seq, port_buses, bus_methods, span, None)?;
+    if !pending_seq.is_empty() {
+        states.push(TlmInitGroupStateKind::Compute {
+            seq_on_exit: std::mem::take(&mut pending_seq),
+        });
+    }
+    Ok(TlmInitThreadPlan { thread: t, tag, states })
+}
+
+fn inline_lower_tlm_initiator_group(
+    threads: Vec<ThreadBlock>,
+    port_buses: &std::collections::HashMap<String, String>,
+    bus_methods: &std::collections::HashMap<String, Vec<TlmMethodMeta>>,
+    resource_decls: &std::collections::HashMap<String, ResourceDecl>,
+) -> Result<Vec<ModuleBodyItem>, CompileError> {
+    let mut plans = Vec::new();
+    for t in threads {
+        plans.push(build_tlm_init_thread_plan(t, port_buses, bus_methods)?);
+    }
+    plans.retain(|p| !p.states.is_empty());
+    if plans.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let span = plans[0].thread.span;
+    let clk = plans[0].thread.clock.clone();
+    let rst = plans[0].thread.reset.clone();
+    let clock_edge = plans[0].thread.clock_edge;
+    let reset_level = plans[0].thread.reset_level;
+    for p in &plans {
+        if p.thread.clock.name != clk.name
+            || p.thread.reset.name != rst.name
+            || p.thread.clock_edge != clock_edge
+            || p.thread.reset_level != reset_level
+        {
+            return Err(CompileError::general(
+                "TLM initiator thread group must use one clock/reset domain",
+                p.thread.span,
+            ));
+        }
+    }
+
+    let mk_ident = |name: String| Ident { name, span };
+    let id = |name: String| Expr::new(ExprKind::Ident(name), span);
+    let dec = |v: u64| Expr::new(ExprKind::Literal(LitKind::Dec(v)), span);
+    let sized = |w: u32, v: u64| Expr::new(ExprKind::Literal(LitKind::Sized(w, v)), span);
+    let bin = |op: BinOp, l: Expr, r: Expr| Expr::new(ExprKind::Binary(op, Box::new(l), Box::new(r)), span);
+    let tern = |c: Expr, t: Expr, e: Expr| Expr::new(ExprKind::Ternary(Box::new(c), Box::new(t), Box::new(e)), span);
+    let port_member = |port: &str, member: String| Expr::new(
+        ExprKind::FieldAccess(Box::new(id(port.to_string())), mk_ident(member)),
+        span,
+    );
+
+    struct GroupAgg {
+        port: String,
+        method: String,
+        arg_decls: Vec<(Ident, TypeExpr)>,
+        tag_width: Option<Expr>,
+        issues: Vec<(Expr, Vec<Expr>, Expr, Expr, Option<String>)>,
+        waits: Vec<Expr>,
+    }
+
+    let mut items = Vec::new();
+    let mut seq_body = Vec::new();
+    let mut aggs: std::collections::BTreeMap<String, GroupAgg> = std::collections::BTreeMap::new();
+
+    for plan in &plans {
+        let total_states = plan.states.len();
+        let state_width = clog2_width(total_states as u64);
+        let state_reg_name = format!("_tlm_init_{}_state", plan.tag);
+        items.push(ModuleBodyItem::RegDecl(RegDecl {
+            name: mk_ident(state_reg_name.clone()),
+            ty: TypeExpr::UInt(Box::new(dec(state_width as u64))),
+            init: None,
+            reset: RegReset::Inherit(rst.clone(), dec(0)),
+            guard: None,
+            multicycle: None,
+            span,
+        }));
+        let state_expr = id(state_reg_name.clone());
+        let state_lit = |v: u64| sized(state_width, v);
+        let state_eq = |v: u64| bin(BinOp::Eq, state_expr.clone(), state_lit(v));
+
+        for (i, sk) in plan.states.iter().enumerate() {
+            let cur_idx = i as u64;
+            let next_idx = ((i + 1) % total_states) as u64;
+            match sk {
+                TlmInitGroupStateKind::Compute { seq_on_exit } => {
+                    let mut then_stmts = seq_on_exit.clone();
+                    then_stmts.push(Stmt::Assign(RegAssign {
+                        target: state_expr.clone(),
+                        value: state_lit(next_idx),
+                        span,
+                    }));
+                    seq_body.push(Stmt::IfElse(IfElseOf {
+                        cond: state_eq(cur_idx),
+                        then_stmts,
+                        else_stmts: Vec::new(),
+                        unique: false,
+                        span,
+                    }));
+                }
+                TlmInitGroupStateKind::TlmIssue {
+                    port,
+                    method,
+                    args,
+                    method_meta,
+                    lock_resource,
+                } => {
+                    aggs.entry(format!("{port}.{method}"))
+                        .or_insert_with(|| GroupAgg {
+                            port: port.clone(),
+                            method: method.clone(),
+                            arg_decls: method_meta.args.clone(),
+                            tag_width: method_meta.out_of_order_tags.clone(),
+                            issues: Vec::new(),
+                            waits: Vec::new(),
+                        })
+                        .issues
+                        .push((
+                            state_eq(cur_idx),
+                            args.clone(),
+                            state_expr.clone(),
+                            state_lit(next_idx),
+                            lock_resource.clone(),
+                        ));
+                }
+                TlmInitGroupStateKind::TlmWait {
+                    port,
+                    method,
+                    method_meta,
+                    dest,
+                } => {
+                    aggs.entry(format!("{port}.{method}"))
+                        .or_insert_with(|| GroupAgg {
+                            port: port.clone(),
+                            method: method.clone(),
+                            arg_decls: method_meta.args.clone(),
+                            tag_width: method_meta.out_of_order_tags.clone(),
+                            issues: Vec::new(),
+                            waits: Vec::new(),
+                        })
+                        .waits
+                        .push(state_eq(cur_idx));
+                    let mut then_stmts = Vec::new();
+                    if let Some(dest_expr) = dest {
+                        then_stmts.push(Stmt::Assign(RegAssign {
+                            target: dest_expr.clone(),
+                            value: port_member(port, format!("{method}_rsp_data")),
+                            span,
+                        }));
+                    }
+                    then_stmts.push(Stmt::Assign(RegAssign {
+                        target: state_expr.clone(),
+                        value: state_lit(next_idx),
+                        span,
+                    }));
+                    let mut advance_rhs = port_member(port, format!("{method}_rsp_valid"));
+                    if let Some(tag_w_expr) = &method_meta.out_of_order_tags {
+                        let tag_w = literal_expr_u64(tag_w_expr)
+                            .ok_or_else(|| {
+                                CompileError::general(
+                                    "`out_of_order tags` must be a literal width in the first implementation",
+                                    tag_w_expr.span,
+                                )
+                            })? as u32;
+                        advance_rhs = bin(
+                            BinOp::And,
+                            advance_rhs,
+                            bin(
+                                BinOp::Eq,
+                                port_member(port, format!("{method}_rsp_tag")),
+                                sized(tag_w, 0),
+                            ),
+                        );
+                    }
+                    seq_body.push(Stmt::IfElse(IfElseOf {
+                        cond: bin(BinOp::And, state_eq(cur_idx), advance_rhs),
+                        then_stmts,
+                        else_stmts: Vec::new(),
+                        unique: false,
+                        span,
+                    }));
+                }
+            }
+        }
+    }
+
+    let or_expr = |exprs: &[Expr]| -> Expr {
+        let mut acc = exprs
+            .first()
+            .cloned()
+            .unwrap_or_else(|| Expr::new(ExprKind::Bool(false), span));
+        for e in &exprs[1..] {
+            acc = Expr::new(
+                ExprKind::Binary(BinOp::Or, Box::new(acc), Box::new(e.clone())),
+                span,
+            );
+        }
+        acc
+    };
+    let emit_bool_or_tree = |
+        prefix: &str,
+        exprs: &[Expr],
+        items: &mut Vec<ModuleBodyItem>,
+        comb_stmts: &mut Vec<Stmt>,
+    | -> Expr {
+        const CHUNK: usize = 8;
+        if exprs.is_empty() {
+            return Expr::new(ExprKind::Bool(false), span);
+        }
+        let mut level = 0usize;
+        let mut cur = exprs.to_vec();
+        while cur.len() > CHUNK {
+            let mut next = Vec::new();
+            for (chunk_i, chunk) in cur.chunks(CHUNK).enumerate() {
+                let wire_name = format!("{prefix}_or_l{level}_{chunk_i}");
+                items.push(ModuleBodyItem::WireDecl(WireDecl {
+                    name: mk_ident(wire_name.clone()),
+                    ty: TypeExpr::Bool,
+                    unpacked: false,
+                    unpacked_ascending: false,
+                    span,
+                }));
+                comb_stmts.push(Stmt::Assign(CombAssign {
+                    target: id(wire_name.clone()),
+                    value: or_expr(chunk),
+                    span,
+                }));
+                next.push(id(wire_name));
+            }
+            cur = next;
+            level += 1;
+        }
+        or_expr(&cur)
+    };
+    let emit_bool_and_tree = |
+        prefix: &str,
+        exprs: &[Expr],
+        items: &mut Vec<ModuleBodyItem>,
+        comb_stmts: &mut Vec<Stmt>,
+    | -> Expr {
+        const CHUNK: usize = 8;
+        if exprs.is_empty() {
+            return Expr::new(ExprKind::Bool(true), span);
+        }
+        let mut level = 0usize;
+        let mut cur = exprs.to_vec();
+        while cur.len() > CHUNK {
+            let mut next = Vec::new();
+            for (chunk_i, chunk) in cur.chunks(CHUNK).enumerate() {
+                let wire_name = format!("{prefix}_and_l{level}_{chunk_i}");
+                items.push(ModuleBodyItem::WireDecl(WireDecl {
+                    name: mk_ident(wire_name.clone()),
+                    ty: TypeExpr::Bool,
+                    unpacked: false,
+                    unpacked_ascending: false,
+                    span,
+                }));
+                let mut value = chunk
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| Expr::new(ExprKind::Bool(true), span));
+                for e in &chunk[1..] {
+                    value = bin(BinOp::And, value, e.clone());
+                }
+                comb_stmts.push(Stmt::Assign(CombAssign {
+                    target: id(wire_name.clone()),
+                    value,
+                    span,
+                }));
+                next.push(id(wire_name));
+            }
+            cur = next;
+            level += 1;
+        }
+        let mut value = cur
+            .first()
+            .cloned()
+            .unwrap_or_else(|| Expr::new(ExprKind::Bool(true), span));
+        for e in &cur[1..] {
+            value = bin(BinOp::And, value, e.clone());
+        }
+        value
+    };
+    let emit_mux_tree = |
+        prefix: &str,
+        ty: &TypeExpr,
+        pairs: &[(Expr, Expr)],
+        default: Expr,
+        items: &mut Vec<ModuleBodyItem>,
+        comb_stmts: &mut Vec<Stmt>,
+    | -> Expr {
+        const CHUNK: usize = 8;
+        if pairs.is_empty() {
+            return default;
+        }
+        let mut level = 0usize;
+        let mut cur = pairs.to_vec();
+        while cur.len() > CHUNK {
+            let mut next = Vec::new();
+            for (chunk_i, chunk) in cur.chunks(CHUNK).enumerate() {
+                let valid_name = format!("{prefix}_mux_valid_l{level}_{chunk_i}");
+                let data_name = format!("{prefix}_mux_data_l{level}_{chunk_i}");
+                items.push(ModuleBodyItem::WireDecl(WireDecl {
+                    name: mk_ident(valid_name.clone()),
+                    ty: TypeExpr::Bool,
+                    unpacked: false,
+                    unpacked_ascending: false,
+                    span,
+                }));
+                items.push(ModuleBodyItem::WireDecl(WireDecl {
+                    name: mk_ident(data_name.clone()),
+                    ty: ty.clone(),
+                    unpacked: false,
+                    unpacked_ascending: false,
+                    span,
+                }));
+                let valid_inputs: Vec<Expr> = chunk.iter().map(|(sel, _)| sel.clone()).collect();
+                comb_stmts.push(Stmt::Assign(CombAssign {
+                    target: id(valid_name.clone()),
+                    value: or_expr(&valid_inputs),
+                    span,
+                }));
+                let mut value = default.clone();
+                for (sel, data) in chunk.iter().rev() {
+                    value = tern(sel.clone(), data.clone(), value);
+                }
+                comb_stmts.push(Stmt::Assign(CombAssign {
+                    target: id(data_name.clone()),
+                    value,
+                    span,
+                }));
+                next.push((id(valid_name), id(data_name)));
+            }
+            cur = next;
+            level += 1;
+        }
+        let mut value = default;
+        for (sel, data) in cur.iter().rev() {
+            value = tern(sel.clone(), data.clone(), value);
+        }
+        value
+    };
+
+    let mut comb_stmts = Vec::new();
+    for (_, agg) in &aggs {
+        let issue_conds: Vec<Expr> = agg.issues.iter().map(|(c, _, _, _, _)| c.clone()).collect();
+        let mut want_refs: Vec<Expr> = Vec::new();
+        for (i, cond) in issue_conds.iter().enumerate() {
+            let want_name = format!("_tlm_init_{}_{}_want_{}", agg.port, agg.method, i);
+            items.push(ModuleBodyItem::WireDecl(WireDecl {
+                name: mk_ident(want_name.clone()),
+                ty: TypeExpr::Bool,
+                unpacked: false,
+                unpacked_ascending: false,
+                span,
+            }));
+            comb_stmts.push(Stmt::Assign(CombAssign {
+                target: id(want_name.clone()),
+                value: cond.clone(),
+                span,
+            }));
+            want_refs.push(id(want_name));
+        }
+        let rr_resource = agg
+            .issues
+            .iter()
+            .filter_map(|(_, _, _, _, r)| r.as_ref())
+            .find(|name| {
+                resource_decls
+                    .get(*name)
+                    .map(|rd| matches!(rd.policy, ArbiterPolicy::RoundRobin))
+                    .unwrap_or(false)
+            });
+        let use_round_robin = rr_resource.is_some() && agg.issues.len() > 1;
+        let grant_exprs: Vec<Expr> = if use_round_robin {
+            let n = agg.issues.len();
+            let ptr_w = clog2_width(n as u64);
+            let rr_name = format!("_tlm_init_{}_{}_rr_ptr", agg.port, agg.method);
+            items.push(ModuleBodyItem::RegDecl(RegDecl {
+                name: mk_ident(rr_name.clone()),
+                ty: TypeExpr::UInt(Box::new(dec(ptr_w as u64))),
+                init: None,
+                reset: RegReset::Inherit(rst.clone(), dec(0)),
+                guard: None,
+                multicycle: None,
+                span,
+            }));
+            let rr_id = id(rr_name.clone());
+            let mut grant_terms_by_i: Vec<Vec<Expr>> = vec![Vec::new(); n];
+            for start in 0..n {
+                let rr_eq_start = bin(BinOp::Eq, rr_id.clone(), sized(ptr_w, start as u64));
+                for offset in 0..n {
+                    let i = (start + offset) % n;
+                    let mut term_inputs = vec![rr_eq_start.clone(), want_refs[i].clone()];
+                    let mut j = start;
+                    while j != i {
+                        term_inputs.push(Expr::new(
+                            ExprKind::Unary(UnaryOp::Not, Box::new(want_refs[j].clone())),
+                            span,
+                        ));
+                        j = (j + 1) % n;
+                    }
+                    let term = emit_bool_and_tree(
+                        &format!(
+                            "_tlm_init_{}_{}_rr_s{}_g{}",
+                            agg.port, agg.method, start, i
+                        ),
+                        &term_inputs,
+                        &mut items,
+                        &mut comb_stmts,
+                    );
+                    grant_terms_by_i[i].push(term);
+                }
+            }
+            grant_terms_by_i
+                .into_iter()
+                .enumerate()
+                .map(|(i, terms)| {
+                    emit_bool_or_tree(
+                        &format!("_tlm_init_{}_{}_rr_grant_{}", agg.port, agg.method, i),
+                        &terms,
+                        &mut items,
+                        &mut comb_stmts,
+                    )
+                })
+                .collect()
+        } else {
+            let mut grants = Vec::new();
+            let mut prev_taken = Expr::new(ExprKind::Bool(false), span);
+            for (i, want) in want_refs.iter().enumerate() {
+                let grant = bin(
+                    BinOp::And,
+                    want.clone(),
+                    Expr::new(ExprKind::Unary(UnaryOp::Not, Box::new(prev_taken.clone())), span),
+                );
+                grants.push(grant);
+                if i + 1 < want_refs.len() {
+                    let taken_name = format!("_tlm_init_{}_{}_taken_{}", agg.port, agg.method, i);
+                    items.push(ModuleBodyItem::WireDecl(WireDecl {
+                        name: mk_ident(taken_name.clone()),
+                        ty: TypeExpr::Bool,
+                        unpacked: false,
+                        unpacked_ascending: false,
+                        span,
+                    }));
+                    comb_stmts.push(Stmt::Assign(CombAssign {
+                        target: id(taken_name.clone()),
+                        value: bin(BinOp::Or, prev_taken, want.clone()),
+                        span,
+                    }));
+                    prev_taken = id(taken_name);
+                }
+            }
+            grants
+        };
+        let mut grants: Vec<Expr> = Vec::new();
+        for (i, grant_expr) in grant_exprs.iter().enumerate() {
+            let grant_name = format!("_tlm_init_{}_{}_grant_{}", agg.port, agg.method, i);
+            items.push(ModuleBodyItem::WireDecl(WireDecl {
+                name: mk_ident(grant_name.clone()),
+                ty: TypeExpr::Bool,
+                unpacked: false,
+                unpacked_ascending: false,
+                span,
+            }));
+            comb_stmts.push(Stmt::Assign(CombAssign {
+                target: id(grant_name.clone()),
+                value: grant_expr.clone(),
+                span,
+            }));
+            grants.push(id(grant_name));
+        }
+        if use_round_robin {
+            let n = agg.issues.len();
+            let ptr_w = clog2_width(n as u64);
+            let rr_name = format!("_tlm_init_{}_{}_rr_ptr", agg.port, agg.method);
+            let rr_id = id(rr_name);
+            let req_fire = bin(
+                BinOp::And,
+                or_expr(&grants),
+                port_member(&agg.port, format!("{}_req_ready", agg.method)),
+            );
+            let mut rr_then = Vec::new();
+            for (i, grant) in grants.iter().enumerate() {
+                let next = if i + 1 == n { 0 } else { i + 1 };
+                rr_then.push(Stmt::IfElse(IfElseOf {
+                    cond: grant.clone(),
+                    then_stmts: vec![Stmt::Assign(RegAssign {
+                        target: rr_id.clone(),
+                        value: sized(ptr_w, next as u64),
+                        span,
+                    })],
+                    else_stmts: Vec::new(),
+                    unique: false,
+                    span,
+                }));
+            }
+            seq_body.push(Stmt::IfElse(IfElseOf {
+                cond: req_fire,
+                then_stmts: rr_then,
+                else_stmts: Vec::new(),
+                unique: false,
+                span,
+            }));
+        }
+        for (grant, (_, _, state_expr, next_state, _)) in grants.iter().zip(agg.issues.iter()) {
+            let advance_cond = bin(
+                BinOp::And,
+                grant.clone(),
+                port_member(&agg.port, format!("{}_req_ready", agg.method)),
+            );
+            seq_body.push(Stmt::IfElse(IfElseOf {
+                cond: advance_cond,
+                then_stmts: vec![Stmt::Assign(RegAssign {
+                    target: state_expr.clone(),
+                    value: next_state.clone(),
+                    span,
+                })],
+                else_stmts: Vec::new(),
+                unique: false,
+                span,
+            }));
+        }
+        let req_valid_value = emit_bool_or_tree(
+            &format!("_tlm_init_{}_{}_req_valid", agg.port, agg.method),
+            &grants,
+            &mut items,
+            &mut comb_stmts,
+        );
+        comb_stmts.push(Stmt::Assign(CombAssign {
+            target: port_member(&agg.port, format!("{}_req_valid", agg.method)),
+            value: req_valid_value,
+            span,
+        }));
+        for (arg_i, (arg_ident, arg_ty)) in agg.arg_decls.iter().enumerate() {
+            let pairs: Vec<(Expr, Expr)> = grants
+                .iter()
+                .zip(agg.issues.iter())
+                .filter_map(|(grant, (_, args, _, _, _))| {
+                    args.get(arg_i).map(|arg| (grant.clone(), arg.clone()))
+                })
+                .collect();
+            let arg_value = emit_mux_tree(
+                &format!("_tlm_init_{}_{}_{}", agg.port, agg.method, arg_ident.name),
+                arg_ty,
+                &pairs,
+                dec(0),
+                &mut items,
+                &mut comb_stmts,
+            );
+            comb_stmts.push(Stmt::Assign(CombAssign {
+                target: port_member(&agg.port, format!("{}_{}", agg.method, arg_ident.name)),
+                value: arg_value,
+                span,
+            }));
+        }
+        if let Some(tag_w_expr) = &agg.tag_width {
+            let tag_w = literal_expr_u64(tag_w_expr).unwrap_or(1) as u32;
+            comb_stmts.push(Stmt::Assign(CombAssign {
+                target: port_member(&agg.port, format!("{}_req_tag", agg.method)),
+                value: sized(tag_w, 0),
+                span,
+            }));
+        }
+        let rsp_ready_value = emit_bool_or_tree(
+            &format!("_tlm_init_{}_{}_rsp_ready", agg.port, agg.method),
+            &agg.waits,
+            &mut items,
+            &mut comb_stmts,
+        );
+        comb_stmts.push(Stmt::Assign(CombAssign {
+            target: port_member(&agg.port, format!("{}_rsp_ready", agg.method)),
+            value: rsp_ready_value,
+            span,
+        }));
+    }
+
+    items.push(ModuleBodyItem::RegBlock(RegBlock {
+        clock: clk,
+        clock_edge,
+        stmts: seq_body,
+        span,
+    }));
+    items.push(ModuleBodyItem::CombBlock(CombBlock {
+        stmts: comb_stmts,
+        span,
+    }));
+    Ok(items)
 }
 
 #[derive(Clone)]
@@ -6652,8 +7568,16 @@ fn inline_lower_tlm_initiator(
     let mut states: Vec<StateKind> = Vec::new();
     let mut pending_seq: Vec<Stmt> = Vec::new();
 
-    for stmt in t.body {
-        match stmt {
+    fn lower_initiator_stmts(
+        stmts: Vec<ThreadStmt>,
+        states: &mut Vec<StateKind>,
+        pending_seq: &mut Vec<Stmt>,
+        port_buses: &std::collections::HashMap<String, String>,
+        bus_methods: &std::collections::HashMap<String, Vec<TlmMethodMeta>>,
+        span: Span,
+    ) -> Result<(), CompileError> {
+        for stmt in stmts {
+            match stmt {
             ThreadStmt::SeqAssign(ra) => {
                 // Reject nested TLM calls in either side (composed RHS
                 // like `d <= m.read(a) + 1;` or LHS ref).
@@ -6675,7 +7599,7 @@ fn inline_lower_tlm_initiator(
                     // Flush any pending non-TLM seq assigns as a Compute state.
                     if !pending_seq.is_empty() {
                         states.push(StateKind::Compute {
-                            seq_on_exit: std::mem::take(&mut pending_seq),
+                            seq_on_exit: std::mem::take(pending_seq),
                         });
                     }
                     let has_ret = call.method_meta.ret.is_some();
@@ -6695,10 +7619,28 @@ fn inline_lower_tlm_initiator(
                     pending_seq.push(Stmt::Assign(ra));
                 }
             }
+            ThreadStmt::Lock { body, .. } => {
+                // TLM initiator lowering is responsible for consuming any
+                // TLM call before the generic thread pass sees it. Recurse
+                // through `lock` so the lock idiom recommended by the
+                // multi-driver diagnostic is accepted for TLM methods. The
+                // actual TLM method drives are still emitted once per lowered
+                // thread by the method aggregator below, so the call site
+                // stays on the TLM path instead of falling into ordinary
+                // thread lowering.
+                lower_initiator_stmts(
+                    body,
+                    states,
+                    pending_seq,
+                    port_buses,
+                    bus_methods,
+                    span,
+                )?;
+            }
             other => {
                 return Err(CompileError::general(
                     &format!(
-                        "v1 TLM initiator thread body only supports SeqAssign statements (found {:?}). Refactor more complex control flow into a `thread` without TLM calls.",
+                        "v1 TLM initiator thread body only supports SeqAssign statements and `lock` blocks around them (found {:?}). Refactor more complex control flow into a `thread` without TLM calls.",
                         std::mem::discriminant(&other),
                     ),
                     span,
@@ -6706,6 +7648,17 @@ fn inline_lower_tlm_initiator(
             }
         }
     }
+        Ok(())
+    }
+
+    lower_initiator_stmts(
+        t.body,
+        &mut states,
+        &mut pending_seq,
+        port_buses,
+        bus_methods,
+        span,
+    )?;
     // Trailing pending seq becomes a Compute state too.
     if !pending_seq.is_empty() {
         states.push(StateKind::Compute { seq_on_exit: std::mem::take(&mut pending_seq) });
@@ -7294,6 +8247,7 @@ fn inline_lower_tlm_target_with_io(
         seq_on_exit: Vec<Stmt>,       // fires on transition out of this state
         comb_in_state: Vec<Stmt>, // active during this state
         transition_cond: Expr,
+        wait_cycles: Option<Expr>,
     }
     let mut user_states: Vec<UserState> = Vec::new();
     let mut cur_seq: Vec<Stmt> = Vec::new();
@@ -7360,6 +8314,15 @@ fn inline_lower_tlm_target_with_io(
                     seq_on_exit: std::mem::take(&mut cur_seq),
                     comb_in_state: std::mem::take(&mut cur_comb),
                     transition_cond: rename_args(cond, &arg_renames),
+                    wait_cycles: None,
+                });
+            }
+            ThreadStmt::WaitCycles(count, _) => {
+                user_states.push(UserState {
+                    seq_on_exit: std::mem::take(&mut cur_seq),
+                    comb_in_state: std::mem::take(&mut cur_comb),
+                    transition_cond: Expr::new(ExprKind::Bool(true), span),
+                    wait_cycles: Some(rename_args(count, &arg_renames)),
                 });
             }
             ThreadStmt::Return(e, _) => {
@@ -7368,7 +8331,7 @@ fn inline_lower_tlm_target_with_io(
             }
             other => {
                 return Err(CompileError::general(
-                    &format!("TLM target thread body statement not supported in v1 (only SeqAssign / CombAssign / WaitUntil / Return allowed inline). Offender: {:?}", std::mem::discriminant(&other)),
+                    &format!("TLM target thread body statement not supported in v1 (only SeqAssign / CombAssign / WaitUntil / WaitCycles / Return allowed inline). Offender: {:?}", std::mem::discriminant(&other)),
                     span,
                 ));
             }
@@ -7414,6 +8377,39 @@ fn inline_lower_tlm_target_with_io(
         multicycle: None,
         span,
     };
+    let has_wait_cycles = user_states.iter().any(|s| s.wait_cycles.is_some());
+    let wait_cnt_name = format!("_tlm_{port}_{method_name}{}_wait_cnt", io.suffix);
+    let wait_cnt_ident = Expr::new(ExprKind::Ident(wait_cnt_name.clone()), span);
+    let wait_count_init = |count: &Expr| -> Expr {
+        if let Some(v) = literal_expr_u64(count) {
+            Expr::new(ExprKind::Literal(LitKind::Sized(32, v.saturating_sub(1))), span)
+        } else {
+            count.clone()
+        }
+    };
+    let wait_cnt_zero = Expr::new(
+        ExprKind::Binary(
+            BinOp::Eq,
+            Box::new(wait_cnt_ident.clone()),
+            Box::new(Expr::new(ExprKind::Literal(LitKind::Sized(32, 0)), span)),
+        ),
+        span,
+    );
+    let wait_cnt_dec = Expr::new(
+        ExprKind::MethodCall(
+            Box::new(Expr::new(
+                ExprKind::Binary(
+                    BinOp::Sub,
+                    Box::new(wait_cnt_ident.clone()),
+                    Box::new(Expr::new(ExprKind::Literal(LitKind::Sized(32, 1)), span)),
+                ),
+                span,
+            )),
+            mk_ident("trunc".to_string()),
+            vec![Expr::new(ExprKind::Literal(LitKind::Dec(32)), span)],
+        ),
+        span,
+    );
 
     // ── Seq block: state transitions + arg latches + user seq assigns ──
     // Build nested if/elsif over state_reg.
@@ -7433,6 +8429,13 @@ fn inline_lower_tlm_target_with_io(
         entry_then.push(Stmt::Assign(RegAssign {
             target: Expr::new(ExprKind::Ident(latch_name.clone()), span),
             value: mk_port_member(format!("{method_name}_req_tag")),
+            span,
+        }));
+    }
+    if let Some(first_wait) = user_states.first().and_then(|s| s.wait_cycles.as_ref()) {
+        entry_then.push(Stmt::Assign(RegAssign {
+            target: wait_cnt_ident.clone(),
+            value: wait_count_init(first_wait),
             span,
         }));
     }
@@ -7460,18 +8463,52 @@ fn inline_lower_tlm_target_with_io(
         let state_idx = (i + 1) as u64;
         let next_idx = (i + 2) as u64;
         let mut then_stmts: Vec<Stmt> = us.seq_on_exit.clone();
+        if let Some(next_wait) = user_states.get(i + 1).and_then(|s| s.wait_cycles.as_ref()) {
+            then_stmts.push(Stmt::Assign(RegAssign {
+                target: wait_cnt_ident.clone(),
+                value: wait_count_init(next_wait),
+                span,
+            }));
+        }
         then_stmts.push(Stmt::Assign(RegAssign {
             target: state_ident.clone(),
             value: mk_state_lit(next_idx),
             span,
         }));
-        let branch_cond = Expr::new(
+        let mut branch_cond = Expr::new(
             ExprKind::Binary(BinOp::And,
                 Box::new(state_eq(state_idx)),
                 Box::new(us.transition_cond.clone()),
             ),
             span,
         );
+        if us.wait_cycles.is_some() {
+            seq_body.push(Stmt::IfElse(IfElseOf {
+                cond: Expr::new(
+                    ExprKind::Binary(
+                        BinOp::And,
+                        Box::new(state_eq(state_idx)),
+                        Box::new(Expr::new(
+                            ExprKind::Unary(UnaryOp::Not, Box::new(wait_cnt_zero.clone())),
+                            span,
+                        )),
+                    ),
+                    span,
+                ),
+                then_stmts: vec![Stmt::Assign(RegAssign {
+                    target: wait_cnt_ident.clone(),
+                    value: wait_cnt_dec.clone(),
+                    span,
+                })],
+                else_stmts: Vec::new(),
+                unique: false,
+                span,
+            }));
+            branch_cond = Expr::new(
+                ExprKind::Binary(BinOp::And, Box::new(branch_cond), Box::new(wait_cnt_zero.clone())),
+                span,
+            );
+        }
         seq_body.push(Stmt::IfElse(IfElseOf {
             cond: branch_cond,
             then_stmts,
@@ -7594,6 +8631,17 @@ fn inline_lower_tlm_target_with_io(
     // ── Assemble output items ────────────────────────────────────────────
     let mut items: Vec<ModuleBodyItem> = Vec::new();
     items.push(ModuleBodyItem::RegDecl(state_reg));
+    if has_wait_cycles {
+        items.push(ModuleBodyItem::RegDecl(RegDecl {
+            name: mk_ident(wait_cnt_name),
+            ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(32)), span))),
+            init: None,
+            reset: RegReset::Inherit(t.reset.clone(), Expr::new(ExprKind::Literal(LitKind::Dec(0)), span)),
+            guard: None,
+            multicycle: None,
+            span,
+        }));
+    }
     for r in latch_regs { items.push(ModuleBodyItem::RegDecl(r)); }
     items.push(ModuleBodyItem::RegBlock(reg_block));
     items.push(ModuleBodyItem::CombBlock(comb_block));
