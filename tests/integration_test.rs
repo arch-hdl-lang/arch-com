@@ -6776,7 +6776,13 @@ fn test_implement_initiator_single_compiles_end_to_end() {
         "bus signals should be driven:\n{sv}");
 }
 
+// TODO: stale after PR #348 (codex/tlm-mux-balanced-trees) added multi-
+// implementer support — the rejection this test asserted no longer
+// fires (`lower_tlm_initiator_calls` now succeeds for the multi-impl
+// case). Ignored to unblock CI on subsequent PRs; either delete this
+// test or rewrite it to assert the new mux-tree behavior.
 #[test]
+#[ignore]
 fn test_implement_initiator_multi_implementer_rejected() {
     // PR-tlm-i3: multi-implementer initiator → targeted error pointing
     // at PR-tlm-i4.
