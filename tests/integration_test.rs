@@ -13706,9 +13706,9 @@ end module M
 "#;
     let (_sv, sdc) = compile_to_sv_with_sdc(source);
     let sdc = sdc.expect(".sdc expected when multicycle reg is present");
-    assert!(sdc.contains("set_multicycle_path 3 -setup -to {M/result_reg[*]}"),
+    assert!(sdc.contains("set_multicycle_path 3 -setup -to [get_cells {M/result_reg*}]"),
         "expected setup constraint with N=3; got:\n{}", sdc);
-    assert!(sdc.contains("set_multicycle_path 2 -hold -to {M/result_reg[*]}"),
+    assert!(sdc.contains("set_multicycle_path 2 -hold -to [get_cells {M/result_reg*}]"),
         "expected hold constraint with N-1=2; got:\n{}", sdc);
     assert!(sdc.contains("Module M: multicycle reg result"),
         "expected per-reg header comment; got:\n{}", sdc);
@@ -13764,9 +13764,9 @@ end module M
 "#;
     let (_sv, sdc) = compile_to_sv_with_sdc(source);
     let sdc = sdc.expect("unused multicycle reg still emits SDC");
-    assert!(sdc.contains("set_multicycle_path 4 -setup -to {M/_unused_reg[*]}"),
+    assert!(sdc.contains("set_multicycle_path 4 -setup -to [get_cells {M/_unused_reg*}]"),
         "got:\n{}", sdc);
-    assert!(sdc.contains("set_multicycle_path 3 -hold -to {M/_unused_reg[*]}"),
+    assert!(sdc.contains("set_multicycle_path 3 -hold -to [get_cells {M/_unused_reg*}]"),
         "got:\n{}", sdc);
 }
 
@@ -13835,8 +13835,8 @@ end fsm F
 "#;
     let (_sv, sdc) = compile_to_sv_with_sdc(source);
     let sdc = sdc.expect(".sdc expected for multicycle reg inside fsm");
-    assert!(sdc.contains("set_multicycle_path 5 -setup -to {F/slow_r_reg[*]}"),
+    assert!(sdc.contains("set_multicycle_path 5 -setup -to [get_cells {F/slow_r_reg*}]"),
         "got:\n{}", sdc);
-    assert!(sdc.contains("set_multicycle_path 4 -hold -to {F/slow_r_reg[*]}"),
+    assert!(sdc.contains("set_multicycle_path 4 -hold -to [get_cells {F/slow_r_reg*}]"),
         "got:\n{}", sdc);
 }
