@@ -81,6 +81,7 @@ synth_one() {
       clean
       stat -liberty $LIB
       ltp -noff
+      write_verilog $OUT_DIR/${top}_synth.v
     " 2>&1 | tee "$stat_out"
   else
     yosys -p "

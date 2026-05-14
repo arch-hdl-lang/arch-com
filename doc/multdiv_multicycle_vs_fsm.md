@@ -145,31 +145,98 @@ Both designs run through the same flow.
    regs lower to plain `dfxtp_1` (area 20.02). This is a property of
    the `Reset<Sync>` declaration in the example, not of `multicycle`.
 
-4. **Critical-path delay is not reported** here. Yosys 0.64's `ltp`
-   pass after `abc -liberty` gave degenerate length-0/1 paths, which
-   means it lost the cell-level depth after the abc mapping. A real
-   ns-level critical path would require OpenSTA or a commercial STA
-   tool. See caveats.
+4. **Critical-path delay** is broken out in the STA section below.
+   The headline finding: with multicycle paths actually honored, the
+   design's combinational max-Fmax is **264 MHz**, vs **87 MHz** for
+   the FSM. Without multicycle honored, the multicycle design falls
+   to **7.3 MHz** (single-cycle treatment of the divide).
+
+## Static timing analysis (OpenSTA 3.1.0)
+
+Post-synth gate-level netlists (Sky130 tt) were re-run through
+OpenSTA 3.1.0 at `~/OpenSTA/build/sta`. Driver:
+`examples/multdiv_multicycle_sta.{tcl,sh}`. Each design was swept to
+find the smallest target clock period that still produces WNS = 0.
+
+| Design                                  | Critical path (ns) | Fmax (MHz) | Critical-path endpoint                              |
+|-----------------------------------------|--------------------|------------|-----------------------------------------------------|
+| `ibex_multdiv_fast` (FSM)               | 11.372             |    ~87     | `op_b_i[1]` → `imd_val_d_o[32]` (combinational out) |
+| `MultdivMulticycle`, multicycle honored | 1.447 (control)    |   ~264     | `start` → `op_is_mul` flop                          |
+| `MultdivMulticycle`, NO multicycle      | 136.235            |     ~7.3   | `operand_b[17]` → `div_result[0]` flop              |
+
+(Bracket period sweeps: FSM passes at 11.5 ns and fails at 11.4 ns;
+multicycle-honored passes at 3.79 ns and fails at 3.78 ns;
+multicycle-unhonored passes at 137 ns and fails at 136 ns.)
+
+### Interpretation
+
+The three rows are the three regimes a `multicycle` reg can be in:
+
+- **Multicycle-honored** (row 2): the synth/STA tool reads the SDC,
+  applies the 3-cycle setup window to `mul_result_reg[*]` and the
+  36-cycle window to `div_result_reg[*]`, and the multiply / divide
+  paths are no longer the binding constraint. The binding path
+  becomes the small control logic (`start` → `op_is_mul`). Min period
+  is bounded by `divide_delay / 36 = 136.235 / 36 ≈ 3.785 ns`. That
+  is the regime `multicycle` is *intended* to deliver.
+- **Multicycle-unhonored** (row 3): the SDC is dropped, every flop is
+  treated as single-cycle, so the binding path is the full
+  combinational divide. This is what yosys's own ABC mapping was
+  doing in the area-only synthesis section above — the cell counts up
+  there are slightly inflated because ABC tried to compress an
+  unconstrained 136-ns path. Multicycle annotation does NOT help
+  area-wise when downstream tools don't honor the SDC.
+- **FSM** (row 1): explicit per-state scheduling caps the per-cycle
+  delay at the level a single shared-adder MAC can sustain. Min
+  period is ~11.4 ns, almost an order of magnitude faster than the
+  multicycle design with the multicycle paths NOT honored.
+
+### Honest framing
+
+The multicycle approach wins on Fmax **if and only if** the downstream
+tool actually retimes / accepts a multi-period path. With the SDC
+respected, multicycle gives ~3x the FSM's Fmax in this example
+(264 vs 87 MHz). With the SDC dropped, the FSM wins by an order of
+magnitude.
+
+### arch-com SDC parser issue (filed)
+
+While running this experiment, OpenSTA 3.1.0 **rejected** the literal
+SDC arch-com emits. The line
+
+```sdc
+set_multicycle_path 3 -setup -to {MultdivMulticycle/mul_result_reg[*]}
+```
+
+fails OpenSTA with `Error: stoi: no conversion`. The brace-pattern
+shorthand for the `-to` object form is not part of the OpenSTA `-to`
+grammar; OpenSTA expects `-to [get_pins ...]` or `-to [get_cells ...]`.
+A SECOND issue is that yosys's flop-instance renaming (`_NNNN_`
+anonymized) means even a corrected SDC syntax referencing
+`mul_result_reg[*]` would not resolve against the post-synth netlist.
+
+The numbers in row 2 of the STA table above come from a manual
+translation of arch-com's SDC: a small TCL helper in
+`examples/multdiv_multicycle_sta.tcl` walks all DFF D-pins, looks at
+the cell's Q-net, and collects D-pins whose Q drives a net matching
+the original signal name. It then issues
+`set_multicycle_path 3 -setup -to <pin_list>` against that list. This
+demonstrates the *value* of multicycle when honored, but it does
+**not** validate arch-com's emitted SDC on OpenSTA — that SDC is
+currently not consumable by OpenSTA 3.1.0 as-emitted.
+
+Tracking item: file arch-com issue for SDC format compatibility with
+OpenSTA's `-to` grammar (likely needs to switch to
+`-to [get_pins ...]` form, or emit an alternative SDC variant for
+open-source flows).
 
 ## Caveats
 
 These numbers come with limits worth flagging:
 
-- **No SDC consumption**. Yosys + ABC do not read SDC, so the
-  `set_multicycle_path` constraints emitted alongside
-  `multdiv_multicycle.sv` are ignored by this flow. The synth depth
-  shown is therefore the WORST-CASE (single-cycle treatment of the
-  multicycle paths). A commercial flow that honors the SDC could
-  retime or resource-share within the declared 3-cycle / 36-cycle
-  windows, which would change both area and critical-path delay. The
-  case for `multicycle` as a synthesis-deliverable mechanism therefore
-  rests on the commercial tool flow — these yosys numbers are a lower
-  bound on how the design fares without any multicycle-aware retiming.
-
-- **No ns-level timing**. Critical path delay (ns / ps) would require
-  OpenSTA or a commercial STA tool. The `ltp -noff` pass returned
-  degenerate length-0/1 paths post-abc-mapping. Cell count + chip
-  area are the comparable signals here.
+- **arch-com SDC not directly consumable by OpenSTA**. The values in
+  the "multicycle honored" row come from a manual TCL translation of
+  the SDC; see the section above.
 
 - **FSM is more featureful**. ibex_multdiv_fast handles MULH, signed
   mode, REM, and divide-by-zero. The multicycle design covers only
@@ -213,14 +280,22 @@ $ cd ~/github/arch-com
 $ cargo build --release
 $ cd ~/github/arch-ibex && make build      # produces build/ibex_multdiv_fast.sv
 $ cd ~/github/arch-com
-$ bash examples/multdiv_multicycle_synth.sh
+$ bash examples/multdiv_multicycle_synth.sh   # synth + emit gate netlists
+$ bash examples/multdiv_multicycle_sta.sh     # STA + Fmax sweep (needs OpenSTA)
 ```
 
 Outputs:
 - `/tmp/multdiv-synth/multdiv_multicycle.sv` + `.sdc`
 - `/tmp/multdiv-synth/ibex_multdiv_fast.sv`
 - `/tmp/multdiv-synth/{multdiv_multicycle,ibex_multdiv_fast}.stat.log`
+- `/tmp/multdiv-synth/{MultdivMulticycle,ibex_multdiv_fast}_synth.v`
+  (post-synth gate-level netlists for STA)
+- `/tmp/multdiv-synth/sta_*.log` (STA WNS/TNS + critical paths)
 
-To re-run with a different PDK: `LIB=/path/to/your.lib bash
-examples/multdiv_multicycle_synth.sh`. Without any `.lib`, the script
-falls back to generic-cell synth and reports unmapped cell counts only.
+To re-run with a different PDK:
+`LIB=/path/to/your.lib bash examples/multdiv_multicycle_synth.sh`.
+Without any `.lib`, the script falls back to generic-cell synth and
+reports unmapped cell counts only (no STA in that mode).
+
+To use a different OpenSTA install:
+`STA=/path/to/sta bash examples/multdiv_multicycle_sta.sh`.
