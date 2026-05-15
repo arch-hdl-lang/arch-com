@@ -1519,6 +1519,14 @@ fn eval_const_expr(expr: &Expr) -> u64 {
 /// for anything it can't fold (e.g. non-literal port reads), matching
 /// the conservative behavior of the legacy single-arg version.
 fn eval_const_expr_with_params(expr: &Expr, params: &[ParamDecl]) -> u64 {
+    eval_const_expr_with_params_seen(expr, params, &mut HashSet::new())
+}
+
+fn eval_const_expr_with_params_seen(
+    expr: &Expr,
+    params: &[ParamDecl],
+    seen_params: &mut HashSet<String>,
+) -> u64 {
     match &expr.kind {
         ExprKind::Literal(LitKind::Dec(v)) => *v,
         ExprKind::Literal(LitKind::Hex(v)) => *v,
@@ -1527,17 +1535,22 @@ fn eval_const_expr_with_params(expr: &Expr, params: &[ParamDecl]) -> u64 {
         ExprKind::Ident(name) => {
             if let Some(p) = params.iter().find(|p| p.name.name == *name) {
                 if let Some(d) = &p.default {
-                    return eval_const_expr_with_params(d, params);
+                    if !seen_params.insert(name.clone()) {
+                        return 0;
+                    }
+                    let value = eval_const_expr_with_params_seen(d, params, seen_params);
+                    seen_params.remove(name);
+                    return value;
                 }
             }
             0
         }
         ExprKind::Clog2(a) => {
-            let v = eval_const_expr_with_params(a, params);
+            let v = eval_const_expr_with_params_seen(a, params, seen_params);
             if v <= 1 { 0 } else { 64 - (v - 1).leading_zeros() as u64 }
         }
         ExprKind::Unary(op, a) => {
-            let v = eval_const_expr_with_params(a, params);
+            let v = eval_const_expr_with_params_seen(a, params, seen_params);
             match op {
                 UnaryOp::Not => !v,
                 UnaryOp::Neg => v.wrapping_neg(),
@@ -1545,8 +1558,8 @@ fn eval_const_expr_with_params(expr: &Expr, params: &[ParamDecl]) -> u64 {
             }
         }
         ExprKind::Binary(op, l, r) => {
-            let lv = eval_const_expr_with_params(l, params);
-            let rv = eval_const_expr_with_params(r, params);
+            let lv = eval_const_expr_with_params_seen(l, params, seen_params);
+            let rv = eval_const_expr_with_params_seen(r, params, seen_params);
             match op {
                 BinOp::Add => lv.wrapping_add(rv),
                 BinOp::Sub => lv.wrapping_sub(rv),
@@ -1656,6 +1669,25 @@ fn cast_to_bits(expr: &str, bits: u32) -> String {
     }
 }
 
+/// Cast expression to a signed HDL scalar width and sign-extend into the
+/// selected C++ signed storage type. For example, SInt<40> uses int64_t
+/// storage but bit 39 is the HDL sign bit, so the 40-bit truncated pattern
+/// must be shifted through bit 63 before arithmetic use.
+fn cast_to_signed_bits(expr: &str, bits: u32) -> String {
+    if bits >= 64 {
+        format!("({})({})", cpp_sint(bits), expr)
+    } else {
+        let mask = (1u64 << bits) - 1;
+        let cpp_bits = if bits <= 8 { 8 }
+            else if bits <= 16 { 16 }
+            else if bits <= 32 { 32 }
+            else { 64 };
+        let shift = cpp_bits - bits;
+        let ty = cpp_sint(bits);
+        format!("(({ty})(((uint64_t)({expr}) & 0x{mask:X}ULL) << {shift}) >> {shift})")
+    }
+}
+
 /// Bit-range extraction from a narrow value: `(expr >> lo) & mask`.
 fn bit_range(expr: &str, hi: u32, lo: u32) -> String {
     let width = hi - lo + 1;
@@ -1705,6 +1737,8 @@ struct Ctx<'a> {
     wide_names:  &'a HashSet<String>,
     /// Signal name → bit width for known signals (used for concat width inference).
     widths:      &'a HashMap<String, u32>,
+    /// Signal names whose HDL scalar type is signed.
+    signed_names: &'a HashSet<String>,
     posedge_lhs: bool,
     /// FSM mode: regs are public members, no `_` prefix on reads
     fsm_mode:    bool,
@@ -1749,12 +1783,19 @@ impl<'a> Ctx<'a> {
         bus_ports:  &'a HashSet<String>,
     ) -> Self {
         static EMPTY_RESET_LEVELS: std::sync::OnceLock<HashMap<String, ResetLevel>> = std::sync::OnceLock::new();
+        static EMPTY_SIGNED_NAMES: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
         let reset_levels = EMPTY_RESET_LEVELS.get_or_init(HashMap::new);
+        let signed_names = EMPTY_SIGNED_NAMES.get_or_init(HashSet::new);
         static EMPTY_PARAMS: &[ParamDecl] = &[];
         Ctx { reg_names, port_names, let_names, let_values: None, inst_names, wide_names,
-              widths, posedge_lhs: false, fsm_mode: false, enum_map, bus_ports,
+              widths, signed_names, posedge_lhs: false, fsm_mode: false, enum_map, bus_ports,
               reset_levels, vec_names: None, vec_sizes: None, fsm_vec_port_regs: None,
               ident_subst: None, coverage: None, params: EMPTY_PARAMS }
+    }
+
+    fn with_signed_names(mut self, signed_names: &'a HashSet<String>) -> Self {
+        self.signed_names = signed_names;
+        self
     }
 
     fn with_params(mut self, params: &'a [ParamDecl]) -> Self {
@@ -2027,6 +2068,43 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
     }
 }
 
+fn infer_expr_signed(expr: &Expr, ctx: &Ctx) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => ctx.signed_names.contains(name.as_str()),
+        ExprKind::FieldAccess(base, field) => {
+            if let ExprKind::Ident(base_name) = &base.kind {
+                let flat = if ctx.bus_ports.contains(base_name.as_str()) {
+                    format!("{}_{}", base_name, field.name)
+                } else {
+                    format!("{}.{}", base_name, field.name)
+                };
+                ctx.signed_names.contains(flat.as_str())
+            } else {
+                false
+            }
+        }
+        ExprKind::Cast(_, ty) => matches!(ty.as_ref(), TypeExpr::SInt(_)),
+        ExprKind::Signed(_) => true,
+        ExprKind::Unsigned(_) => false,
+        ExprKind::MethodCall(base, method, _)
+            if matches!(method.name.as_str(), "trunc" | "sext" | "resize" | "reverse") =>
+        {
+            infer_expr_signed(base, ctx)
+        }
+        ExprKind::Unary(UnaryOp::Neg, _) => true,
+        ExprKind::Unary(_, inner) => infer_expr_signed(inner, ctx),
+        ExprKind::Binary(op, lhs, rhs) => match op {
+            BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt |
+            BinOp::Lte | BinOp::Gte | BinOp::And | BinOp::Or => false,
+            _ => infer_expr_signed(lhs, ctx) || infer_expr_signed(rhs, ctx),
+        },
+        ExprKind::Ternary(_, then_expr, else_expr) => {
+            infer_expr_signed(then_expr, ctx) || infer_expr_signed(else_expr, ctx)
+        }
+        _ => false,
+    }
+}
+
 // ── Expression emitter ────────────────────────────────────────────────────────
 
 /// Lower a Vec method call (any/all/count/contains/reduce_*) to an
@@ -2056,7 +2134,7 @@ fn lower_vec_method_cpp(
         let sub_ctx = Ctx {
             reg_names: ctx.reg_names, port_names: ctx.port_names,
             let_names: ctx.let_names, let_values: ctx.let_values, inst_names: ctx.inst_names,
-            wide_names: ctx.wide_names, widths: ctx.widths,
+            wide_names: ctx.wide_names, widths: ctx.widths, signed_names: ctx.signed_names,
             posedge_lhs: ctx.posedge_lhs, fsm_mode: ctx.fsm_mode,
             enum_map: ctx.enum_map, bus_ports: ctx.bus_ports,
             reset_levels: ctx.reset_levels, vec_names: ctx.vec_names,
@@ -2614,6 +2692,8 @@ fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &Ctx) -> Str
                 if base_w > 128 && bits <= 64 {
                     // VlWide → narrow: extract low bits via word array
                     format!("({})_arch_vw_bits({b}.data(), {}, 0)", cpp_uint(bits), bits - 1)
+                } else if infer_expr_signed(base, ctx) {
+                    cast_to_signed_bits(&b, bits)
                 } else {
                     cast_to_bits(&b, bits)
                 }
@@ -3568,6 +3648,57 @@ fn type_bits_te_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> u32 {
     }
 }
 
+fn type_is_signed_scalar(ty: &TypeExpr) -> bool {
+    matches!(ty, TypeExpr::SInt(_))
+}
+
+/// Collect scalar names whose HDL type is signed. This parallels the width
+/// map so fallback storage paths (implicit instance-output fields, pipe_reg
+/// stages, and expression casts) can preserve signedness for 33..=64-bit
+/// `SInt` values instead of treating them as unsigned bit buckets.
+fn build_signed_names(ports: &[PortDecl], body: &[ModuleBodyItem]) -> HashSet<String> {
+    let mut s = HashSet::new();
+    for p in ports {
+        if type_is_signed_scalar(&p.ty) {
+            s.insert(p.name.name.clone());
+        }
+    }
+    for item in body {
+        match item {
+            ModuleBodyItem::RegDecl(r) => {
+                if type_is_signed_scalar(&r.ty) {
+                    s.insert(r.name.name.clone());
+                }
+            }
+            ModuleBodyItem::WireDecl(w) => {
+                if type_is_signed_scalar(&w.ty) {
+                    s.insert(w.name.name.clone());
+                }
+            }
+            ModuleBodyItem::LetBinding(l) => {
+                if l.ty.as_ref().map_or(false, type_is_signed_scalar) {
+                    s.insert(l.name.name.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    for item in body {
+        if let ModuleBodyItem::PipeRegDecl(p) = item {
+            if s.contains(&p.source.name) {
+                for i in 0..p.stages {
+                    if i == p.stages - 1 {
+                        s.insert(p.name.name.clone());
+                    } else {
+                        s.insert(format!("{}_stg{}", p.name.name, i + 1));
+                    }
+                }
+            }
+        }
+    }
+    s
+}
+
 /// Collect names whose bit width exceeds 64 (require wide handling).
 fn collect_wide_names(ports: &[PortDecl], body: &[ModuleBodyItem], params: &[ParamDecl]) -> HashSet<String> {
     let mut s = HashSet::new();
@@ -3642,12 +3773,16 @@ impl<'a> SimCodegen<'a> {
             }
             let empty_bus: HashSet<String> = HashSet::new();
             let mut local_widths: HashMap<String, u32> = HashMap::new();
+            let mut local_signed_names: HashSet<String> = HashSet::new();
             for a in &f.args {
                 local_widths.insert(a.name.name.clone(), match &a.ty {
                     TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width(w),
                     TypeExpr::Bool | TypeExpr::Bit => 1,
                     _ => 32,
                 });
+                if type_is_signed_scalar(&a.ty) {
+                    local_signed_names.insert(a.name.name.clone());
+                }
             }
             for item in &f.body {
                 if let FunctionBodyItem::Let(l) = item {
@@ -3657,10 +3792,14 @@ impl<'a> SimCodegen<'a> {
                         _ => 32,
                     };
                     local_widths.insert(l.name.name.clone(), w);
+                    if l.ty.as_ref().map_or(false, type_is_signed_scalar) {
+                        local_signed_names.insert(l.name.name.clone());
+                    }
                 }
             }
             let ctx = Ctx::new(&empty_regs, &arg_ports, &empty_lets, &empty_insts,
-                               &empty_wide, &local_widths, &enum_map, &empty_bus);
+                               &empty_wide, &local_widths, &enum_map, &empty_bus)
+                .with_signed_names(&local_signed_names);
 
             // Recursive emitter for nested function-body items (if/elsif/else
             // with return statements inside). Pre-fix the if/for/assign arms
@@ -4000,11 +4139,13 @@ impl<'a> SimCodegen<'a> {
         let inst_out    = collect_inst_output_signals(&m.body);
         let mut wide_names  = collect_wide_names(&m.ports, &m.body, &m.params);
         let mut widths      = build_widths(&m.ports, &m.body, &m.params);
+        let mut signed_names = build_signed_names(&m.ports, &m.body);
 
         // Add bus flattened signals to wide_names and widths
         for (flat_name, flat_ty) in &bus_flat {
             let bits = type_bits_te(flat_ty);
             widths.insert(flat_name.clone(), bits);
+            if type_is_signed_scalar(flat_ty) { signed_names.insert(flat_name.clone()); }
             if bits > 64 { wide_names.insert(flat_name.clone()); }
         }
 
@@ -4380,7 +4521,33 @@ impl<'a> SimCodegen<'a> {
                     let subst_ty = subst_type_expr_sim(&ty, &pm);
                     let bits = type_bits_te_with_params(&subst_ty, &m.params);
                     widths.entry(format!("{parent_name}_{sname}")).or_insert(bits);
+                    if type_is_signed_scalar(&subst_ty) {
+                        signed_names.insert(format!("{parent_name}_{sname}"));
+                    }
                 }
+            }
+        }
+
+        // Preserve signedness for implicit scalar fields that capture
+        // sub-instance outputs. Width-only fallback storage would otherwise
+        // choose uint64_t for an SInt<40> child output and expose a large
+        // unsigned value to parent/native-sim code.
+        for (inst_idx, inst) in insts.iter().enumerate() {
+            let mut sub_params = self.lookup_inst_params(&inst.module_name.name);
+            for pa in &inst.param_assigns {
+                if let Some(p) = sub_params.iter_mut().find(|p| p.name.name == pa.name.name) {
+                    p.default = Some(pa.value.clone());
+                }
+            }
+            let sub_ports = self.lookup_inst_ports(&inst.module_name.name);
+            for conn in &expanded_conns[inst_idx] {
+                if conn.direction != ConnectDir::Output { continue; }
+                let ExprKind::Ident(sig_name) = &conn.signal.kind else { continue; };
+                let Some(port) = sub_ports.iter().find(|p| p.name.name == conn.port_name.name) else { continue; };
+                if type_is_signed_scalar(&port.ty) {
+                    signed_names.insert(sig_name.clone());
+                }
+                widths.entry(sig_name.clone()).or_insert(type_bits_te_with_params(&port.ty, &sub_params));
             }
         }
 
@@ -4909,7 +5076,7 @@ impl<'a> SimCodegen<'a> {
         for item in &m.body {
             if let ModuleBodyItem::PipeRegDecl(p) = item {
                 let w = widths.get(&p.source.name).copied().unwrap_or(32);
-                let ty = cpp_uint(w);
+                let ty = if signed_names.contains(p.source.name.as_str()) { cpp_sint(w) } else { cpp_uint(w) };
                 for i in 0..p.stages {
                     let name = if i == p.stages - 1 {
                         p.name.name.clone()
@@ -4938,7 +5105,7 @@ impl<'a> SimCodegen<'a> {
                     // `widths`). Default to uint32_t when the width isn't
                     // tracked — preserves prior behaviour for plain scalars.
                     let ty = widths.get(sig_name).copied()
-                        .map(cpp_uint)
+                        .map(|w| if signed_names.contains(sig_name.as_str()) { cpp_sint(w) } else { cpp_uint(w) })
                         .unwrap_or("uint32_t");
                     h.push_str(&format!("  {ty} {sig_name};\n"));
                 }
@@ -5046,6 +5213,7 @@ impl<'a> SimCodegen<'a> {
         // Returns (input_code, comb_call, output_read_code) per inst
         let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                            &wide_names, &widths, &enum_map, &bus_port_names)
+                      .with_signed_names(&signed_names)
                       .with_reset_levels(&reset_levels)
                       .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes)
                       .with_let_values(&let_values)
@@ -5497,7 +5665,7 @@ impl<'a> SimCodegen<'a> {
             // Declare _n_ temporaries for pipe_reg stages
             for p in &pipe_regs {
                 let w = widths.get(&p.source.name).copied().unwrap_or(32);
-                let ty = cpp_uint(w);
+                let ty = if signed_names.contains(p.source.name.as_str()) { cpp_sint(w) } else { cpp_uint(w) };
                 for i in 0..p.stages {
                     let name = if i == p.stages - 1 {
                         p.name.name.clone()
@@ -5511,6 +5679,7 @@ impl<'a> SimCodegen<'a> {
 
             let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                &wide_names, &widths, &enum_map, &bus_port_names)
+                          .with_signed_names(&signed_names)
                           .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes).posedge()
                           .with_coverage(cov_handle)
                           .with_let_values(&let_values)
@@ -5554,7 +5723,8 @@ impl<'a> SimCodegen<'a> {
                                     _ => {
                                         let tmp_ctx = Ctx::new(&reg_names, &port_names,
                                             &let_names, &inst_names, &wide_names, &widths,
-                                            &enum_map, &bus_port_names);
+                                            &enum_map, &bus_port_names)
+                                            .with_signed_names(&signed_names);
                                         cpp_expr(expr, &tmp_ctx)
                                     }
                                 }
@@ -5702,6 +5872,7 @@ impl<'a> SimCodegen<'a> {
                     }
                     let ctx_pe = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                            &wide_names, &widths, &enum_map, &bus_port_names)
+                                       .with_signed_names(&signed_names)
                                        .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes)
                                        .with_let_values(&let_values)
                                        .with_params(&m.params);
@@ -5926,6 +6097,7 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
         let ctx_comb = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                 &wide_names, &widths, &enum_map, &bus_port_names)
+                           .with_signed_names(&signed_names)
                            .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes)
                            .with_coverage(cov_handle)
                            .with_let_values(&let_values)
@@ -5973,7 +6145,7 @@ impl<'a> SimCodegen<'a> {
                                     let sub_ctx = Ctx {
                                         reg_names: ctx_comb.reg_names, port_names: ctx_comb.port_names,
                                         let_names: ctx_comb.let_names, let_values: ctx_comb.let_values, inst_names: ctx_comb.inst_names,
-                                        wide_names: ctx_comb.wide_names, widths: ctx_comb.widths,
+                                        wide_names: ctx_comb.wide_names, widths: ctx_comb.widths, signed_names: ctx_comb.signed_names,
                                         posedge_lhs: ctx_comb.posedge_lhs, fsm_mode: ctx_comb.fsm_mode,
                                         enum_map: ctx_comb.enum_map, bus_ports: ctx_comb.bus_ports,
                                         reset_levels: ctx_comb.reset_levels, vec_names: ctx_comb.vec_names,
