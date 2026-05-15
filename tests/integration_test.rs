@@ -12566,6 +12566,50 @@ fn test_sint_40_param_width_emits_int64_storage_and_signed_trunc() {
 }
 
 #[test]
+fn test_thread_driven_sint_reg_keeps_parent_wire_type() {
+    let source = r#"
+        domain SysDomain
+          freq_mhz: 250
+        end domain SysDomain
+
+        module SignedThread
+          local param A: const = 21;
+          local param B: const = 16;
+          local param P: const = A + B;
+          local param W: const = P + 8;
+
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port start: in Bool;
+          port weight: in UInt<A>;
+          port val: in SInt<B>;
+          port y: out SInt<W>;
+
+          reg acc: SInt<W> reset rst => 0;
+          let weight_signed: SInt<A> = signed(weight);
+          let product_raw: SInt<P> = weight_signed * val;
+          let product_ext: SInt<W> = product_raw.sext<W>();
+          let next_acc: SInt<W> = (acc + product_ext).trunc<W>();
+
+          thread T on clk rising, rst high
+            wait until start;
+            acc <= next_acc;
+          end thread T
+
+          comb
+            y = next_acc;
+          end comb
+        end module SignedThread
+    "#;
+
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("logic signed [W-1:0] acc;"),
+            "parent-side wire for thread-driven SInt reg should keep signedness/width:\n{sv}");
+    assert!(sv.contains("assign next_acc = W'(acc + product_ext);"),
+            "parent expression should see typed signed acc/product_ext and emit the trunc assignment:\n{sv}");
+}
+
+#[test]
 fn test_sint_40_inst_output_wire_keeps_signed_storage() {
     let source = r#"
         module Bf16DotEngine

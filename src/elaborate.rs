@@ -2782,15 +2782,24 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
     };
     new_body.push(ModuleBodyItem::Inst(inst));
 
-    // Remove RegDecls for thread-driven regs (now inside merged module)
+    // Thread-driven regs live inside the synthesized threads module. Keep a
+    // typed parent-side wire for each moved reg so ordinary parent logic can
+    // still read the instance output with the original signedness/width.
     let thread_driven: HashSet<String> = all_seq_driven.iter().chain(all_comb_driven.iter()).cloned().collect();
-    new_body.retain(|item| {
-        if let ModuleBodyItem::RegDecl(r) = item {
-            !thread_driven.contains(&r.name.name)
-        } else {
-            true
+    for item in &mut new_body {
+        let ModuleBodyItem::RegDecl(r) = item else {
+            continue;
+        };
+        if thread_driven.contains(&r.name.name) {
+            *item = ModuleBodyItem::WireDecl(WireDecl {
+                name: r.name.clone(),
+                ty: r.ty.clone(),
+                unpacked: false,
+                unpacked_ascending: false,
+                span: r.span,
+            });
         }
-    });
+    }
 
     let new_module = ModuleDecl { body: new_body, ..m };
     let mut extras = synthesized_arbiters;
