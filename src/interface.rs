@@ -381,16 +381,20 @@ pub(crate) fn emit_ports_with_deps(
                 (true, false) => "unpacked ",
                 _             => "",
             };
-            // For port reg with reset, include reset clause
+            // Registered output ports are emitted in the canonical
+            // `pipe_reg<T, N>` spelling. This includes legacy `port reg`
+            // source declarations and compiler-synthesized thread ports;
+            // `.archi` files should expose latency in the port signature.
             if let Some(ref ri) = p.reg_info {
+                let reg_ty = format!("pipe_reg<{unpacked_kw}{ty}, {}>", ri.latency);
                 match &ri.reset {
                     RegReset::Inherit(rst, val) | RegReset::Explicit(rst, _, _, val) => {
                         let rst_name = &rst.name;
                         let rst_val = expr_str(val);
-                        s.push_str(&format!("  port reg {name}: {dir} {unpacked_kw}{ty} reset {rst_name} => {rst_val};\n"));
+                        s.push_str(&format!("  port {name}: {dir} {reg_ty} reset {rst_name} => {rst_val};\n"));
                     }
                     RegReset::None => {
-                        s.push_str(&format!("  port reg {name}: {dir} {unpacked_kw}{ty};\n"));
+                        s.push_str(&format!("  port {name}: {dir} {reg_ty};\n"));
                     }
                 }
             } else {

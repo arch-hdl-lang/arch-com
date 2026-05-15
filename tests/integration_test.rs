@@ -10327,6 +10327,44 @@ end module AscIface
 }
 
 #[test]
+fn test_archi_registered_output_emits_pipe_reg_signature() {
+    // `.archi` is the cross-file contract, so registered output latency should
+    // be visible there even when the source used the deprecated `port reg`
+    // spelling.
+    let source = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module PipeIface
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port reg legacy_q: out UInt<8> reset rst => 0;
+  port modern_q: out pipe_reg<SInt<16>, 2> reset rst => 0;
+end module PipeIface
+";
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse error");
+    let item = parsed.items.iter()
+        .find(|i| matches!(i, arch::ast::Item::Module(_)))
+        .expect("expected a module item");
+    let body = arch::interface::emit_interface(item).expect("emit_interface");
+    assert!(
+        body.contains("port legacy_q: out pipe_reg<UInt<8>, 1> reset rst => 0;"),
+        ".archi should canonicalize legacy port reg to pipe_reg<T,1>: {body}"
+    );
+    assert!(
+        body.contains("port modern_q: out pipe_reg<SInt<16>, 2> reset rst => 0;"),
+        ".archi should preserve pipe_reg latency: {body}"
+    );
+    assert!(
+        !body.contains("port reg"),
+        ".archi should not emit deprecated port reg spelling: {body}"
+    );
+}
+
+#[test]
 fn test_unpacked_on_non_vec_is_rejected() {
     let source = r#"
 module unpacked_neg
