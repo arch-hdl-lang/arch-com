@@ -5461,17 +5461,20 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
     use std::collections::HashMap;
     // Build {bus_name -> Vec<TlmMethodMeta>}.
     let mut bus_methods: HashMap<String, Vec<TlmMethodMeta>> = HashMap::new();
+    let mut bus_params: HashMap<String, Vec<ParamDecl>> = HashMap::new();
     for it in &ast.items {
         match it {
             Item::Bus(b) => {
                 if !b.tlm_methods.is_empty() {
                     bus_methods.insert(b.name.name.clone(), b.tlm_methods.clone());
+                    bus_params.insert(b.name.name.clone(), b.params.clone());
                 }
             }
             Item::Package(pkg) => {
                 for b in &pkg.buses {
                     if !b.tlm_methods.is_empty() {
                         bus_methods.insert(b.name.name.clone(), b.tlm_methods.clone());
+                        bus_params.insert(b.name.name.clone(), b.params.clone());
                     }
                 }
             }
@@ -5486,10 +5489,8 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
         match it {
             Item::Module(mut m) => {
                 // Build port → bus_name map for this module.
-                let port_buses: HashMap<String, String> = m.ports.iter()
-                    .filter_map(|p| p.bus_info.as_ref().map(|bi|
-                        (p.name.name.clone(), bi.bus_name.name.clone())))
-                    .collect();
+                let (port_buses, port_methods) =
+                    specialize_tlm_methods_for_module_ports(&m, &bus_methods, &bus_params);
                 // Detect multi-implementer target cases. Indexed target
                 // lanes (`thread s.read[t](...)`) are handled below by
                 // generating private lane endpoints plus one shared mux.
@@ -5557,7 +5558,7 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
                                     continue;
                                 }
                             };
-                            let method = match bus_methods.get(&bus_name)
+                            let method = match port_methods.get(&binding.port.name)
                                 .and_then(|v| v.iter().find(|mm| mm.name.name == binding.method.name))
                             {
                                 Some(m) => m.clone(),
@@ -5628,6 +5629,118 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
     Ok(SourceFile { items: out_items, inner_doc: None, frontmatter: None })
 }
 
+fn specialize_tlm_methods_for_module_ports(
+    m: &ModuleDecl,
+    bus_methods: &HashMap<String, Vec<TlmMethodMeta>>,
+    bus_params: &HashMap<String, Vec<ParamDecl>>,
+) -> (HashMap<String, String>, HashMap<String, Vec<TlmMethodMeta>>) {
+    let mut port_buses: HashMap<String, String> = HashMap::new();
+    let mut port_methods: HashMap<String, Vec<TlmMethodMeta>> = HashMap::new();
+    for p in &m.ports {
+        let Some(bi) = &p.bus_info else { continue; };
+        let bus_name = bi.bus_name.name.clone();
+        port_buses.insert(p.name.name.clone(), bus_name.clone());
+        let Some(methods) = bus_methods.get(&bus_name) else { continue; };
+        let mut param_map: HashMap<String, &Expr> = HashMap::new();
+        if let Some(params) = bus_params.get(&bus_name) {
+            for pd in params {
+                if let Some(default) = &pd.default {
+                    param_map.insert(pd.name.name.clone(), default);
+                }
+            }
+        }
+        for pa in &bi.params {
+            param_map.insert(pa.name.name.clone(), &pa.value);
+        }
+        port_methods.insert(
+            p.name.name.clone(),
+            methods
+                .iter()
+                .map(|method| specialize_tlm_method(method, &param_map))
+                .collect(),
+        );
+    }
+    (port_buses, port_methods)
+}
+
+fn specialize_tlm_method(
+    method: &TlmMethodMeta,
+    param_map: &HashMap<String, &Expr>,
+) -> TlmMethodMeta {
+    TlmMethodMeta {
+        name: method.name.clone(),
+        args: method
+            .args
+            .iter()
+            .map(|(name, ty)| (name.clone(), subst_type_expr_params(ty, param_map)))
+            .collect(),
+        ret: method
+            .ret
+            .as_ref()
+            .map(|ty| subst_type_expr_params(ty, param_map)),
+        mode: method.mode.clone(),
+        out_of_order_tags: method
+            .out_of_order_tags
+            .as_ref()
+            .map(|expr| subst_expr_params(expr, param_map)),
+        span: method.span,
+    }
+}
+
+fn subst_type_expr_params(ty: &TypeExpr, param_map: &HashMap<String, &Expr>) -> TypeExpr {
+    match ty {
+        TypeExpr::UInt(e) => TypeExpr::UInt(Box::new(subst_expr_params(e, param_map))),
+        TypeExpr::SInt(e) => TypeExpr::SInt(Box::new(subst_expr_params(e, param_map))),
+        TypeExpr::Vec(inner, size) => TypeExpr::Vec(
+            Box::new(subst_type_expr_params(inner, param_map)),
+            Box::new(subst_expr_params(size, param_map)),
+        ),
+        _ => ty.clone(),
+    }
+}
+
+fn subst_expr_params(expr: &Expr, param_map: &HashMap<String, &Expr>) -> Expr {
+    let kind = match &expr.kind {
+        ExprKind::Ident(name) => {
+            if let Some(replacement) = param_map.get(name.as_str()) {
+                return (*replacement).clone();
+            }
+            ExprKind::Ident(name.clone())
+        }
+        ExprKind::Binary(op, l, r) => ExprKind::Binary(
+            *op,
+            Box::new(subst_expr_params(l, param_map)),
+            Box::new(subst_expr_params(r, param_map)),
+        ),
+        ExprKind::Unary(op, e) => ExprKind::Unary(*op, Box::new(subst_expr_params(e, param_map))),
+        ExprKind::Ternary(c, t, e) => ExprKind::Ternary(
+            Box::new(subst_expr_params(c, param_map)),
+            Box::new(subst_expr_params(t, param_map)),
+            Box::new(subst_expr_params(e, param_map)),
+        ),
+        ExprKind::Clog2(e) => ExprKind::Clog2(Box::new(subst_expr_params(e, param_map))),
+        ExprKind::Index(base, idx) => ExprKind::Index(
+            Box::new(subst_expr_params(base, param_map)),
+            Box::new(subst_expr_params(idx, param_map)),
+        ),
+        ExprKind::BitSlice(base, hi, lo) => ExprKind::BitSlice(
+            Box::new(subst_expr_params(base, param_map)),
+            Box::new(subst_expr_params(hi, param_map)),
+            Box::new(subst_expr_params(lo, param_map)),
+        ),
+        ExprKind::MethodCall(base, method, args) => ExprKind::MethodCall(
+            Box::new(subst_expr_params(base, param_map)),
+            method.clone(),
+            args.iter().map(|arg| subst_expr_params(arg, param_map)).collect(),
+        ),
+        ExprKind::Concat(parts) => ExprKind::Concat(
+            parts.iter().map(|part| subst_expr_params(part, param_map)).collect(),
+        ),
+        _ => return expr.clone(),
+    };
+    Expr { kind, span: expr.span, parenthesized: expr.parenthesized }
+}
+
 
 
 // ── TLM initiator call-site lowering (PR-tlm-4) ─────────────────────────────
@@ -5640,17 +5753,20 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
 pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
     use std::collections::HashMap;
     let mut bus_methods: HashMap<String, Vec<TlmMethodMeta>> = HashMap::new();
+    let mut bus_params: HashMap<String, Vec<ParamDecl>> = HashMap::new();
     for it in &ast.items {
         match it {
             Item::Bus(b) => {
                 if !b.tlm_methods.is_empty() {
                     bus_methods.insert(b.name.name.clone(), b.tlm_methods.clone());
+                    bus_params.insert(b.name.name.clone(), b.params.clone());
                 }
             }
             Item::Package(pkg) => {
                 for b in &pkg.buses {
                     if !b.tlm_methods.is_empty() {
                         bus_methods.insert(b.name.name.clone(), b.tlm_methods.clone());
+                        bus_params.insert(b.name.name.clone(), b.params.clone());
                     }
                 }
             }
@@ -5664,9 +5780,11 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
     for it in ast.items {
         match it {
             Item::Module(mut m) => {
-                let port_buses: HashMap<String, String> = m.ports.iter()
-                    .filter_map(|p| p.bus_info.as_ref().map(|bi|
-                        (p.name.name.clone(), bi.bus_name.name.clone())))
+                let (_port_bus_names, port_methods) =
+                    specialize_tlm_methods_for_module_ports(&m, &bus_methods, &bus_params);
+                let port_buses: HashMap<String, String> = port_methods
+                    .keys()
+                    .map(|port| (port.clone(), port.clone()))
                     .collect();
                 let resource_decls: HashMap<String, ResourceDecl> = m.body.iter()
                     .filter_map(|item| match item {
@@ -5679,7 +5797,7 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                 for item in &m.body {
                     if let ModuleBodyItem::Thread(t) = item {
                         if t.tlm_target.is_some() || t.implement.is_some() { continue; }
-                        for dt in direct_tlm_threads(t, &port_buses, &bus_methods) {
+                        for dt in direct_tlm_threads(t, &port_buses, &port_methods) {
                             direct_groups.entry((dt.call.port.clone(), dt.call.method.clone()))
                                 .or_default()
                                 .push(dt);
@@ -5716,7 +5834,7 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                             // PR-tlm-i3 (initiator) with its own targeted
                             // message.
                             if t.implement.is_some() { continue; }
-                            collect_bare_tlm_calls(&t.body, t.span, &port_buses, &bus_methods, &mut bare_uses);
+                            collect_bare_tlm_calls(&t.body, t.span, &port_buses, &port_methods, &mut bare_uses);
                         }
                     }
                     for ((port, method), spans) in &bare_uses {
@@ -5772,7 +5890,7 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                         {
                             continue;
                         }
-                        if thread_body_has_tlm_call(&t.body, &port_buses, &bus_methods) {
+                        if thread_body_has_tlm_call(&t.body, &port_buses, &port_methods) {
                             inline_tlm_thread_spans.insert(t_key);
                             inline_tlm_threads.push(t.clone());
                         }
@@ -5786,7 +5904,7 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                     if let ModuleBodyItem::Thread(t) = &item {
                         let t_key = (t.span.start, t.span.end);
                         if cohort_thread_spans.contains(&t_key) {
-                            if let Some(dt) = direct_tlm_threads(t, &port_buses, &bus_methods).into_iter().next() {
+                            if let Some(dt) = direct_tlm_threads(t, &port_buses, &port_methods).into_iter().next() {
                                 let key = (dt.call.port.clone(), dt.call.method.clone());
                                 if emitted_cohorts.insert(key.clone()) {
                                     if let Some(group) = direct_groups.get(&key) {
@@ -5804,7 +5922,7 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                                 match inline_lower_tlm_initiator_group(
                                     inline_tlm_threads.clone(),
                                     &port_buses,
-                                    &bus_methods,
+                                    &port_methods,
                                     &resource_decls,
                                 ) {
                                     Ok(items) => new_body.extend(items),
@@ -5819,7 +5937,7 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                             continue;
                         }
                         if thread_has_fork_tlm_assign(&t.body) {
-                            match inline_lower_tlm_fork_join_all(t.clone(), &port_buses, &bus_methods) {
+                            match inline_lower_tlm_fork_join_all(t.clone(), &port_buses, &port_methods) {
                                 Ok(items) => new_body.extend(items),
                                 Err(e) => {
                                     errors.push(e);
@@ -5858,9 +5976,9 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                                 continue;
                             }
                         }
-                        if thread_body_has_tlm_call(&t.body, &port_buses, &bus_methods) {
+                        if thread_body_has_tlm_call(&t.body, &port_buses, &port_methods) {
                             let t_moved = if let ModuleBodyItem::Thread(t) = item { t } else { unreachable!() };
-                            match inline_lower_tlm_initiator(t_moved, &port_buses, &bus_methods) {
+                            match inline_lower_tlm_initiator(t_moved, &port_buses, &port_methods) {
                                 Ok(items) => new_body.extend(items),
                                 Err(e) => errors.push(e),
                             }

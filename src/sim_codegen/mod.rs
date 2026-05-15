@@ -1266,16 +1266,36 @@ fn subst_type_expr_sim(ty: &TypeExpr, params: &HashMap<String, &Expr>) -> TypeEx
 }
 
 fn subst_expr_sim(expr: &Expr, params: &HashMap<String, &Expr>) -> Expr {
-    match &expr.kind {
+    let kind = match &expr.kind {
         ExprKind::Ident(name) => {
             if let Some(replacement) = params.get(name.as_str()) {
-                (*replacement).clone()
+                return (*replacement).clone();
             } else {
-                expr.clone()
+                ExprKind::Ident(name.clone())
             }
         }
-        _ => expr.clone(),
-    }
+        ExprKind::Binary(op, l, r) => ExprKind::Binary(
+            *op,
+            Box::new(subst_expr_sim(l, params)),
+            Box::new(subst_expr_sim(r, params)),
+        ),
+        ExprKind::Unary(op, e) => ExprKind::Unary(
+            *op,
+            Box::new(subst_expr_sim(e, params)),
+        ),
+        ExprKind::Ternary(c, t, e) => ExprKind::Ternary(
+            Box::new(subst_expr_sim(c, params)),
+            Box::new(subst_expr_sim(t, params)),
+            Box::new(subst_expr_sim(e, params)),
+        ),
+        ExprKind::Clog2(e) => ExprKind::Clog2(Box::new(subst_expr_sim(e, params))),
+        ExprKind::Index(b, i) => ExprKind::Index(
+            Box::new(subst_expr_sim(b, params)),
+            Box::new(subst_expr_sim(i, params)),
+        ),
+        _ => return expr.clone(),
+    };
+    Expr { kind, span: expr.span, parenthesized: expr.parenthesized }
 }
 
 /// Return flattened bus port signals with direction: Vec<(flat_name, Direction, TypeExpr)>.
@@ -4347,7 +4367,8 @@ impl<'a> SimCodegen<'a> {
                 let mut pm = info.default_param_map();
                 for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
                 for (sname, _sdir, ty) in info.effective_signals(&pm) {
-                    let bits = type_bits_te(&ty);
+                    let subst_ty = subst_type_expr_sim(&ty, &pm);
+                    let bits = type_bits_te_with_params(&subst_ty, &m.params);
                     widths.entry(format!("{parent_name}_{sname}")).or_insert(bits);
                 }
             }
@@ -4830,7 +4851,8 @@ impl<'a> SimCodegen<'a> {
                     }
                     let flat = format!("{}_{}", p.name.name, sname);
                     if !uninit_inputs.contains(&flat) { continue; }
-                    let ty = cpp_port_type_with_params(&sty, &m.params);
+                    let subst_ty = subst_type_expr_sim(&sty, &param_map);
+                    let ty = cpp_port_type_with_params(&subst_ty, &m.params);
                     h.push_str(&format!(
                         "  void set_{flat}({ty} v) {{ {flat} = v; _{flat}_vinit = true; }}\n"
                     ));

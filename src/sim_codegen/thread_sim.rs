@@ -31,7 +31,7 @@
 use crate::ast::{
     ArbiterPolicy, BinOp, CombAssign, Stmt, Direction, Expr, ExprKind, IfElseOf,
     LitKind, ModuleBodyItem, ModuleDecl, RegAssign, ResetLevel,
-    ThreadBlock, ThreadStmt, TypeExpr, UnaryOp,
+    ParamDecl, ThreadBlock, ThreadStmt, TypeExpr, UnaryOp,
 };
 use crate::sim_codegen::SimModel;
 
@@ -178,8 +178,18 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads
     header.push_str("#include \"verilated.h\"\n\n");
     header.push_str(&format!("class {} {{\npublic:\n", class));
 
+    for p in &m.params {
+        if let Some(def) = &p.default {
+            let val = eval_const_with_params(def, &m.params);
+            header.push_str(&format!("  static constexpr uint64_t {} = {}ULL;\n", p.name.name, val));
+        }
+    }
+    if !m.params.is_empty() {
+        header.push('\n');
+    }
+
     for p in &m.ports {
-        let cpp_ty = port_or_reg_cpp_ty(&p.ty)
+        let cpp_ty = port_or_reg_cpp_ty_with_params(&p.ty, &m.params)
             .map_err(|e| format!("module `{}` port `{}`: {}", class, p.name.name, e))?;
         header.push_str(&format!("  {} {} = 0;\n", cpp_ty, p.name.name));
     }
@@ -189,16 +199,16 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads
     for item in &m.body {
         if let ModuleBodyItem::RegDecl(r) = item {
             if let TypeExpr::Vec(elem, count_expr) = &r.ty {
-                let elem_ty = port_or_reg_cpp_ty(elem)
+                let elem_ty = port_or_reg_cpp_ty_with_params(elem, &m.params)
                     .map_err(|e| format!("module `{}` reg `{}` element: {}", class, r.name.name, e))?;
-                let count = eval_const(count_expr);
+                let count = eval_const_with_params(count_expr, &m.params);
                 if count == 0 {
                     return Err(format!("module `{}` reg `{}`: Vec count = 0 (param resolution not yet supported)", class, r.name.name));
                 }
                 header.push_str(&format!("  {} {}[{}] = {{}};\n", elem_ty, r.name.name, count));
                 vec_reg_info.push((r.name.name.clone(), elem_ty, count));
             } else {
-                let cpp_ty = port_or_reg_cpp_ty(&r.ty)
+                let cpp_ty = port_or_reg_cpp_ty_with_params(&r.ty, &m.params)
                     .map_err(|e| format!("module `{}` reg `{}`: {}", class, r.name.name, e))?;
                 header.push_str(&format!("  {} {} = 0;\n", cpp_ty, r.name.name));
             }
@@ -217,7 +227,7 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads
             // For typed lets, infer width; for untyped (target=port),
             // the previous filter already skipped them.
             let cpp_ty = match &lb.ty {
-                Some(t) => port_or_reg_cpp_ty(t)
+                Some(t) => port_or_reg_cpp_ty_with_params(t, &m.params)
                     .map_err(|e| format!("module `{}` let `{}`: {}", class, lb.name.name, e))?,
                 None => continue, // untyped lets must alias a port — handled by the filter above
             };
@@ -395,7 +405,7 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads
     for item in &m.body {
         if let ModuleBodyItem::RegDecl(r) = item {
             if let TypeExpr::Vec(_, count_expr) = &r.ty {
-                let count = eval_const(count_expr);
+                let count = eval_const_with_params(count_expr, &m.params);
                 header.push_str(&format!("      for (uint64_t _i = 0; _i < {count}; _i++) {} [_i] = 0;\n", r.name.name));
             } else {
                 header.push_str(&format!("      {} = 0;\n", r.name.name));
@@ -513,7 +523,7 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads
             let dir = match p.direction { Direction::In => "in", Direction::Out => "out" };
             let bits = match &p.ty {
                 TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Reset(..) => 1,
-                TypeExpr::UInt(w) => eval_const(w),
+                TypeExpr::UInt(w) => eval_const_with_params(w, &m.params),
                 _ => continue,  // Vec / wide / bus skipped in Phase 5 spike
             };
             if bits == 0 || bits > 64 { continue; }
@@ -541,7 +551,7 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads
         for p in &m.ports {
             let width = match &p.ty {
                 TypeExpr::Clock(_) | TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Reset(..) => 1,
-                TypeExpr::UInt(w) => eval_const(w) as u32,
+                TypeExpr::UInt(w) => eval_const_with_params(w, &m.params) as u32,
                 _ => continue,
             };
             if width == 0 || width > 64 { continue; }
@@ -562,11 +572,11 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads
                 if let TypeExpr::Vec(elem, count_expr) = &r.ty {
                     let elem_width = match elem.as_ref() {
                         TypeExpr::Bool | TypeExpr::Bit => 1,
-                        TypeExpr::UInt(w) => eval_const(w) as u32,
+                        TypeExpr::UInt(w) => eval_const_with_params(w, &m.params) as u32,
                         _ => continue,
                     };
                     if elem_width == 0 || elem_width > 64 { continue; }
-                    let count = eval_const(count_expr);
+                    let count = eval_const_with_params(count_expr, &m.params);
                     for i in 0..count {
                         signals.push(crate::sim_codegen::TraceSignal {
                             vcd_name: format!("{}[{}]", r.name.name, i),
@@ -578,7 +588,7 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads
                 } else {
                     let width = match &r.ty {
                         TypeExpr::Bool | TypeExpr::Bit => 1,
-                        TypeExpr::UInt(w) => eval_const(w) as u32,
+                        TypeExpr::UInt(w) => eval_const_with_params(w, &m.params) as u32,
                         _ => continue,
                     };
                     if width == 0 || width > 64 { continue; }
@@ -665,7 +675,7 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads
         header.push_str("  uint64_t _dbg_cycle = 0;\n");
         for p in &m.ports {
             if matches!(&p.ty, TypeExpr::Clock(_)) { continue; }
-            let cpp_ty = port_or_reg_cpp_ty(&p.ty)
+            let cpp_ty = port_or_reg_cpp_ty_with_params(&p.ty, &m.params)
                 .map_err(|e| format!("module `{}` port `{}`: {}", class, p.name.name, e))?;
             header.push_str(&format!("  {cpp_ty} _dbg_prev_{} = 0;\n", p.name.name));
         }
@@ -752,11 +762,7 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads
                     ));
                 }
                 WaitKind::Cycles(n) => {
-                    let n_str = match &n.kind {
-                        ExprKind::Literal(LitKind::Dec(v)) => format!("{}", v),
-                        ExprKind::Literal(LitKind::Sized(_, v)) => format!("{}", v),
-                        _ => return Err("wait <N> cycle: only literal N supported".into()),
-                    };
+                    let n_str = expr_to_cpp(n)?;
                     body_cpp.push_str(&format!(
                         "{pad2}co_await arch_rt::wait_cycles(&_slot_{ti}, {n_str});\n"
                     ));
@@ -1333,6 +1339,8 @@ fn expr_to_cpp(e: &Expr) -> Result<String, String> {
                 BinOp::Add | BinOp::AddWrap => "+",
                 BinOp::Sub | BinOp::SubWrap => "-",
                 BinOp::Mul | BinOp::MulWrap => "*",
+                BinOp::Div => "/",
+                BinOp::Mod => "%",
                 BinOp::Eq => "==", BinOp::Neq => "!=",
                 BinOp::Lt => "<",  BinOp::Gt => ">",
                 BinOp::Lte => "<=", BinOp::Gte => ">=",
@@ -1365,20 +1373,57 @@ fn expr_to_cpp_bool(e: &Expr) -> Result<String, String> {
     }
 }
 
-fn port_or_reg_cpp_ty(ty: &TypeExpr) -> Result<String, String> {
+fn port_or_reg_cpp_ty_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> Result<String, String> {
     match ty {
         TypeExpr::Clock(_) | TypeExpr::Reset(..) | TypeExpr::Bool | TypeExpr::Bit => Ok("uint8_t".to_string()),
-        TypeExpr::UInt(w) => uint_cpp_ty(eval_const(w)),
+        TypeExpr::UInt(w) => uint_cpp_ty(eval_const_with_params(w, params)),
         other => Err(format!("type {:?} not supported", other)),
     }
 }
 
-fn eval_const(e: &Expr) -> u64 {
+fn eval_const_with_params(e: &Expr, params: &[ParamDecl]) -> u64 {
     match &e.kind {
         ExprKind::Literal(LitKind::Dec(v)) => *v,
         ExprKind::Literal(LitKind::Hex(v)) => *v,
         ExprKind::Literal(LitKind::Bin(v)) => *v,
         ExprKind::Literal(LitKind::Sized(_, v)) => *v,
+        ExprKind::Ident(name) => {
+            params.iter()
+                .find(|p| p.name.name == *name)
+                .and_then(|p| p.default.as_ref())
+                .map(|d| eval_const_with_params(d, params))
+                .unwrap_or(0)
+        }
+        ExprKind::Clog2(a) => {
+            let v = eval_const_with_params(a, params);
+            if v <= 1 { 0 } else { 64 - (v - 1).leading_zeros() as u64 }
+        }
+        ExprKind::Unary(op, a) => {
+            let v = eval_const_with_params(a, params);
+            match op {
+                UnaryOp::Not => !v,
+                UnaryOp::BitNot => !v,
+                UnaryOp::Neg => v.wrapping_neg(),
+                UnaryOp::RedAnd | UnaryOp::RedOr | UnaryOp::RedXor => 0,
+            }
+        }
+        ExprKind::Binary(op, l, r) => {
+            let lv = eval_const_with_params(l, params);
+            let rv = eval_const_with_params(r, params);
+            match op {
+                BinOp::Add | BinOp::AddWrap => lv.wrapping_add(rv),
+                BinOp::Sub | BinOp::SubWrap => lv.wrapping_sub(rv),
+                BinOp::Mul | BinOp::MulWrap => lv.wrapping_mul(rv),
+                BinOp::Div => if rv == 0 { 0 } else { lv / rv },
+                BinOp::Mod => if rv == 0 { 0 } else { lv % rv },
+                BinOp::Shl => lv.wrapping_shl(rv as u32),
+                BinOp::Shr => lv.wrapping_shr(rv as u32),
+                BinOp::BitAnd => lv & rv,
+                BinOp::BitOr => lv | rv,
+                BinOp::BitXor => lv ^ rv,
+                _ => 0,
+            }
+        }
         _ => 0,
     }
 }

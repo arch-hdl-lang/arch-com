@@ -595,8 +595,9 @@ impl<'a> Codegen<'a> {
                                         .map(|d| (pd.name.name.clone(), d)))
                                     .collect();
                             for (sname, _sdir, sty) in info.effective_signals(&param_map) {
+                                let subst_ty = Self::subst_type_expr(&sty, &param_map);
                                 let (ty_str, arr_suffix) =
-                                    self.emit_type_and_array_suffix(&sty);
+                                    self.emit_type_and_array_suffix(&subst_ty);
                                 self.line(&format!(
                                     "{} {}_{}{};",
                                     ty_str, w.name.name, sname, arr_suffix

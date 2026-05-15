@@ -1952,7 +1952,8 @@ impl<'a> Codegen<'a> {
             for (sname, _sdir, ty) in bus_info.effective_signals(&pm) {
                 let flat = format!("{parent_name}_{sname}");
                 if declared.contains(&flat) || !bus_emitted.insert(flat.clone()) { continue; }
-                let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(&ty);
+                let subst_ty = Self::subst_type_expr(&ty, &pm);
+                let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(&subst_ty);
                 self.line(&format!("{} {}{};", ty_str, flat, arr_suffix));
             }
         }
