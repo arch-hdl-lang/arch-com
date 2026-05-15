@@ -1620,11 +1620,12 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Warn when `port reg` outputs are assigned inside state-dependent if/elsif
-    /// chains in seq blocks. This indicates the output has 1-cycle latency relative
-    /// to the state that drives it — a common timing mismatch with testbench models.
+    /// Warn when registered output ports are assigned inside state-dependent
+    /// if/elsif chains in seq blocks. This indicates the output has register
+    /// latency relative to the state that drives it — a common timing mismatch
+    /// with testbench models.
     pub(crate) fn check_port_reg_timing(&mut self, m: &ModuleDecl) {
-        // Collect port reg output names
+        // Collect registered output port names.
         let port_reg_names: HashSet<String> = m.ports.iter()
             .filter(|p| p.reg_info.is_some() && p.direction == Direction::Out)
             .map(|p| p.name.name.clone())
@@ -1642,13 +1643,13 @@ impl<'a> TypeChecker<'a> {
             })
             .collect();
 
-        // Collect port reg spans for warning locations
+        // Collect registered output spans for warning locations.
         let port_reg_spans: HashMap<String, Span> = m.ports.iter()
             .filter(|p| p.reg_info.is_some() && p.direction == Direction::Out)
             .map(|p| (p.name.name.clone(), p.span))
             .collect();
 
-        // Scan seq blocks for state-dependent port reg assignments
+        // Scan seq blocks for state-dependent registered-output assignments.
         let mut warned: HashSet<String> = HashSet::new();
         for item in &m.body {
             if let ModuleBodyItem::RegBlock(rb) = item {
@@ -1662,7 +1663,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Recursively scan a seq statement for port reg assignments inside
+    /// Recursively scan a seq statement for registered-output assignments inside
     /// state-dependent if/elsif chains.
     fn find_state_dependent_port_reg_assigns(
         &mut self,
@@ -1689,9 +1690,9 @@ impl<'a> TypeChecker<'a> {
                                 if let Some(&span) = port_reg_spans.get(&target) {
                                     self.warnings.push(CompileWarning {
                                         message: format!(
-                                            "`{target}` is a `port reg` output assigned inside a state-dependent \
-                                             branch — output value appears 1 cycle after the state transition. \
-                                             Use `port` + `comb` for same-cycle outputs"
+                                            "`{target}` is a registered output (`pipe_reg<T, N>`) assigned inside a state-dependent \
+                                             branch — output value appears after the declared output latency. \
+                                             Use a plain `out T` port driven by `comb` for same-cycle outputs"
                                         ),
                                         span,
                                     });
