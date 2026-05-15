@@ -6550,6 +6550,61 @@ fn build_tlm_init_thread_plan(
         span: Span,
         current_lock: Option<&str>,
     ) -> Result<(), CompileError> {
+        fn compute_only_thread_stmts_to_seq(
+            stmts: Vec<ThreadStmt>,
+            port_buses: &std::collections::HashMap<String, String>,
+            bus_methods: &std::collections::HashMap<String, Vec<TlmMethodMeta>>,
+            span: Span,
+        ) -> Result<Vec<Stmt>, CompileError> {
+            let mut out = Vec::new();
+            for stmt in stmts {
+                match stmt {
+                    ThreadStmt::SeqAssign(ra) => {
+                        if contains_tlm_call(&ra.value, port_buses, bus_methods)
+                            || contains_tlm_call(&ra.target, port_buses, bus_methods)
+                        {
+                            return Err(CompileError::general(
+                                "TLM method calls inside `if` branches are not supported in v1 initiator lowering",
+                                ra.span,
+                            ));
+                        }
+                        out.push(Stmt::Assign(ra));
+                    }
+                    ThreadStmt::IfElse(ie) => {
+                        let then_stmts = compute_only_thread_stmts_to_seq(
+                            ie.then_stmts,
+                            port_buses,
+                            bus_methods,
+                            ie.span,
+                        )?;
+                        let else_stmts = compute_only_thread_stmts_to_seq(
+                            ie.else_stmts,
+                            port_buses,
+                            bus_methods,
+                            ie.span,
+                        )?;
+                        out.push(Stmt::IfElse(IfElseOf {
+                            cond: ie.cond,
+                            then_stmts,
+                            else_stmts,
+                            unique: false,
+                            span: ie.span,
+                        }));
+                    }
+                    other => {
+                        return Err(CompileError::general(
+                            &format!(
+                                "v1 TLM initiator compute-only `if` branches only support SeqAssign statements and nested compute-only `if` blocks (found {:?}).",
+                                std::mem::discriminant(&other),
+                            ),
+                            span,
+                        ));
+                    }
+                }
+            }
+            Ok(out)
+        }
+
         for stmt in stmts {
             match stmt {
                 ThreadStmt::SeqAssign(ra) => {
@@ -6593,6 +6648,33 @@ fn build_tlm_init_thread_plan(
                 }
                 ThreadStmt::Lock { resource, body, .. } => {
                     lower_stmts(body, states, pending_seq, port_buses, bus_methods, span, Some(&resource.name))?;
+                }
+                ThreadStmt::IfElse(ie) => {
+                    if thread_body_has_tlm_call(&ie.then_stmts, port_buses, bus_methods)
+                        || thread_body_has_tlm_call(&ie.else_stmts, port_buses, bus_methods)
+                    {
+                        return Err(CompileError::general(
+                            "TLM method calls inside `if` branches are not supported in v1 initiator lowering",
+                            ie.span,
+                        ));
+                    }
+                    pending_seq.push(Stmt::IfElse(IfElseOf {
+                        cond: ie.cond,
+                        then_stmts: compute_only_thread_stmts_to_seq(
+                            ie.then_stmts,
+                            port_buses,
+                            bus_methods,
+                            ie.span,
+                        )?,
+                        else_stmts: compute_only_thread_stmts_to_seq(
+                            ie.else_stmts,
+                            port_buses,
+                            bus_methods,
+                            ie.span,
+                        )?,
+                        unique: false,
+                        span: ie.span,
+                    }));
                 }
                 ThreadStmt::For { var, start, end, body, span: for_span } => {
                     let start_v = literal_expr_u64(&start).ok_or_else(|| {
