@@ -7421,6 +7421,46 @@ fn test_tlm_initiator_call_inside_lock_lowers() {
 }
 
 #[test]
+fn test_tlm_initiator_compute_only_if_lowers_between_calls() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<8>) -> UInt<32>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg d: UInt<32> reset rst => 0;
+          reg acc0: UInt<32> reset rst => 0;
+          reg acc1: UInt<32> reset rst => 0;
+
+          thread driver on clk rising, rst high
+            for i in 0..3
+              d <= m.read(i.zext<8>());
+              if i[0] == 1'b0
+                acc0 <= acc0 +% d;
+              else
+                acc1 <= acc1 +% d;
+              end if
+            end for
+          end thread driver
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("_tlm_init_driver_state"),
+        "TLM initiator should still lower to a state machine:\n{sv}"
+    );
+    assert!(
+        sv.contains("acc0 <= 32'(acc0 + d);") && sv.contains("acc1 <= 32'(acc1 + d);"),
+        "compute-only if branches should remain in the lowered thread FSM:\n{sv}"
+    );
+}
+
+#[test]
 fn test_locked_tlm_generated_workers_share_one_method_driver() {
     let source = "
         bus Mem
