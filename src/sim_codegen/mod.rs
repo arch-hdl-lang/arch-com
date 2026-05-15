@@ -474,14 +474,24 @@ impl<'a> SimCodegen<'a> {
         let enum_map = build_enum_map(self.symbols);
         for p in &m.params {
             match &p.kind {
-                ParamKind::Const | ParamKind::WidthConst(..) => {
+                ParamKind::Const | ParamKind::WidthConst(..) | ParamKind::Logic(_) => {
                     if let Some(ref def) = p.default {
-                        let val = eval_const_expr(def);
+                        let val = eval_const_expr_with_params(def, &m.params);
                         let pname = &p.name.name;
                         bindings.push(format!(
                             "        .def_property_readonly_static(\"{pname}\", [](py::object) {{ return {val}ULL; }})"
                         ));
-                        port_info.push((pname.clone(), 32, false, false, true, false));
+                        let width = match &p.kind {
+                            ParamKind::Logic(ty) => type_bits_te_with_params(ty, &m.params),
+                            ParamKind::WidthConst(hi, lo) => {
+                                let h = eval_const_expr_with_params(hi, &m.params);
+                                let l = eval_const_expr_with_params(lo, &m.params);
+                                (h - l + 1) as u32
+                            }
+                            _ => 32,
+                        };
+                        let is_signed = matches!(&p.kind, ParamKind::Logic(TypeExpr::SInt(_)));
+                        port_info.push((pname.clone(), width, is_signed, false, true, false));
                     }
                 }
                 ParamKind::EnumConst(enum_name) => {
@@ -3488,7 +3498,7 @@ fn build_widths(ports: &[PortDecl], body: &[ModuleBodyItem], params: &[ParamDecl
                 let l = eval_width(lo);
                 h - l + 1
             }
-            ParamKind::Logic(ty) | ParamKind::Type(ty) => type_bits_te(ty),
+            ParamKind::Logic(ty) | ParamKind::Type(ty) => type_bits_te_with_params(ty, params),
             // `param X: const = N` (untyped). Pre-existing call sites treat
             // this as an int-typed parameter (32 bits), so match.
             ParamKind::Const => 32,
@@ -4486,9 +4496,9 @@ impl<'a> SimCodegen<'a> {
         // Emit param constants as #define
         for p in &m.params {
             match &p.kind {
-                ParamKind::Const | ParamKind::WidthConst(..) => {
+                ParamKind::Const | ParamKind::WidthConst(..) | ParamKind::Logic(_) => {
                     if let Some(ref def) = p.default {
-                        let val = eval_const_expr(def);
+                        let val = eval_const_expr_with_params(def, &m.params);
                         h.push_str(&format!("#ifndef {}\n#define {} {val}ULL\n#endif\n", p.name.name, p.name.name));
                     }
                 }
