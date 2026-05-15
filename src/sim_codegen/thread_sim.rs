@@ -1377,6 +1377,7 @@ fn port_or_reg_cpp_ty_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> Result
     match ty {
         TypeExpr::Clock(_) | TypeExpr::Reset(..) | TypeExpr::Bool | TypeExpr::Bit => Ok("uint8_t".to_string()),
         TypeExpr::UInt(w) => uint_cpp_ty(eval_const_with_params(w, params)),
+        TypeExpr::SInt(w) => int_cpp_ty(eval_const_with_params(w, params)),
         other => Err(format!("type {:?} not supported", other)),
     }
 }
@@ -1436,6 +1437,17 @@ fn uint_cpp_ty(bits: u64) -> Result<String, String> {
         17..=32 => "uint32_t".to_string(),
         33..=64 => "uint64_t".to_string(),
         _ => return Err(format!("UInt<{}> > 64 bits not supported", bits)),
+    })
+}
+
+fn int_cpp_ty(bits: u64) -> Result<String, String> {
+    Ok(match bits {
+        0 => return Err("SInt<0> not supported".into()),
+        1..=8 => "int8_t".to_string(),
+        9..=16 => "int16_t".to_string(),
+        17..=32 => "int32_t".to_string(),
+        33..=64 => "int64_t".to_string(),
+        _ => return Err(format!("SInt<{}> > 64 bits not supported", bits)),
     })
 }
 

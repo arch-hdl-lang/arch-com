@@ -12518,6 +12518,146 @@ fn test_uint_48_literal_width_emits_uint64_storage() {
             "expected 48-bit mask; got:\n{out}");
 }
 
+#[test]
+fn test_sint_40_param_width_emits_int64_storage_and_signed_trunc() {
+    let source = r#"
+        module Bf16DotLike
+          param ACC_WIDTH: const = 40;
+
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port score_out: out SInt<ACC_WIDTH>;
+          port inc_in: in SInt<ACC_WIDTH>;
+
+          reg accumulator: SInt<ACC_WIDTH> reset rst => 0;
+          reg score_reg:   SInt<ACC_WIDTH> reset rst => 0;
+
+          comb
+            score_out = score_reg;
+          end comb
+
+          seq on clk rising
+            accumulator <= (accumulator + inc_in).trunc<ACC_WIDTH>();
+            score_reg <= accumulator;
+          end seq
+        end module Bf16DotLike
+    "#;
+    let out = compile_to_sim_h(source, false);
+
+    assert!(out.contains("int64_t score_out"),
+            "SInt<40> output port should use int64_t storage; got:\n{out}");
+    assert!(out.contains("int64_t inc_in"),
+            "SInt<40> input port should use int64_t storage; got:\n{out}");
+    assert!(out.contains("int64_t _accumulator"),
+            "SInt<40> internal reg should use int64_t storage; got:\n{out}");
+    assert!(out.contains("int64_t _score_reg"),
+            "SInt<40> internal reg should use int64_t storage; got:\n{out}");
+    assert!(out.contains("int64_t _n_accumulator"),
+            "SInt<40> _n_ shadow should use int64_t storage; got:\n{out}");
+    assert!(!out.contains("uint32_t _accumulator"),
+            "SInt<40> accumulator must not fall into uint32_t storage; got:\n{out}");
+    assert!(!out.contains("uint64_t _accumulator"),
+            "SInt<40> accumulator must not use unsigned 64-bit storage; got:\n{out}");
+
+    assert!(out.contains("0xFFFFFFFFFFULL"),
+            "SInt<40> trunc should still mask to exactly 40 bits; got:\n{out}");
+    assert!(out.contains("((int64_t)(((uint64_t)((_accumulator + inc_in)) & 0xFFFFFFFFFFULL) << 24) >> 24)"),
+            "SInt<40> trunc should sign-extend from bit 39 into int64_t; got:\n{out}");
+}
+
+#[test]
+fn test_sint_40_inst_output_wire_keeps_signed_storage() {
+    let source = r#"
+        module Bf16DotEngine
+          param ACC_WIDTH: const = 40;
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port score_out: out SInt<ACC_WIDTH>;
+          port inc_in: in SInt<ACC_WIDTH>;
+          reg accumulator: SInt<ACC_WIDTH> reset rst => 0;
+          reg score_reg: SInt<ACC_WIDTH> reset rst => 0;
+          comb
+            score_out = score_reg;
+          end comb
+          seq on clk rising
+            accumulator <= (accumulator + inc_in).trunc<ACC_WIDTH>();
+            score_reg <= accumulator;
+          end seq
+        end module Bf16DotEngine
+
+        module Wrapper
+          param ACC_WIDTH: const = 40;
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port inc: in SInt<ACC_WIDTH>;
+          port score: out SInt<ACC_WIDTH>;
+          wire score_wire: SInt<ACC_WIDTH>;
+          inst dot: Bf16DotEngine
+            param ACC_WIDTH = 40;
+            clk <- clk;
+            rst <- rst;
+            inc_in <- inc;
+            score_out -> score_wire;
+          end inst dot
+          comb
+            score = score_wire;
+          end comb
+        end module Wrapper
+    "#;
+    let out = compile_to_sim_h(source, false);
+
+    assert!(out.contains("int64_t _let_score_wire"),
+            "SInt<40> child output wire should use int64_t storage in wrapper/native sim; got:\n{out}");
+    assert!(!out.contains("uint32_t _let_score_wire"),
+            "SInt<40> child output wire must not use uint32_t storage; got:\n{out}");
+    assert!(!out.contains("uint64_t _let_score_wire"),
+            "SInt<40> child output wire must not use unsigned storage; got:\n{out}");
+    assert!(out.contains("score  = _let_score_wire"),
+            "wrapper should forward the signed child output to its public port; got:\n{out}");
+}
+
+#[test]
+fn test_sint_40_lowered_thread_regs_keep_signed_storage() {
+    let source = r#"
+        module ThreadBf16DotLike
+          param ACC_WIDTH: const = 40;
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port start: in Bool;
+          port inc_in: in SInt<ACC_WIDTH>;
+          port score_out: out SInt<ACC_WIDTH>;
+
+          reg accumulator: SInt<ACC_WIDTH> reset rst => 0;
+          reg score_reg: SInt<ACC_WIDTH> reset rst => 0;
+
+          comb
+            score_out = score_reg;
+          end comb
+
+          thread on clk rising, rst high
+            wait until start;
+            accumulator <= (accumulator + inc_in).trunc<ACC_WIDTH>();
+            score_reg <= accumulator;
+          end thread
+        end module ThreadBf16DotLike
+    "#;
+    let out = compile_to_sim_h(source, false);
+
+    assert!(out.contains("int64_t accumulator"),
+            "lowered thread submodule ports for SInt<40> regs should use int64_t; got:\n{out}");
+    assert!(out.contains("int64_t _accumulator"),
+            "parent/native sim SInt<40> reg storage should use int64_t after thread lowering; got:\n{out}");
+    assert!(out.contains("int64_t _n_accumulator"),
+            "lowered thread/native sim _n_ temporaries should use int64_t for SInt<40>; got:\n{out}");
+    assert!(!out.contains("uint32_t _accumulator"),
+            "lowered thread/native sim must not use uint32_t for SInt<40> accumulator; got:\n{out}");
+    assert!(!out.contains("uint64_t _accumulator"),
+            "lowered thread/native sim must not use unsigned storage for SInt<40> accumulator; got:\n{out}");
+    assert!(out.contains("((int64_t)(((uint64_t)((_accumulator + inc_in)) & 0xFFFFFFFFFFULL) << 24) >> 24)")
+            || out.contains("((int64_t)(((uint64_t)((accumulator + inc_in)) & 0xFFFFFFFFFFULL) << 24) >> 24)"),
+            "lowered thread/native sim trunc should sign-extend SInt<40>; got:\n{out}");
+}
+
 // ── Thread state-name localparams (issue #247) ──────────────────────────────
 
 #[test]
