@@ -9900,6 +9900,41 @@ fn test_thread_sim_declares_module_params_used_by_thread_body() {
 }
 
 #[test]
+fn test_sim_codegen_declares_typed_module_params_used_by_lowered_thread_body() {
+    // Typed value params (`param X: UInt<W> = ...`) are valid ARCH params and
+    // SV codegen emits them, but the native C++ sim header also has to expose
+    // them because lowered thread/TLM bodies may reference the param name.
+    let source = r#"
+        module M
+          param SCHEDULED_CORE_CYCLES: UInt<32> = 32'd7;
+          param DONE_W: UInt<32> = SCHEDULED_CORE_CYCLES + 32'd1;
+          param CALLS: UInt<16> = 16'd3;
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          port done: out UInt<DONE_W>;
+          reg calls_r: UInt<16> reset rst => 0;
+
+          thread on clk rising, rst high
+            wait SCHEDULED_CORE_CYCLES cycle;
+            done = 8'd8;
+            calls_r <= CALLS;
+          end thread
+        end module M
+    "#;
+    let cpp = compile_to_sim_h(source, false);
+    assert!(cpp.contains("#define SCHEDULED_CORE_CYCLES 7ULL"),
+        "sim header should define typed module params for lowered thread bodies:\n{cpp}");
+    assert!(cpp.contains("#define DONE_W 8ULL"),
+        "derived typed module params should be folded for C++ visibility:\n{cpp}");
+    assert!(cpp.contains("#define CALLS 3ULL"),
+        "narrow typed module params should also be emitted:\n{cpp}");
+    assert!(cpp.contains("uint8_t done;"),
+        "param-derived port widths should resolve in normal sim C++ types:\n{cpp}");
+    assert!(cpp.contains("_n_calls_r  = CALLS;"),
+        "lowered thread body should keep using the declared C++ param constant:\n{cpp}");
+}
+
+#[test]
 fn test_sim_codegen_bit_slice_lhs_compiles_and_uses_param_width() {
     // Regression: pre-fix, `name[hi:lo] = val` in a seq block lowered to
     // the read-side bit-slice form `((name >> lo) & MASK) = val`, an
