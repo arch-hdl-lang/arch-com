@@ -3384,6 +3384,34 @@ fn compile_to_sim_h(source: &str, inputs_start_uninit: bool) -> String {
         .join("\n// ---\n")
 }
 
+fn compile_to_thread_sim_h(source: &str) -> String {
+    let tokens = arch::lexer::tokenize(source).expect("lexer error");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target lowering");
+    let ast = arch::elaborate::lower_tlm_initiator_calls(ast).expect("tlm initiator lowering");
+    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg error");
+    let ast = arch::elaborate::lower_credit_channel_dispatch(ast).expect("cc dispatch error");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve error");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    checker.check().expect("type check error");
+
+    ast.items.iter()
+        .filter_map(|item| match item {
+            arch::ast::Item::Module(m)
+                if m.body.iter().any(|i| matches!(i, arch::ast::ModuleBodyItem::Thread(_))) =>
+            {
+                Some(arch::sim_codegen::thread_sim::gen_module_thread(m, false, false, 1)
+                    .expect("thread sim codegen"))
+            }
+            _ => None,
+        })
+        .map(|m| format!("{}\n// ---\n{}", m.header, m.impl_))
+        .collect::<Vec<_>>()
+        .join("\n// ---\n")
+}
+
 #[test]
 fn test_inputs_start_uninit_bus_flattened() {
     // --inputs-start-uninit should now emit shadow vinit bits and setters
@@ -5737,6 +5765,123 @@ fn test_tlm_method_wires_flatten_at_bus_port() {
         "rsp_data should appear with declared ret type:\n{sv}");
     assert!(sv.contains("output logic m_read_rsp_ready"),
         "rsp_ready flows back from initiator to target:\n{sv}");
+}
+
+#[test]
+fn test_tlm_method_param_widths_substitute_in_implicit_bus_wires() {
+    // arch-com#352: TLM method arg/ret/tag widths may be bus params.
+    // A parent instantiating a child bus port through an undeclared
+    // parent-side bus signal exercises the implicit bus-wire declaration
+    // path; pre-fix it emitted `logic [TILE_W-1:0] link_read_tile;`
+    // without declaring TILE_W in the parent SV module.
+    let source = "
+        bus Mem
+          param KV_HEAD_W: const = 2;
+          param TILE_W: const = 4;
+          param TOKEN_W: const = 8;
+          tlm_method read(tile: UInt<TILE_W>) -> UInt<TOKEN_W>: out_of_order tags KV_HEAD_W;
+        end bus Mem
+
+        use Mem;
+
+        module Child
+          port m: initiator Mem<KV_HEAD_W=3, TILE_W=5, TOKEN_W=17>;
+          comb
+            m.read_req_valid = 1'b0;
+            m.read_req_tag = 3'h0;
+            m.read_tile = 5'h0;
+            m.read_rsp_ready = 1'b0;
+          end comb
+        end module Child
+
+        module Parent
+          inst c: Child
+            m -> link;
+          end inst c
+        end module Parent
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("logic [2:0] link_read_req_tag;"),
+        "implicit req tag wire should use overridden KV_HEAD_W:\n{sv}");
+    assert!(sv.contains("logic [4:0] link_read_tile;"),
+        "implicit arg wire should use overridden TILE_W:\n{sv}");
+    assert!(sv.contains("logic [16:0] link_read_rsp_data;"),
+        "implicit response wire should use overridden TOKEN_W:\n{sv}");
+    assert!(!sv.contains("KV_HEAD_W") && !sv.contains("TILE_W") && !sv.contains("TOKEN_W"),
+        "generated SV should not leak bus param identifiers into Parent plumbing:\n{sv}");
+}
+
+#[test]
+fn test_tlm_method_param_widths_substitute_in_lowered_target_and_initiator() {
+    // arch-com#352 original shape: TLM target/initiator lowering creates
+    // latch regs and request mux plumbing from method arg/return types.
+    // Those generated declarations must see bus params too, not emit
+    // dangling identifiers such as TILE_W or TOKEN_W into SV.
+    let source = "
+        bus Mem
+          param TILE_W: const = 4;
+          param TOKEN_W: const = 8;
+          tlm_method read(tile: UInt<TILE_W>) -> UInt<TOKEN_W>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module Target
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m: target Mem<TILE_W=5, TOKEN_W=17>;
+
+          thread m.read(tile) on clk rising, rst high
+            wait 1 cycle;
+            return {12'd0, tile};
+          end thread m.read
+        end module Target
+
+        module Driver
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m: initiator Mem<TILE_W=5, TOKEN_W=17>;
+          port data_out: out UInt<17>;
+
+          reg data: UInt<17> reset rst => 0;
+
+          thread on clk rising, rst high
+            data <= m.read(5'd3);
+          end thread
+
+          comb
+            data_out = data;
+          end comb
+        end module Driver
+
+        module Top
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port data_out: out UInt<17>;
+
+          inst d: Driver
+            clk <- clk;
+            rst <- rst;
+            m -> link;
+            data_out -> data_out;
+          end inst d
+
+          inst t: Target
+            clk <- clk;
+            rst <- rst;
+            m -> link;
+          end inst t
+        end module Top
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("logic [4:0] _tlm_m_read_tile_latched;"),
+        "target latch reg should use substituted TILE_W:\n{sv}");
+    assert!(sv.contains("output logic [16:0] m_read_rsp_data"),
+        "target response data should use substituted TOKEN_W:\n{sv}");
+    assert!(sv.contains("assign m_read_tile = _tlm_init_m_read_grant_0 ? 5'd3 : 0;"),
+        "initiator request drive should use substituted TILE_W:\n{sv}");
+    assert!(!sv.contains("TILE_W") && !sv.contains("TOKEN_W"),
+        "lowered generated SV should not leak bus param identifiers:\n{sv}");
 }
 
 #[test]
@@ -9718,6 +9863,40 @@ fn test_lower_threads_clones_parent_params_into_threads_submodule() {
     // identifier survived lowering).
     assert!(sv.contains("OP_GO") && sv.matches("OP_GO").count() >= 3,
         "thread body should compare op_i against OP_GO:\n{sv}");
+}
+
+#[test]
+fn test_thread_sim_declares_module_params_used_by_thread_body() {
+    // arch-com#352: the ARCH-native coroutine thread sim path skips
+    // lower_threads, so parent params are not cloned into a synthetic FSM
+    // module. The thread sim emitter must make them visible to generated
+    // C++ methods instead of emitting undeclared identifiers like
+    // SCHEDULED_CORE_CYCLES.
+    let source = r#"
+        module M
+          param SCHEDULED_CORE_CYCLES: const = 7;
+          param DONE_W: const = SCHEDULED_CORE_CYCLES + 1;
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          port done: out UInt<DONE_W>;
+
+          thread on clk rising, rst high
+            wait SCHEDULED_CORE_CYCLES cycle;
+            done = DONE_W;
+          end thread
+        end module M
+    "#;
+    let h = compile_to_thread_sim_h(source);
+    assert!(h.contains("static constexpr uint64_t SCHEDULED_CORE_CYCLES = 7ULL;"),
+        "thread sim header should declare module param constants:\n{h}");
+    assert!(h.contains("static constexpr uint64_t DONE_W = 8ULL;"),
+        "derived module params should be folded for C++ visibility:\n{h}");
+    assert!(h.contains("co_await arch_rt::wait_cycles(&_slot_0, SCHEDULED_CORE_CYCLES);"),
+        "wait-cycle expression should keep using the declared constexpr param:\n{h}");
+    assert!(h.contains("done = DONE_W;"),
+        "thread body should use the declared constexpr param:\n{h}");
+    assert!(h.contains("uint8_t done = 0;"),
+        "param-derived port widths should resolve in thread sim C++ types:\n{h}");
 }
 
 #[test]
