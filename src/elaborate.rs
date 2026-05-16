@@ -6520,10 +6520,26 @@ enum TlmInitGroupStateKind {
     },
 }
 
+enum TlmInitGroupNext {
+    Fallthrough,
+    LoopBack {
+        counter: String,
+        end: Expr,
+        body_start: usize,
+        span: Span,
+    },
+}
+
+struct TlmInitGroupState {
+    kind: TlmInitGroupStateKind,
+    next: TlmInitGroupNext,
+}
+
 struct TlmInitThreadPlan {
     thread: ThreadBlock,
     tag: String,
-    states: Vec<TlmInitGroupStateKind>,
+    states: Vec<TlmInitGroupState>,
+    loop_counters: Vec<String>,
 }
 
 fn build_tlm_init_thread_plan(
@@ -6533,13 +6549,22 @@ fn build_tlm_init_thread_plan(
 ) -> Result<TlmInitThreadPlan, CompileError> {
     fn lower_stmts(
         stmts: Vec<ThreadStmt>,
-        states: &mut Vec<TlmInitGroupStateKind>,
+        states: &mut Vec<TlmInitGroupState>,
         pending_seq: &mut Vec<Stmt>,
+        loop_counters: &mut Vec<String>,
+        tag: &str,
         port_buses: &std::collections::HashMap<String, String>,
         bus_methods: &std::collections::HashMap<String, Vec<TlmMethodMeta>>,
         span: Span,
         current_lock: Option<&str>,
     ) -> Result<(), CompileError> {
+        fn push_state(states: &mut Vec<TlmInitGroupState>, kind: TlmInitGroupStateKind) {
+            states.push(TlmInitGroupState {
+                kind,
+                next: TlmInitGroupNext::Fallthrough,
+            });
+        }
+
         fn compute_only_thread_stmts_to_seq(
             stmts: Vec<ThreadStmt>,
             port_buses: &std::collections::HashMap<String, String>,
@@ -6614,19 +6639,19 @@ fn build_tlm_init_thread_plan(
                     }
                     if let Some(call) = match_tlm_call(&ra.value, port_buses, bus_methods) {
                         if !pending_seq.is_empty() {
-                            states.push(TlmInitGroupStateKind::Compute {
+                            push_state(states, TlmInitGroupStateKind::Compute {
                                 seq_on_exit: std::mem::take(pending_seq),
                             });
                         }
                         let has_ret = call.method_meta.ret.is_some();
-                        states.push(TlmInitGroupStateKind::TlmIssue {
+                        push_state(states, TlmInitGroupStateKind::TlmIssue {
                             port: call.port.clone(),
                             method: call.method.clone(),
                             args: call.args.clone(),
                             method_meta: call.method_meta.clone(),
                             lock_resource: current_lock.map(|s| s.to_string()),
                         });
-                        states.push(TlmInitGroupStateKind::TlmWait {
+                        push_state(states, TlmInitGroupStateKind::TlmWait {
                             port: call.port,
                             method: call.method,
                             method_meta: call.method_meta.clone(),
@@ -6637,7 +6662,17 @@ fn build_tlm_init_thread_plan(
                     }
                 }
                 ThreadStmt::Lock { resource, body, .. } => {
-                    lower_stmts(body, states, pending_seq, port_buses, bus_methods, span, Some(&resource.name))?;
+                    lower_stmts(
+                        body,
+                        states,
+                        pending_seq,
+                        loop_counters,
+                        tag,
+                        port_buses,
+                        bus_methods,
+                        span,
+                        Some(&resource.name),
+                    )?;
                 }
                 ThreadStmt::IfElse(ie) => {
                     if thread_body_has_tlm_call(&ie.then_stmts, port_buses, bus_methods)
@@ -6667,37 +6702,93 @@ fn build_tlm_init_thread_plan(
                     }));
                 }
                 ThreadStmt::For { var, start, end, body, span: for_span } => {
-                    let start_v = literal_expr_u64(&start).ok_or_else(|| {
-                        CompileError::general(
-                            "v1 TLM initiator `for` loops require a literal start bound",
-                            start.span,
-                        )
-                    })?;
-                    let end_v = literal_expr_u64(&end).ok_or_else(|| {
-                        CompileError::general(
-                            "v1 TLM initiator `for` loops require a literal end bound",
-                            end.span,
-                        )
-                    })?;
-                    if end_v < start_v {
-                        return Err(CompileError::general(
-                            "v1 TLM initiator `for` loop end must be >= start",
-                            for_span,
-                        ));
-                    }
-                    for i in start_v..=end_v {
-                        let expanded: Vec<ThreadStmt> = body
-                            .iter()
-                            .map(|s| subst_thread_stmt(s, &var.name, i as i64))
-                            .map(fold_literal_bit_slices_thread_stmt)
-                            .collect();
-                        lower_stmts(expanded, states, pending_seq, port_buses, bus_methods, span, current_lock)?;
+                    match (literal_expr_u64(&start), literal_expr_u64(&end)) {
+                        (Some(start_v), Some(end_v)) => {
+                            if end_v < start_v {
+                                return Err(CompileError::general(
+                                    "TLM initiator `for` loop end must be >= start",
+                                    for_span,
+                                ));
+                            }
+                            for i in start_v..=end_v {
+                                let expanded: Vec<ThreadStmt> = body
+                                    .iter()
+                                    .map(|s| subst_thread_stmt(s, &var.name, i as i64))
+                                    .map(fold_literal_bit_slices_thread_stmt)
+                                    .collect();
+                                lower_stmts(
+                                    expanded,
+                                    states,
+                                    pending_seq,
+                                    loop_counters,
+                                    tag,
+                                    port_buses,
+                                    bus_methods,
+                                    span,
+                                    current_lock,
+                                )?;
+                            }
+                        }
+                        _ => {
+                            if !pending_seq.is_empty() {
+                                push_state(states, TlmInitGroupStateKind::Compute {
+                                    seq_on_exit: std::mem::take(pending_seq),
+                                });
+                            }
+
+                            let counter = format!("_tlm_init_{}_loop_cnt_{}", tag, loop_counters.len());
+                            loop_counters.push(counter.clone());
+                            push_state(states, TlmInitGroupStateKind::Compute {
+                                seq_on_exit: vec![Stmt::Assign(RegAssign {
+                                    target: Expr::new(ExprKind::Ident(counter.clone()), for_span),
+                                    value: start.clone(),
+                                    span: for_span,
+                                })],
+                            });
+
+                            let body_start = states.len();
+                            let rewritten: Vec<ThreadStmt> = body
+                                .iter()
+                                .map(|s| rewrite_loop_var(s, &var.name, &counter))
+                                .collect();
+                            let mut body_pending = Vec::new();
+                            lower_stmts(
+                                rewritten,
+                                states,
+                                &mut body_pending,
+                                loop_counters,
+                                tag,
+                                port_buses,
+                                bus_methods,
+                                span,
+                                current_lock,
+                            )?;
+                            if !body_pending.is_empty() {
+                                push_state(states, TlmInitGroupStateKind::Compute {
+                                    seq_on_exit: std::mem::take(&mut body_pending),
+                                });
+                            }
+                            if states.len() == body_start {
+                                return Err(CompileError::general(
+                                    "TLM initiator runtime `for` loop body must lower to at least one state",
+                                    for_span,
+                                ));
+                            }
+                            if let Some(last) = states.last_mut() {
+                                last.next = TlmInitGroupNext::LoopBack {
+                                    counter,
+                                    end: end.clone(),
+                                    body_start,
+                                    span: for_span,
+                                };
+                            }
+                        }
                     }
                 }
                 other => {
                     return Err(CompileError::general(
                         &format!(
-                            "v1 TLM initiator thread body only supports SeqAssign statements, literal `for` loops, and `lock` blocks around them (found {:?}). Refactor more complex control flow into a `thread` without TLM calls.",
+                            "v1 TLM initiator thread body only supports SeqAssign statements, serialized `for` loops, compute-only `if` branches, and `lock` blocks around them (found {:?}). Refactor more complex control flow into a `thread` without TLM calls.",
                             std::mem::discriminant(&other),
                         ),
                         span,
@@ -6712,13 +6803,27 @@ fn build_tlm_init_thread_plan(
     let tag = t.name.as_ref().map(|n| n.name.clone()).unwrap_or_else(|| "tlm_init".to_string());
     let mut states = Vec::new();
     let mut pending_seq = Vec::new();
-    lower_stmts(t.body.clone(), &mut states, &mut pending_seq, port_buses, bus_methods, span, None)?;
+    let mut loop_counters = Vec::new();
+    lower_stmts(
+        t.body.clone(),
+        &mut states,
+        &mut pending_seq,
+        &mut loop_counters,
+        &tag,
+        port_buses,
+        bus_methods,
+        span,
+        None,
+    )?;
     if !pending_seq.is_empty() {
-        states.push(TlmInitGroupStateKind::Compute {
-            seq_on_exit: std::mem::take(&mut pending_seq),
+        states.push(TlmInitGroupState {
+            kind: TlmInitGroupStateKind::Compute {
+                seq_on_exit: std::mem::take(&mut pending_seq),
+            },
+            next: TlmInitGroupNext::Fallthrough,
         });
     }
-    Ok(TlmInitThreadPlan { thread: t, tag, states })
+    Ok(TlmInitThreadPlan { thread: t, tag, states, loop_counters })
 }
 
 fn inline_lower_tlm_initiator_group(
@@ -6791,21 +6896,84 @@ fn inline_lower_tlm_initiator_group(
             multicycle: None,
             span,
         }));
+        for counter in &plan.loop_counters {
+            items.push(ModuleBodyItem::RegDecl(RegDecl {
+                name: mk_ident(counter.clone()),
+                ty: TypeExpr::UInt(Box::new(dec(32))),
+                init: Some(dec(0)),
+                reset: RegReset::None,
+                guard: None,
+                multicycle: None,
+                span,
+            }));
+        }
         let state_expr = id(state_reg_name.clone());
         let state_lit = |v: u64| sized(state_width, v);
         let state_eq = |v: u64| bin(BinOp::Eq, state_expr.clone(), state_lit(v));
+        let loop_transition_stmts = |
+            next: &TlmInitGroupNext,
+            normal_next_idx: u64,
+            state_expr: Expr,
+        | -> Vec<Stmt> {
+            match next {
+                TlmInitGroupNext::Fallthrough => vec![Stmt::Assign(RegAssign {
+                    target: state_expr,
+                    value: state_lit(normal_next_idx),
+                    span,
+                })],
+                TlmInitGroupNext::LoopBack { counter, end, body_start, span: loop_span } => {
+                    let counter_expr = id(counter.clone());
+                    let inc_expr = bin(BinOp::AddWrap, counter_expr.clone(), sized(32, 1));
+                    let end_w = Expr::new(
+                        ExprKind::MethodCall(
+                            Box::new(end.clone()),
+                            mk_ident("resize".to_string()),
+                            vec![dec(32)],
+                        ),
+                        *loop_span,
+                    );
+                    let loop_cond = bin(BinOp::Lt, counter_expr.clone(), end_w);
+                    let inc_stmt = || Stmt::Assign(RegAssign {
+                        target: counter_expr.clone(),
+                        value: inc_expr.clone(),
+                        span: *loop_span,
+                    });
+                    vec![Stmt::IfElse(IfElseOf {
+                        cond: loop_cond,
+                        then_stmts: vec![
+                            inc_stmt(),
+                            Stmt::Assign(RegAssign {
+                                target: state_expr.clone(),
+                                value: state_lit(*body_start as u64),
+                                span: *loop_span,
+                            }),
+                        ],
+                        else_stmts: vec![
+                            inc_stmt(),
+                            Stmt::Assign(RegAssign {
+                                target: state_expr,
+                                value: state_lit(normal_next_idx),
+                                span: *loop_span,
+                            }),
+                        ],
+                        unique: false,
+                        span: *loop_span,
+                    })]
+                }
+            }
+        };
 
-        for (i, sk) in plan.states.iter().enumerate() {
+        for (i, state) in plan.states.iter().enumerate() {
             let cur_idx = i as u64;
             let next_idx = ((i + 1) % total_states) as u64;
-            match sk {
+            match &state.kind {
                 TlmInitGroupStateKind::Compute { seq_on_exit } => {
                     let mut then_stmts = seq_on_exit.clone();
-                    then_stmts.push(Stmt::Assign(RegAssign {
-                        target: state_expr.clone(),
-                        value: state_lit(next_idx),
-                        span,
-                    }));
+                    then_stmts.extend(loop_transition_stmts(
+                        &state.next,
+                        next_idx,
+                        state_expr.clone(),
+                    ));
                     seq_body.push(Stmt::IfElse(IfElseOf {
                         cond: state_eq(cur_idx),
                         then_stmts,
@@ -6864,11 +7032,11 @@ fn inline_lower_tlm_initiator_group(
                             span,
                         }));
                     }
-                    then_stmts.push(Stmt::Assign(RegAssign {
-                        target: state_expr.clone(),
-                        value: state_lit(next_idx),
-                        span,
-                    }));
+                    then_stmts.extend(loop_transition_stmts(
+                        &state.next,
+                        next_idx,
+                        state_expr.clone(),
+                    ));
                     let mut advance_rhs = port_member(port, format!("{method}_rsp_valid"));
                     if let Some(tag_w_expr) = &method_meta.out_of_order_tags {
                         let tag_w = literal_expr_u64(tag_w_expr)

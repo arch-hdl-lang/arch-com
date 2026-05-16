@@ -1,0 +1,104 @@
+//! ---
+//! spec_md: /Users/shuqingzhao/github/fpt26-accel/docs/decode-tlm.md
+//! tags: [tlm_method, runtime_loop, attention, initiator, fpt26]
+//! refs:
+//!   - "/Users/shuqingzhao/github/fpt26-accel/rtl/tlm/AttentionDecodeStage1Tlm.arch"
+//! ---
+//!
+//! FPT26-derived payload TLM smoke model.
+//! This intentionally keeps the target services outside the design so the
+//! testbench can validate serialized initiator calls inside a runtime-bounded
+//! thread loop.
+
+/// HBM tile service subset used by the runtime-loop TLM regression.
+bus Fpt26HbmTlm
+  tlm_method read_k(kv_head: UInt<3>, tile: UInt<4>) -> UInt<32>: blocking;
+end bus Fpt26HbmTlm
+
+/// QK compute service subset used by the runtime-loop TLM regression.
+bus Fpt26QkTlm
+  tlm_method qk_tile(head: UInt<5>, kv_head: UInt<3>, tile: UInt<4>, k_token: UInt<32>) -> UInt<32>: blocking;
+end bus Fpt26QkTlm
+
+/// Bring the HBM TLM bus into scope for module ports.
+use Fpt26HbmTlm;
+
+/// Bring the QK TLM bus into scope for module ports.
+use Fpt26QkTlm;
+
+/// Runtime-bounded payload TLM initiator.
+///
+/// Reads a K tile token, folds it into a checksum, feeds that returned token
+/// into a QK call, and accumulates per-head scores through compute-only branch
+/// logic between serialized TLM calls.
+module Fpt26RuntimeLoopTlm
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port qk_limit: in UInt<6>;
+  port hbm: initiator Fpt26HbmTlm;
+  port qk: initiator Fpt26QkTlm;
+
+  port done_out: out Bool;
+  port hbm_calls_out: out UInt<16>;
+  port qk_calls_out: out UInt<16>;
+  port checksum_out: out UInt<32>;
+  port score0_out: out UInt<32>;
+  port score1_out: out UInt<32>;
+  port score2_out: out UInt<32>;
+  port score3_out: out UInt<32>;
+
+  reg done_r: Bool reset rst => false;
+  reg hbm_calls: UInt<16> reset rst => 0;
+  reg qk_calls: UInt<16> reset rst => 0;
+  reg checksum: UInt<32> reset rst => 0;
+  reg data_hbm: UInt<32> reset rst => 0;
+  reg data_qk: UInt<32> reset rst => 0;
+  reg score0: UInt<32> reset rst => 0;
+  reg score1: UInt<32> reset rst => 0;
+  reg score2: UInt<32> reset rst => 0;
+  reg score3: UInt<32> reset rst => 0;
+
+  comb
+    done_out = done_r;
+    hbm_calls_out = hbm_calls;
+    qk_calls_out = qk_calls;
+    checksum_out = checksum;
+    score0_out = score0;
+    score1_out = score1;
+    score2_out = score2;
+    score3_out = score3;
+  end comb
+
+  thread driver on clk rising, rst high
+    done_r <= false;
+    hbm_calls <= 0;
+    qk_calls <= 0;
+    checksum <= 0;
+    score0 <= 0;
+    score1 <= 0;
+    score2 <= 0;
+    score3 <= 0;
+
+    for qk_op in 0..qk_limit -% 6'd1
+      data_hbm <= hbm.read_k(3'd0, qk_op[3:0].resize<4>());
+      checksum <= checksum +% data_hbm;
+      hbm_calls <= hbm_calls +% 16'd1;
+
+      data_qk <= qk.qk_tile(qk_op[1:0].zext<5>(), 3'd0, qk_op[3:0].resize<4>(), data_hbm);
+      checksum <= checksum +% data_qk;
+      qk_calls <= qk_calls +% 16'd1;
+
+      if qk_op[1:0] == 2'd0
+        score0 <= score0 +% data_qk;
+      elsif qk_op[1:0] == 2'd1
+        score1 <= score1 +% data_qk;
+      elsif qk_op[1:0] == 2'd2
+        score2 <= score2 +% data_qk;
+      else
+        score3 <= score3 +% data_qk;
+      end if
+    end for
+
+    done_r <= true;
+  end thread driver
+end module Fpt26RuntimeLoopTlm

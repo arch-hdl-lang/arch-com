@@ -1087,17 +1087,19 @@ This elaborates to a private bus wire plus ordinary whole-bus inst connections. 
 
 TLM calls are not general expressions. They are legal only in `thread` bodies as `dst <= port.method(args);` or `dst <= fork port.method(args);`; `comb`, `seq`, module-level `let`, module-local `function`, `pipeline`, and `fsm` contexts reject them.
 
-Literal counted `for` loops inside initiator threads may contain direct TLM assignments; the compiler unrolls them before TLM lowering:
+Counted `for` loops inside initiator threads may contain serialized direct blocking TLM assignments. Literal-bounded loops are unrolled before TLM lowering; non-literal/runtime loops lower to a generated loop counter plus issue/wait states:
 
 ```
 thread driver on clk rising, rst high
-  for i in 0..7
-    ack <= m.read(i.zext<32>());
+  for i in 0..limit_r-1
+    data <= hbm.read(i[3:0]);
+    checksum <= checksum +% data;
+    score <= qk.compute(i[1:0], data);
   end for
 end thread driver
 ```
 
-Do not put TLM calls inside non-literal/runtime `for` loops. Use `generate_for` worker threads for compile-time replication of independent workers.
+Runtime-loop TLM calls are serialized in this slice. Use `generate_for` worker threads or RHS-fork groups when you need independent workers or multiple outstanding requests.
 
 Shared method call sites lower to one physical method driver, not multiple SV drivers. Use `lock` plus `resource ... mutex<round_robin>;` when independent workers share a method and require round-robin request arbitration:
 
@@ -1156,7 +1158,7 @@ Bounded burst-like payloads: use a static max vector return and a runtime length
 
 Generated code shape: grouped/looped initiator call sites emit one generated driver per TLM method signal. Large request-valid reductions, response-ready reductions, payload muxes, default-priority grants, and round-robin grant terms are split into intermediate wires so generated SV lines stay bounded.
 
-Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); TLM calls in `for` loops require literal bounds and direct assignments; one call per worker/branch/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; no nested/composed TLM calls; no dynamic-length TLM return types; no `pipelined`; no first-class `burst`; no `Future<T>`/`await`.
+Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); runtime-loop TLM calls are serialized direct blocking assignments; one call per worker/branch/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; no nested/composed TLM calls; no dynamic-length TLM return types; no `pipelined`; no first-class `burst`; no `Future<T>`/`await`.
 
 Full spec: `doc/ARCH_HDL_Specification.md` §18d and §22. Design history / remaining work: `doc/plan_tlm_method.md`.
 
@@ -1331,7 +1333,7 @@ let f = m.read(addr);           // no Future<T>
 await f;                        // no await
 ```
 
-`pipelined` and `burst` are not current TLM modes. Use worker threads, `generate_for` workers, direct-call `fork ... and ... join`, RHS-fork groups, or literal looped call sites for multiple outstanding requests. Use `lock`/`resource mutex<round_robin>` when independent workers share a method and need fair request arbitration.
+`pipelined` and `burst` are not current TLM modes. Use worker threads, `generate_for` workers, direct-call `fork ... and ... join`, RHS-fork groups, or looped serialized call sites for repeated requests. Use `lock`/`resource mutex<round_robin>` when independent workers share a method and need fair request arbitration.
 
 ---
 
