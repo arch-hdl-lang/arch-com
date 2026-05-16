@@ -79,7 +79,10 @@
 >
 > **What remains future work outside this `implement` plan**:
 >
-> - Richer target-side control flow and target-side worker-pool syntax.
+> - Target-side worker-pool syntax and branch-local target `return`.
+>   Target method bodies now support ordinary thread assignments, waits,
+>   `if`, counted `for`, `fork`/`join`, and `lock` before one terminal
+>   top-level `return`.
 > - First-class beat-stream / burst semantics, if they can be expressed
 >   without a hidden future/await model. Today, bounded burst-like payloads
 >   use static `Vec<T, MAX>` or response structs carrying `data`, `len`,

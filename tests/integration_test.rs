@@ -7678,6 +7678,146 @@ fn test_tlm_target_thread_accepts_wait_cycles_before_return() {
 }
 
 #[test]
+fn test_tlm_target_thread_rich_body_compiles() {
+    let source = include_str!("tlm_target_body/TlmTargetRichBody.arch");
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("_tlm_s_read_wait_cnt"),
+        "target body with waits should allocate a wait counter:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_s_read_state"),
+        "rich target body should still lower inline to a TLM target FSM:\n{sv}"
+    );
+}
+
+#[test]
+fn test_tlm_target_thread_rich_body_arch_sim_behavior() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/tlm_target_body/TlmTargetRichBody.arch")
+        .arg("--tb")
+        .arg("tests/tlm_target_body/tb_tlm_target_rich_body.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for rich TLM target body");
+    assert!(
+        out.status.success(),
+        "rich target body arch sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS TlmTargetRichBody"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn test_tlm_target_thread_rich_body_verilator_behavior() {
+    if std::process::Command::new("verilator").arg("--version").output().is_err() {
+        eprintln!("skipping Verilator rich TLM target smoke: verilator not found");
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("TlmTargetRichBody.sv");
+    let obj_dir = td.path().join("obj_dir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/tlm_target_body/TlmTargetRichBody.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build rich TLM target SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let verilate = std::process::Command::new("verilator")
+        .arg("--cc")
+        .arg("--exe")
+        .arg("--build")
+        .arg("--sv")
+        .arg("--assert")
+        .arg("--timing")
+        .arg("-Wno-fatal")
+        .arg("-Wno-WIDTH")
+        .arg("-Wno-DECLFILENAME")
+        .arg("--top-module")
+        .arg("TlmTargetRichBody")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&sv_out)
+        .arg("tests/tlm_target_body/tb_tlm_target_rich_body.cpp")
+        .output()
+        .expect("verilate rich TLM target body");
+    assert!(
+        verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr)
+    );
+
+    let exe = obj_dir.join("VTlmTargetRichBody");
+    let run = std::process::Command::new(&exe)
+        .output()
+        .expect("run Verilator rich TLM target body");
+    assert!(
+        run.status.success(),
+        "Verilator sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("PASS TlmTargetRichBody"),
+        "expected PASS marker in Verilator stdout:\n{}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+}
+
+#[test]
+fn test_tlm_target_thread_rejects_statements_after_return() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module MemTarget
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s:   target Mem;
+          reg acc: UInt<64> reset rst => 0;
+          thread s.read(addr) on clk rising, rst high
+            return 64'h42;
+            acc <= 64'h1;
+          end thread s.read
+        end module MemTarget
+    ";
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let err = elaborate::lower_tlm_target_threads(parsed_ast)
+        .expect_err("target TLM statements after return should be rejected");
+    let msg = format!("{:?}", err);
+    assert!(
+        msg.contains("statements after `return`"),
+        "diagnostic should explain terminal return restriction, got: {msg}"
+    );
+}
+
+#[test]
 fn test_tlm_target_thread_parses_return_stmt() {
     // PR-tlm-3b: `return expr;` inside a thread body is now a valid
     // ThreadStmt::Return variant. (lower_threads still rejects TLM

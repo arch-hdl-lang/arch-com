@@ -319,6 +319,8 @@ The single-driver rule applies per signal: a register may be driven by exactly o
 
 `tlm_method` uses `thread` as its implementation vocabulary. A target method is written as a dotted-name thread (`thread s.read(addr) ... return data; end thread s.read`) or as the equivalent named form with `implement target s.read(addr)`. An initiator method call is legal only inside a thread body as a direct assignment RHS (`dst <= m.read(addr);`) or as an RHS-fork issue (`dst <= fork m.read(addr); ... join all;`).
 
+Target method threads reuse ordinary thread lowering before the generated response state, including waits, branches, counted loops, `fork`/`join`, and locks. Use a single terminal top-level `return`; nested/early returns are not supported.
+
 The current compiler does not have a file-scope `implement BusName.method rtl` block. The accepted `implement` spelling is a thread-header annotation, and it lowers through the same TLM call-site/cohort machinery as ordinary TLM threads.
 
 ## 20.12  Multi-Round Threads: Static Round-Robin Assignment
