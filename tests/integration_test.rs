@@ -6747,8 +6747,8 @@ fn test_implement_target_single_compiles_end_to_end() {
 
 #[test]
 fn test_implement_target_multi_implementer_rejected() {
-    // PR-tlm-i2: multi-implementer target case produces a targeted
-    // error pointing at PR-tlm-i4.
+    // Non-indexed multiple target implementers are ambiguous. Use indexed
+    // target lanes on an `out_of_order tags N` method for this shape.
     let source = "
         bus Mem
           tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
@@ -6776,7 +6776,7 @@ fn test_implement_target_multi_implementer_rejected() {
     let ast = parser.parse_source_file().expect("parse");
     let ast = arch::elaborate::elaborate(ast).expect("elaborate");
     let r = arch::elaborate::lower_tlm_target_threads(ast);
-    assert!(r.is_err(), "multi-implementer target should error until PR-tlm-i4");
+    assert!(r.is_err(), "non-indexed multi-implementer target should error");
     let msg = format!("{:?}", r.unwrap_err());
     assert!(msg.contains("multi-implementer target") && msg.contains("s.read"),
         "expected targeted error, got: {msg}");
@@ -6858,16 +6858,11 @@ fn test_implement_initiator_single_compiles_end_to_end() {
         "bus signals should be driven:\n{sv}");
 }
 
-// TODO: stale after PR #348 (codex/tlm-mux-balanced-trees) added multi-
-// implementer support — the rejection this test asserted no longer
-// fires (`lower_tlm_initiator_calls` now succeeds for the multi-impl
-// case). Ignored to unblock CI on subsequent PRs; either delete this
-// test or rewrite it to assert the new mux-tree behavior.
 #[test]
-#[ignore]
-fn test_implement_initiator_multi_implementer_rejected() {
-    // PR-tlm-i3: multi-implementer initiator → targeted error pointing
-    // at PR-tlm-i4.
+fn test_implement_initiator_multi_implementer_compiles_end_to_end() {
+    // Initiator-side `implement m.read()` is now an annotation over the
+    // ordinary call-site/cohort lowering. Multiple implementer threads
+    // share the same generated method driver instead of being rejected.
     let source = "
         bus Mem
           tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
@@ -6889,16 +6884,13 @@ fn test_implement_initiator_multi_implementer_rejected() {
           end thread w1
         end module M
     ";
-    let tokens = arch::lexer::tokenize(source).expect("lexer");
-    let mut parser = arch::parser::Parser::new(tokens, source);
-    let ast = parser.parse_source_file().expect("parse");
-    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
-    let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target");
-    let r = arch::elaborate::lower_tlm_initiator_calls(ast);
-    assert!(r.is_err(), "multi-implementer initiator should error until PR-tlm-i4");
-    let msg = format!("{:?}", r.unwrap_err());
-    assert!(msg.contains("multi-implementer initiator") && msg.contains("m.read"),
-        "expected targeted error, got: {msg}");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("_tlm_init_w0_state")
+         && sv.contains("_tlm_init_w1_state"),
+        "multi-implementer initiator should lower both workers:\n{sv}");
+    assert!(sv.contains("m_read_req_valid")
+         && sv.contains("m_read_rsp_ready"),
+        "shared method driver should still drive req/rsp handshake:\n{sv}");
 }
 
 #[test]

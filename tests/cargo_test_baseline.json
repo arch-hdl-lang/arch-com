@@ -675,7 +675,7 @@
     },
     {
       "target": "tests/integration_test.rs",
-      "name": "test_implement_initiator_multi_implementer_rejected"
+      "name": "test_implement_initiator_multi_implementer_compiles_end_to_end"
     },
     {
       "target": "tests/integration_test.rs",
