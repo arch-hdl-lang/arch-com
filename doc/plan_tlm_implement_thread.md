@@ -1,4 +1,4 @@
-# Plan: `implement` — glue TLM methods to threads — **SHELVED** (2026-04-23)
+# Plan: `implement` — historical TLM pool design, current annotation semantics
 
 > **TLM's positioning in the language (lesson from this design review,
 > 2026-04-23):**
@@ -21,12 +21,14 @@
 >    the equivalent multi-outstanding implementation. That's a
 >    separate compiler project, not a TLM extension.
 >
-> With this framing, TLM v1 blocking calls are the foundation. The
-> `implement` pool, `reentrant`, and `Future<T>/await` all tried to blur
-> TLM into a high-performance role — none of them succeeded cleanly, and
-> all were shelved. The current concurrency path is narrower: ordinary
-> generated threads or `fork ... join` direct-call branches can share a
-> blocking method through compiler-generated in-order routing.
+> With this framing, current TLM keeps returned values direct and gets
+> concurrency from ordinary hardware structure: named worker threads,
+> `generate_for` workers, direct-call `fork ... join` cohorts,
+> RHS-fork groups, and tagged `out_of_order tags N` methods. The
+> `implement` spelling survived only as a thread-header annotation over
+> that same lowering. It is not a separate pool API, and `Future<T>` /
+> `await` remain rejected directions. The old `reentrant` syntax has been
+> removed; use `generate_for` threads for parallel copies.
 
 > **Shelved per AXI DMA side-by-side analysis (2026-04-23).** We wrote
 > a TLM-Model-B version of `tests/axi_dma_thread/ThreadMm2s.arch` (kept
@@ -49,34 +51,39 @@
 > *clearer* and *more efficient* because it exploits the protocol's
 > intrinsic parallelism.
 >
-> **Decision**: ship nothing further on `implement` pools. Advanced AXI
+> **Decision**: do not build a separate `implement` pool. Advanced AXI
 > patterns compose via existing `thread` + `generate_for` + `lock` +
 > `shared(or)` — as `ThreadMm2s` already demonstrates. Simple in-order
-> TLM pipelining is handled by ordinary worker threads or `fork ... join`
-> branches, not by `implement` and not by `Future<T>`.
+> and tagged out-of-order TLM concurrency is handled by ordinary worker
+> threads, `fork ... join`, RHS-fork groups, literal loop unrolling, and
+> `out_of_order tags N`, not by `Future<T>`.
 >
-> **What stays shipped** (from PR-tlm-i1 through i3):
+> **What stays shipped**:
 >
-> - `implement` grammar + AST on `ThreadBlock`. Harmless dead code
->   parallel to `reentrant`. Future-compat only; no plans to extend.
-> - `implement target` as sugar for v1 dotted-name target syntax
->   (single implementer only; multi-implementer target is a permanent
->   compile error).
-> - Single-thread `implement m.method()` on the initiator side (equivalent
->   to v1; the annotation is allowed but does nothing extra).
+> - `implement` grammar + AST on `ThreadBlock`.
+> - `implement target` as sugar for dotted-name target syntax. Multiple
+>   target implementers are supported only with the indexed tagged-lane
+>   form (`thread s.read[t](...)`) on an `out_of_order tags N` method.
+>   Non-indexed multiple target implementers are a targeted compile error.
+> - `implement m.method()` on the initiator side as an annotation over
+>   ordinary call-site/cohort lowering. Multiple initiator implementer
+>   threads use the same request arbitration and response routing as
+>   ordinary worker threads; the annotation does not create a separate
+>   runtime pool.
 >
-> **What is permanently closed** (no follow-up PRs planned):
+> **What is closed for the current TLM surface**:
 >
-> - Multi-thread `implement` arbitration + dispatch (original PR-tlm-i4).
 > - `Future<T>` / `await` (earlier pivot).
-> - `reentrant [max N]` on threads (prior pivot; dead grammar remains).
+> - `reentrant [max N]` on threads (prior pivot; parser support removed).
 > - TLM `pipelined` as a separate in-order mode.
 >
 > **What remains future work outside this `implement` plan**:
 >
-> - Out-of-order TLM via compiler-managed request/response tags.
-> - Burst-oriented protocol support, if it can be expressed without a
->   hidden future/await model.
+> - Richer target-side control flow and target-side worker-pool syntax.
+> - First-class beat-stream / burst semantics, if they can be expressed
+>   without a hidden future/await model. Today, bounded burst-like payloads
+>   use static `Vec<T, MAX>` or response structs carrying `data`, `len`,
+>   and `resp`.
 >
 > Historical design below retained for context.
 >
@@ -303,9 +310,8 @@ entry state; `rsp_id <= my_id` drive on the response state.
 - Burst mode (`Vec<T, L>` returns, single AR multi-beat response).
   Separate v3 plan.
 - Tier-2 SVA on the arbitration invariants.
-- `implement` on threads that also have `default when`, `once`, or
-  `reentrant` modifiers (might compose, might not — resolve when a
-  user hits it).
+- `implement` on threads that also have `default when` or `once`
+  modifiers (might compose, might not — resolve when a user hits it).
 
 ## Open questions
 

@@ -6617,66 +6617,10 @@ fn test_tlm_one_initiator_many_targets_response_router_arch_sim_behavior() {
 }
 
 #[test]
-fn test_reentrant_thread_parses_with_max() {
-    // PR-tlm-p1: `reentrant max N` clause parses into
-    // ThreadBlock.reentrant = Some(Some(Expr::Literal(N))).
-    let source = "
-        module M
-          port clk: in Clock<SysDomain>;
-          port rst: in Reset<Sync>;
-          port reg out_r: out UInt<8> reset rst => 0;
-          thread driver on clk rising, rst high reentrant max 8
-            out_r <= 8'h1;
-          end thread driver
-        end module M
-    ";
-    let tokens = arch::lexer::tokenize(source).expect("lexer");
-    let mut parser = arch::parser::Parser::new(tokens, source);
-    let ast = parser.parse_source_file().expect("parse");
-    let m = ast.items.iter().find_map(|it| match it {
-        arch::ast::Item::Module(m) if m.name.name == "M" => Some(m),
-        _ => None,
-    }).expect("module M");
-    let t = m.body.iter().find_map(|i| match i {
-        arch::ast::ModuleBodyItem::Thread(t) => Some(t),
-        _ => None,
-    }).expect("thread");
-    match &t.reentrant {
-        Some(Some(_)) => {} // OK — bounded
-        other => panic!("expected Some(Some(Expr)) for `reentrant max 8`, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_reentrant_thread_parses_without_max() {
-    let source = "
-        module M
-          port clk: in Clock<SysDomain>;
-          port rst: in Reset<Sync>;
-          port reg out_r: out UInt<8> reset rst => 0;
-          thread driver on clk rising, rst high reentrant
-            out_r <= 8'h1;
-          end thread driver
-        end module M
-    ";
-    let tokens = arch::lexer::tokenize(source).expect("lexer");
-    let mut parser = arch::parser::Parser::new(tokens, source);
-    let ast = parser.parse_source_file().expect("parse");
-    let m = ast.items.iter().find_map(|it| match it {
-        arch::ast::Item::Module(m) if m.name.name == "M" => Some(m),
-        _ => None,
-    }).expect("module M");
-    let t = m.body.iter().find_map(|i| match i {
-        arch::ast::ModuleBodyItem::Thread(t) => Some(t),
-        _ => None,
-    }).expect("thread");
-    assert!(matches!(t.reentrant, Some(None)),
-        "expected Some(None) for unbounded reentrant, got {:?}", t.reentrant);
-}
-
-#[test]
-fn test_reentrant_thread_rejected_in_lower_threads() {
-    // PR-tlm-p1 scaffolding: lowering ships in PR-tlm-p2/p3.
+fn test_reentrant_thread_keyword_rejected_by_parser() {
+    // Reentrant thread syntax was a historical TLM pipelining pivot.
+    // Parallel copies are expressed with `generate_for` threads instead,
+    // so the parser no longer accepts the keyword.
     let source = "
         module M
           port clk: in Clock<SysDomain>;
@@ -6689,15 +6633,8 @@ fn test_reentrant_thread_rejected_in_lower_threads() {
     ";
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
-    let ast = parser.parse_source_file().expect("parse");
-    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
-    let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target");
-    let ast = arch::elaborate::lower_tlm_initiator_calls(ast).expect("tlm init");
-    let result = arch::elaborate::lower_threads(ast);
-    assert!(result.is_err(), "reentrant thread should be rejected until PR-tlm-p2/p3 land");
-    let msg = format!("{:?}", result.unwrap_err());
-    assert!(msg.contains("reentrant") && msg.contains("not yet implemented"),
-        "expected scaffolding error, got: {msg}");
+    let result = parser.parse_source_file();
+    assert!(result.is_err(), "reentrant thread syntax should no longer parse");
 }
 
 #[test]

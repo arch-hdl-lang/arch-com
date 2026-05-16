@@ -590,15 +590,6 @@ pub struct ThreadBlock {
     /// the v1 dotted-name binding (both populate `tlm_target` for
     /// downstream lowering compat).
     pub implement: Option<TlmImplementBinding>,
-    /// Reentrant threads allow a fresh invocation to start before the
-    /// previous one completes. Captured at parse time by the optional
-    /// `reentrant [max N]` clause on the thread header (see
-    /// `doc/plan_tlm_pipelined.md`). Encoding:
-    ///   - `None`                  — v1 semantics; exactly one instance.
-    ///   - `Some(None)`            — `reentrant` alone (unbounded — v1
-    ///     lowering rejects; reserved for future use).
-    ///   - `Some(Some(Expr))`      — `reentrant max <expr>` (const-reducible).
-    pub reentrant: Option<Option<Expr>>,
     pub body: Vec<ThreadStmt>,
     pub span: Span,
 }

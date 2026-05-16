@@ -947,15 +947,7 @@
     },
     {
       "target": "tests/integration_test.rs",
-      "name": "test_reentrant_thread_parses_with_max"
-    },
-    {
-      "target": "tests/integration_test.rs",
-      "name": "test_reentrant_thread_parses_without_max"
-    },
-    {
-      "target": "tests/integration_test.rs",
-      "name": "test_reentrant_thread_rejected_in_lower_threads"
+      "name": "test_reentrant_thread_keyword_rejected_by_parser"
     },
     {
       "target": "tests/integration_test.rs",

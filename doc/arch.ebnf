@@ -83,10 +83,23 @@ enum_variant = ident [ "=" expr ] ;       (* optional explicit encoding value *)
 (* ─── Bus ────────────────────────────────────────────────────────────────── *)
 
 bus_decl = "bus" ident
-             { param_decl | bus_signal }
+             { param_decl | bus_signal | tlm_method_decl }
            "end" "bus" ident ;
 
 bus_signal = ident ":" ( "in" | "out" ) type_expr ";" ;
+
+tlm_method_decl = "tlm_method" ident "(" [ tlm_arg { "," tlm_arg } ] ")"
+                    [ "->" type_expr ]
+                    ":" tlm_method_mode
+                  ";" ;
+
+tlm_arg = ident ":" type_expr ;
+
+tlm_method_mode = "blocking"
+                | "out_of_order" "tags" expr
+                | "pipelined"                    (* parsed, rejected by compiler *)
+                | "burst"                        (* parsed, rejected by compiler *)
+                ;
 
 
 (* ─── Module ─────────────────────────────────────────────────────────────── *)
@@ -256,14 +269,32 @@ latch_block = "latch" "on" ident
 (* Multi-cycle sequential block — compiler lowers to synthesizable FSM.
    See spec §7a. `once` runs the body once then halts; default re-runs. *)
 
-thread_block = "thread" [ "once" ] [ ident ]
+thread_block = "thread" [ "once" ] [ thread_name_or_tlm_target ]
+                 [ tlm_implement_clause ]
                  "on" ident ( "rising" | "falling" )
                  "," ident ( "high" | "low" )
-                 [ "default" "when" expr
-                     { thread_stmt }
-                   "end" "default" ]
+                 { thread_default_clause }
                  { thread_stmt }
-               "end" "thread" [ ident | "once" ] ;
+               "end" "thread" [ thread_close ] ;
+
+thread_name_or_tlm_target = ident
+                          | ident "." ident [ "[" expr "]" ]
+                              "(" [ ident { "," ident } ] ")"
+                          ;
+
+tlm_implement_clause = "implement" [ "target" ]
+                         ident "." ident "(" [ ident { "," ident } ] ")"
+                       ;
+
+thread_close = ident [ "." ident ] | "once" ;
+
+thread_default_clause = "default" "when" expr
+                          { thread_stmt }
+                        "end" "default"
+                      | "default" "comb"
+                          { comb_stmt }
+                        "end" "default"
+                      ;
 
 thread_stmt = thread_if
             | thread_fork_join
@@ -271,6 +302,8 @@ thread_stmt = thread_if
             | thread_lock
             | thread_do_until
             | log_stmt
+            | "join" "all" ";"
+            | "return" expr ";"
             | "wait" "until" expr ";"
             | "wait" expr "cycle" ";"
             | thread_assign
@@ -302,7 +335,9 @@ thread_do_until = "do"
                     { thread_stmt }
                   "until" expr ";" ;
 
-thread_assign = lvalue ( "=" | "<=" ) expr ";" ;
+thread_assign = lvalue "=" expr ";"
+              | lvalue "<=" [ "fork" ] expr ";"
+              ;
 
 (* Resource for mutual exclusion across threads (used by thread_lock).
    Only three policies accepted by the mutex arbiter — a subset of arbiter_policy. *)

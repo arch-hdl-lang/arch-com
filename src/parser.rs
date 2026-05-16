@@ -1864,20 +1864,6 @@ impl Parser {
             ));
         };
 
-        // Optional `reentrant [max <expr>]` clause — PR-tlm-p1 scaffolding.
-        // Stored on ThreadBlock.reentrant; lowering ships in PR-tlm-p2/p3.
-        let reentrant = if self.check_ident("reentrant") {
-            self.advance();
-            if self.check_ident("max") {
-                self.advance();
-                Some(Some(self.parse_expr()?))
-            } else {
-                Some(None)
-            }
-        } else {
-            None
-        };
-
         // Optional leading default clauses. `default when` is the thread's
         // soft-reset escape; `default comb` is an unconditional comb prelude
         // applied in every lowered state before state-specific comb assigns.
@@ -1980,7 +1966,6 @@ impl Parser {
             default_when,
             default_comb,
             tlm_target,
-            reentrant,
             implement,
             body,
             span: start.merge(end_span),

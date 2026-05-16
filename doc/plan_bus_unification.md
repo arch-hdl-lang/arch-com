@@ -1,8 +1,9 @@
 # Plan: `bus` as the universal interface construct
 
-*Author: session of 2026-04-22. Status: design draft; retrofits several
-prior plans (handshake, credit_channel, tlm) under one conceptual
-umbrella.*
+*Author: session of 2026-04-22. Status: historical design draft, updated
+after the current `tlm_method` implementation. Treat this as rationale for
+the bus-as-interface model; use `doc/ARCH_HDL_Specification.md` §18d/§22
+and `doc/bus_spec_section.md` for normative TLM syntax.*
 
 ## The problem
 
@@ -14,7 +15,7 @@ designed in isolation:
 | `bus` | Top-level, carries plain signals + `handshake` channels | Shipped |
 | `handshake` | Sub-construct inside `bus` body | Shipped (Tier 1, 1.5, 2) |
 | `credit_channel` | Standalone top-level construct (planned) | Design draft |
-| `tlm` | Uses `socket` bindings, separate construct family | Planned |
+| `tlm_method` | Sub-construct inside `bus`; `initiator`/`target` bus ports | Implemented subset |
 
 Seen from outside, these look like four unrelated solutions to one
 problem: **how do modules communicate?** The fragmentation makes the
@@ -67,9 +68,9 @@ bus PeripheralCtrl
     param DEPTH: const = 16;
   end credit_channel data
 
-  // 4. TLM method — transaction-level (planned; nests in bus from day one)
+  // 4. TLM method — transaction-level
   tlm_method read(addr: UInt<ADDR_W>) -> UInt<DATA_W>: blocking;
-  tlm_method write(addr: UInt<ADDR_W>, data: UInt<DATA_W>): pipelined;
+  tlm_method read_ooo(addr: UInt<ADDR_W>) -> UInt<DATA_W>: out_of_order tags 4;
 end bus PeripheralCtrl
 ```
 
@@ -104,7 +105,7 @@ For consistency with the new sibling sub-constructs:
 |---|---|
 | `handshake` | `handshake_channel` |
 | `credit_channel` | `credit_channel` (unchanged) |
-| `tlm` | `tlm_method` (planned — the `tlm` keyword for sockets becomes `tlm_method` inside `bus`) |
+| `tlm_method` | `tlm_method` inside `bus`; no standalone `socket` construct |
 
 All sub-constructs read as "what kind of channel/method does this bus
 carry." The `_channel` / `_method` suffix mirrors the category name.
@@ -130,8 +131,10 @@ After this lands, `bus` carries:
 - **Plain signal declarations** (today) — `name: in|out Type;`
 - **`handshake_channel`** — stateless valid/ready-style protocols
 - **`credit_channel`** — stateful backpressure with compiler-owned FIFO
-- **`tlm_method`** (future) — transaction-level methods with
-  blocking / pipelined / out_of_order / burst concurrency modes
+- **`tlm_method`** — transaction-level methods with `blocking` and
+  tagged `out_of_order tags N` modes. `pipelined`, first-class `burst`,
+  `Future<T>`, `await`, and user-visible `Token<T>` are not part of the
+  current language surface.
 - **`generate_if`** — conditional inclusion of any of the above
 - **`param`** declarations — parameterizes everything above
 
@@ -196,10 +199,10 @@ end credit_channel CmdCh
 port out: initiator CmdCh;
 ```
 
-### `bus` + `tlm_method` (future)
+### `bus` + `tlm_method`
 
-When TLM lands, methods nest inside `bus` (not inside their own
-separate `interface` construct as SV does). Modules attach as
+TLM methods nest inside `bus` (not inside their own separate
+`interface` construct as SV does). Modules attach as
 `initiator` (call the methods) or `target` (implement them), same
 perspective-flip rule that handshake already uses.
 
@@ -245,9 +248,10 @@ Spec chapter on the unified bus construct. Reference card refresh.
 The NoC flit credit validation test from `plan_credit_channel.md`
 §Validation plan.
 
-### PR #6 (future, not in this plan) — `tlm_method`
+### PR #6 — `tlm_method`
 
-Land TLM as a bus sub-construct from day one. Separate plan required.
+Landed as a bus sub-construct. The implemented subset is documented in
+`doc/plan_tlm_method.md` and the normative spec.
 
 ## Non-goals
 
@@ -255,10 +259,9 @@ Land TLM as a bus sub-construct from day one. Separate plan required.
   tempting, but the migration cost is larger than the educational
   win. Keep `bus` as the universal name; document it as "the
   interface grouping."
-- **Not unifying with `socket`.** Today's planned `tlm` design uses
-  `socket` for binding. When TLM lands, `socket` becomes a bus port
-  binding mechanism; the `bus` carries the `tlm_method` declarations.
-  No standalone `socket` construct.
+- **No standalone `socket`.** TLM uses ordinary `port name: initiator
+  BusName;` and `port name: target BusName;` declarations. The `bus`
+  carries the `tlm_method` declarations.
 - **Not touching module-internal constructs.** `fifo` / `ram` /
   `arbiter` stay where they are; they're implementations,
   not interfaces.
@@ -288,19 +291,19 @@ this plan commits to:
 | Target side | (This IS the implementation) | Implemented as a `thread` body bound to the method |
 | Example use | Timer that ticks every 1000 cycles | `axi.read(addr) -> data: blocking` |
 
-Concrete shape under this plan (when TLM lands):
+Concrete current shape:
 
 ```
 bus Mem
   tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
-  tlm_method write(addr: UInt<32>, data: UInt<64>): pipelined;
+  tlm_method read_ooo(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
 end bus Mem
 
 module Initiator
   port m: initiator Mem;
-  thread driver
-    let val = m.read(0x1000);       // compiler generates the wait-state FSM
-    m.write(0x2000, val + 1);       // pipelined — returns a future
+  reg val: UInt<64> reset rst => 0;
+  thread driver on clk rising, rst high
+    val <= m.read(32'h1000);        // compiler generates the wait-state FSM
   end thread driver
 end module Initiator
 
@@ -331,18 +334,16 @@ from hand-written AXI shepherding threads to:
 
 ```
 bus Axi4
-  tlm_method read(addr: UInt<32>, len: UInt<8>) -> Future<Vec<UInt<64>, len>>: burst;
-  tlm_method write(addr: UInt<32>, data: Vec<UInt<64>>): pipelined;
+  tlm_method read_burst(addr: UInt<32>, len: UInt<3>) -> BoundedVecResp32x4: out_of_order tags 4;
 end bus Axi4
 
 module Mm2s
   port m_axi:  initiator Axi4;
   port m_axis: initiator BusAxiStream;
   thread dma
-    let data = m_axi.read(src_addr, beats);   // was: manual ar-channel FSM
-    for beat in data
-      m_axis.t.send('{data: beat, last: ...});
-    end for
+    // Direct TLM calls are legal only as assignment RHS in a thread.
+    // True AXI channel-level control still belongs in explicit protocol threads.
+    burst_rsp <= m_axi.read_burst(src_addr, beats);
   end thread dma
 end module Mm2s
 ```
@@ -356,7 +357,7 @@ TLM needs a lower-level escape hatch.
 
 ### Consequence for the plan
 
-- **PR #6 (future TLM)** design starts from this framing: `tlm_method`
+- **PR #6 (`tlm_method`)** design starts from this framing: `tlm_method`
   lives as a `bus` sub-construct; target implementations use `thread`;
   initiator call sites auto-generate thread-like FSMs.
 - The existing DMA tests (`tests/axi_dma_thread/`) are the canonical
@@ -397,7 +398,8 @@ TLM needs a lower-level escape hatch.
 
 ## What this plan does NOT say
 
-- Does not commit to when `tlm_method` lands. Its own plan, later.
+- `tlm_method` has landed as an implemented subset. Further work is tracked
+  in `doc/plan_tlm_method.md`.
 - Does not pick final wire-protocol names for credit_channel
   (`send_valid` vs `push_valid`, etc.). PR #3 locks them down.
 - Does not address cross-clock-domain buses. `credit_channel` v1 is
