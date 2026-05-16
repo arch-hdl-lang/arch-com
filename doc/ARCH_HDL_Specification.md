@@ -1680,9 +1680,9 @@ end thread Name
 
 **Repeating vs once**: by default a thread loops — after the last body statement it returns to state 0. Write `thread once Name on …` to stop in the terminal state instead.
 
-**`implement` clause (single-implementer only; multi-thread SHELVED)**: a thread may be declared `implement <port>.<method>()` (initiator side) or `implement target <port>.<method>(args)` (target side) between the thread name and the `on` clock clause. The v2 multi-thread pool extension was shelved after an AXI DMA side-by-side analysis showed the TLM call-site abstraction is a poor fit for multi-channel protocols (see `doc/plan_tlm_implement_thread.md`). What ships: `implement target` as cosmetic sugar for the v1 dotted-name target syntax (single implementer only — multi-implementer target is a permanent compile error); single-thread `implement m.method()` on the initiator side as a documentation annotation. For multi-outstanding AXI-style patterns, use the hand-rolled `thread` + `generate for` + `lock` + `shared(or)` idiom demonstrated by `tests/axi_dma_thread/ThreadMm2s.arch`.
+**`implement` clause for TLM methods**: a thread may be declared `implement <port>.<method>()` (initiator side) or `implement target <port>.<method>(args)` (target side) between the thread name and the `on` clock clause. `implement target` is sugar for the dotted target-thread form (`thread s.read(args) ... end thread s.read`) when there is one target implementer. Multiple target implementers require the indexed tagged-lane form (`thread s.read[t](args) ...`) on an `out_of_order tags N` method. Initiator-side `implement m.method()` is accepted as an annotation over the ordinary initiator call-site lowering; multiple initiator implementer threads use the same direct-call/locked cohort machinery as non-`implement` worker threads. This is not a separate TLM pool API and does not make TLM a replacement for hand-written high-performance bus protocols. For AXI-style multi-channel patterns, prefer explicit `thread` + `generate_for` + `lock` + `shared(or)` protocol code such as `tests/axi_dma_thread/ThreadMm2s.arch`.
 
-**Reentrant (parser-accepted grammar; SHELVED — no planned lowering)**: a thread may be declared `reentrant [max N]` after the reset clause. This was an earlier pivot in the TLM pipelining design; both the reentrant model and the later `implement` pool model were shelved after the side-by-side analysis (see `doc/plan_tlm_pipelined.md` and `doc/plan_tlm_implement_thread.md`). Grammar remains for forward-compat but is a compile error in all cases today. Advanced multi-cycle patterns use the existing `generate_for` + `thread` idiom.
+**Rejected historical syntax: `reentrant`**: the earlier TLM pipelining sketch allowed `thread ... reentrant [max N]`, but that syntax is no longer accepted. Parallel copies of a thread are expressed explicitly with `generate_for`, which gives each lane static ownership of state, destinations, tags, locks, and array indices. This avoids the hidden slot lifetime, shared-write, response-routing, reset, and cancellation semantics that made `reentrant` a poor fit for synthesizable ARCH.
 
 **Multiple threads** in one module are declared independently; they all compile into the same `_ModuleName_threads` submodule and share one `always_ff` block to avoid multi-driver conflicts.
 
@@ -5094,7 +5094,7 @@ Full design history and the broader roadmap are in `doc/plan_credit_channel.md` 
 
 TLM call sites are deliberately restricted to `thread` bodies. An initiator call is legal only as the direct RHS of a thread assignment (`dst <= port.method(args);`) or as a nonblocking RHS-fork issue (`dst <= fork port.method(args);`). TLM calls are not general expressions and are rejected in `comb`, `seq`, module-level `let`, module-local `function`, `pipeline`, and `fsm` contexts.
 
-TLM calls are also not legal inside runtime `for` loops in v1, including loops in a thread body. The lowering pass needs a statically visible call site for each outstanding request so it can allocate per-call state, destination routing, FIFO slots, or compiler-managed tags. Use `generate_for` worker threads when the replication factor is compile-time constant.
+TLM calls are also not legal inside non-literal/runtime `for` loops. Literal-bounded `for` loops inside an initiator thread are unrolled before TLM lowering, so each call site is statically visible. For independent compile-time worker replication, use `generate_for` worker threads.
 
 **18d.1 Declaration**
 
@@ -5209,13 +5209,23 @@ Runtime `for` loops around TLM calls are not supported:
 
 ```
 thread bad on clk rising, rst high
-  for i in 0..3
+  for i in 0..count_r
     data[i] <= m.read(addr[i]);        // compile error in v1
   end for
 end thread bad
 ```
 
-Use `generate_for` to create static worker threads instead:
+Literal-bounded `for` loops are supported and are unrolled by the TLM initiator lowering pass:
+
+```
+thread driver on clk rising, rst high
+  for i in 0..3
+    data[i] <= m.read(addr[i]);
+  end for
+end thread driver
+```
+
+Use `generate_for` to create independent static worker threads:
 
 ```
 generate_for i in 0..3
@@ -5242,11 +5252,11 @@ Both target and initiator passes emit ordinary `RegDecl` + `RegBlock` + `CombBlo
 - `pipelined` / `burst` modes and all `Future<T>` / `await` / user-visible `Token<T>` APIs.
 - Dynamic-length TLM return types. Use a fixed-size `Vec<T, MAX>` return plus a runtime `len` arg for bounded burst-like payloads.
 - TLM calls outside a thread body (`comb`, `seq`, module-level `let`, module-local `function`, `pipeline`, `fsm` — compile error).
-- TLM calls inside runtime `for` loops, even inside a thread body. Use `generate_for` worker threads for compile-time replication.
+- TLM calls inside non-literal/runtime `for` loops. Literal-bounded loops inside initiator threads are unrolled; use `generate_for` worker threads for independent compile-time replication.
 - Nested TLM calls in expressions (compile error — must be direct RHS of `<=`).
 - Rich control flow inside TLM initiator bodies. Cohort `fork/join` is supported only when each branch is exactly one direct call assignment. RHS-fork groups support only direct forked TLM assignments, literal `wait N cycle;` offsets, and final `join all;`.
 - Non-literal `out_of_order tags` expressions.
-- Target method bodies with nested control flow beyond linear `wait until` + seq assigns terminated by a single `return`.
+- Target method bodies with nested control flow beyond linear `=` / `<=` assignments, `wait until`, `wait N cycle`, and a terminal `return`.
 
 Full design and evolution in `doc/plan_tlm_method.md`.
 
@@ -7203,9 +7213,9 @@ Several prompting patterns consistently produce high-quality Arch output:
 |                                                                          |
 | // \'The AttentionUnit module has:                                       |
 |                                                                          |
-| // - a TLM pipelined socket (initiator) on MemBusTlm for weight reads    |
+| // - an initiator bus port on MemBusTlm with blocking/OOO tlm_method reads |
 |                                                                          |
-| // - a blocking socket (target) on HostBus for register-mapped control   |
+| // - a target bus port on HostBus for register-mapped control            |
 |                                                                          |
 | // - ports in_valid/in_token (QKVToken)/out_valid/out_score (SInt\<16\>) |
 |                                                                          |
@@ -7395,7 +7405,7 @@ For complex blocks, the AI workflow proceeds through abstraction levels --- from
 |                                                                                   |
 | // Level 1 --- TLM skeleton (fastest to generate, fastest to simulate)            |
 |                                                                                   |
-| // Prompt: \'Generate the AttentionUnit module with TLM pipelined sockets.        |
+| // Prompt: \'Generate the AttentionUnit module with bus TLM method ports.         |
 |                                                                                   |
 | // Use todo! for all internal logic.\'                                            |
 |                                                                                   |

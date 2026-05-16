@@ -315,12 +315,11 @@ The single-driver rule applies per signal: a register may be driven by exactly o
 
 **Rule of thumb:** use `seq` for single-cycle register updates, `fsm` when you want named states and explicit transitions, `thread` when the logic is naturally sequential but spans multiple cycles.
 
-## 20.11  Relation to Bus Implement Blocks
+## 20.11  Relation to TLM Method Threads
 
-`implement BusName.method rtl` (§19.2.2) is syntactic sugar for a `thread` block that is scoped to a bus method's signals and parameters.  The same lowering machinery is used.  The difference is scope:
+`tlm_method` uses `thread` as its implementation vocabulary. A target method is written as a dotted-name thread (`thread s.read(addr) ... return data; end thread s.read`) or as the equivalent named form with `implement target s.read(addr)`. An initiator method call is legal only inside a thread body as a direct assignment RHS (`dst <= m.read(addr);`) or as an RHS-fork issue (`dst <= fork m.read(addr); ... join all;`).
 
-- `thread` lives inside a `module` and operates on the module's signals
-- `implement ... rtl` lives at file scope and defines how a bus method maps to signals
+The current compiler does not have a file-scope `implement BusName.method rtl` block. The accepted `implement` spelling is a thread-header annotation, and it lowers through the same TLM call-site/cohort machinery as ordinary TLM threads.
 
 ## 20.12  Multi-Round Threads: Static Round-Robin Assignment
 

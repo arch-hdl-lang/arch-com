@@ -1090,7 +1090,6 @@ fn subst_thread(t: &ThreadBlock, var: &str, val: i64) -> ThreadBlock {
             tag_lane: tb.tag_lane.as_ref().map(|e| subst_expr_names(e.clone(), var, val)),
             args: tb.args.clone(),
         }),
-        reentrant: t.reentrant.clone(),
         implement: t.implement.clone(),
         body: t.body.iter().map(|s| subst_thread_stmt(s, var, val)).collect(),
         span: t.span,
@@ -1718,15 +1717,6 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                             "internal error: TLM target thread `{}.{}(...)` reached lower_threads without being rewritten. Call `lower_tlm_target_threads` first.",
                             t_binding.port.name, t_binding.method.name
                         ),
-                        t.span,
-                    )]);
-                }
-                // PR-tlm-p1 scaffolding: reentrant threads parse but the
-                // N-instance FSM lowering ships in PR-tlm-p2 (non-TLM)
-                // and PR-tlm-p3 (with issue arbiter for TLM calls).
-                if t.reentrant.is_some() {
-                    return Err(vec![CompileError::general(
-                        "`reentrant` thread lowering is not yet implemented — tracked in doc/plan_tlm_pipelined.md PR-tlm-p2/p3.",
                         t.span,
                     )]);
                 }

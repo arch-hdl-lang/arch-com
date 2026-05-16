@@ -117,8 +117,8 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads
         return Err(format!("module `{}` has no thread blocks", class));
     }
     for (i, t) in threads.iter().enumerate() {
-        if t.tlm_target.is_some() || t.implement.is_some() || t.reentrant.is_some() {
-            return Err(format!("module `{}` thread #{}: TLM/implement/reentrant not yet supported", class, i));
+        if t.tlm_target.is_some() || t.implement.is_some() {
+            return Err(format!("module `{}` thread #{}: TLM/implement not yet supported", class, i));
         }
     }
 

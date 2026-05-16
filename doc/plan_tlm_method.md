@@ -7,6 +7,8 @@
 > `tlm_method name(args) -> Ret: out_of_order tags N;` inside a `bus`.
 > Target implementations are dotted-name threads:
 > `thread port.method(args) on clk rising, rst high ... return expr; end thread port.method`.
+> Tagged OOO targets may use indexed lanes:
+> `thread port.method[t](args) ... return expr; end thread port.method`.
 > Initiator calls are legal only inside `thread` bodies as a direct RHS
 > assignment (`dst <= port.method(args);`) or as an RHS-fork issue
 > (`dst <= fork port.method(args); ... join all;`). Literal counted `for`
@@ -19,6 +21,8 @@
 > `comb`, `seq`, module-level `let`, module-local `function`, `pipeline`,
 > `fsm`, and non-literal/runtime `for` loop contexts. Use `generate_for`
 > worker threads when a compile-time number of independent workers is needed.
+> Fixed-size `Vec<T, N>` returns and response structs containing Vec fields are
+> supported for bounded burst-like payloads.
 > There is no current `Future<T>`, `await`, user-visible `Token<T>`,
 > `pipelined`, or `burst` API.
 
@@ -27,9 +31,8 @@ Cross-refs:
   one of the four sub-constructs nested inside `bus` (stateless sig-level
   `handshake_channel`, stateful sig-level `credit_channel`, stateless
   txn-level bus raw signals, **stateful txn-level `tlm_method`**).
-- `doc/bus_spec_section.md` §19.2 — the original pre-unification TLM sketch
-  (`methods ... end methods` block with `implement X.m rtl ... end`). This
-  plan supersedes the grammar there; the *semantics* carry over.
+- `doc/bus_spec_section.md` §19.2 — current bus/TLM user-facing syntax and
+  constraints.
 
 ## The pitch
 
@@ -81,7 +84,8 @@ Explicitly **deferred** beyond the blocking foundation:
   lowering is found.
 - `max_outstanding` / `timing` annotations from the original sketch.
 - Richer `fork` / `join` lowering around non-trivial TLM call bodies.
-- `implement X.m rtl` protocol-level mapping (covered by threads today).
+- Older file-scope `implement X.m rtl` protocol-level mapping. Current code
+  uses dotted target threads / thread-header `implement target` instead.
 - Multiple initiators on one method (arbiter composition at target).
 
 ## Syntax (v1, blocking only)
@@ -103,8 +107,8 @@ concurrency mode for v1; no body yet):
 ```
 TlmMethod      := 'tlm_method' Ident '(' ParamList ')' ('->' TypeExpr)? ':' Mode ';'
 Mode           := 'blocking'     // v1
-                | 'out_of_order' // future tagged protocol
-                | 'burst'        // future beat-stream protocol
+                | 'out_of_order' 'tags' ConstExpr  // implemented after v1
+                | 'burst'        // rejected/deferred beat-stream protocol
 ParamList      := (Ident ':' TypeExpr (',' Ident ':' TypeExpr)*)?
 ```
 
@@ -377,12 +381,19 @@ Three auto-emitted properties labeled
 
 ### Future / deferred
 
-- PR-tlm-V2c candidate: burst-oriented protocol support. No viable
-  hidden-future path is currently identified; any future design should
-  preserve explicit beat ownership and backpressure.
-- PR-tlm-V2d: DMA test migration — rewrite `ThreadMm2s` / `ThreadS2mm`
-  to use `tlm_method` and compare SV/behavior against the hand-rolled
-  baseline (§`plan_bus_unification.md`).
+- First-class beat-stream / burst protocol support remains deferred. The
+  current compiler supports bounded burst-like payloads through static
+  `Vec<T, MAX>` returns or response structs carrying `data`, returned
+  `len`, and `resp`; this is not a dynamic-length return type.
+- Richer TLM initiator control flow remains deferred. Today, call sites must
+  stay direct RHS assignments or RHS-fork assignments, and TLM loops must
+  have literal bounds so the compiler can unroll them.
+- Richer target-side control flow remains deferred. Target method bodies are
+  linear assignments, waits, and terminal `return`; `if` / `for` / `fork`
+  inside a target method are not part of the lowered subset.
+- One-to-many decoded interconnect remains explicit router code. `connect
+  a.m -> b.s;` is point-to-point sugar; address decode and decode-error
+  response ownership belong in a router module.
 
 ## Resolved design decisions (locked 2026-04-22)
 
@@ -396,9 +407,9 @@ Three auto-emitted properties labeled
    avoids committing to arg-direction grammar before we know we
    need it).
 4. **Multiple threads touching the same method** in the same module:
-   compile error in v1 unless they match the in-order thread-cohort
-   lowering shape. Out-of-order/ID-tagged concurrency remains a separate
-   v2 topic and should use compiler-managed tags, not `Future<T>`.
+   supported when they match the finite cohort shapes listed above.
+   Blocking cohorts route by issue-order FIFO; `out_of_order tags N`
+   cohorts route with compiler-managed tags, not `Future<T>`.
 5. **Call site outside a thread**: compile error with a targeted
    message pointing the user at `thread X ... end thread X`.
 6. **Shared method body across multiple ports on target**: out of v1.

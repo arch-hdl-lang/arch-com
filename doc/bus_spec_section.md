@@ -143,6 +143,8 @@ end module MemTarget
 
 The compiler lowers the target thread into ordinary state registers and comb/seq blocks in the parent module. For tagged OOO methods, the target latches `req_tag` with the arguments and echoes it on `rsp_tag`.
 
+Target TLM bodies are intentionally linear today: combinational assignments (`=`), sequential assignments (`<=`), `wait until`, `wait N cycle`, and a terminal `return expr;` are supported. Rich target-side `if` / `for` / `fork` control flow is still outside the lowered subset.
+
 ### 19.2.4  Initiator Cohorts
 
 Direct TLM calls inside multiple workers can share one method:
@@ -170,12 +172,16 @@ Supported cohort shapes:
 - Multiple direct named worker threads using the same method.
 - `generate_for` workers.
 - One direct-call `fork ... and ... join` thread.
+- Literal-bounded `for` loops inside one initiator thread; these are unrolled before TLM lowering.
+- Timed RHS-fork groups (`dst <= fork m.read(...); wait N cycle; ... join all;`) for multiple outstanding issue inside one thread.
 
 Current restrictions:
 
 - Each worker/branch body is exactly one direct assignment: `dst <= port.method(args);`.
+- RHS-fork groups may contain only direct forked TLM assignments, literal `wait N cycle;` offsets, and a final `join all;`.
 - All workers in the cohort use the same clock/reset.
 - `out_of_order tags N` requires a literal tag count and enough tags for all workers.
+- TLM calls inside non-literal/runtime `for` loops are rejected.
 - Nested TLM calls and composed call expressions are rejected.
 
 ## 19.3  Using a Bus Port
@@ -306,9 +312,8 @@ The `bus` construct provides better source-level ergonomics with 100% portable R
 
 ## 19.10  Relation to `thread` Blocks
 
-`implement BusName.method rtl` (§19.2.2) uses the same lowering machinery as `thread` blocks (§20).  Both compile `wait until`/`fork`-`join`/`for` into synthesizable FSMs.  The difference is scope:
+`tlm_method` is the interface-level abstraction; `thread` is the implementation vocabulary. Initiator calls are legal only inside `thread` bodies, and target methods are implemented by dotted-name target threads such as `thread s.read(addr) ... return data; end thread s.read`.
 
-- A `thread` block lives inside a `module` and operates on the module's ports and signals.
-- An `implement ... rtl` block lives at file scope and defines how a bus method maps to bus signals.
+The current compiler does not have a file-scope `implement BusName.method rtl` block. The accepted `implement` syntax is a thread-header annotation: `thread driver implement m.read() ...` on the initiator side, or `thread name implement target s.read(addr) ...` as target-side sugar for the dotted-name form. It uses the same call-site/cohort lowering as ordinary TLM threads; it is not a separate pool API.
 
-Users writing protocol logic inside a module should prefer `thread` over a manual `fsm` when the logic is naturally sequential.
+Users writing protocol logic inside a module should prefer ordinary `thread` over a manual `fsm` when the logic is naturally sequential. For high-performance protocols that need channel-level control, explicit threads over raw bus signals remain the recommended form.

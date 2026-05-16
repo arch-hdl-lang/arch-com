@@ -179,8 +179,8 @@ keyword Name
   port name: in TypeExpr;
   port name: out TypeExpr;
   port name: in unpacked Vec<T, N>;       // SV unpacked-array port (interop hatch)
-  socket name: initiator InterfaceName;   // TLM
-  socket name: target InterfaceName;      // TLM
+  port name: initiator BusName;           // bus / TLM method endpoint
+  port name: target BusName;              // bus / TLM method endpoint
   generate for i in 0..N-1 ... end generate for i
   generate if PARAM > 0 ... end generate if
   assert name: expression;
@@ -210,7 +210,7 @@ Arch has three kinds of module-scope signal declarations:
 - **Separate compilation:** `arch build` emits `.archi` interface files alongside `.sv`. When `inst sub: SubModule` references an undefined module, the compiler auto-discovers `SubModule.archi` in the input directory or `ARCH_LIB_PATH`.
 
 ### Type System
-- **Primitive types:** `UInt<N>`, `SInt<N>`, `Bool`, `Bit`, `Clock<Domain>`, `Reset<Sync|Async, High|Low>` (polarity defaults High), `Vec<T,N>`, `struct`, `enum`, `Token`, `Future<T>`, `Token<T, id_width: N>`
+- **Primitive types:** `UInt<N>`, `SInt<N>`, `Bool`, `Bit`, `Clock<Domain>`, `Reset<Sync|Async, High|Low>` (polarity defaults High), `Vec<T,N>`, `struct`, `enum`
 - **No implicit conversions.** All width casts are explicit: `.trunc<N>()`, `.zext<N>()`, `.sext<N>()`. Same-width signedness reinterpret: `signed(x)`, `unsigned(x)`
 - Arithmetic result widths follow IEEE 1800-2012 §11.6 (e.g. `UInt<8> + UInt<8>` → `UInt<9>`)
 - **Wrapping operators** `+%`, `-%`, `*%` give result width = `max(W(a), W(b))` (no widening); prefer over `.trunc<N>()` for modular arithmetic: `let x: UInt<8> = a +% b;`
@@ -241,15 +241,29 @@ The parse in the "Bad" column is what Verilog/ARCH produces, but rarely what the
 ### `todo!` Escape Hatch
 Any expression or block body may be replaced with `todo!` to produce a compilable, type-checked skeleton. The compiler emits a warning per site; simulation aborts if a `todo!` site is reached at runtime.
 
-### TLM Concurrency Modes
-| Mode | Return | Use case |
-|---|---|---|
-| `blocking` | `ret: T` | Caller suspends — APB/MMIO |
-| `pipelined` | `ret: Future<T>` | Issue many, await later — AXI in-order |
-| `out_of_order` | `ret: Token<T, id: N>` | Any-order response by ID — Full AXI |
-| `burst` | `ret: Future<Vec<T,L>>` | One AR, N data beats — AXI INCR |
+### TLM Methods
 
-`await f`, `await_all(f0,f1,f2)`, `await_any(t0,t1)` for synchronization.
+`tlm_method` lives inside a `bus` and currently supports only:
+
+```
+tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+tlm_method read(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
+```
+
+Initiator calls are legal only inside `thread` bodies as direct RHS assignments:
+`dst <= port.method(args);`, or as nonblocking RHS-fork issues:
+`dst <= fork port.method(args); ... join all;`. Literal-bounded `for` loops in
+initiator threads may contain direct TLM assignments; the compiler unrolls them
+before lowering. Use `generate_for` for compile-time worker replication.
+
+Target implementations are dotted-name threads:
+`thread s.read(addr) on clk rising, rst high ... return expr; end thread s.read`.
+For tagged OOO target lanes, use indexed syntax:
+`thread s.read[t](addr) ... end thread s.read`.
+
+No current `Future<T>`, `await`, user-visible `Token<T>`, `pipelined`, or
+first-class `burst` API. Bounded burst-like payloads use a fixed-size
+`Vec<T, MAX>` or response struct with `data`, `len`, and `resp` fields.
 
 ---
 

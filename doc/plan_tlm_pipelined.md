@@ -10,22 +10,24 @@
 > arbiter plus an issue-order response router.
 >
 > The first out-of-order slice is a tagged bus protocol extension using
-> the same fork/join or generated-thread user surface, not `Future<T>`.
+> the same fork/join, generated-thread, literal-loop, or RHS-fork user
+> surface, not `Future<T>`.
 >
-> `reentrant` grammar on ThreadBlock (merged in PR #86) stays as
-> dead-but-parsed code; removal or repurposing is a future cleanup.
+> `reentrant` syntax has been removed. It was a rejected pivot, not a
+> dormant feature. Use `generate_for` threads for static parallel copies.
 >
 > Historical design below kept for context — the reentrant thread
 > and `Future<T>/await` sketches led to the current framing. Treat
 > `Future<T>/await` as a rejected design direction, not a dormant
 > roadmap item.
 
-> **Implemented slice in this branch.** A narrow version of the
-> historical multi-thread idea is now supported: allow a finite cohort
-> of ordinary workers to issue blocking calls to the same `tlm_method`,
-> and synthesize only an in-order request arbiter plus response router.
-> This is not a new `tlm_method: pipelined` mode and not the shelved
-> `implement` pool. It is a compiler lowering of these shapes:
+> **Implemented slice.** A narrow version of the historical multi-thread
+> idea is now supported: allow a finite cohort of ordinary workers to
+> issue direct calls to the same `tlm_method`, and synthesize request
+> arbitration plus response routing. Blocking methods route responses in
+> issue order; `out_of_order tags N` routes by compiler-managed tags. This
+> is not a new `tlm_method: pipelined` mode and not a user-visible
+> `Future<T>` model. It is a compiler lowering of these shapes:
 >
 > ```arch
 > generate_for i in 0..N-1
@@ -43,11 +45,28 @@
 > end thread workers
 > ```
 >
+> Literal-bounded loops inside one initiator thread are unrolled before
+> lowering, and RHS-fork groups provide timed nonblocking issue:
+>
+> ```arch
+> thread driver on clk rising, rst high
+>   for i in 0..3
+>     d[i] <= m.read(addr[i]);
+>   end for
+>
+>   d0 <= fork m.read(addr0);
+>   wait 1 cycle;
+>   d1 <= fork m.read(addr1);
+>   join all;
+> end thread driver
+> ```
+>
 > The in-order target protocol remains the v1 blocking req/rsp handshake
 > and is assumed to return responses in request order. `out_of_order
-> tags N` adds req/rsp tag wires and routes by response tag. AXI-style
-> separate AR/R channels and bursts remain outside this feature; those
-> belong in explicit protocol threads or a future beat-stream extension.
+> tags N` adds req/rsp tag wires and routes by response tag. Bounded
+> burst-like payloads use fixed-size `Vec<T, MAX>` returns or response
+> structs with `data`, `len`, and `resp`; AXI-style separate AR/R
+> channels and true beat-stream bursts remain outside this feature.
 
 ---
 
@@ -449,10 +468,8 @@ is the outstanding operation handle.
 
 ## PR roadmap (revised)
 
-- ~~PR-tlm-p1: `reentrant` grammar~~ — merged but semantically unused
-  after this pivot. Leave the grammar in place as dead-but-parsed; a
-  follow-up cleanup can remove it. The `reentrant` scaffolding reject
-  in `lower_threads` stays as the failure mode.
+- ~~PR-tlm-p1: `reentrant` grammar~~ — removed after this pivot. Static
+  parallelism uses `generate_for` threads instead.
 - **PR-tlm-p3**: multi-thread TLM arbitration (this plan). Teaches
   `lower_tlm_initiator_calls` to group threads by `(port, method)`
   and emit the arbiter + issue FIFO + response routing when N > 1.
@@ -461,9 +478,8 @@ is the outstanding operation handle.
 
 ## Open questions (need user sign-off)
 
-1. **`reentrant` grammar cleanup**: keep as dead code (no-op parse,
-   rejected at lower_threads), or remove in a cleanup PR? **Leaning
-   keep** — cheap, reserved for a future "lock per body" use case.
+1. **`reentrant` grammar cleanup**: resolved. The parser no longer accepts
+   `reentrant`; use `generate_for` threads for multiple parallel copies.
 
 2. **Arbitration policy choice surface**: for v2a, fixed round-robin.
    If users need priority later, add a per-bus-port annotation

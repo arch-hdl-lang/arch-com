@@ -1158,7 +1158,7 @@ Generated code shape: grouped/looped initiator call sites emit one generated dri
 
 Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); TLM calls in `for` loops require literal bounds and direct assignments; one call per worker/branch/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; no nested/composed TLM calls; no dynamic-length TLM return types; no `pipelined`; no first-class `burst`; no `Future<T>`/`await`.
 
-Full spec: `doc/ARCH_HDL_Specification.md` §22. Design + v2 roadmap: `doc/plan_tlm_method.md`.
+Full spec: `doc/ARCH_HDL_Specification.md` §18d and §22. Design history / remaining work: `doc/plan_tlm_method.md`.
 
 ### Standard bus library (zero-setup `use`)
 
