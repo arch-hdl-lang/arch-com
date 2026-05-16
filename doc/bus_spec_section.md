@@ -143,7 +143,7 @@ end module MemTarget
 
 The compiler lowers the target thread into ordinary state registers and comb/seq blocks in the parent module. For tagged OOO methods, the target latches `req_tag` with the arguments and echoes it on `rsp_tag`.
 
-Target TLM bodies are intentionally linear today: combinational assignments (`=`), sequential assignments (`<=`), `wait until`, `wait N cycle`, and a terminal `return expr;` are supported. Rich target-side `if` / `for` / `fork` control flow is still outside the lowered subset.
+Target TLM bodies reuse the ordinary thread lowering path before the response state. They may contain combinational assignments (`=`), sequential assignments (`<=`), `if`/`elsif`/`else`, counted `for` loops, `fork`/`join`, `lock` blocks, `wait until`, and `wait N cycle`, followed by at most one terminal top-level `return expr;`. Early returns from nested branches and statements after `return` are not supported; write the selected response into a local/reg and return once at the end.
 
 ### 19.2.4  Initiator Cohorts
 

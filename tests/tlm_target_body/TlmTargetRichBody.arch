@@ -1,0 +1,52 @@
+//! ---
+//! tags: [tlm_method, target, thread, if, runtime_loop]
+//! refs:
+//!   - "doc/plan_tlm_method.md"
+//! ---
+//!
+//! TLM target-body lowering smoke test.
+//! The target method uses ordinary thread control flow before its terminal
+//! return so compiler changes can verify target bodies reuse thread lowering
+//! beyond the original linear assigns/waits subset.
+
+/// Simple blocking memory-like TLM bus for target-body lowering tests.
+bus RichTargetMem
+  tlm_method read(addr: UInt<32>, count: UInt<3>) -> UInt<32>: blocking;
+end bus RichTargetMem
+
+/// Bring the TLM bus into scope for module ports.
+use RichTargetMem;
+
+/// Target implementation with branch-local waits, a runtime counted loop, and fork/join.
+module TlmTargetRichBody
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port ready_i: in Bool;
+  port s: target RichTargetMem;
+
+  reg acc: UInt<32> reset rst => 0;
+
+  thread s.read(addr, count) on clk rising, rst high
+    acc <= addr;
+    if addr[0] == 1'b0
+      wait 2 cycle;
+      acc <= acc +% 32'd10;
+    else
+      wait until ready_i;
+      acc <= acc +% 32'd20;
+    end if
+
+    for i in 0..count -% 3'd1
+      wait 1 cycle;
+      acc <= acc +% 32'd1;
+    end for
+
+    fork
+      wait 1 cycle;
+    and
+      wait until ready_i;
+    join
+
+    return acc;
+  end thread s.read
+end module TlmTargetRichBody

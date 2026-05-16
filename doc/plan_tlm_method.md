@@ -278,9 +278,11 @@ The declared `thread port.method(args)` body is lowered like any other
   `rsp_valid = 1`, `rsp_data = expr`, then waits for `rsp_ready` before
   returning to the entry state.
 
-Multiple `return` points in the body (from nested conditions) all route
-to the same response state by staging the `rsp_data` into a thread-local
-before branching.
+The implemented target lowering accepts at most one terminal top-level
+`return`. Rich control flow before that return (assignments, waits,
+`if`, counted `for`, and `lock`) reuses ordinary thread lowering. Multiple
+or branch-local `return` points remain deferred; users should stage the
+selected response into a local/reg and return once at the end.
 
 ## Interaction with existing constructs
 
@@ -378,6 +380,13 @@ Three auto-emitted properties labeled
   compiler can route by `rsp_tag` instead of FIFO issue order. Parser,
   wire flattening, target tag echo, single-thread tag defaults, and
   cohort tag routing are implemented in the thread-cohort branch.
+- PR-tlm-V2c: serialized runtime-bounded initiator `for` loops. Direct
+  blocking TLM assignments inside a runtime loop lower to loop-counter
+  issue/wait states; each iteration completes before the next begins.
+- PR-tlm-V2d: richer target method bodies. Target-side dotted threads
+  reuse ordinary thread lowering before one terminal top-level `return`,
+  enabling assignments, waits, `if`, counted `for`, `fork`/`join`, and
+  `lock` blocks.
 
 ### Future / deferred
 
@@ -386,11 +395,9 @@ Three auto-emitted properties labeled
   `Vec<T, MAX>` returns or response structs carrying `data`, returned
   `len`, and `resp`; this is not a dynamic-length return type.
 - Richer TLM initiator control flow remains deferred. Today, call sites must
-  stay direct RHS assignments or RHS-fork assignments, and TLM loops must
-  have literal bounds so the compiler can unroll them.
-- Richer target-side control flow remains deferred. Target method bodies are
-  linear assignments, waits, and terminal `return`; `if` / `for` / `fork`
-  inside a target method are not part of the lowered subset.
+  stay direct RHS assignments or RHS-fork assignments. Runtime-loop calls are
+  supported only for serialized direct blocking assignments.
+- Branch-local / early `return` in target method bodies remains deferred.
 - One-to-many decoded interconnect remains explicit router code. `connect
   a.m -> b.s;` is point-to-point sugar; address decode and decode-error
   response ownership belong in a router module.
