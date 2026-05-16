@@ -7390,6 +7390,103 @@ fn test_tlm_initiator_compute_only_if_lowers_between_calls() {
 }
 
 #[test]
+fn test_fpt26_runtime_loop_tlm_initiator_compiles() {
+    let source = include_str!("fpt26_tlm/Fpt26RuntimeLoopTlm.arch");
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("_tlm_init_driver_loop_cnt_0"),
+        "runtime TLM for loop should allocate a loop counter:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign hbm_read_k_req_valid")
+            && sv.contains("assign qk_qk_tile_req_valid"),
+        "runtime loop should still drive both serialized TLM request channels:\n{sv}"
+    );
+}
+
+#[test]
+fn test_fpt26_runtime_loop_tlm_arch_sim_behavior() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/fpt26_tlm/Fpt26RuntimeLoopTlm.arch")
+        .arg("--tb")
+        .arg("tests/fpt26_tlm/tb_fpt26_runtime_loop_tlm.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for FPT26 runtime-loop TLM");
+    assert!(out.status.success(),
+        "FPT26 runtime-loop TLM arch sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS Fpt26RuntimeLoopTlm"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout));
+}
+
+#[test]
+fn test_fpt26_runtime_loop_tlm_verilator_behavior() {
+    if std::process::Command::new("verilator").arg("--version").output().is_err() {
+        eprintln!("skipping Verilator runtime-loop TLM smoke: verilator not found");
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("Fpt26RuntimeLoopTlm.sv");
+    let obj_dir = td.path().join("obj_dir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/fpt26_tlm/Fpt26RuntimeLoopTlm.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build FPT26 runtime-loop TLM SV");
+    assert!(build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr));
+
+    let verilate = std::process::Command::new("verilator")
+        .arg("--cc")
+        .arg("--exe")
+        .arg("--build")
+        .arg("--sv")
+        .arg("--assert")
+        .arg("--timing")
+        .arg("-Wno-fatal")
+        .arg("-Wno-WIDTH")
+        .arg("-Wno-DECLFILENAME")
+        .arg("--top-module")
+        .arg("Fpt26RuntimeLoopTlm")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&sv_out)
+        .arg("tests/fpt26_tlm/tb_fpt26_runtime_loop_tlm.cpp")
+        .output()
+        .expect("verilate FPT26 runtime-loop TLM");
+    assert!(verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr));
+
+    let exe = obj_dir.join("VFpt26RuntimeLoopTlm");
+    let run = std::process::Command::new(&exe)
+        .output()
+        .expect("run Verilator FPT26 runtime-loop TLM");
+    assert!(run.status.success(),
+        "Verilator sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr));
+    assert!(String::from_utf8_lossy(&run.stdout).contains("PASS Fpt26RuntimeLoopTlm"),
+        "expected PASS marker in Verilator stdout:\n{}",
+        String::from_utf8_lossy(&run.stdout));
+}
+
+#[test]
 fn test_locked_tlm_generated_workers_share_one_method_driver() {
     let source = "
         bus Mem

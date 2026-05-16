@@ -173,6 +173,7 @@ Supported cohort shapes:
 - `generate_for` workers.
 - One direct-call `fork ... and ... join` thread.
 - Literal-bounded `for` loops inside one initiator thread; these are unrolled before TLM lowering.
+- Runtime-bounded `for` loops inside one initiator thread when calls are serialized direct blocking assignments.
 - Timed RHS-fork groups (`dst <= fork m.read(...); wait N cycle; ... join all;`) for multiple outstanding issue inside one thread.
 
 Current restrictions:
@@ -181,7 +182,7 @@ Current restrictions:
 - RHS-fork groups may contain only direct forked TLM assignments, literal `wait N cycle;` offsets, and a final `join all;`.
 - All workers in the cohort use the same clock/reset.
 - `out_of_order tags N` requires a literal tag count and enough tags for all workers.
-- TLM calls inside non-literal/runtime `for` loops are rejected.
+- Runtime-loop TLM calls are serialized; use worker/generate/RHS-fork forms for multiple outstanding requests.
 - Nested TLM calls and composed call expressions are rejected.
 
 ## 19.3  Using a Bus Port

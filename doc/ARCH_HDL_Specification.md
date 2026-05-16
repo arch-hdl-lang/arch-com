@@ -5094,7 +5094,7 @@ Full design history and the broader roadmap are in `doc/plan_credit_channel.md` 
 
 TLM call sites are deliberately restricted to `thread` bodies. An initiator call is legal only as the direct RHS of a thread assignment (`dst <= port.method(args);`) or as a nonblocking RHS-fork issue (`dst <= fork port.method(args);`). TLM calls are not general expressions and are rejected in `comb`, `seq`, module-level `let`, module-local `function`, `pipeline`, and `fsm` contexts.
 
-TLM calls are also not legal inside non-literal/runtime `for` loops. Literal-bounded `for` loops inside an initiator thread are unrolled before TLM lowering, so each call site is statically visible. For independent compile-time worker replication, use `generate_for` worker threads.
+TLM calls are legal inside initiator `for` loops when the call is a serialized direct blocking assignment. Literal-bounded loops are unrolled before TLM lowering; non-literal/runtime loops lower to a generated loop counter plus request/response issue/wait states. For independent compile-time worker replication or multiple outstanding requests, use `generate_for` worker threads or RHS-fork groups.
 
 **18d.1 Declaration**
 
@@ -5205,17 +5205,18 @@ end thread driver
 
 `target <= fork port.method(args);` issues a nonblocking TLM request and lets the parent thread continue. `join all;` is an explicit barrier; v1 requires it as the final statement in the group. Literal `wait N cycle;` statements between forked issues become issue offsets, so the example above can have both reads outstanding.
 
-Runtime `for` loops around TLM calls are not supported:
+Runtime `for` loops around serialized blocking TLM calls are supported:
 
 ```
-thread bad on clk rising, rst high
+thread driver on clk rising, rst high
   for i in 0..count_r
-    data[i] <= m.read(addr[i]);        // compile error in v1
+    data_r <= m.read(i.resize<32>());
+    checksum <= checksum +% data_r;
   end for
-end thread bad
+end thread driver
 ```
 
-Literal-bounded `for` loops are supported and are unrolled by the TLM initiator lowering pass:
+Literal-bounded `for` loops are also supported and are unrolled by the TLM initiator lowering pass:
 
 ```
 thread driver on clk rising, rst high
@@ -5252,7 +5253,7 @@ Both target and initiator passes emit ordinary `RegDecl` + `RegBlock` + `CombBlo
 - `pipelined` / `burst` modes and all `Future<T>` / `await` / user-visible `Token<T>` APIs.
 - Dynamic-length TLM return types. Use a fixed-size `Vec<T, MAX>` return plus a runtime `len` arg for bounded burst-like payloads.
 - TLM calls outside a thread body (`comb`, `seq`, module-level `let`, module-local `function`, `pipeline`, `fsm` — compile error).
-- TLM calls inside non-literal/runtime `for` loops. Literal-bounded loops inside initiator threads are unrolled; use `generate_for` worker threads for independent compile-time replication.
+- Runtime-loop TLM calls are serialized direct blocking assignments; use `generate_for` worker threads or RHS-fork groups for multiple outstanding requests.
 - Nested TLM calls in expressions (compile error — must be direct RHS of `<=`).
 - Rich control flow inside TLM initiator bodies. Cohort `fork/join` is supported only when each branch is exactly one direct call assignment. RHS-fork groups support only direct forked TLM assignments, literal `wait N cycle;` offsets, and final `join all;`.
 - Non-literal `out_of_order tags` expressions.
@@ -6908,7 +6909,7 @@ Achievable speedup depends on the design\'s inherent parallelism --- the ratio o
 
 **22. Transaction Level Modeling (TLM)**
 
-> **Compiler-supported subset (2026-05-13).** Current ARCH TLM is a cycle-accurate RTL-lowered method interface, not a separate LT/AT simulation API. The implemented syntax is `tlm_method name(args) -> Ret: blocking;` and `tlm_method name(args) -> Ret: out_of_order tags N;` inside `bus`. Initiator calls appear only inside `thread` bodies as direct RHS assignments (`dst <= port.method(args);`) or RHS-fork issues (`dst <= fork port.method(args); ... join all;`). Literal counted `for` loops inside initiator threads may contain direct TLM assignments; the compiler unrolls them during lowering. Multiple direct worker threads, `generate_for` workers, direct-call `fork ... and ... join` cohorts, RHS-fork groups, and `lock`-protected TLM calls lower to one generated method driver with request arbitration and response routing. There is no supported `Future<T>`, `await`, user-visible `Token<T>`, `pipelined`, or `burst` API today.
+> **Compiler-supported subset (2026-05-13).** Current ARCH TLM is a cycle-accurate RTL-lowered method interface, not a separate LT/AT simulation API. The implemented syntax is `tlm_method name(args) -> Ret: blocking;` and `tlm_method name(args) -> Ret: out_of_order tags N;` inside `bus`. Initiator calls appear only inside `thread` bodies as direct RHS assignments (`dst <= port.method(args);`) or RHS-fork issues (`dst <= fork port.method(args); ... join all;`). Counted `for` loops inside initiator threads may contain serialized direct blocking TLM assignments: literal loops are unrolled and runtime loops lower to a loop counter plus issue/wait states. Multiple direct worker threads, `generate_for` workers, direct-call `fork ... and ... join` cohorts, RHS-fork groups, and `lock`-protected TLM calls lower to one generated method driver with request arbitration and response routing. There is no supported `Future<T>`, `await`, user-visible `Token<T>`, `pipelined`, or `burst` API today.
 
 Arch supports Transaction Level Modeling (TLM) as a first-class abstraction layer above RTL. At the TLM level, modules communicate by calling methods on typed interfaces rather than by driving individual signals cycle by cycle. A memory read is membus.read(addr) → data --- one call, one response --- rather than a sequence of valid/ready handshake cycles. TLM enables fast architectural simulation, software/hardware co-simulation, and performance modeling, all from the same Arch source as the RTL implementation.
 
@@ -7096,7 +7097,7 @@ Use the implemented forms above for all current RTL-backed TLM work:
 - Declare `tlm_method ... : blocking;` or `tlm_method ... : out_of_order tags N;` inside a `bus`.
 - Implement a target as `thread port.method(args) on clk rising, rst high ... return expr; end thread port.method`.
 - Call from an initiator only inside a `thread`, as `dst <= port.method(args);` or `dst <= fork port.method(args); ... join all;`.
-- Use literal counted `for` loops for repeated direct call sites inside one initiator thread; non-literal/runtime TLM loops are rejected.
+- Use counted `for` loops for repeated serialized direct blocking call sites inside one initiator thread; runtime bounds are supported for the serialized case.
 - Use `lock RESOURCE ... end lock RESOURCE` plus `resource RESOURCE: mutex<round_robin>;` when independent workers share a TLM method and require round-robin request arbitration.
 - Express multiple outstanding requests with worker threads, `generate_for` workers, direct-call `fork ... and ... join`, or RHS-fork groups.
 
