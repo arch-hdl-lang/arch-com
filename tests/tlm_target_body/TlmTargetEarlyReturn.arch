@@ -1,0 +1,46 @@
+//! ---
+//! tags: [tlm_method, target, thread, early_return]
+//! refs:
+//!   - "doc/plan_tlm_method.md"
+//! ---
+//!
+//! TLM target early-return lowering smoke test.
+//! The target method returns from branch-local paths and also has a final
+//! fallback return so compiler changes can verify response-state routing.
+
+/// Blocking TLM bus for target early-return lowering tests.
+bus EarlyReturnMem
+  tlm_method read(addr: UInt<32>, mode: UInt<2>) -> UInt<32>: blocking;
+end bus EarlyReturnMem
+
+/// Bring the TLM bus into scope for module ports.
+use EarlyReturnMem;
+
+/// Target implementation with branch-local returns and a terminal fallback return.
+module TlmTargetEarlyReturn
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port ready_i: in Bool;
+  port s: target EarlyReturnMem;
+
+  reg acc: UInt<32> reset rst => 0;
+
+  thread s.read(addr, mode) on clk rising, rst high
+    acc <= addr;
+    wait 1 cycle;
+
+    if mode == 2'd0
+      acc <= acc +% 32'd10;
+      return acc;
+    else
+      wait until ready_i;
+      if mode == 2'd1
+        acc <= acc +% 32'd20;
+        return acc;
+      end if
+    end if
+
+    acc <= acc +% 32'd30;
+    return acc;
+  end thread s.read
+end module TlmTargetEarlyReturn

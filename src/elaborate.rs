@@ -3225,6 +3225,28 @@ struct ThreadFsmState {
     /// Each entry is (condition, target_state_offset_from_this_group).
     /// When non-empty, `transition_cond` is ignored.
     multi_transitions: Vec<(Expr, usize)>,
+    /// Target-side TLM only: this state exits to a generated response state
+    /// carrying the indexed return expression instead of falling through.
+    terminal_return: Option<usize>,
+}
+
+const THREAD_TARGET_NEXT: usize = usize::MAX;
+const THREAD_TARGET_RETURN_BASE: usize = usize::MAX / 2;
+
+fn thread_return_target(idx: usize) -> usize {
+    THREAD_TARGET_RETURN_BASE + idx
+}
+
+fn thread_target_return_idx(target: usize) -> Option<usize> {
+    if (THREAD_TARGET_RETURN_BASE..usize::MAX).contains(&target) {
+        Some(target - THREAD_TARGET_RETURN_BASE)
+    } else {
+        None
+    }
+}
+
+fn thread_target_is_special(target: usize) -> bool {
+    target == THREAD_TARGET_NEXT || thread_target_return_idx(target).is_some()
 }
 
 /// Extract the bit width of a UInt literal type expression (e.g. `UInt<8>` → 8).
@@ -3363,6 +3385,9 @@ fn redirect_fallthrough_to(
     span: Span,
 ) {
     let s = &mut states[idx];
+    if s.terminal_return.is_some() {
+        return;
+    }
     if !s.multi_transitions.is_empty() {
         if !s.multi_transitions.iter().any(|(_, t)| *t == target) {
             s.multi_transitions.push((Expr::new(ExprKind::Bool(true), span), target));
@@ -3385,6 +3410,41 @@ fn redirect_fallthrough_to(
     s.multi_transitions = vec![(Expr::new(ExprKind::Bool(true), span), target)];
 }
 
+fn redirect_fallthrough_to_return(
+    states: &mut Vec<ThreadFsmState>,
+    return_idx: usize,
+    span: Span,
+) {
+    let target = thread_return_target(return_idx);
+    let Some(idx) = states.len().checked_sub(1) else {
+        states.push(ThreadFsmState {
+            comb_stmts: Vec::new(),
+            seq_stmts: Vec::new(),
+            transition_cond: None,
+            wait_cycles: None,
+            multi_transitions: Vec::new(),
+            terminal_return: Some(return_idx),
+        });
+        return;
+    };
+    let next_idx = states.len();
+    let s = &mut states[idx];
+    if !s.multi_transitions.is_empty() {
+        let mut rewrote = false;
+        for (_, t) in &mut s.multi_transitions {
+            if *t == next_idx || *t == THREAD_TARGET_NEXT {
+                *t = target;
+                rewrote = true;
+            }
+        }
+        if !rewrote {
+            s.multi_transitions.push((Expr::new(ExprKind::Bool(true), span), target));
+        }
+        return;
+    }
+    s.terminal_return = Some(return_idx);
+}
+
 fn contains_wait(stmts: &[ThreadStmt]) -> bool {
     stmts.iter().any(|s| match s {
         ThreadStmt::WaitUntil(..) | ThreadStmt::WaitCycles(..) | ThreadStmt::DoUntil { .. } => true,
@@ -3394,6 +3454,35 @@ fn contains_wait(stmts: &[ThreadStmt]) -> bool {
         ThreadStmt::Lock { body, .. } => contains_wait(body),
         _ => false,
     })
+}
+
+fn contains_return(stmts: &[ThreadStmt]) -> bool {
+    stmts.iter().any(|s| match s {
+        ThreadStmt::Return(..) => true,
+        ThreadStmt::IfElse(ie) => contains_return(&ie.then_stmts) || contains_return(&ie.else_stmts),
+        ThreadStmt::ForkJoin(branches, _) => branches.iter().any(|br| contains_return(br)),
+        ThreadStmt::For { body, .. } => contains_return(body),
+        ThreadStmt::Lock { body, .. } | ThreadStmt::DoUntil { body, .. } => contains_return(body),
+        _ => false,
+    })
+}
+
+fn thread_block_always_returns(stmts: &[ThreadStmt]) -> bool {
+    stmts.iter().any(thread_stmt_always_returns)
+}
+
+fn thread_stmt_always_returns(stmt: &ThreadStmt) -> bool {
+    match stmt {
+        ThreadStmt::Return(..) => true,
+        ThreadStmt::IfElse(ie) => {
+            thread_block_always_returns(&ie.then_stmts)
+                && thread_block_always_returns(&ie.else_stmts)
+        }
+        ThreadStmt::Lock { body, .. } | ThreadStmt::DoUntil { body, .. } => {
+            thread_block_always_returns(body)
+        }
+        _ => false,
+    }
 }
 
 fn expr_and(a: Expr, b: Expr, span: Span) -> Expr {
@@ -3595,11 +3684,29 @@ fn partition_thread_body(
     span: Span,
     cnt_width: u32,
 ) -> Result<Vec<ThreadFsmState>, CompileError> {
+    partition_thread_body_impl(body, span, cnt_width, None)
+}
+
+fn partition_tlm_target_thread_body(
+    body: &[ThreadStmt],
+    span: Span,
+    cnt_width: u32,
+    return_exprs: &mut Vec<Expr>,
+) -> Result<Vec<ThreadFsmState>, CompileError> {
+    partition_thread_body_impl(body, span, cnt_width, Some(return_exprs))
+}
+
+fn partition_thread_body_impl(
+    body: &[ThreadStmt],
+    span: Span,
+    cnt_width: u32,
+    mut target_returns: Option<&mut Vec<Expr>>,
+) -> Result<Vec<ThreadFsmState>, CompileError> {
     let mut states: Vec<ThreadFsmState> = Vec::new();
     let mut cur_comb: Vec<Stmt> = Vec::new();
     let mut cur_seq: Vec<Stmt> = Vec::new();
 
-    for stmt in body {
+    for (stmt_idx, stmt) in body.iter().enumerate() {
         match stmt {
             ThreadStmt::CombAssign(ca) => {
                 cur_comb.push(Stmt::Assign(ca.clone()));
@@ -3632,6 +3739,7 @@ fn partition_thread_body(
                         transition_cond: None,
                         wait_cycles: None,
                         multi_transitions: Vec::new(),
+                        terminal_return: None,
                     });
                 }
                 states.push(ThreadFsmState {
@@ -3640,6 +3748,7 @@ fn partition_thread_body(
                     transition_cond: Some(cond.clone()),
                     wait_cycles: None,
                     multi_transitions: Vec::new(),
+                        terminal_return: None,
                 });
                 let _ = sp; // span retained for parity with the prior arm
             }
@@ -3653,6 +3762,7 @@ fn partition_thread_body(
                         transition_cond: None,
                         wait_cycles: None,
                         multi_transitions: Vec::new(),
+                        terminal_return: None,
                     });
                 }
                 // `wait 1 cycle` between two seq-write boundaries is a no-op
@@ -3682,15 +3792,20 @@ fn partition_thread_body(
                         transition_cond: None,
                         wait_cycles: Some(count.clone()),
                         multi_transitions: Vec::new(),
+                        terminal_return: None,
                     });
                 }
             }
             ThreadStmt::IfElse(ie) => {
                 let then_has_wait = contains_wait(&ie.then_stmts);
                 let else_has_wait = contains_wait(&ie.else_stmts);
-                if then_has_wait || else_has_wait {
+                let then_has_return = contains_return(&ie.then_stmts);
+                let else_has_return = contains_return(&ie.else_stmts);
+                if then_has_wait || else_has_wait || then_has_return || else_has_return {
                     if cur_comb.is_empty()
                         && cur_seq.is_empty()
+                        && !then_has_return
+                        && !else_has_return
                         && try_fuse_wait_ifelse(&mut states, ie, cnt_width)?
                     {
                         continue;
@@ -3706,6 +3821,7 @@ fn partition_thread_body(
                             transition_cond: None,
                             wait_cycles: None,
                             multi_transitions: Vec::new(),
+                        terminal_return: None,
                         });
                     }
                     // Step 2: insert dispatch state placeholder; M filled below
@@ -3717,6 +3833,7 @@ fn partition_thread_body(
                         transition_cond: None,
                         wait_cycles: None,
                         multi_transitions: Vec::new(),
+                        terminal_return: None,
                     });
                     // Step 3: recursively partition `then_stmts` and append at then_base.
                     // Empty branches (§II.10.4) skip the recursive call —
@@ -3725,7 +3842,11 @@ fn partition_thread_body(
                     // to the rejoin index.
                     let then_base = states.len();
                     if !ie.then_stmts.is_empty() {
-                        let mut then_states = partition_thread_body(&ie.then_stmts, ie.span, cnt_width)?;
+                        let mut then_states = if let Some(rets) = target_returns.as_deref_mut() {
+                            partition_thread_body_impl(&ie.then_stmts, ie.span, cnt_width, Some(rets))?
+                        } else {
+                            partition_thread_body(&ie.then_stmts, ie.span, cnt_width)?
+                        };
                         let then_len = then_states.len();
                         for fs in &mut then_states {
                             for (_, target) in &mut fs.multi_transitions {
@@ -3734,9 +3855,9 @@ fn partition_thread_body(
                                 // `lower_thread_for`. Inside a branch, that
                                 // fallthrough should land at the rejoin index;
                                 // the redirect step below rewrites it.
-                                if *target == usize::MAX {
+                                if *target == THREAD_TARGET_NEXT {
                                     *target = then_base + then_len;
-                                } else {
+                                } else if !thread_target_is_special(*target) {
                                     *target += then_base;
                                 }
                             }
@@ -3746,13 +3867,17 @@ fn partition_thread_body(
                     // Step 4: same for `else_stmts` at else_base.
                     let else_base = states.len();
                     if !ie.else_stmts.is_empty() {
-                        let mut else_states = partition_thread_body(&ie.else_stmts, ie.span, cnt_width)?;
+                        let mut else_states = if let Some(rets) = target_returns.as_deref_mut() {
+                            partition_thread_body_impl(&ie.else_stmts, ie.span, cnt_width, Some(rets))?
+                        } else {
+                            partition_thread_body(&ie.else_stmts, ie.span, cnt_width)?
+                        };
                         let else_len = else_states.len();
                         for fs in &mut else_states {
                             for (_, target) in &mut fs.multi_transitions {
-                                if *target == usize::MAX {
+                                if *target == THREAD_TARGET_NEXT {
                                     *target = else_base + else_len;
-                                } else {
+                                } else if !thread_target_is_special(*target) {
                                     *target += else_base;
                                 }
                             }
@@ -3826,6 +3951,7 @@ fn partition_thread_body(
                         transition_cond: None,
                         wait_cycles: None,
                         multi_transitions: Vec::new(),
+                        terminal_return: None,
                     });
                 }
                 // Lower fork/join via product-state expansion
@@ -3834,7 +3960,9 @@ fn partition_thread_body(
                 let fork_base = states.len();
                 for fs in &mut fork_states {
                     for (_, target) in &mut fs.multi_transitions {
-                        *target += fork_base;
+                        if !thread_target_is_special(*target) {
+                            *target += fork_base;
+                        }
                     }
                 }
                 states.extend(fork_states);
@@ -3874,6 +4002,7 @@ fn partition_thread_body(
                             transition_cond: None,
                             wait_cycles: None,
                             multi_transitions: Vec::new(),
+                        terminal_return: None,
                         });
                     }
                 }
@@ -3883,10 +4012,10 @@ fn partition_thread_body(
                 let for_len = for_states.len();
                 for fs in &mut for_states {
                     for (_, target) in &mut fs.multi_transitions {
-                        if *target == usize::MAX {
+                        if *target == THREAD_TARGET_NEXT {
                             // Sentinel: "next state after this for group"
                             *target = for_base + for_len;
-                        } else {
+                        } else if !thread_target_is_special(*target) {
                             *target += for_base;
                         }
                     }
@@ -3918,6 +4047,7 @@ fn partition_thread_body(
                         transition_cond: None,
                         wait_cycles: None,
                         multi_transitions: Vec::new(),
+                        terminal_return: None,
                     });
                 }
                 let lock_states = lower_thread_lock(&resource.name, body, *span, cnt_width)?;
@@ -3932,6 +4062,7 @@ fn partition_thread_body(
                         transition_cond: None,
                         wait_cycles: None,
                         multi_transitions: Vec::new(),
+                        terminal_return: None,
                     });
                 }
                 // Collect the do-body's assigns: comb stays in-state, seq stays in-state
@@ -3965,9 +4096,33 @@ fn partition_thread_body(
                     transition_cond: Some(cond.clone()),
                     wait_cycles: None,
                     multi_transitions: Vec::new(),
+                        terminal_return: None,
                 });
             }
-            ThreadStmt::Return(_, span) => {
+            ThreadStmt::Return(e, ret_span) => {
+                if let Some(rets) = target_returns.as_deref_mut() {
+                    let return_idx = rets.len();
+                    rets.push(e.clone());
+                    if !cur_comb.is_empty() || !cur_seq.is_empty() {
+                        states.push(ThreadFsmState {
+                            comb_stmts: std::mem::take(&mut cur_comb),
+                            seq_stmts: std::mem::take(&mut cur_seq),
+                            transition_cond: None,
+                            wait_cycles: None,
+                            multi_transitions: Vec::new(),
+                            terminal_return: Some(return_idx),
+                        });
+                    } else {
+                        redirect_fallthrough_to_return(&mut states, return_idx, *ret_span);
+                    }
+                    if stmt_idx + 1 != body.len() {
+                        return Err(CompileError::general(
+                            "statements after `return` are not supported in TLM target thread bodies",
+                            *ret_span,
+                        ));
+                    }
+                    break;
+                }
                 // `return expr;` is only valid inside a TLM method target
                 // thread body, which has its own dedicated lowering pass
                 // that rewrites Return into the rsp_valid/rsp_data drive
@@ -3976,7 +4131,7 @@ fn partition_thread_body(
                 // error.
                 return Err(CompileError::general(
                     "`return` is only valid inside a TLM method target thread (`thread port.method(args) ...`). Remove the return or wrap the body in a TLM target binding.",
-                    *span,
+                    *ret_span,
                 ));
             }
             ThreadStmt::ForkTlmAssign(ra) => {
@@ -4050,6 +4205,7 @@ fn partition_thread_body(
                 transition_cond: None,
                 wait_cycles: None,
                 multi_transitions: Vec::new(),
+                        terminal_return: None,
             });
         }
     }
@@ -4090,6 +4246,7 @@ fn lower_fork_join(
         states.push(ThreadFsmState {
             comb_stmts: Vec::new(), seq_stmts: Vec::new(),
             transition_cond: None, wait_cycles: None, multi_transitions: Vec::new(),
+                        terminal_return: None,
         });
         branch_states.push(states);
     }
@@ -4201,6 +4358,7 @@ fn lower_fork_join(
             comb_stmts: comb, seq_stmts: seq,
             transition_cond: None, wait_cycles: None,
             multi_transitions: multi,
+            terminal_return: None,
         });
     }
 
@@ -4442,6 +4600,7 @@ fn lower_thread_lock(
             transition_cond: Some(make_grant()),
             wait_cycles: None,
             multi_transitions: Vec::new(),
+                        terminal_return: None,
         });
     }
 
@@ -8637,10 +8796,13 @@ fn inline_lower_tlm_target_with_io(
             }
         }
     }
-    if return_expr.is_none() && method.ret.is_some() {
+    if return_expr.is_none()
+        && method.ret.is_some()
+        && !thread_block_always_returns(&body_before_return)
+    {
         return Err(CompileError::general(
             &format!(
-                "`thread {}.{}(...)` must end with `return <expr>;` (method declares return type {:?})",
+                "`thread {}.{}(...)` must end with `return <expr>;` or all control-flow paths must return (method declares return type {:?})",
                 port, method_name, method.ret,
             ),
             span,
@@ -8649,10 +8811,16 @@ fn inline_lower_tlm_target_with_io(
 
     let cnt_width = infer_for_cnt_width(&body_before_return, &HashMap::new()).max(32);
     let loop_cnt_name = format!("_tlm_{port}_{method_name}{}_loop_cnt", io.suffix);
+    let mut early_return_exprs: Vec<Expr> = Vec::new();
     let mut body_states = if body_before_return.is_empty() {
         Vec::new()
     } else {
-        partition_thread_body(&body_before_return, span, cnt_width)?
+        partition_tlm_target_thread_body(
+            &body_before_return,
+            span,
+            cnt_width,
+            &mut early_return_exprs,
+        )?
     };
     for state in &mut body_states {
         rename_ident_in_comb_stmts(&mut state.comb_stmts, "_loop_cnt", &loop_cnt_name);
@@ -8664,12 +8832,24 @@ fn inline_lower_tlm_target_with_io(
             rename_ident_in_expr(cond, "_loop_cnt", &loop_cnt_name);
         }
     }
+    for expr in &mut early_return_exprs {
+        rename_ident_in_expr(expr, "_loop_cnt", &loop_cnt_name);
+    }
 
-    // Total states: ENTRY (0) + body states + RESPOND (last).
-    let total_states = 2 + body_states.len();
+    let mut response_exprs = early_return_exprs;
+    let terminal_response_slot = return_expr.as_ref().map(|_| {
+        let slot = response_exprs.len();
+        response_exprs.push(return_expr.clone().unwrap());
+        slot
+    });
+    let response_count = response_exprs.len().max(1);
+
+    // Total states: ENTRY (0) + body states + one response state per return.
+    let total_states = 1 + body_states.len() + response_count;
     let state_width = clog2_width(total_states as u64);
     let entry_idx = 0u64;
-    let respond_idx = (total_states - 1) as u64;
+    let response_base = 1 + body_states.len();
+    let fallback_response_idx = (response_base + terminal_response_slot.unwrap_or(0)) as u64;
 
     let state_reg_name = format!("_tlm_{port}_{method_name}{}_state", io.suffix);
     let state_ident = Expr::new(ExprKind::Ident(state_reg_name.clone()), span);
@@ -8751,17 +8931,21 @@ fn inline_lower_tlm_target_with_io(
         state_ident: Expr,
     | -> Vec<Stmt> {
         let mut stmts = Vec::new();
-        if let Some(wait) = body_states.get(target).and_then(|s| s.wait_cycles.as_ref()) {
-            stmts.push(Stmt::Assign(RegAssign {
-                target: wait_cnt_ident.clone(),
-                value: wait_count_init(wait),
-                span,
-            }));
+        if thread_target_return_idx(target).is_none() {
+            if let Some(wait) = body_states.get(target).and_then(|s| s.wait_cycles.as_ref()) {
+                stmts.push(Stmt::Assign(RegAssign {
+                    target: wait_cnt_ident.clone(),
+                    value: wait_count_init(wait),
+                    span,
+                }));
+            }
         }
-        let target_state = if target < body_states.len() {
+        let target_state = if let Some(return_idx) = thread_target_return_idx(target) {
+            (response_base + return_idx) as u64
+        } else if target < body_states.len() {
             (target + 1) as u64
         } else {
-            respond_idx
+            fallback_response_idx
         };
         stmts.push(Stmt::Assign(RegAssign {
             target: state_ident,
@@ -8769,6 +8953,14 @@ fn inline_lower_tlm_target_with_io(
             span,
         }));
         stmts
+    };
+
+    let transition_to_state_response = |response_slot: usize, state_ident: Expr| -> Vec<Stmt> {
+        vec![Stmt::Assign(RegAssign {
+            target: state_ident,
+            value: mk_state_lit((response_base + response_slot) as u64),
+            span,
+        })]
     };
 
     if let Some(first_wait) = body_states.first().and_then(|s| s.wait_cycles.as_ref()) {
@@ -8780,7 +8972,7 @@ fn inline_lower_tlm_target_with_io(
     }
     entry_then.push(Stmt::Assign(RegAssign {
         target: state_ident.clone(),
-        value: if body_states.is_empty() { mk_state_lit(respond_idx) } else { mk_state_lit(1) },
+        value: if body_states.is_empty() { mk_state_lit(fallback_response_idx) } else { mk_state_lit(1) },
         span,
     }));
     let entry_branch_cond = Expr::new(
@@ -8798,7 +8990,8 @@ fn inline_lower_tlm_target_with_io(
         span,
     }));
     // User body states 1..N. Their relative targets come from the ordinary
-    // thread partitioner; falling off the body enters the TLM response state.
+    // thread partitioner; falling off the body enters the terminal response
+    // state, while early returns enter their own response states.
     for (i, us) in body_states.iter().enumerate() {
         let state_idx = (i + 1) as u64;
         if us.wait_cycles.is_some() {
@@ -8827,11 +9020,7 @@ fn inline_lower_tlm_target_with_io(
 
         if !us.multi_transitions.is_empty() {
             for (cond, target) in &us.multi_transitions {
-                let target_idx = if *target >= body_states.len() {
-                    body_states.len()
-                } else {
-                    *target
-                };
+                let target_idx = *target;
                 let mut then_stmts = us.seq_stmts.clone();
                 then_stmts.extend(transition_to_body_or_respond(target_idx, state_ident.clone()));
                 let mut branch_cond = Expr::new(
@@ -8862,7 +9051,11 @@ fn inline_lower_tlm_target_with_io(
             }
         } else {
             let mut then_stmts = us.seq_stmts.clone();
-            then_stmts.extend(transition_to_body_or_respond(i + 1, state_ident.clone()));
+            if let Some(return_idx) = us.terminal_return {
+                then_stmts.extend(transition_to_state_response(return_idx, state_ident.clone()));
+            } else {
+                then_stmts.extend(transition_to_body_or_respond(i + 1, state_ident.clone()));
+            }
             let transition_cond = us.transition_cond.clone().unwrap_or_else(|| Expr::new(ExprKind::Bool(true), span));
             let mut branch_cond = Expr::new(
                 ExprKind::Binary(
@@ -8891,27 +9084,28 @@ fn inline_lower_tlm_target_with_io(
             }));
         }
     }
-    // Respond state → entry (loop back) when rsp_ready.
-    let mut respond_then: Vec<Stmt> = Vec::new();
-    respond_then.push(Stmt::Assign(RegAssign {
-        target: state_ident.clone(),
-        value: mk_state_lit(entry_idx),
-        span,
-    }));
-    let respond_branch_cond = Expr::new(
-        ExprKind::Binary(BinOp::And,
-            Box::new(state_eq(respond_idx)),
-            Box::new(io.rsp_ready.clone()),
-        ),
-        span,
-    );
-    seq_body.push(Stmt::IfElse(IfElseOf {
-        cond: respond_branch_cond,
-        then_stmts: respond_then,
-        else_stmts: Vec::new(),
-        unique: false,
-        span,
-    }));
+    // Response states → entry (loop back) when rsp_ready.
+    for slot in 0..response_count {
+        let response_idx = (response_base + slot) as u64;
+        let respond_branch_cond = Expr::new(
+            ExprKind::Binary(BinOp::And,
+                Box::new(state_eq(response_idx)),
+                Box::new(io.rsp_ready.clone()),
+            ),
+            span,
+        );
+        seq_body.push(Stmt::IfElse(IfElseOf {
+            cond: respond_branch_cond,
+            then_stmts: vec![Stmt::Assign(RegAssign {
+                target: state_ident.clone(),
+                value: mk_state_lit(entry_idx),
+                span,
+            })],
+            else_stmts: Vec::new(),
+            unique: false,
+            span,
+        }));
+    }
 
     let reg_block = RegBlock {
         clock: t.clock.clone(),
@@ -8928,17 +9122,45 @@ fn inline_lower_tlm_target_with_io(
         value: state_eq(entry_idx),
         span,
     }));
-    // rsp_valid = (state == respond)
+    // rsp_valid = state in any generated response state.
+    let mut rsp_valid_expr = state_eq(response_base as u64);
+    for slot in 1..response_count {
+        rsp_valid_expr = Expr::new(
+            ExprKind::Binary(
+                BinOp::Or,
+                Box::new(rsp_valid_expr),
+                Box::new(state_eq((response_base + slot) as u64)),
+            ),
+            span,
+        );
+    }
     comb_stmts.push(Stmt::Assign(CombAssign {
         target: io.rsp_valid_target.clone(),
-        value: state_eq(respond_idx),
+        value: rsp_valid_expr,
         span,
     }));
-    // rsp_data = <return expr> (always driven; only observed when rsp_valid).
-    if let Some(expr) = return_expr {
-        if method.ret.is_some() {
-            if let Some(target) = io.rsp_data_target.clone() {
-                comb_stmts.push(Stmt::Assign(CombAssign { target, value: expr, span }));
+    // rsp_data = selected return expression (only observed when rsp_valid).
+    if method.ret.is_some() {
+        if let Some(target) = io.rsp_data_target.clone() {
+            if let Some(first) = response_exprs.first() {
+                comb_stmts.push(Stmt::Assign(CombAssign {
+                    target: target.clone(),
+                    value: first.clone(),
+                    span,
+                }));
+                for (slot, expr) in response_exprs.iter().enumerate() {
+                    comb_stmts.push(Stmt::IfElse(IfElse {
+                        cond: state_eq((response_base + slot) as u64),
+                        then_stmts: vec![Stmt::Assign(CombAssign {
+                            target: target.clone(),
+                            value: expr.clone(),
+                            span,
+                        })],
+                        else_stmts: Vec::new(),
+                        unique: false,
+                        span,
+                    }));
+                }
             }
         }
     }

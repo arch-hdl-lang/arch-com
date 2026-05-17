@@ -1065,7 +1065,7 @@ end module Initiator
 
 Both sides lower to a parent-module state machine (state reg + RegBlock + CombBlock). `arch sim`, `arch sim --pybind --test`, and `arch sim --thread-sim parallel` work through generated C++ models; parallel mode uses the regular sim model for modules whose TLM threads were lowered away.
 
-Target bodies reuse ordinary thread lowering before one response state. They may use assignments, waits, `if`/`elsif`/`else`, counted `for`, `fork`/`join`, and `lock`, then return once at the end. Branch-local/early returns and statements after `return` are rejected.
+Target bodies reuse ordinary thread lowering before generated response states. They may use assignments, waits, `if`/`elsif`/`else`, counted `for`, `fork`/`join`, `lock`, and branch-local `return expr;`. Statements after `return` in the same block are rejected.
 
 **One-to-one connection sugar** — after both instances are declared, bind an initiator bus port to a target bus port without spelling an intermediate wire:
 
