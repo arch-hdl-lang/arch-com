@@ -6620,6 +6620,10 @@ fn thread_body_has_tlm_call(
             || contains_tlm_call(&ca.target, port_buses, bus_methods),
         ThreadStmt::WaitUntil(e, _) =>
             contains_tlm_call(e, port_buses, bus_methods),
+        ThreadStmt::IfElse(ie) =>
+            contains_tlm_call(&ie.cond, port_buses, bus_methods)
+            || thread_body_has_tlm_call(&ie.then_stmts, port_buses, bus_methods)
+            || thread_body_has_tlm_call(&ie.else_stmts, port_buses, bus_methods),
         ThreadStmt::ForkJoin(branches, _) =>
             branches.iter().any(|branch| thread_body_has_tlm_call(branch, port_buses, bus_methods)),
         ThreadStmt::For { body, .. }
@@ -6664,6 +6668,16 @@ enum TlmInitGroupStateKind {
 
 enum TlmInitGroupNext {
     Fallthrough,
+    Goto {
+        target: usize,
+        span: Span,
+    },
+    Branch {
+        cond: Expr,
+        then_start: usize,
+        else_start: usize,
+        span: Span,
+    },
     LoopBack {
         counter: String,
         end: Expr,
@@ -6817,31 +6831,105 @@ fn build_tlm_init_thread_plan(
                     )?;
                 }
                 ThreadStmt::IfElse(ie) => {
-                    if thread_body_has_tlm_call(&ie.then_stmts, port_buses, bus_methods)
-                        || thread_body_has_tlm_call(&ie.else_stmts, port_buses, bus_methods)
-                    {
-                        return Err(CompileError::general(
-                            "TLM method calls inside `if` branches are not supported in v1 initiator lowering",
-                            ie.span,
-                        ));
+                    let then_has_tlm = thread_body_has_tlm_call(&ie.then_stmts, port_buses, bus_methods);
+                    let else_has_tlm = thread_body_has_tlm_call(&ie.else_stmts, port_buses, bus_methods);
+                    if !then_has_tlm && !else_has_tlm {
+                        pending_seq.push(Stmt::IfElse(IfElseOf {
+                            cond: ie.cond,
+                            then_stmts: compute_only_thread_stmts_to_seq(
+                                ie.then_stmts,
+                                port_buses,
+                                bus_methods,
+                                ie.span,
+                            )?,
+                            else_stmts: compute_only_thread_stmts_to_seq(
+                                ie.else_stmts,
+                                port_buses,
+                                bus_methods,
+                                ie.span,
+                            )?,
+                            unique: false,
+                            span: ie.span,
+                        }));
+                        continue;
                     }
-                    pending_seq.push(Stmt::IfElse(IfElseOf {
-                        cond: ie.cond,
-                        then_stmts: compute_only_thread_stmts_to_seq(
-                            ie.then_stmts,
-                            port_buses,
-                            bus_methods,
-                            ie.span,
-                        )?,
-                        else_stmts: compute_only_thread_stmts_to_seq(
-                            ie.else_stmts,
-                            port_buses,
-                            bus_methods,
-                            ie.span,
-                        )?,
-                        unique: false,
-                        span: ie.span,
-                    }));
+
+                    if !pending_seq.is_empty() {
+                        push_state(states, TlmInitGroupStateKind::Compute {
+                            seq_on_exit: std::mem::take(pending_seq),
+                        });
+                    }
+
+                    let branch_idx = states.len();
+                    push_state(states, TlmInitGroupStateKind::Compute { seq_on_exit: Vec::new() });
+
+                    let then_start = states.len();
+                    let mut then_pending = Vec::new();
+                    lower_stmts(
+                        ie.then_stmts,
+                        states,
+                        &mut then_pending,
+                        loop_counters,
+                        tag,
+                        port_buses,
+                        bus_methods,
+                        span,
+                        current_lock,
+                    )?;
+                    if !then_pending.is_empty() {
+                        push_state(states, TlmInitGroupStateKind::Compute {
+                            seq_on_exit: std::mem::take(&mut then_pending),
+                        });
+                    }
+                    let then_end = states.len();
+
+                    let else_start = states.len();
+                    let mut else_pending = Vec::new();
+                    lower_stmts(
+                        ie.else_stmts,
+                        states,
+                        &mut else_pending,
+                        loop_counters,
+                        tag,
+                        port_buses,
+                        bus_methods,
+                        span,
+                        current_lock,
+                    )?;
+                    if !else_pending.is_empty() {
+                        push_state(states, TlmInitGroupStateKind::Compute {
+                            seq_on_exit: std::mem::take(&mut else_pending),
+                        });
+                    }
+                    let else_end = states.len();
+
+                    let join_idx = states.len();
+                    push_state(states, TlmInitGroupStateKind::Compute { seq_on_exit: Vec::new() });
+
+                    if let Some(branch_state) = states.get_mut(branch_idx) {
+                        branch_state.next = TlmInitGroupNext::Branch {
+                            cond: ie.cond,
+                            then_start: if then_end > then_start { then_start } else { join_idx },
+                            else_start: if else_end > else_start { else_start } else { join_idx },
+                            span: ie.span,
+                        };
+                    }
+                    if then_end > then_start {
+                        if let Some(last_then) = states.get_mut(then_end - 1) {
+                            last_then.next = TlmInitGroupNext::Goto {
+                                target: join_idx,
+                                span: ie.span,
+                            };
+                        }
+                    }
+                    if else_end > else_start {
+                        if let Some(last_else) = states.get_mut(else_end - 1) {
+                            last_else.next = TlmInitGroupNext::Goto {
+                                target: join_idx,
+                                span: ie.span,
+                            };
+                        }
+                    }
                 }
                 ThreadStmt::For { var, start, end, body, span: for_span } => {
                     match (literal_expr_u64(&start), literal_expr_u64(&end)) {
@@ -7063,6 +7151,28 @@ fn inline_lower_tlm_initiator_group(
                     value: state_lit(normal_next_idx),
                     span,
                 })],
+                TlmInitGroupNext::Goto { target, span: goto_span } => vec![Stmt::Assign(RegAssign {
+                    target: state_expr,
+                    value: state_lit(*target as u64),
+                    span: *goto_span,
+                })],
+                TlmInitGroupNext::Branch { cond, then_start, else_start, span: branch_span } => {
+                    vec![Stmt::IfElse(IfElseOf {
+                        cond: cond.clone(),
+                        then_stmts: vec![Stmt::Assign(RegAssign {
+                            target: state_expr.clone(),
+                            value: state_lit(*then_start as u64),
+                            span: *branch_span,
+                        })],
+                        else_stmts: vec![Stmt::Assign(RegAssign {
+                            target: state_expr,
+                            value: state_lit(*else_start as u64),
+                            span: *branch_span,
+                        })],
+                        unique: false,
+                        span: *branch_span,
+                    })]
+                }
                 TlmInitGroupNext::LoopBack { counter, end, body_start, span: loop_span } => {
                     let counter_expr = id(counter.clone());
                     let inc_expr = bin(BinOp::AddWrap, counter_expr.clone(), sized(32, 1));
