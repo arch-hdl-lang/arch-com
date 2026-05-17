@@ -6955,6 +6955,99 @@ fn test_axi_dma_tlm_indexed_burst_target_verilator_behavior() {
 }
 
 #[test]
+fn test_axi_read_beat_interleave_example_compiles() {
+    let source = include_str!("axi_dma_thread/ThreadAxiReadBeatInterleave.arch");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module ThreadAxiReadBeatInterleave"),
+        "beat-interleaving thread example should build:\n{sv}");
+    assert!(sv.contains("_arb_ThreadAxiReadBeatInterleave_r_ch"),
+        "response channel mutex should lower to a generated arbiter:\n{sv}");
+    assert!(sv.contains("r_id = 1"),
+        "generate_for lanes should become concrete response IDs:\n{sv}");
+}
+
+#[test]
+fn test_axi_read_beat_interleave_arch_sim_behavior() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/axi_dma_thread/ThreadAxiReadBeatInterleave.arch")
+        .arg("--tb")
+        .arg("tests/axi_dma_thread/tb_axi_read_beat_interleave.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for beat-interleaving response target");
+    assert!(out.status.success(),
+        "beat-interleaving arch sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS beat interleave alternating"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout));
+}
+
+#[test]
+fn test_axi_read_beat_interleave_verilator_behavior() {
+    if std::process::Command::new("verilator").arg("--version").output().is_err() {
+        eprintln!("skipping Verilator beat-interleaving smoke: verilator not found");
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("ThreadAxiReadBeatInterleave.sv");
+    let obj_dir = td.path().join("obj_dir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/axi_dma_thread/ThreadAxiReadBeatInterleave.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build beat-interleaving SV");
+    assert!(build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr));
+
+    let verilate = std::process::Command::new("verilator")
+        .arg("--cc")
+        .arg("--exe")
+        .arg("--build")
+        .arg("--sv")
+        .arg("--assert")
+        .arg("-Wno-fatal")
+        .arg("-Wno-WIDTH")
+        .arg("-Wno-DECLFILENAME")
+        .arg("--top-module")
+        .arg("ThreadAxiReadBeatInterleave")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&sv_out)
+        .arg("tests/axi_dma_thread/tb_axi_read_beat_interleave.cpp")
+        .output()
+        .expect("verilate beat-interleaving response target");
+    assert!(verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr));
+
+    let exe = obj_dir.join("VThreadAxiReadBeatInterleave");
+    let run = std::process::Command::new(&exe)
+        .output()
+        .expect("run Verilator beat-interleaving response target");
+    assert!(run.status.success(),
+        "Verilator sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr));
+    assert!(String::from_utf8_lossy(&run.stdout).contains("PASS beat interleave alternating"),
+        "expected PASS marker in Verilator stdout:\n{}",
+        String::from_utf8_lossy(&run.stdout));
+}
+
+#[test]
 fn test_implement_initiator_single_compiles_end_to_end() {
     // PR-tlm-i3: single-implementer initiator routes through the
     // existing v1 inline lowering. End-to-end SV compiles.
