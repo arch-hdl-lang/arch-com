@@ -1,0 +1,115 @@
+//! ---
+//! tags: [multicycle, multdiv, sdc, alu, retime, hierarchy, two-pass]
+//! refs:
+//!   - "examples/multdiv_multicycle.arch (single-flat variant, PR #346)"
+//!   - "Research note: Selective Resynthesis for Multicycle Paths in Yosys/ABC"
+//! ---
+//!
+//! HIERARCHY-SPLIT variant of `multdiv_multicycle.arch`. Functionally
+//! identical to the original (same ports, same timing contract, same
+//! SDC), but the heavy arithmetic regs (`mul_result`, `div_result`)
+//! live in a child module `MultdivMulticycleDatapath`. The parent
+//! `MultdivMulticycleHier` keeps the lightweight control (countdown,
+//! op-select, output muxes).
+//!
+//! Why split: enables Path A of the two-pass selective-resynthesis
+//! flow described in the research note. With a hierarchy boundary in
+//! place, Yosys can be told `keep_hierarchy 1 MultdivMulticycleDatapath`
+//! so that pass 1 maps the datapath at a relaxed clock target (3.8 ns,
+//! the multicycle window) and pass 2 maps the control logic at the
+//! real single-cycle clock (5.0 ns), without ABC re-optimizing the
+//! datapath cone.
+//!
+//! Inherits all scope limits from the parent: unsigned only, low-32
+//! multiply only, no divide-by-zero handling. See the original example
+//! for the rationale.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+/// Heavy-arithmetic datapath. Two regs with `multicycle` annotations
+/// drive the SDC; the parent muxes between them. This module is
+/// `keep_hierarchy`-protected during the two-pass synth flow so its
+/// post-pass-1 mapped cells are not re-optimized at the real clock.
+module MultdivMulticycleDatapath
+  param XLEN: const = 32;
+
+  port clk:        in Clock<SysDomain>;
+  port rst:        in Reset<Sync>;
+  port start:      in Bool;
+  port is_mul:     in Bool;
+  port operand_a:  in UInt<XLEN>;
+  port operand_b:  in UInt<XLEN>;
+  port mul_result: out UInt<XLEN>;
+  port div_result: out UInt<XLEN>;
+
+  reg mul_r: UInt<XLEN> multicycle 3  reset rst => 0;
+  reg div_r: UInt<XLEN> multicycle 36 reset rst => 0;
+
+  seq on clk rising
+    if start
+      if is_mul
+        mul_r <= (operand_a.zext<64>() * operand_b.zext<64>()).trunc<XLEN>();
+      else
+        div_r <= operand_a / operand_b;
+      end if
+    end if
+  end seq
+
+  comb
+    mul_result = mul_r;
+    div_result = div_r;
+  end comb
+end module MultdivMulticycleDatapath
+
+/// Top-level wrapper. Same port shape as the flat `MultdivMulticycle`,
+/// same observable timing. Instantiates the datapath child + owns the
+/// countdown / op-select control.
+module MultdivMulticycleHier
+  param XLEN: const = 32;
+
+  port clk:       in Clock<SysDomain>;
+  port rst:       in Reset<Sync>;
+  port start:     in Bool;
+  port is_mul:    in Bool;
+  port operand_a: in UInt<XLEN>;
+  port operand_b: in UInt<XLEN>;
+  port valid_o:   out Bool;
+  port result_o:  out UInt<XLEN>;
+
+  wire mul_w: UInt<XLEN>;
+  wire div_w: UInt<XLEN>;
+
+  inst dp: MultdivMulticycleDatapath
+    clk        <- clk;
+    rst        <- rst;
+    start      <- start;
+    is_mul     <- is_mul;
+    operand_a  <- operand_a;
+    operand_b  <- operand_b;
+    mul_result -> mul_w;
+    div_result -> div_w;
+  end inst dp
+
+  reg op_is_mul: Bool   reset rst => false;
+  reg cnt:       UInt<6> reset rst => 0;
+
+  seq on clk rising
+    if start
+      op_is_mul <= is_mul;
+      if is_mul
+        cnt <= 6'd3;
+      else
+        cnt <= 6'd36;
+      end if
+    elsif cnt != 6'd0
+      cnt <= (cnt - 1).trunc<6>();
+    end if
+  end seq
+
+  comb
+    valid_o  = (cnt == 6'd0);
+    result_o = op_is_mul ? mul_w : div_w;
+  end comb
+end module MultdivMulticycleHier

@@ -11,6 +11,10 @@
 #                            with a small flat-prefix translation; see
 #                            note below)
 #   DESIGN=fsm            — ibex_multdiv_fast FSM netlist, no SDC
+#   DESIGN=hier_nosdc     — two-pass hierarchy-split netlist, no SDC
+#   DESIGN=hier_with_mc   — two-pass hierarchy-split netlist, multicycle
+#                            SDC applied (the post-PR-#349 wildcard form
+#                            resolves directly, no prefix rewrite needed)
 #
 # CLOCK_NS picks the target clock period.
 
@@ -43,6 +47,12 @@ switch -- $design {
         read_verilog $out_dir/ibex_multdiv_fast_synth.v
         link_design ibex_multdiv_fast
         set clk_port [get_ports clk_i]
+    }
+    "hier_nosdc" -
+    "hier_with_mc" {
+        read_verilog $out_dir/MultdivMulticycleHier_synth.v
+        link_design MultdivMulticycleHier
+        set clk_port [get_ports clk]
     }
     default { error "Unknown DESIGN=$design" }
 }
@@ -79,6 +89,37 @@ if {$design eq "mul_with_mc"} {
     close $tmpfp
     puts "=== Sourcing arch-com SDC (flat-prefix translated) ==="
     source "$out_dir/multdiv_multicycle.sdc.flat"
+}
+
+# For the two-pass hier variant, the SDC arch-com emits is in the
+# post-PR-#349 wildcard form `*<wire>_reg*`. That form works for FLAT
+# netlists but NOT for hierarchical: OpenSTA's `get_cells <glob>` is
+# non-recursive — the wildcard does not descend into instance
+# subhierarchies. The two-pass synth preserves the `dp/` child
+# boundary, so the multicycle cells live at `dp/mul_r_reg*` /
+# `dp/div_r_reg*` and the bare `*mul_r_reg*` glob misses them.
+#
+# Workaround: rewrite `[get_cells {*<reg>*}]` -> `[get_cells
+# -hierarchical {*<reg>*}]` before sourcing. The -hierarchical flag
+# makes OpenSTA walk the full instance tree. This is a 4th open
+# arch-com SDC compat issue (after PR #347's get_cells syntax, PR
+# #349's wildcard prefix, and the standalone-prefix workaround for
+# the flat variant). Filed as TODO in
+# doc/multdiv_multicycle_vs_fsm.md.
+if {$design eq "hier_with_mc"} {
+    set sdc_path "$out_dir/multdiv_multicycle_hier.sdc"
+    if {![file exists $sdc_path]} {
+        error "arch-com SDC not at $sdc_path; run multdiv_multicycle_two_pass.sh first"
+    }
+    set fp [open $sdc_path]
+    set sdc [read $fp]
+    close $fp
+    set sdc_hier [regsub -all {\[get_cells\s+\{} $sdc {[get_cells -hierarchical \{}]
+    set tmpfp [open "$out_dir/multdiv_multicycle_hier.sdc.hierarchical" w]
+    puts $tmpfp $sdc_hier
+    close $tmpfp
+    puts "=== Sourcing arch-com SDC (two-pass hier, -hierarchical rewrite) ==="
+    source "$out_dir/multdiv_multicycle_hier.sdc.hierarchical"
 }
 
 puts "=== DESIGN=$design  CLOCK_NS=$clk_ns ==="
