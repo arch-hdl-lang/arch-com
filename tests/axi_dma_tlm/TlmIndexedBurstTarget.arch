@@ -18,10 +18,13 @@ module TlmIndexedBurstTarget
   // Prototype shape for tag-indexed target method replication. Each
   // generated thread is a static server lane selected by req_tag.
   reg lane_rsp: Vec<BoundedVecResp32x4, 4> reset rst => 0;
+  resource read_rsp_ch: mutex<round_robin>;
 
   generate_for t in 0..3
     thread s.read_burst[t](addr, len) on clk rising, rst high
-      return lane_rsp[t];
+      lock read_rsp_ch
+        return lane_rsp[t];
+      end lock read_rsp_ch
     end thread s.read_burst
   end generate_for
 end module TlmIndexedBurstTarget
