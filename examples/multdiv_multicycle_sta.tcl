@@ -11,6 +11,10 @@
 #                            with a small flat-prefix translation; see
 #                            note below)
 #   DESIGN=fsm            — ibex_multdiv_fast FSM netlist, no SDC
+#   DESIGN=hier_nosdc     — two-pass hierarchy-split netlist, no SDC
+#   DESIGN=hier_with_mc   — two-pass hierarchy-split netlist, multicycle
+#                            SDC applied (the post-PR-#349 wildcard form
+#                            resolves directly, no prefix rewrite needed)
 #
 # CLOCK_NS picks the target clock period.
 
@@ -43,6 +47,12 @@ switch -- $design {
         read_verilog $out_dir/ibex_multdiv_fast_synth.v
         link_design ibex_multdiv_fast
         set clk_port [get_ports clk_i]
+    }
+    "hier_nosdc" -
+    "hier_with_mc" {
+        read_verilog $out_dir/MultdivMulticycleHier_synth.v
+        link_design MultdivMulticycleHier
+        set clk_port [get_ports clk]
     }
     default { error "Unknown DESIGN=$design" }
 }
@@ -79,6 +89,21 @@ if {$design eq "mul_with_mc"} {
     close $tmpfp
     puts "=== Sourcing arch-com SDC (flat-prefix translated) ==="
     source "$out_dir/multdiv_multicycle.sdc.flat"
+}
+
+# For the two-pass hier variant, arch-com's SDC now emits
+# `[get_cells -hierarchical {*<reg>_reg*}]` directly (post this PR's
+# codegen fix). The `-hierarchical` flag makes OpenSTA's `get_cells`
+# descend into instance subhierarchies, so the multicycle cells inside
+# `dp/` (the datapath child instance) resolve cleanly with no
+# rewriting needed. Source the SDC verbatim.
+if {$design eq "hier_with_mc"} {
+    set sdc_path "$out_dir/multdiv_multicycle_hier.sdc"
+    if {![file exists $sdc_path]} {
+        error "arch-com SDC not at $sdc_path; run multdiv_multicycle_two_pass.sh first"
+    }
+    puts "=== Sourcing arch-com SDC (two-pass hier) ==="
+    source $sdc_path
 }
 
 puts "=== DESIGN=$design  CLOCK_NS=$clk_ns ==="

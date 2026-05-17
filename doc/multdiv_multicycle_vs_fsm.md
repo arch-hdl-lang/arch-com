@@ -166,11 +166,13 @@ OpenSTA 3.1.0 at `~/OpenSTA/build/sta`. Driver:
 `examples/multdiv_multicycle_sta.{tcl,sh}`. Each design was swept to
 find the smallest target clock period that still produces WNS = 0.
 
-| Design                                  | Critical path (ns) | Fmax (MHz) | Critical-path endpoint                              |
-|-----------------------------------------|--------------------|------------|-----------------------------------------------------|
-| `ibex_multdiv_fast` (FSM)               | 11.372             |    ~87     | `op_b_i[1]` → `imd_val_d_o[32]` (combinational out) |
-| `MultdivMulticycle`, multicycle honored | 1.447 (control)    |   ~264     | `start` → `op_is_mul_reg` flop                      |
-| `MultdivMulticycle`, NO multicycle      | 136.235            |     ~7.3   | `operand_b[17]` → `div_result_reg_0` flop           |
+| Design                                       | Critical path (ns) | Fmax (MHz) | Critical-path endpoint                              |
+|----------------------------------------------|--------------------|------------|-----------------------------------------------------|
+| `ibex_multdiv_fast` (FSM)                    | 11.372             |    ~87     | `op_b_i[1]` → `imd_val_d_o[32]` (combinational out) |
+| `MultdivMulticycle`, multicycle honored      | 1.447 (control)    |   ~264     | `start` → `op_is_mul_reg` flop                      |
+| `MultdivMulticycle`, NO multicycle           | 136.235            |     ~7.3   | `operand_b[17]` → `div_result_reg_0` flop           |
+| `MultdivMulticycleHier` two-pass, mc honored | 1.454 (control)    |   ~270     | `cnt_reg_0` → `cnt_reg_1` flop                      |
+| `MultdivMulticycleHier` two-pass, NO mc      | 130.633            |     ~7.7   | `operand_b[3]` → `dp/div_r_reg_0` flop              |
 
 (Bracket period sweeps: FSM passes at 11.5 ns and fails at 11.4 ns;
 multicycle-honored passes at 3.79 ns and fails at 3.78 ns;
@@ -268,6 +270,168 @@ Three possible upstream fixes (file as arch-com follow-up):
 
 Recommendation: option 2 (`*` prefix) is the least invasive and
 widest-compatible.
+
+## Two-pass selective resynthesis (Path A)
+
+The single-pass numbers above show that yosys + ABC produce roughly
+the same area whether you give them a relaxed clock (3.8 ns, what the
+multicycle annotation buys you) or a real clock (5.0 ns) — they don't
+respond to the multicycle SDC at all because vanilla ABC isn't
+SDC-aware.
+
+The research note `~/.claude/uploads/.../yosys_multicycle.html`
+("Selective Resynthesis for Multicycle Paths in Yosys/ABC") proposes a
+**two-pass workflow** to approximate commercial multicycle-honoring
+synthesis using only Yosys + OpenSTA:
+
+1. **Pass 1**: synthesize the multicycle cone at a *relaxed* clock
+   target (3.8 ns, the multicycle budget). The hypothesis is that ABC
+   will not over-optimize this cone for a tight constraint it doesn't
+   need to meet.
+2. **Pass 2**: freeze the pass-1 mapped cone and resynthesize the
+   *rest of the design* at the real clock target (5.0 ns).
+3. **Verify**: OpenSTA with the original multicycle SDC.
+
+### Freeze strategy
+
+We use a **hierarchy-boundary** freeze (the research note's preferred
+option). A new sibling .arch file
+`examples/multdiv_multicycle_hier.arch` carries the same arithmetic
+but split into two modules:
+
+- `MultdivMulticycleDatapath` — owns `mul_r` and `div_r` (the two
+  `multicycle`-annotated regs) and their feeding arithmetic.
+- `MultdivMulticycleHier` — owns the countdown counter, `op_is_mul`,
+  and the output mux; instantiates the datapath as `dp`.
+
+The two-pass script `examples/multdiv_multicycle_two_pass.sh`:
+
+- Pass 1 invokes yosys with `hierarchy -top MultdivMulticycleDatapath`
+  (synth the child standalone), `dfflibmap` + `abc -liberty -D
+  3800000`. Output: `pass1_child_only.v`.
+- Pass 2 reads parent RTL, `delete MultdivMulticycleDatapath` (drop
+  the RTL form), reads `pass1_child_only.v` (the mapped form), runs
+  `setattr -mod -set keep_hierarchy 1 MultdivMulticycleDatapath`,
+  then `select -module MultdivMulticycleHier; abc -liberty -D
+  5000000`. ABC sees only the parent. Output: `MultdivMulticycleHier_synth.v`.
+
+A simpler approach — `setattr -mod -set keep_hierarchy 1 <child>` on
+the full RTL design and a single `synth` invocation — does NOT
+freeze the child. ABC visits every module in scope; `keep_hierarchy`
+only prevents `flatten`, not module-local ABC remapping. The two
+explicit invocations are needed.
+
+### Results — two-pass vs single-pass
+
+| Design / flow                                                         | Total cells | Area (µm²) | Flops | Critical path (ns) | Fmax (MHz) |
+|-----------------------------------------------------------------------|------------:|-----------:|------:|-------------------:|-----------:|
+| `ibex_multdiv_fast` (FSM, single-pass, no SDC)                        |       7,206 |    49,818  |   74  |            11.372  |        87  |
+| `MultdivMulticycle` (flat, single-pass, NO multicycle)                |       6,047 |    39,208  |   71  |           136.235  |       7.3  |
+| `MultdivMulticycle` (flat, single-pass, multicycle honored)           |       6,047 |    39,208  |   71  | 1.447 / 3.79 (mc)  |       264  |
+| **`MultdivMulticycleHier` (two-pass, multicycle honored)**            |   **6,031** |  **39,221** | **71** | **1.454 / 3.7 (mc)** | **~270**   |
+
+The two-pass row is essentially **tied** with the single-pass row:
+−16 cells (−0.26%), +13 µm² (+0.03%), +6 MHz (+2.3%). The differences
+are within run-to-run noise. The hypothesis ("smaller area from
+relaxed pass") is **not confirmed** on this benchmark.
+
+### Why no QoR delta — honest interpretation
+
+The research note's hypothesis was that the relaxed-clock pass would
+let ABC produce smaller logic for the multicycle cone (no need to
+spend area shrinking critical-path depth that isn't actually
+critical). Empirically, on this benchmark, **vanilla Yosys 0.64 + ABC
+produces identical area for clock targets spanning 1.0 ns to 50.0 ns**:
+
+```
+abc -D 1000000  → 39,175 µm²
+abc -D 2000000  → 39,175 µm²
+abc -D 3800000  → 39,175 µm²
+abc -D 5000000  → 39,175 µm²
+abc -D 10000000 → 39,175 µm²
+abc -D 50000000 → 39,175 µm²
+```
+
+ABC's default mapping script (`&map -a`) isn't aggressively
+delay-driven on a design like this — it produces the area-floor
+netlist regardless of `-D`. So the relaxed pass and the tight pass
+generate the *same* mapped netlist, and the two-pass flow becomes a
+no-op QoR-wise.
+
+This is **a property of yosys-ABC on this benchmark**, not a refutation
+of the methodology. The two-pass machinery works:
+
+- Pass 1 produces a mapped child with `keep_hierarchy` preserved.
+- Pass 2 ABC log shows `Extracting gate netlist of module
+  '\MultdivMulticycleHier'` — only the parent, the child is
+  untouched.
+- The final netlist passes STA at the real clock with multicycle
+  honored (WNS = 0 at 5.0 ns; min period 3.7 ns).
+
+The methodology would likely matter more on designs where:
+- ABC actually responds to `-D` (deeper combinational pipelines, or
+  with `synth -auto-top -mappers cls/lib3` style scripts).
+- The multicycle cone has non-trivial structural sharing opportunities
+  (e.g. a Wallace-tree multiplier where ABC genuinely picks different
+  AOI cells per delay target).
+
+### Reproducing the two-pass flow
+
+```
+$ cd ~/github/arch-com
+$ cargo build --release
+$ bash examples/multdiv_multicycle_two_pass.sh
+$ DESIGN=hier_with_mc OUT_DIR=/tmp/multdiv-two-pass \
+    sta -no_splash -exit examples/multdiv_multicycle_sta.tcl
+```
+
+Outputs:
+- `/tmp/multdiv-two-pass/multdiv_multicycle_hier.{sv,sdc}`
+- `/tmp/multdiv-two-pass/pass1_child_only.v` (mapped child after relaxed-clock pass)
+- `/tmp/multdiv-two-pass/MultdivMulticycleHier_synth.v` (final two-pass netlist)
+- `/tmp/multdiv-two-pass/{pass1,pass2}.{ys,log}` (yosys script + log)
+
+### When two-pass is worth the complexity
+
+Honest framing of when Path A pays off:
+
+- **Don't use it on yosys + Sky130 + this multdiv shape.** Same
+  netlist, two synth runs, slightly more script complexity. No win.
+- **Consider it if** (a) your ABC script is delay-aggressive (e.g.
+  custom `abc -script ...` with `&dch -C 500; &if -K 6` flavor) and
+  (b) the multicycle cone is large enough that the area-vs-delay
+  trade-off curve actually has slope at the relaxed point.
+- **Don't substitute for commercial synth** (DC, Genus) when you have
+  it. Commercial tools consume the SDC directly and don't need a
+  two-pass workaround.
+- **OpenROAD** consumes SDC and runs delay-driven mapping internally;
+  the two-pass workaround is mostly a yosys-standalone band-aid.
+
+### SDC `-hierarchical` flag (fixed in this PR)
+
+The two-pass hier flow originally surfaced a 4th SDC compat issue:
+the post-PR-#349 emission `[get_cells {*mul_r_reg*}]` was correct for
+**flat** netlists but failed for **hierarchical** netlists. OpenSTA's
+`get_cells` *was* non-recursive by default, so the `*` glob did not
+descend into instance subhierarchies — cells living at `dp/mul_r_reg*`
+were missed by the bare `*mul_r_reg*` glob, and the multicycle path
+silently failed to attach (treated as single-cycle).
+
+This PR's codegen fix (`src/codegen/mod.rs::emit_sdc`) now emits the
+`-hierarchical` flag unconditionally:
+
+```sdc
+set_multicycle_path 3 -setup -to [get_cells -hierarchical {*mul_r_reg*}]
+set_multicycle_path 2 -hold  -to [get_cells -hierarchical {*mul_r_reg*}]
+```
+
+`-hierarchical` is harmless for flat netlists (returns the same cells
+either way) and is standard SDC across DC / Genus / Vivado / Quartus /
+OpenSTA. With this fix, the consumer STA driver sources the emitted
+SDC verbatim — no regsub needed for either the flat or the
+hierarchy-split variant. Verified end-to-end: both `mul_with_mc` and
+`hier_with_mc` STA flows report WNS = 0 at the real clock with
+multicycle paths cleanly attached.
 
 ## Caveats
 
