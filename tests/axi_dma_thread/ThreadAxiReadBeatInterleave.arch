@@ -1,0 +1,63 @@
+//! ---
+//! spec_md: doc/thread_multi_outstanding_spec.md
+//! tags: [axi4, read, thread, lock, interleave]
+//! refs:
+//!   - "AXI4 read data channel interleaving by ID"
+//! ---
+//!
+//! Beat-by-beat AXI read response interleaving example. Two static response
+//! lanes share one R channel mutex; each lane locks only long enough to send a
+//! single beat, then releases the channel so the arbiter may grant another
+//! lane on the next beat.
+
+/// Two-lane AXI read response target that interleaves beats on a shared R channel.
+///
+/// This is intentionally a thread/resource example rather than a TLM method
+/// example: it shows the lower-level arbitration shape that a future richer TLM
+/// burst target can lower toward when the protocol wants beat-level response
+/// interleaving instead of whole-burst locking.
+module ThreadAxiReadBeatInterleave
+  param NUM_LANES: const = 2;
+  param BURST_LEN: const = 4;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  port start: in Bool;
+  port r_ready: in Bool;
+
+  port r_valid: out Bool;
+  port r_id: out UInt<2>;
+  port r_data: out UInt<32>;
+  port r_last: out Bool;
+
+  /// Shared read response channel. Round-robin policy makes the two active
+  /// lanes alternate grants when both have a beat ready.
+  resource r_ch: mutex<round_robin>;
+
+  generate_for lane in 0..NUM_LANES-1
+    thread ReadRspLane_lane on clk rising, rst high
+      default comb
+        r_valid = false;
+        r_id    = 2'd0;
+        r_data  = 32'h0000_0000;
+        r_last  = false;
+      end default
+
+      wait until start;
+
+      for beat in 0..BURST_LEN-1
+        lock r_ch
+          do
+            r_valid = true;
+            r_id    = lane;
+            r_data  = ((lane << 8) + beat).zext<32>();
+            r_last  = (beat == BURST_LEN-1);
+          until r_ready;
+        end lock r_ch
+      end for
+
+      wait 1 cycle;
+    end thread ReadRspLane_lane
+  end generate_for
+end module ThreadAxiReadBeatInterleave
