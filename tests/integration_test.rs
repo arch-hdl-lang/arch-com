@@ -7271,7 +7271,7 @@ fn test_tlm_out_of_order_target_echoes_tag() {
     let sv = compile_to_sv(source);
     assert!(sv.contains("_tlm_s_read_tag_latched"),
         "target should latch accepted request tag:\n{sv}");
-    assert!(sv.contains("assign s_read_rsp_tag = _tlm_s_read_tag_latched"),
+    assert!(sv.contains("s_read_rsp_tag = _tlm_s_read_tag_latched"),
         "target should echo the latched tag on response:\n{sv}");
 }
 
@@ -7780,6 +7780,143 @@ fn test_tlm_target_thread_rich_body_verilator_behavior() {
     );
     assert!(
         String::from_utf8_lossy(&run.stdout).contains("PASS TlmTargetRichBody"),
+        "expected PASS marker in Verilator stdout:\n{}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+}
+
+#[test]
+fn test_tlm_target_thread_early_return_compiles() {
+    let source = include_str!("tlm_target_body/TlmTargetEarlyReturn.arch");
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("_tlm_s_read_state"),
+        "early-return target body should lower inline to a TLM target FSM:\n{sv}"
+    );
+    assert!(
+        sv.contains("2'd0") && sv.contains("2'd1"),
+        "early-return response states should be present in emitted SV:\n{sv}"
+    );
+}
+
+#[test]
+fn test_tlm_target_thread_exhaustive_branch_return_without_terminal_fallback() {
+    let source = "
+        bus Mem
+          tlm_method read(sel: UInt<1>) -> UInt<32>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module MemTarget
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s:   target Mem;
+          thread s.read(sel) on clk rising, rst high
+            if sel == 1'b0
+              return 32'd10;
+            else
+              return 32'd20;
+            end if
+          end thread s.read
+        end module MemTarget
+    ";
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("32'd10") && sv.contains("32'd20"),
+        "exhaustive branch-local returns should not require a terminal fallback:\n{sv}"
+    );
+}
+
+#[test]
+fn test_tlm_target_thread_early_return_arch_sim_behavior() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/tlm_target_body/TlmTargetEarlyReturn.arch")
+        .arg("--tb")
+        .arg("tests/tlm_target_body/tb_tlm_target_early_return.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for early-return TLM target body");
+    assert!(
+        out.status.success(),
+        "early-return target body arch sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS TlmTargetEarlyReturn"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn test_tlm_target_thread_early_return_verilator_behavior() {
+    if std::process::Command::new("verilator").arg("--version").output().is_err() {
+        eprintln!("skipping Verilator early-return TLM target smoke: verilator not found");
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("TlmTargetEarlyReturn.sv");
+    let obj_dir = td.path().join("obj_dir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/tlm_target_body/TlmTargetEarlyReturn.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build early-return TLM target SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let verilate = std::process::Command::new("verilator")
+        .arg("--cc")
+        .arg("--exe")
+        .arg("--build")
+        .arg("--sv")
+        .arg("--assert")
+        .arg("--timing")
+        .arg("-Wno-fatal")
+        .arg("-Wno-WIDTH")
+        .arg("-Wno-DECLFILENAME")
+        .arg("--top-module")
+        .arg("TlmTargetEarlyReturn")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&sv_out)
+        .arg("tests/tlm_target_body/tb_tlm_target_early_return.cpp")
+        .output()
+        .expect("verilate early-return TLM target body");
+    assert!(
+        verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr)
+    );
+
+    let exe = obj_dir.join("VTlmTargetEarlyReturn");
+    let run = std::process::Command::new(&exe)
+        .output()
+        .expect("run Verilator early-return TLM target body");
+    assert!(
+        run.status.success(),
+        "Verilator sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("PASS TlmTargetEarlyReturn"),
         "expected PASS marker in Verilator stdout:\n{}",
         String::from_utf8_lossy(&run.stdout)
     );

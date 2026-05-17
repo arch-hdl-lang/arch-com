@@ -278,11 +278,11 @@ The declared `thread port.method(args)` body is lowered like any other
   `rsp_valid = 1`, `rsp_data = expr`, then waits for `rsp_ready` before
   returning to the entry state.
 
-The implemented target lowering accepts at most one terminal top-level
-`return`. Rich control flow before that return (assignments, waits,
-`if`, counted `for`, and `lock`) reuses ordinary thread lowering. Multiple
-or branch-local `return` points remain deferred; users should stage the
-selected response into a local/reg and return once at the end.
+The implemented target lowering accepts branch-local `return` points. Rich
+control flow before those returns (assignments, waits, `if`, counted `for`,
+and `lock`) reuses ordinary thread lowering. Each return lowers to a generated
+response state that drives the selected `rsp_data` expression; statements after
+`return` in the same block are rejected.
 
 ## Interaction with existing constructs
 
@@ -384,9 +384,12 @@ Three auto-emitted properties labeled
   blocking TLM assignments inside a runtime loop lower to loop-counter
   issue/wait states; each iteration completes before the next begins.
 - PR-tlm-V2d: richer target method bodies. Target-side dotted threads
-  reuse ordinary thread lowering before one terminal top-level `return`,
+  reuse ordinary thread lowering before generated response states,
   enabling assignments, waits, `if`, counted `for`, `fork`/`join`, and
   `lock` blocks.
+- PR-tlm-V2e: branch-local target returns. Target-side returns inside
+  conditional bodies lower to per-return response states so response data
+  still observes prior nonblocking updates.
 
 ### Future / deferred
 
@@ -397,7 +400,6 @@ Three auto-emitted properties labeled
 - Richer TLM initiator control flow remains deferred. Today, call sites must
   stay direct RHS assignments or RHS-fork assignments. Runtime-loop calls are
   supported only for serialized direct blocking assignments.
-- Branch-local / early `return` in target method bodies remains deferred.
 - One-to-many decoded interconnect remains explicit router code. `connect
   a.m -> b.s;` is point-to-point sugar; address decode and decode-error
   response ownership belong in a router module.
