@@ -5223,10 +5223,12 @@ thread driver on clk rising, rst high
   wait 1 cycle;
   d1 <= fork m.read(32'h1004);
   join all;
+  checksum <= d0 +% d1;
+  done <= true;
 end thread driver
 ```
 
-`target <= fork port.method(args);` issues a nonblocking TLM request and lets the parent thread continue. `join all;` is an explicit barrier; v1 requires it as the final statement in the group. Literal `wait N cycle;` statements between forked issues become issue offsets, so the example above can have both reads outstanding.
+`target <= fork port.method(args);` issues a nonblocking TLM request and lets the parent thread continue. `join all;` is an explicit barrier. Literal `wait N cycle;` statements between forked issues become issue offsets, so the example above can have both reads outstanding. After `join all;`, an RHS-fork group may run a compute-only tail made of sequential assignments and nested compute-only `if`/`elsif`/`else` branches; the tail executes once after every forked response has been captured.
 
 Runtime `for` loops around serialized blocking TLM calls are supported:
 
@@ -5278,7 +5280,7 @@ Both target and initiator passes emit ordinary `RegDecl` + `RegBlock` + `CombBlo
 - TLM calls outside a thread body (`comb`, `seq`, module-level `let`, module-local `function`, `pipeline`, `fsm` — compile error).
 - Runtime-loop TLM calls are serialized direct blocking assignments; use `generate_for` worker threads or RHS-fork groups for multiple outstanding requests.
 - Nested TLM calls in expressions (compile error — must be direct RHS of `<=`).
-- Rich control flow inside TLM initiator bodies. Cohort `fork/join` is supported only when each branch is exactly one direct call assignment. RHS-fork groups support only direct forked TLM assignments, literal `wait N cycle;` offsets, and final `join all;`.
+- Rich control flow inside TLM initiator bodies. Cohort `fork/join` is supported only when each branch is exactly one direct call assignment. RHS-fork groups support only direct forked TLM assignments, literal `wait N cycle;` offsets, `join all;`, and an optional compute-only tail after the join.
 - Non-literal `out_of_order tags` expressions.
 - Statements after `return` in the same TLM target block. Branch-local target `return expr;` is supported, but it terminates that block.
 
@@ -7051,10 +7053,11 @@ thread driver on clk rising, rst high
   wait 1 cycle;
   d1 <= fork mem.read(32'h2000);
   join all;
+  checksum <= d0 +% d1;
 end thread driver
 ```
 
-`dst <= fork port.method(args);` issues a nonblocking request and lets the thread continue. `join all;` waits for all forked issues in the group. In v1, RHS-fork groups contain only direct forked TLM assignments plus literal `wait N cycle;` offsets, and `join all;` must be final.
+`dst <= fork port.method(args);` issues a nonblocking request and lets the thread continue. `join all;` waits for all forked issues in the group. RHS-fork groups contain direct forked TLM assignments plus literal `wait N cycle;` offsets before the join. After the join, they may contain a compute-only tail made of sequential assignments and nested compute-only `if`/`elsif`/`else` branches.
 
 **22.2.3 out_of_order tags N --- Multiple Outstanding, Any-Order Responses**
 

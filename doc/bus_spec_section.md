@@ -181,7 +181,7 @@ Current restrictions:
 
 - Each worker/forked issue is exactly one direct assignment: `dst <= port.method(args);`.
 - Conditional initiator branches may contain serialized direct blocking TLM assignments plus ordinary compute assignments.
-- RHS-fork groups may contain only direct forked TLM assignments, literal `wait N cycle;` offsets, and a final `join all;`.
+- RHS-fork groups may contain only direct forked TLM assignments and literal `wait N cycle;` offsets before `join all;`, then an optional compute-only tail of sequential assignments and nested compute-only `if`/`elsif`/`else` branches after the join.
 - All workers in the cohort use the same clock/reset.
 - `out_of_order tags N` requires a literal tag count and enough tags for all workers.
 - Runtime-loop TLM calls are serialized; use worker/generate/RHS-fork forms for multiple outstanding requests.

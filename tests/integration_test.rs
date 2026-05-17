@@ -7299,6 +7299,41 @@ fn test_tlm_rhs_fork_requires_join_all() {
 }
 
 #[test]
+fn test_tlm_rhs_fork_tail_rejects_wait_after_join_all() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module Shared
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   d0: UInt<64> reset rst => 0;
+          thread workers on clk rising, rst high
+            d0 <= fork m.read(32'h1000);
+            join all;
+            wait 1 cycle;
+          end thread workers
+        end module Shared
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
+    let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target");
+    let r = arch::elaborate::lower_tlm_initiator_calls(ast);
+    assert!(r.is_err(), "RHS-fork TLM tail should reject waits");
+    let msg = format!("{:?}", r.unwrap_err());
+    assert!(
+        msg.contains("compute-only") && msg.contains("wait"),
+        "expected compute-only wait diagnostic, got: {msg}"
+    );
+}
+
+#[test]
 fn test_tlm_cohort_multi_arg_method() {
     let source = "
         bus Mem
@@ -7440,6 +7475,111 @@ fn test_axi_dma_tlm_read_pair_example_compiles() {
     assert!(sv.contains("mem_read_req_tag"));
     assert!(sv.contains("mem_read_rsp_tag"));
     assert!(sv.contains("_tlm_fork_issue_pair_mem_read"));
+}
+
+#[test]
+fn test_axi_dma_tlm_read_pair_tail_example_compiles() {
+    let source = include_str!("axi_dma_tlm/TlmMm2sReadPairTail.arch");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module TlmMm2sReadPairTail"));
+    assert!(sv.contains("_tlm_fork_issue_pair_mem_read_tail_done"));
+    assert!(
+        sv.contains("checksum_r <=") && sv.contains("done_r <= 1'b1"),
+        "RHS-fork compute tail should lower into sequential assignments:\n{sv}"
+    );
+}
+
+#[test]
+fn test_tlm_rhs_fork_tail_arch_sim_behavior() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/axi_dma_tlm/TlmMm2sReadPairTail.arch")
+        .arg("--tb")
+        .arg("tests/axi_dma_tlm/tb_tlm_mm2s_read_pair_tail.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for RHS-fork TLM tail");
+    assert!(
+        out.status.success(),
+        "RHS-fork tail arch sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS TlmMm2sReadPairTail"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn test_tlm_rhs_fork_tail_verilator_behavior() {
+    if std::process::Command::new("verilator").arg("--version").output().is_err() {
+        eprintln!("skipping Verilator RHS-fork tail smoke: verilator not found");
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("TlmMm2sReadPairTail.sv");
+    let obj_dir = td.path().join("obj_dir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/axi_dma_tlm/TlmMm2sReadPairTail.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build RHS-fork tail SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let verilate = std::process::Command::new("verilator")
+        .arg("--cc")
+        .arg("--exe")
+        .arg("--build")
+        .arg("--sv")
+        .arg("--assert")
+        .arg("-Wno-fatal")
+        .arg("-Wno-WIDTH")
+        .arg("-Wno-DECLFILENAME")
+        .arg("--top-module")
+        .arg("TlmMm2sReadPairTail")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&sv_out)
+        .arg("tests/axi_dma_tlm/tb_tlm_mm2s_read_pair_tail.cpp")
+        .output()
+        .expect("verilate RHS-fork tail");
+    assert!(
+        verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr)
+    );
+
+    let exe = obj_dir.join("VTlmMm2sReadPairTail");
+    let run = std::process::Command::new(&exe)
+        .output()
+        .expect("run Verilator RHS-fork tail");
+    assert!(
+        run.status.success(),
+        "Verilator sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("PASS TlmMm2sReadPairTail"),
+        "expected PASS marker in Verilator stdout:\n{}",
+        String::from_utf8_lossy(&run.stdout)
+    );
 }
 
 #[test]

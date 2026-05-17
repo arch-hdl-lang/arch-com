@@ -252,9 +252,11 @@ tlm_method read(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
 
 Initiator calls are legal only inside `thread` bodies as direct RHS assignments:
 `dst <= port.method(args);`, or as nonblocking RHS-fork issues:
-`dst <= fork port.method(args); ... join all;`. Literal-bounded `for` loops in
-initiator threads may contain direct TLM assignments; the compiler unrolls them
-before lowering. Use `generate_for` for compile-time worker replication.
+`dst <= fork port.method(args); ... join all;`. Counted `for` loops and
+`if`/`elsif`/`else` branches in initiator threads may contain serialized direct
+TLM assignments. Literal-bounded loops are unrolled; runtime loops lower to a
+loop counter. RHS-fork groups may run a compute-only tail after `join all;`.
+Use `generate_for` for compile-time worker replication.
 
 Target implementations are dotted-name threads:
 `thread s.read(addr) on clk rising, rst high ... return expr; end thread s.read`.
