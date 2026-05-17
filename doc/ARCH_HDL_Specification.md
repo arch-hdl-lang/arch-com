@@ -5132,6 +5132,29 @@ Each method flattens to two handshake-shaped channels. Directions below are from
 
 For `out_of_order tags N`, each method also flattens `<name>_req_tag` (initiator → target) and `<name>_rsp_tag` (target → initiator). The compiler assigns tags to workers and routes responses by `rsp_tag`.
 
+Indexed target lanes arbitrate the shared response channel before driving
+`<name>_rsp_valid`, `<name>_rsp_data`, and `<name>_rsp_tag`. By default the
+response mux uses priority order. To choose the arbitration policy, declare a
+module-scope resource and wrap the target lane's `return` in a matching
+`lock` block:
+
+```
+resource read_rsp_ch: mutex<round_robin>;
+
+generate_for t in 0..3
+  thread s.read[t](addr) on clk rising, rst high
+    lock read_rsp_ch
+      return data_for_tag[t];
+    end lock read_rsp_ch
+  end thread s.read
+end generate_for
+```
+
+The lock marks the response/data channel ownership point; the compiler strips
+that lock from the per-lane body and uses the resource policy for the generated
+response arbiter. All indexed target lanes for one method must use the same
+response resource when any lane names one.
+
 Struct return payloads are supported, including structs that contain fixed-size `Vec<T, N>` fields. This is the recommended v1 pattern for responses that need payload plus status metadata, for example `data`, returned `len`, and a response/error code. Fixed-size `Vec<T, N>` return payloads flatten as static hardware on `<name>_rsp_data`; for bounded burst-like transactions with variable runtime length, pass the requested length as an ordinary method arg and return either a maximum-size vector or a bounded response struct.
 
 ```

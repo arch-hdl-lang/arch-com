@@ -1156,6 +1156,26 @@ end thread driver
 
 Bounded burst-like payloads: use a static max vector return and a runtime length arg, or preferably a response struct containing `data: Vec<T, MAX>`, returned `len`, and `resp`. Example: `tlm_method read_burst(addr: UInt<32>, len: UInt<3>) -> BoundedVecResp32x4: out_of_order tags 2;`. The vector size is compile-time fixed; `len` says how many lanes are valid. For decoded interconnect, a router can return a struct response itself on unmapped addresses; see `tests/axi_dma_tlm/TlmOneToManyResp.arch`.
 
+Indexed OOO target lanes use a generated response-channel arbiter. Default
+response arbitration is priority order. To choose the policy, declare a
+resource and wrap the lane return:
+
+```arch
+resource read_rsp_ch: mutex<round_robin>;
+
+generate_for t in 0..3
+  thread s.read_burst[t](addr, len) on clk rising, rst high
+    lock read_rsp_ch
+      return rsp_for_tag[t];
+    end lock read_rsp_ch
+  end thread s.read_burst
+end generate_for
+```
+
+All lanes for one method must use the same response resource when any lane
+names one. The current bounded Vec response is still atomic; this selects which
+completed transaction response drives the shared channel.
+
 `arch build` emits TLM protocol SVA in `translate_off/on`: request payload/tag must stay stable while `req_valid && !req_ready`; response payload/tag must stay stable while `rsp_valid && !rsp_ready`. Validate these with Verilator `--assert`.
 
 Generated code shape: grouped/looped initiator call sites emit one generated driver per TLM method signal. Large request-valid reductions, response-ready reductions, payload muxes, default-priority grants, and round-robin grant terms are split into intermediate wires so generated SV lines stay bounded.

@@ -390,6 +390,13 @@ Three auto-emitted properties labeled
 - PR-tlm-V2e: branch-local target returns. Target-side returns inside
   conditional bodies lower to per-return response states so response data
   still observes prior nonblocking updates.
+- PR-tlm-V2f: indexed target response arbitration. Tagged OOO target lanes
+  now feed a generated response-channel arbiter before driving the shared
+  response handshake. Default policy is priority; wrapping the lane return in
+  `lock RESOURCE ... end lock RESOURCE` uses the matching module-scope
+  `resource RESOURCE: mutex<POLICY>;` policy for that method's response
+  channel. This is still an atomic response payload, not beat-stream burst
+  interleaving.
 
 ### Future / deferred
 

@@ -5685,8 +5685,13 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
                 }
 
                 // Collect TLM target threads + their method metadata.
-                let latch_regs: Vec<RegDecl> = Vec::new();
                 let mut new_body: Vec<ModuleBodyItem> = Vec::new();
+                let resource_decls: HashMap<String, ResourceDecl> = m.body.iter()
+                    .filter_map(|item| match item {
+                        ModuleBodyItem::Resource(r) => Some((r.name.name.clone(), r.clone())),
+                        _ => None,
+                    })
+                    .collect();
                 let mut indexed_target_groups: HashMap<(String, String), Vec<(ThreadBlock, TlmTargetBinding, TlmMethodMeta)>> = HashMap::new();
                 for item in std::mem::take(&mut m.body) {
                     if let ModuleBodyItem::Thread(t) = &item {
@@ -5765,20 +5770,28 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
                         new_body.push(item);
                     }
                 }
+                let mut extra_items: Vec<Item> = Vec::new();
                 for ((_port, _method), group) in indexed_target_groups {
-                    match lower_indexed_tlm_target_group(group) {
-                        Ok(items) => new_body.extend(items),
+                    match lower_indexed_tlm_target_group(
+                        &m.name.name,
+                        group,
+                        &resource_decls,
+                    ) {
+                        Ok((items, mut extras)) => {
+                            new_body.extend(items);
+                            extra_items.append(&mut extras);
+                        }
                         Err(e) => errors.push(e),
                     }
                 }
                 // Inline lowering emits its own RegDecl / RegBlock /
                 // CombBlock items directly into new_body; no additional
                 // accumulation needed.
-                let _ = latch_regs;
                 if !new_body.iter().any(|item| matches!(item, ModuleBodyItem::Thread(_))) {
                     new_body.retain(|item| !matches!(item, ModuleBodyItem::Resource(_)));
                 }
                 m.body = new_body;
+                out_items.extend(extra_items);
                 out_items.push(Item::Module(m));
             }
             other => out_items.push(other),
@@ -8479,12 +8492,19 @@ fn contains_tlm_call(
 // Lock / DoUntil / Log) is rejected with a targeted error.
 
 fn lower_indexed_tlm_target_group(
+    module_name: &str,
     mut group: Vec<(ThreadBlock, TlmTargetBinding, TlmMethodMeta)>,
-) -> Result<Vec<ModuleBodyItem>, CompileError> {
+    resource_decls: &HashMap<String, ResourceDecl>,
+) -> Result<(Vec<ModuleBodyItem>, Vec<Item>), CompileError> {
     if group.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     let span = group[0].0.span;
+    let group_clk = group[0].0.clock.name.clone();
+    let group_clock_edge = group[0].0.clock_edge;
+    let group_reset_ident = group[0].0.reset.clone();
+    let group_rst = group[0].0.reset.name.clone();
+    let group_rst_level = group[0].0.reset_level;
     let port = group[0].1.port.name.clone();
     let method_name = group[0].1.method.name.clone();
     let method = group[0].2.clone();
@@ -8549,8 +8569,28 @@ fn lower_indexed_tlm_target_group(
     );
 
     let mut out = Vec::new();
+    let mut extra_items = Vec::new();
     let mut lane_infos = Vec::new();
+    let mut response_resource: Option<String> = None;
+    let mut response_resource_lanes = 0usize;
     for (lane, t, binding, method_meta) in lanes {
+        let mut t = t;
+        let lane_response_resource = strip_tlm_response_lock(&mut t)?;
+        if let Some(res) = lane_response_resource {
+            response_resource_lanes += 1;
+            match &response_resource {
+                Some(existing) if existing != &res => {
+                    return Err(CompileError::general(
+                        &format!(
+                            "indexed TLM target lanes for `{port}.{method_name}` use different response-channel resources (`{existing}` and `{res}`); use one shared `resource` for the method response channel",
+                        ),
+                        t.span,
+                    ));
+                }
+                None => response_resource = Some(res),
+                _ => {}
+            }
+        }
         let prefix = format!("_tlm_{port}_{method_name}_tag{lane}");
         let req_ready = format!("{prefix}_req_ready");
         let rsp_valid = format!("{prefix}_rsp_valid");
@@ -8591,8 +8631,169 @@ fn lower_indexed_tlm_target_group(
         out.extend(inline_lower_tlm_target_with_io(t, &binding, &method_meta, io)?);
         lane_infos.push((lane, req_ready, rsp_valid, rsp_ready, rsp_data, rsp_tag));
     }
+    if response_resource.is_some() && response_resource_lanes != lane_infos.len() {
+        return Err(CompileError::general(
+            &format!(
+                "indexed TLM target lanes for `{port}.{method_name}` must all wrap `return` in the same response-channel `lock` when any lane names a response resource",
+            ),
+            span,
+        ));
+    }
+
+    let arb_res_name = response_resource
+        .clone()
+        .unwrap_or_else(|| format!("_tlm_{port}_{method_name}_rsp_ch"));
+    let arb_prefix = format!("_tlm_{port}_{method_name}_rsp_arb");
+    let req_packed = format!("{arb_prefix}_req_packed");
+    let grant_packed = format!("{arb_prefix}_grant_packed");
+    let grant_valid = format!("{arb_prefix}_grant_valid");
+    let grant_requester = format!("{arb_prefix}_grant_requester");
+    let hold_valid = format!("{arb_prefix}_hold_valid_r");
+    let hold_idx = format!("{arb_prefix}_hold_idx_r");
+    let lane_count = lane_infos.len();
+    let lane_count_expr = Expr::new(ExprKind::Literal(LitKind::Dec(lane_count as u64)), span);
+    let grant_width = crate::width::index_width(lane_count as u64);
+
+    out.push(ModuleBodyItem::WireDecl(WireDecl {
+        name: mk_ident(req_packed.clone()),
+        ty: TypeExpr::UInt(Box::new(lane_count_expr.clone())),
+        unpacked: false,
+        unpacked_ascending: false,
+        span,
+    }));
+    out.push(ModuleBodyItem::WireDecl(WireDecl {
+        name: mk_ident(grant_packed.clone()),
+        ty: TypeExpr::UInt(Box::new(lane_count_expr.clone())),
+        unpacked: false,
+        unpacked_ascending: false,
+        span,
+    }));
+    out.push(ModuleBodyItem::WireDecl(WireDecl {
+        name: mk_ident(grant_valid.clone()),
+        ty: TypeExpr::Bool,
+        unpacked: false,
+        unpacked_ascending: false,
+        span,
+    }));
+    out.push(ModuleBodyItem::WireDecl(WireDecl {
+        name: mk_ident(grant_requester.clone()),
+        ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(grant_width as u64)), span))),
+        unpacked: false,
+        unpacked_ascending: false,
+        span,
+    }));
+    out.push(ModuleBodyItem::RegDecl(RegDecl {
+        name: mk_ident(hold_valid.clone()),
+        ty: TypeExpr::Bool,
+        init: None,
+        reset: RegReset::Inherit(group_reset_ident.clone(), Expr::new(ExprKind::Literal(LitKind::Dec(0)), span)),
+        guard: None,
+        multicycle: None,
+        span,
+    }));
+    out.push(ModuleBodyItem::RegDecl(RegDecl {
+        name: mk_ident(hold_idx.clone()),
+        ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(grant_width as u64)), span))),
+        init: None,
+        reset: RegReset::Inherit(group_reset_ident.clone(), Expr::new(ExprKind::Literal(LitKind::Dec(0)), span)),
+        guard: None,
+        multicycle: None,
+        span,
+    }));
+
+    let arb_module_name = format!("_arb_{module_name}_{arb_res_name}");
+    let (policy, hook) = match response_resource
+        .as_ref()
+        .and_then(|res| resource_decls.get(res))
+    {
+        Some(rd) => (rd.policy.clone(), rd.hook.clone()),
+        None => (ArbiterPolicy::Priority, None),
+    };
+    extra_items.push(Item::Arbiter(synthesize_lock_arbiter(
+        &arb_module_name,
+        lane_count,
+        policy,
+        hook,
+        &group_clk,
+        &group_rst,
+        group_rst_level,
+        span,
+    )));
+    out.push(ModuleBodyItem::Inst(InstDecl {
+        name: mk_ident(format!("{arb_prefix}_inst")),
+        module_name: mk_ident(arb_module_name),
+        param_assigns: Vec::new(),
+        connections: vec![
+            Connection {
+                port_name: mk_ident("clk".to_string()),
+                direction: ConnectDir::Input,
+                signal: Expr::new(ExprKind::Ident(group_clk.clone()), span),
+                reset_override: None,
+                span,
+            },
+            Connection {
+                port_name: mk_ident("rst".to_string()),
+                direction: ConnectDir::Input,
+                signal: Expr::new(ExprKind::Ident(group_rst.clone()), span),
+                reset_override: None,
+                span,
+            },
+            Connection {
+                port_name: mk_ident("request_valid".to_string()),
+                direction: ConnectDir::Input,
+                signal: Expr::new(ExprKind::Ident(req_packed.clone()), span),
+                reset_override: None,
+                span,
+            },
+            Connection {
+                port_name: mk_ident("request_ready".to_string()),
+                direction: ConnectDir::Output,
+                signal: Expr::new(ExprKind::Ident(grant_packed.clone()), span),
+                reset_override: None,
+                span,
+            },
+            Connection {
+                port_name: mk_ident("grant_valid".to_string()),
+                direction: ConnectDir::Output,
+                signal: Expr::new(ExprKind::Ident(grant_valid.clone()), span),
+                reset_override: None,
+                span,
+            },
+            Connection {
+                port_name: mk_ident("grant_requester".to_string()),
+                direction: ConnectDir::Output,
+                signal: Expr::new(ExprKind::Ident(grant_requester.clone()), span),
+                reset_override: None,
+                span,
+            },
+        ],
+        span,
+    }));
 
     let mut comb_stmts = Vec::new();
+    for (idx, (_lane, _req_ready, rsp_valid, _rsp_ready, _rsp_data, _rsp_tag)) in lane_infos.iter().enumerate() {
+        comb_stmts.push(Stmt::Assign(CombAssign {
+            target: Expr::new(ExprKind::Index(
+                Box::new(Expr::new(ExprKind::Ident(req_packed.clone()), span)),
+                Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(idx as u64)), span)),
+            ), span),
+            value: Expr::new(
+                ExprKind::Binary(
+                    BinOp::And,
+                    Box::new(Expr::new(
+                        ExprKind::Unary(
+                            UnaryOp::Not,
+                            Box::new(Expr::new(ExprKind::Ident(hold_valid.clone()), span)),
+                        ),
+                        span,
+                    )),
+                    Box::new(ident_expr(rsp_valid.clone())),
+                ),
+                span,
+            ),
+            span,
+        }));
+    }
     comb_stmts.push(Stmt::Assign(CombAssign {
         target: port_member(format!("{method_name}_req_ready")),
         value: lit0.clone(),
@@ -8639,7 +8840,30 @@ fn lower_indexed_tlm_target_group(
             span,
         }));
     }
-    for (_lane, _req_ready, rsp_valid, rsp_ready, rsp_data, rsp_tag) in &lane_infos {
+    for (idx, (_lane, _req_ready, rsp_valid, rsp_ready, rsp_data, rsp_tag)) in lane_infos.iter().enumerate() {
+        let lane_grant = Expr::new(ExprKind::Index(
+            Box::new(Expr::new(ExprKind::Ident(grant_packed.clone()), span)),
+            Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(idx as u64)), span)),
+        ), span);
+        let held_lane = Expr::new(
+            ExprKind::Binary(
+                BinOp::And,
+                Box::new(Expr::new(ExprKind::Ident(hold_valid.clone()), span)),
+                Box::new(Expr::new(
+                    ExprKind::Binary(
+                        BinOp::Eq,
+                        Box::new(Expr::new(ExprKind::Ident(hold_idx.clone()), span)),
+                        Box::new(Expr::new(ExprKind::Literal(LitKind::Sized(grant_width, idx as u64)), span)),
+                    ),
+                    span,
+                )),
+            ),
+            span,
+        );
+        let selected_lane = Expr::new(
+            ExprKind::Binary(BinOp::Or, Box::new(held_lane), Box::new(lane_grant)),
+            span,
+        );
         let mut then_stmts = vec![
             Stmt::Assign(CombAssign {
                 target: port_member(format!("{method_name}_rsp_valid")),
@@ -8665,7 +8889,14 @@ fn lower_indexed_tlm_target_group(
             }));
         }
         comb_stmts.push(Stmt::IfElse(IfElse {
-            cond: ident_expr(rsp_valid.clone()),
+            cond: Expr::new(
+                ExprKind::Binary(
+                    BinOp::And,
+                    Box::new(selected_lane),
+                    Box::new(ident_expr(rsp_valid.clone())),
+                ),
+                span,
+            ),
             then_stmts,
             else_stmts: Vec::new(),
             unique: false,
@@ -8673,7 +8904,137 @@ fn lower_indexed_tlm_target_group(
         }));
     }
     out.push(ModuleBodyItem::CombBlock(CombBlock { stmts: comb_stmts, span }));
-    Ok(out)
+    let rsp_ready_member = port_member(format!("{method_name}_rsp_ready"));
+    out.push(ModuleBodyItem::RegBlock(RegBlock {
+        clock: Ident::new(group_clk.clone(), span),
+        clock_edge: group_clock_edge,
+        stmts: vec![
+            Stmt::IfElse(IfElseOf {
+                cond: Expr::new(
+                    ExprKind::Binary(
+                        BinOp::And,
+                        Box::new(Expr::new(ExprKind::Ident(hold_valid.clone()), span)),
+                        Box::new(rsp_ready_member.clone()),
+                    ),
+                    span,
+                ),
+                then_stmts: vec![Stmt::Assign(RegAssign {
+                    target: Expr::new(ExprKind::Ident(hold_valid.clone()), span),
+                    value: lit0.clone(),
+                    span,
+                })],
+                else_stmts: Vec::new(),
+                unique: false,
+                span,
+            }),
+            Stmt::IfElse(IfElseOf {
+                cond: Expr::new(
+                    ExprKind::Binary(
+                        BinOp::And,
+                        Box::new(Expr::new(
+                            ExprKind::Unary(
+                                UnaryOp::Not,
+                                Box::new(Expr::new(ExprKind::Ident(hold_valid.clone()), span)),
+                            ),
+                            span,
+                        )),
+                        Box::new(Expr::new(
+                            ExprKind::Binary(
+                                BinOp::And,
+                                Box::new(Expr::new(ExprKind::Ident(grant_valid.clone()), span)),
+                                Box::new(Expr::new(
+                                    ExprKind::Unary(UnaryOp::Not, Box::new(rsp_ready_member)),
+                                    span,
+                                )),
+                            ),
+                            span,
+                        )),
+                    ),
+                    span,
+                ),
+                then_stmts: vec![
+                    Stmt::Assign(RegAssign {
+                        target: Expr::new(ExprKind::Ident(hold_valid.clone()), span),
+                        value: lit1.clone(),
+                        span,
+                    }),
+                    Stmt::Assign(RegAssign {
+                        target: Expr::new(ExprKind::Ident(hold_idx.clone()), span),
+                        value: Expr::new(ExprKind::Ident(grant_requester.clone()), span),
+                        span,
+                    }),
+                ],
+                else_stmts: Vec::new(),
+                unique: false,
+                span,
+            }),
+        ],
+        span,
+    }));
+    Ok((out, extra_items))
+}
+
+fn strip_tlm_response_lock(t: &mut ThreadBlock) -> Result<Option<String>, CompileError> {
+    fn rewrite_stmts(
+        stmts: Vec<ThreadStmt>,
+        found: &mut Option<String>,
+    ) -> Result<Vec<ThreadStmt>, CompileError> {
+        let mut out = Vec::new();
+        for stmt in stmts {
+            match stmt {
+                ThreadStmt::Lock { resource, body, span } if contains_return(&body) => {
+                    if let Some(existing) = found.as_ref() {
+                        if existing != &resource.name {
+                            return Err(CompileError::general(
+                                &format!(
+                                    "TLM target response return is guarded by multiple resources (`{existing}` and `{}`); use one response-channel resource",
+                                    resource.name
+                                ),
+                                span,
+                            ));
+                        }
+                    } else {
+                        *found = Some(resource.name.clone());
+                    }
+                    out.extend(rewrite_stmts(body, found)?);
+                }
+                ThreadStmt::IfElse(mut ie) => {
+                    ie.then_stmts = rewrite_stmts(ie.then_stmts, found)?;
+                    ie.else_stmts = rewrite_stmts(ie.else_stmts, found)?;
+                    out.push(ThreadStmt::IfElse(ie));
+                }
+                ThreadStmt::For { var, start, end, body, span } => {
+                    out.push(ThreadStmt::For {
+                        var,
+                        start,
+                        end,
+                        body: rewrite_stmts(body, found)?,
+                        span,
+                    });
+                }
+                ThreadStmt::ForkJoin(branches, span) => {
+                    let mut new_branches = Vec::new();
+                    for branch in branches {
+                        new_branches.push(rewrite_stmts(branch, found)?);
+                    }
+                    out.push(ThreadStmt::ForkJoin(new_branches, span));
+                }
+                ThreadStmt::DoUntil { body, cond, span } => {
+                    out.push(ThreadStmt::DoUntil {
+                        body: rewrite_stmts(body, found)?,
+                        cond,
+                        span,
+                    });
+                }
+                other => out.push(other),
+            }
+        }
+        Ok(out)
+    }
+
+    let mut found = None;
+    t.body = rewrite_stmts(std::mem::take(&mut t.body), &mut found)?;
+    Ok(found)
 }
 
 #[derive(Clone)]

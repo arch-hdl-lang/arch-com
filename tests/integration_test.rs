@@ -6819,6 +6819,49 @@ fn test_tlm_indexed_target_generate_for_lowers_tag_lanes() {
 }
 
 #[test]
+fn test_tlm_indexed_target_response_lock_uses_resource_policy() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
+        end bus Mem
+
+        use Mem;
+
+        module MemTarget
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s:   target Mem;
+
+          resource read_rsp: mutex<round_robin>;
+
+          generate_for t in 0..3
+            thread s.read[t](addr) on clk rising, rst high
+              lock read_rsp
+                return 64'h42;
+              end lock read_rsp
+            end thread s.read
+          end generate_for
+        end module MemTarget
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module _arb_MemTarget_read_rsp"),
+        "response lock should synthesize a policy arbiter module:\n{sv}");
+    assert!(sv.contains("rr_ptr_r <= rr_ptr_r + 1"),
+        "response arbiter should use the resource's round-robin policy:\n{sv}");
+    assert!(sv.contains("_tlm_s_read_rsp_arb_req_packed[0] = !_tlm_s_read_rsp_arb_hold_valid_r && _tlm_s_read_tag0_rsp_valid")
+         && sv.contains("_tlm_s_read_rsp_arb_req_packed[3] = !_tlm_s_read_rsp_arb_hold_valid_r && _tlm_s_read_tag3_rsp_valid"),
+        "lane response valids should feed the response arbiter:\n{sv}");
+    assert!(sv.contains("_tlm_s_read_rsp_arb_hold_idx_r == 2'd0 || _tlm_s_read_rsp_arb_grant_packed[0]")
+         && sv.contains("_tlm_s_read_rsp_arb_hold_idx_r == 2'd3 || _tlm_s_read_rsp_arb_grant_packed[3]"),
+        "shared response mux should be gated by the granted lane:\n{sv}");
+    assert!(sv.contains("_tlm_s_read_rsp_arb_hold_valid_r <= 1'd1")
+         && sv.contains("_tlm_s_read_rsp_arb_hold_idx_r <= _tlm_s_read_rsp_arb_grant_requester"),
+        "backpressured response selection should be held stable:\n{sv}");
+    assert!(sv.contains("_tlm_s_read_tag0_rsp_ready = s_read_rsp_ready"),
+        "only the selected lane should receive shared response ready:\n{sv}");
+}
+
+#[test]
 fn test_axi_dma_tlm_indexed_burst_target_example_compiles() {
     let source = include_str!("axi_dma_tlm/TlmIndexedBurstTarget.arch");
     let sv = compile_to_sv(source);
@@ -6828,6 +6871,87 @@ fn test_axi_dma_tlm_indexed_burst_target_example_compiles() {
         "bounded Vec response should stay struct-typed through target lane lowering:\n{sv}");
     assert!(sv.contains("s_read_burst_req_tag == 2'd3"),
         "generated target lanes should route by request tag:\n{sv}");
+}
+
+#[test]
+fn test_axi_dma_tlm_indexed_burst_target_arch_sim_behavior() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/axi_dma_tlm/TlmIndexedBurstTarget.arch")
+        .arg("--tb")
+        .arg("tests/axi_dma_tlm/tb_tlm_indexed_burst_target.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for indexed burst target response arbiter");
+    assert!(out.status.success(),
+        "indexed burst target arch sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS indexed response arb"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout));
+}
+
+#[test]
+fn test_axi_dma_tlm_indexed_burst_target_verilator_behavior() {
+    if std::process::Command::new("verilator").arg("--version").output().is_err() {
+        eprintln!("skipping Verilator indexed burst target smoke: verilator not found");
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("TlmIndexedBurstTarget.sv");
+    let obj_dir = td.path().join("obj_dir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/axi_dma_tlm/TlmIndexedBurstTarget.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build indexed burst target SV");
+    assert!(build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr));
+
+    let verilate = std::process::Command::new("verilator")
+        .arg("--cc")
+        .arg("--exe")
+        .arg("--build")
+        .arg("--sv")
+        .arg("--assert")
+        .arg("-Wno-fatal")
+        .arg("-Wno-WIDTH")
+        .arg("-Wno-DECLFILENAME")
+        .arg("--top-module")
+        .arg("TlmIndexedBurstTarget")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&sv_out)
+        .arg("tests/axi_dma_tlm/tb_tlm_indexed_burst_target.cpp")
+        .output()
+        .expect("verilate indexed burst target");
+    assert!(verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr));
+
+    let exe = obj_dir.join("VTlmIndexedBurstTarget");
+    let run = std::process::Command::new(&exe)
+        .output()
+        .expect("run Verilator indexed burst target");
+    assert!(run.status.success(),
+        "Verilator sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr));
+    assert!(String::from_utf8_lossy(&run.stdout).contains("PASS indexed response arb"),
+        "expected PASS marker in Verilator stdout:\n{}",
+        String::from_utf8_lossy(&run.stdout));
 }
 
 #[test]
