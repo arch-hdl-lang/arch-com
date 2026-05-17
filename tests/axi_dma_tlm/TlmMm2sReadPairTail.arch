@@ -1,0 +1,55 @@
+//! ---
+//! spec_md: doc/axi_dma_case_study.md
+//! tags: [dma, axi4, mm2s, tlm_method, rhs_fork, compute_tail]
+//! refs:
+//!   - "tests/axi_dma_tlm/TlmMm2sReadPair.arch"
+//! ---
+//!
+//! AXI-DMA-flavored TLM smoke example for an RHS-fork group with a
+//! compute-only tail after `join all`.
+
+bus DmaMemReadTail
+  tlm_method read(addr: UInt<32>) -> UInt<32>: out_of_order tags 2;
+end bus DmaMemReadTail
+
+use DmaMemReadTail;
+
+/// Issues two outstanding TLM reads, joins them, then computes a checksum.
+module TlmMm2sReadPairTail
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  port base_addr: in UInt<32>;
+  port choose_xor: in Bool;
+  port mem: initiator DmaMemReadTail;
+
+  port data0: out UInt<32>;
+  port data1: out UInt<32>;
+  port checksum: out UInt<32>;
+  port done: out Bool;
+
+  reg d0_r: UInt<32> reset rst => 0;
+  reg d1_r: UInt<32> reset rst => 0;
+  reg checksum_r: UInt<32> reset rst => 0;
+  reg done_r: Bool reset rst => false;
+
+  comb
+    data0 = d0_r;
+    data1 = d1_r;
+    checksum = checksum_r;
+    done = done_r;
+  end comb
+
+  thread issue_pair on clk rising, rst high
+    d0_r <= fork mem.read(base_addr);
+    wait 1 cycle;
+    d1_r <= fork mem.read((base_addr + 32'd4).trunc<32>());
+    join all;
+    if choose_xor
+      checksum_r <= d0_r ^ d1_r;
+    else
+      checksum_r <= d0_r +% d1_r;
+    end if
+    done_r <= true;
+  end thread issue_pair
+end module TlmMm2sReadPairTail

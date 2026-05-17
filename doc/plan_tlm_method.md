@@ -11,15 +11,17 @@
 > `thread port.method[t](args) ... return expr; end thread port.method`.
 > Initiator calls are legal only inside `thread` bodies as a direct RHS
 > assignment (`dst <= port.method(args);`) or as an RHS-fork issue
-> (`dst <= fork port.method(args); ... join all;`). Literal counted `for`
-> loops inside initiator threads may contain direct TLM assignments; the
-> compiler unrolls them during lowering. `lock RESOURCE ... end lock RESOURCE`
+> (`dst <= fork port.method(args); ... join all;`). Counted `for` loops
+> and `if`/`elsif`/`else` branches inside initiator threads may contain
+> serialized direct TLM assignments; literal loops are unrolled and runtime
+> loops lower to a loop counter. RHS-fork groups may include a compute-only
+> tail after `join all;`. `lock RESOURCE ... end lock RESOURCE`
 > is accepted around initiator TLM calls and uses the matching
 > `resource RESOURCE: mutex<POLICY>;` declaration for shared-method
 > arbitration (`mutex<round_robin>` emits a rotating grant pointer; otherwise
 > the compiler uses default priority). The compiler rejects TLM calls in
-> `comb`, `seq`, module-level `let`, module-local `function`, `pipeline`,
-> `fsm`, and non-literal/runtime `for` loop contexts. Use `generate_for`
+> `comb`, `seq`, module-level `let`, module-local `function`, and
+> `pipeline`/`fsm` contexts. Use `generate_for`
 > worker threads when a compile-time number of independent workers is needed.
 > Fixed-size `Vec<T, N>` returns and response structs containing Vec fields are
 > supported for bounded burst-like payloads.

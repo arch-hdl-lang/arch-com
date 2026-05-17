@@ -58,8 +58,13 @@
 >   wait 1 cycle;
 >   d1 <= fork m.read(addr1);
 >   join all;
+>   checksum <= d0 +% d1;
 > end thread driver
 > ```
+>
+> RHS-fork groups may run a compute-only tail after `join all;`; the tail is
+> limited to sequential assignments and nested compute-only conditional
+> branches.
 >
 > The in-order target protocol remains the v1 blocking req/rsp handshake
 > and is assumed to return responses in request order. `out_of_order

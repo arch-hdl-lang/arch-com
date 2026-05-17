@@ -4136,7 +4136,7 @@ fn partition_thread_body_impl(
             }
             ThreadStmt::ForkTlmAssign(ra) => {
                 return Err(CompileError::general(
-                    "`target <= fork port.method(...);` is only valid for TLM initiator threads and must be paired with a final `join all;`",
+                    "`target <= fork port.method(...);` is only valid for TLM initiator threads and must be paired with `join all;`",
                     ra.span,
                 ));
             }
@@ -7732,15 +7732,73 @@ struct ForkedTlmIssue {
     span: Span,
 }
 
-fn collect_fork_join_all_issues(
+struct ForkJoinAllPlan {
+    issues: Vec<ForkedTlmIssue>,
+    tail_stmts: Vec<Stmt>,
+}
+
+fn fork_join_tail_to_seq_stmt(
+    stmt: &ThreadStmt,
+    port_buses: &std::collections::HashMap<String, String>,
+    bus_methods: &std::collections::HashMap<String, Vec<TlmMethodMeta>>,
+) -> Result<Stmt, CompileError> {
+    match stmt {
+        ThreadStmt::SeqAssign(ra) => {
+            if contains_tlm_call(&ra.target, port_buses, bus_methods)
+                || contains_tlm_call(&ra.value, port_buses, bus_methods)
+            {
+                return Err(CompileError::general(
+                    "RHS-fork TLM tail after `join all;` cannot contain TLM method calls",
+                    ra.span,
+                ));
+            }
+            Ok(Stmt::Assign(ra.clone()))
+        }
+        ThreadStmt::IfElse(ie) => {
+            if contains_tlm_call(&ie.cond, port_buses, bus_methods) {
+                return Err(CompileError::general(
+                    "RHS-fork TLM tail condition after `join all;` cannot contain TLM method calls",
+                    ie.span,
+                ));
+            }
+            let then_stmts = ie.then_stmts.iter()
+                .map(|s| fork_join_tail_to_seq_stmt(s, port_buses, bus_methods))
+                .collect::<Result<Vec<_>, _>>()?;
+            let else_stmts = ie.else_stmts.iter()
+                .map(|s| fork_join_tail_to_seq_stmt(s, port_buses, bus_methods))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Stmt::IfElse(IfElse {
+                cond: ie.cond.clone(),
+                then_stmts,
+                else_stmts,
+                unique: ie.unique,
+                span: ie.span,
+            }))
+        }
+        ThreadStmt::ForkTlmAssign(ra) => Err(CompileError::general(
+            "`target <= fork port.method(...);` cannot appear after `join all;` in an RHS-fork TLM group",
+            ra.span,
+        )),
+        other => Err(CompileError::general(
+            &format!(
+                "RHS-fork TLM tail after `join all;` supports only sequential assignments and compute-only `if` branches (found {:?})",
+                std::mem::discriminant(other),
+            ),
+            thread_stmt_span(other),
+        )),
+    }
+}
+
+fn collect_fork_join_all_plan(
     t: &ThreadBlock,
     port_buses: &std::collections::HashMap<String, String>,
     bus_methods: &std::collections::HashMap<String, Vec<TlmMethodMeta>>,
-) -> Result<Vec<ForkedTlmIssue>, CompileError> {
+) -> Result<ForkJoinAllPlan, CompileError> {
     let mut delay = 0u64;
     let mut issues = Vec::new();
+    let mut tail_stmts = Vec::new();
     let mut saw_join = false;
-    for (idx, stmt) in t.body.iter().enumerate() {
+    for stmt in &t.body {
         match stmt {
             ThreadStmt::ForkTlmAssign(ra) => {
                 if saw_join {
@@ -7771,7 +7829,7 @@ fn collect_fork_join_all_issues(
             ThreadStmt::WaitCycles(n, sp) => {
                 if saw_join {
                     return Err(CompileError::general(
-                        "statements after `join all;` in a forked TLM group are not supported in v1",
+                        "RHS-fork TLM tail after `join all;` is compute-only; `wait N cycle;` is not supported there",
                         *sp,
                     ));
                 }
@@ -7788,17 +7846,15 @@ fn collect_fork_join_all_issues(
                     return Err(CompileError::general("duplicate `join all;` in forked TLM group", *sp));
                 }
                 saw_join = true;
-                if idx + 1 != t.body.len() {
-                    return Err(CompileError::general(
-                        "v1 forked TLM groups require `join all;` to be the final statement in the thread",
-                        *sp,
-                    ));
-                }
             }
             other => {
+                if saw_join {
+                    tail_stmts.push(fork_join_tail_to_seq_stmt(other, port_buses, bus_methods)?);
+                    continue;
+                }
                 return Err(CompileError::general(
                     &format!(
-                        "v1 forked TLM groups only support `target <= fork port.method(...);`, literal `wait N cycle;`, and final `join all;` (found {:?})",
+                        "v1 RHS-fork TLM groups only support `target <= fork port.method(...);`, literal `wait N cycle;`, `join all;`, and an optional compute-only tail (found {:?})",
                         std::mem::discriminant(other),
                     ),
                     thread_stmt_span(other),
@@ -7811,11 +7867,11 @@ fn collect_fork_join_all_issues(
     }
     if !saw_join {
         return Err(CompileError::general(
-            "forked TLM calls require an explicit final `join all;` barrier",
+            "forked TLM calls require an explicit `join all;` barrier",
             t.span,
         ));
     }
-    Ok(issues)
+    Ok(ForkJoinAllPlan { issues, tail_stmts })
 }
 
 fn inline_lower_tlm_fork_join_all(
@@ -7823,7 +7879,9 @@ fn inline_lower_tlm_fork_join_all(
     port_buses: &std::collections::HashMap<String, String>,
     bus_methods: &std::collections::HashMap<String, Vec<TlmMethodMeta>>,
 ) -> Result<Vec<ModuleBodyItem>, CompileError> {
-    let issues = collect_fork_join_all_issues(&t, port_buses, bus_methods)?;
+    let plan = collect_fork_join_all_plan(&t, port_buses, bus_methods)?;
+    let issues = plan.issues;
+    let tail_stmts = plan.tail_stmts;
     let first = &issues[0];
     let port = first.call.port.clone();
     let method = first.call.method.clone();
@@ -7896,6 +7954,7 @@ fn inline_lower_tlm_fork_join_all(
     let tail_name = format!("{prefix}_tail");
     let occ_name = format!("{prefix}_occ");
     let age_name = format!("{prefix}_age");
+    let tail_done_name = format!("{prefix}_tail_done");
 
     let idx_ty = TypeExpr::UInt(Box::new(dec(idx_w as u64)));
     let occ_ty = TypeExpr::UInt(Box::new(dec(occ_w as u64)));
@@ -7926,6 +7985,17 @@ fn inline_lower_tlm_fork_join_all(
             ty,
             init: None,
             reset: RegReset::Inherit(t.reset.clone(), zero()),
+            guard: None,
+            multicycle: None,
+            span,
+        }));
+    }
+    if !tail_stmts.is_empty() {
+        items.push(ModuleBodyItem::RegDecl(RegDecl {
+            name: ident(tail_done_name.clone()),
+            ty: TypeExpr::Bool,
+            init: None,
+            reset: RegReset::Inherit(t.reset.clone(), bool_lit(false)),
             guard: None,
             multicycle: None,
             span,
@@ -8011,34 +8081,67 @@ fn inline_lower_tlm_fork_join_all(
         span,
     }));
 
+    let mut reset_group_stmts: Vec<Stmt> = (0..n).map(|i| Stmt::Assign(RegAssign {
+        target: id(state_name(i)),
+        value: sized(2, 0),
+        span,
+    })).chain(std::iter::once(Stmt::Assign(RegAssign {
+        target: id(age_name.clone()),
+        value: sized(age_w, 0),
+        span,
+    }))).collect();
+    if !tail_stmts.is_empty() {
+        reset_group_stmts.push(Stmt::Assign(RegAssign {
+            target: id(tail_done_name.clone()),
+            value: bool_lit(false),
+            span,
+        }));
+    }
+    let age_progress_stmts = if max_delay > 0 {
+        vec![Stmt::IfElse(IfElse {
+            cond: bin(BinOp::Lt, id(age_name.clone()), sized(age_w, max_delay)),
+            then_stmts: vec![Stmt::Assign(RegAssign {
+                target: id(age_name.clone()),
+                value: trunc(bin(BinOp::Add, id(age_name.clone()), sized(age_w, 1)), age_w),
+                span,
+            })],
+            else_stmts: Vec::new(),
+            unique: false,
+            span,
+        })]
+    } else { Vec::new() };
+
     let mut seq_body: Vec<Stmt> = Vec::new();
-    seq_body.push(Stmt::IfElse(IfElse {
-        cond: all_done.clone(),
-        then_stmts: (0..n).map(|i| Stmt::Assign(RegAssign {
-            target: id(state_name(i)),
-            value: sized(2, 0),
+    if tail_stmts.is_empty() {
+        seq_body.push(Stmt::IfElse(IfElse {
+            cond: all_done.clone(),
+            then_stmts: reset_group_stmts,
+            else_stmts: age_progress_stmts,
+            unique: false,
             span,
-        })).chain(std::iter::once(Stmt::Assign(RegAssign {
-            target: id(age_name.clone()),
-            value: sized(age_w, 0),
+        }));
+    } else {
+        let tail_pending = bin(BinOp::And, all_done.clone(), not(id(tail_done_name.clone())));
+        let mut run_tail_stmts = tail_stmts.clone();
+        run_tail_stmts.push(Stmt::Assign(RegAssign {
+            target: id(tail_done_name.clone()),
+            value: bool_lit(true),
             span,
-        }))).collect(),
-        else_stmts: if max_delay > 0 {
-            vec![Stmt::IfElse(IfElse {
-                cond: bin(BinOp::Lt, id(age_name.clone()), sized(age_w, max_delay)),
-                then_stmts: vec![Stmt::Assign(RegAssign {
-                    target: id(age_name.clone()),
-                    value: trunc(bin(BinOp::Add, id(age_name.clone()), sized(age_w, 1)), age_w),
-                    span,
-                })],
-                else_stmts: Vec::new(),
+        }));
+        seq_body.push(Stmt::IfElse(IfElse {
+            cond: all_done.clone(),
+            then_stmts: vec![Stmt::IfElse(IfElse {
+                cond: tail_pending,
+                then_stmts: run_tail_stmts,
+                else_stmts: reset_group_stmts,
                 unique: false,
                 span,
-            })]
-        } else { Vec::new() },
-        unique: false,
-        span,
-    }));
+            })],
+            else_stmts: age_progress_stmts,
+            unique: false,
+            span,
+        }));
+    }
     for i in 0..n {
         let push_i = bin(BinOp::And, grants[i].clone(), port_member(format!("{method}_req_ready")));
         seq_body.push(Stmt::IfElse(IfElse {

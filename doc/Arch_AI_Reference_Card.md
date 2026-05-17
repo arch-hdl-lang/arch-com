@@ -1168,7 +1168,7 @@ thread driver on clk rising, rst high
 end thread driver
 ```
 
-`dst <= fork m.read(...);` is a nonblocking TLM issue; `join all;` waits for every forked issue in the group. v1 allows direct forked TLM assignments plus literal `wait N cycle;` offsets, with `join all;` final.
+`dst <= fork m.read(...);` is a nonblocking TLM issue; `join all;` waits for every forked issue in the group. RHS-fork groups allow direct forked TLM assignments plus literal `wait N cycle;` offsets before the join, then an optional compute-only tail made of sequential assignments and nested compute-only `if`/`elsif`/`else` branches.
 
 Bounded burst-like payloads: use a static max vector return and a runtime length arg, or preferably a response struct containing `data: Vec<T, MAX>`, returned `len`, and `resp`. Example: `tlm_method read_burst(addr: UInt<32>, len: UInt<3>) -> BoundedVecResp32x4: out_of_order tags 2;`. The vector size is compile-time fixed; `len` says how many lanes are valid. For decoded interconnect, a router can return a struct response itself on unmapped addresses; see `tests/axi_dma_tlm/TlmOneToManyResp.arch`.
 
@@ -1196,7 +1196,7 @@ completed transaction response drives the shared channel.
 
 Generated code shape: grouped/looped initiator call sites emit one generated driver per TLM method signal. Large request-valid reductions, response-ready reductions, payload muxes, default-priority grants, and round-robin grant terms are split into intermediate wires so generated SV lines stay bounded.
 
-Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); runtime-loop and conditional-branch TLM calls are serialized direct blocking assignments; one call per worker/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; no nested/composed TLM calls; no dynamic-length TLM return types; no `pipelined`; no first-class `burst`; no `Future<T>`/`await`.
+Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); runtime-loop and conditional-branch TLM calls are serialized direct blocking assignments; one call per worker/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; RHS-fork tails after `join all;` are compute-only; no nested/composed TLM calls; no dynamic-length TLM return types; no `pipelined`; no first-class `burst`; no `Future<T>`/`await`.
 
 Full spec: `doc/ARCH_HDL_Specification.md` §18d and §22. Design history / remaining work: `doc/plan_tlm_method.md`.
 
