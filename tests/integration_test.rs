@@ -7717,6 +7717,47 @@ fn test_tlm_target_thread_rich_body_arch_sim_behavior() {
     );
 }
 
+fn run_tlm_thread_sim_both(arch_file: &str, tb_file: &str, pass_marker: &str) {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("--thread-sim")
+        .arg("both")
+        .arg(arch_file)
+        .arg("--tb")
+        .arg(tb_file)
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim --thread-sim both");
+    assert!(
+        out.status.success(),
+        "arch sim --thread-sim both should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains(pass_marker),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("Cross-check PASS"),
+        "expected thread-sim cross-check marker in stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn test_tlm_target_thread_rich_body_thread_sim_both() {
+    run_tlm_thread_sim_both(
+        "tests/tlm_target_body/TlmTargetRichBody.arch",
+        "tests/tlm_target_body/tb_tlm_target_rich_body.cpp",
+        "PASS TlmTargetRichBody",
+    );
+}
+
 #[test]
 fn test_tlm_target_thread_rich_body_verilator_behavior() {
     if std::process::Command::new("verilator").arg("--version").output().is_err() {
@@ -7851,6 +7892,15 @@ fn test_tlm_target_thread_early_return_arch_sim_behavior() {
         String::from_utf8_lossy(&out.stdout).contains("PASS TlmTargetEarlyReturn"),
         "expected PASS marker in stdout:\n{}",
         String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn test_tlm_target_thread_early_return_thread_sim_both() {
+    run_tlm_thread_sim_both(
+        "tests/tlm_target_body/TlmTargetEarlyReturn.arch",
+        "tests/tlm_target_body/tb_tlm_target_early_return.cpp",
+        "PASS TlmTargetEarlyReturn",
     );
 }
 
