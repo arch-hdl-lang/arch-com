@@ -407,27 +407,31 @@ Honest framing of when Path A pays off:
 - **OpenROAD** consumes SDC and runs delay-driven mapping internally;
   the two-pass workaround is mostly a yosys-standalone band-aid.
 
-### Open SDC compat issue (4th, file as arch-com follow-up)
+### SDC `-hierarchical` flag (fixed in this PR)
 
-The two-pass hier flow surfaced a new SDC compat wrinkle. arch-com's
-post-PR-#349 emission `[get_cells {*mul_r_reg*}]` is correct for
-**flat** netlists but fails for **hierarchical** netlists: OpenSTA's
-`get_cells` is non-recursive, so the `*` glob does not descend into
-instance subhierarchies. Cells living at `dp/mul_r_reg*` are missed
-by the bare `*mul_r_reg*` glob.
+The two-pass hier flow originally surfaced a 4th SDC compat issue:
+the post-PR-#349 emission `[get_cells {*mul_r_reg*}]` was correct for
+**flat** netlists but failed for **hierarchical** netlists. OpenSTA's
+`get_cells` *was* non-recursive by default, so the `*` glob did not
+descend into instance subhierarchies — cells living at `dp/mul_r_reg*`
+were missed by the bare `*mul_r_reg*` glob, and the multicycle path
+silently failed to attach (treated as single-cycle).
 
-Workaround in `multdiv_multicycle_sta.tcl`: rewrite `[get_cells {...}]`
-→ `[get_cells -hierarchical {...}]` before sourcing. The
-`-hierarchical` flag walks the full instance tree.
+This PR's codegen fix (`src/codegen/mod.rs::emit_sdc`) now emits the
+`-hierarchical` flag unconditionally:
 
-Possible upstream fixes:
-1. Always emit `-hierarchical` in the SDC: `[get_cells -hierarchical
-   {*<reg>_reg*}]`. Works for both flat and hierarchical OpenSTA
-   linkage. Likely the smallest patch.
-2. Emit two parallel forms guarded by a `catch`. Most correct, most
-   verbose.
+```sdc
+set_multicycle_path 3 -setup -to [get_cells -hierarchical {*mul_r_reg*}]
+set_multicycle_path 2 -hold  -to [get_cells -hierarchical {*mul_r_reg*}]
+```
 
-Recommendation: option 1.
+`-hierarchical` is harmless for flat netlists (returns the same cells
+either way) and is standard SDC across DC / Genus / Vivado / Quartus /
+OpenSTA. With this fix, the consumer STA driver sources the emitted
+SDC verbatim — no regsub needed for either the flat or the
+hierarchy-split variant. Verified end-to-end: both `mul_with_mc` and
+`hier_with_mc` STA flows report WNS = 0 at the real clock with
+multicycle paths cleanly attached.
 
 ## Caveats
 

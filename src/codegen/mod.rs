@@ -227,19 +227,27 @@ impl<'a> Codegen<'a> {
                 "# Module {}: multicycle reg {}\n",
                 mc.module_name, mc.reg_name
             ));
-            // `[get_cells {*<reg>_reg*}]` is the largest common subset across
-            // OpenSTA, DC, Genus, Vivado, and Quartus. Bare-path `[*]` only
-            // works on DC/Genus; `get_registers` is missing from OpenSTA. The
-            // leading `*` glob handles both flat synth (reg at top level, no
-            // module instance prefix) and hierarchical synth (the wildcard
-            // absorbs `top/.../<module>/`). The module name remains in the
-            // header comment above for human readers.
+            // `[get_cells -hierarchical {*<reg>_reg*}]` is the largest
+            // common subset across OpenSTA, DC, Genus, Vivado, and Quartus.
+            // Bare-path `[*]` only works on DC/Genus; `get_registers` is
+            // missing from OpenSTA. The leading `*` glob handles both flat
+            // synth (reg at top level, no module instance prefix) and
+            // hierarchical synth (the wildcard absorbs `top/.../<module>/`).
+            // The `-hierarchical` flag is required for hierarchical netlists
+            // under OpenSTA — without it, `get_cells` is non-recursive and
+            // the `*` glob does not descend into instance subhierarchies,
+            // so the multicycle constraint silently attaches to zero cells
+            // and the path is treated as single-cycle. `-hierarchical` is
+            // harmless for flat netlists (returns the same cells either
+            // way) and is standard SDC across DC/Genus/Vivado/Quartus.
+            // The module name remains in the header comment above for
+            // human readers.
             s.push_str(&format!(
-                "set_multicycle_path {} -setup -to [get_cells {{*{}_reg*}}]\n",
+                "set_multicycle_path {} -setup -to [get_cells -hierarchical {{*{}_reg*}}]\n",
                 mc.latency, mc.reg_name
             ));
             s.push_str(&format!(
-                "set_multicycle_path {} -hold -to [get_cells {{*{}_reg*}}]\n",
+                "set_multicycle_path {} -hold -to [get_cells -hierarchical {{*{}_reg*}}]\n",
                 mc.latency.saturating_sub(1), mc.reg_name
             ));
             s.push('\n');

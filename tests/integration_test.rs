@@ -14535,9 +14535,9 @@ end module M
 "#;
     let (_sv, sdc) = compile_to_sv_with_sdc(source);
     let sdc = sdc.expect(".sdc expected when multicycle reg is present");
-    assert!(sdc.contains("set_multicycle_path 3 -setup -to [get_cells {*result_reg*}]"),
+    assert!(sdc.contains("set_multicycle_path 3 -setup -to [get_cells -hierarchical {*result_reg*}]"),
         "expected setup constraint with N=3; got:\n{}", sdc);
-    assert!(sdc.contains("set_multicycle_path 2 -hold -to [get_cells {*result_reg*}]"),
+    assert!(sdc.contains("set_multicycle_path 2 -hold -to [get_cells -hierarchical {*result_reg*}]"),
         "expected hold constraint with N-1=2; got:\n{}", sdc);
     assert!(sdc.contains("Module M: multicycle reg result"),
         "expected per-reg header comment; got:\n{}", sdc);
@@ -14546,10 +14546,18 @@ end module M
     // synth (any number of `top/.../<Module>/` levels). A regression that
     // re-introduces the `<Module>/` prefix would silently fail to attach
     // under flat / standalone synth (OpenSTA warns `instance not found`).
-    assert!(sdc.contains("[get_cells {*result_reg*}]"),
-        "expected wildcard-prefix glob `*result_reg*`; got:\n{}", sdc);
+    assert!(sdc.contains("[get_cells -hierarchical {*result_reg*}]"),
+        "expected wildcard-prefix glob `*result_reg*` with -hierarchical; got:\n{}", sdc);
     assert!(!sdc.contains("{M/result_reg"),
         "expected NO hierarchical `M/result_reg` prefix in glob; got:\n{}", sdc);
+    // `-hierarchical` is mandatory: under hierarchical synth (parent +
+    // child module), OpenSTA's `get_cells` is non-recursive by default, so
+    // the `*` glob does not descend into instance subhierarchies. Without
+    // the flag the multicycle constraint silently attaches to zero cells
+    // and the path is treated as single-cycle (verified with the
+    // MultdivMulticycleHier two-pass example).
+    assert!(sdc.contains("get_cells -hierarchical"),
+        "expected `-hierarchical` flag on get_cells; got:\n{}", sdc);
 }
 
 #[test]
@@ -14602,9 +14610,9 @@ end module M
 "#;
     let (_sv, sdc) = compile_to_sv_with_sdc(source);
     let sdc = sdc.expect("unused multicycle reg still emits SDC");
-    assert!(sdc.contains("set_multicycle_path 4 -setup -to [get_cells {*_unused_reg*}]"),
+    assert!(sdc.contains("set_multicycle_path 4 -setup -to [get_cells -hierarchical {*_unused_reg*}]"),
         "got:\n{}", sdc);
-    assert!(sdc.contains("set_multicycle_path 3 -hold -to [get_cells {*_unused_reg*}]"),
+    assert!(sdc.contains("set_multicycle_path 3 -hold -to [get_cells -hierarchical {*_unused_reg*}]"),
         "got:\n{}", sdc);
 }
 
@@ -14673,8 +14681,8 @@ end fsm F
 "#;
     let (_sv, sdc) = compile_to_sv_with_sdc(source);
     let sdc = sdc.expect(".sdc expected for multicycle reg inside fsm");
-    assert!(sdc.contains("set_multicycle_path 5 -setup -to [get_cells {*slow_r_reg*}]"),
+    assert!(sdc.contains("set_multicycle_path 5 -setup -to [get_cells -hierarchical {*slow_r_reg*}]"),
         "got:\n{}", sdc);
-    assert!(sdc.contains("set_multicycle_path 4 -hold -to [get_cells {*slow_r_reg*}]"),
+    assert!(sdc.contains("set_multicycle_path 4 -hold -to [get_cells -hierarchical {*slow_r_reg*}]"),
         "got:\n{}", sdc);
 }

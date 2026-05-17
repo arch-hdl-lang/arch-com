@@ -91,35 +91,19 @@ if {$design eq "mul_with_mc"} {
     source "$out_dir/multdiv_multicycle.sdc.flat"
 }
 
-# For the two-pass hier variant, the SDC arch-com emits is in the
-# post-PR-#349 wildcard form `*<wire>_reg*`. That form works for FLAT
-# netlists but NOT for hierarchical: OpenSTA's `get_cells <glob>` is
-# non-recursive — the wildcard does not descend into instance
-# subhierarchies. The two-pass synth preserves the `dp/` child
-# boundary, so the multicycle cells live at `dp/mul_r_reg*` /
-# `dp/div_r_reg*` and the bare `*mul_r_reg*` glob misses them.
-#
-# Workaround: rewrite `[get_cells {*<reg>*}]` -> `[get_cells
-# -hierarchical {*<reg>*}]` before sourcing. The -hierarchical flag
-# makes OpenSTA walk the full instance tree. This is a 4th open
-# arch-com SDC compat issue (after PR #347's get_cells syntax, PR
-# #349's wildcard prefix, and the standalone-prefix workaround for
-# the flat variant). Filed as TODO in
-# doc/multdiv_multicycle_vs_fsm.md.
+# For the two-pass hier variant, arch-com's SDC now emits
+# `[get_cells -hierarchical {*<reg>_reg*}]` directly (post this PR's
+# codegen fix). The `-hierarchical` flag makes OpenSTA's `get_cells`
+# descend into instance subhierarchies, so the multicycle cells inside
+# `dp/` (the datapath child instance) resolve cleanly with no
+# rewriting needed. Source the SDC verbatim.
 if {$design eq "hier_with_mc"} {
     set sdc_path "$out_dir/multdiv_multicycle_hier.sdc"
     if {![file exists $sdc_path]} {
         error "arch-com SDC not at $sdc_path; run multdiv_multicycle_two_pass.sh first"
     }
-    set fp [open $sdc_path]
-    set sdc [read $fp]
-    close $fp
-    set sdc_hier [regsub -all {\[get_cells\s+\{} $sdc {[get_cells -hierarchical \{}]
-    set tmpfp [open "$out_dir/multdiv_multicycle_hier.sdc.hierarchical" w]
-    puts $tmpfp $sdc_hier
-    close $tmpfp
-    puts "=== Sourcing arch-com SDC (two-pass hier, -hierarchical rewrite) ==="
-    source "$out_dir/multdiv_multicycle_hier.sdc.hierarchical"
+    puts "=== Sourcing arch-com SDC (two-pass hier) ==="
+    source $sdc_path
 }
 
 puts "=== DESIGN=$design  CLOCK_NS=$clk_ns ==="
