@@ -5094,7 +5094,7 @@ Full design history and the broader roadmap are in `doc/plan_credit_channel.md` 
 
 TLM call sites are deliberately restricted to `thread` bodies. An initiator call is legal only as the direct RHS of a thread assignment (`dst <= port.method(args);`) or as a nonblocking RHS-fork issue (`dst <= fork port.method(args);`). TLM calls are not general expressions and are rejected in `comb`, `seq`, module-level `let`, module-local `function`, `pipeline`, and `fsm` contexts.
 
-TLM calls are legal inside initiator `for` loops when the call is a serialized direct blocking assignment. Literal-bounded loops are unrolled before TLM lowering; non-literal/runtime loops lower to a generated loop counter plus request/response issue/wait states. For independent compile-time worker replication or multiple outstanding requests, use `generate_for` worker threads or RHS-fork groups.
+TLM calls are legal inside initiator `for` loops and `if`/`elsif`/`else` branches when the call is a serialized direct blocking assignment. Literal-bounded loops are unrolled before TLM lowering; non-literal/runtime loops lower to a generated loop counter plus request/response issue/wait states. Conditional branches lower to branch and join states, so only the selected branch issues its TLM calls before control rejoins. For independent compile-time worker replication or multiple outstanding requests, use `generate_for` worker threads or RHS-fork groups.
 
 **18d.1 Declaration**
 

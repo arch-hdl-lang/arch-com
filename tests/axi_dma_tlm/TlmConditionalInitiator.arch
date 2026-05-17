@@ -1,0 +1,51 @@
+//! ---
+//! spec_md: doc/plan_tlm_method.md
+//! tags: [tlm_method, initiator, if, control_flow]
+//! refs:
+//!   - "doc/plan_tlm_method.md"
+//! ---
+//!
+//! TLM initiator conditional-control smoke test. The driver chooses one of two
+//! serialized blocking method calls with an ordinary thread `if` statement.
+
+/// Simple memory-like TLM bus used by the conditional initiator example.
+bus CondMem
+  tlm_method read(addr: UInt<32>) -> UInt<32>: blocking;
+end bus CondMem
+
+/// Bring the TLM bus into scope for module ports.
+use CondMem;
+
+/// Initiator that selects between two TLM reads based on `sel`.
+///
+/// This exercises richer initiator control flow: each branch contains an
+/// ordinary blocking TLM call, and both branches rejoin before the thread
+/// loops back to sample `sel` again.
+module TlmConditionalInitiator
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port sel: in Bool;
+  port m: initiator CondMem;
+
+  port data_out: out UInt<32>;
+  port then_seen_out: out Bool;
+  port else_seen_out: out Bool;
+
+  reg data_r: UInt<32> reset rst => 0;
+  reg then_seen_r: Bool reset rst => false;
+  reg else_seen_r: Bool reset rst => false;
+
+  let data_out = data_r;
+  let then_seen_out = then_seen_r;
+  let else_seen_out = else_seen_r;
+
+  thread driver on clk rising, rst high
+    if sel
+      data_r <= m.read(32'h0000_1000);
+      then_seen_r <= true;
+    else
+      data_r <= m.read(32'h0000_2000);
+      else_seen_r <= true;
+    end if
+  end thread driver
+end module TlmConditionalInitiator

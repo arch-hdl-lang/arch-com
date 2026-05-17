@@ -1103,6 +1103,22 @@ end thread driver
 
 Runtime-loop TLM calls are serialized in this slice. Use `generate_for` worker threads or RHS-fork groups when you need independent workers or multiple outstanding requests.
 
+Serialized direct blocking calls may also appear inside ordinary thread
+`if`/`elsif`/`else` branches. The branch condition is sampled when the lowered
+initiator FSM reaches the branch state; only the selected branch issues its TLM
+calls, then both branches rejoin before later thread statements:
+
+```
+thread driver on clk rising, rst high
+  if use_hi
+    data <= mem.read(32'h2000);
+  else
+    data <= mem.read(32'h1000);
+  end if
+  checksum <= checksum +% data;
+end thread driver
+```
+
 Shared method call sites lower to one physical method driver, not multiple SV drivers. Use `lock` plus `resource ... mutex<round_robin>;` when independent workers share a method and require round-robin request arbitration:
 
 ```
@@ -1180,7 +1196,7 @@ completed transaction response drives the shared channel.
 
 Generated code shape: grouped/looped initiator call sites emit one generated driver per TLM method signal. Large request-valid reductions, response-ready reductions, payload muxes, default-priority grants, and round-robin grant terms are split into intermediate wires so generated SV lines stay bounded.
 
-Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); runtime-loop TLM calls are serialized direct blocking assignments; one call per worker/branch/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; no nested/composed TLM calls; no dynamic-length TLM return types; no `pipelined`; no first-class `burst`; no `Future<T>`/`await`.
+Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); runtime-loop and conditional-branch TLM calls are serialized direct blocking assignments; one call per worker/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; no nested/composed TLM calls; no dynamic-length TLM return types; no `pipelined`; no first-class `burst`; no `Future<T>`/`await`.
 
 Full spec: `doc/ARCH_HDL_Specification.md` §18d and §22. Design history / remaining work: `doc/plan_tlm_method.md`.
 

@@ -404,9 +404,10 @@ Three auto-emitted properties labeled
   current compiler supports bounded burst-like payloads through static
   `Vec<T, MAX>` returns or response structs carrying `data`, returned
   `len`, and `resp`; this is not a dynamic-length return type.
-- Richer TLM initiator control flow remains deferred. Today, call sites must
-  stay direct RHS assignments or RHS-fork assignments. Runtime-loop calls are
-  supported only for serialized direct blocking assignments.
+- Richer TLM initiator control flow beyond serialized `for` loops and
+  `if`/`elsif`/`else` branches remains deferred. Today, call sites must stay
+  direct RHS assignments or RHS-fork assignments; nested/composed TLM
+  expressions are still rejected.
 - One-to-many decoded interconnect remains explicit router code. `connect
   a.m -> b.s;` is point-to-point sugar; address decode and decode-error
   response ownership belong in a router module.

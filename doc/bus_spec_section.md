@@ -174,11 +174,13 @@ Supported cohort shapes:
 - One direct-call `fork ... and ... join` thread.
 - Literal-bounded `for` loops inside one initiator thread; these are unrolled before TLM lowering.
 - Runtime-bounded `for` loops inside one initiator thread when calls are serialized direct blocking assignments.
+- `if`/`elsif`/`else` branches inside one initiator thread when calls are serialized direct blocking assignments; only the selected branch issues requests, then branches rejoin.
 - Timed RHS-fork groups (`dst <= fork m.read(...); wait N cycle; ... join all;`) for multiple outstanding issue inside one thread.
 
 Current restrictions:
 
-- Each worker/branch body is exactly one direct assignment: `dst <= port.method(args);`.
+- Each worker/forked issue is exactly one direct assignment: `dst <= port.method(args);`.
+- Conditional initiator branches may contain serialized direct blocking TLM assignments plus ordinary compute assignments.
 - RHS-fork groups may contain only direct forked TLM assignments, literal `wait N cycle;` offsets, and a final `join all;`.
 - All workers in the cohort use the same clock/reset.
 - `out_of_order tags N` requires a literal tag count and enough tags for all workers.
