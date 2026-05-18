@@ -7189,7 +7189,7 @@ the design:
 
 **22.4 Current TLM Boundaries**
 
-The implemented TLM surface ends here. Older sketches for `Future<T>`, `await`, `pipelined method`, `burst`, LT/AT simulation modes, selective refinement flags, and user-visible token APIs have been removed from the normative spec because they are not accepted by the current compiler. Design history remains in `doc/plan_tlm_method.md`, `doc/plan_tlm_pipelined.md`, and `doc/plan_tlm_implement_thread.md`.
+The implemented TLM surface ends here. Older sketches for `Future<T>`, `await`, `pipelined method`, `burst`, LT/AT simulation modes, selective refinement flags, user-visible token APIs, and the retired `implement` pool direction have been removed from the normative spec because they are not accepted by the current compiler. Current TLM status, remaining work, and historical pivots are tracked in `doc/plan_tlm_method.md`.
 
 Use the implemented forms above for all current RTL-backed TLM work:
 

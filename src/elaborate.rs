@@ -1723,8 +1723,8 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                 // `implement target` threads should have been consumed by
                 // lower_tlm_target_threads (which now treats them like
                 // v1 tlm_target). If one reaches here, it's an internal
-                // error. `implement` (initiator) threads still need
-                // lowering (PR-tlm-i3/i4).
+                // error. `implement` (initiator) threads are handled by
+                // ordinary TLM initiator call-site/cohort lowering.
                 if let Some(ref b) = t.implement {
                     if b.kind == TlmImplementKind::Target {
                         return Err(vec![CompileError::general(
@@ -5598,7 +5598,7 @@ fn rewrite_expr_cc(e: &mut Expr, ctx: &CcDispatchCtx, errors: &mut Vec<CompileEr
     }
 }
 
-// ── TLM target thread lowering (PR-tlm-3c) ──────────────────────────────────
+// ── TLM target thread lowering ──────────────────────────────────────────────
 //
 // Transforms each `thread port.method(args) ... end` body into a regular
 // thread that:
@@ -5915,12 +5915,13 @@ fn subst_expr_params(expr: &Expr, param_map: &HashMap<String, &Expr>) -> Expr {
 
 
 
-// ── TLM initiator call-site lowering (PR-tlm-4) ─────────────────────────────
+// ── TLM initiator call-site lowering ────────────────────────────────────────
 //
 // Recognizes `target_reg <= port.method(args);` as a TLM call site inside a
-// thread body and expands it into the two-state issue + wait-response
-// sequence described in doc/plan_tlm_method.md §Lowering. Call sites
-// outside this shape are rejected with a targeted message.
+// thread body and expands it into the synthesizable request/response protocol
+// described in doc/ARCH_HDL_Specification.md §18d/§22 and
+// doc/plan_tlm_method.md. Call sites outside this shape are rejected with a
+// targeted message.
 
 pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
     use std::collections::HashMap;
@@ -8688,7 +8689,7 @@ fn contains_tlm_call(
 }
 
 
-// ── TLM target in-place lowering (PR-tlm-4b) ────────────────────────────────
+// ── TLM target in-place lowering ────────────────────────────────────────────
 //
 // Replaces the previous "transform into regular thread" approach with
 // direct emission of RegDecl + RegBlock + CombBlock items into the
@@ -8697,12 +8698,10 @@ fn contains_tlm_call(
 // the thread-extraction path doesn't handle for FieldAccess(bus_port,
 // member) drives.
 //
-// Supported user-body shape (v1):
-//   <SeqAssign | CombAssign | WaitUntil>*
-//   return <expr>;
-//
-// Any other statement in the body (nested IfElse / ForkJoin / For /
-// Lock / DoUntil / Log) is rejected with a targeted error.
+// Supported target bodies reuse ordinary thread lowering before generated
+// response states, including assignments, waits, if, counted for, fork/join,
+// lock, and branch-local returns. Statements after a return in the same block
+// are rejected with a targeted error.
 
 fn lower_indexed_tlm_target_group(
     module_name: &str,

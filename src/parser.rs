@@ -300,16 +300,15 @@ impl Parser {
         })
     }
 
-    /// Parse a `tlm_method` declaration inside a bus body. PR-tlm-1
-    /// scaffolding: captures name, args, ret type, and concurrency mode;
-    /// no wires materialized yet. See doc/plan_tlm_method.md.
+    /// Parse a `tlm_method` declaration inside a bus body. Captures name,
+    /// args, ret type, and concurrency mode for later bus flattening and
+    /// thread lowering. See doc/plan_tlm_method.md.
     ///
     /// Grammar:
     ///   'tlm_method' Ident '(' (Ident ':' TypeExpr (',' Ident ':' TypeExpr)*)? ')'
     ///     ('->' TypeExpr)? ':' Mode ';'
     ///   Mode := 'blocking'
     ///         | 'out_of_order' 'tags' Expr
-    ///         | 'pipelined' | 'burst'   // future/rejected
     fn parse_tlm_method_decl(&mut self) -> Result<TlmMethodMeta, CompileError> {
         let start = self.expect(TokenKind::TlmMethod)?.span;
         let name = self.expect_ident()?;
@@ -1798,8 +1797,7 @@ impl Parser {
         };
 
         // Optional `implement [target] <port>.<method>(args...)` clause —
-        // glues the thread to a TLM method (see
-        // doc/plan_tlm_implement_thread.md). Must come BEFORE the `on`
+        // glues the thread to the current TLM lowering. Must come BEFORE the `on`
         // clock clause. Initiator form has empty parens (method calls
         // inside the body supply args at each site); target form binds
         // the declared args as thread-local names.

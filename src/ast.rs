@@ -92,17 +92,16 @@ pub struct BusDecl {
     /// implemented. Typecheck rejects any bus port whose bus carries a
     /// credit_channel until the elaboration PR lands.
     pub credit_channels: Vec<CreditChannelMeta>,
-    /// TLM method sub-constructs declared in this bus. PR-tlm-1 scaffolding:
-    /// parser populates this, but wire flattening + call-site / thread-body
-    /// lowering land in follow-up PRs. See doc/plan_tlm_method.md.
+    /// TLM method sub-constructs declared in this bus. The parser captures
+    /// the method surface here; elaboration/codegen materialize the flattened
+    /// request/response wires and thread lowering. See doc/plan_tlm_method.md.
     pub tlm_methods: Vec<TlmMethodMeta>,
     pub span: Span,
 }
 
-/// Metadata for one `tlm_method` sub-construct inside a bus. PR-tlm-1
-/// scaffolding: parser captures the declaration shape; subsequent PRs
-/// materialize the req/rsp wires and the FSM lowering. See
-/// doc/plan_tlm_method.md.
+/// Metadata for one `tlm_method` sub-construct inside a bus. The declaration
+/// shape is shared by bus flattening, initiator call lowering, target thread
+/// lowering, and protocol assertion generation. See doc/plan_tlm_method.md.
 #[derive(Debug, Clone)]
 pub struct TlmMethodMeta {
     /// Method name (e.g. `read`).
@@ -579,16 +578,14 @@ pub struct ThreadBlock {
     pub default_comb: Vec<Stmt>,
     /// Set when the thread is a TLM method target body:
     ///   `thread PORT.METHOD(ARG1, ARG2, ...) on clk rising, rst high`.
-    /// Captured at parse time (PR-tlm-3); lowering to an FSM (entry gate
-    /// on req_valid, arg bindings, `return` → rsp drive) ships next.
+    /// Lowering gates entry on req_valid, binds args, and turns `return`
+    /// into the response-channel drive.
     pub tlm_target: Option<TlmTargetBinding>,
     /// `implement <port>.<method>()` (initiator) or `implement target
     /// <port>.<method>(args)` (target) clause on the thread header.
-    /// Opts the thread into the compiler's id allocation + arbitration
-    /// machinery across N co-implementers (see doc/plan_tlm_implement_thread.md).
-    /// Initiator form is NEW in v2; target form is a generalization of
-    /// the v1 dotted-name binding (both populate `tlm_target` for
-    /// downstream lowering compat).
+    /// Opts the thread into the compiler's current TLM call-site/cohort
+    /// lowering. Initiator form is an annotation over ordinary call lowering;
+    /// target form generalizes the dotted-name binding.
     pub implement: Option<TlmImplementBinding>,
     pub body: Vec<ThreadStmt>,
     pub span: Span,
@@ -613,9 +610,8 @@ pub struct TlmTargetBinding {
 }
 
 /// `implement` clause on a thread header — glues the thread to a TLM
-/// method declaration. Initiator form binds the thread as one of
-/// potentially N id-tagged issue agents; target form generalizes the
-/// v1 dotted-name target syntax. See `doc/plan_tlm_implement_thread.md`.
+/// method declaration. Initiator form annotates ordinary call-site/cohort
+/// lowering; target form generalizes dotted-name target syntax.
 #[derive(Debug, Clone)]
 pub struct TlmImplementBinding {
     pub kind: TlmImplementKind,
