@@ -3,7 +3,7 @@
 A `bus` is a reusable, parameterized port bundle that eliminates repetitive port declarations across modules.  It serves two roles:
 
 1. **RTL signal bundle** (implemented) — declares signal names, types, and directions.  The compiler flattens bus ports to individual SystemVerilog ports.
-2. **TLM method interface** (implemented subset) — declares transaction-level methods (`blocking`, plus tagged `out_of_order tags N`) on top of the signal bundle. The compiler lowers method calls to RTL handshake wires, so the same design works in `arch build`, `arch sim`, and `arch sim --thread-sim parallel`.
+2. **Synthesizable TLM method interface** (implemented subset) — declares transaction-level methods (`blocking`, plus tagged `out_of_order tags N`) on top of the signal bundle. The compiler lowers method calls to RTL handshake wires, so the same design works in `arch build`, `arch sim`, and `arch sim --thread-sim parallel`.
 
 Directions are declared from the **initiator's perspective**.  At the use site, `initiator` keeps directions as declared; `target` flips every `in` to `out` and every `out` to `in`.
 

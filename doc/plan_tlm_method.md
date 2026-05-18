@@ -439,9 +439,8 @@ Three auto-emitted properties labeled
 
 - Not committing to v2 timeline. Each v2 mode is its own plan.
 - Not addressing TLM-to-RTL timing annotations (`timing: N cycles` from
-  the old sketch). Those are a spec feature for approximately-timed
-  simulation; v1 cycles are whatever the FSM lowering produces.
-- Not designing the `arch sim --tlm-lt` TLM-LT simulation mode. That
-  bypass of RTL simulation is a separate project; v1 `tlm_method`
-  compiles to ordinary RTL and runs under existing `arch sim
-  --pybind --test` and Verilator.
+  the old sketch). ARCH TLM is now defined as synthesizable TLM, so v1 cycles
+  are whatever the thread/FSM lowering produces.
+- Not designing separate LT/AT simulation modes. `tlm_method` compiles to
+  ordinary RTL-shaped state machines and runs under existing `arch sim`,
+  `arch sim --thread-sim both`, `arch sim --pybind --test`, and Verilator.
