@@ -1196,6 +1196,19 @@ completed transaction response drives the shared channel.
 
 Generated code shape: grouped/looped initiator call sites emit one generated driver per TLM method signal. Large request-valid reductions, response-ready reductions, payload muxes, default-priority grants, and round-robin grant terms are split into intermediate wires so generated SV lines stay bounded.
 
+Refining TLM into explicit threads:
+
+- Start with `tlm_method` to define the transaction contract: args, return type, ordering, tag width, latency, and payload checksum/golden behavior.
+- Preserve that contract when rewriting to explicit `bus` signals and ordinary `thread` code.
+- Map request args to payload signals held stable under `req_valid && !req_ready`.
+- Map return data to response payload sampled under `rsp_valid && rsp_ready`.
+- Map `out_of_order tags N` to explicit request/response IDs of the same width.
+- Map blocking calls to a caller thread that issues one request and waits for its matching response.
+- Map worker/RHS-fork concurrency to explicit worker threads plus arbitration and response routing.
+- Keep the same arch sim, `--thread-sim both`, Verilator, and golden checksum tests while replacing the internal TLM method boundary.
+
+Use explicit threads when the protocol needs separate channels, beat-by-beat burst interleaving, registered ready paths for timing closure, protocol-specific retry/error/cancel rules, or area/power tuning beyond the generic TLM driver.
+
 Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); runtime-loop and conditional-branch TLM calls are serialized direct blocking assignments; one call per worker/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; RHS-fork tails after `join all;` are compute-only; no nested/composed TLM calls; no dynamic-length TLM return types; no `pipelined`; no first-class `burst`; no `Future<T>`/`await`.
 
 Full spec: `doc/ARCH_HDL_Specification.md` §18d and §22. Design history / remaining work: `doc/plan_tlm_method.md`.

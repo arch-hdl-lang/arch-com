@@ -444,3 +444,43 @@ Three auto-emitted properties labeled
 - Not designing separate LT/AT simulation modes. `tlm_method` compiles to
   ordinary RTL-shaped state machines and runs under existing `arch sim`,
   `arch sim --thread-sim both`, `arch sim --pybind --test`, and Verilator.
+
+## Refinement Guidance: TLM to Explicit Threads
+
+`tlm_method` should be the first executable hardware contract for a transaction
+API. It is not meant to hide the eventual protocol forever. Once the design
+needs channel-level control, refine the method boundary into explicit bus
+signals and ordinary `thread` code.
+
+Recommended sequence:
+
+1. Keep the `tlm_method` model as the golden contract until the explicit thread
+   version passes the same checks.
+2. Name the explicit bus signals after the generated method protocol:
+   `req_valid`, arg payload fields, `req_ready`, `rsp_valid`, optional
+   `rsp_data`, optional `rsp_tag`, and `rsp_ready`.
+3. Port the initiator call sequence into a caller thread:
+   - direct blocking call -> issue request, wait for response, capture result;
+   - worker cohort -> one explicit worker per lane plus request arbitration;
+   - RHS-fork group -> timed issue threads plus a join/scoreboard condition.
+4. Port the target method body into a target thread:
+   latch request args, run the same waits/compute/control flow, then drive a
+   response beat.
+5. Copy the generated TLM stable-payload assertions into explicit protocol SVA,
+   or write equivalent asserts against the new bus signals.
+6. Run the same golden C++/Python smoke test through `arch sim`, then run
+   `arch sim --thread-sim both` where applicable, and finish with Verilator
+   simulation of the generated SV.
+
+Refine to explicit threads when:
+
+- the protocol has independent address/data/response channels;
+- burst beats need per-beat interleaving or arbitration;
+- ready/valid timing requires deliberate register placement;
+- response IDs, error codes, retry, cancellation, or ordering rules are
+  protocol-specific enough that generated TLM is too generic;
+- area/power work needs manual state sharing, gating, or channel pruning.
+
+The goal of the refinement is behavioral continuity: the top-level transaction
+golden should not change merely because the implementation crossed from
+`tlm_method` syntax to explicit thread protocol code.
