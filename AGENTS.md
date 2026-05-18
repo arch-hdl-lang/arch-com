@@ -26,10 +26,7 @@ The compiler binary is `arch`. MVP commands:
 ```
 arch check F.arch          # type-check only (no output)
 arch sim Tb.arch           # simulate (single core)
-arch sim --parallel Tb.arch
-arch sim --tlm-lt          # max speed, no timing
-arch sim --tlm-at          # ns-accurate AT timing
-arch sim --tlm-rtl         # full signal fidelity
+arch sim --thread-sim both Tb.arch  # cross-check FSM-lowered vs thread sim
 arch sim --wave out.fst    # emit waveform (GTKWave/Surfer)
 arch build F.arch          # emit SystemVerilog
 arch formal F.arch         # emit SMT-LIB2
@@ -278,7 +275,7 @@ The compiler pipeline should follow a classical structure:
 3. **IR / elaboration** — expand `generate` constructs, resolve params, instantiate modules.
 4. **Backend: SystemVerilog emitter** (`arch build`) — one Arch construct → one deterministic SV structure.
 5. **Backend: SMT-LIB2 emitter** (`arch formal`) — for formal verification.
-6. **Simulator** (`arch sim`) — TLM modes: `--tlm-lt`, `--tlm-at`, `--tlm-rtl`; waveform output via `--wave`. Sim emitter lives under `src/sim_codegen/` — `mod.rs` holds shared helpers + `gen_module`; per-construct emitters (`gen_fsm`, `gen_pipeline`, …) live in sibling submodule files and extend `impl SimCodegen` via `pub(super) fn`.
+6. **Simulator** (`arch sim`) — executable semantics for ARCH constructs, including synthesizable TLM after it lowers to threads/FSMs and req/rsp wires. Use `--thread-sim both` and Verilator simulation as equivalence/codegen checks; waveform output via `--wave`. Sim emitter lives under `src/sim_codegen/` — `mod.rs` holds shared helpers + `gen_module`; per-construct emitters (`gen_fsm`, `gen_pipeline`, …) live in sibling submodule files and extend `impl SimCodegen` via `pub(super) fn`.
 
 Special compiler responsibilities:
 - Auto-detect dual-clock FIFOs and insert gray-code pointer synchronization.

@@ -1025,7 +1025,7 @@ Full spec: `doc/ARCH_HDL_Specification.md` §18c.
 
 ### tlm_method (inside bus)
 
-Transaction-level method sub-construct. Initiator modules *call*; target modules *implement* via a dotted-name thread. Current compiler support is `blocking` plus a small tagged out-of-order slice.
+Synthesizable transaction-level method sub-construct. Initiator modules *call*; target modules *implement* via a dotted-name thread. Current compiler support is `blocking` plus a small tagged out-of-order slice. Calls lower to req/rsp wires and state machines; `arch sim` runs that lowered executable semantics, and `--thread-sim both` / Verilator are the equivalence checks.
 
 ```
 bus Mem
