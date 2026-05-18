@@ -264,6 +264,12 @@ No current `Future<T>`, `await`, user-visible `Token<T>`, `pipelined`, or
 first-class `burst` API. Bounded burst-like payloads use a fixed-size
 `Vec<T, MAX>` or response struct with `data`, `len`, and `resp` fields.
 
+Treat `tlm_method` as a synthesizable transaction contract and refinement
+bridge. When a design needs channel-level control, rewrite the method boundary
+as explicit bus signals plus ordinary `thread` bodies while preserving the same
+args, return payload, ordering/tag behavior, and golden tests. Use `arch sim`,
+`arch sim --thread-sim both`, and Verilator simulation as the equivalence path.
+
 ---
 
 ## Compiler Architecture (to build)

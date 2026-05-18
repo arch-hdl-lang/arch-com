@@ -320,3 +320,28 @@ The `bus` construct provides better source-level ergonomics with 100% portable R
 The current compiler does not have a file-scope `implement BusName.method rtl` block. The accepted `implement` syntax is a thread-header annotation: `thread driver implement m.read() ...` on the initiator side, or `thread name implement target s.read(addr) ...` as target-side sugar for the dotted-name form. It uses the same call-site/cohort lowering as ordinary TLM threads; it is not a separate pool API.
 
 Users writing protocol logic inside a module should prefer ordinary `thread` over a manual `fsm` when the logic is naturally sequential. For high-performance protocols that need channel-level control, explicit threads over raw bus signals remain the recommended form.
+
+### 19.7  Refining TLM to Explicit Thread Protocols
+
+Use `tlm_method` to establish the synthesizable transaction contract first:
+method arguments, return payload, ordering, tag width, target latency, and
+golden checksum behavior. When the design needs protocol-specific channel
+control, refine that method boundary into explicit bus signals and ordinary
+`thread` code.
+
+Preserve the method contract during the rewrite:
+
+- Method arguments become request payload signals held stable until the request
+  handshake completes.
+- The return value becomes response payload sampled on the response handshake.
+- `out_of_order tags N` becomes explicit request/response ID signals of the
+  same width.
+- Worker cohorts and RHS-fork groups become explicit worker threads plus
+  arbitration and response routing.
+- Target method bodies become target threads that latch args, run the same
+  waits/compute, then drive the response channel.
+
+Keep the same external smoke test while swapping the implementation underneath:
+run `arch sim`, `arch sim --thread-sim both` where applicable, and Verilator
+simulation against the generated SV. See `doc/ARCH_HDL_Specification.md`
+§22.2.6 for the fuller refinement checklist.

@@ -7103,6 +7103,79 @@ simulator/preprocessor limits such as Verilator's per-line token cap.
 
 `Future<T>`, `await`, user-visible `Token<T>`, `pipelined`, and `burst` are not part of the current language surface. Current RTL-backed TLM intentionally uses worker threads, RHS-fork groups, and hidden compiler-managed tags instead.
 
+**22.2.6 Refining TLM into Explicit Threads**
+
+Synthesizable TLM is intended to be a refinement bridge, not a separate
+simulation world. A useful development flow is:
+
+1. Write the early model as `tlm_method` calls to lock down the transaction
+   contract: method name, argument types, return type, ordering, tag width,
+   latency assumptions, and payload checksum behavior.
+2. Validate that contract with `arch sim`, `arch sim --thread-sim both`, and
+   Verilator simulation.
+3. When a protocol needs channel-level optimization, rewrite the method boundary
+   into an explicit `bus` signal bundle and ordinary `thread` bodies that drive
+   those signals.
+4. Keep the same C++/Python golden checks at the module boundary while replacing
+   the internal TLM call with explicit handshake logic.
+
+The explicit-thread version should preserve the observable method contract:
+
+- Request payload fields become bus signals driven under `req_valid &&
+  req_ready`.
+- Return values become response payload signals sampled under `rsp_valid &&
+  rsp_ready`.
+- `out_of_order tags N` becomes an explicit request ID and response ID with the
+  same width and routing rule.
+- A blocking call becomes a caller thread that issues one request and waits for
+  its matching response before continuing.
+- An RHS-fork group or worker cohort becomes multiple explicit worker threads
+  plus arbitration and response routing.
+- A target method body becomes a target thread that latches request args,
+  performs waits/compute, and later drives the response channel.
+
+Abbreviated contract-mapping sketch:
+
+```arch
+bus MemReqRsp
+  signal req_valid: out Bool;
+  signal req_ready: in Bool;
+  signal req_addr: out UInt<32>;
+  signal rsp_valid: in Bool;
+  signal rsp_ready: out Bool;
+  signal rsp_data: in UInt<64>;
+end bus MemReqRsp
+
+module ExplicitLoad
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port mem: initiator MemReqRsp;
+  reg data_r: UInt<64> reset rst => 0;
+
+  thread load_once on clk rising, rst high
+    wait until mem.req_ready;
+    // In the real explicit implementation, separate comb/default-comb logic
+    // drives req_valid and req_addr and keeps them stable until req_ready.
+    wait until mem.rsp_valid;
+    data_r <= mem.rsp_data;
+  end thread load_once
+end module ExplicitLoad
+```
+
+In real code, drive the request/response valid/ready defaults from `comb` or
+default-comb logic and keep all payload stability rules explicit. The generated
+TLM SVA (`_auto_tlm_*_stable`) is a useful reference for what the explicit
+protocol should preserve.
+
+Use explicit threads instead of `tlm_method` when any of these become central to
+the design:
+
+- Separate request/address/data/response channels with independent backpressure.
+- Beat-by-beat burst interleaving or per-beat arbitration.
+- Timing closure around registered ready/valid paths.
+- Protocol-specific error, retry, cancellation, or ordering rules.
+- Area/power work where the generated generic TLM driver is too conservative.
+
 **22.3 Concurrency Mode Comparison**
 
   ----------------------------------------------------------------------------------------------------------------------------------------------------------------------
