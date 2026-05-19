@@ -5978,7 +5978,19 @@ From FIR, the three backends diverge:
 
 **20.3 The Simulation Execution Model**
 
-The native simulation binary implements a cycle-accurate two-phase execution loop. The two phases per clock edge are identical to hardware behaviour: evaluate combinational logic, then commit register updates. This ordering is statically determined from FIR at compile time --- the binary contains no dynamic scheduling logic.
+The native simulation binary implements a cycle-accurate, statically ordered execution loop. For a clocked design, the public `eval()` entrypoint is:
+
+```
+eval_comb();      // settle combinational logic from current ports/registers
+eval_posedge();   // detect rising edges and commit sequential state
+eval_comb();      // re-settle outputs from the post-edge state
+```
+
+Pure-combinational designs run `eval_comb()` without a sequential commit. Designs with sub-instances use the same semantic ordering but expand the first settle into a topologically ordered instance-input/comb/output propagation pass, then commit parent and child sequential state at the same logical edge, then re-settle the hierarchy. Edge detection happens after the pre-edge settle so derived clocks from clock gates/dividers are observed in their settled value.
+
+Thread/coroutine simulation uses the same boundary: the per-clock `ThreadScheduler::tick()` is called from the generated posedge handler after the pre-edge combinational settle and after the edge state transition point. Statements between `wait` points therefore observe a settled post-edge design state and run atomically for that edge. Any writes they make are ordinary simulation writes that become visible to the next combinational settle/evaluation step; there is no dynamic event queue, delta-cycle region, or NBA scheduler in the native ARCH runtime.
+
+This ordering is statically determined from FIR at compile time --- the binary contains no dynamic scheduling logic.
 
 +----------------------------------------------------------------------------------------+
 | *sim_kernel_pseudocode*                                                                |
