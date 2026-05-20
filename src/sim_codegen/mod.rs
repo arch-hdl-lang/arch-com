@@ -4705,13 +4705,15 @@ impl<'a> SimCodegen<'a> {
         h.push('\n');
         h.push_str(&format!("class {class} {{\npublic:\n"));
 
-        // Public port fields (bus ports are flattened; Vec ports become N flat fields)
+        // Public port fields. Vec ports preserve the source-level array as
+        // `name[N]` and keep the historical flat lane names (`name_0`, ...)
+        // as references into that array for backwards-compatible C++/HARC TBs.
         for p in &m.ports {
             if p.bus_info.is_some() { continue; }
             if let Some(vi) = vec_port_infos.iter().find(|v| v.name == p.name.name) {
-                // Emit N flat fields: name_0, name_1, ..., name_N-1
+                h.push_str(&format!("  {} {}[{}];\n", vi.elem_ty, vi.name, vi.count));
                 for i in 0..vi.count {
-                    h.push_str(&format!("  {} {}_{i};\n", vi.elem_ty, vi.name));
+                    h.push_str(&format!("  {}& {}_{i};\n", vi.elem_ty, vi.name));
                 }
             } else {
                 let ty = cpp_port_type_with_params(&p.ty, &m.params);
@@ -4725,8 +4727,9 @@ impl<'a> SimCodegen<'a> {
         }
         for vi in &vec_port_infos {
             if bus_flat_vec_names.contains(&vi.name) {
+                h.push_str(&format!("  {} {}[{}];\n", vi.elem_ty, vi.name, vi.count));
                 for i in 0..vi.count {
-                    h.push_str(&format!("  {} {}_{i};\n", vi.elem_ty, vi.name));
+                    h.push_str(&format!("  {}& {}_{i};\n", vi.elem_ty, vi.name));
                 }
             }
         }
@@ -4745,10 +4748,10 @@ impl<'a> SimCodegen<'a> {
                 }
             })
             .collect();
-        // Add flat Vec port field inits (name_0(0), name_1(0), ...)
+        // Add flat Vec port alias inits (name_0(name[0]), ...).
         for vi in &vec_port_infos {
             for i in 0..vi.count {
-                port_inits.push(format!("{}_{i}(0)", vi.name));
+                port_inits.push(format!("{}_{i}({}[{i}])", vi.name, vi.name));
             }
         }
         // Add flattened bus signal inits
@@ -4772,6 +4775,7 @@ impl<'a> SimCodegen<'a> {
         // Add memset for Vec port internal arrays
         for vi in &vec_port_infos {
             let n = &vi.name;
+            vec_reg_inits.push(format!("    memset({n}, 0, sizeof({n}));"));
             vec_reg_inits.push(format!("    memset(_{n}, 0, sizeof(_{n}));"));
         }
 

@@ -6057,8 +6057,11 @@ fn test_tlm_vec_return_sim_mirror_uses_array_copy() {
         end module VecBurstCaller
     ";
     let out = compile_to_sim_h(source, false);
-    assert!(out.contains("uint32_t m_read4_rsp_data_0;"),
-        "flattened bus Vec payload should expose flat C++ fields:\n{out}");
+    assert!(
+        out.contains("uint32_t m_read4_rsp_data[4];")
+            && out.contains("uint32_t& m_read4_rsp_data_0;"),
+        "bus Vec payload should expose a C++ array with flat compatibility aliases:\n{out}"
+    );
     assert!(out.contains("uint32_t _m_read4_rsp_data[4];"),
         "flattened bus Vec payload should have an internal array:\n{out}");
     assert!(out.contains("_m_read4_rsp_data[0] = m_read4_rsp_data_0;"),
@@ -7597,8 +7600,11 @@ fn test_axi_dma_tlm_burst_vec_example_compiles() {
         "burst Vec OOO responses should route by worker tag:\n{sv}");
 
     let sim = compile_to_sim_h(source, false);
-    assert!(sim.contains("uint32_t mem_read_burst_rsp_data_0;"),
-        "sim API should expose flattened Vec response lanes:\n{sim}");
+    assert!(
+        sim.contains("uint32_t mem_read_burst_rsp_data[4];")
+            && sim.contains("uint32_t& mem_read_burst_rsp_data_0;"),
+        "sim API should preserve Vec response lanes as an array with flat aliases:\n{sim}"
+    );
     assert!(sim.contains("uint32_t _mem_read_burst_rsp_data[4];"),
         "sim model should mirror the flattened Vec response as an internal array:\n{sim}");
     assert!(sim.contains("for (size_t _i = 0; _i < 4; ++_i) { _n_burst0_r[_i] = _mem_read_burst_rsp_data[_i]; }")
@@ -7622,9 +7628,11 @@ fn test_axi_dma_tlm_burst_vec_bfm_connect_compiles() {
         "sim bus-as-wire struct should keep Vec payload fields as arrays:\n{sim}"
     );
     assert!(
-        sim.contains("uint32_t mem_read_burst_rsp_data_0;")
-            && sim.contains("uint32_t s_read_burst_rsp_data_0;"),
-        "sim APIs should expose flattened Vec TLM ports on both initiator and target modules:\n{sim}"
+        sim.contains("uint32_t mem_read_burst_rsp_data[4];")
+            && sim.contains("uint32_t& mem_read_burst_rsp_data_0;")
+            && sim.contains("uint32_t s_read_burst_rsp_data[4];")
+            && sim.contains("uint32_t& s_read_burst_rsp_data_0;"),
+        "sim APIs should preserve Vec TLM ports as arrays while keeping flat lane aliases:\n{sim}"
     );
 }
 
