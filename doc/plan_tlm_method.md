@@ -154,9 +154,9 @@ Recommended sequence:
    same waits/compute/control flow, then drives the response channel.
 5. Copy or rewrite the generated TLM stable-payload assertions for the explicit
    bus signals.
-6. Run the same golden C++/Python smoke test through `arch sim`, then run
-   `arch sim --thread-sim both` where applicable, and finish with Verilator
-   simulation of the generated SV.
+6. Run the same golden HARC, C++ or Python smoke test through `arch sim`, then
+   run `arch sim --thread-sim both` where applicable, and finish with
+   Verilator simulation of the generated SV.
 
 Refine to explicit threads when:
 

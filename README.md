@@ -42,7 +42,7 @@ cargo run -- sim mymodule.arch --pybind --test test_mymodule.py
 
 ARCH is a **pure synthesizable design language** — it has no built-in testbench constructs, stimulus generators, or assertion libraries. Instead, it is designed to be compatible with existing open-source verification platforms: C++ testbenches (Verilator-style), Python testbenches (cocotb-style via pybind11), and formal tools (EBMC, SymbiYosys). This lets teams keep their verification methodology while adopting ARCH for design entry.
 
-`arch sim` generates Verilator-compatible C++ models from `.arch` sources, compiles them with `g++`, and runs the simulation binary — all in one command.
+`arch sim` generates Verilator-compatible C++20 models from `.arch` sources, compiles them with `g++`, and runs the simulation binary — all in one command. Override the C++ standard with `ARCH_CXX_STD` only when needed, for example `ARCH_CXX_STD=-std=c++23`; optimization flags remain controlled by `ARCH_OPT`.
 
 **C++ testbenches** use the same API as Verilator's generated models (`VModuleName` class with public port fields, `eval()`, `final()`). Existing Verilator C++ testbenches work with minimal changes — just replace the `#include "VModuleName.h"` header:
 
