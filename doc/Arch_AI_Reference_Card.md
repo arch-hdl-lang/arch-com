@@ -1439,7 +1439,7 @@ auto tick = [&]() { dut->clk=0; dut->eval(); dut->clk=1; dut->eval(); };
 dut.tick();   // auto-toggles fast_clk (200MHz) and slow_clk (50MHz) at 4:1 ratio
 
 // Compile:
-// g++ -std=c++17 build/verilated.cpp build/V*.cpp tb.cpp -Ibuild -o sim
+// g++ -std=c++20 build/verilated.cpp build/V*.cpp tb.cpp -Ibuild -o sim
 ```
 
 ---

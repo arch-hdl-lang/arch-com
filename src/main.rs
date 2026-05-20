@@ -14,6 +14,10 @@ use arch::resolve;
 use arch::sim_codegen::SimCodegen;
 use arch::typecheck::TypeChecker;
 
+fn cxx_std_flag() -> String {
+    std::env::var("ARCH_CXX_STD").unwrap_or_else(|_| "-std=c++20".to_string())
+}
+
 #[derive(Parser)]
 #[command(name = "arch", version, about = "ARCH HDL compiler")]
 struct Cli {
@@ -986,7 +990,7 @@ fn run_sim_opts(
                 cpp.file_stem().unwrap().to_string_lossy().into_owned() + ".o",
             );
             let mut cmd = std::process::Command::new("g++");
-            cmd.arg("-std=c++17")
+            cmd.arg(cxx_std_flag())
                .arg("-O2")
                .arg("-fPIC")
                .arg("-c")
@@ -1016,7 +1020,7 @@ fn run_sim_opts(
             };
             let so_path = build_dir.join(format!("{class_name}{ext_suffix}"));
             let mut cmd = std::process::Command::new("g++");
-            cmd.arg("-std=c++17")
+            cmd.arg(cxx_std_flag())
                .arg("-O2")
                .arg("-shared")
                .arg("-fPIC")
@@ -1146,7 +1150,8 @@ sys.exit(0 if ok else 1)
     // ── Normal sim mode (C++ testbench) ──────────────────────────────────
     if tb_files.is_empty() {
         eprintln!("No testbench files supplied — generated models are in {}/", build_dir.display());
-        eprintln!("Compile with: g++ {}/verilated.cpp {}/V*.cpp <your_tb.cpp> -I{} -o sim_out",
+        eprintln!("Compile with: g++ {} {}/verilated.cpp {}/V*.cpp <your_tb.cpp> -I{} -o sim_out",
+            cxx_std_flag(),
             build_dir.display(), build_dir.display(), build_dir.display());
         return Ok(());
     }
@@ -1154,8 +1159,7 @@ sys.exit(0 if ok else 1)
     // 5. Compile with g++
     let sim_bin = build_dir.join("sim_out");
     let mut cmd = std::process::Command::new("g++");
-    let cpp_std = if thread_sim_parallel { "-std=c++20" } else { "-std=c++17" };
-    cmd.arg(cpp_std);
+    cmd.arg(cxx_std_flag());
     // Phase 3.3: opt-in ThreadSanitizer for parallel multi-OS-thread
     // builds. Catches data races at runtime — useful in CI to verify
     // the owned-output invariant remains intact as more features (e.g.
