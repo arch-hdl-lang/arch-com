@@ -1,4 +1,18 @@
-// HARC testbench for the ARCH-native TLM Vec BFM wrapper.
+// HARC sequence-layer testbench for the ARCH-native passive TLM Vec BFM.
+
+function program_rsp0(dut: TlmMm2sBurstVecBfmTop, base: uint<32>)
+    dut.rsp0_data_i[0] = base + 0
+    dut.rsp0_data_i[1] = base + 1
+    dut.rsp0_data_i[2] = base + 2
+    dut.rsp0_data_i[3] = base + 3
+end function program_rsp0
+
+function program_rsp1(dut: TlmMm2sBurstVecBfmTop, base: uint<32>)
+    dut.rsp1_data_i[0] = base + 0
+    dut.rsp1_data_i[1] = base + 1
+    dut.rsp1_data_i[2] = base + 2
+    dut.rsp1_data_i[3] = base + 3
+end function program_rsp1
 
 testbench TlmMm2sBurstVecBfmTb
     dut : TlmMm2sBurstVecBfmTop
@@ -6,23 +20,29 @@ end testbench TlmMm2sBurstVecBfmTb
 
 impl TlmMm2sBurstVecBfmHarcTest for TlmMm2sBurstVecBfmTb
     run
-        log(info, "TlmMm2sBurstVecBfm ARCH-BFM HARC test")
+        log(info, "TlmMm2sBurstVecBfm passive ARCH transactor HARC test")
+
+        let req0_addr : uint<32> = 0x2000
+        let req1_addr : uint<32> = 0x2010
+        let exp0 = 0xA5000000
+        let exp1 = 0x5A000000
 
         dut.rst = 1
-        dut.base_addr = 0x2000
+        dut.base_addr = req0_addr
         dut.len0_i = 2
         dut.len1_i = 4
+        program_rsp0(dut, exp0)
+        program_rsp1(dut, exp1)
         wait 4 cycles
         dut.rst = 0
         wait 16 cycles
 
-        let req0_addr : uint<32> = 0x2000
-        let req1_addr : uint<32> = 0x2010
-        let exp0 = 0xB0000000 | req0_addr
-        let exp1 = 0xB1000000 | req1_addr
-
         assert dut.req_count_o == 2
             else fail("expected 2 BFM requests, observed ${dut.req_count_o}")
+        assert dut.req0_addr_o == req0_addr
+            else fail("req0 addr=0x${dut.req0_addr_o:08x}, expected 0x${req0_addr:08x}")
+        assert dut.req1_addr_o == req1_addr
+            else fail("req1 addr=0x${dut.req1_addr_o:08x}, expected 0x${req1_addr:08x}")
         assert dut.req0_len_o == 2
             else fail("req0 len=${dut.req0_len_o}, expected 2")
         assert dut.req1_len_o == 4
@@ -32,6 +52,6 @@ impl TlmMm2sBurstVecBfmHarcTest for TlmMm2sBurstVecBfmTb
         assert dut.data1_0 == exp1 + 0 && dut.data1_1 == exp1 + 1 && dut.data1_2 == exp1 + 2 && dut.data1_3 == exp1 + 3
             else fail("data1 mismatch: got 0x${dut.data1_0:08x},0x${dut.data1_1:08x},0x${dut.data1_2:08x},0x${dut.data1_3:08x}")
 
-        log(info, "PASS: ARCH Vec TLM BFM len0=${dut.req0_len_o} len1=${dut.req1_len_o} data0[0]=0x${dut.data0_0:08x} data1[3]=0x${dut.data1_3:08x}")
+        log(info, "PASS: passive ARCH Vec TLM transactor addr0=0x${dut.req0_addr_o:08x} addr1=0x${dut.req1_addr_o:08x} data0[0]=0x${dut.data0_0:08x} data1[3]=0x${dut.data1_3:08x}")
     end run
 end impl TlmMm2sBurstVecBfmHarcTest

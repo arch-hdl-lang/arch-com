@@ -5,10 +5,10 @@
 //!   - "tests/axi_dma_tlm/TlmMm2sBurstVec.arch"
 //! ---
 //!
-//! AXI-DMA-flavored TLM integration smoke example with an ARCH target-side BFM
-//! that returns a fixed-size Vec payload. This is the transaction-level version
-//! of `TlmMm2sBurstVec`: HARC drives only scenario inputs while ARCH TLM handles
-//! both initiator and responder behavior.
+//! AXI-DMA-flavored TLM integration smoke example with a passive ARCH
+//! target-side transactor. This is the transaction-level version of
+//! `TlmMm2sBurstVec`: HARC drives the sequence-level request/response plan
+//! while ARCH TLM handles initiator and responder protocol mechanics.
 
 /// Memory read contract using the supported bounded-burst payload convention.
 ///
@@ -62,20 +62,29 @@ module TlmMm2sBurstVecBfmDut
   end thread issue_bursts
 end module TlmMm2sBurstVecBfmDut
 
-/// Synthesizable target-side TLM BFM returning Vec payloads.
+/// Passive synthesizable target-side TLM transactor returning Vec payloads.
 ///
-/// The BFM captures request arguments before the artificial latency waits so
-/// response expressions are ordinary registered hardware values.
+/// The transactor captures DUT request metadata and returns the response
+/// payloads supplied by the external sequence layer. It does not synthesize
+/// response contents from the request address; that policy belongs in HARC or a
+/// higher-level agent.
 module TlmMm2sBurstVecBfmTarget
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   port s: target DmaMemBurstReadVecBfm;
 
+  port rsp0_data_i: in Vec<UInt<32>, 4>;
+  port rsp1_data_i: in Vec<UInt<32>, 4>;
+
   port req_count_o: out UInt<4>;
+  port req0_addr_o: out UInt<32>;
+  port req1_addr_o: out UInt<32>;
   port req0_len_o: out UInt<3>;
   port req1_len_o: out UInt<3>;
 
   reg req_count: UInt<4> reset rst => 0;
+  reg req0_addr: UInt<32> reset rst => 0;
+  reg req1_addr: UInt<32> reset rst => 0;
   reg req0_len: UInt<3> reset rst => 0;
   reg req1_len: UInt<3> reset rst => 0;
   reg rsp0: Vec<UInt<32>, 4> reset rst => 0;
@@ -83,6 +92,8 @@ module TlmMm2sBurstVecBfmTarget
 
   comb
     req_count_o = req_count;
+    req0_addr_o = req0_addr;
+    req1_addr_o = req1_addr;
     req0_len_o = req0_len;
     req1_len_o = req1_len;
   end comb
@@ -91,11 +102,9 @@ module TlmMm2sBurstVecBfmTarget
     if req_count < 4'd2
       req_count <= req_count +% 4'd1;
     end if
+    req0_addr <= addr;
     req0_len <= len;
-    rsp0[0] <= 32'hB000_0000 | addr;
-    rsp0[1] <= (32'hB000_0000 | addr) +% 32'd1;
-    rsp0[2] <= (32'hB000_0000 | addr) +% 32'd2;
-    rsp0[3] <= (32'hB000_0000 | addr) +% 32'd3;
+    rsp0 <= rsp0_data_i;
     wait 3 cycle;
     return rsp0;
   end thread s.read_burst
@@ -104,17 +113,19 @@ module TlmMm2sBurstVecBfmTarget
     if req_count < 4'd2
       req_count <= req_count +% 4'd1;
     end if
+    req1_addr <= addr;
     req1_len <= len;
-    rsp1[0] <= 32'hB100_0000 | addr;
-    rsp1[1] <= (32'hB100_0000 | addr) +% 32'd1;
-    rsp1[2] <= (32'hB100_0000 | addr) +% 32'd2;
-    rsp1[3] <= (32'hB100_0000 | addr) +% 32'd3;
+    rsp1 <= rsp1_data_i;
     wait 1 cycle;
     return rsp1;
   end thread s.read_burst
 end module TlmMm2sBurstVecBfmTarget
 
 /// HARC-facing Vec-returning integration top.
+///
+/// The top intentionally exposes sequence-level response payload inputs and
+/// captured request metadata. HARC can act as the agent sequence layer without
+/// driving lowered TLM req/rsp wires.
 module TlmMm2sBurstVecBfmTop
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
@@ -122,6 +133,8 @@ module TlmMm2sBurstVecBfmTop
   port base_addr: in UInt<32>;
   port len0_i: in UInt<3>;
   port len1_i: in UInt<3>;
+  port rsp0_data_i: in Vec<UInt<32>, 4>;
+  port rsp1_data_i: in Vec<UInt<32>, 4>;
 
   port data0_0: out UInt<32>;
   port data0_1: out UInt<32>;
@@ -132,6 +145,8 @@ module TlmMm2sBurstVecBfmTop
   port data1_2: out UInt<32>;
   port data1_3: out UInt<32>;
   port req_count_o: out UInt<4>;
+  port req0_addr_o: out UInt<32>;
+  port req1_addr_o: out UInt<32>;
   port req0_len_o: out UInt<3>;
   port req1_len_o: out UInt<3>;
 
@@ -154,7 +169,11 @@ module TlmMm2sBurstVecBfmTop
   inst bfm_i: TlmMm2sBurstVecBfmTarget
     clk <- clk;
     rst <- rst;
+    rsp0_data_i <- rsp0_data_i;
+    rsp1_data_i <- rsp1_data_i;
     req_count_o -> req_count_o;
+    req0_addr_o -> req0_addr_o;
+    req1_addr_o -> req1_addr_o;
     req0_len_o -> req0_len_o;
     req1_len_o -> req1_len_o;
   end inst bfm_i
