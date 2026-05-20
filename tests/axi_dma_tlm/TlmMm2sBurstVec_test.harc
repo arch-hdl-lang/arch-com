@@ -5,10 +5,6 @@
 // second response first, and checks that out_of_order tag routing lands each
 // Vec payload in the right destination register.
 
-domain SysDomain
-  freq_mhz: 100
-end domain SysDomain
-
 testbench TlmMm2sBurstVecTb
     dut : TlmMm2sBurstVec
 end testbench TlmMm2sBurstVecTb
@@ -25,8 +21,6 @@ function clear_rsp_vec(dut: TlmMm2sBurstVec)
 end function clear_rsp_vec
 
 impl TlmMm2sBurstVecHarcTest for TlmMm2sBurstVecTb
-    clock clk = SysDomain
-
     run
         log(info, "TlmMm2sBurstVec HARC test")
 
