@@ -7607,6 +7607,134 @@ fn test_axi_dma_tlm_burst_vec_example_compiles() {
 }
 
 #[test]
+fn test_axi_dma_tlm_burst_vec_bfm_connect_compiles() {
+    let source = include_str!("axi_dma_tlm/TlmMm2sBurstVecBfm.arch");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module TlmMm2sBurstVecBfmTop"));
+    assert!(
+        sv.contains("_tlm_conn_dut_i_mem_bfm_i_s_read_burst_rsp_data"),
+        "SV connect should materialize Vec response bus wire:\n{sv}"
+    );
+
+    let sim = compile_to_sim_h(source, false);
+    assert!(
+        sim.contains("uint32_t read_burst_rsp_data[4];"),
+        "sim bus-as-wire struct should keep Vec payload fields as arrays:\n{sim}"
+    );
+    assert!(
+        sim.contains("uint32_t mem_read_burst_rsp_data_0;")
+            && sim.contains("uint32_t s_read_burst_rsp_data_0;"),
+        "sim APIs should expose flattened Vec TLM ports on both initiator and target modules:\n{sim}"
+    );
+}
+
+#[test]
+fn test_axi_dma_tlm_burst_vec_bfm_arch_sim_behavior() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/axi_dma_tlm/TlmMm2sBurstVecBfm.arch")
+        .arg("--tb")
+        .arg("tests/axi_dma_tlm/tb_tlm_mm2s_burst_vec_bfm.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for Vec TLM BFM");
+    assert!(
+        out.status.success(),
+        "Vec TLM BFM arch sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS TlmMm2sBurstVecBfm"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn test_axi_dma_tlm_burst_vec_bfm_thread_sim_both() {
+    run_tlm_thread_sim_both(
+        "tests/axi_dma_tlm/TlmMm2sBurstVecBfm.arch",
+        "tests/axi_dma_tlm/tb_tlm_mm2s_burst_vec_bfm.cpp",
+        "PASS TlmMm2sBurstVecBfm",
+    );
+}
+
+#[test]
+fn test_axi_dma_tlm_burst_vec_bfm_verilator_behavior() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping Verilator Vec TLM BFM smoke: verilator not found");
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("TlmMm2sBurstVecBfm.sv");
+    let obj_dir = td.path().join("obj_dir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/axi_dma_tlm/TlmMm2sBurstVecBfm.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build Vec TLM BFM SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let verilate = std::process::Command::new("verilator")
+        .arg("--cc")
+        .arg("--exe")
+        .arg("--build")
+        .arg("--sv")
+        .arg("--assert")
+        .arg("-Wno-fatal")
+        .arg("-Wno-WIDTH")
+        .arg("-Wno-DECLFILENAME")
+        .arg("--top-module")
+        .arg("TlmMm2sBurstVecBfmTop")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&sv_out)
+        .arg("tests/axi_dma_tlm/tb_tlm_mm2s_burst_vec_bfm.cpp")
+        .output()
+        .expect("verilate Vec TLM BFM");
+    assert!(
+        verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr)
+    );
+
+    let exe = obj_dir.join("VTlmMm2sBurstVecBfmTop");
+    let run = std::process::Command::new(&exe)
+        .output()
+        .expect("run Verilator Vec TLM BFM");
+    assert!(
+        run.status.success(),
+        "Verilator sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("PASS TlmMm2sBurstVecBfm"),
+        "expected PASS marker in Verilator stdout:\n{}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+}
+
+#[test]
 fn test_tlm_out_of_order_target_echoes_tag() {
     let source = "
         bus Mem

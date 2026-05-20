@@ -1,0 +1,163 @@
+//! ---
+//! spec_md: doc/axi_dma_case_study.md
+//! tags: [dma, axi4, mm2s, tlm_method, rhs_fork, target_bfm, burst_vec]
+//! refs:
+//!   - "tests/axi_dma_tlm/TlmMm2sBurstVec.arch"
+//! ---
+//!
+//! AXI-DMA-flavored TLM integration smoke example with an ARCH target-side BFM
+//! that returns a fixed-size Vec payload. This is the transaction-level version
+//! of `TlmMm2sBurstVec`: HARC drives only scenario inputs while ARCH TLM handles
+//! both initiator and responder behavior.
+
+/// Memory read contract using the supported bounded-burst payload convention.
+///
+/// The method returns the maximum static beat vector and carries runtime `len`
+/// as an argument. The tagged out-of-order mode lets the BFM return request 1
+/// before request 0.
+bus DmaMemBurstReadVecBfm
+  tlm_method read_burst(addr: UInt<32>, len: UInt<3>) -> Vec<UInt<32>, 4>: out_of_order tags 2;
+end bus DmaMemBurstReadVecBfm
+
+use DmaMemBurstReadVecBfm;
+
+/// MM2S initiator that issues two outstanding Vec-returning burst-like reads.
+module TlmMm2sBurstVecBfmDut
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  port base_addr: in UInt<32>;
+  port len0_i: in UInt<3>;
+  port len1_i: in UInt<3>;
+  port mem: initiator DmaMemBurstReadVecBfm;
+
+  port data0_0: out UInt<32>;
+  port data0_1: out UInt<32>;
+  port data0_2: out UInt<32>;
+  port data0_3: out UInt<32>;
+  port data1_0: out UInt<32>;
+  port data1_1: out UInt<32>;
+  port data1_2: out UInt<32>;
+  port data1_3: out UInt<32>;
+
+  reg burst0_r: Vec<UInt<32>, 4> reset rst => 0;
+  reg burst1_r: Vec<UInt<32>, 4> reset rst => 0;
+
+  comb
+    data0_0 = burst0_r[0];
+    data0_1 = burst0_r[1];
+    data0_2 = burst0_r[2];
+    data0_3 = burst0_r[3];
+    data1_0 = burst1_r[0];
+    data1_1 = burst1_r[1];
+    data1_2 = burst1_r[2];
+    data1_3 = burst1_r[3];
+  end comb
+
+  thread issue_bursts on clk rising, rst high
+    burst0_r <= fork mem.read_burst(base_addr, len0_i);
+    wait 1 cycle;
+    burst1_r <= fork mem.read_burst((base_addr + 32'd16).trunc<32>(), len1_i);
+    join all;
+  end thread issue_bursts
+end module TlmMm2sBurstVecBfmDut
+
+/// Synthesizable target-side TLM BFM returning Vec payloads.
+///
+/// The BFM captures request arguments before the artificial latency waits so
+/// response expressions are ordinary registered hardware values.
+module TlmMm2sBurstVecBfmTarget
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port s: target DmaMemBurstReadVecBfm;
+
+  port req_count_o: out UInt<4>;
+  port req0_len_o: out UInt<3>;
+  port req1_len_o: out UInt<3>;
+
+  reg req_count: UInt<4> reset rst => 0;
+  reg req0_len: UInt<3> reset rst => 0;
+  reg req1_len: UInt<3> reset rst => 0;
+  reg rsp0: Vec<UInt<32>, 4> reset rst => 0;
+  reg rsp1: Vec<UInt<32>, 4> reset rst => 0;
+
+  comb
+    req_count_o = req_count;
+    req0_len_o = req0_len;
+    req1_len_o = req1_len;
+  end comb
+
+  thread s.read_burst[0](addr, len) on clk rising, rst high
+    if req_count < 4'd2
+      req_count <= req_count +% 4'd1;
+    end if
+    req0_len <= len;
+    rsp0[0] <= 32'hB000_0000 | addr;
+    rsp0[1] <= (32'hB000_0000 | addr) +% 32'd1;
+    rsp0[2] <= (32'hB000_0000 | addr) +% 32'd2;
+    rsp0[3] <= (32'hB000_0000 | addr) +% 32'd3;
+    wait 3 cycle;
+    return rsp0;
+  end thread s.read_burst
+
+  thread s.read_burst[1](addr, len) on clk rising, rst high
+    if req_count < 4'd2
+      req_count <= req_count +% 4'd1;
+    end if
+    req1_len <= len;
+    rsp1[0] <= 32'hB100_0000 | addr;
+    rsp1[1] <= (32'hB100_0000 | addr) +% 32'd1;
+    rsp1[2] <= (32'hB100_0000 | addr) +% 32'd2;
+    rsp1[3] <= (32'hB100_0000 | addr) +% 32'd3;
+    wait 1 cycle;
+    return rsp1;
+  end thread s.read_burst
+end module TlmMm2sBurstVecBfmTarget
+
+/// HARC-facing Vec-returning integration top.
+module TlmMm2sBurstVecBfmTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  port base_addr: in UInt<32>;
+  port len0_i: in UInt<3>;
+  port len1_i: in UInt<3>;
+
+  port data0_0: out UInt<32>;
+  port data0_1: out UInt<32>;
+  port data0_2: out UInt<32>;
+  port data0_3: out UInt<32>;
+  port data1_0: out UInt<32>;
+  port data1_1: out UInt<32>;
+  port data1_2: out UInt<32>;
+  port data1_3: out UInt<32>;
+  port req_count_o: out UInt<4>;
+  port req0_len_o: out UInt<3>;
+  port req1_len_o: out UInt<3>;
+
+  inst dut_i: TlmMm2sBurstVecBfmDut
+    clk <- clk;
+    rst <- rst;
+    base_addr <- base_addr;
+    len0_i <- len0_i;
+    len1_i <- len1_i;
+    data0_0 -> data0_0;
+    data0_1 -> data0_1;
+    data0_2 -> data0_2;
+    data0_3 -> data0_3;
+    data1_0 -> data1_0;
+    data1_1 -> data1_1;
+    data1_2 -> data1_2;
+    data1_3 -> data1_3;
+  end inst dut_i
+
+  inst bfm_i: TlmMm2sBurstVecBfmTarget
+    clk <- clk;
+    rst <- rst;
+    req_count_o -> req_count_o;
+    req0_len_o -> req0_len_o;
+    req1_len_o -> req1_len_o;
+  end inst bfm_i
+
+  connect dut_i.mem -> bfm_i.s;
+end module TlmMm2sBurstVecBfmTop

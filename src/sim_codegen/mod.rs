@@ -4326,6 +4326,27 @@ impl<'a> SimCodegen<'a> {
                 }
             }
         }
+        // Bus-typed wires are emitted as C++ structs. If a bus field is Vec
+        // typed (notably TLM response payloads), record the `<wire>.<field>`
+        // path so instance wiring copies the array element-by-element.
+        for item in &m.body {
+            let ModuleBodyItem::WireDecl(w) = item else { continue; };
+            let TypeExpr::Named(id) = &w.ty else { continue; };
+            let Some((crate::resolve::Symbol::Bus(info), _)) =
+                self.symbols.globals.get(&id.name)
+            else { continue; };
+            let pm = info.default_param_map();
+            for (sname, _sdir, sty) in info.effective_signals(&pm) {
+                if let TypeExpr::Vec(_, count_expr) = &sty {
+                    let count = eval_const_expr_with_params(count_expr, &m.params);
+                    if count > 0 {
+                        let path = format!("{}.{}", w.name.name, sname);
+                        vec_reg_names.insert(path.clone());
+                        vec_sizes.insert(path, count);
+                    }
+                }
+            }
+        }
 
         // Collect reset-none reg names for --check-uninit + any guarded reg (regardless
         // of reset) so Check A can use _<name>_vinit to detect producer bugs.
@@ -5286,6 +5307,16 @@ impl<'a> SimCodegen<'a> {
                 let conns = &expanded_conns[inst_idx];
                 for conn in conns {
                     if conn.direction == ConnectDir::Input && is_invariant(conn) {
+                        if !matches!(conn.signal.kind, ExprKind::Ident(_)) {
+                            if let Some(n) = ctx.expr_vec_size(&conn.signal) {
+                                let sig = cpp_expr(&conn.signal, &ctx);
+                                for i in 0..n {
+                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = {sig}[{i}];\n",
+                                        inst.name.name, conn.port_name.name));
+                                }
+                                continue;
+                            }
+                        }
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
                                 for i in 0..n {
@@ -5325,6 +5356,16 @@ impl<'a> SimCodegen<'a> {
                 cpp.push('\n');
                 for conn in conns {
                     if conn.direction == ConnectDir::Input && !is_invariant(conn) {
+                        if !matches!(conn.signal.kind, ExprKind::Ident(_)) {
+                            if let Some(n) = ctx.expr_vec_size(&conn.signal) {
+                                let sig = cpp_expr(&conn.signal, &ctx);
+                                for i in 0..n {
+                                    cpp.push_str(&format!("    _inst_{}.{}_{i} = {sig}[{i}];\n",
+                                        inst.name.name, conn.port_name.name));
+                                }
+                                continue;
+                            }
+                        }
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             // Vec wire/reg → inst Vec port: expand element-by-element
                             if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
@@ -5362,6 +5403,16 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str(&format!("    _inst_{}.eval_comb();\n", inst.name.name));
                 for conn in conns {
                     if conn.direction == ConnectDir::Output {
+                        if !matches!(conn.signal.kind, ExprKind::Ident(_)) {
+                            if let Some(n) = ctx.expr_vec_size(&conn.signal) {
+                                let sig = cpp_expr(&conn.signal, &ctx);
+                                for i in 0..n {
+                                    cpp.push_str(&format!("    {sig}[{i}] = _inst_{}.{}_{i};\n",
+                                        inst.name.name, conn.port_name.name));
+                                }
+                                continue;
+                            }
+                        }
                         // inst Vec port → Vec wire/reg: expand element-by-element
                         if let ExprKind::Ident(sig_name) = &conn.signal.kind {
                             if let Some(&n) = vec_wire_counts.get(sig_name.as_str()) {
@@ -5431,6 +5482,16 @@ impl<'a> SimCodegen<'a> {
                 let conns = &expanded_conns[inst_idx];
                 for conn in conns {
                     if conn.direction == ConnectDir::Input && is_invariant(conn) {
+                        if !matches!(conn.signal.kind, ExprKind::Ident(_)) {
+                            if let Some(n) = ctx.expr_vec_size(&conn.signal) {
+                                let sig = cpp_expr(&conn.signal, &ctx);
+                                for i in 0..n {
+                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = {sig}[{i}];\n",
+                                        inst.name.name, conn.port_name.name));
+                                }
+                                continue;
+                            }
+                        }
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
                                 for i in 0..n {
@@ -5469,6 +5530,16 @@ impl<'a> SimCodegen<'a> {
                 // Re-set sub-inst inputs (may have changed after posedge)
                 for conn in conns {
                     if conn.direction == ConnectDir::Input && !is_invariant(conn) {
+                        if !matches!(conn.signal.kind, ExprKind::Ident(_)) {
+                            if let Some(n) = ctx.expr_vec_size(&conn.signal) {
+                                let sig = cpp_expr(&conn.signal, &ctx);
+                                for i in 0..n {
+                                    cpp.push_str(&format!("    _inst_{}.{}_{i} = {sig}[{i}];\n",
+                                        inst.name.name, conn.port_name.name));
+                                }
+                                continue;
+                            }
+                        }
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             // Vec wire/reg → inst Vec port: expand element-by-element
                             if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
@@ -5506,6 +5577,16 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str(&format!("    _inst_{}.eval_comb();\n", inst.name.name));
                 for conn in conns {
                     if conn.direction == ConnectDir::Output {
+                        if !matches!(conn.signal.kind, ExprKind::Ident(_)) {
+                            if let Some(n) = ctx.expr_vec_size(&conn.signal) {
+                                let sig = cpp_expr(&conn.signal, &ctx);
+                                for i in 0..n {
+                                    cpp.push_str(&format!("    {sig}[{i}] = _inst_{}.{}_{i};\n",
+                                        inst.name.name, conn.port_name.name));
+                                }
+                                continue;
+                            }
+                        }
                         // inst Vec port → Vec wire/reg: expand element-by-element
                         if let ExprKind::Ident(sig_name) = &conn.signal.kind {
                             if let Some(&n) = vec_wire_counts.get(sig_name.as_str()) {
@@ -6210,6 +6291,16 @@ impl<'a> SimCodegen<'a> {
                 let conns = &expanded_conns[inst_i];
                 for conn in conns {
                     if conn.direction == ConnectDir::Input {
+                        if !matches!(conn.signal.kind, ExprKind::Ident(_)) {
+                            if let Some(n) = ctx_comb.expr_vec_size(&conn.signal) {
+                                let sig = cpp_expr(&conn.signal, &ctx_comb);
+                                for i in 0..n {
+                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = {sig}[{i}];\n",
+                                        inst.name.name, conn.port_name.name));
+                                }
+                                continue;
+                            }
+                        }
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             // Vec wire/reg → inst Vec port: expand element-by-element
                             if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
@@ -6254,6 +6345,16 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str(&format!("  _inst_{}.eval_comb();\n", inst.name.name));
                 for conn in conns {
                     if conn.direction == ConnectDir::Output {
+                        if !matches!(conn.signal.kind, ExprKind::Ident(_)) {
+                            if let Some(n) = ctx_comb.expr_vec_size(&conn.signal) {
+                                let sig = cpp_expr(&conn.signal, &ctx_comb);
+                                for i in 0..n {
+                                    cpp.push_str(&format!("  {sig}[{i}] = _inst_{}.{}_{i};\n",
+                                        inst.name.name, conn.port_name.name));
+                                }
+                                continue;
+                            }
+                        }
                         // inst Vec port → Vec wire/reg: expand element-by-element
                         if let ExprKind::Ident(sig_name) = &conn.signal.kind {
                             if let Some(&n) = vec_wire_counts.get(sig_name.as_str()) {
@@ -7418,19 +7519,29 @@ impl<'a> SimCodegen<'a> {
             }.effective_signals(&param_map);
             h.push_str(&format!("struct {} {{\n", b.name.name));
             let mut field_inits = Vec::new();
+            let mut ctor_body = Vec::new();
             for (sname, _dir, sty) in &effective {
-                let ty = cpp_internal_type(sty);
-                h.push_str(&format!("  {} {};\n", ty, sname));
-                if matches!(sty, TypeExpr::Named(_)) {
-                    field_inits.push(format!("{}()", sname));
+                if vec_array_info(sty).is_some() {
+                    h.push_str(&format!("  {};\n", cpp_field_decl(sname, sty, &[])));
+                    ctor_body.push(format!("std::memset({}, 0, sizeof({}));", sname, sname));
                 } else {
-                    field_inits.push(format!("{}(0)", sname));
+                    let ty = cpp_internal_type(sty);
+                    h.push_str(&format!("  {} {};\n", ty, sname));
+                    if matches!(sty, TypeExpr::Named(_)) {
+                        field_inits.push(format!("{}()", sname));
+                    } else {
+                        field_inits.push(format!("{}(0)", sname));
+                    }
                 }
             }
-            if field_inits.is_empty() {
+            if field_inits.is_empty() && ctor_body.is_empty() {
                 h.push_str(&format!("  {}() {{}}\n", b.name.name));
-            } else {
+            } else if field_inits.is_empty() {
+                h.push_str(&format!("  {}() {{ {} }}\n", b.name.name, ctor_body.join(" ")));
+            } else if ctor_body.is_empty() {
                 h.push_str(&format!("  {}() : {} {{}}\n", b.name.name, field_inits.join(", ")));
+            } else {
+                h.push_str(&format!("  {}() : {} {{ {} }}\n", b.name.name, field_inits.join(", "), ctor_body.join(" ")));
             }
             h.push_str("};\n\n");
         }
