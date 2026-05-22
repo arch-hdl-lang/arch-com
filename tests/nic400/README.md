@@ -15,7 +15,10 @@ arbitration, ID remap, and ID-prefix return routing.
 | `RegSliceChannel.arch` | Generic 1-stage register slice (skid buffer) | ✓ sim PASS |
 | `Nic400ArbiterPolicy.arch` | QoS arbiter (4-requester) with custom hook | ✓ check |
 | `Nic400QosFn.arch` | Pure-comb wrapper of QoS pick function for unit testing | ✓ sim PASS (7/7 cases) |
-| `Nic400Read2x2.arch` | Monolithic 2x2 AXI4 read crossbar | ✓ sim PASS |
+| `Nic400Read2x2.arch` | Monolithic 2x2 AXI4 read crossbar (v1) | ✓ sim PASS |
+| `Nic400MasterPort.arch` | Per-master decode + route (v2, spec §7) | ✓ check + Verilator clean |
+| `Nic400SlavePort.arch` | Per-slave arbitration + return (v2, spec §8) | ✓ check + Verilator clean |
+| `Nic400Fabric.arch` | Hierarchical wiring harness — M MasterPort × N SlavePort (v2, spec §9) | ✓ check + Verilator clean; arch-sim has hierarchical-inst comb-feedback issue (follow-up) |
 
 ## Verification — §15 of spec
 

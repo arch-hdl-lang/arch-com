@@ -682,11 +682,16 @@ impl<'a> Codegen<'a> {
                         for prefix in &prefixes {
                             self.bus_wires.insert(prefix.clone(), bus_name.clone());
                         }
-                        let param_map: std::collections::HashMap<String, &Expr> =
+                        // Start with the bus's declared defaults then layer
+                        // any per-wire overrides from `wire w: Vec<B<PARAM=val>, N>;`.
+                        let mut param_map: std::collections::HashMap<String, &Expr> =
                             info.params.iter()
                                 .filter_map(|pd| pd.default.as_ref()
                                     .map(|d| (pd.name.name.clone(), d)))
                                 .collect();
+                        for pa in &w.bus_params {
+                            param_map.insert(pa.name.name.clone(), &pa.value);
+                        }
                         for prefix in &prefixes {
                             for (sname, _sdir, sty) in info.effective_signals(&param_map) {
                                 let subst_ty = Self::subst_type_expr(&sty, &param_map);

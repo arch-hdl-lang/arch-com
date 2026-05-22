@@ -1,0 +1,105 @@
+// Per-master decode + route block (read-only AR/R path).
+//
+// Spec §7 shape: one M-facing bus target port + NUM_SLAVES outbound bus
+// initiator ports (Vec). On AR, the address decoder picks a slave; on R,
+// the high-bit of the returned slave-side id selects which slave's
+// return path drives the master.
+//
+// The per-master R-channel resource lock serialises the N return threads
+// onto the single master R bus (at most one slave responds per cycle by
+// AXI ID uniqueness, but the lock keeps the multi-driver legal).
+module Nic400MasterPort
+  param I:             const = 0;        // this master's index, 0..NUM_MASTERS-1
+  param NUM_SLAVES:    const = 2;
+  param ADDR_WIDTH:    const = 32;
+  param DATA_WIDTH:    const = 32;
+  param MASTER_ID_W:   const = 3;
+  param SLAVE_ID_W:    const = 4;        // MASTER_ID_W + ceil(log2(NUM_MASTERS))
+  param MIDX_W:        const = 1;        // ceil(log2(NUM_MASTERS))
+  param REGION_BITS:   const = 28;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  // System-facing master port (target perspective).
+  port m:  target BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH,
+                          ID_W=MASTER_ID_W, READ=1, WRITE=0>;
+
+  // Fabric-facing outbound buses, one per slave.
+  port outs: initiator Vec<BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH,
+                                  ID_W=SLAVE_ID_W,  READ=1, WRITE=0>, NUM_SLAVES>;
+
+  // Address decode: bit [REGION_BITS] picks slave (256 MiB regions in v1).
+  let m_ar_slv: UInt<1> = m.ar_addr[28];
+
+  // Per-master R-channel arbiter — N slave-return threads serialise here.
+  resource r_ch: mutex<priority>;
+  // Per-master AR-driver arbiter — N AR forwarding threads (one per slave)
+  // are mutually exclusive on the address decode, but the multi-driver
+  // legality check still wants a single owner per cycle. The lock is
+  // structural; in steady state only one thread is in the body at a time.
+  resource ar_ch: mutex<priority>;
+
+  // ── AR forwarding threads — one per slave ──────────────────────────────
+  generate_for j in 0..NUM_SLAVES-1
+    thread Ar_j on clk rising, rst low
+      default comb
+        outs[j].ar_valid  = false;
+        outs[j].ar_addr   = 0;
+        outs[j].ar_id     = 0;
+        outs[j].ar_len    = 0;
+        outs[j].ar_size   = 0;
+        outs[j].ar_burst  = 0;
+        outs[j].ar_lock   = false;
+        outs[j].ar_cache  = 0;
+        outs[j].ar_prot   = 0;
+        outs[j].ar_qos    = 0;
+        outs[j].ar_region = 0;
+        m.ar_ready      = false;
+      end default
+      wait until m.ar_valid and m_ar_slv == j;
+      lock ar_ch
+        do
+          outs[j].ar_valid  = true;
+          outs[j].ar_addr   = m.ar_addr;
+          outs[j].ar_id     = (I.zext<SLAVE_ID_W>() << MASTER_ID_W) | m.ar_id.zext<SLAVE_ID_W>();
+          outs[j].ar_len    = m.ar_len;
+          outs[j].ar_size   = m.ar_size;
+          outs[j].ar_burst  = m.ar_burst;
+          // AXI4 sideband — pass through unchanged.
+          outs[j].ar_lock   = m.ar_lock;
+          outs[j].ar_cache  = m.ar_cache;
+          outs[j].ar_prot   = m.ar_prot;
+          outs[j].ar_qos    = m.ar_qos;
+          outs[j].ar_region = m.ar_region;
+          m.ar_ready      = outs[j].ar_ready;
+        until outs[j].ar_ready;
+      end lock ar_ch
+    end thread Ar_j
+  end generate_for
+
+  // ── R return threads — one per slave, serialise via r_ch lock ──────────
+  generate_for j in 0..NUM_SLAVES-1
+    thread R_j on clk rising, rst low
+      default comb
+        m.r_valid = false;
+        m.r_data  = 0;
+        m.r_id    = 0;
+        m.r_resp  = 0;
+        m.r_last  = false;
+        outs[j].r_ready = false;
+      end default
+      wait until outs[j].r_valid and outs[j].r_id[SLAVE_ID_W-1:MASTER_ID_W] == I;
+      lock r_ch
+        do
+          m.r_valid = true;
+          m.r_data  = outs[j].r_data;
+          m.r_id    = outs[j].r_id[MASTER_ID_W-1:0];
+          m.r_resp  = outs[j].r_resp;
+          m.r_last  = outs[j].r_last;
+          outs[j].r_ready = m.r_ready;
+        until m.r_ready and m.r_last;
+      end lock r_ch
+    end thread R_j
+  end generate_for
+end module Nic400MasterPort

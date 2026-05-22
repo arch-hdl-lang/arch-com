@@ -1,0 +1,97 @@
+// Per-slave arbitration + return block (read-only AR/R path).
+//
+// Spec §8 shape: one S-facing bus initiator port + NUM_MASTERS inbound
+// bus target ports (Vec). M AR-arbiter threads (one per master) contend
+// on a shared lock to drive the slave's AR; M R-return threads (one
+// per master) decode the slave's r_id high bits and route the beat back
+// to the matching master.
+module Nic400SlavePort
+  param J:             const = 0;        // this slave's index, 0..NUM_SLAVES-1
+  param NUM_MASTERS:   const = 2;
+  param ADDR_WIDTH:    const = 32;
+  param DATA_WIDTH:    const = 32;
+  param MASTER_ID_W:   const = 3;
+  param SLAVE_ID_W:    const = 4;        // MASTER_ID_W + ceil(log2(NUM_MASTERS))
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  // System-facing slave port (initiator perspective — this module drives s.ar_valid etc.).
+  port s: initiator BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH,
+                            ID_W=SLAVE_ID_W, READ=1, WRITE=0>;
+
+  // Fabric-facing inbound buses, one per master.
+  port ins: target Vec<BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH,
+                                  ID_W=SLAVE_ID_W, READ=1, WRITE=0>, NUM_MASTERS>;
+
+  // AR arbiter — M masters serialise onto s.ar_*. Priority for now;
+  // arch sim's `--thread-sim parallel` path supports priority only in v1.
+  // Switch to round_robin when the parallel sim extends its policy set.
+  resource ar_lock: mutex<priority>;
+  // R demux serializer — at most one master matches the slave's r_id prefix
+  // per cycle by AXI ID uniqueness; the lock keeps the multi-driver legal.
+  resource r_demux_lock: mutex<priority>;
+
+  // ── AR arbiter — one thread per master ─────────────────────────────────
+  generate_for i in 0..NUM_MASTERS-1
+    thread ArArb_i on clk rising, rst low
+      default comb
+        s.ar_valid  = false;
+        s.ar_addr   = 0;
+        s.ar_id     = 0;
+        s.ar_len    = 0;
+        s.ar_size   = 0;
+        s.ar_burst  = 0;
+        s.ar_lock   = false;
+        s.ar_cache  = 0;
+        s.ar_prot   = 0;
+        s.ar_qos    = 0;
+        s.ar_region = 0;
+        ins[i].ar_ready = false;
+      end default
+      wait until ins[i].ar_valid;
+      lock ar_lock
+        do
+          s.ar_valid  = true;
+          s.ar_addr   = ins[i].ar_addr;
+          s.ar_id     = ins[i].ar_id;     // already prefixed by master port
+          s.ar_len    = ins[i].ar_len;
+          s.ar_size   = ins[i].ar_size;
+          s.ar_burst  = ins[i].ar_burst;
+          s.ar_lock   = ins[i].ar_lock;
+          s.ar_cache  = ins[i].ar_cache;
+          s.ar_prot   = ins[i].ar_prot;
+          s.ar_qos    = ins[i].ar_qos;
+          s.ar_region = ins[i].ar_region;
+          ins[i].ar_ready = s.ar_ready;
+        until s.ar_ready;
+      end lock ar_lock
+    end thread ArArb_i
+  end generate_for
+
+  // ── R return — one demux thread per master ─────────────────────────────
+  // Match on the high MIDX bits of s.r_id (= the originating master idx).
+  generate_for i in 0..NUM_MASTERS-1
+    thread RDemux_i on clk rising, rst low
+      default comb
+        ins[i].r_valid = false;
+        ins[i].r_data  = 0;
+        ins[i].r_id    = 0;
+        ins[i].r_resp  = 0;
+        ins[i].r_last  = false;
+        s.r_ready = false;
+      end default
+      wait until s.r_valid and s.r_id[SLAVE_ID_W-1:MASTER_ID_W] == i;
+      lock r_demux_lock
+        do
+          ins[i].r_valid = true;
+          ins[i].r_data  = s.r_data;
+          ins[i].r_id    = s.r_id;          // master port strips the prefix on receive
+          ins[i].r_resp  = s.r_resp;
+          ins[i].r_last  = s.r_last;
+          s.r_ready = ins[i].r_ready;
+        until ins[i].r_ready and ins[i].r_last;
+      end lock r_demux_lock
+    end thread RDemux_i
+  end generate_for
+end module Nic400SlavePort

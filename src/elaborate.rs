@@ -599,7 +599,7 @@ fn lower_tlm_connects_in_module(
         used_names.insert(wire_name.clone());
 
         let wire_ident = Ident::new(wire_name.clone(), conn.span);
-        synthesized_wires.push(ModuleBodyItem::WireDecl(WireDecl {
+        synthesized_wires.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
             name: wire_ident.clone(),
             ty: TypeExpr::Named(Ident::new(from_bus.clone(), conn.span)),
             unpacked: false, unpacked_ascending: false,
@@ -1955,11 +1955,11 @@ fn lower_module_threads(
         let n_threads = threads.len();
         // Per-thread scalar req/grant wires (internal to the merged module).
         for ti in 0..n_threads {
-            merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
+            merged_body.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
                 name: Ident::new(format!("_{}_req_{}", res_name, ti), sp),
                 ty: TypeExpr::Bool, unpacked: false, unpacked_ascending: false, span: sp,
             }));
-            merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
+            merged_body.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
                 name: Ident::new(format!("_{}_grant_{}", res_name, ti), sp),
                 ty: TypeExpr::Bool, unpacked: false, unpacked_ascending: false, span: sp,
             }));
@@ -1969,11 +1969,11 @@ fn lower_module_threads(
         let grant_packed = format!("_{}_grant_packed", res_name);
         let n_threads_expr = Expr::new(
             ExprKind::Literal(LitKind::Dec(n_threads as u64)), sp);
-        merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
+        merged_body.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
             name: Ident::new(req_packed.clone(), sp),
             ty: TypeExpr::UInt(Box::new(n_threads_expr.clone())), unpacked: false, unpacked_ascending: false, span: sp,
         }));
-        merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
+        merged_body.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
             name: Ident::new(grant_packed.clone(), sp),
             ty: TypeExpr::UInt(Box::new(n_threads_expr.clone())), unpacked: false, unpacked_ascending: false, span: sp,
         }));
@@ -1983,11 +1983,11 @@ fn lower_module_threads(
         let gv_sink = format!("_{}_grant_valid", res_name);
         let gr_sink = format!("_{}_grant_requester", res_name);
         let gr_width = crate::width::index_width(n_threads as u64);
-        merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
+        merged_body.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
             name: Ident::new(gv_sink.clone(), sp),
             ty: TypeExpr::Bool, unpacked: false, unpacked_ascending: false, span: sp,
         }));
-        merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
+        merged_body.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
             name: Ident::new(gr_sink.clone(), sp),
             ty: TypeExpr::UInt(Box::new(Expr::new(
                 ExprKind::Literal(LitKind::Dec(gr_width as u64)), sp))), unpacked: false, unpacked_ascending: false, span: sp,
@@ -2105,7 +2105,7 @@ fn lower_module_threads(
             // Per-thread input wires: _sig_in_0, _sig_in_1, ...
             for ti in 0..n_threads {
                 let wire_name = format!("_{}_in_{}", sig_name, ti);
-                merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
+                merged_body.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
                     name: Ident::new(wire_name, sp),
                     ty: info.ty.clone(),
                     unpacked: false, unpacked_ascending: false,
@@ -2819,7 +2819,7 @@ fn lower_module_threads(
             continue;
         };
         if thread_driven.contains(&r.name.name) {
-            *item = ModuleBodyItem::WireDecl(WireDecl {
+            *item = ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
                 name: r.name.clone(),
                 ty: r.ty.clone(),
                 unpacked: false,
@@ -7805,7 +7805,7 @@ fn inline_lower_tlm_initiator_group(
             let mut next = Vec::new();
             for (chunk_i, chunk) in cur.chunks(CHUNK).enumerate() {
                 let wire_name = format!("{prefix}_or_l{level}_{chunk_i}");
-                items.push(ModuleBodyItem::WireDecl(WireDecl {
+                items.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
                     name: mk_ident(wire_name.clone()),
                     ty: TypeExpr::Bool,
                     unpacked: false,
@@ -7840,7 +7840,7 @@ fn inline_lower_tlm_initiator_group(
             let mut next = Vec::new();
             for (chunk_i, chunk) in cur.chunks(CHUNK).enumerate() {
                 let wire_name = format!("{prefix}_and_l{level}_{chunk_i}");
-                items.push(ModuleBodyItem::WireDecl(WireDecl {
+                items.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
                     name: mk_ident(wire_name.clone()),
                     ty: TypeExpr::Bool,
                     unpacked: false,
@@ -7892,14 +7892,14 @@ fn inline_lower_tlm_initiator_group(
             for (chunk_i, chunk) in cur.chunks(CHUNK).enumerate() {
                 let valid_name = format!("{prefix}_mux_valid_l{level}_{chunk_i}");
                 let data_name = format!("{prefix}_mux_data_l{level}_{chunk_i}");
-                items.push(ModuleBodyItem::WireDecl(WireDecl {
+                items.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
                     name: mk_ident(valid_name.clone()),
                     ty: TypeExpr::Bool,
                     unpacked: false,
                     unpacked_ascending: false,
                     span,
                 }));
-                items.push(ModuleBodyItem::WireDecl(WireDecl {
+                items.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
                     name: mk_ident(data_name.clone()),
                     ty: ty.clone(),
                     unpacked: false,
@@ -7939,7 +7939,7 @@ fn inline_lower_tlm_initiator_group(
         let mut want_refs: Vec<Expr> = Vec::new();
         for (i, cond) in issue_conds.iter().enumerate() {
             let want_name = format!("_tlm_init_{}_{}_want_{}", agg.port, agg.method, i);
-            items.push(ModuleBodyItem::WireDecl(WireDecl {
+            items.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
                 name: mk_ident(want_name.clone()),
                 ty: TypeExpr::Bool,
                 unpacked: false,
@@ -8028,7 +8028,7 @@ fn inline_lower_tlm_initiator_group(
                 grants.push(grant);
                 if i + 1 < want_refs.len() {
                     let taken_name = format!("_tlm_init_{}_{}_taken_{}", agg.port, agg.method, i);
-                    items.push(ModuleBodyItem::WireDecl(WireDecl {
+                    items.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
                         name: mk_ident(taken_name.clone()),
                         ty: TypeExpr::Bool,
                         unpacked: false,
@@ -8048,7 +8048,7 @@ fn inline_lower_tlm_initiator_group(
         let mut grants: Vec<Expr> = Vec::new();
         for (i, grant_expr) in grant_exprs.iter().enumerate() {
             let grant_name = format!("_tlm_init_{}_{}_grant_{}", agg.port, agg.method, i);
-            items.push(ModuleBodyItem::WireDecl(WireDecl {
+            items.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
                 name: mk_ident(grant_name.clone()),
                 ty: TypeExpr::Bool,
                 unpacked: false,
@@ -9265,17 +9265,17 @@ fn lower_indexed_tlm_target_group(
         let rsp_tag = format!("{prefix}_rsp_tag");
         let rsp_data = format!("{prefix}_rsp_data");
 
-        out.push(ModuleBodyItem::WireDecl(WireDecl { name: mk_ident(req_ready.clone()), ty: TypeExpr::Bool, unpacked: false, unpacked_ascending: false, span }));
-        out.push(ModuleBodyItem::WireDecl(WireDecl { name: mk_ident(rsp_valid.clone()), ty: TypeExpr::Bool, unpacked: false, unpacked_ascending: false, span }));
-        out.push(ModuleBodyItem::WireDecl(WireDecl { name: mk_ident(rsp_ready.clone()), ty: TypeExpr::Bool, unpacked: false, unpacked_ascending: false, span }));
-        out.push(ModuleBodyItem::WireDecl(WireDecl {
+        out.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(), name: mk_ident(req_ready.clone()), ty: TypeExpr::Bool, unpacked: false, unpacked_ascending: false, span }));
+        out.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(), name: mk_ident(rsp_valid.clone()), ty: TypeExpr::Bool, unpacked: false, unpacked_ascending: false, span }));
+        out.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(), name: mk_ident(rsp_ready.clone()), ty: TypeExpr::Bool, unpacked: false, unpacked_ascending: false, span }));
+        out.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
             name: mk_ident(rsp_tag.clone()),
             ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(tag_w as u64)), span))),
             unpacked: false, unpacked_ascending: false,
             span,
         }));
         if let Some(ret_ty) = &method.ret {
-            out.push(ModuleBodyItem::WireDecl(WireDecl { name: mk_ident(rsp_data.clone()), ty: ret_ty.clone(), unpacked: false, unpacked_ascending: false, span }));
+            out.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(), name: mk_ident(rsp_data.clone()), ty: ret_ty.clone(), unpacked: false, unpacked_ascending: false, span }));
         }
 
         let req_valid = Expr::new(
@@ -9321,28 +9321,28 @@ fn lower_indexed_tlm_target_group(
     let lane_count_expr = Expr::new(ExprKind::Literal(LitKind::Dec(lane_count as u64)), span);
     let grant_width = crate::width::index_width(lane_count as u64);
 
-    out.push(ModuleBodyItem::WireDecl(WireDecl {
+    out.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
         name: mk_ident(req_packed.clone()),
         ty: TypeExpr::UInt(Box::new(lane_count_expr.clone())),
         unpacked: false,
         unpacked_ascending: false,
         span,
     }));
-    out.push(ModuleBodyItem::WireDecl(WireDecl {
+    out.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
         name: mk_ident(grant_packed.clone()),
         ty: TypeExpr::UInt(Box::new(lane_count_expr.clone())),
         unpacked: false,
         unpacked_ascending: false,
         span,
     }));
-    out.push(ModuleBodyItem::WireDecl(WireDecl {
+    out.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
         name: mk_ident(grant_valid.clone()),
         ty: TypeExpr::Bool,
         unpacked: false,
         unpacked_ascending: false,
         span,
     }));
-    out.push(ModuleBodyItem::WireDecl(WireDecl {
+    out.push(ModuleBodyItem::WireDecl(WireDecl { bus_params: Vec::new(),
         name: mk_ident(grant_requester.clone()),
         ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(grant_width as u64)), span))),
         unpacked: false,

@@ -786,6 +786,13 @@ pub struct WireDecl {
     /// (or upstream SV `[N]` shorthand) by-index without IEEE 1800-2017
     /// §10.10 silent reversal. Only legal when `unpacked` is also set.
     pub unpacked_ascending: bool,
+    /// `wire w: BusName<PARAM=val, ...>;` or
+    /// `wire w: Vec<BusName<PARAM=val, ...>, N>;` — bus param overrides
+    /// applied at the wire site. Empty for non-bus wires. Stored
+    /// separately from `ty` so the existing TypeExpr shape stays
+    /// invariant; the codegen merges these with bus defaults when
+    /// emitting flat signal types.
+    pub bus_params: Vec<ParamAssign>,
     pub span: Span,
 }
 
