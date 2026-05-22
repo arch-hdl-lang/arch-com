@@ -1,0 +1,145 @@
+// HARC sequence-layer testbench: NIC-400 2x2 read crossbar smoke test.
+//
+// Covers verification-plan §15 items 1 (smoke) and 4 (ID remap correctness):
+//   - M0 issues AR with bit[28]=0 → expect S0 sees AR with id={1'b0, m0_id}.
+//   - M0 issues AR with bit[28]=1 → expect S1 path, ID prefix=0.
+//   - M1 issues AR → expect ID prefix=1 (= 1<<3 OR master_id).
+//   - Each R response with prefixed ID demuxes back to the originating master,
+//     stripped to master_id (3 LSBs).
+//
+// Companion C++ runner: tb_nic400_read2x2_smoke.cpp (mirrors these assertions).
+testbench Nic400Read2x2SmokeTb
+    dut : Nic400Read2x2
+end testbench Nic400Read2x2SmokeTb
+
+impl Nic400Read2x2Smoke for Nic400Read2x2SmokeTb
+    run
+        log(info, "Nic400Read2x2 smoke (HARC source-of-truth)")
+
+        // Reset (active-low)
+        dut.rst = 0
+        dut.m0_ar_valid = 0
+        dut.m1_ar_valid = 0
+        dut.s0_ar_ready = 0
+        dut.s1_ar_ready = 0
+        dut.s0_r_valid = 0
+        dut.s1_r_valid = 0
+        dut.m0_r_ready = 0
+        dut.m1_r_ready = 0
+        wait 4 cycles
+        dut.rst = 1
+        wait 1 cycle
+
+        // ─── Test 1: M0 → S0 ────────────────────────────────────────────
+        dut.m0_ar_valid = 1
+        dut.m0_ar_addr  = 0x00001000
+        dut.m0_ar_id    = 3
+        dut.s0_ar_ready = 1
+        let saw_s0 : uint<32> = 0
+        for _ in 0 .. 8
+            if saw_s0 == 0 && dut.s0_ar_valid == 1 && dut.s0_ar_ready == 1
+                saw_s0 = 1
+                assert dut.s0_ar_id == 3
+                    else fail("test1 s0_ar_id got ${dut.s0_ar_id}")
+                assert dut.s0_ar_addr == 0x00001000
+                    else fail("test1 s0_ar_addr mismatch")
+                assert dut.s1_ar_valid == 0
+                    else fail("test1 s1_ar_valid should be 0")
+            end if
+            wait 1 cycle
+        end for
+        assert saw_s0 == 1
+            else fail("test1 AR never fired")
+        wait 1 cycle
+        dut.m0_ar_valid = 0
+        dut.s0_ar_ready = 0
+
+        // R return for test1
+        dut.s0_r_valid = 1
+        dut.s0_r_data  = 0xDEADBEEF
+        dut.s0_r_id    = 3
+        dut.s0_r_last  = 1
+        dut.m0_r_ready = 1
+        let saw_r0 : uint<32> = 0
+        for _ in 0 .. 8
+            if saw_r0 == 0 && dut.m0_r_valid == 1 && dut.m0_r_ready == 1
+                saw_r0 = 1
+                assert dut.m0_r_data == 0xDEADBEEF
+                    else fail("test1 R data mismatch")
+                assert dut.m0_r_id == 3
+                    else fail("test1 R id strip")
+            end if
+            wait 1 cycle
+        end for
+        assert saw_r0 == 1
+            else fail("test1 R never landed")
+        wait 1 cycle
+        dut.s0_r_valid = 0
+        dut.m0_r_ready = 0
+
+        // ─── Test 2: M0 → S1 ────────────────────────────────────────────
+        dut.m0_ar_valid = 1
+        dut.m0_ar_addr  = 0x10001000
+        dut.m0_ar_id    = 5
+        dut.s1_ar_ready = 1
+        let saw_s1 : uint<32> = 0
+        for _ in 0 .. 8
+            if saw_s1 == 0 && dut.s1_ar_valid == 1 && dut.s1_ar_ready == 1
+                saw_s1 = 1
+                assert dut.s1_ar_id == 5
+                    else fail("test2 s1_ar_id got ${dut.s1_ar_id}")
+                assert dut.s0_ar_valid == 0
+                    else fail("test2 s0_ar_valid leak")
+            end if
+            wait 1 cycle
+        end for
+        assert saw_s1 == 1
+            else fail("test2 AR never fired on s1")
+        wait 1 cycle
+        dut.m0_ar_valid = 0
+        dut.s1_ar_ready = 0
+
+        // ─── Test 3: M1 → S0, expect ID prefix = 1 ───────────────────────
+        dut.m1_ar_valid = 1
+        dut.m1_ar_addr  = 0x00002000
+        dut.m1_ar_id    = 7
+        dut.s0_ar_ready = 1
+        let saw_m1 : uint<32> = 0
+        for _ in 0 .. 8
+            if saw_m1 == 0 && dut.s0_ar_valid == 1 && dut.s0_ar_ready == 1
+                saw_m1 = 1
+                // expected id = {1, 7} = 0b1_111 = 15
+                assert dut.s0_ar_id == 15
+                    else fail("test3 s0_ar_id got ${dut.s0_ar_id}, expected 15")
+            end if
+            wait 1 cycle
+        end for
+        assert saw_m1 == 1
+            else fail("test3 M1 AR never fired")
+        wait 1 cycle
+        dut.m1_ar_valid = 0
+        dut.s0_ar_ready = 0
+
+        // R return for test3 — verify R lands at M1 not M0
+        dut.s0_r_valid = 1
+        dut.s0_r_data  = 0xC0FFEE00
+        dut.s0_r_id    = 15
+        dut.s0_r_last  = 1
+        dut.m1_r_ready = 1
+        let saw_rm1 : uint<32> = 0
+        for _ in 0 .. 8
+            if saw_rm1 == 0 && dut.m1_r_valid == 1 && dut.m1_r_ready == 1
+                saw_rm1 = 1
+                assert dut.m1_r_id == 7
+                    else fail("test3 m1_r_id strip got ${dut.m1_r_id}")
+                assert dut.m0_r_valid == 0
+                    else fail("test3 m0_r leak")
+            end if
+            wait 1 cycle
+        end for
+        assert saw_rm1 == 1
+            else fail("test3 R never landed at M1")
+
+        log(info, "PASS Nic400Read2x2 smoke (HARC): decode + id-remap + return route OK")
+    end run
+end impl Nic400Read2x2Smoke

@@ -66,6 +66,12 @@ pub struct TypeChecker<'a> {
     /// constructs (`past(x, N)`, `a |=> b`) are only legal inside this
     /// scope; flagged as compile errors elsewhere.
     pub in_sva_context: bool,
+    /// Per-module map of Vec-of-bus port names → element count. Populated
+    /// at the start of check_module so check_stmt can expand indexed
+    /// driver-tracking writes (`chans[i].sig = ...`) over all N copies
+    /// when the index isn't a compile-time literal (e.g. inside a `for`
+    /// loop). Cleared between modules.
+    pub vec_of_bus_ports: HashMap<String, u32>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -77,6 +83,7 @@ impl<'a> TypeChecker<'a> {
             warnings: Vec::new(),
             overload_map: HashMap::new(),
             in_sva_context: false,
+            vec_of_bus_ports: HashMap::new(),
         }
     }
 
@@ -406,6 +413,18 @@ impl<'a> TypeChecker<'a> {
         // happens in `check_inst_decl` when validating the inst connections.
         if m.is_interface {
             return;
+        }
+
+        // Per-module map of Vec-of-bus port → count. Used by the Assign
+        // path so that `chans[i].sig = ...` records all N flat copies as
+        // driven when `i` is a loop variable (or any non-literal index).
+        self.vec_of_bus_ports.clear();
+        for p in &m.ports {
+            if let Some(bi) = p.bus_info.as_ref() {
+                if let Some(n) = bi.count {
+                    self.vec_of_bus_ports.insert(p.name.name.clone(), n);
+                }
+            }
         }
 
         // Track driven signals
@@ -902,24 +921,31 @@ impl<'a> TypeChecker<'a> {
         // Check all output ports are driven
         for p in &m.ports {
             if let Some(ref bi) = p.bus_info {
-                // Bus port: check each output signal is driven (flattened name: port_signal)
+                // Bus port: check each output signal is driven (flattened name: port_signal).
+                // For Vec<Bus,N> ports, check each of the N copies independently.
                 let bus_name = &bi.bus_name.name;
                 if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
                     let mut pm = info.default_param_map();
                     for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
                     let eff = info.effective_signals(&pm);
-                    for (sname, sdir, _) in &eff {
-                        let actual_dir = match bi.perspective {
-                            BusPerspective::Initiator => *sdir,
-                            BusPerspective::Target => (*sdir).flip(),
-                        };
-                        if actual_dir == Direction::Out {
-                            let flat = format!("{}_{}", p.name.name, sname);
-                            if !driven.contains(&flat) {
-                                self.errors.push(CompileError::UndriveOutput {
-                                    name: flat,
-                                    span: crate::diagnostics::span_to_source_span(p.name.span),
-                                });
+                    let prefixes: Vec<String> = match bi.count {
+                        None => vec![p.name.name.clone()],
+                        Some(n) => (0..n).map(|i| format!("{}_{}", p.name.name, i)).collect(),
+                    };
+                    for prefix in &prefixes {
+                        for (sname, sdir, _) in &eff {
+                            let actual_dir = match bi.perspective {
+                                BusPerspective::Initiator => *sdir,
+                                BusPerspective::Target => (*sdir).flip(),
+                            };
+                            if actual_dir == Direction::Out {
+                                let flat = format!("{}_{}", prefix, sname);
+                                if !driven.contains(&flat) {
+                                    self.errors.push(CompileError::UndriveOutput {
+                                        name: flat,
+                                        span: crate::diagnostics::span_to_source_span(p.name.span),
+                                    });
+                                }
                             }
                         }
                     }
@@ -2207,7 +2233,33 @@ impl<'a> TypeChecker<'a> {
                 }
                 if !target_name.is_empty() { driven.insert(target_name.clone()); }
                 let flat = Self::expr_flat_name_tc(&a.target);
-                if flat != target_name { driven.insert(flat); }
+                if flat != target_name { driven.insert(flat.clone()); }
+                // Vec-of-bus indexed write with a non-literal index — e.g.
+                // `chans[i].sig = ...` inside a `for i in 0..N` loop. The
+                // root name alone ("chans") doesn't satisfy the per-copy
+                // completeness check, and the index isn't a literal so
+                // `expr_flat_name_tc` couldn't pin it to a specific copy.
+                // Conservatively mark every copy's matching signal driven
+                // (the scalar Vec port case has the same "any indexed
+                // write covers the whole array" semantics).
+                if let ExprKind::FieldAccess(base, field) = &a.target.kind {
+                    if let ExprKind::Index(arr, idx) = &base.kind {
+                        if let ExprKind::Ident(arr_name) = &arr.kind {
+                            let is_literal = matches!(&idx.kind,
+                                ExprKind::Literal(LitKind::Dec(_)) |
+                                ExprKind::Literal(LitKind::Hex(_)) |
+                                ExprKind::Literal(LitKind::Bin(_)) |
+                                ExprKind::Literal(LitKind::Sized(..)));
+                            if !is_literal {
+                                if let Some(&n) = self.vec_of_bus_ports.get(arr_name) {
+                                    for i in 0..n {
+                                        driven.insert(format!("{}_{}_{}", arr_name, i, field.name));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 let rhs_ty = self.resolve_expr_type(&a.value, module_name, local_types);
                 let is_indexed = !matches!(&a.target.kind, ExprKind::Ident(_));

@@ -1,0 +1,77 @@
+// HARC unit test for the NIC-400 QoS arbitration pick function.
+//
+// All cases assume 4 masters indexed 0..3. qos_packed layout:
+//   bits [3:0]   = qos[m0]
+//   bits [7:4]   = qos[m1]
+//   bits [11:8]  = qos[m2]
+//   bits [15:12] = qos[m3]
+// last_grant is the one-hot of the previous winner (1<<idx).
+// grant is one-hot mask of the chosen requester.
+
+testbench Nic400QosFnTb
+    dut : Nic400QosFn
+end testbench Nic400QosFnTb
+
+impl Nic400QosFnHarcTest for Nic400QosFnTb
+    run
+        log(info, "Nic400QosFn HARC test")
+
+        // 1. No requesters -> grant = 0
+        dut.req_mask = 0
+        dut.last_grant = 0
+        dut.qos_packed = 0x3210
+        wait 1 cycle
+        assert dut.grant == 0
+            else fail("empty req: grant=0x${dut.grant:x}")
+
+        // 2. Single requester (m1), qos=0 -> grant = 0b0010
+        dut.req_mask = 0b0010
+        dut.last_grant = 0
+        dut.qos_packed = 0
+        wait 1 cycle
+        assert dut.grant == 0b0010
+            else fail("single req m1: grant=0x${dut.grant:x}")
+
+        // 3. Two requesters, m0=qos3, m2=qos5 -> m2 wins (higher QoS)
+        dut.req_mask = 0b0101
+        dut.last_grant = 0
+        dut.qos_packed = 0x0503   // m3=0, m2=5, m1=0, m0=3
+        wait 1 cycle
+        assert dut.grant == 0b0100
+            else fail("qos pick: grant=0x${dut.grant:x}, expected 0b0100")
+
+        // 4. All four equal qos=2, last_grant=m0 -> next higher index (m1) wins
+        dut.req_mask = 0b1111
+        dut.last_grant = 0b0001
+        dut.qos_packed = 0x2222
+        wait 1 cycle
+        assert dut.grant == 0b0010
+            else fail("rr after m0: grant=0x${dut.grant:x}, expected 0b0010")
+
+        // 5. All four equal qos=2, last_grant=m3 -> wrap to m0
+        dut.req_mask = 0b1111
+        dut.last_grant = 0b1000
+        dut.qos_packed = 0x2222
+        wait 1 cycle
+        assert dut.grant == 0b0001
+            else fail("rr wrap: grant=0x${dut.grant:x}, expected 0b0001")
+
+        // 6. m0 and m2 tied at top qos=7, others lower; last_grant=m0 -> m2
+        dut.req_mask = 0b0101
+        dut.last_grant = 0b0001
+        dut.qos_packed = 0x0707
+        wait 1 cycle
+        assert dut.grant == 0b0100
+            else fail("tied top rr: grant=0x${dut.grant:x}, expected 0b0100")
+
+        // 7. m0,m1,m2,m3 with qos 1,3,1,3; last_grant=m1 -> m3 wins (rr among top)
+        dut.req_mask = 0b1111
+        dut.last_grant = 0b0010
+        dut.qos_packed = 0x3131    // m3=3, m2=1, m1=3, m0=1
+        wait 1 cycle
+        assert dut.grant == 0b1000
+            else fail("4-way tied top rr: grant=0x${dut.grant:x}, expected 0b1000")
+
+        log(info, "PASS: Nic400QosFn — empty, single, qos-pick, rr-fairness, tied-top all OK")
+    end run
+end impl Nic400QosFnHarcTest

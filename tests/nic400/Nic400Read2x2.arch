@@ -1,0 +1,266 @@
+// Minimal NIC-400-style AXI4 READ crossbar: 2 masters x 2 slaves.
+//
+// Demonstrates the four core mechanisms from the NIC-400 spec:
+//   1. Per-master address decode  — picks slave 0 or 1 based on addr[28].
+//   2. Per-slave arbitration       — resource: mutex<round_robin> serializes
+//      M masters onto one slave's AR bus.
+//   3. ID remap                    — slave_id = {master_idx (1 bit), master_id (3 bit)}.
+//   4. Return route by ID prefix   — R channel demux uses r_id[3] (master idx);
+//      shared(or) merges N slave-sourced R streams onto the master's R port.
+//
+// All threads use the canonical `default comb` + `do..until` pattern so
+// signal drives revert cleanly between transactions.
+module Nic400Read2x2
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  // ── Master 0 (target side) ───────────────────────────────────────────
+  port m0_ar_valid:  in  Bool;
+  port m0_ar_ready:  out Bool shared(or);
+  port m0_ar_addr:   in  UInt<32>;
+  port m0_ar_id:     in  UInt<3>;
+  port m0_ar_len:    in  UInt<8>;
+  port m0_ar_size:   in  UInt<3>;
+  port m0_ar_burst:  in  UInt<2>;
+
+  port m0_r_valid:   out Bool shared(or);
+  port m0_r_ready:   in  Bool;
+  port m0_r_data:    out UInt<32> shared(or);
+  port m0_r_id:      out UInt<3> shared(or);
+  port m0_r_resp:    out UInt<2> shared(or);
+  port m0_r_last:    out Bool shared(or);
+
+  // ── Master 1 (target side) ───────────────────────────────────────────
+  port m1_ar_valid:  in  Bool;
+  port m1_ar_ready:  out Bool shared(or);
+  port m1_ar_addr:   in  UInt<32>;
+  port m1_ar_id:     in  UInt<3>;
+  port m1_ar_len:    in  UInt<8>;
+  port m1_ar_size:   in  UInt<3>;
+  port m1_ar_burst:  in  UInt<2>;
+
+  port m1_r_valid:   out Bool shared(or);
+  port m1_r_ready:   in  Bool;
+  port m1_r_data:    out UInt<32> shared(or);
+  port m1_r_id:      out UInt<3> shared(or);
+  port m1_r_resp:    out UInt<2> shared(or);
+  port m1_r_last:    out Bool shared(or);
+
+  // ── Slave 0 (initiator side) ─────────────────────────────────────────
+  port s0_ar_valid:  out Bool shared(or);
+  port s0_ar_ready:  in  Bool;
+  port s0_ar_addr:   out UInt<32> shared(or);
+  port s0_ar_id:     out UInt<4> shared(or);
+  port s0_ar_len:    out UInt<8> shared(or);
+  port s0_ar_size:   out UInt<3> shared(or);
+  port s0_ar_burst:  out UInt<2> shared(or);
+
+  port s0_r_valid:   in  Bool;
+  port s0_r_ready:   out Bool shared(or);
+  port s0_r_data:    in  UInt<32>;
+  port s0_r_id:      in  UInt<4>;
+  port s0_r_resp:    in  UInt<2>;
+  port s0_r_last:    in  Bool;
+
+  // ── Slave 1 (initiator side) ─────────────────────────────────────────
+  port s1_ar_valid:  out Bool shared(or);
+  port s1_ar_ready:  in  Bool;
+  port s1_ar_addr:   out UInt<32> shared(or);
+  port s1_ar_id:     out UInt<4> shared(or);
+  port s1_ar_len:    out UInt<8> shared(or);
+  port s1_ar_size:   out UInt<3> shared(or);
+  port s1_ar_burst:  out UInt<2> shared(or);
+
+  port s1_r_valid:   in  Bool;
+  port s1_r_ready:   out Bool shared(or);
+  port s1_r_data:    in  UInt<32>;
+  port s1_r_id:      in  UInt<4>;
+  port s1_r_resp:    in  UInt<2>;
+  port s1_r_last:    in  Bool;
+
+  // Address decode: bit [28] picks slave (region size 256 MiB).
+  let m0_ar_slv: UInt<1> = m0_ar_addr[28];
+  let m1_ar_slv: UInt<1> = m1_ar_addr[28];
+
+  // Per-slave AR arbiters (round-robin across the 2 masters).
+  resource s0_ar_ch: mutex<round_robin>;
+  resource s1_ar_ch: mutex<round_robin>;
+
+  // ── AR forwarding threads — one per (master, slave) pair ───────────────
+  thread M0Ar_S0 on clk rising, rst low
+    default comb
+      s0_ar_valid = false;
+      s0_ar_addr  = 0;
+      s0_ar_id    = 0;
+      s0_ar_len   = 0;
+      s0_ar_size  = 0;
+      s0_ar_burst = 0;
+      m0_ar_ready = false;
+    end default
+    wait until m0_ar_valid and m0_ar_slv == 1'd0;
+    lock s0_ar_ch
+      do
+        s0_ar_valid = true;
+        s0_ar_addr  = m0_ar_addr;
+        s0_ar_id    = {1'b0, m0_ar_id};
+        s0_ar_len   = m0_ar_len;
+        s0_ar_size  = m0_ar_size;
+        s0_ar_burst = m0_ar_burst;
+        m0_ar_ready = s0_ar_ready;
+      until s0_ar_ready;
+    end lock s0_ar_ch
+  end thread M0Ar_S0
+
+  thread M0Ar_S1 on clk rising, rst low
+    default comb
+      s1_ar_valid = false;
+      s1_ar_addr  = 0;
+      s1_ar_id    = 0;
+      s1_ar_len   = 0;
+      s1_ar_size  = 0;
+      s1_ar_burst = 0;
+      m0_ar_ready = false;
+    end default
+    wait until m0_ar_valid and m0_ar_slv == 1'd1;
+    lock s1_ar_ch
+      do
+        s1_ar_valid = true;
+        s1_ar_addr  = m0_ar_addr;
+        s1_ar_id    = {1'b0, m0_ar_id};
+        s1_ar_len   = m0_ar_len;
+        s1_ar_size  = m0_ar_size;
+        s1_ar_burst = m0_ar_burst;
+        m0_ar_ready = s1_ar_ready;
+      until s1_ar_ready;
+    end lock s1_ar_ch
+  end thread M0Ar_S1
+
+  thread M1Ar_S0 on clk rising, rst low
+    default comb
+      s0_ar_valid = false;
+      s0_ar_addr  = 0;
+      s0_ar_id    = 0;
+      s0_ar_len   = 0;
+      s0_ar_size  = 0;
+      s0_ar_burst = 0;
+      m1_ar_ready = false;
+    end default
+    wait until m1_ar_valid and m1_ar_slv == 1'd0;
+    lock s0_ar_ch
+      do
+        s0_ar_valid = true;
+        s0_ar_addr  = m1_ar_addr;
+        s0_ar_id    = {1'b1, m1_ar_id};
+        s0_ar_len   = m1_ar_len;
+        s0_ar_size  = m1_ar_size;
+        s0_ar_burst = m1_ar_burst;
+        m1_ar_ready = s0_ar_ready;
+      until s0_ar_ready;
+    end lock s0_ar_ch
+  end thread M1Ar_S0
+
+  thread M1Ar_S1 on clk rising, rst low
+    default comb
+      s1_ar_valid = false;
+      s1_ar_addr  = 0;
+      s1_ar_id    = 0;
+      s1_ar_len   = 0;
+      s1_ar_size  = 0;
+      s1_ar_burst = 0;
+      m1_ar_ready = false;
+    end default
+    wait until m1_ar_valid and m1_ar_slv == 1'd1;
+    lock s1_ar_ch
+      do
+        s1_ar_valid = true;
+        s1_ar_addr  = m1_ar_addr;
+        s1_ar_id    = {1'b1, m1_ar_id};
+        s1_ar_len   = m1_ar_len;
+        s1_ar_size  = m1_ar_size;
+        s1_ar_burst = m1_ar_burst;
+        m1_ar_ready = s1_ar_ready;
+      until s1_ar_ready;
+    end lock s1_ar_ch
+  end thread M1Ar_S1
+
+  // ── R return threads — shared(or) merge per master ──────────────────────
+  thread S0R_M0 on clk rising, rst low
+    default comb
+      m0_r_valid = false;
+      m0_r_data  = 0;
+      m0_r_id    = 0;
+      m0_r_resp  = 0;
+      m0_r_last  = false;
+      s0_r_ready = false;
+    end default
+    wait until s0_r_valid and s0_r_id[3] == 1'd0;
+    do
+      m0_r_valid = true;
+      m0_r_data  = s0_r_data;
+      m0_r_id    = s0_r_id[2:0];
+      m0_r_resp  = s0_r_resp;
+      m0_r_last  = s0_r_last;
+      s0_r_ready = m0_r_ready;
+    until m0_r_ready;
+  end thread S0R_M0
+
+  thread S0R_M1 on clk rising, rst low
+    default comb
+      m1_r_valid = false;
+      m1_r_data  = 0;
+      m1_r_id    = 0;
+      m1_r_resp  = 0;
+      m1_r_last  = false;
+      s0_r_ready = false;
+    end default
+    wait until s0_r_valid and s0_r_id[3] == 1'd1;
+    do
+      m1_r_valid = true;
+      m1_r_data  = s0_r_data;
+      m1_r_id    = s0_r_id[2:0];
+      m1_r_resp  = s0_r_resp;
+      m1_r_last  = s0_r_last;
+      s0_r_ready = m1_r_ready;
+    until m1_r_ready;
+  end thread S0R_M1
+
+  thread S1R_M0 on clk rising, rst low
+    default comb
+      m0_r_valid = false;
+      m0_r_data  = 0;
+      m0_r_id    = 0;
+      m0_r_resp  = 0;
+      m0_r_last  = false;
+      s1_r_ready = false;
+    end default
+    wait until s1_r_valid and s1_r_id[3] == 1'd0;
+    do
+      m0_r_valid = true;
+      m0_r_data  = s1_r_data;
+      m0_r_id    = s1_r_id[2:0];
+      m0_r_resp  = s1_r_resp;
+      m0_r_last  = s1_r_last;
+      s1_r_ready = m0_r_ready;
+    until m0_r_ready;
+  end thread S1R_M0
+
+  thread S1R_M1 on clk rising, rst low
+    default comb
+      m1_r_valid = false;
+      m1_r_data  = 0;
+      m1_r_id    = 0;
+      m1_r_resp  = 0;
+      m1_r_last  = false;
+      s1_r_ready = false;
+    end default
+    wait until s1_r_valid and s1_r_id[3] == 1'd1;
+    do
+      m1_r_valid = true;
+      m1_r_data  = s1_r_data;
+      m1_r_id    = s1_r_id[2:0];
+      m1_r_resp  = s1_r_resp;
+      m1_r_last  = s1_r_last;
+      s1_r_ready = m1_r_ready;
+    until m1_r_ready;
+  end thread S1R_M1
+end module Nic400Read2x2

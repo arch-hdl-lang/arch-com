@@ -1,0 +1,92 @@
+// HARC sequence-layer testbench for RegSliceChannel.
+//
+// Exercises:
+//   1. After reset, slice is empty -> dn_valid=0, up_ready=1.
+//   2. Single-cycle traversal when downstream always ready: latency = 1.
+//   3. Backpressure: downstream stalls, slice latches one beat, upstream stalls.
+//   4. Sustained 1 transfer/cycle throughput.
+
+testbench RegSliceChannelTb
+    dut : RegSliceChannel
+end testbench RegSliceChannelTb
+
+impl RegSliceChannelHarcTest for RegSliceChannelTb
+    run
+        log(info, "RegSliceChannel HARC test")
+
+        dut.rst = 0
+        dut.up_valid = 0
+        dut.up_payload = 0
+        dut.dn_ready = 0
+        wait 4 cycles
+        dut.rst = 1
+        wait 2 cycles
+
+        // 1. Empty after reset
+        assert dut.dn_valid == 0
+            else fail("post-reset dn_valid should be 0, got ${dut.dn_valid}")
+        assert dut.up_ready == 1
+            else fail("post-reset up_ready should be 1, got ${dut.up_ready}")
+
+        // 2. One-beat traversal, latency = 1 cycle
+        dut.dn_ready = 1
+        dut.up_valid = 1
+        dut.up_payload = 0xDEADBEEF
+        wait 1 cycle
+        // Cycle after rising edge: dn_valid should be 1, dn_payload latched
+        assert dut.dn_valid == 1
+            else fail("after 1 cycle, dn_valid should be 1, got ${dut.dn_valid}")
+        assert dut.dn_payload == 0xDEADBEEF
+            else fail("dn_payload mismatch: got 0x${dut.dn_payload:08x}, expected 0xDEADBEEF")
+
+        // Drain
+        dut.up_valid = 0
+        wait 2 cycles
+        assert dut.dn_valid == 0
+            else fail("after drain, dn_valid should be 0, got ${dut.dn_valid}")
+
+        // 3. Backpressure: downstream stalled
+        dut.dn_ready = 0
+        dut.up_valid = 1
+        dut.up_payload = 0xCAFEBABE
+        wait 1 cycle
+        // Slice has latched the beat; downstream still stalled
+        assert dut.dn_valid == 1
+            else fail("after fill+stall, dn_valid should be 1, got ${dut.dn_valid}")
+        // Upstream can't push another one without dn_ready
+        assert dut.up_ready == 0
+            else fail("when occupied and dn_ready=0, up_ready should be 0, got ${dut.up_ready}")
+        // Try to push -- should NOT change latched payload
+        dut.up_payload = 0xBADC0DE
+        wait 2 cycles
+        assert dut.dn_payload == 0xCAFEBABE
+            else fail("latched payload should still be 0xCAFEBABE, got 0x${dut.dn_payload:08x}")
+        assert dut.dn_valid == 1
+            else fail("dn_valid should still be 1 while held, got ${dut.dn_valid}")
+
+        // Release downstream
+        dut.up_valid = 0
+        dut.dn_ready = 1
+        wait 2 cycles
+        assert dut.dn_valid == 0
+            else fail("after release, dn_valid should be 0, got ${dut.dn_valid}")
+
+        // 4. Sustained throughput
+        let count : uint<32> = 0
+        dut.dn_ready = 1
+        dut.up_valid = 1
+        for i in 0 .. 8
+            dut.up_payload = 0x1000 + i
+            wait 1 cycle
+            if dut.dn_valid == 1 && dut.dn_ready == 1
+                count = count + 1
+            end if
+        end for
+        dut.up_valid = 0
+        // After 8 cycles of streaming, expect at least 7 transfers (one-cycle ramp-up)
+        assert count >= 7
+            else fail("sustained throughput too low: ${count} transfers in 8 cycles")
+
+        log(info, "PASS: RegSliceChannel latency=1 backpressure-ok throughput=${count}/8")
+    end run
+end impl RegSliceChannelHarcTest

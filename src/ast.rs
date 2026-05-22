@@ -187,6 +187,11 @@ pub struct BusPortInfo {
     pub bus_name: Ident,
     pub perspective: BusPerspective,
     pub params: Vec<ParamAssign>,
+    /// `port chans: initiator Vec<BusName, N>;` — array of N bus copies,
+    /// flattened in codegen to `chans_0_<sig>`, `chans_1_<sig>`, ...
+    /// Accessed via `chans[i].sig` (literal integer i). `None` = scalar bus
+    /// port (current default). MVP only accepts integer literals for N.
+    pub count: Option<u32>,
 }
 
 #[derive(Debug, Clone)]

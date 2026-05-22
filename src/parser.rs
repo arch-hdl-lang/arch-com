@@ -1201,7 +1201,43 @@ impl Parser {
             None
         };
         if let Some(perspective) = bus_perspective {
-            let bus_name = self.expect_ident()?;
+            // Two surface forms:
+            //   port chans: initiator Vec<BusName, N>;       — array of N copies
+            //   port chan:  initiator BusName<PARAM=val>;    — scalar (existing)
+            let (bus_name, count) = if self.check(TokenKind::KwVec) {
+                let vec_span = self.peek_span();
+                self.advance(); // consume Vec
+                self.expect(TokenKind::Lt)?;
+                let old_no_angle = self.no_angle;
+                self.no_angle = true;
+                let bus_ident = self.expect_ident()?;
+                self.expect(TokenKind::Comma)?;
+                let count_expr = self.parse_expr()?;
+                self.no_angle = old_no_angle;
+                self.expect(TokenKind::Gt)?;
+                // MVP: count must be a compile-time integer literal.
+                let n: u32 = match &count_expr.kind {
+                    ExprKind::Literal(LitKind::Dec(n))
+                    | ExprKind::Literal(LitKind::Hex(n))
+                    | ExprKind::Literal(LitKind::Bin(n))
+                    | ExprKind::Literal(LitKind::Sized(_, n)) => *n as u32,
+                    _ => {
+                        return Err(CompileError::general(
+                            "Vec<BusName, N> port: N must be a compile-time integer literal (v1)",
+                            count_expr.span,
+                        ));
+                    }
+                };
+                if n == 0 {
+                    return Err(CompileError::general(
+                        "Vec<BusName, N> port: N must be >= 1",
+                        vec_span,
+                    ));
+                }
+                (bus_ident, Some(n))
+            } else {
+                (self.expect_ident()?, None)
+            };
             // Optional param assignments: <PARAM=val, ...>
             let params = if self.check(TokenKind::Lt) {
                 self.advance();
@@ -1229,7 +1265,7 @@ impl Parser {
                 ty: TypeExpr::Named(bus_name.clone()),
                 default: None,
                 reg_info: None,
-                bus_info: Some(BusPortInfo { bus_name, perspective, params }),
+                bus_info: Some(BusPortInfo { bus_name, perspective, params, count }),
                 shared: None, unpacked: false, unpacked_ascending: false,
                 comb_deps: None,
                 span: start.merge(end_span),
@@ -2899,6 +2935,7 @@ impl Parser {
                 let cstart = self.peek_span();
                 let mut port_name = self.expect_ident()?;
                 // Support indexed port group syntax: name[i].member → namei_member
+                // AND indexed Vec-of-bus connection: name[i] → name_i (no `.member`).
                 if self.eat(TokenKind::LBracket) {
                     let idx_tok = self.advance();
                     let idx = match &idx_tok.kind {
@@ -2908,12 +2945,24 @@ impl Parser {
                             "integer index", &idx_tok.kind.to_string(), idx_tok.span)),
                     };
                     self.expect(TokenKind::RBracket)?;
-                    self.expect(TokenKind::Dot)?;
-                    let member = self.expect_ident()?;
-                    port_name = Ident::new(
-                        format!("{}{idx}_{}", port_name.name, member.name),
-                        port_name.span.merge(member.span),
-                    );
+                    if self.eat(TokenKind::Dot) {
+                        // Indexed port-group member: `request[0].valid` → `request0_valid`
+                        // (matches the ports[N] flattening convention).
+                        let member = self.expect_ident()?;
+                        port_name = Ident::new(
+                            format!("{}{idx}_{}", port_name.name, member.name),
+                            port_name.span.merge(member.span),
+                        );
+                    } else {
+                        // Indexed Vec-of-bus connection: `chans[0]` → `chans_0`
+                        // (matches the SV / sim signature flattening of
+                        // `port chans: initiator Vec<BusName, N>;`).
+                        let end_span = idx_tok.span;
+                        port_name = Ident::new(
+                            format!("{}_{}", port_name.name, idx),
+                            port_name.span.merge(end_span),
+                        );
+                    }
                 // Support dot notation for port group members: group.member → group_member
                 } else if self.eat(TokenKind::Dot) {
                     let member = self.expect_ident()?;
