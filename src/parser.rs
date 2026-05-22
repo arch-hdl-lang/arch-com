@@ -1613,7 +1613,14 @@ impl Parser {
         // Optional `ascending` follows `unpacked` (mirror of port modifier).
         // See arch-com#307.
         let unpacked_ascending = if unpacked { self.eat_contextual("ascending") } else { false };
-        let ty = self.parse_type_expr()?;
+        // Special case for bus-typed wires (scalar or Vec): consume any
+        // inline `<PARAM=val, ...>` param overrides. The bus param list
+        // is stashed in `WireDecl.bus_params` so codegen can apply it to
+        // each flattened signal width — without this, declarations like
+        // `wire w: Vec<BusAxi4<ID_W=4>, 2>;` would carry the bus's
+        // default param values into the flat signal emission and
+        // mismatch any port that overrode the same params.
+        let (ty, bus_params) = self.parse_wire_type_with_bus_params()?;
         self.expect(TokenKind::Semi)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
         if unpacked && !matches!(ty, TypeExpr::Vec(..)) {
@@ -1627,8 +1634,86 @@ impl Parser {
             ty,
             unpacked,
             unpacked_ascending,
+            bus_params,
             span: start.merge(end_span),
         })
+    }
+
+    /// Parse a wire type. Accepts the standard forms plus two bus-typed
+    /// shapes that carry inline param overrides:
+    ///
+    ///   wire w: BusName<PARAM=val, ...>;
+    ///   wire w: Vec<BusName<PARAM=val, ...>, N>;
+    ///
+    /// Returns the standard TypeExpr (params stripped) plus the parsed
+    /// param assignments. Empty Vec when none are present or when the
+    /// type is non-bus.
+    fn parse_wire_type_with_bus_params(&mut self) -> Result<(TypeExpr, Vec<ParamAssign>), CompileError> {
+        // Vec<BusName<...>, N> path: detect Vec keyword and parse manually.
+        if self.check(TokenKind::KwVec) {
+            self.advance();
+            self.expect(TokenKind::Lt)?;
+            let old_no_angle = self.no_angle;
+            self.no_angle = true;
+            // Element type: try Named-with-params first (bus form), fall
+            // back to a general type expr otherwise.
+            let (elem_ty, bus_params) = if let Some(TokenKind::Ident(_)) = self.peek_kind() {
+                let bus_ident = self.expect_ident()?;
+                let params = if self.check(TokenKind::Lt) {
+                    self.advance();
+                    let mut assigns = Vec::new();
+                    loop {
+                        let pname = self.expect_ident()?;
+                        self.expect(TokenKind::Eq)?;
+                        let pval = self.parse_expr()?;
+                        assigns.push(ParamAssign { name: pname, value: pval, ty: None });
+                        if !self.eat(TokenKind::Comma) { break; }
+                    }
+                    self.expect(TokenKind::Gt)?;
+                    assigns
+                } else {
+                    Vec::new()
+                };
+                (TypeExpr::Named(bus_ident), params)
+            } else {
+                // Not a Named element — re-enter the standard parser. No
+                // bus params possible.
+                (self.parse_type_expr()?, Vec::new())
+            };
+            self.expect(TokenKind::Comma)?;
+            let count = self.parse_expr()?;
+            self.no_angle = old_no_angle;
+            self.expect(TokenKind::Gt)?;
+            return Ok((TypeExpr::Vec(Box::new(elem_ty), Box::new(count)), bus_params));
+        }
+        // Scalar bus wire: `wire w: BusName<...>;`. Parse a bare ident
+        // then check for inline params; if not present, fall through to
+        // the regular type parser (covers Bool, UInt<N>, etc.).
+        if let Some(TokenKind::Ident(_)) = self.peek_kind() {
+            // Peek a second token to distinguish `BusName<...>` from
+            // `BusName;` (a bare named type) from the type-keyword forms
+            // (UInt, SInt, etc. start with the keyword kind, not Ident).
+            let saved = self.pos;
+            let bus_ident = self.expect_ident()?;
+            if self.check(TokenKind::Lt) {
+                self.advance();
+                let mut assigns = Vec::new();
+                loop {
+                    let pname = self.expect_ident()?;
+                    self.expect(TokenKind::Eq)?;
+                    let pval = self.parse_expr()?;
+                    assigns.push(ParamAssign { name: pname, value: pval, ty: None });
+                    if !self.eat(TokenKind::Comma) { break; }
+                }
+                self.expect(TokenKind::Gt)?;
+                return Ok((TypeExpr::Named(bus_ident), assigns));
+            }
+            // Not followed by `<` — could be a plain Named type; reuse
+            // the existing path so its full grammar (e.g. struct types)
+            // applies uniformly.
+            self.pos = saved;
+        }
+        Ok((self.parse_type_expr()?, Vec::new()))
     }
 
     fn parse_reg_decl(&mut self) -> Result<RegDecl, CompileError> {

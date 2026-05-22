@@ -1337,7 +1337,19 @@ impl<'a> TypeChecker<'a> {
                 // We need to mark parent signals as "driven" when the inst OUTPUTS them.
                 if let Some((_, bus_name)) = target_bus_ports.iter().find(|(pn, _)| *pn == conn.port_name.name) {
                     if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
-                        if let ExprKind::Ident(sig_base) = &conn.signal.kind {
+                        // Resolve the parent-side base prefix:
+                        //   * `Ident("w")`           → `w`         (scalar wire/port)
+                        //   * `Index(Ident("v"), i)` → `v_<i>`     (Vec-of-bus element)
+                        let sig_base_owned: Option<String> = match &conn.signal.kind {
+                            ExprKind::Ident(n) => Some(n.clone()),
+                            ExprKind::Index(arr, idx) => {
+                                if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) = (&arr.kind, &idx.kind) {
+                                    Some(format!("{}_{}", arr_name, i))
+                                } else { None }
+                            }
+                            _ => None,
+                        };
+                        if let Some(sig_base) = sig_base_owned.as_ref() {
                             // Find the inst's bus port perspective and params
                             let inst_bus_info = self.source.items.iter()
                                 .find_map(|item| match item {

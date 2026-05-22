@@ -1557,6 +1557,12 @@ fn expand_bus_connections(
                         if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) = (&arr.kind, &idx.kind) {
                             if bus_wire_names.contains(arr_name.as_str()) {
                                 BindKind::WireIndex(arr_name.clone(), *i as u32)
+                            } else if parent_vec_of_bus_ports.contains_key(arr_name.as_str()) {
+                                // Vec-of-bus PORT element on the parent
+                                // side (`port s: initiator Vec<B, N>`):
+                                // flat name is `<port>_<i>`, mirroring
+                                // the port flattening.
+                                BindKind::FlatPort(format!("{}_{}", arr_name, i))
                             } else { continue; }
                         } else { continue; }
                     }
@@ -7874,7 +7880,15 @@ impl<'a> SimCodegen<'a> {
             }
         }
         for b in &buses {
-            let param_map: HashMap<String, &Expr> = HashMap::new();
+            // Seed with each bus param's declared default so `generate_if`
+            // gates (e.g. `generate_if READ` / `WRITE`) evaluate as the
+            // bus author intended for the "no overrides" struct. Without
+            // this, the param_map is empty and every conditional branch
+            // folds to false, producing an empty struct that breaks any
+            // sim consumer that touches a bus field.
+            let param_map: HashMap<String, &Expr> = b.params.iter()
+                .filter_map(|p| p.default.as_ref().map(|d| (p.name.name.clone(), d)))
+                .collect();
             let effective = crate::resolve::BusInfo {
                 name: b.name.name.clone(),
                 params: b.params.clone(),
