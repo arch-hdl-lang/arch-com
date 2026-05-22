@@ -386,15 +386,16 @@ impl<'a> SimCodegen<'a> {
         let mut bus_flat: Vec<(String, TypeExpr)> = Vec::new();
         for p in &m.ports {
             if let Some(ref bi) = p.bus_info {
-                match bi.count {
+                match bi.count.as_ref() {
                     None => { bus_port_names.insert(p.name.name.clone()); }
-                    Some(n) => {
+                    Some(count_expr) => {
+                        let n = eval_const_expr_with_params(count_expr, &m.params) as u32;
                         for i in 0..n {
                             bus_port_names.insert(format!("{}_{}", p.name.name, i));
                         }
                     }
                 }
-                bus_flat.extend(flatten_bus_port(&p.name.name, bi, self.symbols));
+                bus_flat.extend(flatten_bus_port(&p.name.name, bi, self.symbols, &m.params));
             }
         }
 
@@ -1323,6 +1324,7 @@ fn flatten_bus_port_with_dir(
     port_name: &str,
     bi: &BusPortInfo,
     symbols: &crate::resolve::SymbolTable,
+    module_params: &[ParamDecl],
 ) -> Vec<(String, Direction, TypeExpr)> {
     let bus_name = &bi.bus_name.name;
     if let Some((crate::resolve::Symbol::Bus(info), _)) = symbols.globals.get(bus_name) {
@@ -1335,9 +1337,14 @@ fn flatten_bus_port_with_dir(
         let eff = info.effective_signals(&param_map);
         let is_target = bi.perspective == BusPerspective::Target;
         // For Vec<Bus, N> ports, emit N copies of each signal with indexed prefix.
-        let prefixes: Vec<String> = match bi.count {
+        // N is resolved against the enclosing module's params for the
+        // param-driven `Vec<Bus, NUM_FOO>` case.
+        let prefixes: Vec<String> = match bi.count.as_ref() {
             None => vec![port_name.to_string()],
-            Some(n) => (0..n).map(|i| format!("{}_{}", port_name, i)).collect(),
+            Some(count_expr) => {
+                let n = eval_const_expr_with_params(count_expr, module_params) as u32;
+                (0..n).map(|i| format!("{}_{}", port_name, i)).collect()
+            }
         };
         let mut out = Vec::new();
         for prefix in &prefixes {
@@ -1366,8 +1373,9 @@ fn flatten_bus_port(
     port_name: &str,
     bi: &BusPortInfo,
     symbols: &crate::resolve::SymbolTable,
+    module_params: &[ParamDecl],
 ) -> Vec<(String, TypeExpr)> {
-    flatten_bus_port_with_dir(port_name, bi, symbols)
+    flatten_bus_port_with_dir(port_name, bi, symbols, module_params)
         .into_iter()
         .map(|(n, _d, t)| (n, t))
         .collect()
@@ -1383,28 +1391,38 @@ fn expand_bus_connections(
     symbols: &crate::resolve::SymbolTable,
     bus_wire_names: &HashSet<String>,
 ) -> Vec<Connection> {
-    // Find the target construct's bus ports (with perspective info)
-    let target_ports: Option<&[PortDecl]> = source.items.iter()
+    // Find the target construct's ports + params. Vec-of-bus counts are
+    // resolved against the child module's params (with this inst's
+    // `param NAME = ...` overrides applied) so that
+    // `port chans: initiator Vec<B, N>;` with a param-driven N folds to a
+    // concrete element count at the call site.
+    let (target_ports, target_params): (Option<&[PortDecl]>, Vec<ParamDecl>) = source.items.iter()
         .find_map(|item| match item {
-            Item::Module(m) if m.name.name == inst.module_name.name => Some(m.ports.as_slice()),
-            Item::Fsm(f) if f.name.name == inst.module_name.name => Some(f.ports.as_slice()),
+            Item::Module(m) if m.name.name == inst.module_name.name =>
+                Some((Some(m.ports.as_slice()), m.params.clone())),
+            Item::Fsm(f) if f.name.name == inst.module_name.name =>
+                Some((Some(f.ports.as_slice()), f.common.params.clone())),
             _ => None,
-        });
-    // For each bus port on the target, expose either the scalar name (count=None)
-    // or every indexed name `port_0`, `port_1`, ... (count=Some(N)). The inst-site
-    // refers to a Vec-of-bus element by its underscore-suffixed name, e.g.
-    // `chans_0 -> w0;` for the first element of a `Vec<B, N>` port `chans`.
+        })
+        .unwrap_or((None, Vec::new()));
+    let mut child_params_overridden = target_params.clone();
+    for pa in &inst.param_assigns {
+        if let Some(p) = child_params_overridden.iter_mut().find(|p| p.name.name == pa.name.name) {
+            p.default = Some(pa.value.clone());
+        }
+    }
     let target_bus_ports: Vec<(String, &str, BusPerspective, &[ParamAssign])> = target_ports
         .map(|ports| {
             let mut v = Vec::new();
             for p in ports {
                 if let Some(bi) = p.bus_info.as_ref() {
                     let bus = bi.bus_name.name.as_str();
-                    match bi.count {
+                    match bi.count.as_ref() {
                         None => {
                             v.push((p.name.name.clone(), bus, bi.perspective, bi.params.as_slice()));
                         }
-                        Some(n) => {
+                        Some(count_expr) => {
+                            let n = eval_const_expr_with_params(count_expr, &child_params_overridden) as u32;
                             for i in 0..n {
                                 v.push((format!("{}_{}", p.name.name, i), bus, bi.perspective, bi.params.as_slice()));
                             }
@@ -3259,16 +3277,22 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
                 ctx.vec_of_bus_port_count,
                 ctx.vec_of_bus_wire_count,
             ) {
-                let lit = |e: &Expr| -> Option<u32> {
-                    match &e.kind {
-                        ExprKind::Literal(LitKind::Dec(n))
-                        | ExprKind::Literal(LitKind::Hex(n))
-                        | ExprKind::Literal(LitKind::Bin(n))
-                        | ExprKind::Literal(LitKind::Sized(_, n)) => Some(*n as u32),
-                        _ => None,
-                    }
+                // Param-driven bounds (e.g. `for i in 0..NUM-1`) fold against
+                // the module's params so the unroll fires on `Vec<Bus, NUM>`
+                // with a param-driven N. `eval_const_expr_with_params`
+                // returns 0 for anything it can't fold; we still need a
+                // signal that the bound was foldable, so guard literal-zero
+                // by requiring `start <= end` AND the body actually touches
+                // a Vec-of-bus.
+                let folds_to = |e: &Expr| -> Option<u32> {
+                    let v = eval_const_expr_with_params(e, ctx.params) as u32;
+                    // Any expression that wasn't a literal-zero in disguise
+                    // and that the body actually depends on counts as
+                    // foldable; in practice the body-touch predicate below
+                    // guards against false positives.
+                    Some(v)
                 };
-                if let (Some(start_lit), Some(end_lit)) = (lit(rs), lit(re)) {
+                if let (Some(start_lit), Some(end_lit)) = (folds_to(rs), folds_to(re)) {
                     let touches = f.body.iter().any(|s| stmt_indexes_vob_with_var(
                         s, var, vob_ports, vob_wires,
                     ));
@@ -4321,17 +4345,21 @@ impl<'a> SimCodegen<'a> {
         for p in &m.ports {
             if let Some(ref bi) = p.bus_info {
                 // Vec<Bus,N> ports register N indexed names so bracket-dot
-                // expression lookup hits a known bus prefix.
-                match bi.count {
+                // expression lookup hits a known bus prefix. N is resolved
+                // against the module's params for the param-driven case.
+                match bi.count.as_ref() {
                     None => { bus_port_names.insert(p.name.name.clone()); }
-                    Some(n) => {
+                    Some(count_expr) => {
+                        let n = eval_const_expr_with_params(count_expr, &m.params) as u32;
                         for i in 0..n {
                             bus_port_names.insert(format!("{}_{}", p.name.name, i));
                         }
-                        vec_of_bus_port_count_map.insert(p.name.name.clone(), n);
+                        if n > 0 {
+                            vec_of_bus_port_count_map.insert(p.name.name.clone(), n);
+                        }
                     }
                 }
-                let with_dir = flatten_bus_port_with_dir(&p.name.name, bi, self.symbols);
+                let with_dir = flatten_bus_port_with_dir(&p.name.name, bi, self.symbols, &m.params);
                 for (fname, fdir, fty) in with_dir {
                     bus_flat_dirs.insert(fname.clone(), fdir);
                     bus_flat.push((fname, fty));

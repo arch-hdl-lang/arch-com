@@ -419,10 +419,15 @@ impl<'a> TypeChecker<'a> {
         // path so that `chans[i].sig = ...` records all N flat copies as
         // driven when `i` is a loop variable (or any non-literal index).
         self.vec_of_bus_ports.clear();
+        let empty_types: HashMap<String, Ty> = HashMap::new();
         for p in &m.ports {
             if let Some(bi) = p.bus_info.as_ref() {
-                if let Some(n) = bi.count {
-                    self.vec_of_bus_ports.insert(p.name.name.clone(), n);
+                if let Some(count_expr) = bi.count.as_ref() {
+                    if let Some(n) = self.eval_const_expr(count_expr, &empty_types) {
+                        if n > 0 {
+                            self.vec_of_bus_ports.insert(p.name.name.clone(), n as u32);
+                        }
+                    }
                 }
             }
         }
@@ -928,9 +933,12 @@ impl<'a> TypeChecker<'a> {
                     let mut pm = info.default_param_map();
                     for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
                     let eff = info.effective_signals(&pm);
-                    let prefixes: Vec<String> = match bi.count {
+                    let prefixes: Vec<String> = match bi.count.as_ref() {
                         None => vec![p.name.name.clone()],
-                        Some(n) => (0..n).map(|i| format!("{}_{}", p.name.name, i)).collect(),
+                        Some(_) => {
+                            let n = self.vec_of_bus_ports.get(&p.name.name).copied().unwrap_or(0);
+                            (0..n).map(|i| format!("{}_{}", p.name.name, i)).collect()
+                        }
                     };
                     for prefix in &prefixes {
                         for (sname, sdir, _) in &eff {

@@ -30,7 +30,7 @@ impl<'a> SimCodegen<'a> {
         for p in &f.ports {
             if let Some(ref bi) = p.bus_info {
                 bus_port_names.insert(p.name.name.clone());
-                bus_flat.extend(flatten_bus_port(&p.name.name, bi, self.symbols));
+                bus_flat.extend(flatten_bus_port(&p.name.name, bi, self.symbols, &f.common.params));
             }
         }
 
