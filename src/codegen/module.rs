@@ -78,6 +78,29 @@ impl<'a> Codegen<'a> {
         // Ports — bus ports are flattened to individual signals
         self.bus_ports.clear();
         self.bus_wires.clear();
+        self.vec_of_bus_port_count.clear();
+        self.vec_of_bus_wire_count.clear();
+        for p in m.ports.iter() {
+            if let Some(bi) = p.bus_info.as_ref() {
+                if let Some(n) = bi.count {
+                    self.vec_of_bus_port_count.insert(p.name.name.clone(), n);
+                }
+            }
+        }
+        for item in m.body.iter() {
+            if let ModuleBodyItem::WireDecl(w) = item {
+                if let TypeExpr::Vec(elem, size_expr) = &w.ty {
+                    if let TypeExpr::Named(id) = elem.as_ref() {
+                        if matches!(self.symbols.globals.get(&id.name),
+                                    Some((crate::resolve::Symbol::Bus(_), _))) {
+                            if let Some(n) = self.eval_const_u32(size_expr, &m.params) {
+                                self.vec_of_bus_wire_count.insert(w.name.name.clone(), n);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         self.reset_ports.clear();
         self.vec_sizes.clear();
         self.pipe_regs.clear();
@@ -136,7 +159,16 @@ impl<'a> Codegen<'a> {
         for p in m.ports.iter() {
             if let Some(ref bi) = p.bus_info {
                 let bus_name = &bi.bus_name.name;
-                self.bus_ports.insert(p.name.name.clone(), bus_name.clone());
+                // Names to register in self.bus_ports + signal-name prefixes:
+                //   scalar:   ["chan"]
+                //   Vec<B,N>: ["chans_0", "chans_1", ..., "chans_{N-1}"]
+                let inst_names: Vec<String> = match bi.count {
+                    None => vec![p.name.name.clone()],
+                    Some(n) => (0..n).map(|i| format!("{}_{}", p.name.name, i)).collect(),
+                };
+                for nm in &inst_names {
+                    self.bus_ports.insert(nm.clone(), bus_name.clone());
+                }
                 if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
                     // Build param substitution map: start with bus defaults, override with port params
                     let mut param_map: std::collections::HashMap<String, &Expr> = info.params.iter()
@@ -146,18 +178,20 @@ impl<'a> Codegen<'a> {
                         param_map.insert(pa.name.name.clone(), &pa.value);
                     }
                     let eff_signals = info.effective_signals(&param_map);
-                    for (sname, sdir, sty) in &eff_signals {
-                        let actual_dir = match bi.perspective {
-                            BusPerspective::Initiator => *sdir,
-                            BusPerspective::Target => (*sdir).flip(),
-                        };
-                        let dir_str = match actual_dir {
-                            Direction::In => "input",
-                            Direction::Out => "output",
-                        };
-                        let subst_ty = Self::subst_type_expr(sty, &param_map);
-                        let ty_str = self.emit_port_type_str(&subst_ty);
-                        port_lines.push(format!("{} {} {}_{}", dir_str, ty_str, p.name.name, sname));
+                    for nm in &inst_names {
+                        for (sname, sdir, sty) in &eff_signals {
+                            let actual_dir = match bi.perspective {
+                                BusPerspective::Initiator => *sdir,
+                                BusPerspective::Target => (*sdir).flip(),
+                            };
+                            let dir_str = match actual_dir {
+                                Direction::In => "input",
+                                Direction::Out => "output",
+                            };
+                            let subst_ty = Self::subst_type_expr(sty, &param_map);
+                            let ty_str = self.emit_port_type_str(&subst_ty);
+                            port_lines.push(format!("{} {} {}_{}", dir_str, ty_str, nm, sname));
+                        }
                     }
                 }
             } else {
@@ -584,29 +618,54 @@ impl<'a> Codegen<'a> {
                     // abstraction. Record the wire in `bus_wires` so field
                     // access rewrites (see emit_expr_str) produce the flat
                     // name.
-                    if let TypeExpr::Named(id) = &w.ty {
-                        if let Some((crate::resolve::Symbol::Bus(info), _)) =
-                            self.symbols.globals.get(&id.name)
-                        {
-                            self.bus_wires.insert(w.name.name.clone(), id.name.clone());
-                            let param_map: std::collections::HashMap<String, &Expr> =
-                                info.params.iter()
-                                    .filter_map(|pd| pd.default.as_ref()
-                                        .map(|d| (pd.name.name.clone(), d)))
-                                    .collect();
+                    //
+                    // `wire w: Vec<BusName, N>;` declares N bus copies with
+                    // indexed names `w_0`, ..., `w_{N-1}`, accessed via
+                    // `w[i].sig`. Each copy contributes its full signal set.
+                    let bus_wire_info = match &w.ty {
+                        TypeExpr::Named(id) => self.symbols.globals.get(&id.name)
+                            .and_then(|(s, _)| if let crate::resolve::Symbol::Bus(info) = s {
+                                Some((info, id.name.clone(), None))
+                            } else { None }),
+                        TypeExpr::Vec(elem, size_expr) => {
+                            if let TypeExpr::Named(id) = elem.as_ref() {
+                                if let Some(n) = self.eval_const_u32(size_expr, &m_clone.params) {
+                                    self.symbols.globals.get(&id.name)
+                                        .and_then(|(s, _)| if let crate::resolve::Symbol::Bus(info) = s {
+                                            Some((info, id.name.clone(), Some(n)))
+                                        } else { None })
+                                } else { None }
+                            } else { None }
+                        }
+                        _ => None,
+                    };
+                    if let Some((info, bus_name, count)) = bus_wire_info {
+                        let prefixes: Vec<String> = match count {
+                            None => vec![w.name.name.clone()],
+                            Some(n) => (0..n).map(|i| format!("{}_{}", w.name.name, i)).collect(),
+                        };
+                        for prefix in &prefixes {
+                            self.bus_wires.insert(prefix.clone(), bus_name.clone());
+                        }
+                        let param_map: std::collections::HashMap<String, &Expr> =
+                            info.params.iter()
+                                .filter_map(|pd| pd.default.as_ref()
+                                    .map(|d| (pd.name.name.clone(), d)))
+                                .collect();
+                        for prefix in &prefixes {
                             for (sname, _sdir, sty) in info.effective_signals(&param_map) {
                                 let subst_ty = Self::subst_type_expr(&sty, &param_map);
                                 let (ty_str, arr_suffix) =
                                     self.emit_type_and_array_suffix(&subst_ty);
                                 self.line(&format!(
                                     "{} {}_{}{};",
-                                    ty_str, w.name.name, sname, arr_suffix
+                                    ty_str, prefix, sname, arr_suffix
                                 ));
-                                declared_names.insert(format!("{}_{}", w.name.name, sname));
+                                declared_names.insert(format!("{}_{}", prefix, sname));
                             }
-                            declared_names.insert(w.name.name.clone());
-                            continue;
                         }
+                        declared_names.insert(w.name.name.clone());
+                        continue;
                     }
                     if w.unpacked {
                         // SV unpacked-array shape (mirror of unpacked port modifier).

@@ -4001,6 +4001,304 @@ fn test_bus_wire_typechecks_and_codegens() {
 }
 
 #[test]
+fn test_vec_of_bus_port_flattens_to_n_indexed_copies() {
+    // `port chans: initiator Vec<BusName, N>;` declares N copies of the bus
+    // on the module signature. SV codegen emits `chans_0_<sig>`, `chans_1_<sig>`,
+    // ..., `chans_{N-1}_<sig>` (N copies × #signals each), and inst-site
+    // bracket-dot indexing `chans[i].sig` resolves to the i-th copy.
+    let source = "
+        bus B
+          v: out Bool;
+          r: in  Bool;
+          d: out UInt<8>;
+        end bus B
+
+        module Prod
+          port clk: in Clock<SysDomain>;
+          port chans: initiator Vec<B, 3>;
+          comb
+            chans[0].v = true;
+            chans[0].d = 8'h11;
+            chans[1].v = false;
+            chans[1].d = 8'h22;
+            chans[2].v = true;
+            chans[2].d = 8'h33;
+          end comb
+        end module Prod
+    ";
+    let sv = compile_to_sv(source);
+    // All N copies appear on the module signature, each carrying every signal.
+    for i in 0..3 {
+        assert!(sv.contains(&format!("output logic chans_{i}_v")),
+                "missing `output logic chans_{i}_v` in SV:\n{sv}");
+        assert!(sv.contains(&format!("input logic chans_{i}_r")),
+                "missing `input logic chans_{i}_r` in SV:\n{sv}");
+        assert!(sv.contains(&format!("output logic [7:0] chans_{i}_d")),
+                "missing `output logic [7:0] chans_{i}_d` in SV:\n{sv}");
+    }
+    // Bracket-dot access resolves to the indexed flat name.
+    assert!(sv.contains("chans_0_v = 1'b1") || sv.contains("assign chans_0_v = 1'b1"),
+            "expected `chans_0_v` assignment in SV:\n{sv}");
+    assert!(sv.contains("chans_1_v = 1'b0") || sv.contains("assign chans_1_v = 1'b0"),
+            "expected `chans_1_v` assignment in SV:\n{sv}");
+    assert!(sv.contains("chans_2_d = 8'd51") || sv.contains("assign chans_2_d = 8'd51"),
+            "expected `chans_2_d = 8'd51` assignment in SV:\n{sv}");
+}
+
+#[test]
+fn test_vec_of_bus_port_rejects_zero_count_and_non_literal() {
+    // MVP restriction: count must be a positive integer literal.
+    let src_zero = r#"
+        bus B
+          v: out Bool;
+        end bus B
+        module M
+          port chans: initiator Vec<B, 0>;
+        end module M
+    "#;
+    let tokens = arch::lexer::tokenize(src_zero).expect("lex");
+    let mut parser = arch::parser::Parser::new(tokens, src_zero);
+    let err = parser.parse_source_file().expect_err("Vec<B, 0> should fail to parse");
+    assert!(format!("{err:?}").contains("N must be >= 1"),
+            "expected `N must be >= 1` diagnostic, got: {err:?}");
+
+    let src_param = r#"
+        bus B
+          v: out Bool;
+        end bus B
+        module M
+          param N: const = 4;
+          port chans: initiator Vec<B, N>;
+        end module M
+    "#;
+    let tokens = arch::lexer::tokenize(src_param).expect("lex");
+    let mut parser = arch::parser::Parser::new(tokens, src_param);
+    let err = parser.parse_source_file().expect_err("Vec<B, N> with non-literal N should fail");
+    assert!(format!("{err:?}").contains("compile-time integer literal"),
+            "expected literal-only diagnostic, got: {err:?}");
+}
+
+#[test]
+fn test_vec_of_bus_port_typecheck_drives_all_indexed_outputs() {
+    // The driver-completeness check expands a Vec<Bus,N> port into N copies
+    // and demands every output signal of every copy be driven. Forgetting
+    // an index = compile error.
+    let src_missing = r#"
+        bus B
+          v: out Bool;
+        end bus B
+        module M
+          port chans: initiator Vec<B, 2>;
+          comb
+            chans[0].v = true;
+            // chans[1].v intentionally undriven
+          end comb
+        end module M
+    "#;
+    let tokens = arch::lexer::tokenize(src_missing).expect("lex");
+    let mut parser = arch::parser::Parser::new(tokens, src_missing);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let result = arch::typecheck::TypeChecker::new(&symbols, &ast).check();
+    let errs = result.expect_err("missing index drive should error");
+    let msg = errs.iter().map(|e| format!("{e:?}")).collect::<String>();
+    // Diagnostic Display = "output port `chans_1_v` is not driven";
+    // Debug = `UndriveOutput { name: "chans_1_v", ... }`. Accept either.
+    assert!(msg.contains("chans_1_v") && (msg.contains("not driven") || msg.contains("UndriveOutput")),
+            "expected `chans_1_v not driven` diagnostic, got: {msg}");
+}
+
+#[test]
+fn test_vec_of_bus_for_loop_static_unroll() {
+    // `chans[i].sig = ...;` inside `for i in 0..N-1` over a `Vec<Bus, N>`
+    // port has no SV-level array (the signature exposes only the flattened
+    // `<port>_<i>_<sig>` names). The codegen statically unrolls the loop
+    // when its bounds are literal, binding the loop variable to each
+    // iteration value so the body becomes N straight-line per-element
+    // assignments.
+    let source = "
+        bus B
+          v: out Bool;
+          d: out UInt<8>;
+        end bus B
+        module M
+          port chans: initiator Vec<B, 4>;
+          port idx: in UInt<8>;
+          comb
+            for i in 0..3
+              chans[i].v = true;
+              chans[i].d = (idx + i).trunc<8>();
+            end for
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    // The loop should be statically unrolled: no behavioral `for (int i ...`,
+    // and per-element flat assignments for each index.
+    assert!(!sv.contains("for (int i ="),
+            "expected for-loop to be statically unrolled (no behavioral SV for-loop):\n{sv}");
+    for i in 0..4 {
+        assert!(sv.contains(&format!("chans_{i}_v = 1'b1")),
+                "missing unrolled `chans_{i}_v = 1'b1`:\n{sv}");
+        // RHS must reference the literal i (not the loop variable).
+        assert!(sv.contains(&format!("chans_{i}_d = 8'(idx + {i})"))
+                || sv.contains(&format!("chans_{i}_d = 8'((idx + {i}))")),
+                "missing unrolled `chans_{i}_d = 8'(idx + {i})`:\n{sv}");
+    }
+}
+
+#[test]
+fn test_vec_of_bus_wire_flattens_to_n_indexed_signals() {
+    // `wire w: Vec<BusName, N>;` is type-expression composition over the
+    // existing `wire X: BusName;` form. SV codegen emits N flat
+    // `w_0_<sig>`, ..., `w_{N-1}_<sig>` and `w[i].sig` access resolves
+    // to the corresponding flat name. No new construct.
+    let source = "
+        bus B
+          v: out Bool;
+          d: out UInt<8>;
+        end bus B
+
+        module M
+          port o_v0: out Bool;
+          port o_d1: out UInt<8>;
+          wire w: Vec<B, 2>;
+          comb
+            w[0].v = true;  w[0].d = 8'h11;
+            w[1].v = false; w[1].d = 8'h22;
+            o_v0 = w[0].v;
+            o_d1 = w[1].d;
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    // The wire becomes N flat per-signal declarations.
+    for (i, expected_d) in [(0u32, "8'd17"), (1u32, "8'd34")] {
+        assert!(sv.contains(&format!("logic w_{i}_v;")),
+                "missing `logic w_{i}_v;` in SV:\n{sv}");
+        assert!(sv.contains(&format!("logic [7:0] w_{i}_d;")),
+                "missing `logic [7:0] w_{i}_d;` in SV:\n{sv}");
+        assert!(sv.contains(&format!("w_{i}_d = {expected_d}")),
+                "missing `w_{i}_d = {expected_d}` assignment in SV:\n{sv}");
+    }
+    // Reading uses the same flat names.
+    assert!(sv.contains("o_v0 = w_0_v"),
+            "expected `o_v0 = w_0_v` in SV:\n{sv}");
+    assert!(sv.contains("o_d1 = w_1_d"),
+            "expected `o_d1 = w_1_d` in SV:\n{sv}");
+}
+
+#[test]
+fn test_vec_of_bus_wire_carries_inst_output_through_indexed_connection() {
+    // The producer drives a `Vec<B, N>` port; the parent declares a
+    // `Vec<B, N>` wire and connects each element via `chans[i] -> w[i];`.
+    // SV codegen must emit per-signal named-port connections with
+    // `w_<i>_<sig>` on the parent side, and downstream reads on `w[i].sig`
+    // must hit those same flat signals.
+    let source = "
+        bus B
+          v: out Bool;
+          d: out UInt<8>;
+        end bus B
+
+        module Producer
+          port clk: in Clock<SysDomain>;
+          port chans: initiator Vec<B, 2>;
+          comb
+            chans[0].v = true;  chans[0].d = 8'hAA;
+            chans[1].v = true;  chans[1].d = 8'h55;
+          end comb
+        end module Producer
+
+        module Parent
+          port clk:   in  Clock<SysDomain>;
+          port o_v0:  out Bool;
+          port o_d1:  out UInt<8>;
+          wire w: Vec<B, 2>;
+          inst p: Producer
+            clk <- clk;
+            chans[0] -> w[0];
+            chans[1] -> w[1];
+          end inst p
+          comb
+            o_v0 = w[0].v;
+            o_d1 = w[1].d;
+          end comb
+        end module Parent
+    ";
+    let sv = compile_to_sv(source);
+    // The Vec-of-bus wire flattens to per-index per-signal storage.
+    for i in 0..2 {
+        assert!(sv.contains(&format!("logic w_{i}_v;")),
+                "missing `logic w_{i}_v;` in Parent SV:\n{sv}");
+    }
+    // The Producer instance's bus port elements connect via per-signal
+    // named ports against those flat wire signals.
+    assert!(sv.contains(".chans_0_v(w_0_v)") || sv.contains(".chans_0_v (w_0_v)"),
+            "expected `.chans_0_v(w_0_v)` named-port connection in SV:\n{sv}");
+    assert!(sv.contains(".chans_1_d(w_1_d)") || sv.contains(".chans_1_d (w_1_d)"),
+            "expected `.chans_1_d(w_1_d)` named-port connection in SV:\n{sv}");
+    // The downstream reads land on the same flat names.
+    assert!(sv.contains("o_v0 = w_0_v"),
+            "expected `o_v0 = w_0_v` in SV:\n{sv}");
+    assert!(sv.contains("o_d1 = w_1_d"),
+            "expected `o_d1 = w_1_d` in SV:\n{sv}");
+}
+
+#[test]
+fn test_vec_of_bus_inst_connection_uses_bracket_index_syntax() {
+    // Parent instantiates a Child whose port is `Vec<B, N>`. Each index is
+    // connected via the bracket form `chans[i] -> wire;`, matching the
+    // declaration `Vec<_, N>` and the expression form `chans[i].sig`. The
+    // codegen expands to per-signal named-port connections in SV.
+    let source = "
+        bus B
+          v: out Bool;
+          d: out UInt<8>;
+        end bus B
+
+        module Child
+          port clk: in Clock<SysDomain>;
+          port chans: initiator Vec<B, 2>;
+          comb
+            chans[0].v = true;  chans[0].d = 8'hAA;
+            chans[1].v = false; chans[1].d = 8'h55;
+          end comb
+        end module Child
+
+        module Parent
+          port clk: in Clock<SysDomain>;
+          port out_v0: out Bool;
+          port out_d1: out UInt<8>;
+          wire w0: B;
+          wire w1: B;
+          inst c: Child
+            clk <- clk;
+            chans[0] -> w0;
+            chans[1] -> w1;
+          end inst c
+          comb
+            out_v0 = w0.v;
+            out_d1 = w1.d;
+          end comb
+        end module Parent
+    ";
+    let sv = compile_to_sv(source);
+    // Child has 4 flat ports for the Vec<B,2>.
+    for i in 0..2 {
+        assert!(sv.contains(&format!("output logic chans_{i}_v")),
+                "child should expose chans_{i}_v:\n{sv}");
+        assert!(sv.contains(&format!("output logic [7:0] chans_{i}_d")),
+                "child should expose chans_{i}_d:\n{sv}");
+    }
+    // Parent's inst connects each index by its underscore-suffixed name.
+    assert!(sv.contains(".chans_0_v(w0_v)") || sv.contains(".chans_0_v (w0_v)"),
+            "expected `.chans_0_v(w0_v)` named-port connection in SV:\n{sv}");
+    assert!(sv.contains(".chans_1_d(w1_d)") || sv.contains(".chans_1_d (w1_d)"),
+            "expected `.chans_1_d(w1_d)` named-port connection in SV:\n{sv}");
+}
+
+#[test]
 fn test_bus_wire_sv_flattens_to_individual_signals() {
     // SV codegen has no bus interface/struct: a bus-typed wire becomes N
     // individual SV wires named `<wire>_<field>`. Field access on the

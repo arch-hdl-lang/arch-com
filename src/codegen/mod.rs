@@ -99,7 +99,18 @@ pub struct Codegen<'a> {
     /// Maps call-site span.start → overload index (for overloaded functions only).
     overload_map: std::collections::HashMap<usize, usize>,
     /// Bus port names in the current module → bus name (for FieldAccess rewriting).
+    /// For Vec-of-bus ports, entries are keyed by the indexed names
+    /// (`<port>_0`, `<port>_1`, ...); the parent port name itself is in
+    /// `vec_of_bus_port_count`.
     bus_ports: std::collections::HashMap<String, String>,
+    /// Map of Vec-of-bus port name → element count N. Used by
+    /// `emit_for_loop_sv` to statically unroll loops whose body accesses
+    /// the port via a non-literal index. Populated per-module from
+    /// `BusPortInfo.count`.
+    vec_of_bus_port_count: std::collections::HashMap<String, u32>,
+    /// Same as `vec_of_bus_port_count` but for wires declared as
+    /// `wire w: Vec<BusName, N>;`. Used to detect the unroll opportunity.
+    vec_of_bus_wire_count: std::collections::HashMap<String, u32>,
     /// Bus-typed wire names in the current module → bus name. Bus wires are
     /// flattened into individual SV signals `<wire>_<field>` at emission
     /// time (no SV interfaces or structs are generated for buses), so
@@ -115,6 +126,13 @@ pub struct Codegen<'a> {
     /// `index` to per-iteration expressions (e.g. `vec[3]`, `2'd3`).
     /// Checked first in `emit_expr_str`'s Ident branch; empty otherwise.
     ident_subst: std::collections::HashMap<String, String>,
+    /// Loop-variable → integer-value substitutions, pushed during static
+    /// unrolling of `for` loops over Vec-of-bus indexed access. The
+    /// bracket-dot resolver for `Index(Ident(arr), Ident(loopvar)).field`
+    /// consults this when `loopvar` is in the map and treats the access
+    /// like a literal-index one (so `chans[i].v` resolves to
+    /// `chans_<value>_v`). Empty outside an unrolled body.
+    loop_var_subst: std::collections::HashMap<String, u32>,
     /// Map of Vec-typed signal name → element count N.
     /// Populated per-module at emit time so Vec method lowerings
     /// (`any`/`all`/`count`/etc.) can unroll over N iterations.
@@ -178,10 +196,13 @@ impl<'a> Codegen<'a> {
             pending_functions: Vec::new(),
             overload_map,
             bus_ports: std::collections::HashMap::new(),
+            vec_of_bus_port_count: std::collections::HashMap::new(),
+            vec_of_bus_wire_count: std::collections::HashMap::new(),
             bus_wires: std::collections::HashMap::new(),
             reset_ports: std::collections::HashMap::new(),
             current_construct: String::new(),
             ident_subst: std::collections::HashMap::new(),
+            loop_var_subst: std::collections::HashMap::new(),
             vec_sizes: std::collections::HashMap::new(),
             pipe_regs: std::collections::HashMap::new(),
             vec_params: std::collections::HashMap::new(),
@@ -1195,8 +1216,32 @@ impl<'a> Codegen<'a> {
         self.line("");
     }
 
-    fn emit_for_loop_sv<S>(&mut self, f: &ForLoop<S>, mut emit_body_stmt: impl FnMut(&mut Self, &S)) {
+    fn emit_for_loop_sv(&mut self, f: &ForLoop<Stmt>, mut emit_body_stmt: impl FnMut(&mut Self, &Stmt)) {
         let var = &f.var.name;
+        // Static unrolling for Vec-of-bus indexed access: the SV signature
+        // exposes only the flattened `<port>_<i>_<sig>` names, with no
+        // SV-level array of buses. A behavioral `for` loop indexing the
+        // bus by the loop variable would emit `chans[i].sig`, which is
+        // not legal SV. Detect the case and inline the body N times
+        // with the loop variable bound to each literal index via
+        // `loop_var_subst`.
+        if let ForRange::Range(rs, re) = &f.range {
+            if let (Some(start_lit), Some(end_lit)) =
+                (Self::expr_to_u32(rs), Self::expr_to_u32(re))
+            {
+                let body_touches_vob = f.body.iter().any(|s| Self::stmt_indexes_vob_with_var(
+                    s, var, &self.vec_of_bus_port_count, &self.vec_of_bus_wire_count,
+                ));
+                if body_touches_vob {
+                    for i in start_lit..=end_lit {
+                        self.loop_var_subst.insert(var.clone(), i);
+                        for s in &f.body { emit_body_stmt(self, s); }
+                    }
+                    self.loop_var_subst.remove(var);
+                    return;
+                }
+            }
+        }
         match &f.range {
             ForRange::Range(rs, re) => {
                 let start = self.emit_expr_str(rs);
@@ -1219,6 +1264,82 @@ impl<'a> Codegen<'a> {
                     self.line("end");
                 }
             }
+        }
+    }
+
+    /// Compile-time reducer for `for-loop` bound expressions used by the
+    /// Vec-of-bus static-unroll path. Only handles bare integer literals
+    /// for now; param-aware bounds remain a follow-up.
+    fn expr_to_u32(e: &Expr) -> Option<u32> {
+        match &e.kind {
+            ExprKind::Literal(LitKind::Dec(n))
+            | ExprKind::Literal(LitKind::Hex(n))
+            | ExprKind::Literal(LitKind::Bin(n))
+            | ExprKind::Literal(LitKind::Sized(_, n)) => Some(*n as u32),
+            _ => None,
+        }
+    }
+
+    /// Does `stmt` contain any expression of the form
+    /// `Index(Ident(name), Ident(var))` where `name` is a known Vec-of-bus
+    /// port or wire? Used by `emit_for_loop_sv` to decide whether to
+    /// statically unroll the loop. Recurses into nested ifs/matches/fors
+    /// and into LHS-of-assign targets as well as RHS values.
+    fn stmt_indexes_vob_with_var(
+        stmt: &Stmt,
+        var: &str,
+        ports: &std::collections::HashMap<String, u32>,
+        wires: &std::collections::HashMap<String, u32>,
+    ) -> bool {
+        fn walk_expr(
+            e: &Expr,
+            var: &str,
+            ports: &std::collections::HashMap<String, u32>,
+            wires: &std::collections::HashMap<String, u32>,
+        ) -> bool {
+            if let ExprKind::Index(arr, idx) = &e.kind {
+                if let (ExprKind::Ident(arr_name), ExprKind::Ident(idx_name)) = (&arr.kind, &idx.kind) {
+                    if idx_name == var && (ports.contains_key(arr_name) || wires.contains_key(arr_name)) {
+                        return true;
+                    }
+                }
+            }
+            match &e.kind {
+                ExprKind::Binary(_, l, r) => walk_expr(l, var, ports, wires) || walk_expr(r, var, ports, wires),
+                ExprKind::Unary(_, x) | ExprKind::Cast(x, _) | ExprKind::LatencyAt(x, _) | ExprKind::SvaNext(_, x) =>
+                    walk_expr(x, var, ports, wires),
+                ExprKind::FieldAccess(b, _) => walk_expr(b, var, ports, wires),
+                ExprKind::Index(b, i) | ExprKind::BitSlice(b, i, _) =>
+                    walk_expr(b, var, ports, wires) || walk_expr(i, var, ports, wires),
+                ExprKind::PartSelect(b, lo, hi, _) =>
+                    walk_expr(b, var, ports, wires) || walk_expr(lo, var, ports, wires) || walk_expr(hi, var, ports, wires),
+                ExprKind::Ternary(c, t, e2) =>
+                    walk_expr(c, var, ports, wires) || walk_expr(t, var, ports, wires) || walk_expr(e2, var, ports, wires),
+                ExprKind::Concat(parts) | ExprKind::FunctionCall(_, parts) =>
+                    parts.iter().any(|p| walk_expr(p, var, ports, wires)),
+                ExprKind::MethodCall(b, _, args) =>
+                    walk_expr(b, var, ports, wires) || args.iter().any(|a| walk_expr(a, var, ports, wires)),
+                _ => false,
+            }
+        }
+        match stmt {
+            Stmt::Assign(a) => walk_expr(&a.target, var, ports, wires) || walk_expr(&a.value, var, ports, wires),
+            Stmt::IfElse(ie) => {
+                walk_expr(&ie.cond, var, ports, wires)
+                    || ie.then_stmts.iter().any(|s| Self::stmt_indexes_vob_with_var(s, var, ports, wires))
+                    || ie.else_stmts.iter().any(|s| Self::stmt_indexes_vob_with_var(s, var, ports, wires))
+            }
+            Stmt::Match(m) => {
+                walk_expr(&m.scrutinee, var, ports, wires)
+                    || m.arms.iter().any(|arm| arm.body.iter().any(|s| Self::stmt_indexes_vob_with_var(s, var, ports, wires)))
+            }
+            Stmt::For(f) => f.body.iter().any(|s| Self::stmt_indexes_vob_with_var(s, var, ports, wires)),
+            Stmt::Init(ib) => ib.body.iter().any(|s| Self::stmt_indexes_vob_with_var(s, var, ports, wires)),
+            Stmt::DoUntil { body, cond, .. } =>
+                walk_expr(cond, var, ports, wires)
+                    || body.iter().any(|s| Self::stmt_indexes_vob_with_var(s, var, ports, wires)),
+            Stmt::WaitUntil(e, _) => walk_expr(e, var, ports, wires),
+            Stmt::Log(l) => l.args.iter().any(|a| walk_expr(a, var, ports, wires)),
         }
     }
 
@@ -2039,10 +2160,29 @@ impl<'a> Codegen<'a> {
                 Item::Fsm(f) if f.name.name == inst.module_name.name => Some(f.ports.as_slice()),
                 _ => None,
             });
+        // For each bus port, expose either the scalar name (count=None) or
+        // every indexed name `port_0`, ..., `port_{N-1}` (count=Some(N)) so
+        // inst-site connections like `chans_0 -> w0;` match a Vec<Bus,N>
+        // element of the child.
         let target_bus_ports: Vec<(String, String, Vec<ParamAssign>)> = target_ports_ref
-            .map(|ports| ports.iter()
-                .filter_map(|p| p.bus_info.as_ref().map(|bi| (p.name.name.clone(), bi.bus_name.name.clone(), bi.params.clone())))
-                .collect())
+            .map(|ports| {
+                let mut v = Vec::new();
+                for p in ports {
+                    if let Some(bi) = p.bus_info.as_ref() {
+                        match bi.count {
+                            None => {
+                                v.push((p.name.name.clone(), bi.bus_name.name.clone(), bi.params.clone()));
+                            }
+                            Some(n) => {
+                                for i in 0..n {
+                                    v.push((format!("{}_{}", p.name.name, i), bi.bus_name.name.clone(), bi.params.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+                v
+            })
             .unwrap_or_default();
 
         // Per-port enum-cast lookup. For each input port whose type is
@@ -2154,7 +2294,10 @@ impl<'a> Codegen<'a> {
                 continue;
             }
             if let Some((_, bus_name, bus_params)) = target_bus_ports.iter().find(|(pn, _, _)| *pn == c.port_name.name) {
-                // Bus connection — expand to individual signals
+                // Bus connection — expand to individual signals. The parent-side
+                // signal can be one of:
+                //   * `Ident("w")`              — scalar bus port or bus wire     → `w_<sig>`
+                //   * `Index(Ident("w"), N)`    — element N of a `Vec<Bus,M>` wire → `w_N_<sig>`
                 if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
                     let mut param_map: std::collections::HashMap<String, &Expr> = info.params.iter()
                         .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
@@ -2163,9 +2306,18 @@ impl<'a> Codegen<'a> {
                         param_map.insert(pa.name.name.clone(), &pa.value);
                     }
                     let eff_signals = info.effective_signals(&param_map);
-                    let sig_str = self.emit_expr_str(&c.signal);
+                    let sig_prefix = match &c.signal.kind {
+                        ExprKind::Index(arr, idx) => {
+                            if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) = (&arr.kind, &idx.kind) {
+                                format!("{}_{}", arr_name, i)
+                            } else {
+                                self.emit_expr_str(&c.signal)
+                            }
+                        }
+                        _ => self.emit_expr_str(&c.signal),
+                    };
                     for (sname, _, _) in &eff_signals {
-                        connections.push(format!(".{}_{}({}_{})", c.port_name.name, sname, sig_str, sname));
+                        connections.push(format!(".{}_{}({}_{})", c.port_name.name, sname, sig_prefix, sname));
                     }
                 }
             } else {
@@ -4068,6 +4220,13 @@ impl<'a> Codegen<'a> {
                 if let Some(sub) = self.ident_subst.get(name) {
                     return sub.clone();
                 }
+                // Static for-loop unroll bound the loop variable to a literal
+                // integer (e.g. `chans[i].v` inside `for i in 0..N-1`). Emit
+                // the integer instead of the bare identifier so the RHS of
+                // the unrolled body uses the iteration value.
+                if let Some(v) = self.loop_var_subst.get(name) {
+                    return v.to_string();
+                }
                 name.clone()
             }
             ExprKind::Binary(op, lhs, rhs) => {
@@ -4176,12 +4335,27 @@ impl<'a> Codegen<'a> {
                         return format!("{}_{}", base_name, field.name);
                     }
                 }
-                // Indexed bus port: m_axi[0].valid → m_axi_0_valid
+                // Indexed bus port or bus wire: m_axi[0].valid → m_axi_0_valid.
+                // The index may be either a compile-time literal or a loop
+                // variable bound to a literal via static `for`-loop unroll
+                // (see `loop_var_subst`).
                 if let ExprKind::Index(arr, idx) = &base.kind {
-                    if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) = (&arr.kind, &idx.kind) {
-                        let expanded = format!("{}_{}", arr_name, i);
-                        if self.bus_ports.contains_key(&expanded) {
-                            return format!("{}_{}_{}", arr_name, i, field.name);
+                    if let ExprKind::Ident(arr_name) = &arr.kind {
+                        let idx_val: Option<u64> = match &idx.kind {
+                            ExprKind::Literal(LitKind::Dec(i))
+                            | ExprKind::Literal(LitKind::Hex(i))
+                            | ExprKind::Literal(LitKind::Bin(i))
+                            | ExprKind::Literal(LitKind::Sized(_, i)) => Some(*i),
+                            ExprKind::Ident(loopvar) => self.loop_var_subst.get(loopvar).map(|v| *v as u64),
+                            _ => None,
+                        };
+                        if let Some(i) = idx_val {
+                            let expanded = format!("{}_{}", arr_name, i);
+                            if self.bus_ports.contains_key(&expanded)
+                                || self.bus_wires.contains_key(&expanded)
+                            {
+                                return format!("{}_{}_{}", arr_name, i, field.name);
+                            }
                         }
                     }
                 }

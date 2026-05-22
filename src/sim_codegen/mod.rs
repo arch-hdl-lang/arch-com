@@ -379,12 +379,21 @@ impl<'a> SimCodegen<'a> {
         let mut port_info: Vec<(String, u32, bool, bool, bool, bool)> = Vec::new();
         let mut bindings = Vec::new();
 
-        // Bus port flattening
+        // Bus port flattening. For Vec<Bus,N> ports, the indexed names
+        // `port_0`, `port_1`, ..., `port_{N-1}` populate `bus_port_names`
+        // so the bracket-dot expression path (`chans[i].sig`) resolves.
         let mut bus_port_names: HashSet<String> = HashSet::new();
         let mut bus_flat: Vec<(String, TypeExpr)> = Vec::new();
         for p in &m.ports {
             if let Some(ref bi) = p.bus_info {
-                bus_port_names.insert(p.name.name.clone());
+                match bi.count {
+                    None => { bus_port_names.insert(p.name.name.clone()); }
+                    Some(n) => {
+                        for i in 0..n {
+                            bus_port_names.insert(format!("{}_{}", p.name.name, i));
+                        }
+                    }
+                }
                 bus_flat.extend(flatten_bus_port(&p.name.name, bi, self.symbols));
             }
         }
@@ -1325,16 +1334,25 @@ fn flatten_bus_port_with_dir(
         }
         let eff = info.effective_signals(&param_map);
         let is_target = bi.perspective == BusPerspective::Target;
-        eff.iter().map(|(sname, sdir, sty)| {
-            let subst_ty = subst_type_expr_sim(sty, &param_map);
-            // Target perspective flips all signal directions
-            let dir = if is_target {
-                match sdir { Direction::In => Direction::Out, Direction::Out => Direction::In }
-            } else {
-                *sdir
-            };
-            (format!("{}_{}", port_name, sname), dir, subst_ty)
-        }).collect()
+        // For Vec<Bus, N> ports, emit N copies of each signal with indexed prefix.
+        let prefixes: Vec<String> = match bi.count {
+            None => vec![port_name.to_string()],
+            Some(n) => (0..n).map(|i| format!("{}_{}", port_name, i)).collect(),
+        };
+        let mut out = Vec::new();
+        for prefix in &prefixes {
+            for (sname, sdir, sty) in &eff {
+                let subst_ty = subst_type_expr_sim(sty, &param_map);
+                // Target perspective flips all signal directions
+                let dir = if is_target {
+                    match sdir { Direction::In => Direction::Out, Direction::Out => Direction::In }
+                } else {
+                    *sdir
+                };
+                out.push((format!("{}_{}", prefix, sname), dir, subst_ty));
+            }
+        }
+        out
     } else {
         Vec::new()
     }
@@ -1372,35 +1390,72 @@ fn expand_bus_connections(
             Item::Fsm(f) if f.name.name == inst.module_name.name => Some(f.ports.as_slice()),
             _ => None,
         });
-    let target_bus_ports: Vec<(&str, &str, BusPerspective, &[ParamAssign])> = target_ports
-        .map(|ports| ports.iter()
-            .filter_map(|p| p.bus_info.as_ref().map(|bi| (p.name.name.as_str(), bi.bus_name.name.as_str(), bi.perspective, bi.params.as_slice())))
-            .collect())
+    // For each bus port on the target, expose either the scalar name (count=None)
+    // or every indexed name `port_0`, `port_1`, ... (count=Some(N)). The inst-site
+    // refers to a Vec-of-bus element by its underscore-suffixed name, e.g.
+    // `chans_0 -> w0;` for the first element of a `Vec<B, N>` port `chans`.
+    let target_bus_ports: Vec<(String, &str, BusPerspective, &[ParamAssign])> = target_ports
+        .map(|ports| {
+            let mut v = Vec::new();
+            for p in ports {
+                if let Some(bi) = p.bus_info.as_ref() {
+                    let bus = bi.bus_name.name.as_str();
+                    match bi.count {
+                        None => {
+                            v.push((p.name.name.clone(), bus, bi.perspective, bi.params.as_slice()));
+                        }
+                        Some(n) => {
+                            for i in 0..n {
+                                v.push((format!("{}_{}", p.name.name, i), bus, bi.perspective, bi.params.as_slice()));
+                            }
+                        }
+                    }
+                }
+            }
+            v
+        })
         .unwrap_or_default();
 
     let mut expanded = Vec::new();
     for c in &inst.connections {
-        if let Some((_, bus_name, perspective, bus_params)) = target_bus_ports.iter().find(|(pn, _, _, _)| *pn == c.port_name.name) {
+        if let Some((_, bus_name, perspective, bus_params)) = target_bus_ports.iter().find(|(pn, _, _, _)| pn == &c.port_name.name) {
             // Bus connection — expand to individual signal connections
             if let Some((crate::resolve::Symbol::Bus(info), _)) = symbols.globals.get(*bus_name) {
-                // Two shapes for the parent-side signal on a whole-bus binding:
-                //   * `p -> ident` where `ident` is a bus port or a bus wire
-                //   * `p -> base.field` where `base.field` is a bus port on the parent
-                // For bus WIRES we keep the bus-wire name as the struct base and
-                // emit FieldAccess exprs per signal so cpp_expr resolves them
-                // to `_let_<wire>.<field>`. For bus PORTS we emit flat idents
-                // (the port has been flattened elsewhere into `<port>_<field>`).
-                let (sig_base, wire_bound) = match &c.signal.kind {
+                // Three shapes for the parent-side signal on a whole-bus binding:
+                //   * `p -> ident`         where `ident` is a bus port or scalar bus wire
+                //   * `p -> base.field`    where `base.field` is a bus port on the parent
+                //   * `p -> wire[i]`       where `wire` is a Vec<Bus,N> wire — element i
+                //
+                // BindKind tells the per-signal emitter how to construct the parent-side
+                // expression for a given signal name:
+                //   FlatPort(prefix)   → emit `Ident("<prefix>_<sname>")`
+                //                        (matches the flattened bus-port shape)
+                //   WireStruct(name)   → emit `FieldAccess(Ident("<name>"), sname)`
+                //                        (matches the C++ struct-typed bus wire)
+                //   WireIndex(name, i) → emit `FieldAccess(Index(Ident("<name>"), i), sname)`
+                //                        (matches a `B _let_<name>[N]` struct-array element)
+                enum BindKind { FlatPort(String), WireStruct(String), WireIndex(String, u32) }
+                let bind = match &c.signal.kind {
                     ExprKind::Ident(name) => {
-                        let is_wire = bus_wire_names.contains(name.as_str());
-                        (name.clone(), is_wire)
+                        if bus_wire_names.contains(name.as_str()) {
+                            BindKind::WireStruct(name.clone())
+                        } else {
+                            BindKind::FlatPort(name.clone())
+                        }
                     }
                     ExprKind::FieldAccess(base, field) => {
                         if let ExprKind::Ident(base_name) = &base.kind {
-                            (format!("{}_{}", base_name, field.name), false)
+                            BindKind::FlatPort(format!("{}_{}", base_name, field.name))
                         } else {
                             continue;
                         }
+                    }
+                    ExprKind::Index(arr, idx) => {
+                        if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) = (&arr.kind, &idx.kind) {
+                            if bus_wire_names.contains(arr_name.as_str()) {
+                                BindKind::WireIndex(arr_name.clone(), *i as u32)
+                            } else { continue; }
+                        } else { continue; }
                     }
                     _ => continue,
                 };
@@ -1419,21 +1474,31 @@ fn expand_bus_connections(
                         Direction::Out => ConnectDir::Output,
                         Direction::In => ConnectDir::Input,
                     };
-                    // Bus WIRE target → struct-field access on the wire.
-                    // Bus PORT target → flat `<port>_<field>` ident.
-                    let parent_signal = if wire_bound {
-                        Expr::new(
+                    let parent_signal = match &bind {
+                        BindKind::FlatPort(prefix) => Expr::new(
+                            ExprKind::Ident(format!("{}_{}", prefix, sname)),
+                            c.signal.span,
+                        ),
+                        BindKind::WireStruct(name) => Expr::new(
                             ExprKind::FieldAccess(
-                                Box::new(Expr::new(ExprKind::Ident(sig_base.clone()), c.signal.span)),
+                                Box::new(Expr::new(ExprKind::Ident(name.clone()), c.signal.span)),
                                 Ident::new(sname.clone(), c.signal.span),
                             ),
                             c.signal.span,
-                        )
-                    } else {
-                        Expr::new(
-                            ExprKind::Ident(format!("{}_{}", sig_base, sname)),
+                        ),
+                        BindKind::WireIndex(name, i) => Expr::new(
+                            ExprKind::FieldAccess(
+                                Box::new(Expr::new(
+                                    ExprKind::Index(
+                                        Box::new(Expr::new(ExprKind::Ident(name.clone()), c.signal.span)),
+                                        Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(*i as u64)), c.signal.span)),
+                                    ),
+                                    c.signal.span,
+                                )),
+                                Ident::new(sname.clone(), c.signal.span),
+                            ),
                             c.signal.span,
-                        )
+                        ),
                     };
                     expanded.push(Connection {
                         port_name: Ident::new(inst_flat, c.port_name.span),
@@ -1510,6 +1575,64 @@ fn vec_array_info(ty: &TypeExpr) -> Option<(String, String)> {
 /// fixed in PR #cam-zero-array).
 fn eval_const_expr(expr: &Expr) -> u64 {
     eval_const_expr_with_params(expr, &[])
+}
+
+/// Walk `stmt` and return true if any expression has the shape
+/// `Index(Ident(name), Ident(var))` where `name` is a Vec-of-bus port
+/// or wire (keys of `ports` / `wires`). Used by the for-loop emitter
+/// to decide whether to statically unroll the body. Recurses into all
+/// sub-statements and into both sides of assignments.
+fn stmt_indexes_vob_with_var(
+    stmt: &Stmt,
+    var: &str,
+    ports: &HashMap<String, u32>,
+    wires: &HashMap<String, u32>,
+) -> bool {
+    fn walk_expr(e: &Expr, var: &str, ports: &HashMap<String, u32>, wires: &HashMap<String, u32>) -> bool {
+        if let ExprKind::Index(arr, idx) = &e.kind {
+            if let (ExprKind::Ident(arr_name), ExprKind::Ident(idx_name)) = (&arr.kind, &idx.kind) {
+                if idx_name == var && (ports.contains_key(arr_name) || wires.contains_key(arr_name)) {
+                    return true;
+                }
+            }
+        }
+        match &e.kind {
+            ExprKind::Binary(_, l, r) => walk_expr(l, var, ports, wires) || walk_expr(r, var, ports, wires),
+            ExprKind::Unary(_, x) | ExprKind::Cast(x, _) | ExprKind::LatencyAt(x, _) | ExprKind::SvaNext(_, x) =>
+                walk_expr(x, var, ports, wires),
+            ExprKind::FieldAccess(b, _) => walk_expr(b, var, ports, wires),
+            ExprKind::Index(b, i) | ExprKind::BitSlice(b, i, _) =>
+                walk_expr(b, var, ports, wires) || walk_expr(i, var, ports, wires),
+            ExprKind::PartSelect(b, lo, hi, _) =>
+                walk_expr(b, var, ports, wires) || walk_expr(lo, var, ports, wires) || walk_expr(hi, var, ports, wires),
+            ExprKind::Ternary(c, t, e2) =>
+                walk_expr(c, var, ports, wires) || walk_expr(t, var, ports, wires) || walk_expr(e2, var, ports, wires),
+            ExprKind::Concat(parts) | ExprKind::FunctionCall(_, parts) =>
+                parts.iter().any(|p| walk_expr(p, var, ports, wires)),
+            ExprKind::MethodCall(b, _, args) =>
+                walk_expr(b, var, ports, wires) || args.iter().any(|a| walk_expr(a, var, ports, wires)),
+            _ => false,
+        }
+    }
+    match stmt {
+        Stmt::Assign(a) => walk_expr(&a.target, var, ports, wires) || walk_expr(&a.value, var, ports, wires),
+        Stmt::IfElse(ie) => {
+            walk_expr(&ie.cond, var, ports, wires)
+                || ie.then_stmts.iter().any(|s| stmt_indexes_vob_with_var(s, var, ports, wires))
+                || ie.else_stmts.iter().any(|s| stmt_indexes_vob_with_var(s, var, ports, wires))
+        }
+        Stmt::Match(m) => {
+            walk_expr(&m.scrutinee, var, ports, wires)
+                || m.arms.iter().any(|arm| arm.body.iter().any(|s| stmt_indexes_vob_with_var(s, var, ports, wires)))
+        }
+        Stmt::For(f) => f.body.iter().any(|s| stmt_indexes_vob_with_var(s, var, ports, wires)),
+        Stmt::Init(ib) => ib.body.iter().any(|s| stmt_indexes_vob_with_var(s, var, ports, wires)),
+        Stmt::DoUntil { body, cond, .. } =>
+            walk_expr(cond, var, ports, wires)
+                || body.iter().any(|s| stmt_indexes_vob_with_var(s, var, ports, wires)),
+        Stmt::WaitUntil(e, _) => walk_expr(e, var, ports, wires),
+        Stmt::Log(l) => l.args.iter().any(|a| walk_expr(a, var, ports, wires)),
+    }
 }
 
 /// Param-aware constant evaluator. Resolves bare identifiers against
@@ -1759,6 +1882,16 @@ struct Ctx<'a> {
     /// (e.g. "item" → "vec[3]", "index" → "3"). Checked first in the Ident
     /// branch of `cpp_expr`; None or missing key means normal resolution.
     ident_subst: Option<&'a HashMap<String, String>>,
+    /// Loop-variable → integer-value substitutions pushed during static
+    /// unrolling of `for` loops over Vec-of-bus indexed access. RefCell
+    /// for interior mutability — the for-loop emitter mutates per
+    /// iteration while emit_stmt walks the body. None = no active unroll.
+    loop_var_subst: Option<&'a std::cell::RefCell<HashMap<String, u32>>>,
+    /// Vec-of-bus port name → element count. Used by the for-loop emitter
+    /// to decide whether the body needs static unrolling.
+    vec_of_bus_port_count: Option<&'a HashMap<String, u32>>,
+    /// Same as `vec_of_bus_port_count` but for `wire w: Vec<BusName, N>;`.
+    vec_of_bus_wire_count: Option<&'a HashMap<String, u32>>,
     /// Branch-coverage registry for the current module. None when --coverage
     /// is off; Some(_) when on. emit_*_if_else allocates counter ids here
     /// and emits `_arch_cov[N]++;` at the start of each arm.
@@ -1790,7 +1923,21 @@ impl<'a> Ctx<'a> {
         Ctx { reg_names, port_names, let_names, let_values: None, inst_names, wide_names,
               widths, signed_names, posedge_lhs: false, fsm_mode: false, enum_map, bus_ports,
               reset_levels, vec_names: None, vec_sizes: None, fsm_vec_port_regs: None,
-              ident_subst: None, coverage: None, params: EMPTY_PARAMS }
+              ident_subst: None, loop_var_subst: None,
+              vec_of_bus_port_count: None, vec_of_bus_wire_count: None,
+              coverage: None, params: EMPTY_PARAMS }
+    }
+
+    fn with_vec_of_bus(
+        mut self,
+        ports: &'a HashMap<String, u32>,
+        wires: &'a HashMap<String, u32>,
+        subst: &'a std::cell::RefCell<HashMap<String, u32>>,
+    ) -> Self {
+        self.vec_of_bus_port_count = Some(ports);
+        self.vec_of_bus_wire_count = Some(wires);
+        self.loop_var_subst = Some(subst);
+        self
     }
 
     fn with_signed_names(mut self, signed_names: &'a HashSet<String>) -> Self {
@@ -2140,6 +2287,9 @@ fn lower_vec_method_cpp(
             reset_levels: ctx.reset_levels, vec_names: ctx.vec_names,
             vec_sizes: ctx.vec_sizes, fsm_vec_port_regs: ctx.fsm_vec_port_regs,
             ident_subst: None, // replaced below via a temporary binding
+            loop_var_subst: ctx.loop_var_subst,
+            vec_of_bus_port_count: ctx.vec_of_bus_port_count,
+            vec_of_bus_wire_count: ctx.vec_of_bus_wire_count,
             coverage: ctx.coverage,
             params: ctx.params,
         };
@@ -2268,6 +2418,11 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             if let Some(sub) = ctx.ident_subst.and_then(|m| m.get(name)) {
                 return sub.clone();
             }
+            // Static for-loop unroll binds the loop variable to a literal
+            // integer (e.g. `chans[i].v` inside `for i in 0..N-1`).
+            if let Some(v) = ctx.loop_var_subst.and_then(|c| c.borrow().get(name).copied()) {
+                return v.to_string();
+            }
             if is_lhs {
                 ctx.resolve_name(name, true)
             } else {
@@ -2336,12 +2491,25 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                     return format!("_inst_{}.{}", base_name, field.name);
                 }
             }
-            // Indexed bus port: m_axi[0].valid → m_axi_0_valid
+            // Indexed bus port: m_axi[0].valid → m_axi_0_valid. The index
+            // may be a literal or a loop variable bound to a literal via
+            // static for-loop unroll (see `loop_var_subst`).
             if let ExprKind::Index(arr, idx) = &base.kind {
-                if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) = (&arr.kind, &idx.kind) {
-                    let expanded = format!("{}_{}", arr_name, i);
-                    if ctx.bus_ports.contains(expanded.as_str()) {
-                        return format!("{}_{}_{}", arr_name, i, field.name);
+                if let ExprKind::Ident(arr_name) = &arr.kind {
+                    let idx_val: Option<u64> = match &idx.kind {
+                        ExprKind::Literal(LitKind::Dec(i))
+                        | ExprKind::Literal(LitKind::Hex(i))
+                        | ExprKind::Literal(LitKind::Bin(i))
+                        | ExprKind::Literal(LitKind::Sized(_, i)) => Some(*i),
+                        ExprKind::Ident(loopvar) =>
+                            ctx.loop_var_subst.and_then(|c| c.borrow().get(loopvar).copied()).map(|v| v as u64),
+                        _ => None,
+                    };
+                    if let Some(i) = idx_val {
+                        let expanded = format!("{}_{}", arr_name, i);
+                        if ctx.bus_ports.contains(expanded.as_str()) {
+                            return format!("{}_{}_{}", arr_name, i, field.name);
+                        }
                     }
                 }
             }
@@ -3076,6 +3244,44 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
         Stmt::Log(l) => emit_log_stmt(l, ctx, out, indent),
         Stmt::For(f) => {
             let var = &f.var.name;
+            // Static unrolling for Vec-of-bus indexed access (mirror of the
+            // SV-side path). The C++ struct fields are flat per-element
+            // (`chans_0_v`, `chans_1_v`, ...), not arrays, so a behavioral
+            // `for (int i ...; i <= N; i++) chans[i].v = ...` would emit a
+            // reference to an undeclared `chans`. Detect Vec-of-bus indexed
+            // writes by the loop variable, and if found AND bounds are
+            // literal, statically unroll: bind the loop var to each
+            // iteration value via `loop_var_subst` and emit the body N
+            // times.
+            if let (ForRange::Range(rs, re), Some(subst), Some(vob_ports), Some(vob_wires)) = (
+                &f.range,
+                ctx.loop_var_subst,
+                ctx.vec_of_bus_port_count,
+                ctx.vec_of_bus_wire_count,
+            ) {
+                let lit = |e: &Expr| -> Option<u32> {
+                    match &e.kind {
+                        ExprKind::Literal(LitKind::Dec(n))
+                        | ExprKind::Literal(LitKind::Hex(n))
+                        | ExprKind::Literal(LitKind::Bin(n))
+                        | ExprKind::Literal(LitKind::Sized(_, n)) => Some(*n as u32),
+                        _ => None,
+                    }
+                };
+                if let (Some(start_lit), Some(end_lit)) = (lit(rs), lit(re)) {
+                    let touches = f.body.iter().any(|s| stmt_indexes_vob_with_var(
+                        s, var, vob_ports, vob_wires,
+                    ));
+                    if touches {
+                        for i in start_lit..=end_lit {
+                            subst.borrow_mut().insert(var.clone(), i);
+                            for s in &f.body { emit_stmt(s, ctx, out, indent, k); }
+                        }
+                        subst.borrow_mut().remove(var);
+                        return;
+                    }
+                }
+            }
             match &f.range {
                 ForRange::Range(rs, re) => {
                     let start = cpp_expr(rs, ctx);
@@ -4104,9 +4310,27 @@ impl<'a> SimCodegen<'a> {
         let mut bus_port_names: HashSet<String> = HashSet::new();
         let mut bus_flat: Vec<(String, TypeExpr)> = Vec::new();
         let mut bus_flat_dirs: HashMap<String, Direction> = HashMap::new();
+        // Vec-of-bus port and wire counts — drive the static unroll path
+        // in emit_stmt for `for` loops that index a Vec<Bus,N> by the loop
+        // variable. The loop_var_subst RefCell carries the per-iteration
+        // binding while emit_stmt walks the body.
+        let mut vec_of_bus_port_count_map: HashMap<String, u32> = HashMap::new();
+        let mut vec_of_bus_wire_count_map: HashMap<String, u32> = HashMap::new();
+        let loop_var_subst_cell: std::cell::RefCell<HashMap<String, u32>> =
+            std::cell::RefCell::new(HashMap::new());
         for p in &m.ports {
             if let Some(ref bi) = p.bus_info {
-                bus_port_names.insert(p.name.name.clone());
+                // Vec<Bus,N> ports register N indexed names so bracket-dot
+                // expression lookup hits a known bus prefix.
+                match bi.count {
+                    None => { bus_port_names.insert(p.name.name.clone()); }
+                    Some(n) => {
+                        for i in 0..n {
+                            bus_port_names.insert(format!("{}_{}", p.name.name, i));
+                        }
+                        vec_of_bus_port_count_map.insert(p.name.name.clone(), n);
+                    }
+                }
                 let with_dir = flatten_bus_port_with_dir(&p.name.name, bi, self.symbols);
                 for (fname, fdir, fty) in with_dir {
                     bus_flat_dirs.insert(fname.clone(), fdir);
@@ -4478,11 +4702,30 @@ impl<'a> SimCodegen<'a> {
         // that `child_port -> bus_wire` emits struct-field-access exprs instead
         // of flat `<wire>_<field>` idents (which would dangle; bus wires are
         // declared as a C++ struct field, not as N flat fields).
+        // A bus wire is either a scalar `wire w: BusName;` or an array
+        // `wire w: Vec<BusName, N>;`. expand_bus_connections needs to see
+        // BOTH cases so that `child_port -> w` and `child_port -> w[i]`
+        // both lower correctly.
         let bus_wire_names: HashSet<String> = m.body.iter()
             .filter_map(|i| if let ModuleBodyItem::WireDecl(w) = i {
-                if let TypeExpr::Named(id) = &w.ty {
-                    if matches!(self.symbols.globals.get(&id.name),
+                let bus_named = match &w.ty {
+                    TypeExpr::Named(id) => Some(&id.name),
+                    TypeExpr::Vec(elem, _) => {
+                        if let TypeExpr::Named(id) = elem.as_ref() { Some(&id.name) } else { None }
+                    }
+                    _ => None,
+                };
+                if let Some(bn) = bus_named {
+                    if matches!(self.symbols.globals.get(bn),
                                 Some((crate::resolve::Symbol::Bus(_), _))) {
+                        // Record Vec-of-bus wire counts for the for-loop
+                        // static-unroll path.
+                        if let TypeExpr::Vec(_, size_expr) = &w.ty {
+                            let n = eval_const_expr_with_params(size_expr, &m.params) as u32;
+                            if n > 0 {
+                                vec_of_bus_wire_count_map.insert(w.name.name.clone(), n);
+                            }
+                        }
                         return Some(w.name.name.clone());
                     }
                 }
@@ -4668,6 +4911,7 @@ impl<'a> SimCodegen<'a> {
             }
         }
         let has_structs = m.body.iter().any(|i| matches!(i, ModuleBodyItem::RegDecl(r) if ty_references_named(&r.ty)))
+            || m.body.iter().any(|i| matches!(i, ModuleBodyItem::WireDecl(w) if ty_references_named(&w.ty)))
             || m.ports.iter().any(|p| ty_references_named(&p.ty));
         let mut h = String::new();
         h.push_str(&format!("#pragma once\n#include <cstdint>\n#include <cstdio>\n#include \"verilated.h\"\n"));
@@ -6186,7 +6430,12 @@ impl<'a> SimCodegen<'a> {
                            .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes)
                            .with_coverage(cov_handle)
                            .with_let_values(&let_values)
-                           .with_params(&m.params);
+                           .with_params(&m.params)
+                           .with_vec_of_bus(
+                               &vec_of_bus_port_count_map,
+                               &vec_of_bus_wire_count_map,
+                               &loop_var_subst_cell,
+                           );
 
         // Credit-channel combinational wires (sender can_send; receiver
         // valid/data once PR-sim-2 lands). Emit early so user comb code
@@ -6236,6 +6485,9 @@ impl<'a> SimCodegen<'a> {
                                         reset_levels: ctx_comb.reset_levels, vec_names: ctx_comb.vec_names,
                                         vec_sizes: ctx_comb.vec_sizes, fsm_vec_port_regs: ctx_comb.fsm_vec_port_regs,
                                         ident_subst: Some(&sub),
+                                        loop_var_subst: ctx_comb.loop_var_subst,
+                                        vec_of_bus_port_count: ctx_comb.vec_of_bus_port_count,
+                                        vec_of_bus_wire_count: ctx_comb.vec_of_bus_wire_count,
                                         coverage: ctx_comb.coverage,
                                         params: ctx_comb.params,
                                     };

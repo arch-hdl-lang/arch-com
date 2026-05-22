@@ -501,7 +501,7 @@ impl<'a> SimCodegen<'a> {
     ) -> String {
         let empty = HashSet::new();
         let empty_rl: HashMap<String, ResetLevel> = HashMap::new();
-        let ctx = Ctx { reg_names: rn, port_names: pn, let_names: ln, let_values: None, inst_names: &empty, wide_names: &empty, widths: w, signed_names: &empty, posedge_lhs: false, fsm_mode: false, enum_map: em, bus_ports: &empty, reset_levels: &empty_rl, vec_names: None, vec_sizes: None, fsm_vec_port_regs: None, ident_subst: None, coverage: None, params: &[] };
+        let ctx = Ctx { reg_names: rn, port_names: pn, let_names: ln, let_values: None, inst_names: &empty, wide_names: &empty, widths: w, signed_names: &empty, posedge_lhs: false, fsm_mode: false, enum_map: em, bus_ports: &empty, reset_levels: &empty_rl, vec_names: None, vec_sizes: None, fsm_vec_port_regs: None, ident_subst: None, loop_var_subst: None, vec_of_bus_port_count: None, vec_of_bus_wire_count: None, coverage: None, params: &[] };
         match &expr.kind {
             ExprKind::FieldAccess(base, field) => {
                 if let ExprKind::Ident(bn) = &base.kind {
