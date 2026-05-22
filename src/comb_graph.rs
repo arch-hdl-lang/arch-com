@@ -669,6 +669,15 @@ fn parent_has_comb_intermediates(m: &ModuleDecl) -> bool {
     m.body.iter().any(|item| matches!(
         item,
         ModuleBodyItem::CombBlock(_) | ModuleBodyItem::LetBinding(_)
+        // Bus wires (scalar `wire w: B;` or `wire w: Vec<B, N>;`) act as
+        // comb intermediates carrying instance outputs to instance
+        // inputs across the parent body. The instance-edge graph above
+        // only sees `Ident(wire)` signals; `Index(Ident(arr), Lit(i))`
+        // signals (Vec-of-bus wire element references) aren't tracked,
+        // so the graph can miss cross-instance comb deps that flow
+        // through such wires. Bumping settle_depth = 2 covers the case
+        // conservatively until the dep tracker handles indexed signals.
+        | ModuleBodyItem::WireDecl(_)
     ))
 }
 
