@@ -80,10 +80,13 @@ impl<'a> Codegen<'a> {
         self.bus_wires.clear();
         self.vec_of_bus_port_count.clear();
         self.vec_of_bus_wire_count.clear();
+        self.current_module_params = m.params.clone();
         for p in m.ports.iter() {
             if let Some(bi) = p.bus_info.as_ref() {
-                if let Some(n) = bi.count {
-                    self.vec_of_bus_port_count.insert(p.name.name.clone(), n);
+                if let Some(count_expr) = bi.count.as_ref() {
+                    if let Some(n) = self.eval_const_u32(count_expr, &m.params) {
+                        self.vec_of_bus_port_count.insert(p.name.name.clone(), n);
+                    }
                 }
             }
         }
@@ -162,9 +165,12 @@ impl<'a> Codegen<'a> {
                 // Names to register in self.bus_ports + signal-name prefixes:
                 //   scalar:   ["chan"]
                 //   Vec<B,N>: ["chans_0", "chans_1", ..., "chans_{N-1}"]
-                let inst_names: Vec<String> = match bi.count {
+                let inst_names: Vec<String> = match bi.count.as_ref() {
                     None => vec![p.name.name.clone()],
-                    Some(n) => (0..n).map(|i| format!("{}_{}", p.name.name, i)).collect(),
+                    Some(_) => {
+                        let n = self.vec_of_bus_port_count.get(&p.name.name).copied().unwrap_or(0);
+                        (0..n).map(|i| format!("{}_{}", p.name.name, i)).collect()
+                    }
                 };
                 for nm in &inst_names {
                     self.bus_ports.insert(nm.clone(), bus_name.clone());

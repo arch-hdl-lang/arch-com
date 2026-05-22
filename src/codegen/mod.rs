@@ -111,6 +111,11 @@ pub struct Codegen<'a> {
     /// Same as `vec_of_bus_port_count` but for wires declared as
     /// `wire w: Vec<BusName, N>;`. Used to detect the unroll opportunity.
     vec_of_bus_wire_count: std::collections::HashMap<String, u32>,
+    /// Cloned params of the module currently being emitted. Used by the
+    /// for-loop static-unroll path to fold param-driven bounds like
+    /// `for i in 0..N-1` where `N` is a module param. Populated at the
+    /// top of `emit_module`; cleared between modules.
+    current_module_params: Vec<ParamDecl>,
     /// Bus-typed wire names in the current module → bus name. Bus wires are
     /// flattened into individual SV signals `<wire>_<field>` at emission
     /// time (no SV interfaces or structs are generated for buses), so
@@ -198,6 +203,7 @@ impl<'a> Codegen<'a> {
             bus_ports: std::collections::HashMap::new(),
             vec_of_bus_port_count: std::collections::HashMap::new(),
             vec_of_bus_wire_count: std::collections::HashMap::new(),
+            current_module_params: Vec::new(),
             bus_wires: std::collections::HashMap::new(),
             reset_ports: std::collections::HashMap::new(),
             current_construct: String::new(),
@@ -1226,9 +1232,12 @@ impl<'a> Codegen<'a> {
         // with the loop variable bound to each literal index via
         // `loop_var_subst`.
         if let ForRange::Range(rs, re) = &f.range {
-            if let (Some(start_lit), Some(end_lit)) =
-                (Self::expr_to_u32(rs), Self::expr_to_u32(re))
-            {
+            // Param-driven bounds (e.g. `for i in 0..NUM-1`) fold against the
+            // current module's params here so the unroll can fire on
+            // `Vec<Bus, NUM>` ports/wires with a param-driven N.
+            let start_lit = self.eval_const_u32(rs, &self.current_module_params.clone());
+            let end_lit = self.eval_const_u32(re, &self.current_module_params.clone());
+            if let (Some(start_lit), Some(end_lit)) = (start_lit, end_lit) {
                 let body_touches_vob = f.body.iter().any(|s| Self::stmt_indexes_vob_with_var(
                     s, var, &self.vec_of_bus_port_count, &self.vec_of_bus_wire_count,
                 ));
@@ -1264,19 +1273,6 @@ impl<'a> Codegen<'a> {
                     self.line("end");
                 }
             }
-        }
-    }
-
-    /// Compile-time reducer for `for-loop` bound expressions used by the
-    /// Vec-of-bus static-unroll path. Only handles bare integer literals
-    /// for now; param-aware bounds remain a follow-up.
-    fn expr_to_u32(e: &Expr) -> Option<u32> {
-        match &e.kind {
-            ExprKind::Literal(LitKind::Dec(n))
-            | ExprKind::Literal(LitKind::Hex(n))
-            | ExprKind::Literal(LitKind::Bin(n))
-            | ExprKind::Literal(LitKind::Sized(_, n)) => Some(*n as u32),
-            _ => None,
         }
     }
 
@@ -2162,20 +2158,35 @@ impl<'a> Codegen<'a> {
             });
         // For each bus port, expose either the scalar name (count=None) or
         // every indexed name `port_0`, ..., `port_{N-1}` (count=Some(N)) so
-        // inst-site connections like `chans_0 -> w0;` match a Vec<Bus,N>
-        // element of the child.
+        // inst-site connections like `chans[i] -> w[i]` match a Vec<Bus,N>
+        // element of the child. Vec count is resolved against the child
+        // module's params (with the inst-site `param NAME = ...` overrides
+        // applied on top).
+        let child_params: Vec<ParamDecl> = self.source.items.iter()
+            .find_map(|item| if let Item::Module(m) = item {
+                if m.name.name == inst.module_name.name { Some(m.params.clone()) } else { None }
+            } else { None })
+            .unwrap_or_default();
+        let mut child_params_overridden = child_params.clone();
+        for pa in &inst.param_assigns {
+            if let Some(p) = child_params_overridden.iter_mut().find(|p| p.name.name == pa.name.name) {
+                p.default = Some(pa.value.clone());
+            }
+        }
         let target_bus_ports: Vec<(String, String, Vec<ParamAssign>)> = target_ports_ref
             .map(|ports| {
                 let mut v = Vec::new();
                 for p in ports {
                     if let Some(bi) = p.bus_info.as_ref() {
-                        match bi.count {
+                        match bi.count.as_ref() {
                             None => {
                                 v.push((p.name.name.clone(), bi.bus_name.name.clone(), bi.params.clone()));
                             }
-                            Some(n) => {
-                                for i in 0..n {
-                                    v.push((format!("{}_{}", p.name.name, i), bi.bus_name.name.clone(), bi.params.clone()));
+                            Some(count_expr) => {
+                                if let Some(n) = self.eval_const_u32(count_expr, &child_params_overridden) {
+                                    for i in 0..n {
+                                        v.push((format!("{}_{}", p.name.name, i), bi.bus_name.name.clone(), bi.params.clone()));
+                                    }
                                 }
                             }
                         }

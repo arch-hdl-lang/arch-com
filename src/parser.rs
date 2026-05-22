@@ -1215,26 +1215,19 @@ impl Parser {
                 let count_expr = self.parse_expr()?;
                 self.no_angle = old_no_angle;
                 self.expect(TokenKind::Gt)?;
-                // MVP: count must be a compile-time integer literal.
-                let n: u32 = match &count_expr.kind {
-                    ExprKind::Literal(LitKind::Dec(n))
-                    | ExprKind::Literal(LitKind::Hex(n))
-                    | ExprKind::Literal(LitKind::Bin(n))
-                    | ExprKind::Literal(LitKind::Sized(_, n)) => *n as u32,
-                    _ => {
-                        return Err(CompileError::general(
-                            "Vec<BusName, N> port: N must be a compile-time integer literal (v1)",
-                            count_expr.span,
-                        ));
-                    }
-                };
-                if n == 0 {
+                // Literal-zero is rejected at parse; param-driven or non-literal N
+                // is folded against the enclosing module's params at typecheck
+                // and codegen time (same machinery as `Vec<T, N>` scalar ports).
+                if let ExprKind::Literal(LitKind::Dec(0))
+                | ExprKind::Literal(LitKind::Hex(0))
+                | ExprKind::Literal(LitKind::Bin(0))
+                | ExprKind::Literal(LitKind::Sized(_, 0)) = &count_expr.kind {
                     return Err(CompileError::general(
                         "Vec<BusName, N> port: N must be >= 1",
                         vec_span,
                     ));
                 }
-                (bus_ident, Some(n))
+                (bus_ident, Some(count_expr))
             } else {
                 (self.expect_ident()?, None)
             };

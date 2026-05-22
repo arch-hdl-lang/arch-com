@@ -4046,8 +4046,10 @@ fn test_vec_of_bus_port_flattens_to_n_indexed_copies() {
 }
 
 #[test]
-fn test_vec_of_bus_port_rejects_zero_count_and_non_literal() {
-    // MVP restriction: count must be a positive integer literal.
+fn test_vec_of_bus_port_rejects_zero_count() {
+    // Literal-zero N is rejected at parse time. Param-driven and other
+    // non-literal N expressions are allowed; they fold against module
+    // params at typecheck/codegen time (see `test_vec_of_bus_port_param_driven_n`).
     let src_zero = r#"
         bus B
           v: out Bool;
@@ -4061,21 +4063,44 @@ fn test_vec_of_bus_port_rejects_zero_count_and_non_literal() {
     let err = parser.parse_source_file().expect_err("Vec<B, 0> should fail to parse");
     assert!(format!("{err:?}").contains("N must be >= 1"),
             "expected `N must be >= 1` diagnostic, got: {err:?}");
+}
 
-    let src_param = r#"
+#[test]
+fn test_vec_of_bus_port_param_driven_n() {
+    // `port chans: initiator Vec<B, NUM_CHANS>;` where NUM_CHANS is a
+    // module param — N folds to the param's default at SV emission time.
+    // The same param drives the for-loop bound, and both static-unroll
+    // paths (Vec-of-bus port count + for-loop bounds) fold against the
+    // module's params.
+    let source = "
         bus B
           v: out Bool;
+          d: out UInt<8>;
         end bus B
         module M
-          param N: const = 4;
-          port chans: initiator Vec<B, N>;
+          param NUM_CHANS: const = 3;
+          port chans: initiator Vec<B, NUM_CHANS>;
+          port idx:   in UInt<8>;
+          comb
+            for i in 0..NUM_CHANS-1
+              chans[i].v = true;
+              chans[i].d = (idx + i).trunc<8>();
+            end for
+          end comb
         end module M
-    "#;
-    let tokens = arch::lexer::tokenize(src_param).expect("lex");
-    let mut parser = arch::parser::Parser::new(tokens, src_param);
-    let err = parser.parse_source_file().expect_err("Vec<B, N> with non-literal N should fail");
-    assert!(format!("{err:?}").contains("compile-time integer literal"),
-            "expected literal-only diagnostic, got: {err:?}");
+    ";
+    let sv = compile_to_sv(source);
+    // 3 flat copies materialized (resolved from default NUM_CHANS = 3).
+    for i in 0..3 {
+        assert!(sv.contains(&format!("output logic chans_{i}_v")),
+                "missing `output logic chans_{i}_v` in SV:\n{sv}");
+    }
+    // for-loop should be statically unrolled even though the upper bound
+    // is `NUM_CHANS-1` (param expression).
+    assert!(!sv.contains("for (int i ="),
+            "expected param-driven for-loop bounds to fold + unroll:\n{sv}");
+    assert!(sv.contains("chans_2_d = 8'(idx + 2)") || sv.contains("chans_2_d = 8'((idx + 2))"),
+            "missing unrolled last-element assignment:\n{sv}");
 }
 
 #[test]

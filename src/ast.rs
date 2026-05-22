@@ -189,9 +189,12 @@ pub struct BusPortInfo {
     pub params: Vec<ParamAssign>,
     /// `port chans: initiator Vec<BusName, N>;` — array of N bus copies,
     /// flattened in codegen to `chans_0_<sig>`, `chans_1_<sig>`, ...
-    /// Accessed via `chans[i].sig` (literal integer i). `None` = scalar bus
-    /// port (current default). MVP only accepts integer literals for N.
-    pub count: Option<u32>,
+    /// Accessed via `chans[i].sig` (literal integer i or loop-bound var).
+    /// `None` = scalar bus port (default). N may be a literal or any
+    /// const-foldable expression involving module params; consumers
+    /// resolve it via `eval_const_expr_with_params` against the enclosing
+    /// module's `params` list.
+    pub count: Option<Expr>,
 }
 
 #[derive(Debug, Clone)]
