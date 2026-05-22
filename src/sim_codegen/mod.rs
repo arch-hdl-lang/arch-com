@@ -1387,10 +1387,12 @@ fn flatten_bus_port(
 /// Non-bus connections are returned unchanged.
 fn expand_bus_connections(
     inst: &InstDecl,
+    parent_module: &ModuleDecl,
     source: &SourceFile,
     symbols: &crate::resolve::SymbolTable,
     bus_wire_names: &HashSet<String>,
 ) -> Vec<Connection> {
+    let m = parent_module;
     // Find the target construct's ports + params. Vec-of-bus counts are
     // resolved against the child module's params (with this inst's
     // `param NAME = ...` overrides applied) so that
@@ -1433,9 +1435,92 @@ fn expand_bus_connections(
             v
         })
         .unwrap_or_default();
+    // Whole Vec-of-bus port lookup, keyed by the bare name (no `_<i>` suffix).
+    // Lets `chans -> w` (whole-vec inst connection) match against the child's
+    // bare Vec<Bus,N> port name; we then expand it to N per-element bus
+    // connections fed back into the standard expansion loop below.
+    let target_vec_of_bus_ports: Vec<(String, u32)> = target_ports
+        .map(|ports| {
+            let mut v = Vec::new();
+            for p in ports {
+                if let Some(bi) = p.bus_info.as_ref() {
+                    if let Some(count_expr) = bi.count.as_ref() {
+                        let n = eval_const_expr_with_params(count_expr, &child_params_overridden) as u32;
+                        if n > 0 { v.push((p.name.name.clone(), n)); }
+                    }
+                }
+            }
+            v
+        })
+        .unwrap_or_default();
+    // Parent-side Vec<Bus,N> port and wire names → counts. Used together
+    // with `target_vec_of_bus_ports` to detect a whole-vec connection
+    // `chans -> w` where both sides are arrays.
+    let parent_vec_of_bus_wires: HashMap<String, u32> = m.body.iter()
+        .filter_map(|i| if let ModuleBodyItem::WireDecl(w) = i {
+            if let TypeExpr::Vec(elem, size_expr) = &w.ty {
+                if let TypeExpr::Named(id) = elem.as_ref() {
+                    if matches!(symbols.globals.get(&id.name), Some((crate::resolve::Symbol::Bus(_), _))) {
+                        let n = eval_const_expr_with_params(size_expr, &m.params) as u32;
+                        if n > 0 { return Some((w.name.name.clone(), n)); }
+                    }
+                }
+            }
+            None
+        } else { None })
+        .collect();
+    let parent_vec_of_bus_ports: HashMap<String, u32> = m.ports.iter()
+        .filter_map(|p| {
+            let bi = p.bus_info.as_ref()?;
+            let count_expr = bi.count.as_ref()?;
+            let n = eval_const_expr_with_params(count_expr, &m.params) as u32;
+            if n > 0 { Some((p.name.name.clone(), n)) } else { None }
+        })
+        .collect();
+    // Pre-expand whole-vec inst connections (`chans -> w`) into N per-element
+    // bus connections (`chans_0 -> w[0]; chans_1 -> w[1]; ...`). The body
+    // loop below then expands each of those into per-signal connections via
+    // the existing scalar+indexed paths.
+    let inst_connections: Vec<crate::ast::Connection> = inst.connections.iter()
+        .flat_map(|c| {
+            if let Some((_, n)) = target_vec_of_bus_ports.iter().find(|(pn, _)| pn == &c.port_name.name) {
+                if let ExprKind::Ident(parent_name) = &c.signal.kind {
+                    let parent_is_vob_wire = parent_vec_of_bus_wires.contains_key(parent_name);
+                    let parent_is_vob_port = parent_vec_of_bus_ports.contains_key(parent_name);
+                    if parent_is_vob_wire || parent_is_vob_port {
+                        return (0..*n).map(|i| {
+                            let port_i = Ident::new(format!("{}_{}", c.port_name.name, i), c.port_name.span);
+                            // Wire: emit Index(Ident(w), i) so downstream sees a
+                            // bus-wire-array element. Port: emit Ident("w_<i>") so
+                            // it lands at the flat per-element port name on the parent.
+                            let parent_expr = if parent_is_vob_wire {
+                                Expr::new(
+                                    ExprKind::Index(
+                                        Box::new(Expr::new(ExprKind::Ident(parent_name.clone()), c.signal.span)),
+                                        Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(i as u64)), c.signal.span)),
+                                    ),
+                                    c.signal.span,
+                                )
+                            } else {
+                                Expr::new(ExprKind::Ident(format!("{}_{}", parent_name, i)), c.signal.span)
+                            };
+                            crate::ast::Connection {
+                                port_name: port_i,
+                                direction: c.direction,
+                                signal: parent_expr,
+                                reset_override: None,
+                                span: c.span,
+                            }
+                        }).collect::<Vec<_>>();
+                    }
+                }
+            }
+            vec![c.clone()]
+        })
+        .collect();
 
     let mut expanded = Vec::new();
-    for c in &inst.connections {
+    for c in &inst_connections {
         if let Some((_, bus_name, perspective, bus_params)) = target_bus_ports.iter().find(|(pn, _, _, _)| pn == &c.port_name.name) {
             // Bus connection — expand to individual signal connections
             if let Some((crate::resolve::Symbol::Bus(info), _)) = symbols.globals.get(*bus_name) {
@@ -4764,7 +4849,7 @@ impl<'a> SimCodegen<'a> {
         // Pre-expand bus connections: whole-bus connections like `axi_rd -> m_axi_mm2s`
         // are expanded to per-signal connections using the bus definition.
         let expanded_conns: Vec<Vec<Connection>> = insts.iter()
-            .map(|inst| expand_bus_connections(inst, self.source, self.symbols, &bus_wire_names))
+            .map(|inst| expand_bus_connections(inst, m, self.source, self.symbols, &bus_wire_names))
             .collect();
 
         // Augment `inst_out` with output signals discovered through bus

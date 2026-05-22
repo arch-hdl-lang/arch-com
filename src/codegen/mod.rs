@@ -2195,6 +2195,26 @@ impl<'a> Codegen<'a> {
                 v
             })
             .unwrap_or_default();
+        // Separate index: Vec-of-bus port → (count, bus, params). Lets a
+        // whole-vec inst connection `chans -> w` (where both child port
+        // and parent signal are `Vec<Bus, N>`) expand to N per-element
+        // per-signal named-port connections without requiring the user
+        // to enumerate `chans[0] -> w[0]; chans[1] -> w[1]; ...`.
+        let target_vec_of_bus_ports: Vec<(String, u32, String, Vec<ParamAssign>)> = target_ports_ref
+            .map(|ports| {
+                let mut v = Vec::new();
+                for p in ports {
+                    if let Some(bi) = p.bus_info.as_ref() {
+                        if let Some(count_expr) = bi.count.as_ref() {
+                            if let Some(n) = self.eval_const_u32(count_expr, &child_params_overridden) {
+                                v.push((p.name.name.clone(), n, bi.bus_name.name.clone(), bi.params.clone()));
+                            }
+                        }
+                    }
+                }
+                v
+            })
+            .unwrap_or_default();
 
         // Per-port enum-cast lookup. For each input port whose type is
         // an extern-package enum (declared via `extern package Pkg ...
@@ -2303,6 +2323,34 @@ impl<'a> Codegen<'a> {
                 indexed_group_dir.insert((group.clone(), sig.clone()), dir);
                 indexed_group_ty.insert((group, sig), ty);
                 continue;
+            }
+            // Whole-vec bus connection: `chans -> w` where the child's
+            // `chans` is a `Vec<Bus, N>` port. The parent signal `w` must
+            // be a bare identifier — a parent Vec-of-bus port or a bus
+            // wire-array (`wire w: Vec<Bus, N>;`). Expand to N x #signals
+            // per-element named-port connections.
+            if let Some((_, n, bus_name, bus_params)) = target_vec_of_bus_ports.iter()
+                .find(|(pn, _, _, _)| *pn == c.port_name.name)
+            {
+                if let ExprKind::Ident(parent_name) = &c.signal.kind {
+                    if let Some((Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
+                        let mut param_map: std::collections::HashMap<String, &Expr> = info.params.iter()
+                            .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
+                            .collect();
+                        for pa in bus_params { param_map.insert(pa.name.name.clone(), &pa.value); }
+                        let eff = info.effective_signals(&param_map);
+                        for i in 0..*n {
+                            for (sname, _, _) in &eff {
+                                connections.push(format!(
+                                    ".{}_{}_{}({}_{}_{})",
+                                    c.port_name.name, i, sname,
+                                    parent_name, i, sname,
+                                ));
+                            }
+                        }
+                        continue;
+                    }
+                }
             }
             if let Some((_, bus_name, bus_params)) = target_bus_ports.iter().find(|(pn, _, _)| *pn == c.port_name.name) {
                 // Bus connection — expand to individual signals. The parent-side
