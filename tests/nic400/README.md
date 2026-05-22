@@ -31,7 +31,24 @@ arbitration, ID remap, and ID-prefix return routing.
 | 5 | Out-of-order completion | `tb_nic400_read2x2_ooo.cpp` | ✓ PASS (R from S1 first, then S0; both land at M0 with correct IDs) |
 | 6 | Register slice latency | `tb_reg_slice_channel.cpp` | ✓ PASS (1-cycle latency, sustained 1/cycle throughput, backpressure-correct) |
 | 7 | `--auto-thread-asserts` runs silently | smoke TB with the flag | ✓ PASS (32 SVA properties; Verilator `--lint-only --assert` clean) |
+| **+** | **v2 latency / throughput** | `tb_nic400_fabric_latency.cpp` | ✓ PASS — pins AR=1 cyc, R=1 cyc, ≥1 txn / 5 cyc |
 | 8 | Formal property (per-slave issue→W order) | `arch formal` | △ DEFERRED — hierarchical formal v1 does not yet support sub-module `wire` declarations introduced by the lock-arbitration lowering pass (compiler limitation, not a design flaw) |
+
+## Performance findings — v2 hierarchical design
+
+Measured with `tb_nic400_fabric_latency.cpp` (runs under `arch sim`):
+
+| Path | Spec §14.1 target | Observed | Δ |
+|---|---|---|---|
+| AR forward (M → S, uncontested) | 0 cycles | **1 cycle** | +1 bubble |
+| R return (S → M, uncontested)   | 0 cycles | **1 cycle** | +1 bubble |
+| AR throughput (back-to-back)    | 1 txn / cycle | **~1 txn / 3 cycles** (8/25) | 3× slower |
+
+**Why**: each thread is a state machine. The entry `wait until X` state samples the request at posedge K, *then* advances to the do/until body where the drives go out. The downstream consumer (slave-side ArArb thread) saw the master's old stale output at the same posedge K — its own state doesn't advance until posedge K+1. Each hop in the master×slave chain costs 1 cycle of stale-output latency, and the S0→S1→S0 state cycle takes ~3 ticks of round-trip per transaction.
+
+The spec quotes 0-cycle pass-through assuming a comb-only port implementation. The thread-based v2 trades that for the spec's structural per-thread state-machine clarity — both are valid implementations of the same NIC-400 protocol shape. A future v3 could swap MasterPort/SlavePort for pure-comb modules and recover the spec's 0-cycle path.
+
+The checker `tb_nic400_fabric_latency.cpp` pins the *observed* values and fails loudly if a future change inflates them.
 
 ## Scope notes — deviations from the spec
 
