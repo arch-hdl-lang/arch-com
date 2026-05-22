@@ -1,0 +1,66 @@
+// QoS-aware round-robin arbiter for the NIC-400 slave port.
+//
+// Selects the highest-QoS requester; among ties at the top QoS, uses
+// round-robin against last_grant to ensure fairness. Pure-comb hook.
+//
+// Sized for NUM_MASTERS = 4 (one-hot req mask = UInt<4>, qos = UInt<4> each).
+// Per-master qos passed in as a packed UInt<16> (4 * 4 bits, qos_m0 in low nibble).
+
+function nic400_qos_pick(req_mask: UInt<4>,
+                         last_grant: UInt<4>,
+                         qos_packed: UInt<16>) -> UInt<4>
+  // Extract per-master qos
+  let q0: UInt<4> = qos_packed[3:0];
+  let q1: UInt<4> = qos_packed[7:4];
+  let q2: UInt<4> = qos_packed[11:8];
+  let q3: UInt<4> = qos_packed[15:12];
+
+  // Find the max QoS among requesters (zero for non-requesters).
+  let q0_eff: UInt<4> = req_mask[0] ? q0 : 0;
+  let q1_eff: UInt<4> = req_mask[1] ? q1 : 0;
+  let q2_eff: UInt<4> = req_mask[2] ? q2 : 0;
+  let q3_eff: UInt<4> = req_mask[3] ? q3 : 0;
+
+  let m01: UInt<4> = q0_eff > q1_eff ? q0_eff : q1_eff;
+  let m23: UInt<4> = q2_eff > q3_eff ? q2_eff : q3_eff;
+  let max_qos: UInt<4> = m01 > m23 ? m01 : m23;
+
+  // Mask of requesters at the top QoS (each branch yields a UInt<4> bit).
+  let top_mask: UInt<4> = ((req_mask[0] and q0 == max_qos ? 4'd1 : 4'd0))
+                        | ((req_mask[1] and q1 == max_qos ? 4'd2 : 4'd0))
+                        | ((req_mask[2] and q2 == max_qos ? 4'd4 : 4'd0))
+                        | ((req_mask[3] and q3 == max_qos ? 4'd8 : 4'd0));
+
+  // mask_above(last_grant): bits with index strictly greater than the
+  // single set bit of last_grant. For one-hot last_grant in {1,2,4,8}.
+  let above_mask: UInt<4> = (last_grant == 4'd1 ? 4'd14
+                          : (last_grant == 4'd2 ? 4'd12
+                          : (last_grant == 4'd4 ? 4'd8
+                          : (last_grant == 4'd8 ? 4'd0
+                          : 4'd15))));
+
+  let primary: UInt<4> = top_mask & above_mask;
+  let pick: UInt<4> = primary != 0 ? primary : top_mask;
+
+  // Isolate lowest set bit: pick & (-pick), using 4-bit two's complement.
+  let pick_neg: UInt<5> = (pick ^ 15).zext<5>() + 1;
+  return pick & pick_neg.trunc<4>();
+end function nic400_qos_pick
+
+// Top-level 4-requester arbiter wrapping the QoS pick function.
+// Designed for instantiation per-slave (one AW arbiter, one AR arbiter).
+arbiter Nic400QosArbiter
+  policy nic400_qos_pick;
+  param N: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  ports[N] req
+    valid: in Bool;
+    ready: out Bool;
+  end ports req
+  port qos_packed: in UInt<16>;             // qos vector for all 4 requesters
+  port grant_valid:     out Bool;
+  port grant_requester: out UInt<2>;
+  hook grant_select(req_mask: UInt<4>, last_grant: UInt<4>, qos_vec: UInt<16>) -> UInt<4>
+    = nic400_qos_pick(req_mask, last_grant, qos_packed);
+end arbiter Nic400QosArbiter

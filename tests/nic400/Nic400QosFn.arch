@@ -1,0 +1,51 @@
+// Pure-comb wrapper around nic400_qos_pick so the function can be exercised
+// directly from a testbench without needing the full arbiter handshake.
+//
+// This module duplicates the body of nic400_qos_pick because module-local
+// functions cannot reference top-level functions from sibling files; making
+// the policy logic live inside the module here lets unit tests pin every
+// behavior of the QoS pick algorithm against synthetic inputs.
+module Nic400QosFn
+  port req_mask:   in  UInt<4>;
+  port last_grant: in  UInt<4>;
+  port qos_packed: in  UInt<16>;
+  port grant:      out UInt<4>;
+
+  function pick(req_mask:   UInt<4>,
+                last_grant: UInt<4>,
+                qos_packed: UInt<16>) -> UInt<4>
+    let q0: UInt<4> = qos_packed[3:0];
+    let q1: UInt<4> = qos_packed[7:4];
+    let q2: UInt<4> = qos_packed[11:8];
+    let q3: UInt<4> = qos_packed[15:12];
+
+    let q0_eff: UInt<4> = req_mask[0] ? q0 : 4'd0;
+    let q1_eff: UInt<4> = req_mask[1] ? q1 : 4'd0;
+    let q2_eff: UInt<4> = req_mask[2] ? q2 : 4'd0;
+    let q3_eff: UInt<4> = req_mask[3] ? q3 : 4'd0;
+
+    let m01: UInt<4> = q0_eff > q1_eff ? q0_eff : q1_eff;
+    let m23: UInt<4> = q2_eff > q3_eff ? q2_eff : q3_eff;
+    let max_qos: UInt<4> = m01 > m23 ? m01 : m23;
+
+    let top_mask: UInt<4> = ((req_mask[0] and q0 == max_qos ? 4'd1 : 4'd0))
+                          | ((req_mask[1] and q1 == max_qos ? 4'd2 : 4'd0))
+                          | ((req_mask[2] and q2 == max_qos ? 4'd4 : 4'd0))
+                          | ((req_mask[3] and q3 == max_qos ? 4'd8 : 4'd0));
+
+    let above_mask: UInt<4> = (last_grant == 4'd1 ? 4'd14
+                            : (last_grant == 4'd2 ? 4'd12
+                            : (last_grant == 4'd4 ? 4'd8
+                            : (last_grant == 4'd8 ? 4'd0
+                            : 4'd15))));
+
+    let primary: UInt<4> = top_mask & above_mask;
+    let pick_set: UInt<4> = primary != 0 ? primary : top_mask;
+    let pick_neg: UInt<5> = (pick_set ^ 4'd15).zext<5>() + 1;
+    return pick_set & pick_neg.trunc<4>();
+  end function pick
+
+  comb
+    grant = pick(req_mask, last_grant, qos_packed);
+  end comb
+end module Nic400QosFn

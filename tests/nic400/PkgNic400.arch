@@ -1,0 +1,19 @@
+// Compile-time configuration of the NIC-400-style AXI4 interconnect.
+// Module-level params override these per instance; defaults are 4M x 4S.
+package PkgNic400
+  domain SysDomain
+    freq_mhz: 1000
+  end domain SysDomain
+
+  param NUM_MASTERS:    const = 4;
+  param NUM_SLAVES:     const = 4;
+  param ADDR_WIDTH:     const = 32;
+  param DATA_WIDTH:     const = 64;
+  param MASTER_ID_W:    const = 4;
+  param MIDX_W:         const = 2;                       // $clog2(NUM_MASTERS)
+  param SIDX_W:         const = 2;                       // $clog2(NUM_SLAVES)
+  param SLAVE_ID_W:     const = 6;                       // MASTER_ID_W + MIDX_W
+  param QOS_W:          const = 4;
+  param OUTSTANDING:    const = 16;
+  param REGION_BITS:    const = 28;                      // 256 MiB per slave
+end package PkgNic400

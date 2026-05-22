@@ -1,0 +1,48 @@
+// Generic single-stage AXI4 register slice for one channel.
+//
+// Breaks combinational valid+payload from upstream to downstream by holding
+// the payload in a register. The ready path remains combinational (slice
+// purpose is to cut forward-direction logic, not the back-pressure path).
+//
+//   Latency: 1 cycle when downstream is always ready.
+//   Throughput: 1 transfer/cycle (sustained).
+//
+// Behavior:
+//   up_ready = !occupied || dn_ready    -- accept when empty OR draining
+//   dn_valid = occupied
+//   dn_payload = payload register
+module RegSliceChannel
+  param PAYLOAD_W: const = 64;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  port up_valid:   in  Bool;
+  port up_payload: in  UInt<PAYLOAD_W>;
+  port up_ready:   out Bool;
+
+  port dn_valid:   out Bool;
+  port dn_payload: out UInt<PAYLOAD_W>;
+  port dn_ready:   in  Bool;
+
+  reg occupied: Bool reset rst => false;
+  reg payload:  UInt<PAYLOAD_W> reset rst => 0;
+
+  let accept_fire:  Bool = up_valid and (not occupied or dn_ready);
+  let drain_fire:   Bool = occupied and dn_ready;
+
+  seq on clk rising
+    if accept_fire
+      payload <= up_payload;
+      occupied <= true;
+    elsif drain_fire
+      occupied <= false;
+    end if
+  end seq
+
+  comb
+    up_ready   = not occupied or dn_ready;
+    dn_valid   = occupied;
+    dn_payload = payload;
+  end comb
+end module RegSliceChannel
