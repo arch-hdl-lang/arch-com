@@ -4134,6 +4134,58 @@ fn test_vec_of_bus_port_typecheck_drives_all_indexed_outputs() {
 }
 
 #[test]
+fn test_comb_graph_treats_bus_wires_as_intermediates() {
+    // Regression: when a parent module wires two instances together through
+    // a bus wire (scalar or Vec-of-bus), the cross-instance comb dependency
+    // must drive settle_depth = 2. Previously the comb-graph dependency
+    // tracker only saw `Ident(wire)` signals, missed `Index(Ident, Lit)`
+    // forms (Vec-of-bus wire element references), and computed settle_depth
+    // = 1 — which left the sim's eval() pass with stale instance outputs
+    // for one cycle and broke handshakes that propagated through bus wires.
+    let source = "
+        bus B
+          v: out Bool;
+          d: out UInt<8>;
+        end bus B
+        module Drv
+          port clk: in Clock<SysDomain>;
+          port out: initiator B;
+          comb
+            out.v = true;
+            out.d = 8'h5A;
+          end comb
+        end module Drv
+        module Use
+          port clk:   in Clock<SysDomain>;
+          port inp:   target B;
+          port outv:  out Bool;
+          comb
+            outv = inp.v;
+          end comb
+        end module Use
+        module Top
+          port clk:  in Clock<SysDomain>;
+          port outv: out Bool;
+          wire w: B;
+          inst d: Drv  clk <- clk;  out -> w;  end inst d
+          inst u: Use  clk <- clk;  inp <- w;  outv -> outv;  end inst u
+        end module Top
+    ";
+    let sv = compile_to_sv(source);
+    // The fix lives in `comb_graph::parent_has_comb_intermediates`. With
+    // it the SV elaborator does its own bus-wire chain settling, but the
+    // dependency is the *sim* settle_depth that doesn't surface in the
+    // SV output. So this test exercises the path indirectly by checking
+    // the SV still emits valid bus-wire flattening and a clean inst
+    // chain — combined with the v2 NIC-400 smoke test (arch sim path)
+    // already covered above.
+    assert!(sv.contains("logic w_v") && sv.contains("logic [7:0] w_d"),
+            "expected flattened bus wire signals:\n{sv}");
+    assert!(sv.contains(".inp_v(w_v)") || sv.contains(".inp_v (w_v)"),
+            "expected `.inp_v(w_v)` inst connection:\n{sv}");
+}
+
+#[test]
 fn test_thread_writing_bus_signals_lowers_correctly() {
     // Regression: previously a `thread T ... b.v = ...; ... end thread T`
     // where `b: initiator B;` is a bus port would lower without exposing

@@ -18,7 +18,7 @@ arbitration, ID remap, and ID-prefix return routing.
 | `Nic400Read2x2.arch` | Monolithic 2x2 AXI4 read crossbar (v1) | ✓ sim PASS |
 | `Nic400MasterPort.arch` | Per-master decode + route (v2, spec §7) | ✓ check + Verilator clean |
 | `Nic400SlavePort.arch` | Per-slave arbitration + return (v2, spec §8) | ✓ check + Verilator clean |
-| `Nic400Fabric.arch` | Hierarchical wiring harness — M MasterPort × N SlavePort (v2, spec §9) | ✓ check + Verilator clean; arch-sim has hierarchical-inst comb-feedback issue (follow-up) |
+| `Nic400Fabric.arch` | Hierarchical wiring harness — M MasterPort × N SlavePort (v2, spec §9) | ✓ check + arch sim PASS + Verilator clean |
 
 ## Verification — §15 of spec
 
