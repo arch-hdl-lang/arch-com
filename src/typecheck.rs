@@ -852,40 +852,68 @@ impl<'a> TypeChecker<'a> {
                     // single-driver check sees them. Full typecheck of thread
                     // bodies is light in Phase 1 (the spike emitter rejects
                     // unsupported shapes itself).
-                    fn walk_thread(stmts: &[crate::ast::ThreadStmt], driven: &mut HashSet<String>) {
+                    let vob_ports = self.vec_of_bus_ports.clone();
+                    fn mark_target(target: &crate::ast::Expr, driven: &mut HashSet<String>,
+                                   vob_ports: &HashMap<String, u32>) {
+                        // Bare Ident, `bus.sig`, `arr[i].sig`, `arr[i]` all flow
+                        // through expr_flat_name_tc / expr_root_name_tc the same
+                        // way they do for comb-block targets — ensures bus-port
+                        // outputs assigned inside thread bodies satisfy the
+                        // driver-completeness check.
+                        let root = TypeChecker::expr_root_name_tc(target);
+                        if !root.is_empty() { driven.insert(root.clone()); }
+                        let flat = TypeChecker::expr_flat_name_tc(target);
+                        if !flat.is_empty() && flat != root { driven.insert(flat.clone()); }
+                        // Indexed Vec-of-bus target with a non-literal idx —
+                        // mirror the comb-block handling: mark every flat copy.
+                        if let crate::ast::ExprKind::FieldAccess(base, field) = &target.kind {
+                            if let crate::ast::ExprKind::Index(arr, idx) = &base.kind {
+                                if let crate::ast::ExprKind::Ident(arr_name) = &arr.kind {
+                                    let is_lit = matches!(&idx.kind,
+                                        crate::ast::ExprKind::Literal(_));
+                                    if !is_lit {
+                                        if let Some(&n) = vob_ports.get(arr_name) {
+                                            for i in 0..n {
+                                                driven.insert(format!("{}_{}_{}", arr_name, i, field.name));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    fn walk_thread(stmts: &[crate::ast::ThreadStmt], driven: &mut HashSet<String>,
+                                   vob_ports: &HashMap<String, u32>) {
                         use crate::ast::ThreadStmt;
                         for s in stmts {
                             match s {
-                                ThreadStmt::CombAssign(a) => {
-                                    if let crate::ast::ExprKind::Ident(n) = &a.target.kind {
-                                        driven.insert(n.clone());
-                                    }
-                                }
-                                ThreadStmt::SeqAssign(a) => {
-                                    if let crate::ast::ExprKind::Ident(n) = &a.target.kind {
-                                        driven.insert(n.clone());
-                                    }
-                                }
-                                ThreadStmt::ForkTlmAssign(a) => {
-                                    if let crate::ast::ExprKind::Ident(n) = &a.target.kind {
-                                        driven.insert(n.clone());
-                                    }
-                                }
+                                ThreadStmt::CombAssign(a) => mark_target(&a.target, driven, vob_ports),
+                                ThreadStmt::SeqAssign(a)  => mark_target(&a.target, driven, vob_ports),
+                                ThreadStmt::ForkTlmAssign(a) => mark_target(&a.target, driven, vob_ports),
                                 ThreadStmt::IfElse(ie) => {
-                                    walk_thread(&ie.then_stmts, driven);
-                                    walk_thread(&ie.else_stmts, driven);
+                                    walk_thread(&ie.then_stmts, driven, vob_ports);
+                                    walk_thread(&ie.else_stmts, driven, vob_ports);
                                 }
                                 ThreadStmt::For { body, .. }
                                 | ThreadStmt::Lock { body, .. }
-                                | ThreadStmt::DoUntil { body, .. } => walk_thread(body, driven),
+                                | ThreadStmt::DoUntil { body, .. } => walk_thread(body, driven, vob_ports),
                                 ThreadStmt::ForkJoin(branches, _) => {
-                                    for b in branches { walk_thread(b, driven); }
+                                    for b in branches { walk_thread(b, driven, vob_ports); }
                                 }
                                 _ => {}
                             }
                         }
                     }
-                    walk_thread(&t.body, &mut driven);
+                    walk_thread(&t.body, &mut driven, &vob_ports);
+                    // `default comb ... end default` targets — these drive
+                    // bus signals between active states; they also satisfy
+                    // the driver-completeness check (every output port has
+                    // at least a default value).
+                    for s in &t.default_comb {
+                        if let Stmt::Assign(a) = s {
+                            mark_target(&a.target, &mut driven, &vob_ports);
+                        }
+                    }
                 }
                 ModuleBodyItem::Resource(_) => {
                     // Resources are lowered before typecheck.

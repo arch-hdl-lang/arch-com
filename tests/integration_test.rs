@@ -4134,6 +4134,54 @@ fn test_vec_of_bus_port_typecheck_drives_all_indexed_outputs() {
 }
 
 #[test]
+fn test_thread_writing_bus_signals_lowers_correctly() {
+    // Regression: previously a `thread T ... b.v = ...; ... end thread T`
+    // where `b: initiator B;` is a bus port would lower without exposing
+    // `b_v` as an output of the synthesized `_<mod>_threads` sub-module.
+    // The parent's driver-completeness check then reported
+    // `output port "b_v" is not driven`. Fixed by teaching the
+    // signal-collection + body-rewrite passes about bus-port FieldAccess
+    // targets, and by widening `declared_names` to include flattened bus
+    // signals so the inst auto-wire-decl pass doesn't duplicate them.
+    let source = "
+        bus B
+          v: out Bool;
+          d: out UInt<8>;
+          r: in  Bool;
+        end bus B
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port b: initiator B;
+          port start: in Bool;
+          thread T on clk rising, rst low
+            default comb
+              b.v = false;
+              b.d = 0;
+            end default
+            wait until start;
+            do
+              b.v = true;
+              b.d = 8'hA5;
+            until b.r;
+          end thread T
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    // Sub-module exposes flat bus signals as ports.
+    assert!(sv.contains("output logic b_v")
+            && sv.contains("output logic [7:0] b_d")
+            && sv.contains("input logic b_r"),
+            "expected sub-module flat bus signals in SV:\n{sv}");
+    // Sub-inst connects them through to parent's flat ports — and the
+    // parent's signature must NOT have duplicate `logic b_v;` decls.
+    assert!(sv.matches("logic b_v").count() <= 2,
+            "expected at most one `logic b_v` decl per module:\n{sv}");
+    assert!(sv.contains(".b_v(b_v)") || sv.contains(".b_v (b_v)"),
+            "expected `.b_v(b_v)` inst-output connection:\n{sv}");
+}
+
+#[test]
 fn test_vec_of_bus_for_loop_static_unroll() {
     // `chans[i].sig = ...;` inside `for i in 0..N-1` over a `Vec<Bus, N>`
     // port has no SV-level array (the signature exposes only the flattened
