@@ -4173,6 +4173,52 @@ fn test_vec_of_bus_for_loop_static_unroll() {
 }
 
 #[test]
+fn test_vec_of_bus_inst_whole_vec_connection() {
+    // `chans -> w;` (whole-vec) where both child port and parent wire/port
+    // are `Vec<Bus, N>` expands to N per-element per-signal named-port
+    // connections in SV — saves the user from writing
+    // `chans[0] -> w[0]; chans[1] -> w[1]; ...` N times.
+    let source = "
+        bus B
+          v: out Bool;
+          d: out UInt<8>;
+        end bus B
+        module Producer
+          port chans: initiator Vec<B, 3>;
+          comb
+            chans[0].v = true;  chans[0].d = 8'h11;
+            chans[1].v = false; chans[1].d = 8'h22;
+            chans[2].v = true;  chans[2].d = 8'h33;
+          end comb
+        end module Producer
+        module Parent
+          port out_d0: out UInt<8>;
+          port out_d2: out UInt<8>;
+          wire w: Vec<B, 3>;
+          inst p: Producer
+            chans -> w;
+          end inst p
+          comb
+            out_d0 = w[0].d;
+            out_d2 = w[2].d;
+          end comb
+        end module Parent
+    ";
+    let sv = compile_to_sv(source);
+    for i in 0..3 {
+        assert!(sv.contains(&format!(".chans_{i}_v(w_{i}_v)"))
+                || sv.contains(&format!(".chans_{i}_v (w_{i}_v)")),
+                "missing `.chans_{i}_v(w_{i}_v)` named-port connection:\n{sv}");
+        assert!(sv.contains(&format!(".chans_{i}_d(w_{i}_d)"))
+                || sv.contains(&format!(".chans_{i}_d (w_{i}_d)")),
+                "missing `.chans_{i}_d(w_{i}_d)` named-port connection:\n{sv}");
+    }
+    // Should not leave a `.chans(w)` (illegal SV) artifact in the output.
+    assert!(!sv.contains(".chans(w)"),
+            "whole-vec connection must expand, not emit `.chans(w)`:\n{sv}");
+}
+
+#[test]
 fn test_vec_of_bus_wire_flattens_to_n_indexed_signals() {
     // `wire w: Vec<BusName, N>;` is type-expression composition over the
     // existing `wire X: BusName;` form. SV codegen emits N flat
