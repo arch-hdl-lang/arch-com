@@ -1,0 +1,4 @@
+package PkgFoo
+  param ADDR_W:      const = 32;
+  param REGION_BITS: const = 28;
+end package PkgFoo
