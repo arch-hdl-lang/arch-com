@@ -1201,16 +1201,35 @@ impl Parser {
             None
         };
         if let Some(perspective) = bus_perspective {
-            // Two surface forms:
-            //   port chans: initiator Vec<BusName, N>;       — array of N copies
-            //   port chan:  initiator BusName<PARAM=val>;    — scalar (existing)
-            let (bus_name, count) = if self.check(TokenKind::KwVec) {
+            // Three surface forms:
+            //   port chans: initiator Vec<BusName, N>;                  — array, default params
+            //   port chans: initiator Vec<BusName<PARAM=val>, N>;       — array, params inside Vec
+            //   port chan:  initiator BusName<PARAM=val>;               — scalar (existing)
+            let (bus_name, count, inner_params) = if self.check(TokenKind::KwVec) {
                 let vec_span = self.peek_span();
                 self.advance(); // consume Vec
                 self.expect(TokenKind::Lt)?;
                 let old_no_angle = self.no_angle;
                 self.no_angle = true;
                 let bus_ident = self.expect_ident()?;
+                // Optional bus-param assignments INSIDE the Vec, e.g.
+                // `Vec<BusAxi4<ADDR_W=32>, N>`. Same shape as the scalar
+                // `BusAxi4<...>` form just after the bus name.
+                let inner_params = if self.check(TokenKind::Lt) {
+                    self.advance();
+                    let mut assigns = Vec::new();
+                    loop {
+                        let pname = self.expect_ident()?;
+                        self.expect(TokenKind::Eq)?;
+                        let pval = self.parse_expr()?;
+                        assigns.push(ParamAssign { name: pname, value: pval, ty: None });
+                        if !self.eat(TokenKind::Comma) { break; }
+                    }
+                    self.expect(TokenKind::Gt)?;
+                    assigns
+                } else {
+                    Vec::new()
+                };
                 self.expect(TokenKind::Comma)?;
                 let count_expr = self.parse_expr()?;
                 self.no_angle = old_no_angle;
@@ -1227,12 +1246,16 @@ impl Parser {
                         vec_span,
                     ));
                 }
-                (bus_ident, Some(count_expr))
+                (bus_ident, Some(count_expr), inner_params)
             } else {
-                (self.expect_ident()?, None)
+                (self.expect_ident()?, None, Vec::new())
             };
-            // Optional param assignments: <PARAM=val, ...>
-            let params = if self.check(TokenKind::Lt) {
+            // Optional param assignments OUTSIDE the form: `<PARAM=val, ...>`
+            // for the scalar `port: initiator BusName<...>` shape, OR the
+            // legacy post-Vec form `Vec<B, N><...>`. Inner-Vec params take
+            // precedence over outer when both are written (same key wins
+            // last by the assignment ordering below).
+            let mut params = if self.check(TokenKind::Lt) {
                 self.advance();
                 let old_no_angle = self.no_angle;
                 self.no_angle = true;
@@ -1250,6 +1273,7 @@ impl Parser {
             } else {
                 Vec::new()
             };
+            params.extend(inner_params);
             self.expect(TokenKind::Semi)?;
             let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
             return Ok(PortDecl {

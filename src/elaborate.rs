@@ -1636,6 +1636,15 @@ pub fn lower_threads_with_opts(
     let mut extra_fsms: Vec<Item> = Vec::new();
     let mut errors: Vec<CompileError> = Vec::new();
 
+    // Pre-collect bus definitions so lower_module_threads can resolve
+    // bus port FieldAccess targets in thread bodies to flattened signal
+    // names (e.g. `b.v = true;` → drives `b_v`). Without this, threads
+    // that write to bus signals leave the corresponding flat output
+    // undriven post-lowering.
+    let bus_defs: HashMap<String, BusDecl> = ast.items.iter()
+        .filter_map(|it| if let Item::Bus(b) = it { Some((b.name.name.clone(), b.clone())) } else { None })
+        .collect();
+
     for item in ast.items {
         match item {
             Item::Module(m) => {
@@ -1644,7 +1653,7 @@ pub fn lower_threads_with_opts(
                     new_items.push(Item::Module(m));
                     continue;
                 }
-                match lower_module_threads(m, opts) {
+                match lower_module_threads(m, opts, &bus_defs) {
                     Ok((new_module, fsms)) => {
                         new_items.push(Item::Module(new_module));
                         extra_fsms.extend(fsms);
@@ -1671,9 +1680,19 @@ pub fn lower_threads_with_opts(
 /// All threads become per-thread state machines within one module.
 /// Shared registers, lock arbitration, and output muxing are all
 /// handled internally — no multi-driver issues.
-fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(ModuleDecl, Vec<Item>), Vec<CompileError>> {
+fn lower_module_threads(
+    m: ModuleDecl,
+    opts: &ThreadLowerOpts,
+    bus_defs: &HashMap<String, BusDecl>,
+) -> Result<(ModuleDecl, Vec<Item>), Vec<CompileError>> {
     let sp = m.span;
-    let type_map = build_module_type_map(&m);
+    let type_map = build_module_type_map_with_buses(&m, bus_defs);
+    // Mapping bus port name → bus name. Used to resolve `b.v = ...` thread
+    // targets to the flat signal name `b_v` so the lowering registers
+    // them as outputs of the synthesized `_<mod>_threads` sub-module.
+    let bus_port_map: HashMap<String, String> = m.ports.iter()
+        .filter_map(|p| p.bus_info.as_ref().map(|bi| (p.name.name.clone(), bi.bus_name.name.clone())))
+        .collect();
     let _reg_map = build_module_reg_map(&m);
     let mut errors: Vec<CompileError> = Vec::new();
 
@@ -1778,21 +1797,26 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
     let mut all_seq_driven: HashSet<String> = HashSet::new();
     let mut all_read: HashSet<String> = HashSet::new();
     for (_, t) in &threads {
-        let (cd, sd, ar) = collect_thread_signals(&t.body);
+        let (cd, sd, ar) = collect_thread_signals_with_buses(&t.body, &bus_port_map);
         all_comb_driven.extend(cd);
         all_seq_driven.extend(sd);
         all_read.extend(ar);
+        // Also seed flat bus-signal read names (`b.r` → `b_r`) so the
+        // sub-module declares them as inputs.
+        collect_thread_bus_reads(&t.body, &bus_port_map, &mut all_read);
         // Also collect signals referenced in the `default when` clause
         if let Some((dw_cond, dw_stmts)) = &t.default_when {
-            let (dw_cd, dw_sd, dw_ar) = collect_thread_signals(dw_stmts);
+            let (dw_cd, dw_sd, dw_ar) = collect_thread_signals_with_buses(dw_stmts, &bus_port_map);
             all_comb_driven.extend(dw_cd);
             all_seq_driven.extend(dw_sd);
             all_read.extend(dw_ar);
+            collect_thread_bus_reads(dw_stmts, &bus_port_map, &mut all_read);
             collect_expr_reads(dw_cond, &mut all_read);
+            collect_expr_bus_reads(dw_cond, &bus_port_map, &mut all_read);
         }
     }
     for (_, t) in &threads {
-        let (dc_targets, dc_reads) = collect_comb_stmt_signals(&t.default_comb);
+        let (dc_targets, dc_reads) = collect_comb_stmt_signals_with_buses(&t.default_comb, &bus_port_map);
         for target in &dc_targets {
             if all_seq_driven.contains(target) {
                 return Err(vec![CompileError::general(
@@ -1838,13 +1862,19 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
         }
     }
 
-    // Input ports (read-only signals, excluding internal lock signals)
+    // Input ports (read-only signals, excluding internal lock signals).
+    // Bus port roots (like `b` for `port b: initiator B`) are filtered
+    // out because the sub-module surfaces only the flattened signals
+    // (`b_v`, `b_r`, ...) — never the bus name itself. The bus-aware
+    // collectors emit both root and flat entries; the rewrite pass
+    // converts in-body references to flat names so the root would dangle.
     let read_only: HashSet<String> = all_read.iter()
         .filter(|n| !all_comb_driven.contains(*n) && !all_seq_driven.contains(*n)
                 && **n != clk_name && **n != rst_name
                 && !n.starts_with("_t") // per-thread counters (_t0_cnt, _t0_loop_cnt, etc.)
                 && **n != "_cnt" && **n != "_loop_cnt"
-                && !lock_internal.contains(*n))
+                && !lock_internal.contains(*n)
+                && !bus_port_map.contains_key(*n))
         .cloned().collect();
     let mut sorted_reads: Vec<&String> = read_only.iter().collect();
     sorted_reads.sort();
@@ -2736,6 +2766,13 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
     let mut merged_params = parent_params;
     merged_params.extend(state_name_params);
 
+    // Rewrite bus-port `FieldAccess(Ident(b), v)` → `Ident("b_v")` everywhere
+    // in the synthesized sub-module body. Required because the sub-module
+    // doesn't carry the bus ports themselves (only the flattened signal
+    // outputs `b_v`, ...), so the original thread-body references to
+    // `b.v` need to land on the flat names.
+    rewrite_bus_targets_in_body(&mut merged_body, &bus_port_map);
+
     let merged_module = ModuleDecl {
         name: Ident::new(merged_name.clone(), sp),
         params: merged_params,
@@ -2924,6 +2961,269 @@ struct SignalInfo {
     unpacked_ascending: bool,
 }
 
+/// Wrapper around `build_module_type_map` that ALSO seeds entries for the
+/// flattened bus-port signals: `port b: target B` with `B { v: out Bool; }`
+/// gets an entry `b_v` → Bool. Lets the thread-lowering pass treat
+/// `b.v = true;` inside a thread body the same as a write to a bare flat
+/// output port — without this, the synthesized `_<mod>_threads` sub-module
+/// fails to expose `b_v` and the parent's driver-completeness check
+/// reports it as undriven.
+///
+/// `bus_defs` is the top-level item index; consulted to resolve each bus
+/// port's effective signal list (including the `target` perspective flip).
+fn build_module_type_map_with_buses(
+    m: &ModuleDecl,
+    bus_defs: &HashMap<String, BusDecl>,
+) -> HashMap<String, SignalInfo> {
+    let mut map = build_module_type_map(m);
+    for p in &m.ports {
+        let Some(bi) = p.bus_info.as_ref() else { continue; };
+        let Some(bd) = bus_defs.get(&bi.bus_name.name) else { continue; };
+        // Effective signals (with `generate_if READ`/`WRITE` resolved). Use the
+        // bus port's own param overrides + bus defaults so width-bearing types
+        // like `UInt<DATA_W>` substitute correctly.
+        let mut param_map: HashMap<String, &Expr> = bd.params.iter()
+            .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
+            .collect();
+        for pa in &bi.params { param_map.insert(pa.name.name.clone(), &pa.value); }
+        let eff = bus_effective_signals(bd, &param_map);
+        // For Vec-of-bus ports, register entries for each indexed copy.
+        let prefixes: Vec<String> = match bi.count.as_ref() {
+            None => vec![p.name.name.clone()],
+            Some(count_expr) => {
+                let n = eval_const_expr_for_lower(count_expr, &m.params) as u32;
+                (0..n).map(|i| format!("{}_{}", p.name.name, i)).collect()
+            }
+        };
+        for prefix in &prefixes {
+            for (sname, _sdir, sty) in &eff {
+                let subst_ty = subst_type_expr_for_lower(sty, &param_map);
+                map.entry(format!("{prefix}_{sname}")).or_insert(SignalInfo {
+                    ty: subst_ty,
+                    reg_reset: RegReset::None,
+                    reg_init: None,
+                    shared: None,
+                    unpacked: false,
+                    unpacked_ascending: false,
+                });
+            }
+        }
+    }
+    map
+}
+
+/// Minimal `effective_signals` walker for `BusDecl`. Inlines bus-level
+/// `generate_if` gates by folding their condition against the param map;
+/// signals inside a falsy branch are dropped. Mirrors the resolve-pass
+/// `BusInfo::effective_signals` but runs pre-resolve (lower_threads is
+/// invoked before `resolve::resolve`).
+fn bus_effective_signals(
+    bd: &BusDecl,
+    param_map: &HashMap<String, &Expr>,
+) -> Vec<(String, Direction, TypeExpr)> {
+    let mut out: Vec<(String, Direction, TypeExpr)> = bd.signals.iter()
+        .map(|s| (s.name.name.clone(), s.direction, s.ty.clone()))
+        .collect();
+    for gi in &bd.generates {
+        let cond_v = eval_const_expr_for_lower(&gi.cond, &[]);
+        // Resolve any param references in the cond by substituting from
+        // param_map; fall back to the bare const eval otherwise.
+        let cond = if cond_v != 0 { true } else {
+            param_map.get(&format!("{:?}", gi.cond.kind)).is_some()
+        };
+        // Simpler: re-evaluate cond by walking param_map for Ident matches.
+        let cond = cond || gen_if_cond_truthy(&gi.cond, param_map);
+        let branch = if cond { &gi.then_signals } else { &gi.else_signals };
+        for s in branch {
+            out.push((s.name.name.clone(), s.direction, s.ty.clone()));
+        }
+    }
+    out
+}
+
+fn gen_if_cond_truthy(e: &Expr, params: &HashMap<String, &Expr>) -> bool {
+    match &e.kind {
+        ExprKind::Literal(LitKind::Dec(n))
+        | ExprKind::Literal(LitKind::Hex(n))
+        | ExprKind::Literal(LitKind::Bin(n))
+        | ExprKind::Literal(LitKind::Sized(_, n)) => *n != 0,
+        ExprKind::Bool(b) => *b,
+        ExprKind::Ident(name) => params.get(name).map_or(false, |v| gen_if_cond_truthy(v, params)),
+        _ => false,
+    }
+}
+
+/// Param-aware constant folder for the pre-resolve thread-lowering pass.
+/// A trimmed copy of the sim_codegen variant — handles literals, plain
+/// param-ident lookups, and the small arithmetic subset that surfaces in
+/// `Vec<Bus, N>` counts and bus param expressions.
+fn eval_const_expr_for_lower(expr: &Expr, params: &[ParamDecl]) -> u64 {
+    match &expr.kind {
+        ExprKind::Literal(LitKind::Dec(n))
+        | ExprKind::Literal(LitKind::Hex(n))
+        | ExprKind::Literal(LitKind::Bin(n))
+        | ExprKind::Literal(LitKind::Sized(_, n)) => *n,
+        ExprKind::Ident(name) => params.iter()
+            .find(|p| p.name.name == *name)
+            .and_then(|p| p.default.as_ref())
+            .map(|d| eval_const_expr_for_lower(d, params))
+            .unwrap_or(0),
+        ExprKind::Binary(op, l, r) => {
+            let lv = eval_const_expr_for_lower(l, params);
+            let rv = eval_const_expr_for_lower(r, params);
+            match op {
+                BinOp::Add => lv.wrapping_add(rv),
+                BinOp::Sub => lv.wrapping_sub(rv),
+                BinOp::Mul => lv.wrapping_mul(rv),
+                BinOp::Div if rv != 0 => lv / rv,
+                BinOp::Mod if rv != 0 => lv % rv,
+                BinOp::Shl => lv << (rv & 63),
+                BinOp::Shr => lv >> (rv & 63),
+                _ => 0,
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Substitute param-ident references in a type expression, walking
+/// Vec<T,N> recursively and folding width-bearing UInt/SInt N expressions.
+fn subst_type_expr_for_lower(ty: &TypeExpr, params: &HashMap<String, &Expr>) -> TypeExpr {
+    fn subst(e: &Expr, params: &HashMap<String, &Expr>) -> Expr {
+        match &e.kind {
+            ExprKind::Ident(name) => params.get(name).map(|v| (*v).clone()).unwrap_or_else(|| e.clone()),
+            _ => e.clone(),
+        }
+    }
+    match ty {
+        TypeExpr::UInt(w) => TypeExpr::UInt(Box::new(subst(w, params))),
+        TypeExpr::SInt(w) => TypeExpr::SInt(Box::new(subst(w, params))),
+        TypeExpr::Vec(elem, n) => TypeExpr::Vec(
+            Box::new(subst_type_expr_for_lower(elem, params)),
+            Box::new(subst(n, params)),
+        ),
+        _ => ty.clone(),
+    }
+}
+
+/// Like `expr_root_name` but for assignment targets: returns the
+/// `<port>_<sig>` flat name when the target is a `FieldAccess` on a known
+/// bus port. Falls back to the root name otherwise. Index-on-bus-port
+/// (`chans[i].sig`) returns `<port>_<i>_<sig>` for literal `i`; non-literal
+/// `i` (loop variable) returns just the root name and the caller is
+/// responsible for the wildcard expansion against the Vec-of-bus count map.
+fn expr_target_flat_name(e: &Expr, bus_port_map: &HashMap<String, String>) -> Option<String> {
+    match &e.kind {
+        ExprKind::FieldAccess(base, field) => {
+            if let ExprKind::Ident(base_name) = &base.kind {
+                if bus_port_map.contains_key(base_name) {
+                    return Some(format!("{}_{}", base_name, field.name));
+                }
+            }
+            if let ExprKind::Index(arr, idx) = &base.kind {
+                if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) = (&arr.kind, &idx.kind) {
+                    if bus_port_map.contains_key(arr_name) {
+                        return Some(format!("{}_{}_{}", arr_name, i, field.name));
+                    }
+                }
+            }
+            expr_root_name(base)
+        }
+        _ => expr_root_name(e),
+    }
+}
+
+/// Walk every `Stmt` in the synthesized thread sub-module body and
+/// replace bus-port FieldAccess expressions (`b.v`) with the flat ident
+/// (`b_v`) on both LHS and RHS. The sub-module exposes the flat signals
+/// as ports — `b` itself was never carried over — so any reference to
+/// the bus name must be rewritten before SV codegen.
+fn rewrite_bus_targets_in_body(body: &mut Vec<ModuleBodyItem>, bus_port_map: &HashMap<String, String>) {
+    fn rw_expr(e: &mut Expr, bus_port_map: &HashMap<String, String>) {
+        // Bottom-up: rewrite children first.
+        match &mut e.kind {
+            ExprKind::Binary(_, l, r) => { rw_expr(l, bus_port_map); rw_expr(r, bus_port_map); }
+            ExprKind::Unary(_, x) | ExprKind::Cast(x, _) | ExprKind::LatencyAt(x, _) | ExprKind::SvaNext(_, x) =>
+                rw_expr(x, bus_port_map),
+            ExprKind::Index(b, i) | ExprKind::BitSlice(b, i, _) => {
+                rw_expr(b, bus_port_map);
+                rw_expr(i, bus_port_map);
+            }
+            ExprKind::PartSelect(b, lo, hi, _) => {
+                rw_expr(b, bus_port_map); rw_expr(lo, bus_port_map); rw_expr(hi, bus_port_map);
+            }
+            ExprKind::Ternary(c, t, e2) => {
+                rw_expr(c, bus_port_map); rw_expr(t, bus_port_map); rw_expr(e2, bus_port_map);
+            }
+            ExprKind::Concat(parts) | ExprKind::FunctionCall(_, parts) => {
+                for p in parts { rw_expr(p, bus_port_map); }
+            }
+            ExprKind::MethodCall(b, _, args) => {
+                rw_expr(b, bus_port_map);
+                for a in args { rw_expr(a, bus_port_map); }
+            }
+            ExprKind::FieldAccess(b, _) => rw_expr(b, bus_port_map),
+            _ => {}
+        }
+        // Now check if THIS node is a bus-port FieldAccess to rewrite.
+        let replacement = match &e.kind {
+            ExprKind::FieldAccess(base, field) => {
+                if let ExprKind::Ident(base_name) = &base.kind {
+                    if bus_port_map.contains_key(base_name) {
+                        Some(ExprKind::Ident(format!("{}_{}", base_name, field.name)))
+                    } else { None }
+                } else if let ExprKind::Index(arr, idx) = &base.kind {
+                    if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i)))
+                        = (&arr.kind, &idx.kind)
+                    {
+                        if bus_port_map.contains_key(arr_name) {
+                            Some(ExprKind::Ident(format!("{}_{}_{}", arr_name, i, field.name)))
+                        } else { None }
+                    } else { None }
+                } else { None }
+            }
+            _ => None,
+        };
+        if let Some(new_kind) = replacement {
+            e.kind = new_kind;
+        }
+    }
+    fn rw_stmt(s: &mut Stmt, bus_port_map: &HashMap<String, String>) {
+        match s {
+            Stmt::Assign(a) => { rw_expr(&mut a.target, bus_port_map); rw_expr(&mut a.value, bus_port_map); }
+            Stmt::IfElse(ie) => {
+                rw_expr(&mut ie.cond, bus_port_map);
+                for s in &mut ie.then_stmts { rw_stmt(s, bus_port_map); }
+                for s in &mut ie.else_stmts { rw_stmt(s, bus_port_map); }
+            }
+            Stmt::Match(m) => {
+                rw_expr(&mut m.scrutinee, bus_port_map);
+                for arm in &mut m.arms { for s in &mut arm.body { rw_stmt(s, bus_port_map); } }
+            }
+            Stmt::For(f) => { for s in &mut f.body { rw_stmt(s, bus_port_map); } }
+            Stmt::Init(ib) => { for s in &mut ib.body { rw_stmt(s, bus_port_map); } }
+            Stmt::DoUntil { body, cond, .. } => {
+                rw_expr(cond, bus_port_map);
+                for s in body { rw_stmt(s, bus_port_map); }
+            }
+            Stmt::WaitUntil(e, _) => rw_expr(e, bus_port_map),
+            Stmt::Log(l) => { for a in &mut l.args { rw_expr(a, bus_port_map); } }
+        }
+    }
+    for item in body.iter_mut() {
+        match item {
+            ModuleBodyItem::CombBlock(cb) => { for s in &mut cb.stmts { rw_stmt(s, bus_port_map); } }
+            ModuleBodyItem::RegBlock(rb) => { for s in &mut rb.stmts { rw_stmt(s, bus_port_map); } }
+            ModuleBodyItem::LatchBlock(lb) => { for s in &mut lb.stmts { rw_stmt(s, bus_port_map); } }
+            ModuleBodyItem::LetBinding(lb) => rw_expr(&mut lb.value, bus_port_map),
+            ModuleBodyItem::RegDecl(r) => {
+                if let Some(init) = r.init.as_mut() { rw_expr(init, bus_port_map); }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
     let mut map = HashMap::new();
     for p in &m.ports {
@@ -2984,6 +3284,86 @@ fn build_module_reg_map(m: &ModuleDecl) -> HashMap<String, RegDecl> {
 }
 
 // ── Signal analysis ─────────────────────────────────────────────────────────
+
+fn collect_comb_stmt_signals_with_buses(
+    stmts: &[Stmt],
+    bus_port_map: &HashMap<String, String>,
+) -> (HashSet<String>, HashSet<String>) {
+    let (mut comb_driven, all_read) = collect_comb_stmt_signals(stmts);
+    // Replace bus-port root names ("b") with their flattened equivalents
+    // ("b_v"). The underlying expr_root_name walker can't distinguish them
+    // since it doesn't know which signals are bus ports.
+    comb_driven.retain(|n| !bus_port_map.contains_key(n));
+    fn walk(stmts: &[Stmt], comb_driven: &mut HashSet<String>, bus_port_map: &HashMap<String, String>) {
+        for s in stmts {
+            match s {
+                Stmt::Assign(a) => {
+                    if let Some(name) = expr_target_flat_name(&a.target, bus_port_map) {
+                        if !bus_port_map.contains_key(&name) {
+                            comb_driven.insert(name);
+                        }
+                    }
+                }
+                Stmt::IfElse(ie) => {
+                    walk(&ie.then_stmts, comb_driven, bus_port_map);
+                    walk(&ie.else_stmts, comb_driven, bus_port_map);
+                }
+                Stmt::Match(m) => { for arm in &m.arms { walk(&arm.body, comb_driven, bus_port_map); } }
+                Stmt::For(f) => walk(&f.body, comb_driven, bus_port_map),
+                Stmt::Init(ib) => walk(&ib.body, comb_driven, bus_port_map),
+                Stmt::DoUntil { body, .. } => walk(body, comb_driven, bus_port_map),
+                _ => {}
+            }
+        }
+    }
+    walk(stmts, &mut comb_driven, bus_port_map);
+    (comb_driven, all_read)
+}
+
+fn collect_thread_signals_with_buses(
+    body: &[ThreadStmt],
+    bus_port_map: &HashMap<String, String>,
+) -> (HashSet<String>, HashSet<String>, HashSet<String>) {
+    let (mut comb_driven, mut seq_driven, all_read) = collect_thread_signals(body);
+    comb_driven.retain(|n| !bus_port_map.contains_key(n));
+    seq_driven.retain(|n| !bus_port_map.contains_key(n));
+    fn walk(stmts: &[ThreadStmt],
+            comb_driven: &mut HashSet<String>,
+            seq_driven: &mut HashSet<String>,
+            bus_port_map: &HashMap<String, String>) {
+        for s in stmts {
+            match s {
+                ThreadStmt::CombAssign(a) => {
+                    if let Some(name) = expr_target_flat_name(&a.target, bus_port_map) {
+                        if !bus_port_map.contains_key(&name) {
+                            comb_driven.insert(name);
+                        }
+                    }
+                }
+                ThreadStmt::SeqAssign(a) | ThreadStmt::ForkTlmAssign(a) => {
+                    if let Some(name) = expr_target_flat_name(&a.target, bus_port_map) {
+                        if !bus_port_map.contains_key(&name) {
+                            seq_driven.insert(name);
+                        }
+                    }
+                }
+                ThreadStmt::IfElse(ie) => {
+                    walk(&ie.then_stmts, comb_driven, seq_driven, bus_port_map);
+                    walk(&ie.else_stmts, comb_driven, seq_driven, bus_port_map);
+                }
+                ThreadStmt::For { body, .. }
+                | ThreadStmt::Lock { body, .. }
+                | ThreadStmt::DoUntil { body, .. } => walk(body, comb_driven, seq_driven, bus_port_map),
+                ThreadStmt::ForkJoin(branches, _) => {
+                    for b in branches { walk(b, comb_driven, seq_driven, bus_port_map); }
+                }
+                _ => {}
+            }
+        }
+    }
+    walk(body, &mut comb_driven, &mut seq_driven, bus_port_map);
+    (comb_driven, seq_driven, all_read)
+}
 
 fn collect_comb_stmt_signals(stmts: &[Stmt]) -> (HashSet<String>, HashSet<String>) {
     let mut comb_driven = HashSet::new();
@@ -3123,6 +3503,81 @@ fn expr_root_name(e: &Expr) -> Option<String> {
 }
 
 /// Collect all identifier reads from an expression.
+/// Walk an expression and add flat bus-signal names for any bus-port
+/// FieldAccess it contains. `b.r` (a bus signal read) → adds `b_r` to
+/// `out`. Used after the underlying `collect_expr_reads` to seed the
+/// flattened input names into the sub-module's port list.
+fn collect_expr_bus_reads(e: &Expr, bus_port_map: &HashMap<String, String>, out: &mut HashSet<String>) {
+    if let ExprKind::FieldAccess(base, field) = &e.kind {
+        if let ExprKind::Ident(base_name) = &base.kind {
+            if bus_port_map.contains_key(base_name) {
+                out.insert(format!("{}_{}", base_name, field.name));
+            }
+        }
+        if let ExprKind::Index(arr, idx) = &base.kind {
+            if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i)))
+                = (&arr.kind, &idx.kind)
+            {
+                if bus_port_map.contains_key(arr_name) {
+                    out.insert(format!("{}_{}_{}", arr_name, i, field.name));
+                }
+            }
+        }
+    }
+    // Recurse into children.
+    match &e.kind {
+        ExprKind::Binary(_, l, r) => { collect_expr_bus_reads(l, bus_port_map, out); collect_expr_bus_reads(r, bus_port_map, out); }
+        ExprKind::Unary(_, x) | ExprKind::Cast(x, _) | ExprKind::LatencyAt(x, _) | ExprKind::SvaNext(_, x) =>
+            collect_expr_bus_reads(x, bus_port_map, out),
+        ExprKind::Index(b, i) | ExprKind::BitSlice(b, i, _) => {
+            collect_expr_bus_reads(b, bus_port_map, out); collect_expr_bus_reads(i, bus_port_map, out);
+        }
+        ExprKind::PartSelect(b, lo, hi, _) => {
+            collect_expr_bus_reads(b, bus_port_map, out); collect_expr_bus_reads(lo, bus_port_map, out); collect_expr_bus_reads(hi, bus_port_map, out);
+        }
+        ExprKind::Ternary(c, t, e2) => {
+            collect_expr_bus_reads(c, bus_port_map, out); collect_expr_bus_reads(t, bus_port_map, out); collect_expr_bus_reads(e2, bus_port_map, out);
+        }
+        ExprKind::Concat(parts) | ExprKind::FunctionCall(_, parts) => {
+            for p in parts { collect_expr_bus_reads(p, bus_port_map, out); }
+        }
+        ExprKind::MethodCall(b, _, args) => {
+            collect_expr_bus_reads(b, bus_port_map, out);
+            for a in args { collect_expr_bus_reads(a, bus_port_map, out); }
+        }
+        ExprKind::FieldAccess(b, _) => collect_expr_bus_reads(b, bus_port_map, out),
+        _ => {}
+    }
+}
+
+/// Walk a thread body (recursively) and add flat bus-signal read names
+/// to `out`. Companion to `collect_expr_bus_reads` for the statement
+/// shape.
+fn collect_thread_bus_reads(body: &[ThreadStmt], bus_port_map: &HashMap<String, String>, out: &mut HashSet<String>) {
+    for s in body {
+        match s {
+            ThreadStmt::CombAssign(a) | ThreadStmt::SeqAssign(a) | ThreadStmt::ForkTlmAssign(a) => {
+                collect_expr_bus_reads(&a.value, bus_port_map, out);
+                collect_expr_bus_reads(&a.target, bus_port_map, out);
+            }
+            ThreadStmt::WaitUntil(c, _) => collect_expr_bus_reads(c, bus_port_map, out),
+            ThreadStmt::IfElse(ie) => {
+                collect_expr_bus_reads(&ie.cond, bus_port_map, out);
+                collect_thread_bus_reads(&ie.then_stmts, bus_port_map, out);
+                collect_thread_bus_reads(&ie.else_stmts, bus_port_map, out);
+            }
+            ThreadStmt::For { body, .. } | ThreadStmt::Lock { body, .. } => collect_thread_bus_reads(body, bus_port_map, out),
+            ThreadStmt::DoUntil { body, cond, .. } => {
+                collect_expr_bus_reads(cond, bus_port_map, out);
+                collect_thread_bus_reads(body, bus_port_map, out);
+            }
+            ThreadStmt::ForkJoin(branches, _) => { for b in branches { collect_thread_bus_reads(b, bus_port_map, out); } }
+            ThreadStmt::Return(e, _) => collect_expr_bus_reads(e, bus_port_map, out),
+            _ => {}
+        }
+    }
+}
+
 fn collect_expr_reads(e: &Expr, out: &mut HashSet<String>) {
     match &e.kind {
         ExprKind::Ident(name) => { out.insert(name.clone()); }

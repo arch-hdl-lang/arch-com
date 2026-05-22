@@ -263,7 +263,36 @@ impl<'a> Codegen<'a> {
         // Collect names already declared as ports, regs, or lets so we can
         // auto-declare inst output wires that aren't otherwise declared.
         let mut declared_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for p in &m.ports { declared_names.insert(p.name.name.clone()); }
+        for p in &m.ports {
+            declared_names.insert(p.name.name.clone());
+            // Bus ports flatten to `<port>_<sig>` (or `<port>_<i>_<sig>` for
+            // Vec-of-bus) at SV signature emission. Pre-populate those flat
+            // names so the inst auto-wire-decl pass doesn't emit a redundant
+            // `logic <port>_<sig>;` declaration that would duplicate the
+            // signature line. Important for designs whose threads write to
+            // bus signals and get an inst-output connection back from the
+            // synthesized `_<mod>_threads` sub-module.
+            if let Some(bi) = p.bus_info.as_ref() {
+                if let Some((Symbol::Bus(info), _)) = self.symbols.globals.get(&bi.bus_name.name) {
+                    let mut pm = info.default_param_map();
+                    for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
+                    let prefixes: Vec<String> = match bi.count.as_ref() {
+                        None => vec![p.name.name.clone()],
+                        Some(count_expr) => {
+                            match self.eval_const_u32(count_expr, &m.params) {
+                                Some(n) => (0..n).map(|i| format!("{}_{}", p.name.name, i)).collect(),
+                                None => vec![p.name.name.clone()],
+                            }
+                        }
+                    };
+                    for prefix in &prefixes {
+                        for (sname, _, _) in info.effective_signals(&pm) {
+                            declared_names.insert(format!("{prefix}_{sname}"));
+                        }
+                    }
+                }
+            }
+        }
         for item in &m.body {
             match item {
                 ModuleBodyItem::RegDecl(r) => { declared_names.insert(r.name.name.clone()); }
