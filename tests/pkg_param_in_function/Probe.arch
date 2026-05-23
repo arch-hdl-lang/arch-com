@@ -1,0 +1,10 @@
+use PkgFoo;
+module Probe
+  port a:   in  UInt<ADDR_W>;
+  port out: out UInt<4>;
+  function shift_decode(x: UInt<ADDR_W>) -> UInt<4>
+    let s: UInt<ADDR_W> = x >> REGION_BITS;
+    return s.trunc<4>();
+  end function shift_decode
+  comb out = shift_decode(a); end comb
+end module Probe

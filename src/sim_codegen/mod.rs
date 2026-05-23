@@ -4065,6 +4065,42 @@ impl<'a> SimCodegen<'a> {
         let mut h = String::new();
         h.push_str("#pragma once\n#include \"verilated.h\"\n\n");
 
+        // Hoist package- and module-level const params as `#define`s so that
+        // function bodies referencing them (e.g. `x >> REGION_BITS` where
+        // `REGION_BITS` is a `package` param) compile. The SV path resolves
+        // this via `import Pkg::*`; the sim path has no equivalent scope —
+        // module-internal functions get hoisted to free C++ functions, and
+        // VFunctions.h is included from each V{Module}.h *before* the
+        // per-module `#define`s, so without this block the identifier is
+        // simply undeclared. `#ifndef`-guarded so re-definitions in
+        // per-module headers are harmless.
+        let mut emitted_param_defines: HashSet<String> = HashSet::new();
+        for item in &self.source.items {
+            let (params, _ctx_label): (&[ParamDecl], &str) = match item {
+                Item::Package(pkg) => (&pkg.params, "package"),
+                Item::Module(m) => (&m.params, "module"),
+                _ => continue,
+            };
+            for p in params {
+                if !emitted_param_defines.insert(p.name.name.clone()) {
+                    continue;
+                }
+                match &p.kind {
+                    ParamKind::Const | ParamKind::WidthConst(..) | ParamKind::Logic(_) => {
+                        if let Some(ref def) = p.default {
+                            let val = eval_const_expr_with_params(def, params);
+                            h.push_str(&format!(
+                                "#ifndef {}\n#define {} {val}ULL\n#endif\n",
+                                p.name.name, p.name.name
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        h.push('\n');
+
         for f in fns {
             let ret_ty = cpp_internal_type(&f.ret_ty);
             let args_str: Vec<String> = f.args.iter()

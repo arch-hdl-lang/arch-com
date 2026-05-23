@@ -15751,3 +15751,33 @@ end fsm F
     assert!(sdc.contains("set_multicycle_path 4 -hold -to [get_cells -hierarchical {*slow_r_reg*}]"),
         "got:\n{}", sdc);
 }
+
+/// Regression: a module-internal `function` whose body references a
+/// `package` param (e.g. `x >> REGION_BITS`) used to fail C++ compile in
+/// arch_sim_build/VFunctions.h with `use of undeclared identifier
+/// 'REGION_BITS'` — module-internal functions are hoisted to free
+/// functions in VFunctions.h, which is included from V{Module}.h
+/// *before* the per-module `#define`s. The fix hoists package- and
+/// module-level const params as `#define`s at the top of VFunctions.h.
+#[test]
+fn test_sim_function_uses_package_param() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/pkg_param_in_function/PkgFoo.arch")
+        .arg("tests/pkg_param_in_function/Probe.arch")
+        .arg("--tb")
+        .arg("tests/pkg_param_in_function/tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for pkg_param_in_function repro");
+    assert!(out.status.success(),
+        "pkg_param_in_function sim should compile + run\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS pkg_param_in_function"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout));
+}
