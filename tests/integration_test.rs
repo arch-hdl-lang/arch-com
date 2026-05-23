@@ -4036,14 +4036,16 @@ fn test_vec_of_bus_port_flattens_to_n_indexed_copies() {
         end module Prod
     ";
     let sv = compile_to_sv(source);
-    // One port per signal, with `[N]` unpacked outer dim.
-    assert!(sv.contains("output logic chans_v [3]"),
-            "missing `output logic chans_v [3]` in SV:\n{sv}");
-    assert!(sv.contains("input logic chans_r [3]"),
-            "missing `input logic chans_r [3]` in SV:\n{sv}");
-    assert!(sv.contains("output logic [7:0] chans_d [3]"),
-            "missing `output logic [7:0] chans_d [3]` in SV:\n{sv}");
-    // Bracket-dot access lowers to indexed SV refs.
+    // One port per signal, with `[N-1:0]` *packed* outer dim. Packed shape
+    // works with both Verilator and Yosys's built-in read_verilog and lets
+    // inst connection sites use SV concat literals for column gather.
+    assert!(sv.contains("output logic [2:0] chans_v"),
+            "missing `output logic [2:0] chans_v` (packed 3-element) in SV:\n{sv}");
+    assert!(sv.contains("input logic [2:0] chans_r"),
+            "missing `input logic [2:0] chans_r` in SV:\n{sv}");
+    assert!(sv.contains("output logic [2:0] [7:0] chans_d"),
+            "missing `output logic [2:0] [7:0] chans_d` in SV:\n{sv}");
+    // Bracket-dot access lowers to packed indexed SV refs.
     assert!(sv.contains("chans_v[0] = 1'b1") || sv.contains("assign chans_v[0] = 1'b1"),
             "expected `chans_v[0] = 1'b1` assignment in SV:\n{sv}");
     assert!(sv.contains("chans_v[1] = 1'b0") || sv.contains("assign chans_v[1] = 1'b0"),
@@ -4097,11 +4099,12 @@ fn test_vec_of_bus_port_param_driven_n() {
         end module M
     ";
     let sv = compile_to_sv(source);
-    // D2 array port (single decl with unpacked `[3]` outer dim — param folded).
-    assert!(sv.contains("output logic chans_v [3]"),
-            "missing `output logic chans_v [3]` in SV:\n{sv}");
-    assert!(sv.contains("output logic [7:0] chans_d [3]"),
-            "missing `output logic [7:0] chans_d [3]` in SV:\n{sv}");
+    // Packed Vec-of-bus port: single decl with `[N-1:0]` packed outer dim
+    // (param folded to 3).
+    assert!(sv.contains("output logic [2:0] chans_v"),
+            "missing `output logic [2:0] chans_v` (packed) in SV:\n{sv}");
+    assert!(sv.contains("output logic [2:0] [7:0] chans_d"),
+            "missing `output logic [2:0] [7:0] chans_d` in SV:\n{sv}");
     // for-loop should be statically unrolled even though the upper bound
     // is `NUM_CHANS-1` (param expression).
     assert!(!sv.contains("for (int i ="),
@@ -4432,25 +4435,22 @@ fn test_vec_of_bus_inst_whole_vec_connection() {
         end module Parent
     ";
     let sv = compile_to_sv(source);
-    for i in 0..3 {
-        assert!(sv.contains(&format!(".chans_{i}_v(w_{i}_v)"))
-                || sv.contains(&format!(".chans_{i}_v (w_{i}_v)")),
-                "missing `.chans_{i}_v(w_{i}_v)` named-port connection:\n{sv}");
-        assert!(sv.contains(&format!(".chans_{i}_d(w_{i}_d)"))
-                || sv.contains(&format!(".chans_{i}_d (w_{i}_d)")),
-                "missing `.chans_{i}_d(w_{i}_d)` named-port connection:\n{sv}");
-    }
-    // Should not leave a `.chans(w)` (illegal SV) artifact in the output.
-    assert!(!sv.contains(".chans(w)"),
-            "whole-vec connection must expand, not emit `.chans(w)`:\n{sv}");
+    // Whole-vec `chans -> w` now emits ONE packed connection per bus signal —
+    // both sides have the same packed shape. No per-element split needed.
+    assert!(sv.contains(".chans_v(w_v)") || sv.contains(".chans_v (w_v)"),
+            "missing `.chans_v(w_v)` packed whole-vec connection:\n{sv}");
+    assert!(sv.contains(".chans_d(w_d)") || sv.contains(".chans_d (w_d)"),
+            "missing `.chans_d(w_d)` packed whole-vec connection:\n{sv}");
+    // The parent's bus wire `w` is also packed, so reads like `w[0].d`
+    // lower to `w_d[0]`.
+    assert!(sv.contains("w_d[0]"), "expected `w_d[0]` indexed wire read:\n{sv}");
 }
 
 #[test]
 fn test_vec_of_bus_wire_flattens_to_n_indexed_signals() {
-    // `wire w: Vec<BusName, N>;` is type-expression composition over the
-    // existing `wire X: BusName;` form. SV codegen emits N flat
-    // `w_0_<sig>`, ..., `w_{N-1}_<sig>` and `w[i].sig` access resolves
-    // to the corresponding flat name. No new construct.
+    // `wire w: Vec<BusName, N>;` becomes one packed per-signal storage
+    // (`logic [N-1:0]` or `logic [N-1:0][W-1:0]`) at the SV layer.
+    // `w[i].sig` access resolves to `w_<sig>[i]`.
     let source = "
         bus B
           v: out Bool;
@@ -4470,20 +4470,20 @@ fn test_vec_of_bus_wire_flattens_to_n_indexed_signals() {
         end module M
     ";
     let sv = compile_to_sv(source);
-    // The wire becomes N flat per-signal declarations.
+    // Packed wire: one decl per bus signal with `[N-1:0]` outer dim.
+    assert!(sv.contains("logic [1:0] w_v;"),
+            "missing `logic [1:0] w_v;` packed wire in SV:\n{sv}");
+    assert!(sv.contains("logic [1:0] [7:0] w_d;"),
+            "missing `logic [1:0] [7:0] w_d;` packed wire in SV:\n{sv}");
+    // Indexed writes/reads use SV packed slicing.
     for (i, expected_d) in [(0u32, "8'd17"), (1u32, "8'd34")] {
-        assert!(sv.contains(&format!("logic w_{i}_v;")),
-                "missing `logic w_{i}_v;` in SV:\n{sv}");
-        assert!(sv.contains(&format!("logic [7:0] w_{i}_d;")),
-                "missing `logic [7:0] w_{i}_d;` in SV:\n{sv}");
-        assert!(sv.contains(&format!("w_{i}_d = {expected_d}")),
-                "missing `w_{i}_d = {expected_d}` assignment in SV:\n{sv}");
+        assert!(sv.contains(&format!("w_d[{i}] = {expected_d}")),
+                "missing `w_d[{i}] = {expected_d}` assignment in SV:\n{sv}");
     }
-    // Reading uses the same flat names.
-    assert!(sv.contains("o_v0 = w_0_v"),
-            "expected `o_v0 = w_0_v` in SV:\n{sv}");
-    assert!(sv.contains("o_d1 = w_1_d"),
-            "expected `o_d1 = w_1_d` in SV:\n{sv}");
+    assert!(sv.contains("o_v0 = w_v[0]"),
+            "expected `o_v0 = w_v[0]` in SV:\n{sv}");
+    assert!(sv.contains("o_d1 = w_d[1]"),
+            "expected `o_d1 = w_d[1]` in SV:\n{sv}");
 }
 
 #[test]
@@ -4525,26 +4525,26 @@ fn test_vec_of_bus_wire_carries_inst_output_through_indexed_connection() {
         end module Parent
     ";
     let sv = compile_to_sv(source);
-    // The Vec-of-bus wire flattens to per-index per-signal storage.
-    for i in 0..2 {
-        assert!(sv.contains(&format!("logic w_{i}_v;")),
-                "missing `logic w_{i}_v;` in Parent SV:\n{sv}");
-    }
-    // The Producer instance's bus port elements connect via per-signal
-    // named ports against those flat wire signals.
-    assert!(sv.contains(".chans_0_v(w_0_v)") || sv.contains(".chans_0_v (w_0_v)"),
-            "expected `.chans_0_v(w_0_v)` named-port connection in SV:\n{sv}");
-    assert!(sv.contains(".chans_1_d(w_1_d)") || sv.contains(".chans_1_d (w_1_d)"),
-            "expected `.chans_1_d(w_1_d)` named-port connection in SV:\n{sv}");
-    // The downstream reads land on the same flat names.
-    assert!(sv.contains("o_v0 = w_0_v"),
-            "expected `o_v0 = w_0_v` in SV:\n{sv}");
-    assert!(sv.contains("o_d1 = w_1_d"),
-            "expected `o_d1 = w_1_d` in SV:\n{sv}");
+    // Packed Vec-of-bus wire: one decl per bus signal with [N-1:0] outer dim.
+    assert!(sv.contains("logic [1:0] w_v;"),
+            "missing `logic [1:0] w_v;` packed wire in Parent SV:\n{sv}");
+    assert!(sv.contains("logic [1:0] [7:0] w_d;"),
+            "missing `logic [1:0] [7:0] w_d;` packed wire in Parent SV:\n{sv}");
+    // Producer inst's Vec-of-bus port connects via packed concat from the
+    // per-element parent expressions.
+    // `chans[0] -> w[0]; chans[1] -> w[1];` gathers into `.chans_<sig>({w[1].sig, w[0].sig})`.
+    assert!(sv.contains(".chans_v({w_v[1], w_v[0]})") || sv.contains(".chans_v ({w_v[1], w_v[0]})"),
+            "expected `.chans_v({{w_v[1], w_v[0]}})` packed concat connection in SV:\n{sv}");
+    assert!(sv.contains(".chans_d({w_d[1], w_d[0]})") || sv.contains(".chans_d ({w_d[1], w_d[0]})"),
+            "expected `.chans_d({{w_d[1], w_d[0]}})` packed concat connection in SV:\n{sv}");
+    // Downstream reads use packed indexed access.
+    assert!(sv.contains("o_v0 = w_v[0]"),
+            "expected `o_v0 = w_v[0]` in SV:\n{sv}");
+    assert!(sv.contains("o_d1 = w_d[1]"),
+            "expected `o_d1 = w_d[1]` in SV:\n{sv}");
 }
 
 #[test]
-#[ignore = "D2 rollout: per-element `chans[i] -> scalar_wire_i` requires SV array-literal grouping (`'{w0_v, w1_v}`), not yet emitted. Whole-vec `chans -> vec_wire` works."]
 fn test_vec_of_bus_inst_connection_uses_bracket_index_syntax() {
     // Parent instantiates a Child whose port is `Vec<B, N>`. Each index is
     // connected via the bracket form `chans[i] -> wire;`, matching the
@@ -4583,19 +4583,17 @@ fn test_vec_of_bus_inst_connection_uses_bracket_index_syntax() {
         end module Parent
     ";
     let sv = compile_to_sv(source);
-    // Child exposes one D2 array port per (Vec-of-bus signal).
-    assert!(sv.contains("output logic chans_v [2]"),
-            "child should expose `output logic chans_v [2]`:\n{sv}");
-    assert!(sv.contains("output logic [7:0] chans_d [2]"),
-            "child should expose `output logic [7:0] chans_d [2]`:\n{sv}");
-    // Inst connects each index by its array-indexed parent-side ref.
-    // Parent-side `w0`, `w1` are scalar bus wires, still flat.
-    assert!(sv.contains(".chans_v(w0_v)") || sv.contains(".chans_v (w0_v)")
-            || sv.contains(".chans_v(w0_v[0])"),
-            "expected `.chans_v(w0_v)` (or array) named-port connection in SV:\n{sv}");
-    assert!(sv.contains(".chans_d(w1_d)") || sv.contains(".chans_d (w1_d)")
-            || sv.contains(".chans_d(w1_d[0])"),
-            "expected `.chans_d(w1_d)` named-port connection in SV:\n{sv}");
+    // Child exposes one packed port per Vec-of-bus signal.
+    assert!(sv.contains("output logic [1:0] chans_v"),
+            "child should expose `output logic [1:0] chans_v` (packed):\n{sv}");
+    assert!(sv.contains("output logic [1:0] [7:0] chans_d"),
+            "child should expose `output logic [1:0] [7:0] chans_d`:\n{sv}");
+    // Per-element scalar wire connections gather into a packed concat
+    // at the inst boundary — big-endian, so chans[1] is the MSB.
+    assert!(sv.contains(".chans_v({w1_v, w0_v})") || sv.contains(".chans_v ({w1_v, w0_v})"),
+            "expected `.chans_v({{w1_v, w0_v}})` packed concat connection in SV:\n{sv}");
+    assert!(sv.contains(".chans_d({w1_d, w0_d})") || sv.contains(".chans_d ({w1_d, w0_d})"),
+            "expected `.chans_d({{w1_d, w0_d}})` packed concat connection in SV:\n{sv}");
 }
 
 #[test]

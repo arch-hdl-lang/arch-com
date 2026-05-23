@@ -2299,6 +2299,26 @@ impl<'a> Codegen<'a> {
             (String, String), TypeExpr,
         > = std::collections::HashMap::new();
 
+        // Per-element Vec-of-bus connection groups. Inst connections like
+        //   `ins[0] <- edges[0][j];  ins[1] <- edges[1][j];`
+        // get parsed with per-element port names `ins_0`, `ins_1`, but the
+        // child's actual SV port is packed `ins_<sig> [N-1:0]`. We can't
+        // emit `.ins_0_<sig>(...)` — that port doesn't exist anymore.
+        // Instead, gather all per-element connections for the same
+        // (base_port, bus_signal) and emit ONE packed concat:
+        //   `.ins_<sig>({elem_{N-1}_<sig>, ..., elem_0_<sig>})`
+        // Map key is (base_port, idx), value is the per-element parent expr
+        // (one for each bus signal will be derived from the same parent expr).
+        let mut vob_per_elem: std::collections::HashMap<
+            (String, u32),  // (base_port_name, elem_idx)
+            Expr,            // per-element parent expr (e.g. `edges[m][j]`)
+        > = std::collections::HashMap::new();
+        // (base_port_name, N) → bus_name, bus_params for packed emit.
+        let vob_port_meta: std::collections::HashMap<String, (u32, String, Vec<ParamAssign>)> =
+            target_vec_of_bus_ports.iter()
+                .map(|(name, n, bus_name, bus_params)| (name.clone(), (*n, bus_name.clone(), bus_params.clone())))
+                .collect();
+
         for c in &inst.connections {
             // Try to match `<group>{idx}_<sig>` against any known port array.
             let matched = target_port_arrays.iter().find_map(|(group, _n, sigs)| {
@@ -2324,32 +2344,72 @@ impl<'a> Codegen<'a> {
                 indexed_group_ty.insert((group, sig), ty);
                 continue;
             }
-            // Whole-vec bus connection: `chans -> w` where the child's
-            // `chans` is a `Vec<Bus, N>` port. The parent signal `w` must
-            // be a bare identifier — a parent Vec-of-bus port or a bus
-            // wire-array (`wire w: Vec<Bus, N>;`). Expand to N x #signals
-            // per-element named-port connections.
-            if let Some((_, n, bus_name, bus_params)) = target_vec_of_bus_ports.iter()
+            // Whole-vec bus connection on a Vec-of-bus child port.
+            // Packed SV emission: one connection per bus signal, parent
+            // expr passed whole — works for all three shapes:
+            //   `chans -> w`       (1D Vec-of-bus wire `w` → packed `w_<sig>`)
+            //   `chans -> edges[i]` (row of 2D wire → packed slice `edges_<sig>[i]`)
+            //   `chans -> p`       (parent Vec-of-bus port `p` → packed `p_<sig>`)
+            if let Some((_, _n, bus_name, bus_params)) = target_vec_of_bus_ports.iter()
                 .find(|(pn, _, _, _)| *pn == c.port_name.name)
             {
-                if let ExprKind::Ident(parent_name) = &c.signal.kind {
-                    if let Some((Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
-                        let mut param_map: std::collections::HashMap<String, &Expr> = info.params.iter()
-                            .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
-                            .collect();
-                        for pa in bus_params { param_map.insert(pa.name.name.clone(), &pa.value); }
-                        let eff = info.effective_signals(&param_map);
-                        for i in 0..*n {
-                            for (sname, _, _) in &eff {
-                                connections.push(format!(
-                                    ".{}_{}_{}({}_{}_{})",
-                                    c.port_name.name, i, sname,
-                                    parent_name, i, sname,
-                                ));
+                let parent_expr_str = self.emit_expr_str(&c.signal);
+                // For an Ident parent: name is the bus base; per-signal ref is `<name>_<sig>`.
+                // For an Index parent: emit_expr_str already produced `<base>_<sig>[i]`
+                // form via the FieldAccess(Index) path — but here there's no field,
+                // so emit_expr_str gives just the indexed array (e.g. `edges[i]`),
+                // which is wrong. Build the correct per-signal ref directly.
+                let per_sig_emit = |sname: &str, self_: &Self| -> String {
+                    match &c.signal.kind {
+                        ExprKind::Ident(name) => format!("{}_{}", name, sname),
+                        ExprKind::Index(arr, idx) => {
+                            let idx_str = match &idx.kind {
+                                ExprKind::Ident(loopvar) =>
+                                    self_.loop_var_subst.get(loopvar)
+                                        .map(|v| v.to_string())
+                                        .unwrap_or_else(|| loopvar.clone()),
+                                _ => self_.emit_expr_str(idx),
+                            };
+                            if let ExprKind::Ident(arr_name) = &arr.kind {
+                                format!("{}_{}[{}]", arr_name, sname, idx_str)
+                            } else {
+                                // Fallback — shouldn't happen for legal whole-vec sources.
+                                format!("{}_{}", parent_expr_str, sname)
                             }
                         }
-                        continue;
+                        _ => format!("{}_{}", parent_expr_str, sname),
                     }
+                };
+                if let Some((Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
+                    let mut param_map: std::collections::HashMap<String, &Expr> = info.params.iter()
+                        .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
+                        .collect();
+                    for pa in bus_params { param_map.insert(pa.name.name.clone(), &pa.value); }
+                    let eff = info.effective_signals(&param_map);
+                    for (sname, _, _) in &eff {
+                        connections.push(format!(
+                            ".{}_{}({})",
+                            c.port_name.name, sname, per_sig_emit(sname, self),
+                        ));
+                    }
+                    continue;
+                }
+            }
+            // Per-element Vec-of-bus connection: `ins[k] <- expr`. The parser
+            // already lowered `ins[k]` to port_name `ins_<k>`. Detect the
+            // `<base>_<k>` pattern against `target_vec_of_bus_ports` and
+            // accumulate for post-loop concat emission.
+            {
+                let pname = &c.port_name.name;
+                let matched_vob = target_vec_of_bus_ports.iter().find_map(|(base, n, _, _)| {
+                    let prefix = format!("{base}_");
+                    let rest = pname.strip_prefix(&prefix)?;
+                    let idx: u32 = rest.parse().ok()?;
+                    if idx < *n { Some((base.clone(), idx)) } else { None }
+                });
+                if let Some((base, idx)) = matched_vob {
+                    vob_per_elem.insert((base, idx), c.signal.clone());
+                    continue;
                 }
             }
             if let Some((_, bus_name, bus_params)) = target_bus_ports.iter().find(|(pn, _, _)| *pn == c.port_name.name) {
@@ -2441,6 +2501,56 @@ impl<'a> Codegen<'a> {
                     format!(".{}({})", c.port_name.name, sig_str)
                 };
                 connections.push(conn_str);
+            }
+        }
+
+        // Emit packed concat connections for gathered Vec-of-bus per-element
+        // connections (`ins[k] <- expr_k` slate). For each (base_port, N),
+        // build per-signal concat in big-endian order (highest idx → LSB),
+        // matching SV's packed concat semantics.
+        let mut vob_bases: std::collections::HashSet<String> =
+            vob_per_elem.keys().map(|(b, _)| b.clone()).collect();
+        let mut vob_bases_sorted: Vec<String> = vob_bases.drain().collect();
+        vob_bases_sorted.sort();
+        for base in &vob_bases_sorted {
+            let Some((n, bus_name, bus_params)) = vob_port_meta.get(base) else { continue; };
+            let Some((Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) else { continue; };
+            let mut param_map: std::collections::HashMap<String, &Expr> = info.params.iter()
+                .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
+                .collect();
+            for pa in bus_params { param_map.insert(pa.name.name.clone(), &pa.value); }
+            let eff = info.effective_signals(&param_map);
+            for (sname, _, _) in &eff {
+                // Build {expr_{N-1}_<sig>, expr_{N-2}_<sig>, …, expr_0_<sig>}.
+                // The per-element exprs were captured at gather time as the
+                // user's `c.signal` AST nodes (e.g. `edges[m][j]`); we need
+                // to produce the per-bus-signal form by attaching .<sig>
+                // and re-emitting via emit_expr_str (which handles 2D-wire
+                // packed-slice lowering).
+                let mut parts: Vec<String> = Vec::with_capacity(*n as usize);
+                for k in (0..*n).rev() {
+                    if let Some(elem_expr) = vob_per_elem.get(&(base.clone(), k)) {
+                        // Build FieldAccess(elem_expr, sname) AST and emit.
+                        let fa = Expr::new(
+                            ExprKind::FieldAccess(
+                                Box::new(elem_expr.clone()),
+                                Ident::new(sname.clone(), elem_expr.span),
+                            ),
+                            elem_expr.span,
+                        );
+                        parts.push(self.emit_expr_str(&fa));
+                    } else {
+                        // Missing element — emit a dummy literal so SV still
+                        // parses (the typecheck pass should have rejected this
+                        // upstream).
+                        parts.push(format!("'0"));
+                    }
+                }
+                connections.push(format!(
+                    ".{}_{}({{{}}})",
+                    base, sname,
+                    parts.join(", "),
+                ));
             }
         }
 
@@ -4461,37 +4571,40 @@ impl<'a> Codegen<'a> {
                 if let ExprKind::Index(arr, idx) = &base.kind {
                     // 2D bus wire element: `edges[m][n].sig`. The arr is
                     // itself `Index(Ident(name), m_idx)`, and `idx` is n_idx.
-                    // Both indices must resolve to literals (either directly
-                    // or via static-unroll loop_var_subst). Emit the flat
-                    // SV wire name `<name>_<m>_<n>_<sig>`.
+                    // SV-side storage is now packed: `logic [M-1:0][N-1:0]
+                    // <wire>_<sig>`, so `edges[m][n].sig` lowers to
+                    // `<wire>_<sig>[m][n]`. m and n can be literals OR
+                    // loop variables (genvar references in a preserved
+                    // generate_for, though insts force unrolling — so today
+                    // they're always literals).
                     if let ExprKind::Index(inner_arr, inner_idx) = &arr.kind {
                         if let ExprKind::Ident(arr_name) = &inner_arr.kind {
-                            let resolve = |e: &Expr| -> Option<u64> {
+                            let resolve_str = |e: &Expr| -> String {
                                 match &e.kind {
-                                    ExprKind::Literal(LitKind::Dec(i))
-                                    | ExprKind::Literal(LitKind::Hex(i))
-                                    | ExprKind::Literal(LitKind::Bin(i))
-                                    | ExprKind::Literal(LitKind::Sized(_, i)) => Some(*i),
-                                    ExprKind::Ident(loopvar) =>
-                                        self.loop_var_subst.get(loopvar).map(|v| *v as u64),
-                                    _ => None,
+                                    ExprKind::Ident(loopvar) => {
+                                        if let Some(&v) = self.loop_var_subst.get(loopvar) {
+                                            v.to_string()
+                                        } else {
+                                            loopvar.clone()
+                                        }
+                                    }
+                                    _ => self.emit_expr_str(e),
                                 }
                             };
-                            if let (Some(m_v), Some(n_v)) = (resolve(inner_idx), resolve(idx)) {
-                                let cell = format!("{}_{}_{}", arr_name, m_v, n_v);
-                                if self.bus_wires.contains_key(&cell) {
-                                    return format!("{}_{}_{}_{}", arr_name, m_v, n_v, field.name);
-                                }
+                            // Check that the wire is registered (any cell).
+                            let cell0 = format!("{}_0_0", arr_name);
+                            if self.bus_wires.contains_key(&cell0) {
+                                let m_str = resolve_str(inner_idx);
+                                let n_str = resolve_str(idx);
+                                return format!("{}_{}[{}][{}]", arr_name, field.name, m_str, n_str);
                             }
                         }
                     }
                     if let ExprKind::Ident(arr_name) = &arr.kind {
-                        // Vec-of-bus *port* → D2 indexed ref.
+                        // Vec-of-bus *port* → packed indexed ref `<port>_<sig>[i]`.
                         if self.vec_of_bus_port_count.contains_key(arr_name) {
                             let idx_str = match &idx.kind {
                                 ExprKind::Ident(loopvar) => {
-                                    // Static-unroll substitution wins if present;
-                                    // otherwise emit the loop var as-is for SV genvar.
                                     if let Some(&v) = self.loop_var_subst.get(loopvar) {
                                         v.to_string()
                                     } else {
@@ -4502,22 +4615,20 @@ impl<'a> Codegen<'a> {
                             };
                             return format!("{}_{}[{}]", arr_name, field.name, idx_str);
                         }
-                        // Bus wire (still flat per element) — original behavior.
-                        let idx_val: Option<u64> = match &idx.kind {
-                            ExprKind::Literal(LitKind::Dec(i))
-                            | ExprKind::Literal(LitKind::Hex(i))
-                            | ExprKind::Literal(LitKind::Bin(i))
-                            | ExprKind::Literal(LitKind::Sized(_, i)) => Some(*i),
-                            ExprKind::Ident(loopvar) => self.loop_var_subst.get(loopvar).map(|v| *v as u64),
-                            _ => None,
-                        };
-                        if let Some(i) = idx_val {
-                            let expanded = format!("{}_{}", arr_name, i);
-                            if self.bus_ports.contains_key(&expanded)
-                                || self.bus_wires.contains_key(&expanded)
-                            {
-                                return format!("{}_{}_{}", arr_name, i, field.name);
-                            }
+                        // 1D Vec-of-bus *wire* — also packed now. Same form.
+                        let cell0 = format!("{}_0", arr_name);
+                        if self.bus_wires.contains_key(&cell0) {
+                            let idx_str = match &idx.kind {
+                                ExprKind::Ident(loopvar) => {
+                                    if let Some(&v) = self.loop_var_subst.get(loopvar) {
+                                        v.to_string()
+                                    } else {
+                                        loopvar.clone()
+                                    }
+                                }
+                                _ => self.emit_expr_str(idx),
+                            };
+                            return format!("{}_{}[{}]", arr_name, field.name, idx_str);
                         }
                     }
                 }

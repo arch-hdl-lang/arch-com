@@ -212,10 +212,33 @@ impl<'a> Codegen<'a> {
                         let subst_ty = Self::subst_type_expr(sty, &param_map);
                         let ty_str = self.emit_port_type_str(&subst_ty);
                         if is_vec_of_bus {
-                            // D2: `<dir> <ty> <port>_<sig> [N]`
+                            // Packed Vec-of-bus port: `<dir> [N-1:0] <ty?> <port>_<sig>`.
+                            // For scalar signals (Bool / 1-bit), the [N-1:0] is the only
+                            // packed dim. For multi-bit signals, the ty_str already
+                            // carries an inner packed dim (e.g. "logic [31:0]"), and
+                            // we prepend the outer [N-1:0] as a second packed dim.
+                            //
+                            // The packed shape lets inst connection sites use SV
+                            // language features (row slice `wire[i]`, concat
+                            // `{a, b, c}` for column gather) instead of needing
+                            // synthesized intermediate-wire arrays. Native-sim
+                            // C++ emission stays as unpacked array + reference
+                            // aliases (see src/sim_codegen) so TB syntax remains
+                            // `dut.port_sig[i]`.
+                            let outer_dim = format!("[{}:0]", vec_n.saturating_sub(1));
+                            // ty_str is `logic` or `logic [W-1:0]`. Insert the
+                            // outer packed dim between `logic` and any inner dim.
+                            let with_outer = if let Some(rest) = ty_str.strip_prefix("logic ") {
+                                format!("logic {} {}", outer_dim, rest)
+                            } else if ty_str == "logic" {
+                                format!("logic {}", outer_dim)
+                            } else {
+                                // Other base types (e.g. struct-typed bus signal — rare).
+                                format!("{} {}", ty_str, outer_dim)
+                            };
                             port_lines.push(format!(
-                                "{} {} {}_{} [{}]",
-                                dir_str, ty_str, p.name.name, sname, vec_n
+                                "{} {} {}_{}",
+                                dir_str, with_outer, p.name.name, sname
                             ));
                         } else {
                             // Scalar bus: `<dir> <ty> <port>_<sig>`
@@ -718,7 +741,11 @@ impl<'a> Codegen<'a> {
                         _ => None,
                     };
                     if let Some((info, bus_name, count)) = bus_wire_info {
-                        let prefixes: Vec<String> = match count {
+                        // Register every flat per-cell name in `self.bus_wires`
+                        // so downstream lookups (e.g. emit_expr_str's bus-wire
+                        // detection) still work — internal name tracking stays
+                        // per-cell even though the emitted SV is packed-array.
+                        let cell_names: Vec<String> = match count {
                             None => vec![w.name.name.clone()],
                             Some((m_n, None)) => (0..m_n).map(|i| format!("{}_{}", w.name.name, i)).collect(),
                             Some((m_n, Some(n_n))) => {
@@ -731,8 +758,8 @@ impl<'a> Codegen<'a> {
                                 v
                             }
                         };
-                        for prefix in &prefixes {
-                            self.bus_wires.insert(prefix.clone(), bus_name.clone());
+                        for nm in &cell_names {
+                            self.bus_wires.insert(nm.clone(), bus_name.clone());
                         }
                         // Start with the bus's declared defaults then layer
                         // any per-wire overrides from `wire w: Vec<B<PARAM=val>, N>;`.
@@ -744,16 +771,45 @@ impl<'a> Codegen<'a> {
                         for pa in &w.bus_params {
                             param_map.insert(pa.name.name.clone(), &pa.value);
                         }
-                        for prefix in &prefixes {
-                            for (sname, _sdir, sty) in info.effective_signals(&param_map) {
-                                let subst_ty = Self::subst_type_expr(&sty, &param_map);
-                                let (ty_str, arr_suffix) =
-                                    self.emit_type_and_array_suffix(&subst_ty);
-                                self.line(&format!(
-                                    "{} {}_{}{};",
-                                    ty_str, prefix, sname, arr_suffix
-                                ));
-                                declared_names.insert(format!("{}_{}", prefix, sname));
+                        // Build the packed outer dim string for Vec / Vec<Vec>.
+                        // None  → scalar wire, no outer dim
+                        // (M, None) → 1D Vec: `[M-1:0]`
+                        // (M, Some(N)) → 2D Vec: `[M-1:0][N-1:0]`
+                        let outer_dim: String = match count {
+                            None => String::new(),
+                            Some((m_n, None)) => format!("[{}:0]", m_n.saturating_sub(1)),
+                            Some((m_n, Some(n_n))) => format!(
+                                "[{}:0][{}:0]",
+                                m_n.saturating_sub(1),
+                                n_n.saturating_sub(1)
+                            ),
+                        };
+                        for (sname, _sdir, sty) in info.effective_signals(&param_map) {
+                            let subst_ty = Self::subst_type_expr(&sty, &param_map);
+                            let (ty_str, arr_suffix) =
+                                self.emit_type_and_array_suffix(&subst_ty);
+                            // Insert the outer packed dim between `logic` and
+                            // any inner packed dim (same pattern as port emit).
+                            let with_outer = if outer_dim.is_empty() {
+                                ty_str.clone()
+                            } else if let Some(rest) = ty_str.strip_prefix("logic ") {
+                                format!("logic {} {}", outer_dim, rest)
+                            } else if ty_str == "logic" {
+                                format!("logic {}", outer_dim)
+                            } else {
+                                format!("{} {}", ty_str, outer_dim)
+                            };
+                            self.line(&format!(
+                                "{} {}_{}{};",
+                                with_outer, w.name.name, sname, arr_suffix
+                            ));
+                            declared_names.insert(format!("{}_{}", w.name.name, sname));
+                            // Also register per-cell names so legacy lookups
+                            // (e.g. driver-tracking elsewhere) find them.
+                            for nm in &cell_names {
+                                if nm != &w.name.name {
+                                    declared_names.insert(format!("{}_{}", nm, sname));
+                                }
                             }
                         }
                         declared_names.insert(w.name.name.clone());
