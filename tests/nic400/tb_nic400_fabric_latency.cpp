@@ -36,18 +36,17 @@ static void tick() {
 }
 
 static void clear_inputs() {
-    dut.m_0_ar_valid = 0; dut.m_0_ar_addr = 0; dut.m_0_ar_id = 0;
-    dut.m_0_ar_len = 0;   dut.m_0_ar_size = 0; dut.m_0_ar_burst = 0;
-    dut.m_0_r_ready = 0;
-    dut.m_1_ar_valid = 0; dut.m_1_ar_addr = 0; dut.m_1_ar_id = 0;
-    dut.m_1_ar_len = 0;   dut.m_1_ar_size = 0; dut.m_1_ar_burst = 0;
-    dut.m_1_r_ready = 0;
-    dut.s_0_ar_ready = 0;
-    dut.s_0_r_valid = 0;  dut.s_0_r_data = 0; dut.s_0_r_id = 0;
-    dut.s_0_r_resp = 0;   dut.s_0_r_last = 0;
-    dut.s_1_ar_ready = 0;
-    dut.s_1_r_valid = 0;  dut.s_1_r_data = 0; dut.s_1_r_id = 0;
-    dut.s_1_r_resp = 0;   dut.s_1_r_last = 0;
+    // D2 array-indexed access for Vec-of-bus ports (`m: Vec<BusAxi4, 2>`,
+    // `s: Vec<BusAxi4, 2>`). The historical `dut.m_0_ar_valid` flat names
+    // still work (they're reference aliases into these arrays).
+    for (int i = 0; i < 2; ++i) {
+        dut.m_ar_valid[i] = 0; dut.m_ar_addr[i] = 0; dut.m_ar_id[i] = 0;
+        dut.m_ar_len[i] = 0;   dut.m_ar_size[i] = 0; dut.m_ar_burst[i] = 0;
+        dut.m_r_ready[i] = 0;
+        dut.s_ar_ready[i] = 0;
+        dut.s_r_valid[i] = 0;  dut.s_r_data[i] = 0; dut.s_r_id[i] = 0;
+        dut.s_r_resp[i] = 0;   dut.s_r_last[i] = 0;
+    }
 }
 
 int main(int argc, char **argv) {
@@ -77,22 +76,22 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 3; ++i) tick();
 
     // ── AR forward latency ───────────────────────────────────────────────
-    // Hold s_0_ar_ready high so the slave isn't a back-pressure source.
-    // Then assert m_0_ar_valid and count how many ticks until s_0_ar_valid
-    // is observed handshaked with s_0_ar_ready.
-    dut.s_0_ar_ready = 1;
-    dut.m_0_ar_addr = 0x00001000;
-    dut.m_0_ar_id   = 1;
-    dut.m_0_ar_size = 2;
-    dut.m_0_ar_burst = 1;
+    // Hold s.ar_ready[0] high so the slave isn't a back-pressure source.
+    // Then assert m.ar_valid[0] and count how many ticks until s.ar_valid[0]
+    // is observed handshaked with s.ar_ready[0].
+    dut.s_ar_ready[0] = 1;
+    dut.m_ar_addr[0]  = 0x00001000;
+    dut.m_ar_id[0]    = 1;
+    dut.m_ar_size[0]  = 2;
+    dut.m_ar_burst[0] = 1;
 
     uint64_t t_ar_drive = cycle;
-    dut.m_0_ar_valid = 1;
+    dut.m_ar_valid[0] = 1;
 
     int lat_ar = -1;
     for (int i = 0; i <= MAX_LAT_AR + 8; ++i) {
         tick();
-        if (dut.s_0_ar_valid && dut.s_0_ar_ready) {
+        if (dut.s_ar_valid[0] && dut.s_ar_ready[0]) {
             lat_ar = (int)(cycle - 1 - t_ar_drive);
             break;
         }
@@ -111,25 +110,25 @@ int main(int argc, char **argv) {
     }
 
     // Clean up the AR phase.
-    dut.m_0_ar_valid = 0;
-    dut.s_0_ar_ready = 0;
+    dut.m_ar_valid[0] = 0;
+    dut.s_ar_ready[0] = 0;
     for (int i = 0; i < 2; ++i) tick();
 
     // ── R return latency ────────────────────────────────────────────────
     // Slave drives R, master holds ready. Count cycles until master sees R.
-    dut.m_0_r_ready = 1;
-    dut.s_0_r_data  = 0xDEADBEEF;
-    dut.s_0_r_id    = 1;          // {master_idx=0, master_id=1} = 1
-    dut.s_0_r_resp  = 0;
-    dut.s_0_r_last  = 1;
+    dut.m_r_ready[0] = 1;
+    dut.s_r_data[0]  = 0xDEADBEEF;
+    dut.s_r_id[0]    = 1;          // {master_idx=0, master_id=1} = 1
+    dut.s_r_resp[0]  = 0;
+    dut.s_r_last[0]  = 1;
 
     uint64_t t_r_drive = cycle;
-    dut.s_0_r_valid = 1;
+    dut.s_r_valid[0] = 1;
 
     int lat_r = -1;
     for (int i = 0; i <= MAX_LAT_R + 8; ++i) {
         tick();
-        if (dut.m_0_r_valid && dut.m_0_r_ready) {
+        if (dut.m_r_valid[0] && dut.m_r_ready[0]) {
             lat_r = (int)(cycle - 1 - t_r_drive);
             break;
         }
@@ -160,19 +159,19 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 4; ++i) tick();
 
     const int N_TXN = 9;
-    dut.s_0_ar_ready = 1;          // Slave always ready
-    dut.m_0_ar_addr  = 0x00001000;
-    dut.m_0_ar_size  = 2;
-    dut.m_0_ar_burst = 1;
-    dut.m_0_ar_valid = 1;          // Master always presents a request
+    dut.s_ar_ready[0] = 1;            // Slave always ready
+    dut.m_ar_addr[0]  = 0x00001000;
+    dut.m_ar_size[0]  = 2;
+    dut.m_ar_burst[0] = 1;
+    dut.m_ar_valid[0] = 1;            // Master always presents a request
 
     int seen = 0;
     int last_seen_cycle = -1;
     uint64_t t_start = cycle;
     for (int i = 0; i < N_TXN * 8 && seen < N_TXN; ++i) {
-        dut.m_0_ar_id = (uint8_t)(seen + 1);
+        dut.m_ar_id[0] = (uint8_t)(seen + 1);
         tick();
-        if (dut.s_0_ar_valid && dut.s_0_ar_ready) {
+        if (dut.s_ar_valid[0] && dut.s_ar_ready[0]) {
             seen++;
             last_seen_cycle = (int)(cycle - t_start);
         }
