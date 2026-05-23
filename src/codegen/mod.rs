@@ -2399,8 +2399,25 @@ impl<'a> Codegen<'a> {
                         }
                     } else {
                         let sig_prefix = match &c.signal.kind {
+                            // 2D bus wire element: `edges[m][n]`. Both indices
+                            // resolve to literals (or static-unrolled loop
+                            // vars); emit `edges_<m>_<n>` as the prefix.
                             ExprKind::Index(arr, idx) => {
-                                if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) = (&arr.kind, &idx.kind) {
+                                let resolve = |e: &Expr| -> Option<u64> {
+                                    match &e.kind {
+                                        ExprKind::Literal(LitKind::Dec(i)) => Some(*i),
+                                        ExprKind::Ident(loopvar) =>
+                                            self.loop_var_subst.get(loopvar).map(|v| *v as u64),
+                                        _ => None,
+                                    }
+                                };
+                                if let ExprKind::Index(inner_arr, inner_idx) = &arr.kind {
+                                    if let ExprKind::Ident(arr_name) = &inner_arr.kind {
+                                        if let (Some(m_v), Some(n_v)) = (resolve(inner_idx), resolve(idx)) {
+                                            format!("{}_{}_{}", arr_name, m_v, n_v)
+                                        } else { self.emit_expr_str(&c.signal) }
+                                    } else { self.emit_expr_str(&c.signal) }
+                                } else if let (ExprKind::Ident(arr_name), Some(i)) = (&arr.kind, resolve(idx)) {
                                     format!("{}_{}", arr_name, i)
                                 } else {
                                     self.emit_expr_str(&c.signal)
@@ -4442,6 +4459,32 @@ impl<'a> Codegen<'a> {
                 // wire — because they're internal to the module body and
                 // their consumers haven't been migrated yet.
                 if let ExprKind::Index(arr, idx) = &base.kind {
+                    // 2D bus wire element: `edges[m][n].sig`. The arr is
+                    // itself `Index(Ident(name), m_idx)`, and `idx` is n_idx.
+                    // Both indices must resolve to literals (either directly
+                    // or via static-unroll loop_var_subst). Emit the flat
+                    // SV wire name `<name>_<m>_<n>_<sig>`.
+                    if let ExprKind::Index(inner_arr, inner_idx) = &arr.kind {
+                        if let ExprKind::Ident(arr_name) = &inner_arr.kind {
+                            let resolve = |e: &Expr| -> Option<u64> {
+                                match &e.kind {
+                                    ExprKind::Literal(LitKind::Dec(i))
+                                    | ExprKind::Literal(LitKind::Hex(i))
+                                    | ExprKind::Literal(LitKind::Bin(i))
+                                    | ExprKind::Literal(LitKind::Sized(_, i)) => Some(*i),
+                                    ExprKind::Ident(loopvar) =>
+                                        self.loop_var_subst.get(loopvar).map(|v| *v as u64),
+                                    _ => None,
+                                }
+                            };
+                            if let (Some(m_v), Some(n_v)) = (resolve(inner_idx), resolve(idx)) {
+                                let cell = format!("{}_{}_{}", arr_name, m_v, n_v);
+                                if self.bus_wires.contains_key(&cell) {
+                                    return format!("{}_{}_{}_{}", arr_name, m_v, n_v, field.name);
+                                }
+                            }
+                        }
+                    }
                     if let ExprKind::Ident(arr_name) = &arr.kind {
                         // Vec-of-bus *port* → D2 indexed ref.
                         if self.vec_of_bus_port_count.contains_key(arr_name) {

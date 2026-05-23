@@ -688,22 +688,48 @@ impl<'a> Codegen<'a> {
                             .and_then(|(s, _)| if let crate::resolve::Symbol::Bus(info) = s {
                                 Some((info, id.name.clone(), None))
                             } else { None }),
-                        TypeExpr::Vec(elem, size_expr) => {
-                            if let TypeExpr::Named(id) = elem.as_ref() {
+                        TypeExpr::Vec(elem, size_expr) => match elem.as_ref() {
+                            TypeExpr::Named(id) => {
                                 if let Some(n) = self.eval_const_u32(size_expr, &m_clone.params) {
                                     self.symbols.globals.get(&id.name)
                                         .and_then(|(s, _)| if let crate::resolve::Symbol::Bus(info) = s {
-                                            Some((info, id.name.clone(), Some(n)))
+                                            Some((info, id.name.clone(), Some((n, None))))
                                         } else { None })
                                 } else { None }
-                            } else { None }
-                        }
+                            }
+                            // 2D bus wire: `wire edges: Vec<Vec<B, N>, M>;` →
+                            // emit M*N*per_signal flat wires named
+                            // `edges_<m>_<n>_<sig>`.
+                            TypeExpr::Vec(inner_elem, inner_size) => {
+                                if let TypeExpr::Named(id) = inner_elem.as_ref() {
+                                    if let (Some(m_n), Some(n_n)) = (
+                                        self.eval_const_u32(size_expr, &m_clone.params),
+                                        self.eval_const_u32(inner_size, &m_clone.params),
+                                    ) {
+                                        self.symbols.globals.get(&id.name)
+                                            .and_then(|(s, _)| if let crate::resolve::Symbol::Bus(info) = s {
+                                                Some((info, id.name.clone(), Some((m_n, Some(n_n)))))
+                                            } else { None })
+                                    } else { None }
+                                } else { None }
+                            }
+                            _ => None,
+                        },
                         _ => None,
                     };
                     if let Some((info, bus_name, count)) = bus_wire_info {
                         let prefixes: Vec<String> = match count {
                             None => vec![w.name.name.clone()],
-                            Some(n) => (0..n).map(|i| format!("{}_{}", w.name.name, i)).collect(),
+                            Some((m_n, None)) => (0..m_n).map(|i| format!("{}_{}", w.name.name, i)).collect(),
+                            Some((m_n, Some(n_n))) => {
+                                let mut v = Vec::with_capacity((m_n * n_n) as usize);
+                                for i in 0..m_n {
+                                    for j in 0..n_n {
+                                        v.push(format!("{}_{}_{}", w.name.name, i, j));
+                                    }
+                                }
+                                v
+                            }
                         };
                         for prefix in &prefixes {
                             self.bus_wires.insert(prefix.clone(), bus_name.clone());
