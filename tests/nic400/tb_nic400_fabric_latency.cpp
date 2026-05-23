@@ -20,6 +20,10 @@
 #include <cstdint>
 #include <cstdio>
 
+// Forward declared so we don't need to include `verilated.h` here — the
+// model's header already pulls in the shim. The runner passes
+// `+trace+<path>` for `--wave`; this main() must hand argc/argv to the
+// shim so the model picks up the trace filename.
 static VNic400Fabric dut;
 static uint64_t cycle = 0;
 
@@ -46,31 +50,23 @@ static void clear_inputs() {
     dut.s_1_r_resp = 0;   dut.s_1_r_last = 0;
 }
 
-int main() {
+int main(int argc, char **argv) {
+    // Forward argv so `+trace+<path>` lands in the shim's commandArgs
+    // and `dut.eval()` opens the VCD file on the first call.
+    Verilated::commandArgs(argc, argv);
+
     // Tunable thresholds — set to the spec's stated value (0). Bumped if
     // the design intentionally adds register slices; today both are 0.
     // Observed latencies for the thread-based MasterPort/SlavePort design:
     //
-    //   AR forward (M → S): 1 cycle bubble.
-    //     The MasterPort's `Ar_j` thread is a state machine — its entry
-    //     `wait until m.ar_valid` state samples the request at posedge K,
-    //     advances to the do/until body, and only THEN drives outs[j].
-    //     The SlavePort's `ArArb_i` thread sees the master's `outs[j]`
-    //     update in the same eval-cycle's post-posedge settle pass, but
-    //     its OWN posedge already ran (with the pre-posedge stale wire
-    //     value) so its state doesn't advance until cycle K+1. Net:
-    //     1 cycle from `m.ar_valid` rising to `s.ar_valid` observed.
-    //
-    //   R return  (S → M): same shape, mirrored — 1 cycle bubble.
-    //
-    // The spec §14.1 quotes "0 cycles" for both, assuming a comb-only
-    // master/slave port implementation. The thread-based v2 trades that
-    // 0-cycle pass-through for the spec's per-thread state-machine
-    // structure. The checker below pins the OBSERVED latency so any
-    // future change that ADDS a bubble (e.g. inserts a register slice
-    // by mistake) fails loudly.
-    const int MAX_LAT_AR = 1;
-    const int MAX_LAT_R  = 1;
+    // Observed latencies for the thread-based MasterPort/SlavePort design
+    // after the `wait 0+ cycle until` Mealy upgrade — matches the spec
+    // §14.1 0-cycle pass-through (and 1 txn/cycle sustained throughput
+    // probed below). Any future regression that re-introduces a bubble
+    // (e.g. switching back to standard `wait until`, or inserting a
+    // register slice) fails this checker loudly.
+    const int MAX_LAT_AR = 0;
+    const int MAX_LAT_R  = 0;
 
     // Reset (active-low)
     dut.rst = 0;
@@ -160,8 +156,12 @@ int main() {
     // round-trip through the master×slave inst chain. Pin the budget to
     // ~1/5 transfers/cycle so the test passes today AND catches any major
     // future regression (e.g. another bubble doubling the cycle count).
-    const int MIN_THROUGHPUT_NUM   = 1;
-    const int MIN_THROUGHPUT_DENOM = 5;  // >= 1 transfer per 5 cycles.
+    // Mealy fusion delivers ~0.89 t/c (8 transfers in 9 cycles) for the
+    // back-to-back AR sequence. Pin at >= 4/5 = 0.80 to allow a little
+    // slack for cycle-counting edge effects but catch any major
+    // regression that would reintroduce a multi-cycle bubble.
+    const int MIN_THROUGHPUT_NUM   = 4;
+    const int MIN_THROUGHPUT_DENOM = 5;
     clear_inputs();
     for (int i = 0; i < 4; ++i) tick();
 

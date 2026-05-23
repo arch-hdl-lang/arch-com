@@ -38,17 +38,45 @@ arbitration, ID remap, and ID-prefix return routing.
 
 Measured with `tb_nic400_fabric_latency.cpp` (runs under `arch sim`):
 
-| Path | Spec §14.1 target | Observed | Δ |
+| Path | Spec §14.1 target | Observed (Mealy) | Observed (Moore) |
 |---|---|---|---|
-| AR forward (M → S, uncontested) | 0 cycles | **1 cycle** | +1 bubble |
-| R return (S → M, uncontested)   | 0 cycles | **1 cycle** | +1 bubble |
-| AR throughput (back-to-back)    | 1 txn / cycle | **~1 txn / 3 cycles** (8/25) | 3× slower |
+| AR forward (M → S, uncontested) | 0 cycles | **0 cycles ✓** | 1 cycle |
+| R return (S → M, uncontested)   | 0 cycles | **0 cycles ✓** | 1 cycle |
+| AR throughput (back-to-back)    | 1 txn / cycle | **0.89 t/c** (8/9) | 0.32 t/c (8/25) |
 
-**Why**: each thread is a state machine. The entry `wait until X` state samples the request at posedge K, *then* advances to the do/until body where the drives go out. The downstream consumer (slave-side ArArb thread) saw the master's old stale output at the same posedge K — its own state doesn't advance until posedge K+1. Each hop in the master×slave chain costs 1 cycle of stale-output latency, and the S0→S1→S0 state cycle takes ~3 ticks of round-trip per transaction.
+The MasterPort/SlavePort threads use the **`wait 0+ cycle until X;`** form (Mealy-style wait), which fuses with the immediately-following `do BODY until Y;` into a single state whose comb drives are gated by `X` and whose transition guard is `X && Y`. When both conditions hold at the same posedge, the thread progresses with zero added cycles — collapsing the entry-wait bubble that the standard `wait until` form imposes.
 
-The spec quotes 0-cycle pass-through assuming a comb-only port implementation. The thread-based v2 trades that for the spec's structural per-thread state-machine clarity — both are valid implementations of the same NIC-400 protocol shape. A future v3 could swap MasterPort/SlavePort for pure-comb modules and recover the spec's 0-cycle path.
+The standard `wait until X;` (Moore-style, ≥1 cycle) is also supported and is what the v1 monolithic design used; the comparison numbers above are from a quick rebuild against the Moore form.
 
 The checker `tb_nic400_fabric_latency.cpp` pins the *observed* values and fails loudly if a future change inflates them.
+
+### Inspecting the bubble
+
+```bash
+# Re-generate the VCD
+arch sim --wave tests/nic400/fab_latency.vcd \
+  tests/nic400/Nic400Fabric.arch tests/nic400/Nic400MasterPort.arch \
+  tests/nic400/Nic400SlavePort.arch tests/nic400/BusAxi4.arch \
+  --tb tests/nic400/tb_nic400_fabric_latency.cpp -o /tmp/fab_wave
+
+# Open in a viewer
+gtkwave tests/nic400/fab_latency.vcd        # or: surfer tests/nic400/fab_latency.vcd
+
+# Or print a compact rising-edge sample table that pinpoints the bubble:
+tests/nic400/probe_ar_bubble.sh tests/nic400/fab_latency.vcd
+```
+
+Sample output of the bubble probe (`fab_latency.vcd` captured from the
+checked-in TB; M = master 0, S = slave 0):
+
+```
+rising t=13  M.ar_v=0  M.ar_r=0  M.ar_id=000    S.ar_v=0  S.ar_r=0  S.ar_id=0000
+rising t=15  M.ar_v=1  M.ar_r=0  M.ar_id=001    S.ar_v=0  S.ar_r=1  S.ar_id=0000   ← TB drives request + slave already ready
+rising t=17  M.ar_v=1  M.ar_r=1  M.ar_id=001    S.ar_v=1  S.ar_r=1  S.ar_id=0001   ← 1 cycle later, slave-side AR finally up + handshake
+rising t=19  M.ar_v=0  M.ar_r=0  M.ar_id=001    S.ar_v=1  S.ar_r=0  S.ar_id=0001   ← TB cleanup
+```
+
+The gap between `t=15` (master + slave both prepared) and `t=17` (slave-side `ar_valid` finally high) is the 1-cycle bubble. ID `b0001` confirms the prefix encoding (`{master_idx=0, master_id=001}`).
 
 ## Scope notes — deviations from the spec
 

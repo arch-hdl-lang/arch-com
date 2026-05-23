@@ -57,7 +57,7 @@ module Nic400MasterPort
         outs[j].ar_region = 0;
         m.ar_ready      = false;
       end default
-      wait until m.ar_valid and m_ar_slv == j;
+      wait 0+ cycle until m.ar_valid and m_ar_slv == j;
       lock ar_ch
         do
           outs[j].ar_valid  = true;
@@ -89,7 +89,7 @@ module Nic400MasterPort
         m.r_last  = false;
         outs[j].r_ready = false;
       end default
-      wait until outs[j].r_valid and outs[j].r_id[SLAVE_ID_W-1:MASTER_ID_W] == I;
+      wait 0+ cycle until outs[j].r_valid and outs[j].r_id[SLAVE_ID_W-1:MASTER_ID_W] == I;
       lock r_ch
         do
           m.r_valid = true;

@@ -1117,6 +1117,9 @@ fn subst_thread_stmt(stmt: &ThreadStmt, var: &str, val: i64) -> ThreadStmt {
         ThreadStmt::WaitUntil(cond, sp) => {
             ThreadStmt::WaitUntil(subst_expr_names(cond.clone(), var, val), *sp)
         }
+        ThreadStmt::WaitUntilMealy(cond, sp) => {
+            ThreadStmt::WaitUntilMealy(subst_expr_names(cond.clone(), var, val), *sp)
+        }
         ThreadStmt::WaitCycles(n, sp) => {
             ThreadStmt::WaitCycles(subst_expr_names(n.clone(), var, val), *sp)
         }
@@ -1172,6 +1175,9 @@ fn fold_literal_bit_slices_thread_stmt(stmt: ThreadStmt) -> ThreadStmt {
         }),
         ThreadStmt::WaitUntil(cond, sp) => {
             ThreadStmt::WaitUntil(fold_literal_bit_slices_expr(cond), sp)
+        }
+        ThreadStmt::WaitUntilMealy(cond, sp) => {
+            ThreadStmt::WaitUntilMealy(fold_literal_bit_slices_expr(cond), sp)
         }
         ThreadStmt::WaitCycles(n, sp) => {
             ThreadStmt::WaitCycles(fold_literal_bit_slices_expr(n), sp)
@@ -3453,7 +3459,7 @@ fn collect_thread_signals(body: &[ThreadStmt]) -> (HashSet<String>, HashSet<Stri
                     collect_expr_reads(&ra.value, all_read);
                     collect_expr_index_reads(&ra.target, all_read);
                 }
-                ThreadStmt::WaitUntil(cond, _) => {
+                ThreadStmt::WaitUntil(cond, _) | ThreadStmt::WaitUntilMealy(cond, _) => {
                     collect_expr_reads(cond, all_read);
                 }
                 ThreadStmt::WaitCycles(_, _) => {}
@@ -3560,7 +3566,7 @@ fn collect_thread_bus_reads(body: &[ThreadStmt], bus_port_map: &HashMap<String, 
                 collect_expr_bus_reads(&a.value, bus_port_map, out);
                 collect_expr_bus_reads(&a.target, bus_port_map, out);
             }
-            ThreadStmt::WaitUntil(c, _) => collect_expr_bus_reads(c, bus_port_map, out),
+            ThreadStmt::WaitUntil(c, _) | ThreadStmt::WaitUntilMealy(c, _) => collect_expr_bus_reads(c, bus_port_map, out),
             ThreadStmt::IfElse(ie) => {
                 collect_expr_bus_reads(&ie.cond, bus_port_map, out);
                 collect_thread_bus_reads(&ie.then_stmts, bus_port_map, out);
@@ -4160,8 +4166,14 @@ fn partition_thread_body_impl(
     let mut states: Vec<ThreadFsmState> = Vec::new();
     let mut cur_comb: Vec<Stmt> = Vec::new();
     let mut cur_seq: Vec<Stmt> = Vec::new();
+    // Set when the previous iteration was a `wait 0+ cycle until ...;` that
+    // consumed the next `do ... until ...;` as part of its Mealy fusion;
+    // skips one iteration of this loop to avoid emitting the do-body as a
+    // separate state.
+    let mut skip_next = false;
 
     for (stmt_idx, stmt) in body.iter().enumerate() {
+        if skip_next { skip_next = false; continue; }
         match stmt {
             ThreadStmt::CombAssign(ca) => {
                 cur_comb.push(Stmt::Assign(ca.clone()));
@@ -4206,6 +4218,145 @@ fn partition_thread_body_impl(
                         terminal_return: None,
                 });
                 let _ = sp; // span retained for parity with the prior arm
+            }
+            ThreadStmt::WaitUntilMealy(cond, sp) => {
+                // Fuse with either:
+                //   (a) `do BODY until exit;`                   — no lock
+                //   (b) `lock R do BODY until exit end lock R;` — with lock
+                // into a single Mealy-gated state. Body drives are gated by
+                // `cond`; for the lock variant, the existing lock-lowering's
+                // `if (grant) { ... }` wrapper is layered on top so the
+                // outer gate is `cond` and the inner gate is `grant`.
+                // Transition out: `cond && exit` (and `&& grant` in the lock
+                // variant — applied by the lock lowering itself).
+                let next = body.get(stmt_idx + 1);
+                // Helper closure: take a Vec<ThreadStmt> body and a Y cond,
+                // produce (gated_comb, gated_seq, fused_transition_cond).
+                fn build_fused(
+                    cond: &Expr,
+                    sp: Span,
+                    do_body: &[ThreadStmt],
+                    exit_cond: &Expr,
+                ) -> (Vec<Stmt>, Vec<Stmt>, Expr) {
+                    let mut do_comb: Vec<Stmt> = Vec::new();
+                    let mut do_seq: Vec<Stmt> = Vec::new();
+                    for s in do_body {
+                        match s {
+                            ThreadStmt::CombAssign(ca) => do_comb.push(Stmt::Assign(ca.clone())),
+                            ThreadStmt::SeqAssign(ra) => do_seq.push(Stmt::Assign(ra.clone())),
+                            ThreadStmt::IfElse(ie) => {
+                                let (comb_if, seq_if) = thread_if_to_fsm_stmts(ie);
+                                if let Some(c) = comb_if { do_comb.push(c); }
+                                if let Some(s) = seq_if { do_seq.push(s); }
+                            }
+                            ThreadStmt::Log(l) => do_seq.push(Stmt::Log(l.clone())),
+                            _ => {}
+                        }
+                    }
+                    let gated_comb = if do_comb.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![Stmt::IfElse(IfElseOf {
+                            cond: cond.clone(),
+                            then_stmts: do_comb,
+                            else_stmts: Vec::new(),
+                            unique: false,
+                            span: sp,
+                        })]
+                    };
+                    let fused_cond = Expr::new(
+                        ExprKind::Binary(
+                            BinOp::And,
+                            Box::new(cond.clone()),
+                            Box::new(exit_cond.clone()),
+                        ),
+                        sp,
+                    );
+                    (gated_comb, do_seq, fused_cond)
+                }
+
+                // Flush any pending assigns first.
+                let mut flush = || {
+                    if !cur_comb.is_empty() || !cur_seq.is_empty() {
+                        states.push(ThreadFsmState {
+                            comb_stmts: std::mem::take(&mut cur_comb),
+                            seq_stmts: std::mem::take(&mut cur_seq),
+                            transition_cond: None,
+                            wait_cycles: None,
+                            multi_transitions: Vec::new(),
+                            terminal_return: None,
+                        });
+                    }
+                };
+
+                match next {
+                    // Form (a): direct do/until.
+                    Some(ThreadStmt::DoUntil { body: do_body, cond: exit_cond, span: _ }) => {
+                        flush();
+                        let (gated_comb, do_seq, fused_cond) = build_fused(cond, *sp, do_body, exit_cond);
+                        states.push(ThreadFsmState {
+                            comb_stmts: gated_comb,
+                            seq_stmts: do_seq,
+                            transition_cond: Some(fused_cond),
+                            wait_cycles: None,
+                            multi_transitions: Vec::new(),
+                            terminal_return: None,
+                        });
+                        skip_next = true;
+                    }
+                    // Form (b): lock R { do BODY until Y } — fuse Mealy +
+                    // lock + do. Reuse the existing lock lowering for the
+                    // inner do/until, then wrap its first state's body
+                    // drives in `if (cond)` and AND cond into its transition.
+                    Some(ThreadStmt::Lock { resource, body: lock_body, span: lock_sp }) => {
+                        // Inside the lock we expect a single DoUntil — the
+                        // canonical AXI handshake shape.
+                        let Some(ThreadStmt::DoUntil { .. }) = lock_body.first() else {
+                            return Err(CompileError::general(
+                                "`wait 0+ cycle until <cond>; lock R; ...` requires the lock body to start with `do ... until <cond>;` for Mealy fusion",
+                                *sp,
+                            ));
+                        };
+                        flush();
+                        // Lower the lock+do into states first.
+                        let mut lock_states = lower_thread_lock(&resource.name, lock_body, *lock_sp, cnt_width)?;
+                        // Layer Mealy gating on the FIRST state — that's
+                        // where the lock-arbitration's `if (grant)` wrapper
+                        // also lives. Wrap its existing comb in `if (cond)`
+                        // (req gate too — only request the lock when our
+                        // condition is true).
+                        if let Some(first) = lock_states.first_mut() {
+                            let existing = std::mem::take(&mut first.comb_stmts);
+                            first.comb_stmts.push(Stmt::IfElse(IfElseOf {
+                                cond: cond.clone(),
+                                then_stmts: existing,
+                                else_stmts: Vec::new(),
+                                unique: false,
+                                span: *sp,
+                            }));
+                            // AND cond into the transition guard so the
+                            // state stays in S0 if cond drops mid-flight.
+                            if let Some(existing_cond) = first.transition_cond.take() {
+                                first.transition_cond = Some(Expr::new(
+                                    ExprKind::Binary(
+                                        BinOp::And,
+                                        Box::new(cond.clone()),
+                                        Box::new(existing_cond),
+                                    ),
+                                    *sp,
+                                ));
+                            }
+                        }
+                        states.extend(lock_states);
+                        skip_next = true;
+                    }
+                    _ => {
+                        return Err(CompileError::general(
+                            "`wait 0+ cycle until <cond>;` must be immediately followed by `do ... until <cond>;` or `lock R ... do ... until ... end lock R;` (single-state Mealy fusion)",
+                            *sp,
+                        ));
+                    }
+                }
             }
             ThreadStmt::WaitCycles(count, _) => {
                 // Same: pure boundary, flush all pending assigns
@@ -5108,6 +5259,9 @@ fn rewrite_loop_var(stmt: &ThreadStmt, var: &str, replacement: &str) -> ThreadSt
         ThreadStmt::JoinAll(sp) => ThreadStmt::JoinAll(*sp),
         ThreadStmt::WaitUntil(cond, sp) => {
             ThreadStmt::WaitUntil(rewrite_var_expr(cond.clone(), var, replacement), *sp)
+        }
+        ThreadStmt::WaitUntilMealy(cond, sp) => {
+            ThreadStmt::WaitUntilMealy(rewrite_var_expr(cond.clone(), var, replacement), *sp)
         }
         ThreadStmt::WaitCycles(n, sp) => {
             ThreadStmt::WaitCycles(rewrite_var_expr(n.clone(), var, replacement), *sp)
@@ -7047,6 +7201,7 @@ fn thread_stmt_span(stmt: &ThreadStmt) -> Span {
     match stmt {
         ThreadStmt::SeqAssign(a) | ThreadStmt::CombAssign(a) | ThreadStmt::ForkTlmAssign(a) => a.span,
         ThreadStmt::WaitUntil(_, sp)
+        | ThreadStmt::WaitUntilMealy(_, sp)
         | ThreadStmt::WaitCycles(_, sp)
         | ThreadStmt::ForkJoin(_, sp)
         | ThreadStmt::JoinAll(sp)

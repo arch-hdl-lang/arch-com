@@ -2167,12 +2167,31 @@ impl Parser {
         // `wait` (contextual keyword)
         if self.check_ident("wait") {
             let wait_start = self.advance().span;
-            // `wait until expr;`
+            // `wait until expr;` — Moore-style (≥1 cycle).
             if self.check_ident("until") {
                 self.advance();
                 let cond = self.parse_expr()?;
                 let semi_span = self.expect(TokenKind::Semi)?.span;
                 return Ok(ThreadStmt::WaitUntil(cond, wait_start.merge(semi_span)));
+            }
+            // `wait 0+ cycle until expr;` — Mealy-style (≥0 cycle). The
+            // 0+ is the literal token sequence `0` `+`. If we see that
+            // exact opener, parse the rest of the Mealy form; otherwise
+            // fall through to the `wait N cycle;` numeric form.
+            let saved_pos = self.pos;
+            if matches!(self.peek_kind(), Some(TokenKind::DecLiteral(s)) if s == "0") {
+                self.advance(); // consume 0
+                if self.check(TokenKind::Plus) {
+                    self.advance(); // consume +
+                    self.expect_contextual("cycle")?;
+                    self.expect_contextual("until")?;
+                    let cond = self.parse_expr()?;
+                    let semi_span = self.expect(TokenKind::Semi)?.span;
+                    return Ok(ThreadStmt::WaitUntilMealy(cond, wait_start.merge(semi_span)));
+                }
+                // Not the Mealy form — backtrack so the numeric `wait N cycle`
+                // path below handles the `0` we already consumed.
+                self.pos = saved_pos;
             }
             // `wait N cycle;`
             let count = self.parse_expr()?;
