@@ -816,7 +816,30 @@ pub struct InstDecl {
     pub module_name: Ident,
     pub param_assigns: Vec<ParamAssign>,
     pub connections: Vec<Connection>,
+    /// `for k in 0..N-1 ... end for` blocks inside the inst body whose
+    /// body is a list of connections. Each loop unrolls at elaboration
+    /// into N flat `Connection`s appended to `connections`. After
+    /// `flatten_inst_for_loops` runs, this is empty and downstream
+    /// passes see only `connections`.
+    pub for_loops: Vec<InstForLoop>,
     pub span: Span,
+}
+
+/// `for VAR in START..END  body  end for` inside an inst body.
+/// Body items are either direct connections or nested for-loops.
+#[derive(Debug, Clone)]
+pub struct InstForLoop {
+    pub var: Ident,
+    pub start: Expr,
+    pub end: Expr,
+    pub body: Vec<InstBodyItem>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum InstBodyItem {
+    Connection(Connection),
+    For(InstForLoop),
 }
 
 #[derive(Debug, Clone)]

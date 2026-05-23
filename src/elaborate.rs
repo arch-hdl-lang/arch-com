@@ -322,8 +322,30 @@ fn elaborate_module_variant(
         return Err(errors);
     }
 
+    // Flatten any `for` loops inside inst bodies. The loop is a parse-time
+    // wiring macro — its body is a list of Connections that gets unrolled
+    // here, with the loop var substituted into each Connection's signal
+    // expression and port_name suffix. After this pass every inst has
+    // `for_loops` empty and all wiring lives in `connections`, so downstream
+    // passes see the same shape as a hand-enumerated inst.
+    let mut flattened: Vec<ModuleBodyItem> = Vec::with_capacity(pre_rewrite.len());
+    for item in pre_rewrite {
+        match item {
+            ModuleBodyItem::Inst(inst) => {
+                match flatten_inst_for_loops(inst, &param_vals) {
+                    Ok(inst) => flattened.push(ModuleBodyItem::Inst(inst)),
+                    Err(mut errs) => errors.append(&mut errs),
+                }
+            }
+            other => flattened.push(other),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
     // Rewrite inst module-names → variant names
-    let new_body = pre_rewrite
+    let new_body = flattened
         .into_iter()
         .map(|item| match item {
             ModuleBodyItem::Inst(inst) => {
@@ -1065,6 +1087,86 @@ fn subst_port(p: &PortDecl, var: &str, val: i64) -> PortDecl {
     }
 }
 
+/// Unroll any `for VAR in S..E ... end for` blocks inside `inst.for_loops`
+/// into flat `Connection`s appended to `inst.connections`. Loop ranges may
+/// reference the enclosing module's params (passed via `param_vals`). After
+/// this pass `for_loops` is empty.
+///
+/// Substitution semantics match the rest of the elaborator: bare-ident
+/// matches of the loop variable become literals, and `signal_VAR` →
+/// `signal_<val>` suffix rewrites also happen — same as `subst_expr_names`.
+/// This means a hand-enumerated form and the loop-unrolled form produce
+/// byte-identical `InstDecl.connections` lists.
+pub(crate) fn flatten_inst_for_loops(
+    mut inst: InstDecl,
+    param_vals: &HashMap<String, i64>,
+) -> Result<InstDecl, Vec<CompileError>> {
+    if inst.for_loops.is_empty() {
+        return Ok(inst);
+    }
+    let loops = std::mem::take(&mut inst.for_loops);
+    let mut errors: Vec<CompileError> = Vec::new();
+    for fl in loops {
+        match unroll_inst_for_loop(&fl, param_vals) {
+            Ok(conns) => inst.connections.extend(conns),
+            Err(mut errs) => errors.append(&mut errs),
+        }
+    }
+    if errors.is_empty() {
+        Ok(inst)
+    } else {
+        Err(errors)
+    }
+}
+
+fn unroll_inst_for_loop(
+    fl: &InstForLoop,
+    param_vals: &HashMap<String, i64>,
+) -> Result<Vec<Connection>, Vec<CompileError>> {
+    let start = try_eval_i64(&fl.start, param_vals).ok_or_else(|| {
+        vec![CompileError::general(
+            "inst body `for`: start expression must be a compile-time constant",
+            fl.start.span,
+        )]
+    })?;
+    let end = try_eval_i64(&fl.end, param_vals).ok_or_else(|| {
+        vec![CompileError::general(
+            "inst body `for`: end expression must be a compile-time constant",
+            fl.end.span,
+        )]
+    })?;
+    if end < start {
+        return Ok(Vec::new());
+    }
+    let var = &fl.var.name;
+    let mut out: Vec<Connection> = Vec::new();
+    for i in start..=end {
+        for item in &fl.body {
+            match item {
+                InstBodyItem::Connection(c) => {
+                    out.push(Connection {
+                        port_name: subst_ident(&c.port_name, var, i),
+                        direction: c.direction,
+                        signal: subst_expr_names(c.signal.clone(), var, i),
+                        reset_override: c.reset_override,
+                        span: c.span,
+                    });
+                }
+                InstBodyItem::For(inner) => {
+                    // Recurse with the outer loop var substituted into the
+                    // inner range/body, then evaluate the inner loop in the
+                    // same param scope (loop vars don't pollute param_vals;
+                    // they're applied via subst).
+                    let inner_subst = subst_inst_for_loop(inner, var, i);
+                    let mut inner_conns = unroll_inst_for_loop(&inner_subst, param_vals)?;
+                    out.append(&mut inner_conns);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn subst_inst(inst: &InstDecl, var: &str, val: i64) -> InstDecl {
     InstDecl {
         name: subst_ident(&inst.name, var, val),
@@ -1096,7 +1198,47 @@ fn subst_inst(inst: &InstDecl, var: &str, val: i64) -> InstDecl {
                 span: c.span,
             })
             .collect(),
+        // Inst-body for-loops may also reference the outer loop var in their
+        // range bounds or body. Substitute through them so that
+        // `flatten_inst_for_loops` later sees a fully-resolved-w.r.t.-outer-vars
+        // form. The inner loop var itself is *not* substituted (it shadows).
+        for_loops: inst
+            .for_loops
+            .iter()
+            .map(|fl| subst_inst_for_loop(fl, var, val))
+            .collect(),
         span: inst.span,
+    }
+}
+
+/// Substitute an outer loop var into an inst-body for-loop's range bounds
+/// and body. If the inner loop's variable shadows the outer name, the body
+/// is left untouched (the inner binding wins).
+fn subst_inst_for_loop(fl: &InstForLoop, var: &str, val: i64) -> InstForLoop {
+    let shadowed = fl.var.name == var;
+    InstForLoop {
+        var: fl.var.clone(),
+        start: subst_expr_names(fl.start.clone(), var, val),
+        end:   subst_expr_names(fl.end.clone(),   var, val),
+        body: if shadowed {
+            fl.body.clone()
+        } else {
+            fl.body.iter().map(|it| subst_inst_body_item(it, var, val)).collect()
+        },
+        span: fl.span,
+    }
+}
+
+fn subst_inst_body_item(it: &InstBodyItem, var: &str, val: i64) -> InstBodyItem {
+    match it {
+        InstBodyItem::Connection(c) => InstBodyItem::Connection(Connection {
+            port_name: subst_ident(&c.port_name, var, val),
+            direction: c.direction,
+            signal: subst_expr_names(c.signal.clone(), var, val),
+            reset_override: c.reset_override,
+            span: c.span,
+        }),
+        InstBodyItem::For(inner) => InstBodyItem::For(subst_inst_for_loop(inner, var, val)),
     }
 }
 
@@ -2114,6 +2256,7 @@ fn lower_module_threads(
                     reset_override: None, span: sp,
                 },
             ],
+            for_loops: Vec::new(),
             span: sp,
         }));
     }
@@ -2904,7 +3047,9 @@ fn lower_module_threads(
         name: Ident::new("_threads".to_string(), sp),
         module_name: Ident::new(merged_name, sp),
         param_assigns: Vec::new(),
-        connections, span: sp,
+        connections,
+        for_loops: Vec::new(),
+        span: sp,
     };
     new_body.push(ModuleBodyItem::Inst(inst));
 
@@ -9681,6 +9826,7 @@ fn lower_indexed_tlm_target_group(
                 span,
             },
         ],
+        for_loops: Vec::new(),
         span,
     }));
 

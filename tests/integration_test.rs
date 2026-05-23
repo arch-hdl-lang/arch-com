@@ -15908,3 +15908,153 @@ fn test_sim_function_uses_package_param() {
         "expected PASS marker in stdout:\n{}",
         String::from_utf8_lossy(&out.stdout));
 }
+
+#[test]
+fn test_inst_for_loop_unrolls_connections() {
+    // A `for k in 0..N-1 ... end for` block inside an inst body unrolls at
+    // elaboration into N flat `Connection`s — AST-identical to the hand-
+    // enumerated form, so the generated SV must contain the per-index
+    // named-port connections produced by the loop body. This is the core
+    // NIC-400 Fabric use case: scaling a master/slave dimension without
+    // hand-enumerating connections.
+    let source = "
+        bus B
+          v: out Bool;
+          d: out UInt<8>;
+        end bus B
+
+        module Producer
+          port clk: in Clock<SysDomain>;
+          port chans: initiator Vec<B, 2>;
+          comb
+            chans[0].v = true;  chans[0].d = 8'hAA;
+            chans[1].v = true;  chans[1].d = 8'h55;
+          end comb
+        end module Producer
+
+        module Parent
+          port clk: in Clock<SysDomain>;
+          port o0: out Bool;
+          port o1: out Bool;
+          wire w_0: B;
+          wire w_1: B;
+          inst p: Producer
+            clk <- clk;
+            for k in 0..1
+              chans[k] -> w_k;
+            end for
+          end inst p
+          comb
+            o0 = w_0.v;
+            o1 = w_1.v;
+          end comb
+        end module Parent
+    ";
+    let sv = compile_to_sv(source);
+    // The for-loop body `chans[k] -> w_k;` unrolls to:
+    //   chans[0] -> w_0;   chans[1] -> w_1;
+    // which gathers into the packed-concat form at the inst boundary
+    // (big-endian, so chans[1] is the MSB).
+    assert!(sv.contains(".chans_v({w_1_v, w_0_v})") || sv.contains(".chans_v ({w_1_v, w_0_v})"),
+            "expected `.chans_v({{w_1_v, w_0_v}})` packed concat from unrolled inst-for-loop in SV:\n{sv}");
+    assert!(sv.contains(".chans_d({w_1_d, w_0_d})") || sv.contains(".chans_d ({w_1_d, w_0_d})"),
+            "expected `.chans_d({{w_1_d, w_0_d}})` packed concat in SV:\n{sv}");
+}
+
+#[test]
+fn test_inst_for_loop_matches_hand_enumerated_form() {
+    // The contract of inst-body `for k in 0..N-1` unroll is: the resulting
+    // AST must be byte-identical to the hand-enumerated form. We compile
+    // both shapes and compare the emitted SV directly. Exercises:
+    //   - 2-D bus wire (`Vec<Vec<B, NS>, NM>`) — the NIC-400 Fabric shape.
+    //   - Outer `generate_for j` substitution flowing into the inst-body
+    //     for-loop's body expressions (`edges[k][j]`).
+    //   - Range bound `0..NM-1` that references an enclosing param.
+    let bus_and_slave = "
+        bus B
+          v: out Bool;
+          d: out UInt<8>;
+        end bus B
+
+        module Slave
+          param J: const = 0;
+          param NMC: const = 2;
+          port clk: in Clock<SysDomain>;
+          port ins: target Vec<B, NMC>;
+          port o_v: out Bool;
+          comb
+            o_v = ins[0].v;
+          end comb
+        end module Slave
+    ";
+
+    let fabric_handw = format!("{bus_and_slave}
+        module Fabric
+          param NM: const = 2;
+          param NS: const = 2;
+          port clk: in Clock<SysDomain>;
+          port o_0: out Bool;
+          port o_1: out Bool;
+          wire edges: Vec<Vec<B, NS>, NM>;
+          comb
+            edges[0][0].v = true;  edges[0][0].d = 8'h22;
+            edges[0][1].v = true;  edges[0][1].d = 8'h33;
+            edges[1][0].v = true;  edges[1][0].d = 8'h44;
+            edges[1][1].v = true;  edges[1][1].d = 8'h55;
+          end comb
+          generate_for j in 0..NS-1
+            inst sp_j: Slave
+              param J = j;
+              param NMC = NM;
+              clk <- clk;
+              o_v -> o_j;
+              ins[0] <- edges[0][j];
+              ins[1] <- edges[1][j];
+            end inst sp_j
+          end generate_for
+        end module Fabric
+    ");
+
+    let fabric_loop = format!("{bus_and_slave}
+        module Fabric
+          param NM: const = 2;
+          param NS: const = 2;
+          port clk: in Clock<SysDomain>;
+          port o_0: out Bool;
+          port o_1: out Bool;
+          wire edges: Vec<Vec<B, NS>, NM>;
+          comb
+            edges[0][0].v = true;  edges[0][0].d = 8'h22;
+            edges[0][1].v = true;  edges[0][1].d = 8'h33;
+            edges[1][0].v = true;  edges[1][0].d = 8'h44;
+            edges[1][1].v = true;  edges[1][1].d = 8'h55;
+          end comb
+          generate_for j in 0..NS-1
+            inst sp_j: Slave
+              param J = j;
+              param NMC = NM;
+              clk <- clk;
+              o_v -> o_j;
+              for k in 0..NM-1
+                ins[k] <- edges[k][j];
+              end for
+            end inst sp_j
+          end generate_for
+        end module Fabric
+    ");
+
+    let sv_handw = compile_to_sv(&fabric_handw);
+    let sv_loop  = compile_to_sv(&fabric_loop);
+    assert_eq!(sv_handw, sv_loop,
+        "inst-body for-loop must produce byte-identical SV to the \
+         hand-enumerated form. Diff:\n\
+         === hand-enumerated ===\n{sv_handw}\n\
+         === loop-unrolled ===\n{sv_loop}");
+
+    // Sanity: the SV actually contains the expected per-index connections
+    // (so this isn't just `equal-but-empty`).
+    assert!(sv_loop.contains("sp_0") && sv_loop.contains("sp_1"),
+            "expected sp_0 and sp_1 instances in SV:\n{sv_loop}");
+    assert!(sv_loop.contains("edges[0][0]") && sv_loop.contains("edges[1][1]"),
+            "expected per-index edges refs in SV:\n{sv_loop}");
+}
