@@ -23,12 +23,13 @@ module GenDemo #(
   output logic [N-1:0] gnt
 );
 
-  genvar i;
-  for (i = 0; i <= N - 1; i = i + 1) begin : gen_i
-    PassThrough pt_i (
-      .a(req[i]),
-      .b(gnt[i])
-    );
-  end
+  PassThrough pt_0 (
+    .a(req[0]),
+    .b(gnt[0])
+  );
+  PassThrough pt_1 (
+    .a(req[1]),
+    .b(gnt[1])
+  );
 
 endmodule

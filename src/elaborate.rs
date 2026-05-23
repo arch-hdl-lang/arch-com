@@ -725,6 +725,7 @@ fn expand_generate_for(
     let has_port_items = gf.items.iter().any(|item| matches!(item, GenItem::Port(_)));
     let has_thread_items = gf.items.iter().any(|item| matches!(item, GenItem::Thread(_)));
     let has_connect_items = gf.items.iter().any(|item| matches!(item, GenItem::TlmConnect(_)));
+    let has_inst_items = gf.items.iter().any(|item| matches!(item, GenItem::Inst(_)));
     let range_depends_on_param = expr_references_param(&gf.start, &param_names)
         || expr_references_param(&gf.end, &param_names);
 
@@ -732,13 +733,17 @@ fn expand_generate_for(
     let start_val = try_eval_i64(&gf.start, param_vals);
     let end_val = try_eval_i64(&gf.end, param_vals);
 
-    // If the range references a param and there are no port, thread, or TLM
-    // connect items,
-    // preserve the generate block as-is so codegen emits SV generate for.
-    // This allows the SV to be parameterized (e.g. NUM_MODULES can be overridden).
-    // Threads and TLM connects must always be expanded (threads need concrete
-    // lowering to FSMs; connects elaborate to private bus wires).
-    if range_depends_on_param && !has_port_items && !has_thread_items && !has_connect_items {
+    // Preserve the generate block as a SV genvar `for` loop only when the
+    // range references a module param AND the body has no items that
+    // require elaboration-time unrolling:
+    //   - port items: SV `for` can't introduce new ports at the boundary
+    //   - thread items: threads lower to FSMs at elaboration time
+    //   - TLM connect items: elaborate to private bus wires
+    //   - inst items: sim codegen has no SV-genvar equivalent, and bus
+    //     port connections need per-iteration loop-var substitution to
+    //     produce flat per-element wiring. Always-unroll insts is what
+    //     makes the sim path work for `generate_for + inst`.
+    if range_depends_on_param && !has_port_items && !has_thread_items && !has_connect_items && !has_inst_items {
         return Ok((
             Vec::new(),
             vec![ModuleBodyItem::Generate(GenerateDecl::For(gf))],

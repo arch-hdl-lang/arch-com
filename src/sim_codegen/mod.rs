@@ -5104,6 +5104,41 @@ impl<'a> SimCodegen<'a> {
         h.push('\n');
         h.push_str(&format!("class {class} {{\npublic:\n"));
 
+        // Build the set of D2 Vec-of-bus port arrays. For each port with
+        // `bi.count.is_some()` (Vec<Bus, N>), emit one C++ array member per
+        // bus signal (D2 shape: `dut.chans_v[i]`), plus per-element
+        // reference aliases (`dut.chans_0_v` → reference to `chans_v[0]`)
+        // so existing flat-style TBs keep working unchanged.
+        //
+        // Returns Vec<(port_name, sig_name, cpp_elem_ty, count)>.
+        let d2_arrays: Vec<(String, String, String, u64)> = {
+            let mut out: Vec<(String, String, String, u64)> = Vec::new();
+            for p in &m.ports {
+                let Some(bi) = p.bus_info.as_ref() else { continue; };
+                let Some(count_expr) = bi.count.as_ref() else { continue; };
+                let n = eval_const_expr_with_params(count_expr, &m.params) as u64;
+                if n == 0 { continue; }
+                let bus_name = &bi.bus_name.name;
+                let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) else { continue; };
+                let mut param_map: HashMap<String, &Expr> = info.params.iter()
+                    .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
+                    .collect();
+                for pa in &bi.params {
+                    param_map.insert(pa.name.name.clone(), &pa.value);
+                }
+                let eff = info.effective_signals(&param_map);
+                for (sname, _sdir, sty) in &eff {
+                    let subst_ty = subst_type_expr_sim(sty, &param_map);
+                    let cpp_ty = cpp_port_type_with_params(&subst_ty, &m.params);
+                    out.push((p.name.name.clone(), sname.clone(), cpp_ty, n));
+                }
+            }
+            out
+        };
+        let d2_alias_names: HashSet<String> = d2_arrays.iter().flat_map(|(port, sname, _, n)| {
+            (0..*n).map(move |i| format!("{}_{}_{}", port, i, sname))
+        }).collect();
+
         // Public port fields. Vec ports preserve the source-level array as
         // `name[N]` and keep the historical flat lane names (`name_0`, ...)
         // as references into that array for backwards-compatible C++/HARC TBs.
@@ -5119,8 +5154,17 @@ impl<'a> SimCodegen<'a> {
                 h.push_str(&format!("  {ty} {};\n", p.name.name));
             }
         }
+        // D2 Vec-of-bus port arrays + per-element flat-name aliases.
+        for (port, sname, cpp_ty, n) in &d2_arrays {
+            h.push_str(&format!("  {cpp_ty} {port}_{sname}[{n}];\n"));
+            for i in 0..*n {
+                h.push_str(&format!("  {cpp_ty}& {port}_{i}_{sname};\n"));
+            }
+        }
         for (flat_name, flat_ty) in &bus_flat {
             if bus_flat_vec_names.contains(flat_name) { continue; }
+            // Skip flat names already emitted as D2 aliases.
+            if d2_alias_names.contains(flat_name) { continue; }
             let ty = cpp_port_type_with_params(flat_ty, &m.params);
             h.push_str(&format!("  {ty} {flat_name};\n"));
         }
@@ -5153,9 +5197,16 @@ impl<'a> SimCodegen<'a> {
                 port_inits.push(format!("{}_{i}({}[{i}])", vi.name, vi.name));
             }
         }
-        // Add flattened bus signal inits
+        // D2 Vec-of-bus per-element alias inits: chans_0_v(chans_v[0]), ...
+        for (port, sname, _cpp_ty, n) in &d2_arrays {
+            for i in 0..*n {
+                port_inits.push(format!("{port}_{i}_{sname}({port}_{sname}[{i}])"));
+            }
+        }
+        // Add flattened bus signal inits — skip names that are now D2 aliases.
         for (flat_name, _) in &bus_flat {
             if bus_flat_vec_names.contains(flat_name) { continue; }
+            if d2_alias_names.contains(flat_name) { continue; }
             if !wide_names.contains(flat_name) {
                 port_inits.push(format!("{flat_name}(0)"));
             }
@@ -5176,6 +5227,12 @@ impl<'a> SimCodegen<'a> {
             let n = &vi.name;
             vec_reg_inits.push(format!("    memset({n}, 0, sizeof({n}));"));
             vec_reg_inits.push(format!("    memset(_{n}, 0, sizeof(_{n}));"));
+        }
+        // Add memset for D2 Vec-of-bus arrays. Per-element flat-name
+        // references alias into the array, so zeroing the array also
+        // zeros the aliases (no separate init needed).
+        for (port, sname, _cpp_ty, _n) in &d2_arrays {
+            vec_reg_inits.push(format!("    memset({port}_{sname}, 0, sizeof({port}_{sname}));"));
         }
 
         let reg_inits: Vec<String> = m.body.iter()

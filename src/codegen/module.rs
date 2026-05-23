@@ -162,18 +162,34 @@ impl<'a> Codegen<'a> {
         for p in m.ports.iter() {
             if let Some(ref bi) = p.bus_info {
                 let bus_name = &bi.bus_name.name;
-                // Names to register in self.bus_ports + signal-name prefixes:
-                //   scalar:   ["chan"]
-                //   Vec<B,N>: ["chans_0", "chans_1", ..., "chans_{N-1}"]
-                let inst_names: Vec<String> = match bi.count.as_ref() {
-                    None => vec![p.name.name.clone()],
-                    Some(_) => {
-                        let n = self.vec_of_bus_port_count.get(&p.name.name).copied().unwrap_or(0);
-                        (0..n).map(|i| format!("{}_{}", p.name.name, i)).collect()
+                // Bus port emission:
+                //   scalar `port chan: ... B`           → one port per bus signal: `chan_<sig>`
+                //   `port chans: ... Vec<B,N>` (D2)     → one port per bus signal, with
+                //                                          unpacked outer dim: `chans_<sig> [N]`
+                // The Vec form gives clean SV genvar-loop indexing (`chans_<sig>[i]`) and
+                // Verilator C++ array-style TB access (`dut.chans_<sig>[i]`).
+                //
+                // Tool note: unpacked-array ports are accepted by Verilator; Yosys's built-in
+                // Verilog frontend doesn't accept them — `arch formal` invokes `sv2v` before
+                // Yosys to lower the unpacked dim into a packed slice.
+                let is_vec_of_bus = bi.count.is_some();
+                let vec_n: u32 = if is_vec_of_bus {
+                    self.vec_of_bus_port_count.get(&p.name.name).copied().unwrap_or(0)
+                } else { 0 };
+                // Register the bus_name under the parent port name so downstream
+                // refs (`port.sig`, `port[i].sig`) can resolve back to the bus def.
+                if is_vec_of_bus {
+                    // For Vec-of-bus, register per-element flat keys so existing internal
+                    // bookkeeping (driver tracking, comb/seq ref substitution) keeps working.
+                    // SV emission is the only surface that uses the D2 shape.
+                    for i in 0..vec_n {
+                        self.bus_ports.insert(format!("{}_{}", p.name.name, i), bus_name.clone());
                     }
-                };
-                for nm in &inst_names {
-                    self.bus_ports.insert(nm.clone(), bus_name.clone());
+                    // Also register the base port name so resolvers that look up by the
+                    // declared port name (without index) find the bus.
+                    self.bus_ports.insert(p.name.name.clone(), bus_name.clone());
+                } else {
+                    self.bus_ports.insert(p.name.name.clone(), bus_name.clone());
                 }
                 if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
                     // Build param substitution map: start with bus defaults, override with port params
@@ -184,19 +200,29 @@ impl<'a> Codegen<'a> {
                         param_map.insert(pa.name.name.clone(), &pa.value);
                     }
                     let eff_signals = info.effective_signals(&param_map);
-                    for nm in &inst_names {
-                        for (sname, sdir, sty) in &eff_signals {
-                            let actual_dir = match bi.perspective {
-                                BusPerspective::Initiator => *sdir,
-                                BusPerspective::Target => (*sdir).flip(),
-                            };
-                            let dir_str = match actual_dir {
-                                Direction::In => "input",
-                                Direction::Out => "output",
-                            };
-                            let subst_ty = Self::subst_type_expr(sty, &param_map);
-                            let ty_str = self.emit_port_type_str(&subst_ty);
-                            port_lines.push(format!("{} {} {}_{}", dir_str, ty_str, nm, sname));
+                    for (sname, sdir, sty) in &eff_signals {
+                        let actual_dir = match bi.perspective {
+                            BusPerspective::Initiator => *sdir,
+                            BusPerspective::Target => (*sdir).flip(),
+                        };
+                        let dir_str = match actual_dir {
+                            Direction::In => "input",
+                            Direction::Out => "output",
+                        };
+                        let subst_ty = Self::subst_type_expr(sty, &param_map);
+                        let ty_str = self.emit_port_type_str(&subst_ty);
+                        if is_vec_of_bus {
+                            // D2: `<dir> <ty> <port>_<sig> [N]`
+                            port_lines.push(format!(
+                                "{} {} {}_{} [{}]",
+                                dir_str, ty_str, p.name.name, sname, vec_n
+                            ));
+                        } else {
+                            // Scalar bus: `<dir> <ty> <port>_<sig>`
+                            port_lines.push(format!(
+                                "{} {} {}_{}",
+                                dir_str, ty_str, p.name.name, sname
+                            ));
                         }
                     }
                 }
