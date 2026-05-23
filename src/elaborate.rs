@@ -2825,15 +2825,78 @@ fn lower_module_threads(
     };
 
     // ── Create InstDecl in parent module ───────────────────────────────
+    //
+    // Parent wrapper exposes Vec-of-bus ports in PACKED form
+    // (`ins_<sig> [N-1:0]` — see src/codegen). The threads sub-module
+    // expects FLAT per-element signal names (`ins_<i>_<sig>`). Detect
+    // when a sub-port name follows the `<base>_<i>_<sig>` pattern AND
+    // `<base>` is a Vec-of-bus port on the wrapper, and emit the
+    // signal as an Index into the packed wrapper port:
+    //   port_name="ins_0_r_valid", signal=Index(Ident("ins_r_valid"), 0)
+    // emit_expr_str renders this as `ins_r_valid[0]` — which IS a valid
+    // SV expression slicing the packed wrapper port.
+    use std::collections::HashMap as _HashMap;
+    let parent_vob: _HashMap<String, (u32, Vec<String>)> = {
+        let mut out = _HashMap::new();
+        for p in &m.ports {
+            let Some(bi) = p.bus_info.as_ref() else { continue; };
+            let Some(count_expr) = bi.count.as_ref() else { continue; };
+            // Build a tiny param-vals map from the module's param defaults so
+            // expressions like `NUM_SLAVES` resolve at elaboration-time.
+            let param_vals_local: HashMap<String, i64> = m.params.iter()
+                .filter_map(|p| p.default.as_ref()
+                    .and_then(|d| try_eval_i64(d, &HashMap::new()).map(|v| (p.name.name.clone(), v))))
+                .collect();
+            let n = try_eval_i64(count_expr, &param_vals_local).unwrap_or(0) as u32;
+            if n == 0 { continue; }
+            let Some(bus_decl) = bus_defs.get(&bi.bus_name.name) else { continue; };
+            // BusDecl.signals lists unconditional signals; conditional ones
+            // (under READ/WRITE flags) live in BusDecl.generates. Collect
+            // names from BOTH so the `<base>_<i>_<sig>` pattern matches
+            // every flattened sub-port name.
+            let mut sigs: Vec<String> = bus_decl.signals.iter()
+                .map(|s| s.name.name.clone())
+                .collect();
+            for g in &bus_decl.generates {
+                for s in g.then_signals.iter().chain(g.else_signals.iter()) {
+                    sigs.push(s.name.name.clone());
+                }
+            }
+            out.insert(p.name.name.clone(), (n, sigs));
+        }
+        out
+    };
     let mut connections: Vec<Connection> = Vec::new();
     for p in &merged_ports {
         let dir = match p.direction {
             Direction::In => ConnectDir::Input,
             Direction::Out => ConnectDir::Output,
         };
+        // Try to decompose `<base>_<i>_<sig>` for Vec-of-bus parent ports.
+        let mut signal = Expr::new(ExprKind::Ident(p.name.name.clone()), sp);
+        for (base, (n, sigs)) in &parent_vob {
+            let prefix = format!("{base}_");
+            let Some(rest) = p.name.name.strip_prefix(&prefix) else { continue; };
+            // rest looks like "<i>_<sig>" — split on first '_'.
+            let Some(und) = rest.find('_') else { continue; };
+            let idx_str = &rest[..und];
+            let sig = &rest[und + 1..];
+            let Ok(idx) = idx_str.parse::<u32>() else { continue; };
+            if idx >= *n { continue; }
+            if !sigs.iter().any(|s| s == sig) { continue; }
+            // Match. Emit Index(Ident("<base>_<sig>"), idx).
+            signal = Expr::new(
+                ExprKind::Index(
+                    Box::new(Expr::new(ExprKind::Ident(format!("{base}_{sig}")), sp)),
+                    Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(idx as u64)), sp)),
+                ),
+                sp,
+            );
+            break;
+        }
         connections.push(Connection {
             port_name: p.name.clone(), direction: dir,
-            signal: Expr::new(ExprKind::Ident(p.name.name.clone()), sp),
+            signal,
             reset_override: None, span: sp,
         });
     }

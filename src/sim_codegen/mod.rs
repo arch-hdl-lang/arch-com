@@ -4739,6 +4739,24 @@ impl<'a> SimCodegen<'a> {
             } else { None })
             .collect();
 
+        // D2 Vec-of-bus port array members: for `port chans: Vec<Bus, N>`,
+        // the C++ class has `<ty> chans_<sig>[N]` array members (Phase 2
+        // mirror) — so any Ident reference to `chans_<sig>` is a C array
+        // and `chans_<sig>[i]` indexing uses C subscript, not bit-shift.
+        // Register these names in vec_reg_names so expr_is_vec recognises
+        // them in the Index emitter.
+        for p in &m.ports {
+            let Some(bi) = p.bus_info.as_ref() else { continue; };
+            if bi.count.is_none() { continue; }
+            let bus_name = &bi.bus_name.name;
+            let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) else { continue; };
+            let mut pm = info.default_param_map();
+            for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
+            for (sname, _, _) in info.effective_signals(&pm) {
+                vec_reg_names.insert(format!("{}_{}", p.name.name, sname));
+            }
+        }
+
         // Vec wire/reg name → element count (for expanding inst port connections)
         let mut vec_wire_counts: HashMap<String, u64> = m.body.iter()
             .filter_map(|i| if let ModuleBodyItem::WireDecl(w) = i {

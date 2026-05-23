@@ -1394,6 +1394,24 @@ impl<'a> TypeChecker<'a> {
                     if !flat.is_empty() {
                         driven.insert(flat);
                     }
+                    // Packed Vec-of-bus port-element drive:
+                    // `Index(Ident("<base>_<sig>"), <i>)` from the thread-wrapper
+                    // emission credits the per-element flat name `<base>_<i>_<sig>`
+                    // that the undriven-port check looks for. Detect when the
+                    // base ident matches a `<vobport>_<sig>` pair.
+                    if let ExprKind::Index(arr, idx) = &conn.signal.kind {
+                        if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i)))
+                            = (&arr.kind, &idx.kind)
+                        {
+                            // Try every Vec-of-bus port name as a prefix.
+                            for (vobport, _n) in self.vec_of_bus_ports.iter() {
+                                let prefix = format!("{vobport}_");
+                                if let Some(sig) = arr_name.strip_prefix(&prefix) {
+                                    driven.insert(format!("{vobport}_{i}_{sig}"));
+                                }
+                            }
+                        }
+                    }
                 }
                 // Whole-bus connection: axi_rd -> m_axi_mm2s expands to N signals.
                 // The inst's bus port drives/receives signals based on its perspective.
