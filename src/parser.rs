@@ -2174,14 +2174,18 @@ impl Parser {
                 let semi_span = self.expect(TokenKind::Semi)?.span;
                 return Ok(ThreadStmt::WaitUntil(cond, wait_start.merge(semi_span)));
             }
-            // `wait 0+ cycle until expr;` — Mealy-style (≥0 cycle). The
-            // 0+ is the literal token sequence `0` `+`. If we see that
-            // exact opener, parse the rest of the Mealy form; otherwise
-            // fall through to the `wait N cycle;` numeric form.
+            // `wait 0+ cycle until expr;` — Mealy-style (≥0 cycle). `0+` is
+            // a single user-facing token, so the lexed `0` and `+` must be
+            // textually adjacent (zero source distance). `wait 0 + cycle`
+            // is NOT accepted — the form is `0+`, not the binary expression
+            // `0 plus cycle`.
             let saved_pos = self.pos;
             if matches!(self.peek_kind(), Some(TokenKind::DecLiteral(s)) if s == "0") {
+                let zero_end = self.tokens[self.pos].span.end;
                 self.advance(); // consume 0
-                if self.check(TokenKind::Plus) {
+                let plus_adjacent = self.check(TokenKind::Plus)
+                    && self.tokens[self.pos].span.start == zero_end;
+                if plus_adjacent {
                     self.advance(); // consume +
                     self.expect_contextual("cycle")?;
                     self.expect_contextual("until")?;

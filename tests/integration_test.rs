@@ -4220,6 +4220,40 @@ fn test_wait_0plus_requires_immediate_do_until() {
 }
 
 #[test]
+fn test_wait_0plus_requires_no_space_between_0_and_plus() {
+    // `0+` is a single user-facing token (no whitespace allowed between
+    // the `0` and the `+`). `wait 0 + cycle until X;` (with a space) is
+    // NOT a Mealy wait — it must not silently parse as one.
+    //
+    // With the space, the parser falls through to the numeric `wait N
+    // cycle;` form, which expects `cycle` immediately after the expr —
+    // `0 + cycle until go` parses `cycle` as an identifier in the binary
+    // expression `0 + cycle`, leaving `until` where `cycle` is expected.
+    // So we just assert a parse error rather than match a specific msg.
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port go: in Bool;
+          port out: out Bool;
+          thread T on clk rising, rst low
+            default comb
+              out = false;
+            end default
+            wait 0 + cycle until go;
+            do
+              out = true;
+            until go;
+          end thread T
+        end module M
+    "#;
+    let tokens = arch::lexer::tokenize(source).expect("lex");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    assert!(parser.parse_source_file().is_err(),
+            "wait `0 + cycle` (with space) should not parse as Mealy wait");
+}
+
+#[test]
 fn test_comb_graph_treats_bus_wires_as_intermediates() {
     // Regression: when a parent module wires two instances together through
     // a bus wire (scalar or Vec-of-bus), the cross-instance comb dependency
