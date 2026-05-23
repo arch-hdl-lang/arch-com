@@ -43,14 +43,19 @@ module Nic400Fabric
 
   // ── N SlavePort instances ─────────────────────────────────────────────
   // Each slave_j gathers element [j] from every master's row of edges.
+  // The inner `for k in 0..NUM_MASTERS-1` is an inst-body unroll macro:
+  // at elaboration each iteration produces one `ins[k] <- edges[k][j]`
+  // Connection (AST-identical to the hand-enumerated form). Scales to
+  // arbitrary M without source changes.
   generate_for j in 0..NUM_SLAVES-1
     inst sp_j: Nic400SlavePort
       param J = j;
       clk <- clk;
       rst <- rst;
       s   -> s[j];
-      ins[0] <- edges[0][j];
-      ins[1] <- edges[1][j];
+      for k in 0..NUM_MASTERS-1
+        ins[k] <- edges[k][j];
+      end for
     end inst sp_j
   end generate_for
 end module Nic400Fabric

@@ -3037,8 +3037,13 @@ impl Parser {
 
         let mut param_assigns = Vec::new();
         let mut connections = Vec::new();
+        let mut for_loops = Vec::new();
 
         while !self.check_end_inst() {
+            if self.check(TokenKind::For) {
+                for_loops.push(self.parse_inst_for_loop()?);
+                continue;
+            }
             if self.check_param() {
                 self.advance();
                 let pname = self.expect_ident()?;
@@ -3181,6 +3186,110 @@ impl Parser {
             module_name,
             param_assigns,
             connections,
+            for_loops,
+        })
+    }
+
+    /// Parse a single connection statement (e.g. `port <- signal;`).
+    /// Used inside inst body for-loops.
+    fn parse_inst_connection(&mut self) -> Result<Connection, CompileError> {
+        let cstart = self.peek_span();
+        let mut port_name = self.expect_ident()?;
+        if self.eat(TokenKind::LBracket) {
+            // Inside an inst-body for-loop, the index can be either a literal
+            // (e.g. `ins[0]`) or an identifier referring to the loop variable
+            // (e.g. `ins[k]`). After elaboration substitution the ident becomes
+            // a literal, so we accept either at parse time.
+            let idx_tok = self.advance();
+            let idx_str = match &idx_tok.kind {
+                TokenKind::DecLiteral(s) => s.clone(),
+                TokenKind::Ident(s) => s.clone(),
+                _ => return Err(CompileError::unexpected_token(
+                    "integer index or loop variable",
+                    &idx_tok.kind.to_string(),
+                    idx_tok.span,
+                )),
+            };
+            self.expect(TokenKind::RBracket)?;
+            if self.eat(TokenKind::Dot) {
+                let member = self.expect_ident()?;
+                port_name = Ident::new(
+                    format!("{}{idx_str}_{}", port_name.name, member.name),
+                    port_name.span.merge(member.span),
+                );
+            } else {
+                let end_span = idx_tok.span;
+                port_name = Ident::new(
+                    format!("{}_{}", port_name.name, idx_str),
+                    port_name.span.merge(end_span),
+                );
+            }
+        } else if self.eat(TokenKind::Dot) {
+            let member = self.expect_ident()?;
+            port_name = Ident::new(
+                format!("{}_{}", port_name.name, member.name),
+                port_name.span.merge(member.span),
+            );
+        }
+        let direction = if self.eat(TokenKind::LArrow) {
+            ConnectDir::Input
+        } else if self.eat(TokenKind::RArrow) {
+            ConnectDir::Output
+        } else {
+            return Err(CompileError::unexpected_token(
+                "<- or ->",
+                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                self.peek_span(),
+            ));
+        };
+        let signal = self.parse_expr()?;
+        self.expect(TokenKind::Semi)?;
+        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(cstart);
+        Ok(Connection {
+            port_name,
+            direction,
+            signal,
+            reset_override: None,
+            span: cstart.merge(end_span),
+        })
+    }
+
+    /// Parse a `for VAR in START..END  body  end for` block whose body
+    /// consists of inst connection statements (possibly with nested
+    /// for-loops). Used inside `parse_inst`.
+    fn parse_inst_for_loop(&mut self) -> Result<InstForLoop, CompileError> {
+        let start_tok = self.expect(TokenKind::For)?.span;
+        let var = self.expect_ident()?;
+        self.expect_contextual("in")?;
+        let range_start = self.parse_expr()?;
+        self.expect(TokenKind::DotDot)?;
+        let range_end = self.parse_expr()?;
+
+        let mut body = Vec::new();
+        while !(self.check(TokenKind::End)
+            && self.pos + 1 < self.tokens.len()
+            && self.tokens[self.pos + 1].kind == TokenKind::For)
+        {
+            if self.check(TokenKind::For) {
+                body.push(InstBodyItem::For(self.parse_inst_for_loop()?));
+            } else if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) {
+                body.push(InstBodyItem::Connection(self.parse_inst_connection()?));
+            } else {
+                return Err(CompileError::unexpected_token(
+                    "port connection or nested `for`",
+                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                    self.peek_span(),
+                ));
+            }
+        }
+        self.expect(TokenKind::End)?;
+        let end_span = self.expect(TokenKind::For)?.span;
+        Ok(InstForLoop {
+            var,
+            start: range_start,
+            end: range_end,
+            body,
+            span: start_tok.merge(end_span),
         })
     }
 
