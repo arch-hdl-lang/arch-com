@@ -1469,6 +1469,27 @@ fn expand_bus_connections(
             None
         } else { None })
         .collect();
+    // 2D bus wires: `wire edges: Vec<Vec<B, N>, M>;` → (M, N).
+    // Used by the whole-row inst connection expansion `outs -> edges[i]`,
+    // where `edges[i]` is a row (Vec<B,N>) inside a 2D wire.
+    let parent_vec_of_bus_wires_2d: HashMap<String, (u32, u32)> = m.body.iter()
+        .filter_map(|i| if let ModuleBodyItem::WireDecl(w) = i {
+            if let TypeExpr::Vec(outer_elem, outer_size) = &w.ty {
+                if let TypeExpr::Vec(inner_elem, inner_size) = outer_elem.as_ref() {
+                    if let TypeExpr::Named(id) = inner_elem.as_ref() {
+                        if matches!(symbols.globals.get(&id.name), Some((crate::resolve::Symbol::Bus(_), _))) {
+                            let m_n = eval_const_expr_with_params(outer_size, &m.params) as u32;
+                            let n_n = eval_const_expr_with_params(inner_size, &m.params) as u32;
+                            if m_n > 0 && n_n > 0 {
+                                return Some((w.name.name.clone(), (m_n, n_n)));
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        } else { None })
+        .collect();
     let parent_vec_of_bus_ports: HashMap<String, u32> = m.ports.iter()
         .filter_map(|p| {
             let bi = p.bus_info.as_ref()?;
@@ -1484,6 +1505,43 @@ fn expand_bus_connections(
     let inst_connections: Vec<crate::ast::Connection> = inst.connections.iter()
         .flat_map(|c| {
             if let Some((_, n)) = target_vec_of_bus_ports.iter().find(|(pn, _)| pn == &c.port_name.name) {
+                // Whole-row connection into a 2D bus wire: `outs -> edges[m]`,
+                // where outs is Vec<B,N>, edges is Vec<Vec<B,N>,M>, m is a
+                // literal (or static-unrolled loop var). Expand to N per-element
+                // connections `outs[j] -> edges[m][j]`.
+                if let ExprKind::Index(arr, idx) = &c.signal.kind {
+                    if let ExprKind::Ident(parent_name) = &arr.kind {
+                        if let Some((_m_n, n_n)) = parent_vec_of_bus_wires_2d.get(parent_name).copied() {
+                            if let ExprKind::Literal(LitKind::Dec(m_idx)) = &idx.kind {
+                                if (n_n as u32) == *n {
+                                    return (0..*n).map(|j| {
+                                        let port_j = Ident::new(format!("{}_{}", c.port_name.name, j), c.port_name.span);
+                                        let parent_expr = Expr::new(
+                                            ExprKind::Index(
+                                                Box::new(Expr::new(
+                                                    ExprKind::Index(
+                                                        Box::new(Expr::new(ExprKind::Ident(parent_name.clone()), c.signal.span)),
+                                                        Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(*m_idx)), c.signal.span)),
+                                                    ),
+                                                    c.signal.span,
+                                                )),
+                                                Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(j as u64)), c.signal.span)),
+                                            ),
+                                            c.signal.span,
+                                        );
+                                        crate::ast::Connection {
+                                            port_name: port_j,
+                                            direction: c.direction,
+                                            signal: parent_expr,
+                                            reset_override: None,
+                                            span: c.span,
+                                        }
+                                    }).collect::<Vec<_>>();
+                                }
+                            }
+                        }
+                    }
+                }
                 if let ExprKind::Ident(parent_name) = &c.signal.kind {
                     let parent_is_vob_wire = parent_vec_of_bus_wires.contains_key(parent_name);
                     let parent_is_vob_port = parent_vec_of_bus_ports.contains_key(parent_name);
@@ -1537,7 +1595,14 @@ fn expand_bus_connections(
                 //                        (matches the C++ struct-typed bus wire)
                 //   WireIndex(name, i) → emit `FieldAccess(Index(Ident("<name>"), i), sname)`
                 //                        (matches a `B _let_<name>[N]` struct-array element)
-                enum BindKind { FlatPort(String), WireStruct(String), WireIndex(String, u32) }
+                enum BindKind {
+                    FlatPort(String),
+                    WireStruct(String),
+                    WireIndex(String, u32),
+                    /// 2D bus wire element: `wire edges: Vec<Vec<B,N>,M>;` →
+                    /// `edges[m][n]` lowers to `_let_edges[m][n].<sig>`.
+                    Wire2DIndex(String, u32, u32),
+                }
                 let bind = match &c.signal.kind {
                     ExprKind::Ident(name) => {
                         if bus_wire_names.contains(name.as_str()) {
@@ -1554,7 +1619,17 @@ fn expand_bus_connections(
                         }
                     }
                     ExprKind::Index(arr, idx) => {
-                        if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) = (&arr.kind, &idx.kind) {
+                        // 2D bus wire element: `edges[m][n]` → arr is itself
+                        // an Index(Ident, literal_m), idx is literal_n.
+                        if let ExprKind::Index(inner_arr, inner_idx) = &arr.kind {
+                            if let (
+                                ExprKind::Ident(arr_name),
+                                ExprKind::Literal(LitKind::Dec(m)),
+                                ExprKind::Literal(LitKind::Dec(n)),
+                            ) = (&inner_arr.kind, &inner_idx.kind, &idx.kind) {
+                                BindKind::Wire2DIndex(arr_name.clone(), *m as u32, *n as u32)
+                            } else { continue; }
+                        } else if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) = (&arr.kind, &idx.kind) {
                             if bus_wire_names.contains(arr_name.as_str()) {
                                 BindKind::WireIndex(arr_name.clone(), *i as u32)
                             } else if parent_vec_of_bus_ports.contains_key(arr_name.as_str()) {
@@ -1601,6 +1676,25 @@ fn expand_bus_connections(
                                     ExprKind::Index(
                                         Box::new(Expr::new(ExprKind::Ident(name.clone()), c.signal.span)),
                                         Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(*i as u64)), c.signal.span)),
+                                    ),
+                                    c.signal.span,
+                                )),
+                                Ident::new(sname.clone(), c.signal.span),
+                            ),
+                            c.signal.span,
+                        ),
+                        BindKind::Wire2DIndex(name, m_idx, n_idx) => Expr::new(
+                            ExprKind::FieldAccess(
+                                Box::new(Expr::new(
+                                    ExprKind::Index(
+                                        Box::new(Expr::new(
+                                            ExprKind::Index(
+                                                Box::new(Expr::new(ExprKind::Ident(name.clone()), c.signal.span)),
+                                                Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(*m_idx as u64)), c.signal.span)),
+                                            ),
+                                            c.signal.span,
+                                        )),
+                                        Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(*n_idx as u64)), c.signal.span)),
                                     ),
                                     c.signal.span,
                                 )),
@@ -1982,6 +2076,12 @@ struct Ctx<'a> {
     /// Reg/wire names whose type is Vec<T,N> — these use C array subscript `[i]`.
     /// All other subscripts on scalar UInt/SInt use bit extraction `(x >> i) & 1`.
     vec_names:   Option<&'a HashSet<String>>,
+    /// Names of *2D* Vec<Vec<_,_>,_> wires/regs (today: Vec-of-Vec-of-bus
+    /// `wire edges: Vec<Vec<B, N>, M>`). When the outer Index returns
+    /// `_let_edges[m]`, the result is still a Vec — the inner subscript
+    /// must keep using C array indexing `[n]`, NOT fall into the bit-shift
+    /// path for scalar types.
+    vec_2d_names: Option<&'a HashSet<String>>,
     /// Vec<T,N> sizes by name (element count). Used for runtime bounds-check codegen.
     vec_sizes:   Option<&'a HashMap<String, u64>>,
     /// FSM Vec port-regs: always resolve to `_name` (internal C array), regardless of fsm_mode.
@@ -2031,7 +2131,8 @@ impl<'a> Ctx<'a> {
         static EMPTY_PARAMS: &[ParamDecl] = &[];
         Ctx { reg_names, port_names, let_names, let_values: None, inst_names, wide_names,
               widths, signed_names, posedge_lhs: false, fsm_mode: false, enum_map, bus_ports,
-              reset_levels, vec_names: None, vec_sizes: None, fsm_vec_port_regs: None,
+              reset_levels, vec_names: None, vec_2d_names: None, vec_sizes: None,
+              fsm_vec_port_regs: None,
               ident_subst: None, loop_var_subst: None,
               vec_of_bus_port_count: None, vec_of_bus_wire_count: None,
               coverage: None, params: EMPTY_PARAMS }
@@ -2076,6 +2177,11 @@ impl<'a> Ctx<'a> {
 
     fn with_vec_names(mut self, vec_names: &'a HashSet<String>) -> Self {
         self.vec_names = Some(vec_names);
+        self
+    }
+
+    fn with_vec_2d_names(mut self, vec_2d_names: &'a HashSet<String>) -> Self {
+        self.vec_2d_names = Some(vec_2d_names);
         self
     }
 
@@ -2170,6 +2276,18 @@ impl<'a> Ctx<'a> {
                 } else {
                     None
                 }
+            }
+            // Outer index of a 2D Vec (e.g. `Vec<Vec<Bus,N>,M>`): the result
+            // is still a Vec, so propagate the base name. Used by
+            // `expr_is_vec` so the *inner* subscript stays as C array
+            // indexing instead of falling into bit-shift extraction.
+            ExprKind::Index(base, _) => {
+                if let ExprKind::Ident(name) = &base.kind {
+                    if self.vec_2d_names.map_or(false, |s| s.contains(name.as_str())) {
+                        return Some(name.clone());
+                    }
+                }
+                None
             }
             _ => None,
         }
@@ -2394,6 +2512,7 @@ fn lower_vec_method_cpp(
             posedge_lhs: ctx.posedge_lhs, fsm_mode: ctx.fsm_mode,
             enum_map: ctx.enum_map, bus_ports: ctx.bus_ports,
             reset_levels: ctx.reset_levels, vec_names: ctx.vec_names,
+            vec_2d_names: ctx.vec_2d_names,
             vec_sizes: ctx.vec_sizes, fsm_vec_port_regs: ctx.fsm_vec_port_regs,
             ident_subst: None, // replaced below via a temporary binding
             loop_var_subst: ctx.loop_var_subst,
@@ -4606,6 +4725,20 @@ impl<'a> SimCodegen<'a> {
             .collect();
         vec_reg_names.extend(vec_wire_names.iter().cloned());
 
+        // 2D Vec names (today: `wire edges: Vec<Vec<Bus,N>,M>`). Outer
+        // indexing returns another Vec, so the inner subscript must stay
+        // as C array indexing instead of bit-extraction.
+        let vec_2d_names: HashSet<String> = m.body.iter()
+            .filter_map(|i| if let ModuleBodyItem::WireDecl(w) = i {
+                if let TypeExpr::Vec(elem, _) = &w.ty {
+                    if matches!(elem.as_ref(), TypeExpr::Vec(_, _)) {
+                        return Some(w.name.name.clone());
+                    }
+                }
+                None
+            } else { None })
+            .collect();
+
         // Vec wire/reg name → element count (for expanding inst port connections)
         let mut vec_wire_counts: HashMap<String, u64> = m.body.iter()
             .filter_map(|i| if let ModuleBodyItem::WireDecl(w) = i {
@@ -5542,6 +5675,25 @@ impl<'a> SimCodegen<'a> {
                     h.push_str(&format!("  {ty} _let_{};\n", l.name.name));
                 }
                 ModuleBodyItem::WireDecl(w) => {
+                    // 2D bus wire: `wire edges: Vec<Vec<B, N>, M>;` →
+                    //   B _let_edges[M][N];
+                    // Emitted *before* the generic vec_array_info path, which
+                    // would otherwise treat the outer Vec's element as
+                    // `uint32_t` and silently flatten the 2D-bus shape into
+                    // a 1D scalar array.
+                    if let TypeExpr::Vec(outer_elem, outer_count) = &w.ty {
+                        if let TypeExpr::Vec(inner_elem, inner_count) = outer_elem.as_ref() {
+                            if let TypeExpr::Named(bus_id) = inner_elem.as_ref() {
+                                let m_count = eval_const_expr_with_params(outer_count, &m.params);
+                                let n_count = eval_const_expr_with_params(inner_count, &m.params);
+                                h.push_str(&format!(
+                                    "  {} _let_{}[{}][{}];\n",
+                                    bus_id.name, w.name.name, m_count, n_count
+                                ));
+                                continue;
+                            }
+                        }
+                    }
                     if let Some((elem_ty, count)) = vec_array_info_with_params(&w.ty, &m.params) {
                         h.push_str(&format!("  {elem_ty} _let_{}[{count}];\n", w.name.name));
                     } else {
@@ -5696,7 +5848,7 @@ impl<'a> SimCodegen<'a> {
                            &wide_names, &widths, &enum_map, &bus_port_names)
                       .with_signed_names(&signed_names)
                       .with_reset_levels(&reset_levels)
-                      .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes)
+                      .with_vec_names(&vec_reg_names).with_vec_2d_names(&vec_2d_names).with_vec_sizes(&vec_sizes)
                       .with_let_values(&let_values)
                       .with_params(&m.params);
 
@@ -6221,7 +6373,7 @@ impl<'a> SimCodegen<'a> {
             let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                &wide_names, &widths, &enum_map, &bus_port_names)
                           .with_signed_names(&signed_names)
-                          .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes).posedge()
+                          .with_vec_names(&vec_reg_names).with_vec_2d_names(&vec_2d_names).with_vec_sizes(&vec_sizes).posedge()
                           .with_coverage(cov_handle)
                           .with_let_values(&let_values)
                           .with_params(&m.params);
@@ -6414,7 +6566,7 @@ impl<'a> SimCodegen<'a> {
                     let ctx_pe = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                            &wide_names, &widths, &enum_map, &bus_port_names)
                                        .with_signed_names(&signed_names)
-                                       .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes)
+                                       .with_vec_names(&vec_reg_names).with_vec_2d_names(&vec_2d_names).with_vec_sizes(&vec_sizes)
                                        .with_let_values(&let_values)
                                        .with_params(&m.params);
                     let src = ctx_pe.resolve_name(&p.source.name, false);
@@ -6639,7 +6791,7 @@ impl<'a> SimCodegen<'a> {
         let ctx_comb = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                 &wide_names, &widths, &enum_map, &bus_port_names)
                            .with_signed_names(&signed_names)
-                           .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes)
+                           .with_vec_names(&vec_reg_names).with_vec_2d_names(&vec_2d_names).with_vec_sizes(&vec_sizes)
                            .with_coverage(cov_handle)
                            .with_let_values(&let_values)
                            .with_params(&m.params)
@@ -6695,6 +6847,7 @@ impl<'a> SimCodegen<'a> {
                                         posedge_lhs: ctx_comb.posedge_lhs, fsm_mode: ctx_comb.fsm_mode,
                                         enum_map: ctx_comb.enum_map, bus_ports: ctx_comb.bus_ports,
                                         reset_levels: ctx_comb.reset_levels, vec_names: ctx_comb.vec_names,
+                                        vec_2d_names: ctx_comb.vec_2d_names,
                                         vec_sizes: ctx_comb.vec_sizes, fsm_vec_port_regs: ctx_comb.fsm_vec_port_regs,
                                         ident_subst: Some(&sub),
                                         loop_var_subst: ctx_comb.loop_var_subst,
