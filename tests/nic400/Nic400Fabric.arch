@@ -1,13 +1,13 @@
 // Wiring harness — M MasterPort × N SlavePort.
 //
 // Spec §9: pure wiring; all real work lives in the per-master / per-slave
-// modules. Each (master_i, slave_j) edge is one bus carried by element
-// `[j]` of master_i's outgoing `Vec<Bus, NUM_SLAVES>` wire — that same
-// wire element appears as element `[i]` on slave_j's incoming
-// `Vec<Bus, NUM_MASTERS>` port.
+// modules. Each (master_i, slave_j) edge is one bus carried by `edges[i][j]`
+// in a single 2D bus wire — the same wire cell that appears as
+// `mp_i.outs[j]` from the master side and `sp_j.ins[i]` from the slave side.
 //
-// 2x2 v1: explicit enumeration of the 2 master + 2 slave instances.
-// Larger configurations are mechanical extensions of the same pattern.
+// Scaled via `generate_for` over both M and N. For M=N=2 today this
+// emits 2+2 = 4 inst declarations; for M=N=8 it would emit 16, all
+// from the same source.
 module Nic400Fabric
   param NUM_MASTERS:   const = 2;
   param NUM_SLAVES:    const = 2;
@@ -26,46 +26,31 @@ module Nic400Fabric
   port s: initiator Vec<BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH,
                                   ID_W=SLAVE_ID_W, READ=1, WRITE=0>, NUM_SLAVES>;
 
-  // Per-master outgoing edge buses (N copies each = M×N edges total).
-  wire m0_outs: Vec<BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH,
-                              ID_W=SLAVE_ID_W, READ=1, WRITE=0>, NUM_SLAVES>;
-  wire m1_outs: Vec<BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH,
-                              ID_W=SLAVE_ID_W, READ=1, WRITE=0>, NUM_SLAVES>;
+  // 2D bus wire: edges[i][j] is the master_i ↔ slave_j edge bus.
+  // M × N = total edges.
+  wire edges: Vec<Vec<BusAxi4, NUM_SLAVES>, NUM_MASTERS>;
 
   // ── M MasterPort instances ────────────────────────────────────────────
-  inst mp_0: Nic400MasterPort
-    param I = 0;
-    clk <- clk;
-    rst <- rst;
-    m   <- m[0];
-    outs -> m0_outs;
-  end inst mp_0
-
-  inst mp_1: Nic400MasterPort
-    param I = 1;
-    clk <- clk;
-    rst <- rst;
-    m   <- m[1];
-    outs -> m1_outs;
-  end inst mp_1
+  generate_for i in 0..NUM_MASTERS-1
+    inst mp_i: Nic400MasterPort
+      param I = i;
+      clk <- clk;
+      rst <- rst;
+      m   <- m[i];
+      outs -> edges[i];
+    end inst mp_i
+  end generate_for
 
   // ── N SlavePort instances ─────────────────────────────────────────────
-  // Each slave_j takes element [j] from every master's outgoing array.
-  inst sp_0: Nic400SlavePort
-    param J = 0;
-    clk <- clk;
-    rst <- rst;
-    s   -> s[0];
-    ins[0] <- m0_outs[0];
-    ins[1] <- m1_outs[0];
-  end inst sp_0
-
-  inst sp_1: Nic400SlavePort
-    param J = 1;
-    clk <- clk;
-    rst <- rst;
-    s   -> s[1];
-    ins[0] <- m0_outs[1];
-    ins[1] <- m1_outs[1];
-  end inst sp_1
+  // Each slave_j gathers element [j] from every master's row of edges.
+  generate_for j in 0..NUM_SLAVES-1
+    inst sp_j: Nic400SlavePort
+      param J = j;
+      clk <- clk;
+      rst <- rst;
+      s   -> s[j];
+      ins[0] <- edges[0][j];
+      ins[1] <- edges[1][j];
+    end inst sp_j
+  end generate_for
 end module Nic400Fabric

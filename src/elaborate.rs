@@ -67,7 +67,8 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
     let mut inst_raw: HashMap<String, Vec<HashMap<String, i64>>> = HashMap::new();
     for item in &ast.items {
         if let Item::Module(m) = item {
-            collect_raw_overrides_from_body(&m.body, &mut inst_raw);
+            let param_vals = module_defaults.get(&m.name.name).cloned().unwrap_or_default();
+            collect_raw_overrides_from_body(&m.body, &mut inst_raw, &param_vals);
         }
     }
 
@@ -117,19 +118,42 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
 fn collect_raw_overrides_from_body(
     body: &[ModuleBodyItem],
     out: &mut HashMap<String, Vec<HashMap<String, i64>>>,
+    enclosing_params: &HashMap<String, i64>,
 ) {
     for item in body {
         match item {
             ModuleBodyItem::Inst(inst) => record_inst(inst, out),
-            ModuleBodyItem::Generate(gen) => {
-                let all_items: Vec<&GenItem> = match gen {
-                    GenerateDecl::For(gf) => gf.items.iter().collect(),
-                    GenerateDecl::If(gi) => gi.then_items.iter()
-                        .chain(gi.else_items.iter()).collect(),
-                };
-                for item in all_items {
-                    if let GenItem::Inst(inst) = item {
-                        record_inst(inst, out);
+            ModuleBodyItem::Generate(gen) => match gen {
+                // `generate_for i in start..end { inst foo: M; param P = i; ... }`:
+                // each unrolled iteration produces a specialized variant; we must
+                // record one (loop-var-substituted) override per (i, inst) so
+                // module_variants matches the post-unroll AST. Range bounds may
+                // reference the enclosing module's params (e.g. `NUM_MASTERS-1`),
+                // so eval with those.
+                GenerateDecl::For(gf) => {
+                    let start = try_eval_i64(&gf.start, enclosing_params);
+                    let end   = try_eval_i64(&gf.end,   enclosing_params);
+                    let var_name = &gf.var.name;
+                    for it in &gf.items {
+                        if let GenItem::Inst(inst) = it {
+                            if let (Some(s), Some(e)) = (start, end) {
+                                for v in s..=e {
+                                    let inst_subst = subst_inst(inst, var_name, v);
+                                    record_inst(&inst_subst, out);
+                                }
+                            } else {
+                                // Non-literal range — record once with the loop var
+                                // unresolved (matches pre-unroll behavior).
+                                record_inst(inst, out);
+                            }
+                        }
+                    }
+                }
+                GenerateDecl::If(gi) => {
+                    for it in gi.then_items.iter().chain(gi.else_items.iter()) {
+                        if let GenItem::Inst(inst) = it {
+                            record_inst(inst, out);
+                        }
                     }
                 }
             }
