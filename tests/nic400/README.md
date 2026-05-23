@@ -31,7 +31,7 @@ arbitration, ID remap, and ID-prefix return routing.
 | 5 | Out-of-order completion | `tb_nic400_read2x2_ooo.cpp` | ✓ PASS (R from S1 first, then S0; both land at M0 with correct IDs) |
 | 6 | Register slice latency | `tb_reg_slice_channel.cpp` | ✓ PASS (1-cycle latency, sustained 1/cycle throughput, backpressure-correct) |
 | 7 | `--auto-thread-asserts` runs silently | smoke TB with the flag | ✓ PASS (32 SVA properties; Verilator `--lint-only --assert` clean) |
-| **+** | **v2 latency / throughput** | `tb_nic400_fabric_latency.cpp` | ✓ PASS — pins AR=1 cyc, R=1 cyc, ≥1 txn / 5 cyc |
+| **+** | **v2 latency / throughput** | `tb_nic400_fabric_latency.cpp` | ✓ PASS — pins AR=0 cyc, R=0 cyc, 1 txn / cyc (9/9) |
 | 8 | Formal property (per-slave issue→W order) | `arch formal` | △ DEFERRED — hierarchical formal v1 does not yet support sub-module `wire` declarations introduced by the lock-arbitration lowering pass (compiler limitation, not a design flaw) |
 
 ## Performance findings — v2 hierarchical design
@@ -42,7 +42,7 @@ Measured with `tb_nic400_fabric_latency.cpp` (runs under `arch sim`):
 |---|---|---|---|
 | AR forward (M → S, uncontested) | 0 cycles | **0 cycles ✓** | 1 cycle |
 | R return (S → M, uncontested)   | 0 cycles | **0 cycles ✓** | 1 cycle |
-| AR throughput (back-to-back)    | 1 txn / cycle | **0.89 t/c** (8/9) | 0.32 t/c (8/25) |
+| AR throughput (back-to-back)    | 1 txn / cycle | **1.00 t/c** (9/9) | 0.32 t/c (8/25) |
 
 The MasterPort/SlavePort threads use the **`wait 0+ cycle until X;`** form (Mealy-style wait), which fuses with the immediately-following `do BODY until Y;` into a single state whose comb drives are gated by `X` and whose transition guard is `X && Y`. When both conditions hold at the same posedge, the thread progresses with zero added cycles — collapsing the entry-wait bubble that the standard `wait until` form imposes.
 

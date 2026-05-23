@@ -148,24 +148,18 @@ int main(int argc, char **argv) {
     }
 
     // ── AR throughput: back-to-back transactions ───────────────────────
-    // After the first transaction completes, can we push another AR through
-    // every cycle? Spec §14.2 quotes "1 transfer/cycle (sustained)" once
-    // the pipeline is warm. The thread-based design observes ~1 transfer
-    // per 3 cycles (8 transfers in 25 cycles ≈ 0.32 t/c) because each
-    // S0→S1→S0 state cycle in the Ar/ArArb threads takes ~3 ticks of
-    // round-trip through the master×slave inst chain. Pin the budget to
-    // ~1/5 transfers/cycle so the test passes today AND catches any major
-    // future regression (e.g. another bubble doubling the cycle count).
-    // Mealy fusion delivers ~0.89 t/c (8 transfers in 9 cycles) for the
-    // back-to-back AR sequence. Pin at >= 4/5 = 0.80 to allow a little
-    // slack for cycle-counting edge effects but catch any major
-    // regression that would reintroduce a multi-cycle bubble.
-    const int MIN_THROUGHPUT_NUM   = 4;
-    const int MIN_THROUGHPUT_DENOM = 5;
+    // Spec §14.2 quotes "1 transfer/cycle (sustained)" once the pipeline is
+    // warm. With Mealy fusion (`wait 0+ cycle until` + `do..until`), every
+    // posedge with valid && ready fires a handshake — no entry-wait state
+    // bubble. Pin to exactly 1.0 t/c: any future regression that
+    // re-introduces a bubble (e.g. accidentally switching to standard
+    // `wait until`, or inserting a register slice) fails this checker.
+    const int MIN_THROUGHPUT_NUM   = 1;
+    const int MIN_THROUGHPUT_DENOM = 1;
     clear_inputs();
     for (int i = 0; i < 4; ++i) tick();
 
-    const int N_TXN = 8;
+    const int N_TXN = 9;
     dut.s_0_ar_ready = 1;          // Slave always ready
     dut.m_0_ar_addr  = 0x00001000;
     dut.m_0_ar_size  = 2;
@@ -188,13 +182,17 @@ int main(int argc, char **argv) {
                     seen, N_TXN, last_seen_cycle);
         return 1;
     }
-    int total_cycles = last_seen_cycle + 1;
+    // last_seen_cycle is 1-indexed: first tick that fires a handshake gives
+    // last_seen_cycle = 1. If `seen` handshakes complete with the last on
+    // tick K, the back-to-back window is exactly K cycles wide (ticks
+    // 1..K), so total_cycles = last_seen_cycle (no +1).
+    int total_cycles = last_seen_cycle;
     std::printf("INFO  AR throughput: %d transfers in %d cycles = %.2f transfers/cycle\n",
                 seen, total_cycles, (double)seen / total_cycles);
     // Cross-multiply to avoid float: seen * DENOM >= total_cycles * NUM
     if (seen * MIN_THROUGHPUT_DENOM < total_cycles * MIN_THROUGHPUT_NUM) {
-        std::printf("FAIL Throughput: AR < %d/%d transfers/cycle\n",
-                    MIN_THROUGHPUT_NUM, MIN_THROUGHPUT_DENOM);
+        std::printf("FAIL Throughput: AR < %d/%d transfers/cycle (observed %d/%d)\n",
+                    MIN_THROUGHPUT_NUM, MIN_THROUGHPUT_DENOM, seen, total_cycles);
         return 1;
     }
 
