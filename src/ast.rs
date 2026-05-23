@@ -648,8 +648,22 @@ pub enum ThreadStmt {
     ForkTlmAssign(RegAssign),
     /// Join all outstanding nonblocking TLM issues in the current group.
     JoinAll(Span),
-    /// `wait until cond;`
+    /// `wait until cond;` — Moore-style wait. The thread sits in a
+    /// dedicated wait state with comb defaults active; at the next
+    /// posedge where `cond` is true, it advances to the next state.
+    /// Lower bound on wait time = 1 cycle even if `cond` is already
+    /// true when entering this stmt.
     WaitUntil(Expr, Span),
+    /// `wait 0+ cycle until cond;` — Mealy-style wait. Must be
+    /// immediately followed by `do ... until ...;`. The lowering fuses
+    /// the two into a single state whose comb drives are gated by the
+    /// mealy condition, and whose state-transition guard is the
+    /// conjunction `(wait cond) && (do-until exit cond)`. Result: when
+    /// both conditions are true on the same posedge, the thread
+    /// progresses with zero added cycles — eliminating the 1-cycle
+    /// "I'm in the entry wait state with defaults active" bubble that
+    /// the standard `wait until` form imposes.
+    WaitUntilMealy(Expr, Span),
     /// `wait N cycle;`
     WaitCycles(Expr, Span),
     /// `if cond ... elsif ... else ... end if`

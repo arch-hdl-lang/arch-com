@@ -31,7 +31,61 @@ arbitration, ID remap, and ID-prefix return routing.
 | 5 | Out-of-order completion | `tb_nic400_read2x2_ooo.cpp` | ✓ PASS (R from S1 first, then S0; both land at M0 with correct IDs) |
 | 6 | Register slice latency | `tb_reg_slice_channel.cpp` | ✓ PASS (1-cycle latency, sustained 1/cycle throughput, backpressure-correct) |
 | 7 | `--auto-thread-asserts` runs silently | smoke TB with the flag | ✓ PASS (32 SVA properties; Verilator `--lint-only --assert` clean) |
+| **+** | **v2 latency / throughput** | `tb_nic400_fabric_latency.cpp` | ✓ PASS — pins AR=0 cyc, R=0 cyc, 1 txn / cyc (9/9) |
 | 8 | Formal property (per-slave issue→W order) | `arch formal` | △ DEFERRED — hierarchical formal v1 does not yet support sub-module `wire` declarations introduced by the lock-arbitration lowering pass (compiler limitation, not a design flaw) |
+
+## Performance findings — v2 hierarchical design
+
+Measured with `tb_nic400_fabric_latency.cpp` (runs under `arch sim`):
+
+| Path | Spec §14.1 target | Observed (Mealy) | Observed (Moore) |
+|---|---|---|---|
+| AR forward (M → S, uncontested) | 0 cycles | **0 cycles ✓** | 1 cycle |
+| R return (S → M, uncontested)   | 0 cycles | **0 cycles ✓** | 1 cycle |
+| AR throughput (back-to-back)    | 1 txn / cycle | **1.00 t/c** (9/9) | 0.32 t/c (8/25) |
+
+The MasterPort/SlavePort threads use the **`wait 0+ cycle until X;`** form (Mealy-style wait), which fuses with the immediately-following `do BODY until Y;` into a single state whose comb drives are gated by `X` and whose transition guard is `X && Y`. When both conditions hold at the same posedge, the thread progresses with zero added cycles — collapsing the entry-wait bubble that the standard `wait until` form imposes.
+
+The standard `wait until X;` (Moore-style, ≥1 cycle) is also supported and is what the v1 monolithic design used; the comparison numbers above are from a quick rebuild against the Moore form.
+
+The checker `tb_nic400_fabric_latency.cpp` pins the *observed* values and fails loudly if a future change inflates them.
+
+### Inspecting the bubble
+
+```bash
+# Re-generate the VCD
+arch sim --wave tests/nic400/fab_latency.vcd \
+  tests/nic400/Nic400Fabric.arch tests/nic400/Nic400MasterPort.arch \
+  tests/nic400/Nic400SlavePort.arch tests/nic400/BusAxi4.arch \
+  --tb tests/nic400/tb_nic400_fabric_latency.cpp -o /tmp/fab_wave
+
+# Open in a viewer
+gtkwave tests/nic400/fab_latency.vcd        # or: surfer tests/nic400/fab_latency.vcd
+
+# Or print a compact rising-edge sample table that pinpoints the bubble:
+tests/nic400/probe_ar_bubble.sh tests/nic400/fab_latency.vcd
+```
+
+Sample output of the bubble probe (`fab_latency.vcd` captured from the
+checked-in TB; M = master 0, S = slave 0):
+
+```
+── AR forward (M → S) ─────────────────────────────────────────
+  rising t=13  M.ar_v=0 ar_r=0 ar_id=000    S.ar_v=0 ar_r=0 ar_id=0000
+  rising t=15  M.ar_v=1 ar_r=1 ar_id=001    S.ar_v=1 ar_r=1 ar_id=0001 <- AR handshake (same cycle)
+  rising t=17  M.ar_v=0 ar_r=0 ar_id=001    S.ar_v=0 ar_r=0 ar_id=0000
+── R return (S → M) ──────────────────────────────────────────
+  rising t=19  S.r_v=0  r_r=0  r_id=0000    M.r_v=0  r_r=0  r_id=000
+  rising t=21  S.r_v=1  r_r=1  r_id=0001    M.r_v=1  r_r=1  r_id=001 <- R handshake (same cycle)
+  rising t=23  S.r_v=0  r_r=0  r_id=0000    M.r_v=0  r_r=0  r_id=000
+```
+
+Both AR (t=15) and R (t=21) handshakes fire on the same rising edge as
+their drives — the Mealy fusion eliminates the entry-wait state. ID
+`b0001` on the slave side confirms the prefix encoding
+(`{master_idx=0, master_id=001}`). If a future change re-introduces a
+bubble, `S.ar_v=1` will appear on the rising edge *after* `M.ar_v=1`
+(and similarly for R), making the regression obvious in this table.
 
 ## Scope notes — deviations from the spec
 

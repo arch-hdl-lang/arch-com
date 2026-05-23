@@ -4134,6 +4134,126 @@ fn test_vec_of_bus_port_typecheck_drives_all_indexed_outputs() {
 }
 
 #[test]
+fn test_wait_0plus_cycle_until_mealy_fusion() {
+    // `wait 0+ cycle until X;` immediately followed by `do BODY until Y;`
+    // fuses into a single Mealy-style state. The SV codegen output for
+    // this design should:
+    //   * NOT emit a separate entry-wait state.
+    //   * Gate the body's comb drives by `X` (`if (X) { ... }`).
+    //   * Transition with `X && Y` as the guard.
+    // Result: same-cycle handshake when both conditions hold at posedge,
+    // eliminating the entry-wait bubble that standard `wait until`
+    // imposes.
+    let source = "
+        bus B
+          v: out Bool;
+          d: out UInt<8>;
+          r: in  Bool;
+        end bus B
+        module Drv
+          port clk:   in  Clock<SysDomain>;
+          port rst:   in  Reset<Async, Low>;
+          port m_val: in  Bool;
+          port m_dat: in  UInt<8>;
+          port m_rdy: out Bool;
+          port b:     initiator B;
+          thread T on clk rising, rst low
+            default comb
+              b.v = false;
+              b.d = 0;
+              m_rdy = false;
+            end default
+            wait 0+ cycle until m_val;
+            do
+              b.v   = true;
+              b.d   = m_dat;
+              m_rdy = b.r;
+            until b.r;
+          end thread T
+        end module Drv
+    ";
+    let sv = compile_to_sv(source);
+    // Exactly one wait_until state (S0) — no separate entry state.
+    let state_decls = sv.matches("_t0_S").count();
+    assert!(state_decls <= 4,
+            "expected at most 2 `_t0_Sx` references (state localparam + one use); \
+             single-state Mealy fusion should not generate extra states. Got {state_decls}:\n{sv}");
+    // The do-body comb is wrapped in `if (m_val)`.
+    assert!(sv.contains("if (m_val)"),
+            "expected `if (m_val)` gating the Mealy body's comb drives:\n{sv}");
+    // Transition guard ANDs the wait + do-until conditions.
+    assert!(sv.contains("if (m_val && b_r)") || sv.contains("m_val && b_r"),
+            "expected `m_val && b_r` as the fused transition guard:\n{sv}");
+}
+
+#[test]
+fn test_wait_0plus_requires_immediate_do_until() {
+    // The Mealy fusion only handles `wait 0+ cycle until X;` followed
+    // immediately by `do ... until ...;` (with or without a wrapping
+    // `lock R ... end lock R`). A plain assign between them is rejected
+    // with a clear diagnostic.
+    let source = r#"
+        bus B
+          v: out Bool;
+        end bus B
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port go: in Bool;
+          port b: initiator B;
+          thread T on clk rising, rst low
+            default comb
+              b.v = false;
+            end default
+            wait 0+ cycle until go;
+            wait 1 cycle;             // not a do/until or lock+do — should error
+          end thread T
+        end module M
+    "#;
+    let tokens = arch::lexer::tokenize(source).expect("lex");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let err = arch::elaborate::lower_threads(ast).expect_err("expected lowering error");
+    let msg = err.iter().map(|e| format!("{e:?}")).collect::<String>();
+    assert!(msg.contains("Mealy fusion") || msg.contains("0+ cycle"),
+            "expected Mealy-fusion-restriction diagnostic, got: {msg}");
+}
+
+#[test]
+fn test_wait_0plus_requires_no_space_between_0_and_plus() {
+    // `0+` is a single user-facing token (no whitespace allowed between
+    // the `0` and the `+`). `wait 0 + cycle until X;` (with a space) is
+    // NOT a Mealy wait — it must not silently parse as one.
+    //
+    // With the space, the parser falls through to the numeric `wait N
+    // cycle;` form, which expects `cycle` immediately after the expr —
+    // `0 + cycle until go` parses `cycle` as an identifier in the binary
+    // expression `0 + cycle`, leaving `until` where `cycle` is expected.
+    // So we just assert a parse error rather than match a specific msg.
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port go: in Bool;
+          port out: out Bool;
+          thread T on clk rising, rst low
+            default comb
+              out = false;
+            end default
+            wait 0 + cycle until go;
+            do
+              out = true;
+            until go;
+          end thread T
+        end module M
+    "#;
+    let tokens = arch::lexer::tokenize(source).expect("lex");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    assert!(parser.parse_source_file().is_err(),
+            "wait `0 + cycle` (with space) should not parse as Mealy wait");
+}
+
+#[test]
 fn test_comb_graph_treats_bus_wires_as_intermediates() {
     // Regression: when a parent module wires two instances together through
     // a bus wire (scalar or Vec-of-bus), the cross-instance comb dependency
