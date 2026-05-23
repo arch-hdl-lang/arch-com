@@ -25,6 +25,12 @@ use crate::lexer::Span;
 // ── Public entry point ────────────────────────────────────────────────────────
 
 pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
+    // Substitute module-scope `type` aliases before any other pass sees the
+    // AST. Aliases are pure substitution — once resolved, downstream passes
+    // (typecheck / elaborate / codegen / sim) treat the AST as if the user
+    // had inlined the aliased types by hand.
+    let ast = crate::type_alias::resolve_type_aliases(ast)?;
+
     // Build enum variant → value map for resolving enum-typed params
     let enum_values: HashMap<String, Vec<(String, u64)>> = ast.items.iter()
         .filter_map(|item| {

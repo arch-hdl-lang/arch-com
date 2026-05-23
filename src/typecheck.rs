@@ -1011,6 +1011,12 @@ impl<'a> TypeChecker<'a> {
                 ModuleBodyItem::TlmConnect(_) => {
                     // Source-level sugar lowered during elaboration.
                 }
+                ModuleBodyItem::TypeAlias(_) => {
+                    // Aliases are substituted by `type_alias::resolve_type_aliases`
+                    // before typecheck runs; reaching here means the resolver
+                    // pre-pass was skipped (e.g. a programmatic AST). Silently
+                    // ignore — the alias has no semantic effect on typecheck.
+                }
             }
         }
 

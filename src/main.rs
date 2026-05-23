@@ -1583,6 +1583,14 @@ fn run_check_multi_opts(
         return Err(ms.report_error(err));
     }
 
+    // Resolve module-scope `type Name = ...;` aliases by inlining them at
+    // every use site. Runs before elaboration so downstream passes see
+    // aliases as if hand-inlined.
+    let parsed_ast = arch::type_alias::resolve_type_aliases(parsed_ast).map_err(|errs| {
+        let err = errs.into_iter().next().unwrap();
+        ms.report_error(err)
+    })?;
+
     // Elaborate (expand generate blocks)
     let ast = elaborate::elaborate(parsed_ast).map_err(|errs| {
         let err = errs.into_iter().next().unwrap();

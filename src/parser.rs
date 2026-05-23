@@ -1016,6 +1016,9 @@ impl Parser {
                 Some(TokenKind::Wire) => {
                     body.push(ModuleBodyItem::WireDecl(self.parse_wire_decl()?));
                 }
+                Some(TokenKind::Type) => {
+                    body.push(ModuleBodyItem::TypeAlias(self.parse_type_alias_decl()?));
+                }
                 Some(TokenKind::Inst) => {
                     body.push(ModuleBodyItem::Inst(self.parse_inst()?));
                 }
@@ -1056,7 +1059,7 @@ impl Parser {
                 }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "param, port, reg, seq, comb, let, inst, connect, pipe_reg, generate_for, generate_if, thread, default, assert, cover, function, or hook",
+                        "param, port, reg, seq, comb, let, inst, connect, pipe_reg, generate_for, generate_if, thread, default, assert, cover, function, type, or hook",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -1697,6 +1700,11 @@ impl Parser {
             let bus_ident = self.expect_ident()?;
             if self.check(TokenKind::Lt) {
                 self.advance();
+                // `no_angle` so `>` isn't consumed as a comparison op inside
+                // the param value expression (e.g. `ADDR_W=16>` would
+                // otherwise parse `16 > ...`).
+                let old_no_angle = self.no_angle;
+                self.no_angle = true;
                 let mut assigns = Vec::new();
                 loop {
                     let pname = self.expect_ident()?;
@@ -1705,6 +1713,7 @@ impl Parser {
                     assigns.push(ParamAssign { name: pname, value: pval, ty: None });
                     if !self.eat(TokenKind::Comma) { break; }
                 }
+                self.no_angle = old_no_angle;
                 self.expect(TokenKind::Gt)?;
                 return Ok((TypeExpr::Named(bus_ident), assigns));
             }
@@ -1714,6 +1723,34 @@ impl Parser {
             self.pos = saved;
         }
         Ok((self.parse_type_expr()?, Vec::new()))
+    }
+
+    /// Parse a module-scope type alias:
+    ///
+    /// ```text
+    /// type Name = <TypeExpr>;
+    /// type Edge = BusAxi4<ADDR_W=32, ID_W=4>;
+    /// type Pair = Vec<UInt<8>, 2>;
+    /// ```
+    ///
+    /// The RHS reuses `parse_wire_type_with_bus_params` so the alias can
+    /// carry bus param overrides identical to a wire / port at the use
+    /// site. Aliases are pure substitutions — no parameterization on the
+    /// LHS in MVP.
+    fn parse_type_alias_decl(&mut self) -> Result<TypeAliasDecl, CompileError> {
+        let start = self.expect(TokenKind::Type)?.span;
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::Eq)?;
+        let (ty, bus_params) = self.parse_wire_type_with_bus_params()?;
+        self.expect(TokenKind::Semi)?;
+        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        Ok(TypeAliasDecl {
+            name,
+            ty,
+            bus_params,
+            span: start.merge(end_span),
+            doc: None,
+        })
     }
 
     fn parse_reg_decl(&mut self) -> Result<RegDecl, CompileError> {

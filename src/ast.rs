@@ -397,6 +397,31 @@ pub enum ModuleBodyItem {
     Assert(AssertDecl),
     Function(FunctionDecl),
     TlmConnect(TlmConnectDecl),
+    /// `type Name = <TypeExpr>;` — module-scope type alias.
+    /// Resolved (substituted) by `resolve_type_aliases` before elaboration;
+    /// after that pass, this variant never appears in the AST passed to
+    /// typecheck / elaborate / codegen.
+    TypeAlias(TypeAliasDecl),
+}
+
+/// `type Name = <TypeExpr>;` — module-scope type alias declaration.
+///
+/// The RHS is any TypeExpr — including parameterized bus types — captured
+/// alongside any inline bus param overrides (`type B = BusName<P=v>;`). The
+/// alias-resolution pre-pass (`resolve_type_aliases`) walks every other
+/// `TypeExpr::Named(name)` in the same module body and substitutes the
+/// alias's stored type, propagating bus_params onto wire/port use sites.
+///
+/// Scope: module body only (MVP). No parameterized aliases. No recursive
+/// aliases — each alias's RHS may reference only aliases declared earlier
+/// in the same module.
+#[derive(Debug, Clone)]
+pub struct TypeAliasDecl {
+    pub name: Ident,
+    pub ty: TypeExpr,
+    pub bus_params: Vec<ParamAssign>,
+    pub span: Span,
+    pub doc: Option<String>,
 }
 
 impl ModuleBodyItem {
@@ -419,6 +444,7 @@ impl ModuleBodyItem {
             ModuleBodyItem::Assert(a) => a.span,
             ModuleBodyItem::Function(f) => f.span,
             ModuleBodyItem::TlmConnect(c) => c.span,
+            ModuleBodyItem::TypeAlias(t) => t.span,
         }
     }
 }
