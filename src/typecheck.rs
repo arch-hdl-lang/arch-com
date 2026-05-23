@@ -825,6 +825,18 @@ impl<'a> TypeChecker<'a> {
                     };
                     for gi in items {
                         if let crate::ast::GenItem::Inst(inst) = gi {
+                            // Look up the instantiated module's bus ports so we can
+                            // mark per-bus-signal flat names for bus-typed inst-outputs
+                            // (`inst_port -> outer_vec[loop_var]`), mirroring
+                            // check_inst_decl's static-inst handling.
+                            let inst_module_ports: Option<&[crate::ast::PortDecl]> =
+                                self.source.items.iter().find_map(|item| match item {
+                                    Item::Module(m2) if m2.name.name == inst.module_name.name
+                                        => Some(m2.ports.as_slice()),
+                                    Item::Fsm(f2) if f2.name.name == inst.module_name.name
+                                        => Some(f2.ports.as_slice()),
+                                    _ => None,
+                                });
                             for conn in &inst.connections {
                                 if conn.direction == ConnectDir::Output {
                                     if let ExprKind::Ident(name) = &conn.signal.kind {
@@ -839,6 +851,57 @@ impl<'a> TypeChecker<'a> {
                                     let flat = Self::expr_flat_name_tc(&conn.signal);
                                     if !flat.is_empty() {
                                         driven.insert(flat);
+                                    }
+                                    // Bus-port output to indexed Vec-of-bus parent
+                                    // port (`inst_bus_port -> vec_port[loop_var]`):
+                                    // SV emitter uses D2 array shape but driver
+                                    // tracking still uses per-element flat names.
+                                    // For a literal idx mark just that element; for
+                                    // a loop variable, conservatively mark ALL N
+                                    // (each sibling unroll iteration fills one).
+                                    let inst_bus_info = inst_module_ports.and_then(|ports| {
+                                        ports.iter()
+                                            .find(|p| p.name.name == conn.port_name.name)
+                                            .and_then(|p| p.bus_info.as_ref())
+                                    });
+                                    if let Some(bi) = inst_bus_info {
+                                        if let Some((crate::resolve::Symbol::Bus(info), _)) =
+                                            self.symbols.globals.get(&bi.bus_name.name)
+                                        {
+                                            let mut pm = info.default_param_map();
+                                            for pa in &bi.params {
+                                                pm.insert(pa.name.name.clone(), &pa.value);
+                                            }
+                                            let eff = info.effective_signals(&pm);
+                                            let prefixes: Vec<String> = match &conn.signal.kind {
+                                                ExprKind::Ident(n) => vec![n.clone()],
+                                                ExprKind::Index(arr, idx) => {
+                                                    if let ExprKind::Ident(arr_name) = &arr.kind {
+                                                        if let ExprKind::Literal(LitKind::Dec(i)) = &idx.kind {
+                                                            vec![format!("{}_{}", arr_name, i)]
+                                                        } else if let Some(&n) = self.vec_of_bus_ports.get(arr_name) {
+                                                            (0..n).map(|i| format!("{}_{}", arr_name, i)).collect()
+                                                        } else {
+                                                            Vec::new()
+                                                        }
+                                                    } else {
+                                                        Vec::new()
+                                                    }
+                                                }
+                                                _ => Vec::new(),
+                                            };
+                                            for prefix in &prefixes {
+                                                for (sname, sdir, _) in &eff {
+                                                    let inst_dir = match bi.perspective {
+                                                        BusPerspective::Initiator => *sdir,
+                                                        BusPerspective::Target => (*sdir).flip(),
+                                                    };
+                                                    if inst_dir == Direction::Out {
+                                                        driven.insert(format!("{}_{}", prefix, sname));
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
