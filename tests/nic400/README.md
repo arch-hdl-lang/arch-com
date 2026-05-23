@@ -70,13 +70,22 @@ Sample output of the bubble probe (`fab_latency.vcd` captured from the
 checked-in TB; M = master 0, S = slave 0):
 
 ```
-rising t=13  M.ar_v=0  M.ar_r=0  M.ar_id=000    S.ar_v=0  S.ar_r=0  S.ar_id=0000
-rising t=15  M.ar_v=1  M.ar_r=0  M.ar_id=001    S.ar_v=0  S.ar_r=1  S.ar_id=0000   ← TB drives request + slave already ready
-rising t=17  M.ar_v=1  M.ar_r=1  M.ar_id=001    S.ar_v=1  S.ar_r=1  S.ar_id=0001   ← 1 cycle later, slave-side AR finally up + handshake
-rising t=19  M.ar_v=0  M.ar_r=0  M.ar_id=001    S.ar_v=1  S.ar_r=0  S.ar_id=0001   ← TB cleanup
+── AR forward (M → S) ─────────────────────────────────────────
+  rising t=13  M.ar_v=0 ar_r=0 ar_id=000    S.ar_v=0 ar_r=0 ar_id=0000
+  rising t=15  M.ar_v=1 ar_r=1 ar_id=001    S.ar_v=1 ar_r=1 ar_id=0001 <- AR handshake (same cycle)
+  rising t=17  M.ar_v=0 ar_r=0 ar_id=001    S.ar_v=0 ar_r=0 ar_id=0000
+── R return (S → M) ──────────────────────────────────────────
+  rising t=19  S.r_v=0  r_r=0  r_id=0000    M.r_v=0  r_r=0  r_id=000
+  rising t=21  S.r_v=1  r_r=1  r_id=0001    M.r_v=1  r_r=1  r_id=001 <- R handshake (same cycle)
+  rising t=23  S.r_v=0  r_r=0  r_id=0000    M.r_v=0  r_r=0  r_id=000
 ```
 
-The gap between `t=15` (master + slave both prepared) and `t=17` (slave-side `ar_valid` finally high) is the 1-cycle bubble. ID `b0001` confirms the prefix encoding (`{master_idx=0, master_id=001}`).
+Both AR (t=15) and R (t=21) handshakes fire on the same rising edge as
+their drives — the Mealy fusion eliminates the entry-wait state. ID
+`b0001` on the slave side confirms the prefix encoding
+(`{master_idx=0, master_id=001}`). If a future change re-introduces a
+bubble, `S.ar_v=1` will appear on the rising edge *after* `M.ar_v=1`
+(and similarly for R), making the regression obvious in this table.
 
 ## Scope notes — deviations from the spec
 
