@@ -16303,3 +16303,112 @@ fn test_generate_for_wire_param_size() {
     assert!(sv.contains("logic [W-1:0] bus_1;") || sv.contains("logic [15:0] bus_1;"),
             "missing `logic [W-1:0] bus_1;` (param-driven width wire):\n{sv}");
 }
+
+#[test]
+fn test_generate_if_variant_discovery_with_param_expr() {
+    // Regression: when `generate_if` contains an inst whose param value
+    // references the enclosing module's params (rather than a literal),
+    // variant discovery must evaluate the value against those params.
+    // Before the fix, every inst in a `generate_if` silently landed on
+    // the default-param variant — a silent miscompile.
+    //
+    // This source sets `param I = TEN` and `param I = TWENTY` on two
+    // Inner insts via different `generate_if 1` blocks. Each should
+    // produce its own specialized VInner__I_10 / VInner__I_20 in the
+    // native sim. Behavior check: out0 = idx + 10, out1 = idx + 20.
+    let source = "
+        module Inner
+          param I: const = 8;
+          port idx: in  UInt<8>;
+          port out: out UInt<8>;
+          let pad: UInt<8> = I.zext<8>();
+          comb
+            out = idx +% pad;
+          end comb
+        end module Inner
+
+        module Top
+          param TEN: const = 10;
+          param TWENTY: const = 20;
+          port idx: in UInt<8>;
+          port out0: out UInt<8>;
+          port out1: out UInt<8>;
+          generate_if 1
+            inst inner_a: Inner
+              param I = TEN;
+              idx <- idx;
+              out -> out0;
+            end inst inner_a
+          end generate_if
+          generate_if 1
+            inst inner_b: Inner
+              param I = TWENTY;
+              idx <- idx;
+              out -> out1;
+            end inst inner_b
+          end generate_if
+        end module Top
+    ";
+    let sv = compile_to_sv(source);
+    // Two specialized variants must be emitted, one per distinct
+    // `param I = <expr>` value resolved against enclosing module params.
+    assert!(sv.contains("module Inner__I_10"),
+            "missing `Inner__I_10` specialized variant — variant discovery \
+             didn't resolve `param I = TEN` against enclosing module's params:\n{sv}");
+    assert!(sv.contains("module Inner__I_20"),
+            "missing `Inner__I_20` specialized variant — variant discovery \
+             didn't resolve `param I = TWENTY` against enclosing module's params:\n{sv}");
+    // Inst sites should reference the specialized variant by name.
+    assert!(sv.contains("Inner__I_10 inner_a")
+            || sv.contains("Inner__I_10 #") && sv.contains("inner_a"),
+            "expected sp_0 to reference Inner__I_10 variant:\n{sv}");
+    assert!(sv.contains("Inner__I_20 inner_b")
+            || sv.contains("Inner__I_20 #") && sv.contains("inner_b"),
+            "expected sp_1 to reference Inner__I_20 variant:\n{sv}");
+}
+
+#[test]
+fn test_generate_if_variant_discovery_with_default_branch_values() {
+    // Even when both then- and else-branches of `generate_if` contain
+    // insts with module-param-referencing values, variant discovery
+    // walks both conservatively and records each. Over-recording is
+    // benign — extra unused variants are deduped at codegen time.
+    let source = "
+        module Inner
+          param I: const = 0;
+          port idx: in  UInt<8>;
+          port out: out UInt<8>;
+          let pad: UInt<8> = I.zext<8>();
+          comb
+            out = idx +% pad;
+          end comb
+        end module Inner
+
+        module Top
+          param SEVEN: const = 7;
+          param NINE:  const = 9;
+          port idx: in UInt<8>;
+          port out: out UInt<8>;
+          generate_if 1
+            inst chosen: Inner
+              param I = SEVEN;
+              idx <- idx;
+              out -> out;
+            end inst chosen
+          end generate_if
+          generate_if 0
+            inst unused: Inner
+              param I = NINE;
+              idx <- idx;
+              out -> out;
+            end inst unused
+          end generate_if
+        end module Top
+    ";
+    let sv = compile_to_sv(source);
+    // Both branches' values get discovered. The cond=1 branch's inst
+    // actually survives; the cond=0 branch's variant is emitted but
+    // never instantiated — synthesis tools dead-code it.
+    assert!(sv.contains("module Inner__I_7"),
+            "missing `Inner__I_7` variant (active branch's param):\n{sv}");
+}

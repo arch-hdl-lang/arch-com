@@ -128,7 +128,7 @@ fn collect_raw_overrides_from_body(
 ) {
     for item in body {
         match item {
-            ModuleBodyItem::Inst(inst) => record_inst(inst, out),
+            ModuleBodyItem::Inst(inst) => record_inst(inst, out, enclosing_params),
             ModuleBodyItem::Generate(gen) => match gen {
                 // `generate_for i in start..end { inst foo: M; param P = i; ... }`:
                 // each unrolled iteration produces a specialized variant; we must
@@ -145,20 +145,29 @@ fn collect_raw_overrides_from_body(
                             if let (Some(s), Some(e)) = (start, end) {
                                 for v in s..=e {
                                     let inst_subst = subst_inst(inst, var_name, v);
-                                    record_inst(&inst_subst, out);
+                                    record_inst(&inst_subst, out, enclosing_params);
                                 }
                             } else {
                                 // Non-literal range — record once with the loop var
                                 // unresolved (matches pre-unroll behavior).
-                                record_inst(inst, out);
+                                record_inst(inst, out, enclosing_params);
                             }
                         }
                     }
                 }
+                // `generate_if cond { inst f: M; param I = SOMETHING; }`:
+                // walk BOTH branches conservatively (over-recording produces
+                // extra variants that compute_all_variants simply emits and
+                // doesn't hurt correctness). The important fix: record_inst
+                // must see the enclosing module's params so a param value
+                // like `param I = NUM_FOO - 1` evaluates correctly — without
+                // this, every iteration's inst silently lands on the
+                // default-param variant. Same shape as the generate_for fix
+                // earlier in this function.
                 GenerateDecl::If(gi) => {
                     for it in gi.then_items.iter().chain(gi.else_items.iter()) {
                         if let GenItem::Inst(inst) = it {
-                            record_inst(inst, out);
+                            record_inst(inst, out, enclosing_params);
                         }
                     }
                 }
@@ -169,10 +178,20 @@ fn collect_raw_overrides_from_body(
     }
 }
 
-fn record_inst(inst: &InstDecl, out: &mut HashMap<String, Vec<HashMap<String, i64>>>) {
+fn record_inst(
+    inst: &InstDecl,
+    out: &mut HashMap<String, Vec<HashMap<String, i64>>>,
+    enclosing_params: &HashMap<String, i64>,
+) {
     let mut overrides = HashMap::new();
     for pa in &inst.param_assigns {
-        if let Some(v) = try_eval_i64(&pa.value, &HashMap::new()) {
+        // Evaluate the inst's param value against the enclosing module's
+        // param map. Without these, a param value like `param I = NUM_FOO`
+        // that references a module param can't resolve at variant-discovery
+        // time, and every inst silently lands on the default-param variant
+        // (the bug the PR-394 fix and this audit address — same shape for
+        // both generate_for and generate_if cases).
+        if let Some(v) = try_eval_i64(&pa.value, enclosing_params) {
             overrides.insert(pa.name.name.clone(), v);
         }
     }
@@ -355,7 +374,7 @@ fn elaborate_module_variant(
         .into_iter()
         .map(|item| match item {
             ModuleBodyItem::Inst(inst) => {
-                ModuleBodyItem::Inst(rewrite_inst(inst, module_variants, module_defaults))
+                ModuleBodyItem::Inst(rewrite_inst(inst, module_variants, module_defaults, &param_vals))
             }
             other => other,
         })
@@ -435,20 +454,25 @@ fn rewrite_inst(
     inst: InstDecl,
     module_variants: &HashMap<String, Vec<(HashMap<String, i64>, String)>>,
     module_defaults: &HashMap<String, HashMap<String, i64>>,
+    enclosing_params: &HashMap<String, i64>,
 ) -> InstDecl {
     let variants = match module_variants.get(&inst.module_name.name) {
         Some(v) if v.len() > 1 => v,
         _ => return inst, // single variant → name unchanged
     };
 
-    // Compute effective params for this inst (regular + reset-override synthetic params)
+    // Compute effective params for this inst (regular + reset-override synthetic params).
+    // Param values must evaluate against the enclosing module's params so an
+    // expression like `param I = NUM_FOO - 1` resolves to a literal that
+    // matches one of the discovered variants. Same shape as the
+    // record_inst fix.
     let defaults = module_defaults
         .get(&inst.module_name.name)
         .cloned()
         .unwrap_or_default();
     let mut effective = defaults;
     for pa in &inst.param_assigns {
-        if let Some(v) = try_eval_i64(&pa.value, &HashMap::new()) {
+        if let Some(v) = try_eval_i64(&pa.value, enclosing_params) {
             effective.insert(pa.name.name.clone(), v);
         }
     }
