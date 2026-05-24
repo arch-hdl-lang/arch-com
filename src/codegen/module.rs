@@ -841,6 +841,11 @@ impl<'a> Codegen<'a> {
                 ModuleBodyItem::Function(f) => {
                     self.emit_function(f);
                 }
+                ModuleBodyItem::TypeAlias(_) => {
+                    // Type aliases are inlined by `type_alias::resolve_type_aliases`
+                    // before elaboration; they should never reach codegen.
+                    unreachable!("type alias should have been resolved before codegen");
+                }
             }
         }
 

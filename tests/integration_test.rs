@@ -16058,3 +16058,150 @@ fn test_inst_for_loop_matches_hand_enumerated_form() {
     assert!(sv_loop.contains("edges[0][0]") && sv_loop.contains("edges[1][1]"),
             "expected per-index edges refs in SV:\n{sv_loop}");
 }
+
+#[test]
+fn test_type_alias_uint_scalar() {
+    // Simplest case: alias for a UInt<W> primitive, used as a port type.
+    let source = r#"
+        module M
+          type Word = UInt<32>;
+          port a:   in  Word;
+          port out: out Word;
+          comb
+            out = a +% 32'd1;
+          end comb
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("input logic [31:0] a"),
+            "alias should expand to UInt<32> at the port: {sv}");
+    assert!(sv.contains("output logic [31:0] out"),
+            "alias should expand to UInt<32> at the output port: {sv}");
+}
+
+#[test]
+fn test_type_alias_struct() {
+    // Alias for a struct type. Use site must produce the same SV as the
+    // inline struct reference.
+    let source = r#"
+        struct Pair
+          lo: UInt<8>;
+          hi: UInt<8>;
+        end struct Pair
+        module M
+          type P = Pair;
+          port in_p:  in  P;
+          port out_lo: out UInt<8>;
+          comb
+            out_lo = in_p.lo;
+          end comb
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    // Aliased struct port should look identical to an inline Pair port.
+    assert!(sv.contains("in_p") && sv.contains("struct"),
+            "struct alias should expand at port site: {sv}");
+}
+
+#[test]
+fn test_type_alias_bus_parameterized_port() {
+    // Original motivation: alias a parameterized bus, use it on a port —
+    // SV emission should match the inline-parameterized form.
+    let source = r#"
+        bus Axi
+          param ADDR_W: const = 32;
+          v: out Bool;
+          addr: out UInt<ADDR_W>;
+        end bus Axi
+        module M
+          type Edge = Axi<ADDR_W=16>;
+          port m: initiator Edge;
+          comb
+            m.v = true;
+            m.addr = 16'd0;
+          end comb
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    // ADDR_W should expand to 16 via the alias, so the port carries
+    // [15:0] not [31:0].
+    assert!(sv.contains("output logic [15:0] m_addr")
+            || sv.contains("output logic [ADDR_W-1:0] m_addr"),
+            "bus alias with ADDR_W=16 override should produce 16-bit addr port: {sv}");
+}
+
+#[test]
+fn test_type_alias_chain() {
+    // Alias referencing an earlier alias.
+    let source = r#"
+        module M
+          type Byte = UInt<8>;
+          type Word = Byte;
+          port a:   in  Word;
+          port out: out Byte;
+          comb
+            out = a;
+          end comb
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("input logic [7:0] a"),
+            "chained alias should resolve through to UInt<8>: {sv}");
+    assert!(sv.contains("output logic [7:0] out"),
+            "chained alias should resolve through to UInt<8>: {sv}");
+}
+
+#[test]
+fn test_type_alias_undeclared_errors() {
+    // Reference to a type that was declared neither as an alias nor as a
+    // struct/enum/bus. Should error somewhere in the pipeline — at the
+    // alias resolver, in resolve, or in typecheck. (The exact stage isn't
+    // load-bearing; the contract is "compile fails with a clear msg".)
+    let source = r#"
+        module M
+          type Alias = Frobnitz;
+          port x: in Alias;
+        end module M
+    "#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    // Try the full pipeline; any stage erroring out is acceptable.
+    let pipeline_errors_out = match arch::type_alias::resolve_type_aliases(ast) {
+        Err(_) => true,
+        Ok(ast2) => match elaborate::elaborate(ast2) {
+            Err(_) => true,
+            Ok(ast3) => match resolve::resolve(&ast3) {
+                Err(_) => true,
+                Ok(symbols) => {
+                    let checker = TypeChecker::new(&symbols, &ast3);
+                    checker.check().is_err()
+                }
+            }
+        }
+    };
+    assert!(pipeline_errors_out,
+            "unknown type name 'Frobnitz' should error somewhere in the compile pipeline");
+}
+
+#[test]
+fn test_type_alias_circular_errors() {
+    // type A = B; type B = A; — must be detected as a cycle.
+    let source = r#"
+        module M
+          type A = B;
+          type B = A;
+          port x: in A;
+        end module M
+    "#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let r = arch::type_alias::resolve_type_aliases(ast);
+    assert!(r.is_err(), "circular alias should error: {r:?}");
+    let errs = r.unwrap_err();
+    let msg: String = errs.iter().map(|e| format!("{e:?}")).collect();
+    assert!(msg.to_lowercase().contains("circular") || msg.to_lowercase().contains("cycle")
+            || msg.to_lowercase().contains("recursive"),
+            "expected circular/cycle/recursive in diagnostic, got: {msg}");
+}

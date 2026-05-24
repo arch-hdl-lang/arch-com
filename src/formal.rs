@@ -1494,6 +1494,10 @@ impl<'a> FormalCtx<'a> {
                 ModuleBodyItem::Inst(_) | ModuleBodyItem::Thread(_) => {
                     // Already handled above
                 }
+                ModuleBodyItem::TypeAlias(_) => {
+                    // Type aliases are inlined by `type_alias::resolve_type_aliases`
+                    // before formal codegen runs; they should never reach here.
+                }
             }
         }
 
