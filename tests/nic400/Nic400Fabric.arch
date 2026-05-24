@@ -19,16 +19,26 @@ module Nic400Fabric
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Async, Low>;
 
-  // System-facing master buses (one per master, parent perspective is target).
-  port m: target Vec<BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH,
-                              ID_W=MASTER_ID_W, READ=1, WRITE=0>, NUM_MASTERS>;
-  // System-facing slave buses.
-  port s: initiator Vec<BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH,
-                                  ID_W=SLAVE_ID_W, READ=1, WRITE=0>, NUM_SLAVES>;
+  // Two parameterized bus shapes — fully spelled out at top-level so the
+  // deeply-nested `Vec<Vec<BusAxi4<...>, N>, M>` form doesn't fight the
+  // grammar at use sites. Every port and wire below references the alias
+  // as a bare identifier; the alias resolver inlines the full type before
+  // any downstream pass sees it. Master-side IDs are MASTER_ID_W wide;
+  // slave-side IDs are SLAVE_ID_W = MASTER_ID_W + ceil(log2(NUM_MASTERS))
+  // wide, since the MasterPort prepends the master_idx prefix.
+  type MasterBus = BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH,
+                            ID_W=MASTER_ID_W, READ=1, WRITE=0>;
+  type SlaveBus  = BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH,
+                            ID_W=SLAVE_ID_W,  READ=1, WRITE=0>;
 
-  // 2D bus wire: edges[i][j] is the master_i ↔ slave_j edge bus.
-  // M × N = total edges.
-  wire edges: Vec<Vec<BusAxi4, NUM_SLAVES>, NUM_MASTERS>;
+  // System-facing master buses (parent perspective is target).
+  port m: target Vec<MasterBus, NUM_MASTERS>;
+  // System-facing slave buses.
+  port s: initiator Vec<SlaveBus, NUM_SLAVES>;
+
+  // 2D bus wire: edges[i][j] is the master_i ↔ slave_j edge bus, already
+  // carrying the prefixed (slave-perspective) ID.
+  wire edges: Vec<Vec<SlaveBus, NUM_SLAVES>, NUM_MASTERS>;
 
   // ── M MasterPort instances ────────────────────────────────────────────
   generate_for i in 0..NUM_MASTERS-1
