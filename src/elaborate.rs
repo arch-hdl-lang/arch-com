@@ -778,6 +778,7 @@ fn expand_generate_for(
     let has_thread_items = gf.items.iter().any(|item| matches!(item, GenItem::Thread(_)));
     let has_connect_items = gf.items.iter().any(|item| matches!(item, GenItem::TlmConnect(_)));
     let has_inst_items = gf.items.iter().any(|item| matches!(item, GenItem::Inst(_)));
+    let has_wire_items = gf.items.iter().any(|item| matches!(item, GenItem::Wire(_)));
     let range_depends_on_param = expr_references_param(&gf.start, &param_names)
         || expr_references_param(&gf.end, &param_names);
 
@@ -795,7 +796,12 @@ fn expand_generate_for(
     //     port connections need per-iteration loop-var substitution to
     //     produce flat per-element wiring. Always-unroll insts is what
     //     makes the sim path work for `generate_for + inst`.
-    if range_depends_on_param && !has_port_items && !has_thread_items && !has_connect_items && !has_inst_items {
+    //   - wire items: same as inst — SV genvars can't introduce new
+    //     wire identifiers per iteration (would need hierarchical
+    //     `gen_i.w` access, which we don't want at the SV boundary).
+    if range_depends_on_param && !has_port_items && !has_thread_items
+        && !has_connect_items && !has_inst_items && !has_wire_items
+    {
         return Ok((
             Vec::new(),
             vec![ModuleBodyItem::Generate(GenerateDecl::For(gf))],
@@ -850,6 +856,7 @@ fn expand_generate_for(
                 GenItem::Assert(a) => body.push(ModuleBodyItem::Assert(subst_assert(a, var, i))),
                 GenItem::Seq(rb)  => body.push(ModuleBodyItem::RegBlock(subst_reg_block(rb, var, i))),
                 GenItem::Comb(cb) => body.push(ModuleBodyItem::CombBlock(subst_comb_block(cb, var, i))),
+                GenItem::Wire(w)  => body.push(ModuleBodyItem::WireDecl(subst_wire_decl(w, var, i))),
             }
         }
     }
@@ -1056,10 +1063,12 @@ fn expand_generate_if(
             GenItem::TlmConnect(c) => body.push(ModuleBodyItem::TlmConnect(c)),
             GenItem::Thread(t) => body.push(ModuleBodyItem::Thread(t)),
             GenItem::Assert(a) => body.push(ModuleBodyItem::Assert(a)),
-            // No loop var in generate_if, so seq/comb pass through verbatim.
-            // Reading B's write-target rule only applies to generate_for.
+            // No loop var in generate_if, so seq/comb/wire pass through
+            // verbatim. Reading B's write-target rule only applies to
+            // generate_for.
             GenItem::Seq(rb)  => body.push(ModuleBodyItem::RegBlock(rb)),
             GenItem::Comb(cb) => body.push(ModuleBodyItem::CombBlock(cb)),
+            GenItem::Wire(w)  => body.push(ModuleBodyItem::WireDecl(w)),
         }
     }
     Ok((ports, body))
@@ -1537,6 +1546,28 @@ fn subst_expr_names(expr: Expr, var: &str, val: i64) -> Expr {
 
 fn subst_ident(ident: &Ident, var: &str, val: i64) -> Ident {
     Ident { name: subst_name(&ident.name, var, val), span: ident.span }
+}
+
+/// Substitute the loop var into a wire declaration: rename `w_i` →
+/// `w_<val>` (via subst_ident → subst_name's suffix rewrite), and walk
+/// any expressions in the wire type (e.g. `Vec<T, N-i>` where N-i references
+/// the loop var). Bus-wire params and Vec count expressions all flow
+/// through subst_expr / subst_type_expr.
+fn subst_wire_decl(w: &WireDecl, var: &str, val: i64) -> WireDecl {
+    WireDecl {
+        name: subst_ident(&w.name, var, val),
+        ty: subst_type_expr(&w.ty, var, val),
+        unpacked: w.unpacked,
+        unpacked_ascending: w.unpacked_ascending,
+        bus_params: w.bus_params.iter()
+            .map(|pa| ParamAssign {
+                name: pa.name.clone(),
+                value: subst_expr(pa.value.clone(), var, val),
+                ty: pa.ty.clone(),
+            })
+            .collect(),
+        span: w.span,
+    }
 }
 
 fn subst_assert(a: &AssertDecl, var: &str, val: i64) -> AssertDecl {

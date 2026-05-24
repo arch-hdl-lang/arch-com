@@ -357,6 +357,19 @@ fn substitute_in_gen_items(
             GenItem::Assert(a) => substitute_in_expr(&mut a.expr, aliases, errors),
             GenItem::Seq(b) => substitute_in_stmts(&mut b.stmts, aliases, errors),
             GenItem::Comb(b) => substitute_in_stmts(&mut b.stmts, aliases, errors),
+            GenItem::Wire(w) => {
+                // Substitute any alias references in the wire's type tree
+                // and its bus_params overrides. Same treatment as a
+                // top-level WireDecl (see the ModuleBodyItem::WireDecl arm
+                // above), minus the alias-bus-param propagation — for
+                // generate_for-of-wire we keep things simple: the wire
+                // type is taken verbatim from source and substituted by
+                // subst_wire_decl per iteration in elaborate.rs.
+                substitute_type(&mut w.ty, aliases, errors);
+                for pa in w.bus_params.iter_mut() {
+                    substitute_in_expr(&mut pa.value, aliases, errors);
+                }
+            }
             GenItem::Thread(_) | GenItem::TlmConnect(_) => {}
         }
     }

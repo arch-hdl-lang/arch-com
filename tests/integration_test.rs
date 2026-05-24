@@ -16205,3 +16205,101 @@ fn test_type_alias_circular_errors() {
             || msg.to_lowercase().contains("recursive"),
             "expected circular/cycle/recursive in diagnostic, got: {msg}");
 }
+
+#[test]
+fn test_generate_for_wire_decls() {
+    // `wire w_i: T;` inside `generate_for i in 0..N-1` unrolls at
+    // elaboration: each iteration substitutes the loop var into the
+    // wire name (`w_i` → `w_0`, `w_1`, ..., `w_{N-1}`) and emits a
+    // distinct wire per iteration.
+    let source = "
+        module M
+          param N: const = 3;
+          port out: out UInt<8>;
+          generate_for i in 0..N-1
+            wire w_i: UInt<8>;
+          end generate_for
+          comb
+            out = w_0 +% w_1 +% w_2;
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    // Three flat wires named w_0, w_1, w_2 — one per iteration value.
+    for i in 0..3 {
+        assert!(sv.contains(&format!("logic [7:0] w_{i};")),
+                "missing `logic [7:0] w_{i};` in SV:\n{sv}");
+    }
+}
+
+#[test]
+fn test_generate_for_wire_inst_loopback() {
+    // Combined wire + inst inside the same generate_for. The inst
+    // drives the wire from this iteration; downstream module-scope
+    // code reads the per-iteration wire by its substituted flat name.
+    let source = "
+        module Doubler
+          port a: in  UInt<8>;
+          port b: out UInt<8>;
+          comb
+            b = a +% a;
+          end comb
+        end module Doubler
+
+        module Top
+          param N: const = 2;
+          port in0:  in  UInt<8>;
+          port in1:  in  UInt<8>;
+          port out0: out UInt<8>;
+          port out1: out UInt<8>;
+          generate_for i in 0..N-1
+            wire stage_i: UInt<8>;
+          end generate_for
+          inst d0: Doubler a <- in0; b -> stage_0; end inst d0
+          inst d1: Doubler a <- in1; b -> stage_1; end inst d1
+          comb
+            out0 = stage_0;
+            out1 = stage_1;
+          end comb
+        end module Top
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("logic [7:0] stage_0;"),
+            "missing `logic [7:0] stage_0;` (wire from generate_for iter 0):\n{sv}");
+    assert!(sv.contains("logic [7:0] stage_1;"),
+            "missing `logic [7:0] stage_1;` (wire from generate_for iter 1):\n{sv}");
+    assert!(sv.contains("assign out0 = stage_0;"),
+            "expected `out0 = stage_0` read of per-iter wire:\n{sv}");
+    assert!(sv.contains("assign out1 = stage_1;"),
+            "expected `out1 = stage_1` read of per-iter wire:\n{sv}");
+}
+
+#[test]
+fn test_generate_for_wire_param_size() {
+    // The wire's type may reference a module param (independent of the
+    // loop variable). Substitution should leave that param ident
+    // intact — only the loop var gets rewritten.
+    let source = "
+        module M
+          param N: const = 2;
+          param W: const = 16;
+          port out_lo: out UInt<W>;
+          port out_hi: out UInt<W>;
+          generate_for i in 0..N-1
+            wire bus_i: UInt<W>;
+          end generate_for
+          comb
+            bus_0 = 16'd0;
+            bus_1 = 16'd0;
+            out_lo = bus_0;
+            out_hi = bus_1;
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    // Wire width should fold to 16 bits via the W param's default.
+    assert!(sv.contains("logic [W-1:0] bus_0;") || sv.contains("logic [15:0] bus_0;"),
+            "missing `logic [W-1:0] bus_0;` (param-driven width wire):\n{sv}");
+    assert!(sv.contains("logic [W-1:0] bus_1;") || sv.contains("logic [15:0] bus_1;"),
+            "missing `logic [W-1:0] bus_1;` (param-driven width wire):\n{sv}");
+}

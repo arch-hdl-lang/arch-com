@@ -3373,13 +3373,23 @@ impl Parser {
                 Some(TokenKind::Comb) => {
                     items.push(GenItem::Comb(self.parse_comb_block()?));
                 }
+                // `wire w_i: T;` inside generate_for — the loop var is
+                // substituted into the wire name (e.g. `w_i` → `w_0`,
+                // `w_1`, …) at elaboration time, producing one wire per
+                // iteration. Forces elaboration-time unrolling of the
+                // surrounding `generate_for` (same as for inst items),
+                // since SV genvars can't introduce new wire identifiers
+                // per iteration.
+                Some(TokenKind::Wire) => {
+                    items.push(GenItem::Wire(self.parse_wire_decl()?));
+                }
                 // Module-scope declarations (port / reg / let) are not allowed
                 // inside generate_for — the body is for per-iteration members
-                // (insts, seq / comb, threads, asserts). Declarations go at
-                // module scope; use Vec types for per-element access. This
-                // keeps the SV boundary from sprouting `_0 / _1 / ... / _N-1`
-                // scalar port names for what is naturally a single indexed
-                // signal.
+                // (insts, seq / comb, threads, asserts, wires). Declarations
+                // go at module scope; use Vec types for per-element access.
+                // This keeps the SV boundary from sprouting `_0 / _1 / ... /
+                // _N-1` scalar port names for what is naturally a single
+                // indexed signal.
                 Some(tok @ (TokenKind::Port | TokenKind::Reg | TokenKind::Let)) => {
                     let (kw, hint) = match tok {
                         TokenKind::Port => ("port",
@@ -3403,7 +3413,7 @@ impl Parser {
                 }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "inst, connect, thread, seq, comb, assert, or cover",
+                        "inst, connect, thread, seq, comb, wire, assert, or cover",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -3427,9 +3437,10 @@ impl Parser {
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
                     items.push(GenItem::Assert(self.parse_assert_decl()?));
                 }
+                Some(TokenKind::Wire) => items.push(GenItem::Wire(self.parse_wire_decl()?)),
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "port, inst, connect, thread, assert, or cover",
+                        "port, inst, connect, thread, wire, assert, or cover",
                         &other.to_string(),
                         self.peek_span(),
                     ));

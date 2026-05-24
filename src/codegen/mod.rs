@@ -2659,6 +2659,8 @@ impl<'a> Codegen<'a> {
                         GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
                         GenItem::Seq(_) | GenItem::Comb(_) => unreachable!(
                             "seq/comb GenItems should have been unrolled by elaboration"),
+                        GenItem::Wire(_) => unreachable!(
+                            "wire GenItems should have been unrolled by elaboration"),
                         GenItem::Assert(_) => {
                             // SVA inside generate for: not yet supported in SV codegen (SVA needs static clock ref)
                         }
@@ -2679,6 +2681,8 @@ impl<'a> Codegen<'a> {
                         GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
                         GenItem::Seq(_) | GenItem::Comb(_) => unreachable!(
                             "seq/comb GenItems should have been lifted by elaboration"),
+                        GenItem::Wire(_) => unreachable!(
+                            "wire GenItems should have been unrolled by elaboration"),
                         GenItem::Assert(_) => {}
                     }
                 }
@@ -2694,6 +2698,8 @@ impl<'a> Codegen<'a> {
                             GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
                             GenItem::Seq(_) | GenItem::Comb(_) => unreachable!(
                                 "seq/comb GenItems should have been lifted by elaboration"),
+                            GenItem::Wire(_) => unreachable!(
+                                "wire GenItems should have been unrolled by elaboration"),
                             GenItem::Assert(_) => {}
                         }
                     }
