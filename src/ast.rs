@@ -505,6 +505,15 @@ pub enum GenItem {
     Assert(AssertDecl),
     Seq(RegBlock),
     Comb(CombBlock),
+    /// `wire w: T;` inside a `generate_for` body. The loop variable is
+    /// substituted into the wire name (and any expressions in the type)
+    /// at elaboration time, producing one wire per iteration with
+    /// distinct flat names (`w_0`, `w_1`, ..., `w_{N-1}`). Like inst
+    /// items, presence of a wire item forces the generate_for to
+    /// elaboration-time unroll (no SV-genvar form is supported, because
+    /// SV genvars can't introduce new wire identifiers per iteration
+    /// without hierarchical `gen_i.w` access — which we don't want).
+    Wire(WireDecl),
 }
 
 /// `generate for VAR in START..END ... end generate for VAR`
