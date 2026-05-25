@@ -4649,6 +4649,65 @@ fn partition_thread_body(
     partition_thread_body_impl(body, span, cnt_width, None)
 }
 
+/// Validate the body of a `do … until cond;` statement.
+///
+/// `do … until` is a SINGLE-STATE hold construct: the body's comb/seq
+/// assigns fire every cycle while the FSM is parked in this state, and
+/// the FSM advances when `cond` becomes true. It is *not* a loop; for a
+/// real loop use `for c in S..E { ... }` (which generates a `_loop_cnt`
+/// register and proper back-edge transitions).
+///
+/// Bodies are restricted to `CombAssign`, `SeqAssign`, `IfElse`, and `Log`.
+/// Any other `ThreadStmt` variant — `Lock`, `For`, `WaitUntil`,
+/// `WaitUntilMealy`, `WaitCycles`, `ForkJoin`, nested `DoUntil`, `Return`,
+/// `ForkTlmAssign`, `JoinAll` — cannot be lowered as a hold-state and was
+/// historically silently dropped, producing FSMs that miscompiled to an
+/// infinite-loop (see issue #410). Reject those constructs with a precise
+/// error pointing at the offending inner statement.
+///
+/// `IfElse` is allowed at the top level but its own then/else bodies are
+/// recursively constrained the same way — a nested `wait` inside an `if`
+/// inside a `do … until` would otherwise be silently dropped by
+/// `thread_if_to_fsm_stmts`.
+fn disallow_nested_control_in_do_until(
+    body: &[ThreadStmt],
+    do_span: Span,
+) -> Result<(), CompileError> {
+    for s in body {
+        let bad = match s {
+            ThreadStmt::CombAssign(_)
+            | ThreadStmt::SeqAssign(_)
+            | ThreadStmt::Log(_) => None,
+            ThreadStmt::IfElse(ie) => {
+                disallow_nested_control_in_do_until(&ie.then_stmts, do_span)?;
+                disallow_nested_control_in_do_until(&ie.else_stmts, do_span)?;
+                None
+            }
+            ThreadStmt::Lock { .. } => Some("`lock`"),
+            ThreadStmt::For { .. } => Some("`for`"),
+            ThreadStmt::WaitUntil(..) => Some("`wait until`"),
+            ThreadStmt::WaitUntilMealy(..) => Some("`wait 0+ cycle until`"),
+            ThreadStmt::WaitCycles(..) => Some("`wait N cycle`"),
+            ThreadStmt::ForkJoin(..) => Some("`fork`/`join`"),
+            ThreadStmt::DoUntil { .. } => Some("a nested `do ... until`"),
+            ThreadStmt::Return(..) => Some("`return`"),
+            ThreadStmt::ForkTlmAssign(_) => Some("a TLM `fork` call"),
+            ThreadStmt::JoinAll(_) => Some("`join all`"),
+        };
+        if let Some(what) = bad {
+            return Err(CompileError::general(
+                &format!(
+                    "{} is not allowed inside `do ... until` — that construct is a single-cycle-per-iteration hold state (drive comb + seq while waiting for the exit condition), not a loop. \
+                    Use `for c in 0..N-1 ... end for` for a bounded iteration, or split the work into multiple `wait until` / `do ... until` statements at thread top level.",
+                    what,
+                ),
+                thread_stmt_span(s).merge(do_span),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn partition_tlm_target_thread_body(
     body: &[ThreadStmt],
     span: Span,
@@ -4751,7 +4810,14 @@ fn partition_thread_body_impl(
                                 if let Some(s) = seq_if { do_seq.push(s); }
                             }
                             ThreadStmt::Log(l) => do_seq.push(Stmt::Log(l.clone())),
-                            _ => {}
+                            _ => {
+                                // Unreachable: the caller (Mealy-fusion path)
+                                // routes through partition_thread_body's
+                                // `DoUntil` arm, which calls
+                                // `disallow_nested_control_in_do_until`
+                                // before reaching here.
+                                unreachable!("Mealy-fused do..until body contained an unexpected statement");
+                            }
                         }
                     }
                     let gated_comb = if do_comb.is_empty() {
@@ -4792,7 +4858,14 @@ fn partition_thread_body_impl(
 
                 match next {
                     // Form (a): direct do/until.
-                    Some(ThreadStmt::DoUntil { body: do_body, cond: exit_cond, span: _ }) => {
+                    Some(ThreadStmt::DoUntil { body: do_body, cond: exit_cond, span: do_sp }) => {
+                        // Same nested-control restriction as the standalone
+                        // `DoUntil` arm of `partition_thread_body_impl`: the
+                        // Mealy-fused state is still a single-state hold,
+                        // and any nested wait/lock/for/etc. inside the do-body
+                        // would be silently dropped by `build_fused` (issue
+                        // #410).
+                        disallow_nested_control_in_do_until(do_body, *do_sp)?;
                         flush();
                         let (gated_comb, do_seq, fused_cond) = build_fused(cond, *sp, do_body, exit_cond);
                         states.push(ThreadFsmState {
@@ -5160,7 +5233,17 @@ fn partition_thread_body_impl(
                 let lock_states = lower_thread_lock(&resource.name, body, *span, cnt_width)?;
                 states.extend(lock_states);
             }
-            ThreadStmt::DoUntil { body, cond, span: _ } => {
+            ThreadStmt::DoUntil { body, cond, span: do_sp } => {
+                // `do { … } until cond;` is a SINGLE-STATE hold: the body's
+                // comb/seq drives fire every cycle while waiting for `cond`.
+                // It is NOT a loop construct. Nested control flow inside the
+                // body (lock, for, wait, fork, do-until, return) cannot be
+                // lowered as a hold-state and was historically silently
+                // dropped — producing FSMs that looked plausible but ran
+                // forever (issue #410). Reject those constructs up-front so
+                // the user sees a precise error pointing at the offending
+                // inner statement instead of an infinite-loop miscompile.
+                disallow_nested_control_in_do_until(body, *do_sp)?;
                 // Flush pending assigns into a prior state
                 if !cur_comb.is_empty() || !cur_seq.is_empty() {
                     states.push(ThreadFsmState {
@@ -5192,8 +5275,9 @@ fn partition_thread_body_impl(
                             do_seq.push(Stmt::Log(l.clone()));
                         }
                         _ => {
-                            // do..until body should only contain simple assigns
-                            // (no waits, forks, loops — those go in the outer thread)
+                            // Unreachable: disallow_nested_control_in_do_until above
+                            // already rejects every other ThreadStmt variant.
+                            unreachable!("do..until body contained an unexpected statement that should have been rejected");
                         }
                     }
                 }

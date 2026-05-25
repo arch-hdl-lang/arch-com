@@ -1,0 +1,55 @@
+// Regression for issue #410: outer `do BODY until cond;` at thread top
+// level used to silently lower to an infinite-loop FSM whenever the body
+// contained anything that the lowering's `DoUntil` arm could not encode
+// as a hold-state — `lock`, `for`, `wait*`, `fork`/`join`, nested
+// `do…until`, or `return`. Those statements were dropped on the floor,
+// leaving the surrounding seq assigns to fire every cycle for the
+// lifetime of the FSM.
+//
+// Resolution: `do … until` is now a *single-state* hold (its documented
+// shape — "drive comb + seq while waiting; advance when cond is true"),
+// and the elaborator rejects nested control flow in its body with a
+// pointer to `for c in S..E … end for` for real loops.
+//
+// This file is therefore an **expected-failure** test: `arch check` must
+// report a diagnostic that mentions both ``lock`` and ``do ... until``.
+// The integration tests `test_do_until_rejects_nested_lock`,
+// `test_do_until_rejects_nested_wait`, and `test_do_until_rejects_nested_for`
+// in `tests/integration_test.rs` are the authoritative regression
+// coverage — this .arch file is preserved for human-readable context.
+module DoUntilRepro
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port start:       in Bool;
+  port should_loop: in Bool;
+  port body_count: out UInt<8>;
+  port lock_drove: out Bool;
+  port done:       out Bool;
+
+  resource lk: mutex<priority>;
+  reg body_count_r: UInt<8> reset rst => 0;
+  reg lock_drove_r: Bool reset rst => false;
+  reg done_r:       Bool reset rst => false;
+
+  thread T on clk rising, rst low
+    default comb
+      body_count = body_count_r;
+      lock_drove = lock_drove_r;
+      done       = done_r;
+    end default
+    wait 0+ cycle until start;
+    // The outer `do … until` body contains a nested `lock` (and a seq
+    // assign). Pre-#410 this lowered to a single hold-state that ran the
+    // seq assigns forever. The compiler now rejects with a diagnostic
+    // that points at this `do` token.
+    do
+      lock lk
+        do
+        until true;
+      end lock lk
+      lock_drove_r <= true;
+      body_count_r <= (body_count_r + 1).trunc<8>();
+    until not should_loop;
+    done_r <= true;
+  end thread T
+end module DoUntilRepro
