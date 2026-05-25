@@ -10229,6 +10229,137 @@ fn test_thread_with_do_until_only_is_accepted() {
 }
 
 #[test]
+fn test_do_until_rejects_nested_lock() {
+    // Regression for issue #410: a `do … until` body that contained a
+    // nested `lock` (or `for` / `wait` / `fork` / `do…until` / `return`)
+    // was previously silently dropped at lowering and produced an
+    // infinite-loop FSM. The elaborator must now reject this with a
+    // diagnostic pointing at the offending inner construct and at the
+    // enclosing `do … until`.
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port start:       in Bool;
+          port should_loop: in Bool;
+          port body_count: out UInt<8>;
+          resource lk: mutex<priority>;
+          reg body_count_r: UInt<8> reset rst => 0;
+          thread T on clk rising, rst low
+            default comb
+              body_count = body_count_r;
+            end default
+            wait until start;
+            do
+              lock lk
+                do
+                until true;
+              end lock lk
+              body_count_r <= (body_count_r + 1).trunc<8>();
+            until not should_loop;
+          end thread T
+        end module M
+    "#;
+    let tokens = arch::lexer::tokenize(source).expect("lex");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let err = arch::elaborate::lower_threads(ast).expect_err("expected lowering error");
+    let msg = err.iter().map(|e| format!("{e:?}")).collect::<String>();
+    assert!(msg.contains("`lock`") && msg.contains("`do ... until`"),
+            "expected do-until-rejects-lock diagnostic, got: {msg}");
+}
+
+#[test]
+fn test_do_until_rejects_nested_wait() {
+    // Companion to the lock case: a `do … until` body containing a
+    // `wait until` must also be rejected — the wait cannot lower as
+    // a hold-state body.
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port go: in Bool;
+          port hit: in Bool;
+          port reg flag: out Bool reset rst => false;
+          thread T on clk rising, rst low
+            do
+              wait until hit;
+              flag <= true;
+            until go;
+          end thread T
+        end module M
+    "#;
+    let tokens = arch::lexer::tokenize(source).expect("lex");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let err = arch::elaborate::lower_threads(ast).expect_err("expected lowering error");
+    let msg = err.iter().map(|e| format!("{e:?}")).collect::<String>();
+    assert!(msg.contains("`wait until`") && msg.contains("`do ... until`"),
+            "expected do-until-rejects-nested-wait diagnostic, got: {msg}");
+}
+
+#[test]
+fn test_do_until_rejects_nested_for() {
+    // `for` inside `do … until` body — same silent-drop trap pre-#410.
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port go: in Bool;
+          port done: in Bool;
+          port reg ctr: out UInt<8> reset rst => 0;
+          thread T on clk rising, rst low
+            wait until go;
+            do
+              for i in 0..3
+                ctr <= (ctr + 1).trunc<8>();
+              end for
+            until done;
+          end thread T
+        end module M
+    "#;
+    let tokens = arch::lexer::tokenize(source).expect("lex");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let err = arch::elaborate::lower_threads(ast).expect_err("expected lowering error");
+    let msg = err.iter().map(|e| format!("{e:?}")).collect::<String>();
+    assert!(msg.contains("`for`") && msg.contains("`do ... until`"),
+            "expected do-until-rejects-nested-for diagnostic, got: {msg}");
+}
+
+#[test]
+fn test_do_until_allows_nested_ifelse_with_simple_assigns() {
+    // Regression boundary: `if/else` inside a `do … until` body is fine
+    // as long as every branch contains only comb/seq assigns and `log`
+    // — i.e. nothing that would need a fresh FSM state. This keeps the
+    // legitimate per-cycle protocol-drive use case working.
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port go:   in Bool;
+          port pick: in Bool;
+          port done: in Bool;
+          port reg a: out Bool reset rst => false;
+          port reg b: out Bool reset rst => false;
+          thread T on clk rising, rst low
+            wait until go;
+            do
+              if pick
+                a <= true;
+              else
+                b <= true;
+              end if
+            until done;
+          end thread T
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("always_ff"),
+            "do/until with simple if/else body should compile:\n{sv}");
+}
+
+#[test]
 fn test_thread_wait_ifelse_fuses_dispatch_and_first_branch_action() {
     // Micro-architecture pattern from arch-ibex multdiv: a thread waits for
     // a request, dispatches on an opcode, then performs the first cycle of
