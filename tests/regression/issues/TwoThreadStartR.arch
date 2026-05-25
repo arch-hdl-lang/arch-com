@@ -1,0 +1,39 @@
+// Minimal repro for v4 attempt: two threads sharing a `start_r` reg.
+// Producer pulses start_r when an `req` input asserts; Consumer waits for
+// start_r and increments a counter on each wake.
+//
+// Expected: counter stays 0 until req is pulsed. At that point Consumer wakes
+// once, counter becomes 1.
+//
+// Suspected actual: Consumer wakes spuriously at reset release even though
+// start_r is reset to false.
+module TwoThreadStartR
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port req:  in Bool;
+  port count: out UInt<8>;
+
+  resource lk: mutex<priority>;
+  reg start_r: Bool reset rst => false;
+  reg count_r: UInt<8> reset rst => 0;
+
+  thread Producer on clk rising, rst low
+    default comb
+      // nothing
+    end default
+    wait 0+ cycle until req;
+    do
+      start_r <= true;
+    until true;
+    wait 1 cycle;
+    start_r <= false;
+  end thread Producer
+
+  thread Consumer on clk rising, rst low
+    default comb
+      count = count_r;
+    end default
+    wait until start_r;
+    count_r <= (count_r + 1).trunc<8>();
+  end thread Consumer
+end module TwoThreadStartR
