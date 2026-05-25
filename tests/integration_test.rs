@@ -16412,3 +16412,36 @@ fn test_generate_if_variant_discovery_with_default_branch_values() {
     assert!(sv.contains("module Inner__I_7"),
             "missing `Inner__I_7` variant (active branch's param):\n{sv}");
 }
+
+#[test]
+fn test_sim_nested_vec_reg_round_trips_all_cells() {
+    // Regression: `reg rf: Vec<Vec<UInt<W>, N>, M>;` used to emit
+    // `uint32_t _rf[M]` — silently truncating the inner dim to a
+    // 32-bit scalar. Reads/writes via `rf[i][j]` then aliased into
+    // bit-positions of the outer element. The fix recursively
+    // descends vec_array_info to emit the proper multi-dim C array
+    // (`uint32_t _rf[M][N]`) and updates the expr emitter to chain
+    // C subscripts for the inner index.
+    //
+    // This test writes 32 distinct values across an 8×4 Vec-of-Vec
+    // reg, then reads every cell back. Any silent aliasing would
+    // scramble values — a pre-fix run would fail the readback.
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/nested_vec_sim/Probe.arch")
+        .arg("--tb")
+        .arg("tests/nested_vec_sim/tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for nested_vec_sim probe");
+    assert!(out.status.success(),
+        "nested-Vec sim should compile + run\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS nested-Vec storage"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout));
+}

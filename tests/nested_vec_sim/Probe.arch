@@ -1,0 +1,25 @@
+module Probe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port idx_outer: in UInt<3>;
+  port idx_inner: in UInt<2>;
+  port wdata: in UInt<32>;
+  port we:    in Bool;
+  port out:   out UInt<32>;
+
+  // Nested Vec — the case PR #404 fixed: outer 8 × inner 4 × 32-bit.
+  // Pre-fix, the inner dim got silently dropped (`uint32_t _rf[8]`);
+  // the fix emits `uint32_t _rf[8][4]` and routes indexed access via
+  // C array subscript on both dims.
+  reg rf: Vec<Vec<UInt<32>, 4>, 8> reset rst => 0;
+
+  seq on clk rising
+    if we
+      rf[idx_outer][idx_inner] <= wdata;
+    end if
+  end seq
+
+  comb
+    out = rf[idx_outer][idx_inner];
+  end comb
+end module Probe
