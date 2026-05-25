@@ -4278,6 +4278,51 @@ fn test_wait_0plus_cycle_until_mealy_fusion() {
 }
 
 #[test]
+fn test_wait_0plus_cycle_until_mealy_fusion_gates_seq_assigns() {
+    // Regression for issue #412: the Mealy-fusion lowering for
+    //   wait 0+ cycle until X;
+    //   do
+    //     <seq>r <= value;
+    //   until Y;
+    // must gate the do-body's seq assigns by X, just like it already
+    // gates the comb assigns. Before the fix, only the comb side and
+    // the state transition were gated; the seq assigns fired every
+    // cycle the FSM sat in the wait state, regardless of X. That
+    // turned "pulse r when X asserts" into "drive r every cycle until
+    // X asserts".
+    let source = "
+        module Drv
+          port clk:   in  Clock<SysDomain>;
+          port rst:   in  Reset<Async, Low>;
+          port go:    in  Bool;
+          port done:  in  Bool;
+          reg started: Bool reset rst => false;
+          thread T on clk rising, rst low
+            default comb
+            end default
+            wait 0+ cycle until go;
+            do
+              started <= true;
+            until done;
+          end thread T
+        end module Drv
+    ";
+    let sv = compile_to_sv(source);
+    // The seq assign for `started` must appear under an `if (go)` guard.
+    // Find the assignment to `_n_started` (or `started <=` in SV) and
+    // verify it sits within the `if (go)` block. Search for the gate
+    // followed by the assignment within a few lines.
+    // Generated SV uses `if (go) begin ... started <= 1'b1 ... end`.
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        trimmed.contains("if (go) begin started <= 1'b1")
+            || trimmed.contains("if (go) started <= 1'b1"),
+        "expected do-body seq assign `started <= true` to be wrapped in `if (go)` \
+         (issue #412 Mealy-fusion seq-gating). Got SV:\n{sv}",
+    );
+}
+
+#[test]
 fn test_wait_0plus_requires_immediate_do_until() {
     // The Mealy fusion only handles `wait 0+ cycle until X;` followed
     // immediately by `do ... until ...;` (with or without a wrapping

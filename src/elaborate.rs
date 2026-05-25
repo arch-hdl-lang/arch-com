@@ -4831,6 +4831,24 @@ fn partition_thread_body_impl(
                             span: sp,
                         })]
                     };
+                    // Issue #412: seq assigns from the do-body must also be
+                    // gated by the Mealy wake condition. Without this gate the
+                    // FSM is sitting in S0 holding for `cond`, but every cycle
+                    // it fires the do-body's reg writes — turning what the
+                    // user wrote as "pulse start_r when req asserts" into
+                    // "drive start_r every cycle until req asserts". The
+                    // comb stmts above are already gated; mirror that here.
+                    let gated_seq = if do_seq.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![Stmt::IfElse(IfElseOf {
+                            cond: cond.clone(),
+                            then_stmts: do_seq,
+                            else_stmts: Vec::new(),
+                            unique: false,
+                            span: sp,
+                        })]
+                    };
                     let fused_cond = Expr::new(
                         ExprKind::Binary(
                             BinOp::And,
@@ -4839,7 +4857,7 @@ fn partition_thread_body_impl(
                         ),
                         sp,
                     );
-                    (gated_comb, do_seq, fused_cond)
+                    (gated_comb, gated_seq, fused_cond)
                 }
 
                 // Flush any pending assigns first.
