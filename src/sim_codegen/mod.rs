@@ -1759,11 +1759,23 @@ fn cpp_field_decl(name: &str, ty: &TypeExpr, params: &[ParamDecl]) -> String {
 }
 
 /// If `ty` is Vec<T, N>, return (elem_cpp_type, count_string).
+///
+/// Nested Vecs (e.g. `Vec<Vec<UInt<32>, 4>, 8>`) recurse: the innermost
+/// non-Vec element type is returned as `elem_cpp_type`, and the count
+/// string is the C-array dimension chain in source order separated by
+/// `"]["` so a caller emitting `<elem>[<count>]` ends up with the
+/// correct multi-dim C array (`uint32_t name[8][4]`).
 fn vec_array_info(ty: &TypeExpr) -> Option<(String, String)> {
     if let TypeExpr::Vec(elem, count_expr) = ty {
-        let elem_type = cpp_internal_type(elem);
-        let count_str = eval_const_expr(count_expr).to_string();
-        Some((elem_type, count_str))
+        let outer_count = eval_const_expr(count_expr).to_string();
+        // Recursively descend nested Vecs to gather inner dimensions.
+        if let Some((inner_elem, inner_dims)) = vec_array_info(elem) {
+            Some((inner_elem, format!("{outer_count}][{inner_dims}")))
+        } else {
+            // Innermost level — element is a scalar (UInt/SInt/Bool/Named).
+            let elem_type = cpp_internal_type(elem);
+            Some((elem_type, outer_count))
+        }
     } else {
         None
     }
@@ -1912,9 +1924,14 @@ fn eval_const_expr_with_params_seen(
 /// surrounding stack on memcpy/index).
 fn vec_array_info_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> Option<(String, String)> {
     if let TypeExpr::Vec(elem, count_expr) = ty {
-        let elem_type = cpp_internal_type(elem);
-        let count_str = eval_const_expr_with_params(count_expr, params).to_string();
-        Some((elem_type, count_str))
+        let outer_count = eval_const_expr_with_params(count_expr, params).to_string();
+        // Recursively descend nested Vecs — see vec_array_info docs.
+        if let Some((inner_elem, inner_dims)) = vec_array_info_with_params(elem, params) {
+            Some((inner_elem, format!("{outer_count}][{inner_dims}")))
+        } else {
+            let elem_type = cpp_internal_type_with_params(elem, params);
+            Some((elem_type, outer_count))
+        }
     } else {
         None
     }
@@ -4725,18 +4742,30 @@ impl<'a> SimCodegen<'a> {
             .collect();
         vec_reg_names.extend(vec_wire_names.iter().cloned());
 
-        // 2D Vec names (today: `wire edges: Vec<Vec<Bus,N>,M>`). Outer
-        // indexing returns another Vec, so the inner subscript must stay
-        // as C array indexing instead of bit-extraction.
+        // 2D Vec names — outer indexing returns another Vec, so the inner
+        // subscript must stay as C array indexing instead of bit-extraction.
+        // Covers:
+        //   - `wire edges: Vec<Vec<Bus,N>,M>;` (the 2D bus wire case from PR #394)
+        //   - `reg rf: Vec<Vec<UInt<W>,N>,M>;` (nested-Vec regs — the case
+        //     this PR newly handles, paired with the recursive
+        //     `vec_array_info` fix that emits `uint32_t _rf[M][N]` rather
+        //     than truncating the inner dim to a scalar)
+        //   - same shape for wires whose elem is a non-bus Vec (e.g.
+        //     `Vec<Vec<UInt<W>, N>, M>`)
         let vec_2d_names: HashSet<String> = m.body.iter()
-            .filter_map(|i| if let ModuleBodyItem::WireDecl(w) = i {
-                if let TypeExpr::Vec(elem, _) = &w.ty {
+            .filter_map(|i| {
+                let (name, ty) = match i {
+                    ModuleBodyItem::WireDecl(w) => (&w.name.name, &w.ty),
+                    ModuleBodyItem::RegDecl(r)  => (&r.name.name, &r.ty),
+                    _ => return None,
+                };
+                if let TypeExpr::Vec(elem, _) = ty {
                     if matches!(elem.as_ref(), TypeExpr::Vec(_, _)) {
-                        return Some(w.name.name.clone());
+                        return Some(name.clone());
                     }
                 }
                 None
-            } else { None })
+            })
             .collect();
 
         // D2 Vec-of-bus port array members: for `port chans: Vec<Bus, N>`,
@@ -6469,7 +6498,24 @@ impl<'a> SimCodegen<'a> {
                         if vec_reg_names.contains(*reg_name) {
                             let count = vec_sizes.get(*reg_name).copied().unwrap_or(0);
                             if count > 0 {
-                                cpp.push_str(&format!("    for (size_t _i = 0; _i < {count}; ++_i) {{ _{reg_name}[_i] = {init}; _n_{reg_name}[_i] = {init}; }}\n"));
+                                // For nested-Vec regs the inner dim is a C array,
+                                // not a scalar — a per-element scalar assign
+                                // `_rf[_i] = 0` fails to compile. memset zeroes
+                                // the whole storage in one shot regardless of
+                                // dimensionality; the spec's reset broadcast
+                                // semantics (scalar distributed across every
+                                // element) collapse to the zero case in
+                                // practice. For non-zero broadcasts, fall back
+                                // to the per-element-loop form (correct for
+                                // 1D, generates a compile error for nested-
+                                // Vec the user must resolve by writing the
+                                // reset by hand).
+                                if init == "0" {
+                                    cpp.push_str(&format!("    memset(_{reg_name}, 0, sizeof(_{reg_name}));\n"));
+                                    cpp.push_str(&format!("    memset(_n_{reg_name}, 0, sizeof(_n_{reg_name}));\n"));
+                                } else {
+                                    cpp.push_str(&format!("    for (size_t _i = 0; _i < {count}; ++_i) {{ _{reg_name}[_i] = {init}; _n_{reg_name}[_i] = {init}; }}\n"));
+                                }
                             }
                         } else if wide_names.contains(*reg_name) {
                             let bits = widths.get(*reg_name).copied().unwrap_or(0);
@@ -6528,7 +6574,13 @@ impl<'a> SimCodegen<'a> {
                         if vec_reg_names.contains(*reg_name) {
                             let count = vec_sizes.get(*reg_name).copied().unwrap_or(0);
                             if count > 0 {
-                                cpp.push_str(&format!("{}for (size_t _i = 0; _i < {count}; ++_i) {{ _n_{reg_name}[_i] = {init}; }}\n", "  ".repeat(base_indent + 1)));
+                                // memset for zero (covers nested-Vec); per-element
+                                // loop for non-zero broadcasts (works for 1D).
+                                if init == "0" {
+                                    cpp.push_str(&format!("{}memset(_n_{reg_name}, 0, sizeof(_n_{reg_name}));\n", "  ".repeat(base_indent + 1)));
+                                } else {
+                                    cpp.push_str(&format!("{}for (size_t _i = 0; _i < {count}; ++_i) {{ _n_{reg_name}[_i] = {init}; }}\n", "  ".repeat(base_indent + 1)));
+                                }
                             }
                         } else if wide_names.contains(*reg_name) {
                             let bits = widths.get(*reg_name).copied().unwrap_or(0);
