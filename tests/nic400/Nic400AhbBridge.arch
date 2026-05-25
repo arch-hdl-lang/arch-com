@@ -137,10 +137,34 @@ module Nic400AhbBridge
     end lock h_resp_lock
   end thread ReadXact
 
-  // ── Write thread ─────────────────────────────────────────────────────
-  // Wait for AHB write address phase. Issue AW; stall hready until aw_ready;
-  // then pulse hready=1 in the cycle when HWDATA is on the bus and forward
-  // it as a single AXI W beat; then wait for B and signal HRESP back to AHB.
+  // ── Write thread (multi-beat, fixed-length bursts) ──────────────────
+  // Sequence for an HBURST=INCR4 example:
+  //   • Cycle 0: AHB master drives NONSEQ+A0+HWRITE=1. Bridge sees this in
+  //     its wait state and enters AW phase with hready=0 (stall the AHB
+  //     master at the address phase boundary).
+  //   • Cycle K: aw_ready=1 captured; lock body exits. Bridge moves to a
+  //     1-cycle "gap" state with hready=1 (default comb). In this cycle the
+  //     master samples hready=1 and prepares to advance to data phase next.
+  //   • Cycle K+2 … K+5 (INCR4): bridge in W-loop iteration b=0..3. Each
+  //     iteration: hready=axi.w_ready, axi.w_valid=true, axi.w_data=
+  //     h.hwdata (combinational pickup of whatever the master placed),
+  //     axi.w_last = (b == axlen). On w_ready=1, lock body exits and the
+  //     loop advances to the next beat.
+  //   • Backpressure: when axi.w_ready=0, h.hready=0 — AHB master holds
+  //     the current HWDATA stable on the bus, AXI side is freely back-
+  //     pressurable.
+  //   • Cycle K+6 onward: B-wait. hready=axi.b_valid (i.e. 0 until B
+  //     arrives). When axi.b_valid=1, drive hready=1 + hresp from b_resp.
+  //
+  // INCR-undef (HBURST=1) is degraded to single-beat per AHB beat — the
+  // bridge can't know the length in advance and the v2 design doesn't
+  // include the HWDATA FIFO needed to buffer and forward the whole burst
+  // after detecting end-of-INCR. v3 will add the buffer.
+  //
+  // HBURST stable assumption: AHB-Lite requires the master to hold HBURST/
+  // HSIZE/HMASTLOCK stable across all beats of a burst. The bridge reads
+  // h.hburst directly in the loop bound and w_last comparison; no need to
+  // latch it.
   thread WriteXact on clk rising, rst low
     default comb
       h.hready  = true;
@@ -179,18 +203,24 @@ module Nic400AhbBridge
         axi.aw_prot   = h.hprot[2:0];
       until axi.aw_ready;
     end lock h_resp_lock
-    // W phase: now release AHB (hready=1) so HWDATA appears on the bus the
-    // next cycle. The lock body holds while we wait for w_ready, capturing
-    // HWDATA combinationally. STRB is fully on for single-beat at full width.
-    lock h_resp_lock
-      do
-        h.hready    = true;       // accept the data phase from AHB master
-        axi.w_valid = true;
-        axi.w_data  = h.hwdata;
-        axi.w_strb  = 15;
-        axi.w_last  = true;       // single-beat: every W beat is last
-      until axi.w_ready;
-    end lock h_resp_lock
+    // Spinup gap: AHB master needs one cycle after sampling hready=1 in the
+    // addr phase before HWDATA appears on the bus. Default comb in this state
+    // has h.hready=true (no lock), which is exactly what we need.
+    wait 1 cycle;
+    // W phase: forward axlen+1 beats. For HBURST=SINGLE, axlen=0 → loop
+    // iterates once. For HBURST=INCR4, axlen=3 → 4 iterations. STRB is fully
+    // on (every byte lane enabled at the full data width).
+    for b in 0..ahb_to_axi_len(h.hburst)
+      lock h_resp_lock
+        do
+          h.hready    = axi.w_ready;
+          axi.w_valid = true;
+          axi.w_data  = h.hwdata;
+          axi.w_strb  = 15;
+          axi.w_last  = (b == ahb_to_axi_len(h.hburst));
+        until axi.w_ready;
+      end lock h_resp_lock
+    end for
     // B phase: stall AHB, wait for B response, pulse hready=1 with HRESP.
     lock h_resp_lock
       do
