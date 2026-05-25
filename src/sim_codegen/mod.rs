@@ -1860,6 +1860,70 @@ fn eval_const_expr_with_params(expr: &Expr, params: &[ParamDecl]) -> u64 {
     eval_const_expr_with_params_seen(expr, params, &mut HashSet::new())
 }
 
+/// Return true if the module body contains a preserved `Generate(For)`
+/// block — these survive elaboration when the for-loop's range
+/// depends on a module param and the body is shape-stable. Sim codegen
+/// has no SV-genvar concept, so we run a local unroll pass before
+/// walking the body.
+fn module_body_has_preserved_generate(body: &[ModuleBodyItem]) -> bool {
+    body.iter().any(|it| matches!(it, ModuleBodyItem::Generate(GenerateDecl::For(_))))
+}
+
+/// Sim-local unroll for preserved `Generate(For)` blocks. Walks the
+/// module body, expands each `For` loop's `Inst` items (and any other
+/// generate-item kinds the elaborator's "shape-stable" gate may admit
+/// in the future) into flat ModuleBodyItem entries. The expansion is
+/// purely sim-local — the source AST is not mutated.
+///
+/// The elaborator's preservation gate only admits ranges that
+/// `eval_const_expr_with_params` can resolve against the parent module's
+/// param defaults. If we hit a range we can't evaluate, we leave the
+/// generate intact (which would silently drop the body in downstream
+/// sim walks); that case shouldn't occur given the preservation gate,
+/// but we'd rather notice it as a broken sim than crash.
+fn flatten_preserved_generates_for_sim(
+    body: &[ModuleBodyItem],
+    params: &[ParamDecl],
+) -> Vec<ModuleBodyItem> {
+    let mut out = Vec::with_capacity(body.len());
+    for item in body {
+        match item {
+            ModuleBodyItem::Generate(GenerateDecl::For(gf)) => {
+                // Resolve range bounds against the module's param defaults.
+                let start = eval_const_expr_with_params(&gf.start, params) as i64;
+                let end = eval_const_expr_with_params(&gf.end, params) as i64;
+                if end < start {
+                    // Empty range — emit nothing.
+                    continue;
+                }
+                let var = &gf.var.name;
+                for i in start..=end {
+                    for git in &gf.items {
+                        match git {
+                            GenItem::Inst(inst) => {
+                                out.push(ModuleBodyItem::Inst(crate::elaborate::subst_inst(inst, var, i)));
+                            }
+                            // The elaborator's preservation gate today
+                            // restricts preserved generate_for bodies
+                            // to inst-only (with shape-stable connections).
+                            // Other GenItem kinds would have been unrolled
+                            // at elaboration time. If a future expansion
+                            // of the gate admits more kinds, extend here.
+                            _ => {
+                                // Conservative: ignore (matches pre-#399
+                                // sim behavior for these kinds; the
+                                // elaborator wouldn't reach here today).
+                            }
+                        }
+                    }
+                }
+            }
+            other => out.push(other.clone()),
+        }
+    }
+    out
+}
+
 fn eval_const_expr_with_params_seen(
     expr: &Expr,
     params: &[ParamDecl],
@@ -4582,6 +4646,23 @@ impl<'a> SimCodegen<'a> {
     }
 
     pub(crate) fn gen_module(&self, m: &ModuleDecl, emit_debug: bool, debug_module_set: &std::collections::HashSet<String>) -> SimModel {
+        // Sim-local flatten: SV genvar `generate_for` blocks (which the
+        // elaborator preserves when an inst-bearing body's connections
+        // are shape-stable) have no sim equivalent. Unroll any preserved
+        // `Generate(For)` here so the rest of sim codegen sees a flat
+        // body — same shape it saw before issue #399 restored the
+        // SV-genvar optimization. The expansion is local to gen_module;
+        // the AST passed in by `generate()` is unchanged.
+        let m_flat_holder;
+        let m: &ModuleDecl = if module_body_has_preserved_generate(&m.body) {
+            let mut clone = m.clone();
+            clone.body = flatten_preserved_generates_for_sim(&m.body, &m.params);
+            m_flat_holder = clone;
+            &m_flat_holder
+        } else {
+            m
+        };
+
         let name = &m.name.name;
         let class = format!("V{name}");
         let enum_map = build_enum_map(self.symbols);

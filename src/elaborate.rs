@@ -81,6 +81,18 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
     // Step 3 — distinct effective-param sets and variant names per module
     let module_variants = compute_all_variants(&ast.items, &module_defaults, &inst_raw);
 
+    // Child-module port info: needed by expand_generate_for to detect
+    // Vec-of-bus child ports that disqualify the SV-genvar preservation.
+    // Built once for the whole file (mirrors the lower_tlm_connects map).
+    let child_module_ports: HashMap<String, Vec<PortDecl>> = ast.items.iter()
+        .filter_map(|item| match item {
+            Item::Module(m) => Some((m.name.name.clone(), m.ports.clone())),
+            Item::Fsm(f) => Some((f.name.name.clone(), f.ports.clone())),
+            Item::Pipeline(p) => Some((p.name.name.clone(), p.ports.clone())),
+            _ => None,
+        })
+        .collect();
+
     // Step 4 — elaborate and emit
     let mut new_items: Vec<Item> = Vec::new();
     let mut errors: Vec<CompileError> = Vec::new();
@@ -99,6 +111,7 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
                         variant_name,
                         &module_variants,
                         &module_defaults,
+                        &child_module_ports,
                     ) {
                         Ok(elaborated) => new_items.push(Item::Module(elaborated)),
                         Err(mut errs) => errors.append(&mut errs),
@@ -324,7 +337,13 @@ fn elaborate_module_variant(
     variant_name: String,
     module_variants: &HashMap<String, Vec<(HashMap<String, i64>, String)>>,
     module_defaults: &HashMap<String, HashMap<String, i64>>,
+    child_module_ports: &HashMap<String, Vec<PortDecl>>,
 ) -> Result<ModuleDecl, Vec<CompileError>> {
+    // Build the parent module's shape info BEFORE we move m.body — used
+    // by expand_generate_for to classify inst-bearing bodies as shape-
+    // stable (SV-genvar-preservable) or needing per-iteration unroll.
+    let parent_shape = ParentShapeInfo::from_module(&m);
+
     // Expand generate blocks
     let mut extra_ports: Vec<PortDecl> = Vec::new();
     let mut pre_rewrite: Vec<ModuleBodyItem> = Vec::new();
@@ -332,7 +351,7 @@ fn elaborate_module_variant(
 
     for item in m.body {
         match item {
-            ModuleBodyItem::Generate(gen) => match expand_generate(gen, &param_vals) {
+            ModuleBodyItem::Generate(gen) => match expand_generate(gen, &param_vals, &parent_shape, child_module_ports) {
                 Ok((ports, items)) => {
                     extra_ports.extend(ports);
                     pre_rewrite.extend(items);
@@ -765,12 +784,78 @@ fn tlm_connect_endpoint_bus(
 
 // ── Generate expansion ────────────────────────────────────────────────────────
 
+/// Read-only view of the *parent* module's port + wire shapes, used by
+/// `expand_generate_for` to classify inst-bearing bodies as "shape-stable"
+/// (SV-genvar-preservable) vs needing per-iteration unroll. We only need
+/// the per-name Vec-of-bus shape — full TypeExpr isn't required.
+#[derive(Default)]
+pub(crate) struct ParentShapeInfo {
+    /// Parent ports/wires that are Vec-of-bus (either `Vec<Bus,N>` port
+    /// directly via `bus_info.count.is_some()`, OR a non-bus port/wire
+    /// whose type is `Vec<Named, _>` / `Vec<Vec<Named, _>, _>` and so on,
+    /// where `Named` *might* be a bus — see `type_expr_contains_bus` for
+    /// why we conservatively treat all Named types as potential buses).
+    /// Indexing one of these by the loop variable produces a per-iteration
+    /// bus-shape reference that the SV genvar form can't emit cleanly.
+    vec_of_bus_names: HashSet<String>,
+}
+
+impl ParentShapeInfo {
+    fn from_module(m: &ModuleDecl) -> Self {
+        let mut vec_of_bus_names = HashSet::new();
+        for p in &m.ports {
+            if let Some(bi) = &p.bus_info {
+                if bi.count.is_some() {
+                    vec_of_bus_names.insert(p.name.name.clone());
+                }
+            } else if matches!(p.ty, TypeExpr::Vec(..)) && type_expr_contains_bus(&p.ty) {
+                // Defensive: bus type wrapped in Vec without bus_info
+                // shouldn't happen for ports today, but cover it anyway.
+                vec_of_bus_names.insert(p.name.name.clone());
+            }
+        }
+        for item in &m.body {
+            if let ModuleBodyItem::WireDecl(w) = item {
+                if matches!(w.ty, TypeExpr::Vec(..)) && type_expr_contains_bus(&w.ty) {
+                    vec_of_bus_names.insert(w.name.name.clone());
+                }
+            }
+        }
+        ParentShapeInfo { vec_of_bus_names }
+    }
+}
+
+/// Conservative recursive check: does this TypeExpr contain a `Named`
+/// type that *might* be a bus? The symbol table isn't available at this
+/// elaboration pass, so we can't distinguish bus-typed Named from
+/// struct/enum-typed Named. Treating all `Named` as potentially-bus
+/// over-approximates: a Vec-of-struct port/wire gets classified as
+/// Vec-of-bus and falls back to elaboration-time unroll if an inst-
+/// bearing generate_for reads it via `arr[i]`. That's a conservative
+/// loss of compactness for one rare shape (positional Vec-of-struct
+/// through an inst connection), not a correctness regression.
+///
+/// For bus wires the parser records the bus reference as
+/// `Named(BusName)` plus `bus_params` for per-site overrides, so
+/// `Vec<BusName, N>` becomes `Vec(Named(BusName), N)`. This catches the
+/// NIC-400 `wire edges: Vec<Vec<SlaveBus, N>, M>` case — exactly what
+/// the unsafe path must keep unrolling.
+fn type_expr_contains_bus(ty: &TypeExpr) -> bool {
+    match ty {
+        TypeExpr::Named(_) => true,
+        TypeExpr::Vec(inner, _) => type_expr_contains_bus(inner),
+        _ => false,
+    }
+}
+
 fn expand_generate(
     gen: GenerateDecl,
     param_vals: &HashMap<String, i64>,
+    parent_shape: &ParentShapeInfo,
+    child_module_ports: &HashMap<String, Vec<PortDecl>>,
 ) -> Result<(Vec<PortDecl>, Vec<ModuleBodyItem>), Vec<CompileError>> {
     match gen {
-        GenerateDecl::For(gf) => expand_generate_for(gf, param_vals),
+        GenerateDecl::For(gf) => expand_generate_for(gf, param_vals, parent_shape, child_module_ports),
         GenerateDecl::If(gi) => expand_generate_if(gi, param_vals),
     }
 }
@@ -794,6 +879,8 @@ fn expr_references_param(expr: &Expr, param_names: &[String]) -> bool {
 fn expand_generate_for(
     gf: GenerateFor,
     param_vals: &HashMap<String, i64>,
+    parent_shape: &ParentShapeInfo,
+    child_module_ports: &HashMap<String, Vec<PortDecl>>,
 ) -> Result<(Vec<PortDecl>, Vec<ModuleBodyItem>), Vec<CompileError>> {
     // Collect param names from param_vals
     let param_names: Vec<String> = param_vals.keys().cloned().collect();
@@ -810,22 +897,49 @@ fn expand_generate_for(
     let start_val = try_eval_i64(&gf.start, param_vals);
     let end_val = try_eval_i64(&gf.end, param_vals);
 
+    // Classify inst-bearing bodies: even when the body has only `inst`
+    // items, we may still be able to preserve the SV genvar form if every
+    // connection is "shape-stable" — i.e. doesn't index a Vec-of-bus
+    // parent port/wire and doesn't drive a Vec-of-bus child port. Those
+    // shapes need per-iteration flat-name expansion that SV genvar can't
+    // express, and elaboration must unroll them.
+    let only_inst_items = has_inst_items
+        && !has_port_items
+        && !has_thread_items
+        && !has_connect_items
+        && !has_wire_items;
+    let inst_items_shape_stable = only_inst_items
+        && gf.items.iter().all(|item| {
+            if let GenItem::Inst(inst) = item {
+                inst_is_shape_stable_for_genvar(inst, parent_shape, child_module_ports)
+            } else {
+                true
+            }
+        });
+
     // Preserve the generate block as a SV genvar `for` loop only when the
     // range references a module param AND the body has no items that
     // require elaboration-time unrolling:
     //   - port items: SV `for` can't introduce new ports at the boundary
     //   - thread items: threads lower to FSMs at elaboration time
     //   - TLM connect items: elaborate to private bus wires
-    //   - inst items: sim codegen has no SV-genvar equivalent, and bus
-    //     port connections need per-iteration loop-var substitution to
-    //     produce flat per-element wiring. Always-unroll insts is what
-    //     makes the sim path work for `generate_for + inst`.
-    //   - wire items: same as inst — SV genvars can't introduce new
-    //     wire identifiers per iteration (would need hierarchical
-    //     `gen_i.w` access, which we don't want at the SV boundary).
-    if range_depends_on_param && !has_port_items && !has_thread_items
-        && !has_connect_items && !has_inst_items && !has_wire_items
-    {
+    //   - wire items: SV genvars can't introduce new wire identifiers per
+    //     iteration (would need hierarchical `gen_i.w` access, which we
+    //     don't want at the SV boundary).
+    //   - inst items: only preserve when every connection is shape-stable.
+    //     "Shape-stable" means the inst's connections are pure scalar or
+    //     simple `Ident` / `Index(Ident, loop_var)` references against
+    //     parent ports/wires that are NOT Vec-of-bus, AND the child
+    //     module's ports themselves are not Vec-of-bus. In that safe case
+    //     SV emits `gen_i.foo_i.port(arr[i])` cleanly; sim codegen runs
+    //     its own local unroll pass to keep both backends in sync.
+    let body_preservable = !has_port_items
+        && !has_thread_items
+        && !has_connect_items
+        && !has_wire_items
+        && (!has_inst_items || inst_items_shape_stable);
+
+    if range_depends_on_param && body_preservable {
         return Ok((
             Vec::new(),
             vec![ModuleBodyItem::Generate(GenerateDecl::For(gf))],
@@ -886,6 +1000,95 @@ fn expand_generate_for(
     }
 
     Ok((ports, body))
+}
+
+// ── generate_for shape-stable inst classification ─────────────────────────────
+//
+// SV genvar form survives if every connection in every inst inside the
+// generate_for body satisfies all of:
+//
+//   1. The connection's signal expression doesn't reference a Vec-of-bus
+//      parent port/wire. We allow plain idents (`clk`, `rst`) and
+//      `Index(Ident, loop_var)` against non-bus parent ports/wires
+//      (e.g. `req[i]` on `port req: in Vec<Bool, N>`).
+//
+//   2. The child module's matched port is not itself a Vec-of-bus port
+//      (`bus_info.count.is_some()`). Vec-of-bus child ports need per-
+//      iteration packed-slice assembly that SV genvar can't express.
+//
+// The conservative default is "unsafe" — if we can't classify, fall back
+// to the existing unroll-at-elaboration path. Inst-body for-loops (the
+// `for k in ... ins[k] <- edges[k][j]` macro inside an inst body) are
+// also unsafe by design: they generate per-iteration flat connection
+// names that SV genvar can't carry.
+fn inst_is_shape_stable_for_genvar(
+    inst: &InstDecl,
+    parent_shape: &ParentShapeInfo,
+    child_module_ports: &HashMap<String, Vec<PortDecl>>,
+) -> bool {
+    // Inst-body for-loops produce per-iteration flat wiring — always unsafe.
+    if !inst.for_loops.is_empty() {
+        return false;
+    }
+
+    // Look up child module ports; if we don't have them, be conservative.
+    let child_ports = match child_module_ports.get(&inst.module_name.name) {
+        Some(p) => p,
+        None => return false,
+    };
+
+    for conn in &inst.connections {
+        // Child-side: Vec-of-bus port? Unsafe.
+        if let Some(p) = child_ports.iter().find(|p| p.name.name == conn.port_name.name) {
+            if let Some(bi) = &p.bus_info {
+                if bi.count.is_some() {
+                    return false;
+                }
+            }
+            // Vec ports on the child side: scalar Vec is fine (e.g.
+            // `port a: in Bool` driven by `req[i]`). But if the child
+            // port itself is a Vec type AND not a bus, that's still
+            // fine for SV genvar — the genvar substitution turns it
+            // into `pt_<i>.a(req[i])` which is unambiguous.
+        }
+
+        // Parent signal-side: indexing a Vec-of-bus port/wire by the
+        // loop var produces a per-iteration bus shape. Unsafe.
+        if signal_indexes_vec_of_bus(&conn.signal, parent_shape) {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// True iff the connection signal references a Vec-of-bus parent
+/// port/wire by indexing (e.g. `m[i]`, `edges[i]`) — exactly the shape
+/// that needs per-iteration flat-name expansion. Plain ident references
+/// to non-Vec-of-bus signals (`clk`, `rst`) and plain idents to scalar
+/// Vec ports (`req`) are both fine for SV genvar.
+fn signal_indexes_vec_of_bus(expr: &Expr, parent_shape: &ParentShapeInfo) -> bool {
+    match &expr.kind {
+        // `name[idx]` — check if `name` is Vec-of-bus.
+        ExprKind::Index(base, _) => {
+            if let ExprKind::Ident(n) = &base.kind {
+                if parent_shape.vec_of_bus_names.contains(n) {
+                    return true;
+                }
+            }
+            // Recurse: e.g. `edges[i][j]` — outer `Index(Index(Ident, _), _)`.
+            signal_indexes_vec_of_bus(base, parent_shape)
+        }
+        // Plain ident: not an indexed Vec-of-bus reference.
+        ExprKind::Ident(_) => false,
+        // Field access on a bus is fine (`bus.signal`) and won't appear
+        // at the top of an inst connection signal anyway. Recurse just
+        // in case.
+        ExprKind::FieldAccess(b, _) => signal_indexes_vec_of_bus(b, parent_shape),
+        // Casts (`x as Reset<...>`) — recurse on inner.
+        ExprKind::Cast(b, _) => signal_indexes_vec_of_bus(b, parent_shape),
+        _ => false,
+    }
 }
 
 // ── generate_for seq/comb write-target check (Reading B) ──────────────────────
@@ -1206,7 +1409,7 @@ fn unroll_inst_for_loop(
     Ok(out)
 }
 
-fn subst_inst(inst: &InstDecl, var: &str, val: i64) -> InstDecl {
+pub(crate) fn subst_inst(inst: &InstDecl, var: &str, val: i64) -> InstDecl {
     InstDecl {
         name: subst_ident(&inst.name, var, val),
         module_name: inst.module_name.clone(),
