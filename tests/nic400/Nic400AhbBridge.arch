@@ -42,6 +42,11 @@ module Nic400AhbBridge
   param DATA_WIDTH: const = 32;
   param STRB_WIDTH: const = 4;        // = DATA_WIDTH/8
   param ID_WIDTH:   const = 3;
+  // v3: chunk length for HBURST=INCR (undefined-length) writes.
+  // Bridge speculatively issues an AXI burst of MAX_INCR_BEATS, pads with
+  // strb=0 if master stops early. Bursts longer than MAX_INCR_BEATS will
+  // hang the master (multi-chunk extension is the v4 step).
+  param MAX_INCR_BEATS: const = 16;
 
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Async, Low>;
@@ -187,7 +192,9 @@ module Nic400AhbBridge
       axi.w_last    = false;
       axi.b_ready   = false;
     end default
-    wait 0+ cycle until h.hsel and (h.htrans == 2) and h.hwrite;
+    // Wake only on fixed-length HBURST values. HBURST=1 (INCR undefined-length)
+    // is handled by the WriteXactIncr thread below.
+    wait 0+ cycle until h.hsel and (h.htrans == 2) and h.hwrite and (h.hburst != 1);
     // AW phase: stall the AHB data phase while we set up AW.
     lock h_resp_lock
       do
@@ -230,4 +237,116 @@ module Nic400AhbBridge
       until axi.b_valid;
     end lock h_resp_lock
   end thread WriteXact
+
+  // ── Write thread (HBURST=INCR, undefined-length, chunked-burst v3) ──
+  // AHB-Lite HBURST=INCR is unbounded — the master streams SEQ beats and
+  // signals end-of-burst by transitioning HTRANS to IDLE (or to NONSEQ for
+  // a different burst). AXI4 requires axlen at AW time and a launched burst
+  // can't be cancelled.
+  //
+  // Strategy: speculatively issue an AXI burst of MAX_INCR_BEATS, drain the
+  // master's HWDATA stream as W beats. When the master stops mid-chunk,
+  // pad the remaining AXI W beats with w_strb=0 (legal sparse-write per
+  // AXI4) so the AXI slave sees a clean axlen-length burst with the trailing
+  // bytes effectively no-op.
+  //
+  // Master-stop detection: at each forwarded W beat, sample h.htrans on
+  // the cycle the W handshake completes. The HTRANS of that cycle is the
+  // master's drive for the NEXT beat's *address* phase — if it's IDLE,
+  // the master is stopping, but THIS beat's HWDATA (already on the bus)
+  // is still valid and must be forwarded. Subsequent beats (b+1..MAX-1)
+  // get padded.
+  //
+  // BUSY handling: not supported in v3. Assumes AHB master uses SEQ
+  // exclusively for INCR (the common cache-line-fill case). HTRANS=BUSY
+  // would be misinterpreted as "still streaming" and forward stale HWDATA.
+  //
+  // Long-burst limitation: AHB INCR bursts longer than MAX_INCR_BEATS
+  // beats hang the master (no inter-chunk handoff in v3). v4 adds a
+  // HWDATA FIFO + multi-chunk for true unbounded INCR support.
+  //
+  // master_stopped_r is module-scope (declared below) so it persists across
+  // the for-loop iterations within a single thread state lowering.
+  reg master_stopped_r: Bool reset rst => false;
+
+  thread WriteXactIncr on clk rising, rst low
+    default comb
+      h.hready  = true;
+      h.hresp   = false;
+      h.hrdata  = 0;
+      axi.aw_valid  = false;
+      axi.aw_addr   = 0;
+      axi.aw_id     = 0;
+      axi.aw_len    = 0;
+      axi.aw_size   = 0;
+      axi.aw_burst  = 0;
+      axi.aw_lock   = false;
+      axi.aw_cache  = 0;
+      axi.aw_prot   = 0;
+      axi.aw_qos    = 0;
+      axi.aw_region = 0;
+      axi.w_valid   = false;
+      axi.w_data    = 0;
+      axi.w_strb    = 0;
+      axi.w_last    = false;
+      axi.b_ready   = false;
+    end default
+    // Wake only on HBURST=1 (INCR undefined-length). master_stopped_r is
+    // cleared at the end of each burst (after the B phase below), so on
+    // wake-up it's already false.
+    wait 0+ cycle until h.hsel and (h.htrans == 2) and h.hwrite and (h.hburst == 1);
+    // AW phase — speculative axlen = MAX_INCR_BEATS - 1.
+    lock h_resp_lock
+      do
+        h.hready      = false;
+        axi.aw_valid  = true;
+        axi.aw_addr   = h.haddr;
+        axi.aw_id     = 0;
+        axi.aw_size   = h.hsize;
+        axi.aw_len    = MAX_INCR_BEATS - 1;
+        axi.aw_burst  = 1;                  // INCR
+        axi.aw_lock   = h.hmastlock;
+        axi.aw_cache  = h.hprot;
+        axi.aw_prot   = h.hprot[2:0];
+      until axi.aw_ready;
+    end lock h_resp_lock
+    // Spinup gap for master to advance into data phase 0.
+    wait 1 cycle;
+    // W loop — drain up to MAX_INCR_BEATS beats from the master, pad the
+    // tail if master stops early.
+    for b in 0..MAX_INCR_BEATS - 1
+      lock h_resp_lock
+        do
+          if master_stopped_r
+            // Padding tail: master has signalled end-of-burst on a prior
+            // iteration. Forward a strb=0 dummy beat to drain the AXI burst.
+            h.hready    = false;
+            axi.w_valid = true;
+            axi.w_data  = 0;
+            axi.w_strb  = 0;
+            axi.w_last  = (b == MAX_INCR_BEATS - 1);
+          else
+            // Streaming: forward current HWDATA from the master's data phase.
+            h.hready    = axi.w_ready;
+            axi.w_valid = true;
+            axi.w_data  = h.hwdata;
+            axi.w_strb  = 15;
+            axi.w_last  = (b == MAX_INCR_BEATS - 1);
+          end if
+        until axi.w_ready;
+      end lock h_resp_lock
+      // Sample HTRANS at handshake-complete cycle. If master drove IDLE in
+      // this cycle's address phase, no more real beats will follow.
+      master_stopped_r <= h.htrans == 0;
+    end for
+    // B phase.
+    lock h_resp_lock
+      do
+        h.hready    = axi.b_valid;
+        h.hresp     = axi_resp_to_ahb(axi.b_resp);
+        axi.b_ready = true;
+      until axi.b_valid;
+    end lock h_resp_lock
+    master_stopped_r <= false;
+  end thread WriteXactIncr
 end module Nic400AhbBridge
