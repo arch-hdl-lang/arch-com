@@ -1,20 +1,25 @@
-// Wiring harness — M MasterPort × N SlavePort.
+// Wiring harness — M MasterPort × N SlavePort (3×4 read/write).
 //
 // Spec §9: pure wiring; all real work lives in the per-master / per-slave
 // modules. Each (master_i, slave_j) edge is one bus carried by `edges[i][j]`
 // in a single 2D bus wire — the same wire cell that appears as
 // `mp_i.outs[j]` from the master side and `sp_j.ins[i]` from the slave side.
 //
-// Scaled via `generate_for` over both M and N. For M=N=2 today this
-// emits 2+2 = 4 inst declarations; for M=N=8 it would emit 16, all
-// from the same source.
+// Scaled via `generate_for` over both M and N. M=3, N=4 emits 3+4 = 7
+// inst declarations from the same source. Bumping to larger M/N is a
+// one-line change.
+//
+// Read/write enabled via `WRITE=1` on the bus type aliases. MasterPort
+// and SlavePort each carry full AR/R + AW/W/B thread sets.
 module Nic400Fabric
-  param NUM_MASTERS:   const = 2;
-  param NUM_SLAVES:    const = 2;
+  param NUM_MASTERS:   const = 3;
+  param NUM_SLAVES:    const = 4;
   param ADDR_WIDTH:    const = 32;
   param DATA_WIDTH:    const = 32;
+  param STRB_WIDTH:    const = 4;            // = DATA_WIDTH / 8
   param MASTER_ID_W:   const = 3;
-  param SLAVE_ID_W:    const = 4;        // MASTER_ID_W + ceil(log2(NUM_MASTERS))
+  param SLAVE_ID_W:    const = 5;            // MASTER_ID_W + ceil(log2(NUM_MASTERS))
+  param NS_W:          const = 2;            // ceil(log2(NUM_SLAVES))
 
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Async, Low>;
@@ -23,13 +28,11 @@ module Nic400Fabric
   // deeply-nested `Vec<Vec<BusAxi4<...>, N>, M>` form doesn't fight the
   // grammar at use sites. Every port and wire below references the alias
   // as a bare identifier; the alias resolver inlines the full type before
-  // any downstream pass sees it. Master-side IDs are MASTER_ID_W wide;
-  // slave-side IDs are SLAVE_ID_W = MASTER_ID_W + ceil(log2(NUM_MASTERS))
-  // wide, since the MasterPort prepends the master_idx prefix.
-  type MasterBus = BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH,
-                            ID_W=MASTER_ID_W, READ=1, WRITE=0>;
-  type SlaveBus  = BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH,
-                            ID_W=SLAVE_ID_W,  READ=1, WRITE=0>;
+  // any downstream pass sees it.
+  type MasterBus = BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH,
+                            ID_W=MASTER_ID_W, READ=1, WRITE=1>;
+  type SlaveBus  = BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH,
+                            ID_W=SLAVE_ID_W,  READ=1, WRITE=1>;
 
   // System-facing master buses (parent perspective is target).
   port m: target Vec<MasterBus, NUM_MASTERS>;
@@ -41,6 +44,15 @@ module Nic400Fabric
   wire edges: Vec<Vec<SlaveBus, NUM_SLAVES>, NUM_MASTERS>;
 
   // ── M MasterPort instances ────────────────────────────────────────────
+  //
+  // Param-pass note: passing `param NUM_SLAVES = NUM_SLAVES` would alias the
+  // parent's param name through to the child, which the inst param-eval
+  // resolver can't unwind (it'd see the child's NUM_SLAVES default replaced
+  // by an Ident("NUM_SLAVES") and fail to evaluate `count_expr` for the
+  // child's Vec-of-bus port count). The child's defaults already match the
+  // Fabric's params, so we rely on them implicitly. If you bump the Fabric
+  // params, also bump the per-port defaults in Nic400MasterPort.arch /
+  // Nic400SlavePort.arch.
   generate_for i in 0..NUM_MASTERS-1
     inst mp_i: Nic400MasterPort
       param I = i;
@@ -52,11 +64,9 @@ module Nic400Fabric
   end generate_for
 
   // ── N SlavePort instances ─────────────────────────────────────────────
-  // Each slave_j gathers element [j] from every master's row of edges.
-  // The inner `for k in 0..NUM_MASTERS-1` is an inst-body unroll macro:
-  // at elaboration each iteration produces one `ins[k] <- edges[k][j]`
-  // Connection (AST-identical to the hand-enumerated form). Scales to
-  // arbitrary M without source changes.
+  // Each slave_j gathers element [j] from every master's row of edges via
+  // a nested for-loop that unrolls at elaboration into M `ins[k] <- edges[k][j]`
+  // connections.
   generate_for j in 0..NUM_SLAVES-1
     inst sp_j: Nic400SlavePort
       param J = j;

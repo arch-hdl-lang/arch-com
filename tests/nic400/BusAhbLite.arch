@@ -1,0 +1,35 @@
+// AHB-Lite bus (initiator = master). Slave/target perspective flips directions.
+//
+// Signal set is the standard AMBA AHB-Lite v1.0 master interface. HREADY here
+// is the slave's HREADYOUT (in a single-slave system there is no decoder mux
+// so HREADYOUT == HREADY at the master). For multi-slave systems an external
+// HREADY mux + HSEL decoder would sit between the master and the bridge.
+//
+// Encodings (informative, enforced by the bridge module, not the bus):
+//   HTRANS:  0=IDLE   1=BUSY   2=NONSEQ   3=SEQ
+//   HBURST:  0=SINGLE 1=INCR   2=WRAP4 3=INCR4 4=WRAP8 5=INCR8 6=WRAP16 7=INCR16
+//   HSIZE:   0=byte   1=hword  2=word   3=dword ...
+//   HRESP:   0=OKAY   1=ERROR  (AHB-Lite collapses the 2-cycle ERROR sequence
+//                               to a 1-bit signal asserted in the data phase)
+bus BusAhbLite
+  param ADDR_W: const = 32;
+  param DATA_W: const = 32;
+
+  // Address-phase signals (master drives, held stable while HREADY=0).
+  hsel:      out Bool;
+  haddr:     out UInt<ADDR_W>;
+  hwrite:    out Bool;
+  hsize:     out UInt<3>;
+  hburst:    out UInt<3>;
+  hprot:     out UInt<4>;
+  htrans:    out UInt<2>;
+  hmastlock: out Bool;
+
+  // Data-phase signals.
+  hwdata:    out UInt<DATA_W>;
+  hrdata:    in  UInt<DATA_W>;
+
+  // Slave-driven status.
+  hready:    in  Bool;     // HREADYOUT from the slave (in single-slave systems == HREADY)
+  hresp:     in  Bool;
+end bus BusAhbLite

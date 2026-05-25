@@ -1,36 +1,43 @@
-// Per-slave arbitration + return block (read-only AR/R path).
+// Per-slave arbitration + return block (full AR/R + AW/W/B path).
 //
 // Spec §8 shape: one S-facing bus initiator port + NUM_MASTERS inbound
 // bus target ports (Vec). M AR-arbiter threads (one per master) contend
 // on a shared lock to drive the slave's AR; M R-return threads (one
 // per master) decode the slave's r_id high bits and route the beat back
-// to the matching master.
+// to the matching master. Symmetric structure for AW/W/B.
+//
+// W routing simplification (v1): each per-master thread handles
+// AW → W → B for a transaction as one sequential chunk. With the
+// MasterPort doing the same on its side, the (master, slave) pair
+// processes one outstanding write at a time. Per-master concurrency
+// across different slaves works (independent threads); same-slave
+// pipelining is depth 1.
 module Nic400SlavePort
   param J:             const = 0;        // this slave's index, 0..NUM_SLAVES-1
-  param NUM_MASTERS:   const = 2;
+  param NUM_MASTERS:   const = 3;
   param ADDR_WIDTH:    const = 32;
   param DATA_WIDTH:    const = 32;
+  param STRB_WIDTH:    const = 4;
   param MASTER_ID_W:   const = 3;
-  param SLAVE_ID_W:    const = 4;        // MASTER_ID_W + ceil(log2(NUM_MASTERS))
+  param SLAVE_ID_W:    const = 5;        // MASTER_ID_W + ceil(log2(NUM_MASTERS))
 
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Async, Low>;
 
   // System-facing slave port (initiator perspective — this module drives s.ar_valid etc.).
-  port s: initiator BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH,
-                            ID_W=SLAVE_ID_W, READ=1, WRITE=0>;
+  port s: initiator BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH,
+                            ID_W=SLAVE_ID_W, READ=1, WRITE=1>;
 
   // Fabric-facing inbound buses, one per master.
-  port ins: target Vec<BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH,
-                                  ID_W=SLAVE_ID_W, READ=1, WRITE=0>, NUM_MASTERS>;
+  port ins: target Vec<BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH,
+                                  ID_W=SLAVE_ID_W, READ=1, WRITE=1>, NUM_MASTERS>;
 
-  // AR arbiter — M masters serialise onto s.ar_*. Priority for now;
-  // arch sim's `--thread-sim parallel` path supports priority only in v1.
-  // Switch to round_robin when the parallel sim extends its policy set.
-  resource ar_lock: mutex<priority>;
-  // R demux serializer — at most one master matches the slave's r_id prefix
-  // per cycle by AXI ID uniqueness; the lock keeps the multi-driver legal.
-  resource r_demux_lock: mutex<priority>;
+  // Per-channel arbiters — M per-master threads contend on shared s.* drives.
+  resource ar_lock:       mutex<priority>;
+  resource r_demux_lock:  mutex<priority>;
+  resource aw_lock:       mutex<priority>;
+  resource w_lock:        mutex<priority>;
+  resource b_demux_lock:  mutex<priority>;
 
   // ── AR arbiter — one thread per master ─────────────────────────────────
   generate_for i in 0..NUM_MASTERS-1
@@ -93,5 +100,76 @@ module Nic400SlavePort
         until ins[i].r_ready and ins[i].r_last;
       end lock r_demux_lock
     end thread RDemux_i
+  end generate_for
+
+  // ── AW → W → B threads — one per master ────────────────────────────────
+  // Each thread handles a complete write transaction originating from
+  // master i. The aw_lock / w_lock / b_demux_lock resources serialise
+  // multi-master contention on the shared s.* signals; cross-master
+  // pipelining works because each master's thread runs independently
+  // until it grabs a contended lock.
+  generate_for i in 0..NUM_MASTERS-1
+    thread AwWb_i on clk rising, rst low
+      default comb
+        s.aw_valid  = false;
+        s.aw_addr   = 0;
+        s.aw_id     = 0;
+        s.aw_len    = 0;
+        s.aw_size   = 0;
+        s.aw_burst  = 0;
+        s.aw_lock   = false;
+        s.aw_cache  = 0;
+        s.aw_prot   = 0;
+        s.aw_qos    = 0;
+        s.aw_region = 0;
+        s.w_valid   = false;
+        s.w_data    = 0;
+        s.w_strb    = 0;
+        s.w_last    = false;
+        s.b_ready   = false;
+        ins[i].aw_ready = false;
+        ins[i].w_ready  = false;
+        ins[i].b_valid  = false;
+        ins[i].b_id     = 0;
+        ins[i].b_resp   = 0;
+      end default
+      // AW phase
+      wait 0+ cycle until ins[i].aw_valid;
+      lock aw_lock
+        do
+          s.aw_valid  = true;
+          s.aw_addr   = ins[i].aw_addr;
+          s.aw_id     = ins[i].aw_id;     // already prefixed by master port
+          s.aw_len    = ins[i].aw_len;
+          s.aw_size   = ins[i].aw_size;
+          s.aw_burst  = ins[i].aw_burst;
+          s.aw_lock   = ins[i].aw_lock;
+          s.aw_cache  = ins[i].aw_cache;
+          s.aw_prot   = ins[i].aw_prot;
+          s.aw_qos    = ins[i].aw_qos;
+          s.aw_region = ins[i].aw_region;
+          ins[i].aw_ready = s.aw_ready;
+        until s.aw_ready;
+      end lock aw_lock
+      // W phase: forward each beat until w_last handshake fires.
+      lock w_lock
+        do
+          s.w_valid = ins[i].w_valid;
+          s.w_data  = ins[i].w_data;
+          s.w_strb  = ins[i].w_strb;
+          s.w_last  = ins[i].w_last;
+          ins[i].w_ready = s.w_ready;
+        until ins[i].w_valid and ins[i].w_last and s.w_ready;
+      end lock w_lock
+      // B phase: demux back to the originating master by id prefix match.
+      lock b_demux_lock
+        do
+          ins[i].b_valid = s.b_valid and s.b_id[SLAVE_ID_W-1:MASTER_ID_W] == i;
+          ins[i].b_id    = s.b_id;
+          ins[i].b_resp  = s.b_resp;
+          s.b_ready = ins[i].b_ready;
+        until s.b_valid and s.b_id[SLAVE_ID_W-1:MASTER_ID_W] == i and ins[i].b_ready;
+      end lock b_demux_lock
+    end thread AwWb_i
   end generate_for
 end module Nic400SlavePort

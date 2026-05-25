@@ -1,0 +1,233 @@
+// AHB-Lite ↔ AXI4 bridge module.
+//
+// Plugs an AHB-Lite master into the AXI4 fabric: the bridge presents an AHB
+// target on `h` and an AXI initiator on `axi`. Sized for the same DATA_W/
+// ADDR_W as the NIC-400 fabric so it can drop in as one of the fabric's
+// MasterPort upstreams (an AHB CPU port) or — by swapping `target`/`initiator`
+// — as one of the SlavePort downstreams (an AHB peripheral). v1 wires up the
+// AHB-master-side case; the slave-side mirror is a future extension.
+//
+// What v1 implements (verified):
+//   • Single-beat transfers (HBURST=SINGLE).
+//   • Independent read and write paths (two threads, no in-flight collision —
+//     AHB itself only allows one outstanding transaction so the threads
+//     time-share `h.hready`/`h.hrdata`/`h.hresp` through their default-comb
+//     drives + an h_resp_lock mutex on the active body).
+//   • HSIZE → AXI axsize (direct copy).
+//   • HPROT → AXI axprot (low 3 bits) and axcache (full 4 bits — close enough
+//     for the NIC-400 demo; ARM's real bridge has a configurable remap table).
+//   • HMASTLOCK → AXI axlock.
+//   • HBURST decoded on the AHB side via a module-local function so larger
+//     HBURST encodings are accepted on the wire (no protocol violation), but
+//     v1 only verifies SINGLE end-to-end. Multi-beat writes need additional
+//     HWDATA streaming + HREADY pacing logic that doesn't fit cleanly in a
+//     single thread state machine; tracked as a follow-on.
+//   • HRESP from AXI b_resp / r_resp: OKAY/EXOKAY → 0, SLVERR/DECERR → 1.
+//
+// Protocol timing (single-beat write):
+//   Cycle 0:   master drives NONSEQ+addr+HWRITE=1. Bridge sees this in its
+//              wait state and holds h.hready=false (stall the data phase).
+//   Cycle 0+: bridge issues AXI AW. Forks AW and W: AW finishes when
+//              axi.aw_ready=1; W requires HWDATA to have arrived, which can't
+//              happen until h.hready=1, so the sequence is AW first then a
+//              one-cycle h.hready=1 pulse to advance master to data phase,
+//              then W with HWDATA capture.
+//
+// Simplification (v1): we collapse the AW→W ordering by holding h.hready=true
+// in the *post*-AW state and capturing HWDATA combinationally — this works
+// because AHB master drives HWDATA the cycle after HREADY=1 in the addr
+// phase, and the bridge's lowered FSM has comb+seq within one state.
+module Nic400AhbBridge
+  param ADDR_WIDTH: const = 32;
+  param DATA_WIDTH: const = 32;
+  param STRB_WIDTH: const = 4;        // = DATA_WIDTH/8
+  param ID_WIDTH:   const = 3;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  // AHB-Lite target — bridge sees address/control as IN, drives status OUT.
+  port h:   target    BusAhbLite<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH>;
+  // AXI initiator — bridge drives AR/AW/W, samples R/B.
+  port axi: initiator BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH,
+                              ID_W=ID_WIDTH, READ=1, WRITE=1>;
+
+  // Mutex to serialise the multi-thread comb drives on h.hready/hrdata/hresp.
+  // The two threads can never both be active (AHB only has one outstanding),
+  // so contention is zero in steady state; the lock just keeps the
+  // multi-driver legal in the lowered FSM.
+  resource h_resp_lock: mutex<priority>;
+
+  // HBURST → AXI axlen mapping. Undefined-length INCR is degraded to single
+  // beat (axlen=0) — see file-level comment.
+  function ahb_to_axi_len(hburst: UInt<3>) -> UInt<8>
+    if (hburst == 0) or (hburst == 1)
+      return 0;
+    elsif (hburst == 2) or (hburst == 3)
+      return 3;
+    elsif (hburst == 4) or (hburst == 5)
+      return 7;
+    else
+      return 15;
+    end if
+  end function ahb_to_axi_len
+
+  // HBURST → AXI axburst (WRAP for HBURST=WRAP*, INCR otherwise).
+  function ahb_to_axi_burst(hburst: UInt<3>) -> UInt<2>
+    if (hburst == 2) or (hburst == 4) or (hburst == 6)
+      return 2;     // WRAP
+    else
+      return 1;     // INCR (SINGLE is also encoded as INCR with len=0 on AXI)
+    end if
+  end function ahb_to_axi_burst
+
+  // AXI {b,r}_resp → AHB HRESP. AXI OKAY=0, EXOKAY=1 → HRESP=0 (OKAY);
+  // SLVERR=2, DECERR=3 → HRESP=1 (ERROR).
+  function axi_resp_to_ahb(rsp: UInt<2>) -> Bool
+    return rsp[1];
+  end function axi_resp_to_ahb
+
+  // ── Read thread ──────────────────────────────────────────────────────
+  // Wait for AHB read address phase (HSEL && NONSEQ && !HWRITE), launch AR,
+  // forward R beats back as HRDATA pulses with HREADY.
+  thread ReadXact on clk rising, rst low
+    default comb
+      h.hready  = true;     // idle: ready (no transaction in flight)
+      h.hresp   = false;
+      h.hrdata  = 0;
+      axi.ar_valid  = false;
+      axi.ar_addr   = 0;
+      axi.ar_id     = 0;
+      axi.ar_len    = 0;
+      axi.ar_size   = 0;
+      axi.ar_burst  = 0;
+      axi.ar_lock   = false;
+      axi.ar_cache  = 0;
+      axi.ar_prot   = 0;
+      axi.ar_qos    = 0;
+      axi.ar_region = 0;
+      axi.r_ready   = false;
+    end default
+    wait 0+ cycle until h.hsel and (h.htrans == 2) and (not h.hwrite);
+    // AR phase: drive AR, stall the AHB data phase with hready=false until
+    // the AXI slave starts returning data.
+    lock h_resp_lock
+      do
+        h.hready      = false;
+        axi.ar_valid  = true;
+        axi.ar_addr   = h.haddr;
+        axi.ar_id     = 0;
+        axi.ar_size   = h.hsize;
+        axi.ar_len    = ahb_to_axi_len(h.hburst);
+        axi.ar_burst  = ahb_to_axi_burst(h.hburst);
+        axi.ar_lock   = h.hmastlock;
+        axi.ar_cache  = h.hprot;
+        axi.ar_prot   = h.hprot[2:0];
+      until axi.ar_ready;
+    end lock h_resp_lock
+    // R phase: each cycle r_valid=1, deliver one HRDATA beat with HREADY=1.
+    // Hold until r_last && r_ready (= r_valid here since we drive r_ready=1).
+    lock h_resp_lock
+      do
+        axi.r_ready = true;
+        h.hready    = axi.r_valid;
+        h.hrdata    = axi.r_data;
+        h.hresp     = axi_resp_to_ahb(axi.r_resp);
+      until axi.r_valid and axi.r_last;
+    end lock h_resp_lock
+  end thread ReadXact
+
+  // ── Write thread (multi-beat, fixed-length bursts) ──────────────────
+  // Sequence for an HBURST=INCR4 example:
+  //   • Cycle 0: AHB master drives NONSEQ+A0+HWRITE=1. Bridge sees this in
+  //     its wait state and enters AW phase with hready=0 (stall the AHB
+  //     master at the address phase boundary).
+  //   • Cycle K: aw_ready=1 captured; lock body exits. Bridge moves to a
+  //     1-cycle "gap" state with hready=1 (default comb). In this cycle the
+  //     master samples hready=1 and prepares to advance to data phase next.
+  //   • Cycle K+2 … K+5 (INCR4): bridge in W-loop iteration b=0..3. Each
+  //     iteration: hready=axi.w_ready, axi.w_valid=true, axi.w_data=
+  //     h.hwdata (combinational pickup of whatever the master placed),
+  //     axi.w_last = (b == axlen). On w_ready=1, lock body exits and the
+  //     loop advances to the next beat.
+  //   • Backpressure: when axi.w_ready=0, h.hready=0 — AHB master holds
+  //     the current HWDATA stable on the bus, AXI side is freely back-
+  //     pressurable.
+  //   • Cycle K+6 onward: B-wait. hready=axi.b_valid (i.e. 0 until B
+  //     arrives). When axi.b_valid=1, drive hready=1 + hresp from b_resp.
+  //
+  // INCR-undef (HBURST=1) is degraded to single-beat per AHB beat — the
+  // bridge can't know the length in advance and the v2 design doesn't
+  // include the HWDATA FIFO needed to buffer and forward the whole burst
+  // after detecting end-of-INCR. v3 will add the buffer.
+  //
+  // HBURST stable assumption: AHB-Lite requires the master to hold HBURST/
+  // HSIZE/HMASTLOCK stable across all beats of a burst. The bridge reads
+  // h.hburst directly in the loop bound and w_last comparison; no need to
+  // latch it.
+  thread WriteXact on clk rising, rst low
+    default comb
+      h.hready  = true;
+      h.hresp   = false;
+      h.hrdata  = 0;
+      axi.aw_valid  = false;
+      axi.aw_addr   = 0;
+      axi.aw_id     = 0;
+      axi.aw_len    = 0;
+      axi.aw_size   = 0;
+      axi.aw_burst  = 0;
+      axi.aw_lock   = false;
+      axi.aw_cache  = 0;
+      axi.aw_prot   = 0;
+      axi.aw_qos    = 0;
+      axi.aw_region = 0;
+      axi.w_valid   = false;
+      axi.w_data    = 0;
+      axi.w_strb    = 0;
+      axi.w_last    = false;
+      axi.b_ready   = false;
+    end default
+    wait 0+ cycle until h.hsel and (h.htrans == 2) and h.hwrite;
+    // AW phase: stall the AHB data phase while we set up AW.
+    lock h_resp_lock
+      do
+        h.hready      = false;
+        axi.aw_valid  = true;
+        axi.aw_addr   = h.haddr;
+        axi.aw_id     = 0;
+        axi.aw_size   = h.hsize;
+        axi.aw_len    = ahb_to_axi_len(h.hburst);
+        axi.aw_burst  = ahb_to_axi_burst(h.hburst);
+        axi.aw_lock   = h.hmastlock;
+        axi.aw_cache  = h.hprot;
+        axi.aw_prot   = h.hprot[2:0];
+      until axi.aw_ready;
+    end lock h_resp_lock
+    // Spinup gap: AHB master needs one cycle after sampling hready=1 in the
+    // addr phase before HWDATA appears on the bus. Default comb in this state
+    // has h.hready=true (no lock), which is exactly what we need.
+    wait 1 cycle;
+    // W phase: forward axlen+1 beats. For HBURST=SINGLE, axlen=0 → loop
+    // iterates once. For HBURST=INCR4, axlen=3 → 4 iterations. STRB is fully
+    // on (every byte lane enabled at the full data width).
+    for b in 0..ahb_to_axi_len(h.hburst)
+      lock h_resp_lock
+        do
+          h.hready    = axi.w_ready;
+          axi.w_valid = true;
+          axi.w_data  = h.hwdata;
+          axi.w_strb  = 15;
+          axi.w_last  = (b == ahb_to_axi_len(h.hburst));
+        until axi.w_ready;
+      end lock h_resp_lock
+    end for
+    // B phase: stall AHB, wait for B response, pulse hready=1 with HRESP.
+    lock h_resp_lock
+      do
+        h.hready    = axi.b_valid;
+        h.hresp     = axi_resp_to_ahb(axi.b_resp);
+        axi.b_ready = true;
+      until axi.b_valid;
+    end lock h_resp_lock
+  end thread WriteXact
+end module Nic400AhbBridge
