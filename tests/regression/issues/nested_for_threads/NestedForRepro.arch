@@ -1,0 +1,35 @@
+// Minimal repro: two nested `for` loops inside a thread should iterate the
+// outer counter independently of the inner counter. Suspected actual: both
+// loops share the same `_loop_cnt` reg, so the outer loop's index is lost.
+module NestedForRepro
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port go: in Bool;
+  port outer_visits: out UInt<8>;
+  port inner_visits: out UInt<8>;
+
+  resource lk: mutex<priority>;
+  reg outer_r: UInt<8> reset rst => 0;
+  reg inner_r: UInt<8> reset rst => 0;
+
+  thread T on clk rising, rst low
+    default comb
+      outer_visits = outer_r;
+      inner_visits = inner_r;
+    end default
+    wait until go;
+    // Outer loop: 3 iterations, expected outer_r ends at 3.
+    for c in 0..2
+      // Inner loop: 4 iterations per outer.
+      for b in 0..3
+        lock lk
+          do
+            // no-op
+          until true;
+        end lock lk
+        inner_r <= (inner_r + 1).trunc<8>();
+      end for
+      outer_r <= (outer_r + 1).trunc<8>();
+    end for
+  end thread T
+end module NestedForRepro

@@ -4278,6 +4278,61 @@ fn test_wait_0plus_cycle_until_mealy_fusion() {
 }
 
 #[test]
+fn test_nested_for_in_thread_uses_distinct_loop_counters() {
+    // Regression for issue #414: nested `for` loops in a thread used to
+    // share a single `_loop_cnt` register, so the inner loop's increment
+    // clobbered the outer loop's running index and the outer exited
+    // after the very first inner iteration completed. The fix allocates
+    // a distinct `_loop_cnt_{id}` per `for` instance and threads
+    // outer-loop transitions through the inner-loop exit condition so
+    // the outer counter only ticks once per completed inner iteration.
+    let source = "
+        module NestedFor
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port go: in Bool;
+          port outer_visits: out UInt<8>;
+          port inner_visits: out UInt<8>;
+
+          reg outer_r: UInt<8> reset rst => 0;
+          reg inner_r: UInt<8> reset rst => 0;
+
+          thread T on clk rising, rst low
+            default comb
+              outer_visits = outer_r;
+              inner_visits = inner_r;
+            end default
+            wait until go;
+            for c in 0..2
+              for b in 0..3
+                wait 1 cycle;
+                inner_r <= (inner_r + 1).trunc<8>();
+              end for
+              outer_r <= (outer_r + 1).trunc<8>();
+            end for
+          end thread T
+        end module NestedFor
+    ";
+    let sv = compile_to_sv(source);
+    // Two distinct loop-counter regs must be declared.
+    assert!(sv.contains("_t0_loop_cnt_0"),
+        "expected outer loop counter `_t0_loop_cnt_0`:\n{sv}");
+    assert!(sv.contains("_t0_loop_cnt_1"),
+        "expected inner loop counter `_t0_loop_cnt_1`:\n{sv}");
+    // No leftover shared `_t0_loop_cnt` (without an `_{id}` suffix) — a
+    // grep for `_t0_loop_cnt;` or `_t0_loop_cnt ` (followed by anything
+    // other than `_`) would catch the old shared-counter shape.
+    let bad_shared = sv.contains("_t0_loop_cnt;")
+        || sv.contains("_t0_loop_cnt <=")
+        || sv.contains("_t0_loop_cnt +")
+        || sv.contains("_t0_loop_cnt =")
+        || sv.contains("_t0_loop_cnt >=")
+        || sv.contains("_t0_loop_cnt <");
+    assert!(!bad_shared,
+        "found references to shared `_t0_loop_cnt` (issue #414 regression):\n{sv}");
+}
+
+#[test]
 fn test_wait_0plus_cycle_until_mealy_fusion_gates_seq_assigns() {
     // Regression for issue #412: the Mealy-fusion lowering for
     //   wait 0+ cycle until X;
@@ -10808,18 +10863,20 @@ fn test_if_wait_for_in_then_branch() {
     // inside the for-loop's last state, causing the body to execute exactly once.
     // The fix removes this unconditional override, so the only state-write
     // arms inside state 4 (for-loop last) should be the loop-back and exit
-    // arms — both guarded by `_t0_loop_cnt` comparisons against `burst_len - 1`.
+    // arms — both guarded by `_t0_loop_cnt_0` comparisons against `burst_len - 1`.
+    // (The counter is named `_t0_loop_cnt_0` since issue #414: each `for`
+    // instance in a thread allocates its own `_loop_cnt_{id}` register.)
     assert!(!sv.contains("if (1'b1) begin\n          _t0_state"),
         "buggy unconditional override should not be emitted:\n{sv}");
     // The for-loop's exit arm should land at the rejoin state (post-if
     // wait_cycles), not at the start of the else branch.
     // The else branch is `wait 1 cycle` (one state); the rejoin is the
-    // post-if `wait 1 cycle` (one state). With the fix, `_t0_loop_cnt >=
+    // post-if `wait 1 cycle` (one state). With the fix, `_t0_loop_cnt_0 >=
     // (burst_len - 1)` should write the rejoin state, not else_base.
-    let exit_arm = sv.contains("if (_t0_loop_cnt >= 16'(burst_len - 1)) begin")
-        || sv.contains("if (_t0_loop_cnt >= 16'(burst_len-1)) begin");
+    let exit_arm = sv.contains("if (_t0_loop_cnt_0 >= 16'(burst_len - 1)) begin")
+        || sv.contains("if (_t0_loop_cnt_0 >= 16'(burst_len-1)) begin");
     assert!(exit_arm,
-        "for-loop exit arm should compare loop_cnt against burst_len-1:\n{sv}");
+        "for-loop exit arm should compare loop_cnt_0 against burst_len-1:\n{sv}");
 }
 
 // ── Doc comments and frontmatter (V1) ─────────────────────────────────────────

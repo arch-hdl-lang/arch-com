@@ -2312,8 +2312,8 @@ fn lower_module_threads(
     let read_only: HashSet<String> = all_read.iter()
         .filter(|n| !all_comb_driven.contains(*n) && !all_seq_driven.contains(*n)
                 && **n != clk_name && **n != rst_name
-                && !n.starts_with("_t") // per-thread counters (_t0_cnt, _t0_loop_cnt, etc.)
-                && **n != "_cnt" && **n != "_loop_cnt"
+                && !n.starts_with("_t") // per-thread counters (_t0_cnt, _t0_loop_cnt_0, etc.)
+                && **n != "_cnt" && !n.starts_with("_loop_cnt")
                 && !lock_internal.contains(*n)
                 && !bus_port_map.contains_key(*n))
         .cloned().collect();
@@ -2621,17 +2621,26 @@ fn lower_module_threads(
             ));
             continue;
         }
-        let mut raw_states = match partition_thread_body(&t.body, sp, cnt_width) {
+        let mut loop_id_gen: u32 = 0;
+        let mut raw_states = match partition_thread_body_with_loop_ids(&t.body, sp, cnt_width, &mut loop_id_gen) {
             Ok(s) => s,
             Err(e) => { errors.push(e); continue; }
         };
+        let num_loop_counters = loop_id_gen as usize;
 
         // Rename per-thread: lock signals, counter regs
-        // Counters: _cnt → _t{ti}_cnt, _loop_cnt → _t{ti}_loop_cnt
-        let cnt_renames = vec![
+        // Counters: _cnt → _t{ti}_cnt, _loop_cnt_{id} → _t{ti}_loop_cnt_{id}
+        // Each `for` instance in the thread gets a distinct counter
+        // (issue #414) — rename all of them with the same per-thread prefix.
+        let mut cnt_renames = vec![
             ("_cnt".to_string(), format!("_t{}_cnt", ti)),
-            ("_loop_cnt".to_string(), format!("_t{}_loop_cnt", ti)),
         ];
+        for id in 0..num_loop_counters {
+            cnt_renames.push((
+                format!("_loop_cnt_{}", id),
+                format!("_t{}_loop_cnt_{}", ti, id),
+            ));
+        }
         for (old, new) in &cnt_renames {
             for state in &mut raw_states {
                 rename_ident_in_comb_stmts(&mut state.comb_stmts, old, new);
@@ -3102,15 +3111,22 @@ fn lower_module_threads(
                 reset: RegReset::None, guard: None, multicycle: None, span: sp,
             }));
         }
-        let has_for = thread_has_for(&t.body);
-        if has_for {
+        // Per-`for`-instance loop counter regs. Each `for` (including nested
+        // ones) gets its own `_t{ti}_loop_cnt_{id}` register so the inner
+        // loop's increment doesn't clobber the outer loop's index
+        // (issue #414). The id matches the allocation order used by
+        // `lower_thread_for` via the shared `loop_id_gen`.
+        let num_for_instances = count_for_instances(&t.body);
+        if num_for_instances > 0 {
             let for_cnt_width = infer_for_cnt_width(&t.body, &type_map);
-            merged_body.push(ModuleBodyItem::RegDecl(RegDecl {
-                name: Ident::new(format!("_t{}_loop_cnt", ti), sp),
-                ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(for_cnt_width as u64)), sp))),
-                init: Some(make_zero_expr(sp)),
-                reset: RegReset::None, guard: None, multicycle: None, span: sp,
-            }));
+            for id in 0..num_for_instances {
+                merged_body.push(ModuleBodyItem::RegDecl(RegDecl {
+                    name: Ident::new(format!("_t{}_loop_cnt_{}", ti, id), sp),
+                    ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(for_cnt_width as u64)), sp))),
+                    init: Some(make_zero_expr(sp)),
+                    reset: RegReset::None, guard: None, multicycle: None, span: sp,
+                }));
+            }
         }
     }
 
@@ -4312,14 +4328,32 @@ fn thread_has_wait_cycles(stmts: &[ThreadStmt]) -> bool {
     })
 }
 
-fn thread_has_for(stmts: &[ThreadStmt]) -> bool {
-    stmts.iter().any(|s| match s {
-        ThreadStmt::For { .. } => true,
-        ThreadStmt::IfElse(ie) => thread_has_for(&ie.then_stmts) || thread_has_for(&ie.else_stmts),
-        ThreadStmt::ForkJoin(branches, _) => branches.iter().any(|br| thread_has_for(br)),
-        ThreadStmt::Lock { body, .. } | ThreadStmt::DoUntil { body, .. } => thread_has_for(body),
-        _ => false,
-    })
+/// Count every `for` instance in `stmts`, including those nested inside other
+/// `for`/`lock`/`fork`/`if-else`/`do-until` bodies. Used to size the per-thread
+/// loop-counter reg allocation: each `for` needs its own `_loop_cnt_{id}` so
+/// nested loops don't clobber each other's running index (issue #414).
+fn count_for_instances(stmts: &[ThreadStmt]) -> usize {
+    let mut n = 0;
+    for s in stmts {
+        match s {
+            ThreadStmt::For { body, .. } => {
+                n += 1;
+                n += count_for_instances(body);
+            }
+            ThreadStmt::IfElse(ie) => {
+                n += count_for_instances(&ie.then_stmts);
+                n += count_for_instances(&ie.else_stmts);
+            }
+            ThreadStmt::ForkJoin(branches, _) => {
+                for br in branches { n += count_for_instances(br); }
+            }
+            ThreadStmt::Lock { body, .. } | ThreadStmt::DoUntil { body, .. } => {
+                n += count_for_instances(body);
+            }
+            _ => {}
+        }
+    }
+    n
 }
 
 /// Redirect the natural fallthrough of `states[idx]` to `target`.
@@ -4554,6 +4588,7 @@ fn try_fuse_wait_ifelse(
     states: &mut Vec<ThreadFsmState>,
     ie: &ThreadIfElse,
     cnt_width: u32,
+    loop_id_gen: &mut u32,
 ) -> Result<bool, CompileError> {
     let Some(wait_idx) = states.len().checked_sub(1) else {
         return Ok(false);
@@ -4576,7 +4611,7 @@ fn try_fuse_wait_ifelse(
         let mut branch_states = if body.is_empty() {
             Vec::new()
         } else {
-            partition_thread_body(body, ie.span, cnt_width)?
+            partition_thread_body_with_loop_ids(body, ie.span, cnt_width, loop_id_gen)?
         };
         let hoisted = try_hoist_initial_thread_state(&mut branch_states);
         let base = states.len();
@@ -4640,13 +4675,19 @@ fn try_fuse_wait_ifelse(
     Ok(true)
 }
 
-/// Partition thread body into FSM states.
-fn partition_thread_body(
+/// Partition thread body into FSM states, sharing a loop-counter id
+/// generator with the caller. Each `for` instance encountered allocates a
+/// fresh id from `loop_id_gen` and writes it back via the `&mut u32` so the
+/// caller can declare the matching `_loop_cnt_{id}` regs. Nested `for`s
+/// must each get a distinct counter — sharing one causes the inner loop
+/// to clobber the outer's running index (issue #414).
+fn partition_thread_body_with_loop_ids(
     body: &[ThreadStmt],
     span: Span,
     cnt_width: u32,
+    loop_id_gen: &mut u32,
 ) -> Result<Vec<ThreadFsmState>, CompileError> {
-    partition_thread_body_impl(body, span, cnt_width, None)
+    partition_thread_body_impl(body, span, cnt_width, None, loop_id_gen)
 }
 
 /// Validate the body of a `do … until cond;` statement.
@@ -4708,13 +4749,18 @@ fn disallow_nested_control_in_do_until(
     Ok(())
 }
 
-fn partition_tlm_target_thread_body(
+/// TLM-target variant of [`partition_thread_body_with_loop_ids`] that also
+/// collects early-return expressions. The number of loop counters allocated
+/// is reflected through `loop_id_gen` so the caller can declare matching
+/// `_loop_cnt_{id}` regs.
+fn partition_tlm_target_thread_body_with_loop_ids(
     body: &[ThreadStmt],
     span: Span,
     cnt_width: u32,
     return_exprs: &mut Vec<Expr>,
+    loop_id_gen: &mut u32,
 ) -> Result<Vec<ThreadFsmState>, CompileError> {
-    partition_thread_body_impl(body, span, cnt_width, Some(return_exprs))
+    partition_thread_body_impl(body, span, cnt_width, Some(return_exprs), loop_id_gen)
 }
 
 fn partition_thread_body_impl(
@@ -4722,6 +4768,7 @@ fn partition_thread_body_impl(
     span: Span,
     cnt_width: u32,
     mut target_returns: Option<&mut Vec<Expr>>,
+    loop_id_gen: &mut u32,
 ) -> Result<Vec<ThreadFsmState>, CompileError> {
     let mut states: Vec<ThreadFsmState> = Vec::new();
     let mut cur_comb: Vec<Stmt> = Vec::new();
@@ -4911,7 +4958,7 @@ fn partition_thread_body_impl(
                         };
                         flush();
                         // Lower the lock+do into states first.
-                        let mut lock_states = lower_thread_lock(&resource.name, lock_body, *lock_sp, cnt_width)?;
+                        let mut lock_states = lower_thread_lock(&resource.name, lock_body, *lock_sp, cnt_width, loop_id_gen)?;
                         // Layer Mealy gating on the FIRST state — that's
                         // where the lock-arbitration's `if (grant)` wrapper
                         // also lives. Wrap its existing comb in `if (cond)`
@@ -5004,7 +5051,7 @@ fn partition_thread_body_impl(
                         && cur_seq.is_empty()
                         && !then_has_return
                         && !else_has_return
-                        && try_fuse_wait_ifelse(&mut states, ie, cnt_width)?
+                        && try_fuse_wait_ifelse(&mut states, ie, cnt_width, loop_id_gen)?
                     {
                         continue;
                     }
@@ -5041,9 +5088,9 @@ fn partition_thread_body_impl(
                     let then_base = states.len();
                     if !ie.then_stmts.is_empty() {
                         let mut then_states = if let Some(rets) = target_returns.as_deref_mut() {
-                            partition_thread_body_impl(&ie.then_stmts, ie.span, cnt_width, Some(rets))?
+                            partition_thread_body_impl(&ie.then_stmts, ie.span, cnt_width, Some(rets), loop_id_gen)?
                         } else {
-                            partition_thread_body(&ie.then_stmts, ie.span, cnt_width)?
+                            partition_thread_body_with_loop_ids(&ie.then_stmts, ie.span, cnt_width, loop_id_gen)?
                         };
                         let then_len = then_states.len();
                         for fs in &mut then_states {
@@ -5066,9 +5113,9 @@ fn partition_thread_body_impl(
                     let else_base = states.len();
                     if !ie.else_stmts.is_empty() {
                         let mut else_states = if let Some(rets) = target_returns.as_deref_mut() {
-                            partition_thread_body_impl(&ie.else_stmts, ie.span, cnt_width, Some(rets))?
+                            partition_thread_body_impl(&ie.else_stmts, ie.span, cnt_width, Some(rets), loop_id_gen)?
                         } else {
-                            partition_thread_body(&ie.else_stmts, ie.span, cnt_width)?
+                            partition_thread_body_with_loop_ids(&ie.else_stmts, ie.span, cnt_width, loop_id_gen)?
                         };
                         let else_len = else_states.len();
                         for fs in &mut else_states {
@@ -5153,7 +5200,7 @@ fn partition_thread_body_impl(
                     });
                 }
                 // Lower fork/join via product-state expansion
-                let mut fork_states = lower_fork_join(branches, *sp, cnt_width)?;
+                let mut fork_states = lower_fork_join(branches, *sp, cnt_width, loop_id_gen)?;
                 // Adjust multi_transitions targets: product indices → global state indices
                 let fork_base = states.len();
                 for fs in &mut fork_states {
@@ -5166,11 +5213,17 @@ fn partition_thread_body_impl(
                 states.extend(fork_states);
             }
             ThreadStmt::For { var, start, end, body, span } => {
+                // Allocate this for-loop's unique counter id and name. Nested
+                // for-loops inside `body` get their own ids via the recursive
+                // partition inside `lower_thread_for`. Issue #414: without
+                // per-instance ids, all `for`s in a thread shared one
+                // `_loop_cnt`, so an inner loop clobbered the outer.
+                let loop_id = *loop_id_gen;
+                let cnt_name = format!("_loop_cnt_{}", loop_id);
                 // Counter init: merge into the last existing state (if it has
                 // unconditional advance) to avoid a dead cycle. Otherwise flush.
-                let cnt_name = "_loop_cnt";
                 let cnt_init = Stmt::Assign(RegAssign {
-                    target: Expr::new(ExprKind::Ident(cnt_name.to_string()), *span),
+                    target: Expr::new(ExprKind::Ident(cnt_name.clone()), *span),
                     value: start.clone(),
                     span: *span,
                 });
@@ -5204,7 +5257,7 @@ fn partition_thread_body_impl(
                         });
                     }
                 }
-                let mut for_states = lower_thread_for(var, start, end, body, *span, cnt_width)?;
+                let mut for_states = lower_thread_for(var, start, end, body, *span, cnt_width, loop_id_gen)?;
                 // Adjust multi_transitions targets (relative → absolute)
                 let for_base = states.len();
                 let for_len = for_states.len();
@@ -5248,7 +5301,7 @@ fn partition_thread_body_impl(
                         terminal_return: None,
                     });
                 }
-                let lock_states = lower_thread_lock(&resource.name, body, *span, cnt_width)?;
+                let lock_states = lower_thread_lock(&resource.name, body, *span, cnt_width, loop_id_gen)?;
                 states.extend(lock_states);
             }
             ThreadStmt::DoUntil { body, cond, span: do_sp } => {
@@ -5438,6 +5491,7 @@ fn lower_fork_join(
     branches: &[Vec<ThreadStmt>],
     span: Span,
     cnt_width: u32,
+    loop_id_gen: &mut u32,
 ) -> Result<Vec<ThreadFsmState>, CompileError> {
     if branches.len() < 2 {
         return Err(CompileError::general("fork/join requires at least 2 branches", span));
@@ -5446,7 +5500,7 @@ fn lower_fork_join(
     // Partition each branch, append a "done" hold state to each
     let mut branch_states: Vec<Vec<ThreadFsmState>> = Vec::new();
     for (i, br) in branches.iter().enumerate() {
-        let mut states = partition_thread_body(br, span, cnt_width).map_err(|e| {
+        let mut states = partition_thread_body_with_loop_ids(br, span, cnt_width, loop_id_gen).map_err(|e| {
             CompileError::general(&format!("in fork branch {}: {}", i, e), span)
         })?;
         if states.is_empty() {
@@ -5579,9 +5633,13 @@ fn lower_fork_join(
 /// Generates: INIT state (set counter = start), body states, LOOP_BACK state
 /// (increment counter, check if counter <= end → loop or exit).
 ///
-/// The loop variable is replaced with the `_loop_cnt` register in all body expressions.
-/// The counter register is added to the FSM's regs by lower_single_thread (via a naming
-/// convention: any state that references `_loop_cnt` triggers the reg creation).
+/// Each `for` instance receives a distinct counter register named
+/// `_loop_cnt_{id}` (id allocated from the shared `loop_id_gen`). This is
+/// critical for nested for-loops: if the inner and outer loops shared a
+/// counter, the inner loop's increment would clobber the outer loop's
+/// running index, making the outer exit early (issue #414). The per-thread
+/// rename pass later prefixes the name with `_t{ti}_`, producing the final
+/// register name `_t{ti}_loop_cnt_{id}`.
 fn lower_thread_for(
     var: &Ident,
     _start: &Expr,
@@ -5589,16 +5647,23 @@ fn lower_thread_for(
     body: &[ThreadStmt],
     span: Span,
     cnt_width: u32,
+    loop_id_gen: &mut u32,
 ) -> Result<Vec<ThreadFsmState>, CompileError> {
+    // Allocate a unique counter id for this for-loop instance.
+    let loop_id = *loop_id_gen;
+    *loop_id_gen += 1;
+    let cnt_name = format!("_loop_cnt_{}", loop_id);
 
-    // Replace loop variable with `_loop_cnt` in the body
-    let cnt = "_loop_cnt";
+    // Replace loop variable with this counter in the body. Nested `for`
+    // loops inside `body` will allocate their own ids during the
+    // recursive partition below, so they each get distinct counter names.
     let rewritten_body: Vec<ThreadStmt> = body.iter()
-        .map(|s| rewrite_loop_var(s, &var.name, cnt))
+        .map(|s| rewrite_loop_var(s, &var.name, &cnt_name))
         .collect();
 
-    // Partition the rewritten body into states
-    let body_states = partition_thread_body(&rewritten_body, span, cnt_width)?;
+    // Partition the rewritten body into states. Share `loop_id_gen` so
+    // any nested `for` allocates a fresh id.
+    let body_states = partition_thread_body_with_loop_ids(&rewritten_body, span, cnt_width, loop_id_gen)?;
     if body_states.is_empty() {
         return Err(CompileError::general(
             "for loop body must contain at least one wait statement",
@@ -5619,7 +5684,7 @@ fn lower_thread_for(
     //   - counter increment (seq, guarded by transition condition)
     //   - multi_transitions: (body_cond && cnt < end → loop back),
     //                        (body_cond && cnt >= end → exit)
-    let cnt_ident = Expr::new(ExprKind::Ident(cnt.to_string()), span);
+    let cnt_ident = Expr::new(ExprKind::Ident(cnt_name.clone()), span);
     let cnt_inc = Stmt::Assign(RegAssign {
         target: cnt_ident.clone(),
         value: Expr::new(
@@ -5653,8 +5718,99 @@ fn lower_thread_for(
         vec![Expr::new(ExprKind::Literal(LitKind::Dec(cnt_width as u64)), span)],
     ), span);
 
+    let result_len = result.len();
     if let Some(last) = result.last_mut() {
-        if let Some(body_cond) = last.transition_cond.take() {
+        if !last.multi_transitions.is_empty() {
+            // Last body state already carries multi_transitions — typically
+            // because the body's last statement is itself a `for` loop
+            // (issue #414: nested-for case) whose own `lower_thread_for`
+            // populated [(inner_back, 0), (inner_exit, NEXT_resolved)]
+            // and the trailing-seq-merge optimization folded any
+            // following seq assigns into this state. We must preserve
+            // the inner loop-back and wrap only the inner-exit
+            // transitions with our counter advance, so the outer
+            // counter only ticks once per completed inner iteration.
+            // The overwrite-and-rebuild strategy used in the "no
+            // multi_transitions" branch below would destroy the inner
+            // loop-back and increment the outer counter every cycle.
+            //
+            // An "inner-exit" transition is one whose target points
+            // PAST the for-loop's own body (i.e. target >= result.len()
+            // in this for's local index space — the inner For arm
+            // resolved its NEXT sentinel to `for_base + for_len`,
+            // which in this body's local frame equals `result.len()`).
+            // Other transitions (loop-back to 0, jumps within the body)
+            // are kept as-is.
+            let prev = std::mem::take(&mut last.multi_transitions);
+            let mut new_trans: Vec<(Expr, usize)> = Vec::with_capacity(prev.len() + 1);
+            let mut inner_exit_conds: Vec<Expr> = Vec::new();
+            for (cond, target) in prev {
+                if target >= result_len && !thread_target_is_special(target) {
+                    inner_exit_conds.push(cond);
+                } else {
+                    new_trans.push((cond, target));
+                }
+            }
+            // Fold all inner-exit conditions into one (cond_a || cond_b || ...).
+            let inner_exit = match inner_exit_conds.len() {
+                0 => {
+                    // No inner-exit transition was found — fall back to
+                    // the unconditional-advance behavior. This shouldn't
+                    // normally happen for a nested-for shape, but be
+                    // robust if a future construct produces a non-empty
+                    // multi_transitions with only intra-body targets.
+                    last.seq_stmts.push(cnt_inc);
+                    last.multi_transitions = new_trans;
+                    last.multi_transitions.push((
+                        Expr::new(ExprKind::Binary(BinOp::Lt, Box::new(cnt_ident.clone()), Box::new(end_w.clone())), span),
+                        loop_back_target,
+                    ));
+                    last.multi_transitions.push((
+                        Expr::new(ExprKind::Binary(BinOp::Gte, Box::new(cnt_ident.clone()), Box::new(end_w.clone())), span),
+                        usize::MAX,
+                    ));
+                    return Ok(result);
+                }
+                1 => inner_exit_conds.pop().unwrap(),
+                _ => {
+                    let mut acc = inner_exit_conds.remove(0);
+                    for c in inner_exit_conds {
+                        acc = Expr::new(ExprKind::Binary(BinOp::Or, Box::new(acc), Box::new(c)), span);
+                    }
+                    acc
+                }
+            };
+            let inner_exit_for_loop = inner_exit.clone();
+            let inner_exit_for_exit = inner_exit.clone();
+            // Outer counter increment, guarded by inner-exit so it only
+            // ticks once per completed inner iteration.
+            last.seq_stmts.push(Stmt::IfElse(IfElse {
+                cond: inner_exit,
+                then_stmts: vec![cnt_inc],
+                else_stmts: Vec::new(),
+                unique: false,
+                span,
+            }));
+            // Outer loop-back: inner_exit && cnt < end → 0
+            let outer_loop_cond = Expr::new(ExprKind::Binary(
+                BinOp::And,
+                Box::new(inner_exit_for_loop),
+                Box::new(Expr::new(ExprKind::Binary(
+                    BinOp::Lt, Box::new(cnt_ident.clone()), Box::new(end_w.clone()),
+                ), span)),
+            ), span);
+            // Outer exit: inner_exit && cnt >= end → NEXT (sentinel)
+            let outer_exit_cond = Expr::new(ExprKind::Binary(
+                BinOp::And,
+                Box::new(inner_exit_for_exit),
+                Box::new(Expr::new(ExprKind::Binary(
+                    BinOp::Gte, Box::new(cnt_ident.clone()), Box::new(end_w.clone()),
+                ), span)),
+            ), span);
+            new_trans.push((outer_loop_cond, loop_back_target));
+            new_trans.push((outer_exit_cond, usize::MAX));
+            last.multi_transitions = new_trans;
+        } else if let Some(body_cond) = last.transition_cond.take() {
             // Last body state had a transition_cond (e.g. do..until).
             // Replace with multi_transitions: loop-back and exit, both
             // guarded by the original body condition AND counter check.
@@ -5720,6 +5876,7 @@ fn lower_thread_lock(
     body: &[ThreadStmt],
     span: Span,
     cnt_width: u32,
+    loop_id_gen: &mut u32,
 ) -> Result<Vec<ThreadFsmState>, CompileError> {
     let req_signal = format!("_{}_req", resource_name);
     let grant_signal = format!("_{}_grant", resource_name);
@@ -5731,7 +5888,7 @@ fn lower_thread_lock(
         span,
     });
 
-    let mut body_states = partition_thread_body(body, span, cnt_width)?;
+    let mut body_states = partition_thread_body_with_loop_ids(body, span, cnt_width, loop_id_gen)?;
 
     // Add req=1 to all body states
     for bs in &mut body_states {
@@ -10597,30 +10754,41 @@ fn inline_lower_tlm_target_with_io(
     }
 
     let cnt_width = infer_for_cnt_width(&body_before_return, &HashMap::new()).max(32);
-    let loop_cnt_name = format!("_tlm_{port}_{method_name}{}_loop_cnt", io.suffix);
+    let loop_cnt_name_base = format!("_tlm_{port}_{method_name}{}_loop_cnt", io.suffix);
     let mut early_return_exprs: Vec<Expr> = Vec::new();
+    let mut loop_id_gen: u32 = 0;
     let mut body_states = if body_before_return.is_empty() {
         Vec::new()
     } else {
-        partition_tlm_target_thread_body(
+        partition_tlm_target_thread_body_with_loop_ids(
             &body_before_return,
             span,
             cnt_width,
             &mut early_return_exprs,
+            &mut loop_id_gen,
         )?
     };
-    for state in &mut body_states {
-        rename_ident_in_comb_stmts(&mut state.comb_stmts, "_loop_cnt", &loop_cnt_name);
-        rename_ident_in_stmts(&mut state.seq_stmts, "_loop_cnt", &loop_cnt_name);
-        if let Some(cond) = &mut state.transition_cond {
-            rename_ident_in_expr(cond, "_loop_cnt", &loop_cnt_name);
+    let num_loop_counters = loop_id_gen as usize;
+    // Each `for` instance in the TLM target body got its own
+    // `_loop_cnt_{id}` placeholder; rename each to a unique
+    // `<base>_{id}` so nested loops don't share a counter (issue #414).
+    let loop_renames: Vec<(String, String)> = (0..num_loop_counters)
+        .map(|id| (format!("_loop_cnt_{}", id), format!("{}_{}", loop_cnt_name_base, id)))
+        .collect();
+    for (old, new) in &loop_renames {
+        for state in &mut body_states {
+            rename_ident_in_comb_stmts(&mut state.comb_stmts, old, new);
+            rename_ident_in_stmts(&mut state.seq_stmts, old, new);
+            if let Some(cond) = &mut state.transition_cond {
+                rename_ident_in_expr(cond, old, new);
+            }
+            for (cond, _) in &mut state.multi_transitions {
+                rename_ident_in_expr(cond, old, new);
+            }
         }
-        for (cond, _) in &mut state.multi_transitions {
-            rename_ident_in_expr(cond, "_loop_cnt", &loop_cnt_name);
+        for expr in &mut early_return_exprs {
+            rename_ident_in_expr(expr, old, new);
         }
-    }
-    for expr in &mut early_return_exprs {
-        rename_ident_in_expr(expr, "_loop_cnt", &loop_cnt_name);
     }
 
     let mut response_exprs = early_return_exprs;
@@ -10993,9 +11161,12 @@ fn inline_lower_tlm_target_with_io(
             span,
         }));
     }
-    if thread_has_for(&body_before_return) {
+    // One loop-counter reg per `for` instance in the TLM target body
+    // (matches the unique names assigned by `lower_thread_for` via the
+    // shared `loop_id_gen`).
+    for id in 0..num_loop_counters {
         items.push(ModuleBodyItem::RegDecl(RegDecl {
-            name: mk_ident(loop_cnt_name),
+            name: mk_ident(format!("{}_{}", loop_cnt_name_base, id)),
             ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(cnt_width as u64)), span))),
             init: Some(Expr::new(ExprKind::Literal(LitKind::Dec(0)), span)),
             reset: RegReset::None,
