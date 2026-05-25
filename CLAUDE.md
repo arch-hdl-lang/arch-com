@@ -10,6 +10,22 @@ change, and AI co-author trailers break the CLA Assistant (which requires every
 listed author to individually sign the CLA — `noreply@anthropic.com` can't).
 Just write a normal commit message with no AI attribution trailer.
 
+## Coding style
+
+### Avoid `if false { ... }` dead stubs during incremental edits
+
+When refactoring, don't wrap large blocks of code in `if false { ... }` to keep
+them parseable during intermediate states. The Rust compiler doesn't warn on
+`if false` bodies, the dead code is invisible to `grep`, and a reviewer scanning
+the diff may miss that an entire branch became unreachable.
+
+Better patterns:
+- Comment out the old block (`// ...`) — greppable, visible in diff.
+- Delete entirely and rely on git history if you need to compare against the
+  old shape mid-refactor.
+- Use `todo!()` or `unreachable!()` for *intentionally* unreachable code (with
+  appropriate runtime panic semantics).
+
 ## Project Overview
 
 `arch-com` is a compiler for **ARCH**, a purpose-built hardware description language (HDL) for micro-architecture work. The compiler ingests `.arch` source files and emits deterministic, readable SystemVerilog. The language is explicitly designed to be generated correctly by LLMs from natural-language hardware descriptions.
