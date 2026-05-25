@@ -84,6 +84,40 @@ struct SharedHarnessEntry {
     args: Vec<Expr>,
 }
 
+/// One indexed-port group collected during `emit_inst`'s connection walk.
+/// Both arbiter `port_arrays` and Vec-of-bus packed ports follow the same
+/// "many per-element entries → one grouped connection" shape; the kind
+/// discriminates the emit strategy.
+struct IndexedGroup {
+    /// Base port on the child (arbiter group name, or VOB port name).
+    base_port: String,
+    kind: GroupKind,
+    /// Arbiter case: (idx, signal_str) pairs to drive the synthesized wire.
+    arb_entries: Vec<(u32, String)>,
+    /// VOB case: per-index parent expr (`ins[k] <- expr_k`).
+    vob_entries: std::collections::HashMap<u32, Expr>,
+}
+
+enum GroupKind {
+    /// Arbiter `port_arrays` — synthesize a temp wire array
+    /// `__<inst>_<group>_<sig>[N]` + per-index drives + one whole-vector
+    /// connection feeding the child's vector port.
+    ArbiterPortArray {
+        sig: String,
+        dir: Direction,
+        ty: TypeExpr,
+        n: u64,
+    },
+    /// Vec-of-bus packed child port — emit a SV packed concat
+    /// `.<port>_<sig>({elem_{N-1}, ..., elem_0})` per bus signal, no
+    /// synthesized intermediate wires.
+    VecOfBusPacked {
+        n: u32,
+        bus_name: String,
+        bus_params: Vec<ParamAssign>,
+    },
+}
+
 pub struct Codegen<'a> {
     pub symbols: &'a SymbolTable,
     pub source: &'a SourceFile,
@@ -2286,34 +2320,16 @@ impl<'a> Codegen<'a> {
                 _ => None,
             }).unwrap_or_default();
 
-        // Map port_name → (group, idx, sig_name) for the per-requester
-        // connections so we can group them after the main loop.
-        let mut indexed_group_conns: std::collections::HashMap<
-            (String, String),  // (group_name, sig_name)
-            Vec<(u32, String)>,  // (idx, signal_str)
-        > = std::collections::HashMap::new();
-        let mut indexed_group_dir: std::collections::HashMap<
-            (String, String), Direction,
-        > = std::collections::HashMap::new();
-        let mut indexed_group_ty: std::collections::HashMap<
-            (String, String), TypeExpr,
-        > = std::collections::HashMap::new();
-
-        // Per-element Vec-of-bus connection groups. Inst connections like
-        //   `ins[0] <- edges[0][j];  ins[1] <- edges[1][j];`
-        // get parsed with per-element port names `ins_0`, `ins_1`, but the
-        // child's actual SV port is packed `ins_<sig> [N-1:0]`. We can't
-        // emit `.ins_0_<sig>(...)` — that port doesn't exist anymore.
-        // Instead, gather all per-element connections for the same
-        // (base_port, bus_signal) and emit ONE packed concat:
-        //   `.ins_<sig>({elem_{N-1}_<sig>, ..., elem_0_<sig>})`
-        // Map key is (base_port, idx), value is the per-element parent expr
-        // (one for each bus signal will be derived from the same parent expr).
-        let mut vob_per_elem: std::collections::HashMap<
-            (String, u32),  // (base_port_name, elem_idx)
-            Expr,            // per-element parent expr (e.g. `edges[m][j]`)
-        > = std::collections::HashMap::new();
-        // (base_port_name, N) → bus_name, bus_params for packed emit.
+        // Unified per-element "indexed-port-group" gather state. Both the
+        // arbiter `port_arrays` flattening (`.req0_valid` → packed wire +
+        // per-bit drives) and the Vec-of-bus packed-port flattening
+        // (`ins[k] <- expr_k` → `{...}` concat per bus signal) follow the
+        // same shape: walk inst connections, bucket per-element entries by
+        // base port, then emit one grouped output per (port[, signal]).
+        // See `IndexedGroup` / `GroupKind` for the data layout.
+        let mut indexed_groups: std::collections::HashMap<String, IndexedGroup> =
+            std::collections::HashMap::new();
+        // (base_port_name, N) → bus_name, bus_params for VOB packed emit.
         let vob_port_meta: std::collections::HashMap<String, (u32, String, Vec<ParamAssign>)> =
             target_vec_of_bus_ports.iter()
                 .map(|(name, n, bus_name, bus_params)| (name.clone(), (*n, bus_name.clone(), bus_params.clone())))
@@ -2336,12 +2352,25 @@ impl<'a> Codegen<'a> {
             });
             if let Some((group, idx, sig, dir, ty)) = matched {
                 let sig_str = self.emit_expr_str(&c.signal);
-                indexed_group_conns
-                    .entry((group.clone(), sig.clone()))
-                    .or_default()
-                    .push((idx, sig_str));
-                indexed_group_dir.insert((group.clone(), sig.clone()), dir);
-                indexed_group_ty.insert((group, sig), ty);
+                // Arbiter case is keyed by (group, sig) — we synthesize a
+                // separate temp wire per (group, sig) pair, so use the
+                // concatenated key as the map slot.
+                let key = format!("{group}.{sig}");
+                let n = target_port_arrays.iter()
+                    .find(|(g, _, _)| *g == group)
+                    .map(|(_, n, _)| *n)
+                    .unwrap_or(0);
+                indexed_groups
+                    .entry(key)
+                    .or_insert_with(|| IndexedGroup {
+                        base_port: group.clone(),
+                        kind: GroupKind::ArbiterPortArray {
+                            sig: sig.clone(), dir, ty: ty.clone(), n,
+                        },
+                        arb_entries: Vec::new(),
+                        vob_entries: std::collections::HashMap::new(),
+                    })
+                    .arb_entries.push((idx, sig_str));
                 continue;
             }
             // Whole-vec bus connection on a Vec-of-bus child port.
@@ -2408,7 +2437,22 @@ impl<'a> Codegen<'a> {
                     if idx < *n { Some((base.clone(), idx)) } else { None }
                 });
                 if let Some((base, idx)) = matched_vob {
-                    vob_per_elem.insert((base, idx), c.signal.clone());
+                    let Some((n, bus_name, bus_params)) = vob_port_meta.get(&base) else {
+                        continue;
+                    };
+                    indexed_groups
+                        .entry(base.clone())
+                        .or_insert_with(|| IndexedGroup {
+                            base_port: base.clone(),
+                            kind: GroupKind::VecOfBusPacked {
+                                n: *n,
+                                bus_name: bus_name.clone(),
+                                bus_params: bus_params.clone(),
+                            },
+                            arb_entries: Vec::new(),
+                            vob_entries: std::collections::HashMap::new(),
+                        })
+                        .vob_entries.insert(idx, c.signal.clone());
                     continue;
                 }
             }
@@ -2504,97 +2548,27 @@ impl<'a> Codegen<'a> {
             }
         }
 
-        // Emit packed concat connections for gathered Vec-of-bus per-element
-        // connections (`ins[k] <- expr_k` slate). For each (base_port, N),
-        // build per-signal concat in big-endian order (highest idx → LSB),
-        // matching SV's packed concat semantics.
-        let mut vob_bases: std::collections::HashSet<String> =
-            vob_per_elem.keys().map(|(b, _)| b.clone()).collect();
-        let mut vob_bases_sorted: Vec<String> = vob_bases.drain().collect();
-        vob_bases_sorted.sort();
-        for base in &vob_bases_sorted {
-            let Some((n, bus_name, bus_params)) = vob_port_meta.get(base) else { continue; };
-            let Some((Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) else { continue; };
-            let mut param_map: std::collections::HashMap<String, &Expr> = info.params.iter()
-                .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
-                .collect();
-            for pa in bus_params { param_map.insert(pa.name.name.clone(), &pa.value); }
-            let eff = info.effective_signals(&param_map);
-            for (sname, _, _) in &eff {
-                // Build {expr_{N-1}_<sig>, expr_{N-2}_<sig>, …, expr_0_<sig>}.
-                // The per-element exprs were captured at gather time as the
-                // user's `c.signal` AST nodes (e.g. `edges[m][j]`); we need
-                // to produce the per-bus-signal form by attaching .<sig>
-                // and re-emitting via emit_expr_str (which handles 2D-wire
-                // packed-slice lowering).
-                let mut parts: Vec<String> = Vec::with_capacity(*n as usize);
-                for k in (0..*n).rev() {
-                    if let Some(elem_expr) = vob_per_elem.get(&(base.clone(), k)) {
-                        // Build FieldAccess(elem_expr, sname) AST and emit.
-                        let fa = Expr::new(
-                            ExprKind::FieldAccess(
-                                Box::new(elem_expr.clone()),
-                                Ident::new(sname.clone(), elem_expr.span),
-                            ),
-                            elem_expr.span,
-                        );
-                        parts.push(self.emit_expr_str(&fa));
-                    } else {
-                        // Missing element — emit a dummy literal so SV still
-                        // parses (the typecheck pass should have rejected this
-                        // upstream).
-                        parts.push(format!("'0"));
-                    }
-                }
-                connections.push(format!(
-                    ".{}_{}({{{}}})",
-                    base, sname,
-                    parts.join(", "),
-                ));
+        // Emit grouped connections for all indexed-port groups. To preserve
+        // historical output ordering: VOB packed concats are appended to
+        // `connections` first (sorted by base port), then arbiter port-array
+        // connections (sorted by group.sig). The arbiter emit also writes
+        // synthesized `logic` decl + per-bit `assign` lines via `self.line`
+        // BEFORE the inst body.
+        let mut group_keys: Vec<&String> = indexed_groups.keys().collect();
+        group_keys.sort();
+        // First pass: VOB packed concats.
+        for key in &group_keys {
+            let g = &indexed_groups[*key];
+            if matches!(g.kind, GroupKind::VecOfBusPacked { .. }) {
+                self.emit_indexed_group(g, &mut connections);
             }
         }
-
-        // Emit synthesized vector wires + per-index drives BEFORE the inst.
-        // For inputs: drive each bit from the user's per-index expression.
-        // For outputs: drive the user's per-index target from the wire.
-        // The whole vector then connects to the inst's vector port.
-        let mut grouped_keys: Vec<(String, String)> = indexed_group_conns.keys().cloned().collect();
-        grouped_keys.sort();
-        for (group, sig) in &grouped_keys {
-            let entries = &indexed_group_conns[&(group.clone(), sig.clone())];
-            let dir = indexed_group_dir[&(group.clone(), sig.clone())];
-            let ty = indexed_group_ty[&(group.clone(), sig.clone())].clone();
-            // Find the array's count.
-            let n = target_port_arrays.iter()
-                .find(|(g, _, _)| g == group)
-                .map(|(_, n, _)| *n)
-                .unwrap_or(entries.len() as u64);
-            let wire_name = format!("__{}_{}_{}", inst.name.name, group, sig);
-            // Synthesize the vector wire as `logic [<elem>][N-1:0]`.
-            // Per-bit (`elem` == Bool) flattens to `logic [N-1:0]`.
-            let elem_ty_str = match &ty {
-                TypeExpr::Bool => format!("[{}:0]", n - 1),
-                _ => {
-                    let elem = self.emit_logic_type_str(&ty);
-                    let body = elem.strip_prefix("logic").unwrap_or(&elem).trim_start();
-                    if body.is_empty() {
-                        format!("[{}:0]", n - 1)
-                    } else {
-                        format!("[{}:0]{body}", n - 1)
-                    }
-                }
-            };
-            self.line(&format!("logic {elem_ty_str} {wire_name};"));
-            // Drive direction depends on the inst's port direction.
-            // Input (`in`) port: user assigns drive bits of the wire.
-            // Output (`out`) port: bit-selects of the wire drive user wires.
-            for (idx, sig_str) in entries {
-                match dir {
-                    Direction::In => self.line(&format!("assign {wire_name}[{idx}] = {sig_str};")),
-                    Direction::Out => self.line(&format!("assign {sig_str} = {wire_name}[{idx}];")),
-                }
+        // Second pass: arbiter port-array synthesized wires + drives.
+        for key in &group_keys {
+            let g = &indexed_groups[*key];
+            if matches!(g.kind, GroupKind::ArbiterPortArray { .. }) {
+                self.emit_indexed_group_with_decls(g, inst, &mut connections);
             }
-            connections.push(format!(".{group}_{sig}({wire_name})"));
         }
 
         self.line(&parts[0]);
@@ -2608,6 +2582,88 @@ impl<'a> Codegen<'a> {
         }
         self.indent -= 1;
         self.line(");");
+    }
+
+    /// Emit a VOB-packed-concat group: one `.<port>_<sig>({...})` connection
+    /// per bus signal. Per-element parent exprs were captured at gather
+    /// time; here we attach `.<sig>` and re-emit via `emit_expr_str`
+    /// (which handles 2D-wire packed-slice lowering).
+    fn emit_indexed_group(&self, g: &IndexedGroup, connections: &mut Vec<String>) {
+        let GroupKind::VecOfBusPacked { n, bus_name, bus_params } = &g.kind else { return };
+        let Some((Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) else { return };
+        let mut param_map: std::collections::HashMap<String, &Expr> = info.params.iter()
+            .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
+            .collect();
+        for pa in bus_params { param_map.insert(pa.name.name.clone(), &pa.value); }
+        let eff = info.effective_signals(&param_map);
+        for (sname, _, _) in &eff {
+            // Build {expr_{N-1}_<sig>, expr_{N-2}_<sig>, …, expr_0_<sig>}.
+            let mut parts: Vec<String> = Vec::with_capacity(*n as usize);
+            for k in (0..*n).rev() {
+                if let Some(elem_expr) = g.vob_entries.get(&k) {
+                    let fa = Expr::new(
+                        ExprKind::FieldAccess(
+                            Box::new(elem_expr.clone()),
+                            Ident::new(sname.clone(), elem_expr.span),
+                        ),
+                        elem_expr.span,
+                    );
+                    parts.push(self.emit_expr_str(&fa));
+                } else {
+                    // Missing element — emit dummy so SV still parses (typecheck
+                    // should have rejected this upstream).
+                    parts.push(format!("'0"));
+                }
+            }
+            connections.push(format!(
+                ".{}_{}({{{}}})",
+                g.base_port, sname,
+                parts.join(", "),
+            ));
+        }
+    }
+
+    /// Emit an arbiter port-array group: synthesize a vector wire,
+    /// per-index `assign` drives (direction-aware), and one whole-vector
+    /// `.<group>_<sig>(<wire>)` connection. The `logic`/`assign` lines
+    /// are written immediately so they appear BEFORE the inst body.
+    fn emit_indexed_group_with_decls(
+        &mut self,
+        g: &IndexedGroup,
+        inst: &InstDecl,
+        connections: &mut Vec<String>,
+    ) {
+        let GroupKind::ArbiterPortArray { sig, dir, ty, n } = &g.kind else { return };
+        let group = &g.base_port;
+        // If `n` is 0 (no port-array metadata found), fall back to the
+        // entry count — preserves prior behavior.
+        let n = if *n == 0 { g.arb_entries.len() as u64 } else { *n };
+        let wire_name = format!("__{}_{}_{}", inst.name.name, group, sig);
+        // Synthesize the vector wire as `logic [<elem>][N-1:0]`.
+        // Per-bit (`elem` == Bool) flattens to `logic [N-1:0]`.
+        let elem_ty_str = match ty {
+            TypeExpr::Bool => format!("[{}:0]", n - 1),
+            _ => {
+                let elem = self.emit_logic_type_str(ty);
+                let body = elem.strip_prefix("logic").unwrap_or(&elem).trim_start();
+                if body.is_empty() {
+                    format!("[{}:0]", n - 1)
+                } else {
+                    format!("[{}:0]{body}", n - 1)
+                }
+            }
+        };
+        self.line(&format!("logic {elem_ty_str} {wire_name};"));
+        // Drive direction depends on the inst's port direction.
+        // Input (`in`) port: user assigns drive bits of the wire.
+        // Output (`out`) port: bit-selects of the wire drive user wires.
+        for (idx, sig_str) in &g.arb_entries {
+            match dir {
+                Direction::In => self.line(&format!("assign {wire_name}[{idx}] = {sig_str};")),
+                Direction::Out => self.line(&format!("assign {sig_str} = {wire_name}[{idx}];")),
+            }
+        }
+        connections.push(format!(".{group}_{sig}({wire_name})"));
     }
 
     /// Evaluate a `ports[N]` count expression in the context of an inst's
