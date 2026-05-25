@@ -1045,15 +1045,96 @@ fn test_generate_for() {
     // a single packed vector per direction, not N separately-named scalars.
     assert!(sv.contains("input logic [N-1:0] req"), "expected Vec req port, got:\n{sv}");
     assert!(sv.contains("output logic [N-1:0] gnt"), "expected Vec gnt port, got:\n{sv}");
-    // generate_for over `inst` items always unrolls at elaboration time (no SV
-    // genvar `gen_i` block) — sim codegen has no genvar equivalent, and
-    // unrolling keeps both backends in sync. The unrolled insts are named
-    // `pt_<i>` for each iteration value.
-    assert!(sv.contains("pt_0") && sv.contains("pt_1"),
-            "expected unrolled `pt_0`, `pt_1` insts, got:\n{sv}");
-    assert!(!sv.contains("genvar i;") && !sv.contains("begin : gen_i"),
-            "expected no SV genvar `for` for inst-bearing generate_for, got:\n{sv}");
+    // generate_for over `inst` items with shape-stable connections (scalar
+    // child ports + `Index(Ident, loop_var)` against a Vec parent port,
+    // no Vec-of-bus shapes) preserves the SV genvar `for begin gen_i end`
+    // form. One compact block, scales to any N.
+    assert!(sv.contains("genvar i;"),
+            "expected `genvar i;` for shape-stable inst-bearing generate_for, got:\n{sv}");
+    assert!(sv.contains("begin : gen_i"),
+            "expected `begin : gen_i` block, got:\n{sv}");
+    // Inside the gen_i block the inst is named `pt_i` (the loop-var-
+    // bearing source name) — substitution to `pt_0`/`pt_1` happens at
+    // SV-elaboration time, not at arch-com elaboration.
+    assert!(sv.contains("PassThrough pt_i"),
+            "expected `PassThrough pt_i` instance in the gen_i block, got:\n{sv}");
+    assert!(!sv.contains("PassThrough pt_0"),
+            "shape-stable case should NOT emit flat `pt_0`, got:\n{sv}");
     insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn test_generate_for_inst_genvar_sim_behavior() {
+    // arch sim's local unroll of preserved Generate(For) blocks must
+    // produce the same wire-through behavior as the pre-#399 unroll-at-
+    // elaboration path. Without the sim-side flatten pass, eval_comb()
+    // would silently skip the Generate block and gnt would never assert.
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("examples/generate_for.arch")
+        .arg("--tb")
+        .arg("examples/tb_generate_for_genvar.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for generate_for genvar probe");
+    assert!(out.status.success(),
+        "generate_for genvar sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS generate_for genvar sim"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout));
+}
+
+#[test]
+fn test_generate_for_inst_genvar_large_n() {
+    // Probe at N=8 to demonstrate compact SV genvar form. Without the
+    // shape-stable preservation this would emit 8 flat inst blocks.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module PassThrough
+  port a: in  Bool;
+  port b: out Bool;
+
+  comb
+    b = a;
+  end comb
+end module PassThrough
+
+module Big
+  param N: const = 8;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port req: in  Vec<Bool, N>;
+  port gnt: out Vec<Bool, N>;
+
+  generate_for i in 0..N-1
+    inst pt_i: PassThrough
+      a <- req[i];
+      b -> gnt[i];
+    end inst pt_i
+  end generate_for
+end module Big
+"#;
+    let sv = compile_to_sv(source);
+    // Exactly ONE genvar block, not 8 flat insts.
+    assert!(sv.contains("genvar i;"), "expected `genvar i;`, got:\n{sv}");
+    assert!(sv.contains("for (i = 0; i <= N - 1; i = i + 1) begin : gen_i"),
+            "expected SV genvar `for` loop, got:\n{sv}");
+    // No literal-i instance names — substitution is deferred to SV elaboration.
+    assert!(!sv.contains("PassThrough pt_0"),
+            "did not expect literal `pt_0` flat inst, got:\n{sv}");
+    assert!(!sv.contains("PassThrough pt_7"),
+            "did not expect literal `pt_7` flat inst, got:\n{sv}");
+    // Single instantiation in the source body.
+    let pt_count = sv.matches("PassThrough pt_i").count();
+    assert_eq!(pt_count, 1, "expected exactly one `PassThrough pt_i`, got {pt_count}:\n{sv}");
 }
 
 #[test]
