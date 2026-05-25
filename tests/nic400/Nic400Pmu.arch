@@ -1,0 +1,92 @@
+// NIC-400 performance monitor — per-master AR/AW/R/W/B handshake counters.
+//
+// Stand-alone instrumentation block. Inputs are pre-qualified handshake
+// "event" pulses — one Bool per master per channel that asserts on a single
+// clock cycle when the corresponding handshake fires (valid && ready). The
+// PMU just integrates these pulses into wide-counter regs and exposes them
+// as Vec outputs.
+//
+// To wire it into the existing Nic400Fabric, the caller computes per-master
+// event signals from the top-level master-side handshakes, e.g.:
+//
+//     let ar_event_i = m[i].ar_valid and m[i].ar_ready;
+//     inst pmu: Nic400Pmu
+//       param NUM_MASTERS = NUM_MASTERS;
+//       clk <- clk;
+//       rst <- rst;
+//       ar_event[i] <- ar_event_i;
+//       ...
+//     end inst pmu
+//
+// Stand-alone testability: a TB that drives synthetic event pulses on the
+// event_in ports validates the counter logic without needing a full fabric.
+//
+// Notes:
+//   • Counters saturate at 2^COUNTER_W-1 (no rollover suppression) — for a
+//     32-bit counter that's ~4.3B handshakes, more than enough for any
+//     verification run. Wrapping (`+%`) is used so the type-checker is happy
+//     about the +1 not producing a wider intermediate.
+//   • R counts beats (one per r_valid && r_ready cycle), so a 16-beat read
+//     burst increments r_count by 16. Same for W. AR/AW/B increment per
+//     transaction.
+//   • No clear/reset register interface in v1 — counters reset only on the
+//     module's `rst` line. A future revision could add a per-counter clear.
+module Nic400Pmu
+  param NUM_MASTERS: const = 3;
+  param COUNTER_W:   const = 32;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  // Per-master handshake event pulses (one cycle high when the corresponding
+  // valid && ready fires on the master-facing side of the fabric).
+  port ar_event: in Vec<Bool, NUM_MASTERS>;
+  port r_event:  in Vec<Bool, NUM_MASTERS>;
+  port aw_event: in Vec<Bool, NUM_MASTERS>;
+  port w_event:  in Vec<Bool, NUM_MASTERS>;
+  port b_event:  in Vec<Bool, NUM_MASTERS>;
+
+  // Per-master counter outputs.
+  port ar_count: out Vec<UInt<COUNTER_W>, NUM_MASTERS>;
+  port r_count:  out Vec<UInt<COUNTER_W>, NUM_MASTERS>;
+  port aw_count: out Vec<UInt<COUNTER_W>, NUM_MASTERS>;
+  port w_count:  out Vec<UInt<COUNTER_W>, NUM_MASTERS>;
+  port b_count:  out Vec<UInt<COUNTER_W>, NUM_MASTERS>;
+
+  reg default: reset rst => 0;
+  reg ar_cnt_r: Vec<UInt<COUNTER_W>, NUM_MASTERS>;
+  reg r_cnt_r:  Vec<UInt<COUNTER_W>, NUM_MASTERS>;
+  reg aw_cnt_r: Vec<UInt<COUNTER_W>, NUM_MASTERS>;
+  reg w_cnt_r:  Vec<UInt<COUNTER_W>, NUM_MASTERS>;
+  reg b_cnt_r:  Vec<UInt<COUNTER_W>, NUM_MASTERS>;
+
+  seq on clk rising
+    for i in 0..NUM_MASTERS-1
+      if ar_event[i]
+        ar_cnt_r[i] <= ar_cnt_r[i] +% 1;
+      end if
+      if r_event[i]
+        r_cnt_r[i] <= r_cnt_r[i] +% 1;
+      end if
+      if aw_event[i]
+        aw_cnt_r[i] <= aw_cnt_r[i] +% 1;
+      end if
+      if w_event[i]
+        w_cnt_r[i] <= w_cnt_r[i] +% 1;
+      end if
+      if b_event[i]
+        b_cnt_r[i] <= b_cnt_r[i] +% 1;
+      end if
+    end for
+  end seq
+
+  comb
+    for i in 0..NUM_MASTERS-1
+      ar_count[i] = ar_cnt_r[i];
+      r_count[i]  = r_cnt_r[i];
+      aw_count[i] = aw_cnt_r[i];
+      w_count[i]  = w_cnt_r[i];
+      b_count[i]  = b_cnt_r[i];
+    end for
+  end comb
+end module Nic400Pmu
