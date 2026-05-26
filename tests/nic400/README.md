@@ -32,6 +32,7 @@ arbitration, ID remap, and ID-prefix return routing.
 | 6 | Register slice latency | `tb_reg_slice_channel.cpp` | ✓ PASS (1-cycle latency, sustained 1/cycle throughput, backpressure-correct) |
 | 7 | `--auto-thread-asserts` runs silently | smoke TB with the flag | ✓ PASS (32 SVA properties; Verilator `--lint-only --assert` clean) |
 | **+** | **v2 latency / throughput** | `tb_nic400_fabric_latency.cpp` | ✓ PASS — pins AR=0 cyc, R=0 cyc, 1 txn / cyc (9/9) |
+| **+** | **multi-outstanding AR / aggregate throughput** | `tb_nic400_fabric_throughput.cpp` | ✓ PASS — 6 ARs in-flight w/ R-lag, 1.00 t/c cross-slave alternation, **3.00 t/c** 3M→3S concurrent |
 | 8 | Formal property (per-slave issue→W order) | `arch formal` | △ DEFERRED — hierarchical formal v1 does not yet support sub-module `wire` declarations introduced by the lock-arbitration lowering pass (compiler limitation, not a design flaw) |
 
 ## Performance findings — v2 hierarchical design
@@ -49,6 +50,33 @@ The MasterPort/SlavePort threads use the **`wait 0+ cycle until X;`** form (Meal
 The standard `wait until X;` (Moore-style, ≥1 cycle) is also supported and is what the v1 monolithic design used; the comparison numbers above are from a quick rebuild against the Moore form.
 
 The checker `tb_nic400_fabric_latency.cpp` pins the *observed* values and fails loudly if a future change inflates them.
+
+### Multi-outstanding AR support (no design change required)
+
+A separate property checker, `tb_nic400_fabric_throughput.cpp`, exercises the
+multi-outstanding behaviour that ARM's real NIC-400 supports via a configurable
+outstanding-transaction depth. **The current design supports depth-∞
+outstanding ARs per (master, slave) pair out-of-the-box** — no ROB, no AR
+FIFO, no `outstanding` parameter is needed. Three properties pinned:
+
+| Scenario | Setup | Measured | Why it works |
+|---|---|---|---|
+| `S1` AR multi-outstanding | M0 drives `m_ar_valid=1` continuously to S0; S0 holds `ar_ready=1` but delays `r_valid` by 4 cycles | **6 ARs in flight before first R returns** | AR and R lower to *separate* threads. The AR thread loops `wait 0+ ... do drive AR until ar_ready` independently of any R-channel progress. The `ar_ch` lock is held only for the handshake cycle (Mealy form), so consecutive ARs grab/release the lock once each cycle. |
+| `S2` cross-slave alternation | M0 alternates ar_addr between slaves 0 and 1 every cycle | **1.00 t/c (8/8)** | Per-slave threads (`Ar_0`, `Ar_1`) live in independent state machines; in steady state each one re-enters its entry-wait the cycle after firing, so the `ar_ch` lock changes hands without inserting a bubble. |
+| `S3` 3-master concurrent | M0→S0, M1→S1, M2→S2 simultaneously, 6 ARs each | **3.00 t/c aggregate (18/6)** | Each (i, j) thread is a distinct lowered FSM. Threads serving different slaves drive disjoint `outs[j].ar_*` and `s.ar_*` (in `Nic400SlavePort`); no cross-slave shared resource serialises them. Linear scaling with M is the structural ceiling. |
+
+**Design takeaway**: the "depth-1 per master, per slave" caveat noted in
+the v1 source comments referred specifically to the *write* path's
+AW → W → B sequencing inside a single thread (where the thread blocks
+on B before accepting the next AW). The read path's split AR/R threads
+do not have that property. The `_ch` locks are single-driver
+guards, not throughput throttles — they only serialise the cycle-level
+drives to shared `m.*` outputs, which is exactly what AXI4 allows
+anyway (one handshake per cycle).
+
+If future work needs to add ROB-style same-ID ordering across slaves or
+enforce a hard outstanding-cap, that's a feature on top of the existing
+unbounded-depth behaviour, not a fix for a missing one.
 
 ### Inspecting the bubble
 
