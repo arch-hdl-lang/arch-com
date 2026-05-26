@@ -77,7 +77,7 @@ Nic400Read2x2 — older 2×2 read-only crossbar (predates Nic400Fabric).
 
 - **`BusAxi4.arch`** — AXI4-full with sideband (`lock`/`cache`/`prot`/`qos`/`region`) on AR/AW. Parameterized: `ADDR_W`, `DATA_W`, `STRB_W = DATA_W/8`, `ID_W`, `READ`, `WRITE`.
 - **`BusAhbLite.arch`** — AHB-Lite v1.0 from initiator (master) perspective. `target` flips directions for the slave side. Used by `Nic400AhbBridge`.
-- **`BusApb.arch`** — APB v2.0 (psel/penable/paddr/pwrite/pwdata/pstrb/pprot out; prdata/pready/pslverr in). Used by `Nic400ApbBridge`.
+- **APB bus** — uses `stdlib/BusApb.arch` with `USE_PPROT=1, USE_PSTRB=1` enabled (gives psel/penable/paddr/pwrite/pwdata/pstrb/pprot out + prdata/pready/pslverr in). The earlier NIC-400-local `BusApb` duplicate has been removed in favour of the stdlib def.
 
 ### Crossbar fabric
 
