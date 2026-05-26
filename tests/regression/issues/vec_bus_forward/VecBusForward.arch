@@ -1,0 +1,50 @@
+// Regression for issue #424: forwarding a `target Vec<Bus, N>` parent
+// port to a child instance via whole-Vec connection (`m <- m_top`) used
+// to fail with "output port `m_top_0_<sig>` is not driven", even though
+// the child's body drives every `m[i].<sig>` in a `comb` block.
+//
+// Root cause: in `check_inst_decl`'s driver-tracking, when the parent
+// signal was an `Ident` whose name referred to a `Vec<Bus,N>` port and
+// the child's bus port was itself `Vec<Bus,N>`, only the bare prefix
+// `<n>_<sig>` was credited — but the parent's undriven-port check
+// expects the per-element prefixes `<n>_0_<sig>`, …, `<n>_{N-1}_<sig>`.
+// The fix expands whole-Vec forwarding into N per-element driver
+// records under the hood. A companion fix in `src/codegen/module.rs`
+// records the SV-side packed `<port>_<sig>` names in `declared_names`
+// so the inst auto-wire-decl pass doesn't shadow the actual port decls
+// with `logic <port>_<sig>;` redundant declarations.
+bus MiniBus
+  param W: const = 8;
+
+  v_valid:  out Bool;
+  v_ready:  in  Bool;
+  v_data:   out UInt<W>;
+end bus MiniBus
+
+module Inner
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port m: target Vec<MiniBus<W=8>, 3>;
+
+  // Target perspective flips signal directions, so Inner must drive
+  // every `in`-typed signal from the bus def (here just v_ready). The
+  // `out`-typed signals (v_valid, v_data) are driven by the *initiator*
+  // upstream — Wrapper forwards them in via `m <- m_top`.
+  comb
+    for i in 0..2
+      m[i].v_ready = true;
+    end for
+  end comb
+end module Inner
+
+module Wrapper
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port m_top: target Vec<MiniBus<W=8>, 3>;
+
+  inst inner: Inner
+    clk <- clk;
+    rst <- rst;
+    m   <- m_top;
+  end inst inner
+end module Wrapper
