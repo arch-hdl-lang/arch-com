@@ -1,0 +1,83 @@
+// 3×4 NIC-400 fabric wrapper with per-master register slices.
+//
+// Drops a 1-stage `Nic400EdgeRegSlice` on every (master → fabric) edge,
+// so each master's AXI4 handshake to the inner fabric absorbs one cycle
+// of pipeline latency. The slave side is forwarded straight through —
+// integrators typically place slave-side reg slices upstream of the
+// memory controllers / peripherals rather than inside the interconnect.
+//
+// External port shape is identical to `Nic400Fabric` — drop-in
+// replacement at the system level.
+//
+// Wiring strategy:
+//   • `inner: Nic400Fabric` — full 3×4 crossbar, no internal pipelining.
+//   • The slave side uses whole-Vec bus forwarding (compiler fix #424):
+//       inner.s -> s;
+//     so the parent's `s: initiator Vec<SlaveBus, NUM_SLAVES>` directly
+//     drives `inner.s` with no per-slave gasket.
+//   • The master side cannot whole-Vec forward because we insert a
+//     slice on each edge. We declare a `Vec<MasterBus, NUM_MASTERS>`
+//     wire `m_int[]` that bridges the slices' fabric-facing `dn` ports
+//     into `inner.m[i]`, and a `generate_for` instantiates one
+//     `Nic400EdgeRegSlice` per master.
+//
+// Caveats:
+//   • STAGES=1 only. Multi-stage slicing would require a parameter on
+//     the wrapper plus chained instances of `Nic400EdgeRegSlice`.
+//   • The slice's `dn` is `initiator` perspective, so its out-typed
+//     signals drive `m_int[i]` (a wire), and its in-typed signals are
+//     driven by `m_int[i]` — that's the same shape the MasterPort
+//     uses for its `outs[j]` initiator port against the `edges[i][j]`
+//     wire in `Nic400Fabric`.
+module Nic400FabricRs1
+  param NUM_MASTERS:   const = 3;
+  param NUM_SLAVES:    const = 4;
+  param ADDR_WIDTH:    const = 32;
+  param DATA_WIDTH:    const = 32;
+  param STRB_WIDTH:    const = 4;            // = DATA_WIDTH / 8
+  param MASTER_ID_W:   const = 3;
+  param SLAVE_ID_W:    const = 5;            // MASTER_ID_W + ceil(log2(NUM_MASTERS))
+  param NS_W:          const = 2;            // ceil(log2(NUM_SLAVES))
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  // Same bus aliases as `Nic400Fabric` so the external port shape is
+  // bit-identical to the un-sliced fabric.
+  type MasterBus = BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH,
+                            ID_W=MASTER_ID_W, READ=1, WRITE=1>;
+  type SlaveBus  = BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH,
+                            ID_W=SLAVE_ID_W,  READ=1, WRITE=1>;
+
+  port m: target    Vec<MasterBus, NUM_MASTERS>;
+  port s: initiator Vec<SlaveBus, NUM_SLAVES>;
+
+  // Internal wire carrying the fabric-facing side of each per-master
+  // register slice. `inner.m[i]` will be driven by `m_int[i]`.
+  wire m_int: Vec<MasterBus, NUM_MASTERS>;
+
+  // ── Inner crossbar ───────────────────────────────────────────────────
+  // Slave side is forwarded directly (relies on fix #424); master side
+  // is wired through `m_int[]` so the per-master slices can sit in
+  // between.
+  inst inner: Nic400Fabric
+    clk <- clk;
+    rst <- rst;
+    for i in 0..NUM_MASTERS-1
+      m[i] <- m_int[i];
+    end for
+    s -> s;
+  end inst inner
+
+  // ── Per-master register slices ───────────────────────────────────────
+  // EdgeRegSlice's defaults (ID_W=3) match the master-facing AXI4 width,
+  // so we don't need to override params here.
+  generate_for i in 0..NUM_MASTERS-1
+    inst rs_i: Nic400EdgeRegSlice
+      clk <- clk;
+      rst <- rst;
+      up <- m[i];
+      dn -> m_int[i];
+    end inst rs_i
+  end generate_for
+end module Nic400FabricRs1
