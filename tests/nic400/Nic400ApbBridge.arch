@@ -1,0 +1,224 @@
+// AXI4 ↔ APB v2.0 target bridge.
+//
+// Presents an AXI4 target on `axi` (so the NIC-400 fabric can hang this off
+// one of its SlavePort downstreams as a peripheral-class slave) and drives an
+// APB v2.0 initiator on `apb` for the actual peripheral. Sized for the same
+// DATA_W/ADDR_W as the fabric (32/32 default) so it drops in alongside the
+// AHB bridge.
+//
+// What v1 implements:
+//   • AXI4 reads with arbitrary axlen (axlen+1 beats) → axlen+1 sequential
+//     APB read phases. Address increments by (1 << ar_size) per beat (AXI
+//     INCR semantics; WRAP not modelled — bridge treats every burst as INCR).
+//   • AXI4 writes with arbitrary axlen → axlen+1 sequential APB write
+//     phases. Each AXI W beat is married 1:1 with one APB access cycle:
+//     w_ready is held low through APB Setup and asserted on the pready=1
+//     cycle, so the master sees one combined handshake per beat.
+//   • APB v2.0 two-phase protocol: Setup (psel=1, penable=0) for exactly
+//     one cycle, then Access (psel=1, penable=1) until pready=1. Idle
+//     between bursts is psel=0, penable=0.
+//   • Error reporting: pslverr asserted on any beat → AXI b_resp = SLVERR
+//     (2) for writes, or AXI r_resp = SLVERR for that specific R beat.
+//     pslverr is accumulated across the burst for the final B response on
+//     writes; reads report per-beat.
+//   • Backpressure: APB pready=0 stretches the Access phase indefinitely;
+//     paddr/pwdata/pstrb/pprot/pwrite are held stable by the comb drive
+//     reading from captured registers.
+//
+// Concurrency: only one outstanding AXI transaction is supported at a time
+// per channel pair (R or W), but the read and write paths run as
+// independent threads. The APB bus only has a single initiator port, so
+// the two threads serialise their APB drives via the apb_lock resource.
+// In practice an AXI master will not have a read and a write to the same
+// peripheral in flight simultaneously through this single-target bridge,
+// but if both threads do contend, the priority mutex picks one and the
+// other waits.
+//
+// Protocol timing (single-beat AXI read, axlen=0):
+//   Cycle 0: master drives ar_valid + ar_addr. Bridge sees ar_valid in
+//            its wait state, asserts ar_ready=1 for one cycle and captures
+//            into ar_addr_r / ar_len_r / ar_size_r.
+//   Cycle 1: APB Setup — psel=1, penable=0, paddr=ar_addr_r, pwrite=0.
+//   Cycle 2+: APB Access — penable=1. Held until pready=1. On pready=1,
+//            prdata_r <= apb.prdata, rerr_r <= apb.pslverr.
+//   Cycle 3+: AXI R beat — r_valid=1, r_data=prdata_r, r_last=1. Held
+//            until r_ready=1.
+//
+// Limitations:
+//   • No AXI exclusive access (ar_lock / aw_lock are ignored).
+//   • APB v3 sideband (pwakeup) not modelled — see BusApb.arch.
+//   • AXI BURST type ignored — bridge always increments by (1 << size).
+//   • Only one outstanding R and one outstanding W at a time.
+module Nic400ApbBridge
+  param ADDR_WIDTH: const = 32;
+  param DATA_WIDTH: const = 32;
+  param STRB_WIDTH: const = 4;         // = DATA_WIDTH/8
+  param ID_WIDTH:   const = 3;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  // AXI4 target — bridge sees AR/AW/W as IN, drives R/B and the *_ready
+  // backpressure signals.
+  port axi: target    BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH,
+                              ID_W=ID_WIDTH, READ=1, WRITE=1>;
+  // APB v2.0 initiator — bridge drives control/address/data, samples response.
+  port apb: initiator BusApb<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH>;
+
+  // Mutex to serialise the multi-thread comb drives on apb.*. In steady
+  // state the two threads do not contend (one AXI master rarely has both
+  // a read and a write in flight to the same peripheral), but the lock
+  // keeps the multi-driver legal in the lowered FSM.
+  resource apb_lock: mutex<priority>;
+
+  // ── Read-path captured state ────────────────────────────────────────
+  reg ar_addr_r: UInt<ADDR_WIDTH> reset rst => 0;
+  reg ar_len_r:  UInt<8>          reset rst => 0;
+  reg ar_size_r: UInt<3>          reset rst => 0;
+  reg ar_prot_r: UInt<3>          reset rst => 0;
+  reg ar_id_r:   UInt<ID_WIDTH>   reset rst => 0;
+  reg prdata_r:  UInt<DATA_WIDTH> reset rst => 0;
+  reg rerr_r:    Bool             reset rst => false;
+
+  // ── Write-path captured state ───────────────────────────────────────
+  reg aw_addr_r: UInt<ADDR_WIDTH> reset rst => 0;
+  reg aw_len_r:  UInt<8>          reset rst => 0;
+  reg aw_size_r: UInt<3>          reset rst => 0;
+  reg aw_prot_r: UInt<3>          reset rst => 0;
+  reg aw_id_r:   UInt<ID_WIDTH>   reset rst => 0;
+  reg werr_r:    Bool             reset rst => false;
+
+  // ── Read thread ──────────────────────────────────────────────────────
+  // For each AXI AR: capture, then loop axlen+1 APB read phases, returning
+  // one AXI R beat per APB phase.
+  thread ReadXact on clk rising, rst low
+    default comb
+      axi.ar_ready = false;
+      axi.r_valid  = false;
+      axi.r_data   = 0;
+      axi.r_id     = 0;
+      axi.r_resp   = 0;
+      axi.r_last   = false;
+      apb.psel     = false;
+      apb.penable  = false;
+      apb.paddr    = 0;
+      apb.pwrite   = false;
+      apb.pwdata   = 0;
+      apb.pstrb    = 0;
+      apb.pprot    = 0;
+    end default
+    // Wait for an AR handshake. Mealy-fuse the capture into the wake state:
+    // assert ar_ready while ar_valid is high (loop exits next cycle).
+    wait 0+ cycle until axi.ar_valid;
+    do
+      axi.ar_ready = true;
+      ar_addr_r <= axi.ar_addr;
+      ar_len_r  <= axi.ar_len;
+      ar_size_r <= axi.ar_size;
+      ar_prot_r <= axi.ar_prot;
+      ar_id_r   <= axi.ar_id;
+    until true;
+    // For each beat: Setup → Access (captures prdata) → AXI R beat.
+    for b in 0..ar_len_r
+      // APB Setup phase — psel=1, penable=0 for exactly one cycle.
+      lock apb_lock
+        do
+          apb.psel    = true;
+          apb.penable = false;
+          apb.paddr   = (ar_addr_r + (b.zext<ADDR_WIDTH>() << ar_size_r)).trunc<ADDR_WIDTH>();
+          apb.pwrite  = false;
+          apb.pprot   = ar_prot_r;
+        until true;
+      end lock apb_lock
+      // APB Access phase — penable=1, hold until pready. Capture data+err.
+      lock apb_lock
+        do
+          apb.psel    = true;
+          apb.penable = true;
+          apb.paddr   = (ar_addr_r + (b.zext<ADDR_WIDTH>() << ar_size_r)).trunc<ADDR_WIDTH>();
+          apb.pwrite  = false;
+          apb.pprot   = ar_prot_r;
+          prdata_r <= apb.prdata;
+          rerr_r   <= apb.pslverr;
+        until apb.pready;
+      end lock apb_lock
+      // AXI R beat — drive r_valid=1 with captured prdata. Held until r_ready.
+      do
+        axi.r_valid = true;
+        axi.r_data  = prdata_r;
+        axi.r_id    = ar_id_r;
+        axi.r_resp  = rerr_r ? 2 : 0;
+        axi.r_last  = (b == ar_len_r);
+      until axi.r_ready;
+    end for
+  end thread ReadXact
+
+  // ── Write thread ─────────────────────────────────────────────────────
+  // For each AXI AW: capture, then loop axlen+1 APB write phases, each
+  // married 1:1 with one AXI W beat handshake. After all beats, drive B.
+  thread WriteXact on clk rising, rst low
+    default comb
+      axi.aw_ready = false;
+      axi.w_ready  = false;
+      axi.b_valid  = false;
+      axi.b_id     = 0;
+      axi.b_resp   = 0;
+      apb.psel     = false;
+      apb.penable  = false;
+      apb.paddr    = 0;
+      apb.pwrite   = false;
+      apb.pwdata   = 0;
+      apb.pstrb    = 0;
+      apb.pprot    = 0;
+    end default
+    // AW handshake — capture and clear werr_r for the new burst.
+    wait 0+ cycle until axi.aw_valid;
+    do
+      axi.aw_ready = true;
+      aw_addr_r <= axi.aw_addr;
+      aw_len_r  <= axi.aw_len;
+      aw_size_r <= axi.aw_size;
+      aw_prot_r <= axi.aw_prot;
+      aw_id_r   <= axi.aw_id;
+      werr_r    <= false;
+    until true;
+    // For each beat: Setup (no W consumption) → Access (consume W on pready).
+    for b in 0..aw_len_r
+      // APB Setup phase. w_ready stays low — the W beat must remain on the
+      // bus until the APB access completes.
+      lock apb_lock
+        do
+          apb.psel    = true;
+          apb.penable = false;
+          apb.paddr   = (aw_addr_r + (b.zext<ADDR_WIDTH>() << aw_size_r)).trunc<ADDR_WIDTH>();
+          apb.pwrite  = true;
+          apb.pwdata  = axi.w_data;
+          apb.pstrb   = axi.w_strb;
+          apb.pprot   = aw_prot_r;
+        until true;
+      end lock apb_lock
+      // APB Access phase. Hold pwdata/pstrb from the AXI W bus until
+      // pready=1, then assert w_ready=1 (same cycle) so the AXI handshake
+      // completes simultaneously with the APB access.
+      lock apb_lock
+        do
+          apb.psel    = true;
+          apb.penable = true;
+          apb.paddr   = (aw_addr_r + (b.zext<ADDR_WIDTH>() << aw_size_r)).trunc<ADDR_WIDTH>();
+          apb.pwrite  = true;
+          apb.pwdata  = axi.w_data;
+          apb.pstrb   = axi.w_strb;
+          apb.pprot   = aw_prot_r;
+          axi.w_ready = apb.pready;
+          werr_r <= werr_r or apb.pslverr;
+        until apb.pready;
+      end lock apb_lock
+    end for
+    // B response — drive once burst is fully drained.
+    do
+      axi.b_valid = true;
+      axi.b_id    = aw_id_r;
+      axi.b_resp  = werr_r ? 2 : 0;
+    until axi.b_ready;
+  end thread WriteXact
+end module Nic400ApbBridge
