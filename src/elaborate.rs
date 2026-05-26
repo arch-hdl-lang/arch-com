@@ -5426,7 +5426,7 @@ fn partition_thread_body_impl(
                     // For-loop exit: guard trailing seq assigns by exit condition.
                     // Fires on the same clock edge as the for-loop's exit transition.
                     let exit_cond = last.multi_transitions[1].0.clone();
-                    for s in cur_seq.drain(..) {
+                    for s in cur_seq.iter().cloned() {
                         last.seq_stmts.push(Stmt::IfElse(IfElse {
                             cond: exit_cond.clone(),
                             then_stmts: vec![s],
@@ -5435,6 +5435,59 @@ fn partition_thread_body_impl(
                             span,
                         }));
                     }
+                    // Issue #422: when the for-body's last statement is an
+                    // if/else (or any multi-arm dispatch) with each arm
+                    // independently falling off the end, the for-loop's
+                    // "exit" arm sits not only in `last` but also in the
+                    // sibling terminal states. Apply the same trailing-seq
+                    // merge to every such state so all arms fire the
+                    // outer-block trailing assigns (e.g. the outer
+                    // counter's data update).
+                    //
+                    // The marker for "this transition leaves the body" is
+                    // `target == states.len()` (i.e. the not-yet-existing
+                    // index just past the for-group, which our
+                    // unconditional-advance flush would land on). This is
+                    // distinct from `THREAD_TARGET_NEXT`, which by this
+                    // point has been resolved.
+                    let exit_pos = states.len();
+                    let n = states.len();
+                    if n >= 2 {
+                        for si in 0..n - 1 {
+                            // Determine the OR of all conditions targeting exit_pos.
+                            let mut exit_arm_conds: Vec<Expr> = Vec::new();
+                            for (cond, target) in &states[si].multi_transitions {
+                                if *target == exit_pos && !thread_target_is_special(*target) {
+                                    exit_arm_conds.push(cond.clone());
+                                }
+                            }
+                            if exit_arm_conds.is_empty() {
+                                continue;
+                            }
+                            let arm_cond = if exit_arm_conds.len() == 1 {
+                                exit_arm_conds.pop().unwrap()
+                            } else {
+                                let mut acc = exit_arm_conds.remove(0);
+                                for c in exit_arm_conds {
+                                    acc = Expr::new(
+                                        ExprKind::Binary(BinOp::Or, Box::new(acc), Box::new(c)),
+                                        span,
+                                    );
+                                }
+                                acc
+                            };
+                            for s in cur_seq.iter().cloned() {
+                                states[si].seq_stmts.push(Stmt::IfElse(IfElse {
+                                    cond: arm_cond.clone(),
+                                    then_stmts: vec![s],
+                                    else_stmts: Vec::new(),
+                                    unique: false,
+                                    span,
+                                }));
+                            }
+                        }
+                    }
+                    cur_seq.clear();
                     true
                 } else if last.transition_cond.is_some() && last.multi_transitions.is_empty() {
                     // State with a conditional transition (e.g. do..until, wait until):
@@ -5759,7 +5812,7 @@ fn lower_thread_for(
                     // normally happen for a nested-for shape, but be
                     // robust if a future construct produces a non-empty
                     // multi_transitions with only intra-body targets.
-                    last.seq_stmts.push(cnt_inc);
+                    last.seq_stmts.push(cnt_inc.clone());
                     last.multi_transitions = new_trans;
                     last.multi_transitions.push((
                         Expr::new(ExprKind::Binary(BinOp::Lt, Box::new(cnt_ident.clone()), Box::new(end_w.clone())), span),
@@ -5786,7 +5839,7 @@ fn lower_thread_for(
             // ticks once per completed inner iteration.
             last.seq_stmts.push(Stmt::IfElse(IfElse {
                 cond: inner_exit,
-                then_stmts: vec![cnt_inc],
+                then_stmts: vec![cnt_inc.clone()],
                 else_stmts: Vec::new(),
                 unique: false,
                 span,
@@ -5834,7 +5887,7 @@ fn lower_thread_for(
             // only increment when a beat is actually accepted
             last.seq_stmts.push(Stmt::IfElse(IfElse {
                 cond: body_cond_clone,
-                then_stmts: vec![cnt_inc],
+                then_stmts: vec![cnt_inc.clone()],
                 else_stmts: Vec::new(),
                 unique: false,
                 span,
@@ -5855,11 +5908,88 @@ fn lower_thread_for(
                 ExprKind::Binary(BinOp::Gte, Box::new(cnt_ident.clone()), Box::new(end_w.clone())),
                 span,
             );
-            last.seq_stmts.push(cnt_inc);
+            last.seq_stmts.push(cnt_inc.clone());
             last.multi_transitions = vec![
                 (loop_cond, loop_back_target),
                 (exit_cond, usize::MAX),
             ];
+        }
+    }
+
+    // Issue #422: the body's last statement might be an if/else (or any
+    // multi-arm dispatch) where each arm independently falls off the end of
+    // the for body. The transformation above patches only `result.last_mut()`
+    // (one terminal arm); other arms have their own "off-the-end" transitions
+    // sitting in non-last states. Without patching them too, they jump
+    // unconditionally past the for group on every iteration, skipping the
+    // loop-continuation cascade (counter increment / loop-back / exit). Apply
+    // the same cascade to every such state so all terminal arms participate.
+    //
+    // An "off-the-end" transition is one with `target >= result_len` and not
+    // a special sentinel (THREAD_TARGET_NEXT, return). Skip the last state
+    // (already handled above).
+    let n = result.len();
+    if n >= 2 {
+        for si in 0..n - 1 {
+            let prev = std::mem::take(&mut result[si].multi_transitions);
+            if prev.is_empty() {
+                continue;
+            }
+            let mut new_trans: Vec<(Expr, usize)> = Vec::with_capacity(prev.len() + 1);
+            let mut off_end_conds: Vec<Expr> = Vec::new();
+            for (cond, target) in prev {
+                if target >= result_len && !thread_target_is_special(target) {
+                    off_end_conds.push(cond);
+                } else {
+                    new_trans.push((cond, target));
+                }
+            }
+            if off_end_conds.is_empty() {
+                result[si].multi_transitions = new_trans;
+                continue;
+            }
+            let off_end = if off_end_conds.len() == 1 {
+                off_end_conds.pop().unwrap()
+            } else {
+                let mut acc = off_end_conds.remove(0);
+                for c in off_end_conds {
+                    acc = Expr::new(ExprKind::Binary(BinOp::Or, Box::new(acc), Box::new(c)), span);
+                }
+                acc
+            };
+            let off_end_for_inc = off_end.clone();
+            let off_end_for_loop = off_end.clone();
+            let off_end_for_exit = off_end;
+            // Counter increment guarded by the off-the-end condition.
+            result[si].seq_stmts.push(Stmt::IfElse(IfElse {
+                cond: off_end_for_inc,
+                then_stmts: vec![cnt_inc.clone()],
+                else_stmts: Vec::new(),
+                unique: false,
+                span,
+            }));
+            // Replace off-the-end transitions with loop-back + exit cascade.
+            new_trans.push((
+                Expr::new(ExprKind::Binary(
+                    BinOp::And,
+                    Box::new(off_end_for_loop),
+                    Box::new(Expr::new(ExprKind::Binary(
+                        BinOp::Lt, Box::new(cnt_ident.clone()), Box::new(end_w.clone()),
+                    ), span)),
+                ), span),
+                loop_back_target,
+            ));
+            new_trans.push((
+                Expr::new(ExprKind::Binary(
+                    BinOp::And,
+                    Box::new(off_end_for_exit),
+                    Box::new(Expr::new(ExprKind::Binary(
+                        BinOp::Gte, Box::new(cnt_ident.clone()), Box::new(end_w.clone()),
+                    ), span)),
+                ), span),
+                usize::MAX,
+            ));
+            result[si].multi_transitions = new_trans;
         }
     }
 
