@@ -1,0 +1,109 @@
+// Minimal repro for the Consumer-S4 lockup hit while building Nic400AhbBridge
+// v4 (PR #416). The bridge's Consumer thread iterates an outer `for c in
+// 0..MAX_CHUNKS-1` over chunks, with inner per-chunk `lock` blocks for AW,
+// W (a nested `for b` loop of beats), and B. When MAX_CHUNKS > 1, the outer
+// for-loop's second iteration never starts: Consumer transitions through
+// AW/W/B for chunk 0 fine, but the B-wait lock body's `until` condition
+// fires once (drives `b_ready=1`, sees `b_valid=1`, would-be handshake at
+// the rising edge) yet the FSM stays in the B-wait state instead of
+// advancing to chunk 1's AW state.
+//
+// This repro keeps the same shape — outer for with nested AW-lock, inner
+// for with W-lock, post-inner B-lock; a downstream FIFO is on the comb
+// path so the conservative analyzer warns about a feedback cycle on
+// `pop_ready ↔ pop_valid`.
+//
+// Two iterations: first AW + 4 W beats + B succeed. Second iteration's
+// AW should fire but does not — the B-wait of iter 0 never transitions
+// out.
+module S4LockupRepro
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port go: in Bool;
+  port aw_count_out: out UInt<8>;
+  port b_count_out:  out UInt<8>;
+  port chunk_count_out: out UInt<8>;
+  // AXI-like external handshakes (TB drives the *_ready/*_valid here).
+  port aw_valid: out Bool;
+  port aw_ready: in  Bool;
+  port w_valid:  out Bool;
+  port w_ready:  in  Bool;
+  port w_data:   out UInt<32>;
+  port b_valid:  in  Bool;
+  port b_ready:  out Bool;
+  // FIFO-side handshake (the comb-cycle suspect).
+  port push_valid: in  Bool;
+  port push_data:  in  UInt<32>;
+  port push_ready: out Bool;
+
+  resource lk: mutex<priority>;
+
+  // Internal FIFO — mirrors the AHB bridge's HWDATA buffer.
+  inst data_fifo: DataFifo
+    param T = UInt<32>;
+    param DEPTH = 8;
+    clk        <- clk;
+    rst        <- rst;
+    push_valid <- push_valid;
+    push_ready -> push_ready;
+    push_data  <- push_data;
+    pop_valid  -> fifo_pop_valid;
+    pop_ready  <- fifo_pop_ready;
+    pop_data   -> fifo_pop_data;
+  end inst data_fifo
+
+  wire fifo_pop_valid: Bool;
+  wire fifo_pop_ready: Bool;
+  wire fifo_pop_data:  UInt<32>;
+
+  reg aw_count_r: UInt<8> reset rst => 0;
+  reg b_count_r:  UInt<8> reset rst => 0;
+  reg chunk_count_r: UInt<8> reset rst => 0;
+
+  thread T on clk rising, rst low
+    default comb
+      aw_count_out = aw_count_r;
+      b_count_out  = b_count_r;
+      chunk_count_out = chunk_count_r;
+      aw_valid = false;
+      w_valid  = false;
+      w_data   = 0;
+      b_ready  = false;
+      fifo_pop_ready = false;
+    end default
+    wait until go;
+    // Outer for: 2 chunks.
+    for c in 0..1
+      // AW lock
+      lock lk
+        do
+          aw_valid = true;
+        until aw_ready;
+      end lock lk
+      aw_count_r <= (aw_count_r + 1).trunc<8>();
+      // Inner W for: 4 beats
+      for b in 0..3
+        lock lk
+          do
+            if fifo_pop_valid
+              w_valid = true;
+              w_data  = fifo_pop_data;
+              fifo_pop_ready = w_ready;
+            else
+              w_valid = false;
+              fifo_pop_ready = false;
+            end if
+          until w_ready;
+        end lock lk
+      end for
+      // B lock
+      lock lk
+        do
+          b_ready = true;
+        until b_valid;
+      end lock lk
+      b_count_r <= (b_count_r + 1).trunc<8>();
+      chunk_count_r <= (chunk_count_r + 1).trunc<8>();
+    end for
+  end thread T
+end module S4LockupRepro
