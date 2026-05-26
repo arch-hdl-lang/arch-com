@@ -1,0 +1,44 @@
+// Regression for issue #423: a module-scope `type` alias that binds a
+// bus's params used to lose those bindings when referenced from inside a
+// `generate_if` body — the bus expanded with its declared param defaults
+// instead of the alias's bound values. The fix propagates the alias's
+// stored `bus_params` onto each `wire` GenItem the same way the top-level
+// `WireDecl` substitution path already did.
+
+bus BusAxi4
+  param ADDR_W: const = 32;
+  param ID_W:   const = 1;
+
+  ar_valid: out Bool;
+  ar_ready: in  Bool;
+  ar_addr:  out UInt<ADDR_W>;
+  ar_id:    out UInt<ID_W>;
+end bus BusAxi4
+
+module AliasInGenif
+  param FLAG: const = 1;
+
+  type WideBus = BusAxi4<ADDR_W=32, ID_W=5>;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  // Module-scope use: ok_bus_ar_id must be 5 bits (alias's ID_W=5).
+  wire ok_bus: WideBus;
+
+  // Inside a true generate_if: bad_bus_ar_id used to be 1 bit (bus
+  // default). With the fix, it must also be 5 bits.
+  generate_if FLAG > 0
+    wire bad_bus: WideBus;
+  end generate_if
+
+  // Drive every signal so single-driver / no-floating-port checks pass.
+  comb
+    ok_bus.ar_valid = true;
+    ok_bus.ar_addr  = 32'd0;
+    ok_bus.ar_id    = 5'd0;
+    bad_bus.ar_valid = true;
+    bad_bus.ar_addr  = 32'd0;
+    bad_bus.ar_id    = 5'd0;
+  end comb
+end module AliasInGenif

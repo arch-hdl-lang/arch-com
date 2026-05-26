@@ -4374,6 +4374,42 @@ fn test_vec_bus_whole_vec_forward_to_child_inst() {
 }
 
 #[test]
+fn test_type_alias_bus_params_propagate_into_generate_if() {
+    // Regression for issue #423: a module-scope `type` alias that binds a
+    // bus's params used to lose those bindings when the alias was
+    // referenced from a `wire` inside a `generate_if` body. The bus then
+    // expanded with its declared param defaults instead of the alias's
+    // bound values — silently producing wrong-width signals in the
+    // generated SV.
+    //
+    // The fix propagates the alias's stored `bus_params` onto each
+    // `GenItem::Wire` the same way the top-level `WireDecl` substitution
+    // path already did. After the fix, both the module-scope wire and the
+    // generate_if wire must emit with the alias's `ID_W = 5`.
+    let source = include_str!(
+        "regression/issues/alias_in_generate_if/AliasInGenif.arch"
+    );
+    let sv = compile_to_sv(source);
+    // Both wires must be 5 bits wide. Before the fix, `bad_bus_ar_id` was
+    // 1 bit (BusAxi4's default ID_W).
+    assert!(
+        sv.contains("logic [4:0] ok_bus_ar_id"),
+        "module-scope alias use should expand with ID_W=5 (5-bit ar_id):\n{sv}",
+    );
+    assert!(
+        sv.contains("logic [4:0] bad_bus_ar_id"),
+        "alias use inside generate_if should also expand with ID_W=5 \
+         (issue #423 regression — used to fall back to bus default ID_W=1):\n{sv}",
+    );
+    // Defensive: the buggy shape must not reappear.
+    assert!(
+        !sv.contains("logic [0:0] bad_bus_ar_id")
+            && !sv.contains("logic bad_bus_ar_id"),
+        "found buggy 1-bit / scalar `bad_bus_ar_id` (issue #423 regression):\n{sv}",
+    );
+}
+
+#[test]
 fn test_wait_0plus_cycle_until_mealy_fusion_gates_seq_assigns() {
     // Regression for issue #412: the Mealy-fusion lowering for
     //   wait 0+ cycle until X;
