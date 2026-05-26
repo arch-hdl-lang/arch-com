@@ -1136,7 +1136,7 @@ Roughly ordered by likely effort × value, picked from the rows above:
 2. **Default-slave responder** — small extra module returning DECERR for un-decoded addrs, wire into the fabric's "no match" output of `Nic400MasterPort`. Closes a basic conformance item.
 3. **Per-slave reg slice wrapper** — symmetric to `Nic400FabricRs1` but on the s side. Mostly copy-paste; useful as a real-SoC pattern.
 4. **Wire width adapter into a system variant** — `Nic400SystemWide` with a 64-bit AXI master and the 32-bit APB target, so the adapter is exercised in-system.
-5. **GPV regfile sketch** — APB target + a few mapped registers (decode-table override, QoS knob). Lowest-cost path to "programmable" status on multiple rows.
+5. **GPV regfile sketch** — AXI4 target (TRM §3.2: GPV is AXI-accessed, AxSIZE=32-bit only, Secure-only, non-cacheable, no interleaved WDATA) plus a `regfile` block with a few mapped registers (`read_qos`/`write_qos` from Table 3-1, decode-table / remap-state override). Lowest-cost path to "programmable" status on the QoS, decode, and remap rows.
 
 Items deliberately deferred: AXI3, AxUSER, QVN, LPI, EX-monitor — each is a real chunk of work and none has a current pull from a benchmark.
 
