@@ -571,7 +571,7 @@ end module M
 | `wait until cond` | Block until condition true | Yes — new state |
 | `wait N cycle` | Stall exactly N clock cycles | Yes — new state |
 | `do … until cond` | Drive comb + seq while condition false | Yes — hold state |
-| `for i in s..e { … }` | Loop body; `i` replaced by `_loop_cnt` reg | Yes — per-body |
+| `for i in s..e { … }` | Loop body; per-instance `_t{ti}_loop_cnt_{id}` reg (nested `for` supported) | Yes — per-body |
 | `lock res { … } end lock res` | Acquire mutex, execute body, release | Yes — per-body |
 | `fork … and … join` | Execute branches in parallel (product-state FSM) | Yes — product |
 | `if/else` (no waits) | Same-state conditional comb/seq | No |
@@ -581,6 +581,8 @@ end module M
 - `default comb … end default` must appear **before** the thread body; it may drive only comb outputs, not signals also assigned with `<=`
 - `default when cond … end default` must appear **before** the thread body; only seq assigns inside
 - `lock` blocks must **not** be nested — compile error (mutual exclusion guarantee)
+- `do … until cond` bodies must **not** contain nested control flow (`lock`, `wait until`, `wait N cycle`, `for`, `fork`/`join`, or `return`) — compile error. The body is a single-state hold, not a loop; nested control would be silently dropped. Nested `if/else` (no waits inside) is permitted. Use a top-level `for c in 0..N-1` or split into multiple top-level `wait until`/`do … until` statements when iteration is needed.
+- Nested `for` loops in a thread each get their own per-instance counter register (`_t{ti}_loop_cnt_{id}`) — the outer loop's index is no longer clobbered by the inner loop.
 - `thread once` — FSM holds in terminal state instead of looping back to S0
 - `generate_for i in 0..N-1 / thread T_i … end thread T_i / end generate_for` — N identical threads
 - Multiple threads in one module share one `always_ff` — no multi-driver conflicts
