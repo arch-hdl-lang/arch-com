@@ -62,8 +62,14 @@ module Nic400ApbBridge
   // backpressure signals.
   port axi: target    BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH,
                               ID_W=ID_WIDTH, READ=1, WRITE=1>;
-  // APB v2.0 initiator — bridge drives control/address/data, samples response.
-  port apb: initiator BusApb<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH>;
+  // APB initiator — bridge drives control/address/data, samples response.
+  // Uses stdlib/BusApb with the APB3/APB4 sidebands enabled (USE_PPROT=1
+  // brings in pprot + pslverr, USE_PSTRB=1 brings in pstrb sized DATA_W/8).
+  // The NIC-400-local BusApb that originally backed this module has been
+  // removed in favour of the stdlib def — there's no semantic difference
+  // for DATA_W=32, and consolidating avoids two competing bus shapes.
+  port apb: initiator BusApb<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH,
+                              USE_PPROT=1, USE_PSTRB=1>;
 
   // Mutex to serialise the multi-thread comb drives on apb.*. In steady
   // state the two threads do not contend (one AXI master rarely has both
