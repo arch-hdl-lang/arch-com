@@ -235,6 +235,26 @@ The parse in the "Bad" column is what Verilog/ARCH produces, but rarely what the
 | Clock ports | `Clock<Domain>` | `clk: in Clock<SysDomain>` |
 | Reset ports | `Reset<Sync\|Async, High\|Low>` | `rst: in Reset<Sync>` (High default) |
 
+### Comment Style (recommended, not compiler-enforced)
+`///` and `//!` are doc comments the learning indexer and `arch doc` consume; plain `//` is for inline notes the indexer should skip.
+
+| Marker | Attaches to | Use for |
+|---|---|---|
+| `//!` | Enclosing file/construct | File-level header prose at the top of a `.arch` file. |
+| `///` | The next construct | One-line summary above a `module` / `bus` / `fsm` / etc. |
+| `//`  | Nothing (plain comment) | Inline notes inside a body — not picked up by the indexer. |
+
+```arch
+//! ARM AMBA APB bus — initiator perspective. (file-level prose...)
+
+/// APB initiator bundle with toggleable v3/v4 sidebands.
+bus BusApb
+  // Initiator → completer  (plain // — not a doc comment)
+  psel: out Bool;
+  ...
+end bus BusApb
+```
+
 ### `todo!` Escape Hatch
 Any expression or block body may be replaced with `todo!` to produce a compilable, type-checked skeleton. The compiler emits a warning per site; simulation aborts if a `todo!` site is reached at runtime.
 
