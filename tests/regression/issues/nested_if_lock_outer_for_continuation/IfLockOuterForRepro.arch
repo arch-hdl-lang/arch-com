@@ -1,0 +1,57 @@
+// Minimal repro: an inner `for` whose body ends in an `if`/`else` with a
+// `lock` in each branch corrupts the OUTER `for`'s loop-continuation
+// transition. Specifically, the codegen emits the outer-for "go to next
+// iter / exit" transition only out of the else-branch's terminal state;
+// the if-branch's terminal state falls back to the thread entry (S0_entry)
+// instead, so the outer counter advances correctly only when the if branch
+// is NOT taken on the last sub-beat.
+//
+// Expected (with bug fixed):
+//   outer_r ends at 3,  inner_r ends at 6  (3 outer iters × 2 inner sub-beats)
+// Actual (current bug):
+//   outer_r stays at 0 (or some wrong value) and the thread restarts at the
+//   top `wait until go;` instead of completing the outer loop.
+module IfLockOuterForRepro
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port go: in Bool;
+  port outer_count: out UInt<8>;
+  port inner_count: out UInt<8>;
+
+  resource lk: mutex<priority>;
+  reg outer_r: UInt<8> reset rst => 0;
+  reg inner_r: UInt<8> reset rst => 0;
+
+  thread T on clk rising, rst low
+    default comb
+      outer_count = outer_r;
+      inner_count = inner_r;
+    end default
+    wait until go;
+    // Outer: 3 iterations.
+    for c in 0..2
+      // Inner: 2 sub-beats per outer iteration. The body ends in an
+      // if/else where each branch has its own `lock` body — the two
+      // branches differ (different seq-side effects inside the lock body),
+      // so the codegen does NOT fuse them into a shared follow-up state.
+      for k in 0..1
+        if k == 1
+          // Last sub-beat: the lock body bumps inner_r itself.
+          lock lk
+            do
+              inner_r <= (inner_r + 2).trunc<8>();
+            until true;
+          end lock lk
+        else
+          // Earlier sub-beat: bump inner_r differently inside the lock.
+          lock lk
+            do
+              inner_r <= (inner_r + 1).trunc<8>();
+            until true;
+          end lock lk
+        end if
+      end for
+      outer_r <= (outer_r + 1).trunc<8>();
+    end for
+  end thread T
+end module IfLockOuterForRepro

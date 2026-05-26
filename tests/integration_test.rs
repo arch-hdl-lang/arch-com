@@ -4410,6 +4410,92 @@ fn test_type_alias_bus_params_propagate_into_generate_if() {
 }
 
 #[test]
+fn test_outer_for_advances_when_inner_if_else_lock_terminates() {
+    // Regression for issue #422: when an inner `for` loop's body ends in an
+    // `if`/`else` where each branch contains its own `lock do ... until ...`
+    // (with DIFFERENT bodies so the codegen doesn't fuse them into one
+    // terminal state), the codegen used to attach the outer-loop
+    // continuation cascade only to the else-branch's terminal state. The
+    // if-branch's terminal state still carried a bare `(true → past-the-end)`
+    // transition, which after outer-frame translation jumped unconditionally
+    // back to the thread entry state — resetting both inner and outer loop
+    // counters instead of advancing the outer iteration.
+    //
+    // The fix replicates the loop-continuation cascade (counter increment,
+    // loop-back, exit) onto every state that has an "off-the-end" transition
+    // (i.e. target == result.len()), not just `result.last_mut()`. The
+    // trailing-seq-merge that attaches the outer-block's trailing assigns
+    // (e.g. `outer_r <= +1`) to the exit arm is also extended to fire on
+    // every sibling terminal arm.
+    //
+    // The repro is committed at
+    // `tests/regression/issues/nested_if_lock_outer_for_continuation/`. The
+    // companion C++ TB exercises the full simulator end-to-end and is
+    // invoked via `arch sim` (out of scope for the SV-level integration
+    // test); here we assert on the generated thread SV directly.
+    let source = include_str!(
+        "regression/issues/nested_if_lock_outer_for_continuation/IfLockOuterForRepro.arch"
+    );
+    let sv = compile_to_sv(source);
+
+    // The inner-for's terminal arms live in two separate states (one per
+    // branch of the if/else). Both must advance the outer loop:
+    //
+    //   - increment `_t0_loop_cnt_0` (outer counter) when the inner-for
+    //     completes its last sub-beat,
+    //   - bump `outer_r` (trailing-seq from the outer-for body),
+    //   - transition either back to the inner-for dispatch (more outer
+    //     iters to do) or to the thread-entry state (outer-for done).
+    //
+    // Before the fix, only ONE of the two terminal arm states carried this
+    // cascade — the other fell through to the thread-entry state, so the
+    // outer counter never ticked when the if-branch took the last sub-beat.
+    //
+    // We count occurrences of the outer-counter increment expression in
+    // the per-state SV blocks; the bug shape has exactly one, the fix has
+    // two.
+    let outer_cnt_inc_hits = sv.matches("_t0_loop_cnt_0 + 2'd1").count();
+    assert!(
+        outer_cnt_inc_hits >= 2,
+        "expected the outer-counter increment `_t0_loop_cnt_0 + 2'd1` to \
+         appear in BOTH terminal arms of the if/else (issue #422 regression — \
+         only one arm carried the cascade in the buggy shape); got \
+         {outer_cnt_inc_hits} occurrence(s):\n{sv}",
+    );
+
+    // The outer-block trailing assign `outer_r <= +1` must also fire on
+    // both terminal arms.
+    let outer_r_inc_hits = sv.matches("outer_r + 1").count();
+    assert!(
+        outer_r_inc_hits >= 2,
+        "expected the outer-block trailing assign `outer_r + 1` to \
+         appear in BOTH terminal arms of the if/else (issue #422 regression); \
+         got {outer_r_inc_hits} occurrence(s):\n{sv}",
+    );
+
+    // Defensive: the if-branch's terminal state must NOT have a bare
+    // unconditional jump back to the thread-entry state `_t0_S0_wait_until`
+    // — that's the buggy shape (the arm bypassed the loop-continuation
+    // cascade entirely). The fixed shape only jumps to S0_wait_until under
+    // the outer-exit guard `cnt_0 >= 2`.
+    //
+    // Use a simple shape check: every transition to `_t0_S0_wait_until`
+    // (other than from S0 itself) must be guarded by a `>=` test on
+    // `_t0_loop_cnt_0`.
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+    // After whitespace-collapse, every `_t0_state <= _t0_S0_wait_until`
+    // should be preceded somewhere upstream by the outer-exit guard.
+    // Count bare unguarded jumps: pattern `1'b1 begin _t0_state <= _t0_S0_wait_until`.
+    assert!(
+        !trimmed.contains("&& 1'b1) begin _t0_state <= _t0_S0_wait_until"),
+        "found an UNGUARDED jump back to _t0_S0_wait_until from an inner \
+         terminal arm (issue #422 regression — the if-branch lock-exit \
+         state used to jump to thread-entry, resetting both loop counters \
+         instead of advancing the outer loop):\n{sv}",
+    );
+}
+
+#[test]
 fn test_concat_bus_field_width_uses_module_param_binding() {
     // Regression for issue #427: sim codegen's Concat pack expression
     // used wrong shift offsets when operands were bus-port FieldAccess
