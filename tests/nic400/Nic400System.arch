@@ -65,7 +65,7 @@ module Nic400System
   port ahb_h: target BusAhbLite<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH>;
   // Peripheral-side APB initiator interface.
   port apb_p: initiator BusApb<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH,
-                                USE_PPROT=1, USE_PSTRB=1>;
+                                USE_PSLVERR=1, USE_PPROT=1, USE_PSTRB=1>;
 
   // PMU counter outputs, observable by the TB.
   port ar_count: out Vec<UInt<32>, NUM_MASTERS>;
