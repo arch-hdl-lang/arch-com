@@ -1424,46 +1424,74 @@ impl<'a> TypeChecker<'a> {
                 // We need to mark parent signals as "driven" when the inst OUTPUTS them.
                 if let Some((_, bus_name)) = target_bus_ports.iter().find(|(pn, _)| *pn == conn.port_name.name) {
                     if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
-                        // Resolve the parent-side base prefix:
-                        //   * `Ident("w")`           → `w`         (scalar wire/port)
-                        //   * `Index(Ident("v"), i)` → `v_<i>`     (Vec-of-bus element)
-                        let sig_base_owned: Option<String> = match &conn.signal.kind {
-                            ExprKind::Ident(n) => Some(n.clone()),
+                        // Find the inst's bus port perspective, params, and Vec count.
+                        let inst_bus_info = self.source.items.iter()
+                            .find_map(|item| match item {
+                                Item::Module(m2) if m2.name.name == inst.module_name.name => Some(m2.ports.as_slice()),
+                                Item::Fsm(f2) if f2.name.name == inst.module_name.name => Some(f2.ports.as_slice()),
+                                _ => None,
+                            })
+                            .and_then(|ports| ports.iter()
+                                .find(|p| p.name.name == conn.port_name.name)
+                                .and_then(|p| p.bus_info.as_ref()));
+                        let inst_perspective = inst_bus_info.map(|bi| bi.perspective);
+                        // Inst port's Vec count (Some(N) means `port: ... Vec<Bus, N>`).
+                        let inst_vec_count: Option<u32> = inst_bus_info
+                            .and_then(|bi| bi.count.as_ref())
+                            .and_then(|ce| {
+                                let empty: HashMap<String, Ty> = HashMap::new();
+                                self.eval_const_expr(ce, &empty).map(|v| v as u32)
+                            });
+
+                        // Resolve the parent-side base prefix(es):
+                        //   * `Ident("w")`           → `w`            (scalar bus wire/port)
+                        //                              or when inst port is Vec<Bus,N> and
+                        //                              `w` is also Vec<Bus,N>: expand to
+                        //                              `w_0`, `w_1`, ..., `w_{N-1}`.
+                        //   * `Index(Ident("v"), i)` → `v_<i>`        (Vec-of-bus element)
+                        let sig_bases: Vec<String> = match &conn.signal.kind {
+                            ExprKind::Ident(n) => {
+                                // Whole-Vec forwarding: child port `m: ... Vec<Bus,N>`
+                                // wired to parent ident `n` that is itself a Vec-of-Bus
+                                // port. Expand to N per-element prefixes so the
+                                // undriven-port check sees `n_0_<sig>`, `n_1_<sig>`, ...
+                                // (which is what the prefixes loop at the module-level
+                                // undriven check produces for a Vec<Bus,N> parent port).
+                                if let Some(n_count) = inst_vec_count {
+                                    if self.vec_of_bus_ports.get(n).copied() == Some(n_count) {
+                                        (0..n_count).map(|i| format!("{}_{}", n, i)).collect()
+                                    } else {
+                                        vec![n.clone()]
+                                    }
+                                } else {
+                                    vec![n.clone()]
+                                }
+                            }
                             ExprKind::Index(arr, idx) => {
                                 if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) = (&arr.kind, &idx.kind) {
-                                    Some(format!("{}_{}", arr_name, i))
-                                } else { None }
+                                    vec![format!("{}_{}", arr_name, i)]
+                                } else { Vec::new() }
                             }
-                            _ => None,
+                            _ => Vec::new(),
                         };
-                        if let Some(sig_base) = sig_base_owned.as_ref() {
-                            // Find the inst's bus port perspective and params
-                            let inst_bus_info = self.source.items.iter()
-                                .find_map(|item| match item {
-                                    Item::Module(m2) if m2.name.name == inst.module_name.name => Some(m2.ports.as_slice()),
-                                    Item::Fsm(f2) if f2.name.name == inst.module_name.name => Some(f2.ports.as_slice()),
-                                    _ => None,
-                                })
-                                .and_then(|ports| ports.iter()
-                                    .find(|p| p.name.name == conn.port_name.name)
-                                    .and_then(|p| p.bus_info.as_ref()));
-                            let inst_perspective = inst_bus_info.map(|bi| bi.perspective);
-
+                        if !sig_bases.is_empty() {
                             let mut pm = info.default_param_map();
                             if let Some(bi) = inst_bus_info {
                                 for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
                             }
                             let eff = info.effective_signals(&pm);
-                            for (sname, sdir, _) in &eff {
-                                // Determine actual direction from inst's perspective
-                                let inst_dir = match inst_perspective {
-                                    Some(BusPerspective::Initiator) => *sdir,
-                                    Some(BusPerspective::Target) => (*sdir).flip(),
-                                    None => *sdir,
-                                };
-                                // If signal is an output FROM the inst, it drives the parent wire/port
-                                if inst_dir == Direction::Out {
-                                    driven.insert(format!("{}_{}", sig_base, sname));
+                            for sig_base in &sig_bases {
+                                for (sname, sdir, _) in &eff {
+                                    // Determine actual direction from inst's perspective
+                                    let inst_dir = match inst_perspective {
+                                        Some(BusPerspective::Initiator) => *sdir,
+                                        Some(BusPerspective::Target) => (*sdir).flip(),
+                                        None => *sdir,
+                                    };
+                                    // If signal is an output FROM the inst, it drives the parent wire/port
+                                    if inst_dir == Direction::Out {
+                                        driven.insert(format!("{}_{}", sig_base, sname));
+                                    }
                                 }
                             }
                         }

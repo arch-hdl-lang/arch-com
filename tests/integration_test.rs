@@ -4333,6 +4333,47 @@ fn test_nested_for_in_thread_uses_distinct_loop_counters() {
 }
 
 #[test]
+fn test_vec_bus_whole_vec_forward_to_child_inst() {
+    // Regression for issue #424: forwarding a `target Vec<Bus, N>`
+    // parent port to a child instance via a whole-Vec connection
+    // (`m <- m_top`) failed with `output port m_top_0_<sig> is not
+    // driven`, even though the child's body drives every `m[i].<sig>`.
+    //
+    // The undriven-port check expands a parent `Vec<Bus,N>` port into N
+    // per-element prefixes `m_top_0_<sig>`, …, `m_top_{N-1}_<sig>` —
+    // but the inst driver-tracking only credited the bare `m_top_<sig>`
+    // for the `Ident("m_top")` parent expression. The fix detects
+    // whole-Vec forwarding (child port and parent port both `Vec<Bus,N>`
+    // with matching N) and seeds the per-element prefixes.
+    //
+    // SV codegen sibling fix: declared_names now includes the packed
+    // `<port>_<sig>` form for Vec-of-bus ports so the inst auto-wire-decl
+    // pass doesn't emit redundant `logic <port>_<sig>;` lines that would
+    // shadow the actual SV port declarations.
+    let source = include_str!("regression/issues/vec_bus_forward/VecBusForward.arch");
+    let sv = compile_to_sv(source);
+    // Both modules must be emitted.
+    assert!(sv.contains("module Inner"), "expected Inner module in SV:\n{sv}");
+    assert!(sv.contains("module Wrapper"), "expected Wrapper module in SV:\n{sv}");
+    // The Vec-of-bus port should emit as packed signals on Wrapper.
+    assert!(sv.contains("m_top_v_valid"), "expected m_top_v_valid port:\n{sv}");
+    assert!(sv.contains("m_top_v_ready"), "expected m_top_v_ready port:\n{sv}");
+    assert!(sv.contains("m_top_v_data"), "expected m_top_v_data port:\n{sv}");
+    // Inner inst should forward each bus signal whole.
+    assert!(sv.contains("Inner inner"), "expected inst `Inner inner` in SV:\n{sv}");
+    assert!(sv.contains(".m_v_ready(m_top_v_ready)"),
+        "expected whole-Vec packed forwarding `.m_v_ready(m_top_v_ready)`:\n{sv}");
+    assert!(sv.contains(".m_v_valid(m_top_v_valid)"),
+        "expected whole-Vec packed forwarding `.m_v_valid(m_top_v_valid)`:\n{sv}");
+    // The pre-fix bug emitted shadowing wires like `logic m_top_v_ready;` —
+    // assert none of those slipped in.
+    assert!(!sv.contains("logic m_top_v_ready;"),
+        "redundant `logic m_top_v_ready;` declaration shadows the SV port (issue #424):\n{sv}");
+    assert!(!sv.contains("logic m_top_v_valid;"),
+        "redundant `logic m_top_v_valid;` declaration shadows the SV port (issue #424):\n{sv}");
+}
+
+#[test]
 fn test_wait_0plus_cycle_until_mealy_fusion_gates_seq_assigns() {
     // Regression for issue #412: the Mealy-fusion lowering for
     //   wait 0+ cycle until X;

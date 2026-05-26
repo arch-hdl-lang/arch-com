@@ -339,6 +339,17 @@ impl<'a> Codegen<'a> {
                             declared_names.insert(format!("{prefix}_{sname}"));
                         }
                     }
+                    // Vec-of-bus ports also emit at the SV signature with a
+                    // packed-array shape and the bare `<port>_<sig>` name
+                    // (no per-element suffix). Record those names too so the
+                    // inst auto-wire-decl pass treats `m_top -> m` whole-Vec
+                    // forwarding as already-declared and doesn't shadow the
+                    // SV ports with redundant `logic <port>_<sig>;` decls.
+                    if bi.count.is_some() {
+                        for (sname, _, _) in info.effective_signals(&pm) {
+                            declared_names.insert(format!("{}_{}", p.name.name, sname));
+                        }
+                    }
                 }
             }
         }
