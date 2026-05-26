@@ -1,0 +1,198 @@
+// Per-edge AXI4 register slice for the NIC-400 fabric.
+//
+// Wraps 5 generic `RegSliceChannel` instances — one per AXI4 channel
+// (AR, R, AW, W, B) — that each break the combinational valid+payload
+// path on that channel while leaving the ready path combinational.
+//
+// Latency: +1 cycle on every channel handshake (sustained 1 transfer/cycle).
+// Use:     drop in between a master and the fabric to relax timing on
+//          long routes; integrators get to choose per-edge insertion.
+//
+// Direction:
+//   `up`   = master-facing side (target perspective — flips signal directions
+//            from the bus definition, so e.g. `up.ar_valid` is an INPUT here).
+//   `dn`   = fabric-facing side (initiator perspective — this module drives
+//            outgoing AXI signals onto the fabric).
+//
+// Per-channel field pack widths:
+//   AR / AW: addr(ADDR_WIDTH) + id(ID_W) + len(8) + size(3) + burst(2)
+//          + lock(1) + cache(4) + prot(3) + qos(4) + region(4)
+//   R      : data(DATA_WIDTH) + id(ID_W) + resp(2) + last(1)
+//   W      : data(DATA_WIDTH) + strb(STRB_WIDTH) + last(1)
+//   B      : id(ID_W) + resp(2)
+//
+// For the AR/AW/W channels the data flows master→fabric, so the slice's
+// "up" port is wired to the master side. For the R/B channels the data
+// flows fabric→master, so the slice's "up" port is wired to the FABRIC
+// side instead. From the slice's point of view, "up" always means "the
+// side that issues the transfer"; the EdgeRegSlice's external `up` /
+// `dn` ports name the AXI roles (M-facing / S-facing), not the per-channel
+// transfer direction.
+module Nic400EdgeRegSlice
+  param ADDR_WIDTH:    const = 32;
+  param DATA_WIDTH:    const = 32;
+  param STRB_WIDTH:    const = 4;
+  // ID_W matches the master-facing AXI4 id width (NOT the wider slave-side
+  // id the fabric uses internally). The Nic400FabricRs1 wrapper drops
+  // these slices upstream of `Nic400MasterPort.m`, so the bus shape here
+  // mirrors that port's `ID_W = MASTER_ID_W`.
+  param ID_W:          const = 3;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  // Master-facing target / fabric-facing initiator. The aliases below
+  // bind the bus params once so we don't repeat the long parameter list
+  // at every reference.
+  type EdgeBus = BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH,
+                          ID_W=ID_W, READ=1, WRITE=1>;
+  port up: target    EdgeBus;
+  port dn: initiator EdgeBus;
+
+  // Packed payload widths per channel.
+  param AR_PAYLOAD_W: const = ADDR_WIDTH + ID_W + 8 + 3 + 2 + 1 + 4 + 3 + 4 + 4;
+  param R_PAYLOAD_W:  const = DATA_WIDTH + ID_W + 2 + 1;
+  param AW_PAYLOAD_W: const = ADDR_WIDTH + ID_W + 8 + 3 + 2 + 1 + 4 + 3 + 4 + 4;
+  param W_PAYLOAD_W:  const = DATA_WIDTH + STRB_WIDTH + 1;
+  param B_PAYLOAD_W:  const = ID_W + 2;
+
+  // ── AR channel (master → fabric) ───────────────────────────────────────
+  // Pack master-side AR fields into a single UInt for the slice input;
+  // unpack the slice output back into fabric-side AR fields.
+  let ar_pack: UInt<AR_PAYLOAD_W> =
+      {up.ar_addr, up.ar_id, up.ar_len, up.ar_size, up.ar_burst,
+       up.ar_lock, up.ar_cache, up.ar_prot, up.ar_qos, up.ar_region};
+  wire ar_unpack: UInt<AR_PAYLOAD_W>;
+
+  inst rs_ar: RegSliceChannel
+    param PAYLOAD_W = AR_PAYLOAD_W;
+    clk        <- clk;
+    rst        <- rst;
+    up_valid   <- up.ar_valid;
+    up_payload <- ar_pack;
+    up_ready   -> up.ar_ready;
+    dn_valid   -> dn.ar_valid;
+    dn_payload -> ar_unpack;
+    dn_ready   <- dn.ar_ready;
+  end inst rs_ar
+
+  // ── R channel (fabric → master) ────────────────────────────────────────
+  let r_pack: UInt<R_PAYLOAD_W> =
+      {dn.r_data, dn.r_id, dn.r_resp, dn.r_last};
+  wire r_unpack: UInt<R_PAYLOAD_W>;
+
+  inst rs_r: RegSliceChannel
+    param PAYLOAD_W = R_PAYLOAD_W;
+    clk        <- clk;
+    rst        <- rst;
+    up_valid   <- dn.r_valid;
+    up_payload <- r_pack;
+    up_ready   -> dn.r_ready;
+    dn_valid   -> up.r_valid;
+    dn_payload -> r_unpack;
+    dn_ready   <- up.r_ready;
+  end inst rs_r
+
+  // ── AW channel (master → fabric) ───────────────────────────────────────
+  let aw_pack: UInt<AW_PAYLOAD_W> =
+      {up.aw_addr, up.aw_id, up.aw_len, up.aw_size, up.aw_burst,
+       up.aw_lock, up.aw_cache, up.aw_prot, up.aw_qos, up.aw_region};
+  wire aw_unpack: UInt<AW_PAYLOAD_W>;
+
+  inst rs_aw: RegSliceChannel
+    param PAYLOAD_W = AW_PAYLOAD_W;
+    clk        <- clk;
+    rst        <- rst;
+    up_valid   <- up.aw_valid;
+    up_payload <- aw_pack;
+    up_ready   -> up.aw_ready;
+    dn_valid   -> dn.aw_valid;
+    dn_payload -> aw_unpack;
+    dn_ready   <- dn.aw_ready;
+  end inst rs_aw
+
+  // ── W channel (master → fabric) ────────────────────────────────────────
+  let w_pack: UInt<W_PAYLOAD_W> =
+      {up.w_data, up.w_strb, up.w_last};
+  wire w_unpack: UInt<W_PAYLOAD_W>;
+
+  inst rs_w: RegSliceChannel
+    param PAYLOAD_W = W_PAYLOAD_W;
+    clk        <- clk;
+    rst        <- rst;
+    up_valid   <- up.w_valid;
+    up_payload <- w_pack;
+    up_ready   -> up.w_ready;
+    dn_valid   -> dn.w_valid;
+    dn_payload -> w_unpack;
+    dn_ready   <- dn.w_ready;
+  end inst rs_w
+
+  // ── B channel (fabric → master) ────────────────────────────────────────
+  let b_pack: UInt<B_PAYLOAD_W> =
+      {dn.b_id, dn.b_resp};
+  wire b_unpack: UInt<B_PAYLOAD_W>;
+
+  inst rs_b: RegSliceChannel
+    param PAYLOAD_W = B_PAYLOAD_W;
+    clk        <- clk;
+    rst        <- rst;
+    up_valid   <- dn.b_valid;
+    up_payload <- b_pack;
+    up_ready   -> dn.b_ready;
+    dn_valid   -> up.b_valid;
+    dn_payload -> b_unpack;
+    dn_ready   <- up.b_ready;
+  end inst rs_b
+
+  // ── Unpack the registered payloads into fabric / master signals ────────
+  //
+  // Field layouts (MSB-first, mirroring the {...} concat order above):
+  //   AR/AW : [addr][id][len][size][burst][lock][cache][prot][qos][region]
+  //   R     : [data][id][resp][last]
+  //   W     : [data][strb][last]
+  //   B     : [id][resp]
+  //
+  // Bit ranges are spelled out inline using ADDR_WIDTH / DATA_WIDTH / ID_W
+  // so the arithmetic stays auditable.
+  comb
+    // ── AR unpack → dn ──
+    dn.ar_addr   = ar_unpack[AR_PAYLOAD_W-1                  : AR_PAYLOAD_W-ADDR_WIDTH];
+    dn.ar_id     = ar_unpack[AR_PAYLOAD_W-ADDR_WIDTH-1       : AR_PAYLOAD_W-ADDR_WIDTH-ID_W];
+    dn.ar_len    = ar_unpack[AR_PAYLOAD_W-ADDR_WIDTH-ID_W-1  : AR_PAYLOAD_W-ADDR_WIDTH-ID_W-8];
+    dn.ar_size   = ar_unpack[AR_PAYLOAD_W-ADDR_WIDTH-ID_W-8-1: AR_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3];
+    dn.ar_burst  = ar_unpack[AR_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-1 : AR_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-2];
+    dn.ar_lock   = ar_unpack[AR_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-2-1 : AR_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-2-1] != 0;
+    dn.ar_cache  = ar_unpack[AR_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-2-1-1 : AR_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-2-1-4];
+    dn.ar_prot   = ar_unpack[AR_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-2-1-4-1 : AR_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-2-1-4-3];
+    dn.ar_qos    = ar_unpack[AR_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-2-1-4-3-1 : AR_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-2-1-4-3-4];
+    dn.ar_region = ar_unpack[3:0];
+
+    // ── R unpack → up ──
+    up.r_data = r_unpack[R_PAYLOAD_W-1                : R_PAYLOAD_W-DATA_WIDTH];
+    up.r_id   = r_unpack[R_PAYLOAD_W-DATA_WIDTH-1     : R_PAYLOAD_W-DATA_WIDTH-ID_W];
+    up.r_resp = r_unpack[R_PAYLOAD_W-DATA_WIDTH-ID_W-1: R_PAYLOAD_W-DATA_WIDTH-ID_W-2];
+    up.r_last = r_unpack[0:0] != 0;
+
+    // ── AW unpack → dn ──
+    dn.aw_addr   = aw_unpack[AW_PAYLOAD_W-1                  : AW_PAYLOAD_W-ADDR_WIDTH];
+    dn.aw_id     = aw_unpack[AW_PAYLOAD_W-ADDR_WIDTH-1       : AW_PAYLOAD_W-ADDR_WIDTH-ID_W];
+    dn.aw_len    = aw_unpack[AW_PAYLOAD_W-ADDR_WIDTH-ID_W-1  : AW_PAYLOAD_W-ADDR_WIDTH-ID_W-8];
+    dn.aw_size   = aw_unpack[AW_PAYLOAD_W-ADDR_WIDTH-ID_W-8-1: AW_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3];
+    dn.aw_burst  = aw_unpack[AW_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-1 : AW_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-2];
+    dn.aw_lock   = aw_unpack[AW_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-2-1 : AW_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-2-1] != 0;
+    dn.aw_cache  = aw_unpack[AW_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-2-1-1 : AW_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-2-1-4];
+    dn.aw_prot   = aw_unpack[AW_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-2-1-4-1 : AW_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-2-1-4-3];
+    dn.aw_qos    = aw_unpack[AW_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-2-1-4-3-1 : AW_PAYLOAD_W-ADDR_WIDTH-ID_W-8-3-2-1-4-3-4];
+    dn.aw_region = aw_unpack[3:0];
+
+    // ── W unpack → dn ──
+    dn.w_data = w_unpack[W_PAYLOAD_W-1                : W_PAYLOAD_W-DATA_WIDTH];
+    dn.w_strb = w_unpack[W_PAYLOAD_W-DATA_WIDTH-1     : W_PAYLOAD_W-DATA_WIDTH-STRB_WIDTH];
+    dn.w_last = w_unpack[0:0] != 0;
+
+    // ── B unpack → up ──
+    up.b_id   = b_unpack[B_PAYLOAD_W-1     : B_PAYLOAD_W-ID_W];
+    up.b_resp = b_unpack[1:0];
+  end comb
+end module Nic400EdgeRegSlice
