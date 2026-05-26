@@ -42,11 +42,18 @@ module Nic400AhbBridge
   param DATA_WIDTH: const = 32;
   param STRB_WIDTH: const = 4;        // = DATA_WIDTH/8
   param ID_WIDTH:   const = 3;
-  // v3: chunk length for HBURST=INCR (undefined-length) writes.
-  // Bridge speculatively issues an AXI burst of MAX_INCR_BEATS, pads with
-  // strb=0 if master stops early. Bursts longer than MAX_INCR_BEATS will
-  // hang the master (multi-chunk extension is the v4 step).
+  // Chunk length for HBURST=INCR (undefined-length) writes. Each AXI burst
+  // the bridge emits covers MAX_INCR_BEATS beats (axlen = MAX_INCR_BEATS-1).
   param MAX_INCR_BEATS: const = 16;
+  // v4: max number of AXI bursts the bridge will issue per AHB INCR.
+  // Supports INCR bursts up to MAX_INCR_BEATS*MAX_INCR_CHUNKS beats. 4 chunks
+  // × 16 = 64 beats covers typical AHB master INCR lengths (cache linefills
+  // are 8–16; longer prefetches occasionally up to 32 or 64). For larger
+  // bursts bump this — phantom-chunk overhead is ~MAX_INCR_BEATS+2 cycles
+  // per unused chunk, paid only at the end of each burst.
+  param MAX_INCR_CHUNKS: const = 4;
+  // FIFO depth between the AHB-capture producer and the AXI-drain consumer.
+  param INCR_FIFO_DEPTH: const = 16;
 
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Async, Low>;
@@ -244,109 +251,201 @@ module Nic400AhbBridge
   // a different burst). AXI4 requires axlen at AW time and a launched burst
   // can't be cancelled.
   //
-  // Strategy: speculatively issue an AXI burst of MAX_INCR_BEATS, drain the
-  // master's HWDATA stream as W beats. When the master stops mid-chunk,
-  // pad the remaining AXI W beats with w_strb=0 (legal sparse-write per
-  // AXI4) so the AXI slave sees a clean axlen-length burst with the trailing
-  // bytes effectively no-op.
+  // v4 splits the work between a Producer thread (AHB-side HWDATA capture
+  // → FIFO) and a Consumer thread (FIFO → AXI burst stream), decoupling
+  // AHB pacing from AXI pacing and supporting INCR bursts up to
+  // MAX_INCR_BEATS*MAX_INCR_CHUNKS beats per transaction.
   //
-  // Master-stop detection: at each forwarded W beat, sample h.htrans on
-  // the cycle the W handshake completes. The HTRANS of that cycle is the
-  // master's drive for the NEXT beat's *address* phase — if it's IDLE,
-  // the master is stopping, but THIS beat's HWDATA (already on the bus)
-  // is still valid and must be forwarded. Subsequent beats (b+1..MAX-1)
-  // get padded.
+  //   Producer (IncrProducer):
+  //     • Waits NONSEQ + INCR + HWRITE. 1-cycle Mealy do-body captures the
+  //       burst params and pulses start_r (per #412/PR #413, seq assigns
+  //       in this body are gated by the wake condition).
+  //     • 1-cycle spinup so master advances into data phase 0.
+  //     • Drive state: each cycle, drive h.hready = push_ready and push the
+  //       current HWDATA into the FIFO. Exit when h.htrans == IDLE — the
+  //       LAST beat's HWDATA gets pushed in the exit cycle.
+  //     • Sets master_done_r.
   //
-  // BUSY handling: not supported in v3. Assumes AHB master uses SEQ
-  // exclusively for INCR (the common cache-line-fill case). HTRANS=BUSY
-  // would be misinterpreted as "still streaming" and forward stale HWDATA.
+  //   Consumer (IncrConsumer):
+  //     • Waits for start_r.
+  //     • For c in 0..MAX_INCR_CHUNKS-1, nested with for b in 0..MAX_INCR_
+  //       BEATS-1 (per #414/PR #415, the two for loops now allocate
+  //       independent _loop_cnt regs):
+  //         - AW (axlen = MAX_INCR_BEATS - 1). Skip if master_done && FIFO
+  //           empty — chunk_aw_done_r captures real-vs-phantom at AW lock
+  //           exit.
+  //         - W loop: real chunk MUST emit MAX_INCR_BEATS beats (forward
+  //           from FIFO; pad tail with strb=0 when master_done && FIFO
+  //           empty mid-chunk; wait when FIFO empty + master still going).
+  //           Phantom chunk exits each W lock immediately.
+  //         - B; accumulate b_resp into err_r.
+  //     • Final HRESP pulse: hready=1 + hresp=err_r for one cycle.
   //
-  // Long-burst limitation: AHB INCR bursts longer than MAX_INCR_BEATS
-  // beats hang the master (no inter-chunk handoff in v3). v4 adds a
-  // HWDATA FIFO + multi-chunk for true unbounded INCR support.
-  //
-  // master_stopped_r is module-scope (declared below) so it persists across
-  // the for-loop iterations within a single thread state lowering.
-  reg master_stopped_r: Bool reset rst => false;
+  // BUSY handling: not supported. Assumes the master uses SEQ exclusively
+  // for INCR (the cache-line-fill pattern).
+  reg start_r:           Bool reset rst => false;
+  reg master_done_r:     Bool reset rst => false;
+  reg burst_addr_r:      UInt<ADDR_WIDTH> reset rst => 0;
+  reg burst_size_r:      UInt<3>          reset rst => 0;
+  reg burst_hmastlock_r: Bool             reset rst => false;
+  reg burst_hprot_r:     UInt<4>          reset rst => 0;
+  reg err_r:             Bool             reset rst => false;
+  // Per-chunk real-vs-phantom flag, set at chunk-N AW lock exit. The W loop
+  // and B phase gate on it to decide whether to drain (real) or skip
+  // (phantom). Without it, the W loop's `master_done && !pop_valid` exit
+  // condition would prematurely abort a real chunk's trailing pad beats.
+  reg chunk_aw_done_r:   Bool             reset rst => false;
 
-  thread WriteXactIncr on clk rising, rst low
+  // FIFO between Producer's capture side and Consumer's drain side.
+  inst hwdata_fifo: IncrHwdataFifo
+    param T = UInt<DATA_WIDTH>;
+    param DEPTH = INCR_FIFO_DEPTH;
+    clk        <- clk;
+    rst        <- rst;
+    push_valid <- fifo_push_valid;
+    push_ready -> fifo_push_ready;
+    push_data  <- fifo_push_data;
+    pop_valid  -> fifo_pop_valid;
+    pop_ready  <- fifo_pop_ready;
+    pop_data   -> fifo_pop_data;
+  end inst hwdata_fifo
+
+  wire fifo_push_valid: Bool;
+  wire fifo_push_ready: Bool;
+  wire fifo_push_data:  UInt<DATA_WIDTH>;
+  wire fifo_pop_valid:  Bool;
+  wire fifo_pop_ready:  Bool;
+  wire fifo_pop_data:   UInt<DATA_WIDTH>;
+
+  // ── Producer thread (AHB capture side) ──────────────────────────────
+  thread IncrProducer on clk rising, rst low
     default comb
-      h.hready  = true;
-      h.hresp   = false;
-      h.hrdata  = 0;
-      axi.aw_valid  = false;
-      axi.aw_addr   = 0;
-      axi.aw_id     = 0;
-      axi.aw_len    = 0;
-      axi.aw_size   = 0;
-      axi.aw_burst  = 0;
-      axi.aw_lock   = false;
-      axi.aw_cache  = 0;
-      axi.aw_prot   = 0;
-      axi.aw_qos    = 0;
-      axi.aw_region = 0;
-      axi.w_valid   = false;
-      axi.w_data    = 0;
-      axi.w_strb    = 0;
-      axi.w_last    = false;
-      axi.b_ready   = false;
+      // Idle ready when no burst pending; stall the master while the
+      // PREVIOUS INCR burst is still draining through Consumer (phantom
+      // chunks + final HRESP). Without this gate, the master would advance
+      // past a new NONSEQ before Producer is allowed to capture it.
+      h.hready        = not master_done_r;
+      fifo_push_valid = false;
+      fifo_push_data  = 0;
     end default
-    // Wake only on HBURST=1 (INCR undefined-length). master_stopped_r is
-    // cleared at the end of each burst (after the B phase below), so on
-    // wake-up it's already false.
-    wait 0+ cycle until h.hsel and (h.htrans == 2) and h.hwrite and (h.hburst == 1);
-    // AW phase — speculative axlen = MAX_INCR_BEATS - 1.
-    lock h_resp_lock
-      do
-        h.hready      = false;
-        axi.aw_valid  = true;
-        axi.aw_addr   = h.haddr;
-        axi.aw_id     = 0;
-        axi.aw_size   = h.hsize;
-        axi.aw_len    = MAX_INCR_BEATS - 1;
-        axi.aw_burst  = 1;                  // INCR
-        axi.aw_lock   = h.hmastlock;
-        axi.aw_cache  = h.hprot;
-        axi.aw_prot   = h.hprot[2:0];
-      until axi.aw_ready;
-    end lock h_resp_lock
-    // Spinup gap for master to advance into data phase 0.
+    // Gate the wake on the previous burst being fully done. Consumer clears
+    // master_done_r in its final HRESP state; until then, the previous burst
+    // is still in flight (e.g. draining phantom chunks). Without this gate,
+    // back-to-back bursts could clobber burst_addr_r etc. mid-burst.
+    wait 0+ cycle until h.hsel and (h.htrans == 2) and h.hwrite and (h.hburst == 1) and (not master_done_r);
+    do
+      h.hready          = false;
+      burst_addr_r      <= h.haddr;
+      burst_size_r      <= h.hsize;
+      burst_hmastlock_r <= h.hmastlock;
+      burst_hprot_r     <= h.hprot;
+      start_r           <= true;
+    until true;
     wait 1 cycle;
-    // W loop — drain up to MAX_INCR_BEATS beats from the master, pad the
-    // tail if master stops early.
-    for b in 0..MAX_INCR_BEATS - 1
+    // Capture loop. The standalone `start_r <= false;` between the spinup
+    // and this loop would have created an extra "action" state, delaying
+    // the first push by one cycle and missing the first HWDATA beat. Move
+    // start_r=false into the loop-exit seq assigns instead — Consumer has
+    // long since woken by this point.
+    do
+      h.hready        = fifo_push_ready;
+      fifo_push_valid = true;
+      fifo_push_data  = h.hwdata;
+    until h.htrans == 0;
+    master_done_r <= true;
+    start_r       <= false;
+  end thread IncrProducer
+
+  // ── Consumer thread (AXI burst drain side) ──────────────────────────
+  thread IncrConsumer on clk rising, rst low
+    default comb
+      h.hresp        = false;
+      h.hrdata       = 0;
+      fifo_pop_ready = false;
+      axi.aw_valid   = false;
+      axi.aw_addr    = 0;
+      axi.aw_id      = 0;
+      axi.aw_len     = 0;
+      axi.aw_size    = 0;
+      axi.aw_burst   = 0;
+      axi.aw_lock    = false;
+      axi.aw_cache   = 0;
+      axi.aw_prot    = 0;
+      axi.aw_qos     = 0;
+      axi.aw_region  = 0;
+      axi.w_valid    = false;
+      axi.w_data     = 0;
+      axi.w_strb     = 0;
+      axi.w_last     = false;
+      axi.b_ready    = false;
+    end default
+    wait until start_r;
+    for c in 0..MAX_INCR_CHUNKS - 1
+      // ── AW phase ────────────────────────────────────────────────────
       lock h_resp_lock
         do
-          if master_stopped_r
-            // Padding tail: master has signalled end-of-burst on a prior
-            // iteration. Forward a strb=0 dummy beat to drain the AXI burst.
-            h.hready    = false;
-            axi.w_valid = true;
-            axi.w_data  = 0;
-            axi.w_strb  = 0;
-            axi.w_last  = (b == MAX_INCR_BEATS - 1);
+          if master_done_r and (not fifo_pop_valid)
+            axi.aw_valid = false;
           else
-            // Streaming: forward current HWDATA from the master's data phase.
-            h.hready    = axi.w_ready;
-            axi.w_valid = true;
-            axi.w_data  = h.hwdata;
-            axi.w_strb  = 15;
-            axi.w_last  = (b == MAX_INCR_BEATS - 1);
+            axi.aw_valid = true;
+            axi.aw_addr  = (burst_addr_r + (((c.zext<ADDR_WIDTH>()) * MAX_INCR_BEATS) << burst_size_r)).trunc<ADDR_WIDTH>();
+            axi.aw_id    = 0;
+            axi.aw_size  = burst_size_r;
+            axi.aw_len   = MAX_INCR_BEATS - 1;
+            axi.aw_burst = 1;
+            axi.aw_lock  = burst_hmastlock_r;
+            axi.aw_cache = burst_hprot_r;
+            axi.aw_prot  = burst_hprot_r[2:0];
           end if
-        until axi.w_ready;
+        until axi.aw_ready or (master_done_r and (not fifo_pop_valid));
       end lock h_resp_lock
-      // Sample HTRANS at handshake-complete cycle. If master drove IDLE in
-      // this cycle's address phase, no more real beats will follow.
-      master_stopped_r <= h.htrans == 0;
+      chunk_aw_done_r <= not (master_done_r and (not fifo_pop_valid));
+      // ── W loop ──────────────────────────────────────────────────────
+      for b in 0..MAX_INCR_BEATS - 1
+        lock h_resp_lock
+          do
+            if not chunk_aw_done_r
+              axi.w_valid    = false;
+              fifo_pop_ready = false;
+            elsif fifo_pop_valid
+              axi.w_valid    = true;
+              axi.w_data     = fifo_pop_data;
+              axi.w_strb     = 15;
+              axi.w_last     = (b == MAX_INCR_BEATS - 1);
+              fifo_pop_ready = axi.w_ready;
+            elsif master_done_r
+              axi.w_valid    = true;
+              axi.w_data     = 0;
+              axi.w_strb     = 0;
+              axi.w_last     = (b == MAX_INCR_BEATS - 1);
+              fifo_pop_ready = false;
+            else
+              axi.w_valid    = false;
+              fifo_pop_ready = false;
+            end if
+          until axi.w_ready or (not chunk_aw_done_r);
+        end lock h_resp_lock
+      end for
+      // ── B phase ─────────────────────────────────────────────────────
+      lock h_resp_lock
+        do
+          if not chunk_aw_done_r
+            axi.b_ready = false;
+          else
+            axi.b_ready = true;
+          end if
+        until axi.b_valid or (not chunk_aw_done_r);
+      end lock h_resp_lock
+      err_r <= err_r or axi_resp_to_ahb(axi.b_resp);
     end for
-    // B phase.
+    // ── Final HRESP pulse to AHB master ────────────────────────────────
     lock h_resp_lock
       do
-        h.hready    = axi.b_valid;
-        h.hresp     = axi_resp_to_ahb(axi.b_resp);
-        axi.b_ready = true;
-      until axi.b_valid;
+        h.hready = true;
+        h.hresp  = err_r;
+      until h.hready;
     end lock h_resp_lock
-    master_stopped_r <= false;
-  end thread WriteXactIncr
+    err_r         <= false;
+    master_done_r <= false;
+  end thread IncrConsumer
 end module Nic400AhbBridge

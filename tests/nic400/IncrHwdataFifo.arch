@@ -1,0 +1,15 @@
+// HWDATA buffer between the AHB-capture Producer and the AXI-drain Consumer
+// inside Nic400AhbBridge for HBURST=INCR (undefined-length) writes. One full
+// chunk's worth of beats (default 16) decouples AHB pacing from AXI pacing.
+fifo IncrHwdataFifo
+  param DEPTH: const = 16;
+  param T: type = UInt<32>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data:  in T;
+  port pop_valid:  out Bool;
+  port pop_ready:  in Bool;
+  port pop_data:   out T;
+end fifo IncrHwdataFifo
