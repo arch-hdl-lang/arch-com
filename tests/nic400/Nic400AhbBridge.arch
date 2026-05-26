@@ -46,17 +46,12 @@ module Nic400AhbBridge
   // the bridge emits covers MAX_INCR_BEATS beats (axlen = MAX_INCR_BEATS-1).
   param MAX_INCR_BEATS: const = 16;
   // v4: max number of AXI bursts the bridge will issue per AHB INCR.
-  // Supports INCR bursts up to MAX_INCR_BEATS*MAX_INCR_CHUNKS beats.
-  //
-  // Currently set to 1 (effectively single-chunk, matching v3's capacity).
-  // The two-thread + FIFO architecture is in place to enable multi-chunk
-  // extension, but bumping this above 1 hits a Consumer-S4 (chunk-B-wait)
-  // lockup that's likely related to the conservative comb-cycle warning
-  // on fifo_pop_ready ↔ fifo_pop_valid not converging across the 2-pass
-  // settle. Setting to 2+ produces correct AW/W transactions for the
-  // first chunk but Consumer fails to transition to chunk 1's AW state.
-  // Tracked as a follow-on after the current PR lands.
-  param MAX_INCR_CHUNKS: const = 1;
+  // Supports INCR bursts up to MAX_INCR_BEATS*MAX_INCR_CHUNKS beats. 4 chunks
+  // × 16 = 64 beats covers typical AHB master INCR lengths (cache linefills
+  // are 8–16; longer prefetches occasionally up to 32 or 64). For larger
+  // bursts bump this — phantom-chunk overhead is ~MAX_INCR_BEATS+2 cycles
+  // per unused chunk, paid only at the end of each burst.
+  param MAX_INCR_CHUNKS: const = 4;
   // FIFO depth between the AHB-capture producer and the AXI-drain consumer.
   param INCR_FIFO_DEPTH: const = 16;
 
