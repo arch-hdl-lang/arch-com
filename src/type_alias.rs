@@ -358,13 +358,23 @@ fn substitute_in_gen_items(
             GenItem::Seq(b) => substitute_in_stmts(&mut b.stmts, aliases, errors),
             GenItem::Comb(b) => substitute_in_stmts(&mut b.stmts, aliases, errors),
             GenItem::Wire(w) => {
-                // Substitute any alias references in the wire's type tree
-                // and its bus_params overrides. Same treatment as a
-                // top-level WireDecl (see the ModuleBodyItem::WireDecl arm
-                // above), minus the alias-bus-param propagation — for
-                // generate_for-of-wire we keep things simple: the wire
-                // type is taken verbatim from source and substituted by
-                // subst_wire_decl per iteration in elaborate.rs.
+                // Propagate alias-carried bus_params onto the wire's
+                // bus_params slot before substituting the type tree — same
+                // treatment as the top-level ModuleBodyItem::WireDecl arm.
+                // Without this, a `wire w: AliasedBus;` inside a
+                // generate_if (or generate_for) body would lose the alias's
+                // bound bus args and fall back to the bus's defaults
+                // (issue #423).
+                let extra = alias_bus_params(&w.ty, aliases);
+                if !extra.is_empty() {
+                    // Wire's own bus_params (explicit) take precedence on
+                    // collision — append alias params first, then the
+                    // wire's existing params, so the wire's params win
+                    // last-wins. Matches the top-level WireDecl arm.
+                    let mut merged = extra;
+                    merged.append(&mut w.bus_params);
+                    w.bus_params = merged;
+                }
                 substitute_type(&mut w.ty, aliases, errors);
                 for pa in w.bus_params.iter_mut() {
                     substitute_in_expr(&mut pa.value, aliases, errors);
