@@ -1709,8 +1709,8 @@ Expands to `NUM` independent threads, each with its own state register `_t{N}_st
 | `if/else (with wait inside)` | Yes (dispatch + rejoin) | Branches lower to disjoint state ranges; rejoin at exit |
 | `wait until cond;` | Yes | Advance when condition true |
 | `wait N cycle;` | Yes | Stall exactly N clock cycles (counter-based) |
-| `do { … } until cond;` | Yes | Hold state: drive comb outputs until condition fires |
-| `for i in s..e { … } end for` | Yes (per iteration) | Runtime bound; `i` becomes `_loop_cnt` register |
+| `do { … } until cond;` | Yes | Hold state: drive comb outputs until condition fires. Nested `lock` / `wait*` / `for` / `fork`/`join` / `return` inside the body are rejected at elaboration time; nested `if/else` (no waits) is permitted. |
+| `for i in s..e { … } end for` | Yes (per iteration) | Runtime bound; `i` becomes per-instance `_t{ti}_loop_cnt_{id}` register (nested `for` loops each get a distinct counter). |
 | `lock res { … } end lock res` | Yes (per body state) | Acquire mutex; zero-cycle if uncontended |
 | `fork … and … join` | Yes (product expansion) | Parallel branches; compiler generates product-state FSM |
 
