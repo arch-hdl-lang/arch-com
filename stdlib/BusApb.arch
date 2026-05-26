@@ -1,55 +1,66 @@
-// ARM AMBA APB (Advanced Peripheral Bus) — initiator perspective. The
-// target perspective flips directions so peripherals see psel/penable/
-// paddr/pwrite/pwdata (plus optional pprot/pstrb) as inputs and drive
-// prdata/pready (plus optional pslverr) as outputs.
-//
-// Spec lineage (which signals belong to which revision):
-//   • APB v2.0 (IHI 0024, 1998): baseline — psel, penable, paddr,
-//     pwrite, pwdata, prdata, pready. No sidebands.
-//   • APB v3 (IHI 0024B, 2008): adds pslverr — slave/completer can
-//     signal an error response on the access phase.
-//   • APB v4 (IHI 0024C, 2010): adds pprot (3-bit protection
-//     attribute) and pstrb (DATA_W/8-bit write byte enables).
-//   • APB v5 (IHI 0024E, 2021) sideband (e.g. pwakeup, pnse, pauser)
-//     is NOT modelled here.
-//
-// Three-state transfer protocol (enforced by the initiator state
-// machine, not the bus itself):
-//   • Idle:   psel=0, penable=0. No transfer in flight.
-//   • Setup: psel=1, penable=0 for one cycle. paddr, pwrite, pwdata,
-//     (pprot, pstrb when enabled) must be driven valid and held
-//     stable. Setup is always exactly one cycle.
-//   • Access: psel=1, penable=1. All setup-phase signals continue to
-//     be held stable. Target samples the request and drives pready
-//     (and pslverr/prdata) — the access phase persists until pready=1,
-//     at which point the transfer completes and the initiator either
-//     returns to Idle or starts a back-to-back Setup.
-//
-// Toggle parameters (nonzero = include the signal, zero = omit):
-//   USE_PSLVERR — APB3 error-response signal (target → initiator).
-//   USE_PPROT   — APB4 3-bit protection attribute (initiator →
-//                 target). pprot[0]=privileged, pprot[1]=non-secure,
-//                 pprot[2]=instruction.
-//   USE_PSTRB   — APB4 write byte enables, DATA_W/8 bits (initiator →
-//                 target). Only meaningful on pwrite=1.
-//
-// Default for every toggle is 0 so a bare instantiation
-// (`BusApb<ADDR_W=12, DATA_W=32>`) yields an APB v2.0-shaped bundle.
-//
-// Consolidated user: tests/nic400/Nic400ApbBridge.arch and
-// tests/nic400/Nic400System.arch instantiate this bus as
-// `BusApb<..., USE_PSLVERR=1, USE_PPROT=1, USE_PSTRB=1>` to model the
-// NIC-400 reference's APB4-with-error initiator port.
-//
-// Reference: ARM IHI 0024 "AMBA APB Protocol Specification".
-//
-// Example:
-//   use BusApb;
-//   module CsrBank
-//     port s_apb: target BusApb<ADDR_W=12, DATA_W=32>;  // APB2-shaped
-//     ...
-//   end module CsrBank
+//! ---
+//! tags: [bus, apb, amba, peripheral, control_status]
+//! refs:
+//!   - "ARM IHI 0024 'AMBA APB Protocol Specification' (revisions 2.0 / v3 / v4 / v5)"
+//! ---
+//!
+//! ARM AMBA APB (Advanced Peripheral Bus) — initiator perspective. The
+//! target perspective flips directions so peripherals see psel/penable/
+//! paddr/pwrite/pwdata (plus optional pprot/pstrb) as inputs and drive
+//! prdata/pready (plus optional pslverr) as outputs.
+//!
+//! Spec lineage (which signals belong to which revision):
+//!   • APB v2.0 (IHI 0024, 1998): baseline — psel, penable, paddr,
+//!     pwrite, pwdata, prdata, pready. No sidebands.
+//!   • APB v3 (IHI 0024B, 2008): adds pslverr — slave/completer can
+//!     signal an error response on the access phase.
+//!   • APB v4 (IHI 0024C, 2010): adds pprot (3-bit protection
+//!     attribute) and pstrb (DATA_W/8-bit write byte enables).
+//!   • APB v5 (IHI 0024E, 2021) sideband (e.g. pwakeup, pnse, pauser)
+//!     is NOT modelled here.
+//!
+//! Three-state transfer protocol (enforced by the initiator state
+//! machine, not the bus itself):
+//!   • Idle:   psel=0, penable=0. No transfer in flight.
+//!   • Setup: psel=1, penable=0 for one cycle. paddr, pwrite, pwdata,
+//!     (pprot, pstrb when enabled) must be driven valid and held
+//!     stable. Setup is always exactly one cycle.
+//!   • Access: psel=1, penable=1. All setup-phase signals continue to
+//!     be held stable. Target samples the request and drives pready
+//!     (and pslverr/prdata) — the access phase persists until pready=1,
+//!     at which point the transfer completes and the initiator either
+//!     returns to Idle or starts a back-to-back Setup.
+//!
+//! Toggle parameters (nonzero = include the signal, zero = omit):
+//!   USE_PSLVERR — APB3 error-response signal (target → initiator).
+//!   USE_PPROT   — APB4 3-bit protection attribute (initiator →
+//!                 target). pprot[0]=privileged, pprot[1]=non-secure,
+//!                 pprot[2]=instruction.
+//!   USE_PSTRB   — APB4 write byte enables, DATA_W/8 bits (initiator →
+//!                 target). Only meaningful on pwrite=1.
+//!
+//! Default for every toggle is 0 so a bare instantiation
+//! (`BusApb<ADDR_W=12, DATA_W=32>`) yields an APB v2.0-shaped bundle.
+//!
+//! Consolidated user: tests/nic400/Nic400ApbBridge.arch and
+//! tests/nic400/Nic400System.arch instantiate this bus as
+//! `BusApb<..., USE_PSLVERR=1, USE_PPROT=1, USE_PSTRB=1>` to model the
+//! NIC-400 reference's APB4-with-error initiator port.
+//!
+//! Example:
+//!
+//! ```arch
+//!   use BusApb;
+//!   module CsrBank
+//!     port s_apb: target BusApb<ADDR_W=12, DATA_W=32>;  // APB2-shaped
+//!     ...
+//!   end module CsrBank
+//! ```
 
+/// ARM AMBA APB bus, initiator perspective. Toggleable APB3
+/// (`USE_PSLVERR`) and APB4 (`USE_PPROT`, `USE_PSTRB`) sidebands; bare
+/// instantiation yields an APB v2.0-shaped bundle. See file-level docs
+/// for the Idle / Setup / Access protocol and signal-to-revision map.
 bus BusApb
   param ADDR_W:      const = 32;
   param DATA_W:      const = 32;
