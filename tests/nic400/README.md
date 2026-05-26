@@ -1,176 +1,213 @@
-# NIC-400 Interconnect — ARCH Implementation Status
+# NIC-400 Demo
+
+An ARM AMBA NIC-400-class interconnect rebuilt in ARCH. Started as a TDD
+exercise for the four core mechanisms (address decode, per-slave
+arbitration, ID remap, ID-prefix return routing) and grew into a
+full-featured demo of the language's bus / thread / generate / pipeline
+constructs against a real-IP target.
 
 Reference spec: [`doc/nic400_interconnect_spec.md`](../../doc/nic400_interconnect_spec.md)
 
-## Implementation summary
+## What's shipped
 
-This directory contains a TDD-built NIC-400-style AXI4 read crossbar in ARCH,
-exercising the four core mechanisms from the spec: address decode, per-slave
-arbitration, ID remap, and ID-prefix return routing.
+| Component | Module | Coverage |
+|-----------|--------|----------|
+| Bus definitions | `BusAxi4`, `BusAhbLite`, `BusApb` | AXI4-full (with sideband), AHB-Lite v1.0, APB v2.0 |
+| Crossbar fabric | `Nic400Fabric` (3 masters × 4 slaves, full R/W) | ID-prefix routing, per-channel `mutex<priority>` arbitration |
+| Per-edge plumbing | `Nic400MasterPort`, `Nic400SlavePort` | Address decode + response demux by ID-prefix match |
+| Timing closure | `Nic400FabricRs1`, `Nic400EdgeRegSlice` | Per-master register slice via wrapper module |
+| AHB bridge | `Nic400AhbBridge` (+ `IncrHwdataFifo`) | SINGLE / INCRn / WRAPn / INCR-undef up to 64 beats (multi-chunk) |
+| APB bridge | `Nic400ApbBridge` | AXI4 target → APB initiator, burst-split into APB phases |
+| Width adapter | `Nic400WidthAdapter` | 64→32 downsize (1:RATIO beat split, w_strb forwarding) |
+| Performance counters | `Nic400Pmu` | Per-master AR/AW/R/W/B handshake counters |
+| Helpers | `Nic400ArbiterPolicy`, `Nic400QosFn`, `RegSliceChannel` | Module-local fns, generic single-channel skid buffer |
 
-| File | Purpose | Status |
-|---|---|---|
-| `PkgNic400.arch` | Compile-time parameters (NUM_MASTERS, ID widths, REGION_BITS) | ✓ check |
-| `BusAxi4.arch` | AXI4-full bus type with sideband (lock/cache/prot/qos/region) | ✓ check |
-| `RegSliceChannel.arch` | Generic 1-stage register slice (skid buffer) | ✓ sim PASS |
-| `Nic400ArbiterPolicy.arch` | QoS arbiter (4-requester) with custom hook | ✓ check |
-| `Nic400QosFn.arch` | Pure-comb wrapper of QoS pick function for unit testing | ✓ sim PASS (7/7 cases) |
-| `Nic400Read2x2.arch` | Monolithic 2x2 AXI4 read crossbar (v1) | ✓ sim PASS |
-| `Nic400MasterPort.arch` | Per-master decode + route (v2, spec §7) | ✓ check + Verilator clean |
-| `Nic400SlavePort.arch` | Per-slave arbitration + return (v2, spec §8) | ✓ check + Verilator clean |
-| `Nic400Fabric.arch` | Hierarchical wiring harness — M MasterPort × N SlavePort (v2, spec §9) | ✓ check + arch sim PASS + Verilator clean |
+## How the pieces fit
 
-## Verification — §15 of spec
+```
+                          Nic400Fabric (3×4)
+                          ┌──────────────────────────────────────┐
+   AHB-master (CPU) ──┐   │   MasterPort×3 ── edges[i][j] ──     │   ┌── APB peripheral
+                      └── m[0]        │                          s[0] ─┘
+       Nic400AhbBridge      │     ┌───┴───────┐                    │      Nic400ApbBridge
+                            │     │ ID-prefix │
+   Direct AXI master ─── m[1]     │ route +   │                    s[1] ── Direct AXI slave
+                            │     │ arbitrate │
+                            m[2]  └───────────┘                    s[2,3] ── Direct AXI slaves
+                            └──────────────────────────────────────┘
+                                       │
+                  Nic400Pmu observes per-master handshake events
+                                       │
+                  Optional: Nic400FabricRs1 wraps Nic400Fabric with
+                  one Nic400EdgeRegSlice on every m[i] for +1-cycle
+                  timing closure on each master→fabric edge.
 
-| # | Test | Testbench | Status |
-|---|---|---|---|
-| 1 | Single master / single slave smoke | `tb_nic400_read2x2_smoke.cpp` + `Nic400Read2x2_smoke.harc` | ✓ PASS (M0→S0, M0→S1, M1→S0 routings) |
-| 2 | Parallel disjoint targets | `tb_nic400_read2x2_parallel.cpp` | ✓ PASS (M0→S0, M1→S1 simultaneously) |
-| 3 | Hot-slave contention arbitration | `tb_nic400_read2x2_hot_slave.cpp` | ✓ PASS (round_robin serializes both masters onto S0) |
-| 4 | ID remap correctness | embedded in smoke + hot-slave | ✓ PASS (prefix=0 for M0, prefix=1 for M1, strip on return) |
-| 5 | Out-of-order completion | `tb_nic400_read2x2_ooo.cpp` | ✓ PASS (R from S1 first, then S0; both land at M0 with correct IDs) |
-| 6 | Register slice latency | `tb_reg_slice_channel.cpp` | ✓ PASS (1-cycle latency, sustained 1/cycle throughput, backpressure-correct) |
-| 7 | `--auto-thread-asserts` runs silently | smoke TB with the flag | ✓ PASS (32 SVA properties; Verilator `--lint-only --assert` clean) |
-| **+** | **v2 latency / throughput** | `tb_nic400_fabric_latency.cpp` | ✓ PASS — pins AR=0 cyc, R=0 cyc, 1 txn / cyc (9/9) |
-| **+** | **multi-outstanding AR / aggregate throughput** | `tb_nic400_fabric_throughput.cpp` | ✓ PASS — 6 ARs in-flight w/ R-lag, 1.00 t/c cross-slave alternation, **3.00 t/c** 3M→3S concurrent |
-| 8 | Formal property (per-slave issue→W order) | `arch formal` | △ DEFERRED — hierarchical formal v1 does not yet support sub-module `wire` declarations introduced by the lock-arbitration lowering pass (compiler limitation, not a design flaw) |
+  Nic400WidthAdapter sits between a wide master (M_DATA_W=64) and the
+  fabric, or between the fabric and a narrow slave (S_DATA_W=32).
+```
 
-## Performance findings — v2 hierarchical design
+## Module dependency graph
 
-Measured with `tb_nic400_fabric_latency.cpp` (runs under `arch sim`):
+```
+PkgNic400  BusAxi4  BusAhbLite  BusApb
+   │         │          │          │
+   │         ├──────────┴──────────┤
+   │         ▼                     ▼
+   │    Nic400MasterPort      Nic400ApbBridge
+   │    Nic400SlavePort       Nic400AhbBridge ── IncrHwdataFifo
+   │         │                Nic400WidthAdapter
+   │         ▼
+   │    Nic400Fabric ──────► RegSliceChannel
+   │         │                     ▲
+   │         ▼                     │
+   │    Nic400FabricRs1 ── Nic400EdgeRegSlice
+   │
+   └─► Nic400Pmu (independent — taps handshake event lines)
 
-| Path | Spec §14.1 target | Observed (Mealy) | Observed (Moore) |
-|---|---|---|---|
+Nic400ArbiterPolicy, Nic400QosFn — helper functions used by
+Nic400MasterPort / Nic400SlavePort internally.
+
+Nic400Read2x2 — older 2×2 read-only crossbar (predates Nic400Fabric).
+                Kept for the four tb_nic400_read2x2_*.cpp regressions.
+```
+
+## File index
+
+### Bus definitions
+
+- **`BusAxi4.arch`** — AXI4-full with sideband (`lock`/`cache`/`prot`/`qos`/`region`) on AR/AW. Parameterized: `ADDR_W`, `DATA_W`, `STRB_W = DATA_W/8`, `ID_W`, `READ`, `WRITE`.
+- **`BusAhbLite.arch`** — AHB-Lite v1.0 from initiator (master) perspective. `target` flips directions for the slave side. Used by `Nic400AhbBridge`.
+- **`BusApb.arch`** — APB v2.0 (psel/penable/paddr/pwrite/pwdata/pstrb/pprot out; prdata/pready/pslverr in). Used by `Nic400ApbBridge`.
+
+### Crossbar fabric
+
+- **`Nic400Fabric.arch`** — 3-master × 4-slave full R/W crossbar. Scaled via `generate_for` over both `NUM_MASTERS` and `NUM_SLAVES`. 2D bus wire `edges[i][j]` is the (master_i ↔ slave_j) edge. ID-prefix routing: master injects its index into the high bits of AW/AR `id`; slave demux matches the prefix on response; master strips it.
+- **`Nic400MasterPort.arch`** — per-master decode + route. One AR thread + one R thread + one AW→W→B thread *per slave*, contending on per-channel `mutex<priority>` resources. Address decode picks slave via `addr[REGION_BITS+NS_W-1:REGION_BITS]`.
+- **`Nic400SlavePort.arch`** — per-slave arbitration + return demux. One AR arbiter + one R demux + one AW→W→B thread *per master*. Same-slave write-pipeline depth is 1; cross-slave concurrency works.
+- **`PkgNic400.arch`** — shared package (currently minimal; reserved for cross-module constants).
+
+### Timing closure
+
+- **`RegSliceChannel.arch`** — generic single-stage register slice for ONE channel. 1 cycle latency, 1 transfer/cycle sustained. Ready path stays combinational.
+- **`Nic400EdgeRegSlice.arch`** — per-edge AXI4 reg slice; wraps 5 `RegSliceChannel` instances (AR/R/AW/W/B) on packed `UInt<PAYLOAD_W>` payloads. Direction is per-channel: AR/AW/W use up→dn (master→fabric), R/B use dn→up (fabric→master).
+- **`Nic400FabricRs1.arch`** — wrapper around `Nic400Fabric` with one `Nic400EdgeRegSlice` per master between external `m[i]` and `inner.m[i]`. Slave side forwarded directly via whole-Vec forwarding (`inner.s -> s`).
+
+### Protocol bridges
+
+- **`Nic400AhbBridge.arch`** — AHB-Lite → AXI4. Two threads (`ReadXact`, `WriteXact`) sharing AHB target drives via `h_resp_lock` mutex. Handles SINGLE / INCRn / WRAPn / INCR-undef. INCR-undef spawns a Producer/Consumer pair coordinating through `IncrHwdataFifo` and issues up to `MAX_INCR_CHUNKS` (default 4) AXI bursts of `MAX_INCR_BEATS` (default 16) — supports up to 64-beat INCR-undef writes.
+- **`IncrHwdataFifo.arch`** — HWDATA buffer used by `Nic400AhbBridge`'s INCR-undef path. Depth = one chunk.
+- **`Nic400ApbBridge.arch`** — AXI4 target → APB initiator. Two threads sharing APB drives via `apb_lock`. Splits AXI bursts into sequential APB Setup → Access phases. Per-beat `paddr = base + (b << size)`.
+- **`Nic400WidthAdapter.arch`** — AXI4 downsize adapter (`M_DATA_W` > `S_DATA_W`). 5 per-channel threads. Master beats split into RATIO little-endian slave sub-beats; reads pack RATIO slave beats into one master beat with OR-reduced `r_resp`.
+
+### Observability
+
+- **`Nic400Pmu.arch`** — performance monitor counters. Per-master AR/AW/R/W/B counters, `COUNTER_W`-wide (default 32). Inputs are pre-qualified one-cycle event pulses (typically `m[i].x_valid && m[i].x_ready`). `r`/`w` count beats; `ar`/`aw`/`b` count transactions.
+
+### Helpers
+
+- **`Nic400ArbiterPolicy.arch`** — module-local `qos_grant_select(req_mask, last_grant, qos_vec)` for QoS-weighted grant selection.
+- **`Nic400QosFn.arch`** — module-local functions decoding QoS / region bits per channel.
+
+### Older standalone crossbar
+
+- **`Nic400Read2x2.arch`** — 2-master × 2-slave read-only crossbar. Predates the hierarchical `Nic400Fabric`. Kept for the four `tb_nic400_read2x2_*.cpp` regressions it carries (smoke, hot-slave, OOO, parallel).
+
+## Testbenches
+
+| TB | Tests |
+|----|-------|
+| `tb_nic400_fabric_smoke.cpp` | Hierarchical 2×2 decode + ID remap + return route |
+| `tb_nic400_fabric_latency.cpp` | AR/R latency cycles + throughput (1.00 transfers/cycle) |
+| `tb_nic400_fabric_write.cpp` | 5 (M,S) write pairs + ID prefix correctness on AW/W, ID strip on B |
+| `tb_nic400_fabric_throughput.cpp` | Multi-outstanding ARs per (M,S); 3M→3S aggregate throughput |
+| `tb_nic400_fabric_regslice.cpp` | Same 5 (M,S) write pairs through `Nic400FabricRs1` (1-cycle reg slice each) |
+| `tb_nic400_ahb_bridge.cpp` | Single-beat reads + writes (HBURST=SINGLE) |
+| `tb_nic400_ahb_bridge_burst.cpp` | Fixed-length INCR4 / INCR8 + backpressure + SLVERR |
+| `tb_nic400_ahb_bridge_incr.cpp` | Short INCR-undef (1/4/16-beat) + SLVERR |
+| `tb_nic400_ahb_bridge_long.cpp` | Long INCR-undef multi-chunk (17/24/32/48/64-beat) + SLVERR |
+| `tb_nic400_apb_bridge.cpp` | Single-beat R/W + INCR4 burst + pready stall + SLVERR |
+| `tb_nic400_width_adapter.cpp` | 64→32 downsize: 1-beat R/W + INCR4 R/W + strb + SLVERR |
+| `tb_nic400_pmu.cpp` | Per-master AR/AW/R/W/B counter integration |
+| `tb_nic400_qos_fn.cpp` | QoS function decoding |
+| `tb_reg_slice_channel.cpp` | Generic single-channel `RegSliceChannel` skid buffer |
+| `tb_nic400_read2x2_*.cpp` | Older 2×2 read-only crossbar regressions |
+
+## Performance findings
+
+Measured via `tb_nic400_fabric_latency.cpp` and `tb_nic400_fabric_throughput.cpp`:
+
+| Path | Spec target | Observed (Mealy `wait 0+`) | Observed (Moore `wait`) |
+|------|-------------|----------------------------|--------------------------|
 | AR forward (M → S, uncontested) | 0 cycles | **0 cycles ✓** | 1 cycle |
-| R return (S → M, uncontested)   | 0 cycles | **0 cycles ✓** | 1 cycle |
-| AR throughput (back-to-back)    | 1 txn / cycle | **1.00 t/c** (9/9) | 0.32 t/c (8/25) |
+| R return (S → M, uncontested) | 0 cycles | **0 cycles ✓** | 1 cycle |
+| AR throughput (back-to-back) | 1 txn/cycle | **1.00 t/c** (9/9) | 0.32 t/c (8/25) |
+| 3M→3S concurrent aggregate | linear M scaling | **3.00 t/c** (18/6) | — |
 
-The MasterPort/SlavePort threads use the **`wait 0+ cycle until X;`** form (Mealy-style wait), which fuses with the immediately-following `do BODY until Y;` into a single state whose comb drives are gated by `X` and whose transition guard is `X && Y`. When both conditions hold at the same posedge, the thread progresses with zero added cycles — collapsing the entry-wait bubble that the standard `wait until` form imposes.
+The MasterPort/SlavePort threads use the **`wait 0+ cycle until X;`**
+form (Mealy-style), which fuses with the immediately-following
+`do BODY until Y;` into a single state — both the comb drives and the
+transition guard live in one posedge, collapsing the entry-wait bubble
+that the Moore form imposes.
 
-The standard `wait until X;` (Moore-style, ≥1 cycle) is also supported and is what the v1 monolithic design used; the comparison numbers above are from a quick rebuild against the Moore form.
+### Multi-outstanding (no design change required)
 
-The checker `tb_nic400_fabric_latency.cpp` pins the *observed* values and fails loudly if a future change inflates them.
+The current design supports depth-∞ outstanding ARs per (master, slave)
+pair out-of-the-box — no ROB, no AR FIFO, no `outstanding` parameter.
+`tb_nic400_fabric_throughput.cpp` pins:
 
-### Multi-outstanding AR support (no design change required)
+- M0 → S0 with R-lag delayed 4 cycles: **6 ARs in flight before first R returns**.
+- M0 alternating S0/S1 each cycle: **1.00 t/c (8/8)**.
+- 3M → 3S concurrent (6 ARs each, simultaneous): **3.00 t/c aggregate**, linear M scaling.
 
-A separate property checker, `tb_nic400_fabric_throughput.cpp`, exercises the
-multi-outstanding behaviour that ARM's real NIC-400 supports via a configurable
-outstanding-transaction depth. **The current design supports depth-∞
-outstanding ARs per (master, slave) pair out-of-the-box** — no ROB, no AR
-FIFO, no `outstanding` parameter is needed. Three properties pinned:
+The `_ch` locks are single-driver guards, not throughput throttles —
+they only serialise cycle-level drives to shared `m.*` outputs, which is
+exactly what AXI4 allows (one handshake per cycle). The "depth-1 per
+(master, slave)" caveat that appears in earlier source comments refers
+specifically to the *write* path's AW→W→B sequencing inside a single
+thread; the read path's split AR/R threads do not have that property.
 
-| Scenario | Setup | Measured | Why it works |
-|---|---|---|---|
-| `S1` AR multi-outstanding | M0 drives `m_ar_valid=1` continuously to S0; S0 holds `ar_ready=1` but delays `r_valid` by 4 cycles | **6 ARs in flight before first R returns** | AR and R lower to *separate* threads. The AR thread loops `wait 0+ ... do drive AR until ar_ready` independently of any R-channel progress. The `ar_ch` lock is held only for the handshake cycle (Mealy form), so consecutive ARs grab/release the lock once each cycle. |
-| `S2` cross-slave alternation | M0 alternates ar_addr between slaves 0 and 1 every cycle | **1.00 t/c (8/8)** | Per-slave threads (`Ar_0`, `Ar_1`) live in independent state machines; in steady state each one re-enters its entry-wait the cycle after firing, so the `ar_ch` lock changes hands without inserting a bubble. |
-| `S3` 3-master concurrent | M0→S0, M1→S1, M2→S2 simultaneously, 6 ARs each | **3.00 t/c aggregate (18/6)** | Each (i, j) thread is a distinct lowered FSM. Threads serving different slaves drive disjoint `outs[j].ar_*` and `s.ar_*` (in `Nic400SlavePort`); no cross-slave shared resource serialises them. Linear scaling with M is the structural ceiling. |
+## Bumping the fabric size
 
-**Design takeaway**: the "depth-1 per master, per slave" caveat noted in
-the v1 source comments referred specifically to the *write* path's
-AW → W → B sequencing inside a single thread (where the thread blocks
-on B before accepting the next AW). The read path's split AR/R threads
-do not have that property. The `_ch` locks are single-driver
-guards, not throughput throttles — they only serialise the cycle-level
-drives to shared `m.*` outputs, which is exactly what AXI4 allows
-anyway (one handshake per cycle).
+Bumping `NUM_MASTERS` / `NUM_SLAVES` on `Nic400Fabric` is a one-line
+change — every per-port instance and connection unrolls via
+`generate_for`. The matching defaults on `Nic400MasterPort` and
+`Nic400SlavePort` need to track (they don't auto-inherit from the
+Fabric's params; the inst connections rely on the defaults). The header
+comment in `Nic400Fabric.arch` calls out the gotcha.
 
-If future work needs to add ROB-style same-ID ordering across slaves or
-enforce a hard outstanding-cap, that's a feature on top of the existing
-unbounded-depth behaviour, not a fix for a missing one.
+## Patterns to follow / pitfalls to avoid
 
-### Inspecting the bubble
+Patterns that work and are exercised in this demo:
 
-```bash
-# Re-generate the VCD
-arch sim --wave tests/nic400/fab_latency.vcd \
-  tests/nic400/Nic400Fabric.arch tests/nic400/Nic400MasterPort.arch \
-  tests/nic400/Nic400SlavePort.arch tests/nic400/BusAxi4.arch \
-  --tb tests/nic400/tb_nic400_fabric_latency.cpp -o /tmp/fab_wave
+- Back-to-back `lock R do … until …; end lock R;` blocks inside a top-level thread body, with multi-thread contention on a shared `mutex<priority>` resource.
+- `generate_for` over masters / slaves / bus arrays — handles M×N inst declarations from one source.
+- Nested `for` loops inside threads (each gets its own loop counter; see #414's fix).
+- AXI bus aliases bound by module params and referenced from `generate_if` bodies (see #423's fix).
+- Whole-Vec<Bus,N> inst port forwarding `m <- m_top` (see #424's fix).
+- Mealy fusion of `wait 0+ cycle until X; lock R do BODY until Y; end lock R;` for zero-overhead handshake throughput.
+- `Concat({addr, id, len, …})` over bus port signals with module-param-bound bus alias params (see #427's fix).
+- Inner-for body ending in if/else with lock-per-branch, where each branch advances state (see #422's fix; used by `Nic400WidthAdapter`'s R thread).
 
-# Open in a viewer
-gtkwave tests/nic400/fab_latency.vcd        # or: surfer tests/nic400/fab_latency.vcd
+Patterns that bite or remain limited:
 
-# Or print a compact rising-edge sample table that pinpoints the bubble:
-tests/nic400/probe_ar_bubble.sh tests/nic400/fab_latency.vcd
-```
+- `do BODY until cond` at the top level of a `thread` is rejected if `BODY` contains nested `lock`/`for`/`wait` — use a `lock` block instead (see #410's resolution).
+- HTRANS=BUSY is not handled by `Nic400AhbBridge`; the bridge assumes cache-line-fill style INCR-undef where the master uses SEQ exclusively.
+- `Nic400AhbBridge` INCR-undef bursts longer than `MAX_INCR_BEATS * MAX_INCR_CHUNKS` (default 64 beats) hang the master.
+- `Nic400ApbBridge` supports one outstanding R + one outstanding W (no AXI exclusive, no APB v3 pwakeup).
+- `Nic400WidthAdapter` is downsize-only; upsize needs an accumulator buffer.
 
-Sample output of the bubble probe (`fab_latency.vcd` captured from the
-checked-in TB; M = master 0, S = slave 0):
+## Compiler debt — context for future contributors
 
-```
-── AR forward (M → S) ─────────────────────────────────────────
-  rising t=13  M.ar_v=0 ar_r=0 ar_id=000    S.ar_v=0 ar_r=0 ar_id=0000
-  rising t=15  M.ar_v=1 ar_r=1 ar_id=001    S.ar_v=1 ar_r=1 ar_id=0001 <- AR handshake (same cycle)
-  rising t=17  M.ar_v=0 ar_r=0 ar_id=001    S.ar_v=0 ar_r=0 ar_id=0000
-── R return (S → M) ──────────────────────────────────────────
-  rising t=19  S.r_v=0  r_r=0  r_id=0000    M.r_v=0  r_r=0  r_id=000
-  rising t=21  S.r_v=1  r_r=1  r_id=0001    M.r_v=1  r_r=1  r_id=001 <- R handshake (same cycle)
-  rising t=23  S.r_v=0  r_r=0  r_id=0000    M.r_v=0  r_r=0  r_id=000
-```
+Building this demo uncovered **eight** thread-lowering / elaboration-scope issues that were filed and fixed along the way:
 
-Both AR (t=15) and R (t=21) handshakes fire on the same rising edge as
-their drives — the Mealy fusion eliminates the entry-wait state. ID
-`b0001` on the slave side confirms the prefix encoding
-(`{master_idx=0, master_id=001}`). If a future change re-introduces a
-bubble, `S.ar_v=1` will appear on the rising edge *after* `M.ar_v=1`
-(and similarly for R), making the regression obvious in this table.
+| Issue | Fix PR | Topic |
+|-------|--------|-------|
+| #410 | #411 | top-level `do BODY until cond` looped infinitely; reject nested control flow |
+| #412 | #413 | Mealy-fused `wait 0+ … ; do … until …;` seq assigns ungated by wake condition |
+| #414 | #415 | nested `for` loops shared a single `_loop_cnt` register |
+| #422 | #430 | inner-for + if/else with lock-per-branch lost outer-for continuation transitions |
+| #423 | #425 | type alias inside `generate_if` lost bound bus params |
+| #424 | #426 | whole-Vec<Bus,N> inst port forwarding raised undriven-port errors |
+| #427 | #428 | sim_codegen `Concat` width wrong with module-param-bound bus alias |
 
-## Scope notes — deviations from the spec
-
-The spec describes a parameterizable M×N crossbar with separate
-`MasterPort`/`SlavePort`/`Fabric`/`Interconnect` modules. The implementation
-here is **a monolithic 2×2 read-only crossbar**:
-
-- **2×2 instead of 4×4**: the spec patterns repeat mechanically; scaling
-  involves enumerating more threads and widening the ID prefix. The 2×2
-  exercises every core mechanism (decode, arbitrate, ID remap, return route).
-- **Read-only**: the write path (AW arbitration, W routing by master-idx FIFO,
-  B return) is a structural mirror of the read path. AR→R is enough to
-  validate the design pattern.
-- **Monolithic, not hierarchical**: ARCH does not currently support
-  `Vec<BusName, N>` port arrays at module signatures, which the spec relies on
-  heavily. The monolithic form sidesteps this by enumerating ports flatly.
-  When the language adds bus arrays, the design can be refactored into the
-  spec's hierarchical form without changing the threads.
-- **Round-robin arbitration**: `resource ... : mutex<round_robin>` is what the
-  compiler currently accepts. The QoS pick function (`Nic400QosFn`) is
-  implemented and unit-tested in isolation; integration into the crossbar
-  requires either `mutex<UserFn>` support or wrapping the QoS arbiter as a
-  separate `arbiter` instance.
-- **No register slices in the 2×2**: `RegSliceChannel` is a tested building
-  block. Slices are inserted at top-level by instantiating it between the
-  master/slave ports and the crossbar; not done here to keep the core
-  verification surface focused.
-
-## Compiler features used / probed
-
-Working:
-- `package` with `param`, `domain`, `enum`, `struct`, module-local `function`
-- `resource X: mutex<round_robin>` / `mutex<priority>` + `lock X ... end lock`
-- `thread T on clk rising, rst low ... default comb ... wait until ... do..until`
-- `fork/and/join` (not used here but available)
-- `generate_for` at module scope for threads
-- `shared(or)` on individual ports
-- `arbiter` construct with `policy <FnName>` and `hook grant_select`
-- `--auto-thread-asserts` emits 32 SVA properties on this design
-
-Tested missing / not-real syntactic forms (driving the monolithic structure above):
-- **`Vec<BusName, N>` port** — parse error: `unexpected token: expected identifier, found Vec` in port type position. No syntactic form for an array of bus ports works today; `generate_for i / port name_i: initiator B` is also rejected ("'port' declarations are not allowed inside generate_for"). Together this blocks declaring N bus-typed edges at a module signature.
-- **`with <bus_signal> shared(or)` annotation on bus ports** — parse error. Worked around by flattening to individual ports each carrying `shared(or)`.
-- **`mst2slv[*][j]` slice notation** — not tested directly; the NIC-400 spec doc itself notes it as speculative ("If the compiler doesn't currently parse this slice form, the equivalent verbose form is to enumerate the slice elements"). Treat as untested rather than confirmed-missing.
-
-Not real keywords (i.e., not "missing features" — they don't exist in the language at all):
-- **`wire_bus`** — appears only in `doc/nic400_interconnect_spec.md`. Not in the lexer, parser, or any other doc. The correct working form is `wire X: BusName;` (e.g. `wire w: FooBus;` from `tests/integration_test.rs`'s Parent example).
-
-Available but I previously claimed missing (correction):
-- **`mutex<UserPolicyFn>`** — supported. Requires a `hook grant_select(...) = UserPolicyFn(...);` block attached to the resource. Working pattern in `tests/integration_test.rs:9841` (`test_resource_lock_custom_policy_with_hook`):
-  ```arch
-  resource shared_lk: mutex<PickHigh>
-    hook grant_select(req_mask: UInt<2>, last_grant: UInt<2>) -> UInt<2>
-         = PickHigh(req_mask, last_grant);
-  end resource shared_lk
-  ```
-  This means the QoS arbitration in the slave-port `aw_lock` can be wired in directly — replacing `mutex<round_robin>` with `mutex<nic400_qos_pick>` plus the hook block — without needing a separate `arbiter` instance.
-
-Real compiler-side gap exposed by this design:
-- Hierarchical formal v1 rejects auto-generated thread sub-modules that contain `wire` decls produced by lock-arbitration lowering. Filed as [arch-hdl-lang/arch-com#383](https://github.com/arch-hdl-lang/arch-com/issues/383).
+Each fix shipped with a minimal repro committed under `tests/regression/issues/`. Together with [`arch-hdl-lang/arch-com#383`](https://github.com/arch-hdl-lang/arch-com/issues/383) (hierarchical formal rejecting auto-generated thread sub-modules with lock-arbitration `wire` decls — open), they form the most concentrated cluster of thread/elaboration issues uncovered in any single demo build.

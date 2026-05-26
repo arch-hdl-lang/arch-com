@@ -1,0 +1,220 @@
+// Top-level integrated NIC-400 system demo.
+//
+// Wires up:
+//   • 1 AHB master (CPU side) → Nic400AhbBridge → fabric.m[0]
+//   • Nic400Pmu observing master 0's AR/AW/R/W/B handshakes
+//   • fabric.s[0] → Nic400ApbBridge → APB peripheral side
+//
+// The remaining fabric ports (m[1..2], s[1..3]) are stubbed to idle so
+// the demo can be exercised end-to-end via just the AHB↔APB path. A
+// real SoC would wire them to direct AXI masters / slaves; this demo
+// keeps the wiring minimal to show the bridges and crossbar working as
+// one elaboration unit without distractions.
+//
+// Hierarchical layout
+// ───────────────────
+//
+//      ahb_h (target BusAhbLite)
+//          │
+//          ▼
+//   Nic400AhbBridge ── axi (initiator BusAxi4, MASTER_ID_W=3) ──┐
+//                                                                │
+//                                          ┌───── m_wire[0] ◀────┘
+//                                          │      m_wire[1..2] = idle
+//                                          ▼
+//                                   Nic400Fabric (3×4)
+//                                   m / s : Vec<…,3>, Vec<…,4>
+//                                          │
+//                                          │      s_wire[1..3] = idle
+//                                          └───── s_wire[0] ────┐
+//                                                                │
+//                                                                ▼
+//                                          Nic400ApbBridge (ID_WIDTH=5)
+//                                                                │
+//                                                                ▼
+//                                                       apb_p (initiator BusApb)
+//
+//   Nic400Pmu: ar_event[0] = ahb_axi.ar_valid && ahb_axi.ar_ready
+//              (same shape for r/aw/w/b), other masters' events tied 0.
+//
+// Bus-ID widths
+// ─────────────
+//   AHB bridge axi  : ID_W=3 (MASTER_ID_W)
+//   Fabric m side   : ID_W=3 (MASTER_ID_W); fabric prefixes with master idx
+//   Fabric s side   : ID_W=5 (SLAVE_ID_W = MASTER_ID_W + ceil(log2(NUM_MASTERS)))
+//   APB bridge axi  : ID_W=5 (must accept the wider slave-perspective ID)
+//
+// Limitations
+// ───────────
+//   • Single fabric port wired per side; m[1..2] and s[1..3] are idle.
+//   • No reg slices (use Nic400FabricRs1 to add them; see fabric README).
+//   • Width adapter not in path (this demo uses 32-bit data end-to-end).
+module Nic400System
+  param ADDR_WIDTH:  const = 32;
+  param DATA_WIDTH:  const = 32;
+  param STRB_WIDTH:  const = 4;        // = DATA_WIDTH / 8
+  param MASTER_ID_W: const = 3;
+  param SLAVE_ID_W:  const = 5;        // MASTER_ID_W + ceil(log2(NUM_MASTERS=3))
+  param NUM_MASTERS: const = 3;
+  param NUM_SLAVES:  const = 4;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  // CPU-side AHB-Lite master interface.
+  port ahb_h: target BusAhbLite<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH>;
+  // Peripheral-side APB initiator interface.
+  port apb_p: initiator BusApb<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH>;
+
+  // PMU counter outputs, observable by the TB.
+  port ar_count: out Vec<UInt<32>, NUM_MASTERS>;
+  port aw_count: out Vec<UInt<32>, NUM_MASTERS>;
+  port r_count:  out Vec<UInt<32>, NUM_MASTERS>;
+  port w_count:  out Vec<UInt<32>, NUM_MASTERS>;
+  port b_count:  out Vec<UInt<32>, NUM_MASTERS>;
+
+  // Bus type aliases matching the fabric's master/slave ID widths.
+  type MasterBus = BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH,
+                            ID_W=MASTER_ID_W, READ=1, WRITE=1>;
+  type SlaveBus  = BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH,
+                            ID_W=SLAVE_ID_W,  READ=1, WRITE=1>;
+
+  // Internal bus wires bridging the inst hierarchies.
+  wire ahb_axi: MasterBus;   // AHB bridge's AXI initiator output → fabric.m[0]
+  wire apb_axi: SlaveBus;    // fabric.s[0] → APB bridge's AXI target input
+
+  // Idle stub buses for the un-used fabric ports.
+  wire idle_m: Vec<MasterBus, NUM_MASTERS>;
+  wire idle_s: Vec<SlaveBus, NUM_SLAVES>;
+
+  // PMU event taps from the AHB-driven master 0.
+  wire pmu_ar_event: Vec<Bool, NUM_MASTERS>;
+  wire pmu_r_event:  Vec<Bool, NUM_MASTERS>;
+  wire pmu_aw_event: Vec<Bool, NUM_MASTERS>;
+  wire pmu_w_event:  Vec<Bool, NUM_MASTERS>;
+  wire pmu_b_event:  Vec<Bool, NUM_MASTERS>;
+
+  // ── AHB → AXI bridge (CPU side) ─────────────────────────────────────
+  inst ahb_br: Nic400AhbBridge
+    clk <- clk;
+    rst <- rst;
+    h   <- ahb_h;
+    axi -> ahb_axi;
+  end inst ahb_br
+
+  // ── 3×4 fabric ──────────────────────────────────────────────────────
+  // m[0] driven by AHB bridge; m[1..2] are idle. s[0] consumed by APB
+  // bridge; s[1..3] are idle.
+  inst fab: Nic400Fabric
+    clk <- clk;
+    rst <- rst;
+    m[0] <- ahb_axi;
+    m[1] <- idle_m[1];
+    m[2] <- idle_m[2];
+    s[0] -> apb_axi;
+    s[1] -> idle_s[1];
+    s[2] -> idle_s[2];
+    s[3] -> idle_s[3];
+  end inst fab
+
+  // ── AXI → APB bridge (peripheral side) ──────────────────────────────
+  // ID_WIDTH=5 matches the fabric's slave-perspective bus width (the
+  // ID has the master-index prefix encoded in the high bits).
+  inst apb_br: Nic400ApbBridge
+    param ID_WIDTH = SLAVE_ID_W;
+    clk <- clk;
+    rst <- rst;
+    axi <- apb_axi;
+    apb -> apb_p;
+  end inst apb_br
+
+  // ── PMU ────────────────────────────────────────────────────────────
+  inst pmu: Nic400Pmu
+    clk <- clk;
+    rst <- rst;
+    ar_event  <- pmu_ar_event;
+    r_event   <- pmu_r_event;
+    aw_event  <- pmu_aw_event;
+    w_event   <- pmu_w_event;
+    b_event   <- pmu_b_event;
+    ar_count  -> ar_count;
+    r_count   -> r_count;
+    aw_count  -> aw_count;
+    w_count   -> w_count;
+    b_count   -> b_count;
+  end inst pmu
+
+  // ── Idle stub drives ────────────────────────────────────────────────
+  // Drive idle_m[i] initiator-side outputs (= signals the fabric reads
+  // as inputs) to inactive. For i=0 these are overwritten by the AHB
+  // bridge connection; but only m[1..2] are actually wired to idle_m,
+  // so we only need to drive those elements. Driving all 3 keeps the
+  // pattern uniform — the i=0 drives don't fan out to the fabric since
+  // m[0] is connected to `ahb_axi`, not `idle_m[0]`.
+  //
+  // For idle_s[j] the fabric drives the initiator-side outputs; we
+  // (the system module) need to drive the target-side inputs the
+  // fabric reads back: ar_ready, r_valid, r_data, etc.
+  comb
+    for i in 0..NUM_MASTERS-1
+      // Idle master: nothing requesting.
+      idle_m[i].ar_valid  = false;
+      idle_m[i].ar_addr   = 0;
+      idle_m[i].ar_id     = 0;
+      idle_m[i].ar_len    = 0;
+      idle_m[i].ar_size   = 0;
+      idle_m[i].ar_burst  = 0;
+      idle_m[i].ar_lock   = false;
+      idle_m[i].ar_cache  = 0;
+      idle_m[i].ar_prot   = 0;
+      idle_m[i].ar_qos    = 0;
+      idle_m[i].ar_region = 0;
+      idle_m[i].r_ready   = false;
+      idle_m[i].aw_valid  = false;
+      idle_m[i].aw_addr   = 0;
+      idle_m[i].aw_id     = 0;
+      idle_m[i].aw_len    = 0;
+      idle_m[i].aw_size   = 0;
+      idle_m[i].aw_burst  = 0;
+      idle_m[i].aw_lock   = false;
+      idle_m[i].aw_cache  = 0;
+      idle_m[i].aw_prot   = 0;
+      idle_m[i].aw_qos    = 0;
+      idle_m[i].aw_region = 0;
+      idle_m[i].w_valid   = false;
+      idle_m[i].w_data    = 0;
+      idle_m[i].w_strb    = 0;
+      idle_m[i].w_last    = false;
+      idle_m[i].b_ready   = false;
+    end for
+    for j in 0..NUM_SLAVES-1
+      // Idle slave: always ready to accept requests but never returns a beat.
+      idle_s[j].ar_ready  = true;
+      idle_s[j].r_valid   = false;
+      idle_s[j].r_data    = 0;
+      idle_s[j].r_id      = 0;
+      idle_s[j].r_resp    = 0;
+      idle_s[j].r_last    = false;
+      idle_s[j].aw_ready  = true;
+      idle_s[j].w_ready   = true;
+      idle_s[j].b_valid   = false;
+      idle_s[j].b_id      = 0;
+      idle_s[j].b_resp    = 0;
+    end for
+
+    // PMU event taps off the AHB bridge's AXI bus (master 0).
+    pmu_ar_event[0] = ahb_axi.ar_valid and ahb_axi.ar_ready;
+    pmu_r_event[0]  = ahb_axi.r_valid  and ahb_axi.r_ready;
+    pmu_aw_event[0] = ahb_axi.aw_valid and ahb_axi.aw_ready;
+    pmu_w_event[0]  = ahb_axi.w_valid  and ahb_axi.w_ready;
+    pmu_b_event[0]  = ahb_axi.b_valid  and ahb_axi.b_ready;
+    // Idle event lanes for unused masters.
+    for k in 1..NUM_MASTERS-1
+      pmu_ar_event[k] = false;
+      pmu_r_event[k]  = false;
+      pmu_aw_event[k] = false;
+      pmu_w_event[k]  = false;
+      pmu_b_event[k]  = false;
+    end for
+  end comb
+end module Nic400System
