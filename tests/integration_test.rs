@@ -5805,6 +5805,75 @@ fn test_stdlib_bus_apb_discovery_apb3_minimal() {
 }
 
 #[test]
+fn test_stdlib_bus_apb_pslverr_decoupled_from_pprot() {
+    // pslverr (APB3 baseline, IHI 0024B 2008) used to be gated under
+    // USE_PPROT (APB4 protection, IHI 0024C 2010). They're now
+    // independent toggles. This test exercises the four combinations
+    // and asserts the generated SV port list matches each.
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    // Helper: build a target-side stub for each toggle pair, run
+    // `arch build`, return the generated SV text.
+    let cases: &[(u32, u32)] = &[(0, 0), (1, 0), (0, 1), (1, 1)];
+    for (use_pslverr, use_pprot) in cases {
+        let name = format!("Stub_v{use_pslverr}_p{use_pprot}");
+        let src = td.path().join(format!("{name}.arch"));
+        // Target side: pslverr direction flips to `out`, so we must
+        // drive it whenever USE_PSLVERR=1.
+        let pslverr_drive = if *use_pslverr == 1 {
+            "s_apb.pslverr = 1'b0;\n            "
+        } else { "" };
+        std::fs::write(&src, format!("\
+            use BusApb;\n\
+            module {name}\n\
+              port clk: in Clock<SysDomain>;\n\
+              port rst: in Reset<Sync>;\n\
+              port s_apb: target BusApb<ADDR_W=12, DATA_W=32, USE_PSLVERR={use_pslverr}, USE_PPROT={use_pprot}>;\n\
+              comb\n\
+                s_apb.pready = 1'b1;\n\
+                s_apb.prdata = 32'h0;\n\
+                {pslverr_drive}\
+              end comb\n\
+            end module {name}\n\
+        ")).unwrap();
+
+        // arch check should succeed for every combination.
+        let chk = std::process::Command::new(arch_bin)
+            .arg("check").arg(&src).output().expect("run arch check");
+        assert!(chk.status.success(),
+            "arch check failed for USE_PSLVERR={use_pslverr} USE_PPROT={use_pprot}; stderr:\n{}",
+            String::from_utf8_lossy(&chk.stderr));
+
+        // Build SV and inspect the generated port list.
+        let sv_out = td.path().join(format!("{name}.sv"));
+        let bld = std::process::Command::new(arch_bin)
+            .arg("build").arg(&src).arg("-o").arg(&sv_out)
+            .output().expect("run arch build");
+        assert!(bld.status.success(),
+            "arch build failed for USE_PSLVERR={use_pslverr} USE_PPROT={use_pprot}; stderr:\n{}",
+            String::from_utf8_lossy(&bld.stderr));
+        let sv = std::fs::read_to_string(&sv_out).expect("read sv");
+
+        // Baseline APB v2 signals always present.
+        for s in ["s_apb_psel", "s_apb_penable", "s_apb_pwrite",
+                  "s_apb_paddr", "s_apb_pwdata", "s_apb_pready",
+                  "s_apb_prdata"] {
+            assert!(sv.contains(s),
+                "missing baseline signal {s} for USE_PSLVERR={use_pslverr} USE_PPROT={use_pprot}\nSV:\n{sv}");
+        }
+        // pslverr gated solely by USE_PSLVERR.
+        let has_pslverr = sv.contains("s_apb_pslverr");
+        assert_eq!(has_pslverr, *use_pslverr == 1,
+            "pslverr presence mismatch for USE_PSLVERR={use_pslverr} USE_PPROT={use_pprot}\nSV:\n{sv}");
+        // pprot gated solely by USE_PPROT.
+        let has_pprot = sv.contains("s_apb_pprot");
+        assert_eq!(has_pprot, *use_pprot == 1,
+            "pprot presence mismatch for USE_PSLVERR={use_pslverr} USE_PPROT={use_pprot}\nSV:\n{sv}");
+    }
+}
+
+#[test]
 fn test_port_reg_deprecation_warning_fires() {
     // Legacy `port reg` should produce a deprecation warning pointing
     // users at `port q: out pipe_reg<T, 1>`.
