@@ -4410,6 +4410,46 @@ fn test_type_alias_bus_params_propagate_into_generate_if() {
 }
 
 #[test]
+fn test_concat_bus_field_width_uses_module_param_binding() {
+    // Regression for issue #427: sim codegen's Concat pack expression
+    // used wrong shift offsets when operands were bus-port FieldAccess
+    // and one of the bus's per-signal widths was bound by a
+    // module-param-substituted bus-alias param.
+    //
+    // The minimal repro declares `bus MiniAxi` with `param ID_W = 1` and
+    // `ar_id: out UInt<ID_W>`, then a module that does
+    // `port up: target MiniAxi<ID_W=ID_W>` with `param ID_W: const = 3`.
+    // Inside the module a concat `{up.ar_addr, up.ar_id}` packs the two
+    // fields. Before the fix the bus-flat width entry for `up_ar_id` was
+    // built by `type_bits_te` with no module-param context, so the
+    // substituted `UInt<ID_W>` width Ident fell through the param-aware
+    // fold to the legacy conservative `eval_width = 32` — and the concat
+    // shifted `up_ar_addr` by 32 bits instead of 3.
+    //
+    // After the fix, the bus-flat width fold uses
+    // `type_bits_te_with_params(&m.params)`, so `up_ar_id`'s width
+    // resolves correctly to 3 and the concat shift is `<< 3`.
+    let source = include_str!(
+        "regression/issues/concat_bus_field_width/ConcatBusFieldWidth.arch"
+    );
+    let cpp = compile_to_sim_h(source, false);
+    // The pack expression must shift `up_ar_addr` by 3 (the width of
+    // `up_ar_id`), not 32.
+    assert!(
+        cpp.contains("((uint64_t)(up_ar_addr) << 3)"),
+        "expected pack shift `(up_ar_addr) << 3` (width of up.ar_id = 3) \
+         in sim cpp (issue #427 regression):\n{cpp}"
+    );
+    // The buggy 32-bit shift must be gone.
+    assert!(
+        !cpp.contains("((uint64_t)(up_ar_addr) << 32)"),
+        "found buggy `(up_ar_addr) << 32` pack shift (issue #427 regression); \
+         the bus-flat width lookup for `up_ar_id` resolved to 32 instead \
+         of 3:\n{cpp}"
+    );
+}
+
+#[test]
 fn test_wait_0plus_cycle_until_mealy_fusion_gates_seq_assigns() {
     // Regression for issue #412: the Mealy-fusion lowering for
     //   wait 0+ cycle until X;

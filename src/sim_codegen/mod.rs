@@ -4737,9 +4737,17 @@ impl<'a> SimCodegen<'a> {
         let mut widths      = build_widths(&m.ports, &m.body, &m.params);
         let mut signed_names = build_signed_names(&m.ports, &m.body);
 
-        // Add bus flattened signals to wide_names and widths
+        // Add bus flattened signals to wide_names and widths.
+        // Use the param-aware width evaluator (issue #427): when a bus's
+        // per-signal width depends on a bus param that the call site binds
+        // to an enclosing-module param Ident (e.g. `up: target MiniAxi<ID_W=ID_W>`
+        // where the module declares `param ID_W: const = 3`), the
+        // substituted `flat_ty` still contains the module-param Ident;
+        // resolving it requires the enclosing module's params. Without this,
+        // the param-aware fold fails and the legacy `eval_width` fallback
+        // returns the conservative 32, corrupting concat shift offsets.
         for (flat_name, flat_ty) in &bus_flat {
-            let bits = type_bits_te(flat_ty);
+            let bits = type_bits_te_with_params(flat_ty, &m.params);
             widths.insert(flat_name.clone(), bits);
             if type_is_signed_scalar(flat_ty) { signed_names.insert(flat_name.clone()); }
             if bits > 64 { wide_names.insert(flat_name.clone()); }
