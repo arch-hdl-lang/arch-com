@@ -1,0 +1,43 @@
+// Regression for issue #427: sim codegen's `Concat` pack expression
+// used wrong shift offsets when operands were bus-port `FieldAccess`es
+// AND one of the bus's per-signal widths was bound by a
+// module-param-substituted bus-alias param.
+//
+// Before fix: width of `up.ar_id` (declared `UInt<ID_W>` inside the bus
+// with `ID_W` bound to the enclosing module's `param ID_W = 3`) inferred
+// as 32 (the legacy `eval_width` conservative fallback). The concat
+// emitted `(up_ar_addr) << 32` instead of `<< 3`. SV codegen was
+// unaffected.
+//
+// After fix: bus-flat signal widths fold through the enclosing module's
+// params via `type_bits_te_with_params`, so `up.ar_id` is correctly 3
+// and the concat shifts `up_ar_addr` by 3.
+bus MiniAxi
+  param ADDR_W: const = 32;
+  param ID_W:   const = 1;
+
+  ar_valid: out Bool;
+  ar_ready: in  Bool;
+  ar_addr:  out UInt<ADDR_W>;
+  ar_id:    out UInt<ID_W>;
+end bus MiniAxi
+
+module ConcatBusFieldWidth
+  param ADDR_WIDTH: const = 32;
+  param ID_W: const = 3;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port up: target MiniAxi<ADDR_W=ADDR_WIDTH, ID_W=ID_W>;
+
+  param PAYLOAD_W: const = ADDR_WIDTH + ID_W;
+
+  let p: UInt<PAYLOAD_W> = {up.ar_addr, up.ar_id};
+  wire u_addr: UInt<ADDR_WIDTH>;
+  wire u_id:   UInt<ID_W>;
+  comb
+    u_addr = p[PAYLOAD_W-1 : PAYLOAD_W-ADDR_WIDTH];
+    u_id   = p[ID_W-1 : 0];
+    up.ar_ready = true;
+  end comb
+end module ConcatBusFieldWidth
