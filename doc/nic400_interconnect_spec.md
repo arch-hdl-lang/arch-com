@@ -1047,9 +1047,89 @@ The size win comes from:
 - `pipeline` with `wait until` makes the register slice a 1-stage parameterizable unit
 - `function` (module-local) makes the address decoder and the QoS policy data-driven and replaceable
 
----
+### 16.1 Living gap tracker
 
-## Appendix A — Files to create
+A living checklist of NIC-400 features vs the ARCH demo. The §16 table above is the *as-planned* snapshot from initial design; this subsection tracks *as-shipped vs the ARM NIC-400 TRM (IHI 0064)* and is updated when PRs land. Status legend: **✅ shipped** / **🟡 partial** / **❌ not started** / **⏭ out of scope** (intentional, with rationale).
+
+Items marked `(verify)` need a confirming pass against the ARM TRM before being treated as authoritative — the initial seed was drawn from this repo's tree and section §16's planned table, not from a TRM reread.
+
+#### Protocol bridges and interfaces
+| Feature | Status | Where / next step |
+|---|---|---|
+| AXI4 (full) master/slave shim | ✅ | `tests/nic400/BusAxi4.arch`, `Nic400Master/SlavePort.arch` |
+| AXI4-Lite shim | ❌ | Would add a `BusAxi4Lite` and a lite↔full bridge module |
+| AXI3 shim (locked-rd/wr, WID) | ❌ | NIC-400 TRM supports AXI3 endpoints; not modelled |
+| AHB-Lite master bridge (CPU→fabric) | ✅ | `Nic400AhbBridge.arch` + multi-burst + INCR-undef chunking |
+| AHB-Lite slave bridge (fabric→AHB peripheral) | ❌ | Reverse direction; not built |
+| APB v2/v3/v4 target bridge | ✅ | `Nic400ApbBridge.arch` + `stdlib/BusApb` (PR #434 toggleable sidebands) |
+| APB initiator (CPU→APB) | ⏭ | Real SoCs front APB peripherals via the AXI→APB bridge — covered |
+
+#### Crossbar fabric
+| Feature | Status | Where / next step |
+|---|---|---|
+| Parameterizable M×N matrix | ✅ | `Nic400Fabric.arch`; demo is 3×4 |
+| ID remap (master idx prefix) | ✅ | `MASTER_ID_W → SLAVE_ID_W = MASTER_ID_W + ceil(log2(M))` |
+| Address decode | 🟡 | Compile-time, top-NS_W bits of REGION_BITS=28 page. NIC-400's runtime-programmable GPV table is unimplemented. |
+| Default slave (decode-error response) | ❌ | NIC-400 routes un-decoded addrs to a default error responder returning DECERR — not in the demo |
+| Per-master / per-slave clock domains | ❌ | All ports share `clk: in Clock<SysDomain>`; CDC via `fifo kind: async` is doable but not wired |
+
+#### Pipelining and width adaptation
+| Feature | Status | Where / next step |
+|---|---|---|
+| Full register slice (1-stage, both directions) | ✅ | `Nic400EdgeRegSlice.arch` + `Nic400FabricRs1.arch` (per-master) |
+| Forward-only / reverse-only / FF reg slice variants | ❌ | NIC-400 has four flavors; the demo ships one (full) |
+| Multi-stage reg slices (STAGES > 1) | ❌ | `Nic400FabricRs1` is STAGES=1 only; wrapper would need chaining |
+| Per-slave reg slice insertion | ❌ | Only per-master is wired; per-slave wrapper not built |
+| Width adapter (upsizer + downsizer) | ✅ | `Nic400WidthAdapter.arch` (5 threads, PR #431) |
+| Width-adapter wired into the integrated demo | ❌ | Standalone module + TB only; not on the AHB↔APB path yet (demo is 32-bit end-to-end) |
+
+#### QoS and arbitration
+| Feature | Status | Where / next step |
+|---|---|---|
+| Per-master QoS-priority arbitration | 🟡 | `Nic400ArbiterPolicy.arch` (hard-coded NUM_MASTERS=4 hook). Generalize to runtime N or document the size assumption. |
+| QoS-Value Regulator (peak/burstiness/avg per master) | ❌ | NIC-400 has 3-token-bucket throttle per master; not in scope today |
+| QoS Virtual Network (QVN) | ❌ | Tag-based independent arbitration lanes; not built |
+| Programmable QoS via GPV register file | ❌ | Tied to GPV programmability item below |
+
+#### Observability and control
+| Feature | Status | Where / next step |
+|---|---|---|
+| PMU per-master handshake counters | ✅ | `Nic400Pmu.arch` (AR/AW/R/W/B per master) |
+| PMU latency / outstanding-txn histograms | ❌ | NIC-400 PMU also exposes RD/WR latency bins and outstanding-depth; not in v1 |
+| GPV (Global Programmer's View) register file | ❌ | NIC-400 exposes addr-map, QoS, idle/down via memory-mapped GPV. Would need an APB target + a `regfile` block. |
+| Low-power interface (LPI) handshake (PREQ/PACTIVE/PACCEPT/PDENY) | ❌ | Per-port clock-gate handshake; not modelled |
+
+#### Security and ordering
+| Feature | Status | Where / next step |
+|---|---|---|
+| AR/AW LOCK propagation (signal carry-through) | ✅ | `ar_lock`/`aw_lock` flow through `BusAxi4` unchanged |
+| Exclusive-access monitor (in slave shim) | ❌ | NIC-400 puts the EX-monitor in the slave shim; not built |
+| AxPROT carry-through (privilege/secure/instr) | ✅ | Signal propagates end-to-end; APB bridge maps to PPROT |
+| AxUSER / WUSER / RUSER / BUSER sidebands | ❌ | `BusAxi4.arch` has no USER fields; NIC-400 allows configurable user widths |
+| AxCACHE / AxQOS / AxREGION carry-through | ✅ | All three flow through fabric and reg slice |
+| Write data interleaving (AXI3 only) | ⏭ | AXI4 forbids it; we're AXI4-only |
+
+#### Verification and TB coverage
+| Feature | Status | Where / next step |
+|---|---|---|
+| Single-master, single-slave smoke | ✅ | `tb_nic400_system.cpp` |
+| Multi-master contention (M=2..3 active at once) | ❌ | All non-CPU master ports are stubbed idle in `Nic400System.arch`; need a multi-driver TB |
+| Multi-slave hot-spot QoS test | ❌ | Implied by §16 row above — `tb_hot_slave_qos.cpp` from spec Appendix A was never landed |
+| OOO completion (interleaved B per master) | ❌ | `tb_ooo_completion.cpp` from spec Appendix A — not landed |
+| Reg-slice fabric throughput | ✅ | `tb_nic400_fabric_regslice.cpp`, `tb_nic400_fabric_throughput.cpp` |
+| Width-adapter independent TB | ✅ | `tb_nic400_width_adapter.cpp` |
+| PMU exact-count TB | ✅ | `tb_nic400_pmu.cpp` (counter glue is in the dedicated PMU TB, not the integrated demo — see `tb_nic400_system.cpp` comments) |
+
+#### Quick-pick "close next" candidates
+Roughly ordered by likely effort × value, picked from the rows above:
+
+1. **De-stub the system demo's idle masters** — give `m[1]`/`m[2]` real activity in `tb_nic400_system.cpp` (or a sibling TB) so multi-master contention is exercised end-to-end. Unblocks a real QoS test next.
+2. **Default-slave responder** — small extra module returning DECERR for un-decoded addrs, wire into the fabric's "no match" output of `Nic400MasterPort`. Closes a basic conformance item.
+3. **Per-slave reg slice wrapper** — symmetric to `Nic400FabricRs1` but on the s side. Mostly copy-paste; useful as a real-SoC pattern.
+4. **Wire width adapter into a system variant** — `Nic400SystemWide` with a 64-bit AXI master and the 32-bit APB target, so the adapter is exercised in-system.
+5. **GPV regfile sketch** — APB target + a few mapped registers (decode-table override, QoS knob). Lowest-cost path to "programmable" status on multiple rows.
+
+Items deliberately deferred: AXI3, AxUSER, QVN, LPI, EX-monitor — each is a real chunk of work and none has a current pull from a benchmark.
 
 ```
 doc/nic400_interconnect_spec.md                 ← this file
