@@ -1,0 +1,287 @@
+// AXI4 data-width downsize adapter.
+//
+// Bridges a wide AXI4 master port (m, DATA_W = M_DATA_W) to a narrow AXI4
+// slave port (s, DATA_W = S_DATA_W). For each master beat the adapter
+// emits / consumes RATIO = M_DATA_W / S_DATA_W slave beats, packing R
+// returns and splitting W beats with little-endian ordering — the low
+// S_DATA_W bits of the master beat correspond to the FIRST slave beat.
+//
+// Constraints (caller must satisfy):
+//   • M_DATA_W % S_DATA_W == 0
+//   • M_DATA_W > S_DATA_W              (downsize-only — upsize is a larger
+//                                       design requiring an accumulation
+//                                       buffer and is out of scope here)
+//   • RATIO ≥ 2 and is a power of two in practice (axsize encodes 1/2/4/…)
+//
+// AXI semantics enforced by the adapter:
+//   • Master AR axlen=N (N+1 master beats) ⇒ slave axlen = (N+1)*RATIO - 1.
+//   • Slave ax_size is forced to log2(S_DATA_W/8); the adapter does not
+//     attempt to honour a narrower master ax_size (i.e. partial-lane
+//     accesses are out of scope in v1 — TB always issues full-width).
+//   • For R: r_resp is OR-reduced across the RATIO sub-beats inside one
+//     master beat (so SLVERR on any sub-beat surfaces as SLVERR on the
+//     containing master beat). r_last on master fires on the final beat.
+//   • For W: w_strb is split into RATIO slices of S_STRB_W bits each,
+//     least-significant slice goes out first.
+//   • B: 1:1 forwarded.
+//
+// Per-channel locks serialise the multi-thread comb drives on the shared
+// m.* / s.* output signals; the AHB bridge uses the same pattern and the
+// rationale carries over — at most one thread is in a lock body at a time
+// in steady state, the lock just keeps the codegen's multi-driver legal.
+//
+// Implementation note: the R thread uses the nested-for + if/else + lock-
+// per-branch shape that previously hit compiler bug #422 (lower_threads
+// dropped the outer-for continuation transition on the if-branch's
+// terminal state). Issue #422 was fixed in PR #430; this module relies on
+// that fix.
+module Nic400WidthAdapter
+  param M_DATA_W: const = 64;
+  param S_DATA_W: const = 32;
+  param ADDR_W:   const = 32;
+  param ID_W:     const = 4;
+  // Derived. Caller is expected to keep M_DATA_W % S_DATA_W == 0 and the
+  // ratio ≥ 2. The compiler folds these expressions in const positions.
+  param RATIO:    const = M_DATA_W / S_DATA_W;
+  param M_STRB_W: const = M_DATA_W / 8;
+  param S_STRB_W: const = S_DATA_W / 8;
+  // axsize encoding for S_DATA_W bytes. For 32-bit slave (S_STRB_W=4) ⇒ 2.
+  param S_AX_SIZE: const = $clog2(S_STRB_W);
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  // Wide master-facing port (adapter is the target — drives ready/resp).
+  port m: target BusAxi4<ADDR_W=ADDR_W, DATA_W=M_DATA_W, STRB_W=M_STRB_W,
+                          ID_W=ID_W, READ=1, WRITE=1>;
+  // Narrow slave-facing port (adapter is the initiator — drives valid/data).
+  port s: initiator BusAxi4<ADDR_W=ADDR_W, DATA_W=S_DATA_W, STRB_W=S_STRB_W,
+                              ID_W=ID_W, READ=1, WRITE=1>;
+
+  // Per-channel arb locks — see Nic400AhbBridge for the rationale.
+  resource ar_lock: mutex<priority>;
+  resource r_lock:  mutex<priority>;
+  resource aw_lock: mutex<priority>;
+  resource w_lock:  mutex<priority>;
+  resource b_lock:  mutex<priority>;
+
+  // Latched master axlen for the R thread's outer-loop bound. The master
+  // holds m.ar_len only during the AR handshake; R-side beats can arrive
+  // many cycles later, by which point the master may have moved on.
+  reg rd_axlen_r:  UInt<8> reset rst => 0;
+  // Latched master axlen for the W thread's outer-loop bound. Same reason.
+  reg wr_axlen_r:  UInt<8> reset rst => 0;
+
+  // Packing accumulator for R beats. At sub-beat k (0..RATIO-2) we OR the
+  // slave's r_data into bits [k*S_DATA_W +: S_DATA_W]. At k == RATIO-1 we
+  // OR the last slave beat in *combinationally* and drive m.r_valid with
+  // the assembled wide word; on m.r_ready the loop clears the reg for the
+  // next master beat.
+  reg r_pack_r:    UInt<M_DATA_W> reset rst => 0;
+  // OR-accumulated response across sub-beats; surfaced on m.r_resp at the
+  // terminal sub-beat.
+  reg r_resp_r:    UInt<2> reset rst => 0;
+
+  // ── AR thread ─────────────────────────────────────────────────────────
+  // Forward master AR to slave, scaling axlen and forcing axsize.
+  thread Ar on clk rising, rst low
+    default comb
+      s.ar_valid  = false;
+      s.ar_addr   = 0;
+      s.ar_id     = 0;
+      s.ar_len    = 0;
+      s.ar_size   = 0;
+      s.ar_burst  = 0;
+      s.ar_lock   = false;
+      s.ar_cache  = 0;
+      s.ar_prot   = 0;
+      s.ar_qos    = 0;
+      s.ar_region = 0;
+      m.ar_ready  = false;
+    end default
+    wait 0+ cycle until m.ar_valid;
+    lock ar_lock
+      do
+        s.ar_valid  = true;
+        s.ar_addr   = m.ar_addr;
+        s.ar_id     = m.ar_id;
+        // (master_axlen + 1) * RATIO - 1, all in 8-bit AXI axlen space.
+        s.ar_len    = (((m.ar_len.zext<16>() + 1) * RATIO) - 1).trunc<8>();
+        s.ar_size   = S_AX_SIZE;
+        s.ar_burst  = m.ar_burst;
+        s.ar_lock   = m.ar_lock;
+        s.ar_cache  = m.ar_cache;
+        s.ar_prot   = m.ar_prot;
+        s.ar_qos    = m.ar_qos;
+        s.ar_region = m.ar_region;
+        m.ar_ready  = s.ar_ready;
+        // Latch master axlen for the R thread before the master can drop it.
+        rd_axlen_r <= m.ar_len;
+      until s.ar_ready;
+    end lock ar_lock
+  end thread Ar
+
+  // ── R thread ─────────────────────────────────────────────────────────
+  // For each master beat (0..rd_axlen_r), pack RATIO slave R beats into one
+  // wide master beat. Inner loop has three structurally-distinct branches:
+  //   • k == 0           : capture into low slot
+  //   • 0 < k < RATIO-1  : OR into middle slot
+  //   • k == RATIO-1     : OR last slot in combinationally and present the
+  //                        packed beat to the master with m.r_valid=1
+  //
+  // This is the nested-for + if/elsif/else + lock-per-branch shape that
+  // tripped #422 before PR #430 landed.
+  thread R on clk rising, rst low
+    default comb
+      m.r_valid = false;
+      m.r_data  = 0;
+      m.r_id    = 0;
+      m.r_resp  = 0;
+      m.r_last  = false;
+      s.r_ready = false;
+    end default
+    wait until s.r_valid;
+    for b in 0..rd_axlen_r
+      for k in 0..RATIO - 1
+        if k == 0
+          // Low slot: overwrite (clears any leftover bits from a previous
+          // master beat too).
+          lock r_lock
+            do
+              s.r_ready = true;
+            until s.r_valid;
+          end lock r_lock
+          r_pack_r <= s.r_data.zext<M_DATA_W>();
+          r_resp_r <= s.r_resp;
+        elsif k == RATIO - 1
+          // Terminal sub-beat: combine accumulated low slots with the
+          // current slave beat (shifted into the top slot) and drive the
+          // master with the full wide word.
+          lock r_lock
+            do
+              s.r_ready = m.r_ready;
+              m.r_valid = s.r_valid;
+              m.r_data  = r_pack_r | (s.r_data.zext<M_DATA_W>() << (k * S_DATA_W));
+              m.r_id    = s.r_id;
+              m.r_resp  = r_resp_r | s.r_resp;
+              m.r_last  = s.r_last;
+            until s.r_valid and m.r_ready;
+          end lock r_lock
+          // Clear accumulator for the next master beat.
+          r_pack_r <= 0;
+          r_resp_r <= 0;
+        else
+          // Middle slot: OR new slave data into bits [k*S_DATA_W +: S_DATA_W].
+          lock r_lock
+            do
+              s.r_ready = true;
+            until s.r_valid;
+          end lock r_lock
+          r_pack_r <= r_pack_r | (s.r_data.zext<M_DATA_W>() << (k * S_DATA_W));
+          r_resp_r <= r_resp_r | s.r_resp;
+        end if
+      end for
+    end for
+  end thread R
+
+  // ── AW thread ─────────────────────────────────────────────────────────
+  thread Aw on clk rising, rst low
+    default comb
+      s.aw_valid  = false;
+      s.aw_addr   = 0;
+      s.aw_id     = 0;
+      s.aw_len    = 0;
+      s.aw_size   = 0;
+      s.aw_burst  = 0;
+      s.aw_lock   = false;
+      s.aw_cache  = 0;
+      s.aw_prot   = 0;
+      s.aw_qos    = 0;
+      s.aw_region = 0;
+      m.aw_ready  = false;
+    end default
+    wait 0+ cycle until m.aw_valid;
+    lock aw_lock
+      do
+        s.aw_valid  = true;
+        s.aw_addr   = m.aw_addr;
+        s.aw_id     = m.aw_id;
+        s.aw_len    = (((m.aw_len.zext<16>() + 1) * RATIO) - 1).trunc<8>();
+        s.aw_size   = S_AX_SIZE;
+        s.aw_burst  = m.aw_burst;
+        s.aw_lock   = m.aw_lock;
+        s.aw_cache  = m.aw_cache;
+        s.aw_prot   = m.aw_prot;
+        s.aw_qos    = m.aw_qos;
+        s.aw_region = m.aw_region;
+        m.aw_ready  = s.aw_ready;
+        wr_axlen_r <= m.aw_len;
+      until s.aw_ready;
+    end lock aw_lock
+  end thread Aw
+
+  // ── W thread ─────────────────────────────────────────────────────────
+  // For each master beat (0..wr_axlen_r), split the wide w_data/w_strb into
+  // RATIO slave sub-beats, least-significant slice first. Master w_ready
+  // pulses high ONLY on the last sub-beat (k == RATIO-1) so the master
+  // advances by one wide beat per RATIO slave beats.
+  //
+  // w_last on the slave fires on the very last sub-beat of the very last
+  // master beat: (b == wr_axlen_r) and (k == RATIO-1).
+  thread W on clk rising, rst low
+    default comb
+      s.w_valid = false;
+      s.w_data  = 0;
+      s.w_strb  = 0;
+      s.w_last  = false;
+      m.w_ready = false;
+    end default
+    wait until m.w_valid;
+    for b in 0..wr_axlen_r
+      for k in 0..RATIO - 1
+        if k == RATIO - 1
+          lock w_lock
+            do
+              s.w_valid = m.w_valid;
+              s.w_data  = m.w_data[k * S_DATA_W +: S_DATA_W];
+              s.w_strb  = m.w_strb[k * S_STRB_W +: S_STRB_W];
+              s.w_last  = (b == wr_axlen_r) and m.w_last;
+              // Master advances after the last sub-beat consumes the wide beat.
+              m.w_ready = s.w_ready;
+            until m.w_valid and s.w_ready;
+          end lock w_lock
+        else
+          lock w_lock
+            do
+              s.w_valid = m.w_valid;
+              s.w_data  = m.w_data[k * S_DATA_W +: S_DATA_W];
+              s.w_strb  = m.w_strb[k * S_STRB_W +: S_STRB_W];
+              s.w_last  = false;
+              // Hold master w_ready=0 until the last sub-beat.
+              m.w_ready = false;
+            until m.w_valid and s.w_ready;
+          end lock w_lock
+        end if
+      end for
+    end for
+  end thread W
+
+  // ── B thread ─────────────────────────────────────────────────────────
+  thread B on clk rising, rst low
+    default comb
+      m.b_valid = false;
+      m.b_id    = 0;
+      m.b_resp  = 0;
+      s.b_ready = false;
+    end default
+    wait 0+ cycle until s.b_valid;
+    lock b_lock
+      do
+        m.b_valid = s.b_valid;
+        m.b_id    = s.b_id;
+        m.b_resp  = s.b_resp;
+        s.b_ready = m.b_ready;
+      until s.b_valid and m.b_ready;
+    end lock b_lock
+  end thread B
+end module Nic400WidthAdapter
