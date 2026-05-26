@@ -1051,63 +1051,72 @@ The size win comes from:
 
 A living checklist of NIC-400 features vs the ARCH demo. The §16 table above is the *as-planned* snapshot from initial design; this subsection tracks *as-shipped vs the ARM NIC-400 TRM (IHI 0064)* and is updated when PRs land. Status legend: **✅ shipped** / **🟡 partial** / **❌ not started** / **⏭ out of scope** (intentional, with rationale).
 
-Items marked `(verify)` need a confirming pass against the ARM TRM before being treated as authoritative — the initial seed was drawn from this repo's tree and section §16's planned table, not from a TRM reread.
+A verification pass against the ARM TRM (DDI 0475E, *CoreLink NIC-400 Network Interconnect Technical Reference Manual*) was completed on 2026-05-26; corrections and additions below carry source-confidence tags: `[TRM]` for items confirmed directly in DDI 0475E, `[INFER]` for items inferred from related ARM IP/AMBA docs (lower confidence), `[UNK]` for items that could not be authoritatively verified. The QoS-400, QVN-400, and TLX-400 supplements are separate ARM products layered on top of NIC-400 and are not in the base TRM; rows that depend on those supplements are marked accordingly.
 
 #### Protocol bridges and interfaces
 | Feature | Status | Where / next step |
 |---|---|---|
 | AXI4 (full) master/slave shim | ✅ | `tests/nic400/BusAxi4.arch`, `Nic400Master/SlavePort.arch` |
-| AXI4-Lite shim | ❌ | Would add a `BusAxi4Lite` and a lite↔full bridge module |
-| AXI3 shim (locked-rd/wr, WID) | ❌ | NIC-400 TRM supports AXI3 endpoints; not modelled |
-| AHB-Lite master bridge (CPU→fabric) | ✅ | `Nic400AhbBridge.arch` + multi-burst + INCR-undef chunking |
-| AHB-Lite slave bridge (fabric→AHB peripheral) | ❌ | Reverse direction; not built |
-| APB v2/v3/v4 target bridge | ✅ | `Nic400ApbBridge.arch` + `stdlib/BusApb` (PR #434 toggleable sidebands) |
+| AXI4-Lite shim | ⏭ | [TRM] NIC-400 TRM §1.2 enumerates AXI3, AXI4, AHB-Lite, APB2/3/4 as the endpoint protocols — AXI4-Lite is **not** a NIC-400 endpoint option. AMBA Designer reaches AXI4-Lite peripherals via an external AXI→AXI4-Lite bridge, not inside the NIC. |
+| AXI3 shim (locked-rd/wr, WID) | ❌ | [TRM] AXI3 is a first-class NIC-400 slave **and** master interface option (TRM §1.2, §2.2.1, §2.3.1). NIC-400 also does AXI3↔AXI4 protocol conversion (split long bursts, optional burst limiter), which the demo does not model. |
+| AHB-Lite master bridge (CPU→fabric) | ✅ | `Nic400AhbBridge.arch` + multi-burst + INCR-undef chunking. [TRM] Mapping table (§2.2.2 Table 2-2) and 1KB-boundary break rule confirmed. |
+| AHB-Lite slave bridge (fabric→AHB peripheral) | ❌ | [TRM] NIC-400 calls this an "AHB-Lite master interface" (or "AHB-Lite mirrored slave interface" for direct AHB-slave attach) on the master side of the fabric. Reverse direction; not built. |
+| AHB-Lite "mirrored" interface variants (mirrored-master / mirrored-slave) | ❌ | [TRM] §2.2.1 / §2.2.2: NIC-400 offers four AHB-Lite interface flavors (slave, mirrored-master, master, mirrored-slave) for direct attach to either an AHB master or AHB slave without the HSEL/HREADY glue. Demo only models one flavor. |
+| APB v2/v3/v4 target bridge | ✅ | `Nic400ApbBridge.arch` + `stdlib/BusApb` (PR #434 toggleable sidebands). [TRM] §2.2.2 confirms per-AMIB APB2/3/4 mix + up to 16 APB subports per AMIB. |
 | APB initiator (CPU→APB) | ⏭ | Real SoCs front APB peripherals via the AXI→APB bridge — covered |
+| AXI3 ↔ AXI4 protocol conversion (long-burst split, burst limiter) | ❌ | [TRM] §2.3.1: AXI4 INCR>16 split into multiple AXI3 bursts on egress; AXI3→AXI4 has a programmable burst limiter (GPV register). Not modelled — demo is AXI4-only. |
 
 #### Crossbar fabric
 | Feature | Status | Where / next step |
 |---|---|---|
-| Parameterizable M×N matrix | ✅ | `Nic400Fabric.arch`; demo is 3×4 |
-| ID remap (master idx prefix) | ✅ | `MASTER_ID_W → SLAVE_ID_W = MASTER_ID_W + ceil(log2(M))` |
-| Address decode | 🟡 | Compile-time, top-NS_W bits of REGION_BITS=28 page. NIC-400's runtime-programmable GPV table is unimplemented. |
-| Default slave (decode-error response) | ❌ | NIC-400 routes un-decoded addrs to a default error responder returning DECERR — not in the demo |
-| Per-master / per-slave clock domains | ❌ | All ports share `clk: in Clock<SysDomain>`; CDC via `fifo kind: async` is doable but not wired |
+| Parameterizable M×N matrix | ✅ | `Nic400Fabric.arch`; demo is 3×4. [TRM] §1.2 caps NIC-400 at 1-128 slave IFs × 1-64 master IFs and up to 5 cascaded switches between any master/slave pair. |
+| ID remap (master idx prefix) | ✅ | `MASTER_ID_W → SLAVE_ID_W = MASTER_ID_W + ceil(log2(M))`. [TRM] §2.3.12 names the components "Interconnect ID (IID) + Virtual ID (VID) + Slave-Interface ID (SIID)"; global ID width is 1-24 bits with an optional "ID reduction" pass at AMIB. Our shim does a single SIID prefix; we do not implement ID reduction. |
+| Address decode | 🟡 | Compile-time, top-NS_W bits of REGION_BITS=28 page. [TRM] §2.3.11 names the runtime knob "Remap" (8 remap-state bits, GPV-programmable, can alias/move/add/remove regions); we don't implement it. |
+| Decode-error (DECERR) response on unmatched address | ❌ | [TRM] §2.2.1: "Any transaction that does not decode to a legal master interface destination... receives a DECERR response." NIC-400 builds this into the slave interface block (ASIB) automatically — there is no separately-instantiated "default slave" module; rephrase the row as a behavior the ASIB must emit. Demo's `Nic400MasterPort` silently drops un-matched addrs. |
+| Per-master / per-slave clock domains | ❌ | All ports share `clk: in Clock<SysDomain>`. [TRM] §2.2.1 / §2.3.5: each ASIB/AMIB can select SYNC 1:1, SYNC 1:n, SYNC n:1, SYNC n:m, or ASYNC frequency-domain crossing with a per-FIFO depth of 2-32, and the `sync_mode` is GPV-programmable. CDC via `fifo kind: async` is doable but not wired. |
+| Cyclic Dependency Avoidance Schemes (CDAS) — Single-Slave / Single-Slave-per-ID | ❌ | [TRM] §2.3.7: per-ASIB knob that stalls transactions to a different destination than outstanding ones of the same type (or same ID), to break AW/W-channel ordering deadlocks. Not modelled. |
+| Single Active Slave (SAS) | ❌ | [TRM] §2.3.8: at a divergent switch slave IF, an AW address beat is stalled if any outstanding write data beats are still in flight to a different master IF. Used as a fallback CDAS resolution. Not modelled. |
+| Address remap states (alias / move / add / remove regions) | ❌ | [TRM] §2.3.11: 8 remap bits in GPV control independent region overlays; the BRESP from the GPV after a remap update guarantees observable ordering. Not modelled. |
 
 #### Pipelining and width adaptation
 | Feature | Status | Where / next step |
 |---|---|---|
-| Full register slice (1-stage, both directions) | ✅ | `Nic400EdgeRegSlice.arch` + `Nic400FabricRs1.arch` (per-master) |
-| Forward-only / reverse-only / FF reg slice variants | ❌ | NIC-400 has four flavors; the demo ships one (full) |
-| Multi-stage reg slices (STAGES > 1) | ❌ | `Nic400FabricRs1` is STAGES=1 only; wrapper would need chaining |
-| Per-slave reg slice insertion | ❌ | Only per-master is wired; per-slave wrapper not built |
-| Width adapter (upsizer + downsizer) | ✅ | `Nic400WidthAdapter.arch` (5 threads, PR #431) |
+| Full register slice (1-stage, both directions) | ✅ | `Nic400EdgeRegSlice.arch` + `Nic400FabricRs1.arch` (per-master). [TRM] §2.2.1 confirms "full register slice" terminology (adds +2 to read/write acceptance capability when placed in the ASIB slave-IF position). |
+| Forward-only register slice variant | ❌ | [TRM] §2.2.1 names exactly two slice variants — "full register slice" (+2 acceptance) and "forward register slice" (+1 acceptance). The earlier note "NIC-400 has four flavors" is incorrect for the base TRM — *(unverified — only "full" and "forward" appear in DDI 0475E; "reverse" / "FF" variants are AMBA register-slice IP terminology but not documented in NIC-400 TRM)*. |
+| Multi-stage reg slices (STAGES > 1) | ❌ | `Nic400FabricRs1` is STAGES=1 only; wrapper would need chaining. *(unverified — TRM does not explicitly enumerate multi-stage chaining; configured via AMBA Designer timing-isolation knobs)* |
+| Per-slave reg slice insertion | ❌ | Only per-master is wired; per-slave wrapper not built. [TRM] §2.2.1/§2.2.2 explicitly support timing isolation at both ASIB and AMIB ("from the external master/slave" and "from the network"). |
+| Upsizer (1:2/1:4/1:8) and Downsizer (2:1/4:1/8:1) data-width adapter | ✅ | `Nic400WidthAdapter.arch` (5 threads, PR #431). [TRM] §2.3.3/§2.3.4 names the functions "Upsizing data width function" and "Downsizing data width function"; supported ratios are 1:2/1:4/1:8 (upsize) and 2:1/4:1/8:1 (downsize); data widths 32/64/128/256 (512/1024 explicitly **not** supported); upsizer only packs cacheable transactions; both have a `bypass_merge` GPV bit and 1-32 accept-capability. |
 | Width-adapter wired into the integrated demo | ❌ | Standalone module + TB only; not on the AHB↔APB path yet (demo is 32-bit end-to-end) |
+| Burst-length splitter for 4KB AXI boundary | ❌ | [INFER] AMBA AXI spec mandates that any single burst stay within a 4KB page; an NIC-400 ASIB whose master issues an oversized burst would have to split — but the TRM only documents the 1KB AHB-Lite split (§2.2.2) and the AXI4→AXI3 long-burst split (§2.3.1) explicitly, so this row is *(unverified — likely upstream-master's responsibility per AMBA AXI, not an NIC-400 feature)*. |
 
 #### QoS and arbitration
 | Feature | Status | Where / next step |
 |---|---|---|
-| Per-master QoS-priority arbitration | 🟡 | `Nic400ArbiterPolicy.arch` (hard-coded NUM_MASTERS=4 hook). Generalize to runtime N or document the size assumption. |
-| QoS-Value Regulator (peak/burstiness/avg per master) | ❌ | NIC-400 has 3-token-bucket throttle per master; not in scope today |
-| QoS Virtual Network (QVN) | ❌ | Tag-based independent arbitration lanes; not built |
-| Programmable QoS via GPV register file | ❌ | Tied to GPV programmability item below |
+| Per-master QoS-priority arbitration | 🟡 | `Nic400ArbiterPolicy.arch` (hard-coded NUM_MASTERS=4 hook). Generalize to runtime N or document the size assumption. [TRM] §2.3.6: NIC-400 native arbitration is *fixed-priority on AxQOS value, LRU within same QoS*; per-ASIB QoS source is static, GPV-programmable, or taken from the attached master (`read_qos`/`write_qos` registers, Table 3-1). |
+| QoS-Value Regulator (peak/burstiness/avg per master) | ⏭ | [TRM] §2.4.1 — this is in the **QoS-400** product (separately licensed, not in the NIC-400 base), described in the *QoS Supplement to TRM*. Base TRM only confirms "regulation of read and write requests" exists; the specific *3-token-bucket peak/burstiness/avg* breakdown is *(unverified — needs the QoS-400 supplement; INFER from public ARM material that it follows the same per-master token-bucket shape as later CoreLink IP, but not authoritatively confirmed in the base TRM)*. |
+| QoS Virtual Network (QVN) | ⏭ | [TRM] §2.4.2 — this is in the **QVN-400** product (separately licensed), up to 8 virtual networks total / max 4 per master or slave IF, configurable via addressable path from masters to slaves. Tag-based independent-lane arbitration claim is consistent with §2.4.2 but the exact tag-wire encoding is in the *QVN Supplement* (not the base TRM). |
+| Programmable QoS via GPV register file | 🟡 | [TRM] §3.2 / Table 3-1: `read_qos[3:0]` at offset `0x100` and `write_qos[3:0]` at `0x104` per ASIB exist in the base NIC-400 when the QoS source is configured as "Programmable" (no QoS-400 license needed for the fixed-priority case). Tied to GPV programmability item below. |
+| Thin Links (TLX) point-to-point reduced-signal bridge | ⏭ | [TRM] §2.4.3 — this is the **TLX-400** product (separately licensed); AXI-to-AXI / AXI-to-AHB long-distance routing with a Data-Link + Physical-Layer split. Not in the base TRM and not modelled. |
 
 #### Observability and control
 | Feature | Status | Where / next step |
 |---|---|---|
-| PMU per-master handshake counters | ✅ | `Nic400Pmu.arch` (AR/AW/R/W/B per master) |
-| PMU latency / outstanding-txn histograms | ❌ | NIC-400 PMU also exposes RD/WR latency bins and outstanding-depth; not in v1 |
-| GPV (Global Programmer's View) register file | ❌ | NIC-400 exposes addr-map, QoS, idle/down via memory-mapped GPV. Would need an APB target + a `regfile` block. |
-| Low-power interface (LPI) handshake (PREQ/PACTIVE/PACCEPT/PDENY) | ❌ | Per-port clock-gate handshake; not modelled |
+| PMU per-master handshake counters | ✅ | `Nic400Pmu.arch` (AR/AW/R/W/B per master). *(unverified — DDI 0475E base TRM does **not** describe a built-in performance-monitor unit; ARM's PMU IP is delivered separately on CCI/CCN. Our PMU is an ARCH-side instrumentation block, not a NIC-400 native feature; this row may belong in a "telemetry add-on" category rather than gap-tracker against the TRM.)* |
+| PMU latency / outstanding-txn histograms | ❌ | *(unverified — see PMU note above; the latency-bin shape is a CCI-style feature, not documented in the NIC-400 base TRM.)* |
+| GPV (Global Programmers View) register file | ❌ | [TRM] §3.2: NIC-400's configuration register file ("Global Programmers View" — note ARM spells "Programmers" without apostrophe). Each ASIB/IB/AMIB has its own 4KB block stacked at a configurable base. GPV is AXI-accessed, **AxSIZE=32-bit only**, **Secure-only**, no interleaved WDATA, aligned only, non-cacheable. Would need an AXI target (not APB — that's a constraint of GPV) + a `regfile` block. |
+| Low-power interface (clock-gating C-channel) — CSYSREQ / CSYSACK / CACTIVE | ❌ | [TRM] §2.2.3 + Appendix A.1.1: NIC-400's hierarchical-clock-gating signals are `csyreq_cd_<Domain>` / `cysack_cd_<Domain>` / `cactive_cd_<Domain>` (one set per clock domain). The earlier note "PREQ/PACTIVE/PACCEPT/PDENY" is **incorrect** — those are AMBA P-channel signals used in newer CoreLink IP (CCI/CCN/PMU), not NIC-400's C-channel. AHB-Lite slave IFs cannot participate fully (protocol has no back-pressure on the address phase) so each AHB-Lite slave needs its own clock domain. |
+| Hierarchical clock-gating central GPV ring | ❌ | [TRM] §2.3.2: when hierarchical clock-gating is enabled and the GPV spans more than one clock domain, NIC-400 inserts an *additional* clock domain that bridges GPV accesses asynchronously and exposes its own AXI low-power IF. Not modelled. |
 
 #### Security and ordering
 | Feature | Status | Where / next step |
 |---|---|---|
-| AR/AW LOCK propagation (signal carry-through) | ✅ | `ar_lock`/`aw_lock` flow through `BusAxi4` unchanged |
-| Exclusive-access monitor (in slave shim) | ❌ | NIC-400 puts the EX-monitor in the slave shim; not built |
-| AxPROT carry-through (privilege/secure/instr) | ✅ | Signal propagates end-to-end; APB bridge maps to PPROT |
-| AxUSER / WUSER / RUSER / BUSER sidebands | ❌ | `BusAxi4.arch` has no USER fields; NIC-400 allows configurable user widths |
-| AxCACHE / AxQOS / AxREGION carry-through | ✅ | All three flow through fabric and reg slice |
-| Write data interleaving (AXI3 only) | ⏭ | AXI4 forbids it; we're AXI4-only |
+| AR/AW LOCK propagation (signal carry-through) | ✅ | `ar_lock`/`aw_lock` flow through `BusAxi4` unchanged. [TRM] §2.3.9: NIC-400 has *Lock Support* logic at switch master IFs that stalls coincident transactions while the locked sequence drains; AXI4 has no AxLOCK width (single-bit) and AXI3 has 2-bit AxLOCK with SWP support. |
+| Exclusive-access monitor (in slave shim) | ❌ | *(unverified — DDI 0475E base TRM does **not** describe an exclusive-access monitor inside NIC-400; the TRM only states that the up/downsizer **removes** exclusive information from split transactions and that the master will never see EXOKAY in that case (§2.3.3/§2.3.4). The "EX-monitor in slave shim" claim is more typical of DMC/CCI-style memory controllers; for NIC-400 the exclusive monitor lives in the addressed slave, not the NIC.)* |
+| AxPROT carry-through (privilege/secure/instr) | ✅ | Signal propagates end-to-end; APB bridge maps to PPROT. [TRM] §2.3.10: each slave IF can be Secure / Non-secure / per-access (`AxPROT[1]`); Non-secure→Secure-only-master returns DECERR. |
+| AxUSER / WUSER / RUSER / BUSER sidebands | ❌ | `BusAxi4.arch` has no USER fields. [TRM] §1.2 + Appendix A.3: NIC-400 supports **independent** 0-256-bit user widths per channel (AWUSER/WUSER/BUSER/ARUSER/RUSER); the AHB-Lite bridge also auto-maps HAUSER→AWUSER/ARUSER and HWUSER→WUSER (§2.2.1/§2.2.2). |
+| AxCACHE / AxQOS / AxREGION carry-through | ✅ | All three flow through fabric and reg slice. [TRM] §2.2.2: NIC-400 can compute a 4-bit AxREGION at decode time *or* take an input region from the master (and an APB-decoded address overrides any input region). |
+| Write data interleaving (AXI3 only) | ⏭ | AXI4 forbids it; we're AXI4-only. [TRM] §1.2 (note): **NIC-400 base product does not accept or issue interleaved write data on any interface** — so this row is doubly out-of-scope (both AXI4 *and* NIC-400 reject WDATA interleaving). |
+| Read-data interleaving / ID-deinterleave on RDATA | ❌ | [INFER] AXI3 permits RDATA interleaving across IDs; the NIC-400 TRM does not document a separate deinterleave block, instead relying on the slave's RID stream + the master's natural ID-based reordering. *(unverified — base TRM is silent on a NIC-internal deinterleave step.)* |
 
 #### Verification and TB coverage
 | Feature | Status | Where / next step |
