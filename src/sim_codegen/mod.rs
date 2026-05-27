@@ -6182,6 +6182,7 @@ impl<'a> SimCodegen<'a> {
                                     }
                                 } else {
                                     let prefix = if reg_names.contains(sig_name.as_str()) { "_" }
+                                        else if let_names.contains(sig_name.as_str()) { "_let_" }
                                         else if inst_out.contains(sig_name.as_str()) { "" }
                                         else { "_let_" };
                                     for i in 0..n {
@@ -6351,6 +6352,7 @@ impl<'a> SimCodegen<'a> {
                                     }
                                 } else {
                                     let prefix = if reg_names.contains(sig_name.as_str()) { "_" }
+                                        else if let_names.contains(sig_name.as_str()) { "_let_" }
                                         else if inst_out.contains(sig_name.as_str()) { "" }
                                         else { "_let_" };
                                     for i in 0..n {
@@ -7149,6 +7151,7 @@ impl<'a> SimCodegen<'a> {
                                     }
                                 } else {
                                     let prefix = if reg_names.contains(sig_name.as_str()) { "_" }
+                                        else if let_names.contains(sig_name.as_str()) { "_let_" }
                                         else if inst_out.contains(sig_name.as_str()) { "" }
                                         else { "_let_" };
                                     for i in 0..n {

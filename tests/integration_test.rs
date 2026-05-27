@@ -17031,3 +17031,34 @@ fn test_sim_nested_vec_reg_round_trips_all_cells() {
         "expected PASS marker in stdout:\n{}",
         String::from_utf8_lossy(&out.stdout));
 }
+
+#[test]
+fn test_native_sim_vec_inst_output_wire_feeds_indexed_let() {
+    // Regression for arch-com#437: a sub-instance Vec output connected to a
+    // declared Vec wire must update the wire's `_let_` storage, because parent
+    // expressions such as `values[idx]` read that storage. The broken native
+    // sim path wrote a separate implicit inst-output array instead, so indexed
+    // lets observed stale zeroes.
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/native_vec_inst_output_wire/Probe.arch")
+        .arg("--tb")
+        .arg("tests/native_vec_inst_output_wire/tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for native Vec inst output wire probe");
+    assert!(
+        out.status.success(),
+        "native Vec inst output wire sim should compile + run\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS native Vec inst output wire"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
