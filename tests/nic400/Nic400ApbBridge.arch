@@ -8,12 +8,16 @@
 //
 // What v1 implements:
 //   • AXI4 reads with arbitrary axlen (axlen+1 beats) → axlen+1 sequential
-//     APB read phases. Address increments by (1 << ar_size) per beat (AXI
-//     INCR semantics; WRAP not modelled — bridge treats every burst as INCR).
+//     APB read phases. Per-beat address obeys the AXI ar_burst encoding:
+//     FIXED (0b00) holds the address constant (FIFO/peripheral-port style),
+//     INCR (0b01) increments by (1 << ar_size) each beat, WRAP (0b10) wraps
+//     within the (axlen+1)*(1<<ar_size)-byte aligned window. Reserved 0b11
+//     is rejected by a module-level assert.
 //   • AXI4 writes with arbitrary axlen → axlen+1 sequential APB write
 //     phases. Each AXI W beat is married 1:1 with one APB access cycle:
 //     w_ready is held low through APB Setup and asserted on the pready=1
-//     cycle, so the master sees one combined handshake per beat.
+//     cycle, so the master sees one combined handshake per beat. The aw_burst
+//     encoding follows the same FIXED/INCR/WRAP semantics as reads.
 //   • APB v2.0 two-phase protocol: Setup (psel=1, penable=0) for exactly
 //     one cycle, then Access (psel=1, penable=1) until pready=1. Idle
 //     between bursts is psel=0, penable=0.
@@ -47,7 +51,8 @@
 // Limitations:
 //   • No AXI exclusive access (ar_lock / aw_lock are ignored).
 //   • APB v3 sideband (pwakeup) not modelled — see BusApb.arch.
-//   • AXI BURST type ignored — bridge always increments by (1 << size).
+//   • Reserved AxBURST=0b11 is rejected by `ar_burst_legal` / `aw_burst_legal`
+//     concurrent SVA; legal FIXED/INCR/WRAP are all decoded per beat.
 //   • Only one outstanding R and one outstanding W at a time.
 module Nic400ApbBridge
   param ADDR_WIDTH: const = 32;
@@ -80,21 +85,49 @@ module Nic400ApbBridge
   resource apb_lock: mutex<priority>;
 
   // ── Read-path captured state ────────────────────────────────────────
-  reg ar_addr_r: UInt<ADDR_WIDTH> reset rst => 0;
-  reg ar_len_r:  UInt<8>          reset rst => 0;
-  reg ar_size_r: UInt<3>          reset rst => 0;
-  reg ar_prot_r: UInt<3>          reset rst => 0;
-  reg ar_id_r:   UInt<ID_WIDTH>   reset rst => 0;
-  reg prdata_r:  UInt<DATA_WIDTH> reset rst => 0;
-  reg rerr_r:    Bool             reset rst => false;
+  reg ar_addr_r:  UInt<ADDR_WIDTH> reset rst => 0;
+  reg ar_len_r:   UInt<8>          reset rst => 0;
+  reg ar_size_r:  UInt<3>          reset rst => 0;
+  reg ar_burst_r: UInt<2>          reset rst => 0;
+  reg ar_prot_r:  UInt<3>          reset rst => 0;
+  reg ar_id_r:    UInt<ID_WIDTH>   reset rst => 0;
+  reg prdata_r:   UInt<DATA_WIDTH> reset rst => 0;
+  reg rerr_r:     Bool             reset rst => false;
 
   // ── Write-path captured state ───────────────────────────────────────
-  reg aw_addr_r: UInt<ADDR_WIDTH> reset rst => 0;
-  reg aw_len_r:  UInt<8>          reset rst => 0;
-  reg aw_size_r: UInt<3>          reset rst => 0;
-  reg aw_prot_r: UInt<3>          reset rst => 0;
-  reg aw_id_r:   UInt<ID_WIDTH>   reset rst => 0;
-  reg werr_r:    Bool             reset rst => false;
+  reg aw_addr_r:  UInt<ADDR_WIDTH> reset rst => 0;
+  reg aw_len_r:   UInt<8>          reset rst => 0;
+  reg aw_size_r:  UInt<3>          reset rst => 0;
+  reg aw_burst_r: UInt<2>          reset rst => 0;
+  reg aw_prot_r:  UInt<3>          reset rst => 0;
+  reg aw_id_r:    UInt<ID_WIDTH>   reset rst => 0;
+  reg werr_r:     Bool             reset rst => false;
+
+  // Per-beat AXI address. AXI4 burst types per §A3.4.1 of IHI 0022D:
+  //   • FIXED (00): address held constant — typical FIFO/peripheral mailbox.
+  //   • INCR  (01): address = base + b * (1 << size).
+  //   • WRAP  (10): address wraps within a (axlen+1)*(1<<size)-byte aligned
+  //                 window. Caller is responsible for legal axlen∈{2,4,8,16}
+  //                 and base aligned to (1<<size); the assert below catches
+  //                 the reserved 11 encoding but not WRAP misuse.
+  function calc_paddr(addr_r:  UInt<ADDR_WIDTH>,
+                      len_r:   UInt<8>,
+                      size_r:  UInt<3>,
+                      burst_r: UInt<2>,
+                      b:       UInt<8>) -> UInt<ADDR_WIDTH>
+    let byte_off:    UInt<ADDR_WIDTH> = b.zext<ADDR_WIDTH>() << size_r;
+    let burst_bytes: UInt<ADDR_WIDTH> = ((len_r.zext<ADDR_WIDTH>() + 1) << size_r).trunc<ADDR_WIDTH>();
+    let wrap_mask:   UInt<ADDR_WIDTH> = (burst_bytes - 1).trunc<ADDR_WIDTH>();
+    let inc_addr:    UInt<ADDR_WIDTH> = (addr_r + byte_off).trunc<ADDR_WIDTH>();
+    let wrap_addr:   UInt<ADDR_WIDTH> = (addr_r & ~wrap_mask) | (inc_addr & wrap_mask);
+    if burst_r == 0
+      return addr_r;
+    elsif burst_r == 2
+      return wrap_addr;
+    else
+      return inc_addr;
+    end if
+  end function calc_paddr
 
   // ── Read thread ──────────────────────────────────────────────────────
   // For each AXI AR: capture, then loop axlen+1 APB read phases, returning
@@ -120,11 +153,12 @@ module Nic400ApbBridge
     wait 0+ cycle until axi.ar_valid;
     do
       axi.ar_ready = true;
-      ar_addr_r <= axi.ar_addr;
-      ar_len_r  <= axi.ar_len;
-      ar_size_r <= axi.ar_size;
-      ar_prot_r <= axi.ar_prot;
-      ar_id_r   <= axi.ar_id;
+      ar_addr_r  <= axi.ar_addr;
+      ar_len_r   <= axi.ar_len;
+      ar_size_r  <= axi.ar_size;
+      ar_burst_r <= axi.ar_burst;
+      ar_prot_r  <= axi.ar_prot;
+      ar_id_r    <= axi.ar_id;
     until true;
     // For each beat: Setup → Access (captures prdata) → AXI R beat.
     for b in 0..ar_len_r
@@ -133,7 +167,7 @@ module Nic400ApbBridge
         do
           apb.psel    = true;
           apb.penable = false;
-          apb.paddr   = (ar_addr_r + (b.zext<ADDR_WIDTH>() << ar_size_r)).trunc<ADDR_WIDTH>();
+          apb.paddr   = calc_paddr(ar_addr_r, ar_len_r, ar_size_r, ar_burst_r, b);
           apb.pwrite  = false;
           apb.pprot   = ar_prot_r;
         until true;
@@ -143,7 +177,7 @@ module Nic400ApbBridge
         do
           apb.psel    = true;
           apb.penable = true;
-          apb.paddr   = (ar_addr_r + (b.zext<ADDR_WIDTH>() << ar_size_r)).trunc<ADDR_WIDTH>();
+          apb.paddr   = calc_paddr(ar_addr_r, ar_len_r, ar_size_r, ar_burst_r, b);
           apb.pwrite  = false;
           apb.pprot   = ar_prot_r;
           prdata_r <= apb.prdata;
@@ -183,12 +217,13 @@ module Nic400ApbBridge
     wait 0+ cycle until axi.aw_valid;
     do
       axi.aw_ready = true;
-      aw_addr_r <= axi.aw_addr;
-      aw_len_r  <= axi.aw_len;
-      aw_size_r <= axi.aw_size;
-      aw_prot_r <= axi.aw_prot;
-      aw_id_r   <= axi.aw_id;
-      werr_r    <= false;
+      aw_addr_r  <= axi.aw_addr;
+      aw_len_r   <= axi.aw_len;
+      aw_size_r  <= axi.aw_size;
+      aw_burst_r <= axi.aw_burst;
+      aw_prot_r  <= axi.aw_prot;
+      aw_id_r    <= axi.aw_id;
+      werr_r     <= false;
     until true;
     // For each beat: Setup (no W consumption) → Access (consume W on pready).
     for b in 0..aw_len_r
@@ -198,7 +233,7 @@ module Nic400ApbBridge
         do
           apb.psel    = true;
           apb.penable = false;
-          apb.paddr   = (aw_addr_r + (b.zext<ADDR_WIDTH>() << aw_size_r)).trunc<ADDR_WIDTH>();
+          apb.paddr   = calc_paddr(aw_addr_r, aw_len_r, aw_size_r, aw_burst_r, b);
           apb.pwrite  = true;
           apb.pwdata  = axi.w_data;
           apb.pstrb   = axi.w_strb;
@@ -212,7 +247,7 @@ module Nic400ApbBridge
         do
           apb.psel    = true;
           apb.penable = true;
-          apb.paddr   = (aw_addr_r + (b.zext<ADDR_WIDTH>() << aw_size_r)).trunc<ADDR_WIDTH>();
+          apb.paddr   = calc_paddr(aw_addr_r, aw_len_r, aw_size_r, aw_burst_r, b);
           apb.pwrite  = true;
           apb.pwdata  = axi.w_data;
           apb.pstrb   = axi.w_strb;
@@ -229,4 +264,11 @@ module Nic400ApbBridge
       axi.b_resp  = werr_r ? 2 : 0;
     until axi.b_ready;
   end thread WriteXact
+
+  // Reserved AxBURST=0b11 is not a defined AXI4 burst type. We accept the
+  // legal trio {FIXED=00, INCR=01, WRAP=10}; if a master ever drives 0b11
+  // on a handshaking AR/AW, the SVA fires before the bridge captures a
+  // burst code it doesn't know how to honour.
+  assert ar_burst_legal: (axi.ar_valid and axi.ar_ready) |-> (axi.ar_burst != 3);
+  assert aw_burst_legal: (axi.aw_valid and axi.aw_ready) |-> (axi.aw_burst != 3);
 end module Nic400ApbBridge
