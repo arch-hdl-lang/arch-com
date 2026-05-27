@@ -4536,6 +4536,75 @@ fn test_concat_bus_field_width_uses_module_param_binding() {
 }
 
 #[test]
+fn test_pybind_bus_flat_width_uses_module_param_binding() {
+    // Regression for issue #427 sibling site (PR #428 covered the
+    // main-sim path at sim_codegen/mod.rs:4750; the pybind binding
+    // emitter at sim_codegen/mod.rs:449 had the same latent bug).
+    //
+    // When a bus's per-signal width is bound through a module-param-
+    // substituted bus-alias param, the pybind `_port_info` tuple must
+    // report the real width, not the legacy `eval_width` 32-bit
+    // fallback that bare `type_bits_te` produced for an unresolved
+    // module-param Ident.
+    let source = include_str!(
+        "regression/issues/pybind_bus_flat_param_width/PybindBusFlatParamWidth.arch"
+    );
+    let pybinds = compile_to_pybind_cpps(source);
+    let cpp = pybinds.iter().find(|(n, _)| n.contains("PybindBusFlatParamWidth"))
+        .expect("PybindBusFlatParamWidth pybind wrapper").1.clone();
+    // _port_info tuple for `up_data` must carry the param-substituted
+    // width (128), not the conservative 32-bit fallback.
+    assert!(
+        cpp.contains("py::make_tuple(\"up_data\", 128,"),
+        "expected `_port_info` tuple `(\"up_data\", 128, ...)` (param-bound \
+         width); bus-flat width fold dropped back to the legacy 32-bit \
+         fallback:\n{cpp}"
+    );
+    assert!(
+        !cpp.contains("py::make_tuple(\"up_data\", 32,"),
+        "found buggy `_port_info` tuple `(\"up_data\", 32, ...)`; the \
+         bus-flat width lookup for `up_data` resolved to 32 instead of the \
+         param-bound 128:\n{cpp}"
+    );
+}
+
+#[test]
+fn test_fsm_bus_flat_trace_width_uses_construct_param_binding() {
+    // Regression for issue #427 sibling site: `src/sim_codegen/fsm.rs`
+    // also used bare `type_bits_te` to derive per-signal widths for the
+    // waveform trace of FSM-owned bus ports. When the bus's per-signal
+    // width is bound through an FSM-param-substituted bus-alias param,
+    // the VCD `$var wire <width> ... <name> $end` header line must
+    // announce the real lane width.
+    let source = include_str!(
+        "regression/issues/fsm_bus_flat_param_width/FsmBusFlatParamWidth.arch"
+    );
+    let sim = compile_to_sim_h(source, false);
+    // VCD declaration for `up_data` must carry the param-substituted
+    // width (96), not the conservative 32-bit fallback.
+    let up_data_lines: Vec<&str> = sim.lines()
+        .filter(|l| l.contains("up_data $end") && l.contains("$var wire"))
+        .collect();
+    assert_eq!(
+        up_data_lines.len(), 1,
+        "expected exactly one VCD `$var wire ... up_data $end` declaration \
+         line; found {} in:\n{sim}", up_data_lines.len()
+    );
+    let line = up_data_lines[0];
+    assert!(
+        line.contains("$var wire 96 "),
+        "expected VCD declaration for `up_data` to be 96 bits wide \
+         (param-bound DATA_W=96); got:\n  {line}\nin:\n{sim}"
+    );
+    assert!(
+        !line.contains("$var wire 32 "),
+        "found buggy 32-bit VCD declaration for `up_data`; the FSM \
+         bus-flat trace width lookup resolved to 32 instead of the \
+         param-bound 96:\n  {line}"
+    );
+}
+
+#[test]
 fn test_wait_0plus_cycle_until_mealy_fusion_gates_seq_assigns() {
     // Regression for issue #412: the Mealy-fusion lowering for
     //   wait 0+ cycle until X;

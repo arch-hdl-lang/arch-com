@@ -1,0 +1,30 @@
+// Regression for issue #427 sibling site: the pybind binding emitter
+// (`emit_pybind_module` in `src/sim_codegen/mod.rs`) used bare
+// `type_bits_te(flat_ty)` for bus-flat ports, which has no enclosing-
+// module-param context. When a bus's per-signal width is bound through
+// a module-param-substituted bus-alias param, the width Ident cannot be
+// resolved and falls through to the legacy conservative 32-bit
+// fallback. The exposed pybind `_port_info` tuple then reports the
+// wrong width to the Python harness, even though the SV path is fine.
+//
+// After the fix, the bus-flat width fold uses
+// `type_bits_te_with_params(&m.params)`, so `up.data` resolves to its
+// real param-bound width.
+bus WideBus
+  param DATA_W: const = 8;
+  data:  out UInt<DATA_W>;
+  valid: out Bool;
+end bus WideBus
+
+module PybindBusFlatParamWidth
+  param DATA_W: const = 128;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port up: initiator WideBus<DATA_W=DATA_W>;
+
+  comb
+    up.data  = 0;
+    up.valid = false;
+  end comb
+end module PybindBusFlatParamWidth

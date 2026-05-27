@@ -1,0 +1,47 @@
+// Regression for issue #427 sibling site: the FSM sim codegen
+// (`src/sim_codegen/fsm.rs`) used bare `type_bits_te(flat_ty)` to
+// derive waveform trace widths for bus-flat ports. When a bus's per-
+// signal width is bound through an FSM-param-substituted bus-alias
+// param, the width Ident cannot be resolved and falls through to the
+// legacy conservative 32-bit fallback. The VCD `$var wire <width> ...`
+// header line then announces the wrong lane width, even though the
+// underlying C++ field is correctly sized.
+//
+// After the fix, the bus-flat trace width fold uses
+// `type_bits_te_with_params(&f.common.params)`, so `up.data` resolves
+// to its real param-bound width.
+bus PayloadBus
+  param DATA_W: const = 8;
+  data:  out UInt<DATA_W>;
+  valid: out Bool;
+end bus PayloadBus
+
+fsm FsmBusFlatParamWidth
+  param DATA_W: const = 96;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port up: initiator PayloadBus<DATA_W=DATA_W>;
+
+  state [Idle, Send]
+  default state Idle;
+  default seq on clk rising;
+
+  default
+    comb
+      up.data  = 0;
+      up.valid = false;
+    end comb
+  end default
+
+  state Idle
+    -> Send;
+  end state Idle
+
+  state Send
+    comb
+      up.valid = true;
+    end comb
+    -> Idle;
+  end state Send
+end fsm FsmBusFlatParamWidth
