@@ -1,0 +1,35 @@
+//! ---
+//! tags: [native-sim, vec, inst-output, regression]
+//! refs:
+//!   - "arch-com#437"
+//! ---
+//!
+//! Regression for native C++ simulation of a sub-instance Vec output connected
+//! to a declared parent Vec wire and then read through an indexed let binding.
+
+/// Constant Vec producer used to expose parent-side Vec output wiring.
+module NativeVecProducer
+  port values: out Vec<UInt<32>, 2>;
+
+  comb
+    values[0] = 32'd37;
+    values[1] = 32'd99;
+  end comb
+end module NativeVecProducer
+
+/// Parent probe that indexes a Vec wire driven by a sub-instance output.
+module NativeVecInstOutputWireProbe
+  port select_in: in UInt<1>;
+  port selected_out: out UInt<32>;
+
+  wire values: Vec<UInt<32>, 2>;
+  let selected: UInt<32> = values[select_in];
+
+  inst producer: NativeVecProducer
+    values -> values;
+  end inst producer
+
+  comb
+    selected_out = selected;
+  end comb
+end module NativeVecInstOutputWireProbe
