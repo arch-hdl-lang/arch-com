@@ -1,0 +1,184 @@
+//! ---
+//! tags: [crypto, sha256, multicycle, fsm, tutorial]
+//! refs:
+//!   - "FIPS 180-4: Secure Hash Standard (SHA-256)"
+//! ---
+//!
+//! SHA-256 compression function — single 512-bit block with fixed IV.
+//! Pulse `start` with `msg` (16 × 32-bit words); `done` pulses high
+//! after 66 clock cycles and `digest` carries the 256-bit result.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+function sigma0(x: UInt<32>) -> UInt<32>
+  let r7  : UInt<32> = {x[6:0],  x[31:7]};
+  let r18 : UInt<32> = {x[17:0], x[31:18]};
+  let shr3: UInt<32> = {3'b000,  x[31:3]};
+  return r7 ^ r18 ^ shr3;
+end function sigma0
+
+function sigma1(x: UInt<32>) -> UInt<32>
+  let r17 : UInt<32> = {x[16:0], x[31:17]};
+  let r19 : UInt<32> = {x[18:0], x[31:19]};
+  let shr10: UInt<32> = {10'b0, x[31:10]};
+  return r17 ^ r19 ^ shr10;
+end function sigma1
+
+function bsigma0(x: UInt<32>) -> UInt<32>
+  let r2 : UInt<32> = {x[1:0],  x[31:2]};
+  let r13: UInt<32> = {x[12:0], x[31:13]};
+  let r22: UInt<32> = {x[21:0], x[31:22]};
+  return r2 ^ r13 ^ r22;
+end function bsigma0
+
+function bsigma1(x: UInt<32>) -> UInt<32>
+  let r6 : UInt<32> = {x[5:0],  x[31:6]};
+  let r11: UInt<32> = {x[10:0], x[31:11]};
+  let r25: UInt<32> = {x[24:0], x[31:25]};
+  return r6 ^ r11 ^ r25;
+end function bsigma1
+
+function ch(x: UInt<32>, y: UInt<32>, z: UInt<32>) -> UInt<32>
+  return (x & y) ^ ((~x) & z);
+end function ch
+
+function maj(x: UInt<32>, y: UInt<32>, z: UInt<32>) -> UInt<32>
+  return (x & y) ^ (x & z) ^ (y & z);
+end function maj
+
+function get_k(r: UInt<6>) -> UInt<32>
+  return match r
+    0  => 32'h428a2f98,  1  => 32'h71374491,
+    2  => 32'hb5c0fbcf,  3  => 32'he9b5dba5,
+    4  => 32'h3956c25b,  5  => 32'h59f111f1,
+    6  => 32'h923f82a4,  7  => 32'hab1c5ed5,
+    8  => 32'hd807aa98,  9  => 32'h12835b01,
+    10 => 32'h243185be, 11  => 32'h550c7dc3,
+    12 => 32'h72be5d74, 13  => 32'h80deb1fe,
+    14 => 32'h9bdc06a7, 15  => 32'hc19bf174,
+    16 => 32'he49b69c1, 17  => 32'hefbe4786,
+    18 => 32'h0fc19dc6, 19  => 32'h240ca1cc,
+    20 => 32'h2de92c6f, 21  => 32'h4a7484aa,
+    22 => 32'h5cb0a9dc, 23  => 32'h76f988da,
+    24 => 32'h983e5152, 25  => 32'ha831c66d,
+    26 => 32'hb00327c8, 27  => 32'hbf597fc7,
+    28 => 32'hc6e00bf3, 29  => 32'hd5a79147,
+    30 => 32'h06ca6351, 31  => 32'h14292967,
+    32 => 32'h27b70a85, 33  => 32'h2e1b2138,
+    34 => 32'h4d2c6dfc, 35  => 32'h53380d13,
+    36 => 32'h650a7354, 37  => 32'h766a0abb,
+    38 => 32'h81c2c92e, 39  => 32'h92722c85,
+    40 => 32'ha2bfe8a1, 41  => 32'ha81a664b,
+    42 => 32'hc24b8b70, 43  => 32'hc76c51a3,
+    44 => 32'hd192e819, 45  => 32'hd6990624,
+    46 => 32'hf40e3585, 47  => 32'h106aa070,
+    48 => 32'h19a4c116, 49  => 32'h1e376c08,
+    50 => 32'h2748774c, 51  => 32'h34b0bcb5,
+    52 => 32'h391c0cb3, 53  => 32'h4ed8aa4a,
+    54 => 32'h5b9cca4f, 55  => 32'h682e6ff3,
+    56 => 32'h748f82ee, 57  => 32'h78a5636f,
+    58 => 32'h84c87814, 59  => 32'h8cc70208,
+    60 => 32'h90befffa, 61  => 32'ha4506ceb,
+    62 => 32'hbef9a3f7, 63  => 32'hc67178f2,
+    _  => 32'h0,
+  end match;
+end function get_k
+
+module Sha256
+  port clk:    in Clock<SysDomain>;
+  port rst:    in Reset<Sync>;
+  port start:  in Bool;
+  port msg:    in Vec<UInt<32>, 16>;
+  port done:   out Bool;
+  port digest: out Vec<UInt<32>, 8>;
+
+  reg state:    UInt<2> reset rst => 0;
+  reg ra:       UInt<32> reset rst => 0;
+  reg rb:       UInt<32> reset rst => 0;
+  reg rc:       UInt<32> reset rst => 0;
+  reg rd_r:     UInt<32> reset rst => 0;
+  reg re:       UInt<32> reset rst => 0;
+  reg rf:       UInt<32> reset rst => 0;
+  reg rg:       UInt<32> reset rst => 0;
+  reg rh:       UInt<32> reset rst => 0;
+  reg w_circ:   Vec<UInt<32>, 16> reset rst => 0;
+  reg round:    UInt<6> reset rst => 0;
+  reg digest_r: Vec<UInt<32>, 8> reset rst => 0;
+
+  wire w_m2:   UInt<32>;
+  wire w_m7:   UInt<32>;
+  wire w_m15:  UInt<32>;
+  wire w_m16:  UInt<32>;
+  wire w_new:  UInt<32>;
+  wire w_cur:  UInt<32>;
+  wire k_cur:  UInt<32>;
+  wire t1:     UInt<32>;
+  wire t2:     UInt<32>;
+  wire next_a: UInt<32>;
+  wire next_e: UInt<32>;
+
+  comb
+    w_m2  = w_circ[(round +% 6'd14).trunc<4>()];
+    w_m7  = w_circ[(round +% 6'd9).trunc<4>()];
+    w_m15 = w_circ[(round +% 6'd1).trunc<4>()];
+    w_m16 = w_circ[round.trunc<4>()];
+    w_new = (sigma1(w_m2) +% w_m7 +% sigma0(w_m15) +% w_m16);
+    w_cur = (round < 16) ? w_m16 : w_new;
+    k_cur = get_k(round);
+    t1    = (rh +% bsigma1(re) +% ch(re, rf, rg) +% k_cur +% w_cur);
+    t2    = (bsigma0(ra) +% maj(ra, rb, rc));
+    next_a = t1 +% t2;
+    next_e = rd_r +% t1;
+    done   = (state == 2'b10);
+    digest = digest_r;
+  end comb
+
+  seq on clk rising
+    if state == 2'b00
+      if start
+        ra   <= 32'h6a09e667;
+        rb   <= 32'hbb67ae85;
+        rc   <= 32'h3c6ef372;
+        rd_r <= 32'ha54ff53a;
+        re   <= 32'h510e527f;
+        rf   <= 32'h9b05688c;
+        rg   <= 32'h1f83d9ab;
+        rh   <= 32'h5be0cd19;
+        for i in 0..15
+          w_circ[i] <= msg[i];
+        end for
+        round <= 0;
+        state <= 2'b01;
+      end if
+    elsif state == 2'b01
+      ra   <= next_a;
+      rb   <= ra;
+      rc   <= rb;
+      rd_r <= rc;
+      re   <= next_e;
+      rf   <= re;
+      rg   <= rf;
+      rh   <= rg;
+      if round >= 16
+        w_circ[round.trunc<4>()] <= w_new;
+      end if
+      if round == 63
+        digest_r[0] <= next_a +% 32'h6a09e667;
+        digest_r[1] <= ra     +% 32'hbb67ae85;
+        digest_r[2] <= rb     +% 32'h3c6ef372;
+        digest_r[3] <= rc     +% 32'ha54ff53a;
+        digest_r[4] <= next_e +% 32'h510e527f;
+        digest_r[5] <= re     +% 32'h9b05688c;
+        digest_r[6] <= rf     +% 32'h1f83d9ab;
+        digest_r[7] <= rg     +% 32'h5be0cd19;
+        state <= 2'b10;
+      else
+        round <= (round + 1).trunc<6>();
+      end if
+    elsif state == 2'b10
+      state <= 2'b00;
+    end if
+  end seq
+end module Sha256
