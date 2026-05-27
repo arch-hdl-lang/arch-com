@@ -8383,6 +8383,10 @@ impl<'a> SimCodegen<'a> {
         }
         h.push('\n');
 
+        // Only round_robin and lru need a _last_grant pointer; priority always
+        // scans from index 0 (highest priority) so no state is needed.
+        let needs_rr_state = matches!(a.policy, ArbiterPolicy::RoundRobin | ArbiterPolicy::Lru);
+
         let mut all_port_inits: Vec<String> = a.ports.iter()
             .map(|p| format!("{}(0)", p.name.name))
             .collect();
@@ -8391,13 +8395,18 @@ impl<'a> SimCodegen<'a> {
             all_port_inits.push(format!("{}_ready(0)", pa.name.name));
         }
         all_port_inits.push("_clk_prev(0)".to_string());
-        all_port_inits.push("_last_grant(0)".to_string());
+        if needs_rr_state {
+            all_port_inits.push("_last_grant(0)".to_string());
+        }
 
         h.push_str(&format!("  {class}() : {} {{}}\n", all_port_inits.join(", ")));
         h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n");
         h.push_str("  void final() { trace_close(); }\n");
         h.push_str("private:\n");
-        h.push_str("  uint8_t _clk_prev;\n  uint8_t _last_grant;\n");
+        h.push_str("  uint8_t _clk_prev;\n");
+        if needs_rr_state {
+            h.push_str("  uint8_t _last_grant;\n");
+        }
         h.push_str("  void trace_open(const char* filename);\n");
         h.push_str("  void trace_dump(uint64_t time);\n");
         h.push_str("  void trace_close();\n");
@@ -8432,15 +8441,23 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("  bool _rising = ({clk_port} && !_clk_prev);\n"));
         cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
         cpp.push_str("  if (!_rising) return;\n");
-        cpp.push_str(&format!("  if ({rst_cond}) {{\n    _last_grant = 0;\n  }} else {{\n"));
-        cpp.push_str("    if (grant_valid) _last_grant = grant_requester;\n");
-        cpp.push_str("  }\n}\n\n");
+        if needs_rr_state {
+            cpp.push_str(&format!("  if ({rst_cond}) {{\n    _last_grant = 0;\n  }} else {{\n"));
+            cpp.push_str("    if (grant_valid) _last_grant = grant_requester;\n");
+            cpp.push_str("  }\n");
+        }
+        cpp.push_str("}\n\n");
 
-        // eval_comb() — round-robin
+        // eval_comb() — priority scans from 0 (index 0 = highest priority);
+        //               round_robin / lru rotate starting after the last grant.
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
         cpp.push_str("  grant_valid = 0;\n  grant_requester = 0;\n");
         cpp.push_str(&format!("  for (int _i = 0; _i < (int){num_req}; _i++) {{\n"));
-        cpp.push_str(&format!("    int _idx = (_last_grant + 1 + _i) % {num_req};\n"));
+        if needs_rr_state {
+            cpp.push_str(&format!("    int _idx = (_last_grant + 1 + _i) % {num_req};\n"));
+        } else {
+            cpp.push_str("    int _idx = _i;\n");
+        }
         cpp.push_str(&format!("    if (({req_pa_name}_valid >> _idx) & 1) {{\n"));
         cpp.push_str("      grant_valid = 1;\n      grant_requester = _idx;\n      break;\n    }\n  }\n");
         cpp.push_str(&format!("  {req_pa_name}_ready = grant_valid ? (1ULL << grant_requester) : 0;\n"));
