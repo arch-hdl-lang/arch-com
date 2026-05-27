@@ -3613,10 +3613,32 @@ fn eval_const_expr_for_lower(expr: &Expr, params: &[ParamDecl]) -> u64 {
 /// Vec<T,N> recursively and folding width-bearing UInt/SInt N expressions.
 fn subst_type_expr_for_lower(ty: &TypeExpr, params: &HashMap<String, &Expr>) -> TypeExpr {
     fn subst(e: &Expr, params: &HashMap<String, &Expr>) -> Expr {
-        match &e.kind {
-            ExprKind::Ident(name) => params.get(name).map(|v| (*v).clone()).unwrap_or_else(|| e.clone()),
-            _ => e.clone(),
-        }
+        let kind = match &e.kind {
+            ExprKind::Ident(name) => {
+                if let Some(v) = params.get(name) { return (*v).clone(); }
+                ExprKind::Ident(name.clone())
+            }
+            // Recurse into arithmetic shapes so widths like `UInt<DATA_W / 8>`
+            // and `UInt<DATA_W * 2>` substitute every operand. Without this
+            // the downstream type_map ends up with an unresolved param ident
+            // and the synthesized `_<mod>_threads` sub-module emits SV ports
+            // referencing the bus's local param name (DATA_W) instead of the
+            // enclosing module's (DATA_WIDTH).
+            ExprKind::Binary(op, l, r) => ExprKind::Binary(
+                *op,
+                Box::new(subst(l, params)),
+                Box::new(subst(r, params)),
+            ),
+            ExprKind::Unary(op, x) => ExprKind::Unary(*op, Box::new(subst(x, params))),
+            ExprKind::Ternary(c, t, f) => ExprKind::Ternary(
+                Box::new(subst(c, params)),
+                Box::new(subst(t, params)),
+                Box::new(subst(f, params)),
+            ),
+            ExprKind::Clog2(x) => ExprKind::Clog2(Box::new(subst(x, params))),
+            _ => return e.clone(),
+        };
+        Expr { kind, span: e.span, parenthesized: e.parenthesized }
     }
     match ty {
         TypeExpr::UInt(w) => TypeExpr::UInt(Box::new(subst(w, params))),
@@ -6240,6 +6262,10 @@ fn rewrite_var_expr(expr: Expr, var: &str, replacement: &str) -> Expr {
             name.clone(),
             args.iter().map(|a| rewrite_var_expr(a.clone(), var, replacement)).collect(),
         ),
+        ExprKind::FunctionCall(name, args) => ExprKind::FunctionCall(
+            name.clone(),
+            args.iter().map(|a| rewrite_var_expr(a.clone(), var, replacement)).collect(),
+        ),
         ExprKind::Signed(inner) => ExprKind::Signed(
             Box::new(rewrite_var_expr(*inner.clone(), var, replacement)),
         ),
@@ -6424,6 +6450,9 @@ fn rename_ident_in_expr(expr: &mut Expr, old: &str, new: &str) {
         ExprKind::FieldAccess(b, _) => rename_ident_in_expr(b, old, new),
         ExprKind::MethodCall(recv, _, args) => {
             rename_ident_in_expr(recv, old, new);
+            for a in args { rename_ident_in_expr(a, old, new); }
+        }
+        ExprKind::FunctionCall(_, args) => {
             for a in args { rename_ident_in_expr(a, old, new); }
         }
         ExprKind::Ternary(c, t, f) => { rename_ident_in_expr(c, old, new); rename_ident_in_expr(t, old, new); rename_ident_in_expr(f, old, new); }

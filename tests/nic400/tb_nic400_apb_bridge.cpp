@@ -139,7 +139,8 @@ static int run_apb_phase(const ApbPhase& p) {
 // ── AXI master helpers ─────────────────────────────────────────────────
 
 // Drive an AR phase and wait for ar_ready handshake. Address/len/size/prot
-// are held on the bus until the bridge captures them.
+// are held on the bus until the bridge captures them. ar_burst defaults to
+// INCR (1); explicit-burst callers use issue_ar_burst.
 static int issue_ar(uint32_t addr, unsigned len, unsigned size, unsigned prot, unsigned id) {
     dut.axi_ar_valid = 1; dut.axi_ar_addr = addr; dut.axi_ar_len = len;
     dut.axi_ar_size = size; dut.axi_ar_burst = 1; dut.axi_ar_prot = prot;
@@ -157,6 +158,25 @@ static int issue_ar(uint32_t addr, unsigned len, unsigned size, unsigned prot, u
     return 0;
 }
 
+// Burst-typed AR variant (0=FIXED, 1=INCR, 2=WRAP).
+static int issue_ar_burst(uint32_t addr, unsigned len, unsigned size, unsigned burst,
+                          unsigned prot, unsigned id) {
+    dut.axi_ar_valid = 1; dut.axi_ar_addr = addr; dut.axi_ar_len = len;
+    dut.axi_ar_size = size; dut.axi_ar_burst = burst; dut.axi_ar_prot = prot;
+    dut.axi_ar_id = id;
+
+    int handshake = 0;
+    for (int i = 0; i < 32 && !handshake; ++i) {
+        pre_edge();
+        if (dut.axi_ar_ready && dut.axi_ar_valid) handshake = 1;
+        post_edge();
+    }
+    if (!handshake) return fail("AR never accepted (burst)");
+    dut.axi_ar_valid = 0; dut.axi_ar_addr = 0; dut.axi_ar_len = 0;
+    dut.axi_ar_size = 0; dut.axi_ar_burst = 0; dut.axi_ar_prot = 0; dut.axi_ar_id = 0;
+    return 0;
+}
+
 static int issue_aw(uint32_t addr, unsigned len, unsigned size, unsigned prot, unsigned id) {
     dut.axi_aw_valid = 1; dut.axi_aw_addr = addr; dut.axi_aw_len = len;
     dut.axi_aw_size = size; dut.axi_aw_burst = 1; dut.axi_aw_prot = prot;
@@ -169,6 +189,25 @@ static int issue_aw(uint32_t addr, unsigned len, unsigned size, unsigned prot, u
         post_edge();
     }
     if (!handshake) return fail("AW never accepted");
+    dut.axi_aw_valid = 0; dut.axi_aw_addr = 0; dut.axi_aw_len = 0;
+    dut.axi_aw_size = 0; dut.axi_aw_burst = 0; dut.axi_aw_prot = 0; dut.axi_aw_id = 0;
+    return 0;
+}
+
+// Burst-typed AW variant (0=FIXED, 1=INCR, 2=WRAP).
+static int issue_aw_burst(uint32_t addr, unsigned len, unsigned size, unsigned burst,
+                          unsigned prot, unsigned id) {
+    dut.axi_aw_valid = 1; dut.axi_aw_addr = addr; dut.axi_aw_len = len;
+    dut.axi_aw_size = size; dut.axi_aw_burst = burst; dut.axi_aw_prot = prot;
+    dut.axi_aw_id = id;
+
+    int handshake = 0;
+    for (int i = 0; i < 32 && !handshake; ++i) {
+        pre_edge();
+        if (dut.axi_aw_ready && dut.axi_aw_valid) handshake = 1;
+        post_edge();
+    }
+    if (!handshake) return fail("AW never accepted (burst)");
     dut.axi_aw_valid = 0; dut.axi_aw_addr = 0; dut.axi_aw_len = 0;
     dut.axi_aw_size = 0; dut.axi_aw_burst = 0; dut.axi_aw_prot = 0; dut.axi_aw_id = 0;
     return 0;
@@ -325,6 +364,64 @@ static int scenario_backpressure() {
     return 0;
 }
 
+// FIXED-burst write (4 beats, size=2): all 4 APB writes target the same
+// peripheral address. The classic FIFO/mailbox case where the prior bridge
+// silently corrupted by walking the address.
+static int scenario_fixed_write_4() {
+    if (issue_aw_burst(0x7000, /*len*/3, /*size*/2, /*burst*/0, /*prot*/0, /*id*/7)) return 1;
+    uint32_t wdata[4] = { 0xF1F1F1F1u, 0xF2F2F2F2u, 0xF3F3F3F3u, 0xF4F4F4F4u };
+    dut.axi_w_valid = 1; dut.axi_w_data = wdata[0];
+    dut.axi_w_strb = 0xF; dut.axi_w_last = 0;
+    for (int b = 0; b < 4; ++b) {
+        dut.axi_w_data = wdata[b];
+        dut.axi_w_last = (b == 3) ? 1 : 0;
+        // FIXED: paddr stays at 0x7000 across every beat.
+        ApbPhase ph = { 0x7000, true, wdata[b], 0xF, 0, false, 0 };
+        if (run_apb_phase(ph)) return 1;
+    }
+    dut.axi_w_valid = 0; dut.axi_w_data = 0; dut.axi_w_strb = 0; dut.axi_w_last = 0;
+    if (capture_b(0)) return 1;
+    tick();
+    std::printf("PASS scenario_fixed_write_4 (FIFO/mailbox addr held constant)\n");
+    return 0;
+}
+
+// WRAP-burst read (4 beats, size=2): 16-byte wrap window aligned to 0x8000.
+// Starting addr=0x8008 → 0x800C → wrap → 0x8000 → 0x8004.
+static int scenario_wrap_read_4() {
+    if (issue_ar_burst(0x8008, /*len*/3, /*size*/2, /*burst*/2, /*prot*/0, /*id*/8)) return 1;
+    uint32_t expected_data[4] = { 0xABCD0001u, 0xABCD0002u, 0xABCD0003u, 0xABCD0004u };
+    uint32_t expected_addr[4] = { 0x8008, 0x800C, 0x8000, 0x8004 };
+    for (int b = 0; b < 4; ++b) {
+        ApbPhase ph = { expected_addr[b], false, 0, 0, expected_data[b], false, 0 };
+        if (run_apb_phase(ph)) return 1;
+        if (capture_r(expected_data[b], 0, b == 3)) return 1;
+    }
+    tick();
+    std::printf("PASS scenario_wrap_read_4 (16-byte window, start mid-window, wraps once)\n");
+    return 0;
+}
+
+// WRAP-burst write (4 beats, size=2): same window math as the read case.
+static int scenario_wrap_write_4() {
+    if (issue_aw_burst(0x9004, /*len*/3, /*size*/2, /*burst*/2, /*prot*/0, /*id*/9)) return 1;
+    uint32_t wdata[4] = { 0xDEAD0001u, 0xDEAD0002u, 0xDEAD0003u, 0xDEAD0004u };
+    uint32_t addrs[4] = { 0x9004, 0x9008, 0x900C, 0x9000 };
+    dut.axi_w_valid = 1; dut.axi_w_data = wdata[0];
+    dut.axi_w_strb = 0xF; dut.axi_w_last = 0;
+    for (int b = 0; b < 4; ++b) {
+        dut.axi_w_data = wdata[b];
+        dut.axi_w_last = (b == 3) ? 1 : 0;
+        ApbPhase ph = { addrs[b], true, wdata[b], 0xF, 0, false, 0 };
+        if (run_apb_phase(ph)) return 1;
+    }
+    dut.axi_w_valid = 0; dut.axi_w_data = 0; dut.axi_w_strb = 0; dut.axi_w_last = 0;
+    if (capture_b(0)) return 1;
+    tick();
+    std::printf("PASS scenario_wrap_write_4 (start near top of window, wraps after one beat)\n");
+    return 0;
+}
+
 int main() {
     dut.rst = 0;
     clear_inputs();
@@ -338,7 +435,10 @@ int main() {
     if (scenario_burst_write_4()) return 1;
     if (scenario_slverr_write())  return 1;
     if (scenario_backpressure())  return 1;
+    if (scenario_fixed_write_4()) return 1;
+    if (scenario_wrap_read_4())   return 1;
+    if (scenario_wrap_write_4())  return 1;
 
-    std::printf("PASS Nic400ApbBridge: 6/6 scenarios\n");
+    std::printf("PASS Nic400ApbBridge: 9/9 scenarios\n");
     return 0;
 }
