@@ -33,11 +33,12 @@ module Nic400SlavePort
                                   ID_W=SLAVE_ID_W, READ=1, WRITE=1>, NUM_MASTERS>;
 
   // Per-channel arbiters — M per-master threads contend on shared s.* drives.
-  resource ar_lock:       mutex<priority>;
-  resource r_demux_lock:  mutex<priority>;
-  resource aw_lock:       mutex<priority>;
-  resource w_lock:        mutex<priority>;
-  resource b_demux_lock:  mutex<priority>;
+  // round_robin gives fair access across masters; no master can starve another.
+  resource ar_lock:       mutex<round_robin>;
+  resource r_demux_lock:  mutex<round_robin>;
+  resource aw_lock:       mutex<round_robin>;
+  resource w_lock:        mutex<round_robin>;
+  resource b_demux_lock:  mutex<round_robin>;
 
   // ── AR arbiter — one thread per master ─────────────────────────────────
   generate_for i in 0..NUM_MASTERS-1

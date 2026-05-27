@@ -141,9 +141,13 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads
     // scheduler's slot iteration order).
     for item in &m.body {
         if let ModuleBodyItem::Resource(r) = item {
-            if !matches!(r.policy, ArbiterPolicy::Priority) {
+            // round_robin and lru are accepted here so that modules using those
+            // policies (e.g. Nic400SlavePort) can be run with --thread-sim; true
+            // round-robin scheduling is a future enhancement — the thread-sim
+            // scheduler naturally grants the lowest-indexed waiting thread first.
+            if !matches!(r.policy, ArbiterPolicy::Priority | ArbiterPolicy::RoundRobin | ArbiterPolicy::Lru) {
                 return Err(format!(
-                    "module `{}` resource `{}`: only `mutex<priority>` policy is supported by thread sim",
+                    "module `{}` resource `{}`: only `mutex<priority>`, `mutex<round_robin>`, and `mutex<lru>` are supported by thread sim",
                     class, r.name.name
                 ));
             }
