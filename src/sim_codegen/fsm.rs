@@ -457,9 +457,15 @@ impl<'a> SimCodegen<'a> {
             ("state_r".to_string(), "_state_r".to_string(), state_bits as u32),
         ];
         extra_sigs_owned.extend(fsm_flat_vec_traces);
-        // Add flattened bus port signals to trace
+        // Add flattened bus port signals to trace. Use the param-aware
+        // width evaluator (issue #427 sibling site): if a bus's per-signal
+        // width depends on a bus param bound to an enclosing-construct
+        // param Ident (e.g. `port up: target MiniAxi<ID_W=ID_W>` with
+        // `param ID_W: const = N` on the FSM), bare `type_bits_te` cannot
+        // resolve the Ident and falls back to 32, producing wrong VCD lane
+        // widths.
         for (flat_name, flat_ty) in &bus_flat {
-            let bits = type_bits_te(flat_ty);
+            let bits = type_bits_te_with_params(flat_ty, &f.common.params);
             extra_sigs_owned.push((flat_name.clone(), flat_name.clone(), bits));
         }
         let extra_sigs_ref: Vec<(&str, &str, u32)> = extra_sigs_owned.iter()

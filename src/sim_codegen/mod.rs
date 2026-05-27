@@ -444,9 +444,17 @@ impl<'a> SimCodegen<'a> {
             }
         }
 
-        // Bus port flattened fields
+        // Bus port flattened fields. Use the param-aware width evaluator
+        // (issue #427): when a bus's per-signal width depends on a bus param
+        // that the call site binds to an enclosing-module param Ident (e.g.
+        // `up: target MiniAxi<ID_W=ID_W>` with `param ID_W: const = 3`), the
+        // substituted `flat_ty` still contains the module-param Ident;
+        // resolving it requires the enclosing module's params. Bare
+        // `type_bits_te` would mis-classify a >64b signal as scalar and
+        // emit a corrupted `def_readwrite` instead of the wide binding,
+        // and the downstream `port_info` width would be wrong too.
         for (flat_name, flat_ty) in &bus_flat {
-            let width = type_bits_te(flat_ty);
+            let width = type_bits_te_with_params(flat_ty, &m.params);
             let is_signed = matches!(flat_ty, TypeExpr::SInt(_));
             if wide_names.contains(flat_name) {
                 bindings.push(self.emit_wide_binding(&class, flat_name, width));
