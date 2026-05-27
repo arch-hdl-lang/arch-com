@@ -1,0 +1,83 @@
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+// 8-element signed INT8 dot product engine.
+//
+// Computes result = a0*b0 + a1*b1 + ... + a7*b7 where each element is a
+// signed 8-bit integer. Output is registered with 1-cycle latency:
+// valid_out rises and result holds the dot product one cycle after valid_in.
+//
+// Adder tree:
+//   Level 0: 4 pairwise sums of sign-extended products  (SInt<24>)
+//   Level 1: 2 sums of level-0 pairs                   (SInt<24>)
+//   Level 2: 1 final sum                                (SInt<24>)
+//
+// Maximum magnitude: 8 × 127 × 127 = 129,032 < 2^17 — SInt<24> never overflows.
+// Each addition widens by 1 bit (SInt<24>+SInt<24>→SInt<25>); .trunc<24>()
+// discards that extra bit safely given the bounded operand range.
+
+module DotProductEngine
+  port clk:      in Clock<SysDomain>;
+  port rst:      in Reset<Sync>;
+  port a0: in SInt<8>;
+  port a1: in SInt<8>;
+  port a2: in SInt<8>;
+  port a3: in SInt<8>;
+  port a4: in SInt<8>;
+  port a5: in SInt<8>;
+  port a6: in SInt<8>;
+  port a7: in SInt<8>;
+  port b0: in SInt<8>;
+  port b1: in SInt<8>;
+  port b2: in SInt<8>;
+  port b3: in SInt<8>;
+  port b4: in SInt<8>;
+  port b5: in SInt<8>;
+  port b6: in SInt<8>;
+  port b7: in SInt<8>;
+  port valid_in:  in Bool;
+  port result:    out SInt<24>;
+  port valid_out: out Bool;
+
+  // Signed products: SInt<8> × SInt<8> → SInt<16> (IEEE 1800-2012 §11.6)
+  let p0: SInt<16> = a0 * b0;
+  let p1: SInt<16> = a1 * b1;
+  let p2: SInt<16> = a2 * b2;
+  let p3: SInt<16> = a3 * b3;
+  let p4: SInt<16> = a4 * b4;
+  let p5: SInt<16> = a5 * b5;
+  let p6: SInt<16> = a6 * b6;
+  let p7: SInt<16> = a7 * b7;
+
+  // Adder tree — level 0: sign-extend each product to SInt<24>, sum pairwise.
+  // SInt<16> + SInt<16> → SInt<17>; after sext to 24: SInt<24>+SInt<24>→SInt<25>.
+  // .trunc<24>() is safe: max pairwise sum magnitude = 2×127²=32,258 < 2^15.
+  let sum01:   SInt<24> = (p0.sext<24>() + p1.sext<24>()).trunc<24>();
+  let sum23:   SInt<24> = (p2.sext<24>() + p3.sext<24>()).trunc<24>();
+  let sum45:   SInt<24> = (p4.sext<24>() + p5.sext<24>()).trunc<24>();
+  let sum67:   SInt<24> = (p6.sext<24>() + p7.sext<24>()).trunc<24>();
+
+  // Level 1: sum pairs of level-0 results.
+  // max magnitude = 4×127²=64,516 < 2^17; .trunc<24>() safe.
+  let sum0123: SInt<24> = (sum01 + sum23).trunc<24>();
+  let sum4567: SInt<24> = (sum45 + sum67).trunc<24>();
+
+  // Level 2: final sum.
+  // max magnitude = 8×127²=129,032 < 2^17; .trunc<24>() safe.
+  let dot:     SInt<24> = (sum0123 + sum4567).trunc<24>();
+
+  // One-cycle pipeline registers.
+  reg result_r: SInt<24> reset rst => 0;
+  reg valid_r:  Bool      reset rst => 0;
+
+  seq on clk rising
+    result_r <= dot;
+    valid_r  <= valid_in;
+  end seq
+
+  comb
+    result    = result_r;
+    valid_out = valid_r;
+  end comb
+end module DotProductEngine
