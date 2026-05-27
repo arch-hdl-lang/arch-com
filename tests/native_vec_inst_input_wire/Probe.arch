@@ -1,0 +1,71 @@
+//! ---
+//! tags: [native-sim, vec, inst-input, regression]
+//! refs:
+//!   - "arch-com#432"
+//! ---
+//!
+//! Regression: a parent `wire Vec<T, PARAM>` driven in `comb` and connected to
+//! a sub-instance Vec input port must produce per-element fan-out assignments.
+//! The native sim codegen built its vec-wire-count map with the non-param-aware
+//! `eval_const_expr`, so a Vec sized by a param identifier (e.g. `NUM_LANES`)
+//! collapsed to count=0 and the input fan-out loop emitted nothing — leaving
+//! the sub-instance's Vec input permanently default-constructed (zero).
+//!
+//! Symptom that surfaced this: Nic400System wired `wire pmu_aw_event:
+//! Vec<Bool, NUM_MASTERS>` into Nic400Pmu's `aw_event` input. The PMU counter
+//! stayed at zero across real AHB→AXI traffic because no pulses ever reached
+//! the sub-instance.
+
+/// Per-lane pulse counter. One increment per cycle when pulse[i] is high.
+module NativeVecInputCounter
+  param N: const = 3;
+  port clk:   in  Clock<SysDomain>;
+  port rst:   in  Reset<Async, Low>;
+  port pulse: in  Vec<Bool, N>;
+  port count: out Vec<UInt<8>, N>;
+
+  reg default: reset rst => 0;
+  reg cnt_r: Vec<UInt<8>, N>;
+
+  seq on clk rising
+    for i in 0..N-1
+      if pulse[i]
+        cnt_r[i] <= cnt_r[i] +% 1;
+      end if
+    end for
+  end seq
+
+  comb
+    for i in 0..N-1
+      count[i] = cnt_r[i];
+    end for
+  end comb
+end module NativeVecInputCounter
+
+/// Parent that drives a `wire Vec<Bool, PARAM>` into a sub-inst Vec input.
+/// The param-sized wire is the codegen path that used to break.
+module NativeVecInstInputWireProbe
+  param N: const = 3;
+  port clk:   in  Clock<SysDomain>;
+  port rst:   in  Reset<Async, Low>;
+  port drive: in  Vec<Bool, N>;
+  port count: out Vec<UInt<8>, N>;
+
+  // Parameterized Vec wire driven in `comb`, fanned out to a sub-inst Vec
+  // input port. This is the shape that silently dropped the fan-out before
+  // the eval_const_expr_with_params fix.
+  wire pulse_w: Vec<Bool, N>;
+
+  inst cnt: NativeVecInputCounter
+    clk   <- clk;
+    rst   <- rst;
+    pulse <- pulse_w;
+    count -> count;
+  end inst cnt
+
+  comb
+    for i in 0..N-1
+      pulse_w[i] = drive[i];
+    end for
+  end comb
+end module NativeVecInstInputWireProbe

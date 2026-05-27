@@ -4883,19 +4883,23 @@ impl<'a> SimCodegen<'a> {
             }
         }
 
-        // Vec wire/reg name → element count (for expanding inst port connections)
+        // Vec wire/reg name → element count (for expanding inst port connections).
+        // Must use the param-aware evaluator so `wire/reg Vec<T, PARAM>` resolves
+        // to the param's literal value. Without this, a param-sized parent Vec
+        // wire connected to a sub-inst Vec input port silently emits zero
+        // fan-out lines (loop `for i in 0..0`), leaving the sub-inst's inputs
+        // permanently default-constructed.
         let mut vec_wire_counts: HashMap<String, u64> = m.body.iter()
             .filter_map(|i| if let ModuleBodyItem::WireDecl(w) = i {
                 if let TypeExpr::Vec(_, count_expr) = &w.ty {
-                    Some((w.name.name.clone(), eval_const_expr(count_expr)))
+                    Some((w.name.name.clone(), eval_const_expr_with_params(count_expr, &m.params)))
                 } else { None }
             } else { None })
             .collect();
-        // Also include Vec regs (for inst port connections like Vec reg → inst Vec output)
         for item in &m.body {
             if let ModuleBodyItem::RegDecl(r) = item {
                 if let TypeExpr::Vec(_, count_expr) = &r.ty {
-                    vec_wire_counts.insert(r.name.name.clone(), eval_const_expr(count_expr));
+                    vec_wire_counts.insert(r.name.name.clone(), eval_const_expr_with_params(count_expr, &m.params));
                 }
             }
         }

@@ -17131,3 +17131,38 @@ fn test_native_sim_vec_inst_output_wire_feeds_indexed_let() {
         String::from_utf8_lossy(&out.stdout)
     );
 }
+
+#[test]
+fn test_native_sim_vec_inst_input_wire_param_sized_fanout() {
+    // Regression for arch-com#432 (Nic400 PMU integration). A parent
+    // `wire Vec<T, PARAM>` driven in `comb` and connected to a sub-instance
+    // Vec input port must emit per-element fan-out assignments. The native
+    // sim codegen built its vec-wire-count map with the non-param-aware
+    // `eval_const_expr`, which collapsed param-sized vecs to count=0; the
+    // input fan-out loop then iterated zero times, silently leaving the
+    // sub-instance's inputs default-constructed. Symptom that surfaced this:
+    // Nic400Pmu counters stuck at zero in Nic400System integration even
+    // though pulses were correctly computed in the parent's `comb` block.
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/native_vec_inst_input_wire/Probe.arch")
+        .arg("--tb")
+        .arg("tests/native_vec_inst_input_wire/tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for native Vec inst input wire probe");
+    assert!(
+        out.status.success(),
+        "native Vec inst input wire sim should compile + run\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS native Vec inst input wire"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
