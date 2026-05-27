@@ -14,8 +14,8 @@
 //   2. Single-beat AHB read → APB read. AHB master drives NONSEQ +
 //      HWRITE=0. TB-as-peripheral returns prdata on pready=1. Verify
 //      AHB master sees HRDATA matching the returned value.
-//   3. PMU sanity: ar_count[0] and aw_count[0] each increment by 1
-//      after the two transactions; counts for masters 1/2 stay 0.
+//   3. PMU exact-count: after S1 (write) and S2 (read), master 0's
+//      ar/r/aw/w/b counters each equal 1; masters 1 and 2 stay at 0.
 //
 // Addressing
 // ──────────
@@ -185,20 +185,22 @@ int main() {
     }
     std::printf("  OK [S2] AHB read 0x%x ← APB prdata 0x%x → HRDATA matches\n", addr2, prdata2);
 
-    // ── Scenario 3: PMU instantiated and idle masters stay at zero ────
-    // The PMU is wired in and observable, but exact-count testing of the
-    // Mealy-fused bridge handshakes is left to the dedicated tb_nic400_
-    // pmu.cpp — the AHB bridge's `wait 0+ cycle until …;` Mealy fusion
-    // produces ar_valid pulses that go 0→1→0 within a single eval pass,
-    // so by the time the PMU's seq block samples at the rising edge the
-    // pulse has settled back to 0. Counting Mealy comb pulses requires
-    // a registered event-detect (a small piece of glue between the AXI
-    // bridge and the PMU) which the dedicated PMU TB exercises by
-    // driving event pulses directly. For the integrated demo here we
-    // assert the structural property: idle masters (1 and 2) record no
-    // events, and the PMU module is instantiated + wired without
-    // elaboration error.
+    // ── Scenario 3: PMU exact-count check on master 0 + idle on m1/m2 ─
+    // After S1 (single-beat AHB write) the master-0 AW/W/B channels each
+    // see exactly one handshake. After S2 (single-beat AHB read) the AR/R
+    // channels each see one. Masters 1 and 2 are tied off and must stay
+    // at zero on every channel.
     for (int i = 0; i < 10; ++i) tick();   // settle PMU regs
+    unsigned ar0 = (unsigned)dut.ar_count[0];
+    unsigned r0  = (unsigned)dut.r_count[0];
+    unsigned aw0 = (unsigned)dut.aw_count[0];
+    unsigned w0  = (unsigned)dut.w_count[0];
+    unsigned b0  = (unsigned)dut.b_count[0];
+    if (ar0 != 1 || r0 != 1 || aw0 != 1 || w0 != 1 || b0 != 1) {
+        std::printf("FAIL PMU m0: ar=%u r=%u aw=%u w=%u b=%u, expected all=1\n",
+                    ar0, r0, aw0, w0, b0);
+        return 1;
+    }
     unsigned ar1 = (unsigned)dut.ar_count[1];
     unsigned ar2 = (unsigned)dut.ar_count[2];
     unsigned aw1 = (unsigned)dut.aw_count[1];
@@ -208,8 +210,8 @@ int main() {
                     ar1, ar2, aw1, aw2);
         return 1;
     }
-    std::printf("  OK [S3] PMU wired in; idle masters 1/2 have ar=aw=0 as expected\n");
+    std::printf("  OK [S3] PMU m0 ar=r=aw=w=b=1; idle masters 1/2 stay 0\n");
 
-    std::printf("PASS Nic400System: AHB ↔ fabric ↔ APB end-to-end + PMU instantiated\n");
+    std::printf("PASS Nic400System: AHB ↔ fabric ↔ APB end-to-end + PMU counts\n");
     return 0;
 }
