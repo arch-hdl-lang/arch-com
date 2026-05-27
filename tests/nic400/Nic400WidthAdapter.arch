@@ -18,6 +18,14 @@
 //   • Slave ax_size is forced to log2(S_DATA_W/8); the adapter does not
 //     attempt to honour a narrower master ax_size (i.e. partial-lane
 //     accesses are out of scope in v1 — TB always issues full-width).
+//   • Burst types: only INCR (01) and WRAP (10) are supported. FIXED (00)
+//     would require RATIO separate sub-bursts per master beat (each at the
+//     same master address) and is rejected by the `ar_burst_supported` /
+//     `aw_burst_supported` concurrent SVA. This matches the ARM NIC-400 TRM
+//     §2.3.4 "downsizing data width function" behaviour, which only handles
+//     cacheable (INCR/WRAP) transactions. WRAP forwards cleanly because the
+//     boundary is byte-count-preserved: (master_axlen+1)*M_STRB_W ==
+//     (slave_axlen+1)*S_STRB_W after the axlen scaling.
 //   • For R: r_resp is OR-reduced across the RATIO sub-beats inside one
 //     master beat (so SLVERR on any sub-beat surfaces as SLVERR on the
 //     containing master beat). r_last on master fires on the final beat.
@@ -284,4 +292,10 @@ module Nic400WidthAdapter
       until s.b_valid and m.b_ready;
     end lock b_lock
   end thread B
+
+  // Only INCR (01) and WRAP (10) are forwarded correctly through the
+  // downsizing path. FIXED (00) needs RATIO separate slave AR transactions
+  // per wide master beat — out of scope here. Reserved (11) is illegal.
+  assert ar_burst_supported: (m.ar_valid and m.ar_ready) |-> (m.ar_burst == 1 or m.ar_burst == 2);
+  assert aw_burst_supported: (m.aw_valid and m.aw_ready) |-> (m.aw_burst == 1 or m.aw_burst == 2);
 end module Nic400WidthAdapter

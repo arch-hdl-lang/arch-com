@@ -451,6 +451,87 @@ static int test_slverr_read() {
     return 0;
 }
 
+// ── Scenario 7: 4-beat WRAP read ──────────────────────────────────────
+// master: addr=0x100, len=3 (4 beats), size=3 (8B), burst=WRAP. Wrap
+// window = (4)*(8) = 32B aligned to 0x100.
+// slave (after RATIO=2 scaling): addr=0x100, len=7 (8 beats), size=2 (4B),
+// burst=WRAP forwarded unchanged. Wrap window math is byte-count-preserved
+// — (master_len+1)*M_STRB_W == (slave_len+1)*S_STRB_W ⇒ both 32B.
+//
+// The TB doesn't model wrap addr arithmetic on the slave (that's the
+// downstream slave's job); it asserts that ar_burst forwards as WRAP, the
+// scaled axlen is correct, and assembly still works. Same data shape as
+// the INCR test — the wrap window matters semantically to the slave, not
+// to the adapter.
+static int test_wrap4_read() {
+    const uint32_t addr = 0x100;
+    const uint32_t sd[8] = {
+        0xA1A1A1A1u, 0xB1B1B1B1u,
+        0xA2A2A2A2u, 0xB2B2B2B2u,
+        0xA3A3A3A3u, 0xB3B3B3B3u,
+        0xA4A4A4A4u, 0xB4B4B4B4u,
+    };
+
+    dut.m_ar_valid = 1; dut.m_ar_addr = addr; dut.m_ar_len = 3;
+    dut.m_ar_size = 3;  dut.m_ar_burst = 2;   // WRAP
+    dut.s_ar_ready = 1;
+
+    int ar_seen = 0;
+    uint32_t s_ar_len = 0xff, s_ar_burst = 0xff, s_ar_addr = 0;
+    for (int i = 0; i < 32 && !ar_seen; ++i) {
+        pre_edge();
+        if (dut.s_ar_valid && dut.s_ar_ready) {
+            ar_seen = 1;
+            s_ar_len   = dut.s_ar_len;
+            s_ar_burst = dut.s_ar_burst;
+            s_ar_addr  = dut.s_ar_addr;
+        }
+        post_edge();
+    }
+    if (!ar_seen) return fail("s7: slave AR never seen");
+    if (s_ar_len != 7)    return fail("s7: slave AR len (expect 7)");
+    if (s_ar_burst != 2)  return fail("s7: slave AR burst must forward WRAP");
+    if (s_ar_addr != addr)return fail("s7: slave AR addr must equal master AR addr");
+    dut.m_ar_valid = 0; dut.s_ar_ready = 0;
+
+    dut.m_r_ready = 1;
+    int s_beat = 0, m_beat = 0, m_last_beat = -1;
+    dut.s_r_valid = 1; dut.s_r_data = sd[0]; dut.s_r_resp = 0; dut.s_r_last = 0;
+
+    for (int i = 0; i < 400 && (s_beat < 8 || m_beat < 4); ++i) {
+        pre_edge();
+        bool s_fire = dut.s_r_valid && dut.s_r_ready;
+        bool m_fire = dut.m_r_valid && dut.m_r_ready;
+        if (m_fire && m_beat < 4) {
+            int b = m_beat;
+            uint64_t got = (uint64_t)dut.m_r_data;
+            uint64_t exp = ((uint64_t)sd[2*b+1] << 32) | sd[2*b];
+            if (got != exp) {
+                std::printf("  s7 beat %d got=0x%016llx exp=0x%016llx\n",
+                            b, (unsigned long long)got, (unsigned long long)exp);
+                return fail("s7: master beat assembly under WRAP forwarding");
+            }
+            if (dut.m_r_last) m_last_beat = b;
+            m_beat++;
+        }
+        post_edge();
+        if (s_fire && s_beat < 8) {
+            s_beat++;
+            if (s_beat < 8) {
+                dut.s_r_data = sd[s_beat];
+                dut.s_r_last = (s_beat == 7) ? 1 : 0;
+            }
+        }
+    }
+    if (s_beat != 8) return fail("s7: did not consume 8 slave R beats");
+    if (m_beat != 4) return fail("s7: did not deliver 4 master R beats");
+    if (m_last_beat != 3) return fail("s7: master r_last must fire on beat 3 only");
+    dut.s_r_valid = 0; dut.s_r_last = 0; dut.m_r_ready = 0;
+
+    std::printf("PASS s7: 4-beat WRAP read (burst=2 forwarded, axlen scaled, data assembly intact)\n");
+    return 0;
+}
+
 int main() {
     dut.rst = 0;
     clear_inputs();
@@ -469,7 +550,9 @@ int main() {
     if (test_strb_write())   return 1;
     for (int i = 0; i < 3; ++i) tick();
     if (test_slverr_read())  return 1;
+    for (int i = 0; i < 3; ++i) tick();
+    if (test_wrap4_read())   return 1;
 
-    std::printf("ALL PASS Nic400WidthAdapter: 6/6 scenarios\n");
+    std::printf("ALL PASS Nic400WidthAdapter: 7/7 scenarios\n");
     return 0;
 }
