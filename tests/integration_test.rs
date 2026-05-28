@@ -17271,3 +17271,33 @@ fn test_expect_fatal_harness_catches_bounds_violation() {
         "BOUNDS VIOLATION: Probe._auto_bound_vec_0",
     );
 }
+
+/// Verifies the concurrent SVA at Nic400WidthAdapter.arch:299-300
+/// (`ar_burst_supported`) actually fires under Verilator `--assert`
+/// when a FIXED-burst AR handshake reaches the adapter's wide master
+/// port. Consumes the `expect_verilator_fatal_multi` harness landed
+/// in arch-com#453 (multi-source variant — the WidthAdapter depends
+/// on `BusAxi4.arch`, which arch build resolves on the same command
+/// line because `.archi` artifacts are gitignored).
+///
+/// Surfaced as the missing CI coverage in arch-com#447 §4 follow-up
+/// to arch-com#441 (which added the SVAs) and arch-com#450 (which
+/// shipped only a manual repro because no expect-fatal harness
+/// existed yet).
+#[test]
+fn test_nic400_width_adapter_fixed_burst_is_rejected_by_sva() {
+    common::expect_verilator_fatal_multi(
+        &[
+            "tests/nic400/Nic400WidthAdapter.arch",
+            "tests/nic400/BusAxi4.arch",
+        ],
+        "tests/nic400/tb_nic400_width_adapter_fixed_reject.cpp",
+        "Nic400WidthAdapter",
+        // Matches the $fatal string emitted by `assert ar_burst_supported:`
+        // at Nic400WidthAdapter.arch:299. Verifying the exact SV codegen
+        // shape ("ar_burst_supported: assert property (...) else $fatal(1,
+        // \"ASSERTION FAILED: Nic400WidthAdapter.ar_burst_supported\")")
+        // means a rename or codegen regression trips this test loudly.
+        "ASSERTION FAILED: Nic400WidthAdapter.ar_burst_supported",
+    );
+}

@@ -1013,6 +1013,13 @@ Backpressure: when a master fills its `aw_route_fifo`, the `AwDecode` thread sta
 
 ### 15.1 Manual repro — `Nic400WidthAdapter` FIXED-burst SVA fire
 
+> Automated CI now covers this case via the Rust test
+> `test_nic400_width_adapter_fixed_burst_is_rejected_by_sva` in
+> `tests/integration_test.rs` (consumes the `expect_verilator_fatal`
+> harness from PR #453; standalone TB at
+> `tests/nic400/tb_nic400_width_adapter_fixed_reject.cpp`). The manual
+> recipe below is retained for ad-hoc investigation.
+
 `Nic400WidthAdapter.arch` carries two concurrent SVAs (PR #441) that reject
 the unsupported FIXED-burst encoding on a wide master AR/AW handshake:
 

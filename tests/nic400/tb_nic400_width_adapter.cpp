@@ -532,56 +532,15 @@ static int test_wrap4_read() {
     return 0;
 }
 
-// ── Scenario 8 (manual repro): FIXED-burst AR must trip the
-// `ar_burst_supported` concurrent SVA.
-//
-// PR #441 added these two SVAs to the module:
-//   assert ar_burst_supported: (m.ar_valid and m.ar_ready) |-> (m.ar_burst == 1 or m.ar_burst == 2);
-//   assert aw_burst_supported: (m.aw_valid and m.aw_ready) |-> (m.aw_burst == 1 or m.aw_burst == 2);
-//
-// A concurrent SVA that no harness exercises is effectively dead — the only
-// way to keep it honest is to drive an illegal handshake and watch
-// Verilator's `--assert` actually fatal.
-//
-// This is left as a *manual repro* (not wired into main()) because the
-// arch-com test harness currently has no infrastructure to assert that a
-// simulation aborts with a specific message — every existing TB exits 0 on
-// success. Introducing a one-off "expected-fatal" harness for a single SVA
-// would be more weight than the assertion warrants. Maintainer recipe:
-//
-//   1. Add `if (test_fixed_burst_rejected()) return 1;` to main() AND
-//      flip the body's `return 0;` to `return 0;` (the test is already
-//      structured to just drive the handshake — Verilator fatals from the
-//      SVA before the TB sees control again).
-//   2. Rebuild and run; expect Verilator to print
-//
-//        %Error: ASSERTION FAILED: Nic400WidthAdapter._auto_..._ar_burst_supported
-//
-//      and exit non-zero. (See doc/nic400_interconnect_spec.md §17.x for
-//      the canonical invocation.)
-//
-// Without `--assert` on the Verilator command line the SVA is compiled but
-// not evaluated; the body below would then proceed quietly. This is the
-// other reason the scenario stays opt-in — adding it to the default run
-// silently passes on builds that don't enable assertion evaluation.
-#if 0
-static int test_fixed_burst_rejected() {
-    // Drive an AR with burst=FIXED (0). The adapter handshakes ar_valid &&
-    // ar_ready unconditionally in its AR thread, so the concurrent SVA
-    // fires on the very first matching posedge.
-    const uint32_t addr = 0xF000;
-    dut.m_ar_valid = 1; dut.m_ar_addr = addr; dut.m_ar_id = 0; dut.m_ar_len = 3;
-    dut.m_ar_size = 3;  dut.m_ar_burst = 0;   // FIXED — must be rejected
-    dut.s_ar_ready = 1;
-
-    // One handshake cycle is enough for the SVA to evaluate. If Verilator
-    // was built with `--assert`, this never returns — $fatal aborts the sim.
-    for (int i = 0; i < 8; ++i) { pre_edge(); post_edge(); }
-
-    // Reaching this point means the SVA did NOT fire — that's a regression.
-    return fail("s8: FIXED-burst SVA did not fatal (was Verilator built with --assert?)");
-}
-#endif
+// FIXED-burst rejection (ar_burst_supported / aw_burst_supported, PR #441)
+// is exercised by a standalone TB with its own `main` whose exit-code
+// semantics are "must abort" — see
+// `tests/nic400/tb_nic400_width_adapter_fixed_reject.cpp` and the Rust
+// test `test_nic400_width_adapter_fixed_burst_is_rejected_by_sva` in
+// `tests/integration_test.rs` (consumes the `expect_verilator_fatal`
+// harness from PR #453). The manual repro recipe in
+// `doc/nic400_interconnect_spec.md` §15.1 is still useful for ad-hoc
+// investigation.
 
 int main() {
     dut.rst = 0;
