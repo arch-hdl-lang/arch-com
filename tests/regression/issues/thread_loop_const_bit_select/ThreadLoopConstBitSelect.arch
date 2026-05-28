@@ -1,0 +1,49 @@
+//! ---
+//! tags: [tlm_method, thread_loop, constant_fold, bit_select, issue_444]
+//! refs:
+//!   - "arch-com#444"
+//! ---
+//!
+//! Regression for literal thread-loop unrolling inside TLM initiator lowering.
+//! A compile-time loop variable used as the base of a bit-select must fold to
+//! a sized constant instead of emitting invalid SV such as `0[0]`.
+
+/// Minimal blocking TLM service used to force initiator-call lowering.
+bus Issue444Svc
+  tlm_method read(idx: UInt<3>) -> UInt<8>: blocking;
+end bus Issue444Svc
+
+/// Bring the issue-444 service bus into scope for module ports.
+use Issue444Svc;
+
+/// TLM initiator whose compile-time thread loop branches on a loop-variable bit.
+module ThreadLoopConstBitSelect
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port svc: initiator Issue444Svc;
+  port even_sum: out UInt<16>;
+  port odd_sum: out UInt<16>;
+
+  reg tmp: UInt<8> reset rst => 0;
+  reg even_r: UInt<16> reset rst => 0;
+  reg odd_r: UInt<16> reset rst => 0;
+
+  comb
+    even_sum = even_r;
+    odd_sum = odd_r;
+  end comb
+
+  thread driver on clk rising, rst high
+    even_r <= 0;
+    odd_r <= 0;
+
+    for kv_group in 0..3
+      tmp <= svc.read(kv_group[2:0]);
+      if kv_group[0] == 1'd0
+        even_r <= even_r +% tmp.zext<16>();
+      else
+        odd_r <= odd_r +% tmp.zext<16>();
+      end if
+    end for
+  end thread driver
+end module ThreadLoopConstBitSelect

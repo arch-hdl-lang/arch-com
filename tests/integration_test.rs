@@ -9119,6 +9119,34 @@ fn test_fpt26_runtime_loop_tlm_initiator_compiles() {
 }
 
 #[test]
+fn test_thread_loop_const_bit_select_folds_after_unroll() {
+    // Regression for issue #444: TLM initiator lowering unrolls literal
+    // thread `for` loops by substituting the loop variable with a literal.
+    // A single-bit select on that variable (`kv_group[0]`) used to survive
+    // as invalid SV (`0[0]`, `1[0]`, ...). Literal bit-selects must fold
+    // to valid sized constants.
+    let source = include_str!(
+        "regression/issues/thread_loop_const_bit_select/ThreadLoopConstBitSelect.arch"
+    );
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("module ThreadLoopConstBitSelect"),
+        "expected issue #444 regression module:\n{sv}"
+    );
+    for i in 0..=3 {
+        let bad = format!("{i}[0] == 1'd0");
+        assert!(
+            !sv.contains(&bad),
+            "literal bit-select should have folded instead of emitting `{bad}`:\n{sv}",
+        );
+    }
+    assert!(
+        sv.contains("1'd0 == 1'd0") && sv.contains("1'd1 == 1'd0"),
+        "expected folded single-bit constants in the unrolled branch conditions:\n{sv}",
+    );
+}
+
+#[test]
 fn test_fpt26_runtime_loop_tlm_arch_sim_behavior() {
     let td = tempfile::tempdir().expect("tempdir");
     let arch_bin = env!("CARGO_BIN_EXE_arch");
