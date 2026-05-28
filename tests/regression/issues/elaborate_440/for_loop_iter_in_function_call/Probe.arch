@@ -1,0 +1,41 @@
+// Regression for PR #440 (compiler tree-walker site 2):
+// `src/elaborate.rs::rewrite_var_expr` walks an expression tree and
+// substitutes a for-loop iteration variable with a per-thread-iteration
+// replacement (e.g. `_loop_cnt_0`). Before #440 the walker had no
+// `ExprKind::FunctionCall` arm: a function call inside a thread `for`
+// body whose argument list referenced the iter variable left the raw
+// iter ident in place after lowering. Verilator then rejected the SV
+// with "b: Variable not declared".
+//
+// After the fix, `FunctionCall(name, args)` recurses through every
+// argument, mirroring the existing `MethodCall` arm.
+//
+// Minimal trigger:
+//   • a `function` declared in the module
+//   • a `thread` containing `for b in 0..N` whose body passes `b` into
+//     a `function` call (here `step(b)`)
+module Probe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port go: in Bool;
+  port acc: out UInt<8>;
+
+  reg acc_r: UInt<8> reset rst => 0;
+
+  function step(idx: UInt<8>) -> UInt<8>
+    return (idx + 1).trunc<8>();
+  end function step
+
+  comb
+    acc = acc_r;
+  end comb
+
+  thread T on clk rising, rst low
+    default comb
+    end default
+    wait until go;
+    for b in 0..3
+      acc_r <= step(b.zext<8>());
+    end for
+  end thread T
+end module Probe

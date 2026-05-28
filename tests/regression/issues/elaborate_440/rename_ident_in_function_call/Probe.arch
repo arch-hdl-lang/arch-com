@@ -1,0 +1,62 @@
+// Regression for PR #440 (compiler tree-walker site 3):
+// `src/elaborate.rs::rename_ident_in_expr` walks an expression tree
+// and renames a counter ident from its bare form (`_loop_cnt_0`) to
+// the per-thread form (`_t{ti}_loop_cnt_0`). Before #440 the walker
+// had no `ExprKind::FunctionCall` arm — when a function call argument
+// references the (already-substituted) counter ident, the rename
+// failed to descend into the args. The lowered SV emitted a bare
+// `_loop_cnt_0` that was undeclared at the module scope (each thread
+// allocates its OWN `_t{ti}_loop_cnt_0` reg).
+//
+// This regression needs two threads each with a `for` loop calling a
+// function on the loop variable. Both ti=0 and ti=1 must rename the
+// counter ident — the bug surfaces as `_loop_cnt_0` leaking past the
+// rename for the FunctionCall-arg site even though it was correctly
+// substituted from the loop var `b` by `rewrite_var_expr`.
+//
+// Sites 2 and 3 form a pair: site 2 (`rewrite_var_expr` FunctionCall
+// arm) substitutes the user-written `b` into `_loop_cnt_0` inside the
+// FunctionCall args; site 3 then renames `_loop_cnt_0` to
+// `_t{ti}_loop_cnt_0` inside those same args. A regression on either
+// arm trips the same assertion: a stale ident (`b` or `_loop_cnt_0`)
+// appears inside a `step(...)` function call argument in the lowered
+// SV. The multi-thread fixture also catches regressions where only
+// the first thread's rename works (ti=0 == `_t0_…`).
+module Probe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port go_a: in Bool;
+  port go_b: in Bool;
+  port acc_a: out UInt<8>;
+  port acc_b: out UInt<8>;
+
+  reg acc_a_r: UInt<8> reset rst => 0;
+  reg acc_b_r: UInt<8> reset rst => 0;
+
+  function step(idx: UInt<8>) -> UInt<8>
+    return (idx + 1).trunc<8>();
+  end function step
+
+  comb
+    acc_a = acc_a_r;
+    acc_b = acc_b_r;
+  end comb
+
+  thread Ta on clk rising, rst low
+    default comb
+    end default
+    wait until go_a;
+    for a in 0..3
+      acc_a_r <= step(a.zext<8>());
+    end for
+  end thread Ta
+
+  thread Tb on clk rising, rst low
+    default comb
+    end default
+    wait until go_b;
+    for b in 0..3
+      acc_b_r <= step(b.zext<8>());
+    end for
+  end thread Tb
+end module Probe

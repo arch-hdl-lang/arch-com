@@ -1,0 +1,42 @@
+// Regression for PR #440 (compiler tree-walker site 1):
+// `src/elaborate.rs::subst_type_expr_for_lower` previously only matched
+// bare `ExprKind::Ident` and did NOT recurse through arithmetic. When a
+// `bus` port's signal width is a non-trivial expression (here
+// `UInt<DATA_W / 8>` on `strb`), the synthesized `_<mod>_threads`
+// sub-module emitted by `lower_threads` ended up with the bus's local
+// param name (DATA_W) leaking into its port list instead of the
+// enclosing module's caller-bound name (DATA_WIDTH). Verilator lint
+// then rejected the sub-module with "DATA_W: Variable not declared".
+//
+// After the fix, the walker recurses into Binary/Unary/Ternary/Clog2,
+// so `DATA_W / 8` substitutes to `DATA_WIDTH / 8` (or the literal 4
+// after caller-bind) in the lowered sub-module's port declarations.
+//
+// Trigger conditions (all required):
+//   1. a `bus` whose signal width is a binary expression on a bus param
+//   2. an outer module that instantiates that bus AND owns a `thread`
+//      — the thread is what causes `lower_threads` to synthesize the
+//      sub-module that exercises `subst_type_expr_for_lower`.
+bus StrbBus
+  param DATA_W: const = 32;
+  data: out UInt<DATA_W>;
+  strb: out UInt<DATA_W / 8>;
+  valid: out Bool;
+end bus StrbBus
+
+module Probe
+  param DATA_WIDTH: const = 32;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port go: in Bool;
+  port up: initiator StrbBus<DATA_W=DATA_WIDTH>;
+
+  thread T on clk rising, rst low
+    default comb
+    end default
+    wait until go;
+    up.data  <= 1;
+    up.strb  <= 1;
+    up.valid <= true;
+  end thread T
+end module Probe
