@@ -17438,3 +17438,138 @@ fn test_nic400_width_adapter_fixed_burst_is_rejected_by_sva() {
         "ASSERTION FAILED: Nic400WidthAdapter.ar_burst_supported",
     );
 }
+
+// ────────────────────────────────────────────────────────────────────
+// PR #440 — three `src/elaborate.rs` tree-walker arms (issue #447 §5)
+// ────────────────────────────────────────────────────────────────────
+//
+// PR #440 landed three tree-walker completeness fixes inside a nic400
+// demo PR without isolated test coverage. Each fix added a missing
+// recursive arm to a walker that synthesizes lowered-thread SV.
+// arch-com#447 §5 flagged the missing isolated tests; these three
+// regressions pin the exact shapes so a future tree-walker regression
+// trips a dedicated test rather than a nic400 system test failure.
+//
+// All three were verified against the pre-#440 commit (1973d92) — each
+// fixture distinguishes pre/post #440 behaviour by inspecting a
+// specific token in the lowered SV (see per-test fingerprint).
+
+#[test]
+fn test_elaborate_440_bus_port_type_param_binary() {
+    // Site 1: `src/elaborate.rs::subst_type_expr_for_lower` (around line
+    // 3623) gained recursion into Binary/Unary/Ternary/Clog2 so that
+    // bus-port widths like `UInt<DATA_W / 8>` substitute every operand
+    // when `lower_threads` synthesizes the `_<mod>_threads` sub-module.
+    // Pre-#440, the inner `DATA_W` ident leaked into the sub-module's
+    // port list (which only knows the outer module's `DATA_WIDTH`).
+    let source = include_str!(
+        "regression/issues/elaborate_440/bus_port_type_param_binary/Probe.arch"
+    );
+    let sv = compile_to_sv(source);
+
+    // The lowered `_Probe_threads` sub-module is the one that exercises
+    // `subst_type_expr_for_lower`. Locate its body and verify the strb
+    // port width substituted the bus's local `DATA_W` to the outer
+    // module's caller-bound `DATA_WIDTH`.
+    let threads_start = sv.find("module _Probe_threads").expect(
+        "expected lowered sub-module `_Probe_threads` in SV (the thread \
+         lowering is what exercises `subst_type_expr_for_lower`):\n{sv}",
+    );
+    let threads_end = sv[threads_start..].find("endmodule").map(|e| threads_start + e).unwrap_or(sv.len());
+    let threads_body = &sv[threads_start..threads_end];
+
+    assert!(
+        threads_body.contains("[DATA_WIDTH / 8-1:0] up_strb"),
+        "expected lowered `_Probe_threads` sub-module to declare \
+         `up_strb` with the outer module's param-bound width \
+         (DATA_WIDTH / 8); `subst_type_expr_for_lower` must recurse \
+         into the Binary expression `DATA_W / 8` so the inner ident \
+         substitutes. Got sub-module body:\n{threads_body}"
+    );
+    assert!(
+        !threads_body.contains("[DATA_W / 8-1:0]")
+            && !threads_body.contains("[DATA_W /8-1:0]")
+            && !threads_body.contains("DATA_W-1:0] up_strb"),
+        "found buggy unresolved `DATA_W` in `_Probe_threads` strb port \
+         width — `subst_type_expr_for_lower` failed to recurse into the \
+         Binary arithmetic shape. Sub-module body:\n{threads_body}"
+    );
+}
+
+#[test]
+fn test_elaborate_440_for_loop_iter_in_function_call() {
+    // Site 2: `src/elaborate.rs::rewrite_var_expr` (around line 6274)
+    // gained an `ExprKind::FunctionCall` arm so a for-loop iter
+    // referenced inside a function-call argument substitutes to the
+    // per-loop counter ident. Pre-#440, the raw `b` leaked into the
+    // lowered SV as an undeclared variable.
+    let source = include_str!(
+        "regression/issues/elaborate_440/for_loop_iter_in_function_call/Probe.arch"
+    );
+    let sv = compile_to_sv(source);
+
+    // Single thread → ti=0 → counter ident = `_t0_loop_cnt_0`.
+    // The function call `step(b.zext<8>())` must substitute `b` into
+    // `_t0_loop_cnt_0` inside the argument.
+    assert!(
+        sv.contains("step_8(8'($unsigned(_t0_loop_cnt_0)))"),
+        "expected `step_8` function call to receive the per-thread loop \
+         counter `_t0_loop_cnt_0` as its argument — `rewrite_var_expr` \
+         must recurse into FunctionCall args to substitute the iter var \
+         `b`. Got SV:\n{sv}"
+    );
+    // The raw iter ident `b` must NOT appear as a function-call arg.
+    // Look for the specific buggy shape from pre-#440.
+    assert!(
+        !sv.contains("step_8(8'($unsigned(b)))"),
+        "found buggy unresolved iter var `b` in `step_8(...)` argument \
+         — `rewrite_var_expr` failed to recurse into FunctionCall args. \
+         SV:\n{sv}"
+    );
+}
+
+#[test]
+fn test_elaborate_440_rename_ident_in_function_call() {
+    // Site 3: `src/elaborate.rs::rename_ident_in_expr` (around line
+    // 6464) gained an `ExprKind::FunctionCall` arm so the per-thread
+    // counter rename (`_loop_cnt_{id}` → `_t{ti}_loop_cnt_{id}`)
+    // descends into function-call args. Sites 2 and 3 form a pair: 2
+    // substitutes the user-written iter var into `_loop_cnt_{id}`, 3
+    // renames `_loop_cnt_{id}` to its per-thread form. A multi-thread
+    // fixture exercises the rename for both ti=0 and ti=1.
+    let source = include_str!(
+        "regression/issues/elaborate_440/rename_ident_in_function_call/Probe.arch"
+    );
+    let sv = compile_to_sv(source);
+
+    // Both threads' function-call args must carry the per-thread
+    // renamed counter, not the bare `_loop_cnt_0` (rename failure) and
+    // not the raw user `a`/`b` (substitution failure).
+    assert!(
+        sv.contains("step_8(8'($unsigned(_t0_loop_cnt_0)))"),
+        "expected thread 0 to call `step_8(_t0_loop_cnt_0)` — \
+         `rename_ident_in_expr` must descend into FunctionCall args to \
+         rename `_loop_cnt_0` for ti=0. Got SV:\n{sv}"
+    );
+    assert!(
+        sv.contains("step_8(8'($unsigned(_t1_loop_cnt_0)))"),
+        "expected thread 1 to call `step_8(_t1_loop_cnt_0)` — \
+         `rename_ident_in_expr` must descend into FunctionCall args to \
+         rename `_loop_cnt_0` for ti=1. Got SV:\n{sv}"
+    );
+    // Pre-#440 buggy fingerprints: raw `a`/`b` (site 2 missing the
+    // FunctionCall arm) or bare `_loop_cnt_0` (site 3 missing it).
+    assert!(
+        !sv.contains("step_8(8'($unsigned(a)))")
+            && !sv.contains("step_8(8'($unsigned(b)))"),
+        "found buggy raw iter var (`a` or `b`) in `step_8(...)` \
+         argument — `rewrite_var_expr` failed to recurse into \
+         FunctionCall args (site 2 paired with site 3). SV:\n{sv}"
+    );
+    assert!(
+        !sv.contains("step_8(8'($unsigned(_loop_cnt_0)))"),
+        "found bare `_loop_cnt_0` in `step_8(...)` argument — \
+         `rename_ident_in_expr` failed to recurse into FunctionCall \
+         args so the per-thread rename didn't fire (site 3). SV:\n{sv}"
+    );
+}
