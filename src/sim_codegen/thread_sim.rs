@@ -33,6 +33,7 @@ use crate::ast::{
     LitKind, ModuleBodyItem, ModuleDecl, RegAssign, ResetLevel,
     ParamDecl, ThreadBlock, ThreadStmt, TypeExpr, UnaryOp,
 };
+use crate::diagnostics::CompileWarning;
 use crate::sim_codegen::SimModel;
 
 /// One segment of a thread, demarcated by a `wait` boundary.
@@ -104,6 +105,21 @@ struct ThreadInfo {
 }
 
 pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads: u32) -> Result<SimModel, String> {
+    let mut sink = Vec::new();
+    gen_module_thread_with_warnings(m, debug, wave, num_os_threads, &mut sink)
+}
+
+/// Same as `gen_module_thread`, but routes thread-sim-specific warnings
+/// (e.g. mutex policy downgrade) into `warnings` instead of dropping them.
+/// The main entry (`gen_module_thread`) forwards to this with a throwaway
+/// sink so existing callers keep working unchanged.
+pub fn gen_module_thread_with_warnings(
+    m: &ModuleDecl,
+    debug: bool,
+    wave: bool,
+    num_os_threads: u32,
+    warnings: &mut Vec<CompileWarning>,
+) -> Result<SimModel, String> {
     // Match the Verilator/fsm convention: V<ModuleName>. Lets the same
     // TB drive either --thread-sim path without changing #includes,
     // which is what makes --thread-sim=both cross-check practical.
@@ -136,20 +152,78 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads
             )),
         }
     }
-    // Resources: only `mutex<priority>` supported in Phase 4 (lower
-    // thread index = higher priority, naturally enforced by the
-    // scheduler's slot iteration order).
+    // Resources: the --thread-sim scheduler resolves mutex contention as
+    // lowest-thread-index-wins, which is observationally identical to
+    // `mutex<priority>`. Any non-priority policy declared by the design
+    // (round_robin, lru, weighted, custom) is silently downgraded —
+    // warn per-resource so users running fairness-sensitive equivalence
+    // checks against the default FSM-lowered path aren't surprised by
+    // false PASSes. The error gate is gone; any declared policy is
+    // accepted, but anything other than `priority` emits a warning.
+    //
+    // Custom policies (`mutex<MyFn>` with `hook grant_select`) get a
+    // distinct, stronger phrasing because the user-defined hook is
+    // bypassed entirely.
+    //
+    // See doc/thread_spec_section.md §20.8.1.
     for item in &m.body {
         if let ModuleBodyItem::Resource(r) = item {
-            // round_robin and lru are accepted here so that modules using those
-            // policies (e.g. Nic400SlavePort) can be run with --thread-sim; true
-            // round-robin scheduling is a future enhancement — the thread-sim
-            // scheduler naturally grants the lowest-indexed waiting thread first.
-            if !matches!(r.policy, ArbiterPolicy::Priority | ArbiterPolicy::RoundRobin | ArbiterPolicy::Lru) {
-                return Err(format!(
-                    "module `{}` resource `{}`: only `mutex<priority>`, `mutex<round_robin>`, and `mutex<lru>` are supported by thread sim",
-                    class, r.name.name
-                ));
+            match &r.policy {
+                ArbiterPolicy::Priority => {}
+                ArbiterPolicy::RoundRobin => {
+                    warnings.push(CompileWarning {
+                        message: format!(
+                            "--thread-sim ignores mutex policy `round_robin` on resource `{}` \
+                             (module `{}`); the --thread-sim scheduler resolves contention as \
+                             lowest-thread-index-wins (== priority). For fairness-sensitive \
+                             behaviour, validate with the default `arch sim` or Verilator. \
+                             See doc/thread_spec_section.md §20.8.1.",
+                            r.name.name, m.name.name
+                        ),
+                        span: r.span,
+                    });
+                }
+                ArbiterPolicy::Lru => {
+                    warnings.push(CompileWarning {
+                        message: format!(
+                            "--thread-sim ignores mutex policy `lru` on resource `{}` \
+                             (module `{}`); the --thread-sim scheduler resolves contention as \
+                             lowest-thread-index-wins (== priority). For fairness-sensitive \
+                             behaviour, validate with the default `arch sim` or Verilator. \
+                             See doc/thread_spec_section.md §20.8.1.",
+                            r.name.name, m.name.name
+                        ),
+                        span: r.span,
+                    });
+                }
+                ArbiterPolicy::Weighted(_) => {
+                    warnings.push(CompileWarning {
+                        message: format!(
+                            "--thread-sim ignores mutex policy `weighted` on resource `{}` \
+                             (module `{}`); the --thread-sim scheduler resolves contention as \
+                             lowest-thread-index-wins (== priority), so per-requester weights \
+                             have no effect. For weight-sensitive behaviour, validate with the \
+                             default `arch sim` or Verilator. \
+                             See doc/thread_spec_section.md §20.8.1.",
+                            r.name.name, m.name.name
+                        ),
+                        span: r.span,
+                    });
+                }
+                ArbiterPolicy::Custom(fn_name) => {
+                    warnings.push(CompileWarning {
+                        message: format!(
+                            "--thread-sim ignores mutex policy `{}` on resource `{}` \
+                             (module `{}`); the custom hook `{}` is COMPLETELY BYPASSED — the \
+                             --thread-sim scheduler resolves contention as \
+                             lowest-thread-index-wins (== priority). Validate custom-policy \
+                             behaviour with the default `arch sim` or Verilator. \
+                             See doc/thread_spec_section.md §20.8.1.",
+                            fn_name.name, r.name.name, m.name.name, fn_name.name
+                        ),
+                        span: r.span,
+                    });
+                }
             }
         }
     }
