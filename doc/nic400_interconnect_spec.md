@@ -1011,6 +1011,40 @@ Backpressure: when a master fills its `aw_route_fifo`, the `AwDecode` thread sta
 7. **Auto-emitted thread SVA (`--auto-thread-asserts`)**: Each `wait until` and each `fork/join` branch fires an `_auto_thread_*` SVA property by construction (`thread_spec_section.md` §20.15). Run Verilator `--binary --assert` on a 1000-cycle trace; every property should hold silently. Mutating any one (e.g., changing `from[i].r_valid` check to wrong index) should trip its corresponding `_auto_thread_*_branch_*` assertion.
 8. **Formal property** (with `arch formal`): `forall i, j. once aw_route_fifo pushes (i,j), the next-issued W to slave j has from-master = i`. This is an automatic consequence of the design but worth verifying.
 
+### 15.1 Manual repro — `Nic400WidthAdapter` FIXED-burst SVA fire
+
+`Nic400WidthAdapter.arch` carries two concurrent SVAs (PR #441) that reject
+the unsupported FIXED-burst encoding on a wide master AR/AW handshake:
+
+```
+assert ar_burst_supported: (m.ar_valid and m.ar_ready) |-> (m.ar_burst == 1 or m.ar_burst == 2);
+assert aw_burst_supported: (m.aw_valid and m.aw_ready) |-> (m.aw_burst == 1 or m.aw_burst == 2);
+```
+
+The default `tb_nic400_width_adapter.cpp` only exercises legal INCR/WRAP,
+so by default these SVAs are dormant. To confirm they fire end-to-end:
+
+1. Open `tests/nic400/tb_nic400_width_adapter.cpp` and find the
+   `#if 0`-gated `test_fixed_burst_rejected` scenario near the bottom.
+   Flip the guard to `#if 1` and wire the call into `main()` (single line).
+2. Rebuild + run under Verilator with `--assert` enabled:
+
+   ```
+   arch build tests/nic400/Nic400WidthAdapter.arch -o /tmp/wadapt
+   verilator --binary --assert --top Nic400WidthAdapter \
+     /tmp/wadapt/Nic400WidthAdapter.sv tests/nic400/tb_nic400_width_adapter.cpp \
+     -o /tmp/wadapt/sim && /tmp/wadapt/sim
+   ```
+
+   Expected: Verilator prints
+   `%Error: ASSERTION FAILED: Nic400WidthAdapter._auto_..._ar_burst_supported`
+   and exits non-zero on the first AR handshake (cycle 1 after reset).
+
+Automating this in the default test run is deferred — arch-com has no
+shared "expected-fatal" harness, and a single-use one for one SVA pair is
+more weight than it warrants. The scenario lives in source so the recipe
+stays greppable.
+
 ---
 
 ## 16. Comparison with NIC-400

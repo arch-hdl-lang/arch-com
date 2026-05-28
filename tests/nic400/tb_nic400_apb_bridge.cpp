@@ -386,6 +386,38 @@ static int scenario_fixed_write_4() {
     return 0;
 }
 
+// FIXED-burst write (4 beats, size=2) with PER-BEAT VARYING STROBES — the
+// defining FIFO/mailbox case that the addr-constant `scenario_fixed_write_4`
+// only half-covers. AXI4 §A3.4.1 explicitly permits the master to vary
+// `w_strb` across the beats of a FIXED burst; the bridge must (a) hold paddr
+// constant AND (b) forward each beat's strobe verbatim into APB `pstrb`.
+//
+// Pattern: beats 0/2 write low 16 bits (strb=0x3), beats 1/3 write high 16
+// bits (strb=0xC). With paddr held at 0x7100 across all 4 beats, this
+// corresponds to a peripheral mailbox where the master alternately updates
+// the low and high half-words at the same register address.
+static int scenario_fixed_write_4_partial_strobe() {
+    if (issue_aw_burst(0x7100, /*len*/3, /*size*/2, /*burst*/0, /*prot*/0, /*id*/10)) return 1;
+    uint32_t wdata[4] = { 0x0000AAAAu, 0xBBBB0000u, 0x0000CCCCu, 0xDDDD0000u };
+    unsigned strbs[4] = { 0x3u, 0xCu, 0x3u, 0xCu };
+    dut.axi_w_valid = 1; dut.axi_w_data = wdata[0];
+    dut.axi_w_strb = strbs[0]; dut.axi_w_last = 0;
+    for (int b = 0; b < 4; ++b) {
+        dut.axi_w_data = wdata[b];
+        dut.axi_w_strb = strbs[b];
+        dut.axi_w_last = (b == 3) ? 1 : 0;
+        // FIXED: paddr stays at 0x7100 across every beat; pstrb must
+        // reflect THIS beat's mask, not a stale or merged value.
+        ApbPhase ph = { 0x7100, true, wdata[b], strbs[b], 0, false, 0 };
+        if (run_apb_phase(ph)) return 1;
+    }
+    dut.axi_w_valid = 0; dut.axi_w_data = 0; dut.axi_w_strb = 0; dut.axi_w_last = 0;
+    if (capture_b(0)) return 1;
+    tick();
+    std::printf("PASS scenario_fixed_write_4_partial_strobe (addr held, pstrb varies per beat)\n");
+    return 0;
+}
+
 // WRAP-burst read (4 beats, size=2): 16-byte wrap window aligned to 0x8000.
 // Starting addr=0x8008 → 0x800C → wrap → 0x8000 → 0x8004.
 static int scenario_wrap_read_4() {
@@ -436,9 +468,10 @@ int main() {
     if (scenario_slverr_write())  return 1;
     if (scenario_backpressure())  return 1;
     if (scenario_fixed_write_4()) return 1;
+    if (scenario_fixed_write_4_partial_strobe()) return 1;
     if (scenario_wrap_read_4())   return 1;
     if (scenario_wrap_write_4())  return 1;
 
-    std::printf("PASS Nic400ApbBridge: 9/9 scenarios\n");
+    std::printf("PASS Nic400ApbBridge: 10/10 scenarios\n");
     return 0;
 }
