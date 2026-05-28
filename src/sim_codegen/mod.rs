@@ -3984,6 +3984,35 @@ fn collect_inst_names(body: &[ModuleBodyItem]) -> HashSet<String> {
 }
 
 /// Collect all sub-instance output signal names (auto-declared wires).
+/// Pick the C++ field prefix for a Vec signal driven by an inst output.
+///
+/// The native-sim emitter stores `reg` values under `_<name>`, `let`/`wire`
+/// values under `_let_<name>`, and inst output wires under the bare flat
+/// name. When an inst Vec output is fanned out element-by-element to a
+/// parent-scope Vec signal, the destination prefix depends on which kind
+/// of declaration the parent signal is.
+///
+/// The classification order matters: a signal can sit in both `let_names`
+/// (because `wire`s are tracked there) and `inst_out` (because an inst
+/// drives it). The wire's storage is `_let_<name>`, so `let_names` must
+/// win over `inst_out` — otherwise the write lands on the never-read flat
+/// field. See PR #438 for the original fix.
+///
+/// `reg_names ∩ let_names` is treated as `reg` (regs win); this case is
+/// not currently reachable because a name can only be declared once, but
+/// the ordering keeps that future-proof.
+fn vec_storage_prefix<'a>(
+    name: &str,
+    reg_names: &HashSet<String>,
+    let_names: &HashSet<String>,
+    inst_out: &HashSet<String>,
+) -> &'a str {
+    if reg_names.contains(name) { "_" }
+    else if let_names.contains(name) { "_let_" }
+    else if inst_out.contains(name) { "" }
+    else { "_let_" }
+}
+
 fn collect_inst_output_signals(body: &[ModuleBodyItem]) -> HashSet<String> {
     let mut signals = HashSet::new();
     for item in body {
@@ -6193,10 +6222,7 @@ impl<'a> SimCodegen<'a> {
                                             inst.name.name, conn.port_name.name));
                                     }
                                 } else {
-                                    let prefix = if reg_names.contains(sig_name.as_str()) { "_" }
-                                        else if let_names.contains(sig_name.as_str()) { "_let_" }
-                                        else if inst_out.contains(sig_name.as_str()) { "" }
-                                        else { "_let_" };
+                                    let prefix = vec_storage_prefix(sig_name.as_str(), &reg_names, &let_names, &inst_out);
                                     for i in 0..n {
                                         cpp.push_str(&format!("    {prefix}{sig_name}[{i}] = _inst_{}.{}_{i};\n",
                                             inst.name.name, conn.port_name.name));
@@ -6363,10 +6389,7 @@ impl<'a> SimCodegen<'a> {
                                             inst.name.name, conn.port_name.name));
                                     }
                                 } else {
-                                    let prefix = if reg_names.contains(sig_name.as_str()) { "_" }
-                                        else if let_names.contains(sig_name.as_str()) { "_let_" }
-                                        else if inst_out.contains(sig_name.as_str()) { "" }
-                                        else { "_let_" };
+                                    let prefix = vec_storage_prefix(sig_name.as_str(), &reg_names, &let_names, &inst_out);
                                     for i in 0..n {
                                         cpp.push_str(&format!("    {prefix}{sig_name}[{i}] = _inst_{}.{}_{i};\n",
                                             inst.name.name, conn.port_name.name));
@@ -7162,10 +7185,7 @@ impl<'a> SimCodegen<'a> {
                                             inst.name.name, conn.port_name.name));
                                     }
                                 } else {
-                                    let prefix = if reg_names.contains(sig_name.as_str()) { "_" }
-                                        else if let_names.contains(sig_name.as_str()) { "_let_" }
-                                        else if inst_out.contains(sig_name.as_str()) { "" }
-                                        else { "_let_" };
+                                    let prefix = vec_storage_prefix(sig_name.as_str(), &reg_names, &let_names, &inst_out);
                                     for i in 0..n {
                                         cpp.push_str(&format!("  {prefix}{sig_name}[{i}] = _inst_{}.{}_{i};\n",
                                             inst.name.name, conn.port_name.name));
