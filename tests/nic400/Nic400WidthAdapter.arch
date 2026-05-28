@@ -298,4 +298,29 @@ module Nic400WidthAdapter
   // per wide master beat — out of scope here. Reserved (11) is illegal.
   assert ar_burst_supported: (m.ar_valid and m.ar_ready) |-> (m.ar_burst == 1 or m.ar_burst == 2);
   assert aw_burst_supported: (m.aw_valid and m.aw_ready) |-> (m.aw_burst == 1 or m.aw_burst == 2);
+
+  // AXI4 §A3.4.1 WRAP preconditions on the wide master port. The
+  // burst_supported asserts above keep FIXED and reserved out, but
+  // don't constrain the *shape* of a WRAP burst. WRAP further requires:
+  //   1. axlen ∈ {1, 3, 7, 15} — 2/4/8/16-beat bursts only. An illegal
+  //      3-beat WRAP forwards as an out-of-spec slave burst whose
+  //      byte-count-preserved scaling no longer wraps at the expected
+  //      window boundary on the slave side.
+  //   2. Base address must be aligned to (1 << ax_size). An unaligned
+  //      WRAP base produces a bogus wrap window on the downstream slave.
+  // Both fire on the wide-master AR/AW handshake cycle.
+  assert ar_wrap_len_legal_widthadapter: (m.ar_valid and m.ar_ready and m.ar_burst == 2)
+    |-> (m.ar_len == 1 or m.ar_len == 3 or m.ar_len == 7 or m.ar_len == 15);
+  assert aw_wrap_len_legal_widthadapter: (m.aw_valid and m.aw_ready and m.aw_burst == 2)
+    |-> (m.aw_len == 1 or m.aw_len == 3 or m.aw_len == 7 or m.aw_len == 15);
+  assert ar_wrap_addr_aligned_widthadapter: (m.ar_valid and m.ar_ready and m.ar_burst == 2)
+    |-> ((m.ar_size == 0)
+         or (m.ar_size == 1 and m.ar_addr[0] == 0)
+         or (m.ar_size == 2 and m.ar_addr[1:0] == 0)
+         or (m.ar_size == 3 and m.ar_addr[2:0] == 0));
+  assert aw_wrap_addr_aligned_widthadapter: (m.aw_valid and m.aw_ready and m.aw_burst == 2)
+    |-> ((m.aw_size == 0)
+         or (m.aw_size == 1 and m.aw_addr[0] == 0)
+         or (m.aw_size == 2 and m.aw_addr[1:0] == 0)
+         or (m.aw_size == 3 and m.aw_addr[2:0] == 0));
 end module Nic400WidthAdapter

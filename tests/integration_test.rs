@@ -17573,3 +17573,82 @@ fn test_elaborate_440_rename_ident_in_function_call() {
          args so the per-thread rename didn't fire (site 3). SV:\n{sv}"
     );
 }
+
+/// Verifies the `ar_wrap_len_legal_apb` concurrent SVA at
+/// Nic400ApbBridge.arch fires under Verilator `--assert` when a WRAP
+/// burst is issued with an illegal 3-beat `ar_len = 2` (AXI4 §A3.4.1
+/// requires WRAP `ax_len ∈ {1, 3, 7, 15}`). Follow-up to arch-com#447
+/// §4 — earlier WRAP support (#440) only checked the reserved
+/// `ar_burst == 3` code; legal-shape checks beyond that were missing.
+#[test]
+fn test_nic400_apb_bridge_wrap_illegal_len_is_rejected_by_sva() {
+    common::expect_verilator_fatal_multi(
+        &[
+            "tests/nic400/Nic400ApbBridge.arch",
+            "tests/nic400/BusAxi4.arch",
+            "stdlib/BusApb.arch",
+        ],
+        "tests/nic400/tb_nic400_apb_bridge_wrap_len_illegal.cpp",
+        "Nic400ApbBridge",
+        "ASSERTION FAILED: Nic400ApbBridge.ar_wrap_len_legal_apb",
+    );
+}
+
+/// Verifies the `ar_wrap_addr_aligned_apb` concurrent SVA at
+/// Nic400ApbBridge.arch fires under Verilator `--assert` when a WRAP
+/// burst is issued with a base address misaligned to `(1 << ar_size)`
+/// (AXI4 §A3.4.1). We drive `ar_addr = 0x8003, ar_size = 2` — the
+/// low 2 bits must be clear for a 4-byte access. Follow-up to
+/// arch-com#447 §4.
+#[test]
+fn test_nic400_apb_bridge_wrap_unaligned_addr_is_rejected_by_sva() {
+    common::expect_verilator_fatal_multi(
+        &[
+            "tests/nic400/Nic400ApbBridge.arch",
+            "tests/nic400/BusAxi4.arch",
+            "stdlib/BusApb.arch",
+        ],
+        "tests/nic400/tb_nic400_apb_bridge_wrap_addr_unaligned.cpp",
+        "Nic400ApbBridge",
+        "ASSERTION FAILED: Nic400ApbBridge.ar_wrap_addr_aligned_apb",
+    );
+}
+
+/// Verifies the `ar_wrap_len_legal_widthadapter` concurrent SVA at
+/// Nic400WidthAdapter.arch fires under Verilator `--assert` when a
+/// WRAP burst is issued with an illegal 3-beat `ar_len = 2`. The
+/// width-adapter's downsizing path would otherwise forward an
+/// out-of-spec slave burst whose byte-count-preserved scaling no
+/// longer wraps at the expected window boundary. Follow-up to
+/// arch-com#447 §4 — earlier WRAP support (#441) only checked the
+/// burst-type code, not the burst shape.
+#[test]
+fn test_nic400_width_adapter_wrap_illegal_len_is_rejected_by_sva() {
+    common::expect_verilator_fatal_multi(
+        &[
+            "tests/nic400/Nic400WidthAdapter.arch",
+            "tests/nic400/BusAxi4.arch",
+        ],
+        "tests/nic400/tb_nic400_width_adapter_wrap_len_illegal.cpp",
+        "Nic400WidthAdapter",
+        "ASSERTION FAILED: Nic400WidthAdapter.ar_wrap_len_legal_widthadapter",
+    );
+}
+
+/// Verifies the `ar_wrap_addr_aligned_widthadapter` concurrent SVA
+/// at Nic400WidthAdapter.arch fires under Verilator `--assert` when a
+/// WRAP burst is issued with a base address misaligned to
+/// `(1 << ar_size)` (AXI4 §A3.4.1). We drive
+/// `ar_addr = 0x8003, ar_size = 2`. Follow-up to arch-com#447 §4.
+#[test]
+fn test_nic400_width_adapter_wrap_unaligned_addr_is_rejected_by_sva() {
+    common::expect_verilator_fatal_multi(
+        &[
+            "tests/nic400/Nic400WidthAdapter.arch",
+            "tests/nic400/BusAxi4.arch",
+        ],
+        "tests/nic400/tb_nic400_width_adapter_wrap_addr_unaligned.cpp",
+        "Nic400WidthAdapter",
+        "ASSERTION FAILED: Nic400WidthAdapter.ar_wrap_addr_aligned_widthadapter",
+    );
+}
