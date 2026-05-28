@@ -274,7 +274,15 @@ impl<'a> Codegen<'a> {
         self.line(&format!("always_ff @({ff_sens}) begin"));
         self.indent += 1;
         self.line(&format!("if ({rst_cond}) rr_ptr_r <= '0;"));
-        self.line(&format!("else if ({grant_valid_sig}) rr_ptr_r <= rr_ptr_r + 1;"));
+        // Advance from the *actual grantee* (grant_requester), not from the scan
+        // start (rr_ptr_r). The scan may walk past non-asserting requesters, so
+        // grant_requester can be > rr_ptr_r; advancing rr_ptr_r alone would
+        // re-prioritize the just-granted slot. Explicit modulo at NUM_REQ keeps
+        // rr_ptr_r in [0, NUM_REQ) for non-power-of-2 NUM_REQ — otherwise the
+        // clog2-width register can hold values >= NUM_REQ and skew fairness.
+        self.line(&format!(
+            "else if ({grant_valid_sig}) rr_ptr_r <= ({grant_requester_sig} == {req_width}'({num_req} - 1)) ? '0 : {grant_requester_sig} + 1'b1;"
+        ));
         self.indent -= 1;
         self.line("end");
         self.line("");
