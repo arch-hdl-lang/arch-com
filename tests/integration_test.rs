@@ -551,6 +551,63 @@ end arbiter BadArb
     assert!(result.is_err(), "expected error for hook param shadowing port");
 }
 
+/// Round-robin arbiter sim must grant index 0 on the first
+/// post-reset cycle when all requesters contend, matching the SV
+/// emitter (which starts the scan AT `rr_ptr_r = 0`).
+///
+/// Pre-fix: the sim initialized `_last_grant = 0` and scanned from
+/// `(_last_grant + 1 + _i) % N`, so it started at index 1 on cycle 1
+/// — diverging from SV by one slot. Steady-state matched because
+/// both designs advance the pointer to `(grant + 1) % N` after a
+/// grant; only the first cycle was off.
+///
+/// Fix: initialize `_last_grant = N - 1` at reset, so
+/// `(N-1 + 1 + 0) % N = 0` and the first scan matches SV.
+///
+/// Surfaced in arch-hdl-lang/arch-com#447 §2.
+#[test]
+fn test_arbiter_round_robin_sim_inits_last_grant_to_n_minus_one() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter RRArb4
+  policy round_robin;
+  param NUM_REQ: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[NUM_REQ] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+end arbiter RRArb4
+"#;
+    let sim = compile_to_sim_h(source, false);
+    assert!(
+        sim.contains("_last_grant(3)"),
+        "expected `_last_grant(3)` (NUM_REQ - 1 = 3) in the emitted \
+         arbiter constructor init list so the first-cycle scan starts \
+         at index 0; got:\n{sim}"
+    );
+    assert!(
+        !sim.contains("_last_grant(0)"),
+        "found pre-fix `_last_grant(0)` init in the emitted arbiter; \
+         the first-cycle scan would start at index 1 and diverge \
+         from the SV emitter:\n{sim}"
+    );
+    // Steady-state behaviour unchanged: still set _last_grant to the
+    // current grantee on every successful grant. The reset clause is
+    // what we changed.
+    assert!(
+        sim.contains("if (grant_valid) _last_grant = grant_requester;"),
+        "expected steady-state pointer update to remain `if (grant_valid) \
+         _last_grant = grant_requester;`; got:\n{sim}"
+    );
+}
+
 #[test]
 fn test_arbiter_latency2() {
     let source = include_str!("../examples/arbiter_latency2.arch");

@@ -8416,7 +8416,15 @@ impl<'a> SimCodegen<'a> {
         }
         all_port_inits.push("_clk_prev(0)".to_string());
         if needs_rr_state {
-            all_port_inits.push("_last_grant(0)".to_string());
+            // Initialize `_last_grant` to N-1 so the first-cycle scan
+            // formula `(_last_grant + 1 + _i) % N` starts at index 0,
+            // matching the SV emitter's `(rr_ptr_r + arb_i) % N` with
+            // `rr_ptr_r` reset to 0. Without this, the sim grants
+            // index 1 on the first contending cycle while SV grants
+            // index 0 — a 1-slot divergence at t=0 that only resolves
+            // after the first successful grant updates `_last_grant`
+            // to the actual grantee.
+            all_port_inits.push(format!("_last_grant({})", num_req.saturating_sub(1)));
         }
 
         h.push_str(&format!("  {class}() : {} {{}}\n", all_port_inits.join(", ")));
@@ -8462,7 +8470,12 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
         cpp.push_str("  if (!_rising) return;\n");
         if needs_rr_state {
-            cpp.push_str(&format!("  if ({rst_cond}) {{\n    _last_grant = 0;\n  }} else {{\n"));
+            // Reset value is N-1 (not 0): see the constructor-init
+            // comment above. The scan formula treats `_last_grant + 1`
+            // as the first index to test, so `_last_grant = N-1`
+            // makes the first post-reset cycle scan from index 0.
+            let rst_val = num_req.saturating_sub(1);
+            cpp.push_str(&format!("  if ({rst_cond}) {{\n    _last_grant = {rst_val};\n  }} else {{\n"));
             cpp.push_str("    if (grant_valid) _last_grant = grant_requester;\n");
             cpp.push_str("  }\n");
         }
