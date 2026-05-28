@@ -1,0 +1,27 @@
+// Minimal fixture for the `expect_verilator_fatal` harness self-test.
+//
+// `vec[idx] <= d` lives inside a `seq` block, so the codegen auto-emits
+// a concurrent SVA bounds assertion `_auto_bound_vec_0`. The Vec holds
+// 4 elements, but `idx: UInt<3>` permits values 0..7 — so driving
+// `idx == 5` (or any value >= 4) for at least one rising edge after
+// reset will trip `$fatal(1, "BOUNDS VIOLATION: Probe._auto_bound_vec_0")`
+// under Verilator `--assert`.
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module Probe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port we:  in Bool;
+  port idx: in UInt<3>;
+  port d:   in UInt<8>;
+
+  reg vec: Vec<UInt<8>, 4> reset rst => 8'd0;
+
+  seq on clk rising
+    if we
+      vec[idx] <= d;
+    end if
+  end seq
+end module Probe

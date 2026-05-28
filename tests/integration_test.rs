@@ -5,6 +5,8 @@ use arch::parser::Parser;
 use arch::resolve;
 use arch::typecheck::TypeChecker;
 
+mod common;
+
 fn compile_to_sv(source: &str) -> String {
     compile_to_sv_with_opts(source, &elaborate::ThreadLowerOpts::default())
 }
@@ -17249,5 +17251,23 @@ fn test_native_sim_vec_inst_input_wire_param_sized_fanout() {
         String::from_utf8_lossy(&out.stdout).contains("PASS native Vec inst input wire"),
         "expected PASS marker in stdout:\n{}",
         String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn test_expect_fatal_harness_catches_bounds_violation() {
+    // Smoke test for the `expect_verilator_fatal` helper in
+    // `tests/common/mod.rs`. The Probe.arch fixture writes to a
+    // `Vec<UInt<8>, 4>` from a 3-bit input index — values 4..7 are
+    // out of bounds, so the codegen-emitted SVA `_auto_bound_vec_0`
+    // must trip under Verilator `--assert`. We pin the substring to
+    // the specific label so a future rename / regression of the
+    // bounds-emission code regresses this test loudly rather than
+    // silently passing on some unrelated fatal.
+    common::expect_verilator_fatal(
+        "tests/expect_fatal_smoke/Probe.arch",
+        "tests/expect_fatal_smoke/tb.cpp",
+        "Probe",
+        "BOUNDS VIOLATION: Probe._auto_bound_vec_0",
     );
 }
