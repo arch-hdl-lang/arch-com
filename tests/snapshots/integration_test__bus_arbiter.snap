@@ -1,6 +1,5 @@
 ---
 source: tests/integration_test.rs
-assertion_line: 473
 expression: sv
 ---
 module BusArbiter #(
@@ -20,7 +19,7 @@ module BusArbiter #(
   
   always_ff @(posedge clk) begin
     if (rst) rr_ptr_r <= '0;
-    else if (grant_valid) rr_ptr_r <= rr_ptr_r + 1;
+    else if (grant_valid) rr_ptr_r <= (grant_requester == 2'(4 - 1)) ? '0 : grant_requester + 1'b1;
   end
   
   always_comb begin

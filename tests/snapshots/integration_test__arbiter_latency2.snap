@@ -23,7 +23,7 @@ module LatencyArbiter #(
   
   always_ff @(posedge clk) begin
     if (rst) rr_ptr_r <= '0;
-    else if (grant_valid_comb) rr_ptr_r <= rr_ptr_r + 1;
+    else if (grant_valid_comb) rr_ptr_r <= (grant_requester_comb == 2'(4 - 1)) ? '0 : grant_requester_comb + 1'b1;
   end
   
   always_comb begin

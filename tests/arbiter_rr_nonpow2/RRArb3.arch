@@ -1,0 +1,28 @@
+// Round-robin arbiter with NUM_REQ = 3 — the canonical non-power-of-2 case.
+//
+// Used by the `test_arbiter_round_robin_sv_nonpow2_verilator_behavior`
+// integration test to verify the SV emitter advances the round-robin
+// pointer from the actual grantee (not the scan-start) and wraps
+// explicitly at NUM_REQ.
+//
+// Pre-fix, NUM_REQ=3 with all three requesters always asserting produced
+// the unfair grant pattern 0,1,2,0,0,1,2,0,... (idx 0 won 50% of cycles).
+// After the fix, the pattern is strict 0,1,2,0,1,2,... and each idx wins
+// exactly 1/3 of cycles.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter RRArb3
+  policy round_robin;
+  param NUM_REQ: const = 3;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[NUM_REQ] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+end arbiter RRArb3

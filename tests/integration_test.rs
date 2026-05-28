@@ -608,6 +608,134 @@ end arbiter RRArb4
     );
 }
 
+/// Round-robin SV pointer-advance must wrap explicitly at NUM_REQ and
+/// advance from the actual grantee — not from the scan-start `rr_ptr_r`.
+/// Two prior bugs combined for non-power-of-2 NUM_REQ:
+///
+/// 1. `rr_ptr_r <= rr_ptr_r + 1` (no explicit `% NUM_REQ`). The
+///    `clog2(NUM_REQ)`-bit register could hold values >= NUM_REQ, e.g.
+///    `rr_ptr_r=3` with NUM_REQ=3 — the scan formula's explicit
+///    `% NUM_REQ` masked the comparison, so idx 0 won twice in a row
+///    whenever the pointer happened to land on 3.
+///
+/// 2. Advancing the scan-start, not the grantee. When the scan walked
+///    past non-asserting requesters, `grant_requester` could be > the
+///    starting `rr_ptr_r`; the next-cycle scan would then re-start
+///    earlier than the just-granted slot and re-prioritize it.
+///
+/// For NUM_REQ=3 with all reqs asserted: pre-fix grants the sequence
+/// `0,1,2,0,0,1,2,0,...` (idx 0 = 50%, idxs 1,2 = 25% each). After
+/// fix: strict `0,1,2,0,1,2,...` round-robin, idx-fair.
+///
+/// Power-of-2 NUM_REQ was unaffected — bit-width truncation
+/// coincidentally implemented the right thing.
+///
+/// See arch-hdl-lang/arch-com#451 (cycle-1 sim fix) and #447 §2.
+#[test]
+fn test_arbiter_round_robin_sv_advances_from_grantee_with_explicit_wrap() {
+    // NUM_REQ=3 is the canonical non-power-of-2 case that exposes both
+    // sub-bugs simultaneously.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter RRArb3
+  policy round_robin;
+  param NUM_REQ: const = 3;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[NUM_REQ] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+end arbiter RRArb3
+"#;
+    let sv = compile_to_sv(source);
+    // Pointer advance must reference grant_requester (the actual grantee),
+    // not rr_ptr_r (the scan-start). With explicit wrap at NUM_REQ - 1.
+    assert!(
+        sv.contains("rr_ptr_r <= (grant_requester == 2'(3 - 1)) ? '0 : grant_requester + 1'b1;"),
+        "expected grantee-based pointer advance with explicit NUM_REQ wrap; got:\n{sv}"
+    );
+    // The pre-fix shape must be gone.
+    assert!(
+        !sv.contains("rr_ptr_r <= rr_ptr_r + 1;"),
+        "found pre-fix `rr_ptr_r <= rr_ptr_r + 1;` — the scan-start-based \
+         advance is incorrect for non-power-of-2 NUM_REQ:\n{sv}"
+    );
+}
+
+/// End-to-end Verilator test for the SV round-robin fairness fix.
+///
+/// Builds RRArb3 (NUM_REQ=3, the canonical non-power-of-2 case) to SV,
+/// runs it under Verilator with all three requesters always asserted,
+/// and checks that the grant_requester sequence is strict
+/// round-robin (each idx wins exactly 1/3 of cycles).
+///
+/// Pre-fix grant pattern was `0,1,2,0,0,1,2,0,...` (idx 0 at 50%).
+/// After fix: `0,1,2,0,1,2,...`, idx-fair.
+#[test]
+fn test_arbiter_round_robin_sv_nonpow2_verilator_behavior() {
+    if std::process::Command::new("verilator").arg("--version").output().is_err() {
+        eprintln!("skipping Verilator RR NUM_REQ=3 fairness smoke: verilator not found");
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("RRArb3.sv");
+    let obj_dir = td.path().join("obj_dir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/arbiter_rr_nonpow2/RRArb3.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build RRArb3 SV");
+    assert!(build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr));
+
+    let verilate = std::process::Command::new("verilator")
+        .arg("--cc")
+        .arg("--exe")
+        .arg("--build")
+        .arg("--sv")
+        .arg("--assert")
+        .arg("-Wno-fatal")
+        .arg("-Wno-WIDTH")
+        .arg("-Wno-DECLFILENAME")
+        .arg("--top-module")
+        .arg("RRArb3")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&sv_out)
+        .arg("tests/arbiter_rr_nonpow2/tb_rr_arb3.cpp")
+        .output()
+        .expect("verilate RRArb3");
+    assert!(verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr));
+
+    let exe = obj_dir.join("VRRArb3");
+    let run = std::process::Command::new(&exe)
+        .output()
+        .expect("run Verilator RRArb3");
+    assert!(run.status.success(),
+        "Verilator sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr));
+    assert!(String::from_utf8_lossy(&run.stdout).contains("PASS rr_arb3"),
+        "expected PASS marker in Verilator stdout:\n{}",
+        String::from_utf8_lossy(&run.stdout));
+}
+
 #[test]
 fn test_arbiter_latency2() {
     let source = include_str!("../examples/arbiter_latency2.arch");
@@ -8024,7 +8152,12 @@ fn test_tlm_indexed_target_response_lock_uses_resource_policy() {
     let sv = compile_to_sv(source);
     assert!(sv.contains("module _arb_MemTarget_read_rsp"),
         "response lock should synthesize a policy arbiter module:\n{sv}");
-    assert!(sv.contains("rr_ptr_r <= rr_ptr_r + 1"),
+    // Round-robin pointer-advance shape inside the synthesized
+    // `_arb_MemTarget_read_rsp` arbiter module — uses the bare
+    // `grant_requester` port. The bare `rr_ptr_r + 1` form was incorrect
+    // for non-power-of-2 NUM_REQ.
+    assert!(sv.contains("rr_ptr_r <= (grant_requester ==")
+         && sv.contains("? '0 : grant_requester + 1'b1;"),
         "response arbiter should use the resource's round-robin policy:\n{sv}");
     assert!(sv.contains("_tlm_s_read_rsp_arb_req_packed[0] = !_tlm_s_read_rsp_arb_hold_valid_r && _tlm_s_read_tag0_rsp_valid")
          && sv.contains("_tlm_s_read_rsp_arb_req_packed[3] = !_tlm_s_read_rsp_arb_hold_valid_r && _tlm_s_read_tag3_rsp_valid"),
@@ -11159,8 +11292,12 @@ fn test_resource_lock_round_robin() {
     let sv = compile_to_sv(source);
     assert!(sv.contains("logic [0:0] rr_ptr_r;"),
         "round_robin should emit rr_ptr_r register:\n{sv}");
-    assert!(sv.contains("rr_ptr_r <= rr_ptr_r + 1"),
-        "round_robin should increment pointer on grant:\n{sv}");
+    // Pointer advances from the actual grantee (not the scan start) and wraps
+    // explicitly at NUM_REQ; the bare `rr_ptr_r + 1` form was incorrect for
+    // non-power-of-2 NUM_REQ. See `emit_arbiter_round_robin`.
+    assert!(sv.contains("rr_ptr_r <= (grant_requester ==")
+        && sv.contains("? '0 : grant_requester + 1'b1;"),
+        "round_robin should advance from grant_requester with explicit wrap:\n{sv}");
 }
 
 #[test]
