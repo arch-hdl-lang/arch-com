@@ -35,7 +35,7 @@ impl<'a> SimCodegen<'a> {
                     ModuleBodyItem::RegDecl(r) => {
                         let prefixed = format!("{}_{}", prefix, r.name.name);
                         let ty = cpp_internal_type(&r.ty);
-                        let bits = type_bits_te(&r.ty);
+                        let bits = type_bits_te_with_params(&r.ty, &p.common.params);
                         let reset_val = Self::pipeline_reset_value(&r.reset).unwrap_or("0".to_string());
                         names_set.insert(r.name.name.clone());
                         all_regs.push(StageReg { prefixed, ty, reset_val, bits, is_let: false });
@@ -45,7 +45,7 @@ impl<'a> SimCodegen<'a> {
                         if l.ty.is_none() { continue; }
                         let prefixed = format!("{}_{}", prefix, l.name.name);
                         let ty = if let Some(ref te) = l.ty { cpp_internal_type(te) } else { "uint32_t".to_string() };
-                        let bits = if let Some(ref te) = l.ty { type_bits_te(te) } else { 32 };
+                        let bits = if let Some(ref te) = l.ty { type_bits_te_with_params(te, &p.common.params) } else { 32 };
                         names_set.insert(l.name.name.clone());
                         all_regs.push(StageReg { prefixed, ty, reset_val: String::new(), bits, is_let: true });
                     }
@@ -69,7 +69,7 @@ impl<'a> SimCodegen<'a> {
         }
         // Add port widths
         for pt in &p.ports {
-            widths.insert(pt.name.name.clone(), type_bits_te(&pt.ty));
+            widths.insert(pt.name.name.clone(), type_bits_te_with_params(&pt.ty, &p.common.params));
         }
 
         // ── Collect implicit wires (comb-block LHS targets + inst output
@@ -132,7 +132,7 @@ impl<'a> SimCodegen<'a> {
                     for t in targets {
                         if is_known(&t, &wires) { continue; }
                         let ty_te = consumer_ty(&t).unwrap_or(TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(32)), p.span))));
-                        let bits = type_bits_te(&ty_te);
+                        let bits = type_bits_te_with_params(&ty_te, &p.common.params);
                         let ty_cpp = cpp_internal_type(&ty_te);
                         wires.push(ImplicitWire { name: t.clone(), prefixed: format!("{prefix}_{t}"), ty_cpp, bits });
                     }
@@ -148,11 +148,11 @@ impl<'a> SimCodegen<'a> {
                         if is_known(target, &wires) { continue; }
                         // Type from sub-module's matching port, fall back to consumer reg.
                         let ty_te = sub_ports.iter()
-                            .find(|p| p.name.name == conn.port_name.name)
-                            .map(|p| p.ty.clone())
+                            .find(|sp| sp.name.name == conn.port_name.name)
+                            .map(|sp| sp.ty.clone())
                             .or_else(|| consumer_ty(target))
                             .unwrap_or(TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(32)), p.span))));
-                        let bits = type_bits_te(&ty_te);
+                        let bits = type_bits_te_with_params(&ty_te, &p.common.params);
                         let ty_cpp = cpp_internal_type(&ty_te);
                         wires.push(ImplicitWire { name: target.clone(), prefixed: format!("{prefix}_{target}"), ty_cpp, bits });
                     }
@@ -198,7 +198,7 @@ impl<'a> SimCodegen<'a> {
         for param in &p.params {
             if matches!(param.kind, ParamKind::Const | ParamKind::WidthConst(..)) {
                 if let Some(ref def) = param.default {
-                    let val = eval_const_expr(def);
+                    let val = eval_const_expr_with_params(def, &p.common.params);
                     h.push_str(&format!("#ifndef {}\n#define {} {val}ULL\n#endif\n", param.name.name, param.name.name));
                 }
             }
@@ -270,9 +270,9 @@ impl<'a> SimCodegen<'a> {
                 if let ModuleBodyItem::LetBinding(l) = item {
                     let val = self.pipeline_sim_expr(&l.value, prefix, si,
                         &stage_names, &stage_prefixes, &stage_reg_names,
-                        &port_names, &reg_names, &let_names, &widths, &_enum_map);
+                        &port_names, &reg_names, &let_names, &widths, &_enum_map, &p.common.params);
                     let ty = if let Some(ref te) = l.ty { cpp_internal_type(te) } else { "uint32_t".to_string() };
-                    let bits = if let Some(ref te) = l.ty { type_bits_te(te) } else { 32 };
+                    let bits = if let Some(ref te) = l.ty { type_bits_te_with_params(te, &p.common.params) } else { 32 };
                     let mask = if bits > 0 && bits < 64 { format!(" & 0x{:X}ULL", (1u64 << bits) - 1) } else { String::new() };
                     cpp.push_str(&format!("      {ty} {}_{} = ({val}){mask};\n", prefix, l.name.name));
                 }
@@ -291,7 +291,7 @@ impl<'a> SimCodegen<'a> {
             let parts: Vec<String> = p.stall_conds.iter().map(|c| {
                 self.pipeline_sim_expr(&c.condition, "", 0,
                     &stage_names, &stage_prefixes, &stage_reg_names,
-                    &port_names, &reg_names, &let_names, &widths, &_enum_map)
+                    &port_names, &reg_names, &let_names, &widths, &_enum_map, &p.common.params)
             }).collect();
             cpp.push_str(&format!("      bool _pipeline_stall = ({});\n", parts.join(" || ")));
         }
@@ -302,7 +302,7 @@ impl<'a> SimCodegen<'a> {
                 if let Some(ref cond) = p.stages[si].stall_cond {
                     let s = self.pipeline_sim_expr(cond, prefix, si,
                         &stage_names, &stage_prefixes, &stage_reg_names,
-                        &port_names, &reg_names, &let_names, &widths, &_enum_map);
+                        &port_names, &reg_names, &let_names, &widths, &_enum_map, &p.common.params);
                     parts.push(format!("({s})"));
                 }
                 if has_global_stall { parts.push("_pipeline_stall".to_string()); }
@@ -344,7 +344,7 @@ impl<'a> SimCodegen<'a> {
                     for stmt in &rb.stmts {
                         self.emit_pipeline_sim_stmt(&mut cpp, stmt, prefix, si,
                             &stage_names, &stage_prefixes, &stage_reg_names,
-                            &port_names, &reg_names, &let_names, &widths, &_enum_map, 6 + indent_extra);
+                            &port_names, &reg_names, &let_names, &widths, &_enum_map, &p.common.params, 6 + indent_extra);
                     }
                 }
             }
@@ -354,7 +354,7 @@ impl<'a> SimCodegen<'a> {
             let target = flush.target_stage.name.to_lowercase();
             let cond = self.pipeline_sim_expr(&flush.condition, "", 0,
                 &stage_names, &stage_prefixes, &stage_reg_names,
-                &port_names, &reg_names, &let_names, &widths, &_enum_map);
+                &port_names, &reg_names, &let_names, &widths, &_enum_map, &p.common.params);
             cpp.push_str(&format!("      if ({cond}) {{ _{target}_valid_r = 0; }}\n"));
         }
         cpp.push_str("    }\n  }\n}\n\n");
@@ -370,9 +370,9 @@ impl<'a> SimCodegen<'a> {
                         if l.ty.is_none() { continue; }
                         let val = self.pipeline_sim_expr(&l.value, prefix, si,
                             &stage_names, &stage_prefixes, &stage_reg_names,
-                            &port_names, &reg_names, &let_names, &widths, &_enum_map);
+                            &port_names, &reg_names, &let_names, &widths, &_enum_map, &p.common.params);
                         let ty = if let Some(ref te) = l.ty { cpp_internal_type(te) } else { "uint32_t".to_string() };
-                        let bits = if let Some(ref te) = l.ty { type_bits_te(te) } else { 32 };
+                        let bits = if let Some(ref te) = l.ty { type_bits_te_with_params(te, &p.common.params) } else { 32 };
                         let mask = if bits > 0 && bits < 64 { format!(" & 0x{:X}ULL", (1u64 << bits) - 1) } else { String::new() };
                         cpp.push_str(&format!("  {ty} {}_{} = ({val}){mask};\n", prefix, l.name.name));
                     }
@@ -380,7 +380,7 @@ impl<'a> SimCodegen<'a> {
                         for stmt in &cb.stmts {
                             self.emit_pipeline_sim_comb_stmt(&mut cpp, stmt, prefix, si,
                                 &stage_names, &stage_prefixes, &stage_reg_names,
-                                &port_names, &reg_names, &let_names, &widths, &_enum_map, 2);
+                                &port_names, &reg_names, &let_names, &widths, &_enum_map, &p.common.params, 2);
                         }
                     }
                     ModuleBodyItem::Inst(inst) => {
@@ -390,7 +390,7 @@ impl<'a> SimCodegen<'a> {
                             if conn.direction != ConnectDir::Input { continue; }
                             let val = self.pipeline_sim_expr(&conn.signal, prefix, si,
                                 &stage_names, &stage_prefixes, &stage_reg_names,
-                                &port_names, &reg_names, &let_names, &widths, &_enum_map);
+                                &port_names, &reg_names, &let_names, &widths, &_enum_map, &p.common.params);
                             cpp.push_str(&format!("  _inst_{}.{} = {val};\n",
                                 inst.name.name, conn.port_name.name));
                         }
@@ -406,8 +406,8 @@ impl<'a> SimCodegen<'a> {
                                 format!("{}_{}", prefix, target)
                             };
                             // Mask to match the implicit-wire width when narrower than 64.
-                            let bits = sub_ports.iter().find(|p| p.name.name == conn.port_name.name)
-                                .map(|p| type_bits_te(&p.ty)).unwrap_or(32);
+                            let bits = sub_ports.iter().find(|sp| sp.name.name == conn.port_name.name)
+                                .map(|sp| type_bits_te_with_params(&sp.ty, &p.common.params)).unwrap_or(32);
                             let mask = if bits > 0 && bits < 64 {
                                 format!(" & 0x{:X}ULL", (1u64 << bits) - 1)
                             } else { String::new() };
@@ -428,35 +428,35 @@ impl<'a> SimCodegen<'a> {
         &self, cpp: &mut String, stmt: &Stmt, prefix: &str, si: usize,
         sn: &[String], sp: &[String], srn: &[HashSet<String>],
         pn: &HashSet<String>, rn: &HashSet<String>, ln: &HashSet<String>,
-        w: &HashMap<String, u32>, em: &HashMap<String, Vec<(String, u64)>>, indent: usize,
+        w: &HashMap<String, u32>, em: &HashMap<String, Vec<(String, u64)>>, params: &[ParamDecl], indent: usize,
     ) {
         let pad = " ".repeat(indent);
         match stmt {
             Stmt::Assign(a) => {
                 let tgt = if let ExprKind::Ident(n) = &a.target.kind {
                     if pn.contains(n) { n.clone() } else { format!("_{}_{}", prefix, n) }
-                } else { self.pipeline_sim_expr(&a.target, prefix, si, sn, sp, srn, pn, rn, ln, w, em) };
-                let val = self.pipeline_sim_expr(&a.value, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
+                } else { self.pipeline_sim_expr(&a.target, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params) };
+                let val = self.pipeline_sim_expr(&a.value, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
                 let tgt_key = if let ExprKind::Ident(n) = &a.target.kind { format!("{}_{}", prefix, n) } else { String::new() };
                 let mask = w.get(&tgt_key).and_then(|&b| if b > 0 && b < 64 { Some(format!(" & 0x{:X}ULL", (1u64 << b) - 1)) } else { None }).unwrap_or_default();
                 cpp.push_str(&format!("{pad}{tgt} = ({val}){mask};\n"));
             }
             Stmt::IfElse(ie) => {
-                let cond = self.pipeline_sim_expr(&ie.cond, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
+                let cond = self.pipeline_sim_expr(&ie.cond, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
                 cpp.push_str(&format!("{pad}if ({cond}) {{\n"));
-                for s in &ie.then_stmts { self.emit_pipeline_sim_stmt(cpp, s, prefix, si, sn, sp, srn, pn, rn, ln, w, em, indent+2); }
+                for s in &ie.then_stmts { self.emit_pipeline_sim_stmt(cpp, s, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent+2); }
                 if !ie.else_stmts.is_empty() {
                     cpp.push_str(&format!("{pad}}} else {{\n"));
-                    for s in &ie.else_stmts { self.emit_pipeline_sim_stmt(cpp, s, prefix, si, sn, sp, srn, pn, rn, ln, w, em, indent+2); }
+                    for s in &ie.else_stmts { self.emit_pipeline_sim_stmt(cpp, s, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent+2); }
                 }
                 cpp.push_str(&format!("{pad}}}\n"));
             }
             Stmt::For(f) => {
                 if let ForRange::Range(ref lo_expr, ref hi_expr) = f.range {
-                    let lo = self.pipeline_sim_expr(lo_expr, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
-                    let hi = self.pipeline_sim_expr(hi_expr, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
+                    let lo = self.pipeline_sim_expr(lo_expr, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
+                    let hi = self.pipeline_sim_expr(hi_expr, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
                     cpp.push_str(&format!("{pad}for (int {v} = {lo}; {v} <= {hi}; {v}++) {{\n", v=f.var.name));
-                    for s in &f.body { self.emit_pipeline_sim_stmt(cpp, s, prefix, si, sn, sp, srn, pn, rn, ln, w, em, indent+2); }
+                    for s in &f.body { self.emit_pipeline_sim_stmt(cpp, s, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent+2); }
                     cpp.push_str(&format!("{pad}}}\n"));
                 }
             }
@@ -468,24 +468,24 @@ impl<'a> SimCodegen<'a> {
         &self, cpp: &mut String, stmt: &Stmt, prefix: &str, si: usize,
         sn: &[String], sp: &[String], srn: &[HashSet<String>],
         pn: &HashSet<String>, rn: &HashSet<String>, ln: &HashSet<String>,
-        w: &HashMap<String, u32>, em: &HashMap<String, Vec<(String, u64)>>, indent: usize,
+        w: &HashMap<String, u32>, em: &HashMap<String, Vec<(String, u64)>>, params: &[ParamDecl], indent: usize,
     ) {
         let pad = " ".repeat(indent);
         match stmt {
             Stmt::Assign(a) => {
                 let tgt = if let ExprKind::Ident(n) = &a.target.kind {
                     if pn.contains(n) { n.clone() } else { format!("{}_{}", prefix, n) }
-                } else { self.pipeline_sim_expr(&a.target, prefix, si, sn, sp, srn, pn, rn, ln, w, em) };
-                let val = self.pipeline_sim_expr(&a.value, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
+                } else { self.pipeline_sim_expr(&a.target, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params) };
+                let val = self.pipeline_sim_expr(&a.value, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
                 cpp.push_str(&format!("{pad}{tgt} = {val};\n"));
             }
             Stmt::IfElse(ie) => {
-                let cond = self.pipeline_sim_expr(&ie.cond, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
+                let cond = self.pipeline_sim_expr(&ie.cond, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
                 cpp.push_str(&format!("{pad}if ({cond}) {{\n"));
-                for s in &ie.then_stmts { self.emit_pipeline_sim_comb_stmt(cpp, s, prefix, si, sn, sp, srn, pn, rn, ln, w, em, indent+2); }
+                for s in &ie.then_stmts { self.emit_pipeline_sim_comb_stmt(cpp, s, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent+2); }
                 if !ie.else_stmts.is_empty() {
                     cpp.push_str(&format!("{pad}}} else {{\n"));
-                    for s in &ie.else_stmts { self.emit_pipeline_sim_comb_stmt(cpp, s, prefix, si, sn, sp, srn, pn, rn, ln, w, em, indent+2); }
+                    for s in &ie.else_stmts { self.emit_pipeline_sim_comb_stmt(cpp, s, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent+2); }
                 }
                 cpp.push_str(&format!("{pad}}}\n"));
             }
@@ -497,11 +497,11 @@ impl<'a> SimCodegen<'a> {
         &self, expr: &Expr, prefix: &str, si: usize,
         sn: &[String], sp: &[String], srn: &[HashSet<String>],
         pn: &HashSet<String>, rn: &HashSet<String>, ln: &HashSet<String>,
-        w: &HashMap<String, u32>, em: &HashMap<String, Vec<(String, u64)>>,
+        w: &HashMap<String, u32>, em: &HashMap<String, Vec<(String, u64)>>, params: &[ParamDecl],
     ) -> String {
         let empty = HashSet::new();
         let empty_rl: HashMap<String, ResetLevel> = HashMap::new();
-        let ctx = Ctx { reg_names: rn, port_names: pn, let_names: ln, let_values: None, inst_names: &empty, wide_names: &empty, widths: w, signed_names: &empty, posedge_lhs: false, fsm_mode: false, enum_map: em, bus_ports: &empty, reset_levels: &empty_rl, vec_names: None, vec_2d_names: None, vec_sizes: None, fsm_vec_port_regs: None, ident_subst: None, loop_var_subst: None, vec_of_bus_port_count: None, vec_of_bus_wire_count: None, coverage: None, params: &[] };
+        let ctx = Ctx { reg_names: rn, port_names: pn, let_names: ln, let_values: None, inst_names: &empty, wide_names: &empty, widths: w, signed_names: &empty, posedge_lhs: false, fsm_mode: false, enum_map: em, bus_ports: &empty, reset_levels: &empty_rl, vec_names: None, vec_2d_names: None, vec_sizes: None, fsm_vec_port_regs: None, ident_subst: None, loop_var_subst: None, vec_of_bus_port_count: None, vec_of_bus_wire_count: None, coverage: None, params };
         match &expr.kind {
             ExprKind::FieldAccess(base, field) => {
                 if let ExprKind::Ident(bn) = &base.kind {
@@ -529,7 +529,7 @@ impl<'a> SimCodegen<'a> {
             ExprKind::Concat(parts) => {
                 let mut total_bits: u32 = 0;
                 let part_widths: Vec<u32> = parts.iter().map(|p2| {
-                    let pw = self.pipeline_sim_expr_width(p2, prefix, si, srn, w, pn);
+                    let pw = self.pipeline_sim_expr_width(p2, prefix, si, srn, w, pn, params);
                     total_bits += pw;
                     pw
                 }).collect();
@@ -538,7 +538,7 @@ impl<'a> SimCodegen<'a> {
                 let mut bit_pos: u32 = part_widths.iter().sum();
                 for (i, part) in parts.iter().enumerate() {
                     bit_pos -= part_widths[i];
-                    let val = self.pipeline_sim_expr(part, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
+                    let val = self.pipeline_sim_expr(part, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
                     if i > 0 { result.push_str(" | "); }
                     if bit_pos > 0 { result.push_str(&format!("((uint64_t)({val}) << {bit_pos})")); }
                     else { result.push_str(&format!("(uint64_t)({val})")); }
@@ -547,8 +547,8 @@ impl<'a> SimCodegen<'a> {
                 result
             }
             ExprKind::Binary(op, lhs, rhs) => {
-                let l = self.pipeline_sim_expr(lhs, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
-                let r = self.pipeline_sim_expr(rhs, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
+                let l = self.pipeline_sim_expr(lhs, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
+                let r = self.pipeline_sim_expr(rhs, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
                 if matches!(*op, BinOp::Implies | BinOp::ImpliesNext) {
                     return format!("(!{l} || {r})");
                 }
@@ -563,46 +563,46 @@ impl<'a> SimCodegen<'a> {
                 format!("({l} {os} {r})")
             }
             ExprKind::Unary(op, inner) => {
-                let v = self.pipeline_sim_expr(inner, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
+                let v = self.pipeline_sim_expr(inner, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
                 match op { UnaryOp::Not => format!("(!{v})"), UnaryOp::BitNot => format!("(~{v})"), UnaryOp::Neg => format!("(-{v})"),
                     UnaryOp::RedAnd | UnaryOp::RedOr | UnaryOp::RedXor => format!("({v})") }
             }
             ExprKind::MethodCall(base, method, args) => {
-                let b = self.pipeline_sim_expr(base, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
+                let b = self.pipeline_sim_expr(base, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
                 match method.name.as_str() {
-                    "trunc" => { if let Some(wa) = args.first() { let bits = eval_const_expr(wa); if bits < 64 { format!("({b} & 0x{:X}ULL)", (1u64 << bits) - 1) } else { b } } else { b } }
+                    "trunc" => { if let Some(wa) = args.first() { let bits = eval_const_expr_with_params(wa, params); if bits < 64 { format!("({b} & 0x{:X}ULL)", (1u64 << bits) - 1) } else { b } } else { b } }
                     "zext" => { format!("(uint64_t)({b})") }
                     "sext" => { b } // TODO: proper sign extension
                     _ => b
                 }
             }
             ExprKind::BitSlice(base, hi, lo) => {
-                let b = self.pipeline_sim_expr(base, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
-                let hv = eval_const_expr(hi); let lv = eval_const_expr(lo); let width = hv - lv + 1;
+                let b = self.pipeline_sim_expr(base, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
+                let hv = eval_const_expr_with_params(hi, params); let lv = eval_const_expr_with_params(lo, params); let width = hv - lv + 1;
                 if width < 64 { format!("(({b} >> {lv}) & 0x{:X}ULL)", (1u64 << width) - 1) } else { format!("({b} >> {lv})") }
             }
             ExprKind::Index(base, idx) => {
-                let b = self.pipeline_sim_expr(base, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
-                let i = self.pipeline_sim_expr(idx, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
+                let b = self.pipeline_sim_expr(base, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
+                let i = self.pipeline_sim_expr(idx, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
                 format!("(({b} >> {i}) & 1)")
             }
             ExprKind::Literal(lit) => match lit { LitKind::Dec(v) => format!("{v}"), LitKind::Hex(v) | LitKind::Bin(v) => format!("0x{v:X}"), LitKind::Sized(_, v) => format!("{v}") },
             ExprKind::Bool(b) => if *b { "1".to_string() } else { "0".to_string() },
             ExprKind::Ternary(c, t, e) => {
-                let cv = self.pipeline_sim_expr(c, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
-                let tv = self.pipeline_sim_expr(t, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
-                let ev = self.pipeline_sim_expr(e, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
+                let cv = self.pipeline_sim_expr(c, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
+                let tv = self.pipeline_sim_expr(t, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
+                let ev = self.pipeline_sim_expr(e, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
                 format!("(({cv}) ? ({tv}) : ({ev}))")
             }
             ExprKind::Signed(inner) | ExprKind::Unsigned(inner) | ExprKind::Cast(inner, _) => {
-                self.pipeline_sim_expr(inner, prefix, si, sn, sp, srn, pn, rn, ln, w, em)
+                self.pipeline_sim_expr(inner, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params)
             }
-            ExprKind::Clog2(arg) => { let a = self.pipeline_sim_expr(arg, prefix, si, sn, sp, srn, pn, rn, ln, w, em); format!("_arch_clog2({a})") }
+            ExprKind::Clog2(arg) => { let a = self.pipeline_sim_expr(arg, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params); format!("_arch_clog2({a})") }
             _ => cpp_expr(expr, &ctx),
         }
     }
 
-    fn pipeline_sim_expr_width(&self, expr: &Expr, prefix: &str, si: usize, srn: &[HashSet<String>], w: &HashMap<String, u32>, pn: &HashSet<String>) -> u32 {
+    fn pipeline_sim_expr_width(&self, expr: &Expr, prefix: &str, si: usize, srn: &[HashSet<String>], w: &HashMap<String, u32>, pn: &HashSet<String>, params: &[ParamDecl]) -> u32 {
         match &expr.kind {
             ExprKind::Ident(name) => {
                 if pn.contains(name) { return *w.get(name).unwrap_or(&8); }
@@ -612,8 +612,8 @@ impl<'a> SimCodegen<'a> {
             ExprKind::FieldAccess(base, field) => {
                 if let ExprKind::Ident(bn) = &base.kind { *w.get(&format!("{}_{}", bn.to_lowercase(), field.name)).unwrap_or(&8) } else { 8 }
             }
-            ExprKind::MethodCall(_, method, args) => match method.name.as_str() { "trunc"|"zext"|"sext"|"resize" => args.first().map(|a| eval_const_expr(a) as u32).unwrap_or(8), _ => 8 },
-            ExprKind::BitSlice(_, hi, lo) => { let h = eval_const_expr(hi); let l = eval_const_expr(lo); (h - l + 1) as u32 }
+            ExprKind::MethodCall(_, method, args) => match method.name.as_str() { "trunc"|"zext"|"sext"|"resize" => args.first().map(|a| eval_const_expr_with_params(a, params) as u32).unwrap_or(8), _ => 8 },
+            ExprKind::BitSlice(_, hi, lo) => { let h = eval_const_expr_with_params(hi, params); let l = eval_const_expr_with_params(lo, params); (h - l + 1) as u32 }
             ExprKind::Literal(LitKind::Sized(ww, _)) => *ww,
             _ => 8,
         }
