@@ -271,4 +271,31 @@ module Nic400ApbBridge
   // burst code it doesn't know how to honour.
   assert ar_burst_legal: (axi.ar_valid and axi.ar_ready) |-> (axi.ar_burst != 3);
   assert aw_burst_legal: (axi.aw_valid and axi.aw_ready) |-> (axi.aw_burst != 3);
+
+  // AXI4 §A3.4.1 WRAP preconditions. The legal-FIXED-INCR-WRAP filter
+  // above keeps reserved 0b11 out, but it doesn't constrain the *shape*
+  // of a WRAP burst. WRAP further requires:
+  //   1. axlen ∈ {1, 3, 7, 15} (i.e. 2/4/8/16-beat bursts only). A
+  //      3-beat WRAP (axlen=2) would compute burst_bytes=12, wrap_mask
+  //      =0xB inside calc_paddr — UNPREDICTABLE per the spec and visibly
+  //      wrong on the bus.
+  //   2. Base address must be aligned to (1 << ax_size). An unaligned
+  //      WRAP base produces a bogus wrap window that doesn't match what
+  //      the master expects.
+  // Both fire on the handshake cycle, before capture, matching the
+  // burst_legal style above.
+  assert ar_wrap_len_legal_apb: (axi.ar_valid and axi.ar_ready and axi.ar_burst == 2)
+    |-> (axi.ar_len == 1 or axi.ar_len == 3 or axi.ar_len == 7 or axi.ar_len == 15);
+  assert aw_wrap_len_legal_apb: (axi.aw_valid and axi.aw_ready and axi.aw_burst == 2)
+    |-> (axi.aw_len == 1 or axi.aw_len == 3 or axi.aw_len == 7 or axi.aw_len == 15);
+  assert ar_wrap_addr_aligned_apb: (axi.ar_valid and axi.ar_ready and axi.ar_burst == 2)
+    |-> ((axi.ar_size == 0)
+         or (axi.ar_size == 1 and axi.ar_addr[0] == 0)
+         or (axi.ar_size == 2 and axi.ar_addr[1:0] == 0)
+         or (axi.ar_size == 3 and axi.ar_addr[2:0] == 0));
+  assert aw_wrap_addr_aligned_apb: (axi.aw_valid and axi.aw_ready and axi.aw_burst == 2)
+    |-> ((axi.aw_size == 0)
+         or (axi.aw_size == 1 and axi.aw_addr[0] == 0)
+         or (axi.aw_size == 2 and axi.aw_addr[1:0] == 0)
+         or (axi.aw_size == 3 and axi.aw_addr[2:0] == 0));
 end module Nic400ApbBridge
