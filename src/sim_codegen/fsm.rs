@@ -69,7 +69,7 @@ impl<'a> SimCodegen<'a> {
         for p in &f.params {
             if matches!(p.kind, ParamKind::Const | ParamKind::WidthConst(..)) {
                 if let Some(ref def) = p.default {
-                    let val = eval_const_expr(def);
+                    let val = eval_const_expr_with_params(def, &f.common.params);
                     h.push_str(&format!("#ifndef {}\n#define {} {val}ULL\n#endif\n", p.name.name, p.name.name));
                 }
             }
@@ -233,12 +233,12 @@ impl<'a> SimCodegen<'a> {
         let fsm_let_names: HashSet<String> = f.lets.iter().map(|l| l.name.name.clone())
             .chain(f.wires.iter().map(|w| w.name.name.clone())).collect();
         let mut fsm_widths: HashMap<String, u32> = HashMap::new();
-        for p in &f.ports { fsm_widths.insert(p.name.name.clone(), type_bits_te(&p.ty)); }
-        for r in &f.regs { fsm_widths.insert(r.name.name.clone(), type_bits_te(&r.ty)); }
+        for p in &f.ports { fsm_widths.insert(p.name.name.clone(), type_bits_te_with_params(&p.ty, &f.common.params)); }
+        for r in &f.regs { fsm_widths.insert(r.name.name.clone(), type_bits_te_with_params(&r.ty, &f.common.params)); }
         for l in &f.lets {
-            if let Some(ty) = &l.ty { fsm_widths.insert(l.name.name.clone(), type_bits_te(ty)); }
+            if let Some(ty) = &l.ty { fsm_widths.insert(l.name.name.clone(), type_bits_te_with_params(ty, &f.common.params)); }
         }
-        for w in &f.wires { fsm_widths.insert(w.name.name.clone(), type_bits_te(&w.ty)); }
+        for w in &f.wires { fsm_widths.insert(w.name.name.clone(), type_bits_te_with_params(&w.ty, &f.common.params)); }
         // Built-in `state` identifier inside fsm scope: read of the current
         // encoded state. Lowers to `_state_r` in sim, with width = clog2(N).
         fsm_widths.insert("state".to_string(), state_bits as u32);
@@ -279,7 +279,7 @@ impl<'a> SimCodegen<'a> {
                 let n = &reg.name.name;
                 if vec_array_info(&reg.ty).is_some() {
                     let init_val = cpp_expr(expr, &ctx_fsm);
-                    let count = if let TypeExpr::Vec(_, c) = &reg.ty { eval_const_expr(c) } else { 0 };
+                    let count = if let TypeExpr::Vec(_, c) = &reg.ty { eval_const_expr_with_params(c, &f.common.params) } else { 0 };
                     cpp.push_str(&format!("    for (int _i = 0; _i < {count}; _i++) _n_{n}[_i] = {init_val};\n"));
                 } else {
                     let init_val = cpp_expr(expr, &ctx_fsm);

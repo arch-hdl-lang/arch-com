@@ -1774,19 +1774,12 @@ fn cpp_field_decl(name: &str, ty: &TypeExpr, params: &[ParamDecl]) -> String {
 /// `"]["` so a caller emitting `<elem>[<count>]` ends up with the
 /// correct multi-dim C array (`uint32_t name[8][4]`).
 fn vec_array_info(ty: &TypeExpr) -> Option<(String, String)> {
-    if let TypeExpr::Vec(elem, count_expr) = ty {
-        let outer_count = eval_const_expr(count_expr).to_string();
-        // Recursively descend nested Vecs to gather inner dimensions.
-        if let Some((inner_elem, inner_dims)) = vec_array_info(elem) {
-            Some((inner_elem, format!("{outer_count}][{inner_dims}")))
-        } else {
-            // Innermost level — element is a scalar (UInt/SInt/Bool/Named).
-            let elem_type = cpp_internal_type(elem);
-            Some((elem_type, outer_count))
-        }
-    } else {
-        None
-    }
+    // Backward-compatible wrapper: delegate to the param-aware version
+    // with an empty params slice. Callers that need to resolve a
+    // `Vec<_, PARAM_NAME>` count expression against an enclosing
+    // construct's params must use `vec_array_info_with_params`
+    // directly — see arch-com#447 §1.
+    vec_array_info_with_params(ty, &[])
 }
 
 /// Evaluate a constant expression to a u64, resolving basic arithmetic.
@@ -1796,6 +1789,15 @@ fn vec_array_info(ty: &TypeExpr) -> Option<(String, String)> {
 /// across `param N: const = …;` references (otherwise the result is 0
 /// and downstream code emits zero-sized C++ arrays — see the regression
 /// fixed in PR #cam-zero-array).
+#[deprecated(
+    note = "use `eval_const_expr_with_params(.., &params)` — the bare \
+            form silently miscompiles when the expression depends on \
+            enclosing-construct params (Vec<_, PARAM>, UInt<PARAM>, \
+            etc.). See arch-com#447 §1 and PRs #427, #439, #442 for \
+            the bug class this guards against."
+)]
+#[allow(dead_code)]  // intentional landmine: present so new callers
+                    // surface a deprecation warning at PR review time.
 fn eval_const_expr(expr: &Expr) -> u64 {
     eval_const_expr_with_params(expr, &[])
 }
@@ -4189,6 +4191,15 @@ fn build_widths(ports: &[PortDecl], body: &[ModuleBodyItem], params: &[ParamDecl
     m
 }
 
+#[deprecated(
+    note = "use `type_bits_te_with_params(.., &params)` — the bare \
+            form silently miscompiles when a `UInt<W>` / `SInt<W>` \
+            width is a param identifier (returns the fallback width \
+            of 32 rather than the param's resolved value). See \
+            arch-com#447 §1 and PRs #427, #439, #442."
+)]
+#[allow(dead_code)]  // intentional landmine: present so new callers
+                    // surface a deprecation warning at PR review time.
 fn type_bits_te(ty: &TypeExpr) -> u32 {
     type_bits_te_with_params(ty, &[])
 }
@@ -4847,7 +4858,7 @@ impl<'a> SimCodegen<'a> {
                 for f in &sd.fields {
                     widths.insert(
                         format!("{instance_name}.{}", f.name.name),
-                        type_bits_te(&f.ty),
+                        type_bits_te_with_params(&f.ty, &m.params),
                     );
                 }
             }
@@ -6819,7 +6830,7 @@ impl<'a> SimCodegen<'a> {
                     // breakdown stays a future opt-in.
                     if let Some(reg) = cov_handle {
                         if let TypeExpr::Vec(elem_ty, _) = &rd.ty {
-                            let elem_bits = type_bits_te(elem_ty);
+                            let elem_bits = type_bits_te_with_params(elem_ty, &m.params);
                             if elem_bits > 0 && elem_bits <= 64 {
                                 let cidx = reg.borrow_mut().alloc(
                                     "toggle",
@@ -6841,7 +6852,7 @@ impl<'a> SimCodegen<'a> {
                     // Skip enums — toggle on a state reg is mostly
                     // noise, FSM coverage is more useful there.
                     if let Some(reg) = cov_handle {
-                        let bits = type_bits_te(&rd.ty);
+                        let bits = type_bits_te_with_params(&rd.ty, &m.params);
                         if bits > 0 && bits <= 64 && !matches!(rd.ty, TypeExpr::Named(_)) {
                             let cidx = reg.borrow_mut().alloc(
                                 "toggle",
