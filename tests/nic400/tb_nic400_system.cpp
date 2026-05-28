@@ -190,6 +190,19 @@ int main() {
     // see exactly one handshake. After S2 (single-beat AHB read) the AR/R
     // channels each see one. Masters 1 and 2 are tied off and must stay
     // at zero on every channel.
+    //
+    // Note for future maintainers: handshake pulses on `ahb_axi.*_valid &&
+    // *_ready` ARE observable by the PMU's `seq on clk rising` block, even
+    // when produced by the AHB bridge's `wait 0+ cycle until …;` Mealy
+    // fusion. The pulse is a comb signal that holds across the rising edge
+    // until the consumer asserts `ready` — exactly when the sampling edge
+    // fires — so the PMU's `if aw_event[i] cnt <= cnt +% 1;` increments
+    // correctly. An earlier version of this TB skipped master-0 exact-
+    // count checks with an "unobservable Mealy pulse" rationale; the true
+    // cause of the zero counts was a sim_codegen bug (PR #442 /
+    // de35faa) where param-sized `wire Vec<T, PARAM>` connections to
+    // sub-inst Vec input ports emitted zero fan-out lines, leaving the
+    // PMU's inputs default-constructed. Do not reintroduce that apology.
     for (int i = 0; i < 10; ++i) tick();   // settle PMU regs
     unsigned ar0 = (unsigned)dut.ar_count[0];
     unsigned r0  = (unsigned)dut.r_count[0];
