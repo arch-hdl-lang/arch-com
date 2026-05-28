@@ -4792,6 +4792,11 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::Index(base, idx) => {
+                if let (Some(v), Some(idx_v)) = (literal_expr_u64(base), literal_expr_u64(idx)) {
+                    if idx_v < 64 {
+                        return format!("1'd{}", (v >> idx_v) & 1);
+                    }
+                }
                 // Vec-of-const param `B[i]`: rewrite to packed part-select
                 // `B[i*W +: W]` since iverilog rejects unpacked-array params.
                 if let ExprKind::Ident(name) = &base.kind {
@@ -4812,6 +4817,19 @@ impl<'a> Codegen<'a> {
                 format!("{b}[{i}]")
             }
             ExprKind::BitSlice(base, hi, lo) => {
+                if let (Some(v), Some(hi_v), Some(lo_v)) =
+                    (literal_expr_u64(base), literal_expr_u64(hi), literal_expr_u64(lo))
+                {
+                    if hi_v >= lo_v && hi_v < 64 {
+                        let width = (hi_v - lo_v + 1) as u32;
+                        let mask = if width >= 64 {
+                            u64::MAX
+                        } else {
+                            (1u64 << width) - 1
+                        };
+                        return format!("{width}'d{}", (v >> lo_v) & mask);
+                    }
+                }
                 let b = self.emit_expr_str(base);
                 // Parenthesize complex base expressions to avoid precedence issues.
                 // SynthIdent is a compiler-renamed bare identifier with the same
@@ -5226,4 +5244,14 @@ impl<'a> Codegen<'a> {
     // ── Synchronizer ─────────────────────────────────────────────────────────
     // ── RAM ───────────────────────────────────────────────────────────────────
 
+}
+
+fn literal_expr_u64(expr: &Expr) -> Option<u64> {
+    match &expr.kind {
+        ExprKind::Literal(LitKind::Dec(v))
+        | ExprKind::Literal(LitKind::Hex(v))
+        | ExprKind::Literal(LitKind::Bin(v))
+        | ExprKind::Literal(LitKind::Sized(_, v)) => Some(*v),
+        _ => None,
+    }
 }

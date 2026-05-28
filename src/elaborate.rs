@@ -1652,6 +1652,19 @@ fn fold_literal_bit_slices_expr(expr: Expr) -> Expr {
     let span = expr.span;
     let parenthesized = expr.parenthesized;
     let kind = match expr.kind {
+        ExprKind::Index(base, idx) => {
+            let base = fold_literal_bit_slices_expr(*base);
+            let idx = fold_literal_bit_slices_expr(*idx);
+            if let (Some(v), Some(idx_v)) = (literal_expr_u64(&base), literal_expr_u64(&idx)) {
+                if idx_v < 64 {
+                    ExprKind::Literal(LitKind::Sized(1, (v >> idx_v) & 1))
+                } else {
+                    ExprKind::Index(Box::new(base), Box::new(idx))
+                }
+            } else {
+                ExprKind::Index(Box::new(base), Box::new(idx))
+            }
+        }
         ExprKind::BitSlice(base, hi, lo) => {
             let base = fold_literal_bit_slices_expr(*base);
             let hi = fold_literal_bit_slices_expr(*hi);
@@ -1689,10 +1702,6 @@ fn fold_literal_bit_slices_expr(expr: Expr) -> Expr {
             Box::new(fold_literal_bit_slices_expr(*e)),
             m,
             args.into_iter().map(fold_literal_bit_slices_expr).collect(),
-        ),
-        ExprKind::Index(base, idx) => ExprKind::Index(
-            Box::new(fold_literal_bit_slices_expr(*base)),
-            Box::new(fold_literal_bit_slices_expr(*idx)),
         ),
         ExprKind::Cast(e, ty) => ExprKind::Cast(Box::new(fold_literal_bit_slices_expr(*e)), ty),
         ExprKind::Concat(exprs) => {
