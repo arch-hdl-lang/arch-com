@@ -481,38 +481,93 @@ end
 
 ### Arbiter structure
 
-For each resource the compiler generates a **fixed-priority combinational arbiter**:
+Each resource lowers to a synthesized `arbiter` Item named `_arb_<Mod>_<res>`,
+instantiated inside the merged threads module (v0.46.0+).  The arbiter's policy
+is taken from the resource declaration; every policy supported by the standalone
+`arbiter` construct is available to `lock`-block arbitration without duplicate
+codegen.  Per-thread request signals are packed into `request_valid[N]`; the
+arbiter drives `request_ready[N]`, which is unpacked back into per-thread
+`grant[i]` wires consumed by the lock-entry stall logic.
 
-```
-grant[0] = req[0]
-grant[1] = req[1] && !grant[0]
-grant[i] = req[i] && !grant[0] && … && !grant[i-1]
-```
+Supported policies and their grant equations (N requesters, indices 0..N-1):
 
-Thread index 0 has the highest priority.  The arbiter is purely combinational —
-it resolves in the same cycle with no flops of its own.
+| Policy | Grant rule | State |
+|---|---|---|
+| `priority` *(default)* | lowest-indexed asserted requester wins | none |
+| `round_robin` | scan from `(rr_ptr + i) mod N`, grant first asserted; on grant, `rr_ptr <= (grantee + 1) mod N` | `rr_ptr` |
+| `lru` | scan from least-recently-granted | per-requester recency vector |
+| `weighted<W>` | each thread gets a credit count `W`; deplete-and-refill | per-requester credit reg |
+| custom (`hook grant_select(...)`) | user function returns one-hot grant mask | hook-defined |
 
-### Deadlock freedom (proof)
+For the priority policy, the arbiter is purely combinational — it resolves in
+the same cycle with no flops of its own.  The other policies carry the state
+listed in the third column, updated once per posedge under the grant condition.
 
-**Definition**: thread Ti *waits-for* Tj when Ti is blocked at lock body state 0
-(`grant_i && cond` is false) and Tj has `req_j = 1` with `j < i`, causing
-`grant_i = 0`.
+### Liveness per policy
 
-**Claim**: the waits-for relation is acyclic, so no deadlock can form.
+**Definition.** Thread Ti *waits-for* Tj when Ti is blocked at lock body
+state 0 (its `grant_i && cond` is false) and Tj currently holds the resource
+(`grant_j = 1`).
 
-**Proof**: from the arbiter equations, `grant[i] = 0` only when some `grant[j]`
-with `j < i` is 1.  Therefore:
+**Priority** *(default)*.  `grant[i] = 0` only when some `grant[j]` with
+`j < i` is 1, so every waits-for edge points from a higher-indexed thread to a
+lower-indexed one:
 
 > Ti waits-for Tj  ⟹  index(Tj) < index(Ti)
 
-All waits-for edges point from higher-indexed threads toward lower-indexed ones.
-A cycle would require some thread to appear on both ends of the edge ordering —
-its index would need to be both strictly less than and strictly greater than
-itself, which is impossible.  No cycle ⟹ no deadlock. ∎
+The waits-for relation is acyclic (any cycle would need a thread index strictly
+less than and strictly greater than itself), so no deadlock can form.
+Corollary: thread 0 always makes progress, which unblocks thread 1, etc. — the
+system is **starvation-free** for all threads as long as every thread's lock
+body eventually terminates.
 
-Corollary: thread 0 always makes progress (no thread can block it), which
-unblocks thread 1, which unblocks thread 2, etc. — the system is **starvation-free**
-for all threads as long as every thread's lock body eventually terminates.
+Note: the safety argument here makes thread 0 unconditionally win contention
+with thread N-1.  Designs whose access patterns rely on fairness should declare
+`mutex<round_robin>` or `mutex<lru>` instead of accepting the default
+`mutex<priority>`.
+
+**Round-robin and LRU.**  Both policies grant the highest-priority asserted
+requester *under a rotating priority order* — round_robin advances by 1 after
+every grant; LRU advances to whichever requester was least recently served.
+The safety argument is the same shape per cycle: the policy picks a single
+winner from the asserted set, so mutual exclusion holds and the
+just-not-granted threads remain stalled at lock entry.  Liveness is stronger
+than priority: as long as every lock body terminates in bounded time, every
+asserted requester is granted within at most N grant-events of asserting.
+Acyclicity of the waits-for relation is no longer per-cycle (the priority
+order itself rotates), but the grant-counter argument still rules out
+deadlock cycles.
+
+**Weighted.**  Each requester carries a credit count.  A requester is eligible
+only while its credit is non-zero; once all eligible requesters' credits are
+exhausted, credits refill.  Mutual exclusion is identical; liveness depends on
+the requester actually carrying enough credit to make forward progress, which
+is the user's responsibility when choosing the weight.
+
+**Custom (`hook grant_select`).**  The grant function is opaque to the
+compiler — the synthesized arbiter trusts whatever one-hot mask the hook
+returns.  Mutual exclusion still holds (the arbiter enforces one-hot regardless
+of what the hook says), but liveness is **only as good as the hook**.  A hook
+that returns the all-zeros mask while requests are asserted creates an
+arbiter-side deadlock; a hook that consistently picks the same thread starves
+others.  Custom-policy users carry the liveness obligation.
+
+### Simulation-vs-build divergence — `--thread-sim` policy downgrade
+
+`arch sim --thread-sim` runs the parallel thread scheduler (`src/sim_codegen/thread_sim.rs`)
+instead of the FSM-lowered codegen.  As of v0.51.0, that scheduler accepts
+`RoundRobin` and `Lru` policies (it previously rejected them) but its internal
+"free or already mine" gating resolves contention as lowest-thread-index-wins,
+which is observationally identical to `priority`.  Until the scheduler honours
+the requested policy:
+
+- Tests that compare `arch sim` (FSM-lowered) against
+  `arch sim --thread-sim both` on a design using `mutex<round_robin>` or
+  `mutex<lru>` may surface as false-PASS — the FSM-lowered path observes the
+  declared policy, the `--thread-sim` path observes priority order.
+- Verilator and the default arch sim path are unaffected.
+
+This is tracked in [arch-com#447](https://github.com/arch-hdl-lang/arch-com/pull/447) §3.
 
 ### Mutual exclusion
 
