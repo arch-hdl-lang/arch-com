@@ -1163,7 +1163,7 @@ A verification pass against the ARM TRM (DDI 0475E, *CoreLink NIC-400 Network In
 | Feature | Status | Where / next step |
 |---|---|---|
 | Single-master, single-slave smoke | ✅ | `tb_nic400_system.cpp` |
-| Multi-master contention (M=2..3 active at once) | ❌ | All non-CPU master ports are stubbed idle in `Nic400System.arch`; need a multi-driver TB |
+| Multi-master contention (M=2..3 active at once) | ✅ | `tb_nic400_fabric_multi_master.cpp`: S1 3-master disjoint reads at 3.00 t/c; S2 3-way hot-slave round_robin at 1.00 t/c (m0=10,m1=10,m2=10, no starvation); S3 3-master disjoint writes (18/18 BRESPs correctly routed). |
 | Multi-slave hot-spot QoS test | ❌ | Implied by §16 row above — `tb_hot_slave_qos.cpp` from spec Appendix A was never landed |
 | OOO completion (interleaved B per master) | ❌ | `tb_ooo_completion.cpp` from spec Appendix A — not landed |
 | Reg-slice fabric throughput | ✅ | `tb_nic400_fabric_regslice.cpp`, `tb_nic400_fabric_throughput.cpp` |
@@ -1173,11 +1173,10 @@ A verification pass against the ARM TRM (DDI 0475E, *CoreLink NIC-400 Network In
 #### Quick-pick "close next" candidates
 Roughly ordered by likely effort × value, picked from the rows above:
 
-1. **De-stub the system demo's idle masters** — give `m[1]`/`m[2]` real activity in `tb_nic400_system.cpp` (or a sibling TB) so multi-master contention is exercised end-to-end. Unblocks a real QoS test next.
-2. **Default-slave responder** — small extra module returning DECERR for un-decoded addrs, wire into the fabric's "no match" output of `Nic400MasterPort`. Closes a basic conformance item.
-3. **Per-slave reg slice wrapper** — symmetric to `Nic400FabricRs1` but on the s side. Mostly copy-paste; useful as a real-SoC pattern.
-4. **Wire width adapter into a system variant** — `Nic400SystemWide` with a 64-bit AXI master and the 32-bit APB target, so the adapter is exercised in-system.
-5. **GPV regfile sketch** — AXI4 target (TRM §3.2: GPV is AXI-accessed, AxSIZE=32-bit only, Secure-only, non-cacheable, no interleaved WDATA) plus a `regfile` block with a few mapped registers (`read_qos`/`write_qos` from Table 3-1, decode-table / remap-state override). Lowest-cost path to "programmable" status on the QoS, decode, and remap rows.
+1. **Default-slave responder** — small extra module returning DECERR for un-decoded addrs, wire into the fabric's "no match" output of `Nic400MasterPort`. Closes a basic conformance item. [TRM §2.2.1]
+2. **Per-slave reg slice wrapper** — symmetric to `Nic400FabricRs1` but on the s side. Mostly copy-paste; useful as a real-SoC pattern. [TRM §2.2.1/§2.2.2]
+3. **Wire width adapter into a system variant** — `Nic400SystemWide` with a 64-bit AXI master and the 32-bit APB target, so the adapter is exercised in-system.
+4. **GPV regfile sketch** — AXI4 target (TRM §3.2: GPV is AXI-accessed, AxSIZE=32-bit only, Secure-only, non-cacheable, no interleaved WDATA) plus a `regfile` block with a few mapped registers (`read_qos`/`write_qos` from Table 3-1, decode-table / remap-state override). Lowest-cost path to "programmable" status on the QoS, decode, and remap rows.
 
 Items deliberately deferred: AXI3, AxUSER, QVN, LPI, EX-monitor — each is a real chunk of work and none has a current pull from a benchmark.
 
