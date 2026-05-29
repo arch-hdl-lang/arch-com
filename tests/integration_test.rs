@@ -18307,6 +18307,38 @@ fn test_native_sim_vec_inst_input_wire_param_sized_fanout() {
 }
 
 #[test]
+fn test_native_sim_thread_driven_top_pipe_reg_output_is_public() {
+    // Regression for arch-com#472: lower_threads rewrites a thread-driven
+    // top-level `port q: out pipe_reg<T,1>` into a registered output on the
+    // synthesized `_threads` submodule, connected back to the parent's
+    // registered output port. Native sim already copied the submodule value
+    // into the parent's private shadow `_q`, but failed to update public
+    // field `q`, so C++ testbenches polling `dut.q` saw stale zeroes.
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/native_pipe_reg_thread_output/Probe.arch")
+        .arg("--tb")
+        .arg("tests/native_pipe_reg_thread_output/tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for native pipe_reg thread output probe");
+    assert!(
+        out.status.success(),
+        "native pipe_reg thread output sim should compile + run\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS native pipe_reg thread output"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
 fn test_expect_fatal_harness_catches_bounds_violation() {
     // Smoke test for the `expect_verilator_fatal` helper in
     // `tests/common/mod.rs`. The Probe.arch fixture writes to a

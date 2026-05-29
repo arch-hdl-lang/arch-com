@@ -111,7 +111,6 @@ fn collect_one_thread_stmt(stmt: &ThreadStmt, out: &mut HashMap<String, Span>) {
         ThreadStmt::Lock { body, .. } => collect_thread_stmts(body, out),
         ThreadStmt::DoUntil { body, .. } => collect_thread_stmts(body, out),
         ThreadStmt::WaitUntil(_, _)
-        | ThreadStmt::WaitUntilMealy(_, _)
         | ThreadStmt::WaitCycles(_, _)
         | ThreadStmt::JoinAll(_)
         | ThreadStmt::Log(_)
