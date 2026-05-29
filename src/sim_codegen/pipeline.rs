@@ -34,7 +34,7 @@ impl<'a> SimCodegen<'a> {
                 match item {
                     ModuleBodyItem::RegDecl(r) => {
                         let prefixed = format!("{}_{}", prefix, r.name.name);
-                        let ty = cpp_internal_type(&r.ty);
+                        let ty = cpp_internal_type_with_params(&r.ty, &p.common.params);
                         let bits = type_bits_te_with_params(&r.ty, &p.common.params);
                         let reset_val = Self::pipeline_reset_value(&r.reset).unwrap_or("0".to_string());
                         names_set.insert(r.name.name.clone());
@@ -44,7 +44,7 @@ impl<'a> SimCodegen<'a> {
                         // ty=None means assignment to existing port/wire — skip as new binding
                         if l.ty.is_none() { continue; }
                         let prefixed = format!("{}_{}", prefix, l.name.name);
-                        let ty = if let Some(ref te) = l.ty { cpp_internal_type(te) } else { "uint32_t".to_string() };
+                        let ty = if let Some(ref te) = l.ty { cpp_internal_type_with_params(te, &p.common.params) } else { "uint32_t".to_string() };
                         let bits = if let Some(ref te) = l.ty { type_bits_te_with_params(te, &p.common.params) } else { 32 };
                         names_set.insert(l.name.name.clone());
                         all_regs.push(StageReg { prefixed, ty, reset_val: String::new(), bits, is_let: true });
@@ -133,7 +133,7 @@ impl<'a> SimCodegen<'a> {
                         if is_known(&t, &wires) { continue; }
                         let ty_te = consumer_ty(&t).unwrap_or(TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(32)), p.span))));
                         let bits = type_bits_te_with_params(&ty_te, &p.common.params);
-                        let ty_cpp = cpp_internal_type(&ty_te);
+                        let ty_cpp = cpp_internal_type_with_params(&ty_te, &p.common.params);
                         wires.push(ImplicitWire { name: t.clone(), prefixed: format!("{prefix}_{t}"), ty_cpp, bits });
                     }
                 }
@@ -153,7 +153,7 @@ impl<'a> SimCodegen<'a> {
                             .or_else(|| consumer_ty(target))
                             .unwrap_or(TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(32)), p.span))));
                         let bits = type_bits_te_with_params(&ty_te, &p.common.params);
-                        let ty_cpp = cpp_internal_type(&ty_te);
+                        let ty_cpp = cpp_internal_type_with_params(&ty_te, &p.common.params);
                         wires.push(ImplicitWire { name: target.clone(), prefixed: format!("{prefix}_{target}"), ty_cpp, bits });
                     }
                 }
@@ -205,7 +205,7 @@ impl<'a> SimCodegen<'a> {
         }
         h.push_str(&format!("\nclass {class} {{\npublic:\n"));
         for pt in &p.ports {
-            h.push_str(&format!("  {} {};\n", cpp_port_type(&pt.ty), pt.name.name));
+            h.push_str(&format!("  {} {};\n", cpp_port_type_with_params(&pt.ty, &p.common.params), pt.name.name));
         }
         h.push('\n');
 
@@ -271,7 +271,7 @@ impl<'a> SimCodegen<'a> {
                     let val = self.pipeline_sim_expr(&l.value, prefix, si,
                         &stage_names, &stage_prefixes, &stage_reg_names,
                         &port_names, &reg_names, &let_names, &widths, &_enum_map, &p.common.params);
-                    let ty = if let Some(ref te) = l.ty { cpp_internal_type(te) } else { "uint32_t".to_string() };
+                    let ty = if let Some(ref te) = l.ty { cpp_internal_type_with_params(te, &p.common.params) } else { "uint32_t".to_string() };
                     let bits = if let Some(ref te) = l.ty { type_bits_te_with_params(te, &p.common.params) } else { 32 };
                     let mask = if bits > 0 && bits < 64 { format!(" & 0x{:X}ULL", (1u64 << bits) - 1) } else { String::new() };
                     cpp.push_str(&format!("      {ty} {}_{} = ({val}){mask};\n", prefix, l.name.name));
@@ -371,7 +371,7 @@ impl<'a> SimCodegen<'a> {
                         let val = self.pipeline_sim_expr(&l.value, prefix, si,
                             &stage_names, &stage_prefixes, &stage_reg_names,
                             &port_names, &reg_names, &let_names, &widths, &_enum_map, &p.common.params);
-                        let ty = if let Some(ref te) = l.ty { cpp_internal_type(te) } else { "uint32_t".to_string() };
+                        let ty = if let Some(ref te) = l.ty { cpp_internal_type_with_params(te, &p.common.params) } else { "uint32_t".to_string() };
                         let bits = if let Some(ref te) = l.ty { type_bits_te_with_params(te, &p.common.params) } else { 32 };
                         let mask = if bits > 0 && bits < 64 { format!(" & 0x{:X}ULL", (1u64 << bits) - 1) } else { String::new() };
                         cpp.push_str(&format!("  {ty} {}_{} = ({val}){mask};\n", prefix, l.name.name));

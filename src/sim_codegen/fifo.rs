@@ -20,7 +20,7 @@ impl<'a> SimCodegen<'a> {
         let elem_ty: String = f.params.iter()
             .find(|p| p.name.name == "TYPE")
             .and_then(|p| if let ParamKind::Type(te) = &p.kind { Some(te) } else { None })
-            .map(cpp_internal_type)
+            .map(|te| cpp_internal_type_with_params(te, &f.params))
             .unwrap_or_else(|| "uint32_t".to_string());
 
         let (rst_name, _is_async, is_low) = extract_reset_info(&f.ports);
@@ -34,10 +34,10 @@ impl<'a> SimCodegen<'a> {
         let resolve_port_ty = |ty: &TypeExpr| -> String {
             if let TypeExpr::Named(n) = ty {
                 if let Some(concrete) = type_param_map.get(&n.name) {
-                    return cpp_port_type(concrete);
+                    return cpp_port_type_with_params(concrete, &f.params);
                 }
             }
-            cpp_port_type(ty)
+            cpp_port_type_with_params(ty, &f.params)
         };
 
         let mut h = String::new();
@@ -220,7 +220,7 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("  fprintf(_trace_fp, \"$scope module {} $end\\n\");\n", name));
         let mut sig_idx = 0usize;
         for p in &f.ports {
-            let w = type_width(&p.ty);
+            let w = type_width_with_params(&p.ty, &f.params);
             let id = vcd_id(sig_idx); sig_idx += 1;
             let pname = &p.name.name;
             cpp.push_str(&format!("  fprintf(_trace_fp, \"$var wire {w} {id} {pname} $end\\n\");\n"));
@@ -233,7 +233,7 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("  fprintf(_trace_fp, \"#%lu\\n\", (unsigned long)time);\n");
         sig_idx = 0;
         for p in &f.ports {
-            let w = type_width(&p.ty);
+            let w = type_width_with_params(&p.ty, &f.params);
             let id = vcd_id(sig_idx); sig_idx += 1;
             let pname = &p.name.name;
             if w == 1 {

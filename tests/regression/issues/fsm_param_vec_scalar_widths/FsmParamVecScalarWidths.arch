@@ -1,0 +1,82 @@
+// Combined regression for arch-com#447 §1's proposed adjacent test,
+// extending PR #458 to the sibling helper cluster (`type_width`,
+// `cpp_port_type`, `cpp_internal_type`, `vec_array_info`). The bug
+// pattern these helpers share with `type_bits_te` / `eval_const_expr`:
+// when called from `fsm.rs` / `pipeline.rs` / etc. against a type that
+// references an enclosing-construct param (`UInt<ACC>` /
+// `Vec<UInt<ACC>, 4>`), the bare form fails to resolve the param and
+// defaults to 32 bits / 0 entries.
+//
+// Three signals in one FSM that exercise three sibling helpers in
+// one pass:
+//
+//   1. `out_word: out UInt<ACC>` — `cpp_port_type` bucketing. With
+//      `ACC = 48`, the C++ bucket must be `uint64_t` (49..=64), not
+//      `uint32_t` (the bare-form default).
+//   2. `reg buf: Vec<UInt<ACC>, 4>` — `vec_array_info` (count + elem
+//      type) AND `cpp_internal_type` (the storage type when the Vec
+//      branch isn't taken). With the bare form, the reset loop
+//      iterates zero times and the underlying C-array would be
+//      declared `uint32_t buf[0]`.
+//   3. `port vec_word: out Vec<UInt<ACC>, 2>` — `vec_array_info` again
+//      on a Vec output port, exercising the flat-field fan-out path
+//      where each element must be sized per the param.
+//
+// After the fix:
+// - `cpp_port_type_with_params(.., &f.common.params)` puts both
+//   `out_word` and each `vec_word_<i>` flat field in the `uint64_t`
+//   bucket.
+// - `vec_array_info_with_params(.., &f.common.params)` returns
+//   `Some(("uint64_t", "4"))` for `buf` and `Some(("uint64_t", "2"))`
+//   for `vec_word`.
+// - `cpp_internal_type_with_params(.., &f.common.params)` puts the
+//   `reg buf` storage rows on `uint64_t` (when the Vec branch is not
+//   taken, e.g. for scalar `UInt<ACC>` regs added by future tests).
+
+fsm FsmParamVecScalarWidths
+  param ACC: const = 48;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port start: in Bool;
+  port out_word: out UInt<ACC>;
+  port vec_word: out Vec<UInt<ACC>, 2>;
+
+  reg buf: Vec<UInt<ACC>, 4> reset rst => 0;
+
+  state [Idle, Run]
+  default state Idle;
+  default seq on clk rising;
+
+  default
+    comb
+      out_word    = 0;
+      vec_word[0] = 0;
+      vec_word[1] = 0;
+    end comb
+  end default
+
+  state Idle
+    comb
+      out_word = 0;
+    end comb
+    seq
+      if start
+        buf[0] <= 1;
+        buf[1] <= 2;
+        buf[2] <= 3;
+        buf[3] <= 4;
+      end if
+    end seq
+    -> Run when start;
+  end state Idle
+
+  state Run
+    comb
+      out_word    = buf[0];
+      vec_word[0] = buf[1];
+      vec_word[1] = buf[2];
+    end comb
+    -> Idle;
+  end state Run
+end fsm FsmParamVecScalarWidths
