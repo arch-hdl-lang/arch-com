@@ -1020,6 +1020,10 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // Multi-driver check (SFG Check 1, closes #375)
+        let sfg_drivers = crate::signal_flow::collect_module_drivers(m, self.source);
+        self.errors.extend(crate::signal_flow::check_multi_driver(m, &sfg_drivers));
+
         // Check all output ports are driven
         for p in &m.ports {
             if let Some(ref bi) = p.bus_info {

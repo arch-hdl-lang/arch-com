@@ -17652,3 +17652,205 @@ fn test_nic400_width_adapter_wrap_unaligned_addr_is_rejected_by_sva() {
         "ASSERTION FAILED: Nic400WidthAdapter.ar_wrap_addr_aligned_widthadapter",
     );
 }
+
+// ── Multi-driver detection (SFG Check 1, issue #375) ─────────────────────────
+
+/// Run through all compile stages up to typecheck and return any errors.
+fn typecheck_source(source: &str) -> Result<(), Vec<arch::diagnostics::CompileError>> {
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(ast).expect("elaborate");
+    let ast = elaborate::lower_tlm_target_threads(ast).expect("tlm_target");
+    let ast = elaborate::lower_tlm_initiator_calls(ast).expect("tlm_initiator");
+    let ast = elaborate::lower_threads_with_opts(ast, &elaborate::ThreadLowerOpts::default())
+        .expect("lower_threads");
+    let ast = elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg");
+    let ast = elaborate::lower_credit_channel_dispatch(ast).expect("credit_channel");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    checker.check().map(|_| ())
+}
+
+fn has_multi_driver_error(source: &str, signal: &str) -> bool {
+    match typecheck_source(source) {
+        Err(errs) => errs.iter().any(|e| {
+            matches!(e, arch::diagnostics::CompileError::MultipleDrivers { name, .. }
+                if name == signal)
+        }),
+        Ok(_) => false,
+    }
+}
+
+/// Repro C2: two separate `comb` blocks driving the same output wire.
+/// Each `comb` becomes a distinct `always_comb` in SV — a genuine multi-driver.
+#[test]
+fn test_multi_driver_two_comb_blocks_same_output() {
+    let source = r#"
+module TwoCombBlocks
+  port a: in Bool;
+  port out: out Bool;
+  comb
+    out = a;
+  end comb
+  comb
+    out = false;
+  end comb
+end module TwoCombBlocks
+"#;
+    assert!(
+        has_multi_driver_error(source, "out"),
+        "expected MultipleDrivers for `out` (two comb blocks)"
+    );
+}
+
+/// Within a single `comb` block, multiple conditional writes to the same
+/// wire (default + if-override) are ONE logical driver — no error.
+#[test]
+fn test_multi_driver_single_comb_block_conditional_no_error() {
+    let source = r#"
+module SingleCombConditional
+  port sel: in Bool;
+  port out: out Bool;
+  comb
+    out = false;
+    if sel
+      out = true;
+    end if
+  end comb
+end module SingleCombConditional
+"#;
+    assert!(
+        typecheck_source(source).is_ok(),
+        "single comb block with conditional write should NOT be a multi-driver"
+    );
+}
+
+/// Repro C7: two separate `inst` scalar outputs connected to the same parent wire.
+/// Both child instances drive `result` — a genuine multi-driver.
+#[test]
+fn test_multi_driver_two_inst_scalar_outputs_same_wire() {
+    let source = r#"
+module DriverA
+  port out_val: out Bool;
+  comb
+    out_val = true;
+  end comb
+end module DriverA
+
+module DriverB
+  port out_val: out Bool;
+  comb
+    out_val = false;
+  end comb
+end module DriverB
+
+module ParentC7
+  port result: out Bool;
+  inst a: DriverA
+    out_val -> result;
+  end inst a
+  inst b: DriverB
+    out_val -> result;
+  end inst b
+end module ParentC7
+"#;
+    assert!(
+        has_multi_driver_error(source, "result"),
+        "expected MultipleDrivers for `result` (two inst scalar outputs)"
+    );
+}
+
+/// A `comb` block and an `inst` scalar output both driving the same wire.
+#[test]
+fn test_multi_driver_comb_and_inst_same_wire() {
+    let source = r#"
+module Src
+  port val: out Bool;
+  comb
+    val = true;
+  end comb
+end module Src
+
+module ParentCombInst
+  port out: out Bool;
+  comb
+    out = false;
+  end comb
+  inst s: Src
+    val -> out;
+  end inst s
+end module ParentCombInst
+"#;
+    assert!(
+        has_multi_driver_error(source, "out"),
+        "expected MultipleDrivers for `out` (comb block + inst output)"
+    );
+}
+
+/// `shared(or)` ports are intentionally multi-driven and must be exempt.
+#[test]
+fn test_multi_driver_shared_or_port_exempt() {
+    let source = r#"
+module SharedOrPort
+  port a: in Bool;
+  port b: in Bool;
+  port out: out Bool shared(or);
+  comb
+    out = a;
+  end comb
+  comb
+    out = b;
+  end comb
+end module SharedOrPort
+"#;
+    // shared(or) ports are exempt — typecheck should succeed
+    assert!(
+        typecheck_source(source).is_ok(),
+        "shared(or) port driven from two comb blocks should NOT be a multi-driver error"
+    );
+}
+
+/// Bus-typed wires connected from both initiator and target insts must NOT
+/// trigger multi-driver.  This is the canonical TLM bus wire pattern.
+#[test]
+fn test_multi_driver_bus_wire_two_inst_connections_no_error() {
+    let source = r#"
+bus Msg
+  data: out UInt<8>;
+  ack:  in  Bool;
+end bus Msg
+
+module Sender
+  port m: initiator Msg;
+  comb
+    m.data = 8'h42;
+  end comb
+end module Sender
+
+module Receiver
+  port m: target Msg;
+  port ack_out: out Bool;
+  comb
+    m.ack   = true;
+    ack_out = m.data[0];
+  end comb
+end module Receiver
+
+module BusWireTop
+  port ack_out: out Bool;
+  wire link: Msg;
+  inst tx: Sender
+    m -> link;
+  end inst tx
+  inst rx: Receiver
+    m    -> link;
+    ack_out -> ack_out;
+  end inst rx
+end module BusWireTop
+"#;
+    assert!(
+        typecheck_source(source).is_ok(),
+        "bus wire connected from initiator + target insts must NOT be a multi-driver error"
+    );
+}
