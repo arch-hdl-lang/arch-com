@@ -1,0 +1,353 @@
+// HARC testbench: Nic400Fabric hot-slave throughput.
+//
+// Verifies that the slave-side `ar_lock` (mutex<round_robin>) arbiter
+// introduces zero dead cycles on M0↔M1 master handoffs into slave 0.
+//
+// Run with:
+//   harc sim --dut tests/nic400/BusAxi4.arch \
+//             tests/nic400/Nic400Fabric.arch \
+//             tests/nic400/Nic400MasterPort.arch \
+//             tests/nic400/Nic400SlavePort.arch \
+//             tests/nic400/Nic400FabricHotSlave_test.harc \
+//             --top Nic400Fabric
+//
+// Background
+// ──────────
+// Nic400FabricMultiMaster_test.harc S2 checks RR fairness / no starvation
+// but does not measure cycle-exact handoff timing.  This TB measures it.
+//
+// Scenarios
+// ─────────
+//   S1. Direct M↔M swap timing: one master requests at a time, strictly
+//       alternating M0→M1→M0… over 10 swap events.  Every swap must
+//       complete in exactly 1 cycle (grant-to-grant gap = 1).
+//   S2. Persistent contention: M0 + M1 both valid=1 continuously.
+//       mutex<round_robin> should sustain ≥ 0.9 t/c with no starvation
+//       (both masters receive ARs).
+//   S3. Contender dropout: M0 monopolises slave 0 for 4 ARs (M1 absent),
+//       then drops permanently.  M1 must sustain ≥ 0.9 t/c for 6 tail
+//       ARs with no dead cycle on the dropout event.
+//
+// Address mapping (both masters → slave 0):
+//   M0: 0x0000_1000  (addr[29:28] = 0b00)
+//   M1: 0x0000_2000  (addr[29:28] = 0b00)
+// Master index in slave-side ID: s_ar_id[0][4:3]
+
+testbench Nic400FabricHotSlaveTb
+    dut : Nic400Fabric
+end testbench Nic400FabricHotSlaveTb
+
+impl Nic400FabricHotSlaveTest for Nic400FabricHotSlaveTb
+    run
+        log(info, "Nic400Fabric hot-slave throughput test")
+
+        // ── Reset ────────────────────────────────────────────────────────
+        dut.rst           = 0
+        dut.m_ar_valid[0] = 0
+        dut.m_ar_valid[1] = 0
+        dut.m_ar_valid[2] = 0
+        dut.m_ar_addr[0]  = 0
+        dut.m_ar_addr[1]  = 0
+        dut.m_ar_addr[2]  = 0
+        dut.m_ar_id[0]    = 0
+        dut.m_ar_id[1]    = 0
+        dut.m_ar_id[2]    = 0
+        dut.m_ar_len[0]   = 0
+        dut.m_ar_len[1]   = 0
+        dut.m_ar_len[2]   = 0
+        dut.m_ar_size[0]  = 0
+        dut.m_ar_size[1]  = 0
+        dut.m_ar_size[2]  = 0
+        dut.m_ar_burst[0] = 0
+        dut.m_ar_burst[1] = 0
+        dut.m_ar_burst[2] = 0
+        dut.m_r_ready[0]  = 0
+        dut.m_r_ready[1]  = 0
+        dut.m_r_ready[2]  = 0
+        dut.m_aw_valid[0] = 0
+        dut.m_aw_valid[1] = 0
+        dut.m_aw_valid[2] = 0
+        dut.m_aw_addr[0]  = 0
+        dut.m_aw_addr[1]  = 0
+        dut.m_aw_addr[2]  = 0
+        dut.m_aw_id[0]    = 0
+        dut.m_aw_id[1]    = 0
+        dut.m_aw_id[2]    = 0
+        dut.m_aw_len[0]   = 0
+        dut.m_aw_len[1]   = 0
+        dut.m_aw_len[2]   = 0
+        dut.m_aw_size[0]  = 0
+        dut.m_aw_size[1]  = 0
+        dut.m_aw_size[2]  = 0
+        dut.m_aw_burst[0] = 0
+        dut.m_aw_burst[1] = 0
+        dut.m_aw_burst[2] = 0
+        dut.m_w_valid[0]  = 0
+        dut.m_w_valid[1]  = 0
+        dut.m_w_valid[2]  = 0
+        dut.m_w_data[0]   = 0
+        dut.m_w_data[1]   = 0
+        dut.m_w_data[2]   = 0
+        dut.m_w_strb[0]   = 0
+        dut.m_w_strb[1]   = 0
+        dut.m_w_strb[2]   = 0
+        dut.m_w_last[0]   = 0
+        dut.m_w_last[1]   = 0
+        dut.m_w_last[2]   = 0
+        dut.m_b_ready[0]  = 0
+        dut.m_b_ready[1]  = 0
+        dut.m_b_ready[2]  = 0
+        dut.s_ar_ready[0] = 0
+        dut.s_ar_ready[1] = 0
+        dut.s_ar_ready[2] = 0
+        dut.s_ar_ready[3] = 0
+        dut.s_r_valid[0]  = 0
+        dut.s_r_valid[1]  = 0
+        dut.s_r_valid[2]  = 0
+        dut.s_r_valid[3]  = 0
+        dut.s_r_data[0]   = 0
+        dut.s_r_data[1]   = 0
+        dut.s_r_data[2]   = 0
+        dut.s_r_data[3]   = 0
+        dut.s_r_id[0]     = 0
+        dut.s_r_id[1]     = 0
+        dut.s_r_id[2]     = 0
+        dut.s_r_id[3]     = 0
+        dut.s_r_resp[0]   = 0
+        dut.s_r_resp[1]   = 0
+        dut.s_r_resp[2]   = 0
+        dut.s_r_resp[3]   = 0
+        dut.s_r_last[0]   = 0
+        dut.s_r_last[1]   = 0
+        dut.s_r_last[2]   = 0
+        dut.s_r_last[3]   = 0
+        dut.s_aw_ready[0] = 0
+        dut.s_aw_ready[1] = 0
+        dut.s_aw_ready[2] = 0
+        dut.s_aw_ready[3] = 0
+        dut.s_w_ready[0]  = 0
+        dut.s_w_ready[1]  = 0
+        dut.s_w_ready[2]  = 0
+        dut.s_w_ready[3]  = 0
+        dut.s_b_valid[0]  = 0
+        dut.s_b_valid[1]  = 0
+        dut.s_b_valid[2]  = 0
+        dut.s_b_valid[3]  = 0
+        dut.s_b_id[0]     = 0
+        dut.s_b_id[1]     = 0
+        dut.s_b_id[2]     = 0
+        dut.s_b_id[3]     = 0
+        dut.s_b_resp[0]   = 0
+        dut.s_b_resp[1]   = 0
+        dut.s_b_resp[2]   = 0
+        dut.s_b_resp[3]   = 0
+        wait 4 cycles
+        dut.rst = 1
+        wait 3 cycles
+
+        // ── S1: Direct M↔M swap timing ───────────────────────────────────
+        // One master requests at a time; strictly alternate M0↔M1.
+        // After each grant the winner drops to 0, the other raises to 1.
+        // Every master-switch (swap event) must have a grant-to-grant gap
+        // of exactly 1 cycle.  Run until 10 swap events observed.
+        dut.s_ar_ready[0] = 1
+        dut.m_r_ready[0]  = 1
+        dut.m_r_ready[1]  = 1
+        dut.m_ar_addr[0]  = 0x00001000
+        dut.m_ar_size[0]  = 2
+        dut.m_ar_burst[0] = 1
+        dut.m_ar_addr[1]  = 0x00002000
+        dut.m_ar_size[1]  = 2
+        dut.m_ar_burst[1] = 1
+        // M0 requests first; M1 absent.
+        dut.m_ar_valid[0] = 1
+        dut.m_ar_valid[1] = 0
+
+        let seen_s1_m0   : uint<32> = 0
+        let seen_s1_m1   : uint<32> = 0
+        let swaps_done   : uint<32> = 0
+        let over_one_gap : uint<32> = 0
+        let worst_gap    : uint<32> = 0
+        // 255 = sentinel "no grant yet" — uint<32> so never equals 0 or 1.
+        let last_winner  : uint<32> = 255
+        let last_grant_c : uint<32> = 0
+        let cyc_s1       : uint<32> = 0
+        let total_s1     : uint<32> = 0
+
+        // Budget: (10+1) grants × 4 = 44 cycles; each grant takes 1 cycle
+        // under zero-dead-cycle handoff, so this is very generous.
+        for _ in 0 .. 44
+            dut.m_ar_id[0] = (seen_s1_m0 & 7)
+            dut.m_ar_id[1] = (seen_s1_m1 & 7)
+            wait 1 cycle
+            cyc_s1 = cyc_s1 + 1
+
+            if dut.s_ar_valid[0] == 1 && total_s1 < 11
+                let mid = ((dut.s_ar_id[0] >> 3) & 3)
+
+                if last_winner != 255
+                    let gap = cyc_s1 - last_grant_c
+                    if gap > worst_gap
+                        worst_gap = gap
+                    end if
+                    if last_winner != mid && gap != 1
+                        over_one_gap = over_one_gap + 1
+                    end if
+                    if last_winner != mid
+                        swaps_done = swaps_done + 1
+                    end if
+                end if
+
+                if mid == 0
+                    seen_s1_m0   = seen_s1_m0 + 1
+                    dut.m_ar_valid[0] = 0
+                    dut.m_ar_valid[1] = 1
+                elsif mid == 1
+                    seen_s1_m1   = seen_s1_m1 + 1
+                    dut.m_ar_valid[0] = 1
+                    dut.m_ar_valid[1] = 0
+                end if
+
+                last_winner  = mid
+                last_grant_c = cyc_s1
+                total_s1     = total_s1 + 1
+            end if
+        end for
+
+        assert swaps_done >= 10
+            else fail("S1: only ${swaps_done}/10 swap events in ${cyc_s1} cycles")
+        assert over_one_gap == 0
+            else fail("S1: ${over_one_gap} swap events had gap > 1 (dead cycle on M↔M handoff)")
+        assert worst_gap == 1
+            else fail("S1: worst grant-to-grant gap = ${worst_gap} cycles (expected 1)")
+        log(info, "PASS S1: M↔M swap timing — ${total_s1} grants, ${swaps_done} swaps, worst gap=${worst_gap}")
+
+        dut.m_ar_valid[0] = 0
+        dut.m_ar_valid[1] = 0
+        dut.s_ar_ready[0] = 0
+        wait 2 cycles
+
+        // ── S2: Persistent contention ─────────────────────────────────────
+        // Both M0 and M1 hold valid=1 simultaneously.
+        // mutex<round_robin> should distribute grants with no back-to-back
+        // bubble (aggregate t/c ≥ 0.9) and no starvation (both get ARs).
+        dut.s_ar_ready[0] = 1
+        dut.m_r_ready[0]  = 1
+        dut.m_r_ready[1]  = 1
+        dut.m_ar_valid[0] = 1
+        dut.m_ar_addr[0]  = 0x00001000
+        dut.m_ar_size[0]  = 2
+        dut.m_ar_burst[0] = 1
+        dut.m_ar_valid[1] = 1
+        dut.m_ar_addr[1]  = 0x00002000
+        dut.m_ar_size[1]  = 2
+        dut.m_ar_burst[1] = 1
+
+        let seen_s2_m0 : uint<32> = 0
+        let seen_s2_m1 : uint<32> = 0
+        let total_s2   : uint<32> = 0
+        let last_s2    : uint<32> = 1
+        let cyc_s2     : uint<32> = 0
+
+        // 16 ARs × 4 = 64-cycle budget
+        for _ in 0 .. 64
+            dut.m_ar_id[0] = (seen_s2_m0 & 7)
+            dut.m_ar_id[1] = (seen_s2_m1 & 7)
+            wait 1 cycle
+            cyc_s2 = cyc_s2 + 1
+            if dut.s_ar_valid[0] == 1 && total_s2 < 16
+                let mid = ((dut.s_ar_id[0] >> 3) & 3)
+                if mid == 0
+                    seen_s2_m0 = seen_s2_m0 + 1
+                elsif mid == 1
+                    seen_s2_m1 = seen_s2_m1 + 1
+                end if
+                total_s2 = total_s2 + 1
+                last_s2  = cyc_s2
+            end if
+        end for
+
+        assert total_s2 == 16
+            else fail("S2: only ${total_s2}/16 ARs completed in ${cyc_s2} cycles")
+        assert seen_s2_m0 > 0
+            else fail("S2: master 0 starved (0 grants, m1=${seen_s2_m1})")
+        assert seen_s2_m1 > 0
+            else fail("S2: master 1 starved (0 grants, m0=${seen_s2_m0})")
+        // t/c >= 0.9: total*10 >= last*9
+        assert (total_s2 * 10) >= (last_s2 * 9)
+            else fail("S2: throughput too low: ${total_s2} ARs in ${last_s2} cycles")
+        log(info, "PASS S2: persistent contention — m0=${seen_s2_m0} m1=${seen_s2_m1} ${total_s2}ARs/${last_s2}cyc")
+
+        dut.m_ar_valid[0] = 0
+        dut.m_ar_valid[1] = 0
+        dut.s_ar_ready[0] = 0
+        wait 2 cycles
+
+        // ── S3: Contender dropout ─────────────────────────────────────────
+        // Phase 1: M0 monopolises slave 0 for 4 ARs (M1 absent).
+        // Phase 2: M0 drops permanently, M1 raised.  M1 must sustain
+        //          ≥ 0.9 t/c for 6 tail ARs — confirming no dead cycle on
+        //          the dropout event.
+        dut.s_ar_ready[0] = 1
+        dut.m_r_ready[0]  = 1
+        dut.m_r_ready[1]  = 1
+        dut.m_ar_valid[0] = 1
+        dut.m_ar_addr[0]  = 0x00001000
+        dut.m_ar_size[0]  = 2
+        dut.m_ar_burst[0] = 1
+        dut.m_ar_valid[1] = 0   // M1 absent during monopolise phase
+
+        let seen_s3_m0  : uint<32> = 0
+        let m1_tail     : uint<32> = 0
+        let phase2_cyc  : uint<32> = 0
+        let last_p2_cyc : uint<32> = 0   // phase-2 cycle of last M1 tail grant
+
+        // Phase 1: 4 ARs, budget 4×4=16 cycles.
+        for _ in 0 .. 16
+            dut.m_ar_id[0] = (seen_s3_m0 & 7)
+            wait 1 cycle
+            if dut.s_ar_valid[0] == 1 && seen_s3_m0 < 4
+                let mid = ((dut.s_ar_id[0] >> 3) & 3)
+                assert mid == 0
+                    else fail("S3 phase1: unexpected master ${mid} granted (expected M0 only)")
+                seen_s3_m0 = seen_s3_m0 + 1
+            end if
+        end for
+
+        assert seen_s3_m0 == 4
+            else fail("S3: M0 monopolise phase only got ${seen_s3_m0}/4 ARs")
+
+        // Drop M0 permanently, raise M1.
+        dut.m_ar_valid[0] = 0
+        dut.m_ar_valid[1] = 1
+        dut.m_ar_addr[1]  = 0x00002000
+        dut.m_ar_size[1]  = 2
+        dut.m_ar_burst[1] = 1
+
+        // Phase 2: M1 tail — 6 ARs, budget 6×4=24 cycles.
+        // phase2_cyc counts elapsed cycles from dropout.
+        for _ in 0 .. 24
+            dut.m_ar_id[1] = (m1_tail & 7)
+            wait 1 cycle
+            phase2_cyc = phase2_cyc + 1
+            if dut.s_ar_valid[0] == 1 && m1_tail < 6
+                let mid = ((dut.s_ar_id[0] >> 3) & 3)
+                assert mid == 1
+                    else fail("S3 phase2: unexpected master ${mid} granted (expected M1 only)")
+                m1_tail     = m1_tail + 1
+                last_p2_cyc = phase2_cyc
+            end if
+        end for
+
+        assert m1_tail == 6
+            else fail("S3: M1 tail only ${m1_tail}/6 ARs after dropout")
+        // t/c >= 0.9 for tail: 6 grants × 10 >= elapsed_at_last_grant × 9.
+        // With zero dead cycle: 6 grants at phase2_cyc 1..6 → last_p2_cyc=6,
+        // ratio = 6/6 = 1.00.  One dead cycle at start → ratio = 6/7 < 0.9.
+        assert (m1_tail * 10) >= (last_p2_cyc * 9)
+            else fail("S3: M1 tail throughput too low: ${m1_tail} ARs in ${last_p2_cyc} phase-2 cycles")
+        log(info, "PASS S3: contender dropout — M0=${seen_s3_m0} ARs solo, M1 tail=${m1_tail} ARs in ${last_p2_cyc} cycles")
+
+        log(info, "PASS Nic400Fabric hot-slave throughput: zero-cycle M↔M handoff confirmed")
+    end run
+end impl Nic400FabricHotSlaveTest
