@@ -19,7 +19,7 @@ below labels its category.
 | # | Finding | Severity | Status | Category |
 |---|---|---|---|---|
 | 1 | §1 follow-up #458 leaves 4 sibling bare-API helpers unmigrated and undeprecated | **HIGH** | open | internal codegen |
-| 2 | 2026-05-27 findings note declares §3 (#460) and §A (#459) fixed, both PRs still **OPEN** | **HIGH** | doc drift | docs |
+| 2 | 2026-05-27 findings note declares §3 (#460) and §A (#459) fixed, both PRs still **OPEN**; **#460 takes the wrong approach** — warning is not the fix, scheduler should honour the policy | **HIGH** | open | sim runtime |
 | 3 | §2 follow-up: arch-sim has no behavioral test on non-pow-of-2 RR; only Verilator runs on `RRArb3` | LOW | open | test gap |
 | 4 | §4 follow-up: WRAP AW-side SVAs added but no expect-fatal TB exercises the AW path | LOW | open | test gap |
 | 5 | §4(d) still open: INCR 4 KB-boundary precondition unasserted; AxLOCK=EXCLUSIVE preconditions also unasserted (new) | LOW | open | feature gap |
@@ -69,7 +69,7 @@ spec change.
 
 ---
 
-## 2. 2026-05-27 findings note declares fixes that haven't merged yet (HIGH)
+## 2. 2026-05-27 findings note declares fixes that haven't merged — AND #460 takes the wrong approach (HIGH)
 
 `ideas/2026-05-27-code-review-findings.md` (landed via PR #447) and
 the PR description both claim:
@@ -82,21 +82,60 @@ and [#460](https://github.com/arch-hdl-lang/arch-com/pull/460) are
 still **OPEN**. The findings note is on `main` claiming fixes that
 have not landed.
 
-**Impact.** A reader of the findings note sees "all findings closed"
-and stops looking. A future audit comparing the index to git history
-finds nothing in `main` matching the claim.
+### #459 (§A) — right approach, just needs to land
 
-**Proposal — pick one:**
+Internal flag on `PortRegInfo` to suppress the false positive on
+thread-synthesized port-regs. Straightforward, scoped, and matches
+the original §A proposal verbatim. Land as-is.
 
-1. (preferred) Land #459 and #460 before next review (this note can
-   be the trigger to push them over the line). They are small,
-   internal-only PRs and the rationale is documented.
-2. Edit the resolution table in PR #447 to reflect the actual state
-   ("queued — PR open"). The note is a historical record; "all
-   closed" is currently a false claim.
+### #460 (§3) — **wrong approach; should be redirected**
 
-The resolution table is also missing PRs #461 (SHA-256 example) —
-unrelated to the review, just noting it landed in the same window.
+PR #460 implements §3's *short-term* option (emit a codegen-time
+warning) instead of the *real* fix: teach the `--thread-sim`
+scheduler to honour the mutex policy. The original §3 finding
+listed both options and called the scheduler fix "longer-term", but
+the warning-only approach leaves the semantic divergence live.
+`mutex<round_robin>` is documented as fair; if `--thread-sim`
+delivers priority instead, the scheduler is buggy, not the user's
+design. A warning shifts the burden onto the user (read every warn
+line before trusting `--thread-sim both` results) and doesn't
+remove the false-PASS surface.
+
+This applies to a broader principle worth tagging explicitly: when
+a code path silently degrades a documented semantic (RR → priority,
+multi-threaded → single-threaded, etc.), the default fix is to
+implement the documented behaviour. A warning is acceptable only as
+a transition step with a tracking issue for the real fix.
+
+**Proposal:**
+
+1. Close PR #460 or redirect to "warning + tracking issue for the
+   real fix", whichever the author prefers. The warning itself is
+   not harmful — it just isn't the closure.
+2. Open a new PR (or reframe #460) that **implements the policy in
+   the `--thread-sim parallel` scheduler**. Today the scheduler at
+   `src/sim_codegen/thread_sim.rs:808-814` is "free or already
+   mine," which is structural priority. The fix adds a per-resource
+   policy field that the runtime consults: maintain a per-resource
+   `last_grant` index for round-robin, an LRU stack for `mutex<lru>`,
+   a credit counter for weighted, and a hook callback dispatch for
+   `mutex<MyFn>`. The custom-hook case in particular needs to fire
+   the user's `hook grant_select(...)` and use its one-hot result.
+3. Once the scheduler honours the policy, remove the codegen-time
+   warning from #460 — it stops carrying signal.
+
+This is internal codegen / sim runtime, so per `CLAUDE.md` the
+implementation can land without spec confirmation. But the design
+of the scheduler state machinery (especially the credit/weighted
+policy and custom-hook calling convention) is non-trivial and
+benefits from human review before code.
+
+### #461 missing from the resolution table
+
+The resolution table in #447 is also missing PR #461 (SHA-256
+example), which landed in the same 24h window. Unrelated to the
+review's findings — just noting that the table is currently
+incomplete.
 
 ---
 
@@ -237,9 +276,15 @@ Documentation should not be amended until the underlying PRs land
 (see Finding 2 for #459/#460). Once they do, the following deltas
 are needed:
 
-- **`doc/thread_spec_section.md` §20.8.1 (line 216)** — does not
-  mention PR #460's codegen warning. Add a single sentence pointing
-  at the warning shape.
+- **`doc/thread_spec_section.md` §20.8.1 (line 216)** — currently
+  describes only the runtime behaviour. The right closure here
+  depends on Finding 2: once the scheduler actually honours
+  `mutex<round_robin|lru|weighted|custom>`, §20.8.1's caveat about
+  fairness under `--thread-sim` can be **removed entirely**
+  (`--thread-sim both` becomes a real cross-check again). If the
+  warning-only path from #460 lands as a transition step, document
+  it here; otherwise leave the section alone until the scheduler
+  fix lands.
 - **`doc/ARCH_HDL_Specification.md` §7a.3 (lines 1737–1746)** —
   stale: "the compiler generates a fixed-priority combinational
   arbiter" and "with fixed priority the waits-for graph is acyclic
