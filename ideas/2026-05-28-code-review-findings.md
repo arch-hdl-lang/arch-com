@@ -14,6 +14,31 @@ below labels its category.
 
 ---
 
+## Post-merge resolution status (updated 2026-05-29)
+
+| # | Finding | Original status | Resolution |
+|---|---|---|---|
+| 1 | §1 follow-up #458 — sibling helpers unmigrated | HIGH open | **fixed** (#464 — 23 sites migrated, 4 bare helpers deprecated, combined FSM fixture added) |
+| 2 / §A | #459 — `port reg` timing false positive | HIGH open | **fixed** (#459 force-pushed to use the existing `legacy_port_reg` gate instead of a new field — 5 files → 2 files, also silences user-written `pipe_reg<T, N>` correctly) |
+| 2 / §3 | #460 — `--thread-sim` mutex policy downgrade | HIGH open, wrong shape | **fixed for real** (#460 redirected: the merged form is the **scheduler implementation** of round_robin/lru/weighted/custom — not the warning. Doc fairness caveats in `thread_spec_section.md` §20.8.1 and `thread_lowering_algorithm.md` were removed by the redirect; `--thread-sim both` is a real cross-check again) |
+| 9 (subset) | `thread_spec_section.md` §20.8.1 caveat + `thread_lowering_algorithm.md` policy doc | MED open | **fixed alongside #460** — both files updated as part of the scheduler-redirect PR |
+| 3 / 4 / 5 / 6 / 7 / 8 | LOW residual test / refactor / feature gaps | LOW open | unchanged — queued for next batch |
+| 9 (remainder) | `ARCH_HDL_Specification.md` §7a.3 fixed-priority claim, `Arch_AI_Reference_Card.md` thread block, `COMPILER_STATUS.md` `--thread-sim both`, `nic400_interconnect_spec.md` §16.1 SVA inventory | MED open | unchanged — these were already stale before this batch and would benefit from a separate doc-sweep PR |
+| A | `_cb_depth` MT safety | LOW tracked | unchanged (harc-com#316) |
+| B | `topo_sort_component_indices` visibility | INFO | unchanged |
+| C | bare/param-aware helper duality language proposal | INFO | informally addressed by #464 (option 1 — delete the bare form via deprecation); options 2/3 still tabled |
+
+**HIGH findings: all three closed.** Three follow-up PRs landed:
+[#459](https://github.com/arch-hdl-lang/arch-com/pull/459) (legacy_port_reg gate, my replacement),
+[#460](https://github.com/arch-hdl-lang/arch-com/pull/460) (scheduler honours mutex policies — the real fix, not the warning),
+[#464](https://github.com/arch-hdl-lang/arch-com/pull/464) (sibling-helper migration).
+
+The original sections below remain the **historical record** of what
+the review found before resolution. The findings table above is the
+source of truth for current status.
+
+---
+
 ## TL;DR
 
 | # | Finding | Severity | Status | Category |
