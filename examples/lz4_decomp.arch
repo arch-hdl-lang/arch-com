@@ -1,0 +1,205 @@
+// LZ4 block decompressor (subset) — modeled on CAST Inc.'s LZ4SNP-D
+// lossless decompression IP (https://www.cast-inc.com/compression/lossless-data-compression).
+//
+// Decompresses one LZ4 *block* from a valid/ready byte stream into a
+// 256-byte circular history buffer, then streams the decoded bytes out
+// over a second valid/ready interface.
+//
+// LZ4 block format (per sequence):
+//   token byte    : [7:4] = literal-length nibble, [3:0] = match-length nibble
+//   [ext lit len] : if literal nibble == 15, add 0xFF-continuation bytes
+//   literals      : <literal-length> raw bytes copied to the output
+//   offset        : 2 bytes, little-endian back-reference distance
+//   [ext mat len] : if match nibble == 15, add 0xFF-continuation bytes
+//   (match copy)  : copy <match-length + 4> bytes from current_pos - offset
+//
+// The final sequence of a block is literals only (no offset / match); the
+// caller marks the last compressed byte with `in_last`, which ends the
+// block after the trailing literal run.
+//
+// This demo keeps a 256-byte window (8-bit pointers); the low offset byte
+// is used for addressing, which covers all back-references < 256. A
+// hand-written SystemVerilog mirror used by the HARC testbench lives in
+// harc-com at tests/dut/lz4_decomp.sv.
+//
+// domain SysDomain
+//   freq_mhz: 100
+
+fsm Lz4Decomp
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  // Compressed input byte stream. `in_last` marks the final block byte.
+  port in_valid: in  Bool;
+  port in_data:  in  UInt<8>;
+  port in_last:  in  Bool;
+  port in_ready: out Bool;
+
+  // Decompressed output byte stream.
+  port out_valid: out Bool;
+  port out_data:  out UInt<8>;
+  port out_last:  out Bool;
+  port out_ready: in  Bool;
+
+  // Pulses high while the completed block sits in the Done state.
+  port done: out Bool;
+
+  // History / output buffer (256-byte window) and parse state.
+  reg hist: Vec<UInt<8>, 256> reset none;
+  reg wr_ptr:   UInt<8>  reset rst => 0;   // bytes decoded so far this block
+  reg em_ptr:   UInt<8>  reset rst => 0;   // emit pointer during Emit
+  reg len_r:    UInt<16> reset rst => 0;   // literal / match length countdown
+  reg off_r:    UInt<8>  reset rst => 0;   // back-reference offset (low byte)
+  reg ml_nib_r: UInt<4>  reset rst => 0;   // match-length nibble from the token
+
+  state [ReadToken, ExtraLitLen, CopyLiteral,
+         ReadOffLo, ReadOffHi, ExtraMatchLen, CopyMatch,
+         Emit, Done]
+  default state ReadToken;
+  default seq on clk rising;
+
+  default
+    comb
+      in_ready  = false;
+      out_valid = false;
+      out_data  = 0;
+      out_last  = false;
+      done      = false;
+    end comb
+  end default
+
+  // Parse the token: high nibble = literal length, low nibble = match length.
+  state ReadToken
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        ml_nib_r <= in_data[3:0];
+        if in_data[7:4] == 15
+          len_r <= 15;
+        else
+          len_r <= in_data[7:4].zext<16>();
+        end if
+      end if
+    end seq
+    -> ExtraLitLen when in_valid and (in_data[7:4] == 15);
+    -> CopyLiteral when in_valid and (in_data[7:4] != 15) and (in_data[7:4] != 0);
+    -> ReadOffLo   when in_valid and (in_data[7:4] == 0);
+  end state ReadToken
+
+  // Accumulate the extended literal length (0xFF continuation bytes).
+  state ExtraLitLen
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        len_r <= (len_r + in_data.zext<16>()).trunc<16>();
+      end if
+    end seq
+    -> ExtraLitLen when in_valid and (in_data == 255);
+    -> CopyLiteral when in_valid and (in_data != 255);
+  end state ExtraLitLen
+
+  // Copy literal bytes from the input into the history/output buffer.
+  state CopyLiteral
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        hist[wr_ptr] <= in_data;
+        wr_ptr <= (wr_ptr + 1).trunc<8>();
+        len_r  <= (len_r - 1).trunc<16>();
+      end if
+    end seq
+    -> Emit      when in_valid and (len_r == 1) and in_last;
+    -> ReadOffLo when in_valid and (len_r == 1) and (not in_last);
+  end state CopyLiteral
+
+  // Offset, low byte.
+  state ReadOffLo
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        off_r <= in_data;
+      end if
+    end seq
+    -> ReadOffHi when in_valid;
+  end state ReadOffLo
+
+  // Offset high byte (unused for the 256-byte window) + match length base.
+  state ReadOffHi
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        if ml_nib_r == 15
+          len_r <= 19;                                  // 15 + minmatch(4)
+        else
+          len_r <= (ml_nib_r.zext<16>() + 4).trunc<16>();
+        end if
+      end if
+    end seq
+    -> ExtraMatchLen when in_valid and (ml_nib_r == 15);
+    -> CopyMatch     when in_valid and (ml_nib_r != 15);
+  end state ReadOffHi
+
+  // Accumulate the extended match length (0xFF continuation bytes).
+  state ExtraMatchLen
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        len_r <= (len_r + in_data.zext<16>()).trunc<16>();
+      end if
+    end seq
+    -> ExtraMatchLen when in_valid and (in_data == 255);
+    -> CopyMatch     when in_valid and (in_data != 255);
+  end state ExtraMatchLen
+
+  // Copy matched bytes from the back-reference, one byte per cycle. Overlap
+  // (offset < length, e.g. RLE) works because each written byte is visible
+  // to the next cycle's read.
+  state CopyMatch
+    seq
+      hist[wr_ptr] <= hist[(wr_ptr - off_r).trunc<8>()];
+      wr_ptr <= (wr_ptr + 1).trunc<8>();
+      len_r  <= (len_r - 1).trunc<16>();
+    end seq
+    -> ReadToken when len_r == 1;
+  end state CopyMatch
+
+  // Stream the decoded block out of the buffer.
+  state Emit
+    comb
+      out_valid = true;
+      out_data  = hist[em_ptr];
+      out_last  = (em_ptr == (wr_ptr - 1).trunc<8>());
+    end comb
+    seq
+      if out_ready
+        em_ptr <= (em_ptr + 1).trunc<8>();
+      end if
+    end seq
+    -> Done when out_ready and (em_ptr == (wr_ptr - 1).trunc<8>());
+  end state Emit
+
+  // Completion; reset the pointers so the next block starts clean.
+  state Done
+    comb
+      done = true;
+    end comb
+    seq
+      wr_ptr <= 0;
+      em_ptr <= 0;
+    end seq
+    -> ReadToken when true;
+  end state Done
+
+end fsm Lz4Decomp
