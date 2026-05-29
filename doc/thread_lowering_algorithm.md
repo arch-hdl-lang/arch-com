@@ -552,23 +552,6 @@ that returns the all-zeros mask while requests are asserted creates an
 arbiter-side deadlock; a hook that consistently picks the same thread starves
 others.  Custom-policy users carry the liveness obligation.
 
-### Simulation-vs-build divergence — `--thread-sim` policy downgrade
-
-`arch sim --thread-sim` runs the parallel thread scheduler (`src/sim_codegen/thread_sim.rs`)
-instead of the FSM-lowered codegen.  As of v0.51.0, that scheduler accepts
-`RoundRobin` and `Lru` policies (it previously rejected them) but its internal
-"free or already mine" gating resolves contention as lowest-thread-index-wins,
-which is observationally identical to `priority`.  Until the scheduler honours
-the requested policy:
-
-- Tests that compare `arch sim` (FSM-lowered) against
-  `arch sim --thread-sim both` on a design using `mutex<round_robin>` or
-  `mutex<lru>` may surface as false-PASS — the FSM-lowered path observes the
-  declared policy, the `--thread-sim` path observes priority order.
-- Verilator and the default arch sim path are unaffected.
-
-This is tracked in [arch-com#447](https://github.com/arch-hdl-lang/arch-com/pull/447) §3.
-
 ### Mutual exclusion
 
 Mutual exclusion requires that at most one thread executes inside a given lock's

@@ -2446,7 +2446,7 @@ impl Parser {
             "weighted"    => {
                 // `mutex<weighted<W>>` — inner `<W>` (param expr).
                 self.expect(TokenKind::Lt)?;
-                let w = self.parse_expr()?;
+                let w = self.parse_type_arg_expr()?;
                 self.expect(TokenKind::Gt)?;
                 ArbiterPolicy::Weighted(w)
             }

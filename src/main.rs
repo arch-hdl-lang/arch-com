@@ -807,10 +807,9 @@ fn run_sim_opts(
                 _ => regular_items.push(item.clone()),
             }
         }
-        // Surface --thread-sim-specific warnings (e.g. mutex policy
-        // downgrade) on the same stderr path as typecheck warnings so
-        // users running `arch sim --thread-sim` see them without having
-        // to consult docs.
+        // Surface --thread-sim-specific warnings on the same stderr path
+        // as typecheck warnings so users running `arch sim --thread-sim`
+        // see them without having to consult docs.
         for w in &thread_sim_warnings {
             let (filename, _, local_offset) = ms.locate(w.span.start);
             eprintln!("warning: {} ({}:{})", w.message, filename, local_offset);

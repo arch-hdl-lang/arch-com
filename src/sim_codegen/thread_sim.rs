@@ -110,7 +110,7 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads
 }
 
 /// Same as `gen_module_thread`, but routes thread-sim-specific warnings
-/// (e.g. mutex policy downgrade) into `warnings` instead of dropping them.
+/// into `warnings` instead of dropping them.
 /// The main entry (`gen_module_thread`) forwards to this with a throwaway
 /// sink so existing callers keep working unchanged.
 pub fn gen_module_thread_with_warnings(
@@ -118,7 +118,7 @@ pub fn gen_module_thread_with_warnings(
     debug: bool,
     wave: bool,
     num_os_threads: u32,
-    warnings: &mut Vec<CompileWarning>,
+    _warnings: &mut Vec<CompileWarning>,
 ) -> Result<SimModel, String> {
     // Match the Verilator/fsm convention: V<ModuleName>. Lets the same
     // TB drive either --thread-sim path without changing #includes,
@@ -152,82 +152,6 @@ pub fn gen_module_thread_with_warnings(
             )),
         }
     }
-    // Resources: the --thread-sim scheduler resolves mutex contention as
-    // lowest-thread-index-wins, which is observationally identical to
-    // `mutex<priority>`. Any non-priority policy declared by the design
-    // (round_robin, lru, weighted, custom) is silently downgraded —
-    // warn per-resource so users running fairness-sensitive equivalence
-    // checks against the default FSM-lowered path aren't surprised by
-    // false PASSes. The error gate is gone; any declared policy is
-    // accepted, but anything other than `priority` emits a warning.
-    //
-    // Custom policies (`mutex<MyFn>` with `hook grant_select`) get a
-    // distinct, stronger phrasing because the user-defined hook is
-    // bypassed entirely.
-    //
-    // See doc/thread_spec_section.md §20.8.1.
-    for item in &m.body {
-        if let ModuleBodyItem::Resource(r) = item {
-            match &r.policy {
-                ArbiterPolicy::Priority => {}
-                ArbiterPolicy::RoundRobin => {
-                    warnings.push(CompileWarning {
-                        message: format!(
-                            "--thread-sim ignores mutex policy `round_robin` on resource `{}` \
-                             (module `{}`); the --thread-sim scheduler resolves contention as \
-                             lowest-thread-index-wins (== priority). For fairness-sensitive \
-                             behaviour, validate with the default `arch sim` or Verilator. \
-                             See doc/thread_spec_section.md §20.8.1.",
-                            r.name.name, m.name.name
-                        ),
-                        span: r.span,
-                    });
-                }
-                ArbiterPolicy::Lru => {
-                    warnings.push(CompileWarning {
-                        message: format!(
-                            "--thread-sim ignores mutex policy `lru` on resource `{}` \
-                             (module `{}`); the --thread-sim scheduler resolves contention as \
-                             lowest-thread-index-wins (== priority). For fairness-sensitive \
-                             behaviour, validate with the default `arch sim` or Verilator. \
-                             See doc/thread_spec_section.md §20.8.1.",
-                            r.name.name, m.name.name
-                        ),
-                        span: r.span,
-                    });
-                }
-                ArbiterPolicy::Weighted(_) => {
-                    warnings.push(CompileWarning {
-                        message: format!(
-                            "--thread-sim ignores mutex policy `weighted` on resource `{}` \
-                             (module `{}`); the --thread-sim scheduler resolves contention as \
-                             lowest-thread-index-wins (== priority), so per-requester weights \
-                             have no effect. For weight-sensitive behaviour, validate with the \
-                             default `arch sim` or Verilator. \
-                             See doc/thread_spec_section.md §20.8.1.",
-                            r.name.name, m.name.name
-                        ),
-                        span: r.span,
-                    });
-                }
-                ArbiterPolicy::Custom(fn_name) => {
-                    warnings.push(CompileWarning {
-                        message: format!(
-                            "--thread-sim ignores mutex policy `{}` on resource `{}` \
-                             (module `{}`); the custom hook `{}` is COMPLETELY BYPASSED — the \
-                             --thread-sim scheduler resolves contention as \
-                             lowest-thread-index-wins (== priority). Validate custom-policy \
-                             behaviour with the default `arch sim` or Verilator. \
-                             See doc/thread_spec_section.md §20.8.1.",
-                            fn_name.name, r.name.name, m.name.name, fn_name.name
-                        ),
-                        span: r.span,
-                    });
-                }
-            }
-        }
-    }
-
     // Partition each thread body into segments + collected branches.
     let mut thread_infos: Vec<ThreadInfo> = Vec::new();
     for (ti, t) in threads.iter().enumerate() {
@@ -235,6 +159,16 @@ pub fn gen_module_thread_with_warnings(
         let main_segs = partition(&t.body, &mut branches, ti)
             .map_err(|e| format!("module `{}` thread #{}: {}", class, ti, e))?;
         thread_infos.push(ThreadInfo { main_segs, branches });
+    }
+    let resource_count = m.body.iter()
+        .filter(|item| matches!(item, ModuleBodyItem::Resource(_)))
+        .count();
+    if resource_count > 0 && threads.len() > 64 {
+        return Err(format!(
+            "module `{}`: thread sim resource mutexes support at most 64 user threads (got {})",
+            class,
+            threads.len()
+        ));
     }
 
     // Ports + regs as fields.
@@ -253,6 +187,9 @@ pub fn gen_module_thread_with_warnings(
     header.push_str("#pragma once\n");
     header.push_str("#include \"arch_thread_rt.h\"\n");
     header.push_str("#include <cstdint>\n");
+    if m.body.iter().any(|item| matches!(item, ModuleBodyItem::Resource(r) if matches!(r.policy, ArbiterPolicy::Custom(_)))) {
+        header.push_str("#include \"VFunctions.h\"\n");
+    }
     header.push_str("#include \"verilated.h\"\n\n");
     header.push_str(&format!("class {} {{\npublic:\n", class));
 
@@ -506,10 +443,10 @@ pub fn gen_module_thread_with_warnings(
             header.push_str(&format!("      _t{i}_br{}_seg = 0;\n", br.id));
         }
     }
-    // Resource holders back to free.
+    // Resource arbitration state back to reset values.
     for item in &m.body {
         if let ModuleBodyItem::Resource(r) = item {
-            header.push_str(&format!("      _resource_{}_holder = -1;\n", r.name.name));
+            emit_resource_reset(&mut header, r, &m.params, threads.len(), "      ");
         }
     }
     // Initial settle after reset: same logic as constructor — advances
@@ -781,13 +718,52 @@ pub fn gen_module_thread_with_warnings(
             header.push_str(&format!("  std::thread _worker_{i};\n"));
         }
     }
-    // One holder field per resource: int32_t = current owning thread
-    // index, or -1 when free. Reset to -1 in posedge_clk's reset arm.
+    // One arbitration bundle per resource. Request bits are set by
+    // threads parked on `lock`, and the generated selector mirrors the
+    // declared mutex policy so --thread-sim observes the same contract as
+    // lowered lock arbiters.
     for item in &m.body {
         if let ModuleBodyItem::Resource(r) = item {
+            header.push_str(&format!("  uint64_t _resource_{}_req_mask = 0;\n", r.name.name));
             header.push_str(&format!("  int32_t _resource_{}_holder = -1;\n", r.name.name));
+            match &r.policy {
+                ArbiterPolicy::Priority => {}
+                ArbiterPolicy::RoundRobin => {
+                    header.push_str(&format!(
+                        "  uint32_t _resource_{}_last_grant = {};\n",
+                        r.name.name,
+                        threads.len().saturating_sub(1)
+                    ));
+                }
+                ArbiterPolicy::Lru => {
+                    header.push_str(&format!(
+                        "  uint32_t _resource_{}_lru_order[{}] = {{{}}};\n",
+                        r.name.name,
+                        threads.len(),
+                        (0..threads.len()).map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+                    ));
+                }
+                ArbiterPolicy::Weighted(weight) => {
+                    let credit = eval_const_with_params(weight, &m.params).max(1);
+                    header.push_str(&format!(
+                        "  uint32_t _resource_{}_last_grant = {};\n",
+                        r.name.name,
+                        threads.len().saturating_sub(1)
+                    ));
+                    header.push_str(&format!(
+                        "  uint32_t _resource_{}_credits[{}] = {{{}}};\n",
+                        r.name.name,
+                        threads.len(),
+                        std::iter::repeat(credit.to_string()).take(threads.len()).collect::<Vec<_>>().join(", ")
+                    ));
+                }
+                ArbiterPolicy::Custom(_) => {
+                    header.push_str(&format!("  uint64_t _resource_{}_last_grant_onehot = 0;\n", r.name.name));
+                }
+            }
         }
     }
+    emit_resource_helpers(&mut header, m, threads.len())?;
     for (i, info) in thread_infos.iter().enumerate() {
         header.push_str(&format!("  arch_rt::ThreadSlot _slot_{i};\n"));
         header.push_str(&format!("  uint32_t _seg_{i} = 0;\n"));
@@ -874,15 +850,17 @@ pub fn gen_module_thread_with_warnings(
                     ));
                 }
                 WaitKind::LockAcquire(res, my_id) => {
-                    // Wait until lock is free or already held by this thread.
-                    // Re-check after resume because another thread (lower
-                    // priority order in pass 2) might have just claimed.
+                    // Register this thread as a requester, then wait until
+                    // the resource's policy selector chooses it. Re-check
+                    // after resume because another scheduler tick may have
+                    // claimed first in multi-OS-thread mode.
+                    body_cpp.push_str(&format!("{pad2}_resource_{res}_note_request({my_id});\n"));
                     body_cpp.push_str(&format!("{pad2}while (true) {{\n"));
                     body_cpp.push_str(&format!(
-                        "{pad2}  co_await arch_rt::wait_until(&_slot_{ti}, [this]{{ return _resource_{res}_holder == -1 || _resource_{res}_holder == {my_id}; }});\n"
+                        "{pad2}  co_await arch_rt::wait_until(&_slot_{ti}, [this]{{ return _resource_{res}_can_acquire({my_id}); }});\n"
                     ));
-                    body_cpp.push_str(&format!("{pad2}  if (_resource_{res}_holder == -1 || _resource_{res}_holder == {my_id}) {{\n"));
-                    body_cpp.push_str(&format!("{pad2}    _resource_{res}_holder = {my_id};\n"));
+                    body_cpp.push_str(&format!("{pad2}  if (_resource_{res}_can_acquire({my_id})) {{\n"));
+                    body_cpp.push_str(&format!("{pad2}    _resource_{res}_claim({my_id});\n"));
                     body_cpp.push_str(&format!("{pad2}    break;\n"));
                     body_cpp.push_str(&format!("{pad2}  }}\n"));
                     body_cpp.push_str(&format!("{pad2}}}\n"));
@@ -891,7 +869,7 @@ pub fn gen_module_thread_with_warnings(
             // Release lock if this segment was the last one inside a
             // `lock <name> { ... }` body.
             if let Some(res) = &seg.release_lock {
-                body_cpp.push_str(&format!("{pad2}_resource_{res}_holder = -1;\n"));
+                body_cpp.push_str(&format!("{pad2}_resource_{res}_release({ti});\n"));
             }
             // Post-wait seq stmts (used by `do { ... } until cond;`):
             // fire AFTER the co_await returns, on the cycle the wait
@@ -1562,6 +1540,157 @@ fn collect_thread_driven_outputs(threads: &[&ThreadBlock], m: &ModuleDecl) -> Ve
     let mut v: Vec<String> = out.into_iter().collect();
     v.sort();
     v
+}
+
+fn emit_resource_helpers(header: &mut String, m: &ModuleDecl, num_threads: usize) -> Result<(), String> {
+    for item in &m.body {
+        let ModuleBodyItem::Resource(r) = item else { continue; };
+        let res = &r.name.name;
+        header.push_str(&format!("  uint32_t _resource_{res}_select() {{\n"));
+        header.push_str(&format!("    uint64_t _req = _resource_{res}_req_mask;\n"));
+        header.push_str("    if (_req == 0) return 0xffffffffu;\n");
+        match &r.policy {
+            ArbiterPolicy::Priority => {
+                header.push_str(&format!("    for (uint32_t _idx = 0; _idx < {num_threads}; _idx++) {{\n"));
+                header.push_str("      if ((_req >> _idx) & 1ULL) return _idx;\n");
+                header.push_str("    }\n");
+                header.push_str("    return 0xffffffffu;\n");
+            }
+            ArbiterPolicy::RoundRobin => {
+                header.push_str(&format!("    for (uint32_t _step = 0; _step < {num_threads}; _step++) {{\n"));
+                header.push_str(&format!("      uint32_t _idx = (_resource_{res}_last_grant + 1 + _step) % {num_threads};\n"));
+                header.push_str("      if ((_req >> _idx) & 1ULL) return _idx;\n");
+                header.push_str("    }\n");
+                header.push_str("    return 0xffffffffu;\n");
+            }
+            ArbiterPolicy::Lru => {
+                header.push_str(&format!("    for (uint32_t _rank = 0; _rank < {num_threads}; _rank++) {{\n"));
+                header.push_str(&format!("      uint32_t _idx = _resource_{res}_lru_order[_rank];\n"));
+                header.push_str("      if ((_req >> _idx) & 1ULL) return _idx;\n");
+                header.push_str("    }\n");
+                header.push_str("    return 0xffffffffu;\n");
+            }
+            ArbiterPolicy::Weighted(weight) => {
+                let credit = eval_const_with_params(weight, &m.params).max(1);
+                header.push_str("    bool _has_credit = false;\n");
+                header.push_str(&format!("    for (uint32_t _idx = 0; _idx < {num_threads}; _idx++) {{\n"));
+                header.push_str(&format!("      if (((_req >> _idx) & 1ULL) && _resource_{res}_credits[_idx] != 0) _has_credit = true;\n"));
+                header.push_str("    }\n");
+                header.push_str("    if (!_has_credit) {\n");
+                header.push_str(&format!("      for (uint32_t _idx = 0; _idx < {num_threads}; _idx++) _resource_{res}_credits[_idx] = {credit};\n"));
+                header.push_str("    }\n");
+                header.push_str(&format!("    for (uint32_t _step = 0; _step < {num_threads}; _step++) {{\n"));
+                header.push_str(&format!("      uint32_t _idx = (_resource_{res}_last_grant + 1 + _step) % {num_threads};\n"));
+                header.push_str(&format!("      if (((_req >> _idx) & 1ULL) && _resource_{res}_credits[_idx] != 0) return _idx;\n"));
+                header.push_str("    }\n");
+                header.push_str("    return 0xffffffffu;\n");
+            }
+            ArbiterPolicy::Custom(fn_ident) => {
+                let hook = r.hook.as_ref().ok_or_else(|| {
+                    format!(
+                        "module `{}` resource `{}`: custom mutex policy `{}` requires a hook",
+                        m.name.name, res, fn_ident.name
+                    )
+                })?;
+                let mut args: Vec<String> = Vec::new();
+                for arg in &hook.fn_args {
+                    let is_hook_param = hook.params.iter().any(|p| p.name.name == arg.name);
+                    let mapped = if is_hook_param {
+                        match arg.name.as_str() {
+                            "req_mask" => "_req".to_string(),
+                            "last_grant" => format!("_resource_{res}_last_grant_onehot"),
+                            _ => arg.name.clone(),
+                        }
+                    } else {
+                        arg.name.clone()
+                    };
+                    args.push(mapped);
+                }
+                header.push_str(&format!(
+                    "    uint64_t _grant_onehot = (uint64_t)({}({})) & _req;\n",
+                    fn_ident.name,
+                    args.join(", ")
+                ));
+                header.push_str(&format!("    for (int32_t _idx = (int32_t){num_threads} - 1; _idx >= 0; --_idx) {{\n"));
+                header.push_str("      if ((_grant_onehot >> (uint32_t)_idx) & 1ULL) return (uint32_t)_idx;\n");
+                header.push_str("    }\n");
+                header.push_str("    return 0xffffffffu;\n");
+            }
+        }
+        header.push_str("  }\n");
+        header.push_str(&format!("  bool _resource_{res}_can_acquire(uint32_t _tid) {{\n"));
+        header.push_str(&format!("    if (_resource_{res}_holder == (int32_t)_tid) return true;\n"));
+        header.push_str(&format!("    if (_resource_{res}_holder != -1) return false;\n"));
+        header.push_str(&format!("    return _resource_{res}_select() == _tid;\n"));
+        header.push_str("  }\n");
+        header.push_str(&format!("  void _resource_{res}_note_request(uint32_t _tid) {{\n"));
+        header.push_str(&format!("    _resource_{res}_req_mask |= (1ULL << _tid);\n"));
+        header.push_str("  }\n");
+        header.push_str(&format!("  void _resource_{res}_claim(uint32_t _tid) {{\n"));
+        header.push_str(&format!("    _resource_{res}_req_mask &= ~(1ULL << _tid);\n"));
+        header.push_str(&format!("    if (_resource_{res}_holder == (int32_t)_tid) return;\n"));
+        header.push_str(&format!("    _resource_{res}_holder = (int32_t)_tid;\n"));
+        match &r.policy {
+            ArbiterPolicy::Priority => {}
+            ArbiterPolicy::RoundRobin => {
+                header.push_str(&format!("    _resource_{res}_last_grant = _tid;\n"));
+            }
+            ArbiterPolicy::Lru => {
+                header.push_str("    uint32_t _pos = 0;\n");
+                header.push_str(&format!("    while (_pos < {num_threads} && _resource_{res}_lru_order[_pos] != _tid) _pos++;\n"));
+                header.push_str(&format!("    while (_pos + 1 < {num_threads}) {{\n"));
+                header.push_str(&format!("      _resource_{res}_lru_order[_pos] = _resource_{res}_lru_order[_pos + 1];\n"));
+                header.push_str("      _pos++;\n");
+                header.push_str("    }\n");
+                header.push_str(&format!("    _resource_{res}_lru_order[{num_threads} - 1] = _tid;\n"));
+            }
+            ArbiterPolicy::Weighted(_) => {
+                header.push_str(&format!("    if (_resource_{res}_credits[_tid] != 0) _resource_{res}_credits[_tid]--;\n"));
+                header.push_str(&format!("    _resource_{res}_last_grant = _tid;\n"));
+            }
+            ArbiterPolicy::Custom(_) => {
+                header.push_str(&format!("    _resource_{res}_last_grant_onehot = (1ULL << _tid);\n"));
+            }
+        }
+        header.push_str("  }\n");
+        header.push_str(&format!("  void _resource_{res}_release(uint32_t _tid) {{\n"));
+        header.push_str(&format!("    if (_resource_{res}_holder == (int32_t)_tid) _resource_{res}_holder = -1;\n"));
+        header.push_str("  }\n");
+    }
+    Ok(())
+}
+
+fn emit_resource_reset(
+    header: &mut String,
+    r: &crate::ast::ResourceDecl,
+    params: &[ParamDecl],
+    num_threads: usize,
+    pad: &str,
+) {
+    let res = &r.name.name;
+    header.push_str(&format!("{pad}_resource_{res}_req_mask = 0;\n"));
+    header.push_str(&format!("{pad}_resource_{res}_holder = -1;\n"));
+    match &r.policy {
+        ArbiterPolicy::Priority => {}
+        ArbiterPolicy::RoundRobin => {
+            header.push_str(&format!("{pad}_resource_{res}_last_grant = {};\n", num_threads.saturating_sub(1)));
+        }
+        ArbiterPolicy::Lru => {
+            for idx in 0..num_threads {
+                header.push_str(&format!("{pad}_resource_{res}_lru_order[{idx}] = {idx};\n"));
+            }
+        }
+        ArbiterPolicy::Weighted(weight) => {
+            let credit = eval_const_with_params(weight, params).max(1);
+            header.push_str(&format!("{pad}_resource_{res}_last_grant = {};\n", num_threads.saturating_sub(1)));
+            for idx in 0..num_threads {
+                header.push_str(&format!("{pad}_resource_{res}_credits[{idx}] = {credit};\n"));
+            }
+        }
+        ArbiterPolicy::Custom(_) => {
+            header.push_str(&format!("{pad}_resource_{res}_last_grant_onehot = 0;\n"));
+        }
+    }
 }
 
 // Suppress unused-import warnings while CombAssign/RegAssign are
