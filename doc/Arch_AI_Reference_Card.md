@@ -588,9 +588,13 @@ end module M
 - Multiple threads in one module share one `always_ff` — no multi-driver conflicts
 - Thread-driven `reg` declarations are **automatically** lifted to the `_ModuleName_threads` submodule
 
-**Lock deadlock freedom:** the fixed-priority arbiter (`grant[i] = req[i] && !grant[j<i]`)
-makes the waits-for graph acyclic — thread 0 always wins, thread N waits only for threads
-with lower index. See `doc/thread_lowering_algorithm.md` for proof.
+**Lock arbiter policy** selected via `mutex<...>` on the `resource` decl:
+
+- `mutex<priority>` (default) — `grant[i] = req[i] && !grant[j<i]`; thread 0 always wins, thread N waits only for lower-index threads. Acyclic waits-for graph.
+- `mutex<round_robin>` / `mutex<lru>` / `mutex<weighted<W>>` — bounded-wait fairness (any requester granted within ≤ N cycles for round_robin/lru; long-run proportional for weighted).
+- `mutex<MyFn>` — user-supplied `hook grant_select(...) -> UInt<N>` returns a one-hot grant. Compiler enforces mutual exclusion; the user owns deadlock freedom.
+
+`arch sim --thread-sim parallel` honours the policy directly, so `--thread-sim both` is an exact cross-check against the FSM-lowered path. See `doc/thread_lowering_algorithm.md` for the per-policy liveness story.
 
 ---
 
