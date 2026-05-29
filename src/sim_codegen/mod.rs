@@ -5278,8 +5278,37 @@ impl<'a> SimCodegen<'a> {
         // member then default-initializes to 0, giving the desired idle
         // tie-off behaviour.
         let mut inst_out = inst_out;
-        for conns in &expanded_conns {
-            for conn in conns {
+        for (inst_idx, inst) in insts.iter().enumerate() {
+            let mut bus_flat_port_names: HashSet<String> = HashSet::new();
+            let mut sub_params = self.lookup_inst_params(&inst.module_name.name);
+            for pa in &inst.param_assigns {
+                if let Some(p) = sub_params.iter_mut().find(|p| p.name.name == pa.name.name) {
+                    p.default = Some(pa.value.clone());
+                }
+            }
+            for port in self.lookup_inst_ports(&inst.module_name.name) {
+                let Some(bi) = port.bus_info.as_ref() else { continue; };
+                let Some((crate::resolve::Symbol::Bus(info), _)) =
+                    self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+                let prefixes: Vec<String> = match bi.count.as_ref() {
+                    None => vec![port.name.name.clone()],
+                    Some(count_expr) => {
+                        let n = eval_const_expr_with_params(count_expr, &sub_params);
+                        (0..n).map(|i| format!("{}_{}", port.name.name, i)).collect()
+                    }
+                };
+                let mut pm = info.default_param_map();
+                for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
+                for (sname, _, _) in info.effective_signals(&pm) {
+                    for prefix in &prefixes {
+                        bus_flat_port_names.insert(format!("{}_{}", prefix, sname));
+                    }
+                }
+            }
+            for conn in &expanded_conns[inst_idx] {
+                if !bus_flat_port_names.contains(&conn.port_name.name) {
+                    continue;
+                }
                 if let ExprKind::Ident(name) = &conn.signal.kind {
                     inst_out.insert(name.clone());
                 }

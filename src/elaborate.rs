@@ -4599,6 +4599,196 @@ fn guarded_stmt(cond: Expr, stmts: Vec<Stmt>, span: Span) -> Option<Stmt> {
     }
 }
 
+fn lit_same_shape(a: &LitKind, b: &LitKind) -> bool {
+    match (a, b) {
+        (LitKind::Dec(a), LitKind::Dec(b))
+        | (LitKind::Hex(a), LitKind::Hex(b))
+        | (LitKind::Bin(a), LitKind::Bin(b)) => a == b,
+        (LitKind::Sized(aw, av), LitKind::Sized(bw, bv)) => aw == bw && av == bv,
+        _ => false,
+    }
+}
+
+fn inside_member_same_shape(a: &InsideMember, b: &InsideMember) -> bool {
+    match (a, b) {
+        (InsideMember::Single(a), InsideMember::Single(b)) => expr_same_shape(a, b),
+        (InsideMember::Range(alo, ahi), InsideMember::Range(blo, bhi)) => {
+            expr_same_shape(alo, blo) && expr_same_shape(ahi, bhi)
+        }
+        _ => false,
+    }
+}
+
+fn expr_slice_same_shape(a: &[Expr], b: &[Expr]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b.iter())
+            .all(|(a_expr, b_expr)| expr_same_shape(a_expr, b_expr))
+}
+
+fn expr_same_shape(a: &Expr, b: &Expr) -> bool {
+    match (&a.kind, &b.kind) {
+        (ExprKind::Literal(a), ExprKind::Literal(b)) => lit_same_shape(a, b),
+        (ExprKind::Ident(a), ExprKind::Ident(b)) => a == b,
+        (ExprKind::SynthIdent(a, _), ExprKind::SynthIdent(b, _)) => a == b,
+        (ExprKind::Binary(a_op, a_l, a_r), ExprKind::Binary(b_op, b_l, b_r)) => {
+            a_op == b_op && expr_same_shape(a_l, b_l) && expr_same_shape(a_r, b_r)
+        }
+        (ExprKind::Unary(a_op, a_e), ExprKind::Unary(b_op, b_e)) => {
+            a_op == b_op && expr_same_shape(a_e, b_e)
+        }
+        (ExprKind::FieldAccess(a_base, a_field), ExprKind::FieldAccess(b_base, b_field)) => {
+            a_field.name == b_field.name && expr_same_shape(a_base, b_base)
+        }
+        (ExprKind::MethodCall(a_base, a_name, a_args), ExprKind::MethodCall(b_base, b_name, b_args)) => {
+            a_name.name == b_name.name
+                && expr_same_shape(a_base, b_base)
+                && expr_slice_same_shape(a_args, b_args)
+        }
+        (ExprKind::Index(a_base, a_idx), ExprKind::Index(b_base, b_idx)) => {
+            expr_same_shape(a_base, b_base) && expr_same_shape(a_idx, b_idx)
+        }
+        (ExprKind::BitSlice(a_base, a_hi, a_lo), ExprKind::BitSlice(b_base, b_hi, b_lo)) => {
+            expr_same_shape(a_base, b_base)
+                && expr_same_shape(a_hi, b_hi)
+                && expr_same_shape(a_lo, b_lo)
+        }
+        (
+            ExprKind::PartSelect(a_base, a_start, a_width, a_dir),
+            ExprKind::PartSelect(b_base, b_start, b_width, b_dir),
+        ) => {
+            a_dir == b_dir
+                && expr_same_shape(a_base, b_base)
+                && expr_same_shape(a_start, b_start)
+                && expr_same_shape(a_width, b_width)
+        }
+        (ExprKind::EnumVariant(a_enum, a_var), ExprKind::EnumVariant(b_enum, b_var)) => {
+            a_enum.name == b_enum.name && a_var.name == b_var.name
+        }
+        (ExprKind::Todo, ExprKind::Todo) => true,
+        (ExprKind::Bool(a), ExprKind::Bool(b)) => a == b,
+        (ExprKind::Concat(a), ExprKind::Concat(b)) => expr_slice_same_shape(a, b),
+        (ExprKind::Repeat(a_count, a_expr), ExprKind::Repeat(b_count, b_expr)) => {
+            expr_same_shape(a_count, b_count) && expr_same_shape(a_expr, b_expr)
+        }
+        (ExprKind::Clog2(a), ExprKind::Clog2(b))
+        | (ExprKind::Onehot(a), ExprKind::Onehot(b))
+        | (ExprKind::Signed(a), ExprKind::Signed(b))
+        | (ExprKind::Unsigned(a), ExprKind::Unsigned(b)) => expr_same_shape(a, b),
+        (ExprKind::LatencyAt(a, a_n), ExprKind::LatencyAt(b, b_n)) => {
+            a_n == b_n && expr_same_shape(a, b)
+        }
+        (ExprKind::SvaNext(a_n, a), ExprKind::SvaNext(b_n, b)) => {
+            a_n == b_n && expr_same_shape(a, b)
+        }
+        (ExprKind::FunctionCall(a_name, a_args), ExprKind::FunctionCall(b_name, b_args)) => {
+            a_name == b_name && expr_slice_same_shape(a_args, b_args)
+        }
+        (ExprKind::Inside(a_expr, a_members), ExprKind::Inside(b_expr, b_members)) => {
+            expr_same_shape(a_expr, b_expr)
+                && a_members.len() == b_members.len()
+                && a_members
+                    .iter()
+                    .zip(b_members.iter())
+                    .all(|(a_member, b_member)| inside_member_same_shape(a_member, b_member))
+        }
+        (ExprKind::Ternary(a_c, a_t, a_f), ExprKind::Ternary(b_c, b_t, b_f)) => {
+            expr_same_shape(a_c, b_c)
+                && expr_same_shape(a_t, b_t)
+                && expr_same_shape(a_f, b_f)
+        }
+        _ => false,
+    }
+}
+
+fn fast_wait_if_condition(ie: &ThreadIfElse) -> Option<Expr> {
+    if !ie.else_stmts.is_empty() || ie.then_stmts.len() != 1 {
+        return None;
+    }
+
+    let ThreadStmt::WaitUntil(wait_cond, _) = &ie.then_stmts[0] else {
+        return None;
+    };
+    let ExprKind::Unary(UnaryOp::Not, if_cond_inner) = &ie.cond.kind else {
+        return None;
+    };
+    if expr_same_shape(if_cond_inner, wait_cond) {
+        Some(wait_cond.clone())
+    } else {
+        None
+    }
+}
+
+fn merge_fast_region_assigns(
+    states: &mut [ThreadFsmState],
+    fast_region: &mut Option<(usize, Expr)>,
+    cur_comb: &mut Vec<Stmt>,
+    cur_seq: &mut Vec<Stmt>,
+    span: Span,
+) -> bool {
+    let Some((state_idx, guard)) = fast_region.take() else {
+        return false;
+    };
+    if let Some(stmt) = guarded_stmt(guard.clone(), std::mem::take(cur_comb), span) {
+        states[state_idx].comb_stmts.push(stmt);
+    }
+    if let Some(stmt) = guarded_stmt(guard, std::mem::take(cur_seq), span) {
+        states[state_idx].seq_stmts.push(stmt);
+    }
+    true
+}
+
+fn flush_pending_thread_state(
+    states: &mut Vec<ThreadFsmState>,
+    fast_region: &mut Option<(usize, Expr)>,
+    cur_comb: &mut Vec<Stmt>,
+    cur_seq: &mut Vec<Stmt>,
+    span: Span,
+) -> bool {
+    if cur_comb.is_empty() && cur_seq.is_empty() {
+        return fast_region.take().is_some();
+    }
+    if merge_fast_region_assigns(states, fast_region, cur_comb, cur_seq, span) {
+        return true;
+    }
+    states.push(ThreadFsmState {
+        comb_stmts: std::mem::take(cur_comb),
+        seq_stmts: std::mem::take(cur_seq),
+        transition_cond: None,
+        wait_cycles: None,
+        multi_transitions: Vec::new(),
+        terminal_return: None,
+    });
+    true
+}
+
+fn collect_single_state_thread_body(
+    body: &[ThreadStmt],
+) -> (Vec<Stmt>, Vec<Stmt>) {
+    let mut comb_stmts = Vec::new();
+    let mut seq_stmts = Vec::new();
+    for stmt in body {
+        match stmt {
+            ThreadStmt::CombAssign(ca) => comb_stmts.push(Stmt::Assign(ca.clone())),
+            ThreadStmt::SeqAssign(ra) => seq_stmts.push(Stmt::Assign(ra.clone())),
+            ThreadStmt::IfElse(ie) => {
+                let (comb_if, seq_if) = thread_if_to_fsm_stmts(ie);
+                if let Some(stmt) = comb_if {
+                    comb_stmts.push(stmt);
+                }
+                if let Some(stmt) = seq_if {
+                    seq_stmts.push(stmt);
+                }
+            }
+            ThreadStmt::Log(l) => seq_stmts.push(Stmt::Log(l.clone())),
+            _ => {
+                unreachable!("single-state thread body contained an unexpected statement");
+            }
+        }
+    }
+    (comb_stmts, seq_stmts)
+}
+
 /// Optimize the common micro-architecture shape:
 ///
 ///   wait until req;
@@ -4804,6 +4994,8 @@ fn partition_thread_body_impl(
     let mut states: Vec<ThreadFsmState> = Vec::new();
     let mut cur_comb: Vec<Stmt> = Vec::new();
     let mut cur_seq: Vec<Stmt> = Vec::new();
+    let mut fast_region: Option<(usize, Expr)> = None;
+    let mut no_trailing_merge_from: Option<usize> = None;
     // Set when the previous iteration was a `wait 0+ cycle until ...;` that
     // consumed the next `do ... until ...;` as part of its Mealy fusion;
     // skips one iteration of this loop to avoid emitting the do-body as a
@@ -4823,6 +5015,14 @@ fn partition_thread_body_impl(
                 cur_seq.push(Stmt::Log(l.clone()));
             }
             ThreadStmt::WaitUntil(cond, sp) => {
+                if let Some((state_idx, guard)) = fast_region.take() {
+                    if let Some(stmt) = guarded_stmt(guard.clone(), cur_comb.clone(), *sp) {
+                        states[state_idx].comb_stmts.push(stmt);
+                    }
+                    if let Some(stmt) = guarded_stmt(guard, std::mem::take(&mut cur_seq), *sp) {
+                        states[state_idx].seq_stmts.push(stmt);
+                    }
+                }
                 // Per spec §7a.2: only TRAILING seq assigns (after the last
                 // wait in the body) may merge into the preceding state's
                 // exit. Inter-yield seq assigns — assigns sitting BETWEEN
@@ -4940,16 +5140,13 @@ fn partition_thread_body_impl(
 
                 // Flush any pending assigns first.
                 let mut flush = || {
-                    if !cur_comb.is_empty() || !cur_seq.is_empty() {
-                        states.push(ThreadFsmState {
-                            comb_stmts: std::mem::take(&mut cur_comb),
-                            seq_stmts: std::mem::take(&mut cur_seq),
-                            transition_cond: None,
-                            wait_cycles: None,
-                            multi_transitions: Vec::new(),
-                            terminal_return: None,
-                        });
-                    }
+                    flush_pending_thread_state(
+                        &mut states,
+                        &mut fast_region,
+                        &mut cur_comb,
+                        &mut cur_seq,
+                        *sp,
+                    );
                 };
 
                 match next {
@@ -5030,17 +5227,14 @@ fn partition_thread_body_impl(
             }
             ThreadStmt::WaitCycles(count, _) => {
                 // Same: pure boundary, flush all pending assigns
-                let had_flush = !cur_comb.is_empty() || !cur_seq.is_empty();
-                if had_flush {
-                    states.push(ThreadFsmState {
-                        comb_stmts: std::mem::take(&mut cur_comb),
-                        seq_stmts: std::mem::take(&mut cur_seq),
-                        transition_cond: None,
-                        wait_cycles: None,
-                        multi_transitions: Vec::new(),
-                        terminal_return: None,
-                    });
-                }
+                let merged_fast_idx = fast_region.as_ref().map(|(idx, _)| *idx);
+                let had_flush = flush_pending_thread_state(
+                    &mut states,
+                    &mut fast_region,
+                    &mut cur_comb,
+                    &mut cur_seq,
+                    span,
+                );
                 // `wait 1 cycle` between two seq-write boundaries is a no-op
                 // structurally — the natural state transition from the
                 // flushed prior state to whatever state comes next already
@@ -5070,9 +5264,26 @@ fn partition_thread_body_impl(
                         multi_transitions: Vec::new(),
                         terminal_return: None,
                     });
+                } else if let Some(idx) = merged_fast_idx {
+                    no_trailing_merge_from = Some(idx);
                 }
             }
             ThreadStmt::IfElse(ie) => {
+                if cur_comb.is_empty() && cur_seq.is_empty() {
+                    if let Some(cond) = fast_wait_if_condition(ie) {
+                        let fast_idx = states.len();
+                        states.push(ThreadFsmState {
+                            comb_stmts: Vec::new(),
+                            seq_stmts: Vec::new(),
+                            transition_cond: Some(cond.clone()),
+                            wait_cycles: None,
+                            multi_transitions: Vec::new(),
+                            terminal_return: None,
+                        });
+                        fast_region = Some((fast_idx, cond));
+                        continue;
+                    }
+                }
                 let then_has_wait = contains_wait(&ie.then_stmts);
                 let else_has_wait = contains_wait(&ie.else_stmts);
                 let then_has_return = contains_return(&ie.then_stmts);
@@ -5084,22 +5295,20 @@ fn partition_thread_body_impl(
                         && !else_has_return
                         && try_fuse_wait_ifelse(&mut states, ie, cnt_width, loop_id_gen)?
                     {
+                        fast_region.take();
                         continue;
                     }
 
                     // Dispatch-and-rejoin (see doc/thread_lowering_proof.md §II.10).
                     // Step 1: flush pending comb/seq into a predecessor state so
                     // `cond` reads post-flush register values.
-                    if !cur_comb.is_empty() || !cur_seq.is_empty() {
-                        states.push(ThreadFsmState {
-                            comb_stmts: std::mem::take(&mut cur_comb),
-                            seq_stmts: std::mem::take(&mut cur_seq),
-                            transition_cond: None,
-                            wait_cycles: None,
-                            multi_transitions: Vec::new(),
-                        terminal_return: None,
-                        });
-                    }
+                    flush_pending_thread_state(
+                        &mut states,
+                        &mut fast_region,
+                        &mut cur_comb,
+                        &mut cur_seq,
+                        ie.span,
+                    );
                     // Step 2: insert dispatch state placeholder; M filled below
                     // once branch base indices are known.
                     let dispatch_idx = states.len();
@@ -5220,16 +5429,13 @@ fn partition_thread_body_impl(
             }
             ThreadStmt::ForkJoin(branches, sp) => {
                 // Flush pending statements into a state before fork
-                if !cur_comb.is_empty() || !cur_seq.is_empty() {
-                    states.push(ThreadFsmState {
-                        comb_stmts: std::mem::take(&mut cur_comb),
-                        seq_stmts: std::mem::take(&mut cur_seq),
-                        transition_cond: None,
-                        wait_cycles: None,
-                        multi_transitions: Vec::new(),
-                        terminal_return: None,
-                    });
-                }
+                flush_pending_thread_state(
+                    &mut states,
+                    &mut fast_region,
+                    &mut cur_comb,
+                    &mut cur_seq,
+                    *sp,
+                );
                 // Lower fork/join via product-state expansion
                 let mut fork_states = lower_fork_join(branches, *sp, cnt_width, loop_id_gen)?;
                 // Adjust multi_transitions targets: product indices → global state indices
@@ -5262,8 +5468,16 @@ fn partition_thread_body_impl(
                     // No pending assigns — merge counter init into last state.
                     // The init fires on the same edge as the state's transition,
                     // so the counter is ready when the for-body starts.
-                    if let Some(last) = states.last_mut() {
-                        if last.multi_transitions.is_empty() {
+                    if let Some((fast_idx, guard)) = fast_region.take() {
+                        if let Some(stmt) = guarded_stmt(guard, vec![cnt_init.clone()], *span) {
+                            states[fast_idx].seq_stmts.push(stmt);
+                        }
+                        true
+                    } else if let Some(last_idx) = states.len().checked_sub(1) {
+                        let last = &mut states[last_idx];
+                        if last.multi_transitions.is_empty()
+                            && no_trailing_merge_from != Some(last_idx)
+                        {
                             last.seq_stmts.push(cnt_init.clone());
                             true
                         } else {
@@ -5277,16 +5491,13 @@ fn partition_thread_body_impl(
                 };
                 if !merged {
                     cur_seq.push(cnt_init.clone());
-                    if !cur_comb.is_empty() || !cur_seq.is_empty() {
-                        states.push(ThreadFsmState {
-                            comb_stmts: std::mem::take(&mut cur_comb),
-                            seq_stmts: std::mem::take(&mut cur_seq),
-                            transition_cond: None,
-                            wait_cycles: None,
-                            multi_transitions: Vec::new(),
-                        terminal_return: None,
-                        });
-                    }
+                    flush_pending_thread_state(
+                        &mut states,
+                        &mut fast_region,
+                        &mut cur_comb,
+                        &mut cur_seq,
+                        *span,
+                    );
                 }
                 let mut for_states = lower_thread_for(var, start, end, body, *span, cnt_width, loop_id_gen)?;
                 // Adjust multi_transitions targets (relative → absolute)
@@ -5322,16 +5533,13 @@ fn partition_thread_body_impl(
                     ));
                 }
                 // Flush pending statements
-                if !cur_comb.is_empty() || !cur_seq.is_empty() {
-                    states.push(ThreadFsmState {
-                        comb_stmts: std::mem::take(&mut cur_comb),
-                        seq_stmts: std::mem::take(&mut cur_seq),
-                        transition_cond: None,
-                        wait_cycles: None,
-                        multi_transitions: Vec::new(),
-                        terminal_return: None,
-                    });
-                }
+                flush_pending_thread_state(
+                    &mut states,
+                    &mut fast_region,
+                    &mut cur_comb,
+                    &mut cur_seq,
+                    *span,
+                );
                 let lock_states = lower_thread_lock(&resource.name, body, *span, cnt_width, loop_id_gen)?;
                 states.extend(lock_states);
             }
@@ -5346,43 +5554,33 @@ fn partition_thread_body_impl(
                 // the user sees a precise error pointing at the offending
                 // inner statement instead of an infinite-loop miscompile.
                 disallow_nested_control_in_do_until(body, *do_sp)?;
-                // Flush pending assigns into a prior state
-                if !cur_comb.is_empty() || !cur_seq.is_empty() {
-                    states.push(ThreadFsmState {
-                        comb_stmts: std::mem::take(&mut cur_comb),
-                        seq_stmts: std::mem::take(&mut cur_seq),
-                        transition_cond: None,
-                        wait_cycles: None,
-                        multi_transitions: Vec::new(),
-                        terminal_return: None,
-                    });
-                }
-                // Collect the do-body's assigns: comb stays in-state, seq stays in-state
-                let mut do_comb: Vec<Stmt> = Vec::new();
-                let mut do_seq: Vec<Stmt> = Vec::new();
-                for s in body {
-                    match s {
-                        ThreadStmt::CombAssign(ca) => {
-                            do_comb.push(Stmt::Assign(ca.clone()));
+                if cur_comb.is_empty() && cur_seq.is_empty() {
+                    if let Some((fast_idx, wait_cond)) = fast_region.take() {
+                        let (do_comb, do_seq) = collect_single_state_thread_body(body);
+                        if let Some(stmt) = guarded_stmt(wait_cond.clone(), do_comb, *do_sp) {
+                            states[fast_idx].comb_stmts.push(stmt);
                         }
-                        ThreadStmt::SeqAssign(ra) => {
-                            do_seq.push(Stmt::Assign(ra.clone()));
+                        if let Some(stmt) = guarded_stmt(wait_cond.clone(), do_seq, *do_sp) {
+                            states[fast_idx].seq_stmts.push(stmt);
                         }
-                        ThreadStmt::IfElse(ie) => {
-                            let (comb_if, seq_if) = thread_if_to_fsm_stmts(ie);
-                            if let Some(c) = comb_if { do_comb.push(c); }
-                            if let Some(s) = seq_if { do_seq.push(s); }
-                        }
-                        ThreadStmt::Log(l) => {
-                            do_seq.push(Stmt::Log(l.clone()));
-                        }
-                        _ => {
-                            // Unreachable: disallow_nested_control_in_do_until above
-                            // already rejects every other ThreadStmt variant.
-                            unreachable!("do..until body contained an unexpected statement that should have been rejected");
-                        }
+                        states[fast_idx].transition_cond = Some(expr_and(
+                            wait_cond,
+                            cond.clone(),
+                            *do_sp,
+                        ));
+                        continue;
                     }
                 }
+                // Flush pending assigns into a prior state
+                flush_pending_thread_state(
+                    &mut states,
+                    &mut fast_region,
+                    &mut cur_comb,
+                    &mut cur_seq,
+                    *do_sp,
+                );
+                // Collect the do-body's assigns: comb stays in-state, seq stays in-state
+                let (do_comb, do_seq) = collect_single_state_thread_body(body);
                 states.push(ThreadFsmState {
                     comb_stmts: do_comb,
                     seq_stmts: do_seq,
@@ -5397,14 +5595,27 @@ fn partition_thread_body_impl(
                     let return_idx = rets.len();
                     rets.push(e.clone());
                     if !cur_comb.is_empty() || !cur_seq.is_empty() {
-                        states.push(ThreadFsmState {
-                            comb_stmts: std::mem::take(&mut cur_comb),
-                            seq_stmts: std::mem::take(&mut cur_seq),
-                            transition_cond: None,
-                            wait_cycles: None,
-                            multi_transitions: Vec::new(),
-                            terminal_return: Some(return_idx),
-                        });
+                        let merged_fast_idx = fast_region.as_ref().map(|(idx, _)| *idx);
+                        if merge_fast_region_assigns(
+                            &mut states,
+                            &mut fast_region,
+                            &mut cur_comb,
+                            &mut cur_seq,
+                            *ret_span,
+                        ) {
+                            if let Some(idx) = merged_fast_idx {
+                                states[idx].terminal_return = Some(return_idx);
+                            }
+                        } else {
+                            states.push(ThreadFsmState {
+                                comb_stmts: std::mem::take(&mut cur_comb),
+                                seq_stmts: std::mem::take(&mut cur_seq),
+                                transition_cond: None,
+                                wait_cycles: None,
+                                multi_transitions: Vec::new(),
+                                terminal_return: Some(return_idx),
+                            });
+                        }
                     } else {
                         redirect_fallthrough_to_return(&mut states, return_idx, *ret_span);
                     }
@@ -5450,10 +5661,22 @@ fn partition_thread_body_impl(
     // exit) and the remaining stmts are just seq assigns, merge them into
     // the exit transition's seq (guarded by exit condition) to avoid a
     // dead cycle.
+    if fast_region.is_some() {
+        flush_pending_thread_state(
+            &mut states,
+            &mut fast_region,
+            &mut cur_comb,
+            &mut cur_seq,
+            span,
+        );
+    }
     if !cur_comb.is_empty() || !cur_seq.is_empty() {
         let merged_into_exit = if cur_comb.is_empty() && !cur_seq.is_empty() {
-            if let Some(last) = states.last_mut() {
-                if last.multi_transitions.len() == 2 {
+            if let Some(last_idx) = states.len().checked_sub(1) {
+                let last = &mut states[last_idx];
+                if no_trailing_merge_from == Some(last_idx) {
+                    false
+                } else if last.multi_transitions.len() == 2 {
                     // For-loop exit: guard trailing seq assigns by exit condition.
                     // Fires on the same clock edge as the for-loop's exit transition.
                     let exit_cond = last.multi_transitions[1].0.clone();

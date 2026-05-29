@@ -72,6 +72,12 @@ pub struct TypeChecker<'a> {
     /// when the index isn't a compile-time literal (e.g. inside a `for`
     /// loop). Cleared between modules.
     pub vec_of_bus_ports: HashMap<String, u32>,
+    /// Parameter scope for the construct currently being typechecked.
+    ///
+    /// Constant-width expressions must resolve `local param` names within the
+    /// current construct first. Falling back directly to the whole source file
+    /// lets unrelated modules with the same local-param name collide.
+    active_params: Vec<ParamDecl>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -84,6 +90,7 @@ impl<'a> TypeChecker<'a> {
             overload_map: HashMap::new(),
             in_sva_context: false,
             vec_of_bus_ports: HashMap::new(),
+            active_params: Vec::new(),
         }
     }
 
@@ -93,7 +100,9 @@ impl<'a> TypeChecker<'a> {
         // Runs before per-item checks so reported errors sort naturally.
         self.check_const_div_zero();
         for item in self.source.items.clone().iter() {
+            let saved_params = std::mem::replace(&mut self.active_params, Self::item_params(item));
             item.as_construct().typecheck(&mut self);
+            self.active_params = saved_params;
         }
         // Cross-item check: every `inst foo: SomeRegfile` whose target
         // regfile has `kind: latch` must drive its write-port `addr` /
@@ -118,6 +127,25 @@ impl<'a> TypeChecker<'a> {
             Ok((self.warnings, self.overload_map))
         } else {
             Err(self.errors)
+        }
+    }
+
+    fn item_params(item: &Item) -> Vec<ParamDecl> {
+        match item {
+            Item::Module(m)       => m.params.clone(),
+            Item::Fsm(f)          => f.params.clone(),
+            Item::Fifo(f)         => f.params.clone(),
+            Item::Ram(r)          => r.params.clone(),
+            Item::Cam(c)          => c.params.clone(),
+            Item::Counter(c)      => c.params.clone(),
+            Item::Arbiter(a)      => a.params.clone(),
+            Item::Regfile(r)      => r.params.clone(),
+            Item::Pipeline(p)     => p.params.clone(),
+            Item::Linklist(l)     => l.params.clone(),
+            Item::Synchronizer(s) => s.params.clone(),
+            Item::Clkgate(c)      => c.params.clone(),
+            Item::Package(p)      => p.params.clone(),
+            _ => Vec::new(),
         }
     }
 
@@ -3735,8 +3763,18 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Literal(LitKind::Bin(v)) => Some(*v),
             ExprKind::Literal(LitKind::Sized(_, v)) => Some(*v),
             ExprKind::Ident(name) => {
-                // Try to resolve param value from symbol table
-                // For MVP, check if it's a known param with a default
+                // Resolve local params in the current construct before
+                // consulting the whole source. Multiple unrelated modules can
+                // legitimately use the same local-param name with different
+                // values.
+                if let Some(p) = self.active_params.iter().find(|p| p.name.name == *name) {
+                    if let Some(default) = &p.default {
+                        return self.eval_const_expr(default, local_types);
+                    }
+                }
+
+                // Legacy fallback for contexts that do not enter a construct
+                // scope, such as package-level scans.
                 for item in &self.source.items {
                     if let Item::Module(m) = item {
                         for p in &m.params {
