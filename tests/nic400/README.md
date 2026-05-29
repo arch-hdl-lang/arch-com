@@ -136,18 +136,25 @@ Nic400Read2x2 — older 2×2 read-only crossbar (predates Nic400Fabric).
 
 Measured via `tb_nic400_fabric_latency.cpp` and `tb_nic400_fabric_throughput.cpp`:
 
-| Path | Spec target | Observed (Mealy `wait 0+`) | Observed (Moore `wait`) |
+| Path | Spec target | Observed (fast-gate wait) | Observed (Moore `wait`) |
 |------|-------------|----------------------------|--------------------------|
 | AR forward (M → S, uncontested) | 0 cycles | **0 cycles ✓** | 1 cycle |
 | R return (S → M, uncontested) | 0 cycles | **0 cycles ✓** | 1 cycle |
 | AR throughput (back-to-back) | 1 txn/cycle | **1.00 t/c** (9/9) | 0.32 t/c (8/25) |
 | 3M→3S concurrent aggregate | linear M scaling | **3.00 t/c** (18/6) | — |
 
-The MasterPort/SlavePort threads use the **`wait 0+ cycle until X;`**
-form (Mealy-style), which fuses with the immediately-following
-`do BODY until Y;` into a single state — both the comb drives and the
-transition guard live in one posedge, collapsing the entry-wait bubble
-that the Moore form imposes.
+The MasterPort/SlavePort threads use the fast-gate form:
+
+```arch
+if not X
+  wait until X;
+end if
+```
+
+When immediately followed by `do BODY until Y;` or `lock R do BODY until
+Y; end lock R;`, this fuses into a single Mealy-style state — both the
+comb drives and the transition guard live in one posedge, collapsing the
+entry-wait bubble that the Moore form imposes.
 
 ### Multi-outstanding (no design change required)
 
@@ -184,7 +191,7 @@ Patterns that work and are exercised in this demo:
 - Nested `for` loops inside threads (each gets its own loop counter; see #414's fix).
 - AXI bus aliases bound by module params and referenced from `generate_if` bodies (see #423's fix).
 - Whole-Vec<Bus,N> inst port forwarding `m <- m_top` (see #424's fix).
-- Mealy fusion of `wait 0+ cycle until X; lock R do BODY until Y; end lock R;` for zero-overhead handshake throughput.
+- Mealy fusion of `if not X; wait until X; end if; lock R do BODY until Y; end lock R;` for zero-overhead handshake throughput.
 - `Concat({addr, id, len, …})` over bus port signals with module-param-bound bus alias params (see #427's fix).
 - Inner-for body ending in if/else with lock-per-branch, where each branch advances state (see #422's fix; used by `Nic400WidthAdapter`'s R thread).
 
@@ -203,7 +210,7 @@ Building this demo uncovered **eight** thread-lowering / elaboration-scope issue
 | Issue | Fix PR | Topic |
 |-------|--------|-------|
 | #410 | #411 | top-level `do BODY until cond` looped infinitely; reject nested control flow |
-| #412 | #413 | Mealy-fused `wait 0+ … ; do … until …;` seq assigns ungated by wake condition |
+| #412 | #413 | Mealy-fused fast-gate `do … until …;` seq assigns ungated by wake condition |
 | #414 | #415 | nested `for` loops shared a single `_loop_cnt` register |
 | #422 | #430 | inner-for + if/else with lock-per-branch lost outer-for continuation transitions |
 | #423 | #425 | type alias inside `generate_if` lost bound bus params |

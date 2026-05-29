@@ -37,7 +37,9 @@ module DoUntilRepro
       lock_drove = lock_drove_r;
       done       = done_r;
     end default
-    wait 0+ cycle until start;
+    if not (start)
+      wait until start;
+    end if
     // The outer `do … until` body contains a nested `lock` (and a seq
     // assign). Pre-#410 this lowered to a single hold-state that ran the
     // seq assigns forever. The compiler now rejects with a diagnostic

@@ -120,7 +120,9 @@ module Nic400AhbBridge
       axi.ar_region = 0;
       axi.r_ready   = false;
     end default
-    wait 0+ cycle until h.hsel and (h.htrans == 2) and (not h.hwrite);
+    if not (h.hsel and (h.htrans == 2) and (not h.hwrite))
+      wait until h.hsel and (h.htrans == 2) and (not h.hwrite);
+    end if
     // AR phase: drive AR, stall the AHB data phase with hready=false until
     // the AXI slave starts returning data.
     lock h_resp_lock
@@ -201,7 +203,9 @@ module Nic400AhbBridge
     end default
     // Wake only on fixed-length HBURST values. HBURST=1 (INCR undefined-length)
     // is handled by the WriteXactIncr thread below.
-    wait 0+ cycle until h.hsel and (h.htrans == 2) and h.hwrite and (h.hburst != 1);
+    if not (h.hsel and (h.htrans == 2) and h.hwrite and (h.hburst != 1))
+      wait until h.hsel and (h.htrans == 2) and h.hwrite and (h.hburst != 1);
+    end if
     // AW phase: stall the AHB data phase while we set up AW.
     lock h_resp_lock
       do
@@ -332,7 +336,9 @@ module Nic400AhbBridge
     // master_done_r in its final HRESP state; until then, the previous burst
     // is still in flight (e.g. draining phantom chunks). Without this gate,
     // back-to-back bursts could clobber burst_addr_r etc. mid-burst.
-    wait 0+ cycle until h.hsel and (h.htrans == 2) and h.hwrite and (h.hburst == 1) and (not master_done_r);
+    if not (h.hsel and (h.htrans == 2) and h.hwrite and (h.hburst == 1) and (not master_done_r))
+      wait until h.hsel and (h.htrans == 2) and h.hwrite and (h.hburst == 1) and (not master_done_r);
+    end if
     do
       h.hready          = false;
       burst_addr_r      <= h.haddr;
