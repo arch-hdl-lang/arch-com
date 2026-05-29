@@ -789,12 +789,15 @@ fn run_sim_opts(
         // usable integration mode for TLM designs.
         let mut out = Vec::new();
         let mut regular_items = Vec::new();
+        let mut thread_sim_warnings: Vec<arch::diagnostics::CompileWarning> = Vec::new();
         for item in &ast.items {
             match item {
                 arch::ast::Item::Module(m) => {
                     let has_thread = m.body.iter().any(|i| matches!(i, arch::ast::ModuleBodyItem::Thread(_)));
                     if has_thread {
-                        let model = arch::sim_codegen::thread_sim::gen_module_thread(m, debug, wave.is_some(), threads)
+                        let model = arch::sim_codegen::thread_sim::gen_module_thread_with_warnings(
+                            m, debug, wave.is_some(), threads, &mut thread_sim_warnings,
+                        )
                             .map_err(|e| miette::miette!("thread sim: {}", e))?;
                         out.push(model);
                     } else {
@@ -803,6 +806,13 @@ fn run_sim_opts(
                 }
                 _ => regular_items.push(item.clone()),
             }
+        }
+        // Surface --thread-sim-specific warnings on the same stderr path
+        // as typecheck warnings so users running `arch sim --thread-sim`
+        // see them without having to consult docs.
+        for w in &thread_sim_warnings {
+            let (filename, _, local_offset) = ms.locate(w.span.start);
+            eprintln!("warning: {} ({}:{})", w.message, filename, local_offset);
         }
         if regular_items.iter().any(|item| matches!(
             item,

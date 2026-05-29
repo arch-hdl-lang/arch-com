@@ -213,8 +213,6 @@ end resource bus
 
 If a `lock` references a resource that has no explicit `resource` declaration, the compiler defaults to `mutex<priority>`.
 
-> **`--thread-sim` caveat.** `arch sim --thread-sim` runs the parallel thread scheduler instead of the FSM-lowered codegen.  That scheduler currently resolves contention by lowest-thread-index — observationally identical to `priority` — even when the resource is declared `mutex<round_robin>` or `mutex<lru>`.  Equivalence checks under `arch sim --thread-sim both` against the default path will silently pass on designs that depend on fair scheduling; use the default `arch sim` or Verilator when validating fairness-sensitive behaviour.  Tracked in [arch-com#447](https://github.com/arch-hdl-lang/arch-com/pull/447) §3; see [`thread_lowering_algorithm.md`](thread_lowering_algorithm.md#liveness-per-policy) for the per-policy lowering details.
-
 ### 20.8.2  Lock Block
 
 ```

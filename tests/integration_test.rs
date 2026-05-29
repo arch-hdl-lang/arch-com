@@ -3686,6 +3686,36 @@ fn compile_to_thread_sim_h(source: &str) -> String {
         .join("\n// ---\n")
 }
 
+/// Mirror of `compile_to_thread_sim_h` that also collects the warnings
+/// the thread-sim emitter pushes. Returns just the warnings — the header
+/// text is not useful for warning-shape assertions.
+fn compile_to_thread_sim_collect_warnings(source: &str) -> Vec<arch::diagnostics::CompileWarning> {
+    let tokens = arch::lexer::tokenize(source).expect("lexer error");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target lowering");
+    let ast = arch::elaborate::lower_tlm_initiator_calls(ast).expect("tlm initiator lowering");
+    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg error");
+    let ast = arch::elaborate::lower_credit_channel_dispatch(ast).expect("cc dispatch error");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve error");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    checker.check().expect("type check error");
+
+    let mut warnings: Vec<arch::diagnostics::CompileWarning> = Vec::new();
+    for item in &ast.items {
+        if let arch::ast::Item::Module(m) = item {
+            if m.body.iter().any(|i| matches!(i, arch::ast::ModuleBodyItem::Thread(_))) {
+                arch::sim_codegen::thread_sim::gen_module_thread_with_warnings(
+                    m, false, false, 1, &mut warnings,
+                )
+                .expect("thread sim codegen");
+            }
+        }
+    }
+    warnings
+}
+
 #[test]
 fn test_inputs_start_uninit_bus_flattened() {
     // --inputs-start-uninit should now emit shadow vinit bits and setters
@@ -17659,6 +17689,225 @@ fn test_elaborate_440_rename_ident_in_function_call() {
         "found bare `_loop_cnt_0` in `step_8(...)` argument — \
          `rename_ident_in_expr` failed to recurse into FunctionCall \
          args so the per-thread rename didn't fire (site 3). SV:\n{sv}"
+    );
+}
+
+// ─── --thread-sim mutex policy arbitration ────────────────────────────────
+
+#[test]
+fn test_thread_sim_honors_round_robin_mutex_policy_without_warning() {
+    let source = r#"
+        module SharedBus
+          port clk:      in Clock<SysDomain>;
+          port rst_n:    in Reset<Async, Low>;
+          port bus_valid: out Bool;
+          port bus_addr:  out UInt<32>;
+          port bus_ready: in Bool;
+          port done_0:   out Bool;
+          port done_1:   out Bool;
+
+          resource shared_bus : mutex<round_robin>;
+
+          thread Writer_0 on clk rising, rst_n low
+            lock shared_bus
+              bus_valid = 1;
+              bus_addr  = 32'h1000;
+              wait until bus_ready;
+              bus_valid = 0;
+            end lock shared_bus
+            done_0 = 1;
+            wait until bus_ready;
+          end thread Writer_0
+
+          thread Writer_1 on clk rising, rst_n low
+            lock shared_bus
+              bus_valid = 1;
+              bus_addr  = 32'h2000;
+              wait until bus_ready;
+              bus_valid = 0;
+            end lock shared_bus
+            done_1 = 1;
+            wait until bus_ready;
+          end thread Writer_1
+        end module SharedBus
+    "#;
+    let warnings = compile_to_thread_sim_collect_warnings(source);
+    assert!(
+        warnings.iter().all(|w| !w.message.contains("--thread-sim ignores mutex policy")),
+        "thread-sim should implement mutex policy instead of warning; got: {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>(),
+    );
+
+    let h = compile_to_thread_sim_h(source);
+    assert!(
+        h.contains("_resource_shared_bus_last_grant")
+            && h.contains("_resource_shared_bus_select()")
+            && h.contains("(_resource_shared_bus_last_grant + 1 + _step) % 2"),
+        "round-robin mutex should emit per-resource rotation state and selector:\n{h}",
+    );
+}
+
+#[test]
+fn test_thread_sim_emits_lru_and_weighted_mutex_policy_state() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port go: in Bool;
+          port done_0: out Bool;
+          port done_1: out Bool;
+
+          resource lru_lk: mutex<lru>;
+          resource weighted_lk: mutex<weighted<3> >;
+
+          thread on clk rising, rst low
+            wait until go;
+            lock lru_lk
+              done_0 = 1;
+              wait 1 cycle;
+            end lock lru_lk
+            lock weighted_lk
+              wait 1 cycle;
+            end lock weighted_lk
+          end thread
+
+          thread on clk rising, rst low
+            wait until go;
+            lock lru_lk
+              done_1 = 1;
+              wait 1 cycle;
+            end lock lru_lk
+            lock weighted_lk
+              wait 1 cycle;
+            end lock weighted_lk
+          end thread
+        end module M
+    "#;
+
+    let warnings = compile_to_thread_sim_collect_warnings(source);
+    assert!(
+        warnings.iter().all(|w| !w.message.contains("--thread-sim ignores mutex policy")),
+        "lru/weighted mutex policies should not be downgraded to warnings: {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>(),
+    );
+
+    let h = compile_to_thread_sim_h(source);
+    assert!(
+        h.contains("_resource_lru_lk_lru_order[2] = {0, 1}")
+            && h.contains("_resource_lru_lk_lru_order[_rank]")
+            && h.contains("_resource_lru_lk_lru_order[2 - 1] = _tid"),
+        "lru mutex should emit per-resource recency stack:\n{h}",
+    );
+    assert!(
+        h.contains("_resource_weighted_lk_credits[2] = {3, 3}")
+            && h.contains("_resource_weighted_lk_credits[_idx] = 3")
+            && h.contains("_resource_weighted_lk_credits[_tid]--"),
+        "weighted mutex should emit per-resource credit counters:\n{h}",
+    );
+}
+
+#[test]
+fn test_thread_sim_no_warning_on_priority_mutex_policy() {
+    // `mutex<priority>` is the scheduler's native ordering — no warning.
+    // This pins the absence-of-warning property so a future tweak that
+    // makes the warning unconditional would fail this test.
+    let source = r#"
+        module SharedBus
+          port clk:      in Clock<SysDomain>;
+          port rst_n:    in Reset<Async, Low>;
+          port bus_valid: out Bool;
+          port bus_addr:  out UInt<32>;
+          port bus_ready: in Bool;
+          port done_0:   out Bool;
+          port done_1:   out Bool;
+
+          resource shared_bus : mutex<priority>;
+
+          thread Writer_0 on clk rising, rst_n low
+            lock shared_bus
+              bus_valid = 1;
+              bus_addr  = 32'h1000;
+              wait until bus_ready;
+              bus_valid = 0;
+            end lock shared_bus
+            done_0 = 1;
+            wait until bus_ready;
+          end thread Writer_0
+
+          thread Writer_1 on clk rising, rst_n low
+            lock shared_bus
+              bus_valid = 1;
+              bus_addr  = 32'h2000;
+              wait until bus_ready;
+              bus_valid = 0;
+            end lock shared_bus
+            done_1 = 1;
+            wait until bus_ready;
+          end thread Writer_1
+        end module SharedBus
+    "#;
+    let warnings = compile_to_thread_sim_collect_warnings(source);
+    let policy_warnings: Vec<&str> = warnings.iter()
+        .filter(|w| w.message.contains("--thread-sim ignores mutex policy"))
+        .map(|w| w.message.as_str())
+        .collect();
+    assert!(
+        policy_warnings.is_empty(),
+        "expected no policy-downgrade warning for mutex<priority>; got: {:?}",
+        policy_warnings,
+    );
+}
+
+#[test]
+fn test_thread_sim_honors_custom_mutex_policy_with_hook() {
+    let source = r#"
+        function PickHigh(req_mask: UInt<2>, _last: UInt<2>) -> UInt<2>
+          return req_mask & 2'b10;
+        end function PickHigh
+
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port go0: in Bool;
+          port go1: in Bool;
+          port done_0: out Bool;
+          port done_1: out Bool;
+
+          resource shared_lk: mutex<PickHigh>
+            hook grant_select(req_mask: UInt<2>, last_grant: UInt<2>) -> UInt<2>
+                 = PickHigh(req_mask, last_grant);
+          end resource shared_lk
+
+          thread on clk rising, rst low
+            wait until go0;
+            lock shared_lk
+              done_0 = 1;
+              wait 1 cycle;
+            end lock shared_lk
+          end thread
+
+          thread on clk rising, rst low
+            wait until go1;
+            lock shared_lk
+              done_1 = 1;
+              wait 1 cycle;
+            end lock shared_lk
+          end thread
+        end module M
+    "#;
+    let warnings = compile_to_thread_sim_collect_warnings(source);
+    assert!(
+        warnings.iter().all(|w| !w.message.contains("--thread-sim ignores mutex policy")),
+        "custom mutex policy should dispatch its hook instead of warning; got: {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>(),
+    );
+
+    let h = compile_to_thread_sim_h(source);
+    assert!(
+        h.contains("#include \"VFunctions.h\"")
+            && h.contains("PickHigh(_req, _resource_shared_lk_last_grant_onehot)")
+            && h.contains("_resource_shared_lk_last_grant_onehot = (1ULL << _tid)"),
+        "custom mutex policy should include VFunctions and call the hook selector:\n{h}",
     );
 }
 
