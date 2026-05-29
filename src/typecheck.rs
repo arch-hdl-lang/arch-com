@@ -1809,14 +1809,24 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Warn when registered output ports are assigned inside state-dependent
-    /// if/elsif chains in seq blocks. This indicates the output has register
-    /// latency relative to the state that drives it — a common timing mismatch
-    /// with testbench models.
+    /// Warn when **deprecated** `port reg` outputs are assigned inside
+    /// state-dependent if/elsif chains in seq blocks. The motivation is the
+    /// implicit 1-cycle latency the legacy `port reg` form hides — a common
+    /// timing mismatch with testbench models that expect same-cycle outputs.
+    ///
+    /// Filter is `ri.legacy_port_reg` (not just `reg_info.is_some()`) so that:
+    ///   * user-written `port: out pipe_reg<T, N>` is silent — the user has
+    ///     explicitly opted into the N-cycle latency by writing the type, so
+    ///     the foot-gun the warning was designed to catch doesn't apply;
+    ///   * thread-lowering synthesizes port-regs with `legacy_port_reg: false`
+    ///     (see `src/elaborate.rs::lower_threads`), so internal artifacts the
+    ///     user can't act on are silent automatically — no separate
+    ///     `synthesized` flag needed.
     pub(crate) fn check_port_reg_timing(&mut self, m: &ModuleDecl) {
-        // Collect registered output port names.
+        // Collect names of *legacy-form* registered output ports only.
         let port_reg_names: HashSet<String> = m.ports.iter()
-            .filter(|p| p.reg_info.is_some() && p.direction == Direction::Out)
+            .filter(|p| p.direction == Direction::Out
+                     && p.reg_info.as_ref().is_some_and(|ri| ri.legacy_port_reg))
             .map(|p| p.name.name.clone())
             .collect();
         if port_reg_names.is_empty() {
@@ -1834,7 +1844,8 @@ impl<'a> TypeChecker<'a> {
 
         // Collect registered output spans for warning locations.
         let port_reg_spans: HashMap<String, Span> = m.ports.iter()
-            .filter(|p| p.reg_info.is_some() && p.direction == Direction::Out)
+            .filter(|p| p.direction == Direction::Out
+                     && p.reg_info.as_ref().is_some_and(|ri| ri.legacy_port_reg))
             .map(|p| (p.name.name.clone(), p.span))
             .collect();
 
@@ -1879,9 +1890,11 @@ impl<'a> TypeChecker<'a> {
                                 if let Some(&span) = port_reg_spans.get(&target) {
                                     self.warnings.push(CompileWarning {
                                         message: format!(
-                                            "`{target}` is a registered output (`pipe_reg<T, N>`) assigned inside a state-dependent \
-                                             branch — output value appears after the declared output latency. \
-                                             Use a plain `out T` port driven by `comb` for same-cycle outputs"
+                                            "`{target}` is a deprecated `port reg` output assigned inside a state-dependent \
+                                             branch — the implicit 1-cycle latency makes the output appear one cycle after \
+                                             the state that drives it. Migrate to either `port {target}: out T` driven by \
+                                             `comb` (same-cycle output) or `port {target}: out pipe_reg<T, N>` (explicit \
+                                             N-cycle registered output)"
                                         ),
                                         span,
                                     });
