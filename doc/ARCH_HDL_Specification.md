@@ -1734,14 +1734,29 @@ thread T on clk rising, rst high
 end thread T
 ```
 
-For each `resource`, the compiler generates a fixed-priority combinational arbiter:
+For each `resource`, the compiler generates a combinational arbiter whose
+policy is selected by the `mutex<...>` annotation on the resource
+declaration:
 
-```
-grant[0] = req[0]
-grant[i] = req[i] && !grant[0] && … && !grant[i-1]
-```
+| Policy | Behaviour | Liveness story |
+|---|---|---|
+| `mutex<priority>` (default) | `grant[i] = req[i] && !grant[0] && … && !grant[i-1]` | Thread 0 always makes progress; thread N waits only for threads with lower index. Acyclic waits-for graph by construction. |
+| `mutex<round_robin>` | Rotates the scan-start pointer each grant, so consecutive contenders alternate. | Bounded wait: any requester is granted within N cycles of asserting its request (N = number of contenders). |
+| `mutex<lru>` | Picks the least-recently-granted requester. | Same bounded-wait property as round_robin. |
+| `mutex<weighted<W>>` | Token-bucket-weighted across requesters; `W` is the bucket depth. | Long-run fairness in proportion to per-requester weights. |
+| `mutex<MyFn>` (custom hook) | The user supplies `hook grant_select(req, last_grant) -> grant: UInt<N>` returning a one-hot grant mask. | The compiler enforces one-hot (mutual exclusion), but liveness is the user's obligation — a hook that returns all-zeros under requests deadlocks the arbiter; a hook that consistently picks the same thread starves the others. |
 
-**Deadlock freedom** is a compile-time guarantee: with fixed priority the waits-for graph is acyclic — no circular wait can form. Thread 0 always makes progress and starvation is impossible as long as lock bodies terminate.
+**Deadlock freedom** is a compile-time guarantee for the built-in
+policies (priority, round_robin, lru, weighted) because each enforces a
+bounded-wait property and the waits-for graph is acyclic by
+construction. For `mutex<MyFn>` the deadlock-freedom obligation is
+shifted onto the user-provided hook — see
+`doc/thread_lowering_algorithm.md` §Liveness per policy.
+
+Under `arch sim --thread-sim parallel` (the pre-lowering thread
+simulator), the scheduler honours the declared mutex policy directly,
+so `arch sim --thread-sim both` is an exact cross-check against the
+FSM-lowered path for all five policy choices.
 
 **Nested lock blocks are a compile error.** Nesting would allow a higher-priority thread to enter a critical section that a lower-priority thread is already executing (mutual exclusion violation). Sequential (non-nested) lock usage is safe.
 
