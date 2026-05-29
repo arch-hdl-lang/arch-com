@@ -3934,6 +3934,134 @@ fn test_handshake_tier15_guarded_payload_silent() {
 }
 
 #[test]
+fn test_check_port_reg_timing_fires_on_legacy_port_reg() {
+    // Positive control: when a user *writes* the deprecated `port reg`
+    // form and assigns it inside a state-dependent if/elsif branch in a
+    // seq block, the timing-mismatch warning must fire. The implicit
+    // 1-cycle latency the legacy form hides is exactly the foot-gun the
+    // warning was designed to catch — testbench models that expect a
+    // same-cycle output from the state register see one-cycle-old data.
+    let source = "
+        module Foo
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port reg out_reg: out UInt<8> reset rst => 0;
+          reg state: UInt<2> reset rst => 0;
+          default seq on clk rising;
+          seq
+            if state == 0
+              out_reg <= 8'd1;
+            end if
+          end seq
+        end module Foo
+    ";
+    let ws = warnings_from(source);
+    assert!(
+        ws.iter().any(|m|
+            m.contains("out_reg")
+            && m.contains("deprecated `port reg`")
+            && m.contains("state-dependent")
+        ),
+        "expected check_port_reg_timing warning for legacy `port reg` \
+         output; got: {:?}",
+        ws,
+    );
+}
+
+#[test]
+fn test_check_port_reg_timing_skips_modern_pipe_reg() {
+    // Negative control: when a user writes the modern `port: out pipe_reg<T, N>`
+    // form, they have *explicitly* opted into the N-cycle latency by
+    // declaring it in the port signature. The foot-gun the warning is
+    // designed to catch (latency hidden behind the `port reg` keyword)
+    // doesn't apply — the latency is visible in the port type. The
+    // warning must NOT fire, even when the port is assigned inside a
+    // state-dependent branch.
+    let source = "
+        module Foo
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port out_reg: out pipe_reg<UInt<8>, 1> reset rst => 0;
+          reg state: UInt<2> reset rst => 0;
+          default seq on clk rising;
+          seq
+            if state == 0
+              out_reg@1 <= 8'd1;
+            end if
+          end seq
+        end module Foo
+    ";
+    let ws = warnings_from(source);
+    assert!(
+        !ws.iter().any(|m|
+            m.contains("out_reg")
+            && (m.contains("state-dependent") || m.contains("deprecated `port reg`"))
+        ),
+        "did not expect check_port_reg_timing warning for modern \
+         `pipe_reg<T, N>` output (user opted into the N-cycle latency \
+         explicitly); got: {:?}",
+        ws,
+    );
+}
+
+#[test]
+fn test_check_port_reg_timing_skips_synthesized_thread_lowered_regs() {
+    // Negative control: when thread lowering manufactures port regs on
+    // the synthesized `_threads` submodule, the user did NOT write those
+    // port regs — the warning would point at a declaration that doesn't
+    // exist in user source. The synthesized port regs use
+    // `legacy_port_reg: false` (see `src/elaborate.rs::lower_threads`),
+    // which is the same gate the modern `pipe_reg<T, N>` form satisfies,
+    // so the timing check is silent on them automatically — no separate
+    // `synthesized` flag needed. Repro pattern matches
+    // `Nic400WidthAdapter.arch`: a thread with `wait until` / `wait`
+    // (creating FSM states) that does seq assignments inside
+    // state-dependent branches.
+    let source = "
+        module Foo
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          port start: in Bool;
+          port reg out_data: out UInt<8> reset rst => 0;
+          thread on clk rising, rst high
+            wait until start;
+            out_data <= 8'd1;
+            wait 1 cycle;
+            out_data <= 8'd2;
+          end thread
+        end module Foo
+    ";
+    // Drive the full lowering pipeline (threads → port regs synthesized
+    // on the merged threads submodule) before typecheck, matching the
+    // `arch check` driver.
+    let tokens = arch::lexer::tokenize(source).expect("lexer error");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let ast = arch::elaborate::lower_tlm_target_threads(ast)
+        .expect("tlm target lowering");
+    let ast = arch::elaborate::lower_tlm_initiator_calls(ast)
+        .expect("tlm initiator lowering");
+    let ast = arch::elaborate::lower_threads(ast).expect("thread lowering");
+    let ast = arch::elaborate::lower_pipe_reg_ports(ast)
+        .expect("pipe_reg lowering");
+    let ast = arch::elaborate::lower_credit_channel_dispatch(ast)
+        .expect("credit_channel lowering");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let (warnings, _) = checker.check().expect("typecheck");
+    let msgs: Vec<String> = warnings.into_iter().map(|w| w.message).collect();
+    assert!(
+        !msgs.iter().any(|m|
+            m.contains("state-dependent") || m.contains("deprecated `port reg`")
+        ),
+        "expected NO check_port_reg_timing warning on synthesized \
+         thread-lowered port regs; got: {:?}",
+        msgs,
+    );
+}
+
+#[test]
 fn test_handshake_tier15_guard_via_compound_and_silent() {
     let source = "
         bus BusHS
