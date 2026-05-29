@@ -84,7 +84,7 @@ impl<'a> SimCodegen<'a> {
         }
         let fsm_vec_port_infos: Vec<FsmVecPortInfo> = f.ports.iter()
             .filter_map(|p| {
-                if let Some((elem_ty, count_str)) = vec_array_info(&p.ty) {
+                if let Some((elem_ty, count_str)) = vec_array_info_with_params(&p.ty, &f.common.params) {
                     let count: u64 = count_str.parse().unwrap_or(0);
                     Some(FsmVecPortInfo {
                         name: p.name.name.clone(),
@@ -126,20 +126,20 @@ impl<'a> SimCodegen<'a> {
                     h.push_str(&format!("  {} {}_{i};\n", vi.elem_ty, vi.name));
                 }
             } else {
-                h.push_str(&format!("  {} {};\n", cpp_port_type(&p.ty), p.name.name));
+                h.push_str(&format!("  {} {};\n", cpp_port_type_with_params(&p.ty, &f.common.params), p.name.name));
             }
         }
         // Flattened bus port fields
         for (flat_name, flat_ty) in &bus_flat {
-            let ty = cpp_port_type(flat_ty);
+            let ty = cpp_port_type_with_params(flat_ty, &f.common.params);
             h.push_str(&format!("  {ty} {flat_name};\n"));
         }
         // Datapath registers as public members (accessible from testbench)
         for reg in &f.regs {
-            if let Some((elem_ty, count)) = vec_array_info(&reg.ty) {
+            if let Some((elem_ty, count)) = vec_array_info_with_params(&reg.ty, &f.common.params) {
                 h.push_str(&format!("  {} {}[{}];\n", elem_ty, reg.name.name, count));
             } else {
-                let ty = cpp_internal_type(&reg.ty);
+                let ty = cpp_internal_type_with_params(&reg.ty, &f.common.params);
                 h.push_str(&format!("  {} {};\n", ty, reg.name.name));
             }
         }
@@ -148,12 +148,12 @@ impl<'a> SimCodegen<'a> {
         // directly via the let's RHS).
         for lb in &f.lets {
             if port_names.contains(&lb.name.name) { continue; }
-            let ty = lb.ty.as_ref().map(|t| cpp_internal_type(t)).unwrap_or_else(|| "uint32_t".to_string());
+            let ty = lb.ty.as_ref().map(|t| cpp_internal_type_with_params(t, &f.common.params)).unwrap_or_else(|| "uint32_t".to_string());
             h.push_str(&format!("  {} {};\n", ty, lb.name.name));
         }
         // Wire declarations as public members
         for w in &f.wires {
-            let ty = cpp_internal_type(&w.ty);
+            let ty = cpp_internal_type_with_params(&w.ty, &f.common.params);
             h.push_str(&format!("  {} {};\n", ty, w.name.name));
         }
         h.push('\n');
@@ -263,10 +263,10 @@ impl<'a> SimCodegen<'a> {
         // Shadow variables for datapath regs
         for reg in &f.regs {
             let n = &reg.name.name;
-            if let Some((elem_ty, count)) = vec_array_info(&reg.ty) {
+            if let Some((elem_ty, count)) = vec_array_info_with_params(&reg.ty, &f.common.params) {
                 cpp.push_str(&format!("  {elem_ty} _n_{n}[{count}]; memcpy(_n_{n}, {n}, sizeof({n}));\n"));
             } else {
-                let ty = cpp_internal_type(&reg.ty);
+                let ty = cpp_internal_type_with_params(&reg.ty, &f.common.params);
                 cpp.push_str(&format!("  {ty} _n_{n} = {n};\n"));
             }
         }
@@ -277,7 +277,7 @@ impl<'a> SimCodegen<'a> {
                 .or(reg.init.as_ref());
             if let Some(expr) = reset_expr {
                 let n = &reg.name.name;
-                if vec_array_info(&reg.ty).is_some() {
+                if vec_array_info_with_params(&reg.ty, &f.common.params).is_some() {
                     let init_val = cpp_expr(expr, &ctx_fsm);
                     let count = if let TypeExpr::Vec(_, c) = &reg.ty { eval_const_expr_with_params(c, &f.common.params) } else { 0 };
                     cpp.push_str(&format!("    for (int _i = 0; _i < {count}; _i++) _n_{n}[_i] = {init_val};\n"));
@@ -371,7 +371,7 @@ impl<'a> SimCodegen<'a> {
         // Commit datapath regs
         for reg in &f.regs {
             let n = &reg.name.name;
-            if vec_array_info(&reg.ty).is_some() {
+            if vec_array_info_with_params(&reg.ty, &f.common.params).is_some() {
                 cpp.push_str(&format!("  memcpy({n}, _n_{n}, sizeof({n}));\n"));
             } else {
                 cpp.push_str(&format!("  {n} = _n_{n};\n"));
@@ -446,7 +446,7 @@ impl<'a> SimCodegen<'a> {
         for vi in &fsm_vec_port_infos {
             let elem_bits = if let TypeExpr::Vec(elem, _) = f.ports.iter()
                 .find(|p| p.name.name == vi.name).map(|p| &p.ty).unwrap() {
-                type_width(elem)
+                type_width_with_params(elem, &f.common.params)
             } else { 32 };
             for i in 0..vi.count {
                 let fname = format!("{}_{i}", vi.name);
@@ -471,7 +471,7 @@ impl<'a> SimCodegen<'a> {
         let extra_sigs_ref: Vec<(&str, &str, u32)> = extra_sigs_owned.iter()
             .map(|(n, e, w)| (n.as_str(), e.as_str(), *w))
             .collect();
-        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &f.ports, &extra_sigs_ref);
+        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &f.ports, &extra_sigs_ref, &f.common.params);
 
         // --coverage: per-FSM counter storage + atexit dumper. Same
         // shape as gen_module's coverage emission (#132/#134).

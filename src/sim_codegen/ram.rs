@@ -41,7 +41,7 @@ impl<'a> SimCodegen<'a> {
                 TypeExpr::Named(n) => type_params.get(&n.name).copied().unwrap_or(ty),
                 other => other,
             };
-            type_width(resolved)
+            type_width_with_params(resolved, &r.params)
         };
 
         // Extract data width from output port signal type
@@ -346,7 +346,7 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("}\n");
 
         let extra_sigs: Vec<(&str, &str, u32)> = vec![];
-        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &r.ports, &extra_sigs);
+        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &r.ports, &extra_sigs, &r.params);
         h.push_str("};\n");
 
         SimModel { class_name: class, header: h, impl_: cpp }

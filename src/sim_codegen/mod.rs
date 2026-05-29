@@ -478,7 +478,7 @@ impl<'a> SimCodegen<'a> {
                     bindings.push(format!(
                         "        .def_property_readonly(\"{rname}\", [](const {class}& self) {{ return self.{cpp_field}; }})"
                     ));
-                } else if vec_array_info(&r.ty).is_some() {
+                } else if vec_array_info_with_params(&r.ty, &m.params).is_some() {
                     // Vec reg — skip for now (complex)
                     continue;
                 } else {
@@ -1129,6 +1129,14 @@ fn collect_trace_signals(
 ///   shadow generation where 0 signals "skip this port"
 /// - `type_bits_te(ty)`: scalar-only width (does NOT recurse into Vec), defaults to 32 —
 ///   used for inst port width tracking where Vec is handled separately via flat fields
+#[deprecated(
+    note = "use `type_width_with_params(.., &params)` — the bare form silently \
+            miscompiles when the type depends on enclosing-construct params \
+            (UInt<PARAM>, Vec<_, PARAM>). See arch-com#447 §1 and PR #463 \
+            extending #458 to the sibling helper cluster."
+)]
+#[allow(dead_code)]  // intentional landmine: present so new callers
+                    // surface a deprecation warning at PR review time.
 fn type_width(ty: &TypeExpr) -> u32 {
     type_width_with_params(ty, &[])
 }
@@ -1161,14 +1169,20 @@ fn add_trace_to_simple_construct(
     construct_name: &str,
     ports: &[PortDecl],
     extra_signals: &[(&str, &str, u32)],
+    params: &[ParamDecl],
 ) {
-    // Build signal list from ports + extras
+    // Build signal list from ports + extras.
     // Vec and bus ports are skipped (their flat fields are passed via extra_signals by caller).
+    // `params` is the enclosing construct's param list, used to resolve
+    // `UInt<PARAM>` / `SInt<PARAM>` widths in port VCD declarations to
+    // their real bit width rather than the legacy 32-default. See
+    // arch-com#447 §1 / PR following #458 for the migration that closed
+    // this footgun.
     let mut signals = Vec::new();
     for p in ports {
         if matches!(p.ty, TypeExpr::Vec(..)) { continue; }  // handled as flat via extra_signals
         if p.bus_info.is_some() { continue; }                // bus ports flattened via extra_signals
-        let width = type_width(&p.ty);
+        let width = type_width_with_params(&p.ty, params);
         signals.push(TraceSignal {
             vcd_name: p.name.name.clone(),
             cpp_expr: p.name.name.clone(),
@@ -1236,6 +1250,14 @@ fn wide_words(bits: u32) -> u32 { (bits + 31) / 32 }
 fn is_wide_bits(bits: u32) -> bool { bits > 64 }
 
 /// C++ type for a public port field.
+#[deprecated(
+    note = "use `cpp_port_type_with_params(.., &params)` — the bare form \
+            silently buckets `UInt<PARAM>` into uint32_t even when the param \
+            resolves to a wider value. See arch-com#447 §1 and PR #463 \
+            extending #458 to the sibling helper cluster."
+)]
+#[allow(dead_code)]  // intentional landmine: present so new callers
+                    // surface a deprecation warning at PR review time.
 fn cpp_port_type(ty: &TypeExpr) -> String {
     cpp_port_type_with_params(ty, &[])
 }
@@ -1731,6 +1753,14 @@ fn expand_bus_connections(
 /// 1–64 bits   → uint8/16/32/64_t
 /// 65–128 bits → _arch_u128
 /// >128 bits   → VlWide<N>  (same as port type, no conversion needed)
+#[deprecated(
+    note = "use `cpp_internal_type_with_params(.., &params)` — the bare form \
+            silently buckets `UInt<PARAM>` regs/lets into the wrong scalar \
+            type. See arch-com#447 §1 and PR #463 extending #458 to the \
+            sibling helper cluster."
+)]
+#[allow(dead_code)]  // intentional landmine: present so new callers
+                    // surface a deprecation warning at PR review time.
 fn cpp_internal_type(ty: &TypeExpr) -> String {
     cpp_internal_type_with_params(ty, &[])
 }
@@ -1773,6 +1803,15 @@ fn cpp_field_decl(name: &str, ty: &TypeExpr, params: &[ParamDecl]) -> String {
 /// string is the C-array dimension chain in source order separated by
 /// `"]["` so a caller emitting `<elem>[<count>]` ends up with the
 /// correct multi-dim C array (`uint32_t name[8][4]`).
+#[deprecated(
+    note = "use `vec_array_info_with_params(.., &params)` — the bare form \
+            silently returns count=0 for `Vec<_, PARAM>` declarations. See \
+            arch-com#447 §1 and PR #463 extending #458 to the sibling \
+            helper cluster (twin of the PR #442 sites for the Vec-reg \
+            storage path)."
+)]
+#[allow(dead_code)]  // intentional landmine: present so new callers
+                    // surface a deprecation warning at PR review time.
 fn vec_array_info(ty: &TypeExpr) -> Option<(String, String)> {
     // Backward-compatible wrapper: delegate to the param-aware version
     // with an empty params slice. Callers that need to resolve a
@@ -4350,9 +4389,16 @@ impl<'a> SimCodegen<'a> {
         h.push('\n');
 
         for f in fns {
-            let ret_ty = cpp_internal_type(&f.ret_ty);
+            // Free functions hoisted out of a module body. The function's
+            // param-resolving context is the enclosing module's params (see
+            // L4329 above where param defines are emitted from the module's
+            // param list), but that slice isn't threaded into this loop yet.
+            // The bare-form-equivalent `&[]` is acceptable as a residual
+            // since user-written `function ... -> T` signatures typically use
+            // concrete-width types; tracked as a follow-up to arch-com#463.
+            let ret_ty = cpp_internal_type_with_params(&f.ret_ty, &[]);
             let args_str: Vec<String> = f.args.iter()
-                .map(|a| format!("{} {}", cpp_internal_type(&a.ty), a.name.name))
+                .map(|a| format!("{} {}", cpp_internal_type_with_params(&a.ty, &[]), a.name.name))
                 .collect();
             h.push_str(&format!("inline {ret_ty} {}({}) {{\n", f.name.name, args_str.join(", ")));
 
@@ -4421,7 +4467,7 @@ impl<'a> SimCodegen<'a> {
                 for item in items {
                     match item {
                         FunctionBodyItem::Let(l) => {
-                            let ty = l.ty.as_ref().map(|t| cpp_internal_type(t))
+                            let ty = l.ty.as_ref().map(|t| cpp_internal_type_with_params(t, &[]))
                                 .unwrap_or_else(|| "uint32_t".to_string());
                             let val = cpp_expr(&l.value, ctx);
                             out.push_str(&format!("{indent}const {ty} {} = {};\n", l.name.name, val));
@@ -4454,7 +4500,7 @@ impl<'a> SimCodegen<'a> {
             for item in &f.body {
                 match item {
                     FunctionBodyItem::Let(l) => {
-                        let ty = l.ty.as_ref().map(|t| cpp_internal_type(t))
+                        let ty = l.ty.as_ref().map(|t| cpp_internal_type_with_params(t, &[]))
                             .unwrap_or_else(|| "uint32_t".to_string());
                         let val = cpp_expr(&l.value, &ctx);
                         h.push_str(&format!("  const {ty} {} = {};\n", l.name.name, val));
@@ -5536,7 +5582,7 @@ impl<'a> SimCodegen<'a> {
         let mut vec_reg_inits: Vec<String> = m.body.iter()
             .filter_map(|i| {
                 if let ModuleBodyItem::RegDecl(r) = i {
-                    if vec_array_info(&r.ty).is_some() {
+                    if vec_array_info_with_params(&r.ty, &m.params).is_some() {
                         let n = &r.name.name;
                         Some(format!("    memset(_{n}, 0, sizeof(_{n}));"))
                     } else { None }
@@ -5558,7 +5604,7 @@ impl<'a> SimCodegen<'a> {
 
         let reg_inits: Vec<String> = m.body.iter()
             .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i {
-                if vec_array_info(&r.ty).is_some() {
+                if vec_array_info_with_params(&r.ty, &m.params).is_some() {
                     None  // handled via memset in constructor body
                 } else if matches!(r.ty, TypeExpr::Named(_)) {
                     Some(format!("_{}()", r.name.name))  // struct default constructor
@@ -5586,7 +5632,7 @@ impl<'a> SimCodegen<'a> {
             .filter_map(|p| {
                 let ri = p.reg_info.as_ref()?;
                 // Vec port-regs are C arrays — can't use (0) in init list
-                if vec_array_info(&p.ty).is_some() { return None; }
+                if vec_array_info_with_params(&p.ty, &m.params).is_some() { return None; }
                 let init_val = if let Some(ref init_expr) = ri.init {
                     match &init_expr.kind {
                         ExprKind::Literal(LitKind::Dec(v)) => v.to_string(),
@@ -7661,7 +7707,7 @@ impl<'a> SimCodegen<'a> {
         let mut h = String::new();
         h.push_str("#pragma once\n#include <cstdint>\n#include <cstdio>\n#include \"verilated.h\"\n\n");
         h.push_str(&format!("class {class} {{\npublic:\n"));
-        for p in &c.ports { h.push_str(&format!("  {} {};\n", cpp_port_type(&p.ty), p.name.name)); }
+        for p in &c.ports { h.push_str(&format!("  {} {};\n", cpp_port_type_with_params(&p.ty, &c.params), p.name.name)); }
         h.push('\n');
 
         let port_inits: Vec<String> = c.ports.iter().map(|p| format!("{}(0)", p.name.name)).collect();
@@ -7762,7 +7808,7 @@ impl<'a> SimCodegen<'a> {
 
         // Add trace support
         let extra_sigs: Vec<(&str, &str, u32)> = vec![("count_r", "_count_r", count_bits)];
-        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &c.ports, &extra_sigs);
+        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &c.ports, &extra_sigs, &c.params);
         h.push_str("};\n");
 
         SimModel { class_name: class, header: h, impl_: cpp }
@@ -7786,7 +7832,7 @@ impl<'a> SimCodegen<'a> {
         // C++ type for one register element (from the write data signal type)
         let elem_cpp = r.write_ports.as_ref()
             .and_then(|wp| wp.signals.iter().find(|s| s.name.name == "data"))
-            .map(|s| cpp_internal_type(&s.ty))
+            .map(|s| cpp_internal_type_with_params(&s.ty, &r.params))
             .unwrap_or_else(|| "uint32_t".to_string());
 
         // Flat port name: "{pfx}_{sig}" when count==1, "{pfx}{i}_{sig}" otherwise
@@ -7806,19 +7852,19 @@ impl<'a> SimCodegen<'a> {
         h.push_str(&format!("#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\nclass {class} {{\npublic:\n"));
 
         for p in &r.ports {
-            h.push_str(&format!("  {} {};\n", cpp_port_type(&p.ty), p.name.name));
+            h.push_str(&format!("  {} {};\n", cpp_port_type_with_params(&p.ty, &r.params), p.name.name));
         }
         if let Some(rp) = &r.read_ports {
             for i in 0..nread {
                 for s in &rp.signals {
-                    h.push_str(&format!("  {} {};\n", cpp_port_type(&s.ty), flat(&read_pfx, i, nread, &s.name.name)));
+                    h.push_str(&format!("  {} {};\n", cpp_port_type_with_params(&s.ty, &r.params), flat(&read_pfx, i, nread, &s.name.name)));
                 }
             }
         }
         if let Some(wp) = &r.write_ports {
             for i in 0..nwrite {
                 for s in &wp.signals {
-                    h.push_str(&format!("  {} {};\n", cpp_port_type(&s.ty), flat(&write_pfx, i, nwrite, &s.name.name)));
+                    h.push_str(&format!("  {} {};\n", cpp_port_type_with_params(&s.ty, &r.params), flat(&write_pfx, i, nwrite, &s.name.name)));
                 }
             }
         }
@@ -7855,7 +7901,7 @@ impl<'a> SimCodegen<'a> {
             // For a wider data type we still match what cpp_internal_type picks.
             let waddr_t = r.write_ports.as_ref()
                 .and_then(|wp| wp.signals.iter().find(|s| s.name.name == "addr"))
-                .map(|s| cpp_internal_type(&s.ty))
+                .map(|s| cpp_internal_type_with_params(&s.ty, &r.params))
                 .unwrap_or_else(|| "uint32_t".to_string());
             h.push_str("  uint8_t _we_q;\n");
             h.push_str(&format!("  {waddr_t} _waddr_q;\n"));
@@ -7959,7 +8005,7 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("}\n");
 
         let extra_sigs: Vec<(&str, &str, u32)> = vec![];
-        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &r.ports, &extra_sigs);
+        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &r.ports, &extra_sigs, &r.params);
         h.push_str("};\n");
 
         SimModel { class_name: class, header: h, impl_: cpp }
@@ -7984,7 +8030,7 @@ impl<'a> SimCodegen<'a> {
         let dst_clk = &clk_ports[1].name.name;
 
         let data_in_port = s.ports.iter().find(|p| p.name.name == "data_in").unwrap();
-        let data_ctype = cpp_port_type(&data_in_port.ty);
+        let data_ctype = cpp_port_type_with_params(&data_in_port.ty, &s.params);
         let data_bits: u32 = match &data_in_port.ty {
             TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width(w),
             TypeExpr::Bool | TypeExpr::Bit => 1,
@@ -8009,7 +8055,7 @@ impl<'a> SimCodegen<'a> {
         }
         h.push_str(&format!("class {class} {{\npublic:\n"));
         for p in &s.ports {
-            h.push_str(&format!("  {} {};\n", cpp_port_type(&p.ty), p.name.name));
+            h.push_str(&format!("  {} {};\n", cpp_port_type_with_params(&p.ty, &s.params), p.name.name));
         }
         h.push_str("\n  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() { trace_close(); }\n");
         if cdc_random {
@@ -8188,7 +8234,7 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("}\n");
 
         let extra_sigs: Vec<(&str, &str, u32)> = vec![];
-        add_trace_to_simple_construct(&mut h, &mut cpp, &class, &class, &s.ports, &extra_sigs);
+        add_trace_to_simple_construct(&mut h, &mut cpp, &class, &class, &s.ports, &extra_sigs, &s.params);
         h.push_str("};\n");
 
         SimModel { class_name: class, header: h, impl_: cpp }
@@ -8355,11 +8401,11 @@ impl<'a> SimCodegen<'a> {
             let mut field_inits = Vec::new();
             let mut ctor_body = Vec::new();
             for (sname, _dir, sty) in &effective {
-                if vec_array_info(sty).is_some() {
+                if vec_array_info_with_params(sty, &b.params).is_some() {
                     h.push_str(&format!("  {};\n", cpp_field_decl(sname, sty, &[])));
                     ctor_body.push(format!("std::memset({}, 0, sizeof({}));", sname, sname));
                 } else {
-                    let ty = cpp_internal_type(sty);
+                    let ty = cpp_internal_type_with_params(sty, &b.params);
                     h.push_str(&format!("  {} {};\n", ty, sname));
                     if matches!(sty, TypeExpr::Named(_)) {
                         field_inits.push(format!("{}()", sname));
@@ -8405,7 +8451,7 @@ impl<'a> SimCodegen<'a> {
         h.push_str("#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\n");
         h.push_str(&format!("class {class} {{\npublic:\n"));
         for p in &a.ports {
-            let ty = cpp_port_type(&p.ty);
+            let ty = cpp_port_type_with_params(&p.ty, &a.params);
             h.push_str(&format!("  {ty} {};\n", p.name.name));
         }
         for pa in &a.port_arrays {

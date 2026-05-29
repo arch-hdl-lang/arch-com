@@ -4822,6 +4822,94 @@ fn test_fsm_bus_flat_trace_width_uses_construct_param_binding() {
 }
 
 #[test]
+fn test_fsm_param_vec_scalar_widths_resolve_through_sibling_helpers() {
+    // Combined regression for arch-com#447 §1 (extended by PR after #458).
+    // PR #458 deprecated `type_bits_te` / `eval_const_expr` and migrated
+    // their call sites to the param-aware form. The follow-up extends the
+    // same migration to the sibling cluster (`type_width`,
+    // `cpp_port_type`, `cpp_internal_type`, `vec_array_info`).
+    //
+    // The fixture exercises three of those helpers in one FSM with
+    // `param ACC: const = 48`:
+    //
+    //   - `out_word: out UInt<ACC>` → `cpp_port_type` ⇒ `uint64_t`
+    //   - `vec_word: out Vec<UInt<ACC>, 2>` → `cpp_port_type` (per flat
+    //     field) AND `vec_array_info` (count=2) ⇒ two `uint64_t
+    //     vec_word_<i>` fields plus a `_vec_word[2]` internal array.
+    //   - `reg buf: Vec<UInt<ACC>, 4>` → `vec_array_info` (count=4) AND
+    //     `cpp_internal_type` ⇒ `uint64_t buf[4]`.
+    //
+    // Under the bare-form fallback the port bucket would collapse to
+    // `uint32_t`, the Vec count would fold to 0 (`buf[0]`,
+    // `_vec_word[0]`), and the per-element VCD trace declarations would
+    // announce width 32 instead of 48.
+    let source = include_str!(
+        "regression/issues/fsm_param_vec_scalar_widths/FsmParamVecScalarWidths.arch"
+    );
+    let sim = compile_to_sim_h(source, false);
+
+    // 1. Scalar UInt<ACC> port: bucket must be uint64_t.
+    assert!(
+        sim.contains("uint64_t out_word"),
+        "scalar `out_word` (UInt<48>) must bucket into uint64_t — \
+         bare-form `cpp_port_type` would emit uint32_t. sim header:\n{sim}"
+    );
+    assert!(
+        !sim.contains("uint32_t out_word"),
+        "found buggy `uint32_t out_word` declaration; param-aware \
+         `cpp_port_type_with_params` did not resolve `UInt<ACC>` when \
+         ACC=48:\n{sim}"
+    );
+
+    // 2. Vec<UInt<ACC>, 2> port: per-element flat fields must be uint64_t,
+    //    count must be 2 (not 0).
+    assert!(
+        sim.contains("uint64_t vec_word_0") && sim.contains("uint64_t vec_word_1"),
+        "flat fields `vec_word_0`/`vec_word_1` must be uint64_t (UInt<48>) \
+         — bare-form `cpp_port_type` would emit uint32_t or omit them \
+         entirely (count=0):\n{sim}"
+    );
+    assert!(
+        sim.contains("uint64_t _vec_word[2]") || sim.contains("uint64_t _vec_word [2]"),
+        "internal Vec storage array `_vec_word[2]` must be uint64_t × 2 — \
+         bare-form `vec_array_info` would fold the count to 0:\n{sim}"
+    );
+
+    // 3. Vec<UInt<ACC>, 4> reg: storage array must be `uint64_t buf[4]`.
+    assert!(
+        sim.contains("uint64_t buf[4]") || sim.contains("uint64_t buf [4]"),
+        "Vec reg `buf` must declare `uint64_t buf[4]` — bare-form \
+         `vec_array_info` would emit `uint32_t buf[0]` (count=0, wrong \
+         scalar bucket):\n{sim}"
+    );
+    assert!(
+        !sim.contains("uint32_t buf[4]"),
+        "found buggy `uint32_t buf[4]` — `cpp_internal_type` bucketed \
+         `UInt<48>` to uint32_t instead of uint64_t:\n{sim}"
+    );
+    assert!(
+        !sim.contains("uint64_t buf[0]") && !sim.contains("uint32_t buf[0]"),
+        "found buggy `buf[0]` declaration — `vec_array_info` folded the \
+         Vec count to 0:\n{sim}"
+    );
+
+    // 4. VCD trace dump per-bit loop for `out_word` must run 48 iterations,
+    //    not 32. This catches the `add_trace_to_simple_construct` callsite
+    //    that previously passed `&[]` for params (free-function helper
+    //    didn't take a params slice). When `add_trace_to_simple_construct`
+    //    was migrated to accept `params: &[ParamDecl]`, the FSM callsite
+    //    started passing `&f.common.params` so `UInt<ACC>` resolves to 48.
+    let out_word_trace_line = sim.lines()
+        .find(|l| l.contains("(out_word >> _i) & 1"))
+        .unwrap_or("(out_word trace dump line not found)");
+    assert!(
+        out_word_trace_line.contains("_i = 48 - 1"),
+        "VCD trace dump loop for `out_word` must iterate 48 times \
+         (UInt<ACC> with ACC=48); got:\n  {out_word_trace_line}\n\nFull sim:\n{sim}"
+    );
+}
+
+#[test]
 fn test_wait_0plus_cycle_until_mealy_fusion_gates_seq_assigns() {
     // Regression for issue #412: the Mealy-fusion lowering for
     //   wait 0+ cycle until X;
@@ -17820,5 +17908,84 @@ fn test_thread_sim_honors_custom_mutex_policy_with_hook() {
             && h.contains("PickHigh(_req, _resource_shared_lk_last_grant_onehot)")
             && h.contains("_resource_shared_lk_last_grant_onehot = (1ULL << _tid)"),
         "custom mutex policy should include VFunctions and call the hook selector:\n{h}",
+    );
+}
+
+/// Verifies the `ar_wrap_len_legal_apb` concurrent SVA at
+/// Nic400ApbBridge.arch fires under Verilator `--assert` when a WRAP
+/// burst is issued with an illegal 3-beat `ar_len = 2` (AXI4 §A3.4.1
+/// requires WRAP `ax_len ∈ {1, 3, 7, 15}`). Follow-up to arch-com#447
+/// §4 — earlier WRAP support (#440) only checked the reserved
+/// `ar_burst == 3` code; legal-shape checks beyond that were missing.
+#[test]
+fn test_nic400_apb_bridge_wrap_illegal_len_is_rejected_by_sva() {
+    common::expect_verilator_fatal_multi(
+        &[
+            "tests/nic400/Nic400ApbBridge.arch",
+            "tests/nic400/BusAxi4.arch",
+            "stdlib/BusApb.arch",
+        ],
+        "tests/nic400/tb_nic400_apb_bridge_wrap_len_illegal.cpp",
+        "Nic400ApbBridge",
+        "ASSERTION FAILED: Nic400ApbBridge.ar_wrap_len_legal_apb",
+    );
+}
+
+/// Verifies the `ar_wrap_addr_aligned_apb` concurrent SVA at
+/// Nic400ApbBridge.arch fires under Verilator `--assert` when a WRAP
+/// burst is issued with a base address misaligned to `(1 << ar_size)`
+/// (AXI4 §A3.4.1). We drive `ar_addr = 0x8003, ar_size = 2` — the
+/// low 2 bits must be clear for a 4-byte access. Follow-up to
+/// arch-com#447 §4.
+#[test]
+fn test_nic400_apb_bridge_wrap_unaligned_addr_is_rejected_by_sva() {
+    common::expect_verilator_fatal_multi(
+        &[
+            "tests/nic400/Nic400ApbBridge.arch",
+            "tests/nic400/BusAxi4.arch",
+            "stdlib/BusApb.arch",
+        ],
+        "tests/nic400/tb_nic400_apb_bridge_wrap_addr_unaligned.cpp",
+        "Nic400ApbBridge",
+        "ASSERTION FAILED: Nic400ApbBridge.ar_wrap_addr_aligned_apb",
+    );
+}
+
+/// Verifies the `ar_wrap_len_legal_widthadapter` concurrent SVA at
+/// Nic400WidthAdapter.arch fires under Verilator `--assert` when a
+/// WRAP burst is issued with an illegal 3-beat `ar_len = 2`. The
+/// width-adapter's downsizing path would otherwise forward an
+/// out-of-spec slave burst whose byte-count-preserved scaling no
+/// longer wraps at the expected window boundary. Follow-up to
+/// arch-com#447 §4 — earlier WRAP support (#441) only checked the
+/// burst-type code, not the burst shape.
+#[test]
+fn test_nic400_width_adapter_wrap_illegal_len_is_rejected_by_sva() {
+    common::expect_verilator_fatal_multi(
+        &[
+            "tests/nic400/Nic400WidthAdapter.arch",
+            "tests/nic400/BusAxi4.arch",
+        ],
+        "tests/nic400/tb_nic400_width_adapter_wrap_len_illegal.cpp",
+        "Nic400WidthAdapter",
+        "ASSERTION FAILED: Nic400WidthAdapter.ar_wrap_len_legal_widthadapter",
+    );
+}
+
+/// Verifies the `ar_wrap_addr_aligned_widthadapter` concurrent SVA
+/// at Nic400WidthAdapter.arch fires under Verilator `--assert` when a
+/// WRAP burst is issued with a base address misaligned to
+/// `(1 << ar_size)` (AXI4 §A3.4.1). We drive
+/// `ar_addr = 0x8003, ar_size = 2`. Follow-up to arch-com#447 §4.
+#[test]
+fn test_nic400_width_adapter_wrap_unaligned_addr_is_rejected_by_sva() {
+    common::expect_verilator_fatal_multi(
+        &[
+            "tests/nic400/Nic400WidthAdapter.arch",
+            "tests/nic400/BusAxi4.arch",
+        ],
+        "tests/nic400/tb_nic400_width_adapter_wrap_addr_unaligned.cpp",
+        "Nic400WidthAdapter",
+        "ASSERTION FAILED: Nic400WidthAdapter.ar_wrap_addr_aligned_widthadapter",
     );
 }
