@@ -49,7 +49,7 @@ impl<'a> SimCodegen<'a> {
         h.push_str("#pragma once\n#include <cstdint>\n#include <cstdio>\n#include <cstring>\n#include \"verilated.h\"\n\n");
         h.push_str(&format!("class {class} {{\npublic:\n"));
         for p in &c.ports {
-            h.push_str(&format!("  {} {};\n", cpp_port_type(&p.ty), p.name.name));
+            h.push_str(&format!("  {} {};\n", cpp_port_type_with_params(&p.ty, &c.params), p.name.name));
         }
         h.push('\n');
 
@@ -159,7 +159,7 @@ impl<'a> SimCodegen<'a> {
         let extra_sigs: Vec<(&str, &str, u32)> = vec![
             ("entry_valid_r", "_entry_valid_r", depth),
         ];
-        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &c.ports, &extra_sigs);
+        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &c.ports, &extra_sigs, &c.params);
         h.push_str("};\n");
 
         SimModel { class_name: class, header: h, impl_: cpp }

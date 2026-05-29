@@ -44,7 +44,7 @@ impl<'a> SimCodegen<'a> {
                 _ => None,
             });
         let data_cpp: String = data_te.as_ref()
-            .map(cpp_port_type)
+            .map(|te| cpp_port_type_with_params(te, &l.params))
             .unwrap_or_else(|| "uint32_t".to_string());
 
         // Port-type emitter that resolves the `DATA` type-param to its
@@ -57,7 +57,7 @@ impl<'a> SimCodegen<'a> {
                     return data_cpp.clone();
                 }
             }
-            cpp_port_type(ty)
+            cpp_port_type_with_params(ty, &l.params)
         };
 
         let has_doubly = matches!(l.kind, LinklistKind::Doubly | LinklistKind::CircularDoubly);
@@ -434,7 +434,7 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("  }\n}\n");
 
         let extra_sigs: Vec<(&str, &str, u32)> = vec![];
-        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &l.ports, &extra_sigs);
+        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &l.ports, &extra_sigs, &l.params);
         h.push_str("};\n");
 
         SimModel { class_name: class, header: h, impl_: cpp }
