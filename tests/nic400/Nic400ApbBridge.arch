@@ -302,4 +302,29 @@ module Nic400ApbBridge
          or (axi.aw_size == 1 and axi.aw_addr[0] == 0)
          or (axi.aw_size == 2 and axi.aw_addr[1:0] == 0)
          or (axi.aw_size == 3 and axi.aw_addr[2:0] == 0));
+
+  // AXI4 §A3.4.1 INCR 4 KB boundary precondition. An INCR burst must
+  // not cross a 4 KB address boundary — the master is responsible for
+  // splitting bursts that would. The bridge's per-beat `calc_paddr`
+  // happily generates paddrs straddling the boundary if the master
+  // doesn't honour this, producing addresses on the downstream APB that
+  // never correspond to anything the master intends.
+  //
+  // Constraint: ar_addr[11:0] + (ar_len+1) * (1 << ar_size) <= 4096
+  // (equivalent: ar_addr[11:0] + ((ar_len + 1) << ar_size) <= 4096).
+  assert ar_incr_no_4k_cross_apb: (axi.ar_valid and axi.ar_ready and axi.ar_burst == 1)
+    |-> (axi.ar_addr[11:0].zext<17>() + ((axi.ar_len.zext<9>() + 1) << axi.ar_size).zext<17>() <= 17'd4096);
+  assert aw_incr_no_4k_cross_apb: (axi.aw_valid and axi.aw_ready and axi.aw_burst == 1)
+    |-> (axi.aw_addr[11:0].zext<17>() + ((axi.aw_len.zext<9>() + 1) << axi.aw_size).zext<17>() <= 17'd4096);
+
+  // AXI4 §A7.2.4 exclusive-access burst cardinality. Exclusive bursts
+  // (ax_lock = 1 in AXI4; bit 0 of the AXI3 2-bit AxLOCK encoding) must
+  // be at most 16 beats — that's `ax_len <= 15`. The pow-2-byte and
+  // base-alignment halves of §A7.2.4 are left for a follow-up SVA pair
+  // (they require per-(len, size) decomposition similar to the WRAP
+  // alignment SVAs above).
+  assert ar_excl_len_legal_apb: (axi.ar_valid and axi.ar_ready and axi.ar_lock)
+    |-> (axi.ar_len <= 8'd15);
+  assert aw_excl_len_legal_apb: (axi.aw_valid and axi.aw_ready and axi.aw_lock)
+    |-> (axi.aw_len <= 8'd15);
 end module Nic400ApbBridge
