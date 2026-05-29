@@ -738,6 +738,36 @@ fn test_arbiter_round_robin_sv_nonpow2_verilator_behavior() {
         String::from_utf8_lossy(&run.stdout));
 }
 
+/// arch-sim cross-check for the same RR fairness fixture, closing the §3
+/// gap from `ideas/2026-05-28-code-review-findings.md`: the prior PR #452
+/// only ran Verilator against RRArb3, leaving the arch-sim path covered
+/// only by a substring grep on the emitted header. This test runs the same
+/// `tb_rr_arb3.cpp` driver through the arch-sim backend so any future
+/// divergence between the SV scheduler and the sim scheduler trips both
+/// tests (or neither), not just Verilator.
+#[test]
+fn test_arbiter_round_robin_arch_sim_nonpow2_behavior() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/arbiter_rr_nonpow2/RRArb3.arch")
+        .arg("--tb")
+        .arg("tests/arbiter_rr_nonpow2/tb_rr_arb3.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for RRArb3");
+    assert!(out.status.success(),
+        "arch sim should pass for RRArb3\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("PASS rr_arb3"),
+        "expected `PASS rr_arb3` (strict round-robin, idx-fair) in arch \
+         sim stdout — the same fairness contract Verilator verifies; got:\n{stdout}");
+}
+
 #[test]
 fn test_arbiter_latency2() {
     let source = include_str!("../examples/arbiter_latency2.arch");
@@ -19018,5 +19048,45 @@ end module BusWireTop
     assert!(
         typecheck_source(source).is_ok(),
         "bus wire connected from initiator + target insts must NOT be a multi-driver error"
+    );
+}
+
+/// AW-side mirror of `test_nic400_apb_bridge_wrap_illegal_len_is_rejected_by_sva`.
+///
+/// Closes §4 from `ideas/2026-05-28-code-review-findings.md`: the AW
+/// `aw_wrap_len_legal_apb` SVA was added in PR #456 but had no
+/// expect-fatal TB exercising it. A codegen bug that broke the AW SVA
+/// label or condition would not have been caught by CI.
+#[test]
+fn test_nic400_apb_bridge_wrap_illegal_aw_len_is_rejected_by_sva() {
+    common::expect_verilator_fatal_multi(
+        &[
+            "tests/nic400/Nic400ApbBridge.arch",
+            "tests/nic400/BusAxi4.arch",
+            "stdlib/BusApb.arch",
+        ],
+        "tests/nic400/tb_nic400_apb_bridge_wrap_len_illegal_aw.cpp",
+        "Nic400ApbBridge",
+        "ASSERTION FAILED: Nic400ApbBridge.aw_wrap_len_legal_apb",
+    );
+}
+
+/// AW-side mirror of `test_nic400_apb_bridge_wrap_unaligned_addr_is_rejected_by_sva`.
+///
+/// Closes §4 from `ideas/2026-05-28-code-review-findings.md`: AW
+/// alignment SVA also needed expect-fatal coverage so the per-size
+/// alignment check is verified to fire on the write path, not just the
+/// read path.
+#[test]
+fn test_nic400_apb_bridge_wrap_unaligned_aw_addr_is_rejected_by_sva() {
+    common::expect_verilator_fatal_multi(
+        &[
+            "tests/nic400/Nic400ApbBridge.arch",
+            "tests/nic400/BusAxi4.arch",
+            "stdlib/BusApb.arch",
+        ],
+        "tests/nic400/tb_nic400_apb_bridge_wrap_addr_unaligned_aw.cpp",
+        "Nic400ApbBridge",
+        "ASSERTION FAILED: Nic400ApbBridge.aw_wrap_addr_aligned_apb",
     );
 }
