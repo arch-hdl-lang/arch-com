@@ -3838,6 +3838,34 @@ fn collect_reg_names(body: &[ModuleBodyItem], ports: &[PortDecl]) -> HashSet<Str
         .collect()
 }
 
+fn collect_port_reg_names(ports: &[PortDecl]) -> HashSet<String> {
+    ports.iter()
+        .filter_map(|p| if p.reg_info.is_some() { Some(p.name.name.clone()) } else { None })
+        .collect()
+}
+
+fn emit_port_reg_public_copy(
+    cpp: &mut String,
+    name: &str,
+    widths: &HashMap<String, u32>,
+    vec_count: Option<u64>,
+    indent: &str,
+) {
+    if let Some(count) = vec_count {
+        for i in 0..count {
+            cpp.push_str(&format!("{indent}{name}_{i} = _{name}[{i}];\n"));
+        }
+        return;
+    }
+
+    let bits = widths.get(name).copied().unwrap_or(0);
+    if bits > 64 && bits <= 128 {
+        cpp.push_str(&format!("{indent}_arch_u128_to_vl(_{name}, {name}._data);\n"));
+    } else {
+        cpp.push_str(&format!("{indent}{name} = _{name};\n"));
+    }
+}
+
 fn collect_let_names(body: &[ModuleBodyItem]) -> HashSet<String> {
     let mut out = HashSet::new();
     for i in body {
@@ -4823,6 +4851,7 @@ impl<'a> SimCodegen<'a> {
 
         let mut reg_names = collect_reg_names(&m.body, &m.ports);
         reg_names.extend(collect_pipe_reg_names(&m.body));
+        let port_reg_names = collect_port_reg_names(&m.ports);
         let let_names   = collect_let_names(&m.body);
         let let_values  = collect_let_values(&m.body, &m.params);
         let inst_names  = collect_inst_names(&m.body);
@@ -6307,6 +6336,9 @@ impl<'a> SimCodegen<'a> {
                                         cpp.push_str(&format!("    _{sig_name}[{i}] = _inst_{}.{}_{i};\n",
                                             inst.name.name, conn.port_name.name));
                                     }
+                                    if port_reg_names.contains(sig_name.as_str()) {
+                                        emit_port_reg_public_copy(&mut cpp, sig_name, &widths, Some(n), "    ");
+                                    }
                                 } else {
                                     let prefix = vec_storage_prefix(sig_name.as_str(), &reg_names, &let_names, &inst_out);
                                     for i in 0..n {
@@ -6328,6 +6360,11 @@ impl<'a> SimCodegen<'a> {
                         } else {
                             cpp.push_str(&format!("    {} = _inst_{}.{};\n",
                                 sig, inst.name.name, conn.port_name.name));
+                        }
+                        if let ExprKind::Ident(name) = &conn.signal.kind {
+                            if port_reg_names.contains(name.as_str()) {
+                                emit_port_reg_public_copy(&mut cpp, name, &widths, None, "    ");
+                            }
                         }
                         // --check-uninit: mark inst output as initialized
                         if let ExprKind::Ident(name) = &conn.signal.kind {
@@ -6474,6 +6511,9 @@ impl<'a> SimCodegen<'a> {
                                         cpp.push_str(&format!("    _{sig_name}[{i}] = _inst_{}.{}_{i};\n",
                                             inst.name.name, conn.port_name.name));
                                     }
+                                    if port_reg_names.contains(sig_name.as_str()) {
+                                        emit_port_reg_public_copy(&mut cpp, sig_name, &widths, Some(n), "    ");
+                                    }
                                 } else {
                                     let prefix = vec_storage_prefix(sig_name.as_str(), &reg_names, &let_names, &inst_out);
                                     for i in 0..n {
@@ -6495,6 +6535,11 @@ impl<'a> SimCodegen<'a> {
                         } else {
                             cpp.push_str(&format!("    {} = _inst_{}.{};\n",
                                 sig, inst.name.name, conn.port_name.name));
+                        }
+                        if let ExprKind::Ident(name) = &conn.signal.kind {
+                            if port_reg_names.contains(name.as_str()) {
+                                emit_port_reg_public_copy(&mut cpp, name, &widths, None, "    ");
+                            }
                         }
                         // --check-uninit: mark inst output as initialized
                         if let ExprKind::Ident(name) = &conn.signal.kind {
@@ -7270,6 +7315,9 @@ impl<'a> SimCodegen<'a> {
                                         cpp.push_str(&format!("  _{sig_name}[{i}] = _inst_{}.{}_{i};\n",
                                             inst.name.name, conn.port_name.name));
                                     }
+                                    if port_reg_names.contains(sig_name.as_str()) {
+                                        emit_port_reg_public_copy(&mut cpp, sig_name, &widths, Some(n), "  ");
+                                    }
                                 } else {
                                     let prefix = vec_storage_prefix(sig_name.as_str(), &reg_names, &let_names, &inst_out);
                                     for i in 0..n {
@@ -7290,6 +7338,11 @@ impl<'a> SimCodegen<'a> {
                         } else {
                             cpp.push_str(&format!("  {} = _inst_{}.{};\n",
                                 sig, inst.name.name, conn.port_name.name));
+                        }
+                        if let ExprKind::Ident(name) = &conn.signal.kind {
+                            if port_reg_names.contains(name.as_str()) {
+                                emit_port_reg_public_copy(&mut cpp, name, &widths, None, "  ");
+                            }
                         }
                     }
                 }
