@@ -4789,6 +4789,29 @@ fn collect_single_state_thread_body(
     (comb_stmts, seq_stmts)
 }
 
+fn mealy_gate_first_lock_state(lock_states: &mut [ThreadFsmState], cond: &Expr, span: Span) {
+    if let Some(first) = lock_states.first_mut() {
+        let existing = std::mem::take(&mut first.comb_stmts);
+        first.comb_stmts.push(Stmt::IfElse(IfElse {
+            cond: cond.clone(),
+            then_stmts: existing,
+            else_stmts: Vec::new(),
+            unique: false,
+            span,
+        }));
+        if let Some(existing_cond) = first.transition_cond.take() {
+            first.transition_cond = Some(Expr::new(
+                ExprKind::Binary(
+                    BinOp::And,
+                    Box::new(cond.clone()),
+                    Box::new(existing_cond),
+                ),
+                span,
+            ));
+        }
+    }
+}
+
 /// Optimize the common micro-architecture shape:
 ///
 ///   wait until req;
@@ -5191,29 +5214,10 @@ fn partition_thread_body_impl(
                         // where the lock-arbitration's `if (grant)` wrapper
                         // also lives. Wrap its existing comb in `if (cond)`
                         // (req gate too — only request the lock when our
-                        // condition is true).
-                        if let Some(first) = lock_states.first_mut() {
-                            let existing = std::mem::take(&mut first.comb_stmts);
-                            first.comb_stmts.push(Stmt::IfElse(IfElseOf {
-                                cond: cond.clone(),
-                                then_stmts: existing,
-                                else_stmts: Vec::new(),
-                                unique: false,
-                                span: *sp,
-                            }));
-                            // AND cond into the transition guard so the
-                            // state stays in S0 if cond drops mid-flight.
-                            if let Some(existing_cond) = first.transition_cond.take() {
-                                first.transition_cond = Some(Expr::new(
-                                    ExprKind::Binary(
-                                        BinOp::And,
-                                        Box::new(cond.clone()),
-                                        Box::new(existing_cond),
-                                    ),
-                                    *sp,
-                                ));
-                            }
-                        }
+                        // condition is true), and AND cond into the transition
+                        // guard so the state stays in S0 if cond drops
+                        // mid-flight.
+                        mealy_gate_first_lock_state(&mut lock_states, cond, *sp);
                         states.extend(lock_states);
                         skip_next = true;
                     }
@@ -5533,6 +5537,26 @@ fn partition_thread_body_impl(
                     ));
                 }
                 // Flush pending statements
+                if cur_comb.is_empty()
+                    && cur_seq.is_empty()
+                    && fast_region.is_some()
+                    && matches!(body.first(), Some(ThreadStmt::DoUntil { .. }))
+                {
+                    let (fast_idx, wait_cond) = fast_region.take().unwrap();
+                    if fast_idx + 1 == states.len() {
+                        states.pop();
+                    }
+                    let mut lock_states = lower_thread_lock(
+                        &resource.name,
+                        body,
+                        *span,
+                        cnt_width,
+                        loop_id_gen,
+                    )?;
+                    mealy_gate_first_lock_state(&mut lock_states, &wait_cond, *span);
+                    states.extend(lock_states);
+                    continue;
+                }
                 flush_pending_thread_state(
                     &mut states,
                     &mut fast_region,

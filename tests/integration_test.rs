@@ -4697,6 +4697,70 @@ fn test_if_not_wait_until_do_until_matches_wait_0plus_lowering() {
 }
 
 #[test]
+fn test_if_not_wait_until_lock_do_until_matches_wait_0plus_lowering() {
+    let old_source = "
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port req: in Bool;
+          port ack: in Bool;
+          port out_v: out Bool shared(or);
+          reg captured: Bool reset rst => false;
+
+          resource bus_lk: mutex<priority>;
+
+          thread T on clk rising, rst low
+            default comb
+              out_v = false;
+            end default
+            wait 0+ cycle until req;
+            lock bus_lk
+              do
+                out_v = true;
+                captured <= true;
+              until ack;
+            end lock bus_lk
+          end thread T
+        end module M
+    ";
+    let new_source = "
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port req: in Bool;
+          port ack: in Bool;
+          port out_v: out Bool shared(or);
+          reg captured: Bool reset rst => false;
+
+          resource bus_lk: mutex<priority>;
+
+          thread T on clk rising, rst low
+            default comb
+              out_v = false;
+            end default
+            if not req
+              wait until req;
+            end if
+            lock bus_lk
+              do
+                out_v = true;
+                captured <= true;
+              until ack;
+            end lock bus_lk
+          end thread T
+        end module M
+    ";
+
+    let old_sv = compile_to_sv(old_source);
+    let new_sv = compile_to_sv(new_source);
+    assert_eq!(
+        old_sv, new_sv,
+        "`if not X; wait until X; end if; lock R do ... until Y; end lock R;` \
+         should lower exactly like `wait 0+ cycle until X; lock R do ... until Y; end lock R;`"
+    );
+}
+
+#[test]
 fn test_nested_for_in_thread_uses_distinct_loop_counters() {
     // Regression for issue #414: nested `for` loops in a thread used to
     // share a single `_loop_cnt` register, so the inner loop's increment
