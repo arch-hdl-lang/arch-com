@@ -329,4 +329,24 @@ module Nic400WidthAdapter
          or (m.aw_size == 1 and m.aw_addr[0] == 0)
          or (m.aw_size == 2 and m.aw_addr[1:0] == 0)
          or (m.aw_size == 3 and m.aw_addr[2:0] == 0));
+
+  // AXI4 §A3.4.1 INCR 4 KB boundary precondition. The width adapter
+  // forwards INCR bursts beat-for-beat; the slave-side per-beat
+  // address sequence will silently straddle a 4 KB boundary if the
+  // upstream master doesn't honour the precondition. Master-side
+  // responsibility per the spec, but asserting it here catches the
+  // case at sim/formal time rather than letting it through to silicon.
+  assert ar_incr_no_4k_cross_widthadapter: (m.ar_valid and m.ar_ready and m.ar_burst == 1)
+    |-> (m.ar_addr[11:0].zext<17>() + ((m.ar_len.zext<9>() + 1) << m.ar_size).zext<17>() <= 17'd4096);
+  assert aw_incr_no_4k_cross_widthadapter: (m.aw_valid and m.aw_ready and m.aw_burst == 1)
+    |-> (m.aw_addr[11:0].zext<17>() + ((m.aw_len.zext<9>() + 1) << m.aw_size).zext<17>() <= 17'd4096);
+
+  // AXI4 §A7.2.4 exclusive-access burst cardinality. Width adapter
+  // forwards ax_lock blindly; assert the cardinality constraint here
+  // so a misbehaving master doesn't propagate >16-beat exclusives to
+  // the slave.
+  assert ar_excl_len_legal_widthadapter: (m.ar_valid and m.ar_ready and m.ar_lock)
+    |-> (m.ar_len <= 8'd15);
+  assert aw_excl_len_legal_widthadapter: (m.aw_valid and m.aw_ready and m.aw_lock)
+    |-> (m.aw_len <= 8'd15);
 end module Nic400WidthAdapter

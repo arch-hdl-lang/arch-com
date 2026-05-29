@@ -19090,3 +19090,43 @@ fn test_nic400_apb_bridge_wrap_unaligned_aw_addr_is_rejected_by_sva() {
         "ASSERTION FAILED: Nic400ApbBridge.aw_wrap_addr_aligned_apb",
     );
 }
+
+/// Verifies the `ar_incr_no_4k_cross_apb` concurrent SVA at
+/// Nic400ApbBridge.arch fires under Verilator `--assert` when an INCR
+/// burst crosses a 4 KB page boundary (AXI4 §A3.4.1). We drive
+/// `ar_addr = 0x0FF8, ar_size = 2, ar_len = 3` — 4 beats × 4 bytes =
+/// 16 bytes, starting 8 short of the 0x1000 boundary, so the burst
+/// crosses by 8 bytes. Closes §5 from arch-com#463.
+#[test]
+fn test_nic400_apb_bridge_incr_4k_cross_is_rejected_by_sva() {
+    common::expect_verilator_fatal_multi(
+        &[
+            "tests/nic400/Nic400ApbBridge.arch",
+            "tests/nic400/BusAxi4.arch",
+            "stdlib/BusApb.arch",
+        ],
+        "tests/nic400/tb_nic400_apb_bridge_incr_4k_cross.cpp",
+        "Nic400ApbBridge",
+        "ASSERTION FAILED: Nic400ApbBridge.ar_incr_no_4k_cross_apb",
+    );
+}
+
+/// Verifies the `ar_excl_len_legal_apb` concurrent SVA at
+/// Nic400ApbBridge.arch fires under Verilator `--assert` when an
+/// EXCLUSIVE burst is issued with `ar_len > 15` (AXI4 §A7.2.4 —
+/// exclusive accesses are capped at 16 beats). We drive `ar_lock = 1,
+/// ar_len = 16`. Closes §5 from arch-com#463 (cardinality half; the
+/// pow-2-byte and base-alignment halves of §A7.2.4 are deferred).
+#[test]
+fn test_nic400_apb_bridge_excl_len_illegal_is_rejected_by_sva() {
+    common::expect_verilator_fatal_multi(
+        &[
+            "tests/nic400/Nic400ApbBridge.arch",
+            "tests/nic400/BusAxi4.arch",
+            "stdlib/BusApb.arch",
+        ],
+        "tests/nic400/tb_nic400_apb_bridge_excl_len_illegal.cpp",
+        "Nic400ApbBridge",
+        "ASSERTION FAILED: Nic400ApbBridge.ar_excl_len_legal_apb",
+    );
+}
