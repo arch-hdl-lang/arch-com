@@ -9,6 +9,7 @@ pub mod learn;
 pub mod lexer;
 pub mod parser;
 pub mod resolve;
+pub mod signal_flow;
 pub mod sim_codegen;
 pub mod sim_credit_channel;
 pub mod type_alias;
