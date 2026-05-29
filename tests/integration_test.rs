@@ -4465,6 +4465,80 @@ fn test_wait_0plus_cycle_until_mealy_fusion() {
 }
 
 #[test]
+fn test_if_not_wait_until_do_until_matches_wait_0plus_lowering() {
+    let old_source = "
+        bus B
+          v: out Bool;
+          d: out UInt<8>;
+          r: in  Bool;
+        end bus B
+        module Drv
+          port clk:   in  Clock<SysDomain>;
+          port rst:   in  Reset<Async, Low>;
+          port m_val: in  Bool;
+          port m_dat: in  UInt<8>;
+          port m_rdy: out Bool;
+          reg started: Bool reset rst => false;
+          port b:     initiator B;
+          thread T on clk rising, rst low
+            default comb
+              b.v = false;
+              b.d = 0;
+              m_rdy = false;
+            end default
+            wait 0+ cycle until m_val;
+            do
+              b.v   = true;
+              b.d   = m_dat;
+              m_rdy = b.r;
+              started <= true;
+            until b.r;
+          end thread T
+        end module Drv
+    ";
+    let new_source = "
+        bus B
+          v: out Bool;
+          d: out UInt<8>;
+          r: in  Bool;
+        end bus B
+        module Drv
+          port clk:   in  Clock<SysDomain>;
+          port rst:   in  Reset<Async, Low>;
+          port m_val: in  Bool;
+          port m_dat: in  UInt<8>;
+          port m_rdy: out Bool;
+          reg started: Bool reset rst => false;
+          port b:     initiator B;
+          thread T on clk rising, rst low
+            default comb
+              b.v = false;
+              b.d = 0;
+              m_rdy = false;
+            end default
+            if not m_val
+              wait until m_val;
+            end if
+            do
+              b.v   = true;
+              b.d   = m_dat;
+              m_rdy = b.r;
+              started <= true;
+            until b.r;
+          end thread T
+        end module Drv
+    ";
+
+    let old_sv = compile_to_sv(old_source);
+    let new_sv = compile_to_sv(new_source);
+    assert_eq!(
+        old_sv, new_sv,
+        "`if not X; wait until X; end if; do ... until Y;` should lower exactly like \
+         `wait 0+ cycle until X; do ... until Y;`"
+    );
+}
+
+#[test]
 fn test_nested_for_in_thread_uses_distinct_loop_counters() {
     // Regression for issue #414: nested `for` loops in a thread used to
     // share a single `_loop_cnt` register, so the inner loop's increment
@@ -14366,6 +14440,430 @@ end module M
 }
 
 #[test]
+fn test_thread_if_not_wait_until_fast_path_fuses_next_action() {
+    // Canonical fast-path idiom:
+    //
+    //   if not start
+    //     wait until start;
+    //   end if
+    //   phase <= 1;
+    //
+    // If `start` is already high while the thread is in S0, the assignment
+    // must fire on that same edge. Pre-fix lowering skipped the wait state but
+    // still emitted a separate S1 action state, inserting a one-cycle bubble.
+    let source = r#"
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port start: in Bool;
+  port phase: out UInt<8>;
+  reg phase_r: UInt<8> reset rst => 8'd0;
+
+  thread on clk rising, rst high
+    if not start
+      wait until start;
+    end if
+    phase_r <= 8'd1;
+    wait 1 cycle;
+    phase_r <= 8'd2;
+  end thread
+
+  comb
+    phase = phase_r;
+  end comb
+end module M
+"#;
+    let sv = compile_to_sv(source);
+
+    assert!(
+        !sv.contains("_t0_S0_dispatch"),
+        "fast-path if/wait should lower as a wait state, not dispatch around a wait:\n{sv}"
+    );
+    assert!(
+        sv.contains("localparam [0:0] _t0_S0_wait_until = 0"),
+        "expected canonical fast-path state to remain a wait_until state:\n{sv}"
+    );
+    assert!(
+        sv.contains("localparam [0:0] _t0_S1_action = 1"),
+        "expected post-wait action state for work after `wait 1 cycle`:\n{sv}"
+    );
+
+    let s0_marker = "if (_t0_state == _t0_S0_wait_until) begin";
+    let s0_start = sv.find(s0_marker).unwrap_or_else(|| {
+        panic!("missing S0 wait branch in SV:\n{sv}");
+    });
+    let after_s0 = &sv[s0_start + s0_marker.len()..];
+    let s1_rel = after_s0.find("if (_t0_state == _t0_S1_action) begin").unwrap_or_else(|| {
+        panic!("missing S1 action branch after S0 in SV:\n{sv}");
+    });
+    let s0_branch = &sv[s0_start..s0_start + s0_marker.len() + s1_rel];
+
+    assert!(
+        s0_branch.contains("if (start) begin") && s0_branch.contains("phase_r <= 8'd1"),
+        "phase_r <= 1 must fire in the S0/start transition branch:\n{s0_branch}\nFull SV:\n{sv}"
+    );
+    assert!(
+        !s0_branch.contains("phase_r <= 8'd2"),
+        "`wait 1 cycle` after the fast-path action must keep the next action out of S0:\n{s0_branch}\nFull SV:\n{sv}"
+    );
+}
+
+#[test]
+fn test_thread_if_not_wait_until_fast_path_followed_by_wait_cycle() {
+    let source = r#"
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port start: in Bool;
+  port phase: out UInt<8>;
+  reg phase_r: UInt<8> reset rst => 8'd0;
+
+  thread on clk rising, rst high
+    if not start
+      wait until start;
+    end if
+    wait 1 cycle;
+    phase_r <= 8'd1;
+  end thread
+
+  comb
+    phase = phase_r;
+  end comb
+end module M
+"#;
+    let sv = compile_to_sv(source);
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert!(
+        sv.contains("_t0_S0_wait_until") && sv.contains("_t0_S1_action"),
+        "fast gate followed by `wait 1 cycle` should keep the fast wait and emit a later action state:\n{sv}"
+    );
+    assert!(
+        !trimmed.contains("_t0_state == _t0_S0_wait_until) begin if (start) begin phase_r <= 8'd1"),
+        "`wait 1 cycle` after the fast gate must prevent the trailing assign from merging into S0:\n{sv}"
+    );
+}
+
+#[test]
+fn test_thread_if_not_wait_until_fast_path_followed_by_plain_wait_until() {
+    let source = r#"
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port start: in Bool;
+  port ready: in Bool;
+  port phase: out UInt<8>;
+  reg phase_r: UInt<8> reset rst => 8'd0;
+
+  thread on clk rising, rst high
+    if not start
+      wait until start;
+    end if
+    wait until ready;
+    phase_r <= 8'd1;
+  end thread
+
+  comb
+    phase = phase_r;
+  end comb
+end module M
+"#;
+    let sv = compile_to_sv(source);
+
+    assert!(
+        sv.contains("localparam [1:0] _t0_S0_wait_until = 0")
+            || sv.contains("localparam [0:0] _t0_S0_wait_until = 0"),
+        "expected S0 fast wait state:\n{sv}"
+    );
+    assert!(
+        sv.contains("_t0_S1_wait_until"),
+        "fast gate followed by an ordinary `wait until` should emit a second wait state:\n{sv}"
+    );
+    assert!(
+        sv.contains("if (ready) begin\n          phase_r <= 8'd1"),
+        "trailing assignment should merge into the second wait's ready edge:\n{sv}"
+    );
+    assert!(
+        !sv.contains("start && ready"),
+        "the following ordinary `wait until ready` should not be fused into the fast gate:\n{sv}"
+    );
+}
+
+#[test]
+fn test_thread_if_not_wait_until_fast_path_followed_by_same_state_if() {
+    let source = r#"
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port start: in Bool;
+  port sel: in Bool;
+  port phase: out UInt<8>;
+  reg phase_r: UInt<8> reset rst => 8'd0;
+
+  thread on clk rising, rst high
+    if not start
+      wait until start;
+    end if
+    if sel
+      phase_r <= 8'd1;
+    else
+      phase_r <= 8'd2;
+    end if
+    wait 1 cycle;
+  end thread
+
+  comb
+    phase = phase_r;
+  end comb
+end module M
+"#;
+    let sv = compile_to_sv(source);
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert!(
+        trimmed.contains("_t0_state == _t0_S0_wait_until) begin if (start) begin if (sel) begin phase_r <= 8'd1")
+            && trimmed.contains("end else begin phase_r <= 8'd2"),
+        "same-state if/else after fast gate should execute in the S0/start transition branch:\n{sv}"
+    );
+}
+
+#[test]
+fn test_thread_if_not_wait_until_fast_path_followed_by_comb_assign() {
+    let source = r#"
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port start: in Bool;
+  port done: out Bool shared(or);
+
+  thread on clk rising, rst high
+    default comb
+      done = false;
+    end default
+    if not start
+      wait until start;
+    end if
+    done = true;
+    wait 1 cycle;
+  end thread
+end module M
+"#;
+    let sv = compile_to_sv(source);
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert!(
+        trimmed.contains("if (_t0_state == _t0_S0_wait_until) begin if (start) begin done = done | 1'b1"),
+        "comb assign after fast gate should be gated by start in the S0 comb block:\n{sv}"
+    );
+}
+
+#[test]
+fn test_thread_if_not_wait_until_fast_path_followed_by_if_with_waits() {
+    let source = r#"
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port start: in Bool;
+  port sel: in Bool;
+  port phase: out UInt<8>;
+  reg phase_r: UInt<8> reset rst => 8'd0;
+
+  thread on clk rising, rst high
+    if not start
+      wait until start;
+    end if
+    if sel
+      phase_r <= 8'd1;
+      wait 1 cycle;
+    else
+      phase_r <= 8'd2;
+      wait 1 cycle;
+    end if
+    phase_r <= 8'd3;
+  end thread
+
+  comb
+    phase = phase_r;
+  end comb
+end module M
+"#;
+    let sv = compile_to_sv(source);
+
+    assert!(
+        sv.contains("start && sel") && sv.contains("phase_r <= 8'd1"),
+        "then-branch first action should fuse onto the start edge under start && sel:\n{sv}"
+    );
+    assert!(
+        sv.contains("start && !sel") && sv.contains("phase_r <= 8'd2"),
+        "else-branch first action should fuse onto the start edge under start && !sel:\n{sv}"
+    );
+}
+
+#[test]
+fn test_thread_if_not_wait_until_fast_path_followed_by_wait_0plus() {
+    let source = r#"
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port start: in Bool;
+  port go: in Bool;
+  port done: in Bool;
+  port phase: out UInt<8>;
+  reg phase_r: UInt<8> reset rst => 8'd0;
+
+  thread on clk rising, rst high
+    if not start
+      wait until start;
+    end if
+    wait 0+ cycle until go;
+    do
+      phase_r <= 8'd1;
+    until done;
+  end thread
+
+  comb
+    phase = phase_r;
+  end comb
+end module M
+"#;
+    let sv = compile_to_sv(source);
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert!(
+        trimmed.contains("_t0_state == _t0_S0_wait_until) begin if (start) begin _t0_state <= _t0_S1_wait_until"),
+        "S0 should wait for start before entering the following wait-0+ fused state:\n{sv}"
+    );
+    assert!(
+        trimmed.contains("_t0_state == _t0_S1_wait_until) begin if (go) begin phase_r <= 8'd1")
+            && sv.contains("go && done"),
+        "following wait-0+/do-until should keep its Mealy gating after the fast start gate:\n{sv}"
+    );
+}
+
+#[test]
+fn test_thread_if_not_wait_until_fast_path_followed_by_for_loop() {
+    let source = r#"
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port start: in Bool;
+  port phase: out UInt<8>;
+  reg phase_r: UInt<8> reset rst => 8'd0;
+
+  thread on clk rising, rst high
+    if not start
+      wait until start;
+    end if
+    for i in 0..1
+      phase_r <= i.zext<8>();
+      wait 1 cycle;
+    end for
+    phase_r <= 8'd9;
+  end thread
+
+  comb
+    phase = phase_r;
+  end comb
+end module M
+"#;
+    let sv = compile_to_sv(source);
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert!(
+        trimmed.contains("_t0_state == _t0_S0_wait_until) begin if (start) begin _t0_loop_cnt_0 <="),
+        "for-loop counter init after fast gate should happen on the S0/start transition edge:\n{sv}"
+    );
+    assert!(
+        !trimmed.contains("_t0_state == _t0_S0_wait_until) begin if (start) begin phase_r <="),
+        "for-loop body should remain in later loop states, not collapse into the fast gate:\n{sv}"
+    );
+}
+
+#[test]
+fn test_thread_if_not_wait_until_fast_path_followed_by_lock() {
+    let source = r#"
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port start: in Bool;
+  port done: out Bool shared(or);
+
+  resource shared_lk: mutex<priority>;
+
+  thread on clk rising, rst low
+    if not start
+      wait until start;
+    end if
+    lock shared_lk
+      done = true;
+      wait 1 cycle;
+    end lock shared_lk
+  end thread
+end module M
+"#;
+    let sv = compile_to_sv(source);
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert!(
+        sv.contains("_t0_S0_wait_until") && sv.contains("_t0_S1_wait_until"),
+        "lock after fast gate should preserve the start wait before entering lock arbitration:\n{sv}"
+    );
+    assert!(
+        trimmed.contains("_t0_state == _t0_S0_wait_until) begin if (start) begin _t0_state <= _t0_S1_wait_until"),
+        "S0 should transition into the lock state only when start is true:\n{sv}"
+    );
+}
+
+#[test]
+fn test_thread_if_not_wait_until_fast_path_followed_by_fork_join() {
+    let source = r#"
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port start: in Bool;
+  port out_a: out Bool;
+  port out_b: out Bool;
+  reg a_r: Bool reset rst => false;
+  reg b_r: Bool reset rst => false;
+
+  thread on clk rising, rst high
+    if not start
+      wait until start;
+    end if
+    fork
+      a_r <= true;
+      wait 1 cycle;
+    and
+      b_r <= true;
+      wait 1 cycle;
+    join
+  end thread
+
+  comb
+    out_a = a_r;
+    out_b = b_r;
+  end comb
+end module M
+"#;
+    let sv = compile_to_sv(source);
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert!(
+        sv.contains("_t0_S0_wait_until") && sv.contains("_t0_S1_action"),
+        "fork/join after fast gate should preserve the start wait and enter fork product states after it:\n{sv}"
+    );
+    assert!(
+        trimmed.contains("_t0_state == _t0_S0_wait_until) begin if (start) begin _t0_state <= _t0_S1_action"),
+        "S0 should transition into fork/join lowering only when start is true:\n{sv}"
+    );
+    assert!(
+        !trimmed.contains("_t0_state == _t0_S0_wait_until) begin if (start) begin a_r <= 1'b1")
+            && !trimmed.contains("_t0_state == _t0_S0_wait_until) begin if (start) begin b_r <= 1'b1"),
+        "fork branch bodies should remain in fork product states, not collapse into S0:\n{sv}"
+    );
+}
+
+#[test]
 fn test_unpacked_wire_modifier_emits_unpacked_sv() {
     // Issue #267: `unpacked` modifier on internal wire/let declarations.
     // A `wire foo: unpacked Vec<T,N>` mirrors the existing `unpacked Vec`
@@ -15160,6 +15658,95 @@ fn test_sint_40_inst_output_wire_keeps_signed_storage() {
             "SInt<40> child output wire must not use unsigned storage; got:\n{out}");
     assert!(out.contains("score  = _let_score_wire"),
             "wrapper should forward the signed child output to its public port; got:\n{out}");
+}
+
+#[test]
+fn test_local_param_names_are_scoped_per_instantiated_module() {
+    let source = r#"
+        module MulA
+          local param A_WIDTH: const = 16;
+          local param B_WIDTH: const = 16;
+          local param PRODUCT_WIDTH: const = A_WIDTH + B_WIDTH;
+
+          port x: in SInt<A_WIDTH>;
+          port y: in SInt<B_WIDTH>;
+          port z: out SInt<PRODUCT_WIDTH>;
+
+          let product_raw: SInt<PRODUCT_WIDTH> = x * y;
+          let z = product_raw;
+        end module MulA
+
+        module MulB
+          local param A_WIDTH: const = 22;
+          local param B_WIDTH: const = 16;
+          local param PRODUCT_WIDTH: const = A_WIDTH + B_WIDTH;
+
+          port x: in SInt<A_WIDTH>;
+          port y: in SInt<B_WIDTH>;
+          port z: out SInt<PRODUCT_WIDTH>;
+
+          let product_raw: SInt<PRODUCT_WIDTH> = x * y;
+          let z = product_raw;
+        end module MulB
+
+        module Top
+          port a_x: in SInt<16>;
+          port a_y: in SInt<16>;
+          port b_x: in SInt<22>;
+          port b_y: in SInt<16>;
+          port a_z: out SInt<32>;
+          port b_z: out SInt<38>;
+
+          inst mul_a: MulA
+            x <- a_x;
+            y <- a_y;
+            z -> a_z;
+          end inst mul_a
+
+          inst mul_b: MulB
+            x <- b_x;
+            y <- b_y;
+            z -> b_z;
+          end inst mul_b
+        end module Top
+    "#;
+
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("output logic signed [37:0] b_z"),
+        "Top's MulB output should remain 38 bits after MulB's PRODUCT_WIDTH resolves locally:\n{sv}"
+    );
+}
+
+#[test]
+fn test_native_sim_does_not_emit_fields_for_param_inst_inputs() {
+    let source = r#"
+        module Child
+          param LEN_WIDTH: const = 8;
+          port len: in UInt<LEN_WIDTH>;
+          port out: out Bool;
+
+          comb
+            out = false;
+          end comb
+        end module Child
+
+        module Parent
+          param HEAD_DIM: const = 16;
+          port out: out Bool;
+
+          inst child: Child
+            len <- HEAD_DIM;
+            out -> out;
+          end inst child
+        end module Parent
+    "#;
+
+    let sim = compile_to_sim_h(source, false);
+    assert!(
+        !sim.contains("uint32_t HEAD_DIM;"),
+        "param-valued scalar inst inputs must not be emitted as simulator fields:\n{sim}"
+    );
 }
 
 #[test]
