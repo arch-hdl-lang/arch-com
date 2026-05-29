@@ -107,7 +107,9 @@ module Nic400WidthAdapter
       s.ar_region = 0;
       m.ar_ready  = false;
     end default
-    wait 0+ cycle until m.ar_valid;
+    if not (m.ar_valid)
+      wait until m.ar_valid;
+    end if
     lock ar_lock
       do
         s.ar_valid  = true;
@@ -208,7 +210,9 @@ module Nic400WidthAdapter
       s.aw_region = 0;
       m.aw_ready  = false;
     end default
-    wait 0+ cycle until m.aw_valid;
+    if not (m.aw_valid)
+      wait until m.aw_valid;
+    end if
     lock aw_lock
       do
         s.aw_valid  = true;
@@ -282,7 +286,9 @@ module Nic400WidthAdapter
       m.b_resp  = 0;
       s.b_ready = false;
     end default
-    wait 0+ cycle until s.b_valid;
+    if not (s.b_valid)
+      wait until s.b_valid;
+    end if
     lock b_lock
       do
         m.b_valid = s.b_valid;

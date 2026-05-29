@@ -150,7 +150,9 @@ module Nic400ApbBridge
     end default
     // Wait for an AR handshake. Mealy-fuse the capture into the wake state:
     // assert ar_ready while ar_valid is high (loop exits next cycle).
-    wait 0+ cycle until axi.ar_valid;
+    if not (axi.ar_valid)
+      wait until axi.ar_valid;
+    end if
     do
       axi.ar_ready = true;
       ar_addr_r  <= axi.ar_addr;
@@ -214,7 +216,9 @@ module Nic400ApbBridge
       apb.pprot    = 0;
     end default
     // AW handshake — capture and clear werr_r for the new burst.
-    wait 0+ cycle until axi.aw_valid;
+    if not (axi.aw_valid)
+      wait until axi.aw_valid;
+    end if
     do
       axi.aw_ready = true;
       aw_addr_r  <= axi.aw_addr;

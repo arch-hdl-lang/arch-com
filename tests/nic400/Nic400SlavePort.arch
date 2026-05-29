@@ -57,7 +57,9 @@ module Nic400SlavePort
         s.ar_region = 0;
         ins[i].ar_ready = false;
       end default
-      wait 0+ cycle until ins[i].ar_valid;
+      if not (ins[i].ar_valid)
+        wait until ins[i].ar_valid;
+      end if
       lock ar_lock
         do
           s.ar_valid  = true;
@@ -89,7 +91,9 @@ module Nic400SlavePort
         ins[i].r_last  = false;
         s.r_ready = false;
       end default
-      wait 0+ cycle until s.r_valid and s.r_id[SLAVE_ID_W-1:MASTER_ID_W] == i;
+      if not (s.r_valid and s.r_id[SLAVE_ID_W-1:MASTER_ID_W] == i)
+        wait until s.r_valid and s.r_id[SLAVE_ID_W-1:MASTER_ID_W] == i;
+      end if
       lock r_demux_lock
         do
           ins[i].r_valid = true;
@@ -135,7 +139,9 @@ module Nic400SlavePort
         ins[i].b_resp   = 0;
       end default
       // AW phase
-      wait 0+ cycle until ins[i].aw_valid;
+      if not (ins[i].aw_valid)
+        wait until ins[i].aw_valid;
+      end if
       lock aw_lock
         do
           s.aw_valid  = true;

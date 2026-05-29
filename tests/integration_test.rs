@@ -4570,10 +4570,10 @@ fn test_vec_of_bus_port_typecheck_drives_all_indexed_outputs() {
 }
 
 #[test]
-fn test_wait_0plus_cycle_until_mealy_fusion() {
-    // `wait 0+ cycle until X;` immediately followed by `do BODY until Y;`
-    // fuses into a single Mealy-style state. The SV codegen output for
-    // this design should:
+fn test_fast_gate_do_until_mealy_fusion() {
+    // `if not X; wait until X; end if` immediately followed by
+    // `do BODY until Y;` fuses into a single Mealy-style state. The SV
+    // codegen output for this design should:
     //   * NOT emit a separate entry-wait state.
     //   * Gate the body's comb drives by `X` (`if (X) { ... }`).
     //   * Transition with `X && Y` as the guard.
@@ -4599,7 +4599,9 @@ fn test_wait_0plus_cycle_until_mealy_fusion() {
               b.d = 0;
               m_rdy = false;
             end default
-            wait 0+ cycle until m_val;
+            if not (m_val)
+              wait until m_val;
+            end if
             do
               b.v   = true;
               b.d   = m_dat;
@@ -4623,8 +4625,8 @@ fn test_wait_0plus_cycle_until_mealy_fusion() {
 }
 
 #[test]
-fn test_if_not_wait_until_do_until_matches_wait_0plus_lowering() {
-    let old_source = "
+fn test_fast_gate_do_until_paren_and_bare_not_lower_the_same() {
+    let paren_source = "
         bus B
           v: out Bool;
           d: out UInt<8>;
@@ -4644,7 +4646,9 @@ fn test_if_not_wait_until_do_until_matches_wait_0plus_lowering() {
               b.d = 0;
               m_rdy = false;
             end default
-            wait 0+ cycle until m_val;
+            if not (m_val)
+              wait until m_val;
+            end if
             do
               b.v   = true;
               b.d   = m_dat;
@@ -4654,7 +4658,7 @@ fn test_if_not_wait_until_do_until_matches_wait_0plus_lowering() {
           end thread T
         end module Drv
     ";
-    let new_source = "
+    let bare_source = "
         bus B
           v: out Bool;
           d: out UInt<8>;
@@ -4687,18 +4691,18 @@ fn test_if_not_wait_until_do_until_matches_wait_0plus_lowering() {
         end module Drv
     ";
 
-    let old_sv = compile_to_sv(old_source);
-    let new_sv = compile_to_sv(new_source);
+    let paren_sv = compile_to_sv(paren_source);
+    let bare_sv = compile_to_sv(bare_source);
     assert_eq!(
-        old_sv, new_sv,
-        "`if not X; wait until X; end if; do ... until Y;` should lower exactly like \
-         `wait 0+ cycle until X; do ... until Y;`"
+        paren_sv, bare_sv,
+        "`if not (X); wait until X; end if` should lower like \
+         `if not X; wait until X; end if` before a `do ... until` body"
     );
 }
 
 #[test]
-fn test_if_not_wait_until_lock_do_until_matches_wait_0plus_lowering() {
-    let old_source = "
+fn test_fast_gate_lock_do_until_paren_and_bare_not_lower_the_same() {
+    let paren_source = "
         module M
           port clk: in Clock<SysDomain>;
           port rst: in Reset<Async, Low>;
@@ -4713,7 +4717,9 @@ fn test_if_not_wait_until_lock_do_until_matches_wait_0plus_lowering() {
             default comb
               out_v = false;
             end default
-            wait 0+ cycle until req;
+            if not (req)
+              wait until req;
+            end if
             lock bus_lk
               do
                 out_v = true;
@@ -4723,7 +4729,7 @@ fn test_if_not_wait_until_lock_do_until_matches_wait_0plus_lowering() {
           end thread T
         end module M
     ";
-    let new_source = "
+    let bare_source = "
         module M
           port clk: in Clock<SysDomain>;
           port rst: in Reset<Async, Low>;
@@ -4751,12 +4757,12 @@ fn test_if_not_wait_until_lock_do_until_matches_wait_0plus_lowering() {
         end module M
     ";
 
-    let old_sv = compile_to_sv(old_source);
-    let new_sv = compile_to_sv(new_source);
+    let paren_sv = compile_to_sv(paren_source);
+    let bare_sv = compile_to_sv(bare_source);
     assert_eq!(
-        old_sv, new_sv,
-        "`if not X; wait until X; end if; lock R do ... until Y; end lock R;` \
-         should lower exactly like `wait 0+ cycle until X; lock R do ... until Y; end lock R;`"
+        paren_sv, bare_sv,
+        "`if not (X); wait until X; end if` should lower like \
+         `if not X; wait until X; end if` before a `lock R do ... until` body"
     );
 }
 
@@ -5176,9 +5182,11 @@ fn test_fsm_param_vec_scalar_widths_resolve_through_sibling_helpers() {
 }
 
 #[test]
-fn test_wait_0plus_cycle_until_mealy_fusion_gates_seq_assigns() {
+fn test_fast_gate_do_until_mealy_fusion_gates_seq_assigns() {
     // Regression for issue #412: the Mealy-fusion lowering for
-    //   wait 0+ cycle until X;
+    //   if not X
+    //     wait until X;
+    //   end if
     //   do
     //     <seq>r <= value;
     //   until Y;
@@ -5198,7 +5206,9 @@ fn test_wait_0plus_cycle_until_mealy_fusion_gates_seq_assigns() {
           thread T on clk rising, rst low
             default comb
             end default
-            wait 0+ cycle until go;
+            if not (go)
+              wait until go;
+            end if
             do
               started <= true;
             until done;
@@ -5221,11 +5231,10 @@ fn test_wait_0plus_cycle_until_mealy_fusion_gates_seq_assigns() {
 }
 
 #[test]
-fn test_wait_0plus_requires_immediate_do_until() {
-    // The Mealy fusion only handles `wait 0+ cycle until X;` followed
-    // immediately by `do ... until ...;` (with or without a wrapping
-    // `lock R ... end lock R`). A plain assign between them is rejected
-    // with a clear diagnostic.
+fn test_wait_0plus_is_retired_with_migration_hint() {
+    // The legacy Mealy spelling is retired. The parser should reject it
+    // directly and tell users to spell the fast path with `if not X` plus
+    // a normal `wait until X`.
     let source = r#"
         bus B
           v: out Bool;
@@ -5240,17 +5249,24 @@ fn test_wait_0plus_requires_immediate_do_until() {
               b.v = false;
             end default
             wait 0+ cycle until go;
-            wait 1 cycle;             // not a do/until or lock+do — should error
+            do
+              b.v = true;
+            until go;
           end thread T
         end module M
     "#;
     let tokens = arch::lexer::tokenize(source).expect("lex");
     let mut parser = arch::parser::Parser::new(tokens, source);
-    let ast = parser.parse_source_file().expect("parse");
-    let err = arch::elaborate::lower_threads(ast).expect_err("expected lowering error");
-    let msg = err.iter().map(|e| format!("{e:?}")).collect::<String>();
-    assert!(msg.contains("Mealy fusion") || msg.contains("0+ cycle"),
-            "expected Mealy-fusion-restriction diagnostic, got: {msg}");
+    let err = parser
+        .parse_source_file()
+        .expect_err("retired wait 0+ syntax should be a parse error");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("retired")
+            && msg.contains("if not")
+            && msg.contains("wait until"),
+        "expected wait-0+ retirement diagnostic with migration hint, got: {msg}"
+    );
 }
 
 #[test]
@@ -15010,7 +15026,7 @@ end module M
 }
 
 #[test]
-fn test_thread_if_not_wait_until_fast_path_followed_by_wait_0plus() {
+fn test_thread_if_not_wait_until_fast_path_followed_by_second_fast_gate_do_until() {
     let source = r#"
 module M
   port clk: in Clock<SysDomain>;
@@ -15025,7 +15041,9 @@ module M
     if not start
       wait until start;
     end if
-    wait 0+ cycle until go;
+    if not (go)
+      wait until go;
+    end if
     do
       phase_r <= 8'd1;
     until done;
@@ -15041,12 +15059,12 @@ end module M
 
     assert!(
         trimmed.contains("_t0_state == _t0_S0_wait_until) begin if (start) begin _t0_state <= _t0_S1_wait_until"),
-        "S0 should wait for start before entering the following wait-0+ fused state:\n{sv}"
+        "S0 should wait for start before entering the following fast-gate fused state:\n{sv}"
     );
     assert!(
         trimmed.contains("_t0_state == _t0_S1_wait_until) begin if (go) begin phase_r <= 8'd1")
             && sv.contains("go && done"),
-        "following wait-0+/do-until should keep its Mealy gating after the fast start gate:\n{sv}"
+        "following fast-gate/do-until should keep its Mealy gating after the fast start gate:\n{sv}"
     );
 }
 

@@ -2211,11 +2211,18 @@ impl Parser {
                 let semi_span = self.expect(TokenKind::Semi)?.span;
                 return Ok(ThreadStmt::WaitUntil(cond, wait_start.merge(semi_span)));
             }
-            // `wait 0+ cycle until expr;` — Mealy-style (≥0 cycle). `0+` is
-            // a single user-facing token, so the lexed `0` and `+` must be
-            // textually adjacent (zero source distance). `wait 0 + cycle`
-            // is NOT accepted — the form is `0+`, not the binary expression
-            // `0 plus cycle`.
+            // Retired syntax: `wait 0+ cycle until expr;`.
+            //
+            // `0+` used to request Mealy-style wait fusion. The canonical
+            // spelling is now:
+            //
+            //   if not <expr>
+            //     wait until <expr>;
+            //   end if
+            //
+            // Keep a targeted parse error for the old adjacent-token spelling
+            // so users get a migration hint instead of a confusing `wait N
+            // cycle` parse failure.
             let saved_pos = self.pos;
             if matches!(self.peek_kind(), Some(TokenKind::DecLiteral(s)) if s == "0") {
                 let zero_end = self.tokens[self.pos].span.end;
@@ -2223,12 +2230,11 @@ impl Parser {
                 let plus_adjacent = self.check(TokenKind::Plus)
                     && self.tokens[self.pos].span.start == zero_end;
                 if plus_adjacent {
-                    self.advance(); // consume +
-                    self.expect_contextual("cycle")?;
-                    self.expect_contextual("until")?;
-                    let cond = self.parse_expr()?;
-                    let semi_span = self.expect(TokenKind::Semi)?.span;
-                    return Ok(ThreadStmt::WaitUntilMealy(cond, wait_start.merge(semi_span)));
+                    let plus_span = self.advance().span; // consume +
+                    return Err(CompileError::general(
+                        "`wait 0+ cycle until <cond>;` has been retired; use `if not <cond> ... wait until <cond>; ... end if` for zero-or-more-cycle fast-path waiting",
+                        wait_start.merge(plus_span),
+                    ));
                 }
                 // Not the Mealy form — backtrack so the numeric `wait N cycle`
                 // path below handles the `0` we already consumed.
