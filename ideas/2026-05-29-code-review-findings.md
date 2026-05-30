@@ -30,7 +30,7 @@ labels its category.
 | 4 | harc-com #317's RAL callback recursion guard (`HARC_RAL_CB_MAX_DEPTH = 16`) emits a FATAL abort that no test exercises — `regblock_record_write_emits_recursion_guard` is substring-only | MED | open | test gap |
 | 5 | arch-com #475 Hot-slave M↔M handoff test has no asymmetric-load scenario (one master always valid, one slow toggle) — round-robin starvation under asymmetric traffic is the canonical pathological case and remains uncovered | MED | open | test gap |
 | 6 | arch-com #466 INCR-4K and EXCLUSIVE preconditions on `Nic400WidthAdapter` are not exercised by a dedicated expect-fatal TB; the PR cites "structurally identical" but the WidthAdapter's `axlen` scaling means the boundary math differs from the APB bridge case | MED | open | test gap |
-| 7 | arch-com nic400 SVAs (both pre-existing and the new #456/#466 batch) have no `disable iff (rst …)` gating; any TB that fails to release `ax_valid`/`ax_addr` cleanly in reset would trip the SVA spuriously | LOW | open | protocol |
+| 7 | ~~nic400 SVAs lack `disable iff` gating~~ — **corrected**: compiler-side bug in `emit_assert_sva` affecting every user-written `assert`/`cover` across the codebase. Spec §7783 promises `disable iff (rst)`; emitter ignored reset polarity. **Fixed in [PR #479](https://github.com/arch-hdl-lang/arch-com/pull/479).** | MED | **fixed** | bug |
 | 8 | harc-com #321 `diff_trace_strings` compares normalised lines by index — assumes deterministic event ordering across backends; assumption is undocumented | LOW | open | tech debt |
 | 9 | Stale "Mealy fusion" / "`wait 0+ cycle until`" comments in 7 nic400 testbenches and `probe_ar_bubble.sh` after arch-com #471 retired the syntax | LOW | open | doc drift |
 | 10 | arch-com #461 (`SHA-256 compression`) and harc-com #319 (`sha256.sv` + HARC TB) landed on the same day but neither cross-references the other; both lack a FIPS 180-4 vector citation in source | LOW | open | doc drift |
@@ -485,6 +485,9 @@ user-visible new feature" PR template check would be worth proposing.
 - [ ] Land this note as the canonical record of the 2026-05-29 review pass.
 - [ ] Land the two quick-win follow-up PRs (Findings 1 and 2) — internal-only,
       per `CLAUDE.md`.
+- [x] Finding 7 — fixed in [PR #479](https://github.com/arch-hdl-lang/arch-com/pull/479)
+      after verification surfaced it as a compiler/spec drift rather than a
+      nic400-local gap.
 - [ ] Queue Findings 3, 4, 5, 6, 9, 10, 11, 12 for the next batch.
-- [ ] Findings 7 and 8 require user direction (touch SVA conventions and
-      public CLI semantics respectively) — flag for human review.
+- [ ] Finding 8 requires user direction (touches public CLI semantics) —
+      flag for human review.
