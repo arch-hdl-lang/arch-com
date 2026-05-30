@@ -247,29 +247,61 @@ with the assertion name. ~50 lines of TB.
 
 ---
 
-## 7. nic400 SVAs have no reset gating (LOW, protocol)
+## 7. User-written assert/cover SVAs miss `disable iff` despite the spec — **FIXED in PR #479**
 
-All concurrent SVAs in `Nic400ApbBridge.arch` and `Nic400WidthAdapter.arch`
-— including the new INCR-4K and EXCLUSIVE preconditions from PR #466 — are
-declared without `disable iff (rst …)` clauses:
+> **Correction (post-publish):** the original draft of this finding said
+> nic400 SVAs lacked `disable iff` and recommended either a per-module
+> sweep or a TB-side reset contract. On verification with the user, the
+> real shape was different — and worse.
 
-```sv
-ar_incr_no_4k_cross_apb: assert property (@(posedge clk) (axi.ar_valid && axi.ar_ready && axi.ar_burst == 2'b01) |-> …)
+`doc/ARCH_HDL_Specification.md:7783` states that user-written `assert`
+and `cover` bodies are evaluated *"at every clock edge under the
+construct's `posedge clk` with `disable iff (rst)`."* The auto-emitted
+SVA family (`_auto_bound_*`, `_auto_div0_*`, `_auto_hs_*`,
+`_auto_thread_*`) already honours this — `src/codegen/mod.rs` lines
+2980 / 3092 / 3599 / 3680 each compute `rst_active` from the module's
+`Reset<Kind, Polarity>` port and splice it into a `disable iff (...)`
+clause.
+
+`emit_assert_sva` at `src/codegen/mod.rs:2769-2791` (pre-PR-#479) was
+the **only** SVA emitter that ignored reset polarity:
+
+```rust
+"{label}: assert property (@(posedge {clk}) {expr_str})"
 ```
 
-If a testbench fails to drive `ar_valid` low during the first few reset
-cycles (or drives `ar_addr` to X-then-zero during reset release), the SVA
-could fire spuriously on the reset edge. None of the current TBs trip it,
-but a new master implementation that doesn't release cleanly will.
+— bare `@(posedge clk)`, no `disable iff`. Spec promises one shape, the
+compiler emitted another. Every user-written `assert` and `cover`
+across the codebase was affected — nic400, ibex, l1d, every example —
+not just nic400.
 
-This is a *systemic* pattern in nic400 — not introduced by #466 — so the
-fix is one sweep across both modules.
+**Fixed in [arch-com#479](https://github.com/arch-hdl-lang/arch-com/pull/479).**
+A new helper `Codegen::rst_active_from_ports(&[PortDecl]) ->
+Option<String>` resolves the active-level reset expression from a port
+list (`!rst` for `Reset<_, Low>`, bare `rst` for `Reset<_, High>`,
+`None` when there is no reset port). `emit_assert_sva` and
+`emit_asserts_for_construct` take a new `rst_active: Option<&str>`
+parameter and splice it into the `disable iff (...)` slot. All 10 call
+sites (`arbiter`, `cam`, `counter`, `fifo`, `fsm`, `linklist`,
+`module`, `pipeline`, `ram`, `regfile`) compute `rst_active` from the
+construct's ports and pass it through. Reset-less / clock-less modules
+emit no `disable iff` (matching the existing `_auto_bound_*`
+behaviour).
 
-**Recommended action.** Either (a) add `disable iff (!rstn)` (or `rst` for
-active-high; the polarity is in the module signature) to every concurrent
-SVA, or (b) document the convention "TBs must release `ax_valid` cleanly
-in reset" in `doc/nic400_interconnect_spec.md` as a contract. (a) is more
-robust; (b) keeps the SVAs simpler.
+Verified end-to-end: full `cargo test --release` is green (539 passed)
+and every nic400 expect-fatal Verilator test still trips the right
+`$fatal` because the violations occur outside reset. Four new
+regression tests pin the active-high / active-low / cover / no-reset
+shapes.
+
+**Why the original draft was wrong.** The nic400 `.arch` source has no
+`disable iff` because the syntax for it doesn't surface there — user
+asserts are written as `assert name: expr;` and the compiler is meant
+to wrap them with the construct-level clock and reset. Reading just
+the `.arch` file makes it look like a nic400 omission; checking the
+emitted SV (or the spec) reveals it's a compiler omission. Trust but
+verify: the auto-emit family already proved the polarity-inference
+machinery exists — the gap was that one emitter wasn't using it.
 
 ---
 
