@@ -19036,6 +19036,72 @@ end module SharedOrPort
     );
 }
 
+/// `lhs_base_name` collapses `vec[i]` and `vec[j]` to the same underlying
+/// signal — by design, because two `comb` blocks become two distinct
+/// `always_comb` blocks driving the same `logic` array, and SV's
+/// multi-driver rule treats any cross-block write into the array as a
+/// conflict on the array as a whole. Two `comb` blocks writing different
+/// indices of one Vec is therefore a real multi-driver and must error.
+///
+/// This test pins that design intent so a future change to
+/// `lhs_base_name` (e.g. mistakenly granularizing per-index) breaks
+/// loudly. Surfaced in the 2026-05-29 daily code-review pass — Finding
+/// 2 in `ideas/2026-05-29-code-review-findings.md`.
+#[test]
+fn test_multi_driver_vec_index_from_two_blocks_errors() {
+    let source = r#"
+module VecIndexTwoBlocks
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port out0: out UInt<8>;
+  port out1: out UInt<8>;
+  wire data: Vec<UInt<8>, 2>;
+  comb
+    data[0] = a;
+    out0 = data[0];
+  end comb
+  comb
+    data[1] = b;
+    out1 = data[1];
+  end comb
+end module VecIndexTwoBlocks
+"#;
+    assert!(
+        has_multi_driver_error(source, "data"),
+        "two comb blocks writing different Vec indices must trigger \
+         MultipleDrivers — Vec is one SV array, two always_comb blocks \
+         is a real conflict"
+    );
+}
+
+/// Sister positive case: ONE `comb` block writing multiple Vec indices
+/// must NOT error. This is the legitimate combinational fan-out pattern.
+/// Surfaced in the 2026-05-29 daily code-review pass — Finding 2 in
+/// `ideas/2026-05-29-code-review-findings.md`.
+#[test]
+fn test_multi_driver_vec_index_in_single_block_no_error() {
+    let source = r#"
+module VecIndexSingleBlock
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port out0: out UInt<8>;
+  port out1: out UInt<8>;
+  wire data: Vec<UInt<8>, 2>;
+  comb
+    data[0] = a;
+    data[1] = b;
+    out0 = data[0];
+    out1 = data[1];
+  end comb
+end module VecIndexSingleBlock
+"#;
+    assert!(
+        typecheck_source(source).is_ok(),
+        "one comb block writing multiple Vec indices is legal — \
+         one driver, not many"
+    );
+}
+
 /// Bus-typed wires connected from both initiator and target insts must NOT
 /// trigger multi-driver.  This is the canonical TLM bus wire pattern.
 #[test]
