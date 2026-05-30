@@ -31,7 +31,7 @@ labels its category.
 | 5 | arch-com #475 Hot-slave M↔M handoff test has no asymmetric-load scenario (one master always valid, one slow toggle) — round-robin starvation under asymmetric traffic is the canonical pathological case and remains uncovered | MED | open | test gap |
 | 6 | arch-com #466 INCR-4K and EXCLUSIVE preconditions on `Nic400WidthAdapter` are not exercised by a dedicated expect-fatal TB; the PR cites "structurally identical" but the WidthAdapter's `axlen` scaling means the boundary math differs from the APB bridge case | MED | open | test gap |
 | 7 | ~~nic400 SVAs lack `disable iff` gating~~ — **corrected**: compiler-side bug in `emit_assert_sva` affecting every user-written `assert`/`cover` across the codebase. Spec §7783 promises `disable iff (rst)`; emitter ignored reset polarity. **Fixed in [PR #479](https://github.com/arch-hdl-lang/arch-com/pull/479).** | MED | **fixed** | bug |
-| 8 | harc-com #321 `diff_trace_strings` compares normalised lines by index — assumes deterministic event ordering across backends; assumption is undocumented | LOW | open | tech debt |
+| 8 | harc-com #321 `diff_trace_strings` compares normalised lines by index — assumes deterministic event ordering across backends; assumption is undocumented. **Fixed in [harc-com#323](https://github.com/arch-hdl-lang/harc-com/pull/323).** | LOW | **fixed** | tech debt |
 | 9 | Stale "Mealy fusion" / "`wait 0+ cycle until`" comments in 7 nic400 testbenches and `probe_ar_bubble.sh` after arch-com #471 retired the syntax | LOW | open | doc drift |
 | 10 | arch-com #461 (`SHA-256 compression`) and harc-com #319 (`sha256.sv` + HARC TB) landed on the same day but neither cross-references the other; both lack a FIPS 180-4 vector citation in source | LOW | open | doc drift |
 | 11 | arch-com #463 §9 (doc drift) is partially closed by #455/#466/#467 but the resolution table in PR #463 was never amended; the table will look fully open to the next reviewer | LOW | open | meta-debt |
@@ -489,5 +489,6 @@ user-visible new feature" PR template check would be worth proposing.
       after verification surfaced it as a compiler/spec drift rather than a
       nic400-local gap.
 - [ ] Queue Findings 3, 4, 5, 6, 9, 10, 11, 12 for the next batch.
-- [ ] Finding 8 requires user direction (touches public CLI semantics) —
-      flag for human review.
+- [x] Finding 8 — fixed in [harc-com#323](https://github.com/arch-hdl-lang/harc-com/pull/323)
+      after user authorized the conservative "document the constraint"
+      approach over a behaviour change to the diff logic.
