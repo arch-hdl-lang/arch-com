@@ -202,7 +202,8 @@ impl<'a> Codegen<'a> {
             self.line("");
             let asserts = a.asserts.clone();
             let aname = a.name.name.clone();
-            self.emit_asserts_for_construct(&asserts, &aname, &clk);
+            let rst_active = Codegen::rst_active_from_ports(&a.ports);
+            self.emit_asserts_for_construct(&asserts, &aname, &clk, rst_active.as_deref());
         }
 
         // Tier-2 protocol SVA for any `handshake_channel` declared in the

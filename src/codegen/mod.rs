@@ -2766,17 +2766,41 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn emit_assert_sva(&mut self, a: &AssertDecl, construct_name: &str, clk: &str) {
+    /// Resolve a construct's `Reset<Kind, Polarity>` port to the active-level
+    /// SV expression used inside `disable iff (...)`. Returns `None` if the
+    /// construct has no reset port (the SVA then has no `disable iff` clause).
+    /// Active-low becomes `!rst`; active-high becomes the bare port name.
+    /// Mirrors the inline pattern used by `_auto_bound_*` / `_auto_div0_*`
+    /// emitters in this file.
+    pub(crate) fn rst_active_from_ports(ports: &[PortDecl]) -> Option<String> {
+        ports.iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)))
+            .map(|p| match &p.ty {
+                TypeExpr::Reset(_, ResetLevel::Low) => format!("!{}", p.name.name),
+                _ => p.name.name.clone(),
+            })
+    }
+
+    fn emit_assert_sva(
+        &mut self,
+        a: &AssertDecl,
+        construct_name: &str,
+        clk: &str,
+        rst_active: Option<&str>,
+    ) {
         let expr_str = self.emit_expr_str(&a.expr);
         let label = a.name.as_ref().map(|n| n.name.as_str().to_string())
             .unwrap_or_else(|| match a.kind {
                 AssertKind::Assert => "_assert_anon".to_string(),
                 AssertKind::Cover  => "_cover_anon".to_string(),
             });
+        let disable = rst_active
+            .map(|r| format!(" disable iff ({r})"))
+            .unwrap_or_default();
         match a.kind {
             AssertKind::Assert => {
                 self.line(&format!(
-                    "{label}: assert property (@(posedge {clk}) {expr_str})"
+                    "{label}: assert property (@(posedge {clk}){disable} {expr_str})"
                 ));
                 self.line(&format!(
                     "  else $fatal(1, \"ASSERTION FAILED: {construct_name}.{label}\");"
@@ -2784,7 +2808,7 @@ impl<'a> Codegen<'a> {
             }
             AssertKind::Cover => {
                 self.line(&format!(
-                    "{label}: cover property (@(posedge {clk}) {expr_str});"
+                    "{label}: cover property (@(posedge {clk}){disable} {expr_str});"
                 ));
             }
         }
@@ -2792,11 +2816,20 @@ impl<'a> Codegen<'a> {
 
     /// Emit assert/cover SVA for construct-level assert declarations (FSM, FIFO, etc.)
     /// Wrapped in translate_off/on so synthesis tools and Yosys ignore the SVA.
-    fn emit_asserts_for_construct(&mut self, asserts: &[AssertDecl], name: &str, clk: &str) {
+    /// `rst_active` is the construct's active-level reset expression
+    /// (`Some("!rst")` for active-low, `Some("rst")` for active-high, `None`
+    /// for clockless / reset-less constructs).
+    fn emit_asserts_for_construct(
+        &mut self,
+        asserts: &[AssertDecl],
+        name: &str,
+        clk: &str,
+        rst_active: Option<&str>,
+    ) {
         if asserts.is_empty() { return; }
         self.line("// synopsys translate_off");
         for a in asserts {
-            self.emit_assert_sva(a, name, clk);
+            self.emit_assert_sva(a, name, clk, rst_active);
         }
         self.line("// synopsys translate_on");
     }

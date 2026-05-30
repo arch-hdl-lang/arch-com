@@ -306,7 +306,8 @@ impl<'a> Codegen<'a> {
             self.line("");
             let asserts = l.asserts.clone();
             let lname = l.name.name.clone();
-            self.emit_asserts_for_construct(&asserts, &lname, &clk);
+            let rst_active = Codegen::rst_active_from_ports(&l.ports);
+            self.emit_asserts_for_construct(&asserts, &lname, &clk, rst_active.as_deref());
         }
 
         self.indent -= 1;
