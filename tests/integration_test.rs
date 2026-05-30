@@ -18849,6 +18849,35 @@ fn test_nic400_width_adapter_wrap_unaligned_addr_is_rejected_by_sva() {
     );
 }
 
+/// Verifies the `ar_incr_no_4k_cross_widthadapter` concurrent SVA at
+/// Nic400WidthAdapter.arch fires under Verilator `--assert` when an
+/// INCR burst's footprint crosses a 4 KB address boundary (AXI4
+/// §A3.4.1). PR #466 added the SVA but argued that the APB bridge's
+/// matching SVA was sufficient CI coverage; arch-com PR #477's
+/// Finding 6 asked for an explicit WidthAdapter-side TB that pins the
+/// behaviour against future refactors (e.g. accidental switch from
+/// pre-scaling `m.ar_*` to post-scaling `s.ar_*` operands in the
+/// boundary computation).
+///
+/// Stimulus: `M_DATA_W=64` default, `ar_addr=0x0FF8, ar_size=3,
+/// ar_len=7` ⇒ 8 master beats × 8 B = 64 B span from 0x0FF8 to
+/// 0x1037, straddling the 4 KB boundary at 0x1000. RATIO=2 ⇒ slave
+/// sees axlen=15, axsize=2 over the same byte span — confirming the
+/// "byte-count-preserved" identity that makes the master-side SVA
+/// equivalent to a hypothetical slave-side one.
+#[test]
+fn test_nic400_width_adapter_incr_4k_cross_is_rejected_by_sva() {
+    common::expect_verilator_fatal_multi(
+        &[
+            "tests/nic400/Nic400WidthAdapter.arch",
+            "tests/nic400/BusAxi4.arch",
+        ],
+        "tests/nic400/tb_nic400_width_adapter_incr_4k_cross.cpp",
+        "Nic400WidthAdapter",
+        "ASSERTION FAILED: Nic400WidthAdapter.ar_incr_no_4k_cross_widthadapter",
+    );
+}
+
 // ── Multi-driver detection (SFG Check 1, issue #375) ─────────────────────────
 
 /// Run through all compile stages up to typecheck and return any errors.
