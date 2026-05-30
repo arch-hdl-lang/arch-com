@@ -43,6 +43,12 @@
 //   3. Contender dropout: M0 monopolises for a few ARs, then drops
 //      permanently. M1 should grant on the very next cycle (no bubble
 //      on the contender-disappears event) and continue at 1.00 t/c.
+//   4. Asymmetric-load starvation guard: M0 valid=1 continuously while
+//      M1 toggles valid once every 5 cycles for 50 cycles. Catches the
+//      canonical round-robin failure mode where the pointer advances
+//      every cycle instead of advancing on grant — under that bug the
+//      low-frequency requester is starved. Fair RR must grant M1 within
+//      a bounded number of cycles of every M1 valid epoch.
 
 #include "VNic400Fabric.h"
 #include <cstdint>
@@ -314,6 +320,93 @@ static int scenario_contender_dropout() {
     return 0;
 }
 
+// ── Scenario 4: asymmetric-load starvation guard ────────────────────────
+// M0 drives ar_valid=1 continuously across 50 cycles. M1 re-arms a fresh
+// request every 5 cycles: valid goes high and stays high until granted,
+// then drops for the rest of the 5-cycle slot. Canonical asymmetric-load
+// pattern that exposes a broken round-robin pointer that advances every
+// cycle (instead of advancing on grant) — under that bug, M0 (always
+// valid) would keep winning and M1 would be starved. Fair RR must grant
+// M1 within at most 15 cycles of every M1 valid epoch.
+static int scenario_asymmetric_load() {
+    const int N_CYCLES = 50;
+    const int M1_PERIOD = 5;
+    const int M1_MAX_GAP = 15;
+
+    clear_inputs();
+    dut.s_ar_ready[0] = 1;
+    dut.m_r_ready[0]  = 1;
+    dut.m_r_ready[1]  = 1;
+    dut.m_ar_addr[0]  = 0x00001000;
+    dut.m_ar_size[0]  = 2;
+    dut.m_ar_burst[0] = 1;
+    dut.m_ar_addr[1]  = 0x00002000;
+    dut.m_ar_size[1]  = 2;
+    dut.m_ar_burst[1] = 1;
+    dut.m_ar_valid[0] = 1;   // M0 always valid
+    dut.m_ar_valid[1] = 0;
+
+    int seen_m0 = 0, seen_m1 = 0;
+    int cyc = 0;
+    int last_m1_grant = 0;
+    int worst_m1_gap = 0;
+    int m1_epoch_starts = 0;
+    for (int t = 0; t < N_CYCLES; ++t) {
+        // Re-arm M1 valid every M1_PERIOD cycles; hold until granted.
+        if ((cyc % M1_PERIOD) == 0) {
+            dut.m_ar_valid[1] = 1;
+            m1_epoch_starts++;
+        }
+        dut.m_ar_id[0] = (uint8_t)(seen_m0 & 0x7);
+        dut.m_ar_id[1] = (uint8_t)(seen_m1 & 0x7);
+        tick();
+        cyc++;
+        if (dut.s_ar_valid[0] && dut.s_ar_ready[0]) {
+            uint32_t prefix = (dut.s_ar_id[0]) >> 3;
+            if (prefix == 0) {
+                seen_m0++;
+            } else if (prefix == 1) {
+                seen_m1++;
+                int gap = cyc - last_m1_grant;
+                if (gap > worst_m1_gap) worst_m1_gap = gap;
+                last_m1_grant = cyc;
+                // M1 served — drop valid until next epoch.
+                dut.m_ar_valid[1] = 0;
+            }
+        }
+    }
+
+    std::printf("INFO  S4 (asymmetric load): %d cycles, m0=%d m1=%d/%d epochs, "
+                "worst_m1_gap=%d\n",
+                cyc, seen_m0, seen_m1, m1_epoch_starts, worst_m1_gap);
+
+    if (seen_m1 < m1_epoch_starts) {
+        std::printf("FAIL S4: M1 starved — only %d/%d epoch grants in %d cycles "
+                    "(m0=%d)\n", seen_m1, m1_epoch_starts, cyc, seen_m0);
+        return 1;
+    }
+    if (worst_m1_gap > M1_MAX_GAP) {
+        std::printf("FAIL S4: M1 starvation — worst gap=%d cycles between "
+                    "consecutive M1 grants (expected <= %d)\n",
+                    worst_m1_gap, M1_MAX_GAP);
+        return 1;
+    }
+    // Sanity: M0 should still receive most grants (always valid).
+    if (seen_m0 <= seen_m1) {
+        std::printf("FAIL S4: unexpected — M1 (%d) >= M0 (%d); M0 was held "
+                    "valid continuously\n", seen_m1, seen_m0);
+        return 1;
+    }
+    std::printf("PASS S4: asymmetric load — m0=%d m1=%d/%d epochs worst_m1_gap=%d "
+                "(round-robin grants low-frequency requester within window)\n",
+                seen_m0, seen_m1, m1_epoch_starts, worst_m1_gap);
+
+    dut.m_ar_valid[0] = 0;
+    dut.m_ar_valid[1] = 0;
+    for (int i = 0; i < 2; ++i) tick();
+    return 0;
+}
+
 int main(int argc, char **argv) {
     Verilated::commandArgs(argc, argv);
     do_reset();
@@ -327,6 +420,10 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 2; ++i) tick();
 
     if (scenario_contender_dropout())     return 1;
+    clear_inputs();
+    for (int i = 0; i < 2; ++i) tick();
+
+    if (scenario_asymmetric_load())       return 1;
 
     std::printf("PASS Nic400Fabric hot-slave throughput: zero-cycle M↔M handoff\n");
     return 0;

@@ -27,6 +27,13 @@
 //   S3. Contender dropout: M0 monopolises slave 0 for 4 ARs (M1 absent),
 //       then drops permanently.  M1 must sustain ≥ 0.9 t/c for 6 tail
 //       ARs with no dead cycle on the dropout event.
+//   S4. Asymmetric-load starvation guard: M0 valid=1 continuously while
+//       M1 toggles valid=1 once every 5 cycles.  Catches the canonical
+//       round-robin failure mode where the pointer advances every cycle
+//       instead of advancing on grant — under that bug the low-frequency
+//       requester is starved (window between M1 grants > 15 cycles).
+//       Fair round-robin must grant M1 at least once in every 15-cycle
+//       window during M1's valid epochs.
 //
 // Address mapping (both masters → slave 0):
 //   M0: 0x0000_1000  (addr[29:28] = 0b00)
@@ -347,6 +354,90 @@ impl Nic400FabricHotSlaveTest for Nic400FabricHotSlaveTb
         assert (m1_tail * 10) >= (last_p2_cyc * 9)
             else fail("S3: M1 tail throughput too low: ${m1_tail} ARs in ${last_p2_cyc} phase-2 cycles")
         log(info, "PASS S3: contender dropout — M0=${seen_s3_m0} ARs solo, M1 tail=${m1_tail} ARs in ${last_p2_cyc} cycles")
+
+        dut.m_ar_valid[0] = 0
+        dut.m_ar_valid[1] = 0
+        dut.s_ar_ready[0] = 0
+        wait 2 cycles
+
+        // ── S4: Asymmetric-load starvation guard ─────────────────────────
+        // M0 holds valid=1 continuously throughout the 50-cycle window.
+        // M1 raises a fresh request every 5 cycles: valid goes high and
+        // stays high until granted, then drops for the remainder of the
+        // 5-cycle slot.  This is the canonical asymmetric-load pattern
+        // that exposes a broken round-robin pointer that advances every
+        // cycle instead of advancing on grant — under that bug M0 (held
+        // valid continuously) would keep winning and M1 would be starved
+        // because the pointer never settles on M1's slot when M1 actually
+        // asserts.  Fair RR must grant M1 within at most 15 cycles of
+        // every M1 valid epoch.
+        dut.s_ar_ready[0] = 1
+        dut.m_r_ready[0]  = 1
+        dut.m_r_ready[1]  = 1
+        dut.m_ar_addr[0]  = 0x00001000
+        dut.m_ar_size[0]  = 2
+        dut.m_ar_burst[0] = 1
+        dut.m_ar_addr[1]  = 0x00002000
+        dut.m_ar_size[1]  = 2
+        dut.m_ar_burst[1] = 1
+        dut.m_ar_valid[0] = 1    // M0 always valid
+        dut.m_ar_valid[1] = 0
+
+        let seen_s4_m0       : uint<32> = 0
+        let seen_s4_m1       : uint<32> = 0
+        let cyc_s4           : uint<32> = 0
+        let last_m1_grant    : uint<32> = 0   // cyc_s4 at last M1 grant
+        let worst_m1_gap     : uint<32> = 0   // max cycles between consecutive M1 grants
+        let m1_epoch_starts  : uint<32> = 0   // count of cycles where M1 rose valid
+        let m1_pending       : uint<32> = 0   // 1 = M1 valid currently held, 0 = M1 idle slot
+
+        for _ in 0 .. 50
+            // Start a new M1 valid epoch every 5 cycles.
+            if (cyc_s4 % 5) == 0
+                dut.m_ar_valid[1] = 1
+                m1_pending      = 1
+                m1_epoch_starts = m1_epoch_starts + 1
+            end if
+            dut.m_ar_id[0] = (seen_s4_m0 & 7)
+            dut.m_ar_id[1] = (seen_s4_m1 & 7)
+            wait 1 cycle
+            cyc_s4 = cyc_s4 + 1
+            if dut.s_ar_valid[0] == 1
+                let mid = ((dut.s_ar_id[0] >> 3) & 3)
+                if mid == 0
+                    seen_s4_m0 = seen_s4_m0 + 1
+                elsif mid == 1
+                    seen_s4_m1 = seen_s4_m1 + 1
+                    let gap = cyc_s4 - last_m1_grant
+                    if gap > worst_m1_gap
+                        worst_m1_gap = gap
+                    end if
+                    last_m1_grant = cyc_s4
+                    // M1 served — drop valid until next epoch.
+                    dut.m_ar_valid[1] = 0
+                    m1_pending = 0
+                end if
+            end if
+        end for
+
+        // Starvation guard: M1 must receive a grant within every 15-cycle
+        // window across the 50-cycle test.  Under fair RR with M1
+        // re-arming every 5 cycles, the actual gap should be ≤ 5 cycles;
+        // we leave 3× slack to absorb arbiter-pointer phase relative to
+        // M1 epochs.
+        assert seen_s4_m1 >= m1_epoch_starts
+            else fail("S4: M1 starved — only ${seen_s4_m1}/${m1_epoch_starts} epoch grants in ${cyc_s4} cycles (m0=${seen_s4_m0})")
+        assert worst_m1_gap <= 15
+            else fail("S4: M1 starvation — worst gap=${worst_m1_gap} cycles between consecutive M1 grants (expected ≤ 15; m1=${seen_s4_m1}, m0=${seen_s4_m0})")
+        // Sanity: M0 should still get most grants given it's always valid.
+        assert seen_s4_m0 > seen_s4_m1
+            else fail("S4: unexpected — M1 (${seen_s4_m1}) >= M0 (${seen_s4_m0}); M0 was held valid continuously")
+        log(info, "PASS S4: asymmetric load — m0=${seen_s4_m0} m1=${seen_s4_m1}/${m1_epoch_starts}epochs ${cyc_s4}cyc worst_m1_gap=${worst_m1_gap}")
+
+        dut.m_ar_valid[0] = 0
+        dut.m_ar_valid[1] = 0
+        dut.s_ar_ready[0] = 0
+        wait 2 cycles
 
         log(info, "PASS Nic400Fabric hot-slave throughput: zero-cycle M↔M handoff confirmed")
     end run
