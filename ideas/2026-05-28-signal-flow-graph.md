@@ -70,7 +70,21 @@ This mirrors what Verilator does when it builds its elaborated netlist, but at t
 
 ## Checks enabled
 
-### Check 1 — Multi-driver detection (fixes #375)
+### Check 1 — Multi-driver detection (fixes #375) — **DONE (PR #470, v0.60.1+)**
+
+Shipped in `src/signal_flow.rs` as `collect_module_drivers` + `check_multi_driver`,
+called from `arch check`. Catches the `CombBlock` × `CombBlock`,
+`CombBlock` × `Inst`, and `Inst` × `Inst` cases from #375 (C2, C7).
+Exempts intra-block default+override, bus-wire dual-drive (initiator +
+target), and `shared(or)`/`shared(and)` ports. **Deferred for follow-up:**
+`RegBlock` (C-seq), `LatchBlock`, and unlowered `Thread` items — the TLM
+indexed-target lowering generates multiple `RegBlock`s that legitimately
+share register assignments via state-gating, so the naive count check
+fires false positives there. A future PR needs to distinguish
+user-written from compiler-generated blocks before turning those
+contexts on.
+
+
 
 For each signal, collect all `DriveEdge` records targeting it. If there are 2+
 edges from **distinct source identities** (different `CombBlock` indices, different
@@ -139,7 +153,7 @@ mechanically checkable condition.
 
 Two PRs, in order:
 
-### PR A — SFG builder + multi-driver check (closes #375)
+### PR A — SFG builder + multi-driver check (closes #375) — **SHIPPED (PR #470)**
 
 | Sub-task | File(s) | Estimate |
 |----------|---------|----------|

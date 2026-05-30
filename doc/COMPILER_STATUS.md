@@ -172,7 +172,7 @@
 | Duplicate definitions | ✅ |
 | Undefined name references | ✅ |
 | Output ports must be driven | ✅ |
-| Single driver per signal | ✅ |
+| Single driver per signal | ✅ | **SFG-based multi-driver check** (PR #470, v0.60.1+, spec §3.4): `src/signal_flow.rs` builds a per-module signal flow graph and rejects two distinct block-level constructs both driving the same signal. **Currently covers**: two `comb` blocks on the same wire/output (C2), `comb` + `inst` output, two `inst` scalar outputs on one wire (C7). **Exemptions handled correctly**: multiple assignments within the same block (default + if/else override pattern), bus-typed wires connected from both initiator and target inst items, implicit bus wires where the child port is a bus port, `shared(or)`/`shared(and)` ports. **Deferred surface** (tracked in `ideas/2026-05-28-signal-flow-graph.md`): `RegBlock` (two `seq` blocks writing the same reg) — TLM indexed-target lowering generates multiple `RegBlock`s that share register assignments via state-gating, so a naive check fires false positives; a follow-up needs to distinguish user-written from lowering-generated blocks. `LatchBlock` deferred for the same reason. `Thread` multi-driver in `--thread-sim parallel` mode is intentional (threads combine into one FSM in normal lowering) and stays exempt. |
 | `todo!` site warning | ✅ |
 | Binary op result widths (IEEE 1800-2012 §11.6) | ✅ |
 | Width mismatch at assignment | ✅ Any RHS wider than LHS errors in both `always` and `comb` blocks; arithmetic widening hint included |
