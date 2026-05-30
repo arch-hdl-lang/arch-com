@@ -1,0 +1,74 @@
+//! ---
+//! tags: [compression, huffman, lossless, deflate, cast-huff-x]
+//! refs:
+//!   - "RFC 1951: DEFLATE Compressed Data Format Specification"
+//!   - "CAST Inc. HUFF-X Huffman Coder IP"
+//! ---
+//!
+//! Fixed-table Huffman literal encoder for bytes 0-255,
+//! implementing RFC 1951 DEFLATE fixed Huffman literal codes.
+//!
+//!   Symbols   0-143 => 8-bit code: code = symbol + 0x30  (0x030 .. 0x0BF)
+//!   Symbols 144-255 => 9-bit code: code = symbol + 0x100 (0x190 .. 0x1FF)
+//!
+//! AXI-Stream-compatible valid/ready handshake on both sides.
+//! One clock cycle of pipeline latency; back-pressure stalls the pipeline
+//! register without dropping data.
+
+domain SysDomain
+  freq_mhz: 200
+end domain SysDomain
+
+/// Huffman literal encoder with single-cycle pipeline latency.
+///
+/// s_* is the input byte stream (AXI-Stream tvalid/tready/tdata/tlast).
+/// m_* carries (code, len) codewords downstream.
+/// m_ready back-pressure stalls the pipeline register without data loss.
+module HuffEnc
+  port clk:     in Clock<SysDomain>;
+  port rst:     in Reset<Sync>;
+
+  port s_valid: in Bool;
+  port s_ready: out Bool;
+  port s_data:  in UInt<8>;
+  port s_last:  in Bool;
+
+  port m_valid: out Bool;
+  port m_ready: in Bool;
+  port m_code:  out UInt<9>;
+  port m_len:   out UInt<4>;
+  port m_last:  out Bool;
+
+  reg valid_r: Bool reset rst => false;
+  reg code_r:  UInt<9> reset rst => 0;
+  reg len_r:   UInt<4> reset rst => 0;
+  reg last_r:  Bool reset rst => false;
+
+  wire stall:  Bool;
+  wire code_w: UInt<9>;
+  wire len_w:  UInt<4>;
+
+  comb
+    // RFC 1951 fixed Huffman literal code lookup
+    code_w  = (s_data < 144) ? (s_data.zext<9>() +% 9'd48) : (s_data.zext<9>() +% 9'd256);
+    len_w   = (s_data < 144) ? 4'd8 : 4'd9;
+    // AXI-Stream handshake: stall if output is valid but not yet consumed
+    stall   = valid_r and (not m_ready);
+    s_ready = not stall;
+    m_valid = valid_r;
+    m_code  = code_r;
+    m_len   = len_r;
+    m_last  = last_r;
+  end comb
+
+  seq on clk rising
+    if not stall
+      valid_r <= s_valid;
+      if s_valid
+        code_r <= code_w;
+        len_r  <= len_w;
+        last_r <= s_last;
+      end if
+    end if
+  end seq
+end module HuffEnc
