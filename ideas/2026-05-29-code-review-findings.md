@@ -26,10 +26,10 @@ labels its category.
 |---|---|---|---|---|
 | 1 | harc-com #310's end-to-end fixture (`regblock_record_test.harc`) is not wired into `tests/run_fixtures.sh`, so the headline new RAL API has no CI integration coverage | **HIGH** | open | test gap |
 | 2 | arch-com #470's SFG check has no test pinning the **intended** Vec-index aggregation behaviour (`vec[i]` and `vec[j]` collapse to one driver via `lhs_base_name`) | MED | open | test gap |
-| 3 | arch-com `doc/COMPILER_STATUS.md` does not list the multi-driver check (#470) as shipped, despite this being a user-visible compile-time error class with `examples` linkage in [`ideas/2026-05-28-signal-flow-graph.md`](ideas/2026-05-28-signal-flow-graph.md) | MED | open | doc drift |
-| 4 | harc-com #317's RAL callback recursion guard (`HARC_RAL_CB_MAX_DEPTH = 16`) emits a FATAL abort that no test exercises — `regblock_record_write_emits_recursion_guard` is substring-only | MED | open | test gap |
-| 5 | arch-com #475 Hot-slave M↔M handoff test has no asymmetric-load scenario (one master always valid, one slow toggle) — round-robin starvation under asymmetric traffic is the canonical pathological case and remains uncovered | MED | open | test gap |
-| 6 | arch-com #466 INCR-4K and EXCLUSIVE preconditions on `Nic400WidthAdapter` are not exercised by a dedicated expect-fatal TB; the PR cites "structurally identical" but the WidthAdapter's `axlen` scaling means the boundary math differs from the APB bridge case | MED | open | test gap |
+| 3 | arch-com `doc/COMPILER_STATUS.md` does not list the multi-driver check (#470) as shipped. **Fixed in [arch-com#480](https://github.com/arch-hdl-lang/arch-com/pull/480).** | MED | **fixed** | doc drift |
+| 4 | harc-com #317's RAL callback recursion guard FATAL abort path is substring-checked only. **Fixed in [harc-com#324](https://github.com/arch-hdl-lang/harc-com/pull/324)** (dual-layer: end-to-end fixture + structural codegen test; 4 mutations exercised). | MED | **fixed** | test gap |
+| 5 | arch-com #475 Hot-slave M↔M handoff has no asymmetric-load scenario. **Fixed in [arch-com#482](https://github.com/arch-hdl-lang/arch-com/pull/482)** (S4 scenario; mutation of round-robin pointer logic confirmed the test catches the regression class). | MED | **fixed** | test gap |
+| 6 | arch-com #466 INCR-4K / EXCLUSIVE preconditions on `Nic400WidthAdapter` have no dedicated expect-fatal TB. **Fixed in [arch-com#481](https://github.com/arch-hdl-lang/arch-com/pull/481).** Investigation revealed PR #466's "structurally identical" claim is correct *semantically* (the WidthAdapter forwards `ar_addr` unchanged and total burst byte count is invariant under scaling) — the TB still pins the SVA wiring as a regression net and documents the byte-count-invariance argument so the misread doesn't recur. | MED | **fixed** | test gap |
 | 7 | ~~nic400 SVAs lack `disable iff` gating~~ — **corrected**: compiler-side bug in `emit_assert_sva` affecting every user-written `assert`/`cover` across the codebase. Spec §7783 promises `disable iff (rst)`; emitter ignored reset polarity. **Fixed in [PR #479](https://github.com/arch-hdl-lang/arch-com/pull/479).** | MED | **fixed** | bug |
 | 8 | harc-com #321 `diff_trace_strings` compares normalised lines by index — assumes deterministic event ordering across backends; assumption is undocumented. **Fixed in [harc-com#323](https://github.com/arch-hdl-lang/harc-com/pull/323).** | LOW | **fixed** | tech debt |
 | 9 | Stale "Mealy fusion" / "`wait 0+ cycle until`" comments in 7 nic400 testbenches and `probe_ar_bubble.sh` after arch-com #471 retired the syntax | LOW | open | doc drift |
@@ -488,7 +488,11 @@ user-visible new feature" PR template check would be worth proposing.
 - [x] Finding 7 — fixed in [PR #479](https://github.com/arch-hdl-lang/arch-com/pull/479)
       after verification surfaced it as a compiler/spec drift rather than a
       nic400-local gap.
-- [ ] Queue Findings 3, 4, 5, 6, 9, 10, 11, 12 for the next batch.
+- [x] Finding 3 — fixed in [arch-com#480](https://github.com/arch-hdl-lang/arch-com/pull/480).
+- [x] Finding 4 — fixed in [harc-com#324](https://github.com/arch-hdl-lang/harc-com/pull/324).
+- [x] Finding 5 — fixed in [arch-com#482](https://github.com/arch-hdl-lang/arch-com/pull/482).
+- [x] Finding 6 — fixed in [arch-com#481](https://github.com/arch-hdl-lang/arch-com/pull/481).
+- [ ] Queue Findings 9, 10, 11, 12 for the next batch.
 - [x] Finding 8 — fixed in [harc-com#323](https://github.com/arch-hdl-lang/harc-com/pull/323)
       after user authorized the conservative "document the constraint"
       approach over a behaviour change to the diff logic.
