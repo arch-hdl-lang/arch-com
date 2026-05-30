@@ -95,6 +95,11 @@ enum Command {
         /// Output .sv file
         #[arg(short, long)]
         o: Option<PathBuf>,
+        /// Emit a static HTML thread lowering map. Bare flag writes
+        /// `<sv-output-stem>.thread.html`; `--emit-thread-map=PATH` writes
+        /// the explicit path. The optional value requires `=`.
+        #[arg(long, num_args = 0..=1, require_equals = true)]
+        emit_thread_map: Option<Option<PathBuf>>,
         /// Auto-emit SVA properties from `thread` lowering (wait_until / wait
         /// N cycle progress, fork-join branch transitions). Wrapped in
         /// `synopsys translate_off/on` so they don't reach synthesis. Off by
@@ -281,6 +286,28 @@ impl MultiSource {
             .with_source_code(NamedSource::new(filename.to_string(), file_source.to_string()))
     }
 
+}
+
+fn thread_map_sources_from_multi(ms: &MultiSource) -> Vec<arch::thread_map::ThreadMapSource> {
+    ms.segments.iter()
+        .map(|(start, end, filename, source)| arch::thread_map::ThreadMapSource {
+            start: *start,
+            end: *end,
+            filename: filename.clone(),
+            source: source.clone(),
+        })
+        .collect()
+}
+
+fn filter_thread_map_by_ranges(
+    map: &arch::thread_map::ThreadMap,
+    ranges: &[(usize, usize)],
+) -> arch::thread_map::ThreadMap {
+    let modules = map.modules.iter()
+        .filter(|module| ranges.iter().any(|(start, end)| module.span.start >= *start && module.span.start < *end))
+        .cloned()
+        .collect();
+    arch::thread_map::ThreadMap { modules }
 }
 
 /// Run a compiler-command body and record its success/failure into the
@@ -483,12 +510,26 @@ fn main() -> miette::Result<()> {
                 other => return Err(miette::miette!("--thread-sim: expected `fsm`, `parallel`, or `both`, got `{}`", other)),
             }
         }
-        Command::Build { files, o, auto_thread_asserts, no_inline_deps } => {
+        Command::Build { files, o, emit_thread_map, auto_thread_asserts, no_inline_deps } => {
             let files_for_learn = files.clone();
             learn_wrap(&files_for_learn, move || {
+            if matches!(emit_thread_map, Some(Some(_))) && files.len() > 1 && o.is_none() {
+                return Err(miette::miette!(
+                    "--emit-thread-map=PATH requires a single combined build output; pass -o or use bare --emit-thread-map for per-file maps"
+                ));
+            }
             let all_files = resolve_use_imports(&files)?;
             let ms = MultiSource::from_files(&all_files)?;
-            let (ast, symbols, overload_map) = run_check_multi_opts(&ms, false, auto_thread_asserts)?;
+            let thread_map_store = emit_thread_map
+                .as_ref()
+                .map(|_| std::rc::Rc::new(std::cell::RefCell::new(arch::thread_map::ThreadMap::default())));
+            let (ast, symbols, overload_map) = run_check_multi_opts_with_thread_map(
+                &ms,
+                false,
+                auto_thread_asserts,
+                thread_map_store.clone(),
+            )?;
+            let thread_map_sources = thread_map_sources_from_multi(&ms);
 
             let comments = lexer::extract_comments(&ms.combined);
 
@@ -531,6 +572,28 @@ fn main() -> miette::Result<()> {
                 let out_path = o.unwrap_or_else(|| files[0].with_extension("sv"));
                 fs::write(&out_path, &sv).into_diagnostic()?;
                 eprintln!("Wrote {}", out_path.display());
+                if let (Some(req), Some(map_store)) = (&emit_thread_map, &thread_map_store) {
+                    let html_path = req
+                        .clone()
+                        .unwrap_or_else(|| out_path.with_extension("thread.html"));
+                    let map = if no_inline_deps {
+                        let keep: Vec<(usize, usize)> = ms.segments.iter()
+                            .filter_map(|(start, end, filename, _)| {
+                                if original_names.contains(filename) { Some((*start, *end)) } else { None }
+                            })
+                            .collect();
+                        filter_thread_map_by_ranges(&map_store.borrow(), &keep)
+                    } else {
+                        map_store.borrow().clone()
+                    };
+                    let html = arch::thread_map::render_html(
+                        &map,
+                        &thread_map_sources,
+                        &format!("Thread map for {}", out_path.display()),
+                    );
+                    fs::write(&html_path, html).into_diagnostic()?;
+                    eprintln!("Wrote {}", html_path.display());
+                }
                 // Companion .sdc file: only written if any module contained
                 // a `multicycle <N>` reg. No-op for legacy `.arch` sources.
                 if let Some(sdc_text) = sdc {
@@ -570,6 +633,17 @@ fn main() -> miette::Result<()> {
                     let out_path = std::path::Path::new(filename).with_extension("sv");
                     fs::write(&out_path, &sv).into_diagnostic()?;
                     eprintln!("Wrote {}", out_path.display());
+                    if let (Some(None), Some(map_store)) = (&emit_thread_map, &thread_map_store) {
+                        let map = filter_thread_map_by_ranges(&map_store.borrow(), &[(*seg_start, *seg_end)]);
+                        let html_path = out_path.with_extension("thread.html");
+                        let html = arch::thread_map::render_html(
+                            &map,
+                            &thread_map_sources,
+                            &format!("Thread map for {}", out_path.display()),
+                        );
+                        fs::write(&html_path, html).into_diagnostic()?;
+                        eprintln!("Wrote {}", html_path.display());
+                    }
                     // Companion .sdc per-file: only if this file's items
                     // declared `multicycle <N>` regs.
                     if let Some(sdc_text) = codegen.emit_sdc(&out_path.to_string_lossy()) {
@@ -1523,6 +1597,15 @@ fn run_check_multi_opts(
     skip_lower_threads: bool,
     auto_thread_asserts: bool,
 ) -> miette::Result<(arch::ast::SourceFile, resolve::SymbolTable, std::collections::HashMap<usize, usize>)> {
+    run_check_multi_opts_with_thread_map(ms, skip_lower_threads, auto_thread_asserts, None)
+}
+
+fn run_check_multi_opts_with_thread_map(
+    ms: &MultiSource,
+    skip_lower_threads: bool,
+    auto_thread_asserts: bool,
+    thread_map: Option<std::rc::Rc<std::cell::RefCell<arch::thread_map::ThreadMap>>>,
+) -> miette::Result<(arch::ast::SourceFile, resolve::SymbolTable, std::collections::HashMap<usize, usize>)> {
     let source = &ms.combined;
 
     // Lex
@@ -1630,6 +1713,7 @@ fn run_check_multi_opts(
     } else {
         let opts = elaborate::ThreadLowerOpts {
             auto_asserts: auto_thread_asserts,
+            thread_map,
         };
         elaborate::lower_threads_with_opts(ast, &opts).map_err(|errs| {
             let err = errs.into_iter().next().unwrap();

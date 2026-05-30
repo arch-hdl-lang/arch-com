@@ -74,6 +74,23 @@ fn compile_to_sv_with_opts(source: &str, opts: &elaborate::ThreadLowerOpts) -> S
     codegen.generate()
 }
 
+fn collect_thread_map(source: &str) -> arch::thread_map::ThreadMap {
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let ast = elaborate::lower_tlm_target_threads(ast).expect("tlm_target lowering error");
+    let ast = elaborate::lower_tlm_initiator_calls(ast).expect("tlm_initiator lowering error");
+    let map = std::rc::Rc::new(std::cell::RefCell::new(arch::thread_map::ThreadMap::default()));
+    let opts = elaborate::ThreadLowerOpts {
+        thread_map: Some(map.clone()),
+        ..Default::default()
+    };
+    let _ast = elaborate::lower_threads_with_opts(ast, &opts).expect("lower_threads error");
+    let collected = map.borrow().clone();
+    collected
+}
+
 #[test]
 fn test_top_counter_compiles() {
     let source = include_str!("../examples/top_counter.arch");
@@ -10885,7 +10902,7 @@ fn test_auto_thread_asserts_wait_cycles_and_until() {
     // emit, wrapped in `synopsys translate_off/on`, with reset-guarded
     // antecedents.
     let source = include_str!("../tests/thread/wait_cycles.arch");
-    let opts = elaborate::ThreadLowerOpts { auto_asserts: true };
+    let opts = elaborate::ThreadLowerOpts { auto_asserts: true, ..Default::default() };
     let sv = compile_to_sv_with_opts(source, &opts);
 
     // Wait-until: state 0 transitions on `start`. Issue #247 changed
@@ -10918,7 +10935,7 @@ fn test_auto_thread_asserts_fork_join_branches() {
     // fork/join produces multi_transitions. Each branch transition gets
     // an `_auto_thread_t{i}_branch_s{s}_b{b}` assertion.
     let source = include_str!("../tests/thread/fork_join.arch");
-    let opts = elaborate::ThreadLowerOpts { auto_asserts: true };
+    let opts = elaborate::ThreadLowerOpts { auto_asserts: true, ..Default::default() };
     let sv = compile_to_sv_with_opts(source, &opts);
     assert!(sv.contains("_auto_thread_t0_branch_s"),
         "expected at least one fork/join branch assertion:\n{sv}");
@@ -10941,12 +10958,156 @@ fn test_auto_thread_asserts_active_high_reset() {
           end thread
         end module M
     "#;
-    let opts = elaborate::ThreadLowerOpts { auto_asserts: true };
+    let opts = elaborate::ThreadLowerOpts { auto_asserts: true, ..Default::default() };
     let sv = compile_to_sv_with_opts(source, &opts);
     assert!(sv.contains("!rst &&"),
         "expected `!rst` guard for active-high reset:\n{sv}");
     assert!(!sv.contains("(rst) &&"),
         "should not use bare `rst` as guard for active-high:\n{sv}");
+}
+
+// ── Thread map HTML sidecar ──────────────────────────────────────────────────
+
+fn thread_map_smoke_source(module_name: &str) -> String {
+    format!(r#"
+        module {module_name}
+          port clk:  in Clock<SysDomain>;
+          port rst:  in Reset<Async, Low>;
+          port go:   in Bool;
+          port done: out Bool;
+          thread T on clk rising, rst low
+            done = 0;
+            wait until go;
+            done = 1;
+            wait 2 cycle;
+          end thread T
+        end module {module_name}
+    "#)
+}
+
+#[test]
+fn test_build_emit_thread_map_bare_path() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("Flow.arch");
+    let sv_out = td.path().join("Flow.sv");
+    let html_out = td.path().join("Flow.thread.html");
+    std::fs::write(&src, thread_map_smoke_source("Flow")).expect("write source");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_NO_LEARN", "1")
+        .arg("build")
+        .arg(&src)
+        .arg("-o")
+        .arg(&sv_out)
+        .arg("--emit-thread-map")
+        .output()
+        .expect("run arch build --emit-thread-map");
+    assert!(out.status.success(),
+        "build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr));
+    assert!(html_out.exists(), "expected bare flag to write {}", html_out.display());
+    let html = std::fs::read_to_string(&html_out).expect("read thread map");
+    assert!(html.contains("_t0_S0_wait_until"), "expected generated state name in HTML:\n{html}");
+    assert!(html.contains("wait until go"), "expected source line in HTML:\n{html}");
+    assert!(html.contains("done = 1"), "expected source assignment in HTML:\n{html}");
+}
+
+#[test]
+fn test_build_emit_thread_map_explicit_path() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("Flow.arch");
+    let sv_out = td.path().join("Flow.sv");
+    let html_out = td.path().join("custom_map.html");
+    std::fs::write(&src, thread_map_smoke_source("Flow")).expect("write source");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_NO_LEARN", "1")
+        .arg("build")
+        .arg(&src)
+        .arg("-o")
+        .arg(&sv_out)
+        .arg(format!("--emit-thread-map={}", html_out.display()))
+        .output()
+        .expect("run arch build --emit-thread-map=path");
+    assert!(out.status.success(),
+        "build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr));
+    assert!(html_out.exists(), "expected explicit map path to be written");
+}
+
+#[test]
+fn test_build_emit_thread_map_multifile_paths_and_explicit_error() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let a = td.path().join("A.arch");
+    let b = td.path().join("B.arch");
+    std::fs::write(&a, thread_map_smoke_source("A")).expect("write A");
+    std::fs::write(&b, thread_map_smoke_source("B")).expect("write B");
+
+    let ok = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_NO_LEARN", "1")
+        .arg("build")
+        .arg(&a)
+        .arg(&b)
+        .arg("--emit-thread-map")
+        .output()
+        .expect("run multi-file build");
+    assert!(ok.status.success(),
+        "multi-file bare map should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&ok.stdout),
+        String::from_utf8_lossy(&ok.stderr));
+    assert!(td.path().join("A.thread.html").exists(), "expected A.thread.html");
+    assert!(td.path().join("B.thread.html").exists(), "expected B.thread.html");
+
+    let explicit = td.path().join("all.html");
+    let err = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_NO_LEARN", "1")
+        .arg("build")
+        .arg(&a)
+        .arg(&b)
+        .arg(format!("--emit-thread-map={}", explicit.display()))
+        .output()
+        .expect("run multi-file explicit map build");
+    assert!(!err.status.success(), "explicit map without -o should fail");
+    let stderr = String::from_utf8_lossy(&err.stderr);
+    assert!(stderr.contains("--emit-thread-map=PATH requires"),
+        "expected explicit multi-file diagnostic, got:\n{stderr}");
+}
+
+#[test]
+fn test_thread_map_metadata_records_dispatch_and_wait_roles() {
+    let simple = collect_thread_map(&thread_map_smoke_source("Simple"));
+    let simple_thread = &simple.modules[0].threads[0];
+    assert!(simple_thread.states.iter().any(|s| s.role == "wait_until" && s.labels.iter().any(|l| l.contains("go"))),
+        "expected simple wait_until state labelled with go: {simple_thread:#?}");
+
+    let source = r#"
+        module M
+          port clk:  in Clock<SysDomain>;
+          port rst:  in Reset<Async, Low>;
+          port go:   in Bool;
+          port sel:  in Bool;
+          port ack:  in Bool;
+          port done: out Bool;
+          thread T on clk rising, rst low
+            wait until go;
+            if sel
+              wait until ack;
+            else
+              wait 2 cycle;
+            end if
+            done = 1;
+            wait 1 cycle;
+          end thread T
+        end module M
+    "#;
+    let map = collect_thread_map(source);
+    let thread = &map.modules[0].threads[0];
+    assert!(thread.states.iter().any(|s| s.role == "wait_cycles"),
+        "expected wait_cycles state: {thread:#?}");
+    assert!(thread.states.iter().any(|s| s.role == "dispatch" && s.transitions.iter().any(|t| t.condition.contains("sel"))),
+        "expected dispatch state with sel transition: {thread:#?}");
 }
 
 // ── If/else with internal waits — dispatch-and-rejoin ─────────────────────────
@@ -11450,7 +11611,7 @@ fn test_if_wait_with_auto_asserts() {
           end thread
         end module M
     "#;
-    let opts = elaborate::ThreadLowerOpts { auto_asserts: true };
+    let opts = elaborate::ThreadLowerOpts { auto_asserts: true, ..Default::default() };
     let sv = compile_to_sv_with_opts(source, &opts);
     assert!(sv.contains("_auto_thread_t0_branch_"),
         "expected dispatch-state branch assertions:\n{sv}");
