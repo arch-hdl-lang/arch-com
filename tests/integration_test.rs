@@ -19130,3 +19130,110 @@ fn test_nic400_apb_bridge_excl_len_illegal_is_rejected_by_sva() {
         "ASSERTION FAILED: Nic400ApbBridge.ar_excl_len_legal_apb",
     );
 }
+
+// ────────────────────────────────────────────────────────────────────
+// User-written `assert` SVA reset gating
+// ────────────────────────────────────────────────────────────────────
+//
+// `doc/ARCH_HDL_Specification.md:7783` states that user-written
+// `assert`/`cover` bodies are evaluated "at every clock edge under
+// the construct's `posedge clk` with `disable iff (rst)`". The
+// auto-emitted SVA family (`_auto_bound_*`, `_auto_div0_*`,
+// `_auto_hs_*`, `_auto_thread_*`) already honours this — emission
+// goes through the same `rst_active` extraction logic. User-written
+// `assert` bodies were the outlier: `emit_assert_sva` ignored the
+// module's reset polarity and produced bare `@(posedge clk)` SVAs.
+//
+// These tests pin the spec-aligned behaviour. Surfaced in the
+// 2026-05-29 daily code-review pass — Finding 7 in
+// `ideas/2026-05-29-code-review-findings.md` (originally
+// mis-described as a nic400-local gap; the real fix is here in the
+// compiler).
+
+/// Active-low reset (`Reset<Async, Low>` → `!rst` in `disable iff`).
+/// This is the nic400 convention — every nic400 module uses it.
+#[test]
+fn test_user_assert_sva_disables_iff_active_low_reset() {
+    let source = r#"
+module UserAssertActiveLow
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port a: in Bool;
+  port b: in Bool;
+  assert ab_consistent: a |-> b;
+end module UserAssertActiveLow
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("ab_consistent: assert property (@(posedge clk) disable iff (!rst) a |-> b)"),
+        "expected user assert to carry `disable iff (!rst)` (active-low \
+         reset); got:\n{sv}"
+    );
+}
+
+/// Active-high reset (`Reset<Sync>` defaults to High → bare `rst` in
+/// `disable iff`).
+#[test]
+fn test_user_assert_sva_disables_iff_active_high_reset() {
+    let source = r#"
+module UserAssertActiveHigh
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port a: in Bool;
+  port b: in Bool;
+  assert ab_consistent: a |-> b;
+end module UserAssertActiveHigh
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("ab_consistent: assert property (@(posedge clk) disable iff (rst) a |-> b)"),
+        "expected user assert to carry `disable iff (rst)` (active-high \
+         reset); got:\n{sv}"
+    );
+}
+
+/// `cover` bodies must be gated the same way as `assert` — both share
+/// the same lowering path.
+#[test]
+fn test_user_cover_sva_disables_iff_reset() {
+    let source = r#"
+module UserCoverReset
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port a: in Bool;
+  cover seen_a: a;
+end module UserCoverReset
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("seen_a: cover property (@(posedge clk) disable iff (!rst) a);"),
+        "expected user cover to carry `disable iff (!rst)`; got:\n{sv}"
+    );
+}
+
+/// A clock-only module with no reset port must NOT emit a bogus
+/// `disable iff` clause. The existing `_auto_bound_*` emitters skip
+/// `disable iff` when no reset port is found; user asserts must follow
+/// suit.
+#[test]
+fn test_user_assert_sva_no_reset_no_disable_iff() {
+    let source = r#"
+module UserAssertNoReset
+  port clk: in Clock<SysDomain>;
+  port a: in Bool;
+  port b: in Bool;
+  assert ab_consistent: a |-> b;
+end module UserAssertNoReset
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("ab_consistent: assert property (@(posedge clk) a |-> b)"),
+        "expected user assert to omit `disable iff` when no reset port \
+         is declared; got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("disable iff"),
+        "no `disable iff` should appear anywhere in a reset-less module's \
+         user-assert SVA; got:\n{sv}"
+    );
+}

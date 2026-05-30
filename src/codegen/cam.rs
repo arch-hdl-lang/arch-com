@@ -172,7 +172,8 @@ impl<'a> Codegen<'a> {
 
         if !c.asserts.is_empty() {
             let asserts = c.asserts.clone();
-            self.emit_asserts_for_construct(&asserts, &n, &clk);
+            let rst_active = Codegen::rst_active_from_ports(&c.ports);
+            self.emit_asserts_for_construct(&asserts, &n, &clk, rst_active.as_deref());
         }
 
         self.indent -= 1;

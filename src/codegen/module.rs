@@ -871,7 +871,8 @@ impl<'a> Codegen<'a> {
                     .map(|p| p.name.name.clone())
                     .unwrap_or_else(|| "clk".to_string());
                 let owned: Vec<AssertDecl> = module_asserts.into_iter().cloned().collect();
-                self.emit_asserts_for_construct(&owned, &m_clone.name.name, &clk_name);
+                let rst_active = Codegen::rst_active_from_ports(&m_clone.ports);
+                self.emit_asserts_for_construct(&owned, &m_clone.name.name, &clk_name, rst_active.as_deref());
             }
         }
 
