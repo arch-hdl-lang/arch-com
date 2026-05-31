@@ -1,0 +1,202 @@
+//! ---
+//! spec_md: doc/lz4_decomp.md
+//! tags: [lossless, compression, lz4, streaming, ip, cast_lz4snp_equivalent]
+//! refs:
+//!   - "CAST LZ4SNP — LZ4/Snappy Lossless Decompressor IP (cast-inc.com)"
+//!   - "LZ4 Block Format Specification (lz4.org/lz4_Block_format.html)"
+//! ---
+//!
+//! Streaming hardware LZ4 block decompressor, architecturally equivalent
+//! to CAST's LZ4SNP IP core.
+//!
+//! Interface: byte-wide AXI-Stream-compatible source (compressed) and sink
+//! (decompressed). Back-references are resolved from an on-chip history RAM
+//! sized 2^HIST_BITS bytes (default 4 KiB; set HIST_BITS=16/HIST_DEPTH=65536
+//! for the full LZ4-spec 64 KiB window).
+//!
+//! Protocol: `s_last` is asserted on the last compressed byte of the LZ4
+//! block. After outputting the final decompressed byte, `done` pulses for
+//! one cycle.
+//!
+//! Throughput: 1 cycle per literal byte; 1 cycle per match byte (async RAM).
+//! The decompressor never stalls its input except when the output is
+//! backpressured (`m_ready = 0`).
+
+use Lz4HistRam;
+
+/// Streaming LZ4 block decompressor — equivalent to CAST LZ4SNP.
+///
+/// Parameters:
+///   HIST_BITS  — log2 of history depth (12 = 4 KiB; 16 = 64 KiB full spec).
+///   HIST_DEPTH — must equal 2^HIST_BITS.
+module Lz4Decomp
+  param HIST_BITS:  const = 12;
+  param HIST_DEPTH: const = 4096;
+
+  port clk:     in  Clock<SysDomain>;
+  port rst:     in  Reset<Sync>;
+
+  port s_valid: in  Bool;
+  port s_data:  in  UInt<8>;
+  port s_last:  in  Bool;
+  port s_ready: out Bool;
+
+  port m_valid: out Bool;
+  port m_data:  out UInt<8>;
+  port m_last:  out Bool;
+  port m_ready: in  Bool;
+
+  port done:    out Bool;
+
+  // ── Parsing state registers ─────────────────────────────────────────
+  reg lit_len_r:      UInt<18> reset rst => 0;
+  reg match_len_r:    UInt<18> reset rst => 0;
+  reg match_off_r:    UInt<16> reset rst => 0;
+  reg match_nibble_r: UInt<4>  reset rst => 0;
+  reg lit_byte_r:     UInt<8>  reset rst => 0;
+  reg wr_ptr_r:       UInt<HIST_BITS> reset rst => 0;
+  reg last_byte_r:    Bool     reset rst => false;
+  reg done_r:         Bool     reset rst => false;
+
+  // ── History RAM interface ────────────────────────────────────────────
+  wire hist_wr_en:   Bool;
+  wire hist_wr_addr: UInt<HIST_BITS>;
+  wire hist_wr_data: UInt<8>;
+  wire hist_rd_en:   Bool;
+  wire hist_rd_addr: UInt<HIST_BITS>;
+  wire hist_rd_data: UInt<8>;
+
+  inst hist: Lz4HistRam<HIST_BITS=HIST_BITS, HIST_DEPTH=HIST_DEPTH>
+    clk          <- clk;
+    wr_port.en   <- hist_wr_en;
+    wr_port.addr <- hist_wr_addr;
+    wr_port.data <- hist_wr_data;
+    rd_port.en   <- hist_rd_en;
+    rd_port.addr <- hist_rd_addr;
+    rd_port.data -> hist_rd_data;
+  end inst hist
+
+  let done = done_r;
+
+  // ── Main decompressor thread ─────────────────────────────────────────
+  //
+  // The thread lowers to a synthesizable FSM.  Each `do … until` and
+  // `wait until` becomes one FSM state; `for` loops generate a counter
+  // register alongside the state.
+  //
+  // LZ4 block sequence structure:
+  //   [token][lit_ext*][literals][off_lo][off_hi][match_ext*][EOS token?]
+  // The last sequence ends after the literals (no match part); `s_last`
+  // marks the final compressed byte so the thread knows to skip the match.
+  thread Decomp on clk rising, rst high
+
+    default comb
+      s_ready      = false;
+      m_valid      = false;
+      m_data       = 8'h00;
+      m_last       = false;
+      hist_wr_en   = false;
+      hist_wr_addr = 0;
+      hist_wr_data = 8'h00;
+      hist_rd_en   = false;
+      hist_rd_addr = 0;
+    end default
+
+    done_r <= false;
+
+    // ── Step 1: consume token byte ──────────────────────────────────
+    do
+      s_ready = true;
+    until s_valid;
+    lit_len_r      <= s_data[7:4].zext<18>();
+    match_nibble_r <= s_data[3:0];
+    match_len_r    <= (s_data[3:0].zext<18>() + 18'd4);
+    last_byte_r    <= s_last;
+
+    // ── Step 2: extend literal length (nibble == 0xF) ───────────────
+    if lit_len_r == 18'd15
+      do
+        do
+          s_ready = true;
+        until s_valid;
+        lit_len_r   <= (lit_len_r + s_data.zext<18>()).trunc<18>();
+        last_byte_r <= s_last;
+      until s_data != 8'hFF;
+    end if
+
+    // ── Step 3: output literal bytes ─────────────────────────────────
+    if lit_len_r > 0
+      for i in 0..lit_len_r - 1
+        do
+          s_ready = true;
+        until s_valid;
+        lit_byte_r  <= s_data;
+        last_byte_r <= s_last;
+        do
+          m_valid      = true;
+          m_data       = lit_byte_r;
+          hist_wr_en   = m_ready;
+          hist_wr_addr = wr_ptr_r;
+          hist_wr_data = lit_byte_r;
+        until m_ready;
+        wr_ptr_r <= (wr_ptr_r + 1).trunc<HIST_BITS>();
+      end for
+    end if
+
+    // ── End-of-block guard ────────────────────────────────────────────
+    // `last_byte_r` was set on the last literal handshake (or on the
+    // token itself when lit_len == 0 and s_last was asserted there).
+    // When true, this was the final LZ4 sequence — no match follows.
+    if not last_byte_r
+
+      // ── Step 4: read match offset (little-endian 16-bit) ──────────
+      do
+        s_ready = true;
+      until s_valid;
+      match_off_r <= s_data.zext<16>();
+      last_byte_r <= s_last;
+
+      do
+        s_ready = true;
+      until s_valid;
+      match_off_r <= (match_off_r | (s_data.zext<16>() << 8)).trunc<16>();
+      last_byte_r <= s_last;
+
+      // ── Step 5: extend match length (nibble == 0xF) ───────────────
+      if match_nibble_r == 4'hF
+        do
+          do
+            s_ready = true;
+          until s_valid;
+          match_len_r <= (match_len_r + s_data.zext<18>()).trunc<18>();
+          last_byte_r <= s_last;
+        until s_data != 8'hFF;
+      end if
+
+      // ── Step 6: copy match bytes from history ─────────────────────
+      // Async RAM read: hist_rd_data is available in the same cycle
+      // hist_rd_en and hist_rd_addr are driven.  Overlapping matches
+      // (offset < match_len, e.g. run-length encoding) are handled
+      // correctly because wr_ptr_r increments each iteration.
+      if match_len_r > 0
+        for i in 0..match_len_r - 1
+          do
+            hist_rd_en   = true;
+            hist_rd_addr = (wr_ptr_r -% match_off_r.trunc<HIST_BITS>());
+            m_valid      = true;
+            m_data       = hist_rd_data;
+            hist_wr_en   = m_ready;
+            hist_wr_addr = wr_ptr_r;
+            hist_wr_data = hist_rd_data;
+          until m_ready;
+          wr_ptr_r <= (wr_ptr_r + 1).trunc<HIST_BITS>();
+        end for
+      end if
+
+    else
+      done_r <= true;
+    end if
+
+  end thread Decomp
+
+end module Lz4Decomp
