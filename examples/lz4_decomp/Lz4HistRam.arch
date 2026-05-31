@@ -1,0 +1,37 @@
+//! ---
+//! tags: [ram, lz4, history, simple_dual, lossless_compression]
+//! refs:
+//!   - "CAST LZ4SNP — LZ4/Snappy Lossless Decompressor IP"
+//! ---
+//!
+//! Latency-0 (async read) simple-dual-port history ring buffer for
+//! Lz4Decomp.  One write port records each output byte; one read port
+//! resolves back-references combinationally in the same clock cycle.
+
+/// Async-read history RAM for LZ4 decompression.
+///
+/// Parameters:
+///   HIST_BITS — address width; effective depth = 2^HIST_BITS bytes.
+///   HIST_DEPTH — must equal 2^HIST_BITS (kept separate because
+///                const-shift expressions are not yet folded in Vec depth).
+ram Lz4HistRam
+  kind simple_dual;
+  latency 0;
+  param HIST_BITS:  const = 12;
+  param HIST_DEPTH: const = 4096;
+  param T:          type  = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  store
+    buf: Vec<T, HIST_DEPTH>;
+  end store
+  ports rd_port
+    en:   in  Bool;
+    addr: in  UInt<HIST_BITS>;
+    data: out T;
+  end ports rd_port
+  ports wr_port
+    en:   in Bool;
+    addr: in UInt<HIST_BITS>;
+    data: in T;
+  end ports wr_port
+end ram Lz4HistRam
