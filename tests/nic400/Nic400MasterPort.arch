@@ -5,53 +5,48 @@
 // the high MIDX_W bits of the returned slave-side id select which slave's
 // return path drives the master. Symmetric structure for AW/W/B.
 //
-// Per-channel resource locks (ar_ch, r_ch, aw_ch, w_ch, b_ch) serialise
-// the multi-driver write to the shared m.* signals: with N per-slave
-// threads each driving the same master-side handshake outputs, the lock
-// keeps the multi-driver legal even though only one thread is in the
-// body at a time in steady state.
+// OOR (out-of-range) addresses — any address with bits[ADDR_WIDTH-1:REGION_BITS+NS_W] ≠ 0
+// — are routed to `default_s` (Nic400DefaultSlave) which returns DECERR.
+// Valid slave range: 0x0000_0000 – 0x3FFF_FFFF (4 slaves × 256 MB each,
+// with REGION_BITS=28 and NS_W=2).  Addresses ≥ 0x4000_0000 → OOR.
 //
-// W routing simplification (v1): each per-slave thread handles AW → W → B
-// for a transaction as one sequential chunk. The master sees back-pressure
-// (m.aw_ready=0) if a second AW for the same slave arrives before the
-// first completes. Cross-slave concurrency works (different threads),
-// but the same-slave pipeline depth is 1. The locks enforce W-beat
-// ordering when multiple slaves' threads contend.
+// wait 0+ cycle is retired; Mealy-equivalent replacement used throughout:
+//   if not <cond>
+//     wait until <cond>;
+//   end if
 module Nic400MasterPort
-  param I:             const = 0;        // this master's index, 0..NUM_MASTERS-1
+  param I:             const = 0;
   param NUM_SLAVES:    const = 4;
   param ADDR_WIDTH:    const = 32;
   param DATA_WIDTH:    const = 32;
   param STRB_WIDTH:    const = 4;
   param MASTER_ID_W:   const = 3;
-  param SLAVE_ID_W:    const = 5;        // MASTER_ID_W + ceil(log2(NUM_MASTERS))
-  param NS_W:          const = 2;        // ceil(log2(NUM_SLAVES))
+  param SLAVE_ID_W:    const = 5;
+  param NS_W:          const = 2;
   param REGION_BITS:   const = 28;
 
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Async, Low>;
 
-  // System-facing master port (target perspective).
   port m:  target BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH,
                           ID_W=MASTER_ID_W, READ=1, WRITE=1>;
-
-  // Fabric-facing outbound buses, one per slave.
   port outs: initiator Vec<BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH,
-                                  ID_W=SLAVE_ID_W,  READ=1, WRITE=1>, NUM_SLAVES>;
+                                  ID_W=SLAVE_ID_W, READ=1, WRITE=1>, NUM_SLAVES>;
+  port default_s: initiator BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH,
+                                    ID_W=SLAVE_ID_W, READ=1, WRITE=1>;
 
-  // Address decode for AR/AW: top NS_W bits of the REGION_BITS-aligned page.
-  // For 4 slaves: ar_addr[29:28] picks 0..3. For 2 slaves: ar_addr[28] picks 0..1.
   let m_ar_slv: UInt<NS_W> = m.ar_addr[REGION_BITS+NS_W-1:REGION_BITS];
   let m_aw_slv: UInt<NS_W> = m.aw_addr[REGION_BITS+NS_W-1:REGION_BITS];
+  let m_ar_oor: Bool = m.ar_addr[ADDR_WIDTH-1:REGION_BITS+NS_W] != 0;
+  let m_aw_oor: Bool = m.aw_addr[ADDR_WIDTH-1:REGION_BITS+NS_W] != 0;
 
-  // Per-channel arbiters — N per-slave threads contend on shared m.* drives.
   resource ar_ch: mutex<priority>;
   resource r_ch:  mutex<priority>;
   resource aw_ch: mutex<priority>;
   resource w_ch:  mutex<priority>;
   resource b_ch:  mutex<priority>;
 
-  // ── AR forwarding threads — one per slave ──────────────────────────────
+  // ── AR forwarding threads — one per real slave ─────────────────────────
   generate_for j in 0..NUM_SLAVES-1
     thread Ar_j on clk rising, rst low
       default comb
@@ -68,8 +63,8 @@ module Nic400MasterPort
         outs[j].ar_region = 0;
         m.ar_ready      = false;
       end default
-      if not (m.ar_valid and m_ar_slv == j)
-        wait until m.ar_valid and m_ar_slv == j;
+      if not (m.ar_valid and (not m_ar_oor) and m_ar_slv == j)
+        wait until m.ar_valid and (not m_ar_oor) and m_ar_slv == j;
       end if
       lock ar_ch
         do
@@ -90,7 +85,63 @@ module Nic400MasterPort
     end thread Ar_j
   end generate_for
 
-  // ── R return threads — one per slave, serialise via r_ch lock ──────────
+  // ── AR + R thread — OOR → default slave ───────────────────────────────
+  thread Ar_default on clk rising, rst low
+    default comb
+      default_s.ar_valid  = false;
+      default_s.ar_addr   = 0;
+      default_s.ar_id     = 0;
+      default_s.ar_len    = 0;
+      default_s.ar_size   = 0;
+      default_s.ar_burst  = 0;
+      default_s.ar_lock   = false;
+      default_s.ar_cache  = 0;
+      default_s.ar_prot   = 0;
+      default_s.ar_qos    = 0;
+      default_s.ar_region = 0;
+      default_s.r_ready   = false;
+      m.ar_ready          = false;
+      m.r_valid           = false;
+      m.r_data            = 0;
+      m.r_id              = 0;
+      m.r_resp            = 0;
+      m.r_last            = false;
+    end default
+    if not (m.ar_valid and m_ar_oor)
+      wait until m.ar_valid and m_ar_oor;
+    end if
+    lock ar_ch
+      do
+        default_s.ar_valid  = true;
+        default_s.ar_addr   = m.ar_addr;
+        default_s.ar_id     = (I.zext<SLAVE_ID_W>() << MASTER_ID_W) | m.ar_id.zext<SLAVE_ID_W>();
+        default_s.ar_len    = m.ar_len;
+        default_s.ar_size   = m.ar_size;
+        default_s.ar_burst  = m.ar_burst;
+        default_s.ar_lock   = m.ar_lock;
+        default_s.ar_cache  = m.ar_cache;
+        default_s.ar_prot   = m.ar_prot;
+        default_s.ar_qos    = m.ar_qos;
+        default_s.ar_region = m.ar_region;
+        m.ar_ready          = default_s.ar_ready;
+      until default_s.ar_ready;
+    end lock ar_ch
+    if not default_s.r_valid
+      wait until default_s.r_valid;
+    end if
+    lock r_ch
+      do
+        m.r_valid         = true;
+        m.r_data          = default_s.r_data;
+        m.r_id            = default_s.r_id[MASTER_ID_W-1:0];
+        m.r_resp          = default_s.r_resp;
+        m.r_last          = default_s.r_last;
+        default_s.r_ready = m.r_ready;
+      until m.r_ready and m.r_last;
+    end lock r_ch
+  end thread Ar_default
+
+  // ── R return threads — one per real slave ─────────────────────────────
   generate_for j in 0..NUM_SLAVES-1
     thread R_j on clk rising, rst low
       default comb
@@ -117,10 +168,7 @@ module Nic400MasterPort
     end thread R_j
   end generate_for
 
-  // ── AW → W → B threads — one per slave ────────────────────────────────
-  // Each thread handles a complete write transaction targeted at slave j.
-  // The aw_ch / w_ch / b_ch locks serialise multi-driver writes to the
-  // shared m.* signals across the N per-slave threads of this master.
+  // ── AW → W → B threads — one per real slave ───────────────────────────
   generate_for j in 0..NUM_SLAVES-1
     thread AwWb_j on clk rising, rst low
       default comb
@@ -146,9 +194,8 @@ module Nic400MasterPort
         m.b_id     = 0;
         m.b_resp   = 0;
       end default
-      // AW phase: wait for master's AW and address-decode match.
-      if not (m.aw_valid and m_aw_slv == j)
-        wait until m.aw_valid and m_aw_slv == j;
+      if not (m.aw_valid and (not m_aw_oor) and m_aw_slv == j)
+        wait until m.aw_valid and (not m_aw_oor) and m_aw_slv == j;
       end if
       lock aw_ch
         do
@@ -166,7 +213,6 @@ module Nic400MasterPort
           m.aw_ready      = outs[j].aw_ready;
         until outs[j].aw_ready;
       end lock aw_ch
-      // W phase: forward each beat until w_last handshake fires.
       lock w_ch
         do
           outs[j].w_valid = m.w_valid;
@@ -176,10 +222,6 @@ module Nic400MasterPort
           m.w_ready     = outs[j].w_ready;
         until m.w_valid and m.w_last and outs[j].w_ready;
       end lock w_ch
-      // B phase: wait outside b_ch until the slave actually has B valid,
-      // then acquire the lock to forward to master.  Waiting outside the
-      // lock lets a faster slave's AwWb thread win b_ch ahead of a slower
-      // one, enabling out-of-order B delivery within the same master.
       if not outs[j].b_valid
         wait until outs[j].b_valid;
       end if
@@ -193,4 +235,71 @@ module Nic400MasterPort
       end lock b_ch
     end thread AwWb_j
   end generate_for
+
+  // ── AW → W → B thread — OOR → default slave ───────────────────────────
+  thread AwWb_default on clk rising, rst low
+    default comb
+      default_s.aw_valid  = false;
+      default_s.aw_addr   = 0;
+      default_s.aw_id     = 0;
+      default_s.aw_len    = 0;
+      default_s.aw_size   = 0;
+      default_s.aw_burst  = 0;
+      default_s.aw_lock   = false;
+      default_s.aw_cache  = 0;
+      default_s.aw_prot   = 0;
+      default_s.aw_qos    = 0;
+      default_s.aw_region = 0;
+      default_s.w_valid   = false;
+      default_s.w_data    = 0;
+      default_s.w_strb    = 0;
+      default_s.w_last    = false;
+      default_s.b_ready   = false;
+      m.aw_ready = false;
+      m.w_ready  = false;
+      m.b_valid  = false;
+      m.b_id     = 0;
+      m.b_resp   = 0;
+    end default
+    if not (m.aw_valid and m_aw_oor)
+      wait until m.aw_valid and m_aw_oor;
+    end if
+    lock aw_ch
+      do
+        default_s.aw_valid  = true;
+        default_s.aw_addr   = m.aw_addr;
+        default_s.aw_id     = (I.zext<SLAVE_ID_W>() << MASTER_ID_W) | m.aw_id.zext<SLAVE_ID_W>();
+        default_s.aw_len    = m.aw_len;
+        default_s.aw_size   = m.aw_size;
+        default_s.aw_burst  = m.aw_burst;
+        default_s.aw_lock   = m.aw_lock;
+        default_s.aw_cache  = m.aw_cache;
+        default_s.aw_prot   = m.aw_prot;
+        default_s.aw_qos    = m.aw_qos;
+        default_s.aw_region = m.aw_region;
+        m.aw_ready          = default_s.aw_ready;
+      until default_s.aw_ready;
+    end lock aw_ch
+    lock w_ch
+      do
+        default_s.w_valid = m.w_valid;
+        default_s.w_data  = m.w_data;
+        default_s.w_strb  = m.w_strb;
+        default_s.w_last  = m.w_last;
+        m.w_ready         = default_s.w_ready;
+      until m.w_valid and m.w_last and default_s.w_ready;
+    end lock w_ch
+    if not default_s.b_valid
+      wait until default_s.b_valid;
+    end if
+    lock b_ch
+      do
+        m.b_valid          = true;
+        m.b_id             = default_s.b_id[MASTER_ID_W-1:0];
+        m.b_resp           = default_s.b_resp;
+        default_s.b_ready  = m.b_ready;
+      until m.b_ready;
+    end lock b_ch
+  end thread AwWb_default
+
 end module Nic400MasterPort
