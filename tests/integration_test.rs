@@ -11264,6 +11264,29 @@ fn thread_map_smoke_source(module_name: &str) -> String {
     "#)
 }
 
+fn thread_map_control_flow_source(module_name: &str) -> String {
+    format!(r#"
+        module {module_name}
+          port clk:  in Clock<SysDomain>;
+          port rst:  in Reset<Async, Low>;
+          port go:   in Bool;
+          port sel:  in Bool;
+          port ack:  in Bool;
+          port done: out Bool;
+          thread T on clk rising, rst low
+            wait until go;
+            if sel
+              wait until ack;
+            else
+              wait 2 cycle;
+            end if
+            done = 1;
+            wait 1 cycle;
+          end thread T
+        end module {module_name}
+    "#)
+}
+
 #[test]
 fn test_build_emit_thread_map_bare_path() {
     let td = tempfile::tempdir().expect("tempdir");
@@ -11288,6 +11311,7 @@ fn test_build_emit_thread_map_bare_path() {
     assert!(html_out.exists(), "expected bare flag to write {}", html_out.display());
     let html = std::fs::read_to_string(&html_out).expect("read thread map");
     assert!(html.contains("_t0_S0_wait_until"), "expected generated state name in HTML:\n{html}");
+    assert!(html.contains("thread-flow-chart"), "expected flow chart SVG in HTML:\n{html}");
     assert!(html.contains("wait until go"), "expected source line in HTML:\n{html}");
     assert!(html.contains("done = 1"), "expected source assignment in HTML:\n{html}");
 }
@@ -11361,32 +11385,42 @@ fn test_thread_map_metadata_records_dispatch_and_wait_roles() {
     assert!(simple_thread.states.iter().any(|s| s.role == "wait_until" && s.labels.iter().any(|l| l.contains("go"))),
         "expected simple wait_until state labelled with go: {simple_thread:#?}");
 
-    let source = r#"
-        module M
-          port clk:  in Clock<SysDomain>;
-          port rst:  in Reset<Async, Low>;
-          port go:   in Bool;
-          port sel:  in Bool;
-          port ack:  in Bool;
-          port done: out Bool;
-          thread T on clk rising, rst low
-            wait until go;
-            if sel
-              wait until ack;
-            else
-              wait 2 cycle;
-            end if
-            done = 1;
-            wait 1 cycle;
-          end thread T
-        end module M
-    "#;
-    let map = collect_thread_map(source);
+    let source = thread_map_control_flow_source("M");
+    let map = collect_thread_map(&source);
     let thread = &map.modules[0].threads[0];
     assert!(thread.states.iter().any(|s| s.role == "wait_cycles"),
         "expected wait_cycles state: {thread:#?}");
     assert!(thread.states.iter().any(|s| s.role == "dispatch" && s.transitions.iter().any(|t| t.condition.contains("sel"))),
         "expected dispatch state with sel transition: {thread:#?}");
+}
+
+#[test]
+fn test_thread_map_html_renders_control_flow_chart() {
+    let source = thread_map_control_flow_source("Branchy");
+    let map = collect_thread_map(&source);
+    let sources = vec![arch::thread_map::ThreadMapSource {
+        start: 0,
+        end: source.len(),
+        filename: "Branchy.arch".to_string(),
+        source,
+    }];
+    let html = arch::thread_map::render_html(&map, &sources, "Branchy.thread.html");
+    assert!(html.contains("<h2>Thread Flow</h2>"),
+        "expected right pane to be a flow-chart pane:\n{html}");
+    assert!(html.contains("thread-flow-chart"),
+        "expected generated SVG flow chart:\n{html}");
+    assert!(html.contains("flow-edge"),
+        "expected SVG transition edges:\n{html}");
+    assert!(html.contains("marker-end"),
+        "expected arrowheads on flow edges:\n{html}");
+    assert!(html.contains("data-state=\"S"),
+        "expected state nodes in flow chart:\n{html}");
+    assert!(html.contains("dispatch"),
+        "expected branch dispatch state in chart/table:\n{html}");
+    assert!(html.contains("sel"),
+        "expected branch condition label in chart/table:\n{html}");
+    assert!(html.contains("wait until ack"),
+        "expected then-branch wait label in chart/table:\n{html}");
 }
 
 #[test]
