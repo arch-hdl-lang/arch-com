@@ -26,6 +26,28 @@ Better patterns:
 - Use `todo!()` or `unreachable!()` for *intentionally* unreachable code (with
   appropriate runtime panic semantics).
 
+## Proposing enhancements
+
+**Run a novelty check before writing any enhancement proposal into `ideas/`.**
+Before drafting a proposal for a feature/flag/construct, confirm it does not
+already exist:
+
+1. `grep -in "<flag-or-keyword>" doc/COMPILER_STATUS.md` — covers both the
+   "Implemented" table and the numbered roadmap rows (look for `✅` / **DONE**).
+2. `grep -rn "<flag-or-keyword>" src/` — confirms there is no existing
+   implementation.
+3. Search closed PRs/issues for the keyword.
+
+Only write the proposal if all three come back empty. An optional `ideas/`
+PostToolUse hook (`.claude/hooks/novelty_check.sh`, wired up in
+`.claude/settings.json` if present) runs this grep automatically when an
+`ideas/*.md` file is written and surfaces any hits — but it is only a backstop,
+and `.claude/` may be gitignored, so do the check while choosing the idea, not
+after.
+
+(Lesson: `arch sim --wave` was proposed once as "missing" when it was already
+`COMPILER_STATUS.md` row 301, **DONE**. A one-line grep would have caught it.)
+
 ## Project Overview
 
 `arch-com` is a compiler for **ARCH**, a purpose-built hardware description language (HDL) for micro-architecture work. The compiler ingests `.arch` source files and emits deterministic, readable SystemVerilog. The language is explicitly designed to be generated correctly by LLMs from natural-language hardware descriptions.
