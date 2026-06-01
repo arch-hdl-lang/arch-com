@@ -1705,6 +1705,37 @@ fn run_check_multi_opts_with_thread_map(
         ms.report_error(err)
     })?;
 
+    // Dead-skid combinational-feedback lint (issue #245). Runs on the
+    // pre-thread-lowering AST so `ModuleBodyItem::Thread` is still present and
+    // its source-level write/read sets are intact. Emits warnings only (never
+    // errors); suppressed per-module by `pragma allow_dead_skid_feedback;`.
+    for item in &ast.items {
+        if let arch::ast::Item::Module(m) = item {
+            if m.allow_dead_skid_feedback {
+                continue;
+            }
+            for hz in arch::signal_flow::find_dead_skid_hazards(m, &ast) {
+                let (filename, _, local_offset) = ms.locate(hz.read_span.start);
+                eprintln!(
+                    "warning: dead-skid feedback: thread `{}` reads `{}`, a combinational \
+                     function of `{}` that it drives — during dead-skid cycles `{}` falls to its \
+                     default and `{}` may read spuriously (comb path: {}). Read the upstream input \
+                     directly, or add `pragma allow_dead_skid_feedback;` to module `{}` if the \
+                     read-back is intentional. ({}:{})",
+                    hz.thread_name,
+                    hz.read_signal,
+                    hz.driven_signal,
+                    hz.driven_signal,
+                    hz.read_signal,
+                    hz.path.join(" -> "),
+                    m.name.name,
+                    filename,
+                    local_offset,
+                );
+            }
+        }
+    }
+
     // Lower thread blocks to FSM + inst (skipped under --thread-sim parallel,
     // where the new pre-lowering thread sim emitter consumes thread blocks
     // directly via coroutines).

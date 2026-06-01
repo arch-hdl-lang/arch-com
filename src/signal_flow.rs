@@ -317,6 +317,55 @@ pub fn thread_write_set(t: &ThreadBlock) -> HashMap<String, Span> {
     out
 }
 
+/// Collect only the **combinationally-driven** thread writes (`=` /
+/// `CombAssign` and the `default comb` block).  These are the signals subject
+/// to dead-skid collapse: during the compiler-inserted skid sub-states they
+/// fall to their default value.  Registered drives (`<=` / `SeqAssign`,
+/// `ForkTlmAssign`) HOLD across those cycles, so a comb mirror of a register is
+/// stable and must NOT seed the hazard search — including them produces false
+/// positives on the common `reg x_r; comb x = x_r; wait until x;` mirror shape.
+pub fn thread_comb_write_set(t: &ThreadBlock) -> HashMap<String, Span> {
+    let mut out = HashMap::new();
+    collect_thread_comb_stmts(&t.body, &mut out);
+    collect_stmts(&t.default_comb, &mut out);
+    out
+}
+
+fn collect_thread_comb_stmts(stmts: &[ThreadStmt], out: &mut HashMap<String, Span>) {
+    for s in stmts {
+        collect_one_thread_comb_stmt(s, out);
+    }
+}
+
+fn collect_one_thread_comb_stmt(stmt: &ThreadStmt, out: &mut HashMap<String, Span>) {
+    match stmt {
+        ThreadStmt::CombAssign(a) => {
+            if let Some(name) = lhs_base_name(&a.target) {
+                out.entry(name).or_insert(a.span);
+            }
+        }
+        // Registered drives hold during dead-skid — not seeds.
+        ThreadStmt::SeqAssign(_) | ThreadStmt::ForkTlmAssign(_) => {}
+        ThreadStmt::IfElse(ie) => {
+            collect_thread_comb_stmts(&ie.then_stmts, out);
+            collect_thread_comb_stmts(&ie.else_stmts, out);
+        }
+        ThreadStmt::ForkJoin(branches, _) => {
+            for b in branches {
+                collect_thread_comb_stmts(b, out);
+            }
+        }
+        ThreadStmt::For { body, .. } => collect_thread_comb_stmts(body, out),
+        ThreadStmt::Lock { body, .. } => collect_thread_comb_stmts(body, out),
+        ThreadStmt::DoUntil { body, .. } => collect_thread_comb_stmts(body, out),
+        ThreadStmt::WaitUntil(_, _)
+        | ThreadStmt::WaitCycles(_, _)
+        | ThreadStmt::JoinAll(_)
+        | ThreadStmt::Log(_)
+        | ThreadStmt::Return(_, _) => {}
+    }
+}
+
 /// Collect the set of signal names a thread reads (read set), with the span of
 /// the first read of each.  Reads come from RHS values, `wait until` / `do
 /// until` conditions, `if` conditions, loop bounds, and LHS index/slice
@@ -572,7 +621,9 @@ pub fn find_dead_skid_hazards(m: &ModuleDecl, source: &SourceFile) -> Vec<DeadSk
     let mut hazards = Vec::new();
 
     for t in threads {
-        let writes = thread_write_set(t);
+        // Seed only from comb-driven writes: dead-skid collapse affects `=`
+        // drives, not registered `<=` values (which hold across skid cycles).
+        let writes = thread_comb_write_set(t);
         let reads = thread_read_set(t);
         if writes.is_empty() || reads.is_empty() {
             continue;

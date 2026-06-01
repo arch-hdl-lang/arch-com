@@ -19468,6 +19468,73 @@ end module Pure
     assert!(dead_skid_hazards(source, "Pure").is_empty());
 }
 
+/// Negative control (registered mirror): the thread drives a REGISTER (`<=`),
+/// a comb block mirrors it (`active = active_r`), and the thread reads the
+/// mirror.  Registered values hold across dead-skid cycles, so this is NOT a
+/// hazard.  (Mirrors the axi_dma_thread `ThreadMm2s` shape that surfaced the
+/// false-positive during the Stage 2 sweep.)
+#[test]
+fn test_dead_skid_registered_mirror_no_hazard() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module RegMirror
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port go: in Bool;
+  port reg done: out Bool reset rst => false;
+  reg active_r: Bool reset rst => false;
+  wire active: Bool;
+  comb
+    active = active_r;
+  end comb
+  thread Worker on clk rising, rst high
+    active_r <= true;
+    wait until active;
+    done <= true;
+  end thread Worker
+end module RegMirror
+"#;
+    let hz = dead_skid_hazards(source, "RegMirror");
+    assert!(
+        hz.is_empty(),
+        "comb mirror of a registered thread output must NOT be a dead-skid hazard, got {hz:?}"
+    );
+}
+
+/// The `pragma allow_dead_skid_feedback;` suppression knob parses and sets the
+/// module flag the lint consults.
+#[test]
+fn test_pragma_allow_dead_skid_feedback_parses() {
+    let source = r#"
+module M
+  pragma allow_dead_skid_feedback;
+  port a: in Bool;
+  port y: out Bool;
+  comb
+    y = a;
+  end comb
+end module M
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let m = ast
+        .items
+        .iter()
+        .find_map(|it| match it {
+            arch::ast::Item::Module(m) if m.name.name == "M" => Some(m),
+            _ => None,
+        })
+        .expect("module");
+    assert!(
+        m.allow_dead_skid_feedback,
+        "pragma allow_dead_skid_feedback should set the module flag"
+    );
+}
+
 /// Unit: `comb_reachable_from` follows forward edges transitively and excludes
 /// seeds unless reached via a cycle.
 #[test]
