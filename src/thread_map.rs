@@ -192,22 +192,25 @@ pre { margin: 0; overflow: auto; }
 .module:last-child { border-bottom: 0; }
 h3 { margin: 0 0 8px; font-size: 15px; }
 h4 { margin: 12px 0 8px; font-size: 13px; color: #34445d; }
-.flow-wrap { overflow: auto; border: 1px solid #edf1f6; border-radius: 6px; background: #fbfcfe; margin: 8px 0 12px; }
-.thread-flow-chart { display: block; min-width: 620px; width: 100%; height: auto; }
-.flow-edge { fill: none; stroke: #7c8da5; stroke-width: 1.7; }
-.flow-badge { fill: #ffffff; stroke: #7c8da5; stroke-width: 1.2; }
-.flow-badge-text { fill: #33445d; font: 700 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-anchor: middle; dominant-baseline: central; }
-.flow-node { stroke: #aebbd0; stroke-width: 1.2; }
-.flow-node-title { fill: #1f2c3d; font: 700 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.flow-node-role { fill: #5f6f84; font: 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-.flow-node-label { fill: #26364c; font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.flow-legend { padding: 8px 10px 10px; border-top: 1px solid #edf1f6; background: #fff; }
-.flow-legend-title { margin: 0 0 6px; color: #53647c; font-size: 12px; font-weight: 650; }
-.flow-transition { display: grid; grid-template-columns: 26px 70px minmax(0, 1fr); gap: 8px; align-items: start; padding: 5px 0; border-top: 1px solid #f0f3f8; }
-.flow-transition:first-of-type { border-top: 0; }
-.flow-transition .num { border: 1px solid #aebbd0; border-radius: 999px; text-align: center; font: 700 11px/18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #33445d; background: #fff; }
-.flow-transition .route { color: #53647c; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.flow-transition .cond { color: #26364c; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+.flow-wrap { overflow: auto; border: 1px solid #edf1f6; border-radius: 6px; background: #fbfcfe; margin: 8px 0 12px; padding: 12px; }
+.structured-flow { min-width: 520px; }
+.flow-step { position: relative; display: grid; grid-template-columns: 38px minmax(0, 1fr); column-gap: 10px; padding-bottom: 12px; }
+.flow-step::before { content: ""; position: absolute; left: 18px; top: 32px; bottom: 0; border-left: 2px solid #c9d3e2; }
+.flow-step:last-child::before { display: none; }
+.flow-dot { z-index: 1; width: 36px; height: 28px; border-radius: 999px; border: 1px solid #aebbd0; background: #fff; color: #33445d; display: grid; place-items: center; font: 700 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.flow-card { border: 1px solid #aebbd0; border-radius: 7px; padding: 9px 10px; box-shadow: 0 1px 0 rgba(24,32,47,.04); }
+.flow-card.c0 { background: #d7ebff; } .flow-card.c1 { background: #d9f2df; } .flow-card.c2 { background: #ffe6c7; } .flow-card.c3 { background: #eadcff; }
+.flow-card.c4 { background: #d8f3f0; } .flow-card.c5 { background: #ffe0e6; } .flow-card.c6 { background: #edf0b9; } .flow-card.c7 { background: #dde5f8; }
+.flow-card.dispatch { border-style: dashed; }
+.flow-card .title { color: #1f2c3d; font: 700 12px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.flow-card .meta { color: #53647c; font-size: 12px; margin-top: 3px; }
+.flow-card .summary { color: #26364c; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin-top: 5px; }
+.branch-list { margin-top: 8px; border-top: 1px solid rgba(84,100,124,.18); }
+.branch-row { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 8px; padding-top: 6px; color: #26364c; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.branch-row .target { color: #53647c; font-weight: 700; }
+.branch-row.loop .target { color: #8a4f00; }
+.branch-row.jump .target { color: #385a8f; }
+.branch-row .cond { overflow-wrap: anywhere; }
 table { width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 12px; }
 th, td { border-top: 1px solid #edf1f6; padding: 7px 8px; vertical-align: top; text-align: left; overflow-wrap: anywhere; }
 th { color: #53647c; font-size: 12px; font-weight: 650; background: #fbfcfe; }
@@ -371,183 +374,96 @@ fn line_has_hazard(map: &ThreadMap, line_start: usize, line_end: usize) -> bool 
     })
 }
 
-struct FlowEdgeRow {
-    number: usize,
-    from_index: usize,
-    target_index: usize,
-    condition: String,
-}
-
 fn render_thread_flow_chart(out: &mut String, sources: &[ThreadMapSource], thread: &ThreadMapThread) {
-    let width = 760usize;
-    let top = 34usize;
-    let row_h = 104usize;
-    let node_x = 250usize;
-    let node_w = 260usize;
-    let node_h = 68usize;
-    let height = top * 2 + row_h * thread.states.len().max(1);
-
-    out.push_str("<div class=\"flow-wrap\">");
-    out.push_str(&format!(
-        "<svg class=\"thread-flow-chart\" viewBox=\"0 0 {width} {height}\" role=\"img\" aria-label=\"Thread {} flow chart\">",
-        html_escape(&thread.name)
-    ));
-    let marker_id = format!("arrow-t{}", thread.index);
-    out.push_str(&format!(
-        "<defs><marker id=\"{}\" markerWidth=\"8\" markerHeight=\"8\" refX=\"7\" refY=\"4\" orient=\"auto\" markerUnits=\"strokeWidth\"><path d=\"M0,0 L8,4 L0,8 z\" fill=\"#7c8da5\"/></marker></defs>",
-        html_escape(&marker_id)
-    ));
-
-    let mut edge_rows = Vec::new();
-    let mut edge_number = 1usize;
+    out.push_str("<div class=\"flow-wrap\"><div class=\"structured-flow\">");
     for state in &thread.states {
-        let from_y = state_center_y(state.index, top, row_h);
-        for (edge_idx, tr) in state.transitions.iter().enumerate() {
-            if tr.target_index >= thread.states.len() {
-                continue;
-            }
-            let to_y = state_center_y(tr.target_index, top, row_h);
-            render_flow_edge(out, node_x, node_w, node_h, from_y, to_y, state.index, tr.target_index, edge_idx, edge_number, &marker_id);
-            edge_rows.push(FlowEdgeRow {
-                number: edge_number,
-                from_index: state.index,
-                target_index: tr.target_index,
-                condition: tr.condition.clone(),
-            });
-            edge_number += 1;
-        }
-    }
-
-    for state in &thread.states {
-        let y = state_center_y(state.index, top, row_h) - node_h / 2;
         let lines = find_line_range(sources, state.span)
             .map(|(_, a, b)| if a == b { a.to_string() } else { format!("{a}-{b}") })
             .unwrap_or_else(|| "-".to_string());
         out.push_str(&format!(
-            "<g class=\"flow-state\" data-state=\"S{}\"><rect class=\"flow-node c{}\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"6\"/>",
+            "<div class=\"flow-step\" data-state=\"S{}\"><div class=\"flow-dot\">S{}</div><div class=\"flow-card c{} {}\">",
+            state.index,
             state.index,
             state.index % 8,
-            node_x,
-            y,
-            node_w,
-            node_h
+            html_escape(&state.role)
         ));
         out.push_str(&format!(
-            "<text class=\"flow-node-title\" x=\"{}\" y=\"{}\">S{} {}</text>",
-            node_x + 12,
-            y + 20,
+            "<div class=\"title\">S{} {}</div>",
             state.index,
             html_escape(&state.state_name)
         ));
         out.push_str(&format!(
-            "<text class=\"flow-node-role\" x=\"{}\" y=\"{}\">{} - line {}</text>",
-            node_x + 12,
-            y + 38,
+            "<div class=\"meta\">{} - line {}</div>",
             html_escape(&state.role),
             html_escape(&lines)
         ));
-        if let Some(label) = state.labels.first() {
+        if !state.labels.is_empty() {
             out.push_str(&format!(
-                "<text class=\"flow-node-label\" x=\"{}\" y=\"{}\">{}</text>",
-                node_x + 12,
-                y + 56,
-                html_escape(&truncate_label(label, 34))
+                "<div class=\"summary\">{}</div>",
+                html_escape(&state.labels.join("; "))
             ));
         }
-        out.push_str("</g>");
+        if !state.transitions.is_empty() {
+            out.push_str("<div class=\"branch-list\">");
+            for tr in &state.transitions {
+                let class = transition_class(state.index, tr.target_index);
+                out.push_str(&format!(
+                    "<div class=\"branch-row {}\"><span class=\"target\">{}</span><span class=\"cond\">{}</span></div>",
+                    class,
+                    html_escape(&transition_route(state.index, tr.target_index)),
+                    html_escape(&transition_summary(state, tr))
+                ));
+            }
+            out.push_str("</div>");
+        }
+        out.push_str("</div></div>");
     }
-
-    out.push_str("</svg>");
-    render_flow_legend(out, &edge_rows);
     out.push_str("</div>");
 }
 
-fn state_center_y(index: usize, top: usize, row_h: usize) -> usize {
-    top + index * row_h + 34
-}
-
-fn render_flow_edge(
-    out: &mut String,
-    node_x: usize,
-    node_w: usize,
-    node_h: usize,
-    from_y: usize,
-    to_y: usize,
-    from_index: usize,
-    target_index: usize,
-    edge_idx: usize,
-    edge_number: usize,
-    marker_id: &str,
-) {
-    let center_x = node_x + node_w / 2;
-    let right_x = node_x + node_w;
-    if target_index == from_index {
-        let x1 = right_x;
-        let y1 = from_y - node_h / 4;
-        let y2 = from_y + node_h / 4;
-        let x2 = right_x + 58 + edge_idx * 18;
-        out.push_str(&format!(
-            "<path class=\"flow-edge\" marker-end=\"url(#{})\" d=\"M{x1},{y1} C{x2},{y1} {x2},{y2} {x1},{y2}\"/>",
-            html_escape(marker_id)
-        ));
-        render_flow_badge(out, x2 + 10, from_y, edge_number);
-    } else if target_index == from_index + 1 {
-        let y1 = from_y + node_h / 2;
-        let y2 = to_y - node_h / 2;
-        out.push_str(&format!(
-            "<path class=\"flow-edge\" marker-end=\"url(#{})\" d=\"M{center_x},{y1} L{center_x},{y2}\"/>",
-            html_escape(marker_id)
-        ));
-        render_flow_badge(out, center_x + 16, (y1 + y2) / 2, edge_number);
+fn transition_class(from: usize, target: usize) -> &'static str {
+    if target <= from {
+        "loop"
+    } else if target == from + 1 {
+        "fallthrough"
     } else {
-        let x1 = right_x;
-        let x2 = right_x + 64 + edge_idx * 24;
-        let x3 = node_x;
-        let y1 = from_y;
-        let y2 = to_y;
-        out.push_str(&format!(
-            "<path class=\"flow-edge\" marker-end=\"url(#{})\" d=\"M{x1},{y1} C{x2},{y1} {x2},{y2} {x3},{y2}\"/>",
-            html_escape(marker_id)
-        ));
-        render_flow_badge(out, x2 + 10, (y1 + y2) / 2, edge_number);
+        "jump"
     }
 }
 
-fn render_flow_badge(out: &mut String, x: usize, y: usize, edge_number: usize) {
-    out.push_str(&format!(
-        "<circle class=\"flow-badge\" cx=\"{x}\" cy=\"{y}\" r=\"9\"/><text class=\"flow-badge-text\" x=\"{x}\" y=\"{y}\">{edge_number}</text>"
-    ));
+fn transition_route(from: usize, target: usize) -> String {
+    if target <= from {
+        format!("loop S{target}")
+    } else if target == from + 1 {
+        format!("next S{target}")
+    } else {
+        format!("jump S{target}")
+    }
 }
 
-fn render_flow_legend(out: &mut String, edges: &[FlowEdgeRow]) {
-    if edges.is_empty() {
-        return;
+fn transition_summary(state: &ThreadMapState, tr: &ThreadMapTransition) -> String {
+    if tr.condition == "always" {
+        return "continue".to_string();
     }
-    out.push_str("<div class=\"flow-legend\"><div class=\"flow-legend-title\">Transitions</div>");
-    for edge in edges {
-        out.push_str("<div class=\"flow-transition\">");
-        out.push_str(&format!("<span class=\"num\">{}</span>", edge.number));
-        out.push_str(&format!(
-            "<span class=\"route\">S{} → S{}</span>",
-            edge.from_index,
-            edge.target_index
-        ));
-        out.push_str(&format!(
-            "<span class=\"cond\">{}</span>",
-            html_escape(&edge.condition)
-        ));
-        out.push_str("</div>");
+    if tr.condition == "true" {
+        return "join/rejoin".to_string();
     }
-    out.push_str("</div>");
-}
-
-fn truncate_label(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
+    if state.role == "dispatch" && state.transitions.len() == 2 {
+        if tr.condition.starts_with("!(") {
+            return "else".to_string();
+        }
+        return "then".to_string();
     }
-    let mut out = s.chars().take(max_chars.saturating_sub(3)).collect::<String>();
-    out.push_str("...");
-    out
+    if tr.target_index <= state.index {
+        if tr.target_index == 0 {
+            return "exit thread iteration".to_string();
+        }
+        return "repeat loop".to_string();
+    }
+    if tr.target_index > state.index + 1 {
+        return "branch".to_string();
+    }
+    tr.condition.clone()
 }
 
 fn source_has_map(map: &ThreadMap, src: &ThreadMapSource) -> bool {
