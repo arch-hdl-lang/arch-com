@@ -2896,6 +2896,7 @@ fn lower_module_threads(
                 index: ti,
                 span: t.span,
                 states,
+                hazards: Vec::new(),
             });
         }
 

@@ -19504,6 +19504,81 @@ end module RegMirror
     );
 }
 
+/// Thread-map HTML overlay: a thread carrying a dead-skid hazard renders the
+/// ⚠ badge table, the escaped comb path, and highlights the read source line.
+#[test]
+fn test_thread_map_html_renders_hazard_overlay() {
+    use arch::lexer::Span;
+    use arch::thread_map::*;
+    let src = ThreadMapSource {
+        start: 0,
+        end: 18,
+        filename: "f.arch".into(),
+        source: "line1\nline2\nline3\n".into(),
+    };
+    let map = ThreadMap {
+        modules: vec![ThreadMapModule {
+            module_name: "Top".into(),
+            generated_module_name: "_Top_threads".into(),
+            span: Span::new(0, 18),
+            threads: vec![ThreadMapThread {
+                name: "Worker".into(),
+                index: 0,
+                span: Span::new(0, 18),
+                states: vec![],
+                hazards: vec![CombFeedbackHazard {
+                    read_signal: "is_zero_w".into(),
+                    driven_signal: "a_drv".into(),
+                    path_summary: "a_drv -> is_zero_w".into(),
+                    read_span: Span::new(7, 10), // inside "line2"
+                }],
+            }],
+        }],
+    };
+    let html = render_html(&map, &[src], "t");
+    assert!(
+        html.contains("⚠ dead-skid comb feedback"),
+        "expected the hazard badge table"
+    );
+    assert!(
+        html.contains("a_drv -&gt; is_zero_w"),
+        "expected the escaped comb path"
+    );
+    assert!(
+        html.contains("src-line hazard"),
+        "expected the read source line to be highlighted"
+    );
+}
+
+/// A clean thread (no hazards) renders no badge and no highlight.
+#[test]
+fn test_thread_map_html_no_hazard_no_overlay() {
+    use arch::lexer::Span;
+    use arch::thread_map::*;
+    let map = ThreadMap {
+        modules: vec![ThreadMapModule {
+            module_name: "Top".into(),
+            generated_module_name: "_Top_threads".into(),
+            span: Span::new(0, 10),
+            threads: vec![ThreadMapThread {
+                name: "W".into(),
+                index: 0,
+                span: Span::new(0, 10),
+                states: vec![],
+                hazards: vec![],
+            }],
+        }],
+    };
+    let html = render_html(&map, &[], "t");
+    // Note: the CSS block always contains the literal "⚠ dead-skid read"
+    // (source-line annotation rule), so match the table-specific header.
+    assert!(
+        !html.contains("⚠ dead-skid comb feedback"),
+        "clean thread must not render a hazard badge"
+    );
+    assert!(!html.contains("class=\"src-line hazard\""));
+}
+
 /// The `pragma allow_dead_skid_feedback;` suppression knob parses and sets the
 /// module flag the lint consults.
 #[test]
