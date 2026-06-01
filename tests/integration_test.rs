@@ -18432,6 +18432,61 @@ fn test_sim_nested_vec_reg_round_trips_all_cells() {
 }
 
 #[test]
+fn test_sim_vec_reg_forwarded_to_thread_inst_uses_reg_storage() {
+    // Regression: a module that contains BOTH threads AND a module-scope
+    // `Vec<T, N>` reg lowers the threads into an `_inst__threads`
+    // sub-instance; the parent forwards each Vec-reg element into the
+    // thread's flattened scalar inputs. The forwarding path used to
+    // hardcode the `_let_` (wire) prefix — emitting `_inst__threads.foo_0
+    // = _let_foo[0];` — but a Vec *reg* stores under `_foo[0]`, so the
+    // generated C++ referenced an undeclared `_let_foo` and failed to
+    // compile. Fix: resolve the prefix via `vec_storage_prefix` (reg → `_`,
+    // wire/let → `_let_`, inst-output → ``).
+    let src = r#"
+module VecRegThread
+  param N: const = 2;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port go:  in Bool;
+  port done: out Bool;
+
+  reg tag: Vec<UInt<8>, N> reset rst => 0;
+
+  seq on clk rising
+    for i in 0..N-1
+      if go
+        tag[i] <= 7;
+      end if
+    end for
+  end seq
+
+  thread Worker on clk rising, rst low
+    default comb
+      done = false;
+    end default
+    if not go
+      wait until go;
+    end if
+    do
+      done = (tag[0] == 7);
+    until tag[0] == 7;
+  end thread Worker
+end module VecRegThread
+"#;
+    let h = compile_to_sim_h(src, false);
+    // The forwarding must use reg storage `_tag[`, never the wire form.
+    assert!(
+        !h.contains("_let_tag["),
+        "Vec reg forwarded to thread inst must not use `_let_` (wire) prefix:\n{h}"
+    );
+    assert!(
+        h.contains("_inst__threads.tag_0 = _tag[0]")
+            || h.contains("_inst__threads.tag_0  = _tag[0]"),
+        "expected Vec reg forwarded as `_tag[0]` into thread inst:\n{h}"
+    );
+}
+
+#[test]
 fn test_native_sim_vec_inst_output_wire_feeds_indexed_let() {
     // Regression for arch-com#437: a sub-instance Vec output connected to a
     // declared Vec wire must update the wire's `_let_` storage, because parent

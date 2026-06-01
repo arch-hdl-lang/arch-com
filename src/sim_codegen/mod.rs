@@ -6223,8 +6223,9 @@ impl<'a> SimCodegen<'a> {
                         }
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
+                                let _vec_pfx = vec_storage_prefix(src_name.as_str(), &reg_names, &let_names, &inst_out);
                                 for i in 0..n {
-                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = _let_{src_name}[{i}];\n",
+                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = {_vec_pfx}{src_name}[{i}];\n",
                                         inst.name.name, conn.port_name.name));
                                 }
                                 continue;
@@ -6273,8 +6274,9 @@ impl<'a> SimCodegen<'a> {
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             // Vec wire/reg → inst Vec port: expand element-by-element
                             if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
+                                let _vec_pfx = vec_storage_prefix(src_name.as_str(), &reg_names, &let_names, &inst_out);
                                 for i in 0..n {
-                                    cpp.push_str(&format!("    _inst_{}.{}_{i} = _let_{src_name}[{i}];\n",
+                                    cpp.push_str(&format!("    _inst_{}.{}_{i} = {_vec_pfx}{src_name}[{i}];\n",
                                         inst.name.name, conn.port_name.name));
                                 }
                                 continue;
@@ -6404,8 +6406,9 @@ impl<'a> SimCodegen<'a> {
                         }
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
+                                let _vec_pfx = vec_storage_prefix(src_name.as_str(), &reg_names, &let_names, &inst_out);
                                 for i in 0..n {
-                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = _let_{src_name}[{i}];\n",
+                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = {_vec_pfx}{src_name}[{i}];\n",
                                         inst.name.name, conn.port_name.name));
                                 }
                                 continue;
@@ -6453,8 +6456,9 @@ impl<'a> SimCodegen<'a> {
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             // Vec wire/reg → inst Vec port: expand element-by-element
                             if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
+                                let _vec_pfx = vec_storage_prefix(src_name.as_str(), &reg_names, &let_names, &inst_out);
                                 for i in 0..n {
-                                    cpp.push_str(&format!("    _inst_{}.{}_{i} = _let_{src_name}[{i}];\n",
+                                    cpp.push_str(&format!("    _inst_{}.{}_{i} = {_vec_pfx}{src_name}[{i}];\n",
                                         inst.name.name, conn.port_name.name));
                                 }
                                 continue;
@@ -7252,8 +7256,9 @@ impl<'a> SimCodegen<'a> {
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             // Vec wire/reg → inst Vec port: expand element-by-element
                             if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
+                                let _vec_pfx = vec_storage_prefix(src_name.as_str(), &reg_names, &let_names, &inst_out);
                                 for i in 0..n {
-                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = _let_{src_name}[{i}];\n",
+                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = {_vec_pfx}{src_name}[{i}];\n",
                                         inst.name.name, conn.port_name.name));
                                 }
                                 continue;
