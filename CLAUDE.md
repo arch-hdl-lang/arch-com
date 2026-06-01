@@ -2,6 +2,32 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## IP build jobs — compiler provenance is mandatory
+
+**Any IP build job in this repo MUST produce its SystemVerilog with the `arch`
+compiler. Never hand-write or hand-port the `.sv`.**
+
+The deliverable for an IP is the `.arch` source *plus* its compiler-emitted
+output, committed side by side (e.g. `examples/rom_lut.arch` +
+`examples/rom_lut.sv`). To generate the `.sv`:
+
+```bash
+arch build examples/<ip>/<Module>.arch     # emits <Module>.sv next to the source
+arch check examples/<ip>/<Module>.arch     # type-check first if iterating
+```
+
+A hand-written `.sv` is not an `arch` artifact: it doesn't prove the `.arch`
+source compiles, it drifts from the source on every edit, and it defeats the
+whole point of verifying the *generated* design. If the job produces a `.sv`
+that did not come out of `arch build`, the job is incomplete — build it, commit
+the real output, and (if the SV changed) re-run the relevant `arch sim` test
+before declaring done.
+
+Downstream, `harc-com` vendors these compiler-emitted `.sv` files into
+`tests/dut/` via its `tests/dut/refresh.sh`; that script copies from this repo's
+`arch build` output, so the chain only holds if the `.sv` here is genuinely
+compiler-generated.
+
 ## Commit conventions
 
 **Do not add `Co-Authored-By:` trailers for AI agents** (Claude, Copilot, etc.)
