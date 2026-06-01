@@ -195,11 +195,19 @@ h4 { margin: 12px 0 8px; font-size: 13px; color: #34445d; }
 .flow-wrap { overflow: auto; border: 1px solid #edf1f6; border-radius: 6px; background: #fbfcfe; margin: 8px 0 12px; }
 .thread-flow-chart { display: block; min-width: 620px; width: 100%; height: auto; }
 .flow-edge { fill: none; stroke: #7c8da5; stroke-width: 1.7; }
-.flow-edge-label { fill: #3e5069; font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.flow-badge { fill: #ffffff; stroke: #7c8da5; stroke-width: 1.2; }
+.flow-badge-text { fill: #33445d; font: 700 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-anchor: middle; dominant-baseline: central; }
 .flow-node { stroke: #aebbd0; stroke-width: 1.2; }
 .flow-node-title { fill: #1f2c3d; font: 700 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .flow-node-role { fill: #5f6f84; font: 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 .flow-node-label { fill: #26364c; font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.flow-legend { padding: 8px 10px 10px; border-top: 1px solid #edf1f6; background: #fff; }
+.flow-legend-title { margin: 0 0 6px; color: #53647c; font-size: 12px; font-weight: 650; }
+.flow-transition { display: grid; grid-template-columns: 26px 70px minmax(0, 1fr); gap: 8px; align-items: start; padding: 5px 0; border-top: 1px solid #f0f3f8; }
+.flow-transition:first-of-type { border-top: 0; }
+.flow-transition .num { border: 1px solid #aebbd0; border-radius: 999px; text-align: center; font: 700 11px/18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #33445d; background: #fff; }
+.flow-transition .route { color: #53647c; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.flow-transition .cond { color: #26364c; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
 table { width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 12px; }
 th, td { border-top: 1px solid #edf1f6; padding: 7px 8px; vertical-align: top; text-align: left; overflow-wrap: anywhere; }
 th { color: #53647c; font-size: 12px; font-weight: 650; background: #fbfcfe; }
@@ -363,6 +371,13 @@ fn line_has_hazard(map: &ThreadMap, line_start: usize, line_end: usize) -> bool 
     })
 }
 
+struct FlowEdgeRow {
+    number: usize,
+    from_index: usize,
+    target_index: usize,
+    condition: String,
+}
+
 fn render_thread_flow_chart(out: &mut String, sources: &[ThreadMapSource], thread: &ThreadMapThread) {
     let width = 760usize;
     let top = 34usize;
@@ -383,6 +398,8 @@ fn render_thread_flow_chart(out: &mut String, sources: &[ThreadMapSource], threa
         html_escape(&marker_id)
     ));
 
+    let mut edge_rows = Vec::new();
+    let mut edge_number = 1usize;
     for state in &thread.states {
         let from_y = state_center_y(state.index, top, row_h);
         for (edge_idx, tr) in state.transitions.iter().enumerate() {
@@ -390,7 +407,14 @@ fn render_thread_flow_chart(out: &mut String, sources: &[ThreadMapSource], threa
                 continue;
             }
             let to_y = state_center_y(tr.target_index, top, row_h);
-            render_flow_edge(out, node_x, node_w, node_h, from_y, to_y, state.index, tr, edge_idx, &marker_id);
+            render_flow_edge(out, node_x, node_w, node_h, from_y, to_y, state.index, tr.target_index, edge_idx, edge_number, &marker_id);
+            edge_rows.push(FlowEdgeRow {
+                number: edge_number,
+                from_index: state.index,
+                target_index: tr.target_index,
+                condition: tr.condition.clone(),
+            });
+            edge_number += 1;
         }
     }
 
@@ -433,7 +457,9 @@ fn render_thread_flow_chart(out: &mut String, sources: &[ThreadMapSource], threa
         out.push_str("</g>");
     }
 
-    out.push_str("</svg></div>");
+    out.push_str("</svg>");
+    render_flow_legend(out, &edge_rows);
+    out.push_str("</div>");
 }
 
 fn state_center_y(index: usize, top: usize, row_h: usize) -> usize {
@@ -448,14 +474,14 @@ fn render_flow_edge(
     from_y: usize,
     to_y: usize,
     from_index: usize,
-    tr: &ThreadMapTransition,
+    target_index: usize,
     edge_idx: usize,
+    edge_number: usize,
     marker_id: &str,
 ) {
     let center_x = node_x + node_w / 2;
     let right_x = node_x + node_w;
-    let label = html_escape(&truncate_label(&tr.condition, 26));
-    if tr.target_index == from_index {
+    if target_index == from_index {
         let x1 = right_x;
         let y1 = from_y - node_h / 4;
         let y2 = from_y + node_h / 4;
@@ -464,25 +490,15 @@ fn render_flow_edge(
             "<path class=\"flow-edge\" marker-end=\"url(#{})\" d=\"M{x1},{y1} C{x2},{y1} {x2},{y2} {x1},{y2}\"/>",
             html_escape(marker_id)
         ));
-        out.push_str(&format!(
-            "<text class=\"flow-edge-label\" x=\"{}\" y=\"{}\">{}</text>",
-            x2 + 4,
-            from_y + 4,
-            label
-        ));
-    } else if tr.target_index == from_index + 1 {
+        render_flow_badge(out, x2 + 10, from_y, edge_number);
+    } else if target_index == from_index + 1 {
         let y1 = from_y + node_h / 2;
         let y2 = to_y - node_h / 2;
         out.push_str(&format!(
             "<path class=\"flow-edge\" marker-end=\"url(#{})\" d=\"M{center_x},{y1} L{center_x},{y2}\"/>",
             html_escape(marker_id)
         ));
-        out.push_str(&format!(
-            "<text class=\"flow-edge-label\" x=\"{}\" y=\"{}\">{}</text>",
-            center_x + 12,
-            (y1 + y2) / 2 - 4,
-            label
-        ));
+        render_flow_badge(out, center_x + 16, (y1 + y2) / 2, edge_number);
     } else {
         let x1 = right_x;
         let x2 = right_x + 64 + edge_idx * 24;
@@ -493,13 +509,36 @@ fn render_flow_edge(
             "<path class=\"flow-edge\" marker-end=\"url(#{})\" d=\"M{x1},{y1} C{x2},{y1} {x2},{y2} {x3},{y2}\"/>",
             html_escape(marker_id)
         ));
-        out.push_str(&format!(
-            "<text class=\"flow-edge-label\" x=\"{}\" y=\"{}\">{}</text>",
-            x2 + 4,
-            (y1 + y2) / 2,
-            label
-        ));
+        render_flow_badge(out, x2 + 10, (y1 + y2) / 2, edge_number);
     }
+}
+
+fn render_flow_badge(out: &mut String, x: usize, y: usize, edge_number: usize) {
+    out.push_str(&format!(
+        "<circle class=\"flow-badge\" cx=\"{x}\" cy=\"{y}\" r=\"9\"/><text class=\"flow-badge-text\" x=\"{x}\" y=\"{y}\">{edge_number}</text>"
+    ));
+}
+
+fn render_flow_legend(out: &mut String, edges: &[FlowEdgeRow]) {
+    if edges.is_empty() {
+        return;
+    }
+    out.push_str("<div class=\"flow-legend\"><div class=\"flow-legend-title\">Transitions</div>");
+    for edge in edges {
+        out.push_str("<div class=\"flow-transition\">");
+        out.push_str(&format!("<span class=\"num\">{}</span>", edge.number));
+        out.push_str(&format!(
+            "<span class=\"route\">S{} → S{}</span>",
+            edge.from_index,
+            edge.target_index
+        ));
+        out.push_str(&format!(
+            "<span class=\"cond\">{}</span>",
+            html_escape(&edge.condition)
+        ));
+        out.push_str("</div>");
+    }
+    out.push_str("</div>");
 }
 
 fn truncate_label(s: &str, max_chars: usize) -> String {

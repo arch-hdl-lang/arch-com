@@ -11413,6 +11413,12 @@ fn test_thread_map_html_renders_control_flow_chart() {
         "expected SVG transition edges:\n{html}");
     assert!(html.contains("marker-end"),
         "expected arrowheads on flow edges:\n{html}");
+    assert!(html.contains("flow-badge"),
+        "expected numbered edge badges instead of inline condition text:\n{html}");
+    assert!(html.contains("flow-legend"),
+        "expected wrapped transition legend for edge conditions:\n{html}");
+    assert!(!html.contains("flow-edge-label"),
+        "edge conditions should not be drawn inline over the SVG paths:\n{html}");
     assert!(html.contains("data-state=\"S"),
         "expected state nodes in flow chart:\n{html}");
     assert!(html.contains("dispatch"),
