@@ -11424,6 +11424,35 @@ fn test_thread_map_html_renders_control_flow_chart() {
 }
 
 #[test]
+fn test_thread_map_source_bands_anchor_broad_control_spans() {
+    let source = include_str!("regression/issues/nested_if_lock_outer_for_continuation/IfLockOuterForRepro.arch");
+    let map = collect_thread_map(source);
+    let sources = vec![arch::thread_map::ThreadMapSource {
+        start: 0,
+        end: source.len(),
+        filename: "IfLockOuterForRepro.arch".to_string(),
+        source: source.to_string(),
+    }];
+    let html = arch::thread_map::render_html(&map, &sources, "IfLockOuterForRepro.thread.html");
+    let row_for_line = |line: usize| {
+        let needle = format!("<span class=\"ln\">{line}</span>");
+        let pos = html.find(&needle).unwrap_or_else(|| panic!("missing source line {line}"));
+        let row_start = html[..pos].rfind("<div class=\"src-line\">").unwrap();
+        let row_end = html[pos..].find("</div>").map(|off| pos + off).unwrap();
+        &html[row_start..row_end]
+    };
+
+    assert!(row_for_line(30).contains(">S0<"),
+        "wait-until state should mark the wait line:\n{}", row_for_line(30));
+    assert!(row_for_line(32).contains(">S3<") || row_for_line(32).contains(">S4<"),
+        "broad loop/dispatch states should anchor to the loop header:\n{}", row_for_line(32));
+    assert!(!row_for_line(33).contains("class=\"band "),
+        "comment lines inside a broad span should not be painted:\n{}", row_for_line(33));
+    assert!(!row_for_line(39).contains("class=\"band "),
+        "nested comment lines inside a broad span should not be painted:\n{}", row_for_line(39));
+}
+
+#[test]
 fn test_thread_map_spans_ignore_generated_counter_loads() {
     let source = include_str!("../tests/thread/wait_cycles.arch");
     let map = collect_thread_map(source);

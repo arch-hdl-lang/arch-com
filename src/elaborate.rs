@@ -4478,6 +4478,13 @@ fn merge_span(acc: &mut Option<Span>, span: Span) {
 }
 
 fn thread_fsm_state_span(state: &ThreadFsmState, fallback: Span) -> Span {
+    if let Some(count) = &state.wait_cycles {
+        return count.span;
+    }
+    if let Some(cond) = &state.transition_cond {
+        return cond.span;
+    }
+
     let mut span = None;
     for stmt in &state.comb_stmts {
         merge_span(&mut span, crate::thread_map::stmt_span(stmt));
@@ -4485,16 +4492,19 @@ fn thread_fsm_state_span(state: &ThreadFsmState, fallback: Span) -> Span {
     for stmt in &state.seq_stmts {
         merge_span(&mut span, crate::thread_map::stmt_span(stmt));
     }
-    if let Some(cond) = &state.transition_cond {
-        merge_span(&mut span, cond.span);
+    if let Some(span) = span {
+        return span;
     }
-    if let Some(count) = &state.wait_cycles {
-        merge_span(&mut span, count.span);
+
+    if !state.multi_transitions.is_empty() {
+        let mut span = None;
+        for (cond, _) in &state.multi_transitions {
+            merge_span(&mut span, cond.span);
+        }
+        return span.unwrap_or(fallback);
     }
-    for (cond, _) in &state.multi_transitions {
-        merge_span(&mut span, cond.span);
-    }
-    span.unwrap_or(fallback)
+
+    fallback
 }
 
 fn thread_map_state_labels(state: &ThreadFsmState) -> Vec<String> {

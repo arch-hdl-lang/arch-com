@@ -326,7 +326,7 @@ fn render_source_file(out: &mut String, map: &ThreadMap, src: &ThreadMapSource) 
         let line_start = offset;
         let line_end = offset + raw_line.len().max(1);
         offset += raw_line.len();
-        let states = states_overlapping_line(map, src, line_start, line_end);
+        let states = states_overlapping_line(map, src, line_start, line_end, line_no, line_text);
         let hazard = line_has_hazard(map, line_start, line_end);
         out.push_str(if hazard {
             "<div class=\"src-line hazard\">"
@@ -528,21 +528,67 @@ fn states_overlapping_line<'a>(
     src: &ThreadMapSource,
     line_start: usize,
     line_end: usize,
+    line_no: usize,
+    line_text: &str,
 ) -> Vec<&'a ThreadMapState> {
     let mut states = Vec::new();
+    let trimmed = line_text.trim_start();
+    if trimmed.is_empty() || trimmed.starts_with("//") {
+        return states;
+    }
     for module in &map.modules {
         if !span_overlaps(module.span, src.start, src.end) {
             continue;
         }
         for thread in &module.threads {
             for state in &thread.states {
-                if span_overlaps(state.span, line_start, line_end) {
+                if state_marks_line(state, src, line_start, line_end, line_no) {
                     states.push(state);
                 }
             }
         }
     }
     states
+}
+
+fn state_marks_line(
+    state: &ThreadMapState,
+    src: &ThreadMapSource,
+    line_start: usize,
+    line_end: usize,
+    line_no: usize,
+) -> bool {
+    if !span_overlaps(state.span, line_start, line_end) {
+        return false;
+    }
+    let Some((start_line, end_line)) = line_range_in_source(src, state.span) else {
+        return true;
+    };
+    if start_line == end_line {
+        return true;
+    }
+    anchor_line_for_span(src, state.span).map_or(line_no == start_line, |anchor| line_no == anchor)
+}
+
+fn line_range_in_source(src: &ThreadMapSource, span: Span) -> Option<(usize, usize)> {
+    if span.start < src.start || span.start > src.end {
+        return None;
+    }
+    let start = line_for_offset(&src.source, span.start.saturating_sub(src.start));
+    let end = line_for_offset(&src.source, span.end.saturating_sub(src.start));
+    Some((start, end.max(start)))
+}
+
+fn anchor_line_for_span(src: &ThreadMapSource, span: Span) -> Option<usize> {
+    let (start_line, end_line) = line_range_in_source(src, span)?;
+    for line_no in start_line..=end_line {
+        let text = src.source.lines().nth(line_no.saturating_sub(1)).unwrap_or("");
+        let trimmed = text.trim_start();
+        if !trimmed.is_empty() && !trimmed.starts_with("//") {
+            return Some(line_no);
+        }
+    }
+    Some(start_line)
 }
 
 fn find_line_range(sources: &[ThreadMapSource], span: Span) -> Option<(&str, usize, usize)> {
