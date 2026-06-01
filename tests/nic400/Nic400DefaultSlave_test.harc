@@ -1,0 +1,273 @@
+// HARC testbench: Nic400Fabric default-slave DECERR responder.
+//
+// Closes the gap-tracker row "Decode-error (DECERR) response on unmatched
+// address" (doc/nic400_interconnect_spec.md §16.1, TRM §2.2.1).
+//
+// Run with:
+//   harc sim --dut tests/nic400/BusAxi4.arch \
+//             tests/nic400/Nic400DefaultSlave.arch \
+//             tests/nic400/Nic400Fabric.arch \
+//             tests/nic400/Nic400MasterPort.arch \
+//             tests/nic400/Nic400SlavePort.arch \
+//             tests/nic400/Nic400DefaultSlave_test.harc \
+//             --top Nic400Fabric
+//
+// Address map (NS_W=2, REGION_BITS=28):
+//   0x0000_0000–0x3FFF_FFFF → slaves 0..3  (valid)
+//   addr[31:30] != 0        → OUT OF RANGE → default slave → DECERR
+//
+// Scenarios:
+//   S1. OOR read:  M0 issues AR with addr=0x8000_0000 (bit31 set → OOR).
+//       Expect RRESP=DECERR (0b11), RLAST=1, R-id echoes the AR-id.
+//   S2. OOR write: M1 issues AW+W with addr=0xC000_0000 (OOR).
+//       Expect BRESP=DECERR (0b11), B-id echoes the AW-id.
+//   S3. Valid read still works (regression): M2 → slave2 (0x2000_0000),
+//       confirms the OOR path didn't break normal decode.
+
+testbench Nic400DefaultSlaveTb
+    dut : Nic400Fabric
+end testbench Nic400DefaultSlaveTb
+
+impl Nic400DefaultSlaveTest for Nic400DefaultSlaveTb
+    run
+        log(info, "Nic400Fabric default-slave DECERR test")
+
+        // ── Reset ────────────────────────────────────────────────────────
+        dut.rst           = 0
+        dut.m_ar_valid[0] = 0
+        dut.m_ar_valid[1] = 0
+        dut.m_ar_valid[2] = 0
+        dut.m_ar_addr[0]  = 0
+        dut.m_ar_addr[1]  = 0
+        dut.m_ar_addr[2]  = 0
+        dut.m_ar_id[0]    = 0
+        dut.m_ar_id[1]    = 0
+        dut.m_ar_id[2]    = 0
+        dut.m_ar_len[0]   = 0
+        dut.m_ar_len[1]   = 0
+        dut.m_ar_len[2]   = 0
+        dut.m_ar_size[0]  = 0
+        dut.m_ar_size[1]  = 0
+        dut.m_ar_size[2]  = 0
+        dut.m_ar_burst[0] = 0
+        dut.m_ar_burst[1] = 0
+        dut.m_ar_burst[2] = 0
+        dut.m_r_ready[0]  = 0
+        dut.m_r_ready[1]  = 0
+        dut.m_r_ready[2]  = 0
+        dut.m_aw_valid[0] = 0
+        dut.m_aw_valid[1] = 0
+        dut.m_aw_valid[2] = 0
+        dut.m_aw_addr[0]  = 0
+        dut.m_aw_addr[1]  = 0
+        dut.m_aw_addr[2]  = 0
+        dut.m_aw_id[0]    = 0
+        dut.m_aw_id[1]    = 0
+        dut.m_aw_id[2]    = 0
+        dut.m_aw_len[0]   = 0
+        dut.m_aw_len[1]   = 0
+        dut.m_aw_len[2]   = 0
+        dut.m_aw_size[0]  = 0
+        dut.m_aw_size[1]  = 0
+        dut.m_aw_size[2]  = 0
+        dut.m_aw_burst[0] = 0
+        dut.m_aw_burst[1] = 0
+        dut.m_aw_burst[2] = 0
+        dut.m_w_valid[0]  = 0
+        dut.m_w_valid[1]  = 0
+        dut.m_w_valid[2]  = 0
+        dut.m_w_data[0]   = 0
+        dut.m_w_data[1]   = 0
+        dut.m_w_data[2]   = 0
+        dut.m_w_strb[0]   = 0
+        dut.m_w_strb[1]   = 0
+        dut.m_w_strb[2]   = 0
+        dut.m_w_last[0]   = 0
+        dut.m_w_last[1]   = 0
+        dut.m_w_last[2]   = 0
+        dut.m_b_ready[0]  = 0
+        dut.m_b_ready[1]  = 0
+        dut.m_b_ready[2]  = 0
+        dut.s_ar_ready[0] = 0
+        dut.s_ar_ready[1] = 0
+        dut.s_ar_ready[2] = 0
+        dut.s_ar_ready[3] = 0
+        dut.s_r_valid[0]  = 0
+        dut.s_r_valid[1]  = 0
+        dut.s_r_valid[2]  = 0
+        dut.s_r_valid[3]  = 0
+        dut.s_r_data[0]   = 0
+        dut.s_r_data[1]   = 0
+        dut.s_r_data[2]   = 0
+        dut.s_r_data[3]   = 0
+        dut.s_r_id[0]     = 0
+        dut.s_r_id[1]     = 0
+        dut.s_r_id[2]     = 0
+        dut.s_r_id[3]     = 0
+        dut.s_r_resp[0]   = 0
+        dut.s_r_resp[1]   = 0
+        dut.s_r_resp[2]   = 0
+        dut.s_r_resp[3]   = 0
+        dut.s_r_last[0]   = 0
+        dut.s_r_last[1]   = 0
+        dut.s_r_last[2]   = 0
+        dut.s_r_last[3]   = 0
+        dut.s_aw_ready[0] = 0
+        dut.s_aw_ready[1] = 0
+        dut.s_aw_ready[2] = 0
+        dut.s_aw_ready[3] = 0
+        dut.s_w_ready[0]  = 0
+        dut.s_w_ready[1]  = 0
+        dut.s_w_ready[2]  = 0
+        dut.s_w_ready[3]  = 0
+        dut.s_b_valid[0]  = 0
+        dut.s_b_valid[1]  = 0
+        dut.s_b_valid[2]  = 0
+        dut.s_b_valid[3]  = 0
+        dut.s_b_id[0]     = 0
+        dut.s_b_id[1]     = 0
+        dut.s_b_id[2]     = 0
+        dut.s_b_id[3]     = 0
+        dut.s_b_resp[0]   = 0
+        dut.s_b_resp[1]   = 0
+        dut.s_b_resp[2]   = 0
+        dut.s_b_resp[3]   = 0
+        wait 4 cycles
+        dut.rst = 1
+        wait 3 cycles
+
+        // ── S1: OOR read → DECERR ─────────────────────────────────────────
+        // M0 issues AR to 0x8000_0000 (bit31 set → out of range).
+        dut.m_ar_valid[0] = 1
+        dut.m_ar_addr[0]  = 0x80000000
+        dut.m_ar_id[0]    = 5
+        dut.m_ar_size[0]  = 2
+        dut.m_ar_burst[0] = 1
+        dut.m_ar_len[0]   = 0
+        dut.m_r_ready[0]  = 1
+
+        let s1_resp : uint<32> = 99
+        let s1_id   : uint<32> = 99
+        let s1_last : uint<32> = 99
+        let s1_done : uint<32> = 0
+
+        for _ in 0 .. 30
+            wait 1 cycle
+            // Drop ar_valid once the AR has been accepted by the default slave.
+            if dut.m_ar_ready[0] == 1
+                dut.m_ar_valid[0] = 0
+            end if
+            if s1_done == 0 && dut.m_r_valid[0] == 1
+                s1_resp = dut.m_r_resp[0]
+                s1_id   = (dut.m_r_id[0] & 7)
+                s1_last = dut.m_r_last[0]
+                s1_done = 1
+            end if
+        end for
+
+        assert s1_done == 1
+            else fail("S1: OOR read got no R response")
+        assert s1_resp == 3
+            else fail("S1: OOR read RRESP=${s1_resp} (expected 3=DECERR)")
+        assert s1_id == 5
+            else fail("S1: OOR read R-id=${s1_id} (expected 5, echoed AR-id)")
+        assert s1_last == 1
+            else fail("S1: OOR read RLAST=${s1_last} (expected 1)")
+        log(info, "PASS S1: OOR read → DECERR (RRESP=3, R-id=5, RLAST=1)")
+
+        dut.m_ar_valid[0] = 0
+        dut.m_r_ready[0]  = 0
+        wait 3 cycles
+
+        // ── S2: OOR write → DECERR ────────────────────────────────────────
+        // M1 issues AW+W to 0xC000_0000 (bits[31:30]=0b11 → out of range).
+        dut.m_aw_valid[1] = 1
+        dut.m_aw_addr[1]  = 0xC0000000
+        dut.m_aw_id[1]    = 2
+        dut.m_aw_size[1]  = 2
+        dut.m_aw_burst[1] = 1
+        dut.m_aw_len[1]   = 0
+        dut.m_w_valid[1]  = 1
+        dut.m_w_data[1]   = 0x12345678
+        dut.m_w_strb[1]   = 15
+        dut.m_w_last[1]   = 1
+        dut.m_b_ready[1]  = 1
+
+        let s2_resp : uint<32> = 99
+        let s2_id   : uint<32> = 99
+        let s2_done : uint<32> = 0
+
+        // Hold AW+W valid steady until B is observed (single-beat write).
+        // Dropping valid the same cycle ready pulses can race the
+        // MasterPort AwWb_default W-phase `until` check; holding is the
+        // proven pattern (cf. Nic400FabricMultiMaster_test.harc S3).
+        for _ in 0 .. 40
+            wait 1 cycle
+            if s2_done == 0 && dut.m_b_valid[1] == 1
+                s2_resp = dut.m_b_resp[1]
+                s2_id   = (dut.m_b_id[1] & 7)
+                s2_done = 1
+                dut.m_aw_valid[1] = 0
+                dut.m_w_valid[1]  = 0
+            end if
+        end for
+
+        assert s2_done == 1
+            else fail("S2: OOR write got no B response")
+        assert s2_resp == 3
+            else fail("S2: OOR write BRESP=${s2_resp} (expected 3=DECERR)")
+        assert s2_id == 2
+            else fail("S2: OOR write B-id=${s2_id} (expected 2, echoed AW-id)")
+        log(info, "PASS S2: OOR write → DECERR (BRESP=3, B-id=2)")
+
+        dut.m_aw_valid[1] = 0
+        dut.m_w_valid[1]  = 0
+        dut.m_b_ready[1]  = 0
+        wait 3 cycles
+
+        // ── S3: Valid read regression ─────────────────────────────────────
+        // M2 reads slave2 (0x2000_0000). The TB plays slave2: accept AR,
+        // return one OKAY R beat. Confirms OOR path didn't break decode.
+        dut.m_ar_valid[2] = 1
+        dut.m_ar_addr[2]  = 0x20001000   // addr[29:28]=0b10 → slave 2
+        dut.m_ar_id[2]    = 1
+        dut.m_ar_size[2]  = 2
+        dut.m_ar_burst[2] = 1
+        dut.m_ar_len[2]   = 0
+        dut.m_r_ready[2]  = 1
+        dut.s_ar_ready[2] = 1
+
+        let s3_resp   : uint<32> = 99
+        let s3_done   : uint<32> = 0
+        let s3_arseen : uint<32> = 0
+
+        for _ in 0 .. 30
+            wait 1 cycle
+            // Slave2 side: when fabric forwards AR, capture it and respond.
+            if dut.s_ar_valid[2] == 1 && s3_arseen == 0
+                s3_arseen = 1
+                dut.s_r_valid[2] = 1
+                dut.s_r_data[2]  = 0xCAFEBABE
+                dut.s_r_id[2]    = dut.s_ar_id[2]   // echo prefixed id back
+                dut.s_r_resp[2]  = 0                // OKAY
+                dut.s_r_last[2]  = 1
+            end if
+            if dut.m_ar_ready[2] == 1
+                dut.m_ar_valid[2] = 0
+            end if
+            if s3_done == 0 && dut.m_r_valid[2] == 1
+                s3_resp = dut.m_r_resp[2]
+                s3_done = 1
+                dut.s_r_valid[2] = 0
+            end if
+        end for
+
+        assert s3_done == 1
+            else fail("S3: valid read got no R response")
+        assert s3_resp == 0
+            else fail("S3: valid read RRESP=${s3_resp} (expected 0=OKAY)")
+        log(info, "PASS S3: valid read → OKAY (decode path intact)")
+
+        log(info, "PASS Nic400Fabric default-slave: OOR read+write DECERR, valid decode intact")
+    end run
+end impl Nic400DefaultSlaveTest

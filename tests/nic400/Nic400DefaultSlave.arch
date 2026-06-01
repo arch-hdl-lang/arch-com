@@ -1,0 +1,103 @@
+// Default-slave error responder for Nic400Fabric.
+//
+// Returns AXI4 DECERR (RRESP / BRESP = 2'b11) for every transaction it
+// receives.  Instantiated by Nic400Fabric; each MasterPort routes OOR
+// (out-of-range address) transactions here through its `default_s` port.
+//
+// One independent Rd / Wr thread pair per master; no arbitration needed
+// since each master gets its own dedicated port (m[i]).
+//
+// Read path: accepts one AR at a time, returns a single RRESP=DECERR beat
+// with RLAST=1 (ar_len ignored for multi-beat bursts).
+//
+// Write path: accepts AW, drains W to WLAST, returns BRESP=DECERR.
+
+module Nic400DefaultSlave
+  param NUM_MASTERS: const = 3;
+  param ADDR_WIDTH:  const = 32;
+  param DATA_WIDTH:  const = 32;
+  param STRB_WIDTH:  const = 4;
+  param SLAVE_ID_W:  const = 5;
+  param MASTER_ID_W: const = 3;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  port m: target Vec<BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH,
+                              STRB_W=STRB_WIDTH, ID_W=SLAVE_ID_W,
+                              READ=1, WRITE=1>, NUM_MASTERS>;
+
+  // Latched IDs — Vec regs declared at module scope, indexed inside
+  // generate_for per the ARCH rule.  Captured on the AR / AW handshake
+  // cycle so the response echoes the correct ID after ar_valid / aw_valid
+  // may be de-asserted.
+  reg rd_id: Vec<UInt<SLAVE_ID_W>, NUM_MASTERS> reset rst => 0;
+  reg wr_id: Vec<UInt<SLAVE_ID_W>, NUM_MASTERS> reset rst => 0;
+
+  generate_for i in 0..NUM_MASTERS-1
+
+    // ID-latch seq: one per master (loop variable i substituted by elaboration).
+    seq on clk rising
+      if m[i].ar_valid and m[i].ar_ready
+        rd_id[i] <= m[i].ar_id;
+      end if
+      if m[i].aw_valid and m[i].aw_ready
+        wr_id[i] <= m[i].aw_id;
+      end if
+    end seq
+
+    // ── Rd_i: accept AR → return RRESP=DECERR ──────────────────────────
+    thread Rd_i on clk rising, rst low
+      default comb
+        m[i].ar_ready = false;
+        m[i].r_valid  = false;
+        m[i].r_data   = 0;
+        m[i].r_id     = 0;
+        m[i].r_resp   = 0;
+        m[i].r_last   = false;
+      end default
+
+      // Hold ar_ready=1 until the master presents AR.
+      // seq fires on the same posedge as the do..until exit, latching ar_id
+      // into rd_id[i]; the register is available from the next state onward.
+      do
+        m[i].ar_ready = true;
+      until m[i].ar_valid;
+
+      // Single RRESP=DECERR (0b11) beat with RLAST.
+      do
+        m[i].r_valid = true;
+        m[i].r_id    = rd_id[i];
+        m[i].r_resp  = 3;
+        m[i].r_data  = 0;
+        m[i].r_last  = true;
+      until m[i].r_ready;
+    end thread Rd_i
+
+    // ── Wr_i: accept AW → drain W → return BRESP=DECERR ────────────────
+    thread Wr_i on clk rising, rst low
+      default comb
+        m[i].aw_ready = false;
+        m[i].w_ready  = false;
+        m[i].b_valid  = false;
+        m[i].b_id     = 0;
+        m[i].b_resp   = 0;
+      end default
+
+      do
+        m[i].aw_ready = true;
+      until m[i].aw_valid;
+
+      do
+        m[i].w_ready = true;
+      until m[i].w_valid and m[i].w_last;
+
+      do
+        m[i].b_valid = true;
+        m[i].b_id    = wr_id[i];
+        m[i].b_resp  = 3;
+      until m[i].b_ready;
+    end thread Wr_i
+
+  end generate_for
+end module Nic400DefaultSlave

@@ -43,6 +43,9 @@ module Nic400Fabric
   // carrying the prefixed (slave-perspective) ID.
   wire edges: Vec<Vec<SlaveBus, NUM_SLAVES>, NUM_MASTERS>;
 
+  // Per-master OOR wires: master_i.default_s ↔ default_sl.m[i].
+  wire default_edges: Vec<SlaveBus, NUM_MASTERS>;
+
   // ── M MasterPort instances ────────────────────────────────────────────
   //
   // Param-pass note: passing `param NUM_SLAVES = NUM_SLAVES` would alias the
@@ -56,12 +59,24 @@ module Nic400Fabric
   generate_for i in 0..NUM_MASTERS-1
     inst mp_i: Nic400MasterPort
       param I = i;
-      clk <- clk;
-      rst <- rst;
-      m   <- m[i];
-      outs -> edges[i];
+      clk       <- clk;
+      rst       <- rst;
+      m         <- m[i];
+      outs      -> edges[i];
+      default_s -> default_edges[i];
     end inst mp_i
   end generate_for
+
+  // ── Default slave — returns DECERR for OOR addresses ─────────────────
+  // Receives OOR transactions from every MasterPort's default_s port and
+  // immediately responds with RRESP/BRESP=2'b11 (DECERR).
+  inst default_sl: Nic400DefaultSlave
+    clk <- clk;
+    rst <- rst;
+    for k in 0..NUM_MASTERS-1
+      m[k] <- default_edges[k];
+    end for
+  end inst default_sl
 
   // ── N SlavePort instances ─────────────────────────────────────────────
   // Each slave_j gathers element [j] from every master's row of edges via
