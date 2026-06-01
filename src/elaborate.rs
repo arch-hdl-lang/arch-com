@@ -2772,6 +2772,68 @@ fn lower_module_threads(
             span: sp,
         }));
 
+        if opts.thread_map.is_some() {
+            let mut states = Vec::new();
+            for (si, raw) in raw_states.iter().enumerate() {
+                let next_state = if si + 1 < n_states {
+                    si + 1
+                } else if t.once {
+                    si
+                } else {
+                    0
+                };
+                let transitions = if !raw.multi_transitions.is_empty() {
+                    raw.multi_transitions
+                        .iter()
+                        .map(|(cond, target)| {
+                            let tgt = if *target >= n_states {
+                                if t.once { n_states - 1 } else { 0 }
+                            } else {
+                                *target
+                            };
+                            crate::thread_map::ThreadMapTransition {
+                                condition: crate::thread_map::expr_label(cond),
+                                target_index: tgt,
+                                target_name: state_names[tgt].clone(),
+                            }
+                        })
+                        .collect()
+                } else if let Some(cond) = &raw.transition_cond {
+                    vec![crate::thread_map::ThreadMapTransition {
+                        condition: crate::thread_map::expr_label(cond),
+                        target_index: next_state,
+                        target_name: state_names[next_state].clone(),
+                    }]
+                } else if raw.wait_cycles.is_some() {
+                    vec![crate::thread_map::ThreadMapTransition {
+                        condition: format!("_t{}_cnt == 0", ti),
+                        target_index: next_state,
+                        target_name: state_names[next_state].clone(),
+                    }]
+                } else {
+                    vec![crate::thread_map::ThreadMapTransition {
+                        condition: "always".to_string(),
+                        target_index: next_state,
+                        target_name: state_names[next_state].clone(),
+                    }]
+                };
+                states.push(crate::thread_map::ThreadMapState {
+                    index: si,
+                    state_name: state_names[si].clone(),
+                    role: thread_map_state_role(si, raw).to_string(),
+                    span: thread_fsm_state_span(raw, t.span),
+                    labels: thread_map_state_labels(raw),
+                    transitions,
+                });
+            }
+            thread_map_threads.push(crate::thread_map::ThreadMapThread {
+                name: _tname.clone(),
+                index: ti,
+                span: t.span,
+                states,
+            });
+        }
+
         // Pre-process: add counter loads on every transition edge into a
         // wait_cycles state. Older lowering only looked at the lexically
         // preceding state, which missed dispatch edges that jump into the
@@ -2838,74 +2900,11 @@ fn lower_module_threads(
             if let Some(guard) = cond {
                 raw_states[si].seq_stmts.push(Stmt::IfElse(IfElse {
                     cond: guard, then_stmts: vec![load],
-                    else_stmts: Vec::new(), unique: false, span: sp,
+                    else_stmts: Vec::new(), unique: false, span: count_span,
                 }));
             } else {
                 raw_states[si].seq_stmts.push(load);
             }
-        }
-
-        if opts.thread_map.is_some() {
-            let mut states = Vec::new();
-            for (si, raw) in raw_states.iter().enumerate() {
-                let next_state = if si + 1 < n_states {
-                    si + 1
-                } else if t.once {
-                    si
-                } else {
-                    0
-                };
-                let transitions = if !raw.multi_transitions.is_empty() {
-                    raw.multi_transitions
-                        .iter()
-                        .map(|(cond, target)| {
-                            let tgt = if *target >= n_states {
-                                if t.once { n_states - 1 } else { 0 }
-                            } else {
-                                *target
-                            };
-                            crate::thread_map::ThreadMapTransition {
-                                condition: crate::thread_map::expr_label(cond),
-                                target_index: tgt,
-                                target_name: state_names[tgt].clone(),
-                            }
-                        })
-                        .collect()
-                } else if let Some(cond) = &raw.transition_cond {
-                    vec![crate::thread_map::ThreadMapTransition {
-                        condition: crate::thread_map::expr_label(cond),
-                        target_index: next_state,
-                        target_name: state_names[next_state].clone(),
-                    }]
-                } else if raw.wait_cycles.is_some() {
-                    vec![crate::thread_map::ThreadMapTransition {
-                        condition: format!("_t{}_cnt == 0", ti),
-                        target_index: next_state,
-                        target_name: state_names[next_state].clone(),
-                    }]
-                } else {
-                    vec![crate::thread_map::ThreadMapTransition {
-                        condition: "always".to_string(),
-                        target_index: next_state,
-                        target_name: state_names[next_state].clone(),
-                    }]
-                };
-                states.push(crate::thread_map::ThreadMapState {
-                    index: si,
-                    state_name: state_names[si].clone(),
-                    role: thread_map_state_role(si, raw).to_string(),
-                    span: thread_fsm_state_span(raw, t.span),
-                    labels: thread_map_state_labels(raw),
-                    transitions,
-                });
-            }
-            thread_map_threads.push(crate::thread_map::ThreadMapThread {
-                name: _tname.clone(),
-                index: ti,
-                span: t.span,
-                states,
-                hazards: Vec::new(),
-            });
         }
 
         // State transition always_ff

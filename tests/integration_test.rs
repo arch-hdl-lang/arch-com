@@ -11389,6 +11389,38 @@ fn test_thread_map_metadata_records_dispatch_and_wait_roles() {
         "expected dispatch state with sel transition: {thread:#?}");
 }
 
+#[test]
+fn test_thread_map_spans_ignore_generated_counter_loads() {
+    let source = include_str!("../tests/thread/wait_cycles.arch");
+    let map = collect_thread_map(source);
+    let thread = &map.modules[0].threads[0];
+    let line_range = |span: lexer::Span| {
+        let start_line = source[..span.start].bytes().filter(|b| *b == b'\n').count() + 1;
+        let end_line = source[..span.end].bytes().filter(|b| *b == b'\n').count() + 1;
+        (start_line, end_line)
+    };
+
+    let wait_until = thread.states.iter()
+        .find(|s| s.role == "wait_until")
+        .expect("wait_until state");
+    assert_eq!(line_range(wait_until.span), (8, 8),
+        "S0 should render only on the wait-until source line: {wait_until:#?}");
+    let wait_until_src = &source[wait_until.span.start..wait_until.span.end];
+    assert!(!wait_until_src.contains("wait 5 cycle"),
+        "S0 span should stop before the following wait-cycle source: {wait_until_src:?}");
+    assert!(!wait_until_src.contains("end module"),
+        "S0 span should not stretch to the whole module: {wait_until_src:?}");
+
+    let wait_cycles = thread.states.iter()
+        .find(|s| s.role == "wait_cycles")
+        .expect("wait_cycles state");
+    assert_eq!(line_range(wait_cycles.span), (9, 9),
+        "S1 should render only on the wait-cycle source line: {wait_cycles:#?}");
+    let wait_cycles_src = &source[wait_cycles.span.start..wait_cycles.span.end];
+    assert!(!wait_cycles_src.contains("pulse = 1"),
+        "wait_cycles span should stop before the action source: {wait_cycles_src:?}");
+}
+
 // ── If/else with internal waits — dispatch-and-rejoin ─────────────────────────
 
 #[test]
