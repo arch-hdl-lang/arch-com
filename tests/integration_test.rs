@@ -11311,7 +11311,7 @@ fn test_build_emit_thread_map_bare_path() {
     assert!(html_out.exists(), "expected bare flag to write {}", html_out.display());
     let html = std::fs::read_to_string(&html_out).expect("read thread map");
     assert!(html.contains("_t0_S0_wait_until"), "expected generated state name in HTML:\n{html}");
-    assert!(html.contains("structured-flow"), "expected structured flow chart in HTML:\n{html}");
+    assert!(html.contains("thread-flow-chart"), "expected flow chart in HTML:\n{html}");
     assert!(html.contains("wait until go"), "expected source line in HTML:\n{html}");
     assert!(html.contains("done = 1"), "expected source assignment in HTML:\n{html}");
 }
@@ -11407,14 +11407,14 @@ fn test_thread_map_html_renders_control_flow_chart() {
     let html = arch::thread_map::render_html(&map, &sources, "Branchy.thread.html");
     assert!(html.contains("<h2>Thread Flow</h2>"),
         "expected right pane to be a flow-chart pane:\n{html}");
-    assert!(html.contains("structured-flow"),
-        "expected generated structured flow chart:\n{html}");
-    assert!(html.contains("branch-row"),
-        "expected transition rows inside state cards:\n{html}");
-    assert!(html.contains("next S"),
-        "expected fallthrough transition route labels:\n{html}");
+    assert!(html.contains("thread-flow-chart"),
+        "expected generated graph-style flow chart:\n{html}");
+    assert!(html.contains("graph-edge"),
+        "expected graph transition edges:\n{html}");
+    assert!(html.contains("marker-end"),
+        "expected arrowheads on graph edges:\n{html}");
     assert!(html.contains("then") && html.contains("else"),
-        "expected source-like branch summaries in structured chart:\n{html}");
+        "expected source-like branch labels in graph:\n{html}");
     assert!(html.contains("data-state=\"S"),
         "expected state nodes in flow chart:\n{html}");
     assert!(html.contains("dispatch"),
