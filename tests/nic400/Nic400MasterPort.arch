@@ -68,7 +68,9 @@ module Nic400MasterPort
         outs[j].ar_region = 0;
         m.ar_ready      = false;
       end default
-      wait 0+ cycle until m.ar_valid and m_ar_slv == j;
+      if not (m.ar_valid and m_ar_slv == j)
+        wait until m.ar_valid and m_ar_slv == j;
+      end if
       lock ar_ch
         do
           outs[j].ar_valid  = true;
@@ -99,7 +101,9 @@ module Nic400MasterPort
         m.r_last  = false;
         outs[j].r_ready = false;
       end default
-      wait 0+ cycle until outs[j].r_valid and outs[j].r_id[SLAVE_ID_W-1:MASTER_ID_W] == I;
+      if not (outs[j].r_valid and outs[j].r_id[SLAVE_ID_W-1:MASTER_ID_W] == I)
+        wait until outs[j].r_valid and outs[j].r_id[SLAVE_ID_W-1:MASTER_ID_W] == I;
+      end if
       lock r_ch
         do
           m.r_valid = true;
@@ -143,7 +147,9 @@ module Nic400MasterPort
         m.b_resp   = 0;
       end default
       // AW phase: wait for master's AW and address-decode match.
-      wait 0+ cycle until m.aw_valid and m_aw_slv == j;
+      if not (m.aw_valid and m_aw_slv == j)
+        wait until m.aw_valid and m_aw_slv == j;
+      end if
       lock aw_ch
         do
           outs[j].aw_valid  = true;
