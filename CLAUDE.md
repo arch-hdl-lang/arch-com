@@ -42,8 +42,10 @@ Only write the proposal if all three come back empty. An optional `ideas/`
 PostToolUse hook (`.claude/hooks/novelty_check.sh`, wired up in
 `.claude/settings.json` if present) runs this grep automatically when an
 `ideas/*.md` file is written and surfaces any hits — but it is only a backstop,
-and `.claude/` may be gitignored, so do the check while choosing the idea, not
-after.
+and `.claude/` is gitignored, so do the check while choosing the idea, not
+after. For cloud sessions, the hook is recreated per-container by the
+environment setup script (`.claude/setup-novelty-hook.sh`) rather than
+committed.
 
 (Lesson: `arch sim --wave` was proposed once as "missing" when it was already
 `COMPILER_STATUS.md` row 301, **DONE**. A one-line grep would have caught it.)
