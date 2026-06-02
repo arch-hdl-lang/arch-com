@@ -1,0 +1,230 @@
+//! ---
+//! tags: [compression, lz4, decompressor, streaming, fsm]
+//! refs:
+//!   - "LZ4 block format: https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md"
+//!   - "CAST LZ4SNP-D: https://www.cast-inc.com/compression/lossless-data-compression/lz4snp-c"
+//! ---
+//!
+//! LZ4 block decompressor — byte-serial streaming FSM.
+//!
+//! Models the CAST LZ4SNP-D lossless decompressor IP.  Accepts a raw LZ4
+//! block as a byte stream and emits decompressed bytes one per clock.
+//! A power-of-two history ring buffer (2^HIST_BITS bytes, default 256)
+//! provides the match lookback required by LZ4's back-reference scheme.
+//!
+//! ── Interface ────────────────────────────────────────────────────────────────
+//!   in_valid / in_data / in_eob  — compressed input stream.  in_eob is
+//!                                   asserted alongside the LAST compressed
+//!                                   byte of the block.
+//!   in_ready                     — back-pressure: low only during match-copy,
+//!                                   done, and error states.
+//!   out_valid / out_data         — decompressed output stream (no back-pressure;
+//!                                   one byte per cycle when asserted).
+//!   done                         — pulses high for exactly one cycle after the
+//!                                   final output byte has been produced.
+//!   err                          — latches high on a stream error (zero offset).
+//!
+//! ── LZ4 block sequence format ────────────────────────────────────────────────
+//! Each sequence:
+//!   [TOKEN] [extra_lit_len…] [literals…] [off_lo] [off_hi] [extra_match_len…]
+//!
+//!   TOKEN high nibble = literal-length indicator (ll).
+//!   TOKEN low  nibble = match-length indicator   (ml).
+//!   Total literal length  = ll + Σextra_lit  (if ll==15 read extra bytes until <255).
+//!   Total match   length  = ml + 4 + Σextra_match (minimum match = 4 bytes).
+//!
+//!   The final sequence of the block has no match part; in_eob is asserted
+//!   with the last literal byte of that sequence.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+enum LzState
+  ReadToken,
+  ExtraLitLen,
+  CopyLit,
+  ReadOffLo,
+  ReadOffHi,
+  ExtraMatchLen,
+  CopyMatch,
+  Done,
+  Err
+end enum LzState
+
+module Lz4Decomp
+  param HIST_BITS: const = 8;
+
+  port clk:      in Clock<SysDomain>;
+  port rst:      in Reset<Sync>;
+
+  port in_valid: in Bool;
+  port in_data:  in UInt<8>;
+  port in_eob:   in Bool;
+  port in_ready: out Bool;
+
+  port out_valid: out Bool;
+  port out_data:  out UInt<8>;
+
+  port done: out Bool;
+  port err:  out Bool;
+
+  reg state:        LzState           reset rst => LzState::ReadToken;
+  reg lit_len:      UInt<16>          reset rst => 0;
+  reg match_len:    UInt<16>          reset rst => 0;
+  reg offset:       UInt<16>          reset rst => 0;
+  reg match_nibble: UInt<4>           reset rst => 0;
+  reg eob_seen:     Bool              reset rst => false;
+  reg history:      Vec<UInt<8>, 256> reset rst => 0;
+  reg wr_ptr:       UInt<8>           reset rst => 0;
+  reg rd_ptr:       UInt<8>           reset rst => 0;
+
+  // Combinational helpers — always-valid but only used in specific states.
+  wire lit_nib:  UInt<4>;   // high nibble of in_data (token byte)
+  wire full_off: UInt<16>;  // assembled offset, valid only in ReadOffHi state
+
+  comb
+    lit_nib  = in_data[7:4];
+    full_off = (in_data.zext<16>() << 8) | offset;
+
+    in_ready = (state == LzState::ReadToken)   or
+               (state == LzState::ExtraLitLen) or
+               (state == LzState::CopyLit)     or
+               (state == LzState::ReadOffLo)   or
+               (state == LzState::ReadOffHi)   or
+               (state == LzState::ExtraMatchLen);
+
+    done = (state == LzState::Done);
+    err  = (state == LzState::Err);
+
+    if (state == LzState::CopyLit) and in_valid
+      out_valid = true;
+      out_data  = in_data;
+    elsif state == LzState::CopyMatch
+      out_valid = true;
+      out_data  = history[rd_ptr];
+    else
+      out_valid = false;
+      out_data  = 0;
+    end if
+  end comb
+
+  seq on clk rising
+
+    if state == LzState::ReadToken
+      if in_valid
+        match_nibble <= in_data[3:0];
+        eob_seen     <= in_eob;
+        if lit_nib == 15
+          lit_len <= 15;
+          state   <= LzState::ExtraLitLen;
+        elsif lit_nib == 0
+          lit_len <= 0;
+          if in_eob
+            state <= LzState::Done;
+          else
+            state <= LzState::ReadOffLo;
+          end if
+        else
+          lit_len <= lit_nib.zext<16>();
+          state   <= LzState::CopyLit;
+        end if
+      end if
+
+    elsif state == LzState::ExtraLitLen
+      if in_valid
+        lit_len <= (lit_len + in_data.zext<16>()).trunc<16>();
+        if in_eob
+          eob_seen <= true;
+        end if
+        if in_data < 8'd255
+          state <= LzState::CopyLit;
+        end if
+      end if
+
+    elsif state == LzState::CopyLit
+      if in_valid
+        history[wr_ptr] <= in_data;
+        wr_ptr <= (wr_ptr + 1).trunc<8>();
+        if in_eob
+          eob_seen <= true;
+        end if
+        if lit_len <= 1
+          if eob_seen or in_eob
+            state <= LzState::Done;
+          else
+            state <= LzState::ReadOffLo;
+          end if
+        else
+          lit_len <= (lit_len - 1).trunc<16>();
+        end if
+      end if
+
+    elsif state == LzState::ReadOffLo
+      if in_valid
+        offset <= in_data.zext<16>();
+        if in_eob
+          eob_seen <= true;
+        end if
+        state <= LzState::ReadOffHi;
+      end if
+
+    elsif state == LzState::ReadOffHi
+      if in_valid
+        if full_off == 0
+          state <= LzState::Err;
+        else
+          offset <= full_off;
+          // Ring-buffer read pointer: wr_ptr minus offset (wrapping).
+          rd_ptr <= (wr_ptr -% full_off.trunc<8>());
+          if in_eob
+            eob_seen <= true;
+          end if
+          if match_nibble == 15
+            match_len <= 19;   // 4 + 15; more extras accumulate in ExtraMatchLen
+            state     <= LzState::ExtraMatchLen;
+          else
+            match_len <= (match_nibble.zext<16>() + 4).trunc<16>();
+            state     <= LzState::CopyMatch;
+          end if
+        end if
+      end if
+
+    elsif state == LzState::ExtraMatchLen
+      if in_valid
+        match_len <= (match_len + in_data.zext<16>()).trunc<16>();
+        if in_eob
+          eob_seen <= true;
+        end if
+        if in_data < 8'd255
+          state <= LzState::CopyMatch;
+        end if
+      end if
+
+    elsif state == LzState::CopyMatch
+      // One match byte produced per cycle; no input consumed.
+      history[wr_ptr] <= history[rd_ptr];
+      wr_ptr <= (wr_ptr + 1).trunc<8>();
+      rd_ptr <= (rd_ptr + 1).trunc<8>();
+      if match_len <= 1
+        if eob_seen
+          state <= LzState::Done;
+        else
+          state <= LzState::ReadToken;
+        end if
+      else
+        match_len <= (match_len - 1).trunc<16>();
+      end if
+
+    elsif state == LzState::Done
+      // Reset write pointer so successive blocks start from a clean history.
+      wr_ptr   <= 0;
+      eob_seen <= false;
+      state    <= LzState::ReadToken;
+
+    end if
+    // LzState::Err is sticky — only reset clears it.
+
+  end seq
+
+end module Lz4Decomp
