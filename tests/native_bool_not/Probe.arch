@@ -1,0 +1,34 @@
+//! ---
+//! tags: [native-sim, bool, not, pipe-reg]
+//! ---
+//!
+//! Regression fixture for native C++ Bool `not` lowering on byte-backed
+//! Bool pipe_reg outputs. It mirrors the fpt26 shape where two registered
+//! Bool outputs are read with `@0` and negated in a logical conjunction.
+
+/// Probes Bool `not` semantics on registered Bool outputs in native sim.
+module NativeBoolNotProbe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  port busy_in: in Bool;
+  port result_valid_in: in Bool;
+
+  port busy_out: out pipe_reg<Bool, 1> reset rst => false;
+  port result_valid_out: out pipe_reg<Bool, 1> reset rst => false;
+
+  port not_result_valid: out Bool;
+  port idle_ampamp: out Bool;
+  port idle_keyword: out Bool;
+
+  seq on clk rising
+    busy_out <= busy_in;
+    result_valid_out <= result_valid_in;
+  end seq
+
+  comb
+    not_result_valid = not result_valid_out@0;
+    idle_ampamp = not busy_out@0 && not result_valid_out@0;
+    idle_keyword = (busy_out@0 == false) and (result_valid_out@0 == false);
+  end comb
+end module NativeBoolNotProbe

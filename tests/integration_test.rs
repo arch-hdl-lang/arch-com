@@ -18498,6 +18498,49 @@ fn test_native_sim_vec_inst_input_wire_param_sized_fanout() {
 }
 
 #[test]
+fn test_native_sim_bool_not_pipe_reg_outputs_and_ampamp() {
+    // Regression for arch-com#492. Native sim used to tokenize `&&` as
+    // bitwise `&` plus reduction `&` on the RHS, then infer
+    // `not result_valid_out@0` as 8 bits. That emitted a reduction-AND
+    // over `!result_valid_out`, so `not false` collapsed back to false
+    // for byte-backed Bool values.
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/native_bool_not/Probe.arch")
+        .arg("--tb")
+        .arg("tests/native_bool_not/tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for native Bool not pipe_reg probe");
+    assert!(
+        out.status.success(),
+        "native Bool not pipe_reg sim should compile + run\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("PASS native Bool not pipe_reg"),
+        "expected PASS marker in stdout:\n{stdout}"
+    );
+
+    let generated_cpp = std::fs::read_to_string(td.path().join("VNativeBoolNotProbe.cpp"))
+        .expect("read generated native sim C++");
+    assert!(
+        generated_cpp.contains("idle_ampamp")
+            && generated_cpp.contains("((!_busy_out) && (!_result_valid_out))"),
+        "symbolic `&&` should lower to C++ logical &&, not bitwise/reduction glue:\n{generated_cpp}"
+    );
+    assert!(
+        !generated_cpp.contains("0xffULL") && !generated_cpp.contains("0xFFULL"),
+        "Bool `not` should not be reduced as an 8-bit all-ones value:\n{generated_cpp}"
+    );
+}
+
+#[test]
 fn test_native_sim_thread_driven_top_pipe_reg_output_is_public() {
     // Regression for arch-com#472: lower_threads rewrites a thread-driven
     // top-level `port q: out pipe_reg<T,1>` into a registered output on the
