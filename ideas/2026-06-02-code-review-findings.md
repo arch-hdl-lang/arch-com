@@ -67,7 +67,7 @@ harc-com#332 adds `tests/split_build_e2e.rs`, which drives the real CLI
 through Verilator for both the default-group and group-size-1 layouts and
 asserts link + per-test dispatch. Gated on `verilator` being present.
 
-## 2. Tech-debt note (no action): the header-factoring path serves only the non-default config
+## 2. Tech debt (FIXED — harc-com#333): the header-factoring path served only the non-default config
 
 `emit_split_tests_with_file_prefix` has two branches:
 
@@ -88,15 +88,15 @@ the default group size none of those files exist. The user-facing
 `docs/harc-sim-cli.md` is correct (it promises only "a dispatcher `main.cpp`
 + one or more grouped shard `.cpp` files").
 
-No fix proposed: it is a deliberate phase-1d bridge, and harc-com#332 now
-exercises the group-1 path so it cannot silently rot. Worth a one-line
-clarification in `separate-compilation-plan.md` if that doc is touched
-again, and worth deciding (later) whether the group-1 path earns its
-maintenance cost.
-
-Minor dead code in the same function: in the `group_size == 1` branch the
-shard-filename `else` arm (`shard{}.cpp`) is unreachable, because the
-`group_size > 1` case has already returned. Trivial cleanup, not urgent.
+**Resolved in harc-com#333.** Both paths were collapsed into one
+self-contained-shard loop: the factoring bought no build-time win (the
+common header is compiled once per TU anyway) and gave identical
+incremental granularity (each per-test `.cpp` is already byte-stable when
+other tests change, so `write_if_changed` lets Make skip it — verified end
+to end). `group_size==1` now emits one `test_<name>.cpp` per test, no
+`.hpp`/`.inc`. Net −241 lines in `cpp_tb.rs`; the unreachable
+shard-filename `else` arm is gone; `separate-compilation-plan.md` rewritten
+to match. Verified through Verilator for both group-1 and group-4 layouts.
 
 ## 3. Proposal: auto-discover `.archi` for **bus port types**, not just module `inst`
 
