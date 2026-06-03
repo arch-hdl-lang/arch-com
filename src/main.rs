@@ -1252,13 +1252,13 @@ sys.exit(0 if ok else 1)
         cmd.arg("-fsanitize=thread").arg("-g");
         eprintln!("(ARCH_TSAN=1: building with -fsanitize=thread)");
     }
-    // -O2 + -flto: meaningful uplift for hot inner loops in generated
-    // sim code. LTO is the big win for designs with sub-instance
-    // (`inst`) calls — without it, the cross-TU function calls between
-    // the top class's eval() and the sub-instance's eval_comb() can't
-    // be inlined. Compile time goes up modestly; sim throughput up
-    // substantially. Override via ARCH_OPT env.
-    let opt = std::env::var("ARCH_OPT").unwrap_or_else(|_| "-O2 -flto".to_string());
+    // -O2 is the default. LTO (-flto) is omitted from the default because
+    // GCC miscompiles C++20 lambda coroutines when LTO is enabled: the
+    // coroutine frame's captured-by-reference locals become a
+    // stack-use-after-scope (SEGV on resume). `-fno-lto` is implicit.
+    // Users on clang can override via ARCH_OPT=-O2 -flto to recover the
+    // cross-TU inlining benefit.
+    let opt = std::env::var("ARCH_OPT").unwrap_or_else(|_| "-O2".to_string());
     for tok in opt.split_whitespace() {
         cmd.arg(tok);
     }

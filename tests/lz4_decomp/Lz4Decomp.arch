@@ -1,0 +1,192 @@
+//! ---
+//! tags: [compression, lz4, thread, streaming]
+//! refs:
+//!   - "LZ4 Block Format Description — lz4.org"
+//!   - "CAST LZ4SNP-D LZ4/Snappy Data Decompressor IP Core"
+//! ---
+//!
+//! LZ4 raw-block decompressor — byte-stream I/O, valid/ready handshake.
+//!
+//! Implements the LZ4 "block" format (no frame wrapper).
+//! Sequence structure: token | [extra lit len] | literals |
+//!                     offset-lo | offset-hi | [extra match len]
+//! The last sequence in a block has only literals (no match bytes read).
+//! s_last must be asserted on the last compressed byte (= last literal
+//! of the last sequence). m_last is asserted on the last decompressed byte.
+//!
+//! History depth: 256 bytes (8-bit write pointer). Match offsets > 255
+//! are clipped to the low byte — sufficient for the demo test vectors.
+//!
+//! Extended lengths: supports up to two extra-length bytes per field
+//! (lit_len or match_len up to 15+255+254 = 524). Cascade-of-if avoids
+//! the nested-do-until restriction.
+//!
+//! Architecture mirrors the CAST LZ4SNP-D pipelined token-parse datapath:
+//!   1. Token parser (thread FSM)
+//!   2. Extended-length accumulator (cascade-of-if)
+//!   3. Literal copy engine  (input → output + history write)
+//!   4. Match copy engine    (history read → output + history write)
+//!   5. Circular history buffer (Vec<UInt<8>,256> register array)
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module Lz4Decomp
+  port clk:     in Clock<SysDomain>;
+  port rst:     in Reset<Sync>;
+
+  // Compressed input (byte-wide valid/ready)
+  port s_valid: in Bool;
+  port s_ready: out Bool;
+  port s_data:  in UInt<8>;
+  port s_last:  in Bool;
+
+  // Decompressed output (byte-wide valid/ready)
+  port m_valid: out Bool;
+  port m_ready: in Bool;
+  port m_data:  out UInt<8>;
+  port m_last:  out Bool;
+
+  // 256-byte circular history buffer for match copy
+  reg hist:   Vec<UInt<8>, 256> reset rst => 0;
+  reg wr_ptr: UInt<8>           reset rst => 0;
+
+  // Parse state registers (owned by thread Decomp)
+  reg tok_r:          UInt<8>  reset rst => 0;
+  reg blk_end_r:      Bool     reset rst => false;
+  reg lit_len_r:      UInt<16> reset rst => 0;
+  reg match_pref_r:   UInt<4>  reset rst => 0;
+  reg match_off_lo_r: UInt<8>  reset rst => 0;
+  reg match_off_r:    UInt<8>  reset rst => 1;
+  reg match_len_r:    UInt<16> reset rst => 4;
+  reg byte_r:         UInt<8>  reset rst => 0;
+
+  thread Decomp on clk rising, rst high
+    default comb
+      s_ready = false;
+      m_valid = false;
+      m_data  = 8'h00;
+      m_last  = false;
+    end default
+
+    // ── TOKEN READ ──────────────────────────────────────────────────
+    do
+      s_ready = 1;
+    until s_valid;
+    tok_r     <= s_data;
+    blk_end_r <= s_last;
+    wait 1 cycle;
+
+    // ── LITERAL LENGTH DECODE ───────────────────────────────────────
+    if tok_r[7:4] == 4'd15
+      lit_len_r <= 16'd15;
+    else
+      lit_len_r <= tok_r[7:4].zext<16>();
+    end if
+    match_pref_r <= tok_r[3:0];
+    wait 1 cycle;
+
+    // ── EXTENDED LITERAL LENGTH (cascade-of-if, up to 2 extra bytes)
+    // Each extra byte adds its value to lit_len_r; exit as soon as
+    // a byte < 255 is seen (no more data needed).
+    if lit_len_r == 16'd15
+      do
+        s_ready = 1;
+      until s_valid;
+      byte_r    <= s_data;
+      lit_len_r <= (lit_len_r + s_data.zext<16>()).trunc<16>();
+      wait 1 cycle;
+      if byte_r == 8'd255
+        do
+          s_ready = 1;
+        until s_valid;
+        byte_r    <= s_data;
+        lit_len_r <= (lit_len_r + s_data.zext<16>()).trunc<16>();
+        wait 1 cycle;
+      end if
+    end if
+
+    // ── LITERAL COPY ────────────────────────────────────────────────
+    // lit_len_r bytes: consume from input, emit to output, write hist.
+    // blk_end_r is updated each literal so m_last fires on the last byte.
+    if lit_len_r != 16'd0
+      for li in 0..lit_len_r - 1
+        do
+          s_ready = 1;
+        until s_valid;
+        byte_r    <= s_data;
+        blk_end_r <= s_last;
+        wait 1 cycle;
+        do
+          m_valid = 1;
+          m_data  = byte_r;
+          m_last  = blk_end_r;
+        until m_ready;
+        hist[wr_ptr] <= byte_r;
+        wr_ptr <= (wr_ptr + 1).trunc<8>();
+        wait 1 cycle;
+      end for
+    end if
+
+    // ── MATCH PHASE (skip for last sequence — blk_end_r is true) ────
+    if not blk_end_r
+
+      // Match offset low byte
+      do
+        s_ready = 1;
+      until s_valid;
+      match_off_lo_r <= s_data;
+      wait 1 cycle;
+
+      // Match offset high byte (consumed; discarded for 256-byte buffer)
+      do
+        s_ready = 1;
+      until s_valid;
+      match_off_r <= match_off_lo_r;
+      wait 1 cycle;
+
+      // Effective match length = token_nibble + MINMATCH(4) + extras.
+      if match_pref_r == 4'd15
+        match_len_r <= (16'd15 + 16'd4).trunc<16>();
+        wait 1 cycle;
+        // Extended match length — same cascade pattern, up to 2 bytes
+        do
+          s_ready = 1;
+        until s_valid;
+        byte_r      <= s_data;
+        match_len_r <= (match_len_r + s_data.zext<16>()).trunc<16>();
+        wait 1 cycle;
+        if byte_r == 8'd255
+          do
+            s_ready = 1;
+          until s_valid;
+          byte_r      <= s_data;
+          match_len_r <= (match_len_r + s_data.zext<16>()).trunc<16>();
+          wait 1 cycle;
+        end if
+      else
+        match_len_r <= (match_pref_r.zext<16>() + 16'd4).trunc<16>();
+        wait 1 cycle;
+      end if
+
+      // Copy match_len bytes from the circular history buffer.
+      // Overlapping copies (offset < match_len) work correctly because
+      // hist[wr_ptr] is written each iteration before the next read.
+      for mi in 0..match_len_r - 1
+        byte_r <= hist[(wr_ptr - match_off_r).trunc<8>()];
+        wait 1 cycle;
+        do
+          m_valid = 1;
+          m_data  = byte_r;
+          m_last  = false;
+        until m_ready;
+        hist[wr_ptr] <= byte_r;
+        wr_ptr <= (wr_ptr + 1).trunc<8>();
+        wait 1 cycle;
+      end for
+
+    end if
+    // Thread loops back to next token of next sequence / next block.
+  end thread Decomp
+end module Lz4Decomp
