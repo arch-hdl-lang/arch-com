@@ -20,6 +20,21 @@ pub struct ThreadMapThread {
     pub index: usize,
     pub span: Span,
     pub states: Vec<ThreadMapState>,
+    /// Dead-skid comb-feedback hazards for this thread (issue #245).  Populated
+    /// after lowering from the pre-lowering analysis; empty when clean.
+    pub hazards: Vec<CombFeedbackHazard>,
+}
+
+/// One dead-skid comb-feedback hazard surfaced in the thread map: the thread
+/// reads `read_signal`, a combinational function of `driven_signal` it drives.
+#[derive(Debug, Clone)]
+pub struct CombFeedbackHazard {
+    pub read_signal: String,
+    pub driven_signal: String,
+    /// Rendered comb path `driven_signal -> … -> read_signal`.
+    pub path_summary: String,
+    /// Span of the thread's read of `read_signal` (for source highlighting).
+    pub read_span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -183,6 +198,11 @@ th { color: #53647c; font-size: 12px; font-weight: 650; background: #fbfcfe; }
 .labels { color: #2d3b50; }
 .trans { color: #364860; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .empty { padding: 20px 24px; color: var(--muted); }
+table.hazards th { background: #fff4e5; color: #9a4a00; }
+table.hazards td { border-top: 1px solid #ffe0bf; }
+.src-line.hazard { background: #fff4e5; }
+.src-line.hazard .ln { color: #c2640a; font-weight: 700; }
+.src-line.hazard .code::after { content: "  ⚠ dead-skid read"; color: #c2640a; font-weight: 700; }
 @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
 "#,
     );
@@ -210,11 +230,26 @@ th { color: #53647c; font-size: 12px; font-weight: 650; background: #fbfcfe; }
             html_escape(&module.generated_module_name)
         ));
         for thread in &module.threads {
+            let warn = if thread.hazards.is_empty() { "" } else { "⚠ " };
             out.push_str(&format!(
-                "<h4>thread {} <span class=\"role\">index {}</span></h4>",
+                "<h4>{}thread {} <span class=\"role\">index {}</span></h4>",
+                warn,
                 html_escape(&thread.name),
                 thread.index
             ));
+            if !thread.hazards.is_empty() {
+                out.push_str(
+                    "<table class=\"hazards\"><thead><tr><th colspan=\"2\">⚠ dead-skid comb feedback (issue #245)</th></tr><tr><th style=\"width:30%\">Reads</th><th>Comb path</th></tr></thead><tbody>",
+                );
+                for hz in &thread.hazards {
+                    out.push_str(&format!(
+                        "<tr><td class=\"trans\">{}</td><td class=\"trans\">{}</td></tr>",
+                        html_escape(&hz.read_signal),
+                        html_escape(&hz.path_summary),
+                    ));
+                }
+                out.push_str("</tbody></table>");
+            }
             out.push_str("<table><thead><tr><th style=\"width:22%\">State</th><th style=\"width:13%\">Lines</th><th style=\"width:25%\">Labels</th><th>Transitions</th></tr></thead><tbody>");
             for state in &thread.states {
                 let lines = find_line_range(sources, state.span)
@@ -281,7 +316,12 @@ fn render_source_file(out: &mut String, map: &ThreadMap, src: &ThreadMapSource) 
         let line_end = offset + raw_line.len().max(1);
         offset += raw_line.len();
         let states = states_overlapping_line(map, src, line_start, line_end);
-        out.push_str("<div class=\"src-line\">");
+        let hazard = line_has_hazard(map, line_start, line_end);
+        out.push_str(if hazard {
+            "<div class=\"src-line hazard\">"
+        } else {
+            "<div class=\"src-line\">"
+        });
         out.push_str(&format!(
             "<span class=\"ln\">{line_no}</span><span class=\"bands\">"
         ));
@@ -299,6 +339,17 @@ fn render_source_file(out: &mut String, map: &ThreadMap, src: &ThreadMapSource) 
         ));
     }
     out.push_str("</pre></div>");
+}
+
+/// True when any thread hazard's read span overlaps `[line_start, line_end)`.
+fn line_has_hazard(map: &ThreadMap, line_start: usize, line_end: usize) -> bool {
+    map.modules.iter().any(|m| {
+        m.threads.iter().any(|t| {
+            t.hazards
+                .iter()
+                .any(|h| span_overlaps(h.read_span, line_start, line_end))
+        })
+    })
 }
 
 fn source_has_map(map: &ThreadMap, src: &ThreadMapSource) -> bool {

@@ -551,7 +551,11 @@ pub fn per_output_comb_deps_for_symbol(
 
 /// Helper for `per_output_comb_deps`: walk a list of comb statements,
 /// updating `direct[LHS] |= rhs idents | enclosing-condition idents`.
-fn collect_comb_deps(
+///
+/// Public so the dead-skid feedback lint (`signal_flow`) can build the same
+/// parent-level forward comb adjacency without duplicating the
+/// condition-stack-aware walk.
+pub fn collect_comb_deps(
     stmts: &[Stmt],
     direct: &mut HashMap<String, HashSet<String>>,
     cond_stack: &mut Vec<HashSet<String>>,

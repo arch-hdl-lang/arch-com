@@ -969,6 +969,7 @@ impl Parser {
         let mut cdc_safe = false;
         let mut rdc_safe = false;
         let mut comb_loops_allowed = false;
+        let mut allow_dead_skid_feedback = false;
 
         while !self.check_end_keyword() {
             match self.peek_kind() {
@@ -982,6 +983,7 @@ impl Parser {
                         "cdc_safe" => cdc_safe = true,
                         "rdc_safe" => rdc_safe = true,
                         "comb_loops_allowed" => comb_loops_allowed = true,
+                        "allow_dead_skid_feedback" => allow_dead_skid_feedback = true,
                         _ => {
                             return Err(CompileError::general(
                                 &format!("unknown pragma `{}`", pragma_name.name),
@@ -1090,6 +1092,7 @@ impl Parser {
             cdc_safe,
             rdc_safe,
             comb_loops_allowed,
+            allow_dead_skid_feedback,
             // `doc` is populated by `attach_outer_doc` from `parse_item`;
             // `inner_doc` was harvested above right after the name.
             doc: None,

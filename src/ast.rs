@@ -229,6 +229,12 @@ pub struct ModuleDecl {
     /// instance OWNED by this module (i.e. this module is the parent that
     /// declares the inst) is treated as blessed and suppressed.
     pub comb_loops_allowed: bool,
+    /// `pragma allow_dead_skid_feedback;` — suppress the dead-skid
+    /// combinational-feedback lint (issue #245) for threads in this module.
+    /// Set when the read-back of a thread-driven comb signal is intentional
+    /// (e.g. an acknowledged single-cycle handshake) rather than an
+    /// accidental dead-skid trap.
+    pub allow_dead_skid_feedback: bool,
     pub span: Span,
     /// Outer doc comment from `///` lines preceding the `module` keyword.
     /// See `doc/plan_arch_doc_comments.md`.

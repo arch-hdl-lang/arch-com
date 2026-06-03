@@ -1705,9 +1705,44 @@ fn run_check_multi_opts_with_thread_map(
         ms.report_error(err)
     })?;
 
+    // Dead-skid combinational-feedback lint (issue #245). Runs on the
+    // pre-thread-lowering AST so `ModuleBodyItem::Thread` is still present and
+    // its source-level write/read sets are intact. Emits warnings only (never
+    // errors); suppressed per-module by `pragma allow_dead_skid_feedback;`.
+    // Hazards are also collected for the thread-map HTML overlay below.
+    let mut collected_hazards: Vec<(String, arch::signal_flow::DeadSkidHazard)> = Vec::new();
+    for item in &ast.items {
+        if let arch::ast::Item::Module(m) = item {
+            if m.allow_dead_skid_feedback {
+                continue;
+            }
+            for hz in arch::signal_flow::find_dead_skid_hazards(m, &ast) {
+                let (filename, _, local_offset) = ms.locate(hz.read_span.start);
+                eprintln!(
+                    "warning: dead-skid feedback: thread `{}` reads `{}`, a combinational \
+                     function of `{}` that it drives — during dead-skid cycles `{}` falls to its \
+                     default and `{}` may read spuriously (comb path: {}). Read the upstream input \
+                     directly, or add `pragma allow_dead_skid_feedback;` to module `{}` if the \
+                     read-back is intentional. ({}:{})",
+                    hz.thread_name,
+                    hz.read_signal,
+                    hz.driven_signal,
+                    hz.driven_signal,
+                    hz.read_signal,
+                    hz.path.join(" -> "),
+                    m.name.name,
+                    filename,
+                    local_offset,
+                );
+                collected_hazards.push((m.name.name.clone(), hz));
+            }
+        }
+    }
+
     // Lower thread blocks to FSM + inst (skipped under --thread-sim parallel,
     // where the new pre-lowering thread sim emitter consumes thread blocks
     // directly via coroutines).
+    let map_handle = thread_map.clone();
     let ast = if skip_lower_threads {
         ast
     } else {
@@ -1720,6 +1755,27 @@ fn run_check_multi_opts_with_thread_map(
             ms.report_error(err)
         })?
     };
+
+    // Overlay the collected dead-skid hazards onto the thread map (issue #245)
+    // so `--emit-thread-map` renders a ⚠ badge + comb path next to the
+    // offending thread and highlights the read site in the source panel.
+    if let Some(map_rc) = &map_handle {
+        if !collected_hazards.is_empty() {
+            let mut map = map_rc.borrow_mut();
+            for (mod_name, hz) in &collected_hazards {
+                for tmm in map.modules.iter_mut().filter(|m| m.module_name == *mod_name) {
+                    for tmt in tmm.threads.iter_mut().filter(|t| t.name == hz.thread_name) {
+                        tmt.hazards.push(arch::thread_map::CombFeedbackHazard {
+                            read_signal: hz.read_signal.clone(),
+                            driven_signal: hz.driven_signal.clone(),
+                            path_summary: hz.path.join(" -> "),
+                            read_span: hz.read_span,
+                        });
+                    }
+                }
+            }
+        }
+    }
 
     // Lower `pipe_reg<T, N>` ports with N > 1 into an N-stage cascade.
     let ast = elaborate::lower_pipe_reg_ports(ast).map_err(|errs| {

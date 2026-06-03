@@ -19350,6 +19350,369 @@ end module BusWireTop
     );
 }
 
+// ── Dead-skid comb-feedback analysis (issue #245) ────────────────────────────
+
+/// Run the dead-skid analysis on the PRE-thread-lowering AST (so
+/// `ModuleBodyItem::Thread` is still present) for module `module`.
+fn dead_skid_hazards(source: &str, module: &str) -> Vec<arch::signal_flow::DeadSkidHazard> {
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(ast).expect("elaborate");
+    let m = ast
+        .items
+        .iter()
+        .find_map(|it| match it {
+            arch::ast::Item::Module(m) if m.name.name == module => Some(m),
+            _ => None,
+        })
+        .expect("module not found");
+    arch::signal_flow::find_dead_skid_hazards(m, &ast)
+}
+
+/// Cross-module (one boundary deep): a thread combinationally drives the ALU's
+/// operand wires and reads back the ALU's `is_zero` output through a parent
+/// wire.  During dead-skid cycles the operand drives drop to 0, so `is_zero`
+/// asserts spuriously — the canonical arch-ibex pitfall #11.
+#[test]
+fn test_dead_skid_cross_module_hazard() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module Alu
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port is_zero: out Bool;
+  comb
+    is_zero = (a + b) == 0;
+  end comb
+end module Alu
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port reg done: out Bool reset rst => false;
+  wire a_drv: UInt<8>;
+  wire b_drv: UInt<8>;
+  wire is_zero_w: Bool;
+  inst alu: Alu
+    a <- a_drv;
+    b <- b_drv;
+    is_zero -> is_zero_w;
+  end inst alu
+  thread Worker on clk rising, rst high
+    a_drv = 8'd5;
+    b_drv = 8'd3;
+    wait until is_zero_w;
+    done <= true;
+  end thread Worker
+end module Top
+"#;
+    let hz = dead_skid_hazards(source, "Top");
+    assert!(
+        hz.iter().any(|h| h.read_signal == "is_zero_w"
+            && (h.driven_signal == "a_drv" || h.driven_signal == "b_drv")),
+        "expected a cross-module dead-skid hazard on `is_zero_w`, got {hz:?}"
+    );
+}
+
+/// Negative control: the thread reads an upstream INPUT (`go`) rather than the
+/// routed combinational output — no dead-skid hazard.
+#[test]
+fn test_dead_skid_reads_upstream_input_no_hazard() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module Alu
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port is_zero: out Bool;
+  comb
+    is_zero = (a + b) == 0;
+  end comb
+end module Alu
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port go: in Bool;
+  port reg done: out Bool reset rst => false;
+  wire a_drv: UInt<8>;
+  wire b_drv: UInt<8>;
+  wire is_zero_w: Bool;
+  inst alu: Alu
+    a <- a_drv;
+    b <- b_drv;
+    is_zero -> is_zero_w;
+  end inst alu
+  thread Worker on clk rising, rst high
+    a_drv = 8'd5;
+    b_drv = 8'd3;
+    wait until go;
+    done <= true;
+  end thread Worker
+end module Top
+"#;
+    let hz = dead_skid_hazards(source, "Top");
+    assert!(
+        hz.is_empty(),
+        "thread reading an upstream input must NOT be a dead-skid hazard, got {hz:?}"
+    );
+}
+
+/// Intra-module variant: thread comb-drives `x`, a parent comb block routes
+/// `fb = x`, and the thread reads `fb`.
+#[test]
+fn test_dead_skid_intra_module_hazard() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module IntraTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port reg done: out Bool reset rst => false;
+  wire x: Bool;
+  wire fb: Bool;
+  comb
+    fb = x;
+  end comb
+  thread W on clk rising, rst high
+    x = true;
+    wait until fb;
+    done <= true;
+  end thread W
+end module IntraTop
+"#;
+    let hz = dead_skid_hazards(source, "IntraTop");
+    assert!(
+        hz.iter().any(|h| h.read_signal == "fb" && h.driven_signal == "x"),
+        "expected intra-module dead-skid hazard `x -> fb`, got {hz:?}"
+    );
+}
+
+/// The read can also live in `default comb`, not just in `wait until` or an
+/// RHS inside the thread body. During dead-skid cycles the comb-driven source
+/// still collapses to its default, so a default output that mirrors the routed
+/// comb feedback is hazardous and must be reported.
+#[test]
+fn test_dead_skid_default_comb_read_hazard() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module Alu
+  port a: in UInt<8>;
+  port z: out Bool;
+  comb
+    z = (a == 0);
+  end comb
+end module Alu
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port done: out Bool;
+  port go: in Bool;
+  wire a_drv: UInt<8>;
+  wire z_w: Bool;
+  inst alu: Alu
+    a <- a_drv;
+    z -> z_w;
+  end inst alu
+  thread Worker on clk rising, rst high
+    default comb
+      done = z_w;
+    end default
+    a_drv = 8'd1;
+    wait until go;
+  end thread Worker
+end module Top
+"#;
+    let hz = dead_skid_hazards(source, "Top");
+    assert!(
+        hz.iter().any(|h| h.read_signal == "z_w" && h.driven_signal == "a_drv"),
+        "expected default-comb read hazard `a_drv -> z_w`, got {hz:?}"
+    );
+}
+
+/// A module with no threads yields no hazards (cheap early-out path).
+#[test]
+fn test_dead_skid_no_threads_no_hazard() {
+    let source = r#"
+module Pure
+  port a: in Bool;
+  port y: out Bool;
+  comb
+    y = not a;
+  end comb
+end module Pure
+"#;
+    assert!(dead_skid_hazards(source, "Pure").is_empty());
+}
+
+/// Negative control (registered mirror): the thread drives a REGISTER (`<=`),
+/// a comb block mirrors it (`active = active_r`), and the thread reads the
+/// mirror.  Registered values hold across dead-skid cycles, so this is NOT a
+/// hazard.  (Mirrors the axi_dma_thread `ThreadMm2s` shape that surfaced the
+/// false-positive during the Stage 2 sweep.)
+#[test]
+fn test_dead_skid_registered_mirror_no_hazard() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module RegMirror
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port go: in Bool;
+  port reg done: out Bool reset rst => false;
+  reg active_r: Bool reset rst => false;
+  wire active: Bool;
+  comb
+    active = active_r;
+  end comb
+  thread Worker on clk rising, rst high
+    active_r <= true;
+    wait until active;
+    done <= true;
+  end thread Worker
+end module RegMirror
+"#;
+    let hz = dead_skid_hazards(source, "RegMirror");
+    assert!(
+        hz.is_empty(),
+        "comb mirror of a registered thread output must NOT be a dead-skid hazard, got {hz:?}"
+    );
+}
+
+/// Thread-map HTML overlay: a thread carrying a dead-skid hazard renders the
+/// ⚠ badge table, the escaped comb path, and highlights the read source line.
+#[test]
+fn test_thread_map_html_renders_hazard_overlay() {
+    use arch::lexer::Span;
+    use arch::thread_map::*;
+    let src = ThreadMapSource {
+        start: 0,
+        end: 18,
+        filename: "f.arch".into(),
+        source: "line1\nline2\nline3\n".into(),
+    };
+    let map = ThreadMap {
+        modules: vec![ThreadMapModule {
+            module_name: "Top".into(),
+            generated_module_name: "_Top_threads".into(),
+            span: Span::new(0, 18),
+            threads: vec![ThreadMapThread {
+                name: "Worker".into(),
+                index: 0,
+                span: Span::new(0, 18),
+                states: vec![],
+                hazards: vec![CombFeedbackHazard {
+                    read_signal: "is_zero_w".into(),
+                    driven_signal: "a_drv".into(),
+                    path_summary: "a_drv -> is_zero_w".into(),
+                    read_span: Span::new(7, 10), // inside "line2"
+                }],
+            }],
+        }],
+    };
+    let html = render_html(&map, &[src], "t");
+    assert!(
+        html.contains("⚠ dead-skid comb feedback"),
+        "expected the hazard badge table"
+    );
+    assert!(
+        html.contains("a_drv -&gt; is_zero_w"),
+        "expected the escaped comb path"
+    );
+    assert!(
+        html.contains("src-line hazard"),
+        "expected the read source line to be highlighted"
+    );
+}
+
+/// A clean thread (no hazards) renders no badge and no highlight.
+#[test]
+fn test_thread_map_html_no_hazard_no_overlay() {
+    use arch::lexer::Span;
+    use arch::thread_map::*;
+    let map = ThreadMap {
+        modules: vec![ThreadMapModule {
+            module_name: "Top".into(),
+            generated_module_name: "_Top_threads".into(),
+            span: Span::new(0, 10),
+            threads: vec![ThreadMapThread {
+                name: "W".into(),
+                index: 0,
+                span: Span::new(0, 10),
+                states: vec![],
+                hazards: vec![],
+            }],
+        }],
+    };
+    let html = render_html(&map, &[], "t");
+    // Note: the CSS block always contains the literal "⚠ dead-skid read"
+    // (source-line annotation rule), so match the table-specific header.
+    assert!(
+        !html.contains("⚠ dead-skid comb feedback"),
+        "clean thread must not render a hazard badge"
+    );
+    assert!(!html.contains("class=\"src-line hazard\""));
+}
+
+/// The `pragma allow_dead_skid_feedback;` suppression knob parses and sets the
+/// module flag the lint consults.
+#[test]
+fn test_pragma_allow_dead_skid_feedback_parses() {
+    let source = r#"
+module M
+  pragma allow_dead_skid_feedback;
+  port a: in Bool;
+  port y: out Bool;
+  comb
+    y = a;
+  end comb
+end module M
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let m = ast
+        .items
+        .iter()
+        .find_map(|it| match it {
+            arch::ast::Item::Module(m) if m.name.name == "M" => Some(m),
+            _ => None,
+        })
+        .expect("module");
+    assert!(
+        m.allow_dead_skid_feedback,
+        "pragma allow_dead_skid_feedback should set the module flag"
+    );
+}
+
+/// Unit: `comb_reachable_from` follows forward edges transitively and excludes
+/// seeds unless reached via a cycle.
+#[test]
+fn test_comb_reachable_from_transitive() {
+    use std::collections::{HashMap, HashSet};
+    let mut fwd: HashMap<String, HashSet<String>> = HashMap::new();
+    fwd.entry("a".into()).or_default().insert("b".into());
+    fwd.entry("b".into()).or_default().insert("c".into());
+    let seeds: HashSet<String> = ["a".to_string()].into_iter().collect();
+    let reached = arch::signal_flow::comb_reachable_from(&seeds, &fwd);
+    assert!(reached.contains("b") && reached.contains("c"));
+    assert!(!reached.contains("a"), "seed must not appear unless via a cycle");
+}
+
 /// AW-side mirror of `test_nic400_apb_bridge_wrap_illegal_len_is_rejected_by_sva`.
 ///
 /// Closes §4 from `ideas/2026-05-28-code-review-findings.md`: the AW
