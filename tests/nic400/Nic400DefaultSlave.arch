@@ -32,6 +32,7 @@ module Nic400DefaultSlave
   // cycle so the response echoes the correct ID after ar_valid / aw_valid
   // may be de-asserted.
   reg rd_id: Vec<UInt<SLAVE_ID_W>, NUM_MASTERS> reset rst => 0;
+  reg rd_len: Vec<UInt<8>, NUM_MASTERS> reset rst => 0;
   reg wr_id: Vec<UInt<SLAVE_ID_W>, NUM_MASTERS> reset rst => 0;
 
   generate_for i in 0..NUM_MASTERS-1
@@ -40,6 +41,7 @@ module Nic400DefaultSlave
     seq on clk rising
       if m[i].ar_valid and m[i].ar_ready
         rd_id[i] <= m[i].ar_id;
+        rd_len[i] <= m[i].ar_len;
       end if
       if m[i].aw_valid and m[i].aw_ready
         wr_id[i] <= m[i].aw_id;
@@ -64,14 +66,17 @@ module Nic400DefaultSlave
         m[i].ar_ready = true;
       until m[i].ar_valid;
 
-      // Single RRESP=DECERR (0b11) beat with RLAST.
-      do
-        m[i].r_valid = true;
-        m[i].r_id    = rd_id[i];
-        m[i].r_resp  = 3;
-        m[i].r_data  = 0;
-        m[i].r_last  = true;
-      until m[i].r_ready;
+      // Return one DECERR beat per requested transfer so burst reads keep
+      // AXI beat count and RLAST semantics intact.
+      for b in 0..rd_len[i]
+        do
+          m[i].r_valid = true;
+          m[i].r_id    = rd_id[i];
+          m[i].r_resp  = 3;
+          m[i].r_data  = 0;
+          m[i].r_last  = (b == rd_len[i]);
+        until m[i].r_ready;
+      end for
     end thread Rd_i
 
     // ── Wr_i: accept AW → drain W → return BRESP=DECERR ────────────────
