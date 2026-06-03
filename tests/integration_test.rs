@@ -16397,12 +16397,15 @@ fn test_thread_state_localparams_emitted() {
     let sv = compile_to_sv(source);
 
     // (1) One `localparam` per state with the expected role suffix.
-    //     S0 = wait_until (transition_cond = `req`), S1 = action (seq write),
-    //     S2 = wait_cycles (wait 2 cycle), S3 = action (final seq write).
+    //     S0 = wait_until (transition_cond = `req`), S1 = action (seq write,
+    //     now folded into S0's cond-exit arm by issue #306), S2 = wait_cycles
+    //     (wait 2 cycle), S3 = action (final seq write — not folded because
+    //     the preceding state is wait_cycles, not wait_until).
+    //     Localparams are still emitted for all states including folded ones.
     assert!(sv.contains("localparam [1:0] _t0_S0_wait_until = 0"),
         "expected S0 wait_until localparam:\n{sv}");
     assert!(sv.contains("localparam [1:0] _t0_S1_action = 1"),
-        "expected S1 action localparam:\n{sv}");
+        "expected S1 action localparam (folded but still declared):\n{sv}");
     assert!(sv.contains("localparam [1:0] _t0_S2_wait_cycles = 2"),
         "expected S2 wait_cycles localparam:\n{sv}");
     assert!(sv.contains("localparam [1:0] _t0_S3_action = 3"),
@@ -16420,10 +16423,21 @@ fn test_thread_state_localparams_emitted() {
         "expected name-form state comparison for S2:\n{sv}");
 
     // (4) State-register assignments use the name, not a bare literal.
-    assert!(sv.contains("_t0_state <= _t0_S1_action"),
-        "expected name-form state assignment to S1:\n{sv}");
+    //     Issue #306: S0's cond-exit arm now folds S1's `done <= true` and
+    //     transitions directly to S2 (skipping S1).  So `_t0_S1_action` no
+    //     longer appears as a transition target; `_t0_S2_wait_cycles` still
+    //     does (from the folded S0 exit arm).
+    assert!(!sv.contains("_t0_state <= _t0_S1_action"),
+        "S1 was folded into S0's exit; S0 must jump directly to S2:\n{sv}");
     assert!(sv.contains("_t0_state <= _t0_S2_wait_cycles"),
-        "expected name-form state assignment to S2:\n{sv}");
+        "expected name-form state assignment to S2 (folded from S0 exit arm):\n{sv}");
+    // The folded seq assign must appear inside the if(req) block.
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        trimmed.contains("if (req) begin done <= 1'b1; _t0_state <= _t0_S2_wait_cycles;")
+            || trimmed.contains("if (req) begin done <= 1'b1; _t0_state <= _t0_S2_wait_cycles"),
+        "expected `done <= true` folded into S0's if(req) arm (issue #306):\n{sv}",
+    );
 
     // (5) No bare `_t0_state == N` or `_t0_state <= N` numeric-literal forms
     //     should remain. The synchronous-reset path emits `_t0_state <= 0`
@@ -20094,5 +20108,160 @@ fn bus_interface_archi_round_trips() {
         chk.status.success(),
         "emitted bus .archi must parse back in; stderr:\n{}",
         String::from_utf8_lossy(&chk.stderr)
+    );
+}
+
+// ── Issue #306: wait-until exit assignment fold ───────────────────────────────
+
+/// Basic fold: `wait until go; phase <= 2'd1;` — the register assignment
+/// must appear inside the `if (go)` arm of state S0, not in a separate S1.
+#[test]
+fn test_wait_until_fold_basic() {
+    let source = r#"
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port phase: out UInt<2>;
+  reg phase_r: UInt<2> reset rst => 0;
+  let phase = phase_r;
+  thread on clk rising, rst high
+    wait until go;
+    phase_r <= 2'd1;
+    wait until go;
+  end thread
+end module M
+"#;
+    let sv = compile_to_sv(source);
+    // The assignment must be inside the if (go) block at state 0.
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        trimmed.contains("if (go) begin phase_r <= 2'd1;")
+            || trimmed.contains("if (go) begin phase_r <= 2'(2'd1)"),
+        "phase_r <= 2'd1 must be folded into the if(go) arm of the \
+         wait_until state (issue #306):\n{sv}",
+    );
+    // The S1 action state should be is_folded — it must NOT appear as a
+    // standalone `_t0_state == _t0_S1_action` check in the always_ff block.
+    assert!(
+        !sv.contains("_t0_state == _t0_S1_action"),
+        "S1 must be folded (unreachable); no standalone S1 check \
+         should appear in always_ff (issue #306):\n{sv}",
+    );
+}
+
+/// Multi-assign fold: `wait until go; X <= A; Y <= B;` — both assignments
+/// must appear in the same if(go) arm of state S0.
+#[test]
+fn test_wait_until_fold_multi_assign() {
+    let source = r#"
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port x_out: out UInt<8>;
+  port y_out: out UInt<8>;
+  reg x_r: UInt<8> reset rst => 0;
+  reg y_r: UInt<8> reset rst => 0;
+  let x_out = x_r;
+  let y_out = y_r;
+  thread on clk rising, rst high
+    wait until go;
+    x_r <= 8'd10;
+    y_r <= 8'd20;
+    wait until go;
+  end thread
+end module M
+"#;
+    let sv = compile_to_sv(source);
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Both assigns must be inside the same if(go) arm.
+    assert!(
+        trimmed.contains("if (go) begin x_r <= 8'd10; y_r <= 8'd20;")
+            || trimmed.contains("if (go) begin y_r <= 8'd20; x_r <= 8'd10;"),
+        "both x_r and y_r assigns must fold into the same if(go) arm \
+         (issue #306 multi-assign):\n{sv}",
+    );
+}
+
+/// Fold correctness: `wait until go; X <= A; wait until done; Y <= B;` —
+/// X folds into state 0's go-exit arm; Y folds into state 1's done-exit arm.
+/// Verify state ordering is correct and no extra intermediate state exists.
+#[test]
+fn test_wait_until_fold_no_fold_past_second_wait() {
+    let source = r#"
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port done: in Bool;
+  port x_out: out UInt<8>;
+  port y_out: out UInt<8>;
+  reg x_r: UInt<8> reset rst => 0;
+  reg y_r: UInt<8> reset rst => 0;
+  let x_out = x_r;
+  let y_out = y_r;
+  thread on clk rising, rst high
+    wait until go;
+    x_r <= 8'd1;
+    wait until done;
+    y_r <= 8'd2;
+  end thread
+end module M
+"#;
+    let sv = compile_to_sv(source);
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+    // x_r folds into state 0's go-exit arm.
+    assert!(
+        trimmed.contains("if (go) begin x_r <= 8'd1;"),
+        "x_r must fold into state 0's if(go) arm (issue #306):\n{sv}",
+    );
+    // y_r folds into state 1's done-exit arm (the second wait_until).
+    assert!(
+        trimmed.contains("if (done) begin y_r <= 8'd2;"),
+        "y_r must fold into the wait_until(done) state's if(done) arm \
+         (issue #306 second-wait fold):\n{sv}",
+    );
+    // Both wait_until localparams must be declared (no states collapsed
+    // beyond the fold).
+    assert!(
+        sv.contains("_wait_until"),
+        "expected wait_until role localparam(s) in emitted SV:\n{sv}",
+    );
+}
+
+/// Wait-N-cycle unaffected: `wait 3 cycle; X <= A;` — the counter states
+/// must NOT be folded.  The fold applies only to `wait until`, not `wait N cycle`.
+#[test]
+fn test_wait_until_fold_wait_n_cycle_not_folded() {
+    let source = r#"
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port x_out: out UInt<8>;
+  reg x_r: UInt<8> reset rst => 0;
+  let x_out = x_r;
+  thread on clk rising, rst high
+    wait until go;
+    wait 3 cycle;
+    x_r <= 8'd42;
+  end thread
+end module M
+"#;
+    let sv = compile_to_sv(source);
+    // A wait_cycles localparam must be present (counter state kept).
+    assert!(
+        sv.contains("_wait_cycles"),
+        "wait_cycles localparam must be emitted (counter states must not \
+         be folded — issue #306):\n{sv}",
+    );
+    // x_r must NOT appear inside an if(go) arm — it fires after the counter
+    // expires, not on the go-detection edge.
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        !trimmed.contains("if (go) begin x_r <= 8'd42"),
+        "x_r must NOT be folded into state 0's if(go) arm when separated \
+         by a wait N cycle (issue #306 wait-N-cycle unaffected):\n{sv}",
     );
 }
