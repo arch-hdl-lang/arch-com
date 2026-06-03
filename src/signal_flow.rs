@@ -367,12 +367,13 @@ fn collect_one_thread_comb_stmt(stmt: &ThreadStmt, out: &mut HashMap<String, Spa
 }
 
 /// Collect the set of signal names a thread reads (read set), with the span of
-/// the first read of each.  Reads come from RHS values, `wait until` / `do
-/// until` conditions, `if` conditions, loop bounds, and LHS index/slice
-/// expressions.
+/// the first read of each. Reads come from RHS values in the body and
+/// `default comb`, `wait until` / `do until` conditions, `if` conditions, loop
+/// bounds, and LHS index/slice expressions.
 pub fn thread_read_set(t: &ThreadBlock) -> HashMap<String, Span> {
     let mut out = HashMap::new();
     collect_thread_reads(&t.body, &mut out);
+    collect_stmt_reads(&t.default_comb, &mut out);
     if let Some((cond, body)) = &t.default_when {
         add_expr_reads(cond, t.span, &mut out);
         collect_thread_reads(body, &mut out);
@@ -415,6 +416,56 @@ fn collect_lhs_index_reads(target: &Expr, span: Span, out: &mut HashMap<String, 
 fn collect_thread_reads(stmts: &[ThreadStmt], out: &mut HashMap<String, Span>) {
     for s in stmts {
         collect_one_thread_read(s, out);
+    }
+}
+
+fn collect_stmt_reads(stmts: &[Stmt], out: &mut HashMap<String, Span>) {
+    for s in stmts {
+        collect_one_stmt_read(s, out);
+    }
+}
+
+fn collect_one_stmt_read(stmt: &Stmt, out: &mut HashMap<String, Span>) {
+    match stmt {
+        Stmt::Assign(a) => {
+            add_expr_reads(&a.value, a.span, out);
+            collect_lhs_index_reads(&a.target, a.span, out);
+        }
+        Stmt::IfElse(ie) => {
+            add_expr_reads(&ie.cond, ie.span, out);
+            collect_stmt_reads(&ie.then_stmts, out);
+            collect_stmt_reads(&ie.else_stmts, out);
+        }
+        Stmt::Match(ms) => {
+            add_expr_reads(&ms.scrutinee, ms.span, out);
+            for arm in &ms.arms {
+                if let Pattern::Literal(e) = &arm.pattern {
+                    add_expr_reads(e, ms.span, out);
+                }
+                collect_stmt_reads(&arm.body, out);
+            }
+        }
+        Stmt::For(fl) => {
+            match &fl.range {
+                ForRange::Range(start, end) => {
+                    add_expr_reads(start, fl.span, out);
+                    add_expr_reads(end, fl.span, out);
+                }
+                ForRange::ValueList(vals) => {
+                    for v in vals {
+                        add_expr_reads(v, fl.span, out);
+                    }
+                }
+            }
+            collect_stmt_reads(&fl.body, out);
+        }
+        Stmt::Init(ib) => collect_stmt_reads(&ib.body, out),
+        Stmt::DoUntil { body, cond, span } => {
+            collect_stmt_reads(body, out);
+            add_expr_reads(cond, *span, out);
+        }
+        Stmt::WaitUntil(cond, span) => add_expr_reads(cond, *span, out),
+        Stmt::Log(_) => {}
     }
 }
 

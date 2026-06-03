@@ -19453,6 +19453,52 @@ end module IntraTop
     );
 }
 
+/// The read can also live in `default comb`, not just in `wait until` or an
+/// RHS inside the thread body. During dead-skid cycles the comb-driven source
+/// still collapses to its default, so a default output that mirrors the routed
+/// comb feedback is hazardous and must be reported.
+#[test]
+fn test_dead_skid_default_comb_read_hazard() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module Alu
+  port a: in UInt<8>;
+  port z: out Bool;
+  comb
+    z = (a == 0);
+  end comb
+end module Alu
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port done: out Bool;
+  port go: in Bool;
+  wire a_drv: UInt<8>;
+  wire z_w: Bool;
+  inst alu: Alu
+    a <- a_drv;
+    z -> z_w;
+  end inst alu
+  thread Worker on clk rising, rst high
+    default comb
+      done = z_w;
+    end default
+    a_drv = 8'd1;
+    wait until go;
+  end thread Worker
+end module Top
+"#;
+    let hz = dead_skid_hazards(source, "Top");
+    assert!(
+        hz.iter().any(|h| h.read_signal == "z_w" && h.driven_signal == "a_drv"),
+        "expected default-comb read hazard `a_drv -> z_w`, got {hz:?}"
+    );
+}
+
 /// A module with no threads yields no hazards (cheap early-out path).
 #[test]
 fn test_dead_skid_no_threads_no_hazard() {
