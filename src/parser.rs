@@ -3841,7 +3841,11 @@ impl Parser {
                     kind: ExprKind::SvaNext(n_val, Box::new(operand)),
                     span, parenthesized: false })
             }
-            Some(TokenKind::Not) => {
+            // `not` keyword and `!` symbol are exact aliases for logical-not
+            // (same token semantics, same precedence) — mirrors `&&`==`and` /
+            // `||`==`or`. Bitwise complement stays `~` (BitNot). `!=` is a
+            // distinct token (BangEq), so `a != b` is unaffected.
+            Some(TokenKind::Not) | Some(TokenKind::Bang) => {
                 let tok = self.advance();
                 let operand = self.parse_expr_bp(prefix_bp())?;
                 let span = tok.span.merge(operand.span);

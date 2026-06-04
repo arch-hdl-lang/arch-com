@@ -154,6 +154,69 @@ end module Placeholder
     insta::assert_snapshot!(sv);
 }
 
+// ── Operators ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_bang_prefix_is_logical_not_alias() {
+    // arch#496: `!` is a symbolic alias for the `not` keyword (logical-not),
+    // exactly parallel to `&&`==`and` / `||`==`or` (#493). It must lower to
+    // SV `!`, and `!=` must remain a distinct, unaffected operator.
+    let bang_src = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module BangAlias
+  port a: in Bool;
+  port b: in Bool;
+  port y: out Bool;
+  port impl_out: out Bool;
+  port nested: out Bool;
+  port ne: out Bool;
+  comb
+    y = !a;
+    impl_out = (!a) || b;
+    nested = !(a and b);
+    ne = a != b;
+  end comb
+end module BangAlias
+"#;
+    let bang = compile_to_sv(bang_src);
+    assert!(bang.contains("assign y = !a;"), "got:\n{bang}");
+    assert!(bang.contains("assign impl_out = !a || b;"), "got:\n{bang}");
+    assert!(bang.contains("assign nested = !(a && b);"), "got:\n{bang}");
+    // `!=` is a distinct token (BangEq) — prefix `!` must not disturb it.
+    assert!(bang.contains("assign ne = a != b;"), "got:\n{bang}");
+
+    // The keyword spelling of the same module must lower byte-identically:
+    // `!`/`||`/`and` and `not`/`or`/`and` are exact aliases.
+    let kw_src = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module BangAlias
+  port a: in Bool;
+  port b: in Bool;
+  port y: out Bool;
+  port impl_out: out Bool;
+  port nested: out Bool;
+  port ne: out Bool;
+  comb
+    y = not a;
+    impl_out = (not a) or b;
+    nested = not (a and b);
+    ne = a != b;
+  end comb
+end module BangAlias
+"#;
+    let kw = compile_to_sv(kw_src);
+    assert_eq!(
+        bang, kw,
+        "`!`/`||` must lower identically to `not`/`or`:\n--- bang ---\n{bang}\n--- kw ---\n{kw}"
+    );
+}
+
 // ── Let bindings ──────────────────────────────────────────────────────────────
 
 #[test]
