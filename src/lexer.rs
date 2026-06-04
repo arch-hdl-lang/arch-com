@@ -701,6 +701,17 @@ mod tests {
     }
 
     #[test]
+    fn test_bang_vs_bang_eq() {
+        // `!` (prefix logical-not, arch#496) must not swallow a following `=`:
+        // `!=` is the distinct BangEq token (longest-match).
+        let tokens = tokenize("! != !a").unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Bang);
+        assert_eq!(tokens[1].kind, TokenKind::BangEq);
+        assert_eq!(tokens[2].kind, TokenKind::Bang);
+        assert!(matches!(tokens[3].kind, TokenKind::Ident(_)));
+    }
+
+    #[test]
     fn test_literals() {
         let tokens = tokenize("42 0xFF 0b1010 8'hAB").unwrap();
         assert_eq!(tokens[0].kind, TokenKind::DecLiteral("42".into()));
