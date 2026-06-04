@@ -37,8 +37,12 @@ module Nic400MasterPort
 
   let m_ar_slv: UInt<NS_W> = m.ar_addr[REGION_BITS+NS_W-1:REGION_BITS];
   let m_aw_slv: UInt<NS_W> = m.aw_addr[REGION_BITS+NS_W-1:REGION_BITS];
-  let m_ar_oor: Bool = m.ar_addr[ADDR_WIDTH-1:REGION_BITS+NS_W] != 0;
-  let m_aw_oor: Bool = m.aw_addr[ADDR_WIDTH-1:REGION_BITS+NS_W] != 0;
+  // Decode holes inside the NS_W selector space (e.g. NUM_SLAVES=3, NS_W=2,
+  // addr selecting slot 3) must also route to the default slave; otherwise
+  // no per-slave thread matches and the request stalls forever instead of
+  // returning DECERR.
+  let m_ar_oor: Bool = (m.ar_addr[ADDR_WIDTH-1:REGION_BITS+NS_W] != 0) or (m_ar_slv >= NUM_SLAVES);
+  let m_aw_oor: Bool = (m.aw_addr[ADDR_WIDTH-1:REGION_BITS+NS_W] != 0) or (m_aw_slv >= NUM_SLAVES);
 
   resource ar_ch: mutex<priority>;
   resource r_ch:  mutex<priority>;
