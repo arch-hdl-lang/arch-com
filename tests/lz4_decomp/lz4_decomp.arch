@@ -1,0 +1,286 @@
+// LZ4 block decompressor — CAST LZ4SNP-D style
+//
+// Implements LZ4 block-format decompression (no frame header).
+// Streaming byte-in / byte-out with AXI-stream-style valid/ready.
+// History window: 4096 bytes (12-bit circular).
+//
+// Input stream: in_valid / in_data / in_ready / in_last
+//   in_last must be asserted on the last byte of the compressed block.
+//
+// Output stream: out_valid / out_data / out_ready
+//   out_ready = 1 assumed (no backpressure in v1).
+//
+// LZ4 sequence format (per block):
+//   Token byte → [lit-len extension bytes] → literal bytes
+//   → match-offset low → match-offset high → [match-len extension bytes]
+//   (last sequence terminates after literal bytes, no match)
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+// ── 4096 × 8-bit async-read simple-dual-port history RAM ─────────────────────
+// Write port stores literals and match-copy bytes.
+// Read port supplies match-copy bytes combinationally (latency 0 = async).
+ram Lz4HistBuf
+  kind simple_dual;
+  latency 0;
+  port clk: in Clock<SysDomain>;
+  store
+    buf: Vec<UInt<8>, 4096>;
+  end store
+  ports rd_port
+    addr:  in  UInt<12>;
+    rdata: out UInt<8>;
+  end ports rd_port
+  ports wr_port
+    en:    in  Bool;
+    addr:  in  UInt<12>;
+    wdata: in  UInt<8>;
+  end ports wr_port
+end ram Lz4HistBuf
+
+// ── LZ4 decompressor FSM ──────────────────────────────────────────────────────
+// States:
+//   Token      — wait for token byte; decode literal-len / match-len fields
+//   LitLenExt  — read extra literal-length bytes (nibble was 15)
+//   LitCopy    — pass literal bytes to output, write to history
+//   MatchOffLo — read match-offset low byte
+//   MatchOffHi — read match-offset high byte; compute match read pointer
+//   MatchLenExt — read extra match-length bytes (nibble was 15)
+//   MatchCopy  — replay bytes from history into output and history
+//   Done       — one-cycle end-of-block marker, then back to Token
+fsm Lz4DecompFsm
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  // Compressed input stream
+  port in_valid: in Bool;
+  port in_data:  in UInt<8>;
+  port in_ready: out Bool;
+  port in_last:  in Bool;
+
+  // Decompressed output stream
+  port out_valid: out Bool;
+  port out_data:  out UInt<8>;
+  port out_ready: in Bool;
+
+  // History RAM interface
+  port hist_rd_addr: out UInt<12>;
+  port hist_rd_data: in  UInt<8>;
+  port hist_wr_en:   out Bool;
+  port hist_wr_addr: out UInt<12>;
+  port hist_wr_data: out UInt<8>;
+
+  // Datapath registers
+  reg lit_len_r:      UInt<16> init 0 reset rst => 0;
+  reg match_len_r:    UInt<16> init 0 reset rst => 0;
+  reg match_off_lo_r: UInt<8>  init 0 reset rst => 0;
+  reg out_ptr_r:      UInt<12> init 0 reset rst => 0;
+  reg match_rd_ptr_r: UInt<12> init 0 reset rst => 0;
+  reg ml_need_ext_r:  Bool     init false reset rst => false;
+
+  // Combinational helpers — always active, valid when their inputs are meaningful
+  let token_ll:  UInt<8>  = in_data[7:4].zext<8>();
+  let token_ml:  UInt<8>  = in_data[3:0].zext<8>();
+  // 16-bit match offset from two bytes: high byte on in_data, low byte in register
+  let match_off_full: UInt<16> = (in_data.zext<16>() << 8) | match_off_lo_r.zext<16>();
+  // Match read pointer: out_ptr_r − offset (modular 12-bit)
+  let neg_off12:        UInt<12> = 12'd0 -% match_off_full.trunc<12>();
+  let match_rd_ptr_new: UInt<12> = out_ptr_r +% neg_off12;
+
+  state [Token, LitLenExt, LitCopy, MatchOffLo, MatchOffHi, MatchLenExt, MatchCopy, Done]
+  default state Token;
+  default seq on clk rising;
+
+  default
+    comb
+      in_ready     = false;
+      out_valid    = false;
+      out_data     = 0;
+      hist_rd_addr = 0;
+      hist_wr_en   = false;
+      hist_wr_addr = 0;
+      hist_wr_data = 0;
+    end comb
+  end default
+
+  // ── Token: consume token byte ─────────────────────────────────────────────
+  state Token
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        lit_len_r   <= token_ll.zext<16>();
+        match_len_r <= (token_ml.zext<9>() + 9'd4).zext<16>();
+        ml_need_ext_r <= (token_ml == 8'd15);
+      end if
+    end seq
+    -> LitLenExt  when (in_valid & (token_ll == 8'd15));
+    -> LitCopy    when (in_valid & (token_ll != 8'd15) & (token_ll != 8'd0));
+    -> Done       when (in_valid & (token_ll == 8'd0) & in_last);
+    -> MatchOffLo when (in_valid & (token_ll == 8'd0) & !in_last);
+  end state Token
+
+  // ── LitLenExt: accumulate literal-length extension bytes ─────────────────
+  // Extension byte 255 → add 255, keep reading; < 255 → add and proceed.
+  state LitLenExt
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        lit_len_r <= (lit_len_r + in_data.zext<16>()).trunc<16>();
+      end if
+    end seq
+    -> LitCopy when (in_valid & (in_data != 8'd255));
+  end state LitLenExt
+
+  // ── LitCopy: stream literals from input to output and into history ────────
+  state LitCopy
+    comb
+      in_ready     = true;
+      out_valid    = in_valid;
+      out_data     = in_data;
+      hist_wr_en   = in_valid;
+      hist_wr_addr = out_ptr_r;
+      hist_wr_data = in_data;
+    end comb
+    seq
+      if in_valid
+        out_ptr_r <= out_ptr_r +% 12'd1;
+        lit_len_r <= (lit_len_r - 16'd1).trunc<16>();
+      end if
+    end seq
+    -> Done       when (in_valid & (lit_len_r == 16'd1) & in_last);
+    -> MatchOffLo when (in_valid & (lit_len_r == 16'd1) & !in_last);
+  end state LitCopy
+
+  // ── MatchOffLo: read low byte of match offset ─────────────────────────────
+  state MatchOffLo
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        match_off_lo_r <= in_data;
+      end if
+    end seq
+    -> MatchOffHi when in_valid;
+  end state MatchOffLo
+
+  // ── MatchOffHi: read high byte; compute circular history read pointer ─────
+  state MatchOffHi
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        match_rd_ptr_r <= match_rd_ptr_new;
+      end if
+    end seq
+    -> MatchLenExt when (in_valid & ml_need_ext_r);
+    -> MatchCopy   when (in_valid & !ml_need_ext_r);
+  end state MatchOffHi
+
+  // ── MatchLenExt: accumulate match-length extension bytes ──────────────────
+  state MatchLenExt
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        match_len_r <= (match_len_r + in_data.zext<16>()).trunc<16>();
+      end if
+    end seq
+    -> MatchCopy when (in_valid & (in_data != 8'd255));
+  end state MatchLenExt
+
+  // ── MatchCopy: replay bytes from history into output and history ──────────
+  // One byte per cycle; output is combinational from async RAM read.
+  // No input consumed (in_ready = false from default).
+  state MatchCopy
+    comb
+      out_valid    = true;
+      out_data     = hist_rd_data;
+      hist_rd_addr = match_rd_ptr_r;
+      hist_wr_en   = true;
+      hist_wr_addr = out_ptr_r;
+      hist_wr_data = hist_rd_data;
+    end comb
+    seq
+      out_ptr_r      <= out_ptr_r +% 12'd1;
+      match_rd_ptr_r <= match_rd_ptr_r +% 12'd1;
+      match_len_r    <= (match_len_r - 16'd1).trunc<16>();
+    end seq
+    -> Token when (match_len_r == 16'd1);
+  end state MatchCopy
+
+  // ── Done: end-of-block; one idle cycle then back to Token ─────────────────
+  state Done
+    -> Token when true;
+  end state Done
+
+end fsm Lz4DecompFsm
+
+// ── Lz4Decomp: top-level wrapper ──────────────────────────────────────────────
+// Instantiates Lz4DecompFsm + Lz4HistBuf and connects them via internal wires.
+module Lz4Decomp
+  port clk:      in Clock<SysDomain>;
+  port rst:      in Reset<Sync>;
+
+  port in_valid: in Bool;
+  port in_data:  in UInt<8>;
+  port in_ready: out Bool;
+  port in_last:  in Bool;
+
+  port out_valid: out Bool;
+  port out_data:  out UInt<8>;
+  port out_ready: in Bool;
+
+  // Internal wires: FSM ↔ history RAM
+  wire hist_rd_addr_w: UInt<12>;
+  wire hist_rd_data_w: UInt<8>;
+  wire hist_wr_en_w:   Bool;
+  wire hist_wr_addr_w: UInt<12>;
+  wire hist_wr_data_w: UInt<8>;
+
+  // Internal wires: FSM outputs to module ports
+  wire in_ready_w:  Bool;
+  wire out_valid_w: Bool;
+  wire out_data_w:  UInt<8>;
+
+  inst fsm_i: Lz4DecompFsm
+    clk          <- clk;
+    rst          <- rst;
+    in_valid     <- in_valid;
+    in_data      <- in_data;
+    in_ready     -> in_ready_w;
+    in_last      <- in_last;
+    out_valid    -> out_valid_w;
+    out_data     -> out_data_w;
+    out_ready    <- out_ready;
+    hist_rd_addr -> hist_rd_addr_w;
+    hist_rd_data <- hist_rd_data_w;
+    hist_wr_en   -> hist_wr_en_w;
+    hist_wr_addr -> hist_wr_addr_w;
+    hist_wr_data -> hist_wr_data_w;
+  end inst fsm_i
+
+  inst hist_i: Lz4HistBuf
+    clk           <- clk;
+    rd_port.addr  <- hist_rd_addr_w;
+    rd_port.rdata -> hist_rd_data_w;
+    wr_port.en    <- hist_wr_en_w;
+    wr_port.addr  <- hist_wr_addr_w;
+    wr_port.wdata <- hist_wr_data_w;
+  end inst hist_i
+
+  comb
+    in_ready  = in_ready_w;
+    out_valid = out_valid_w;
+    out_data  = out_data_w;
+  end comb
+
+end module Lz4Decomp
