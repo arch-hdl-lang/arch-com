@@ -1345,6 +1345,38 @@ fn resolve_stdlib_dir() -> Option<PathBuf> {
     None
 }
 
+/// Port list for any port-bearing construct. Returns an empty slice for
+/// items that carry no ports (struct, enum, function, bus, package, …).
+/// Used by the dep-discovery scan to find `initiator`/`target` bus-port
+/// type references the `inst` scan cannot see.
+fn item_ports(item: &Item) -> &[arch::ast::PortDecl] {
+    match item {
+        // Own `ports` field.
+        Item::Module(m) => &m.ports,
+        Item::Synchronizer(s) => &s.ports,
+        Item::Clkgate(c) => &c.ports,
+        Item::Template(t) => &t.ports,
+        // `ports` via `Deref<Target = ConstructCommon>`.
+        Item::Fsm(f) => &f.ports,
+        Item::Fifo(f) => &f.ports,
+        Item::Ram(r) => &r.ports,
+        Item::Cam(c) => &c.ports,
+        Item::Counter(c) => &c.ports,
+        Item::Arbiter(a) => &a.ports,
+        Item::Regfile(r) => &r.ports,
+        Item::Pipeline(p) => &p.ports,
+        Item::Linklist(l) => &l.ports,
+        Item::Domain(_)
+        | Item::Struct(_)
+        | Item::Enum(_)
+        | Item::Function(_)
+        | Item::Bus(_)
+        | Item::Package(_)
+        | Item::Use(_)
+        | Item::ExternPackage(_) => &[],
+    }
+}
+
 fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
     use std::collections::HashSet;
 
@@ -1355,6 +1387,7 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
     let mut all_files: Vec<PathBuf> = Vec::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let mut all_defined_modules: HashSet<String> = HashSet::new();
+    let mut all_defined_buses: HashSet<String> = HashSet::new();
     let mut queue: Vec<PathBuf> = files.to_vec();
 
     // Process files, discovering new dependencies via `use`
@@ -1376,8 +1409,10 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
 
         // Find `use` items and queue their files
         let mut deps = Vec::new();
+        let mut use_names: HashSet<String> = HashSet::new();
         for item in &parsed.items {
             if let arch::ast::Item::Use(u) = item {
+                use_names.insert(u.name.name.clone());
                 // Resolution order:
                 //   1. Same-directory relative path
                 //   2. ARCH_LIB_PATH entries (colon-separated)
@@ -1416,6 +1451,7 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
                 Item::Fifo(f) => { all_defined_modules.insert(f.name.name.clone()); }
                 Item::Ram(r) => { all_defined_modules.insert(r.name.name.clone()); }
                 Item::Arbiter(a) => { all_defined_modules.insert(a.name.name.clone()); }
+                Item::Bus(b) => { all_defined_buses.insert(b.name.name.clone()); }
                 _ => {}
             }
         }
@@ -1458,6 +1494,55 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
                     let p = stdlib.join(format!("{inst_name}.archi"));
                     if p.exists() { deps.push(p); }
                 }
+            }
+        }
+
+        // Find bus port-type references (`port p: initiator|target BusName<…>`)
+        // and look for their `.arch` / `.archi` definitions with the same
+        // search chain as `inst` references. Bus types referenced across files
+        // appear in port declarations, not `inst` nodes, so the scan above
+        // never queues them — without this a single-file `arch check` of a
+        // module with a bus port fails with "unknown bus type" even when the
+        // bus's `.arch`/`.archi` sits right next to it.
+        let mut bus_refs: Vec<String> = Vec::new();
+        for item in &parsed.items {
+            for port in item_ports(item) {
+                if let Some(bus) = &port.bus_info {
+                    bus_refs.push(bus.bus_name.name.clone());
+                }
+            }
+        }
+        for bus_name in bus_refs {
+            if all_defined_buses.contains(bus_name.as_str()) { continue; }
+            // An explicit `use <Bus>;` is authoritative — it already queued
+            // the canonical definition above. Skip the fallback scan for it
+            // so we don't also pull in a stale build-artifact `<Bus>.archi`
+            // sitting in the source directory (which would double-define the
+            // bus).
+            if use_names.contains(bus_name.as_str()) { continue; }
+            // Same-directory `.arch` first, then `.archi`.
+            let arch_path = base_dir.join(format!("{bus_name}.arch"));
+            let archi_path = base_dir.join(format!("{bus_name}.archi"));
+            if arch_path.exists() {
+                deps.push(arch_path);
+            } else if archi_path.exists() {
+                deps.push(archi_path);
+            }
+            // Then ARCH_LIB_PATH entries.
+            if let Ok(lib_path) = std::env::var("ARCH_LIB_PATH") {
+                for dir in lib_path.split(':') {
+                    let p = std::path::Path::new(dir).join(format!("{bus_name}.arch"));
+                    if p.exists() { deps.push(p); break; }
+                    let p = std::path::Path::new(dir).join(format!("{bus_name}.archi"));
+                    if p.exists() { deps.push(p); break; }
+                }
+            }
+            // Finally the shipped standard library.
+            if let Some(stdlib) = resolve_stdlib_dir() {
+                let p = stdlib.join(format!("{bus_name}.arch"));
+                if p.exists() { deps.push(p); continue; }
+                let p = stdlib.join(format!("{bus_name}.archi"));
+                if p.exists() { deps.push(p); }
             }
         }
 

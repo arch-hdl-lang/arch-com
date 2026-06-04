@@ -81,7 +81,21 @@ pub(crate) fn emit_bus_interface(b: &BusDecl) -> String {
     let name = &b.name.name;
     let mut s = format!("bus {name}\n");
     emit_params(&mut s, &b.params);
-    emit_ports(&mut s, &b.signals);
+    // Bus members are bare `name: dir Type;` — that is how `parse_bus_signal`
+    // reads them. The generic `emit_ports` would prefix each with `port `,
+    // producing a `.archi` the parser rejects ("'port' is a reserved
+    // keyword"), so the emitted bus interface could never be read back.
+    for sig in &b.signals {
+        let dir = match sig.direction {
+            Direction::In => "in",
+            Direction::Out => "out",
+        };
+        s.push_str(&format!(
+            "  {}: {dir} {};\n",
+            sig.name.name,
+            type_str(&sig.ty)
+        ));
+    }
     s.push_str(&format!("end bus {name}\n"));
     s
 }

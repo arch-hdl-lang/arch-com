@@ -19971,3 +19971,128 @@ end module UserAssertNoReset
          user-assert SVA; got:\n{sv}"
     );
 }
+
+/// `arch check Foo.arch` for a module that references a `bus` type via a
+/// port (`port m: initiator|target BusName`) must auto-discover the bus
+/// definition (`BusName.arch` / `.archi`) from the same directory, the
+/// same way `inst SubModule` auto-discovers `SubModule.archi`. Before this
+/// was wired up, the dep scan only inspected `inst` nodes, so a single-file
+/// check of a bus-consuming module failed with "unknown bus type".
+#[test]
+fn bus_port_type_auto_discovers_sibling_definition() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    std::fs::write(
+        td.path().join("MyBus.arch"),
+        "bus MyBus\n  cmd: out UInt<8>;\n  resp: in UInt<8>;\nend bus MyBus\n",
+    )
+    .unwrap();
+    // NOTE: no `use MyBus;` — resolution must come purely from the
+    // bus-port dependency scan.
+    let consumer = td.path().join("Consumer.arch");
+    std::fs::write(
+        &consumer,
+        "module Consumer\n  port clk: in Clock<SysDomain>;\n  \
+         port m: initiator MyBus;\n  comb\n    m.cmd = 8'h0;\n  end comb\n\
+         end module Consumer\n",
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(arch_bin)
+        .arg("check")
+        .arg(&consumer)
+        .output()
+        .expect("run arch check");
+    assert!(
+        out.status.success(),
+        "single-file check of a bus-consuming module should auto-discover \
+         the sibling bus definition; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Control: with the bus definition absent, the check must still fail
+    // with the unresolved-bus diagnostic (auto-discovery is additive, not a
+    // silent pass).
+    let td2 = tempfile::tempdir().expect("tempdir");
+    let lonely = td2.path().join("Consumer.arch");
+    std::fs::copy(&consumer, &lonely).unwrap();
+    let out2 = std::process::Command::new(arch_bin)
+        .arg("check")
+        .arg(&lonely)
+        .output()
+        .expect("run arch check");
+    assert!(
+        !out2.status.success(),
+        "check should fail when the referenced bus cannot be found"
+    );
+    assert!(
+        String::from_utf8_lossy(&out2.stderr).contains("unknown bus type"),
+        "expected 'unknown bus type' diagnostic; stderr:\n{}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
+}
+
+/// The `.archi` bus interface emitted by `arch build` must parse back in —
+/// `emit_bus_interface` previously wrote `port name: ...` members, but a
+/// `bus` body is parsed with bare `name: dir Type;` members, so the
+/// emitted interface tripped "'port' is a reserved keyword" on read-back.
+/// This guards the round-trip now that bus interfaces are auto-discovered.
+#[test]
+fn bus_interface_archi_round_trips() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    std::fs::write(
+        td.path().join("MyBus.arch"),
+        "bus MyBus\n  cmd: out UInt<8>;\n  resp: in UInt<8>;\nend bus MyBus\n",
+    )
+    .unwrap();
+    let consumer = td.path().join("Consumer.arch");
+    std::fs::write(
+        &consumer,
+        "module Consumer\n  port clk: in Clock<SysDomain>;\n  \
+         port m: initiator MyBus;\n  comb\n    m.cmd = 8'h0;\n  end comb\n\
+         end module Consumer\n",
+    )
+    .unwrap();
+
+    // Build the consumer — this emits `MyBus.archi` alongside the SV.
+    let sv_out = td.path().join("Consumer.sv");
+    let bld = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg(&consumer)
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("run arch build");
+    assert!(
+        bld.status.success(),
+        "arch build failed; stderr:\n{}",
+        String::from_utf8_lossy(&bld.stderr)
+    );
+
+    let bus_archi = td.path().join("MyBus.archi");
+    assert!(
+        bus_archi.exists(),
+        "arch build should emit MyBus.archi next to the generated SV"
+    );
+    let archi_text = std::fs::read_to_string(&bus_archi).unwrap();
+    assert!(
+        archi_text.contains("cmd: out UInt<8>") && !archi_text.contains("port cmd"),
+        "bus interface members must be bare `name: dir Type;`, not \
+         `port`-prefixed; got:\n{archi_text}"
+    );
+
+    // The emitted interface must parse standalone (the round-trip).
+    let chk = std::process::Command::new(arch_bin)
+        .arg("check")
+        .arg(&bus_archi)
+        .output()
+        .expect("run arch check");
+    assert!(
+        chk.status.success(),
+        "emitted bus .archi must parse back in; stderr:\n{}",
+        String::from_utf8_lossy(&chk.stderr)
+    );
+}
