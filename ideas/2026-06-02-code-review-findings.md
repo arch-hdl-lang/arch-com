@@ -98,7 +98,16 @@ to end). `group_size==1` now emits one `test_<name>.cpp` per test, no
 shard-filename `else` arm is gone; `separate-compilation-plan.md` rewritten
 to match. Verified through Verilator for both group-1 and group-4 layouts.
 
-## 3. Proposal: auto-discover `.archi` for **bus port types**, not just module `inst`
+## 3. Proposal (IMPLEMENTED — arch-com#498): auto-discover `.archi` for **bus port types**, not just module `inst`
+
+**Implemented in arch-com#498.** The dep scan now collects bus names from
+`initiator`/`target` ports and resolves them via the same search chain as
+`inst`; an explicit `use BusName;` takes precedence. The change also fixed a
+latent round-trip bug it exposed — `emit_bus_interface` wrote `port`-prefixed
+members that a `bus` body cannot parse back; members are now emitted bare.
+`arch check tests/nic400/Nic400MasterPort.arch` now passes standalone. The
+original proposal text follows.
+
 
 **Evidence.** `arch check tests/nic400/Nic400MasterPort.arch` (the exact
 command in #488's test plan, listed as "OK") actually fails:
