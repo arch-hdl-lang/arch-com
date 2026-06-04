@@ -18504,6 +18504,10 @@ fn test_native_sim_bool_not_pipe_reg_outputs_and_ampamp() {
     // `not result_valid_out@0` as 8 bits. That emitted a reduction-AND
     // over `!result_valid_out`, so `not false` collapsed back to false
     // for byte-backed Bool values.
+    //
+    // Also covers the `||` sibling alias (review 2026-06-03): #493 added both
+    // `&&` and `||` tokens but only exercised `&&`. `||` must lower to C++
+    // logical `||`, not bitwise/reduction glue, on the same Bool pipe_reg path.
     let td = tempfile::tempdir().expect("tempdir");
     let arch_bin = env!("CARGO_BIN_EXE_arch");
     let out = std::process::Command::new(arch_bin)
@@ -18533,6 +18537,11 @@ fn test_native_sim_bool_not_pipe_reg_outputs_and_ampamp() {
         generated_cpp.contains("idle_ampamp")
             && generated_cpp.contains("((!_busy_out) && (!_result_valid_out))"),
         "symbolic `&&` should lower to C++ logical &&, not bitwise/reduction glue:\n{generated_cpp}"
+    );
+    assert!(
+        generated_cpp.contains("busy_pipebar")
+            && generated_cpp.contains("(_busy_out || _result_valid_out)"),
+        "symbolic `||` should lower to C++ logical ||, not bitwise/reduction glue:\n{generated_cpp}"
     );
     assert!(
         !generated_cpp.contains("0xffULL") && !generated_cpp.contains("0xFFULL"),

@@ -20,6 +20,8 @@ module NativeBoolNotProbe
   port not_result_valid: out Bool;
   port idle_ampamp: out Bool;
   port idle_keyword: out Bool;
+  port busy_pipebar: out Bool;
+  port busy_or_keyword: out Bool;
 
   seq on clk rising
     busy_out <= busy_in;
@@ -30,5 +32,10 @@ module NativeBoolNotProbe
     not_result_valid = not result_valid_out@0;
     idle_ampamp = not busy_out@0 && not result_valid_out@0;
     idle_keyword = (busy_out@0 == false) and (result_valid_out@0 == false);
+    // `||` is the symbolic alias for the `or` keyword (arch-com#492 / #493).
+    // Cover the OR sibling so the alias lowers to C++ logical `||`, not a
+    // bitwise/reduction glue over byte-backed Bool pipe_reg values.
+    busy_pipebar = busy_out@0 || result_valid_out@0;
+    busy_or_keyword = busy_out@0 or result_valid_out@0;
   end comb
 end module NativeBoolNotProbe

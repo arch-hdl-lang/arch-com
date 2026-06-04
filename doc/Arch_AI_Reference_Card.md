@@ -278,7 +278,7 @@ let {field1, field2} = struct_expr;   // binds two locals to the struct's named 
 Arithmetic:  + - * / %   (auto-widen)
 Wrapping:    +% -% *%    (no-widen; result width = max(W(a),W(b)))
 Comparison:  == != < > <= >=
-Logical:     and or not
+Logical:     and or not    // `&&` == `and`, `||` == `or` (symbolic aliases)
 Bitwise:     & | ^ ~ << >>
 SVA-only:    |->  (overlap implication, same-cycle)
              |=>  (next-cycle implication)

@@ -34,6 +34,8 @@ int main() {
     CHECK(dut.not_result_valid == 1, "not false is true on a Bool pipe_reg @0 read");
     CHECK(dut.idle_ampamp == 1, "symbolic && preserves not false && not false");
     CHECK(dut.idle_keyword == 1, "keyword and matches symbolic &&");
+    CHECK(dut.busy_pipebar == 0, "symbolic || preserves false || false");
+    CHECK(dut.busy_or_keyword == 0, "keyword or matches symbolic ||");
 
     dut.busy_in = 0;
     dut.result_valid_in = 1;
@@ -42,6 +44,8 @@ int main() {
     CHECK(dut.not_result_valid == 0, "not true is false on a Bool pipe_reg @0 read");
     CHECK(dut.idle_ampamp == 0, "symbolic && observes not true as false");
     CHECK(dut.idle_keyword == 0, "keyword and matches symbolic && when false");
+    CHECK(dut.busy_pipebar == 1, "symbolic || observes false || true as true");
+    CHECK(dut.busy_or_keyword == 1, "keyword or matches symbolic || when true");
 
     std::printf("PASS native Bool not pipe_reg: %d pass / %d fail\n", pass, fail);
     return fail == 0 ? 0 : 1;
