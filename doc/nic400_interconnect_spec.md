@@ -1113,7 +1113,7 @@ A verification pass against the ARM TRM (DDI 0475E, *CoreLink NIC-400 Network In
 | Parameterizable M×N matrix | ✅ | `Nic400Fabric.arch`; demo is 3×4. [TRM] §1.2 caps NIC-400 at 1-128 slave IFs × 1-64 master IFs and up to 5 cascaded switches between any master/slave pair. |
 | ID remap (master idx prefix) | ✅ | `MASTER_ID_W → SLAVE_ID_W = MASTER_ID_W + ceil(log2(M))`. [TRM] §2.3.12 names the components "Interconnect ID (IID) + Virtual ID (VID) + Slave-Interface ID (SIID)"; global ID width is 1-24 bits with an optional "ID reduction" pass at AMIB. Our shim does a single SIID prefix; we do not implement ID reduction. |
 | Address decode | 🟡 | Compile-time, top-NS_W bits of REGION_BITS=28 page. [TRM] §2.3.11 names the runtime knob "Remap" (8 remap-state bits, GPV-programmable, can alias/move/add/remove regions); we don't implement it. |
-| Decode-error (DECERR) response on unmatched address | ❌ | [TRM] §2.2.1: "Any transaction that does not decode to a legal master interface destination... receives a DECERR response." NIC-400 builds this into the slave interface block (ASIB) automatically — there is no separately-instantiated "default slave" module; rephrase the row as a behavior the ASIB must emit. Demo's `Nic400MasterPort` silently drops un-matched addrs. |
+| Decode-error (DECERR) response on unmatched address | ✅ | `Nic400DefaultSlave.arch` (per-master Rd/Wr thread pair returning RRESP/BRESP=2'b11). `Nic400MasterPort` decodes OOR via `m_ar_oor`/`m_aw_oor` (`addr[ADDR_WIDTH-1:REGION_BITS+NS_W] != 0`) and routes OOR AR/AW to the `default_s` port; the default slave echoes the request ID in the error response. Verified by `Nic400DefaultSlave_test.harc` (OOR read + OOR write → DECERR, valid decode intact). [TRM] §2.2.1: real NIC-400 builds this into the ASIB rather than a separate module; we model it as a standalone default-slave block for clarity. |
 | Per-master / per-slave clock domains | ❌ | All ports share `clk: in Clock<SysDomain>`. [TRM] §2.2.1 / §2.3.5: each ASIB/AMIB can select SYNC 1:1, SYNC 1:n, SYNC n:1, SYNC n:m, or ASYNC frequency-domain crossing with a per-FIFO depth of 2-32, and the `sync_mode` is GPV-programmable. CDC via `fifo kind: async` is doable but not wired. |
 | Cyclic Dependency Avoidance Schemes (CDAS) — Single-Slave / Single-Slave-per-ID | ❌ | [TRM] §2.3.7: per-ASIB knob that stalls transactions to a different destination than outstanding ones of the same type (or same ID), to break AW/W-channel ordering deadlocks. Not modelled. |
 | Single Active Slave (SAS) | ❌ | [TRM] §2.3.8: at a divergent switch slave IF, an AW address beat is stalled if any outstanding write data beats are still in flight to a different master IF. Used as a fallback CDAS resolution. Not modelled. |
@@ -1165,8 +1165,10 @@ A verification pass against the ARM TRM (DDI 0475E, *CoreLink NIC-400 Network In
 |---|---|---|
 | Single-master, single-slave smoke | ✅ | `tb_nic400_system.cpp` |
 | Multi-master contention (M=2..3 active at once) | ✅ | `tb_nic400_fabric_multi_master.cpp`: S1 3-master disjoint reads at 3.00 t/c; S2 3-way hot-slave round_robin at 1.00 t/c (m0=10,m1=10,m2=10, no starvation); S3 3-master disjoint writes (18/18 BRESPs correctly routed). |
-| Multi-slave hot-spot QoS test | ❌ | Implied by §16 row above — `tb_hot_slave_qos.cpp` from spec Appendix A was never landed |
-| OOO completion (interleaved B per master) | ❌ | `tb_ooo_completion.cpp` from spec Appendix A — not landed |
+| Hot-slave handoff throughput | ✅ | `Nic400FabricHotSlave_test.harc`: S1 M↔M swap timing (zero dead cycle), S2 persistent round_robin contention, S3 contender dropout, S4 asymmetric load — all at ≥0.9 t/c. (Per-master QoS *priority* arbitration remains 🟡 — `ar_lock` is `mutex<round_robin>`, not the QoS hook.) |
+| OOO completion (interleaved B per master) | ✅ | `Nic400OooCompletion_test.harc` (§15.5): M0 issues two writes to slaves 0/1; slave1's B injected first → M0 receives B(id=1) before B(id=0). Enabled by the MasterPort B-phase fix (wait outside `b_ch` until the slave has `b_valid`). |
+| Default-slave DECERR | ✅ | `Nic400DefaultSlave_test.harc`: OOR read → RRESP=DECERR (id echoed, RLAST=1), OOR write → BRESP=DECERR (id echoed), valid decode unaffected. |
+| Decode-error response | ✅ | See "Decode-error (DECERR) response on unmatched address" row above. |
 | Reg-slice fabric throughput | ✅ | `tb_nic400_fabric_regslice.cpp`, `tb_nic400_fabric_throughput.cpp` |
 | Width-adapter independent TB | ✅ | `tb_nic400_width_adapter.cpp` |
 | PMU exact-count TB | ✅ | `tb_nic400_pmu.cpp` (counter glue is in the dedicated PMU TB, not the integrated demo — see `tb_nic400_system.cpp` comments) |
@@ -1174,7 +1176,7 @@ A verification pass against the ARM TRM (DDI 0475E, *CoreLink NIC-400 Network In
 #### Quick-pick "close next" candidates
 Roughly ordered by likely effort × value, picked from the rows above:
 
-1. **Default-slave responder** — small extra module returning DECERR for un-decoded addrs, wire into the fabric's "no match" output of `Nic400MasterPort`. Closes a basic conformance item. [TRM §2.2.1]
+1. ~~**Default-slave responder**~~ — ✅ **DONE**: `Nic400DefaultSlave.arch` returns DECERR for OOR addresses; `Nic400MasterPort` routes un-decoded AR/AW to it via the `default_s` port. [TRM §2.2.1]
 2. **Per-slave reg slice wrapper** — symmetric to `Nic400FabricRs1` but on the s side. Mostly copy-paste; useful as a real-SoC pattern. [TRM §2.2.1/§2.2.2]
 3. **Wire width adapter into a system variant** — `Nic400SystemWide` with a 64-bit AXI master and the 32-bit APB target, so the adapter is exercised in-system.
 4. **GPV regfile sketch** — AXI4 target (TRM §3.2: GPV is AXI-accessed, AxSIZE=32-bit only, Secure-only, non-cacheable, no interleaved WDATA) plus a `regfile` block with a few mapped registers (`read_qos`/`write_qos` from Table 3-1, decode-table / remap-state override). Lowest-cost path to "programmable" status on the QoS, decode, and remap rows.
