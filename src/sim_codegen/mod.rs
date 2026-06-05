@@ -2452,6 +2452,7 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
                 8
             }
         }
+        ExprKind::LatencyAt(inner, _) | ExprKind::SvaNext(_, inner) => infer_expr_width(inner, ctx),
         ExprKind::Literal(LitKind::Sized(w, _)) => *w,
         ExprKind::Literal(_) => 32,
         ExprKind::Bool(_) => 1,
@@ -2525,7 +2526,7 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
                 }
             }
         }
-        ExprKind::Unary(UnaryOp::Not, inner) => infer_expr_width(inner, ctx),
+        ExprKind::Unary(UnaryOp::Not, _) => 1,
         ExprKind::Unary(UnaryOp::RedAnd, _)
         | ExprKind::Unary(UnaryOp::RedOr, _)
         | ExprKind::Unary(UnaryOp::RedXor, _) => 1,

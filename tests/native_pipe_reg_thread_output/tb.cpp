@@ -20,9 +20,12 @@ int main() {
     dut.rst = 0;
     tick();
 
+    // Issue #306 (wait-until exit fold): payload_out and valid_out now fire
+    // on the SAME clock edge as `start` detection (one cycle earlier than
+    // the pre-fold two-state form).  After a single tick with start=1 the
+    // outputs are already updated.
     dut.payload_in = 0x5a;
     dut.start = 1;
-    tick();
     tick();
 
     if (!dut.valid_out || dut.payload_out != 0x5a) {
@@ -31,6 +34,9 @@ int main() {
         return 1;
     }
 
+    // The `wait 1 cycle` after the two assignments means the state machine
+    // spends one cycle in the post-assignment action state before clearing
+    // valid_out.  De-assert start and advance one more cycle.
     dut.start = 0;
     tick();
     if (dut.valid_out) {

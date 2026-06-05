@@ -467,7 +467,7 @@ fn elaborate_module_variant(
         p
     }).collect();
 
-    Ok(ModuleDecl { name: new_name, params: new_params, ports: all_ports, body: new_body, implements: m.implements, hooks: m.hooks, cdc_safe: m.cdc_safe, rdc_safe: m.rdc_safe, comb_loops_allowed: m.comb_loops_allowed, span: m.span, doc: m.doc, inner_doc: m.inner_doc, is_interface: m.is_interface })
+    Ok(ModuleDecl { name: new_name, params: new_params, ports: all_ports, body: new_body, implements: m.implements, hooks: m.hooks, cdc_safe: m.cdc_safe, rdc_safe: m.rdc_safe, comb_loops_allowed: m.comb_loops_allowed, allow_dead_skid_feedback: m.allow_dead_skid_feedback, span: m.span, doc: m.doc, inner_doc: m.inner_doc, is_interface: m.is_interface })
 }
 
 /// Rewrite an inst's `module_name` to the correct variant name.
@@ -2698,6 +2698,14 @@ fn lower_module_threads(
             continue;
         }
 
+        // Issue #306: fold register assignments from a sole-entry action state
+        // that immediately follows a `wait until` state into the wait state's
+        // cond-exit arm.  This makes `wait until cond; X <= Y;` fire X on
+        // the same clock edge as the cond detection (one cycle earlier than
+        // the unfolded two-state form).  The absorbed action state is marked
+        // `is_folded` and skipped during codegen — it becomes unreachable.
+        fold_wait_until_exit_assignments(&mut raw_states, t.once);
+
         let n_states = raw_states.len();
         let state_reg = format!("_t{}_state", ti);
         let state_bits = crate::width::index_width(n_states as u64) as u64;
@@ -2896,16 +2904,24 @@ fn lower_module_threads(
                 index: ti,
                 span: t.span,
                 states,
+                hazards: Vec::new(),
             });
         }
 
         // State transition always_ff
         let mut seq_stmts: Vec<Stmt> = Vec::new();
         for (si, raw) in raw_states.iter().enumerate() {
+            // Issue #306: skip states that were absorbed into a preceding
+            // wait_until exit arm.  They are unreachable at runtime.
+            if raw.is_folded {
+                continue;
+            }
+
             // Only skip truly empty states that don't need state advancement
             let needs_transition = si + 1 < n_states || !t.once; // non-terminal states always need advancement
             if raw.seq_stmts.is_empty() && raw.transition_cond.is_none()
                 && raw.wait_cycles.is_none() && raw.multi_transitions.is_empty()
+                && raw.folded_exit_seq.is_empty()
                 && !needs_transition {
                 continue;
             }
@@ -2923,8 +2939,14 @@ fn lower_module_threads(
             body.extend(raw.seq_stmts.clone());
 
             // State transitions
-            // For thread_once: last state stays (terminal), otherwise wrap to 0
-            let next_state = if si + 1 < n_states {
+            // For thread_once: last state stays (terminal), otherwise wrap to 0.
+            // Issue #306: when folded_exit_target is set, the wait_until state
+            // transitions directly to that target (skipping the absorbed action
+            // state si+1).  For all other transition kinds the natural next-state
+            // computation below applies.
+            let next_state = if let Some(folded_tgt) = raw.folded_exit_target {
+                folded_tgt
+            } else if si + 1 < n_states {
                 si + 1
             } else if t.once {
                 si // terminal: stay in last state
@@ -2970,13 +2992,19 @@ fn lower_module_threads(
                     }));
                 }
             } else if let Some(ref cond) = raw.transition_cond {
+                // Issue #306: if folded_exit_seq is non-empty, include those
+                // seq assigns inside the cond-exit arm so they fire on the same
+                // clock edge as the wait-exit detection (one cycle earlier than
+                // the unfolded two-state form).
+                let mut then_stmts: Vec<Stmt> = raw.folded_exit_seq.clone();
+                then_stmts.push(Stmt::Assign(RegAssign {
+                    target: Expr::new(ExprKind::Ident(state_reg.clone()), sp),
+                    value: state_name_expr(next_state),
+                    span: sp,
+                }));
                 body.push(Stmt::IfElse(IfElse {
                     cond: cond.clone(),
-                    then_stmts: vec![Stmt::Assign(RegAssign {
-                        target: Expr::new(ExprKind::Ident(state_reg.clone()), sp),
-                        value: state_name_expr(next_state),
-                        span: sp,
-                    })],
+                    then_stmts,
                     else_stmts: Vec::new(), unique: false, span: sp,
                 }));
             } else if raw.wait_cycles.is_some() {
@@ -3115,6 +3143,11 @@ fn lower_module_threads(
         // Collect comb outputs for this thread (merged into one block later)
         // For shared(or) signals, transform `sig = val` → `sig = sig | val`
         for (si, raw) in raw_states.iter().enumerate() {
+            // Issue #306: folded states are unreachable; skip their comb outputs.
+            if raw.is_folded {
+                continue;
+            }
+
             let state_cond = Expr::new(ExprKind::Binary(
                 BinOp::Eq,
                 Box::new(Expr::new(ExprKind::Ident(state_reg.clone()), sp)),
@@ -3312,6 +3345,7 @@ fn lower_module_threads(
         cdc_safe: false,
         rdc_safe: false,
         comb_loops_allowed: false,
+        allow_dead_skid_feedback: false,
         span: sp,
         doc: None,
         inner_doc: None,
@@ -4299,6 +4333,119 @@ struct ThreadFsmState {
     /// Target-side TLM only: this state exits to a generated response state
     /// carrying the indexed return expression instead of falling through.
     terminal_return: Option<usize>,
+    /// Issue #306: seq assigns folded from the immediately-following action
+    /// state into this wait_until state's cond-exit arm.  Only populated
+    /// when `transition_cond.is_some()` and the next state was a sole-entry
+    /// pure-action state.  Emitted inside `if (cond) { folded_exit_seq; state <= next; }`.
+    folded_exit_seq: Vec<Stmt>,
+    /// When `folded_exit_seq` is non-empty, the transition target skips the
+    /// absorbed action state and jumps directly to the state after it.
+    /// `None` means use the natural `si + 1` computation.
+    folded_exit_target: Option<usize>,
+    /// True when this state was absorbed into a preceding wait_until exit arm
+    /// (issue #306).  The state is unreachable; codegen skips it entirely.
+    is_folded: bool,
+    /// True when this state must NOT be folded into the preceding wait_until
+    /// state's exit arm (issue #306).  Set when a `wait 1 cycle` was elided
+    /// before this state — the natural S(wait)→S(action) transition provides
+    /// the 1-cycle budget and folding would lose that cycle.
+    no_fold_into_prev: bool,
+}
+
+/// Issue #306: fold `wait until` exit assignments.
+///
+/// Scans `states` for pairs (si, si+1) where:
+///   - state si is a pure `wait until cond` state (has `transition_cond`,
+///     no `wait_cycles`, no `multi_transitions`, no `folded_exit_seq` already)
+///   - state si+1 is a pure action state (no `transition_cond`, no
+///     `wait_cycles`, no `multi_transitions`, not already folded), AND
+///   - state si+1 has at least one seq assign to fold, AND
+///   - no other state targets si+1 via `multi_transitions` (sole-entry check)
+///
+/// When all conditions hold, `seq_stmts` from si+1 are moved into
+/// si's `folded_exit_seq` field.  The transition target for si is updated to
+/// `folded_exit_target = si+2` so the codegen skips si+1 directly.
+/// State si+1 is marked `is_folded = true`; the codegen loop skips it.
+///
+/// This does NOT fold across `wait N cycle` states (those need the counter
+/// states) or into/out of fork/join dispatch states.
+fn fold_wait_until_exit_assignments(states: &mut Vec<ThreadFsmState>, t_once: bool) {
+    let n = states.len();
+    // Build the set of state indices targeted by any multi_transition from
+    // any state.  A state in this set may be reachable from multiple
+    // predecessors, so folding it into the single wait_until predecessor
+    // would silently drop an execution path.
+    let mut multi_targets: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for state in states.iter() {
+        for (_, target) in &state.multi_transitions {
+            if *target < n {
+                multi_targets.insert(*target);
+            }
+        }
+    }
+
+    // Walk forward; after folding si+1 into si we continue at si+1 (now
+    // marked is_folded) — no index confusion since we only read/write
+    // `states[si]` and `states[si+1]` in each iteration.
+    for si in 0..n.saturating_sub(1) {
+        let successor = si + 1;
+
+        // State si: must be a pure wait_until (no wait_cycles, no multi,
+        // no prior fold already applied, and empty folded_exit_seq).
+        // Also require empty seq_stmts: if the fast_region mechanism has
+        // already merged guarded assigns into si's seq_stmts (as it does for
+        // `if not X; wait until X; end if` followed by actions), folding
+        // the next action state would stack a second if-guard on top, producing
+        // two separate `if (cond)` arms in the always_ff block.
+        {
+            let s = &states[si];
+            if s.transition_cond.is_none()
+                || s.wait_cycles.is_some()
+                || !s.multi_transitions.is_empty()
+                || !s.folded_exit_seq.is_empty()
+                || !s.seq_stmts.is_empty()
+                || s.is_folded
+            {
+                continue;
+            }
+        }
+
+        // State si+1: must be a pure action state (no wait cond/cycles/multi,
+        // not already folded), have at least one seq assign to fold, and be
+        // a sole-entry state (not targeted by any multi_transition).
+        // Also must not have the `no_fold_into_prev` flag set (which marks
+        // states created after a `wait 1 cycle` elision — the natural
+        // si→si+1 transition is the 1-cycle budget, folding would lose it).
+        {
+            let s1 = &states[successor];
+            if s1.transition_cond.is_some()
+                || s1.wait_cycles.is_some()
+                || !s1.multi_transitions.is_empty()
+                || s1.is_folded
+                || s1.seq_stmts.is_empty()
+                || s1.no_fold_into_prev
+                || multi_targets.contains(&successor)
+            {
+                continue;
+            }
+        }
+
+        // Compute the effective target after si+1: the state that si+1
+        // would naturally advance to.
+        let after_action = if successor + 1 < n {
+            successor + 1
+        } else if t_once {
+            successor // terminal
+        } else {
+            0 // wrap
+        };
+
+        // Move seq_stmts from si+1 into si's folded_exit_seq.
+        let folded = std::mem::take(&mut states[successor].seq_stmts);
+        states[si].folded_exit_seq = folded;
+        states[si].folded_exit_target = Some(after_action);
+        states[successor].is_folded = true;
+    }
 }
 
 fn thread_map_state_role(si: usize, state: &ThreadFsmState) -> &'static str {
@@ -4578,6 +4725,10 @@ fn redirect_fallthrough_to_return(
             wait_cycles: None,
             multi_transitions: Vec::new(),
             terminal_return: Some(return_idx),
+            folded_exit_seq: Vec::new(),
+            folded_exit_target: None,
+            is_folded: false,
+            no_fold_into_prev: false,
         });
         return;
     };
@@ -4885,6 +5036,10 @@ fn flush_pending_thread_state(
         wait_cycles: None,
         multi_transitions: Vec::new(),
         terminal_return: None,
+        folded_exit_seq: Vec::new(),
+        folded_exit_target: None,
+        is_folded: false,
+        no_fold_into_prev: false,
     });
     true
 }
@@ -5144,6 +5299,12 @@ fn partition_thread_body_impl(
     let mut cur_seq: Vec<Stmt> = Vec::new();
     let mut fast_region: Option<(usize, Expr)> = None;
     let mut no_trailing_merge_from: Option<usize> = None;
+    // Issue #306: set to true when a `wait 1 cycle` was elided using the
+    // natural wait_until→action transition as the 1-cycle budget.  The NEXT
+    // action state created must be marked `no_fold_into_prev` so the fold
+    // pass does not absorb it back into the wait_until state (which would
+    // lose the 1-cycle guarantee provided by the elision).
+    let mut next_state_no_fold: bool = false;
     for (stmt_idx, stmt) in body.iter().enumerate() {
         match stmt {
             ThreadStmt::CombAssign(ca) => {
@@ -5179,6 +5340,10 @@ fn partition_thread_body_impl(
                 // the same comb expression in two consecutive states
                 // produces the same per-cycle value.
                 if !cur_seq.is_empty() {
+                    // Issue #306: if next_state_no_fold is set (from a prior
+                    // `wait 1 cycle` elision), apply it to the dead-skid
+                    // prefix state and reset the flag.
+                    let nfip = std::mem::take(&mut next_state_no_fold);
                     states.push(ThreadFsmState {
                         comb_stmts: cur_comb.clone(),
                         seq_stmts: std::mem::take(&mut cur_seq),
@@ -5186,7 +5351,16 @@ fn partition_thread_body_impl(
                         wait_cycles: None,
                         multi_transitions: Vec::new(),
                         terminal_return: None,
+                        folded_exit_seq: Vec::new(),
+                        folded_exit_target: None,
+                        is_folded: false,
+                        no_fold_into_prev: nfip,
                     });
+                } else {
+                    // No dead-skid state created; reset next_state_no_fold
+                    // since the wait_until state itself doesn't need it (the
+                    // fold only targets action states, not wait states).
+                    next_state_no_fold = false;
                 }
                 states.push(ThreadFsmState {
                     comb_stmts: std::mem::take(&mut cur_comb),
@@ -5194,7 +5368,11 @@ fn partition_thread_body_impl(
                     transition_cond: Some(cond.clone()),
                     wait_cycles: None,
                     multi_transitions: Vec::new(),
-                        terminal_return: None,
+                    terminal_return: None,
+                    folded_exit_seq: Vec::new(),
+                    folded_exit_target: None,
+                    is_folded: false,
+                    no_fold_into_prev: false,
                 });
                 let _ = sp; // span retained for parity with the prior arm
             }
@@ -5229,6 +5407,10 @@ fn partition_thread_body_impl(
                     | ExprKind::Literal(LitKind::Bin(1))
                     | ExprKind::Literal(LitKind::Sized(_, 1)));
                 if !count_is_one || !had_flush {
+                    // A real wait_cycles state is pushed; any prior
+                    // `next_state_no_fold` from an earlier elision is no
+                    // longer relevant (the boundary state absorbed it).
+                    next_state_no_fold = false;
                     states.push(ThreadFsmState {
                         comb_stmts: Vec::new(),
                         seq_stmts: Vec::new(),
@@ -5236,9 +5418,18 @@ fn partition_thread_body_impl(
                         wait_cycles: Some(count.clone()),
                         multi_transitions: Vec::new(),
                         terminal_return: None,
+                        folded_exit_seq: Vec::new(),
+                        folded_exit_target: None,
+                        is_folded: false,
+                        no_fold_into_prev: false,
                     });
                 } else if let Some(idx) = merged_fast_idx {
                     no_trailing_merge_from = Some(idx);
+                    // Issue #306: mark that the next action state (created after
+                    // this elided wait) must not be folded into the preceding
+                    // wait_until state — the natural transition provides the
+                    // 1-cycle budget already consumed by the elision.
+                    next_state_no_fold = true;
                 }
             }
             ThreadStmt::IfElse(ie) => {
@@ -5252,6 +5443,10 @@ fn partition_thread_body_impl(
                             wait_cycles: None,
                             multi_transitions: Vec::new(),
                             terminal_return: None,
+                            folded_exit_seq: Vec::new(),
+                            folded_exit_target: None,
+                            is_folded: false,
+                            no_fold_into_prev: false,
                         });
                         fast_region = Some((fast_idx, cond));
                         continue;
@@ -5292,6 +5487,10 @@ fn partition_thread_body_impl(
                         wait_cycles: None,
                         multi_transitions: Vec::new(),
                         terminal_return: None,
+                        folded_exit_seq: Vec::new(),
+                        folded_exit_target: None,
+                        is_folded: false,
+                        no_fold_into_prev: false,
                     });
                     // Step 3: recursively partition `then_stmts` and append at then_base.
                     // Empty branches (§II.10.4) skip the recursive call —
@@ -5580,7 +5779,11 @@ fn partition_thread_body_impl(
                     transition_cond: Some(cond.clone()),
                     wait_cycles: None,
                     multi_transitions: Vec::new(),
-                        terminal_return: None,
+                    terminal_return: None,
+                    folded_exit_seq: Vec::new(),
+                    folded_exit_target: None,
+                    is_folded: false,
+                    no_fold_into_prev: false,
                 });
             }
             ThreadStmt::Return(e, ret_span) => {
@@ -5607,6 +5810,10 @@ fn partition_thread_body_impl(
                                 wait_cycles: None,
                                 multi_transitions: Vec::new(),
                                 terminal_return: Some(return_idx),
+                                folded_exit_seq: Vec::new(),
+                                folded_exit_target: None,
+                                is_folded: false,
+                                no_fold_into_prev: false,
                             });
                         }
                     } else {
@@ -5761,13 +5968,18 @@ fn partition_thread_body_impl(
             false
         };
         if !merged_into_exit {
+            let nfip = std::mem::take(&mut next_state_no_fold);
             states.push(ThreadFsmState {
                 comb_stmts: std::mem::take(&mut cur_comb),
                 seq_stmts: std::mem::take(&mut cur_seq),
                 transition_cond: None,
                 wait_cycles: None,
                 multi_transitions: Vec::new(),
-                        terminal_return: None,
+                terminal_return: None,
+                folded_exit_seq: Vec::new(),
+                folded_exit_target: None,
+                is_folded: false,
+                no_fold_into_prev: nfip,
             });
         }
     }
@@ -5809,7 +6021,11 @@ fn lower_fork_join(
         states.push(ThreadFsmState {
             comb_stmts: Vec::new(), seq_stmts: Vec::new(),
             transition_cond: None, wait_cycles: None, multi_transitions: Vec::new(),
-                        terminal_return: None,
+            terminal_return: None,
+            folded_exit_seq: Vec::new(),
+            folded_exit_target: None,
+            is_folded: false,
+            no_fold_into_prev: false,
         });
         branch_states.push(states);
     }
@@ -5922,6 +6138,10 @@ fn lower_fork_join(
             transition_cond: None, wait_cycles: None,
             multi_transitions: multi,
             terminal_return: None,
+            folded_exit_seq: Vec::new(),
+            folded_exit_target: None,
+            is_folded: false,
+            no_fold_into_prev: false,
         });
     }
 
@@ -6343,7 +6563,11 @@ fn lower_thread_lock(
             transition_cond: Some(make_grant()),
             wait_cycles: None,
             multi_transitions: Vec::new(),
-                        terminal_return: None,
+            terminal_return: None,
+            folded_exit_seq: Vec::new(),
+            folded_exit_target: None,
+            is_folded: false,
+            no_fold_into_prev: false,
         });
     }
 

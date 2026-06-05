@@ -8718,6 +8718,8 @@ When the compiler encounters `inst sub: SubModule` and `SubModule` is not define
 2. `SubModule.archi` in the input file's directory
 3. `SubModule.arch` or `SubModule.archi` in directories listed in `ARCH_LIB_PATH` (colon-separated)
 
+The same discovery applies to **bus port types**. A port declaration `port m: initiator BusName` or `port m: target BusName` whose `BusName` is not defined in the input files triggers the identical search for `BusName.arch` / `BusName.archi` (input directory, then `ARCH_LIB_PATH`, then the stdlib). This means `arch check ModuleWithBusPort.arch` resolves the bus on its own — there is no need to also pass the bus source. An explicit `use BusName;` takes precedence: when the bus is named in a `use`, that declaration drives resolution and the fallback bus scan is skipped, so a stale build-emitted `BusName.archi` in the source directory cannot shadow it. Emitted bus `.archi` files are round-trippable — bus members are written as bare `name: dir Type;`, matching the `bus` body grammar.
+
 This enables separate compilation workflows:
 
 ```bash

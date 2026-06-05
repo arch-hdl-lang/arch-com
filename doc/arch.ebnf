@@ -762,6 +762,11 @@ reset_polarity   = "High" | "Low" ;
      19-20:  *  /  %
      21   :  prefix unary (!, ~, -, &, |, ^)
      postfix: . [] as inside  (highest)
+
+   Logical operators have keyword and symbolic spellings that are exact
+   aliases (same token, same precedence): `and` == `&&`, `or` == `||`,
+   `not` == `!`. Either spelling is accepted; the keyword form is canonical
+   in the spec and examples.
 *)
 
 expr = ternary_expr ;
@@ -770,7 +775,7 @@ ternary_expr = binary_expr [ "?" expr ":" expr ] ;
 
 binary_expr = prefix_expr { binary_op prefix_expr } ;
 
-binary_op = "||" | "&&"
+binary_op = "||" | "&&" | "or" | "and"   (* `||`/`&&` are aliases for `or`/`and` *)
            | "==" | "!="
            | "<" | ">" | "<=" | ">="
            | "|" | "^" | "&"

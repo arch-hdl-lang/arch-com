@@ -204,8 +204,10 @@ pub enum TokenKind {
     #[token("as")]
     As,
     #[token("and")]
+    #[token("&&")]
     And,
     #[token("or")]
+    #[token("||")]
     Or,
     #[token("not")]
     Not,
@@ -681,7 +683,7 @@ mod tests {
 
     #[test]
     fn test_operators() {
-        let tokens = tokenize("+ - * == != <= >= <- -> => << >>").unwrap();
+        let tokens = tokenize("+ - * == != <= >= <- -> => << >> && ||").unwrap();
         assert_eq!(tokens[0].kind, TokenKind::Plus);
         assert_eq!(tokens[1].kind, TokenKind::Minus);
         assert_eq!(tokens[2].kind, TokenKind::Star);
@@ -694,6 +696,19 @@ mod tests {
         assert_eq!(tokens[9].kind, TokenKind::FatArrow);
         assert_eq!(tokens[10].kind, TokenKind::Shl);
         assert_eq!(tokens[11].kind, TokenKind::Shr);
+        assert_eq!(tokens[12].kind, TokenKind::And);
+        assert_eq!(tokens[13].kind, TokenKind::Or);
+    }
+
+    #[test]
+    fn test_bang_vs_bang_eq() {
+        // `!` (prefix logical-not, arch#496) must not swallow a following `=`:
+        // `!=` is the distinct BangEq token (longest-match).
+        let tokens = tokenize("! != !a").unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Bang);
+        assert_eq!(tokens[1].kind, TokenKind::BangEq);
+        assert_eq!(tokens[2].kind, TokenKind::Bang);
+        assert!(matches!(tokens[3].kind, TokenKind::Ident(_)));
     }
 
     #[test]

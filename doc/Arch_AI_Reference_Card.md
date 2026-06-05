@@ -278,7 +278,7 @@ let {field1, field2} = struct_expr;   // binds two locals to the struct's named 
 Arithmetic:  + - * / %   (auto-widen)
 Wrapping:    +% -% *%    (no-widen; result width = max(W(a),W(b)))
 Comparison:  == != < > <= >=
-Logical:     and or not
+Logical:     and or not    // `&&`==`and`, `||`==`or`, `!`==`not` (symbolic aliases; `~` is bitwise-not)
 Bitwise:     & | ^ ~ << >>
 SVA-only:    |->  (overlap implication, same-cycle)
              |=>  (next-cycle implication)
@@ -1355,6 +1355,8 @@ arch build *.arch                 # builds all, respects deps via .archi discove
 ```
 
 When `inst sub: SubModule` references an undefined module, the compiler searches for `SubModule.archi` or `SubModule.arch` in the input directory and `ARCH_LIB_PATH`.
+
+The same auto-discovery applies to **bus port types**: a `port m: initiator BusName` / `port m: target BusName` declaration whose `BusName` is not defined in the current input set pulls in `BusName.arch` / `BusName.archi` from the input directory, `ARCH_LIB_PATH`, then the stdlib. So `arch check ModuleWithBusPort.arch` resolves its bus standalone, no need to also pass the bus file. An explicit `use BusName;` takes precedence — when present, the fallback bus scan is skipped (the `use` already names the dependency). The emitted `BusName.archi` is round-trippable: bus members are written as bare `name: dir Type;`, matching the `bus` body grammar.
 
 ---
 

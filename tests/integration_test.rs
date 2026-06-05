@@ -154,6 +154,69 @@ end module Placeholder
     insta::assert_snapshot!(sv);
 }
 
+// ── Operators ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_bang_prefix_is_logical_not_alias() {
+    // arch#496: `!` is a symbolic alias for the `not` keyword (logical-not),
+    // exactly parallel to `&&`==`and` / `||`==`or` (#493). It must lower to
+    // SV `!`, and `!=` must remain a distinct, unaffected operator.
+    let bang_src = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module BangAlias
+  port a: in Bool;
+  port b: in Bool;
+  port y: out Bool;
+  port impl_out: out Bool;
+  port nested: out Bool;
+  port ne: out Bool;
+  comb
+    y = !a;
+    impl_out = (!a) || b;
+    nested = !(a and b);
+    ne = a != b;
+  end comb
+end module BangAlias
+"#;
+    let bang = compile_to_sv(bang_src);
+    assert!(bang.contains("assign y = !a;"), "got:\n{bang}");
+    assert!(bang.contains("assign impl_out = !a || b;"), "got:\n{bang}");
+    assert!(bang.contains("assign nested = !(a && b);"), "got:\n{bang}");
+    // `!=` is a distinct token (BangEq) — prefix `!` must not disturb it.
+    assert!(bang.contains("assign ne = a != b;"), "got:\n{bang}");
+
+    // The keyword spelling of the same module must lower byte-identically:
+    // `!`/`||`/`and` and `not`/`or`/`and` are exact aliases.
+    let kw_src = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module BangAlias
+  port a: in Bool;
+  port b: in Bool;
+  port y: out Bool;
+  port impl_out: out Bool;
+  port nested: out Bool;
+  port ne: out Bool;
+  comb
+    y = not a;
+    impl_out = (not a) or b;
+    nested = not (a and b);
+    ne = a != b;
+  end comb
+end module BangAlias
+"#;
+    let kw = compile_to_sv(kw_src);
+    assert_eq!(
+        bang, kw,
+        "`!`/`||` must lower identically to `not`/`or`:\n--- bang ---\n{bang}\n--- kw ---\n{kw}"
+    );
+}
+
 // ── Let bindings ──────────────────────────────────────────────────────────────
 
 #[test]
@@ -16334,12 +16397,15 @@ fn test_thread_state_localparams_emitted() {
     let sv = compile_to_sv(source);
 
     // (1) One `localparam` per state with the expected role suffix.
-    //     S0 = wait_until (transition_cond = `req`), S1 = action (seq write),
-    //     S2 = wait_cycles (wait 2 cycle), S3 = action (final seq write).
+    //     S0 = wait_until (transition_cond = `req`), S1 = action (seq write,
+    //     now folded into S0's cond-exit arm by issue #306), S2 = wait_cycles
+    //     (wait 2 cycle), S3 = action (final seq write — not folded because
+    //     the preceding state is wait_cycles, not wait_until).
+    //     Localparams are still emitted for all states including folded ones.
     assert!(sv.contains("localparam [1:0] _t0_S0_wait_until = 0"),
         "expected S0 wait_until localparam:\n{sv}");
     assert!(sv.contains("localparam [1:0] _t0_S1_action = 1"),
-        "expected S1 action localparam:\n{sv}");
+        "expected S1 action localparam (folded but still declared):\n{sv}");
     assert!(sv.contains("localparam [1:0] _t0_S2_wait_cycles = 2"),
         "expected S2 wait_cycles localparam:\n{sv}");
     assert!(sv.contains("localparam [1:0] _t0_S3_action = 3"),
@@ -16357,10 +16423,21 @@ fn test_thread_state_localparams_emitted() {
         "expected name-form state comparison for S2:\n{sv}");
 
     // (4) State-register assignments use the name, not a bare literal.
-    assert!(sv.contains("_t0_state <= _t0_S1_action"),
-        "expected name-form state assignment to S1:\n{sv}");
+    //     Issue #306: S0's cond-exit arm now folds S1's `done <= true` and
+    //     transitions directly to S2 (skipping S1).  So `_t0_S1_action` no
+    //     longer appears as a transition target; `_t0_S2_wait_cycles` still
+    //     does (from the folded S0 exit arm).
+    assert!(!sv.contains("_t0_state <= _t0_S1_action"),
+        "S1 was folded into S0's exit; S0 must jump directly to S2:\n{sv}");
     assert!(sv.contains("_t0_state <= _t0_S2_wait_cycles"),
-        "expected name-form state assignment to S2:\n{sv}");
+        "expected name-form state assignment to S2 (folded from S0 exit arm):\n{sv}");
+    // The folded seq assign must appear inside the if(req) block.
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        trimmed.contains("if (req) begin done <= 1'b1; _t0_state <= _t0_S2_wait_cycles;")
+            || trimmed.contains("if (req) begin done <= 1'b1; _t0_state <= _t0_S2_wait_cycles"),
+        "expected `done <= true` folded into S0's if(req) arm (issue #306):\n{sv}",
+    );
 
     // (5) No bare `_t0_state == N` or `_t0_state <= N` numeric-literal forms
     //     should remain. The synchronous-reset path emits `_t0_state <= 0`
@@ -18553,6 +18630,58 @@ fn test_native_sim_vec_inst_input_wire_param_sized_fanout() {
 }
 
 #[test]
+fn test_native_sim_bool_not_pipe_reg_outputs_and_ampamp() {
+    // Regression for arch-com#492. Native sim used to tokenize `&&` as
+    // bitwise `&` plus reduction `&` on the RHS, then infer
+    // `not result_valid_out@0` as 8 bits. That emitted a reduction-AND
+    // over `!result_valid_out`, so `not false` collapsed back to false
+    // for byte-backed Bool values.
+    //
+    // Also covers the `||` sibling alias (review 2026-06-03): #493 added both
+    // `&&` and `||` tokens but only exercised `&&`. `||` must lower to C++
+    // logical `||`, not bitwise/reduction glue, on the same Bool pipe_reg path.
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/native_bool_not/Probe.arch")
+        .arg("--tb")
+        .arg("tests/native_bool_not/tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for native Bool not pipe_reg probe");
+    assert!(
+        out.status.success(),
+        "native Bool not pipe_reg sim should compile + run\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("PASS native Bool not pipe_reg"),
+        "expected PASS marker in stdout:\n{stdout}"
+    );
+
+    let generated_cpp = std::fs::read_to_string(td.path().join("VNativeBoolNotProbe.cpp"))
+        .expect("read generated native sim C++");
+    assert!(
+        generated_cpp.contains("idle_ampamp")
+            && generated_cpp.contains("((!_busy_out) && (!_result_valid_out))"),
+        "symbolic `&&` should lower to C++ logical &&, not bitwise/reduction glue:\n{generated_cpp}"
+    );
+    assert!(
+        generated_cpp.contains("busy_pipebar")
+            && generated_cpp.contains("(_busy_out || _result_valid_out)"),
+        "symbolic `||` should lower to C++ logical ||, not bitwise/reduction glue:\n{generated_cpp}"
+    );
+    assert!(
+        !generated_cpp.contains("0xffULL") && !generated_cpp.contains("0xFFULL"),
+        "Bool `not` should not be reduced as an 8-bit all-ones value:\n{generated_cpp}"
+    );
+}
+
+#[test]
 fn test_native_sim_thread_driven_top_pipe_reg_output_is_public() {
     // Regression for arch-com#472: lower_threads rewrites a thread-driven
     // top-level `port q: out pipe_reg<T,1>` into a registered output on the
@@ -19386,6 +19515,369 @@ end module BusWireTop
     );
 }
 
+// ── Dead-skid comb-feedback analysis (issue #245) ────────────────────────────
+
+/// Run the dead-skid analysis on the PRE-thread-lowering AST (so
+/// `ModuleBodyItem::Thread` is still present) for module `module`.
+fn dead_skid_hazards(source: &str, module: &str) -> Vec<arch::signal_flow::DeadSkidHazard> {
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(ast).expect("elaborate");
+    let m = ast
+        .items
+        .iter()
+        .find_map(|it| match it {
+            arch::ast::Item::Module(m) if m.name.name == module => Some(m),
+            _ => None,
+        })
+        .expect("module not found");
+    arch::signal_flow::find_dead_skid_hazards(m, &ast)
+}
+
+/// Cross-module (one boundary deep): a thread combinationally drives the ALU's
+/// operand wires and reads back the ALU's `is_zero` output through a parent
+/// wire.  During dead-skid cycles the operand drives drop to 0, so `is_zero`
+/// asserts spuriously — the canonical arch-ibex pitfall #11.
+#[test]
+fn test_dead_skid_cross_module_hazard() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module Alu
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port is_zero: out Bool;
+  comb
+    is_zero = (a + b) == 0;
+  end comb
+end module Alu
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port reg done: out Bool reset rst => false;
+  wire a_drv: UInt<8>;
+  wire b_drv: UInt<8>;
+  wire is_zero_w: Bool;
+  inst alu: Alu
+    a <- a_drv;
+    b <- b_drv;
+    is_zero -> is_zero_w;
+  end inst alu
+  thread Worker on clk rising, rst high
+    a_drv = 8'd5;
+    b_drv = 8'd3;
+    wait until is_zero_w;
+    done <= true;
+  end thread Worker
+end module Top
+"#;
+    let hz = dead_skid_hazards(source, "Top");
+    assert!(
+        hz.iter().any(|h| h.read_signal == "is_zero_w"
+            && (h.driven_signal == "a_drv" || h.driven_signal == "b_drv")),
+        "expected a cross-module dead-skid hazard on `is_zero_w`, got {hz:?}"
+    );
+}
+
+/// Negative control: the thread reads an upstream INPUT (`go`) rather than the
+/// routed combinational output — no dead-skid hazard.
+#[test]
+fn test_dead_skid_reads_upstream_input_no_hazard() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module Alu
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port is_zero: out Bool;
+  comb
+    is_zero = (a + b) == 0;
+  end comb
+end module Alu
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port go: in Bool;
+  port reg done: out Bool reset rst => false;
+  wire a_drv: UInt<8>;
+  wire b_drv: UInt<8>;
+  wire is_zero_w: Bool;
+  inst alu: Alu
+    a <- a_drv;
+    b <- b_drv;
+    is_zero -> is_zero_w;
+  end inst alu
+  thread Worker on clk rising, rst high
+    a_drv = 8'd5;
+    b_drv = 8'd3;
+    wait until go;
+    done <= true;
+  end thread Worker
+end module Top
+"#;
+    let hz = dead_skid_hazards(source, "Top");
+    assert!(
+        hz.is_empty(),
+        "thread reading an upstream input must NOT be a dead-skid hazard, got {hz:?}"
+    );
+}
+
+/// Intra-module variant: thread comb-drives `x`, a parent comb block routes
+/// `fb = x`, and the thread reads `fb`.
+#[test]
+fn test_dead_skid_intra_module_hazard() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module IntraTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port reg done: out Bool reset rst => false;
+  wire x: Bool;
+  wire fb: Bool;
+  comb
+    fb = x;
+  end comb
+  thread W on clk rising, rst high
+    x = true;
+    wait until fb;
+    done <= true;
+  end thread W
+end module IntraTop
+"#;
+    let hz = dead_skid_hazards(source, "IntraTop");
+    assert!(
+        hz.iter().any(|h| h.read_signal == "fb" && h.driven_signal == "x"),
+        "expected intra-module dead-skid hazard `x -> fb`, got {hz:?}"
+    );
+}
+
+/// The read can also live in `default comb`, not just in `wait until` or an
+/// RHS inside the thread body. During dead-skid cycles the comb-driven source
+/// still collapses to its default, so a default output that mirrors the routed
+/// comb feedback is hazardous and must be reported.
+#[test]
+fn test_dead_skid_default_comb_read_hazard() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module Alu
+  port a: in UInt<8>;
+  port z: out Bool;
+  comb
+    z = (a == 0);
+  end comb
+end module Alu
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port done: out Bool;
+  port go: in Bool;
+  wire a_drv: UInt<8>;
+  wire z_w: Bool;
+  inst alu: Alu
+    a <- a_drv;
+    z -> z_w;
+  end inst alu
+  thread Worker on clk rising, rst high
+    default comb
+      done = z_w;
+    end default
+    a_drv = 8'd1;
+    wait until go;
+  end thread Worker
+end module Top
+"#;
+    let hz = dead_skid_hazards(source, "Top");
+    assert!(
+        hz.iter().any(|h| h.read_signal == "z_w" && h.driven_signal == "a_drv"),
+        "expected default-comb read hazard `a_drv -> z_w`, got {hz:?}"
+    );
+}
+
+/// A module with no threads yields no hazards (cheap early-out path).
+#[test]
+fn test_dead_skid_no_threads_no_hazard() {
+    let source = r#"
+module Pure
+  port a: in Bool;
+  port y: out Bool;
+  comb
+    y = not a;
+  end comb
+end module Pure
+"#;
+    assert!(dead_skid_hazards(source, "Pure").is_empty());
+}
+
+/// Negative control (registered mirror): the thread drives a REGISTER (`<=`),
+/// a comb block mirrors it (`active = active_r`), and the thread reads the
+/// mirror.  Registered values hold across dead-skid cycles, so this is NOT a
+/// hazard.  (Mirrors the axi_dma_thread `ThreadMm2s` shape that surfaced the
+/// false-positive during the Stage 2 sweep.)
+#[test]
+fn test_dead_skid_registered_mirror_no_hazard() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module RegMirror
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port go: in Bool;
+  port reg done: out Bool reset rst => false;
+  reg active_r: Bool reset rst => false;
+  wire active: Bool;
+  comb
+    active = active_r;
+  end comb
+  thread Worker on clk rising, rst high
+    active_r <= true;
+    wait until active;
+    done <= true;
+  end thread Worker
+end module RegMirror
+"#;
+    let hz = dead_skid_hazards(source, "RegMirror");
+    assert!(
+        hz.is_empty(),
+        "comb mirror of a registered thread output must NOT be a dead-skid hazard, got {hz:?}"
+    );
+}
+
+/// Thread-map HTML overlay: a thread carrying a dead-skid hazard renders the
+/// ⚠ badge table, the escaped comb path, and highlights the read source line.
+#[test]
+fn test_thread_map_html_renders_hazard_overlay() {
+    use arch::lexer::Span;
+    use arch::thread_map::*;
+    let src = ThreadMapSource {
+        start: 0,
+        end: 18,
+        filename: "f.arch".into(),
+        source: "line1\nline2\nline3\n".into(),
+    };
+    let map = ThreadMap {
+        modules: vec![ThreadMapModule {
+            module_name: "Top".into(),
+            generated_module_name: "_Top_threads".into(),
+            span: Span::new(0, 18),
+            threads: vec![ThreadMapThread {
+                name: "Worker".into(),
+                index: 0,
+                span: Span::new(0, 18),
+                states: vec![],
+                hazards: vec![CombFeedbackHazard {
+                    read_signal: "is_zero_w".into(),
+                    driven_signal: "a_drv".into(),
+                    path_summary: "a_drv -> is_zero_w".into(),
+                    read_span: Span::new(7, 10), // inside "line2"
+                }],
+            }],
+        }],
+    };
+    let html = render_html(&map, &[src], "t");
+    assert!(
+        html.contains("⚠ dead-skid comb feedback"),
+        "expected the hazard badge table"
+    );
+    assert!(
+        html.contains("a_drv -&gt; is_zero_w"),
+        "expected the escaped comb path"
+    );
+    assert!(
+        html.contains("src-line hazard"),
+        "expected the read source line to be highlighted"
+    );
+}
+
+/// A clean thread (no hazards) renders no badge and no highlight.
+#[test]
+fn test_thread_map_html_no_hazard_no_overlay() {
+    use arch::lexer::Span;
+    use arch::thread_map::*;
+    let map = ThreadMap {
+        modules: vec![ThreadMapModule {
+            module_name: "Top".into(),
+            generated_module_name: "_Top_threads".into(),
+            span: Span::new(0, 10),
+            threads: vec![ThreadMapThread {
+                name: "W".into(),
+                index: 0,
+                span: Span::new(0, 10),
+                states: vec![],
+                hazards: vec![],
+            }],
+        }],
+    };
+    let html = render_html(&map, &[], "t");
+    // Note: the CSS block always contains the literal "⚠ dead-skid read"
+    // (source-line annotation rule), so match the table-specific header.
+    assert!(
+        !html.contains("⚠ dead-skid comb feedback"),
+        "clean thread must not render a hazard badge"
+    );
+    assert!(!html.contains("class=\"src-line hazard\""));
+}
+
+/// The `pragma allow_dead_skid_feedback;` suppression knob parses and sets the
+/// module flag the lint consults.
+#[test]
+fn test_pragma_allow_dead_skid_feedback_parses() {
+    let source = r#"
+module M
+  pragma allow_dead_skid_feedback;
+  port a: in Bool;
+  port y: out Bool;
+  comb
+    y = a;
+  end comb
+end module M
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let m = ast
+        .items
+        .iter()
+        .find_map(|it| match it {
+            arch::ast::Item::Module(m) if m.name.name == "M" => Some(m),
+            _ => None,
+        })
+        .expect("module");
+    assert!(
+        m.allow_dead_skid_feedback,
+        "pragma allow_dead_skid_feedback should set the module flag"
+    );
+}
+
+/// Unit: `comb_reachable_from` follows forward edges transitively and excludes
+/// seeds unless reached via a cycle.
+#[test]
+fn test_comb_reachable_from_transitive() {
+    use std::collections::{HashMap, HashSet};
+    let mut fwd: HashMap<String, HashSet<String>> = HashMap::new();
+    fwd.entry("a".into()).or_default().insert("b".into());
+    fwd.entry("b".into()).or_default().insert("c".into());
+    let seeds: HashSet<String> = ["a".to_string()].into_iter().collect();
+    let reached = arch::signal_flow::comb_reachable_from(&seeds, &fwd);
+    assert!(reached.contains("b") && reached.contains("c"));
+    assert!(!reached.contains("a"), "seed must not appear unless via a cycle");
+}
+
 /// AW-side mirror of `test_nic400_apb_bridge_wrap_illegal_len_is_rejected_by_sva`.
 ///
 /// Closes §4 from `ideas/2026-05-28-code-review-findings.md`: the AW
@@ -19570,5 +20062,285 @@ end module UserAssertNoReset
         !sv.contains("disable iff"),
         "no `disable iff` should appear anywhere in a reset-less module's \
          user-assert SVA; got:\n{sv}"
+    );
+}
+
+/// `arch check Foo.arch` for a module that references a `bus` type via a
+/// port (`port m: initiator|target BusName`) must auto-discover the bus
+/// definition (`BusName.arch` / `.archi`) from the same directory, the
+/// same way `inst SubModule` auto-discovers `SubModule.archi`. Before this
+/// was wired up, the dep scan only inspected `inst` nodes, so a single-file
+/// check of a bus-consuming module failed with "unknown bus type".
+#[test]
+fn bus_port_type_auto_discovers_sibling_definition() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    std::fs::write(
+        td.path().join("MyBus.arch"),
+        "bus MyBus\n  cmd: out UInt<8>;\n  resp: in UInt<8>;\nend bus MyBus\n",
+    )
+    .unwrap();
+    // NOTE: no `use MyBus;` — resolution must come purely from the
+    // bus-port dependency scan.
+    let consumer = td.path().join("Consumer.arch");
+    std::fs::write(
+        &consumer,
+        "module Consumer\n  port clk: in Clock<SysDomain>;\n  \
+         port m: initiator MyBus;\n  comb\n    m.cmd = 8'h0;\n  end comb\n\
+         end module Consumer\n",
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(arch_bin)
+        .arg("check")
+        .arg(&consumer)
+        .output()
+        .expect("run arch check");
+    assert!(
+        out.status.success(),
+        "single-file check of a bus-consuming module should auto-discover \
+         the sibling bus definition; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Control: with the bus definition absent, the check must still fail
+    // with the unresolved-bus diagnostic (auto-discovery is additive, not a
+    // silent pass).
+    let td2 = tempfile::tempdir().expect("tempdir");
+    let lonely = td2.path().join("Consumer.arch");
+    std::fs::copy(&consumer, &lonely).unwrap();
+    let out2 = std::process::Command::new(arch_bin)
+        .arg("check")
+        .arg(&lonely)
+        .output()
+        .expect("run arch check");
+    assert!(
+        !out2.status.success(),
+        "check should fail when the referenced bus cannot be found"
+    );
+    assert!(
+        String::from_utf8_lossy(&out2.stderr).contains("unknown bus type"),
+        "expected 'unknown bus type' diagnostic; stderr:\n{}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
+}
+
+/// The `.archi` bus interface emitted by `arch build` must parse back in —
+/// `emit_bus_interface` previously wrote `port name: ...` members, but a
+/// `bus` body is parsed with bare `name: dir Type;` members, so the
+/// emitted interface tripped "'port' is a reserved keyword" on read-back.
+/// This guards the round-trip now that bus interfaces are auto-discovered.
+#[test]
+fn bus_interface_archi_round_trips() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    std::fs::write(
+        td.path().join("MyBus.arch"),
+        "bus MyBus\n  cmd: out UInt<8>;\n  resp: in UInt<8>;\nend bus MyBus\n",
+    )
+    .unwrap();
+    let consumer = td.path().join("Consumer.arch");
+    std::fs::write(
+        &consumer,
+        "module Consumer\n  port clk: in Clock<SysDomain>;\n  \
+         port m: initiator MyBus;\n  comb\n    m.cmd = 8'h0;\n  end comb\n\
+         end module Consumer\n",
+    )
+    .unwrap();
+
+    // Build the consumer — this emits `MyBus.archi` alongside the SV.
+    let sv_out = td.path().join("Consumer.sv");
+    let bld = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg(&consumer)
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("run arch build");
+    assert!(
+        bld.status.success(),
+        "arch build failed; stderr:\n{}",
+        String::from_utf8_lossy(&bld.stderr)
+    );
+
+    let bus_archi = td.path().join("MyBus.archi");
+    assert!(
+        bus_archi.exists(),
+        "arch build should emit MyBus.archi next to the generated SV"
+    );
+    let archi_text = std::fs::read_to_string(&bus_archi).unwrap();
+    assert!(
+        archi_text.contains("cmd: out UInt<8>") && !archi_text.contains("port cmd"),
+        "bus interface members must be bare `name: dir Type;`, not \
+         `port`-prefixed; got:\n{archi_text}"
+    );
+
+    // The emitted interface must parse standalone (the round-trip).
+    let chk = std::process::Command::new(arch_bin)
+        .arg("check")
+        .arg(&bus_archi)
+        .output()
+        .expect("run arch check");
+    assert!(
+        chk.status.success(),
+        "emitted bus .archi must parse back in; stderr:\n{}",
+        String::from_utf8_lossy(&chk.stderr)
+    );
+}
+
+// ── Issue #306: wait-until exit assignment fold ───────────────────────────────
+
+/// Basic fold: `wait until go; phase <= 2'd1;` — the register assignment
+/// must appear inside the `if (go)` arm of state S0, not in a separate S1.
+#[test]
+fn test_wait_until_fold_basic() {
+    let source = r#"
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port phase: out UInt<2>;
+  reg phase_r: UInt<2> reset rst => 0;
+  let phase = phase_r;
+  thread on clk rising, rst high
+    wait until go;
+    phase_r <= 2'd1;
+    wait until go;
+  end thread
+end module M
+"#;
+    let sv = compile_to_sv(source);
+    // The assignment must be inside the if (go) block at state 0.
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        trimmed.contains("if (go) begin phase_r <= 2'd1;")
+            || trimmed.contains("if (go) begin phase_r <= 2'(2'd1)"),
+        "phase_r <= 2'd1 must be folded into the if(go) arm of the \
+         wait_until state (issue #306):\n{sv}",
+    );
+    // The S1 action state should be is_folded — it must NOT appear as a
+    // standalone `_t0_state == _t0_S1_action` check in the always_ff block.
+    assert!(
+        !sv.contains("_t0_state == _t0_S1_action"),
+        "S1 must be folded (unreachable); no standalone S1 check \
+         should appear in always_ff (issue #306):\n{sv}",
+    );
+}
+
+/// Multi-assign fold: `wait until go; X <= A; Y <= B;` — both assignments
+/// must appear in the same if(go) arm of state S0.
+#[test]
+fn test_wait_until_fold_multi_assign() {
+    let source = r#"
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port x_out: out UInt<8>;
+  port y_out: out UInt<8>;
+  reg x_r: UInt<8> reset rst => 0;
+  reg y_r: UInt<8> reset rst => 0;
+  let x_out = x_r;
+  let y_out = y_r;
+  thread on clk rising, rst high
+    wait until go;
+    x_r <= 8'd10;
+    y_r <= 8'd20;
+    wait until go;
+  end thread
+end module M
+"#;
+    let sv = compile_to_sv(source);
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Both assigns must be inside the same if(go) arm.
+    assert!(
+        trimmed.contains("if (go) begin x_r <= 8'd10; y_r <= 8'd20;")
+            || trimmed.contains("if (go) begin y_r <= 8'd20; x_r <= 8'd10;"),
+        "both x_r and y_r assigns must fold into the same if(go) arm \
+         (issue #306 multi-assign):\n{sv}",
+    );
+}
+
+/// Fold correctness: `wait until go; X <= A; wait until done; Y <= B;` —
+/// X folds into state 0's go-exit arm; Y folds into state 1's done-exit arm.
+/// Verify state ordering is correct and no extra intermediate state exists.
+#[test]
+fn test_wait_until_fold_no_fold_past_second_wait() {
+    let source = r#"
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port done: in Bool;
+  port x_out: out UInt<8>;
+  port y_out: out UInt<8>;
+  reg x_r: UInt<8> reset rst => 0;
+  reg y_r: UInt<8> reset rst => 0;
+  let x_out = x_r;
+  let y_out = y_r;
+  thread on clk rising, rst high
+    wait until go;
+    x_r <= 8'd1;
+    wait until done;
+    y_r <= 8'd2;
+  end thread
+end module M
+"#;
+    let sv = compile_to_sv(source);
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+    // x_r folds into state 0's go-exit arm.
+    assert!(
+        trimmed.contains("if (go) begin x_r <= 8'd1;"),
+        "x_r must fold into state 0's if(go) arm (issue #306):\n{sv}",
+    );
+    // y_r folds into state 1's done-exit arm (the second wait_until).
+    assert!(
+        trimmed.contains("if (done) begin y_r <= 8'd2;"),
+        "y_r must fold into the wait_until(done) state's if(done) arm \
+         (issue #306 second-wait fold):\n{sv}",
+    );
+    // Both wait_until localparams must be declared (no states collapsed
+    // beyond the fold).
+    assert!(
+        sv.contains("_wait_until"),
+        "expected wait_until role localparam(s) in emitted SV:\n{sv}",
+    );
+}
+
+/// Wait-N-cycle unaffected: `wait 3 cycle; X <= A;` — the counter states
+/// must NOT be folded.  The fold applies only to `wait until`, not `wait N cycle`.
+#[test]
+fn test_wait_until_fold_wait_n_cycle_not_folded() {
+    let source = r#"
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port x_out: out UInt<8>;
+  reg x_r: UInt<8> reset rst => 0;
+  let x_out = x_r;
+  thread on clk rising, rst high
+    wait until go;
+    wait 3 cycle;
+    x_r <= 8'd42;
+  end thread
+end module M
+"#;
+    let sv = compile_to_sv(source);
+    // A wait_cycles localparam must be present (counter state kept).
+    assert!(
+        sv.contains("_wait_cycles"),
+        "wait_cycles localparam must be emitted (counter states must not \
+         be folded — issue #306):\n{sv}",
+    );
+    // x_r must NOT appear inside an if(go) arm — it fires after the counter
+    // expires, not on the go-detection edge.
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        !trimmed.contains("if (go) begin x_r <= 8'd42"),
+        "x_r must NOT be folded into state 0's if(go) arm when separated \
+         by a wait N cycle (issue #306 wait-N-cycle unaffected):\n{sv}",
     );
 }
