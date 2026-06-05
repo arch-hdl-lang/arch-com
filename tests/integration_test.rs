@@ -18714,6 +18714,30 @@ fn test_native_sim_thread_driven_top_pipe_reg_output_is_public() {
 }
 
 #[test]
+fn test_nic400_master_port_marks_non_power_of_two_decode_holes_oor() {
+    // PR #487 added a default-slave DECERR path for out-of-range accesses,
+    // but the original OOR predicate only checked high address bits above
+    // REGION_BITS+NS_W. That misses decode holes when NUM_SLAVES is not a
+    // power of two: with NUM_SLAVES=3 and NS_W=2, slave index 3 has no
+    // backing thread and must still route to the default slave.
+    let bus = include_str!("nic400/BusAxi4.arch");
+    let master = include_str!("nic400/Nic400MasterPort.arch")
+        .replace("param NUM_SLAVES:    const = 4;", "param NUM_SLAVES:    const = 3;");
+    let sv = compile_to_sv(&format!("{bus}\n{master}"));
+    let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        trimmed.contains("assign m_ar_oor = m_ar_addr[ADDR_WIDTH - 1:REGION_BITS + NS_W] != 0 || m_ar_slv >= NUM_SLAVES;")
+            || trimmed.contains("assign m_ar_oor = (m_ar_addr[ADDR_WIDTH - 1:REGION_BITS + NS_W] != 0) || (m_ar_slv >= NUM_SLAVES);"),
+        "read-side OOR decode must treat hole indices >= NUM_SLAVES as DECERR:\n{sv}",
+    );
+    assert!(
+        trimmed.contains("assign m_aw_oor = m_aw_addr[ADDR_WIDTH - 1:REGION_BITS + NS_W] != 0 || m_aw_slv >= NUM_SLAVES;")
+            || trimmed.contains("assign m_aw_oor = (m_aw_addr[ADDR_WIDTH - 1:REGION_BITS + NS_W] != 0) || (m_aw_slv >= NUM_SLAVES);"),
+        "write-side OOR decode must treat hole indices >= NUM_SLAVES as DECERR:\n{sv}",
+    );
+}
+
+#[test]
 fn test_expect_fatal_harness_catches_bounds_violation() {
     // Smoke test for the `expect_verilator_fatal` helper in
     // `tests/common/mod.rs`. The Probe.arch fixture writes to a
