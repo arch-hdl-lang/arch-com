@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+branch="$(git branch --show-current)"
+
+case "$branch" in
+  codex/*)
+    scripts/pre_pr_review.sh check
+    ;;
+  *)
+    ;;
+esac

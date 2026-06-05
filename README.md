@@ -252,6 +252,26 @@ See `doc/ARCH_HDL_Specification.md` for the full language reference and `doc/COM
 
 - Start here for a fast contributor orientation: `doc/ONBOARDING_CHEATSHEET.md`
 
+### PR review gate
+
+Install the versioned local git hooks with:
+
+```sh
+git config core.hooksPath .githooks
+chmod +x .githooks/pre-push scripts/pre_pr_review.sh
+```
+
+Before opening a PR, run a code-review pass against the branch diff, address or
+accept the findings, then record the reviewed HEAD:
+
+```sh
+scripts/pre_pr_review.sh mark
+scripts/pre_pr_review.sh check
+```
+
+The installed `pre-push` hook checks `codex/*` branches and blocks the push when
+the review marker is missing or stale, so review happens before PR creation.
+
 ## Tests
 
 ```sh
