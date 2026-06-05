@@ -10,6 +10,19 @@ change, and AI co-author trailers break the CLA Assistant (which requires every
 listed author to individually sign the CLA — `noreply@anthropic.com` can't).
 Just write a normal commit message with no AI attribution trailer.
 
+## PR review gate
+
+Before creating a pull request, run a code-review pass against the branch diff:
+findings first, ordered by severity, with file/line references; then open
+questions, then a brief summary and validation gaps. Address or explicitly
+accept any findings before opening the PR.
+
+After the review pass is complete, run `scripts/pre_pr_review.sh mark` to record
+the reviewed HEAD. Run `scripts/pre_pr_review.sh check` before creating the PR.
+Use `git config core.hooksPath .githooks` in local clones to install the
+versioned `.githooks/pre-push` hook. The hook blocks pushes from `codex/*`
+branches when the review marker is missing or stale.
+
 ## Project Overview
 
 `arch-com` is a compiler for **ARCH**, a purpose-built hardware description language (HDL) for micro-architecture work. The compiler ingests `.arch` source files and emits deterministic, readable SystemVerilog. The language is explicitly designed to be generated correctly by LLMs from natural-language hardware descriptions.
