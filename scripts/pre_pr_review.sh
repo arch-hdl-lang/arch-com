@@ -34,6 +34,7 @@ head_sha="$(git rev-parse HEAD)"
 safe_branch="$(printf '%s' "$branch" | tr '/: ' '___')"
 marker_dir="$(git rev-parse --git-path pre-pr-reviews)"
 marker="${marker_dir}/${safe_branch}.review"
+merge_base="$(git merge-base "${base_ref}" HEAD)"
 
 mkdir -p "$marker_dir"
 
@@ -47,6 +48,7 @@ if [[ "$mode" == "mark" ]]; then
     printf 'branch=%s\n' "$branch"
     printf 'head=%s\n' "$head_sha"
     printf 'base=%s\n' "$base_ref"
+    printf 'merge_base=%s\n' "$merge_base"
     printf 'reviewed_at_utc=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     printf 'changed_files<<EOF\n%s\nEOF\n' "$changed_files"
   } >"$marker"
@@ -72,6 +74,7 @@ EOF
 fi
 
 reviewed_head="$(awk -F= '$1 == "head" { print $2; exit }' "$marker")"
+reviewed_merge_base="$(awk -F= '$1 == "merge_base" { print $2; exit }' "$marker")"
 if [[ "$reviewed_head" != "$head_sha" ]]; then
   cat >&2 <<EOF
 pre-pr-review: marker is stale for ${branch}.
@@ -80,6 +83,22 @@ pre-pr-review: marker is stale for ${branch}.
 
 Run a fresh code-review pass, then:
   scripts/pre_pr_review.sh mark
+EOF
+  exit 1
+fi
+
+if [[ "$reviewed_merge_base" != "$merge_base" ]]; then
+  cat >&2 <<EOF
+pre-pr-review: marker was recorded against a different base for ${branch}.
+  reviewed merge-base: ${reviewed_merge_base:-<none>}
+  current  merge-base: ${merge_base}
+  check base ref      : ${base_ref}
+
+Run a fresh code-review pass against:
+  git diff ${base_ref}...HEAD
+
+Then refresh the marker:
+  scripts/pre_pr_review.sh mark ${base_ref}
 EOF
   exit 1
 fi
