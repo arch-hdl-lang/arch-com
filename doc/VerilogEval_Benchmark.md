@@ -87,14 +87,14 @@ Three problems required new ARCH language features:
 
 All 156 .arch files use the following idioms to minimize code:
 
-- `default seq on clk rising;` + one-line `seq target <= expr;`
-- One-line `comb y = expr;` for single assignments
+- `default seq on clk rising;` + `seq ... end seq` blocks without repeated clock headers
+- `comb ... end comb` blocks for combinational assignments
 - One-line `state X transition to Y when cond;` for trivial FSM states
 - FSM `default ... end default` blocks for repeated combinational outputs
 - Ternary `cond ? a : b` replacing if/else single-assignment patterns
 - Reduction operators: `&x`, `|x`, `^x`
 - Concat `{a, b}`, replication `{5{a}}`, bit-slice `x[hi:lo]`
-- `port reg` for output registers (avoids separate reg + port assignment)
+- `pipe_reg<T, 1>` output ports for registered outputs (avoids separate reg + port assignment while keeping latency visible)
 - `SysDomain` used directly (no `domain SysDomain` declaration needed)
 
 ---

@@ -793,29 +793,27 @@ This sets the default clock and edge for all `seq` blocks in the construct. With
 module Counter
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
-  port reg count: out UInt<8> reset rst => 0;
+  port count: out pipe_reg<UInt<8>, 1> reset rst => 0;
 
   default seq on clk rising;
 
-  seq count <= (count + 1).trunc<8>();
+  seq
+    count@1 <= (count +% 1);
+  end seq
 end module Counter
 ```
 
-**One-line seq syntax:** When `default seq` is declared, a single-assignment seq block can be written on one line without `end seq`:
+With a `default seq` declaration, seq blocks still use the ordinary `seq ... end seq` delimiters; the default only removes the repeated `on clk rising/falling` header.
+
+Combinational blocks use the ordinary `comb ... end comb` delimiters, even for a single assignment:
 
 ```
-seq target <= expr;
+comb
+  y = a & b;
+end comb
 ```
 
-This is equivalent to `seq on clk rising target <= expr; end seq`. Multi-line seq blocks (with `if/elsif/else`, `for`, or multiple assignments) still use the full `seq ... end seq` form (but omit `on clk rising`).
-
-Combinational blocks with a single assignment can use the one-line form, omitting `end comb`:
-
-```
-comb y = a & b;
-```
-
-This is equivalent to `comb y = a & b; end comb`. Blocks with multiple assignments, `if/else`, or `for` loops must use the full `comb ... end comb` form.
+The block body may contain assignments, `if/else`, or `for` loops.
 
 **4.2.1 Conditional Statements: if / elsif / else**
 
@@ -1083,7 +1081,7 @@ end module Mux2
 
 **`multicycle` reg annotation (implemented in Phase A; sim valid-tracking deferred to Phase B)** — `reg result: UInt<32> multicycle 3 reset rst => 0;` declares that the combinational path feeding this register has a multi-cycle timing budget. Unlike `pipe_reg` (which inserts N physical flip-flop stages), a `multicycle` register remains a single flop — no extra area or power. The compiler emits an SDC constraint (`set_multicycle_path N -to result`) and can statically verify that consumers only sample the value at the correct rate. This is useful for slow-settling operations (multipliers, dividers, complex ALU) where the path does not affect end-to-end throughput.
 
-The Counter example from §4.2 can be simplified using `port reg`:
+The Counter example from §4.2 can be simplified using a `pipe_reg<T, 1>` output port:
 
 ```
 module Counter
@@ -1091,23 +1089,23 @@ module Counter
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   port en: in Bool;
-  port reg count: out UInt<T> reset rst => 0;
+  port count: out pipe_reg<UInt<T>, 1> reset rst => 0;
 
   seq on clk rising
     if en
-      count <= (count + 1).trunc<T>();
+      count@1 <= (count +% 1);
     end if
   end seq
 end module Counter
 ```
 
-> *⚑ `port reg` eliminates the intermediate `reg count_r` and the `comb count = count_r; end comb` wiring block. The port is directly assigned in the `seq` block. This is the preferred style when the output port is a straightforward registered value.*
+> *⚑ `pipe_reg<T, 1>` eliminates the intermediate `reg count_r` and the `comb count = count_r; end comb` wiring block while keeping the one-cycle latency visible in the port type and write site. This is the preferred style when the output port is a straightforward registered value.*
 
-**Timing implication of `port reg` vs `port` outputs:**
+**Timing implication of `pipe_reg` vs plain `port` outputs:**
 
 | Output style | Declaration | Driven in | SV codegen | Output latency |
 |---|---|---|---|---|
-| **Registered** | `port reg o: out T reset ...` | `seq` block (`<=`) | `always_ff: o <= f(state)` | 1-cycle lag — output reflects state from the **previous** clock edge |
+| **Registered** | `port o: out pipe_reg<T, 1> reset ...` | `seq` block (`o@1 <= ...`) | `always_ff: o <= f(state)` | 1-cycle lag — output reflects state from the **previous** clock edge |
 | **Combinational** | `port o: out T` | `comb` block (`=`) or `let o = expr;` | `assign o = f(state)` or `always_comb` | 0-cycle — output reflects **current** state immediately |
 
 For FSM outputs that must change in the **same cycle** as a state transition (e.g., when a testbench model updates state and outputs simultaneously), use a plain `port` with `comb` assignment:
@@ -1123,14 +1121,14 @@ end comb
 For FSM outputs that should be **registered** (glitch-free, timing-clean, but 1-cycle delayed):
 
 ```
-port reg o_active: out Bool reset rst => false;
+port o_active: out pipe_reg<Bool, 1> reset rst => false;
 
 seq on clk rising
-  o_active <= (state_ff == 3);  // registered: reflects state_ff from previous edge
+  o_active@1 <= (state_ff == 3);  // registered: reflects state_ff from previous edge
 end seq
 ```
 
-> *⚑ Choose carefully: `port reg` adds a pipeline stage to the output path. If a testbench or downstream module expects zero-latency output response to state changes, use combinational `port` + `comb` instead.*
+> *⚑ Choose carefully: `pipe_reg<T, 1>` adds a pipeline stage to the output path. If a testbench or downstream module expects zero-latency output response to state changes, use combinational `port` + `comb` instead.*
 
 **`multicycle` reg annotation (implemented in Phase A; sim valid-tracking deferred to Phase B)** — `reg result: UInt<32> multicycle 3 reset rst => 0;` declares that the combinational path feeding this register has a multi-cycle timing budget. Unlike `pipe_reg` (which inserts N physical flip-flop stages), a `multicycle` register remains a single flop — no extra area or power. The compiler auto-detects all input signals feeding the register by walking the assignment expression tree. Three modes of enforcement: (1) **Simulation** (`--check-uninit`): hidden valid tracking with input change detection and latency counter; reads before the counter expires return poison/X. (Phase B; not yet implemented.) (2) **Synthesis**: SDC constraint generation — `arch build` writes a companion `<output>.sdc` file containing one `set_multicycle_path N -setup -to [get_cells {*reg_reg*}]` and one `set_multicycle_path N-1 -hold -to [get_cells {*reg_reg*}]` per annotation. The `*`-prefixed glob is portable across flat and hierarchical synthesis netlists and across the major STA tools (OpenSTA, DC, Genus, Vivado, Quartus). (Phase A; landed.) (3) **Formal**: optional `assert property` to verify the multicycle timing assumption holds. (Phase C; not yet implemented.)
 
@@ -1317,7 +1315,9 @@ The compiler already warns when `kind ff` is used on multi-bit data (suggesting 
 module ClkPassthrough
   port clk_in:  in Clock<SysDomain>;
   port clk_out: out Clock<SysDomain>;
-  comb clk_out = clk_in;
+  comb
+    clk_out = clk_in;
+  end comb
 end module ClkPassthrough
 
 // Inline gate (AND with enable)
@@ -1325,7 +1325,9 @@ module ClkGate
   port clk_in:  in Clock<SysDomain>;
   port enable:  in Bool;
   port clk_out: out Clock<SysDomain>;
-  comb clk_out = clk_in & enable;
+  comb
+    clk_out = clk_in & enable;
+  end comb
 end module ClkGate
 
 // Divide-by-2
@@ -1335,8 +1337,12 @@ module ClkDiv2
   port clk_out: out Clock<SysDomain>;
   reg toggle: Bool reset rst=>false;
   default seq on clk_in rising;
-  seq toggle <= ~toggle; end seq
-  comb clk_out = toggle;
+  seq
+    toggle <= ~toggle;
+  end seq
+  comb
+    clk_out = toggle;
+  end comb
 end module ClkDiv2
 ```
 
@@ -2269,7 +2275,7 @@ With `kind latch` each row becomes a per-row `always_latch` block with one-hot w
 
 `kind latch` accepts an optional `flops:` sub-config that selects who owns the sample flops protecting the latch's transparency window:
 
-`flops: external` (default). The caller must drive `write.addr` / `write.data` directly from a flop --- a `reg`, a `port reg`, a pipeline stage register, an input port, or another instance's output. The type checker rejects `wire` / `let` / arbitrary combinational sources with a diagnostic that names the problematic pin and asks for a flop, since transparent latches can glitch on combinational input churn. The latch enable is `we && (waddr == k)` and write happens with zero added latency.
+`flops: external` (default). The caller must drive `write.addr` / `write.data` directly from a flop --- a `reg`, a `pipe_reg<T, N>` output port, a legacy `port reg`, a pipeline stage register, an input port, or another instance's output. The type checker rejects `wire` / `let` / arbitrary combinational sources with a diagnostic that names the problematic pin and asks for a flop, since transparent latches can glitch on combinational input churn. The latch enable is `we && (waddr == k)` and write happens with zero added latency.
 
 `flops: internal` (Ibex-style). The regfile auto-emits its own `we_q` / `waddr_q` / `wdata_q` sample flops on the rising edge of `clk` and drives each row's latch with an ICG-equivalent gate `!clk && we_q && (waddr_q == k)` --- transparent only during the clk-low half of the cycle after the sample edge, when the sampled signals are guaranteed stable. This shifts the freshness contract from caller to regfile: the caller may drive write pins from any combinational source, and the static flop-source check is skipped. The trade-off is one extra cycle of write latency: a write asserted in cycle N is captured into `rf_data[k]` during cycle N+1's clk-low phase.
 
@@ -5068,7 +5074,7 @@ module NocConsumer
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   port incoming: target NocChannel;
-  port reg last_seq: out UInt<64> reset rst => 0;
+  port last_seq: out pipe_reg<UInt<64>, 1> reset rst => 0;
   comb
     incoming.flits.no_pop();
     if incoming.flits.valid
@@ -5077,7 +5083,7 @@ module NocConsumer
   end comb
   seq on clk rising
     if incoming.flits.valid
-      last_seq <= incoming.flits.data;
+      last_seq@1 <= incoming.flits.data;
     end if
   end seq
 end module NocConsumer
@@ -8581,7 +8587,9 @@ module Consumer
   port req: in BusReq;
   port addr_out: out UInt<32>;
 
-  comb addr_out = req.addr;
+  comb
+    addr_out = req.addr;
+  end comb
 end module Consumer
 ```
 
