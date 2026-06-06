@@ -3431,7 +3431,16 @@ fn lower_module_threads(
     let inst = InstDecl {
         name: Ident::new("_threads".to_string(), sp),
         module_name: Ident::new(merged_name, sp),
-        param_assigns: Vec::new(),
+        param_assigns: m
+            .params
+            .iter()
+            .filter(|p| !p.is_local)
+            .map(|p| ParamAssign {
+                name: p.name.clone(),
+                value: Expr::new(ExprKind::Ident(p.name.name.clone()), p.span),
+                ty: None,
+            })
+            .collect(),
         connections,
         for_loops: Vec::new(),
         span: sp,
