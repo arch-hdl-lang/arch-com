@@ -15,6 +15,26 @@ from mcp.server.fastmcp import FastMCP
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 
+
+def _workspace_roots_from_env() -> list[pathlib.Path]:
+    """Return roots where MCP file tools may operate.
+
+    The ARCH language reference remains rooted in PROJECT_ROOT, but agents often
+    invoke the MCP server while editing .arch files in another repository. Allow
+    those repositories through ARCH_MCP_WORKSPACE_ROOTS as a colon-separated
+    list of roots.
+    """
+    roots = [PROJECT_ROOT]
+    raw_roots = os.environ.get("ARCH_MCP_WORKSPACE_ROOTS", "")
+    for raw_root in raw_roots.split(os.pathsep):
+        raw_root = raw_root.strip()
+        if raw_root:
+            roots.append(pathlib.Path(raw_root).expanduser())
+    return list(dict.fromkeys(root.resolve() for root in roots))
+
+
+WORKSPACE_ROOTS = _workspace_roots_from_env()
+
 # Load .env written by install.sh (contains ARCH_BIN path)
 _env_file = SCRIPT_DIR / ".env"
 if _env_file.exists():
@@ -188,11 +208,29 @@ def doc_comments_spec() -> str:
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 def _resolve_safe(path: str) -> pathlib.Path:
-    """Resolve *path* and ensure it stays under PROJECT_ROOT."""
-    resolved = (PROJECT_ROOT / path).resolve()
-    if not str(resolved).startswith(str(PROJECT_ROOT)):
-        raise ValueError(f"Path escapes project root: {path}")
-    return resolved
+    """Resolve *path* and ensure it stays under an allowed workspace root."""
+    raw_path = pathlib.Path(path).expanduser()
+    resolved = (raw_path if raw_path.is_absolute() else PROJECT_ROOT / raw_path).resolve()
+    for root in WORKSPACE_ROOTS:
+        try:
+            resolved.relative_to(root)
+            return resolved
+        except ValueError:
+            pass
+    raise ValueError(
+        f"Path escapes allowed workspace roots: {path} "
+        f"(allowed: {', '.join(str(root) for root in WORKSPACE_ROOTS)})"
+    )
+
+
+def _display_path(path: pathlib.Path) -> str:
+    """Return a stable, readable path for MCP responses."""
+    for root in WORKSPACE_ROOTS:
+        try:
+            return str(path.relative_to(root))
+        except ValueError:
+            pass
+    return str(path)
 
 
 def _run(args: list[str], timeout: int = 30, cwd: str | None = None) -> str:
@@ -421,7 +459,7 @@ def write_and_check(path: str, content: str, extra_files: list[str] | None = Non
     check_files.append(str(resolved))
 
     check_result = _run([ARCH_BIN, "check"] + check_files)
-    return f"[OK] Wrote {resolved.relative_to(PROJECT_ROOT)}\n\n{check_result}"
+    return f"[OK] Wrote {_display_path(resolved)}\n\n{check_result}"
 
 
 @mcp.tool()
@@ -443,7 +481,7 @@ def write_arch_file(path: str, content: str) -> str:
     resolved = _resolve_safe(path)
     resolved.parent.mkdir(parents=True, exist_ok=True)
     resolved.write_text(content)
-    return f"[OK] Wrote {resolved.relative_to(PROJECT_ROOT)}"
+    return f"[OK] Wrote {_display_path(resolved)}"
 
 
 @mcp.tool()
@@ -453,7 +491,7 @@ def list_arch_files(directory: str = ".") -> str:
     if not resolved.is_dir():
         return f"[ERROR] Not a directory: {directory}"
     files = sorted(resolved.rglob("*.arch"))
-    rel = [str(f.relative_to(PROJECT_ROOT)) for f in files]
+    rel = [_display_path(f) for f in files]
     return "\n".join(rel) if rel else "(no .arch files found)"
 
 
