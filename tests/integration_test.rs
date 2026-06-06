@@ -11132,6 +11132,38 @@ fn test_wait_1_cycle_in_else_branch_kept() {
         "thread with wait-1-cycle in else branch should compile:\n{sv}");
 }
 
+#[test]
+fn test_lowered_threads_codegen_has_no_extra_blank_separator_or_eof_blank() {
+    // Regression: `arch build` briefly emitted `endmodule\n\nmodule M`
+    // between the synthetic `_M_threads` helper and the public wrapper,
+    // plus `endmodule\n\n` at EOF. That produced blank-line-only churn in
+    // downstream generated SV such as fpt26 AttentionTileShell.sv.
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          port go: in Bool;
+          port done: out Bool;
+          thread on clk rising, rst high
+            wait until go;
+            done = 1;
+            wait 1 cycle;
+          end thread
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module _M_threads"), "expected lowered helper:\n{sv}");
+    assert!(sv.contains("endmodule\nmodule M"), "expected tight helper/public boundary:\n{sv}");
+    assert!(
+        !sv.contains("endmodule\n\nmodule M"),
+        "helper/public boundary must not contain a blank separator:\n{sv}"
+    );
+    assert!(
+        sv.ends_with("endmodule\n") && !sv.ends_with("endmodule\n\n"),
+        "generated SV must end with one newline after final endmodule:\n{sv:?}"
+    );
+}
+
 // ── Auto-emitted SVA from thread lowering ─────────────────────────────────────
 
 #[test]
