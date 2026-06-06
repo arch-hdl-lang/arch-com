@@ -392,7 +392,8 @@ impl<'a> Codegen<'a> {
                 _ => vec![],
             })
             .collect();
-        for item in items {
+        let mut trimmed_threads_helper_boundary = false;
+        for (idx, item) in items.iter().enumerate() {
             self.emit_comments_before(item.span().start);
             // Function / Template / Bus / Use have no top-level SV emit
             // (Function is emitted inside each module body, Template is
@@ -400,10 +401,17 @@ impl<'a> Codegen<'a> {
             // an import emitted inside modules) — their `Construct::emit_sv`
             // impl is the trait default no-op.
             item.as_construct().emit_sv(self);
+            if Self::is_threads_helper_for_next_public_module(item, items.get(idx + 1)) {
+                self.trim_trailing_blank_line();
+                trimmed_threads_helper_boundary = true;
+            }
         }
         // Flush any trailing comments after the last item.
         let end = usize::MAX;
         self.emit_comments_before(end);
+        if trimmed_threads_helper_boundary {
+            self.trim_trailing_blank_line();
+        }
 
         // Prepend typedefs for any synthesized find_first result structs.
         // One packed struct per unique index width used in the source.
@@ -423,6 +431,22 @@ impl<'a> Codegen<'a> {
             self.out = prefix;
         }
         std::mem::take(&mut self.out)
+    }
+
+    fn is_threads_helper_for_next_public_module(item: &Item, next: Option<&Item>) -> bool {
+        let Item::Module(m) = item else {
+            return false;
+        };
+        let Some(Item::Module(next_m)) = next else {
+            return false;
+        };
+        m.name.name == format!("_{}_threads", next_m.name.name)
+    }
+
+    fn trim_trailing_blank_line(&mut self) {
+        while self.out.ends_with("\n\n") {
+            self.out.pop();
+        }
     }
 
     fn line(&mut self, s: &str) {
