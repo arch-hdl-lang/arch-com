@@ -366,10 +366,10 @@ fn line_has_hazard(map: &ThreadMap, line_start: usize, line_end: usize) -> bool 
 
 fn render_thread_flow_chart(out: &mut String, sources: &[ThreadMapSource], thread: &ThreadMapThread) {
     let positions = graph_positions(thread);
-    let width = 540;
+    let width = GRAPH_W;
     let height = positions
         .iter()
-        .map(|p| p.y + GRAPH_NODE_H + 70)
+        .map(|p| p.y + GRAPH_NODE_H + 120)
         .max()
         .unwrap_or(180);
     let marker_id = format!("graph-arrow-t{}", thread.index);
@@ -425,8 +425,9 @@ fn render_thread_flow_chart(out: &mut String, sources: &[ThreadMapSource], threa
     out.push_str("</svg></div>");
 }
 
-const GRAPH_NODE_W: i32 = 190;
+const GRAPH_NODE_W: i32 = 210;
 const GRAPH_NODE_H: i32 = 64;
+const GRAPH_W: i32 = 860;
 
 #[derive(Clone, Copy)]
 struct GraphPos {
@@ -436,7 +437,7 @@ struct GraphPos {
 
 fn graph_positions(thread: &ThreadMapThread) -> Vec<GraphPos> {
     let mut positions = (0..thread.states.len())
-        .map(|i| GraphPos { x: 175, y: 24 + i as i32 * 122 })
+        .map(|i| GraphPos { x: 380, y: 24 + i as i32 * 122 })
         .collect::<Vec<_>>();
 
     for state in &thread.states {
@@ -449,10 +450,10 @@ fn graph_positions(thread: &ThreadMapThread) -> Vec<GraphPos> {
         if forward_targets.len() == 2 {
             let branch_y = positions[state.index].y + 132;
             if let Some(pos) = positions.get_mut(forward_targets[0]) {
-                *pos = GraphPos { x: 20, y: branch_y };
+                *pos = GraphPos { x: 250, y: branch_y };
             }
             if let Some(pos) = positions.get_mut(forward_targets[1]) {
-                *pos = GraphPos { x: 330, y: branch_y };
+                *pos = GraphPos { x: 560, y: branch_y };
             }
             break;
         }
@@ -470,26 +471,44 @@ fn render_graph_edge(
 ) {
     let label = transition_summary(state, tr);
     if tr.target_index <= state.index {
-        let lane = 522 - (state.index.saturating_sub(tr.target_index) as i32 * 18).min(64);
-        let sx = from.x + GRAPH_NODE_W;
+        let from_center = from.x + GRAPH_NODE_W / 2;
+        let to_center = to.x + GRAPH_NODE_W / 2;
+        let use_left_lane = from_center <= to_center;
+        let lane_offset = (state.index.saturating_sub(tr.target_index) as i32 * 30).min(96);
+        let lane = if use_left_lane {
+            24 + lane_offset
+        } else {
+            GRAPH_W - 24 - lane_offset
+        };
+        let sx = if use_left_lane { from.x } else { from.x + GRAPH_NODE_W };
         let sy = from.y + GRAPH_NODE_H / 2;
-        let ex = to.x + GRAPH_NODE_W;
+        let ex = if use_left_lane { to.x } else { to.x + GRAPH_NODE_W };
         let ey = to.y + GRAPH_NODE_H / 2;
         out.push_str(&format!(
             "<path class=\"graph-edge\" marker-end=\"url(#{})\" d=\"M{sx},{sy} C{lane},{sy} {lane},{ey} {ex},{ey}\"/>",
             html_escape(marker_id)
         ));
-        render_graph_label(out, lane + 8, (sy + ey) / 2, &label);
+        render_graph_label(out, if use_left_lane { lane + 8 } else { lane - 42 }, (sy + ey) / 2, &label);
     } else {
         let sx = from.x + GRAPH_NODE_W / 2;
         let sy = from.y + GRAPH_NODE_H;
         let ex = to.x + GRAPH_NODE_W / 2;
         let ey = to.y;
         let mid_y = (sy + ey) / 2;
-        out.push_str(&format!(
-            "<path class=\"graph-edge\" marker-end=\"url(#{})\" d=\"M{sx},{sy} C{sx},{mid_y} {ex},{mid_y} {ex},{ey}\"/>",
-            html_escape(marker_id)
-        ));
+        if sx == ex {
+            out.push_str(&format!(
+                "<path class=\"graph-edge\" marker-end=\"url(#{})\" d=\"M{sx},{sy} L{ex},{ey}\"/>",
+                html_escape(marker_id)
+            ));
+        } else {
+            let bend = ((ex - sx).abs() / 3).clamp(36, 96);
+            let c1x = if ex >= sx { sx + bend } else { sx - bend };
+            let c2x = if ex >= sx { ex - bend } else { ex + bend };
+            out.push_str(&format!(
+                "<path class=\"graph-edge\" marker-end=\"url(#{})\" d=\"M{sx},{sy} C{c1x},{mid_y} {c2x},{mid_y} {ex},{ey}\"/>",
+                html_escape(marker_id)
+            ));
+        }
         render_graph_label(out, (sx + ex) / 2 + 8, mid_y - 6, &label);
     }
 }
