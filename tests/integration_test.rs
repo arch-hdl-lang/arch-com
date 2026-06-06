@@ -12984,6 +12984,64 @@ fn test_lower_threads_clones_parent_params_into_threads_submodule() {
 }
 
 #[test]
+fn test_lower_threads_forwards_parent_params_to_threads_inst() {
+    // arch-com#507: the synthetic `_<mod>_threads` submodule repeats
+    // overridable parent params so thread bodies can reference them, but
+    // the wrapper must also pass through the wrapper's current parameter
+    // values. Otherwise an inst-site override affects parent logic while
+    // the lifted thread body silently keeps the helper defaults.
+    let source = r#"
+        module ParamThread
+          param DONE_VALUE: const = 5;
+          param OUT_W: const = 4;
+          local param LOCAL_DONE: const = DONE_VALUE + 1;
+
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          port go: in Bool;
+          port reg result: out UInt<OUT_W> reset rst => 0;
+
+          thread on clk rising, rst high
+            wait until go;
+            result <= DONE_VALUE;
+            wait 1 cycle;
+          end thread
+        end module ParamThread
+
+        module Top
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          port go: in Bool;
+          port result: out UInt<8>;
+
+          inst u: ParamThread
+            param DONE_VALUE = 9;
+            param OUT_W = 8;
+            clk <- clk;
+            rst <- rst;
+            go <- go;
+            result -> result;
+          end inst u
+        end module Top
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("ParamThread #(.DONE_VALUE(9), .OUT_W(8)) u ("),
+        "top-level override should still be emitted:\n{sv}"
+    );
+    assert!(
+        sv.contains(
+            "_ParamThread_threads #(.DONE_VALUE(DONE_VALUE), .OUT_W(OUT_W)) _threads ("
+        ),
+        "wrapper must forward overridable params into the synthesized threads helper:\n{sv}"
+    );
+    assert!(
+        !sv.contains(".LOCAL_DONE(LOCAL_DONE)"),
+        "localparams are cloned into the helper but must not be overridden at the inst site:\n{sv}"
+    );
+}
+
+#[test]
 fn test_thread_sim_declares_module_params_used_by_thread_body() {
     // arch-com#352: the ARCH-native coroutine thread sim path skips
     // lower_threads, so parent params are not cloned into a synthetic FSM
