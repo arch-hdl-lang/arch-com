@@ -86,7 +86,9 @@ seq on clk rising                    // clocked process — uses <=
   p <= expr;                         // no reset guard (reset none)
 end seq
 
-seq r <= expr;                       // one-line seq (uses default clock)
+seq                                   // default-clock block; still uses end seq
+  r <= expr;
+end seq
 ```
 
 **Conditionals:** use `elsif` (one word), NOT `else if`:
@@ -159,7 +161,7 @@ enum E   { A, B, }
 - `Bool` and `UInt<1>` are identical — freely assignable, bitwise ops on 1-bit return Bool
 - `Bit` is an alias for `UInt<1>`
 - No current `Future<T>` / `await` / user-visible `Token<T>` API. TLM concurrency is expressed with worker threads, `generate_for`, direct-call `fork/join` cohorts, and RHS-fork groups.
-- `Clock<Domain>` may be `out` — use for passthrough (`comb clk_out = clk_in;`), gating (`comb clk_out = clk_in & en;`), or division. For integrated latch-based gating use the `clkgate` construct.
+- `Clock<Domain>` may be `out` — use a `comb ... end comb` block for passthrough, gating, or division. For integrated latch-based gating use the `clkgate` construct.
 - **`struct` packed bit layout: declaration-first = MSB** (SV convention). A TB reading a struct-typed signal as an integer finds the first-declared field in the top bits, last-declared at the LSBs.
 
 **Width conversions** (always explicit):
@@ -314,23 +316,23 @@ module Name
   port clk: in Clock<D>;
   port rst: in Reset<Sync>;
   port a:   in UInt<W>;
-  port y:   out UInt<W>;
+  port y_comb: out UInt<W>;
   port v:   in unpacked Vec<UInt<8>, 4>;  // SV unpacked-array port (interop hatch);
                                           // default Vec<T,N> ports emit packed multi-dim.
 
   reg default: reset rst => 0;           // wildcard default for all regs
   reg r: UInt<W>;                        // inherits reset from default
-  port reg y: out UInt<W>;              // output port + register combined
+  port y_reg: out pipe_reg<UInt<W>, 1>;  // 1-cycle registered output port
   pipe_reg d: r stages 2;               // 2-stage delay of r (read-only)
+
+  let y_comb = a;
 
   default seq on clk rising;
 
-  seq on clk rising
+  seq
     r <= a;
-    y <= r;
+    y_reg@1 <= r;
   end seq
-
-  seq r <= a;                            // one-line seq (uses default clk)
 end module Name
 ```
 
@@ -458,13 +460,17 @@ fsm Name
   end state Idle
 
   state Running
-    comb active = true; end comb
+    comb
+      active = true;
+    end comb
     -> Done    when all_done;
     -> Running when not all_done;
   end state Running
 
   state Done
-    comb fire_irq = true; end comb
+    comb
+      fire_irq = true;
+    end comb
     -> Idle;                          // unconditional: always advance
   end state Done
 end fsm Name
@@ -1310,7 +1316,9 @@ use BusPkg;
 module Consumer
   port req:      in BusReq;
   port addr_out: out UInt<32>;
-  comb addr_out = req.addr;
+  comb
+    addr_out = req.addr;
+  end comb
 end module Consumer
 ```
 
