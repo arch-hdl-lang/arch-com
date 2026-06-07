@@ -1164,7 +1164,7 @@ A verification pass against the ARM TRM (DDI 0475E, *CoreLink NIC-400 Network In
 | Feature | Status | Where / next step |
 |---|---|---|
 | Single-master, single-slave smoke | ✅ | `tb_nic400_system.cpp` |
-| Multi-master contention (M=2..3 active at once) | ✅ | `tb_nic400_fabric_multi_master.cpp`: S1 3-master disjoint reads at 3.00 t/c; S2 3-way hot-slave round_robin at 1.00 t/c (m0=10,m1=10,m2=10, no starvation); S3 3-master disjoint writes (18/18 BRESPs correctly routed). |
+| Multi-master contention (M=2..3 active at once) | ✅ | `Nic400FabricMultiMaster_test.harc`: S1 3-master disjoint reads at ~3.0 t/c; S2 3-way hot-slave round_robin (m0=10,m1=10,m2=10, no starvation); S3 3-master disjoint writes (18/18 BRESPs correctly routed). Replaces the hand-written `tb_nic400_fabric_multi_master.cpp`, which ran through the same `arch sim` path the HARC TB generates. |
 | Hot-slave handoff throughput | ✅ | `Nic400FabricHotSlave_test.harc`: S1 M↔M swap timing (zero dead cycle), S2 persistent round_robin contention, S3 contender dropout, S4 asymmetric load — all at ≥0.9 t/c. (Per-master QoS *priority* arbitration remains 🟡 — `ar_lock` is `mutex<round_robin>`, not the QoS hook.) |
 | OOO completion (interleaved B per master) | ✅ | `Nic400OooCompletion_test.harc` (§15.5): M0 issues two writes to slaves 0/1; slave1's B injected first → M0 receives B(id=1) before B(id=0). Enabled by the MasterPort B-phase fix (wait outside `b_ch` until the slave has `b_valid`). |
 | Default-slave DECERR | ✅ | `Nic400DefaultSlave_test.harc`: OOR read → RRESP=DECERR (id echoed, RLAST=1), OOR write → BRESP=DECERR (id echoed), valid decode unaffected. |
