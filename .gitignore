@@ -62,3 +62,6 @@ critique2.txt
 
 # Private draft — crowd-sourced data co-op proposal (not for publication)
 doc/plan_arch_data_coop.md
+
+# Local design/scratch notes — not part of the repo (agent working files)
+ideas/
