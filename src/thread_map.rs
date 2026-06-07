@@ -1,4 +1,4 @@
-use crate::ast::{BinOp, Expr, ExprKind, InsideMember, LitKind, Stmt, UnaryOp};
+use crate::ast::{BinOp, Expr, ExprKind, ForRange, InsideMember, LitKind, Stmt, UnaryOp};
 use crate::lexer::Span;
 
 #[derive(Debug, Clone, Default)]
@@ -18,6 +18,9 @@ pub struct ThreadMapModule {
 pub struct ThreadMapThread {
     pub name: String,
     pub index: usize,
+    /// True for `thread once`, where the terminal state holds instead of
+    /// wrapping to state 0.
+    pub once: bool,
     pub span: Span,
     pub states: Vec<ThreadMapState>,
     /// Dead-skid comb-feedback hazards for this thread (issue #245).  Populated
@@ -42,16 +45,92 @@ pub struct ThreadMapState {
     pub index: usize,
     pub state_name: String,
     pub role: String,
+    /// False when this source partition was absorbed by an optimization such
+    /// as folded wait-exit assignment lowering and is not emitted as a runtime
+    /// state arm in the generated FSM.
+    pub emitted: bool,
     pub span: Span,
     pub labels: Vec<String>,
+    /// Source-level fall-through target after local proof-preserving
+    /// compaction such as folded wait-exit assignments.
+    ///
+    /// The lowered FSM transition target is still represented separately in
+    /// `transitions`; proof tooling checks the two agree where source
+    /// semantics require natural fall-through.
+    pub source_next_index: usize,
+    pub source_next_name: String,
+    /// Rendered `wait N cycle` count expression for counted-wait states.
+    ///
+    /// `None` for all other state roles. The proof converter only accepts
+    /// literal natural counts today, but this field keeps the certificate
+    /// source-of-truth separate from human-readable labels.
+    pub wait_cycles_count: Option<String>,
+    /// Sequential updates that fire while this runtime state is active.
+    pub seq_updates: Vec<String>,
+    /// Direct sequential assignments that fire while this runtime state is
+    /// active. Nested/guarded statements remain represented by `seq_updates`
+    /// until the proof certificate grows a full statement language.
+    pub seq_assignments: Vec<ThreadMapAssignment>,
+    /// Sequential updates folded into this state's guarded exit arm.
+    ///
+    /// This is populated by the wait-until exit folding optimization. The
+    /// absorbed successor state is still present in the map with
+    /// `emitted == false`, while these updates document the store effect that
+    /// moved onto the wait state's exit edge.
+    pub folded_exit_updates: Vec<String>,
+    /// Direct sequential assignments folded into this state's guarded exit
+    /// arm. This mirrors `folded_exit_updates` with structure when the folded
+    /// statement is a plain `target <= value` assignment.
+    pub folded_exit_assignments: Vec<ThreadMapAssignment>,
+    /// Source-level transition intent for this state, after local compaction.
+    ///
+    /// This is intentionally separate from `transitions`, which records the
+    /// lowered FSM table. Today the lowering path populates both from the same
+    /// raw table for most states, but proof tooling treats them as separate
+    /// channels so later source-intent extraction can catch lowered-table drift.
+    pub source_transitions: Vec<ThreadMapTransition>,
+    /// Machine-readable provenance for `source_transitions`.
+    ///
+    /// v5 uses `pre_fold_snapshot`: transition intent was snapshotted before
+    /// folded wait-exit assignment optimization and compacted across folded
+    /// states before emission.
+    pub source_transition_origin: String,
+    /// Lowered FSM transition table emitted by `lower_threads`.
     pub transitions: Vec<ThreadMapTransition>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ThreadMapAssignment {
+    pub target: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct ThreadMapTransition {
     pub condition: String,
+    pub condition_guard: Option<ThreadMapGuardExpr>,
     pub target_index: usize,
     pub target_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThreadMapGuardExpr {
+    Atom(String),
+    True,
+    False,
+    Not(Box<ThreadMapGuardExpr>),
+    And(Box<ThreadMapGuardExpr>, Box<ThreadMapGuardExpr>),
+    Or(Box<ThreadMapGuardExpr>, Box<ThreadMapGuardExpr>),
+    Lt(ThreadMapNatExpr, ThreadMapNatExpr),
+    Ge(ThreadMapNatExpr, ThreadMapNatExpr),
+    Eq(ThreadMapNatExpr, ThreadMapNatExpr),
+    Ne(ThreadMapNatExpr, ThreadMapNatExpr),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThreadMapNatExpr {
+    Var(String),
+    Const(u64),
 }
 
 #[derive(Debug, Clone)]
@@ -158,6 +237,132 @@ pub fn expr_label(expr: &Expr) -> String {
     }
 }
 
+pub fn guard_expr(expr: &Expr) -> ThreadMapGuardExpr {
+    match &expr.kind {
+        ExprKind::Bool(true) => ThreadMapGuardExpr::True,
+        ExprKind::Bool(false) => ThreadMapGuardExpr::False,
+        ExprKind::Unary(UnaryOp::Not, inner) => {
+            ThreadMapGuardExpr::Not(Box::new(guard_expr(inner)))
+        }
+        ExprKind::Binary(BinOp::And, lhs, rhs) => {
+            ThreadMapGuardExpr::And(Box::new(guard_expr(lhs)), Box::new(guard_expr(rhs)))
+        }
+        ExprKind::Binary(BinOp::Or, lhs, rhs) => {
+            ThreadMapGuardExpr::Or(Box::new(guard_expr(lhs)), Box::new(guard_expr(rhs)))
+        }
+        ExprKind::Binary(BinOp::Lt, lhs, rhs) => {
+            ThreadMapGuardExpr::Lt(nat_expr(lhs), nat_expr(rhs))
+        }
+        ExprKind::Binary(BinOp::Gte, lhs, rhs) => {
+            ThreadMapGuardExpr::Ge(nat_expr(lhs), nat_expr(rhs))
+        }
+        ExprKind::Binary(BinOp::Gt, lhs, rhs) => {
+            ThreadMapGuardExpr::Lt(nat_expr(rhs), nat_expr(lhs))
+        }
+        ExprKind::Binary(BinOp::Lte, lhs, rhs) => {
+            ThreadMapGuardExpr::Ge(nat_expr(rhs), nat_expr(lhs))
+        }
+        ExprKind::Binary(BinOp::Eq, lhs, rhs) => {
+            ThreadMapGuardExpr::Eq(nat_expr(lhs), nat_expr(rhs))
+        }
+        ExprKind::Binary(BinOp::Neq, lhs, rhs) => {
+            ThreadMapGuardExpr::Ne(nat_expr(lhs), nat_expr(rhs))
+        }
+        _ => ThreadMapGuardExpr::Atom(expr_label(expr)),
+    }
+}
+
+pub fn nat_expr(expr: &Expr) -> ThreadMapNatExpr {
+    match &expr.kind {
+        ExprKind::Literal(LitKind::Dec(v))
+        | ExprKind::Literal(LitKind::Hex(v))
+        | ExprKind::Literal(LitKind::Bin(v))
+        | ExprKind::Literal(LitKind::Sized(_, v)) => ThreadMapNatExpr::Const(*v),
+        ExprKind::Cast(inner, _) | ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => {
+            nat_expr(inner)
+        }
+        ExprKind::MethodCall(inner, method, args)
+            if matches!(method.name.as_str(), "trunc" | "zext" | "sext" | "resize")
+                && args.len() == 1 =>
+        {
+            nat_expr(inner)
+        }
+        _ => ThreadMapNatExpr::Var(expr_label(expr)),
+    }
+}
+
+pub fn stmt_label(stmt: &Stmt) -> String {
+    match stmt {
+        Stmt::Assign(assign) => format!(
+            "{} <= {}",
+            expr_label(&assign.target),
+            expr_label(&assign.value)
+        ),
+        Stmt::IfElse(ie) => {
+            let then_labels = ie
+                .then_stmts
+                .iter()
+                .map(stmt_label)
+                .collect::<Vec<_>>()
+                .join("; ");
+            let else_labels = ie
+                .else_stmts
+                .iter()
+                .map(stmt_label)
+                .collect::<Vec<_>>()
+                .join("; ");
+            if ie.else_stmts.is_empty() {
+                format!("if {} then [{}]", expr_label(&ie.cond), then_labels)
+            } else {
+                format!(
+                    "if {} then [{}] else [{}]",
+                    expr_label(&ie.cond),
+                    then_labels,
+                    else_labels
+                )
+            }
+        }
+        Stmt::Match(m) => format!("match {}", expr_label(&m.scrutinee)),
+        Stmt::Log(log) => format!("log {}", log.tag),
+        Stmt::For(f) => {
+            let body = f.body.iter().map(stmt_label).collect::<Vec<_>>().join("; ");
+            format!(
+                "for {} in {} [{}]",
+                f.var.name,
+                for_range_label(&f.range),
+                body
+            )
+        }
+        Stmt::Init(init) => {
+            let body = init
+                .body
+                .iter()
+                .map(stmt_label)
+                .collect::<Vec<_>>()
+                .join("; ");
+            format!("init on {} [{}]", init.reset_signal.name, body)
+        }
+        Stmt::WaitUntil(cond, _) => format!("wait until {}", expr_label(cond)),
+        Stmt::DoUntil { body, cond, .. } => {
+            let body = body.iter().map(stmt_label).collect::<Vec<_>>().join("; ");
+            format!("do [{}] until {}", body, expr_label(cond))
+        }
+    }
+}
+
+pub fn stmt_assignments(stmts: &[Stmt]) -> Vec<ThreadMapAssignment> {
+    stmts
+        .iter()
+        .filter_map(|stmt| match stmt {
+            Stmt::Assign(assign) => Some(ThreadMapAssignment {
+                target: expr_label(&assign.target),
+                value: expr_label(&assign.value),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 pub fn render_html(map: &ThreadMap, sources: &[ThreadMapSource], title: &str) -> String {
     let mut out = String::new();
     out.push_str("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n");
@@ -241,7 +446,11 @@ table.hazards td { border-top: 1px solid #ffe0bf; }
             html_escape(&module.generated_module_name)
         ));
         for thread in &module.threads {
-            let warn = if thread.hazards.is_empty() { "" } else { "⚠ " };
+            let warn = if thread.hazards.is_empty() {
+                ""
+            } else {
+                "⚠ "
+            };
             out.push_str(&format!(
                 "<h4>{}thread {} <span class=\"role\">index {}</span></h4>",
                 warn,
@@ -364,7 +573,11 @@ fn line_has_hazard(map: &ThreadMap, line_start: usize, line_end: usize) -> bool 
     })
 }
 
-fn render_thread_flow_chart(out: &mut String, sources: &[ThreadMapSource], thread: &ThreadMapThread) {
+fn render_thread_flow_chart(
+    out: &mut String,
+    sources: &[ThreadMapSource],
+    thread: &ThreadMapThread,
+) {
     let positions = graph_positions(thread);
     let width = GRAPH_W;
     let height = positions
@@ -396,7 +609,13 @@ fn render_thread_flow_chart(out: &mut String, sources: &[ThreadMapSource], threa
     for state in &thread.states {
         let pos = positions[state.index];
         let lines = find_line_range(sources, state.span)
-            .map(|(_, a, b)| if a == b { a.to_string() } else { format!("{a}-{b}") })
+            .map(|(_, a, b)| {
+                if a == b {
+                    a.to_string()
+                } else {
+                    format!("{a}-{b}")
+                }
+            })
             .unwrap_or_else(|| "-".to_string());
         out.push_str(&format!(
             "<g class=\"flow-state\" data-state=\"S{}\"><rect class=\"graph-node c{}\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/>",
@@ -437,7 +656,10 @@ struct GraphPos {
 
 fn graph_positions(thread: &ThreadMapThread) -> Vec<GraphPos> {
     let mut positions = (0..thread.states.len())
-        .map(|i| GraphPos { x: 380, y: 24 + i as i32 * 122 })
+        .map(|i| GraphPos {
+            x: 380,
+            y: 24 + i as i32 * 122,
+        })
         .collect::<Vec<_>>();
 
     for state in &thread.states {
@@ -450,10 +672,16 @@ fn graph_positions(thread: &ThreadMapThread) -> Vec<GraphPos> {
         if forward_targets.len() == 2 {
             let branch_y = positions[state.index].y + 132;
             if let Some(pos) = positions.get_mut(forward_targets[0]) {
-                *pos = GraphPos { x: 250, y: branch_y };
+                *pos = GraphPos {
+                    x: 250,
+                    y: branch_y,
+                };
             }
             if let Some(pos) = positions.get_mut(forward_targets[1]) {
-                *pos = GraphPos { x: 560, y: branch_y };
+                *pos = GraphPos {
+                    x: 560,
+                    y: branch_y,
+                };
             }
             break;
         }
@@ -480,15 +708,28 @@ fn render_graph_edge(
         } else {
             GRAPH_W - 24 - lane_offset
         };
-        let sx = if use_left_lane { from.x } else { from.x + GRAPH_NODE_W };
+        let sx = if use_left_lane {
+            from.x
+        } else {
+            from.x + GRAPH_NODE_W
+        };
         let sy = from.y + GRAPH_NODE_H / 2;
-        let ex = if use_left_lane { to.x } else { to.x + GRAPH_NODE_W };
+        let ex = if use_left_lane {
+            to.x
+        } else {
+            to.x + GRAPH_NODE_W
+        };
         let ey = to.y + GRAPH_NODE_H / 2;
         out.push_str(&format!(
             "<path class=\"graph-edge\" marker-end=\"url(#{})\" d=\"M{sx},{sy} C{lane},{sy} {lane},{ey} {ex},{ey}\"/>",
             html_escape(marker_id)
         ));
-        render_graph_label(out, if use_left_lane { lane + 8 } else { lane - 42 }, (sy + ey) / 2, &label);
+        render_graph_label(
+            out,
+            if use_left_lane { lane + 8 } else { lane - 42 },
+            (sy + ey) / 2,
+            &label,
+        );
     } else {
         let sx = from.x + GRAPH_NODE_W / 2;
         let sy = from.y + GRAPH_NODE_H;
@@ -527,7 +768,11 @@ fn graph_node_title(state: &ThreadMapState) -> String {
     if let Some(label) = state.labels.iter().find(|l| l.starts_with("wait until ")) {
         return format!("S{}: {}", state.index, label);
     }
-    if let Some(label) = state.labels.iter().find(|l| l.starts_with("wait ") && l.ends_with(" cycle")) {
+    if let Some(label) = state
+        .labels
+        .iter()
+        .find(|l| l.starts_with("wait ") && l.ends_with(" cycle"))
+    {
         return format!("S{}: {}", state.index, label);
     }
     if state.role == "dispatch" && state.transitions.len() == 2 {
@@ -543,7 +788,12 @@ fn graph_node_title(state: &ThreadMapState) -> String {
 }
 
 fn transition_summary(state: &ThreadMapState, tr: &ThreadMapTransition) -> String {
-    transition_summary_with(state.role.as_str(), state.transitions.len(), state.index, tr)
+    transition_summary_with(
+        state.role.as_str(),
+        state.transitions.len(),
+        state.index,
+        tr,
+    )
 }
 
 fn transition_summary_with(
@@ -647,7 +897,11 @@ fn line_range_in_source(src: &ThreadMapSource, span: Span) -> Option<(usize, usi
 fn anchor_line_for_span(src: &ThreadMapSource, span: Span) -> Option<usize> {
     let (start_line, end_line) = line_range_in_source(src, span)?;
     for line_no in start_line..=end_line {
-        let text = src.source.lines().nth(line_no.saturating_sub(1)).unwrap_or("");
+        let text = src
+            .source
+            .lines()
+            .nth(line_no.saturating_sub(1))
+            .unwrap_or("");
         let trimmed = text.trim_start();
         if !trimmed.is_empty() && !trimmed.starts_with("//") {
             return Some(line_no);
@@ -745,5 +999,74 @@ fn inside_member_label(member: &InsideMember) -> String {
     match member {
         InsideMember::Single(e) => expr_label(e),
         InsideMember::Range(lo, hi) => format!("{}..{}", expr_label(lo), expr_label(hi)),
+    }
+}
+
+fn for_range_label(range: &ForRange) -> String {
+    match range {
+        ForRange::Range(start, end) => format!("{}..{}", expr_label(start), expr_label(end)),
+        ForRange::ValueList(values) => values.iter().map(expr_label).collect::<Vec<_>>().join(", "),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{Expr, Ident};
+
+    fn dec(value: u64) -> Expr {
+        Expr::new(ExprKind::Literal(LitKind::Dec(value)), Span::new(0, 1))
+    }
+
+    fn ident(name: &str) -> Expr {
+        Expr::new(ExprKind::Ident(name.to_string()), Span::new(0, 1))
+    }
+
+    fn binary(op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
+        Expr::new(
+            ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)),
+            Span::new(0, 1),
+        )
+    }
+
+    fn method(base: Expr, name: &str, args: Vec<Expr>) -> Expr {
+        Expr::new(
+            ExprKind::MethodCall(
+                Box::new(base),
+                Ident::new(name.to_string(), Span::new(0, 1)),
+                args,
+            ),
+            Span::new(0, 1),
+        )
+    }
+
+    #[test]
+    fn nat_expr_preserves_literal_through_width_method_call() {
+        assert_eq!(
+            nat_expr(&method(dec(3), "resize", vec![dec(2)])),
+            ThreadMapNatExpr::Const(3)
+        );
+        assert_eq!(
+            nat_expr(&method(dec(7), "trunc", vec![dec(3)])),
+            ThreadMapNatExpr::Const(7)
+        );
+    }
+
+    #[test]
+    fn guard_expr_preserves_equality_as_structured_nat_comparison() {
+        assert_eq!(
+            guard_expr(&binary(BinOp::Eq, ident("idx"), dec(3))),
+            ThreadMapGuardExpr::Eq(
+                ThreadMapNatExpr::Var("idx".to_string()),
+                ThreadMapNatExpr::Const(3)
+            )
+        );
+        assert_eq!(
+            guard_expr(&binary(BinOp::Neq, ident("idx"), dec(3))),
+            ThreadMapGuardExpr::Ne(
+                ThreadMapNatExpr::Var("idx".to_string()),
+                ThreadMapNatExpr::Const(3)
+            )
+        );
     }
 }

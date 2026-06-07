@@ -1,0 +1,6 @@
+name = "arch_thread_lowering_proof"
+version = "0.1.0"
+defaultTargets = ["ArchThreadLoweringProof"]
+
+[[lean_lib]]
+name = "ArchThreadLoweringProof"
