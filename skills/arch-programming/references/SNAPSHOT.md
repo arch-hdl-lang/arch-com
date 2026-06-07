@@ -29,16 +29,13 @@ runnable examples and full regression context, use a live `arch-com` checkout.
 
 ## Refresh
 
-When ARCH docs change, refresh this snapshot from the repository root:
+When ARCH docs change, refresh these snapshots from the repository root:
 
 ```sh
-cp README.md skills/arch-programming/references/README.md
-cp doc/Arch_AI_Reference_Card.md skills/arch-programming/references/Arch_AI_Reference_Card.md
-cp doc/ARCH_HDL_Specification.md skills/arch-programming/references/ARCH_HDL_Specification.md
-cp doc/COMPILER_STATUS.md skills/arch-programming/references/COMPILER_STATUS.md
-cp doc/arch_sim_cocotb.md skills/arch-programming/references/arch_sim_cocotb.md
-cp doc/plan_arch_doc_comments.md skills/arch-programming/references/plan_arch_doc_comments.md
-cp mcp/README.md skills/arch-programming/references/mcp_README.md
-cp mcp/instructions.md skills/arch-programming/references/mcp_instructions.md
-cp LICENSE skills/arch-programming/references/LICENSE
+scripts/sync_skill_snapshots.sh refresh
 ```
+
+The script owns the source -> snapshot mapping. The `skill-snapshots` CI
+workflow runs `scripts/sync_skill_snapshots.sh check` on every PR that touches
+a source doc or a bundled snapshot, and fails if the two have drifted — so a
+doc change must be accompanied by a refresh in the same PR.
