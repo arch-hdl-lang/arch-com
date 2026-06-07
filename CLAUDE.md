@@ -26,6 +26,35 @@ Better patterns:
 - Use `todo!()` or `unreachable!()` for *intentionally* unreachable code (with
   appropriate runtime panic semantics).
 
+## Never invoke a stale compiler binary
+
+A long-lived `target/release/arch` only changes when someone runs `cargo build`.
+Branches and worktrees move ahead of it, so the binary silently drifts from the
+source it is supposed to be testing. Running a stale binary produces phantom
+results — it has accepted retired syntax and "rediscovered" already-fixed
+codegen bugs, costing full reconciliation passes to unmask.
+
+- **In-cargo paths are already safe**: `cargo test` rebuilds first, and the
+  integration tests use `env!("CARGO_BIN_EXE_arch")`, which cargo guarantees is
+  fresh.
+- **Out-of-cargo paths are the hazard**: manual `./target/release/arch ...`,
+  harc's `--arch-bin <path>`, and handing an agent a binary path from another
+  checkout. None of these check freshness.
+
+Rules:
+- Before trusting any out-of-cargo compiler run, rebuild: `cargo build --release`
+  (incremental — a no-op in seconds if nothing changed), then use *that*
+  checkout's binary. Freshness check when in doubt:
+  `[ -z "$(find src -name '*.rs' -newer target/release/arch -print -quit)" ] || echo STALE`
+- For low-volume invocations prefer `cargo run --release --` — it re-checks the
+  source every call and can never be stale.
+- **When spawning an agent that runs the compiler**, instruct it to build the
+  binary fresh *from its own worktree* and use that worktree's binary. Never hand
+  it a pre-built path from a different checkout — the agent cannot tell it is
+  stale, and will report already-fixed bugs as findings. Treat any
+  agent-reported compiler bug as suspect until re-verified on a freshly built
+  binary.
+
 ## Project Overview
 
 `arch-com` is a compiler for **ARCH**, a purpose-built hardware description language (HDL) for micro-architecture work. The compiler ingests `.arch` source files and emits deterministic, readable SystemVerilog. The language is explicitly designed to be generated correctly by LLMs from natural-language hardware descriptions.
