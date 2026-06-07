@@ -1,0 +1,49 @@
+name: skill-snapshots
+
+# The arch-programming skill bundles point-in-time copies of core ARCH docs
+# under skills/arch-programming/references/. This check fails if a source doc
+# changes without refreshing its bundled snapshot (or vice versa).
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'README.md'
+      - 'LICENSE'
+      - 'doc/Arch_AI_Reference_Card.md'
+      - 'doc/ARCH_HDL_Specification.md'
+      - 'doc/COMPILER_STATUS.md'
+      - 'doc/arch_sim_cocotb.md'
+      - 'doc/plan_arch_doc_comments.md'
+      - 'mcp/README.md'
+      - 'mcp/instructions.md'
+      - 'skills/arch-programming/references/**'
+      - 'scripts/sync_skill_snapshots.sh'
+      - '.github/workflows/skill-snapshots.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'README.md'
+      - 'LICENSE'
+      - 'doc/Arch_AI_Reference_Card.md'
+      - 'doc/ARCH_HDL_Specification.md'
+      - 'doc/COMPILER_STATUS.md'
+      - 'doc/arch_sim_cocotb.md'
+      - 'doc/plan_arch_doc_comments.md'
+      - 'mcp/README.md'
+      - 'mcp/instructions.md'
+      - 'skills/arch-programming/references/**'
+      - 'scripts/sync_skill_snapshots.sh'
+      - '.github/workflows/skill-snapshots.yml'
+
+concurrency:
+  group: skill-snapshots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-snapshots:
+    name: skill snapshots in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify bundled skill snapshots match their sources
+        run: scripts/sync_skill_snapshots.sh check
