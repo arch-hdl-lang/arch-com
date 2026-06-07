@@ -13,6 +13,7 @@ pub mod signal_flow;
 pub mod sim_codegen;
 pub mod sim_credit_channel;
 pub mod thread_map;
+pub mod thread_proof_cert;
 pub mod type_alias;
 pub mod typecheck;
 pub mod width;

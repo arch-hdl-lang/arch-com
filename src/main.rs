@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use miette::{IntoDiagnostic, NamedSource, Report};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use arch::ast::Item;
 use arch::codegen::Codegen;
@@ -100,6 +100,26 @@ enum Command {
         /// the explicit path. The optional value requires `=`.
         #[arg(long, num_args = 0..=1, require_equals = true)]
         emit_thread_map: Option<Option<PathBuf>>,
+        /// Emit a machine-readable thread lowering proof certificate JSON.
+        /// Bare flag writes `<sv-output-stem>.thread-proof.json`;
+        /// `--emit-thread-proof=PATH` writes the explicit path. The optional
+        /// value requires `=`.
+        #[arg(long, num_args = 0..=1, require_equals = true)]
+        emit_thread_proof: Option<Option<PathBuf>>,
+        /// Emit a Lean replay file for the thread lowering proof certificate.
+        /// Bare flag writes `<sv-output-stem>.thread-proof.lean`;
+        /// `--emit-thread-proof-lean=PATH` writes the explicit path. The
+        /// optional value requires `=`.
+        #[arg(long, num_args = 0..=1, require_equals = true)]
+        emit_thread_proof_lean: Option<Option<PathBuf>>,
+        /// Emit the Lean thread proof file and immediately replay it with
+        /// `lake env lean`. Use `--thread-proof-lean-project=DIR` or
+        /// `ARCH_THREAD_PROOF_LEAN_PROJECT` to locate the Lean project.
+        #[arg(long)]
+        check_thread_proof_lean: bool,
+        /// Lean project directory used by `--check-thread-proof-lean`.
+        #[arg(long)]
+        thread_proof_lean_project: Option<PathBuf>,
         /// Auto-emit SVA properties from `thread` lowering (wait_until / wait
         /// N cycle progress, fork-join branch transitions). Wrapped in
         /// `synopsys translate_off/on` so they don't reach synthesis. Off by
@@ -226,6 +246,25 @@ enum Command {
         /// Dump the generated SMT-LIB2 to this file (for inspection / debugging)
         #[arg(long)]
         emit_smt: Option<PathBuf>,
+        /// Emit a Lean replay file for the thread lowering proof certificate.
+        /// Bare flag writes `<first-input-stem>.thread-proof.lean`;
+        /// `--emit-thread-proof-lean=PATH` writes the explicit path. The
+        /// optional value requires `=`.
+        #[arg(long, num_args = 0..=1, require_equals = true)]
+        emit_thread_proof_lean: Option<Option<PathBuf>>,
+        /// Emit the Lean thread proof file and immediately replay it with
+        /// `lake env lean`. Use `--thread-proof-lean-project=DIR` or
+        /// `ARCH_THREAD_PROOF_LEAN_PROJECT` to locate the Lean project.
+        #[arg(long)]
+        check_thread_proof_lean: bool,
+        /// Lean project directory used by `--check-thread-proof-lean`.
+        #[arg(long)]
+        thread_proof_lean_project: Option<PathBuf>,
+        /// After emitting/replaying the Lean thread-lowering proof, skip the
+        /// SMT-LIB2 backend. Use this when the goal is compiler lowering
+        /// proof replay rather than bounded design-property checking.
+        #[arg(long)]
+        thread_proof_only: bool,
         /// Per-property solver timeout in seconds
         #[arg(long, default_value_t = 60)]
         timeout: u32,
@@ -282,29 +321,91 @@ impl MultiSource {
         let offset = err.span_offset();
         let (filename, file_source, local_offset) = self.locate(offset);
         let relocated_err = err.relocate(local_offset);
-        Report::new(relocated_err)
-            .with_source_code(NamedSource::new(filename.to_string(), file_source.to_string()))
+        Report::new(relocated_err).with_source_code(NamedSource::new(
+            filename.to_string(),
+            file_source.to_string(),
+        ))
     }
-
 }
 
 fn thread_map_sources_from_multi(ms: &MultiSource) -> Vec<arch::thread_map::ThreadMapSource> {
-    ms.segments.iter()
-        .map(|(start, end, filename, source)| arch::thread_map::ThreadMapSource {
-            start: *start,
-            end: *end,
-            filename: filename.clone(),
-            source: source.clone(),
-        })
+    ms.segments
+        .iter()
+        .map(
+            |(start, end, filename, source)| arch::thread_map::ThreadMapSource {
+                start: *start,
+                end: *end,
+                filename: filename.clone(),
+                source: source.clone(),
+            },
+        )
         .collect()
+}
+
+fn check_thread_proof_lean_file(
+    proof_path: &Path,
+    explicit_project: Option<&Path>,
+) -> miette::Result<()> {
+    let project_dir = thread_proof_lean_project_dir(explicit_project)?;
+    let proof_path = proof_path
+        .canonicalize()
+        .unwrap_or_else(|_| proof_path.to_path_buf());
+    let output = std::process::Command::new("lake")
+        .arg("env")
+        .arg("lean")
+        .arg(&proof_path)
+        .current_dir(&project_dir)
+        .output()
+        .into_diagnostic()
+        .map_err(|err| {
+            miette::miette!(
+                "failed to run Lean proof replay via `lake`; set PATH so `lake` is available: {err}"
+            )
+        })?;
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(miette::miette!(
+            "Lean thread proof replay failed for {} in {}\nstdout:\n{}\nstderr:\n{}",
+            proof_path.display(),
+            project_dir.display(),
+            stdout,
+            stderr
+        ));
+    }
+    eprintln!("Lean proof replay OK {}", proof_path.display());
+    Ok(())
+}
+
+fn thread_proof_lean_project_dir(explicit_project: Option<&Path>) -> miette::Result<PathBuf> {
+    let candidate = if let Some(path) = explicit_project {
+        path.to_path_buf()
+    } else if let Ok(path) = std::env::var("ARCH_THREAD_PROOF_LEAN_PROJECT") {
+        PathBuf::from(path)
+    } else {
+        PathBuf::from("proofs/lean_thread_lowering")
+    };
+    if !candidate.join("lakefile.toml").exists() {
+        return Err(miette::miette!(
+            "Lean thread proof project not found at {}; pass --thread-proof-lean-project=DIR or set ARCH_THREAD_PROOF_LEAN_PROJECT",
+            candidate.display()
+        ));
+    }
+    Ok(candidate)
 }
 
 fn filter_thread_map_by_ranges(
     map: &arch::thread_map::ThreadMap,
     ranges: &[(usize, usize)],
 ) -> arch::thread_map::ThreadMap {
-    let modules = map.modules.iter()
-        .filter(|module| ranges.iter().any(|(start, end)| module.span.start >= *start && module.span.start < *end))
+    let modules = map
+        .modules
+        .iter()
+        .filter(|module| {
+            ranges
+                .iter()
+                .any(|(start, end)| module.span.start >= *start && module.span.start < *end)
+        })
         .cloned()
         .collect();
     arch::thread_map::ThreadMap { modules }
@@ -367,28 +468,35 @@ fn main() -> miette::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Check { files } => {
-            learn_wrap(&files, || {
-                let all_files = resolve_use_imports(&files)?;
-                let ms = MultiSource::from_files(&all_files)?;
-                run_check_multi(&ms)?;
-                eprintln!("OK: no errors");
-                Ok(())
-            })
-        }
+        Command::Check { files } => learn_wrap(&files, || {
+            let all_files = resolve_use_imports(&files)?;
+            let ms = MultiSource::from_files(&all_files)?;
+            run_check_multi(&ms)?;
+            eprintln!("OK: no errors");
+            Ok(())
+        }),
         Command::LearnIndex => {
             let n = arch::learn::build_index().into_diagnostic()?;
             eprintln!("Indexed {} events.", n);
             Ok(())
         }
-        Command::Advise { query, top, from_stderr, feature } => {
+        Command::Advise {
+            query,
+            top,
+            from_stderr,
+            feature,
+        } => {
             let mut q = query.join(" ");
             if from_stderr {
                 use std::io::Read;
                 let mut buf = String::new();
-                std::io::stdin().read_to_string(&mut buf).into_diagnostic()?;
+                std::io::stdin()
+                    .read_to_string(&mut buf)
+                    .into_diagnostic()?;
                 if !buf.trim().is_empty() {
-                    if !q.is_empty() { q.push(' '); }
+                    if !q.is_empty() {
+                        q.push(' ');
+                    }
                     q.push_str(buf.trim());
                 }
             }
@@ -401,12 +509,14 @@ fn main() -> miette::Result<()> {
             let pool_size = if feature { top.max(1) * 8 } else { top };
             let matches = arch::learn::advise(&q, pool_size).into_diagnostic()?;
             let matches: Vec<_> = if feature {
-                matches.into_iter()
+                matches
+                    .into_iter()
                     .filter(|m| m.event.kind == "feature")
                     .take(top)
                     .collect()
             } else {
-                matches.into_iter()
+                matches
+                    .into_iter()
                     .filter(|m| m.event.kind != "feature")
                     .take(top)
                     .collect()
@@ -416,8 +526,12 @@ fn main() -> miette::Result<()> {
                 return Ok(());
             }
             for (i, m) in matches.iter().enumerate() {
-                println!("── match #{} (score {:.3}, retrieved {}×) ──────────────────────",
-                         i + 1, m.score, m.retrieved_count);
+                println!(
+                    "── match #{} (score {:.3}, retrieved {}×) ──────────────────────",
+                    i + 1,
+                    m.score,
+                    m.retrieved_count
+                );
                 if m.event.kind == "feature" {
                     // Feature event: file::construct + truncated doc snippet.
                     println!("  kind:      {}", m.event.error_code);
@@ -425,9 +539,11 @@ fn main() -> miette::Result<()> {
                     println!("  file:      {}", m.event.file_path);
                     let snippet: String = m.event.error_message.chars().take(240).collect();
                     let truncated = m.event.error_message.chars().count() > 240;
-                    println!("  doc:       {}{}",
-                             snippet.replace('\n', " "),
-                             if truncated { " …" } else { "" });
+                    println!(
+                        "  doc:       {}{}",
+                        snippet.replace('\n', " "),
+                        if truncated { " …" } else { "" }
+                    );
                 } else {
                     println!("  code:    {}", m.event.error_code);
                     println!("  message: {}", m.event.error_message);
@@ -442,15 +558,18 @@ fn main() -> miette::Result<()> {
             arch::learn::print_stats().into_diagnostic()?;
             Ok(())
         }
-        Command::LearnBootstrap { path } => {
-            run_learn_bootstrap(&path)
-        }
+        Command::LearnBootstrap { path } => run_learn_bootstrap(&path),
         Command::LearnClear => {
             arch::learn::clear_store().into_diagnostic()?;
             eprintln!("Cleared ~/.arch/learn/");
             Ok(())
         }
-        Command::LearnPrune { code, contains, older_than_days, dry_run } => {
+        Command::LearnPrune {
+            code,
+            contains,
+            older_than_days,
+            dry_run,
+        } => {
             if code.is_none() && contains.is_none() && older_than_days.is_none() {
                 eprintln!("error: specify at least one of --code / --contains / --older-than-days");
                 std::process::exit(2);
@@ -460,46 +579,115 @@ fn main() -> miette::Result<()> {
                 contains.as_deref(),
                 older_than_days,
                 dry_run,
-            ).into_diagnostic()?;
+            )
+            .into_diagnostic()?;
             if dry_run {
                 eprintln!("Would remove {} events; {} would remain.", removed, kept);
             } else {
-                eprintln!("Removed {} events; {} remain. Run `arch learn-index` to refresh the index.", removed, kept);
+                eprintln!(
+                    "Removed {} events; {} remain. Run `arch learn-index` to refresh the index.",
+                    removed, kept
+                );
             }
             Ok(())
         }
-        Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave, debug, debug_depth, debug_fsm, coverage, coverage_dat, thread_sim, threads, pybind, test, pybind_module_name, auto_thread_asserts, param_overrides } => {
+        Command::Sim {
+            arch_files,
+            tb_files,
+            outdir,
+            check_uninit,
+            inputs_start_uninit,
+            check_uninit_ram,
+            cdc_random,
+            wave,
+            debug,
+            debug_depth,
+            debug_fsm,
+            coverage,
+            coverage_dat,
+            thread_sim,
+            threads,
+            pybind,
+            test,
+            pybind_module_name,
+            auto_thread_asserts,
+            param_overrides,
+        } => {
             let _ = auto_thread_asserts;
 
             // Parse --param NAME=VALUE overrides
-            let mut param_overrides_map: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+            let mut param_overrides_map: std::collections::HashMap<String, u64> =
+                std::collections::HashMap::new();
             for ov in &param_overrides {
-                let (name, val_str) = ov.split_once('=').ok_or_else(|| {
-                    miette::miette!("--param: expected NAME=VALUE, got '{ov}'")
-                })?;
+                let (name, val_str) = ov
+                    .split_once('=')
+                    .ok_or_else(|| miette::miette!("--param: expected NAME=VALUE, got '{ov}'"))?;
                 let val: u64 = val_str.parse().map_err(|_| {
                     miette::miette!("--param: value must be an integer, got '{val_str}' in '{ov}'")
                 })?;
                 param_overrides_map.insert(name.to_string(), val);
             }
 
-            let dbg_ports = debug || debug_fsm;  // any debug option implies port logging
-            // --inputs-start-uninit and --check-uninit-ram both imply --check-uninit
+            let dbg_ports = debug || debug_fsm; // any debug option implies port logging
+                                                // --inputs-start-uninit and --check-uninit-ram both imply --check-uninit
             let check_uninit = check_uninit || inputs_start_uninit || check_uninit_ram;
             // --coverage-dat resolves to a path: explicit --coverage-dat=foo
             // → Some(Some("foo")) → "foo"; bare --coverage-dat
             // → Some(None) → default "coverage.dat"; absent → None.
-            let cov_dat_path: Option<String> = coverage_dat.map(|opt| opt.unwrap_or_else(|| "coverage.dat".to_string()));
+            let cov_dat_path: Option<String> =
+                coverage_dat.map(|opt| opt.unwrap_or_else(|| "coverage.dat".to_string()));
             let coverage = coverage || cov_dat_path.is_some();
             if threads > 1 && thread_sim != "parallel" {
-                return Err(miette::miette!("--threads N (N>1) requires --thread-sim parallel"));
+                return Err(miette::miette!(
+                    "--threads N (N>1) requires --thread-sim parallel"
+                ));
             }
             match thread_sim.as_str() {
                 "fsm" => learn_wrap(&arch_files, || {
-                    run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, coverage, cov_dat_path.clone(), false, threads, pybind, test.as_deref(), pybind_module_name.as_deref(), &param_overrides_map)
+                    run_sim(
+                        &arch_files,
+                        &tb_files,
+                        outdir.as_deref(),
+                        check_uninit,
+                        inputs_start_uninit,
+                        check_uninit_ram,
+                        cdc_random,
+                        wave.as_deref(),
+                        dbg_ports,
+                        debug_depth,
+                        debug_fsm,
+                        coverage,
+                        cov_dat_path.clone(),
+                        false,
+                        threads,
+                        pybind,
+                        test.as_deref(),
+                        pybind_module_name.as_deref(),
+                        &param_overrides_map,
+                    )
                 }),
                 "parallel" => learn_wrap(&arch_files, || {
-                    run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, coverage, cov_dat_path.clone(), true, threads, pybind, test.as_deref(), pybind_module_name.as_deref(), &param_overrides_map)
+                    run_sim(
+                        &arch_files,
+                        &tb_files,
+                        outdir.as_deref(),
+                        check_uninit,
+                        inputs_start_uninit,
+                        check_uninit_ram,
+                        cdc_random,
+                        wave.as_deref(),
+                        dbg_ports,
+                        debug_depth,
+                        debug_fsm,
+                        coverage,
+                        cov_dat_path.clone(),
+                        true,
+                        threads,
+                        pybind,
+                        test.as_deref(),
+                        pybind_module_name.as_deref(),
+                        &param_overrides_map,
+                    )
                 }),
                 "both" => {
                     // Cross-check: build + run both fsm and parallel sims
@@ -507,135 +695,132 @@ fn main() -> miette::Result<()> {
                     // traces. Mismatch ⇒ abort with first divergence.
                     run_thread_sim_cross_check(&arch_files, &tb_files, outdir.as_deref())
                 }
-                other => return Err(miette::miette!("--thread-sim: expected `fsm`, `parallel`, or `both`, got `{}`", other)),
+                other => {
+                    return Err(miette::miette!(
+                        "--thread-sim: expected `fsm`, `parallel`, or `both`, got `{}`",
+                        other
+                    ))
+                }
             }
         }
-        Command::Build { files, o, emit_thread_map, auto_thread_asserts, no_inline_deps } => {
+        Command::Build {
+            files,
+            o,
+            emit_thread_map,
+            emit_thread_proof,
+            emit_thread_proof_lean,
+            check_thread_proof_lean,
+            thread_proof_lean_project,
+            auto_thread_asserts,
+            no_inline_deps,
+        } => {
             let files_for_learn = files.clone();
             learn_wrap(&files_for_learn, move || {
-            if matches!(emit_thread_map, Some(Some(_))) && files.len() > 1 && o.is_none() {
-                return Err(miette::miette!(
+                if matches!(emit_thread_map, Some(Some(_))) && files.len() > 1 && o.is_none() {
+                    return Err(miette::miette!(
                     "--emit-thread-map=PATH requires a single combined build output; pass -o or use bare --emit-thread-map for per-file maps"
                 ));
-            }
-            let all_files = resolve_use_imports(&files)?;
-            let ms = MultiSource::from_files(&all_files)?;
-            let thread_map_store = emit_thread_map
-                .as_ref()
-                .map(|_| std::rc::Rc::new(std::cell::RefCell::new(arch::thread_map::ThreadMap::default())));
-            let (ast, symbols, overload_map) = run_check_multi_opts_with_thread_map(
-                &ms,
-                false,
-                auto_thread_asserts,
-                thread_map_store.clone(),
-            )?;
-            let thread_map_sources = thread_map_sources_from_multi(&ms);
+                }
+                if matches!(emit_thread_proof, Some(Some(_))) && files.len() > 1 && o.is_none() {
+                    return Err(miette::miette!(
+                    "--emit-thread-proof=PATH requires a single combined build output; pass -o or use bare --emit-thread-proof for per-file certificates"
+                ));
+                }
+                if matches!(emit_thread_proof_lean, Some(Some(_))) && files.len() > 1 && o.is_none()
+                {
+                    return Err(miette::miette!(
+                    "--emit-thread-proof-lean=PATH requires a single combined build output; pass -o or use bare --emit-thread-proof-lean for per-file Lean certificates"
+                ));
+                }
+                let need_thread_proof_lean =
+                    emit_thread_proof_lean.is_some() || check_thread_proof_lean;
+                let all_files = resolve_use_imports(&files)?;
+                let ms = MultiSource::from_files(&all_files)?;
+                let collect_thread_metadata = emit_thread_map.is_some()
+                    || emit_thread_proof.is_some()
+                    || need_thread_proof_lean;
+                let thread_map_store = collect_thread_metadata.then(|| {
+                    std::rc::Rc::new(std::cell::RefCell::new(
+                        arch::thread_map::ThreadMap::default(),
+                    ))
+                });
+                let (ast, symbols, overload_map) = run_check_multi_opts_with_thread_map(
+                    &ms,
+                    false,
+                    auto_thread_asserts,
+                    thread_map_store.clone(),
+                )?;
+                let thread_map_sources = thread_map_sources_from_multi(&ms);
 
-            let comments = lexer::extract_comments(&ms.combined);
+                let comments = lexer::extract_comments(&ms.combined);
 
-            // --no-inline-deps: only emit constructs from the original
-            // input files, not from auto-discovered dependency files.
-            let original_names: std::collections::HashSet<String> = if no_inline_deps {
-                files.iter()
-                    .map(|f| f.to_string_lossy().to_string())
-                    .collect()
-            } else {
-                std::collections::HashSet::new()
-            };
-
-            if files.len() == 1 || o.is_some() {
-                // Single file or explicit -o: emit one combined SV file
-                let (sv, sdc) = if no_inline_deps {
-                    // Only items from the original input files
-                    let file_items: Vec<_> = ast.items.iter()
-                        .filter(|item| {
-                            let s = item.span().start;
-                            ms.segments.iter().any(|(seg_start, seg_end, fname, _)| {
-                                s >= *seg_start && s < *seg_end
-                                    && original_names.contains(fname)
-                            })
-                        })
-                        .cloned()
-                        .collect();
-                    let mut codegen = Codegen::new(&symbols, &ast, overload_map).with_comments(comments);
-                    let sv = codegen.generate_items(&file_items);
-                    let out_path_hint = o.clone().unwrap_or_else(|| files[0].with_extension("sv"));
-                    let sdc = codegen.emit_sdc(&out_path_hint.to_string_lossy());
-                    (sv, sdc)
+                // --no-inline-deps: only emit constructs from the original
+                // input files, not from auto-discovered dependency files.
+                let original_names: std::collections::HashSet<String> = if no_inline_deps {
+                    files
+                        .iter()
+                        .map(|f| f.to_string_lossy().to_string())
+                        .collect()
                 } else {
-                    let mut codegen = Codegen::new(&symbols, &ast, overload_map).with_comments(comments);
-                    let sv = codegen.generate();
-                    let out_path_hint = o.clone().unwrap_or_else(|| files[0].with_extension("sv"));
-                    let sdc = codegen.emit_sdc(&out_path_hint.to_string_lossy());
-                    (sv, sdc)
+                    std::collections::HashSet::new()
                 };
-                let out_path = o.unwrap_or_else(|| files[0].with_extension("sv"));
-                fs::write(&out_path, &sv).into_diagnostic()?;
-                eprintln!("Wrote {}", out_path.display());
-                if let (Some(req), Some(map_store)) = (&emit_thread_map, &thread_map_store) {
-                    let html_path = req
-                        .clone()
-                        .unwrap_or_else(|| out_path.with_extension("thread.html"));
-                    let map = if no_inline_deps {
-                        let keep: Vec<(usize, usize)> = ms.segments.iter()
-                            .filter_map(|(start, end, filename, _)| {
-                                if original_names.contains(filename) { Some((*start, *end)) } else { None }
+
+                if files.len() == 1 || o.is_some() {
+                    // Single file or explicit -o: emit one combined SV file
+                    let (sv, sdc) = if no_inline_deps {
+                        // Only items from the original input files
+                        let file_items: Vec<_> = ast
+                            .items
+                            .iter()
+                            .filter(|item| {
+                                let s = item.span().start;
+                                ms.segments.iter().any(|(seg_start, seg_end, fname, _)| {
+                                    s >= *seg_start
+                                        && s < *seg_end
+                                        && original_names.contains(fname)
+                                })
                             })
+                            .cloned()
                             .collect();
-                        filter_thread_map_by_ranges(&map_store.borrow(), &keep)
+                        let mut codegen =
+                            Codegen::new(&symbols, &ast, overload_map).with_comments(comments);
+                        let sv = codegen.generate_items(&file_items);
+                        let out_path_hint =
+                            o.clone().unwrap_or_else(|| files[0].with_extension("sv"));
+                        let sdc = codegen.emit_sdc(&out_path_hint.to_string_lossy());
+                        (sv, sdc)
                     } else {
-                        map_store.borrow().clone()
+                        let mut codegen =
+                            Codegen::new(&symbols, &ast, overload_map).with_comments(comments);
+                        let sv = codegen.generate();
+                        let out_path_hint =
+                            o.clone().unwrap_or_else(|| files[0].with_extension("sv"));
+                        let sdc = codegen.emit_sdc(&out_path_hint.to_string_lossy());
+                        (sv, sdc)
                     };
-                    let html = arch::thread_map::render_html(
-                        &map,
-                        &thread_map_sources,
-                        &format!("Thread map for {}", out_path.display()),
-                    );
-                    fs::write(&html_path, html).into_diagnostic()?;
-                    eprintln!("Wrote {}", html_path.display());
-                }
-                // Companion .sdc file: only written if any module contained
-                // a `multicycle <N>` reg. No-op for legacy `.arch` sources.
-                if let Some(sdc_text) = sdc {
-                    let sdc_path = out_path.with_extension("sdc");
-                    fs::write(&sdc_path, &sdc_text).into_diagnostic()?;
-                    eprintln!("Wrote {}", sdc_path.display());
-                }
-            } else {
-                // Multi-file: emit one .sv per .arch input file
-                for (seg_start, seg_end, filename, _) in &ms.segments {
-                    // --no-inline-deps: skip dependency files not in the original input set
-                    if no_inline_deps && !original_names.contains(filename.as_str()) {
-                        continue;
-                    }
-                    // Collect items whose span falls within this file's segment
-                    let file_items: Vec<_> = ast.items.iter()
-                        .filter(|item| {
-                            let s = item.span().start;
-                            s >= *seg_start && s < *seg_end
-                        })
-                        .cloned()
-                        .collect();
-
-                    if file_items.is_empty() {
-                        continue; // skip domain-only files etc. that produce no SV
-                    }
-
-                    // Filter comments belonging to this file's segment
-                    let file_comments: Vec<_> = comments.iter()
-                        .filter(|(span, _)| span.start >= *seg_start && span.start < *seg_end)
-                        .cloned()
-                        .collect();
-
-                    let mut codegen = Codegen::new(&symbols, &ast, overload_map.clone()).with_comments(file_comments);
-                    let sv = codegen.generate_items(&file_items);
-
-                    let out_path = std::path::Path::new(filename).with_extension("sv");
+                    let out_path = o.unwrap_or_else(|| files[0].with_extension("sv"));
                     fs::write(&out_path, &sv).into_diagnostic()?;
                     eprintln!("Wrote {}", out_path.display());
-                    if let (Some(None), Some(map_store)) = (&emit_thread_map, &thread_map_store) {
-                        let map = filter_thread_map_by_ranges(&map_store.borrow(), &[(*seg_start, *seg_end)]);
-                        let html_path = out_path.with_extension("thread.html");
+                    if let (Some(req), Some(map_store)) = (&emit_thread_map, &thread_map_store) {
+                        let html_path = req
+                            .clone()
+                            .unwrap_or_else(|| out_path.with_extension("thread.html"));
+                        let map = if no_inline_deps {
+                            let keep: Vec<(usize, usize)> = ms
+                                .segments
+                                .iter()
+                                .filter_map(|(start, end, filename, _)| {
+                                    if original_names.contains(filename) {
+                                        Some((*start, *end))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            filter_thread_map_by_ranges(&map_store.borrow(), &keep)
+                        } else {
+                            map_store.borrow().clone()
+                        };
                         let html = arch::thread_map::render_html(
                             &map,
                             &thread_map_sources,
@@ -644,43 +829,257 @@ fn main() -> miette::Result<()> {
                         fs::write(&html_path, html).into_diagnostic()?;
                         eprintln!("Wrote {}", html_path.display());
                     }
-                    // Companion .sdc per-file: only if this file's items
-                    // declared `multicycle <N>` regs.
-                    if let Some(sdc_text) = codegen.emit_sdc(&out_path.to_string_lossy()) {
+                    if let (Some(req), Some(map_store)) = (&emit_thread_proof, &thread_map_store) {
+                        let proof_path = req
+                            .clone()
+                            .unwrap_or_else(|| out_path.with_extension("thread-proof.json"));
+                        let map = if no_inline_deps {
+                            let keep: Vec<(usize, usize)> = ms
+                                .segments
+                                .iter()
+                                .filter_map(|(start, end, filename, _)| {
+                                    if original_names.contains(filename) {
+                                        Some((*start, *end))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            filter_thread_map_by_ranges(&map_store.borrow(), &keep)
+                        } else {
+                            map_store.borrow().clone()
+                        };
+                        let json = arch::thread_proof_cert::render_json(&map);
+                        fs::write(&proof_path, json).into_diagnostic()?;
+                        eprintln!("Wrote {}", proof_path.display());
+                    }
+                    if need_thread_proof_lean {
+                        let map_store = thread_map_store
+                            .as_ref()
+                            .expect("thread map store must exist for Lean proof emission");
+                        let proof_path = emit_thread_proof_lean
+                            .as_ref()
+                            .and_then(|req| req.clone())
+                            .unwrap_or_else(|| out_path.with_extension("thread-proof.lean"));
+                        let map = if no_inline_deps {
+                            let keep: Vec<(usize, usize)> = ms
+                                .segments
+                                .iter()
+                                .filter_map(|(start, end, filename, _)| {
+                                    if original_names.contains(filename) {
+                                        Some((*start, *end))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            filter_thread_map_by_ranges(&map_store.borrow(), &keep)
+                        } else {
+                            map_store.borrow().clone()
+                        };
+                        let lean =
+                            arch::thread_proof_cert::render_lean_checked(&map).map_err(|err| {
+                                miette::miette!("thread proof Lean emission failed: {err}")
+                            })?;
+                        fs::write(&proof_path, lean).into_diagnostic()?;
+                        eprintln!("Wrote {}", proof_path.display());
+                        if check_thread_proof_lean {
+                            check_thread_proof_lean_file(
+                                &proof_path,
+                                thread_proof_lean_project.as_deref(),
+                            )?;
+                        }
+                    }
+                    // Companion .sdc file: only written if any module contained
+                    // a `multicycle <N>` reg. No-op for legacy `.arch` sources.
+                    if let Some(sdc_text) = sdc {
                         let sdc_path = out_path.with_extension("sdc");
                         fs::write(&sdc_path, &sdc_text).into_diagnostic()?;
                         eprintln!("Wrote {}", sdc_path.display());
                     }
-                }
-            }
+                } else {
+                    // Multi-file: emit one .sv per .arch input file
+                    for (seg_start, seg_end, filename, _) in &ms.segments {
+                        // --no-inline-deps: skip dependency files not in the original input set
+                        if no_inline_deps && !original_names.contains(filename.as_str()) {
+                            continue;
+                        }
+                        // Collect items whose span falls within this file's segment
+                        let file_items: Vec<_> = ast
+                            .items
+                            .iter()
+                            .filter(|item| {
+                                let s = item.span().start;
+                                s >= *seg_start && s < *seg_end
+                            })
+                            .cloned()
+                            .collect();
 
-            // Emit .archi interface files alongside .sv (for separate compilation)
-            for item in &ast.items {
-                // Don't re-emit .archi for an interface stub we just
-                // loaded — we'd be overwriting the source file we
-                // read. Covers module + every ConstructCommon-bearing
-                // variant via `Item::is_interface`.
-                if item.is_interface() { continue; }
-                if let Some(content) = arch::interface::emit_interface(item) {
-                    let name = &item.as_construct().name().name;
-                    // Write .archi next to the .sv output
-                    let archi_dir = files[0].parent()
-                        .unwrap_or(std::path::Path::new(".")).to_path_buf();
-                    let archi_path = archi_dir.join(format!("{name}.archi"));
-                    fs::write(&archi_path, &content).into_diagnostic()?;
-                    eprintln!("Wrote {}", archi_path.display());
-                }
-            }
+                        if file_items.is_empty() {
+                            continue; // skip domain-only files etc. that produce no SV
+                        }
 
-            Ok(())
+                        // Filter comments belonging to this file's segment
+                        let file_comments: Vec<_> = comments
+                            .iter()
+                            .filter(|(span, _)| span.start >= *seg_start && span.start < *seg_end)
+                            .cloned()
+                            .collect();
+
+                        let mut codegen = Codegen::new(&symbols, &ast, overload_map.clone())
+                            .with_comments(file_comments);
+                        let sv = codegen.generate_items(&file_items);
+
+                        let out_path = std::path::Path::new(filename).with_extension("sv");
+                        fs::write(&out_path, &sv).into_diagnostic()?;
+                        eprintln!("Wrote {}", out_path.display());
+                        if let (Some(None), Some(map_store)) = (&emit_thread_map, &thread_map_store)
+                        {
+                            let map = filter_thread_map_by_ranges(
+                                &map_store.borrow(),
+                                &[(*seg_start, *seg_end)],
+                            );
+                            let html_path = out_path.with_extension("thread.html");
+                            let html = arch::thread_map::render_html(
+                                &map,
+                                &thread_map_sources,
+                                &format!("Thread map for {}", out_path.display()),
+                            );
+                            fs::write(&html_path, html).into_diagnostic()?;
+                            eprintln!("Wrote {}", html_path.display());
+                        }
+                        if let (Some(None), Some(map_store)) =
+                            (&emit_thread_proof, &thread_map_store)
+                        {
+                            let map = filter_thread_map_by_ranges(
+                                &map_store.borrow(),
+                                &[(*seg_start, *seg_end)],
+                            );
+                            let proof_path = out_path.with_extension("thread-proof.json");
+                            let json = arch::thread_proof_cert::render_json(&map);
+                            fs::write(&proof_path, json).into_diagnostic()?;
+                            eprintln!("Wrote {}", proof_path.display());
+                        }
+                        if need_thread_proof_lean {
+                            let map_store = thread_map_store
+                                .as_ref()
+                                .expect("thread map store must exist for Lean proof emission");
+                            let map = filter_thread_map_by_ranges(
+                                &map_store.borrow(),
+                                &[(*seg_start, *seg_end)],
+                            );
+                            let proof_path = out_path.with_extension("thread-proof.lean");
+                            let lean = arch::thread_proof_cert::render_lean_checked(&map).map_err(
+                                |err| miette::miette!("thread proof Lean emission failed: {err}"),
+                            )?;
+                            fs::write(&proof_path, lean).into_diagnostic()?;
+                            eprintln!("Wrote {}", proof_path.display());
+                            if check_thread_proof_lean {
+                                check_thread_proof_lean_file(
+                                    &proof_path,
+                                    thread_proof_lean_project.as_deref(),
+                                )?;
+                            }
+                        }
+                        // Companion .sdc per-file: only if this file's items
+                        // declared `multicycle <N>` regs.
+                        if let Some(sdc_text) = codegen.emit_sdc(&out_path.to_string_lossy()) {
+                            let sdc_path = out_path.with_extension("sdc");
+                            fs::write(&sdc_path, &sdc_text).into_diagnostic()?;
+                            eprintln!("Wrote {}", sdc_path.display());
+                        }
+                    }
+                }
+
+                // Emit .archi interface files alongside .sv (for separate compilation)
+                for item in &ast.items {
+                    // Don't re-emit .archi for an interface stub we just
+                    // loaded — we'd be overwriting the source file we
+                    // read. Covers module + every ConstructCommon-bearing
+                    // variant via `Item::is_interface`.
+                    if item.is_interface() {
+                        continue;
+                    }
+                    if let Some(content) = arch::interface::emit_interface(item) {
+                        let name = &item.as_construct().name().name;
+                        // Write .archi next to the .sv output
+                        let archi_dir = files[0]
+                            .parent()
+                            .unwrap_or(std::path::Path::new("."))
+                            .to_path_buf();
+                        let archi_path = archi_dir.join(format!("{name}.archi"));
+                        fs::write(&archi_path, &content).into_diagnostic()?;
+                        eprintln!("Wrote {}", archi_path.display());
+                    }
+                }
+
+                Ok(())
             })
         }
-        Command::Formal { files, top, bound, solver, emit_smt, timeout, auto_thread_asserts } => {
+        Command::Formal {
+            files,
+            top,
+            bound,
+            solver,
+            emit_smt,
+            emit_thread_proof_lean,
+            check_thread_proof_lean,
+            thread_proof_lean_project,
+            thread_proof_only,
+            timeout,
+            auto_thread_asserts,
+        } => {
             let files_for_learn = files.clone();
             learn_wrap(&files_for_learn, move || {
                 let all_files = resolve_use_imports(&files)?;
                 let ms = MultiSource::from_files(&all_files)?;
-                let (ast, symbols, _overload_map) = run_check_multi_opts(&ms, false, auto_thread_asserts)?;
+                let need_thread_proof_lean =
+                    emit_thread_proof_lean.is_some() || check_thread_proof_lean;
+                if thread_proof_only && !need_thread_proof_lean {
+                    return Err(miette::miette!(
+                        "--thread-proof-only requires --emit-thread-proof-lean or --check-thread-proof-lean"
+                    ));
+                }
+                if thread_proof_only && emit_smt.is_some() {
+                    return Err(miette::miette!(
+                        "--thread-proof-only skips SMT-LIB2 generation; remove --emit-smt"
+                    ));
+                }
+                let thread_map_store = need_thread_proof_lean.then(|| {
+                    std::rc::Rc::new(std::cell::RefCell::new(
+                        arch::thread_map::ThreadMap::default(),
+                    ))
+                });
+                let (ast, symbols, _overload_map) = run_check_multi_opts_with_thread_map(
+                    &ms,
+                    false,
+                    auto_thread_asserts,
+                    thread_map_store.clone(),
+                )?;
+                if need_thread_proof_lean {
+                    let map_store = thread_map_store
+                        .as_ref()
+                        .expect("thread map store must exist for Lean proof emission");
+                    let proof_path = emit_thread_proof_lean
+                        .as_ref()
+                        .and_then(|req| req.clone())
+                        .unwrap_or_else(|| files[0].with_extension("thread-proof.lean"));
+                    let lean = arch::thread_proof_cert::render_lean_checked(&map_store.borrow())
+                        .map_err(|err| {
+                            miette::miette!("thread proof Lean emission failed: {err}")
+                        })?;
+                    fs::write(&proof_path, lean).into_diagnostic()?;
+                    eprintln!("Wrote {}", proof_path.display());
+                    if check_thread_proof_lean {
+                        check_thread_proof_lean_file(
+                            &proof_path,
+                            thread_proof_lean_project.as_deref(),
+                        )?;
+                    }
+                }
+                if thread_proof_only {
+                    return Ok(());
+                }
 
                 let args = formal::FormalArgs {
                     top: top.clone(),
@@ -689,9 +1088,8 @@ fn main() -> miette::Result<()> {
                     emit_smt: emit_smt.clone(),
                     timeout,
                 };
-                let report = formal::run(&ast, &symbols, &args).map_err(|err| {
-                    ms.report_error(err)
-                })?;
+                let report =
+                    formal::run(&ast, &symbols, &args).map_err(|err| ms.report_error(err))?;
                 std::process::exit(report.exit_code());
             })
         }
@@ -706,14 +1104,26 @@ fn run_thread_sim_cross_check(
     tb_files: &[PathBuf],
     outdir: Option<&std::path::Path>,
 ) -> miette::Result<()> {
-    let base = outdir.map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("arch_sim_build"));
-    let fsm_dir = base.with_file_name(format!("{}_fsm", base.file_name().and_then(|s| s.to_str()).unwrap_or("arch_sim_build")));
-    let par_dir = base.with_file_name(format!("{}_par", base.file_name().and_then(|s| s.to_str()).unwrap_or("arch_sim_build")));
+    let base = outdir
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("arch_sim_build"));
+    let fsm_dir = base.with_file_name(format!(
+        "{}_fsm",
+        base.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("arch_sim_build")
+    ));
+    let par_dir = base.with_file_name(format!(
+        "{}_par",
+        base.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("arch_sim_build")
+    ));
 
     eprintln!("=== arch sim --thread-sim both: building fsm path ===");
-    let fsm_trace = build_and_capture(arch_files, tb_files, &fsm_dir, /*parallel=*/false)?;
+    let fsm_trace = build_and_capture(arch_files, tb_files, &fsm_dir, /*parallel=*/ false)?;
     eprintln!("=== arch sim --thread-sim both: building parallel path ===");
-    let par_trace = build_and_capture(arch_files, tb_files, &par_dir, /*parallel=*/true)?;
+    let par_trace = build_and_capture(arch_files, tb_files, &par_dir, /*parallel=*/ true)?;
 
     // Filter to just the [cycle][Mod.port](in/out) debug lines, ignore
     // TB stdout. The fsm path uses --debug --depth N to optionally
@@ -731,7 +1141,10 @@ fn run_thread_sim_cross_check(
     let par_lines = extract_trace(&par_trace);
 
     if fsm_lines == par_lines {
-        eprintln!("=== Cross-check PASS: {} port-change events match ===", fsm_lines.len());
+        eprintln!(
+            "=== Cross-check PASS: {} port-change events match ===",
+            fsm_lines.len()
+        );
         return Ok(());
     }
 
@@ -748,8 +1161,11 @@ fn run_thread_sim_cross_check(
             return Err(miette::miette!("--thread-sim both: cross-check failed"));
         }
     }
-    Err(miette::miette!("--thread-sim both: trace lengths differ ({} fsm vs {} parallel)",
-        fsm_lines.len(), par_lines.len()))
+    Err(miette::miette!(
+        "--thread-sim both: trace lengths differ ({} fsm vs {} parallel)",
+        fsm_lines.len(),
+        par_lines.len()
+    ))
 }
 
 /// Helper for run_thread_sim_cross_check: build a sim binary in `dir`
@@ -770,14 +1186,24 @@ fn build_and_capture(
 
     // Generate models + verilated stubs into dir.
     run_sim_opts(
-        arch_files, tb_files, Some(dir),
-        /*check_uninit*/ false, /*inputs_start_uninit*/ false, /*check_uninit_ram*/ false,
-        /*cdc_random*/ false, /*wave*/ None,
-        /*debug*/ true, /*debug_depth*/ 1, /*debug_fsm*/ false,
-        /*coverage*/ false, /*coverage_dat*/ None,
+        arch_files,
+        tb_files,
+        Some(dir),
+        /*check_uninit*/ false,
+        /*inputs_start_uninit*/ false,
+        /*check_uninit_ram*/ false,
+        /*cdc_random*/ false,
+        /*wave*/ None,
+        /*debug*/ true,
+        /*debug_depth*/ 1,
+        /*debug_fsm*/ false,
+        /*coverage*/ false,
+        /*coverage_dat*/ None,
         parallel,
         /*threads*/ 1,
-        /*pybind*/ false, /*test_file*/ None, /*pybind_module_name_override*/ None,
+        /*pybind*/ false,
+        /*test_file*/ None,
+        /*pybind_module_name_override*/ None,
         /*no_exit*/ true,
         &std::collections::HashMap::new(),
     )?;
@@ -814,9 +1240,28 @@ fn run_sim(
     pybind_module_name_override: Option<&str>,
     param_overrides: &std::collections::HashMap<String, u64>,
 ) -> miette::Result<()> {
-    run_sim_opts(arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram,
-        cdc_random, wave, debug, debug_depth, debug_fsm, coverage, coverage_dat, thread_sim_parallel,
-        threads, pybind, test_file, pybind_module_name_override, /*no_exit=*/false, param_overrides)
+    run_sim_opts(
+        arch_files,
+        tb_files,
+        outdir,
+        check_uninit,
+        inputs_start_uninit,
+        check_uninit_ram,
+        cdc_random,
+        wave,
+        debug,
+        debug_depth,
+        debug_fsm,
+        coverage,
+        coverage_dat,
+        thread_sim_parallel,
+        threads,
+        pybind,
+        test_file,
+        pybind_module_name_override,
+        /*no_exit=*/ false,
+        param_overrides,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -845,7 +1290,11 @@ fn run_sim_opts(
     // 1. Parse + type-check
     let all_files = resolve_use_imports(arch_files)?;
     let ms = MultiSource::from_files(&all_files)?;
-    let (ast, symbols, overload_map) = run_check_multi_opts(&ms, thread_sim_parallel, /*auto_thread_asserts=*/ false)?;
+    let (ast, symbols, overload_map) = run_check_multi_opts(
+        &ms,
+        thread_sim_parallel,
+        /*auto_thread_asserts=*/ false,
+    )?;
 
     // 2. Set up output directory
     let build_dir = outdir
@@ -867,12 +1316,19 @@ fn run_sim_opts(
         for item in &ast.items {
             match item {
                 arch::ast::Item::Module(m) => {
-                    let has_thread = m.body.iter().any(|i| matches!(i, arch::ast::ModuleBodyItem::Thread(_)));
+                    let has_thread = m
+                        .body
+                        .iter()
+                        .any(|i| matches!(i, arch::ast::ModuleBodyItem::Thread(_)));
                     if has_thread {
                         let model = arch::sim_codegen::thread_sim::gen_module_thread_with_warnings(
-                            m, debug, wave.is_some(), threads, &mut thread_sim_warnings,
+                            m,
+                            debug,
+                            wave.is_some(),
+                            threads,
+                            &mut thread_sim_warnings,
                         )
-                            .map_err(|e| miette::miette!("thread sim: {}", e))?;
+                        .map_err(|e| miette::miette!("thread sim: {}", e))?;
                         out.push(model);
                     } else {
                         regular_items.push(item.clone());
@@ -888,38 +1344,51 @@ fn run_sim_opts(
             let (filename, _, local_offset) = ms.locate(w.span.start);
             eprintln!("warning: {} ({}:{})", w.message, filename, local_offset);
         }
-        if regular_items.iter().any(|item| matches!(
-            item,
-            arch::ast::Item::Module(_)
-                | arch::ast::Item::Fsm(_)
-                | arch::ast::Item::Fifo(_)
-                | arch::ast::Item::Ram(_)
-                | arch::ast::Item::Cam(_)
-                | arch::ast::Item::Counter(_)
-                | arch::ast::Item::Arbiter(_)
-                | arch::ast::Item::Regfile(_)
-                | arch::ast::Item::Pipeline(_)
-                | arch::ast::Item::Synchronizer(_)
-                | arch::ast::Item::Clkgate(_)
-                | arch::ast::Item::Function(_)
-                | arch::ast::Item::Package(_)
-                | arch::ast::Item::Struct(_)
-                | arch::ast::Item::Enum(_)
-        )) {
+        if regular_items.iter().any(|item| {
+            matches!(
+                item,
+                arch::ast::Item::Module(_)
+                    | arch::ast::Item::Fsm(_)
+                    | arch::ast::Item::Fifo(_)
+                    | arch::ast::Item::Ram(_)
+                    | arch::ast::Item::Cam(_)
+                    | arch::ast::Item::Counter(_)
+                    | arch::ast::Item::Arbiter(_)
+                    | arch::ast::Item::Regfile(_)
+                    | arch::ast::Item::Pipeline(_)
+                    | arch::ast::Item::Synchronizer(_)
+                    | arch::ast::Item::Clkgate(_)
+                    | arch::ast::Item::Function(_)
+                    | arch::ast::Item::Package(_)
+                    | arch::ast::Item::Struct(_)
+                    | arch::ast::Item::Enum(_)
+            )
+        }) {
             let regular_ast = arch::ast::SourceFile {
                 items: regular_items,
                 inner_doc: ast.inner_doc.clone(),
                 frontmatter: ast.frontmatter.clone(),
             };
-            let mut sim = SimCodegen::new(&symbols, &regular_ast, overload_map.clone()).check_uninit(check_uninit).inputs_start_uninit(inputs_start_uninit).check_uninit_ram(check_uninit_ram).cdc_random(cdc_random).debug(debug, debug_depth).with_debug_fsm(debug_fsm).coverage(coverage).coverage_dat(coverage_dat.clone());
+            let mut sim = SimCodegen::new(&symbols, &regular_ast, overload_map.clone())
+                .check_uninit(check_uninit)
+                .inputs_start_uninit(inputs_start_uninit)
+                .check_uninit_ram(check_uninit_ram)
+                .cdc_random(cdc_random)
+                .debug(debug, debug_depth)
+                .with_debug_fsm(debug_fsm)
+                .coverage(coverage)
+                .coverage_dat(coverage_dat.clone());
             if coverage {
-                let segs: Vec<(usize, String, String)> = ms.segments.iter()
+                let segs: Vec<(usize, String, String)> = ms
+                    .segments
+                    .iter()
                     .map(|(start, _end, name, src)| (*start, name.clone(), src.clone()))
                     .collect();
                 sim = sim.with_source_map(arch::sim_codegen::SourceMap::new(segs));
             }
             for model in sim.generate() {
-                if model.class_name == "VStructs" && out.iter().any(|m| m.class_name == "VStructs") {
+                if model.class_name == "VStructs" && out.iter().any(|m| m.class_name == "VStructs")
+                {
                     continue;
                 }
                 if !out.iter().any(|m| m.class_name == model.class_name) {
@@ -929,11 +1398,21 @@ fn run_sim_opts(
         }
         out
     } else {
-        let mut sim = SimCodegen::new(&symbols, &ast, overload_map.clone()).check_uninit(check_uninit).inputs_start_uninit(inputs_start_uninit).check_uninit_ram(check_uninit_ram).cdc_random(cdc_random).debug(debug, debug_depth).with_debug_fsm(debug_fsm).coverage(coverage).coverage_dat(coverage_dat.clone());
+        let mut sim = SimCodegen::new(&symbols, &ast, overload_map.clone())
+            .check_uninit(check_uninit)
+            .inputs_start_uninit(inputs_start_uninit)
+            .check_uninit_ram(check_uninit_ram)
+            .cdc_random(cdc_random)
+            .debug(debug, debug_depth)
+            .with_debug_fsm(debug_fsm)
+            .coverage(coverage)
+            .coverage_dat(coverage_dat.clone());
         if coverage {
             // Build a SourceMap so the coverage dumper can render
             // file:line instead of opaque branch[N] ordinals.
-            let segs: Vec<(usize, String, String)> = ms.segments.iter()
+            let segs: Vec<(usize, String, String)> = ms
+                .segments
+                .iter()
                 .map(|(start, _end, name, src)| (*start, name.clone(), src.clone()))
                 .collect();
             sim = sim.with_source_map(arch::sim_codegen::SourceMap::new(segs));
@@ -948,34 +1427,50 @@ fn run_sim_opts(
     let mut generated_cpps: Vec<PathBuf> = Vec::new();
 
     for model in &models {
-        let h_path   = build_dir.join(format!("{}.h",   model.class_name));
+        let h_path = build_dir.join(format!("{}.h", model.class_name));
         let cpp_path = build_dir.join(format!("{}.cpp", model.class_name));
-        fs::write(&h_path,   &model.header).into_diagnostic()?;
+        fs::write(&h_path, &model.header).into_diagnostic()?;
         fs::write(&cpp_path, &model.impl_).into_diagnostic()?;
         eprintln!("Generated {}", cpp_path.display());
         generated_cpps.push(cpp_path);
     }
 
     // 4. Write verilated.h / verilated.cpp stubs
-    let verilated_h   = build_dir.join("verilated.h");
+    let verilated_h = build_dir.join("verilated.h");
     let verilated_cpp = build_dir.join("verilated.cpp");
-    fs::write(&verilated_h,   SimCodegen::verilated_h()).into_diagnostic()?;
+    fs::write(&verilated_h, SimCodegen::verilated_h()).into_diagnostic()?;
     fs::write(&verilated_cpp, SimCodegen::verilated_cpp()).into_diagnostic()?;
     generated_cpps.push(verilated_cpp);
 
     // 4b. Thread sim runtime header (only used under --thread-sim parallel,
     // but emit unconditionally — cheap and keeps the build dir self-contained).
     let arch_thread_rt_h = build_dir.join("arch_thread_rt.h");
-    fs::write(&arch_thread_rt_h, arch::sim_codegen::thread_sim::arch_thread_rt_h()).into_diagnostic()?;
+    fs::write(
+        &arch_thread_rt_h,
+        arch::sim_codegen::thread_sim::arch_thread_rt_h(),
+    )
+    .into_diagnostic()?;
 
     // ── Pybind11 mode ────────────────────────────────────────────────────
     if pybind {
         if thread_sim_parallel {
-            return Err(miette::miette!("--pybind not yet supported with --thread-sim parallel"));
+            return Err(miette::miette!(
+                "--pybind not yet supported with --thread-sim parallel"
+            ));
         }
-        let mut sim = SimCodegen::new(&symbols, &ast, overload_map.clone()).check_uninit(check_uninit).inputs_start_uninit(inputs_start_uninit).check_uninit_ram(check_uninit_ram).cdc_random(cdc_random).debug(debug, debug_depth).with_debug_fsm(debug_fsm).coverage(coverage).coverage_dat(coverage_dat.clone());
+        let mut sim = SimCodegen::new(&symbols, &ast, overload_map.clone())
+            .check_uninit(check_uninit)
+            .inputs_start_uninit(inputs_start_uninit)
+            .check_uninit_ram(check_uninit_ram)
+            .cdc_random(cdc_random)
+            .debug(debug, debug_depth)
+            .with_debug_fsm(debug_fsm)
+            .coverage(coverage)
+            .coverage_dat(coverage_dat.clone());
         if coverage {
-            let segs: Vec<(usize, String, String)> = ms.segments.iter()
+            let segs: Vec<(usize, String, String)> = ms
+                .segments
+                .iter()
                 .map(|(start, _end, name, src)| (*start, name.clone(), src.clone()))
                 .collect();
             sim = sim.with_source_map(arch::sim_codegen::SourceMap::new(segs));
@@ -998,7 +1493,8 @@ fn run_sim_opts(
         // Prefer the LAST wrapper whose class name doesn't start with
         // `V_`; fall back to wrapper[0] for designs without thread-
         // submodule lowering (the existing default shape).
-        let user_top_idx = pybind_wrappers.iter()
+        let user_top_idx = pybind_wrappers
+            .iter()
             .rposition(|w| !w.class_name.starts_with("V_"))
             .unwrap_or(0);
 
@@ -1015,15 +1511,17 @@ fn run_sim_opts(
         let mut pybind_cpps: Vec<PathBuf> = Vec::new();
         let mut pybind_module_name = String::new();
         for (i, wrapper) in pybind_wrappers.iter().enumerate() {
-            let (class_name, impl_src) = if i == user_top_idx && pybind_module_name_override.is_some() {
-                let new_name = &effective_first_name;
-                let retargeted = wrapper.impl_
-                    .replace(&format!("PYBIND11_MODULE({}, m)", default_first_name),
-                             &format!("PYBIND11_MODULE({}, m)", new_name));
-                (new_name.clone(), retargeted)
-            } else {
-                (wrapper.class_name.clone(), wrapper.impl_.clone())
-            };
+            let (class_name, impl_src) =
+                if i == user_top_idx && pybind_module_name_override.is_some() {
+                    let new_name = &effective_first_name;
+                    let retargeted = wrapper.impl_.replace(
+                        &format!("PYBIND11_MODULE({}, m)", default_first_name),
+                        &format!("PYBIND11_MODULE({}, m)", new_name),
+                    );
+                    (new_name.clone(), retargeted)
+                } else {
+                    (wrapper.class_name.clone(), wrapper.impl_.clone())
+                };
             let cpp_path = build_dir.join(format!("{}.cpp", class_name));
             fs::write(&cpp_path, &impl_src).into_diagnostic()?;
             eprintln!("Generated pybind11 wrapper: {}", cpp_path.display());
@@ -1070,21 +1568,28 @@ fn run_sim_opts(
         // Precompile shared C++ into .o.
         let mut shared_objs: Vec<PathBuf> = Vec::new();
         for cpp in &generated_cpps {
-            let obj = build_dir.join(
-                cpp.file_stem().unwrap().to_string_lossy().into_owned() + ".o",
-            );
+            let obj =
+                build_dir.join(cpp.file_stem().unwrap().to_string_lossy().into_owned() + ".o");
             let mut cmd = std::process::Command::new("g++");
             cmd.arg(cxx_std_flag())
-               .arg("-O2")
-               .arg("-fPIC")
-               .arg("-c")
-               .arg("-I").arg(&build_dir);
-            for flag in py_includes.split_whitespace() { cmd.arg(flag); }
-            for (name, val) in param_overrides { cmd.arg(format!("-D{name}={val}")); }
+                .arg("-O2")
+                .arg("-fPIC")
+                .arg("-c")
+                .arg("-I")
+                .arg(&build_dir);
+            for flag in py_includes.split_whitespace() {
+                cmd.arg(flag);
+            }
+            for (name, val) in param_overrides {
+                cmd.arg(format!("-D{name}={val}"));
+            }
             cmd.arg(cpp).arg("-o").arg(&obj);
             let status = cmd.status().into_diagnostic()?;
             if !status.success() {
-                eprintln!("Pybind11 compilation failed (shared .o for {})", cpp.display());
+                eprintln!(
+                    "Pybind11 compilation failed (shared .o for {})",
+                    cpp.display()
+                );
                 std::process::exit(1);
             }
             shared_objs.push(obj);
@@ -1105,14 +1610,21 @@ fn run_sim_opts(
             let so_path = build_dir.join(format!("{class_name}{ext_suffix}"));
             let mut cmd = std::process::Command::new("g++");
             cmd.arg(cxx_std_flag())
-               .arg("-O2")
-               .arg("-shared")
-               .arg("-fPIC")
-               .arg("-I").arg(&build_dir);
-            for flag in py_includes.split_whitespace() { cmd.arg(flag); }
-            for (name, val) in param_overrides { cmd.arg(format!("-D{name}={val}")); }
+                .arg("-O2")
+                .arg("-shared")
+                .arg("-fPIC")
+                .arg("-I")
+                .arg(&build_dir);
+            for flag in py_includes.split_whitespace() {
+                cmd.arg(flag);
+            }
+            for (name, val) in param_overrides {
+                cmd.arg(format!("-D{name}={val}"));
+            }
             cmd.arg(cpp_path);
-            for obj in &shared_objs { cmd.arg(obj); }
+            for obj in &shared_objs {
+                cmd.arg(obj);
+            }
             cmd.arg("-o").arg(&so_path);
             #[cfg(target_os = "macos")]
             cmd.arg("-undefined").arg("dynamic_lookup");
@@ -1141,11 +1653,14 @@ fn run_sim_opts(
             // `<arch-com>/target/{debug,release}/arch`, so go up twice and
             // look for a sibling `python/` directory. Fall back to
             // `$ARCH_PYTHON_DIR` or the current cwd for development layouts.
-            let python_dir = std::env::current_exe().ok()
-                .and_then(|exe| exe.parent()
-                    .and_then(|p| p.parent())
-                    .and_then(|p| p.parent())
-                    .map(|p| p.join("python")))
+            let python_dir = std::env::current_exe()
+                .ok()
+                .and_then(|exe| {
+                    exe.parent()
+                        .and_then(|p| p.parent())
+                        .and_then(|p| p.parent())
+                        .map(|p| p.join("python"))
+                })
                 .filter(|p| p.is_dir())
                 .or_else(|| std::env::var("ARCH_PYTHON_DIR").ok().map(PathBuf::from))
                 .or_else(|| std::env::current_dir().ok().map(|cwd| cwd.join("python")))
@@ -1158,20 +1673,31 @@ fn run_sim_opts(
 
             let pythonpath = format!("{shim_str}:{cocotb_dir}:{build_str}");
 
-            let test_path_abs = test_path.canonicalize().unwrap_or_else(|_| test_path.to_path_buf());
-            let test_dir = test_path_abs.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-            let test_module_name = test_path_abs.file_stem()
-                .unwrap_or_default().to_string_lossy().into_owned();
+            let test_path_abs = test_path
+                .canonicalize()
+                .unwrap_or_else(|_| test_path.to_path_buf());
+            let test_dir = test_path_abs
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
+            let test_module_name = test_path_abs
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
 
             // Derive the model class name. The class is the pybind module
             // name minus the `_pybind` suffix (matches emit_pybind_module).
-            let model_class = pybind_module_name.strip_suffix("_pybind")
-                .unwrap_or(&pybind_module_name).to_string();
+            let model_class = pybind_module_name
+                .strip_suffix("_pybind")
+                .unwrap_or(&pybind_module_name)
+                .to_string();
 
             // Generated runner: runs user __main__, then dispatches any
             // registered @cocotb.test() functions.
             let runner_py = build_dir.join("_arch_cocotb_runner.py");
-            let runner_src = format!(r#"import sys
+            let runner_src = format!(
+                r#"import sys
 import runpy
 import importlib
 from pathlib import Path
@@ -1211,8 +1737,8 @@ from arch_cocotb.runner import run_tests
 ok = run_tests(model_class, TEST_MODULE)
 sys.exit(0 if ok else 1)
 "#,
-                test_path   = test_path_abs.display(),
-                test_dir    = test_dir.display(),
+                test_path = test_path_abs.display(),
+                test_dir = test_dir.display(),
                 test_module = test_module_name,
                 pybind_module = pybind_module_name,
                 model_class = model_class,
@@ -1233,10 +1759,17 @@ sys.exit(0 if ok else 1)
 
     // ── Normal sim mode (C++ testbench) ──────────────────────────────────
     if tb_files.is_empty() {
-        eprintln!("No testbench files supplied — generated models are in {}/", build_dir.display());
-        eprintln!("Compile with: g++ {} {}/verilated.cpp {}/V*.cpp <your_tb.cpp> -I{} -o sim_out",
+        eprintln!(
+            "No testbench files supplied — generated models are in {}/",
+            build_dir.display()
+        );
+        eprintln!(
+            "Compile with: g++ {} {}/verilated.cpp {}/V*.cpp <your_tb.cpp> -I{} -o sim_out",
             cxx_std_flag(),
-            build_dir.display(), build_dir.display(), build_dir.display());
+            build_dir.display(),
+            build_dir.display(),
+            build_dir.display()
+        );
         return Ok(());
     }
 
@@ -1304,9 +1837,7 @@ sys.exit(0 if ok else 1)
         let _ = run_cmd.status();
         return Ok(());
     }
-    let run_status = run_cmd
-        .status()
-        .into_diagnostic()?;
+    let run_status = run_cmd.status().into_diagnostic()?;
 
     std::process::exit(run_status.code().unwrap_or(1));
 }
@@ -1323,10 +1854,14 @@ sys.exit(0 if ok else 1)
 ///   5. `<exe>/../share/arch/stdlib/` — matches Unix `<prefix>/bin/arch` installs
 /// Returns None if none of these resolve to an existing directory.
 fn resolve_stdlib_dir() -> Option<PathBuf> {
-    if std::env::var("ARCH_NO_STDLIB").is_ok() { return None; }
+    if std::env::var("ARCH_NO_STDLIB").is_ok() {
+        return None;
+    }
     if let Ok(p) = std::env::var("ARCH_STDLIB_PATH") {
         let p = PathBuf::from(p);
-        if p.is_dir() { return Some(p); }
+        if p.is_dir() {
+            return Some(p);
+        }
     }
     let exe = std::env::current_exe().ok()?;
     for up in 1..=4 {
@@ -1335,13 +1870,17 @@ fn resolve_stdlib_dir() -> Option<PathBuf> {
             candidate = candidate.parent()?.to_path_buf();
         }
         let stdlib = candidate.join("stdlib");
-        if stdlib.is_dir() { return Some(stdlib); }
+        if stdlib.is_dir() {
+            return Some(stdlib);
+        }
     }
     // Unix prefix install: /usr/local/bin/arch → /usr/local/share/arch/stdlib
     let exe_parent = exe.parent()?;
     let prefix = exe_parent.parent()?;
     let share = prefix.join("share").join("arch").join("stdlib");
-    if share.is_dir() { return Some(share); }
+    if share.is_dir() {
+        return Some(share);
+    }
     None
 }
 
@@ -1380,7 +1919,8 @@ fn item_ports(item: &Item) -> &[arch::ast::PortDecl] {
 fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
     use std::collections::HashSet;
 
-    let base_dir = files.first()
+    let base_dir = files
+        .first()
         .and_then(|f| f.parent())
         .unwrap_or(std::path::Path::new("."));
 
@@ -1399,12 +1939,12 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
         seen.insert(canon);
 
         let source = fs::read_to_string(&file).into_diagnostic()?;
-        let tokens = lexer::tokenize(&source).map_err(|_| {
-            miette::miette!("Lexer error in {}", file.display())
-        })?;
+        let tokens = lexer::tokenize(&source)
+            .map_err(|_| miette::miette!("Lexer error in {}", file.display()))?;
         let mut p = parser::Parser::new(tokens, &source);
         let parsed = p.parse_source_file().map_err(|err| {
-            Report::new(err).with_source_code(NamedSource::new(file.display().to_string(), source.clone()))
+            Report::new(err)
+                .with_source_code(NamedSource::new(file.display().to_string(), source.clone()))
         })?;
 
         // Find `use` items and queue their files
@@ -1427,10 +1967,16 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
                 if let Ok(lib_path) = std::env::var("ARCH_LIB_PATH") {
                     for dir in lib_path.split(':') {
                         let p = std::path::Path::new(dir).join(&file_name);
-                        if p.exists() { deps.push(p); found = true; break; }
+                        if p.exists() {
+                            deps.push(p);
+                            found = true;
+                            break;
+                        }
                     }
                 }
-                if found { continue; }
+                if found {
+                    continue;
+                }
                 if let Some(stdlib) = resolve_stdlib_dir() {
                     let p = stdlib.join(&file_name);
                     if p.exists() {
@@ -1443,15 +1989,33 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
         // Track all module names defined across all input files
         for item in &parsed.items {
             match item {
-                Item::Module(m) => { all_defined_modules.insert(m.name.name.clone()); }
-                Item::Fsm(f) => { all_defined_modules.insert(f.name.name.clone()); }
-                Item::Counter(c) => { all_defined_modules.insert(c.name.name.clone()); }
-                Item::Pipeline(p) => { all_defined_modules.insert(p.name.name.clone()); }
-                Item::Synchronizer(s) => { all_defined_modules.insert(s.name.name.clone()); }
-                Item::Fifo(f) => { all_defined_modules.insert(f.name.name.clone()); }
-                Item::Ram(r) => { all_defined_modules.insert(r.name.name.clone()); }
-                Item::Arbiter(a) => { all_defined_modules.insert(a.name.name.clone()); }
-                Item::Bus(b) => { all_defined_buses.insert(b.name.name.clone()); }
+                Item::Module(m) => {
+                    all_defined_modules.insert(m.name.name.clone());
+                }
+                Item::Fsm(f) => {
+                    all_defined_modules.insert(f.name.name.clone());
+                }
+                Item::Counter(c) => {
+                    all_defined_modules.insert(c.name.name.clone());
+                }
+                Item::Pipeline(p) => {
+                    all_defined_modules.insert(p.name.name.clone());
+                }
+                Item::Synchronizer(s) => {
+                    all_defined_modules.insert(s.name.name.clone());
+                }
+                Item::Fifo(f) => {
+                    all_defined_modules.insert(f.name.name.clone());
+                }
+                Item::Ram(r) => {
+                    all_defined_modules.insert(r.name.name.clone());
+                }
+                Item::Arbiter(a) => {
+                    all_defined_modules.insert(a.name.name.clone());
+                }
+                Item::Bus(b) => {
+                    all_defined_buses.insert(b.name.name.clone());
+                }
                 _ => {}
             }
         }
@@ -1459,17 +2023,35 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
         // Find inst references and look for .archi interface files
         for item in &parsed.items {
             let insts = match item {
-                Item::Module(m) => m.body.iter()
-                    .filter_map(|b| if let arch::ast::ModuleBodyItem::Inst(i) = b { Some(&i.module_name.name) } else { None })
+                Item::Module(m) => m
+                    .body
+                    .iter()
+                    .filter_map(|b| {
+                        if let arch::ast::ModuleBodyItem::Inst(i) = b {
+                            Some(&i.module_name.name)
+                        } else {
+                            None
+                        }
+                    })
                     .collect::<Vec<_>>(),
-                Item::Pipeline(p) => p.stages.iter()
+                Item::Pipeline(p) => p
+                    .stages
+                    .iter()
                     .flat_map(|s| s.body.iter())
-                    .filter_map(|b| if let arch::ast::ModuleBodyItem::Inst(i) = b { Some(&i.module_name.name) } else { None })
+                    .filter_map(|b| {
+                        if let arch::ast::ModuleBodyItem::Inst(i) = b {
+                            Some(&i.module_name.name)
+                        } else {
+                            None
+                        }
+                    })
                     .collect::<Vec<_>>(),
                 _ => vec![],
             };
             for inst_name in insts {
-                if all_defined_modules.contains(inst_name.as_str()) { continue; }
+                if all_defined_modules.contains(inst_name.as_str()) {
+                    continue;
+                }
                 // Look for .arch first, then .archi
                 let arch_path = base_dir.join(format!("{inst_name}.arch"));
                 let archi_path = base_dir.join(format!("{inst_name}.archi"));
@@ -1482,17 +2064,28 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
                 if let Ok(lib_path) = std::env::var("ARCH_LIB_PATH") {
                     for dir in lib_path.split(':') {
                         let p = std::path::Path::new(dir).join(format!("{inst_name}.archi"));
-                        if p.exists() { deps.push(p); break; }
+                        if p.exists() {
+                            deps.push(p);
+                            break;
+                        }
                         let p = std::path::Path::new(dir).join(format!("{inst_name}.arch"));
-                        if p.exists() { deps.push(p); break; }
+                        if p.exists() {
+                            deps.push(p);
+                            break;
+                        }
                     }
                 }
                 // Fall back to the shipped standard library.
                 if let Some(stdlib) = resolve_stdlib_dir() {
                     let p = stdlib.join(format!("{inst_name}.arch"));
-                    if p.exists() { deps.push(p); continue; }
+                    if p.exists() {
+                        deps.push(p);
+                        continue;
+                    }
                     let p = stdlib.join(format!("{inst_name}.archi"));
-                    if p.exists() { deps.push(p); }
+                    if p.exists() {
+                        deps.push(p);
+                    }
                 }
             }
         }
@@ -1513,13 +2106,17 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
             }
         }
         for bus_name in bus_refs {
-            if all_defined_buses.contains(bus_name.as_str()) { continue; }
+            if all_defined_buses.contains(bus_name.as_str()) {
+                continue;
+            }
             // An explicit `use <Bus>;` is authoritative — it already queued
             // the canonical definition above. Skip the fallback scan for it
             // so we don't also pull in a stale build-artifact `<Bus>.archi`
             // sitting in the source directory (which would double-define the
             // bus).
-            if use_names.contains(bus_name.as_str()) { continue; }
+            if use_names.contains(bus_name.as_str()) {
+                continue;
+            }
             // Same-directory `.arch` first, then `.archi`.
             let arch_path = base_dir.join(format!("{bus_name}.arch"));
             let archi_path = base_dir.join(format!("{bus_name}.archi"));
@@ -1532,17 +2129,28 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
             if let Ok(lib_path) = std::env::var("ARCH_LIB_PATH") {
                 for dir in lib_path.split(':') {
                     let p = std::path::Path::new(dir).join(format!("{bus_name}.arch"));
-                    if p.exists() { deps.push(p); break; }
+                    if p.exists() {
+                        deps.push(p);
+                        break;
+                    }
                     let p = std::path::Path::new(dir).join(format!("{bus_name}.archi"));
-                    if p.exists() { deps.push(p); break; }
+                    if p.exists() {
+                        deps.push(p);
+                        break;
+                    }
                 }
             }
             // Finally the shipped standard library.
             if let Some(stdlib) = resolve_stdlib_dir() {
                 let p = stdlib.join(format!("{bus_name}.arch"));
-                if p.exists() { deps.push(p); continue; }
+                if p.exists() {
+                    deps.push(p);
+                    continue;
+                }
                 let p = stdlib.join(format!("{bus_name}.archi"));
-                if p.exists() { deps.push(p); }
+                if p.exists() {
+                    deps.push(p);
+                }
             }
         }
 
@@ -1559,7 +2167,8 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
     // end, all_files has: first input files first, then deps. We need deps first.
     // Let's just deduplicate and reorder: deps before users.
     // Simple approach: move any file that is NOT in the original `files` list to front.
-    let orig_set: HashSet<PathBuf> = files.iter()
+    let orig_set: HashSet<PathBuf> = files
+        .iter()
         .map(|f| f.canonicalize().unwrap_or_else(|_| f.clone()))
         .collect();
     let mut dep_files: Vec<PathBuf> = Vec::new();
@@ -1567,7 +2176,9 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
     let mut seen2: HashSet<PathBuf> = HashSet::new();
     for f in &all_files {
         let canon = f.canonicalize().unwrap_or_else(|_| f.clone());
-        if seen2.contains(&canon) { continue; }
+        if seen2.contains(&canon) {
+            continue;
+        }
         seen2.insert(canon.clone());
         if orig_set.contains(&canon) {
             main_files.push(f.clone());
@@ -1585,14 +2196,15 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
 fn collect_arch_files(root: &std::path::Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     fn walk(p: &std::path::Path, out: &mut Vec<PathBuf>) {
-        let Ok(rd) = fs::read_dir(p) else { return; };
+        let Ok(rd) = fs::read_dir(p) else {
+            return;
+        };
         for entry in rd.flatten() {
             let path = entry.path();
             if let Ok(ft) = entry.file_type() {
                 if ft.is_dir() {
                     walk(&path, out);
-                } else if ft.is_file()
-                    && path.extension().and_then(|s| s.to_str()) == Some("arch")
+                } else if ft.is_file() && path.extension().and_then(|s| s.to_str()) == Some("arch")
                 {
                     out.push(path);
                 }
@@ -1638,21 +2250,30 @@ fn run_learn_bootstrap(path: &std::path::Path) -> miette::Result<()> {
     for file in &files {
         let src = match fs::read_to_string(file) {
             Ok(s) => s,
-            Err(_) => { skipped_files += 1; continue; }
+            Err(_) => {
+                skipped_files += 1;
+                continue;
+            }
         };
         let tokens = match arch::lexer::tokenize(&src) {
             Ok(t) => t,
-            Err(_) => { skipped_files += 1; continue; }
+            Err(_) => {
+                skipped_files += 1;
+                continue;
+            }
         };
         let mut p = parser::Parser::new(tokens, &src);
         let ast = match p.parse_source_file() {
             Ok(a) => a,
-            Err(_) => { skipped_files += 1; continue; }
+            Err(_) => {
+                skipped_files += 1;
+                continue;
+            }
         };
         let path_str = file.display().to_string();
         let path_str_for_closure = path_str.clone();
-        let n = arch::learn::harvest_features(&ast, |_item| path_str_for_closure.clone())
-            .unwrap_or(0);
+        let n =
+            arch::learn::harvest_features(&ast, |_item| path_str_for_closure.clone()).unwrap_or(0);
         total_events += n;
         parsed_files += 1;
     }
@@ -1673,15 +2294,25 @@ fn run_learn_bootstrap(path: &std::path::Path) -> miette::Result<()> {
 
 fn run_check_multi(
     ms: &MultiSource,
-) -> miette::Result<(arch::ast::SourceFile, resolve::SymbolTable, std::collections::HashMap<usize, usize>)> {
-    run_check_multi_opts(ms, /*skip_lower_threads=*/ false, /*auto_thread_asserts=*/ false)
+) -> miette::Result<(
+    arch::ast::SourceFile,
+    resolve::SymbolTable,
+    std::collections::HashMap<usize, usize>,
+)> {
+    run_check_multi_opts(
+        ms, /*skip_lower_threads=*/ false, /*auto_thread_asserts=*/ false,
+    )
 }
 
 fn run_check_multi_opts(
     ms: &MultiSource,
     skip_lower_threads: bool,
     auto_thread_asserts: bool,
-) -> miette::Result<(arch::ast::SourceFile, resolve::SymbolTable, std::collections::HashMap<usize, usize>)> {
+) -> miette::Result<(
+    arch::ast::SourceFile,
+    resolve::SymbolTable,
+    std::collections::HashMap<usize, usize>,
+)> {
     run_check_multi_opts_with_thread_map(ms, skip_lower_threads, auto_thread_asserts, None)
 }
 
@@ -1690,7 +2321,11 @@ fn run_check_multi_opts_with_thread_map(
     skip_lower_threads: bool,
     auto_thread_asserts: bool,
     thread_map: Option<std::rc::Rc<std::cell::RefCell<arch::thread_map::ThreadMap>>>,
-) -> miette::Result<(arch::ast::SourceFile, resolve::SymbolTable, std::collections::HashMap<usize, usize>)> {
+) -> miette::Result<(
+    arch::ast::SourceFile,
+    resolve::SymbolTable,
+    std::collections::HashMap<usize, usize>,
+)> {
     let source = &ms.combined;
 
     // Lex
@@ -1698,16 +2333,20 @@ fn run_check_multi_opts_with_thread_map(
         let offset = spans[0].start;
         let (filename, file_source, local_offset) = ms.locate(offset);
         let err = CompileError::LexerError {
-            span: miette::SourceSpan::new(local_offset.into(), (spans[0].end - spans[0].start).into()),
+            span: miette::SourceSpan::new(
+                local_offset.into(),
+                (spans[0].end - spans[0].start).into(),
+            ),
         };
-        Report::new(err).with_source_code(NamedSource::new(filename.to_string(), file_source.to_string()))
+        Report::new(err).with_source_code(NamedSource::new(
+            filename.to_string(),
+            file_source.to_string(),
+        ))
     })?;
 
     // Parse
     let mut p = parser::Parser::new(tokens, source);
-    let mut parsed_ast = p.parse_source_file().map_err(|err| {
-        ms.report_error(err)
-    })?;
+    let mut parsed_ast = p.parse_source_file().map_err(|err| ms.report_error(err))?;
 
     // Tag items loaded from `.archi` interface stubs (port-only, no body).
     // Body-only downstream passes — typecheck's output-driven check /
@@ -1848,7 +2487,11 @@ fn run_check_multi_opts_with_thread_map(
         if !collected_hazards.is_empty() {
             let mut map = map_rc.borrow_mut();
             for (mod_name, hz) in &collected_hazards {
-                for tmm in map.modules.iter_mut().filter(|m| m.module_name == *mod_name) {
+                for tmm in map
+                    .modules
+                    .iter_mut()
+                    .filter(|m| m.module_name == *mod_name)
+                {
                     for tmt in tmm.threads.iter_mut().filter(|t| t.name == hz.thread_name) {
                         tmt.hazards.push(arch::thread_map::CombFeedbackHazard {
                             read_signal: hz.read_signal.clone(),
