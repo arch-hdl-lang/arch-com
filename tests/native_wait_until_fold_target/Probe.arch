@@ -1,0 +1,28 @@
+//! ---
+//! tags: [native-sim, thread-lowering, wait-until-fold, regression]
+//! refs:
+//!   - "arch-com#306"
+//! ---
+//!
+//! Regression for native simulation of folded wait-until exit assignments.
+//! The folded wait state must jump to the post-action target, not the absorbed
+//! action state.
+
+/// Thread whose wait-until exit action is folded before a counted wait.
+module NativeWaitUntilFoldTargetProbe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port phase: out UInt<2>;
+
+  reg phase_r: UInt<2> reset rst => 0;
+  let phase = phase_r;
+
+  thread on clk rising, rst high
+    wait until go;
+    phase_r <= 2'd1;
+    wait 2 cycle;
+    phase_r <= 2'd2;
+    wait until go;
+  end thread
+end module NativeWaitUntilFoldTargetProbe

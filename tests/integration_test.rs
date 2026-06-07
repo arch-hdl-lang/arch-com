@@ -18804,6 +18804,38 @@ fn test_native_sim_thread_driven_top_pipe_reg_output_is_public() {
 }
 
 #[test]
+fn test_native_sim_wait_until_fold_target_reaches_post_action_state() {
+    // Regression for the folded wait-until exit target: after
+    // `wait until go; phase <= 1; wait 2 cycle; phase <= 2;`, default native
+    // sim must update phase on the go-detection edge and then continue into
+    // the counted-wait state. If the folded wait targets the absorbed action
+    // state instead, the native sim state machine gets stuck and never reaches
+    // phase=2.
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/native_wait_until_fold_target/Probe.arch")
+        .arg("--tb")
+        .arg("tests/native_wait_until_fold_target/tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for native wait-until folded target probe");
+    assert!(
+        out.status.success(),
+        "native wait-until folded target sim should compile + run\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS native wait-until folded target"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
 fn test_nic400_master_port_marks_non_power_of_two_decode_holes_oor() {
     // PR #487 added a default-slave DECERR path for out-of-range accesses,
     // but the original OOR predicate only checked high address bits above
