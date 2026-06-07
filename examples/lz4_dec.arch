@@ -1,0 +1,274 @@
+//! ---
+//! tags: [fsm, ram, streaming, compression, lz4, cast-lz4snp-d]
+//! ---
+//!
+//! LZ4 block decompressor — models the CAST LZ4SNP-D IP.
+//!
+//! Accepts a raw LZ4 block as a byte-streaming input (valid/ready/data/last)
+//! and produces the decompressed byte stream as output. The `in_last` flag
+//! must be asserted on the final compressed byte of the block (the last
+//! literal byte of the last sequence — in LZ4 block format the last sequence
+//! always ends with literals and has no match/offset tail).
+//!
+//! Key design choices
+//! ------------------
+//! * History buffer: 64 KiB simple-dual-port RAM, latency 0 (async read).
+//!   The read data is captured by a `reg … reset none` on each rising edge,
+//!   which gives an effective 1-cycle read latency in the FSM (the FSM spends
+//!   one "issue" cycle before the "data" cycle).
+//! * Match copy: two-phase per byte (issue read → use data), so match
+//!   throughput is 0.5 B/cycle. Literal copy is 1 B/cycle.
+//! * No implicit latches: every combinational output has an explicit default
+//!   before the if/elsif chain.
+//!
+//! References
+//! ----------
+//! LZ4 block format: https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md
+//! CAST LZ4SNP-D:    https://www.cast-inc.com/compression/lossless-data-compression/lz4snp-d
+
+domain SysDomain
+  freq_mhz: 200
+end domain SysDomain
+
+// ── History ring buffer ────────────────────────────────────────────────────────
+
+/// 64 KiB simple-dual-port history buffer.  Async read (latency 0) so the
+/// read data is combinatorially available on the same cycle the address is
+/// presented; the parent module captures it in a `reg reset none` to get a
+/// clean 1-cycle read latency without any additional pipelining registers.
+ram HistoryBuf
+  kind simple_dual;
+  latency 0;
+  init: zero;
+  port clk: in Clock<SysDomain>;
+  store
+    mem: Vec<UInt<8>, 65536>;
+  end store
+  ports wr_port
+    en:   in Bool;
+    addr: in UInt<16>;
+    data: in UInt<8>;
+  end ports wr_port
+  ports rd_port
+    en:   in Bool;
+    addr: in UInt<16>;
+    data: out UInt<8>;
+  end ports rd_port
+end ram HistoryBuf
+
+// ── State encoding ─────────────────────────────────────────────────────────────
+
+/// FSM states for the LZ4 sequence parser.
+enum Lz4State
+  Token,        // consume token byte; decode lit-len and match-len nibbles
+  ExtLit,       // accumulate extended literal-length bytes (value == 255 → continue)
+  CopyLit,      // stream literal bytes: input → output and history write
+  OffLo,        // consume low byte of match offset
+  OffHi,        // consume high byte; initialise match_len_r
+  ExtMatch,     // accumulate extended match-length bytes
+  CopyMatch,    // copy from history → output and history write (2-phase per byte)
+  Idle          // one-cycle gap between back-to-back blocks; auto-advances to Token
+end enum Lz4State
+
+// ── Top-level decompressor module ─────────────────────────────────────────────
+
+/// Streaming LZ4 block decompressor.
+///
+/// Input handshake:  `in_valid` / `in_ready` / `in_data` / `in_last`
+/// Output handshake: `out_valid` / `out_ready` / `out_data` / `out_last`
+///
+/// `in_last` must be asserted on the last byte of the compressed input block.
+/// `out_last` pulses on the last decompressed byte of the block.
+module Lz4Dec
+  port clk:       in  Clock<SysDomain>;
+  port rst:       in  Reset<Sync, High>;
+
+  // Compressed input stream
+  port in_valid:  in  Bool;
+  port in_ready:  out Bool;
+  port in_data:   in  UInt<8>;
+  port in_last:   in  Bool;
+
+  // Decompressed output stream
+  port out_valid: out Bool;
+  port out_ready: in  Bool;
+  port out_data:  out UInt<8>;
+  port out_last:  out Bool;
+
+  // ── FSM state ────────────────────────────────────────────────────────────────
+  reg state_r:      Lz4State reset rst => Lz4State::Token;
+  reg copy_phase_r: Bool     reset rst => false;
+
+  // ── Datapath registers ───────────────────────────────────────────────────────
+  reg lit_len_r:    UInt<16> reset rst => 0;  // remaining literals to copy
+  reg match_code_r: UInt<4>  reset rst => 0;  // token lower nibble (match len code)
+  reg match_len_r:  UInt<16> reset rst => 0;  // remaining match bytes to copy
+  reg offset_r:     UInt<16> reset rst => 0;  // match offset (distance back in history)
+  reg offset_lo_r:  UInt<8>  reset rst => 0;  // temp: low byte of offset
+  reg wr_ptr_r:     UInt<16> reset rst => 0;  // write cursor in history ring
+
+  // ── History RAM interface wires (driven by comb block) ───────────────────────
+  wire hist_wr_en_w:   Bool;
+  wire hist_wr_addr_w: UInt<16>;
+  wire hist_wr_data_w: UInt<8>;
+  wire hist_rd_en_w:   Bool;
+  wire hist_rd_addr_w: UInt<16>;
+
+  // Async read result captured every rising edge; latency-0 RAM output is
+  // combinatorial so this register gives the effective 1-cycle read latency.
+  reg hist_rd_data_r: UInt<8> init 0 reset none;
+
+  // ── History RAM instance ─────────────────────────────────────────────────────
+  inst hist: HistoryBuf
+    clk          <- clk;
+    wr_port.en   <- hist_wr_en_w;
+    wr_port.addr <- hist_wr_addr_w;
+    wr_port.data <- hist_wr_data_w;
+    rd_port.en   <- hist_rd_en_w;
+    rd_port.addr <- hist_rd_addr_w;
+    rd_port.data -> hist_rd_data_r;
+  end inst hist
+
+  // ── Combinational block: outputs and RAM control ─────────────────────────────
+  //
+  // Pattern: assign safe defaults unconditionally, then override per state.
+  // Every signal is written on every execution path so the latch check passes.
+  comb
+    // Safe defaults (all other states fall through to these)
+    in_ready       = false;
+    out_valid      = false;
+    out_data       = 0;
+    out_last       = false;
+    hist_wr_en_w   = false;
+    hist_wr_addr_w = 0;
+    hist_wr_data_w = 0;
+    hist_rd_en_w   = false;
+    hist_rd_addr_w = 0;
+
+    if (state_r == Lz4State::Token) or (state_r == Lz4State::ExtLit) or
+       (state_r == Lz4State::OffLo) or (state_r == Lz4State::OffHi) or
+       (state_r == Lz4State::ExtMatch)
+      // These states consume one input byte per cycle; no output.
+      in_ready = true;
+
+    elsif state_r == Lz4State::CopyLit
+      // Literals: consume and produce simultaneously; backpressure from
+      // downstream stalls both sides.
+      in_ready       = out_ready;
+      out_valid      = in_valid;
+      out_data       = in_data;
+      out_last       = in_valid and out_ready and (lit_len_r == 1) and in_last;
+      hist_wr_en_w   = in_valid and out_ready;
+      hist_wr_addr_w = wr_ptr_r;
+      hist_wr_data_w = in_data;
+
+    elsif state_r == Lz4State::CopyMatch
+      // Match copy (2-phase):
+      //   Phase 0 (copy_phase_r = false): issue the async read; no output yet.
+      //   Phase 1 (copy_phase_r = true):  drive output from captured read data;
+      //                                   also write that byte back to history.
+      // Keep rd_en/rd_addr active in both phases so hist_rd_data_r stays valid
+      // during any backpressure stall in phase 1.
+      hist_rd_en_w   = true;
+      hist_rd_addr_w = wr_ptr_r -% offset_r;
+      if copy_phase_r
+        out_valid      = true;
+        out_data       = hist_rd_data_r;
+        hist_wr_en_w   = out_ready;
+        hist_wr_addr_w = wr_ptr_r;
+        hist_wr_data_w = hist_rd_data_r;
+      end if
+    end if
+  end comb
+
+  // ── Sequential block: state transitions and register updates ─────────────────
+  seq on clk rising
+    if state_r == Lz4State::Token
+      if in_valid
+        match_code_r <= in_data[3:0];
+        if in_data[7:4] == 15
+          // Extended literal length: start accumulation at 15
+          lit_len_r <= 15;
+          state_r   <= Lz4State::ExtLit;
+        elsif in_data[7:4] > 0
+          // Literal count fits in the nibble
+          lit_len_r <= in_data[7:4].zext<16>();
+          state_r   <= Lz4State::CopyLit;
+        elsif in_last
+          // Token with 0 literals is the terminal sequence; block is done
+          state_r <= Lz4State::Idle;
+        else
+          // No literals; go straight to match offset
+          state_r <= Lz4State::OffLo;
+        end if
+      end if
+
+    elsif state_r == Lz4State::ExtLit
+      if in_valid
+        lit_len_r <= lit_len_r +% in_data.zext<16>();
+        if in_data != 255
+          state_r <= Lz4State::CopyLit;
+        end if
+      end if
+
+    elsif state_r == Lz4State::CopyLit
+      if in_valid and out_ready
+        lit_len_r <= lit_len_r -% 1;
+        wr_ptr_r  <= wr_ptr_r +% 1;
+        if lit_len_r == 1
+          if in_last
+            state_r <= Lz4State::Idle;
+          else
+            state_r <= Lz4State::OffLo;
+          end if
+        end if
+      end if
+
+    elsif state_r == Lz4State::OffLo
+      if in_valid
+        offset_lo_r <= in_data;
+        state_r     <= Lz4State::OffHi;
+      end if
+
+    elsif state_r == Lz4State::OffHi
+      if in_valid
+        offset_r    <= (in_data.zext<16>() << 8) | offset_lo_r.zext<16>();
+        match_len_r <= match_code_r.zext<16>() +% 4;
+        if match_code_r == 15
+          state_r <= Lz4State::ExtMatch;
+        else
+          copy_phase_r <= false;
+          state_r      <= Lz4State::CopyMatch;
+        end if
+      end if
+
+    elsif state_r == Lz4State::ExtMatch
+      if in_valid
+        match_len_r <= match_len_r +% in_data.zext<16>();
+        if in_data != 255
+          copy_phase_r <= false;
+          state_r      <= Lz4State::CopyMatch;
+        end if
+      end if
+
+    elsif state_r == Lz4State::CopyMatch
+      if not copy_phase_r
+        // Phase 0: read issued; advance to phase 1 next cycle
+        copy_phase_r <= true;
+      elsif out_ready
+        // Phase 1: data consumed by downstream
+        match_len_r  <= match_len_r -% 1;
+        wr_ptr_r     <= wr_ptr_r +% 1;
+        copy_phase_r <= false;
+        if match_len_r == 1
+          state_r <= Lz4State::Token;
+        end if
+      end if
+
+    elsif state_r == Lz4State::Idle
+      // One-cycle inter-block gap; auto-advance to accept next block
+      state_r <= Lz4State::Token;
+    end if
+  end seq
+
+end module Lz4Dec
