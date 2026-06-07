@@ -1,0 +1,472 @@
+// HARC testbench for Nic400Fabric multi-master contention.
+//
+// Closes §16.1 gap: "Multi-master contention (M=2..3 active at once)".
+//
+// Run with:
+//   harc sim --dut tests/nic400/BusAxi4.arch \
+//             tests/nic400/Nic400Fabric.arch \
+//             tests/nic400/Nic400MasterPort.arch \
+//             tests/nic400/Nic400SlavePort.arch \
+//             tests/nic400/Nic400FabricMultiMaster_test.harc \
+//             --top Nic400Fabric
+//
+// Address decode (NS_W=2, REGION_BITS=28):
+//   addr[29:28] = 0b00 → slave 0  (0x0000_xxxx)
+//   addr[29:28] = 0b01 → slave 1  (0x1000_xxxx)
+//   addr[29:28] = 0b10 → slave 2  (0x2000_xxxx)
+//
+// Scenarios:
+//   S1. Disjoint-slave reads  — M0→S0, M1→S1, M2→S2 concurrently.
+//       Expect 8 ARs per slave (24 total), ~3.0 t/c aggregate.
+//   S2. Hot-slave reads (3-way) — M0, M1, M2 all target S0.
+//       ar_lock is mutex<round_robin>. Expect 30 ARs, no starvation, ~1.0 t/c.
+//   S3. Disjoint-slave writes — M0→S0, M1→S1, M2→S2 (AW→W→B).
+//       TB plays all three slave sides. Hold m_b_ready=0 so B phase is visible
+//       post-tick; detect W completion via s_w_valid[i] 1→0 transition.
+
+testbench Nic400FabricMultiMasterTb
+    dut : Nic400Fabric
+end testbench Nic400FabricMultiMasterTb
+
+impl Nic400FabricMultiMasterTest for Nic400FabricMultiMasterTb
+    run
+        log(info, "Nic400Fabric multi-master contention test")
+
+        // ── Reset ────────────────────────────────────────────────────────
+        dut.rst = 0
+        dut.m_ar_valid[0] = 0
+        dut.m_ar_valid[1] = 0
+        dut.m_ar_valid[2] = 0
+        dut.m_ar_addr[0] = 0
+        dut.m_ar_addr[1] = 0
+        dut.m_ar_addr[2] = 0
+        dut.m_ar_id[0] = 0
+        dut.m_ar_id[1] = 0
+        dut.m_ar_id[2] = 0
+        dut.m_ar_len[0] = 0
+        dut.m_ar_len[1] = 0
+        dut.m_ar_len[2] = 0
+        dut.m_ar_size[0] = 0
+        dut.m_ar_size[1] = 0
+        dut.m_ar_size[2] = 0
+        dut.m_ar_burst[0] = 0
+        dut.m_ar_burst[1] = 0
+        dut.m_ar_burst[2] = 0
+        dut.m_r_ready[0] = 0
+        dut.m_r_ready[1] = 0
+        dut.m_r_ready[2] = 0
+        dut.m_aw_valid[0] = 0
+        dut.m_aw_valid[1] = 0
+        dut.m_aw_valid[2] = 0
+        dut.m_aw_addr[0] = 0
+        dut.m_aw_addr[1] = 0
+        dut.m_aw_addr[2] = 0
+        dut.m_aw_id[0] = 0
+        dut.m_aw_id[1] = 0
+        dut.m_aw_id[2] = 0
+        dut.m_aw_len[0] = 0
+        dut.m_aw_len[1] = 0
+        dut.m_aw_len[2] = 0
+        dut.m_aw_size[0] = 0
+        dut.m_aw_size[1] = 0
+        dut.m_aw_size[2] = 0
+        dut.m_aw_burst[0] = 0
+        dut.m_aw_burst[1] = 0
+        dut.m_aw_burst[2] = 0
+        dut.m_w_valid[0] = 0
+        dut.m_w_valid[1] = 0
+        dut.m_w_valid[2] = 0
+        dut.m_w_data[0] = 0
+        dut.m_w_data[1] = 0
+        dut.m_w_data[2] = 0
+        dut.m_w_strb[0] = 0
+        dut.m_w_strb[1] = 0
+        dut.m_w_strb[2] = 0
+        dut.m_w_last[0] = 0
+        dut.m_w_last[1] = 0
+        dut.m_w_last[2] = 0
+        dut.m_b_ready[0] = 0
+        dut.m_b_ready[1] = 0
+        dut.m_b_ready[2] = 0
+        dut.s_ar_ready[0] = 0
+        dut.s_ar_ready[1] = 0
+        dut.s_ar_ready[2] = 0
+        dut.s_ar_ready[3] = 0
+        dut.s_r_valid[0] = 0
+        dut.s_r_valid[1] = 0
+        dut.s_r_valid[2] = 0
+        dut.s_r_valid[3] = 0
+        dut.s_r_data[0] = 0
+        dut.s_r_data[1] = 0
+        dut.s_r_data[2] = 0
+        dut.s_r_data[3] = 0
+        dut.s_r_id[0] = 0
+        dut.s_r_id[1] = 0
+        dut.s_r_id[2] = 0
+        dut.s_r_id[3] = 0
+        dut.s_r_resp[0] = 0
+        dut.s_r_resp[1] = 0
+        dut.s_r_resp[2] = 0
+        dut.s_r_resp[3] = 0
+        dut.s_r_last[0] = 0
+        dut.s_r_last[1] = 0
+        dut.s_r_last[2] = 0
+        dut.s_r_last[3] = 0
+        dut.s_aw_ready[0] = 0
+        dut.s_aw_ready[1] = 0
+        dut.s_aw_ready[2] = 0
+        dut.s_aw_ready[3] = 0
+        dut.s_w_ready[0] = 0
+        dut.s_w_ready[1] = 0
+        dut.s_w_ready[2] = 0
+        dut.s_w_ready[3] = 0
+        dut.s_b_valid[0] = 0
+        dut.s_b_valid[1] = 0
+        dut.s_b_valid[2] = 0
+        dut.s_b_valid[3] = 0
+        dut.s_b_id[0] = 0
+        dut.s_b_id[1] = 0
+        dut.s_b_id[2] = 0
+        dut.s_b_id[3] = 0
+        dut.s_b_resp[0] = 0
+        dut.s_b_resp[1] = 0
+        dut.s_b_resp[2] = 0
+        dut.s_b_resp[3] = 0
+        wait 4 cycles
+        dut.rst = 1
+        wait 3 cycles
+
+        // ── S1: Disjoint-slave reads ──────────────────────────────────────
+        // M0→S0 (addr[29:28]=0b00), M1→S1 (=0b01), M2→S2 (=0b10).
+        // Each slave-ready held high. Three independent paths, no contention.
+        // Collect exactly 8 ARs per slave (cap per-slave at 8), then assert.
+        dut.s_ar_ready[0] = 1
+        dut.s_ar_ready[1] = 1
+        dut.s_ar_ready[2] = 1
+        dut.m_ar_valid[0] = 1
+        dut.m_ar_addr[0] = 0x00001000
+        dut.m_ar_size[0] = 2
+        dut.m_ar_burst[0] = 1
+        dut.m_r_ready[0] = 1
+        dut.m_ar_valid[1] = 1
+        dut.m_ar_addr[1] = 0x10001000
+        dut.m_ar_size[1] = 2
+        dut.m_ar_burst[1] = 1
+        dut.m_r_ready[1] = 1
+        dut.m_ar_valid[2] = 1
+        dut.m_ar_addr[2] = 0x20001000
+        dut.m_ar_size[2] = 2
+        dut.m_ar_burst[2] = 1
+        dut.m_r_ready[2] = 1
+
+        let seen_s1_0 : uint<32> = 0
+        let seen_s1_1 : uint<32> = 0
+        let seen_s1_2 : uint<32> = 0
+        let total_s1  : uint<32> = 0
+        let cyc_s1    : uint<32> = 0
+        let last_s1   : uint<32> = 1
+
+        for _ in 0 .. 12
+            dut.m_ar_id[0] = (seen_s1_0 & 7)
+            dut.m_ar_id[1] = (seen_s1_1 & 7)
+            dut.m_ar_id[2] = (seen_s1_2 & 7)
+            wait 1 cycle
+            cyc_s1 = cyc_s1 + 1
+            if dut.s_ar_valid[0] == 1 && seen_s1_0 < 8
+                seen_s1_0 = seen_s1_0 + 1
+                total_s1  = total_s1 + 1
+                last_s1   = cyc_s1
+            end if
+            if dut.s_ar_valid[1] == 1 && seen_s1_1 < 8
+                seen_s1_1 = seen_s1_1 + 1
+                total_s1  = total_s1 + 1
+                last_s1   = cyc_s1
+            end if
+            if dut.s_ar_valid[2] == 1 && seen_s1_2 < 8
+                seen_s1_2 = seen_s1_2 + 1
+                total_s1  = total_s1 + 1
+                last_s1   = cyc_s1
+            end if
+        end for
+
+        assert total_s1 == 24
+            else fail("S1: only ${total_s1}/24 ARs completed")
+        assert seen_s1_0 == 8
+            else fail("S1: slave 0 got ${seen_s1_0} ARs (expected 8 from m0)")
+        assert seen_s1_1 == 8
+            else fail("S1: slave 1 got ${seen_s1_1} ARs (expected 8 from m1)")
+        assert seen_s1_2 == 8
+            else fail("S1: slave 2 got ${seen_s1_2} ARs (expected 8 from m2)")
+        // Throughput >= 2.7 t/c: total*10 >= last*27
+        assert (total_s1 * 10) >= (last_s1 * 27)
+            else fail("S1: throughput too low: ${total_s1} ARs in ${last_s1} cycles")
+        log(info, "PASS S1: disjoint reads — ${total_s1} ARs (m0→s0=${seen_s1_0} m1→s1=${seen_s1_1} m2→s2=${seen_s1_2})")
+
+        dut.m_ar_valid[0] = 0
+        dut.m_ar_valid[1] = 0
+        dut.m_ar_valid[2] = 0
+        dut.s_ar_ready[0] = 0
+        dut.s_ar_ready[1] = 0
+        dut.s_ar_ready[2] = 0
+        wait 2 cycles
+
+        // ── S2: 3-way hot-slave reads ─────────────────────────────────────
+        // M0, M1, M2 all target S0. ar_lock is mutex<round_robin>.
+        // Decode master index from s_ar_id[0][4:3]. No starvation; ~1.0 t/c.
+        dut.s_ar_ready[0] = 1
+        dut.m_ar_valid[0] = 1
+        dut.m_ar_addr[0] = 0x00001000
+        dut.m_ar_size[0] = 2
+        dut.m_ar_burst[0] = 1
+        dut.m_r_ready[0] = 1
+        dut.m_ar_valid[1] = 1
+        dut.m_ar_addr[1] = 0x00002000
+        dut.m_ar_size[1] = 2
+        dut.m_ar_burst[1] = 1
+        dut.m_r_ready[1] = 1
+        dut.m_ar_valid[2] = 1
+        dut.m_ar_addr[2] = 0x00003000
+        dut.m_ar_size[2] = 2
+        dut.m_ar_burst[2] = 1
+        dut.m_r_ready[2] = 1
+
+        let seen_s2_0 : uint<32> = 0
+        let seen_s2_1 : uint<32> = 0
+        let seen_s2_2 : uint<32> = 0
+        let total_s2  : uint<32> = 0
+        let cyc_s2    : uint<32> = 0
+        let last_s2   : uint<32> = 1
+
+        for _ in 0 .. 180
+            dut.m_ar_id[0] = (seen_s2_0 & 7)
+            dut.m_ar_id[1] = (seen_s2_1 & 7)
+            dut.m_ar_id[2] = (seen_s2_2 & 7)
+            wait 1 cycle
+            cyc_s2 = cyc_s2 + 1
+            if dut.s_ar_valid[0] == 1 && total_s2 < 30
+                let mid = ((dut.s_ar_id[0] >> 3) & 3)
+                if mid == 0
+                    seen_s2_0 = seen_s2_0 + 1
+                elsif mid == 1
+                    seen_s2_1 = seen_s2_1 + 1
+                elsif mid == 2
+                    seen_s2_2 = seen_s2_2 + 1
+                end if
+                total_s2 = total_s2 + 1
+                last_s2  = cyc_s2
+            end if
+        end for
+
+        assert total_s2 == 30
+            else fail("S2: only ${total_s2}/30 ARs completed")
+        assert seen_s2_0 > 0
+            else fail("S2: master 0 starved (0 grants)")
+        assert seen_s2_1 > 0
+            else fail("S2: master 1 starved (0 grants)")
+        assert seen_s2_2 > 0
+            else fail("S2: master 2 starved (0 grants)")
+        // Throughput >= 0.9 t/c: total*10 >= last*9
+        assert (total_s2 * 10) >= (last_s2 * 9)
+            else fail("S2: throughput too low: ${total_s2} ARs in ${last_s2} cycles")
+        log(info, "PASS S2: hot-slave 3-way — ${total_s2} ARs (m0=${seen_s2_0} m1=${seen_s2_1} m2=${seen_s2_2})")
+
+        dut.m_ar_valid[0] = 0
+        dut.m_ar_valid[1] = 0
+        dut.m_ar_valid[2] = 0
+        dut.s_ar_ready[0] = 0
+        wait 2 cycles
+
+        // ── S3: Disjoint-slave writes ─────────────────────────────────────
+        // M0→S0, M1→S1, M2→S2. TB plays all three slave sides simultaneously.
+        //
+        // Per-master state machine (one phase transition per cycle):
+        //   Phase 0 (AW_W): AW+W driven, detect W completion by s_w_valid[i]
+        //                   transitioning 1→0 post-tick (thread left S1→S2).
+        //   Phase 1 (B_INJ): s_b_valid=1 injected, m_b_ready=0 (B visible
+        //                    post-tick since thread stays in S2). Verify ID.
+        //   Phase 2 (B_ACC): raise m_b_ready=1; thread fires S2→S0 on this
+        //                    tick's posedge. Clean up and re-arm.
+        //
+        // ID encoding (fabric embeds master index in bits[4:3] of slave ID):
+        //   master 0: s_b_id = (0 << 3) | txn_id = txn_id
+        //   master 1: s_b_id = (1 << 3) | txn_id = 8 | txn_id
+        //   master 2: s_b_id = (2 << 3) | txn_id = 16 | txn_id
+
+        let phase_0  : uint<32> = 0
+        let phase_1  : uint<32> = 0
+        let phase_2  : uint<32> = 0
+        let b_sent_0 : uint<32> = 0
+        let b_sent_1 : uint<32> = 0
+        let b_sent_2 : uint<32> = 0
+        let prev_w_0 : uint<32> = 0
+        let prev_w_1 : uint<32> = 0
+        let prev_w_2 : uint<32> = 0
+        let total_s3 : uint<32> = 0
+
+        dut.m_aw_valid[0] = 1
+        dut.m_aw_addr[0]  = 0x00001000
+        dut.m_aw_id[0]    = 0
+        dut.m_aw_len[0]   = 0
+        dut.m_aw_size[0]  = 2
+        dut.m_aw_burst[0] = 1
+        dut.m_w_valid[0]  = 1
+        dut.m_w_data[0]   = 0xA0000000
+        dut.m_w_strb[0]   = 15
+        dut.m_w_last[0]   = 1
+        dut.m_b_ready[0]  = 0
+        dut.s_aw_ready[0] = 1
+        dut.s_w_ready[0]  = 1
+
+        dut.m_aw_valid[1] = 1
+        dut.m_aw_addr[1]  = 0x10001000
+        dut.m_aw_id[1]    = 0
+        dut.m_aw_len[1]   = 0
+        dut.m_aw_size[1]  = 2
+        dut.m_aw_burst[1] = 1
+        dut.m_w_valid[1]  = 1
+        dut.m_w_data[1]   = 0xA1000000
+        dut.m_w_strb[1]   = 15
+        dut.m_w_last[1]   = 1
+        dut.m_b_ready[1]  = 0
+        dut.s_aw_ready[1] = 1
+        dut.s_w_ready[1]  = 1
+
+        dut.m_aw_valid[2] = 1
+        dut.m_aw_addr[2]  = 0x20001000
+        dut.m_aw_id[2]    = 0
+        dut.m_aw_len[2]   = 0
+        dut.m_aw_size[2]  = 2
+        dut.m_aw_burst[2] = 1
+        dut.m_w_valid[2]  = 1
+        dut.m_w_data[2]   = 0xA2000000
+        dut.m_w_strb[2]   = 15
+        dut.m_w_last[2]   = 1
+        dut.m_b_ready[2]  = 0
+        dut.s_aw_ready[2] = 1
+        dut.s_w_ready[2]  = 1
+
+        for _ in 0 .. 360
+            wait 1 cycle
+
+            // ── master 0 ─────────────────────────────────────────────────
+            let cw0 = dut.s_w_valid[0]
+            if b_sent_0 < 6
+                if phase_0 == 0
+                    if prev_w_0 == 1 && cw0 == 0
+                        dut.s_b_valid[0] = 1
+                        dut.s_b_id[0]    = (b_sent_0 & 7)
+                        dut.s_b_resp[0]  = 0
+                        phase_0 = 1
+                    end if
+                elsif phase_0 == 1
+                    assert dut.m_b_valid[0] == 1
+                        else fail("S3: m0 B_INJ m_b_valid=0 at b_sent=${b_sent_0}")
+                    assert (dut.m_b_id[0] & 7) == (b_sent_0 & 7)
+                        else fail("S3: m0 B id mismatch got 0x${dut.m_b_id[0]}")
+                    dut.m_b_ready[0] = 1
+                    phase_0 = 2
+                elsif phase_0 == 2
+                    dut.m_b_ready[0] = 0
+                    dut.s_b_valid[0] = 0
+                    b_sent_0 = b_sent_0 + 1
+                    total_s3 = total_s3 + 1
+                    if b_sent_0 < 6
+                        dut.m_aw_valid[0] = 1
+                        dut.m_aw_id[0]    = (b_sent_0 & 7)
+                        dut.m_aw_addr[0]  = (0x00001000 + (b_sent_0 * 4))
+                        dut.m_w_valid[0]  = 1
+                        dut.m_w_data[0]   = (0xA0000000 | b_sent_0)
+                        dut.s_aw_ready[0] = 1
+                        dut.s_w_ready[0]  = 1
+                    end if
+                    phase_0 = 0
+                end if
+            end if
+            prev_w_0 = cw0
+
+            // ── master 1 ─────────────────────────────────────────────────
+            let cw1 = dut.s_w_valid[1]
+            if b_sent_1 < 6
+                if phase_1 == 0
+                    if prev_w_1 == 1 && cw1 == 0
+                        dut.s_b_valid[1] = 1
+                        dut.s_b_id[1]    = (8 | (b_sent_1 & 7))
+                        dut.s_b_resp[1]  = 0
+                        phase_1 = 1
+                    end if
+                elsif phase_1 == 1
+                    assert dut.m_b_valid[1] == 1
+                        else fail("S3: m1 B_INJ m_b_valid=0 at b_sent=${b_sent_1}")
+                    assert (dut.m_b_id[1] & 7) == (b_sent_1 & 7)
+                        else fail("S3: m1 B id mismatch got 0x${dut.m_b_id[1]}")
+                    dut.m_b_ready[1] = 1
+                    phase_1 = 2
+                elsif phase_1 == 2
+                    dut.m_b_ready[1] = 0
+                    dut.s_b_valid[1] = 0
+                    b_sent_1 = b_sent_1 + 1
+                    total_s3 = total_s3 + 1
+                    if b_sent_1 < 6
+                        dut.m_aw_valid[1] = 1
+                        dut.m_aw_id[1]    = (b_sent_1 & 7)
+                        dut.m_aw_addr[1]  = (0x10001000 + (b_sent_1 * 4))
+                        dut.m_w_valid[1]  = 1
+                        dut.m_w_data[1]   = (0xA1000000 | b_sent_1)
+                        dut.s_aw_ready[1] = 1
+                        dut.s_w_ready[1]  = 1
+                    end if
+                    phase_1 = 0
+                end if
+            end if
+            prev_w_1 = cw1
+
+            // ── master 2 ─────────────────────────────────────────────────
+            let cw2 = dut.s_w_valid[2]
+            if b_sent_2 < 6
+                if phase_2 == 0
+                    if prev_w_2 == 1 && cw2 == 0
+                        dut.s_b_valid[2] = 1
+                        dut.s_b_id[2]    = (16 | (b_sent_2 & 7))
+                        dut.s_b_resp[2]  = 0
+                        phase_2 = 1
+                    end if
+                elsif phase_2 == 1
+                    assert dut.m_b_valid[2] == 1
+                        else fail("S3: m2 B_INJ m_b_valid=0 at b_sent=${b_sent_2}")
+                    assert (dut.m_b_id[2] & 7) == (b_sent_2 & 7)
+                        else fail("S3: m2 B id mismatch got 0x${dut.m_b_id[2]}")
+                    dut.m_b_ready[2] = 1
+                    phase_2 = 2
+                elsif phase_2 == 2
+                    dut.m_b_ready[2] = 0
+                    dut.s_b_valid[2] = 0
+                    b_sent_2 = b_sent_2 + 1
+                    total_s3 = total_s3 + 1
+                    if b_sent_2 < 6
+                        dut.m_aw_valid[2] = 1
+                        dut.m_aw_id[2]    = (b_sent_2 & 7)
+                        dut.m_aw_addr[2]  = (0x20001000 + (b_sent_2 * 4))
+                        dut.m_w_valid[2]  = 1
+                        dut.m_w_data[2]   = (0xA2000000 | b_sent_2)
+                        dut.s_aw_ready[2] = 1
+                        dut.s_w_ready[2]  = 1
+                    end if
+                    phase_2 = 0
+                end if
+            end if
+            prev_w_2 = cw2
+        end for
+
+        assert total_s3 == 18
+            else fail("S3: only ${total_s3}/18 writes (m0=${b_sent_0} m1=${b_sent_1} m2=${b_sent_2})")
+        assert b_sent_0 == 6
+            else fail("S3: master 0 completed ${b_sent_0}/6 writes")
+        assert b_sent_1 == 6
+            else fail("S3: master 1 completed ${b_sent_1}/6 writes")
+        assert b_sent_2 == 6
+            else fail("S3: master 2 completed ${b_sent_2}/6 writes")
+        log(info, "PASS S3: disjoint writes — all 18 BRESPs routed correctly")
+
+        log(info, "PASS Nic400Fabric multi-master: disjoint reads + hot-slave 3-way + disjoint writes")
+    end run
+end impl Nic400FabricMultiMasterTest
