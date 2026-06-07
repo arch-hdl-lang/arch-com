@@ -535,7 +535,7 @@ static int test_wrap4_read() {
 // FIXED-burst rejection (ar_burst_supported / aw_burst_supported, PR #441)
 // is exercised by a standalone TB with its own `main` whose exit-code
 // semantics are "must abort" — see
-// `tests/nic400/tb_nic400_width_adapter_fixed_reject.cpp` and the Rust
+// `examples/nic400/tb_nic400_width_adapter_fixed_reject.cpp` and the Rust
 // test `test_nic400_width_adapter_fixed_burst_is_rejected_by_sva` in
 // `tests/integration_test.rs` (consumes the `expect_verilator_fatal`
 // harness from PR #453). The manual repro recipe in

@@ -4,12 +4,12 @@
 // address" (doc/nic400_interconnect_spec.md §16.1, TRM §2.2.1).
 //
 // Run with:
-//   harc sim --dut tests/nic400/BusAxi4.arch \
-//             tests/nic400/Nic400DefaultSlave.arch \
-//             tests/nic400/Nic400Fabric.arch \
-//             tests/nic400/Nic400MasterPort.arch \
-//             tests/nic400/Nic400SlavePort.arch \
-//             tests/nic400/Nic400DefaultSlave_test.harc \
+//   harc sim --dut examples/nic400/BusAxi4.arch \
+//             examples/nic400/Nic400DefaultSlave.arch \
+//             examples/nic400/Nic400Fabric.arch \
+//             examples/nic400/Nic400MasterPort.arch \
+//             examples/nic400/Nic400SlavePort.arch \
+//             examples/nic400/Nic400DefaultSlave_test.harc \
 //             --top Nic400Fabric
 //
 // Address map (NS_W=2, REGION_BITS=28):
