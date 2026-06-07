@@ -1,7 +1,7 @@
 // HARC testbench: Nic400Fabric default-slave DECERR responder.
 //
 // Closes the gap-tracker row "Decode-error (DECERR) response on unmatched
-// address" (doc/nic400_interconnect_spec.md §16.1, TRM §2.2.1).
+// address" (nic400_interconnect_spec.md §16.1, TRM §2.2.1).
 //
 // Run with:
 //   harc sim --dut examples/nic400/BusAxi4.arch \

@@ -13,7 +13,7 @@
 // assertion rather than any unrelated fatal.
 //
 // This TB is the auto-CI counterpart to the manual repro recipe in
-// `doc/nic400_interconnect_spec.md` §15.1 — kept as a standalone
+// `nic400_interconnect_spec.md` §15.1 — kept as a standalone
 // binary (own `main`) so its exit-code semantics (must abort) stay
 // orthogonal to the regular `tb_nic400_width_adapter.cpp` which exits
 // 0 on success.
