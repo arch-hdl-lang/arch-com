@@ -27,13 +27,13 @@ fn strip_auto_handshake_sva(sv: &str) -> String {
         let trimmed = line.trim_start();
         if trimmed == "// synopsys translate_off" {
             // Skip the entire block (translate_off..translate_on).
-            while i < lines.len()
-                && lines[i].trim_start() != "// synopsys translate_on"
-            {
+            while i < lines.len() && lines[i].trim_start() != "// synopsys translate_on" {
                 i += 1;
             }
             // Consume the translate_on line too.
-            if i < lines.len() { i += 1; }
+            if i < lines.len() {
+                i += 1;
+            }
             // Retroactively swallow exactly one leading blank-ish line
             // (whitespace only — `Codegen::line("")` at indent>0 emits a
             // fully-indented empty line). The corresponding leading
@@ -81,7 +81,9 @@ fn collect_thread_map(source: &str) -> arch::thread_map::ThreadMap {
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
     let ast = elaborate::lower_tlm_target_threads(ast).expect("tlm_target lowering error");
     let ast = elaborate::lower_tlm_initiator_calls(ast).expect("tlm_initiator lowering error");
-    let map = std::rc::Rc::new(std::cell::RefCell::new(arch::thread_map::ThreadMap::default()));
+    let map = std::rc::Rc::new(std::cell::RefCell::new(
+        arch::thread_map::ThreadMap::default(),
+    ));
     let opts = elaborate::ThreadLowerOpts {
         thread_map: Some(map.clone()),
         ..Default::default()
@@ -224,14 +226,32 @@ fn test_let_bindings() {
     let source = include_str!("../examples/let_bindings.arch");
     let sv = compile_to_sv(source);
     // Typed let: emits declared type then a separate assign
-    assert!(sv.contains("logic [7:0] mask;"), "expected typed let decl, got:\n{sv}");
-    assert!(sv.contains("assign mask = a & b;"), "expected typed let assign, got:\n{sv}");
+    assert!(
+        sv.contains("logic [7:0] mask;"),
+        "expected typed let decl, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign mask = a & b;"),
+        "expected typed let assign, got:\n{sv}"
+    );
     // Untyped let: emits logic declaration + assign (same pattern as typed let)
-    assert!(sv.contains("logic same;"), "expected untyped let decl, got:\n{sv}");
-    assert!(sv.contains("assign same = a == b;"), "expected untyped let assign, got:\n{sv}");
+    assert!(
+        sv.contains("logic same;"),
+        "expected untyped let decl, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign same = a == b;"),
+        "expected untyped let assign, got:\n{sv}"
+    );
     // Outputs driven from the let-bound wires
-    assert!(sv.contains("assign masked = mask;"), "expected masked assign, got:\n{sv}");
-    assert!(sv.contains("assign equal = same;"), "expected equal assign, got:\n{sv}");
+    assert!(
+        sv.contains("assign masked = mask;"),
+        "expected masked assign, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign equal = same;"),
+        "expected equal assign, got:\n{sv}"
+    );
     insta::assert_snapshot!(sv);
 }
 
@@ -249,7 +269,7 @@ fn test_fsm_traffic_light() {
     // State register FF
     assert!(sv.contains("always_ff @(posedge clk)"));
     assert!(sv.contains("state_r <= RED")); // reset value
-    // Next-state logic
+                                            // Next-state logic
     assert!(sv.contains("state_next = state_r")); // hold default
     assert!(sv.contains("state_next = GREEN"));
     assert!(sv.contains("state_next = YELLOW"));
@@ -595,7 +615,10 @@ end arbiter BadArb
     let symbols = resolve::resolve(&ast).expect("resolve error");
     let checker = TypeChecker::new(&symbols, &ast);
     let result = checker.check();
-    assert!(result.is_err(), "expected error for custom policy without hook");
+    assert!(
+        result.is_err(),
+        "expected error for custom policy without hook"
+    );
 }
 
 #[test]
@@ -630,7 +653,10 @@ end arbiter BadArb
     let symbols = resolve::resolve(&ast).expect("resolve error");
     let checker = TypeChecker::new(&symbols, &ast);
     let result = checker.check();
-    assert!(result.is_err(), "expected error for hook param shadowing port");
+    assert!(
+        result.is_err(),
+        "expected error for hook param shadowing port"
+    );
 }
 
 /// Round-robin arbiter sim must grant index 0 on the first
@@ -761,7 +787,11 @@ end arbiter RRArb3
 /// After fix: `0,1,2,0,1,2,...`, idx-fair.
 #[test]
 fn test_arbiter_round_robin_sv_nonpow2_verilator_behavior() {
-    if std::process::Command::new("verilator").arg("--version").output().is_err() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         eprintln!("skipping Verilator RR NUM_REQ=3 fairness smoke: verilator not found");
         return;
     }
@@ -778,10 +808,12 @@ fn test_arbiter_round_robin_sv_nonpow2_verilator_behavior() {
         .arg(&sv_out)
         .output()
         .expect("build RRArb3 SV");
-    assert!(build.status.success(),
+    assert!(
+        build.status.success(),
         "arch build should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&build.stdout),
-        String::from_utf8_lossy(&build.stderr));
+        String::from_utf8_lossy(&build.stderr)
+    );
 
     let verilate = std::process::Command::new("verilator")
         .arg("--cc")
@@ -800,22 +832,28 @@ fn test_arbiter_round_robin_sv_nonpow2_verilator_behavior() {
         .arg("tests/arbiter_rr_nonpow2/tb_rr_arb3.cpp")
         .output()
         .expect("verilate RRArb3");
-    assert!(verilate.status.success(),
+    assert!(
+        verilate.status.success(),
         "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&verilate.stdout),
-        String::from_utf8_lossy(&verilate.stderr));
+        String::from_utf8_lossy(&verilate.stderr)
+    );
 
     let exe = obj_dir.join("VRRArb3");
     let run = std::process::Command::new(&exe)
         .output()
         .expect("run Verilator RRArb3");
-    assert!(run.status.success(),
+    assert!(
+        run.status.success(),
         "Verilator sim should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&run.stdout),
-        String::from_utf8_lossy(&run.stderr));
-    assert!(String::from_utf8_lossy(&run.stdout).contains("PASS rr_arb3"),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("PASS rr_arb3"),
         "expected PASS marker in Verilator stdout:\n{}",
-        String::from_utf8_lossy(&run.stdout));
+        String::from_utf8_lossy(&run.stdout)
+    );
 }
 
 /// arch-sim cross-check for the same RR fairness fixture, closing the §3
@@ -838,14 +876,18 @@ fn test_arbiter_round_robin_arch_sim_nonpow2_behavior() {
         .arg(td.path())
         .output()
         .expect("run arch sim for RRArb3");
-    assert!(out.status.success(),
+    assert!(
+        out.status.success(),
         "arch sim should pass for RRArb3\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("PASS rr_arb3"),
+    assert!(
+        stdout.contains("PASS rr_arb3"),
         "expected `PASS rr_arb3` (strict round-robin, idx-fair) in arch \
-         sim stdout — the same fairness contract Verilator verifies; got:\n{stdout}");
+         sim stdout — the same fairness contract Verilator verifies; got:\n{stdout}"
+    );
 }
 
 #[test]
@@ -942,14 +984,20 @@ arbiter HsArbB
 end arbiter HsArbB
 "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("input logic [NUM_REQ-1:0] request_valid"),
-        "expected request_valid array port:\n{sv}");
-    assert!(sv.contains("output logic [NUM_REQ-1:0] request_ready"),
-        "expected request_ready array port:\n{sv}");
+    assert!(
+        sv.contains("input logic [NUM_REQ-1:0] request_valid"),
+        "expected request_valid array port:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic [NUM_REQ-1:0] request_ready"),
+        "expected request_ready array port:\n{sv}"
+    );
     // Payload flows in the same direction as `receive` (in to the arbiter).
     // Width comes from the field type; SV declares one wire per index slot.
-    assert!(sv.contains("request_qos"),
-        "expected request_qos payload port:\n{sv}");
+    assert!(
+        sv.contains("request_qos"),
+        "expected request_qos payload port:\n{sv}"
+    );
 }
 
 // ── Tier-2 auto-SVA for arbiter handshake_channel ────────────────────────────
@@ -979,24 +1027,40 @@ end arbiter HsArbSvaArr
 "#;
     let sv = compile_to_sv(source);
     // Wrapper + structural shape.
-    assert!(sv.contains("// synopsys translate_off"),
-        "expected translate_off wrapper:\n{sv}");
-    assert!(sv.contains("// synopsys translate_on"),
-        "expected translate_on wrapper:\n{sv}");
-    assert!(sv.contains("// Auto-generated handshake protocol assertions"),
-        "expected Tier-2 header comment:\n{sv}");
-    assert!(sv.contains("generate for (genvar i = 0; i < NUM_REQ; i++) begin: g_auto_hs_request"),
-        "expected genvar-indexed generate block over NUM_REQ:\n{sv}");
-    assert!(sv.contains("end endgenerate"),
-        "expected generate block close:\n{sv}");
+    assert!(
+        sv.contains("// synopsys translate_off"),
+        "expected translate_off wrapper:\n{sv}"
+    );
+    assert!(
+        sv.contains("// synopsys translate_on"),
+        "expected translate_on wrapper:\n{sv}"
+    );
+    assert!(
+        sv.contains("// Auto-generated handshake protocol assertions"),
+        "expected Tier-2 header comment:\n{sv}"
+    );
+    assert!(
+        sv.contains("generate for (genvar i = 0; i < NUM_REQ; i++) begin: g_auto_hs_request"),
+        "expected genvar-indexed generate block over NUM_REQ:\n{sv}"
+    );
+    assert!(
+        sv.contains("end endgenerate"),
+        "expected generate block close:\n{sv}"
+    );
     // Property uses lane-indexed signals + disable iff (rst) + the same
     // `(v && !r) |=> v` predicate as the bus-side emitter.
-    assert!(sv.contains("_auto_hs_request__lane_valid_stable"),
-        "expected per-lane valid_stable label:\n{sv}");
-    assert!(sv.contains("disable iff (rst)"),
-        "expected reset-disable clause:\n{sv}");
-    assert!(sv.contains("(request_valid[i] && !request_ready[i]) |=> request_valid[i]"),
-        "expected lane-indexed valid-stable predicate:\n{sv}");
+    assert!(
+        sv.contains("_auto_hs_request__lane_valid_stable"),
+        "expected per-lane valid_stable label:\n{sv}"
+    );
+    assert!(
+        sv.contains("disable iff (rst)"),
+        "expected reset-disable clause:\n{sv}"
+    );
+    assert!(
+        sv.contains("(request_valid[i] && !request_ready[i]) |=> request_valid[i]"),
+        "expected lane-indexed valid-stable predicate:\n{sv}"
+    );
 }
 
 /// A non-array `handshake_channel` (no `[N]` shape, e.g. an arbiter's
@@ -1026,14 +1090,20 @@ arbiter HsArbSvaBare
 end arbiter HsArbSvaBare
 "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_auto_hs_grant_valid_stable"),
-        "expected bare grant valid_stable label:\n{sv}");
+    assert!(
+        sv.contains("_auto_hs_grant_valid_stable"),
+        "expected bare grant valid_stable label:\n{sv}"
+    );
     // Crucially, no generate-for wrapper for the non-array channel.
-    assert!(!sv.contains("g_auto_hs_grant"),
-        "non-array handshake_channel must not be wrapped in generate-for:\n{sv}");
+    assert!(
+        !sv.contains("g_auto_hs_grant"),
+        "non-array handshake_channel must not be wrapped in generate-for:\n{sv}"
+    );
     // And the predicate uses unindexed signal names.
-    assert!(sv.contains("(grant_valid && !grant_ready) |=> grant_valid"),
-        "expected unindexed grant valid-stable predicate:\n{sv}");
+    assert!(
+        sv.contains("(grant_valid && !grant_ready) |=> grant_valid"),
+        "expected unindexed grant valid-stable predicate:\n{sv}"
+    );
 }
 
 /// A `valid_only` `handshake_channel` has no ready signal to gate
@@ -1064,12 +1134,16 @@ end arbiter HsArbSvaVOnly
     let sv = compile_to_sv(source);
     // No SVA label for `grant` should appear — mirrors the bus side's
     // v1 silent-skip for variants without a back-signal.
-    assert!(!sv.contains("_auto_hs_grant"),
-        "valid_only handshake_channel must not emit Tier-2 SVA:\n{sv}");
+    assert!(
+        !sv.contains("_auto_hs_grant"),
+        "valid_only handshake_channel must not emit Tier-2 SVA:\n{sv}"
+    );
     // The Tier-2 wrapper itself must be elided too when no channel
     // produced any property (matches bus-side emit_handshake_asserts).
-    assert!(!sv.contains("Auto-generated handshake protocol assertions"),
-        "Tier-2 wrapper must not be emitted when no property applies:\n{sv}");
+    assert!(
+        !sv.contains("Auto-generated handshake protocol assertions"),
+        "Tier-2 wrapper must not be emitted when no property applies:\n{sv}"
+    );
 }
 
 /// A `valid_ready` `handshake_channel` declared *without* any payload
@@ -1100,12 +1174,16 @@ end arbiter HsArbSvaNoPL
 "#;
     let sv = compile_to_sv(source);
     // Exactly one property — valid_stable — for the channel, lane-indexed.
-    assert!(sv.contains("_auto_hs_request__lane_valid_stable"),
-        "expected valid_stable property:\n{sv}");
+    assert!(
+        sv.contains("_auto_hs_request__lane_valid_stable"),
+        "expected valid_stable property:\n{sv}"
+    );
     // No `$stable` payload-stability check (Tier-2 v1 scope explicitly
     // doesn't include payload-stability, matching bus-side behaviour).
-    assert!(!sv.contains("$stable"),
-        "Tier-2 v1 must not emit payload-stability $stable checks:\n{sv}");
+    assert!(
+        !sv.contains("$stable"),
+        "Tier-2 v1 must not emit payload-stability $stable checks:\n{sv}"
+    );
 }
 
 /// Regression: the bus-side handshake_channel Tier-2 SVA path is
@@ -1141,8 +1219,10 @@ fn test_existing_bus_handshake_sva_unaffected() {
     assert!(sv.contains("synopsys translate_off"));
     assert!(sv.contains("synopsys translate_on"));
     // Bus path is non-array, so no generate-for wrapper.
-    assert!(!sv.contains("g_auto_hs_aw"),
-        "bus-path Tier-2 SVA must remain non-generate-wrapped:\n{sv}");
+    assert!(
+        !sv.contains("g_auto_hs_aw"),
+        "bus-path Tier-2 SVA must remain non-generate-wrapped:\n{sv}"
+    );
 }
 
 // ── (Existing) handshake_channel port-shape tests ────────────────────────────
@@ -1194,11 +1274,15 @@ end arbiter HsArbC
     // can't see (no HandshakeMeta). Strip it before structural compare.
     assert_eq!(strip_auto_handshake_sva(&sv_h), strip_auto_handshake_sva(&sv_n),
         "valid_only handshake_channel + receive valid_ready array must match hand-rolled shape (modulo Tier-2 SVA)");
-    assert!(sv_n.contains("output logic grant_valid"),
-        "expected grant_valid top-level port:\n{sv_n}");
-    assert!(sv_n.contains("output logic [2-1:0] grant_requester")
-        || sv_n.contains("output logic [1:0] grant_requester"),
-        "expected grant_requester top-level port:\n{sv_n}");
+    assert!(
+        sv_n.contains("output logic grant_valid"),
+        "expected grant_valid top-level port:\n{sv_n}"
+    );
+    assert!(
+        sv_n.contains("output logic [2-1:0] grant_requester")
+            || sv_n.contains("output logic [1:0] grant_requester"),
+        "expected grant_requester top-level port:\n{sv_n}"
+    );
 }
 
 // ── Template ─────────────────────────────────────────────────────────────────
@@ -1262,9 +1346,15 @@ fn test_active_low_reset() {
     let source = include_str!("../examples/reset_low.arch");
     let sv = compile_to_sv(source);
     // reset condition must be inverted
-    assert!(sv.contains("if ((!rst_n))"), "expected inverted reset condition, got:\n{sv}");
+    assert!(
+        sv.contains("if ((!rst_n))"),
+        "expected inverted reset condition, got:\n{sv}"
+    );
     // must NOT contain bare active-high check
-    assert!(!sv.contains("if (rst_n)"), "unexpected active-high reset check:\n{sv}");
+    assert!(
+        !sv.contains("if (rst_n)"),
+        "unexpected active-high reset check:\n{sv}"
+    );
     insta::assert_snapshot!(sv);
 }
 
@@ -1323,11 +1413,16 @@ end module BadCounter
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     let result = checker.check();
-    assert!(result.is_err(), "expected type error for implicit truncation");
+    assert!(
+        result.is_err(),
+        "expected type error for implicit truncation"
+    );
     let errors = result.unwrap_err();
     assert!(
-        errors.iter().any(|e| format!("{e:?}").contains("width mismatch")
-            || format!("{e:?}").contains("trunc")),
+        errors
+            .iter()
+            .any(|e| format!("{e:?}").contains("width mismatch")
+                || format!("{e:?}").contains("trunc")),
         "expected width-mismatch error mentioning trunc, got: {errors:?}"
     );
 }
@@ -1340,23 +1435,37 @@ fn test_generate_for() {
     let sv = compile_to_sv(source);
     // Ports are declared as Vec<Bool, N> at module scope — the SV boundary is
     // a single packed vector per direction, not N separately-named scalars.
-    assert!(sv.contains("input logic [N-1:0] req"), "expected Vec req port, got:\n{sv}");
-    assert!(sv.contains("output logic [N-1:0] gnt"), "expected Vec gnt port, got:\n{sv}");
+    assert!(
+        sv.contains("input logic [N-1:0] req"),
+        "expected Vec req port, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic [N-1:0] gnt"),
+        "expected Vec gnt port, got:\n{sv}"
+    );
     // generate_for over `inst` items with shape-stable connections (scalar
     // child ports + `Index(Ident, loop_var)` against a Vec parent port,
     // no Vec-of-bus shapes) preserves the SV genvar `for begin gen_i end`
     // form. One compact block, scales to any N.
-    assert!(sv.contains("genvar i;"),
-            "expected `genvar i;` for shape-stable inst-bearing generate_for, got:\n{sv}");
-    assert!(sv.contains("begin : gen_i"),
-            "expected `begin : gen_i` block, got:\n{sv}");
+    assert!(
+        sv.contains("genvar i;"),
+        "expected `genvar i;` for shape-stable inst-bearing generate_for, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("begin : gen_i"),
+        "expected `begin : gen_i` block, got:\n{sv}"
+    );
     // Inside the gen_i block the inst is named `pt_i` (the loop-var-
     // bearing source name) — substitution to `pt_0`/`pt_1` happens at
     // SV-elaboration time, not at arch-com elaboration.
-    assert!(sv.contains("PassThrough pt_i"),
-            "expected `PassThrough pt_i` instance in the gen_i block, got:\n{sv}");
-    assert!(!sv.contains("PassThrough pt_0"),
-            "shape-stable case should NOT emit flat `pt_0`, got:\n{sv}");
+    assert!(
+        sv.contains("PassThrough pt_i"),
+        "expected `PassThrough pt_i` instance in the gen_i block, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("PassThrough pt_0"),
+        "shape-stable case should NOT emit flat `pt_0`, got:\n{sv}"
+    );
     insta::assert_snapshot!(sv);
 }
 
@@ -1377,13 +1486,17 @@ fn test_generate_for_inst_genvar_sim_behavior() {
         .arg(td.path())
         .output()
         .expect("run arch sim for generate_for genvar probe");
-    assert!(out.status.success(),
+    assert!(
+        out.status.success(),
         "generate_for genvar sim should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS generate_for genvar sim"),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS generate_for genvar sim"),
         "expected PASS marker in stdout:\n{}",
-        String::from_utf8_lossy(&out.stdout));
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 #[test]
@@ -1422,16 +1535,25 @@ end module Big
     let sv = compile_to_sv(source);
     // Exactly ONE genvar block, not 8 flat insts.
     assert!(sv.contains("genvar i;"), "expected `genvar i;`, got:\n{sv}");
-    assert!(sv.contains("for (i = 0; i <= N - 1; i = i + 1) begin : gen_i"),
-            "expected SV genvar `for` loop, got:\n{sv}");
+    assert!(
+        sv.contains("for (i = 0; i <= N - 1; i = i + 1) begin : gen_i"),
+        "expected SV genvar `for` loop, got:\n{sv}"
+    );
     // No literal-i instance names — substitution is deferred to SV elaboration.
-    assert!(!sv.contains("PassThrough pt_0"),
-            "did not expect literal `pt_0` flat inst, got:\n{sv}");
-    assert!(!sv.contains("PassThrough pt_7"),
-            "did not expect literal `pt_7` flat inst, got:\n{sv}");
+    assert!(
+        !sv.contains("PassThrough pt_0"),
+        "did not expect literal `pt_0` flat inst, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("PassThrough pt_7"),
+        "did not expect literal `pt_7` flat inst, got:\n{sv}"
+    );
     // Single instantiation in the source body.
     let pt_count = sv.matches("PassThrough pt_i").count();
-    assert_eq!(pt_count, 1, "expected exactly one `PassThrough pt_i`, got {pt_count}:\n{sv}");
+    assert_eq!(
+        pt_count, 1,
+        "expected exactly one `PassThrough pt_i`, got {pt_count}:\n{sv}"
+    );
 }
 
 #[test]
@@ -1439,7 +1561,10 @@ fn test_generate_if_true() {
     let source = include_str!("../examples/generate_if.arch");
     let sv = compile_to_sv(source);
     // generate_if true → debug_out port is included
-    assert!(sv.contains("debug_out"), "expected debug_out port, got:\n{sv}");
+    assert!(
+        sv.contains("debug_out"),
+        "expected debug_out port, got:\n{sv}"
+    );
     insta::assert_snapshot!(sv);
 }
 
@@ -1465,7 +1590,10 @@ module ParamDebug
 end module ParamDebug
 "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("debug_out"), "expected debug_out when ENABLE_DEBUG=1, got:\n{sv}");
+    assert!(
+        sv.contains("debug_out"),
+        "expected debug_out when ENABLE_DEBUG=1, got:\n{sv}"
+    );
 }
 
 #[test]
@@ -1489,7 +1617,10 @@ module NoDebug2
 end module NoDebug2
 "#;
     let sv = compile_to_sv(source);
-    assert!(!sv.contains("debug_out"), "debug_out should be excluded when ENABLE_DEBUG=0, got:\n{sv}");
+    assert!(
+        !sv.contains("debug_out"),
+        "debug_out should be excluded when ENABLE_DEBUG=0, got:\n{sv}"
+    );
 }
 
 #[test]
@@ -1514,7 +1645,10 @@ module CmpDebug
 end module CmpDebug
 "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("verbose_out"), "expected verbose_out when LOG_LEVEL=2 > 1, got:\n{sv}");
+    assert!(
+        sv.contains("verbose_out"),
+        "expected verbose_out when LOG_LEVEL=2 > 1, got:\n{sv}"
+    );
 }
 
 #[test]
@@ -1552,8 +1686,14 @@ end module Outer
     let sv = compile_to_sv(source);
     // The elaborated Inner module (single variant, ENABLE_DEBUG=1) must have debug_out.
     // Single inst → no name mangling, module keeps its original name.
-    assert!(sv.contains("debug_out"), "Inner should have debug_out when ENABLE_DEBUG=1:\n{sv}");
-    assert!(sv.contains("module Inner"), "module should keep original name for single variant:\n{sv}");
+    assert!(
+        sv.contains("debug_out"),
+        "Inner should have debug_out when ENABLE_DEBUG=1:\n{sv}"
+    );
+    assert!(
+        sv.contains("module Inner"),
+        "module should keep original name for single variant:\n{sv}"
+    );
 }
 
 #[test]
@@ -1587,8 +1727,14 @@ end module Outer2
 "#;
     let sv = compile_to_sv(source);
     // Single inst → no mangling, module keeps its name but is elaborated with ENABLE_DEBUG=0.
-    assert!(!sv.contains("debug_out"), "Inner2 should NOT have debug_out when ENABLE_DEBUG=0:\n{sv}");
-    assert!(sv.contains("module Inner2"), "module should keep original name for single variant:\n{sv}");
+    assert!(
+        !sv.contains("debug_out"),
+        "Inner2 should NOT have debug_out when ENABLE_DEBUG=0:\n{sv}"
+    );
+    assert!(
+        sv.contains("module Inner2"),
+        "module should keep original name for single variant:\n{sv}"
+    );
 }
 
 #[test]
@@ -1629,11 +1775,23 @@ end module Top
 "#;
     let sv = compile_to_sv(source);
     // Both variant module declarations must be emitted
-    assert!(sv.contains("module Sub__ENABLE_0"), "expected Sub__ENABLE_0 module:\n{sv}");
-    assert!(sv.contains("module Sub__ENABLE_1"), "expected Sub__ENABLE_1 module:\n{sv}");
+    assert!(
+        sv.contains("module Sub__ENABLE_0"),
+        "expected Sub__ENABLE_0 module:\n{sv}"
+    );
+    assert!(
+        sv.contains("module Sub__ENABLE_1"),
+        "expected Sub__ENABLE_1 module:\n{sv}"
+    );
     // Top's inst blocks must reference the renamed variants
-    assert!(sv.contains("Sub__ENABLE_1"), "Top should reference Sub__ENABLE_1:\n{sv}");
-    assert!(sv.contains("Sub__ENABLE_0"), "Top should reference Sub__ENABLE_0:\n{sv}");
+    assert!(
+        sv.contains("Sub__ENABLE_1"),
+        "Top should reference Sub__ENABLE_1:\n{sv}"
+    );
+    assert!(
+        sv.contains("Sub__ENABLE_0"),
+        "Top should reference Sub__ENABLE_0:\n{sv}"
+    );
     // sub_on and sub_off instance names must still appear
     assert!(sv.contains("sub_on"), "expected sub_on instance:\n{sv}");
     assert!(sv.contains("sub_off"), "expected sub_off instance:\n{sv}");
@@ -1685,23 +1843,43 @@ end module Outer
 "#;
     let sv = compile_to_sv(source);
     // Two distinct SV modules emitted
-    assert!(sv.contains("module Inner__ENABLE_DEBUG_0"), "missing Inner__ENABLE_DEBUG_0:\n{sv}");
-    assert!(sv.contains("module Inner__ENABLE_DEBUG_1"), "missing Inner__ENABLE_DEBUG_1:\n{sv}");
+    assert!(
+        sv.contains("module Inner__ENABLE_DEBUG_0"),
+        "missing Inner__ENABLE_DEBUG_0:\n{sv}"
+    );
+    assert!(
+        sv.contains("module Inner__ENABLE_DEBUG_1"),
+        "missing Inner__ENABLE_DEBUG_1:\n{sv}"
+    );
     // ENABLE_DEBUG=1 variant has debug_in port; ENABLE_DEBUG=0 does not.
     // Verify by checking what each module declaration contains.
-    let debug_1_block = sv.split("module Inner__ENABLE_DEBUG_1").nth(1)
+    let debug_1_block = sv
+        .split("module Inner__ENABLE_DEBUG_1")
+        .nth(1)
         .and_then(|s| s.split("endmodule").next())
         .unwrap_or("");
-    let debug_0_block = sv.split("module Inner__ENABLE_DEBUG_0").nth(1)
+    let debug_0_block = sv
+        .split("module Inner__ENABLE_DEBUG_0")
+        .nth(1)
         .and_then(|s| s.split("endmodule").next())
         .unwrap_or("");
-    assert!(debug_1_block.contains("debug_in"), "ENABLE_DEBUG=1 variant missing debug_in:\n{sv}");
-    assert!(!debug_0_block.contains("debug_in"), "ENABLE_DEBUG=0 variant should not have debug_in:\n{sv}");
+    assert!(
+        debug_1_block.contains("debug_in"),
+        "ENABLE_DEBUG=1 variant missing debug_in:\n{sv}"
+    );
+    assert!(
+        !debug_0_block.contains("debug_in"),
+        "ENABLE_DEBUG=0 variant should not have debug_in:\n{sv}"
+    );
     // Inst sites reference the correct variants (params appear between name and instance)
-    assert!(sv.contains("Inner__ENABLE_DEBUG_1") && sv.contains("inner_on"),
-        "inner_on should use _1 variant:\n{sv}");
-    assert!(sv.contains("Inner__ENABLE_DEBUG_0") && sv.contains("inner_off"),
-        "inner_off should use _0 variant:\n{sv}");
+    assert!(
+        sv.contains("Inner__ENABLE_DEBUG_1") && sv.contains("inner_on"),
+        "inner_on should use _1 variant:\n{sv}"
+    );
+    assert!(
+        sv.contains("Inner__ENABLE_DEBUG_0") && sv.contains("inner_off"),
+        "inner_off should use _0 variant:\n{sv}"
+    );
 }
 
 #[test]
@@ -1721,7 +1899,10 @@ module NoDebug
 end module NoDebug
 "#;
     let sv = compile_to_sv(source);
-    assert!(!sv.contains("debug_out"), "debug_out should be excluded when condition is false, got:\n{sv}");
+    assert!(
+        !sv.contains("debug_out"),
+        "debug_out should be excluded when condition is false, got:\n{sv}"
+    );
 }
 
 // ── Mixed reset / no-reset in always block ───────────────────────────────────
@@ -1756,17 +1937,32 @@ end module MixedReset
 "#;
     let sv = compile_to_sv(source);
     // count_r has reset: should appear inside if(rst)/else guard in first always_ff
-    assert!(sv.contains("if (rst) begin"), "expected reset guard, got:\n{sv}");
-    assert!(sv.contains("count_r <= 0;"), "expected count_r reset init, got:\n{sv}");
+    assert!(
+        sv.contains("if (rst) begin"),
+        "expected reset guard, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("count_r <= 0;"),
+        "expected count_r reset init, got:\n{sv}"
+    );
     // pipe_r has reset none: must be in a SEPARATE always_ff block (no reset in sensitivity list).
     // Mixing resetable and non-resetable regs in one always_ff with async reset causes
     // synthesis tools to infer unintended clock gating on the reset path.
     let always_blocks: Vec<&str> = sv.split("always_ff").collect();
-    assert!(always_blocks.len() >= 3, "expected at least 2 always_ff blocks (reset + no-reset), got:\n{sv}");
+    assert!(
+        always_blocks.len() >= 3,
+        "expected at least 2 always_ff blocks (reset + no-reset), got:\n{sv}"
+    );
     // The second always_ff should contain pipe_r and NOT have reset in sensitivity
     let second_block = always_blocks[2];
-    assert!(second_block.contains("pipe_r <= data_in"), "pipe_r should be in separate always_ff, got:\n{sv}");
-    assert!(!second_block.contains("rst"), "no-reset always_ff should not reference rst, got:\n{sv}");
+    assert!(
+        second_block.contains("pipe_r <= data_in"),
+        "pipe_r should be in separate always_ff, got:\n{sv}"
+    );
+    assert!(
+        !second_block.contains("rst"),
+        "no-reset always_ff should not reference rst, got:\n{sv}"
+    );
     insta::assert_snapshot!(sv);
 }
 
@@ -1798,14 +1994,17 @@ end module RoConst
 "#;
     let sv = compile_to_sv(source);
     // The reset value must be driven somewhere in an always_ff.
-    assert!(sv.contains("always_ff @(posedge clk)"),
-        "expected an always_ff for the reset-only reg, got:\n{sv}");
-    assert!(sv.contains("if (rst)"),
-        "expected reset guard, got:\n{sv}");
+    assert!(
+        sv.contains("always_ff @(posedge clk)"),
+        "expected an always_ff for the reset-only reg, got:\n{sv}"
+    );
+    assert!(sv.contains("if (rst)"), "expected reset guard, got:\n{sv}");
     // arch-com emits the literal as decimal; accept either form since
     // what matters is that the RHS is the reset value (4).
-    assert!(sv.contains("roconst_r <= 32'd4;") || sv.contains("roconst_r <= 32'h4;"),
-        "expected roconst_r reset-init assignment, got:\n{sv}");
+    assert!(
+        sv.contains("roconst_r <= 32'd4;") || sv.contains("roconst_r <= 32'h4;"),
+        "expected roconst_r reset-init assignment, got:\n{sv}"
+    );
     insta::assert_snapshot!(sv);
 }
 
@@ -1841,15 +2040,21 @@ end module MixedOrphan
 "#;
     let sv = compile_to_sv(source);
     // Original seq-block always_ff resets ticker_r.
-    assert!(sv.contains("ticker_r <= 0;"),
-        "expected ticker_r reset in seq-block always_ff, got:\n{sv}");
+    assert!(
+        sv.contains("ticker_r <= 0;"),
+        "expected ticker_r reset in seq-block always_ff, got:\n{sv}"
+    );
     // Orphan reset always_ff fires for constant_r.
-    assert!(sv.contains("constant_r <= 32'd42;"),
-        "expected constant_r orphan reset assignment, got:\n{sv}");
+    assert!(
+        sv.contains("constant_r <= 32'd42;"),
+        "expected constant_r orphan reset assignment, got:\n{sv}"
+    );
     // Two distinct always_ff blocks — one for each.
     let always_count = sv.matches("always_ff @").count();
-    assert!(always_count >= 2,
-        "expected >=2 always_ff blocks (seq + orphan), got {always_count}:\n{sv}");
+    assert!(
+        always_count >= 2,
+        "expected >=2 always_ff blocks (seq + orphan), got {always_count}:\n{sv}"
+    );
     insta::assert_snapshot!(sv);
 }
 
@@ -1887,7 +2092,10 @@ end module BadMixed
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     let result = checker.check();
-    assert!(result.is_err(), "expected error for mixed reset signals in same always block");
+    assert!(
+        result.is_err(),
+        "expected error for mixed reset signals in same always block"
+    );
 }
 
 #[test]
@@ -1923,7 +2131,10 @@ end module BadSyncAsync
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     let result = checker.check();
-    assert!(result.is_err(), "expected error for mixing sync and async reset in same always block");
+    assert!(
+        result.is_err(),
+        "expected error for mixing sync and async reset in same always block"
+    );
 }
 
 // ── Pipeline ──────────────────────────────────────────────────────────────────
@@ -1934,11 +2145,23 @@ fn test_simple_pipeline() {
     let sv = compile_to_sv(source);
     assert!(sv.contains("module SimplePipe"), "missing module header");
     assert!(sv.contains("fetch_valid_r"), "missing fetch valid register");
-    assert!(sv.contains("writeback_valid_r"), "missing writeback valid register");
-    assert!(sv.contains("fetch_captured"), "missing fetch stage register");
-    assert!(sv.contains("writeback_result"), "missing writeback stage register");
+    assert!(
+        sv.contains("writeback_valid_r"),
+        "missing writeback valid register"
+    );
+    assert!(
+        sv.contains("fetch_captured"),
+        "missing fetch stage register"
+    );
+    assert!(
+        sv.contains("writeback_result"),
+        "missing writeback stage register"
+    );
     assert!(sv.contains("always_ff"), "missing always_ff block");
-    assert!(sv.contains("assign data_out = writeback_result"), "missing comb output");
+    assert!(
+        sv.contains("assign data_out = writeback_result"),
+        "missing comb output"
+    );
     insta::assert_snapshot!(sv);
 }
 
@@ -1970,7 +2193,10 @@ end pipeline BadPipe
     let symbols = resolve::resolve(&elaborated).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &elaborated);
     let result = checker.check();
-    assert!(result.is_err(), "expected error for comb-only pipeline stage");
+    assert!(
+        result.is_err(),
+        "expected error for comb-only pipeline stage"
+    );
 }
 
 #[test]
@@ -2014,7 +2240,10 @@ end pipeline BadFlush
     let symbols = resolve::resolve(&elaborated).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &elaborated);
     let result = checker.check();
-    assert!(result.is_err(), "expected error for undeclared flush target stage");
+    assert!(
+        result.is_err(),
+        "expected error for undeclared flush target stage"
+    );
 }
 
 #[test]
@@ -2026,30 +2255,66 @@ fn test_cpu_pipeline() {
     // Per-stage stall chain
     assert!(sv.contains("fetch_stall"), "missing fetch_stall signal");
     assert!(sv.contains("decode_stall"), "missing decode_stall signal");
-    assert!(sv.contains("(!imem_valid)"), "missing Fetch stall condition");
+    assert!(
+        sv.contains("(!imem_valid)"),
+        "missing Fetch stall condition"
+    );
     // Backpressure propagation
-    assert!(sv.contains("fetch_stall = (!imem_valid) || decode_stall"), "missing backpressure chain");
+    assert!(
+        sv.contains("fetch_stall = (!imem_valid) || decode_stall"),
+        "missing backpressure chain"
+    );
     // Stage register updates with stall guard
-    assert!(sv.contains("if (!fetch_stall)"), "missing fetch stall guard");
-    assert!(sv.contains("if (!decode_stall)"), "missing decode stall guard");
+    assert!(
+        sv.contains("if (!fetch_stall)"),
+        "missing fetch stall guard"
+    );
+    assert!(
+        sv.contains("if (!decode_stall)"),
+        "missing decode stall guard"
+    );
     // Bubble insertion
-    assert!(sv.contains("fetch_stall ? 1'b0 : fetch_valid_r"), "missing bubble insertion");
+    assert!(
+        sv.contains("fetch_stall ? 1'b0 : fetch_valid_r"),
+        "missing bubble insertion"
+    );
     // Flush
     assert!(sv.contains("if (branch_taken)"), "missing flush condition");
     assert!(sv.contains("fetch_valid_r <= 1'b0"), "missing fetch flush");
-    assert!(sv.contains("decode_valid_r <= 1'b0"), "missing decode flush");
+    assert!(
+        sv.contains("decode_valid_r <= 1'b0"),
+        "missing decode flush"
+    );
     // Cross-stage references rewritten
-    assert!(sv.contains("fetch_instr"), "missing rewritten cross-stage ref");
-    assert!(sv.contains("decode_rs1_val"), "missing rewritten decode ref");
-    assert!(sv.contains("execute_alu_result"), "missing rewritten execute ref");
+    assert!(
+        sv.contains("fetch_instr"),
+        "missing rewritten cross-stage ref"
+    );
+    assert!(
+        sv.contains("decode_rs1_val"),
+        "missing rewritten decode ref"
+    );
+    assert!(
+        sv.contains("execute_alu_result"),
+        "missing rewritten execute ref"
+    );
     // Outputs
-    assert!(sv.contains("assign wb_data = writeback_result"), "missing wb output");
+    assert!(
+        sv.contains("assign wb_data = writeback_result"),
+        "missing wb output"
+    );
     // pc is now passed forward through registered stages instead of
     // being read directly from Fetch (which would be a 3-hop bypass).
-    assert!(sv.contains("assign pc_out = writeback_pc"), "missing pc output");
+    assert!(
+        sv.contains("assign pc_out = writeback_pc"),
+        "missing pc output"
+    );
     // Explicit forwarding mux
     assert!(sv.contains("decode_rs1_fwd"), "missing forwarding mux wire");
-    assert!(sv.contains("always_comb"), "missing always_comb for forwarding mux");
+    assert!(
+        sv.contains("always_comb"),
+        "missing always_comb for forwarding mux"
+    );
     insta::assert_snapshot!(sv);
 }
 
@@ -2089,11 +2354,20 @@ end module BitExtract
 "#;
     let sv = compile_to_sv(source);
     // trunc<7>() → 7'(instr)
-    assert!(sv.contains("7'(instr)"), "expected trunc<7> → 7'(instr), got:\n{sv}");
+    assert!(
+        sv.contains("7'(instr)"),
+        "expected trunc<7> → 7'(instr), got:\n{sv}"
+    );
     // trunc<11,7>() → instr[11:7]
-    assert!(sv.contains("instr[11:7]"), "expected trunc<11,7> → instr[11:7], got:\n{sv}");
+    assert!(
+        sv.contains("instr[11:7]"),
+        "expected trunc<11,7> → instr[11:7], got:\n{sv}"
+    );
     // trunc<14,12>() → instr[14:12]
-    assert!(sv.contains("instr[14:12]"), "expected trunc<14,12> → instr[14:12], got:\n{sv}");
+    assert!(
+        sv.contains("instr[14:12]"),
+        "expected trunc<14,12> → instr[14:12], got:\n{sv}"
+    );
     insta::assert_snapshot!(sv);
 }
 
@@ -2129,8 +2403,10 @@ end module BadAccum
     let result = arch::typecheck::TypeChecker::new(&symbols, &ast).check();
     let errs = result.expect_err("expected typecheck to reject bare-ident <= in seq for-loop");
     let msg = errs.iter().map(|e| format!("{e:?}")).collect::<String>();
-    assert!(msg.contains("non-blocking assignment") && msg.contains("for"),
-            "expected for-loop NBA error, got: {msg}");
+    assert!(
+        msg.contains("non-blocking assignment") && msg.contains("for"),
+        "expected for-loop NBA error, got: {msg}"
+    );
 }
 
 #[test]
@@ -2161,7 +2437,8 @@ end module ShiftFill
     let mut parser = arch::parser::Parser::new(tokens, ok);
     let ast = parser.parse_source_file().expect("parse");
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
-    arch::typecheck::TypeChecker::new(&symbols, &ast).check()
+    arch::typecheck::TypeChecker::new(&symbols, &ast)
+        .check()
         .expect("indexed-target NBA in for-loop should typecheck");
 }
 
@@ -2286,8 +2563,10 @@ end pipeline SkipBypass
     let result = checker.check();
     let errs = result.expect_err("expected typecheck to flag the 2-hop bypass");
     let msg = errs.iter().map(|e| format!("{e:?}")).collect::<String>();
-    assert!(msg.contains("bypassing the intermediate"),
-            "expected bypass message, got: {msg}");
+    assert!(
+        msg.contains("bypassing the intermediate"),
+        "expected bypass message, got: {msg}"
+    );
 }
 
 #[test]
@@ -2334,7 +2613,9 @@ end pipeline ForwardRead
     let ast = parser.parse_source_file().expect("parse");
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
-    checker.check().expect("forward-reference pattern should typecheck");
+    checker
+        .check()
+        .expect("forward-reference pattern should typecheck");
 }
 
 #[test]
@@ -2389,9 +2670,15 @@ end module Top
     assert!(sv.contains("module SimplePipe"), "missing pipeline module");
     // Should contain the top module with instantiation
     assert!(sv.contains("module Top"), "missing top module");
-    assert!(sv.contains("SimplePipe pipe0"), "missing pipeline instantiation");
+    assert!(
+        sv.contains("SimplePipe pipe0"),
+        "missing pipeline instantiation"
+    );
     assert!(sv.contains(".data_in(din)"), "missing data_in connection");
-    assert!(sv.contains(".data_out(dout)"), "missing data_out connection");
+    assert!(
+        sv.contains(".data_out(dout)"),
+        "missing data_out connection"
+    );
     insta::assert_snapshot!(sv);
 }
 
@@ -2449,10 +2736,16 @@ end pipeline AluPipe
     // ALU module should be emitted
     assert!(sv.contains("module Alu"), "missing Alu module");
     // Pipeline should contain the inst
-    assert!(sv.contains("Alu alu0"), "missing Alu instantiation inside pipeline stage");
+    assert!(
+        sv.contains("Alu alu0"),
+        "missing Alu instantiation inside pipeline stage"
+    );
     assert!(sv.contains(".a("), "missing port a connection");
     assert!(sv.contains(".b("), "missing port b connection");
-    assert!(sv.contains(".result(result_out)"), "missing result connection");
+    assert!(
+        sv.contains(".result(result_out)"),
+        "missing result connection"
+    );
     insta::assert_snapshot!(sv);
 }
 
@@ -2588,7 +2881,10 @@ end pipeline P2
 "#;
     let sv = compile_to_sv(source);
     assert!(sv.contains("module Helper"), "Helper module should emit");
-    assert!(sv.contains("Helper h ("), "Helper inst should emit inside pipeline stage");
+    assert!(
+        sv.contains("Helper h ("),
+        "Helper inst should emit inside pipeline stage"
+    );
     assert!(
         sv.contains("logic [15:0] only_h_out"),
         "inst output wire should be 16-bit per Helper.q_out"
@@ -2807,11 +3103,20 @@ end module FifoCtrl
 "#;
     let sv = compile_to_sv(source);
     // $clog2(DEPTH) should appear in port widths
-    assert!(sv.contains("$clog2(DEPTH)"), "expected $clog2(DEPTH) in SV output, got:\n{sv}");
+    assert!(
+        sv.contains("$clog2(DEPTH)"),
+        "expected $clog2(DEPTH) in SV output, got:\n{sv}"
+    );
     // $clog2(DEPTH) + 1 in count port
-    assert!(sv.contains("$clog2(DEPTH) + 1"), "expected $clog2(DEPTH) + 1 in SV output, got:\n{sv}");
+    assert!(
+        sv.contains("$clog2(DEPTH) + 1"),
+        "expected $clog2(DEPTH) + 1 in SV output, got:\n{sv}"
+    );
     // trunc<$clog2(DEPTH)>() should emit as size cast
-    assert!(sv.contains("$clog2(DEPTH)'("), "expected $clog2(DEPTH)'(...) size cast, got:\n{sv}");
+    assert!(
+        sv.contains("$clog2(DEPTH)'("),
+        "expected $clog2(DEPTH)'(...) size cast, got:\n{sv}"
+    );
     insta::assert_snapshot!(sv);
 }
 
@@ -2856,24 +3161,39 @@ end linklist TaskQueue
     let sv = compile_to_sv(source);
     // Module header
     assert!(sv.contains("module TaskQueue #("), "missing module header");
-    assert!(sv.contains("parameter int  DEPTH = 8"), "missing DEPTH param");
+    assert!(
+        sv.contains("parameter int  DEPTH = 8"),
+        "missing DEPTH param"
+    );
     assert!(sv.contains("parameter type DATA"), "missing DATA param");
     // Infrastructure signals
     assert!(sv.contains("_fl_mem"), "missing free list memory");
     assert!(sv.contains("_next_mem"), "missing next pointer RAM");
     assert!(sv.contains("_head_r"), "missing head register");
-    assert!(sv.contains("_tail_r"), "missing tail register (track_tail: true)");
+    assert!(
+        sv.contains("_tail_r"),
+        "missing tail register (track_tail: true)"
+    );
     // Status outputs
     assert!(sv.contains("assign empty"), "missing empty assign");
     assert!(sv.contains("assign full"), "missing full assign");
     assert!(sv.contains("assign length"), "missing length assign");
     // Op ports
     assert!(sv.contains("alloc_req_valid"), "missing alloc port");
-    assert!(sv.contains("delete_head_resp_data"), "missing delete_head resp_data port");
+    assert!(
+        sv.contains("delete_head_resp_data"),
+        "missing delete_head resp_data port"
+    );
     // alloc FSM
-    assert!(sv.contains("_fl_rdp <= _fl_rdp + 1'b1"), "missing free-list dequeue");
+    assert!(
+        sv.contains("_fl_rdp <= _fl_rdp + 1'b1"),
+        "missing free-list dequeue"
+    );
     // delete_head 2-cycle FSM
-    assert!(sv.contains("_ctrl_delete_head_busy"), "missing delete_head busy reg");
+    assert!(
+        sv.contains("_ctrl_delete_head_busy"),
+        "missing delete_head busy reg"
+    );
     assert!(sv.contains("_head_r <= _next_mem"), "missing head advance");
     insta::assert_snapshot!(sv);
 }
@@ -2919,7 +3239,10 @@ end linklist SchedList
     assert!(sv.contains("_prev_mem"), "doubly list missing _prev_mem");
     assert!(sv.contains("_next_mem"), "missing _next_mem");
     // prev op controller
-    assert!(sv.contains("_ctrl_prev_resp_handle <= _prev_mem"), "missing prev pointer follow");
+    assert!(
+        sv.contains("_ctrl_prev_resp_handle <= _prev_mem"),
+        "missing prev pointer follow"
+    );
     insta::assert_snapshot!(sv);
 }
 
@@ -2957,26 +3280,43 @@ linklist MhQ
 end linklist MhQ
 "#;
     let sim = compile_to_sim_h(source, false);
-    assert!(sim.contains("uint8_t _head_r[2]"), "missing _head_r[2]:\n{sim}");
+    assert!(
+        sim.contains("uint8_t _head_r[2]"),
+        "missing _head_r[2]:\n{sim}"
+    );
     assert!(sim.contains("uint8_t _tail_r[2]"), "missing _tail_r[2]");
     assert!(sim.contains("uint8_t _length_r[2]"), "missing _length_r[2]");
-    assert!(sim.contains("_ctrl_insert_tail_head_idx"),
-            "missing insert_tail head_idx latch");
-    assert!(sim.contains("_ctrl_delete_head_head_idx"),
-            "missing delete_head head_idx latch");
+    assert!(
+        sim.contains("_ctrl_insert_tail_head_idx"),
+        "missing insert_tail head_idx latch"
+    );
+    assert!(
+        sim.contains("_ctrl_delete_head_head_idx"),
+        "missing delete_head head_idx latch"
+    );
     // Delete ready gated by per-head length
-    assert!(sim.contains("_length_r[delete_head_req_head_idx] != 0"),
-            "missing per-head delete ready gate");
+    assert!(
+        sim.contains("_length_r[delete_head_req_head_idx] != 0"),
+        "missing per-head delete ready gate"
+    );
     // Busy-cycle head/tail access uses the latched idx
-    assert!(sim.contains("_head_r[_ctrl_delete_head_head_idx]"),
-            "missing busy-cycle head ref");
-    assert!(sim.contains("_tail_r[_ctrl_insert_tail_head_idx]"),
-            "missing busy-cycle tail ref");
+    assert!(
+        sim.contains("_head_r[_ctrl_delete_head_head_idx]"),
+        "missing busy-cycle head ref"
+    );
+    assert!(
+        sim.contains("_tail_r[_ctrl_insert_tail_head_idx]"),
+        "missing busy-cycle tail ref"
+    );
     // Per-head length updates
-    assert!(sim.contains("_length_r[_ctrl_insert_tail_head_idx]++"),
-            "missing length inc in insert");
-    assert!(sim.contains("_length_r[_ctrl_delete_head_head_idx]--"),
-            "missing length dec in delete");
+    assert!(
+        sim.contains("_length_r[_ctrl_insert_tail_head_idx]++"),
+        "missing length inc in insert"
+    );
+    assert!(
+        sim.contains("_length_r[_ctrl_delete_head_head_idx]--"),
+        "missing length dec in delete"
+    );
 }
 
 #[test]
@@ -3013,24 +3353,46 @@ end linklist MhQ
 "#;
     let sv = compile_to_sv(source);
     // Module header carries NUM_HEADS param
-    assert!(sv.contains("parameter int  NUM_HEADS = 4"), "missing NUM_HEADS param:\n{sv}");
+    assert!(
+        sv.contains("parameter int  NUM_HEADS = 4"),
+        "missing NUM_HEADS param:\n{sv}"
+    );
     // Head/tail/length become arrays indexed by NUM_HEADS
     assert!(sv.contains("_head_r [NUM_HEADS]"), "missing head array");
     assert!(sv.contains("_tail_r [NUM_HEADS]"), "missing tail array");
-    assert!(sv.contains("_length_r [NUM_HEADS]"), "missing internal length array");
+    assert!(
+        sv.contains("_length_r [NUM_HEADS]"),
+        "missing internal length array"
+    );
     // Per-op latched head_idx register
-    assert!(sv.contains("_ctrl_insert_tail_head_idx"), "missing insert_tail head_idx latch");
-    assert!(sv.contains("_ctrl_delete_head_head_idx"), "missing delete_head head_idx latch");
+    assert!(
+        sv.contains("_ctrl_insert_tail_head_idx"),
+        "missing insert_tail head_idx latch"
+    );
+    assert!(
+        sv.contains("_ctrl_delete_head_head_idx"),
+        "missing delete_head head_idx latch"
+    );
     // Accept cycle reads head/tail by request idx directly; busy cycle
     // by the latched idx.
-    assert!(sv.contains("_head_r[delete_head_req_head_idx]"), "missing accept-cycle head ref");
-    assert!(sv.contains("_tail_r[_ctrl_insert_tail_head_idx]"), "missing busy-cycle tail ref");
+    assert!(
+        sv.contains("_head_r[delete_head_req_head_idx]"),
+        "missing accept-cycle head ref"
+    );
+    assert!(
+        sv.contains("_tail_r[_ctrl_insert_tail_head_idx]"),
+        "missing busy-cycle tail ref"
+    );
     // req_ready for delete gated by per-head length
-    assert!(sv.contains("_length_r[delete_head_req_head_idx] != '0"),
-            "missing per-head delete ready gate");
+    assert!(
+        sv.contains("_length_r[delete_head_req_head_idx] != '0"),
+        "missing per-head delete ready gate"
+    );
     // Reset loops through NUM_HEADS
-    assert!(sv.contains("for (_ll_i = 0; _ll_i < NUM_HEADS; _ll_i++)"),
-            "missing NUM_HEADS reset loop");
+    assert!(
+        sv.contains("for (_ll_i = 0; _ll_i < NUM_HEADS; _ll_i++)"),
+        "missing NUM_HEADS reset loop"
+    );
 }
 
 #[test]
@@ -3079,29 +3441,49 @@ end linklist MhFull
 "#;
     let sv = compile_to_sv(source);
     // No $fatal stub anywhere — all three ops are now wired.
-    assert!(!sv.contains("not yet implemented for multi-head"),
-            "stub message should be gone:\n{sv}");
+    assert!(
+        !sv.contains("not yet implemented for multi-head"),
+        "stub message should be gone:\n{sv}"
+    );
     // insert_head: head_idx latch + busy-cycle uses latched idx + length++
-    assert!(sv.contains("_ctrl_insert_head_head_idx  <= insert_head_req_head_idx"),
-            "missing insert_head idx latch:\n{sv}");
-    assert!(sv.contains("_head_r[_ctrl_insert_head_head_idx] <= _ctrl_insert_head_resp_handle"),
-            "missing insert_head busy-cycle head update");
-    assert!(sv.contains("_length_r[_ctrl_insert_head_head_idx] <= _length_r[_ctrl_insert_head_head_idx] + 1'b1"),
-            "missing insert_head length increment");
-    assert!(sv.contains("_ctrl_insert_head_was_empty <= (_length_r[insert_head_req_head_idx] == '0)"),
-            "missing per-head was_empty check on insert_head");
+    assert!(
+        sv.contains("_ctrl_insert_head_head_idx  <= insert_head_req_head_idx"),
+        "missing insert_head idx latch:\n{sv}"
+    );
+    assert!(
+        sv.contains("_head_r[_ctrl_insert_head_head_idx] <= _ctrl_insert_head_resp_handle"),
+        "missing insert_head busy-cycle head update"
+    );
+    assert!(
+        sv.contains(
+            "_length_r[_ctrl_insert_head_head_idx] <= _length_r[_ctrl_insert_head_head_idx] + 1'b1"
+        ),
+        "missing insert_head length increment"
+    );
+    assert!(
+        sv.contains("_ctrl_insert_head_was_empty <= (_length_r[insert_head_req_head_idx] == '0)"),
+        "missing per-head was_empty check on insert_head"
+    );
     // insert_after: head_idx latch + length++ (pointer patches stay shared)
-    assert!(sv.contains("_ctrl_insert_after_head_idx <= insert_after_req_head_idx"),
-            "missing insert_after idx latch");
+    assert!(
+        sv.contains("_ctrl_insert_after_head_idx <= insert_after_req_head_idx"),
+        "missing insert_after idx latch"
+    );
     assert!(sv.contains("_length_r[_ctrl_insert_after_head_idx] <= _length_r[_ctrl_insert_after_head_idx] + 1'b1"),
             "missing insert_after length increment");
     // delete: head_idx latch + length-- + per-head ready gate
-    assert!(sv.contains("_ctrl_delete_head_idx <= delete_req_head_idx"),
-            "missing delete idx latch");
-    assert!(sv.contains("_length_r[_ctrl_delete_head_idx] <= _length_r[_ctrl_delete_head_idx] - 1'b1"),
-            "missing delete length decrement");
-    assert!(sv.contains("_length_r[delete_req_head_idx] != '0"),
-            "missing per-head delete ready gate");
+    assert!(
+        sv.contains("_ctrl_delete_head_idx <= delete_req_head_idx"),
+        "missing delete idx latch"
+    );
+    assert!(
+        sv.contains("_length_r[_ctrl_delete_head_idx] <= _length_r[_ctrl_delete_head_idx] - 1'b1"),
+        "missing delete length decrement"
+    );
+    assert!(
+        sv.contains("_length_r[delete_req_head_idx] != '0"),
+        "missing per-head delete ready gate"
+    );
 }
 
 #[test]
@@ -3146,27 +3528,45 @@ linklist MhFull
 end linklist MhFull
 "#;
     let sim = compile_to_sim_h(source, false);
-    assert!(!sim.contains("is not yet implemented for multi-head"),
-            "stub message should be gone:\n{sim}");
+    assert!(
+        !sim.contains("is not yet implemented for multi-head"),
+        "stub message should be gone:\n{sim}"
+    );
     // insert_head: head_idx latch + length++ + per-head head update
-    assert!(sim.contains("_ctrl_insert_head_head_idx = insert_head_req_head_idx"),
-            "missing insert_head idx latch:\n{sim}");
-    assert!(sim.contains("_head_r[_ctrl_insert_head_head_idx] = _ctrl_insert_head_resp_handle"),
-            "missing insert_head busy head update");
-    assert!(sim.contains("_length_r[_ctrl_insert_head_head_idx]++"),
-            "missing insert_head length increment");
+    assert!(
+        sim.contains("_ctrl_insert_head_head_idx = insert_head_req_head_idx"),
+        "missing insert_head idx latch:\n{sim}"
+    );
+    assert!(
+        sim.contains("_head_r[_ctrl_insert_head_head_idx] = _ctrl_insert_head_resp_handle"),
+        "missing insert_head busy head update"
+    );
+    assert!(
+        sim.contains("_length_r[_ctrl_insert_head_head_idx]++"),
+        "missing insert_head length increment"
+    );
     // insert_after: idx latch + length++
-    assert!(sim.contains("_ctrl_insert_after_head_idx = insert_after_req_head_idx"),
-            "missing insert_after idx latch");
-    assert!(sim.contains("_length_r[_ctrl_insert_after_head_idx]++"),
-            "missing insert_after length increment");
+    assert!(
+        sim.contains("_ctrl_insert_after_head_idx = insert_after_req_head_idx"),
+        "missing insert_after idx latch"
+    );
+    assert!(
+        sim.contains("_length_r[_ctrl_insert_after_head_idx]++"),
+        "missing insert_after length increment"
+    );
     // delete: idx latch + length-- + per-head ready gate
-    assert!(sim.contains("_ctrl_delete_head_idx = delete_req_head_idx"),
-            "missing delete idx latch");
-    assert!(sim.contains("_length_r[_ctrl_delete_head_idx]--"),
-            "missing delete length decrement");
-    assert!(sim.contains("_length_r[delete_req_head_idx] != 0"),
-            "missing per-head delete ready gate");
+    assert!(
+        sim.contains("_ctrl_delete_head_idx = delete_req_head_idx"),
+        "missing delete idx latch"
+    );
+    assert!(
+        sim.contains("_length_r[_ctrl_delete_head_idx]--"),
+        "missing delete length decrement"
+    );
+    assert!(
+        sim.contains("_length_r[delete_req_head_idx] != 0"),
+        "missing per-head delete ready gate"
+    );
 }
 
 #[test]
@@ -3197,10 +3597,21 @@ end linklist BadMh
     let ast = elaborate::elaborate(parsed).expect("elaborate");
     let symbols = resolve::resolve(&ast).expect("resolve");
     let result = TypeChecker::new(&symbols, &ast).check();
-    assert!(result.is_err(), "expected typecheck to reject per-head op without req_head_idx");
-    let msg = result.unwrap_err().iter().map(|e| format!("{e:?}")).collect::<String>();
-    assert!(msg.contains("req_head_idx") && msg.contains("multi-head") == false && msg.contains("NUM_HEADS"),
-            "expected NUM_HEADS-specific error, got: {msg}");
+    assert!(
+        result.is_err(),
+        "expected typecheck to reject per-head op without req_head_idx"
+    );
+    let msg = result
+        .unwrap_err()
+        .iter()
+        .map(|e| format!("{e:?}"))
+        .collect::<String>();
+    assert!(
+        msg.contains("req_head_idx")
+            && msg.contains("multi-head") == false
+            && msg.contains("NUM_HEADS"),
+        "expected NUM_HEADS-specific error, got: {msg}"
+    );
 }
 
 #[test]
@@ -3231,10 +3642,19 @@ end linklist BadSh
     let ast = elaborate::elaborate(parsed).expect("elaborate");
     let symbols = resolve::resolve(&ast).expect("resolve");
     let result = TypeChecker::new(&symbols, &ast).check();
-    assert!(result.is_err(), "expected typecheck to reject req_head_idx on single-head list");
-    let msg = result.unwrap_err().iter().map(|e| format!("{e:?}")).collect::<String>();
-    assert!(msg.contains("req_head_idx") && msg.contains("single-head"),
-            "expected single-head-specific error, got: {msg}");
+    assert!(
+        result.is_err(),
+        "expected typecheck to reject req_head_idx on single-head list"
+    );
+    let msg = result
+        .unwrap_err()
+        .iter()
+        .map(|e| format!("{e:?}"))
+        .collect::<String>();
+    assert!(
+        msg.contains("req_head_idx") && msg.contains("single-head"),
+        "expected single-head-specific error, got: {msg}"
+    );
 }
 
 #[test]
@@ -3266,10 +3686,19 @@ end linklist BadList
     let symbols = resolve::resolve(&ast).expect("resolve error");
     let checker = TypeChecker::new(&symbols, &ast);
     let result = checker.check();
-    assert!(result.is_err(), "expected type error for prev on singly list");
+    assert!(
+        result.is_err(),
+        "expected type error for prev on singly list"
+    );
     let errs = result.unwrap_err();
-    assert!(errs.iter().any(|e| { let s = e.to_string(); s.contains("prev") && s.contains("doubly") }),
-            "expected error about prev requiring doubly, got: {:?}", errs);
+    assert!(
+        errs.iter().any(|e| {
+            let s = e.to_string();
+            s.contains("prev") && s.contains("doubly")
+        }),
+        "expected error about prev requiring doubly, got: {:?}",
+        errs
+    );
 }
 
 #[test]
@@ -3277,8 +3706,8 @@ fn test_linklist_inst_in_module() {
     // PacketQueue wraps TaskQueue linklist as a push/pop FIFO interface.
     // Verifies that: linklist can be instantiated inside a module,
     // inst output ports are auto-declared as wires, and codegen succeeds.
-    let source = std::fs::read_to_string("examples/pkt_queue.arch")
-        .expect("pkt_queue.arch not found");
+    let source =
+        std::fs::read_to_string("examples/pkt_queue.arch").expect("pkt_queue.arch not found");
     let tokens = lexer::tokenize(&source).expect("lexer error");
     let mut parser = Parser::new(tokens, &source);
     let parsed = parser.parse_source_file().expect("parse error");
@@ -3351,14 +3780,35 @@ end module RfUser
 "#;
     let sv = compile_to_sv(source);
     // Parser transforms read[0].addr → read0_addr, read[1].data → read1_data
-    assert!(sv.contains(".read0_addr"), "expected .read0_addr port connection, got:\n{sv}");
-    assert!(sv.contains(".read0_data"), "expected .read0_data port connection, got:\n{sv}");
-    assert!(sv.contains(".read1_addr"), "expected .read1_addr port connection, got:\n{sv}");
-    assert!(sv.contains(".read1_data"), "expected .read1_data port connection, got:\n{sv}");
+    assert!(
+        sv.contains(".read0_addr"),
+        "expected .read0_addr port connection, got:\n{sv}"
+    );
+    assert!(
+        sv.contains(".read0_data"),
+        "expected .read0_data port connection, got:\n{sv}"
+    );
+    assert!(
+        sv.contains(".read1_addr"),
+        "expected .read1_addr port connection, got:\n{sv}"
+    );
+    assert!(
+        sv.contains(".read1_data"),
+        "expected .read1_data port connection, got:\n{sv}"
+    );
     // Also check dot-only syntax: write.en → write_en
-    assert!(sv.contains(".write_en"),   "expected .write_en port connection, got:\n{sv}");
-    assert!(sv.contains(".write_addr"), "expected .write_addr port connection, got:\n{sv}");
-    assert!(sv.contains(".write_data"), "expected .write_data port connection, got:\n{sv}");
+    assert!(
+        sv.contains(".write_en"),
+        "expected .write_en port connection, got:\n{sv}"
+    );
+    assert!(
+        sv.contains(".write_addr"),
+        "expected .write_addr port connection, got:\n{sv}"
+    );
+    assert!(
+        sv.contains(".write_data"),
+        "expected .write_data port connection, got:\n{sv}"
+    );
     insta::assert_snapshot!(sv);
 }
 
@@ -3377,7 +3827,9 @@ struct Foo
 end struct Foo
 "#;
     let sv = compile_to_sv(source);
-    let td = sv.find("typedef struct packed").expect("expected typedef struct packed in SV");
+    let td = sv
+        .find("typedef struct packed")
+        .expect("expected typedef struct packed in SV");
     let end = sv[td..].find("} Foo;").expect("expected `} Foo;` closing") + td;
     let body = &sv[td..end];
     let pos_a = body.find("a;").expect("expected field `a`");
@@ -3455,7 +3907,10 @@ end module LteExpr
 "#;
     let sv = compile_to_sv(source);
     // Statement-level `<=` still produces a non-blocking assignment.
-    assert!(sv.contains("cnt <="), "expected seq `cnt <= ...` in SV, got:\n{sv}");
+    assert!(
+        sv.contains("cnt <="),
+        "expected seq `cnt <= ...` in SV, got:\n{sv}"
+    );
     // Expression-level `<=` appears in the assertion body.
     assert!(
         sv.contains("bounded") && sv.contains("<= 200"),
@@ -3491,13 +3946,31 @@ fn test_handshake_valid_ready_expansion() {
     ";
     let sv = compile_to_sv(source);
     // Send-side valid is OUTPUT, ready is INPUT.
-    assert!(sv.contains("output logic bus_p_aw_valid"), "aw_valid should be output on initiator");
-    assert!(sv.contains("input logic bus_p_aw_ready"), "aw_ready should be input on initiator");
-    assert!(sv.contains("output logic [31:0] bus_p_aw_addr"), "aw payload out");
+    assert!(
+        sv.contains("output logic bus_p_aw_valid"),
+        "aw_valid should be output on initiator"
+    );
+    assert!(
+        sv.contains("input logic bus_p_aw_ready"),
+        "aw_ready should be input on initiator"
+    );
+    assert!(
+        sv.contains("output logic [31:0] bus_p_aw_addr"),
+        "aw payload out"
+    );
     // Receive-side b: valid becomes INPUT for the initiator.
-    assert!(sv.contains("input logic bus_p_b_valid"), "b_valid should be input on initiator");
-    assert!(sv.contains("output logic bus_p_b_ready"), "b_ready should be output on initiator");
-    assert!(sv.contains("input logic [1:0] bus_p_b_resp"), "b payload in");
+    assert!(
+        sv.contains("input logic bus_p_b_valid"),
+        "b_valid should be input on initiator"
+    );
+    assert!(
+        sv.contains("output logic bus_p_b_ready"),
+        "b_ready should be output on initiator"
+    );
+    assert!(
+        sv.contains("input logic [1:0] bus_p_b_resp"),
+        "b payload in"
+    );
 }
 
 #[test]
@@ -3521,9 +3994,18 @@ fn test_handshake_target_flip() {
     ";
     let sv = compile_to_sv(source);
     // Target flips: producer-side 'out' becomes 'in' at the consumer.
-    assert!(sv.contains("input logic bus_c_aw_valid"), "target flip: aw_valid becomes input");
-    assert!(sv.contains("output logic bus_c_aw_ready"), "target flip: aw_ready becomes output");
-    assert!(sv.contains("input logic [31:0] bus_c_aw_addr"), "target flip: payload becomes input");
+    assert!(
+        sv.contains("input logic bus_c_aw_valid"),
+        "target flip: aw_valid becomes input"
+    );
+    assert!(
+        sv.contains("output logic bus_c_aw_ready"),
+        "target flip: aw_ready becomes output"
+    );
+    assert!(
+        sv.contains("input logic [31:0] bus_c_aw_addr"),
+        "target flip: payload becomes input"
+    );
 }
 
 #[test]
@@ -3672,8 +4154,10 @@ fn test_use_bus_does_not_emit_sv_import() {
         end module M
     ";
     let sv = compile_to_sv(source);
-    assert!(!sv.contains("import BusS"),
-            "spurious SV import emitted for a bus-typed use:\n{sv}");
+    assert!(
+        !sv.contains("import BusS"),
+        "spurious SV import emitted for a bus-typed use:\n{sv}"
+    );
 }
 
 #[test]
@@ -3699,8 +4183,10 @@ fn test_use_package_still_emits_sv_import() {
         end module M
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("import PkgA::*;"),
-            "expected SV import for a package-typed use:\n{sv}");
+    assert!(
+        sv.contains("import PkgA::*;"),
+        "expected SV import for a package-typed use:\n{sv}"
+    );
 }
 
 /// `extern package` declares opaque types from an SV-side package.
@@ -3728,19 +4214,31 @@ end module IbexCore
     // rather than wildcard `import Pkg::*;` so unrelated enum
     // items / parameters from the upstream SV package don't pollute
     // the compilation unit and conflict with locally-named signals.
-    assert!(sv.contains("import ibex_pkg::rv32m_e;"),
-            "expected SV `import ibex_pkg::rv32m_e;` for extern package:\n{sv}");
-    assert!(sv.contains("import ibex_pkg::rv32b_e;"),
-            "expected SV `import ibex_pkg::rv32b_e;` for extern package:\n{sv}");
-    assert!(!sv.contains("import ibex_pkg::*;"),
-            "extern packages must NOT emit wildcard `import ibex_pkg::*;`:\n{sv}");
-    assert!(sv.contains("parameter rv32m_e RV32M = RV32MFast"),
-            "expected bare `rv32m_e` type and `RV32MFast` variant:\n{sv}");
-    assert!(sv.contains("parameter rv32b_e RV32B = RV32BNone"),
-            "expected bare `rv32b_e` type and `RV32BNone` variant:\n{sv}");
+    assert!(
+        sv.contains("import ibex_pkg::rv32m_e;"),
+        "expected SV `import ibex_pkg::rv32m_e;` for extern package:\n{sv}"
+    );
+    assert!(
+        sv.contains("import ibex_pkg::rv32b_e;"),
+        "expected SV `import ibex_pkg::rv32b_e;` for extern package:\n{sv}"
+    );
+    assert!(
+        !sv.contains("import ibex_pkg::*;"),
+        "extern packages must NOT emit wildcard `import ibex_pkg::*;`:\n{sv}"
+    );
+    assert!(
+        sv.contains("parameter rv32m_e RV32M = RV32MFast"),
+        "expected bare `rv32m_e` type and `RV32MFast` variant:\n{sv}"
+    );
+    assert!(
+        sv.contains("parameter rv32b_e RV32B = RV32BNone"),
+        "expected bare `rv32b_e` type and `RV32BNone` variant:\n{sv}"
+    );
     // No extern package body should be emitted (SV package lives upstream).
-    assert!(!sv.contains("extern package") && !sv.contains("endpackage"),
-            "extern package must not emit SV package body:\n{sv}");
+    assert!(
+        !sv.contains("extern package") && !sv.contains("endpackage"),
+        "extern package must not emit SV package body:\n{sv}"
+    );
 }
 
 fn compile_to_sim_h(source: &str, inputs_start_uninit: bool) -> String {
@@ -3762,7 +4260,8 @@ fn compile_to_sim_h(source: &str, inputs_start_uninit: bool) -> String {
         .inputs_start_uninit(inputs_start_uninit);
     let models = sim.generate();
     // Concatenate all model headers + impl files — tests can grep across them.
-    models.iter()
+    models
+        .iter()
         .map(|m| format!("{}\n// ---\n{}", m.header, m.impl_))
         .collect::<Vec<_>>()
         .join("\n// ---\n")
@@ -3781,13 +4280,18 @@ fn compile_to_thread_sim_h(source: &str) -> String {
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     checker.check().expect("type check error");
 
-    ast.items.iter()
+    ast.items
+        .iter()
         .filter_map(|item| match item {
             arch::ast::Item::Module(m)
-                if m.body.iter().any(|i| matches!(i, arch::ast::ModuleBodyItem::Thread(_))) =>
+                if m.body
+                    .iter()
+                    .any(|i| matches!(i, arch::ast::ModuleBodyItem::Thread(_))) =>
             {
-                Some(arch::sim_codegen::thread_sim::gen_module_thread(m, false, false, 1)
-                    .expect("thread sim codegen"))
+                Some(
+                    arch::sim_codegen::thread_sim::gen_module_thread(m, false, false, 1)
+                        .expect("thread sim codegen"),
+                )
             }
             _ => None,
         })
@@ -3815,9 +4319,16 @@ fn compile_to_thread_sim_collect_warnings(source: &str) -> Vec<arch::diagnostics
     let mut warnings: Vec<arch::diagnostics::CompileWarning> = Vec::new();
     for item in &ast.items {
         if let arch::ast::Item::Module(m) = item {
-            if m.body.iter().any(|i| matches!(i, arch::ast::ModuleBodyItem::Thread(_))) {
+            if m.body
+                .iter()
+                .any(|i| matches!(i, arch::ast::ModuleBodyItem::Thread(_)))
+            {
                 arch::sim_codegen::thread_sim::gen_module_thread_with_warnings(
-                    m, false, false, 1, &mut warnings,
+                    m,
+                    false,
+                    false,
+                    1,
+                    &mut warnings,
                 )
                 .expect("thread sim codegen");
             }
@@ -3851,14 +4362,22 @@ fn test_inputs_start_uninit_bus_flattened() {
         end module Reader
     ";
     let h = compile_to_sim_h(source, true);
-    assert!(h.contains("bool _b_data_vinit = false;"),
-            "expected shadow bit for flattened bus input 'b_data':\n{h}");
-    assert!(h.contains("bool _b_valid_vinit = false;"),
-            "expected shadow bit for flattened bus input 'b_valid':\n{h}");
-    assert!(h.contains("void set_b_data("),
-            "expected setter for flattened bus input 'b_data':\n{h}");
-    assert!(h.contains("void set_b_valid("),
-            "expected setter for flattened bus input 'b_valid':\n{h}");
+    assert!(
+        h.contains("bool _b_data_vinit = false;"),
+        "expected shadow bit for flattened bus input 'b_data':\n{h}"
+    );
+    assert!(
+        h.contains("bool _b_valid_vinit = false;"),
+        "expected shadow bit for flattened bus input 'b_valid':\n{h}"
+    );
+    assert!(
+        h.contains("void set_b_data("),
+        "expected setter for flattened bus input 'b_data':\n{h}"
+    );
+    assert!(
+        h.contains("void set_b_valid("),
+        "expected setter for flattened bus input 'b_valid':\n{h}"
+    );
 }
 
 #[test]
@@ -3883,10 +4402,14 @@ fn test_inputs_start_uninit_bus_skips_output_direction() {
         end module Driver
     ";
     let h = compile_to_sim_h(source, true);
-    assert!(!h.contains("_b_data_vinit"),
-            "did not expect vinit for output-side bus signal 'b_data':\n{h}");
-    assert!(!h.contains("set_b_data("),
-            "did not expect setter for output-side bus signal 'b_data':\n{h}");
+    assert!(
+        !h.contains("_b_data_vinit"),
+        "did not expect vinit for output-side bus signal 'b_data':\n{h}"
+    );
+    assert!(
+        !h.contains("set_b_data("),
+        "did not expect setter for output-side bus signal 'b_data':\n{h}"
+    );
 }
 
 #[test]
@@ -3907,8 +4430,10 @@ fn test_inputs_start_uninit_without_flag_emits_nothing() {
         end module Reader
     ";
     let h = compile_to_sim_h(source, false);
-    assert!(!h.contains("_b_data_vinit"),
-            "no --inputs-start-uninit → no bus vinit tracking:\n{h}");
+    assert!(
+        !h.contains("_b_data_vinit"),
+        "no --inputs-start-uninit → no bus vinit tracking:\n{h}"
+    );
 }
 
 #[test]
@@ -3952,19 +4477,29 @@ fn test_handshake_tier15_payload_warning_gated_on_valid() {
         .check_uninit(true)
         .inputs_start_uninit(true);
     let models = sim.generate();
-    let cpp = models.iter().find(|m| m.class_name == "VConsumer").unwrap().impl_.clone();
+    let cpp = models
+        .iter()
+        .find(|m| m.class_name == "VConsumer")
+        .unwrap()
+        .impl_
+        .clone();
 
     // Payload-signal read warning must be AND'd with the handshake's valid.
-    assert!(cpp.contains("!_b_ch_data_vinit && b_ch_valid"),
-            "expected payload warning gated on valid signal:\n{cpp}");
+    assert!(
+        cpp.contains("!_b_ch_data_vinit && b_ch_valid"),
+        "expected payload warning gated on valid signal:\n{cpp}"
+    );
 
     // Valid-signal itself is tracked but NOT a payload, so its warning is
     // unconditional (no extra gate).
-    let valid_check_line = cpp.lines()
+    let valid_check_line = cpp
+        .lines()
         .find(|l| l.contains("!_b_ch_valid_vinit"))
         .expect("expected warning for b_ch_valid signal");
-    assert!(!valid_check_line.contains("&& b_ch_valid"),
-            "valid signal's own warning should not self-gate:\n{valid_check_line}");
+    assert!(
+        !valid_check_line.contains("&& b_ch_valid"),
+        "valid signal's own warning should not self-gate:\n{valid_check_line}"
+    );
 }
 
 #[test]
@@ -4003,9 +4538,16 @@ fn test_handshake_tier15_req_ack_4phase_uses_req_as_guard() {
         .check_uninit(true)
         .inputs_start_uninit(true);
     let models = sim.generate();
-    let cpp = models.iter().find(|m| m.class_name == "VC").unwrap().impl_.clone();
-    assert!(cpp.contains("!_b_ch_payload_vinit && b_ch_req"),
-            "req_ack_4phase payload should gate on b_ch_req:\n{cpp}");
+    let cpp = models
+        .iter()
+        .find(|m| m.class_name == "VC")
+        .unwrap()
+        .impl_
+        .clone();
+    assert!(
+        cpp.contains("!_b_ch_payload_vinit && b_ch_req"),
+        "req_ack_4phase payload should gate on b_ch_req:\n{cpp}"
+    );
 }
 
 fn warnings_from(source: &str) -> Vec<String> {
@@ -4040,8 +4582,12 @@ fn test_handshake_tier15_unguarded_payload_warns() {
         end module Consumer
     ";
     let ws = warnings_from(source);
-    assert!(ws.iter().any(|m| m.contains("b.ch_data") && m.contains("if b.ch_valid")),
-            "expected unguarded-payload warning; got: {:?}", ws);
+    assert!(
+        ws.iter()
+            .any(|m| m.contains("b.ch_data") && m.contains("if b.ch_valid")),
+        "expected unguarded-payload warning; got: {:?}",
+        ws
+    );
 }
 
 #[test]
@@ -4069,8 +4615,12 @@ fn test_handshake_tier15_guarded_payload_silent() {
         end module Consumer
     ";
     let ws = warnings_from(source);
-    assert!(!ws.iter().any(|m| m.contains("handshake payload") && m.contains("ch_data")),
-            "did not expect handshake warning; got: {:?}", ws);
+    assert!(
+        !ws.iter()
+            .any(|m| m.contains("handshake payload") && m.contains("ch_data")),
+        "did not expect handshake warning; got: {:?}",
+        ws
+    );
 }
 
 #[test]
@@ -4097,11 +4647,9 @@ fn test_check_port_reg_timing_fires_on_legacy_port_reg() {
     ";
     let ws = warnings_from(source);
     assert!(
-        ws.iter().any(|m|
-            m.contains("out_reg")
+        ws.iter().any(|m| m.contains("out_reg")
             && m.contains("deprecated `port reg`")
-            && m.contains("state-dependent")
-        ),
+            && m.contains("state-dependent")),
         "expected check_port_reg_timing warning for legacy `port reg` \
          output; got: {:?}",
         ws,
@@ -4133,10 +4681,8 @@ fn test_check_port_reg_timing_skips_modern_pipe_reg() {
     ";
     let ws = warnings_from(source);
     assert!(
-        !ws.iter().any(|m|
-            m.contains("out_reg")
-            && (m.contains("state-dependent") || m.contains("deprecated `port reg`"))
-        ),
+        !ws.iter().any(|m| m.contains("out_reg")
+            && (m.contains("state-dependent") || m.contains("deprecated `port reg`"))),
         "did not expect check_port_reg_timing warning for modern \
          `pipe_reg<T, N>` output (user opted into the N-cycle latency \
          explicitly); got: {:?}",
@@ -4178,23 +4724,19 @@ fn test_check_port_reg_timing_skips_synthesized_thread_lowered_regs() {
     let mut parser = arch::parser::Parser::new(tokens, source);
     let parsed_ast = parser.parse_source_file().expect("parse error");
     let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
-    let ast = arch::elaborate::lower_tlm_target_threads(ast)
-        .expect("tlm target lowering");
-    let ast = arch::elaborate::lower_tlm_initiator_calls(ast)
-        .expect("tlm initiator lowering");
+    let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target lowering");
+    let ast = arch::elaborate::lower_tlm_initiator_calls(ast).expect("tlm initiator lowering");
     let ast = arch::elaborate::lower_threads(ast).expect("thread lowering");
-    let ast = arch::elaborate::lower_pipe_reg_ports(ast)
-        .expect("pipe_reg lowering");
-    let ast = arch::elaborate::lower_credit_channel_dispatch(ast)
-        .expect("credit_channel lowering");
+    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("pipe_reg lowering");
+    let ast = arch::elaborate::lower_credit_channel_dispatch(ast).expect("credit_channel lowering");
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     let (warnings, _) = checker.check().expect("typecheck");
     let msgs: Vec<String> = warnings.into_iter().map(|w| w.message).collect();
     assert!(
-        !msgs.iter().any(|m|
-            m.contains("state-dependent") || m.contains("deprecated `port reg`")
-        ),
+        !msgs
+            .iter()
+            .any(|m| m.contains("state-dependent") || m.contains("deprecated `port reg`")),
         "expected NO check_port_reg_timing warning on synthesized \
          thread-lowered port regs; got: {:?}",
         msgs,
@@ -4227,8 +4769,12 @@ fn test_handshake_tier15_guard_via_compound_and_silent() {
         end module Consumer
     ";
     let ws = warnings_from(source);
-    assert!(!ws.iter().any(|m| m.contains("handshake payload") && m.contains("ch_data")),
-            "AND-conjunct guard should silence the lint; got: {:?}", ws);
+    assert!(
+        !ws.iter()
+            .any(|m| m.contains("handshake payload") && m.contains("ch_data")),
+        "AND-conjunct guard should silence the lint; got: {:?}",
+        ws
+    );
 }
 
 #[test]
@@ -4256,8 +4802,11 @@ fn test_handshake_tier15_else_branch_warns() {
         end module Consumer
     ";
     let ws = warnings_from(source);
-    assert!(ws.iter().any(|m| m.contains("b.ch_data")),
-            "read in else-branch of `if valid` is NOT guarded; should warn. got: {:?}", ws);
+    assert!(
+        ws.iter().any(|m| m.contains("b.ch_data")),
+        "read in else-branch of `if valid` is NOT guarded; should warn. got: {:?}",
+        ws
+    );
 }
 
 #[test]
@@ -4285,8 +4834,11 @@ fn test_handshake_tier15_req_ack_uses_req_as_guard() {
         end module C
     ";
     let ws = warnings_from(source);
-    assert!(!ws.iter().any(|m| m.contains("handshake payload")),
-            "if b.ch_req should guard req_ack payload; got: {:?}", ws);
+    assert!(
+        !ws.iter().any(|m| m.contains("handshake payload")),
+        "if b.ch_req should guard req_ack payload; got: {:?}",
+        ws
+    );
 }
 
 #[test]
@@ -4307,10 +4859,14 @@ fn test_vec_methods_any_all_expand_to_reduction() {
     ";
     let sv = compile_to_sv(source);
     // Fully unrolled, item → vec[i]:
-    assert!(sv.contains("vec[0] == needle || vec[1] == needle"),
-            "expected any to expand to OR of 4 compares: {sv}");
-    assert!(sv.contains("vec[0] != 0 && vec[1] != 0"),
-            "expected all to expand to AND of 4 compares: {sv}");
+    assert!(
+        sv.contains("vec[0] == needle || vec[1] == needle"),
+        "expected any to expand to OR of 4 compares: {sv}"
+    );
+    assert!(
+        sv.contains("vec[0] != 0 && vec[1] != 0"),
+        "expected all to expand to AND of 4 compares: {sv}"
+    );
 }
 
 #[test]
@@ -4329,8 +4885,10 @@ fn test_vec_methods_index_binder() {
     ";
     let sv = compile_to_sv(source);
     // index should expand to 2-bit literals 2'd0..2'd3 (clog2(4)=2).
-    assert!(sv.contains("2'd0") && sv.contains("2'd3"),
-            "expected index binder to emit sized literals: {sv}");
+    assert!(
+        sv.contains("2'd0") && sv.contains("2'd3"),
+        "expected index binder to emit sized literals: {sv}"
+    );
 }
 
 #[test]
@@ -4349,11 +4907,15 @@ fn test_vec_methods_count_and_contains() {
     ";
     let sv = compile_to_sv(source);
     // count emits 3-bit population-count expression (clog2(N+1)=3 for N=4).
-    assert!(sv.contains("3'(vec[0] == x ? 1 : 0)"),
-            "expected count to emit width-3 bool-to-bit casts: {sv}");
+    assert!(
+        sv.contains("3'(vec[0] == x ? 1 : 0)"),
+        "expected count to emit width-3 bool-to-bit casts: {sv}"
+    );
     // contains lowers identically to any(item == x).
-    assert!(sv.contains("(vec[0] == x) || (vec[1] == x)"),
-            "expected contains to OR per-element equality: {sv}");
+    assert!(
+        sv.contains("(vec[0] == x) || (vec[1] == x)"),
+        "expected contains to OR per-element equality: {sv}"
+    );
 }
 
 #[test]
@@ -4372,12 +4934,18 @@ fn test_vec_methods_reduce_or_and_xor() {
         end module M
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("flags[0] | flags[1] | flags[2] | flags[3]"),
-            "reduce_or expected: {sv}");
-    assert!(sv.contains("flags[0] & flags[1] & flags[2] & flags[3]"),
-            "reduce_and expected: {sv}");
-    assert!(sv.contains("flags[0] ^ flags[1] ^ flags[2] ^ flags[3]"),
-            "reduce_xor expected: {sv}");
+    assert!(
+        sv.contains("flags[0] | flags[1] | flags[2] | flags[3]"),
+        "reduce_or expected: {sv}"
+    );
+    assert!(
+        sv.contains("flags[0] & flags[1] & flags[2] & flags[3]"),
+        "reduce_and expected: {sv}"
+    );
+    assert!(
+        sv.contains("flags[0] ^ flags[1] ^ flags[2] ^ flags[3]"),
+        "reduce_xor expected: {sv}"
+    );
 }
 
 #[test]
@@ -4400,13 +4968,19 @@ fn test_let_destructure_basic() {
         end module M
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("assign x = p_in.x;"),
-            "expected field assign for x:\n{sv}");
-    assert!(sv.contains("assign y = p_in.y;"),
-            "expected field assign for y:\n{sv}");
+    assert!(
+        sv.contains("assign x = p_in.x;"),
+        "expected field assign for x:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign y = p_in.y;"),
+        "expected field assign for y:\n{sv}"
+    );
     // Per-field width comes from the struct definition.
-    assert!(sv.contains("logic [7:0] x;") && sv.contains("logic [7:0] y;"),
-            "expected 8-bit wire declarations:\n{sv}");
+    assert!(
+        sv.contains("logic [7:0] x;") && sv.contains("logic [7:0] y;"),
+        "expected 8-bit wire declarations:\n{sv}"
+    );
 }
 
 #[test]
@@ -4429,10 +5003,14 @@ fn test_let_destructure_partial() {
         end module M
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("assign a = t.a;"),
-            "expected partial destructure:\n{sv}");
-    assert!(!sv.contains("assign b = t.b;") && !sv.contains("assign c = t.c;"),
-            "did not expect unbound fields:\n{sv}");
+    assert!(
+        sv.contains("assign a = t.a;"),
+        "expected partial destructure:\n{sv}"
+    );
+    assert!(
+        !sv.contains("assign b = t.b;") && !sv.contains("assign c = t.c;"),
+        "did not expect unbound fields:\n{sv}"
+    );
 }
 
 #[test]
@@ -4454,11 +5032,15 @@ fn test_let_destructure_non_struct_errors() {
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     let result = checker.check();
-    assert!(result.is_err(),
-            "expected type-check error for destructure on non-struct");
+    assert!(
+        result.is_err(),
+        "expected type-check error for destructure on non-struct"
+    );
     let msg = format!("{:?}", result.unwrap_err());
-    assert!(msg.contains("requires a struct-typed RHS"),
-            "expected specific error message, got: {msg}");
+    assert!(
+        msg.contains("requires a struct-typed RHS"),
+        "expected specific error message, got: {msg}"
+    );
 }
 
 #[test]
@@ -4485,11 +5067,15 @@ fn test_let_destructure_unknown_field_errors() {
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     let result = checker.check();
-    assert!(result.is_err(),
-            "expected type-check error for unknown field");
+    assert!(
+        result.is_err(),
+        "expected type-check error for unknown field"
+    );
     let msg = format!("{:?}", result.unwrap_err());
-    assert!(msg.contains("has no field named `z`"),
-            "expected unknown-field message, got: {msg}");
+    assert!(
+        msg.contains("has no field named `z`"),
+        "expected unknown-field message, got: {msg}"
+    );
 }
 
 #[test]
@@ -4527,19 +5113,29 @@ fn test_bus_wire_typechecks_and_codegens() {
     ";
     let h = compile_to_sim_h(source, false);
     // VStructs.h should emit a plain C++ struct for the bus.
-    assert!(h.contains("struct FooBus {"),
-            "expected `struct FooBus {{` in generated structs header:\n{h}");
-    assert!(h.contains("uint8_t cmd;") && h.contains("uint8_t resp;"),
-            "expected bus fields as struct members:\n{h}");
+    assert!(
+        h.contains("struct FooBus {"),
+        "expected `struct FooBus {{` in generated structs header:\n{h}"
+    );
+    assert!(
+        h.contains("uint8_t cmd;") && h.contains("uint8_t resp;"),
+        "expected bus fields as struct members:\n{h}"
+    );
 
     // VParent.h should declare the wire as a struct-typed member and must
     // NOT emit a shadow `uint32_t w;` scalar.
-    let parent = h.split("// ---\n").find(|p| p.contains("class VParent"))
+    let parent = h
+        .split("// ---\n")
+        .find(|p| p.contains("class VParent"))
         .expect("no VParent header section");
-    assert!(parent.contains("FooBus _let_w;"),
-            "expected `FooBus _let_w;` in VParent header:\n{parent}");
-    assert!(!parent.contains("uint32_t w;"),
-            "unexpected shadow `uint32_t w;` in VParent header:\n{parent}");
+    assert!(
+        parent.contains("FooBus _let_w;"),
+        "expected `FooBus _let_w;` in VParent header:\n{parent}"
+    );
+    assert!(
+        !parent.contains("uint32_t w;"),
+        "unexpected shadow `uint32_t w;` in VParent header:\n{parent}"
+    );
 }
 
 #[test]
@@ -4575,19 +5171,31 @@ fn test_vec_of_bus_port_flattens_to_n_indexed_copies() {
     // One port per signal, with `[N-1:0]` *packed* outer dim. Packed shape
     // works with both Verilator and Yosys's built-in read_verilog and lets
     // inst connection sites use SV concat literals for column gather.
-    assert!(sv.contains("output logic [2:0] chans_v"),
-            "missing `output logic [2:0] chans_v` (packed 3-element) in SV:\n{sv}");
-    assert!(sv.contains("input logic [2:0] chans_r"),
-            "missing `input logic [2:0] chans_r` in SV:\n{sv}");
-    assert!(sv.contains("output logic [2:0] [7:0] chans_d"),
-            "missing `output logic [2:0] [7:0] chans_d` in SV:\n{sv}");
+    assert!(
+        sv.contains("output logic [2:0] chans_v"),
+        "missing `output logic [2:0] chans_v` (packed 3-element) in SV:\n{sv}"
+    );
+    assert!(
+        sv.contains("input logic [2:0] chans_r"),
+        "missing `input logic [2:0] chans_r` in SV:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic [2:0] [7:0] chans_d"),
+        "missing `output logic [2:0] [7:0] chans_d` in SV:\n{sv}"
+    );
     // Bracket-dot access lowers to packed indexed SV refs.
-    assert!(sv.contains("chans_v[0] = 1'b1") || sv.contains("assign chans_v[0] = 1'b1"),
-            "expected `chans_v[0] = 1'b1` assignment in SV:\n{sv}");
-    assert!(sv.contains("chans_v[1] = 1'b0") || sv.contains("assign chans_v[1] = 1'b0"),
-            "expected `chans_v[1] = 1'b0` assignment in SV:\n{sv}");
-    assert!(sv.contains("chans_d[2] = 8'd51") || sv.contains("assign chans_d[2] = 8'd51"),
-            "expected `chans_d[2] = 8'd51` assignment in SV:\n{sv}");
+    assert!(
+        sv.contains("chans_v[0] = 1'b1") || sv.contains("assign chans_v[0] = 1'b1"),
+        "expected `chans_v[0] = 1'b1` assignment in SV:\n{sv}"
+    );
+    assert!(
+        sv.contains("chans_v[1] = 1'b0") || sv.contains("assign chans_v[1] = 1'b0"),
+        "expected `chans_v[1] = 1'b0` assignment in SV:\n{sv}"
+    );
+    assert!(
+        sv.contains("chans_d[2] = 8'd51") || sv.contains("assign chans_d[2] = 8'd51"),
+        "expected `chans_d[2] = 8'd51` assignment in SV:\n{sv}"
+    );
 }
 
 #[test]
@@ -4605,9 +5213,13 @@ fn test_vec_of_bus_port_rejects_zero_count() {
     "#;
     let tokens = arch::lexer::tokenize(src_zero).expect("lex");
     let mut parser = arch::parser::Parser::new(tokens, src_zero);
-    let err = parser.parse_source_file().expect_err("Vec<B, 0> should fail to parse");
-    assert!(format!("{err:?}").contains("N must be >= 1"),
-            "expected `N must be >= 1` diagnostic, got: {err:?}");
+    let err = parser
+        .parse_source_file()
+        .expect_err("Vec<B, 0> should fail to parse");
+    assert!(
+        format!("{err:?}").contains("N must be >= 1"),
+        "expected `N must be >= 1` diagnostic, got: {err:?}"
+    );
 }
 
 #[test]
@@ -4637,16 +5249,24 @@ fn test_vec_of_bus_port_param_driven_n() {
     let sv = compile_to_sv(source);
     // Packed Vec-of-bus port: single decl with `[N-1:0]` packed outer dim
     // (param folded to 3).
-    assert!(sv.contains("output logic [2:0] chans_v"),
-            "missing `output logic [2:0] chans_v` (packed) in SV:\n{sv}");
-    assert!(sv.contains("output logic [2:0] [7:0] chans_d"),
-            "missing `output logic [2:0] [7:0] chans_d` in SV:\n{sv}");
+    assert!(
+        sv.contains("output logic [2:0] chans_v"),
+        "missing `output logic [2:0] chans_v` (packed) in SV:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic [2:0] [7:0] chans_d"),
+        "missing `output logic [2:0] [7:0] chans_d` in SV:\n{sv}"
+    );
     // for-loop should be statically unrolled even though the upper bound
     // is `NUM_CHANS-1` (param expression).
-    assert!(!sv.contains("for (int i ="),
-            "expected param-driven for-loop bounds to fold + unroll:\n{sv}");
-    assert!(sv.contains("chans_d[2] = 8'(idx + 2)") || sv.contains("chans_d[2] = 8'((idx + 2))"),
-            "missing unrolled last-element assignment:\n{sv}");
+    assert!(
+        !sv.contains("for (int i ="),
+        "expected param-driven for-loop bounds to fold + unroll:\n{sv}"
+    );
+    assert!(
+        sv.contains("chans_d[2] = 8'(idx + 2)") || sv.contains("chans_d[2] = 8'((idx + 2))"),
+        "missing unrolled last-element assignment:\n{sv}"
+    );
 }
 
 #[test]
@@ -4675,8 +5295,10 @@ fn test_vec_of_bus_port_typecheck_drives_all_indexed_outputs() {
     let msg = errs.iter().map(|e| format!("{e:?}")).collect::<String>();
     // Diagnostic Display = "output port `chans_1_v` is not driven";
     // Debug = `UndriveOutput { name: "chans_1_v", ... }`. Accept either.
-    assert!(msg.contains("chans_1_v") && (msg.contains("not driven") || msg.contains("UndriveOutput")),
-            "expected `chans_1_v not driven` diagnostic, got: {msg}");
+    assert!(
+        msg.contains("chans_1_v") && (msg.contains("not driven") || msg.contains("UndriveOutput")),
+        "expected `chans_1_v not driven` diagnostic, got: {msg}"
+    );
 }
 
 #[test]
@@ -4723,15 +5345,21 @@ fn test_fast_gate_do_until_mealy_fusion() {
     let sv = compile_to_sv(source);
     // Exactly one wait_until state (S0) — no separate entry state.
     let state_decls = sv.matches("_t0_S").count();
-    assert!(state_decls <= 4,
-            "expected at most 2 `_t0_Sx` references (state localparam + one use); \
-             single-state Mealy fusion should not generate extra states. Got {state_decls}:\n{sv}");
+    assert!(
+        state_decls <= 4,
+        "expected at most 2 `_t0_Sx` references (state localparam + one use); \
+             single-state Mealy fusion should not generate extra states. Got {state_decls}:\n{sv}"
+    );
     // The do-body comb is wrapped in `if (m_val)`.
-    assert!(sv.contains("if (m_val)"),
-            "expected `if (m_val)` gating the Mealy body's comb drives:\n{sv}");
+    assert!(
+        sv.contains("if (m_val)"),
+        "expected `if (m_val)` gating the Mealy body's comb drives:\n{sv}"
+    );
     // Transition guard ANDs the wait + do-until conditions.
-    assert!(sv.contains("if (m_val && b_r)") || sv.contains("m_val && b_r"),
-            "expected `m_val && b_r` as the fused transition guard:\n{sv}");
+    assert!(
+        sv.contains("if (m_val && b_r)") || sv.contains("m_val && b_r"),
+        "expected `m_val && b_r` as the fused transition guard:\n{sv}"
+    );
 }
 
 #[test]
@@ -4914,10 +5542,14 @@ fn test_nested_for_in_thread_uses_distinct_loop_counters() {
     ";
     let sv = compile_to_sv(source);
     // Two distinct loop-counter regs must be declared.
-    assert!(sv.contains("_t0_loop_cnt_0"),
-        "expected outer loop counter `_t0_loop_cnt_0`:\n{sv}");
-    assert!(sv.contains("_t0_loop_cnt_1"),
-        "expected inner loop counter `_t0_loop_cnt_1`:\n{sv}");
+    assert!(
+        sv.contains("_t0_loop_cnt_0"),
+        "expected outer loop counter `_t0_loop_cnt_0`:\n{sv}"
+    );
+    assert!(
+        sv.contains("_t0_loop_cnt_1"),
+        "expected inner loop counter `_t0_loop_cnt_1`:\n{sv}"
+    );
     // No leftover shared `_t0_loop_cnt` (without an `_{id}` suffix) — a
     // grep for `_t0_loop_cnt;` or `_t0_loop_cnt ` (followed by anything
     // other than `_`) would catch the old shared-counter shape.
@@ -4927,8 +5559,10 @@ fn test_nested_for_in_thread_uses_distinct_loop_counters() {
         || sv.contains("_t0_loop_cnt =")
         || sv.contains("_t0_loop_cnt >=")
         || sv.contains("_t0_loop_cnt <");
-    assert!(!bad_shared,
-        "found references to shared `_t0_loop_cnt` (issue #414 regression):\n{sv}");
+    assert!(
+        !bad_shared,
+        "found references to shared `_t0_loop_cnt` (issue #414 regression):\n{sv}"
+    );
 }
 
 #[test]
@@ -4952,24 +5586,50 @@ fn test_vec_bus_whole_vec_forward_to_child_inst() {
     let source = include_str!("regression/issues/vec_bus_forward/VecBusForward.arch");
     let sv = compile_to_sv(source);
     // Both modules must be emitted.
-    assert!(sv.contains("module Inner"), "expected Inner module in SV:\n{sv}");
-    assert!(sv.contains("module Wrapper"), "expected Wrapper module in SV:\n{sv}");
+    assert!(
+        sv.contains("module Inner"),
+        "expected Inner module in SV:\n{sv}"
+    );
+    assert!(
+        sv.contains("module Wrapper"),
+        "expected Wrapper module in SV:\n{sv}"
+    );
     // The Vec-of-bus port should emit as packed signals on Wrapper.
-    assert!(sv.contains("m_top_v_valid"), "expected m_top_v_valid port:\n{sv}");
-    assert!(sv.contains("m_top_v_ready"), "expected m_top_v_ready port:\n{sv}");
-    assert!(sv.contains("m_top_v_data"), "expected m_top_v_data port:\n{sv}");
+    assert!(
+        sv.contains("m_top_v_valid"),
+        "expected m_top_v_valid port:\n{sv}"
+    );
+    assert!(
+        sv.contains("m_top_v_ready"),
+        "expected m_top_v_ready port:\n{sv}"
+    );
+    assert!(
+        sv.contains("m_top_v_data"),
+        "expected m_top_v_data port:\n{sv}"
+    );
     // Inner inst should forward each bus signal whole.
-    assert!(sv.contains("Inner inner"), "expected inst `Inner inner` in SV:\n{sv}");
-    assert!(sv.contains(".m_v_ready(m_top_v_ready)"),
-        "expected whole-Vec packed forwarding `.m_v_ready(m_top_v_ready)`:\n{sv}");
-    assert!(sv.contains(".m_v_valid(m_top_v_valid)"),
-        "expected whole-Vec packed forwarding `.m_v_valid(m_top_v_valid)`:\n{sv}");
+    assert!(
+        sv.contains("Inner inner"),
+        "expected inst `Inner inner` in SV:\n{sv}"
+    );
+    assert!(
+        sv.contains(".m_v_ready(m_top_v_ready)"),
+        "expected whole-Vec packed forwarding `.m_v_ready(m_top_v_ready)`:\n{sv}"
+    );
+    assert!(
+        sv.contains(".m_v_valid(m_top_v_valid)"),
+        "expected whole-Vec packed forwarding `.m_v_valid(m_top_v_valid)`:\n{sv}"
+    );
     // The pre-fix bug emitted shadowing wires like `logic m_top_v_ready;` —
     // assert none of those slipped in.
-    assert!(!sv.contains("logic m_top_v_ready;"),
-        "redundant `logic m_top_v_ready;` declaration shadows the SV port (issue #424):\n{sv}");
-    assert!(!sv.contains("logic m_top_v_valid;"),
-        "redundant `logic m_top_v_valid;` declaration shadows the SV port (issue #424):\n{sv}");
+    assert!(
+        !sv.contains("logic m_top_v_ready;"),
+        "redundant `logic m_top_v_ready;` declaration shadows the SV port (issue #424):\n{sv}"
+    );
+    assert!(
+        !sv.contains("logic m_top_v_valid;"),
+        "redundant `logic m_top_v_valid;` declaration shadows the SV port (issue #424):\n{sv}"
+    );
 }
 
 #[test]
@@ -4985,9 +5645,7 @@ fn test_type_alias_bus_params_propagate_into_generate_if() {
     // `GenItem::Wire` the same way the top-level `WireDecl` substitution
     // path already did. After the fix, both the module-scope wire and the
     // generate_if wire must emit with the alias's `ID_W = 5`.
-    let source = include_str!(
-        "regression/issues/alias_in_generate_if/AliasInGenif.arch"
-    );
+    let source = include_str!("regression/issues/alias_in_generate_if/AliasInGenif.arch");
     let sv = compile_to_sv(source);
     // Both wires must be 5 bits wide. Before the fix, `bad_bus_ar_id` was
     // 1 bit (BusAxi4's default ID_W).
@@ -5002,8 +5660,7 @@ fn test_type_alias_bus_params_propagate_into_generate_if() {
     );
     // Defensive: the buggy shape must not reappear.
     assert!(
-        !sv.contains("logic [0:0] bad_bus_ar_id")
-            && !sv.contains("logic bad_bus_ar_id"),
+        !sv.contains("logic [0:0] bad_bus_ar_id") && !sv.contains("logic bad_bus_ar_id"),
         "found buggy 1-bit / scalar `bad_bus_ar_id` (issue #423 regression):\n{sv}",
     );
 }
@@ -5114,9 +5771,7 @@ fn test_concat_bus_field_width_uses_module_param_binding() {
     // After the fix, the bus-flat width fold uses
     // `type_bits_te_with_params(&m.params)`, so `up_ar_id`'s width
     // resolves correctly to 3 and the concat shift is `<< 3`.
-    let source = include_str!(
-        "regression/issues/concat_bus_field_width/ConcatBusFieldWidth.arch"
-    );
+    let source = include_str!("regression/issues/concat_bus_field_width/ConcatBusFieldWidth.arch");
     let cpp = compile_to_sim_h(source, false);
     // The pack expression must shift `up_ar_addr` by 3 (the width of
     // `up_ar_id`), not 32.
@@ -5145,12 +5800,15 @@ fn test_pybind_bus_flat_width_uses_module_param_binding() {
     // report the real width, not the legacy `eval_width` 32-bit
     // fallback that bare `type_bits_te` produced for an unresolved
     // module-param Ident.
-    let source = include_str!(
-        "regression/issues/pybind_bus_flat_param_width/PybindBusFlatParamWidth.arch"
-    );
+    let source =
+        include_str!("regression/issues/pybind_bus_flat_param_width/PybindBusFlatParamWidth.arch");
     let pybinds = compile_to_pybind_cpps(source);
-    let cpp = pybinds.iter().find(|(n, _)| n.contains("PybindBusFlatParamWidth"))
-        .expect("PybindBusFlatParamWidth pybind wrapper").1.clone();
+    let cpp = pybinds
+        .iter()
+        .find(|(n, _)| n.contains("PybindBusFlatParamWidth"))
+        .expect("PybindBusFlatParamWidth pybind wrapper")
+        .1
+        .clone();
     // _port_info tuple for `up_data` must carry the param-substituted
     // width (128), not the conservative 32-bit fallback.
     assert!(
@@ -5175,19 +5833,21 @@ fn test_fsm_bus_flat_trace_width_uses_construct_param_binding() {
     // width is bound through an FSM-param-substituted bus-alias param,
     // the VCD `$var wire <width> ... <name> $end` header line must
     // announce the real lane width.
-    let source = include_str!(
-        "regression/issues/fsm_bus_flat_param_width/FsmBusFlatParamWidth.arch"
-    );
+    let source =
+        include_str!("regression/issues/fsm_bus_flat_param_width/FsmBusFlatParamWidth.arch");
     let sim = compile_to_sim_h(source, false);
     // VCD declaration for `up_data` must carry the param-substituted
     // width (96), not the conservative 32-bit fallback.
-    let up_data_lines: Vec<&str> = sim.lines()
+    let up_data_lines: Vec<&str> = sim
+        .lines()
         .filter(|l| l.contains("up_data $end") && l.contains("$var wire"))
         .collect();
     assert_eq!(
-        up_data_lines.len(), 1,
+        up_data_lines.len(),
+        1,
         "expected exactly one VCD `$var wire ... up_data $end` declaration \
-         line; found {} in:\n{sim}", up_data_lines.len()
+         line; found {} in:\n{sim}",
+        up_data_lines.len()
     );
     let line = up_data_lines[0];
     assert!(
@@ -5225,9 +5885,8 @@ fn test_fsm_param_vec_scalar_widths_resolve_through_sibling_helpers() {
     // `uint32_t`, the Vec count would fold to 0 (`buf[0]`,
     // `_vec_word[0]`), and the per-element VCD trace declarations would
     // announce width 32 instead of 48.
-    let source = include_str!(
-        "regression/issues/fsm_param_vec_scalar_widths/FsmParamVecScalarWidths.arch"
-    );
+    let source =
+        include_str!("regression/issues/fsm_param_vec_scalar_widths/FsmParamVecScalarWidths.arch");
     let sim = compile_to_sim_h(source, false);
 
     // 1. Scalar UInt<ACC> port: bucket must be uint64_t.
@@ -5281,7 +5940,8 @@ fn test_fsm_param_vec_scalar_widths_resolve_through_sibling_helpers() {
     //    didn't take a params slice). When `add_trace_to_simple_construct`
     //    was migrated to accept `params: &[ParamDecl]`, the FSM callsite
     //    started passing `&f.common.params` so `UInt<ACC>` resolves to 48.
-    let out_word_trace_line = sim.lines()
+    let out_word_trace_line = sim
+        .lines()
         .find(|l| l.contains("(out_word >> _i) & 1"))
         .unwrap_or("(out_word trace dump line not found)");
     assert!(
@@ -5372,9 +6032,7 @@ fn test_wait_0plus_is_retired_with_migration_hint() {
         .expect_err("retired wait 0+ syntax should be a parse error");
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("retired")
-            && msg.contains("if not")
-            && msg.contains("wait until"),
+        msg.contains("retired") && msg.contains("if not") && msg.contains("wait until"),
         "expected wait-0+ retirement diagnostic with migration hint, got: {msg}"
     );
 }
@@ -5409,8 +6067,10 @@ fn test_wait_0plus_requires_no_space_between_0_and_plus() {
     "#;
     let tokens = arch::lexer::tokenize(source).expect("lex");
     let mut parser = arch::parser::Parser::new(tokens, source);
-    assert!(parser.parse_source_file().is_err(),
-            "wait `0 + cycle` (with space) should not parse as Mealy wait");
+    assert!(
+        parser.parse_source_file().is_err(),
+        "wait `0 + cycle` (with space) should not parse as Mealy wait"
+    );
 }
 
 #[test]
@@ -5459,10 +6119,14 @@ fn test_comb_graph_treats_bus_wires_as_intermediates() {
     // the SV still emits valid bus-wire flattening and a clean inst
     // chain — combined with the v2 NIC-400 smoke test (arch sim path)
     // already covered above.
-    assert!(sv.contains("logic w_v") && sv.contains("logic [7:0] w_d"),
-            "expected flattened bus wire signals:\n{sv}");
-    assert!(sv.contains(".inp_v(w_v)") || sv.contains(".inp_v (w_v)"),
-            "expected `.inp_v(w_v)` inst connection:\n{sv}");
+    assert!(
+        sv.contains("logic w_v") && sv.contains("logic [7:0] w_d"),
+        "expected flattened bus wire signals:\n{sv}"
+    );
+    assert!(
+        sv.contains(".inp_v(w_v)") || sv.contains(".inp_v (w_v)"),
+        "expected `.inp_v(w_v)` inst connection:\n{sv}"
+    );
 }
 
 #[test]
@@ -5501,16 +6165,22 @@ fn test_thread_writing_bus_signals_lowers_correctly() {
     ";
     let sv = compile_to_sv(source);
     // Sub-module exposes flat bus signals as ports.
-    assert!(sv.contains("output logic b_v")
+    assert!(
+        sv.contains("output logic b_v")
             && sv.contains("output logic [7:0] b_d")
             && sv.contains("input logic b_r"),
-            "expected sub-module flat bus signals in SV:\n{sv}");
+        "expected sub-module flat bus signals in SV:\n{sv}"
+    );
     // Sub-inst connects them through to parent's flat ports — and the
     // parent's signature must NOT have duplicate `logic b_v;` decls.
-    assert!(sv.matches("logic b_v").count() <= 2,
-            "expected at most one `logic b_v` decl per module:\n{sv}");
-    assert!(sv.contains(".b_v(b_v)") || sv.contains(".b_v (b_v)"),
-            "expected `.b_v(b_v)` inst-output connection:\n{sv}");
+    assert!(
+        sv.matches("logic b_v").count() <= 2,
+        "expected at most one `logic b_v` decl per module:\n{sv}"
+    );
+    assert!(
+        sv.contains(".b_v(b_v)") || sv.contains(".b_v (b_v)"),
+        "expected `.b_v(b_v)` inst-output connection:\n{sv}"
+    );
 }
 
 #[test]
@@ -5540,15 +6210,21 @@ fn test_vec_of_bus_for_loop_static_unroll() {
     let sv = compile_to_sv(source);
     // The loop should be statically unrolled: no behavioral `for (int i ...`,
     // and per-element array-indexed assignments (D2 shape).
-    assert!(!sv.contains("for (int i ="),
-            "expected for-loop to be statically unrolled (no behavioral SV for-loop):\n{sv}");
+    assert!(
+        !sv.contains("for (int i ="),
+        "expected for-loop to be statically unrolled (no behavioral SV for-loop):\n{sv}"
+    );
     for i in 0..4 {
-        assert!(sv.contains(&format!("chans_v[{i}] = 1'b1")),
-                "missing unrolled `chans_v[{i}] = 1'b1`:\n{sv}");
+        assert!(
+            sv.contains(&format!("chans_v[{i}] = 1'b1")),
+            "missing unrolled `chans_v[{i}] = 1'b1`:\n{sv}"
+        );
         // RHS must reference the literal i (not the loop variable).
-        assert!(sv.contains(&format!("chans_d[{i}] = 8'(idx + {i})"))
+        assert!(
+            sv.contains(&format!("chans_d[{i}] = 8'(idx + {i})"))
                 || sv.contains(&format!("chans_d[{i}] = 8'((idx + {i}))")),
-                "missing unrolled `chans_d[{i}] = 8'(idx + {i})`:\n{sv}");
+            "missing unrolled `chans_d[{i}] = 8'(idx + {i})`:\n{sv}"
+        );
     }
 }
 
@@ -5587,13 +6263,20 @@ fn test_vec_of_bus_inst_whole_vec_connection() {
     let sv = compile_to_sv(source);
     // Whole-vec `chans -> w` now emits ONE packed connection per bus signal —
     // both sides have the same packed shape. No per-element split needed.
-    assert!(sv.contains(".chans_v(w_v)") || sv.contains(".chans_v (w_v)"),
-            "missing `.chans_v(w_v)` packed whole-vec connection:\n{sv}");
-    assert!(sv.contains(".chans_d(w_d)") || sv.contains(".chans_d (w_d)"),
-            "missing `.chans_d(w_d)` packed whole-vec connection:\n{sv}");
+    assert!(
+        sv.contains(".chans_v(w_v)") || sv.contains(".chans_v (w_v)"),
+        "missing `.chans_v(w_v)` packed whole-vec connection:\n{sv}"
+    );
+    assert!(
+        sv.contains(".chans_d(w_d)") || sv.contains(".chans_d (w_d)"),
+        "missing `.chans_d(w_d)` packed whole-vec connection:\n{sv}"
+    );
     // The parent's bus wire `w` is also packed, so reads like `w[0].d`
     // lower to `w_d[0]`.
-    assert!(sv.contains("w_d[0]"), "expected `w_d[0]` indexed wire read:\n{sv}");
+    assert!(
+        sv.contains("w_d[0]"),
+        "expected `w_d[0]` indexed wire read:\n{sv}"
+    );
 }
 
 #[test]
@@ -5621,19 +6304,29 @@ fn test_vec_of_bus_wire_flattens_to_n_indexed_signals() {
     ";
     let sv = compile_to_sv(source);
     // Packed wire: one decl per bus signal with `[N-1:0]` outer dim.
-    assert!(sv.contains("logic [1:0] w_v;"),
-            "missing `logic [1:0] w_v;` packed wire in SV:\n{sv}");
-    assert!(sv.contains("logic [1:0] [7:0] w_d;"),
-            "missing `logic [1:0] [7:0] w_d;` packed wire in SV:\n{sv}");
+    assert!(
+        sv.contains("logic [1:0] w_v;"),
+        "missing `logic [1:0] w_v;` packed wire in SV:\n{sv}"
+    );
+    assert!(
+        sv.contains("logic [1:0] [7:0] w_d;"),
+        "missing `logic [1:0] [7:0] w_d;` packed wire in SV:\n{sv}"
+    );
     // Indexed writes/reads use SV packed slicing.
     for (i, expected_d) in [(0u32, "8'd17"), (1u32, "8'd34")] {
-        assert!(sv.contains(&format!("w_d[{i}] = {expected_d}")),
-                "missing `w_d[{i}] = {expected_d}` assignment in SV:\n{sv}");
+        assert!(
+            sv.contains(&format!("w_d[{i}] = {expected_d}")),
+            "missing `w_d[{i}] = {expected_d}` assignment in SV:\n{sv}"
+        );
     }
-    assert!(sv.contains("o_v0 = w_v[0]"),
-            "expected `o_v0 = w_v[0]` in SV:\n{sv}");
-    assert!(sv.contains("o_d1 = w_d[1]"),
-            "expected `o_d1 = w_d[1]` in SV:\n{sv}");
+    assert!(
+        sv.contains("o_v0 = w_v[0]"),
+        "expected `o_v0 = w_v[0]` in SV:\n{sv}"
+    );
+    assert!(
+        sv.contains("o_d1 = w_d[1]"),
+        "expected `o_d1 = w_d[1]` in SV:\n{sv}"
+    );
 }
 
 #[test]
@@ -5676,22 +6369,34 @@ fn test_vec_of_bus_wire_carries_inst_output_through_indexed_connection() {
     ";
     let sv = compile_to_sv(source);
     // Packed Vec-of-bus wire: one decl per bus signal with [N-1:0] outer dim.
-    assert!(sv.contains("logic [1:0] w_v;"),
-            "missing `logic [1:0] w_v;` packed wire in Parent SV:\n{sv}");
-    assert!(sv.contains("logic [1:0] [7:0] w_d;"),
-            "missing `logic [1:0] [7:0] w_d;` packed wire in Parent SV:\n{sv}");
+    assert!(
+        sv.contains("logic [1:0] w_v;"),
+        "missing `logic [1:0] w_v;` packed wire in Parent SV:\n{sv}"
+    );
+    assert!(
+        sv.contains("logic [1:0] [7:0] w_d;"),
+        "missing `logic [1:0] [7:0] w_d;` packed wire in Parent SV:\n{sv}"
+    );
     // Producer inst's Vec-of-bus port connects via packed concat from the
     // per-element parent expressions.
     // `chans[0] -> w[0]; chans[1] -> w[1];` gathers into `.chans_<sig>({w[1].sig, w[0].sig})`.
-    assert!(sv.contains(".chans_v({w_v[1], w_v[0]})") || sv.contains(".chans_v ({w_v[1], w_v[0]})"),
-            "expected `.chans_v({{w_v[1], w_v[0]}})` packed concat connection in SV:\n{sv}");
-    assert!(sv.contains(".chans_d({w_d[1], w_d[0]})") || sv.contains(".chans_d ({w_d[1], w_d[0]})"),
-            "expected `.chans_d({{w_d[1], w_d[0]}})` packed concat connection in SV:\n{sv}");
+    assert!(
+        sv.contains(".chans_v({w_v[1], w_v[0]})") || sv.contains(".chans_v ({w_v[1], w_v[0]})"),
+        "expected `.chans_v({{w_v[1], w_v[0]}})` packed concat connection in SV:\n{sv}"
+    );
+    assert!(
+        sv.contains(".chans_d({w_d[1], w_d[0]})") || sv.contains(".chans_d ({w_d[1], w_d[0]})"),
+        "expected `.chans_d({{w_d[1], w_d[0]}})` packed concat connection in SV:\n{sv}"
+    );
     // Downstream reads use packed indexed access.
-    assert!(sv.contains("o_v0 = w_v[0]"),
-            "expected `o_v0 = w_v[0]` in SV:\n{sv}");
-    assert!(sv.contains("o_d1 = w_d[1]"),
-            "expected `o_d1 = w_d[1]` in SV:\n{sv}");
+    assert!(
+        sv.contains("o_v0 = w_v[0]"),
+        "expected `o_v0 = w_v[0]` in SV:\n{sv}"
+    );
+    assert!(
+        sv.contains("o_d1 = w_d[1]"),
+        "expected `o_d1 = w_d[1]` in SV:\n{sv}"
+    );
 }
 
 #[test]
@@ -5734,16 +6439,24 @@ fn test_vec_of_bus_inst_connection_uses_bracket_index_syntax() {
     ";
     let sv = compile_to_sv(source);
     // Child exposes one packed port per Vec-of-bus signal.
-    assert!(sv.contains("output logic [1:0] chans_v"),
-            "child should expose `output logic [1:0] chans_v` (packed):\n{sv}");
-    assert!(sv.contains("output logic [1:0] [7:0] chans_d"),
-            "child should expose `output logic [1:0] [7:0] chans_d`:\n{sv}");
+    assert!(
+        sv.contains("output logic [1:0] chans_v"),
+        "child should expose `output logic [1:0] chans_v` (packed):\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic [1:0] [7:0] chans_d"),
+        "child should expose `output logic [1:0] [7:0] chans_d`:\n{sv}"
+    );
     // Per-element scalar wire connections gather into a packed concat
     // at the inst boundary — big-endian, so chans[1] is the MSB.
-    assert!(sv.contains(".chans_v({w1_v, w0_v})") || sv.contains(".chans_v ({w1_v, w0_v})"),
-            "expected `.chans_v({{w1_v, w0_v}})` packed concat connection in SV:\n{sv}");
-    assert!(sv.contains(".chans_d({w1_d, w0_d})") || sv.contains(".chans_d ({w1_d, w0_d})"),
-            "expected `.chans_d({{w1_d, w0_d}})` packed concat connection in SV:\n{sv}");
+    assert!(
+        sv.contains(".chans_v({w1_v, w0_v})") || sv.contains(".chans_v ({w1_v, w0_v})"),
+        "expected `.chans_v({{w1_v, w0_v}})` packed concat connection in SV:\n{sv}"
+    );
+    assert!(
+        sv.contains(".chans_d({w1_d, w0_d})") || sv.contains(".chans_d ({w1_d, w0_d})"),
+        "expected `.chans_d({{w1_d, w0_d}})` packed concat connection in SV:\n{sv}"
+    );
 }
 
 #[test]
@@ -5789,19 +6502,29 @@ fn test_bus_wire_sv_flattens_to_individual_signals() {
     let sv = cg.generate();
 
     // Bus wire must decompose into flat signals.
-    assert!(sv.contains("logic [7:0] w_cmd;") && sv.contains("logic [7:0] w_resp;"),
-            "expected flat `w_cmd` / `w_resp` wires:\n{sv}");
+    assert!(
+        sv.contains("logic [7:0] w_cmd;") && sv.contains("logic [7:0] w_resp;"),
+        "expected flat `w_cmd` / `w_resp` wires:\n{sv}"
+    );
     // No `FooBus w;` placeholder left behind.
-    assert!(!sv.contains("FooBus w"),
-            "unexpected `FooBus w` decl (should be flattened):\n{sv}");
+    assert!(
+        !sv.contains("FooBus w"),
+        "unexpected `FooBus w` decl (should be flattened):\n{sv}"
+    );
     // Field access on bus wire rewrites to flat name.
-    assert!(sv.contains("assign w_cmd = x_in") || sv.contains("w_cmd = x_in"),
-            "expected `w_cmd = x_in` assignment:\n{sv}");
-    assert!(sv.contains("x_out = w_resp"),
-            "expected `x_out = w_resp` assignment:\n{sv}");
+    assert!(
+        sv.contains("assign w_cmd = x_in") || sv.contains("w_cmd = x_in"),
+        "expected `w_cmd = x_in` assignment:\n{sv}"
+    );
+    assert!(
+        sv.contains("x_out = w_resp"),
+        "expected `x_out = w_resp` assignment:\n{sv}"
+    );
     // Inst binding connects to the flat wires.
-    assert!(sv.contains(".p_cmd(w_cmd)") && sv.contains(".p_resp(w_resp)"),
-            "expected inst binding to flat wires:\n{sv}");
+    assert!(
+        sv.contains(".p_cmd(w_cmd)") && sv.contains(".p_resp(w_resp)"),
+        "expected inst binding to flat wires:\n{sv}"
+    );
 }
 
 #[test]
@@ -5825,11 +6548,27 @@ fn test_bus_declaration_inside_package_parses() {
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
     let sf = parser.parse_source_file().expect("parse");
-    let pkg = sf.items.iter().find_map(|i|
-        if let arch::ast::Item::Package(p) = i { Some(p) } else { None }
-    ).expect("parsed package");
-    assert_eq!(pkg.structs.len(), 1, "struct should still parse alongside bus");
-    assert_eq!(pkg.buses.len(), 1, "bus should be collected into package.buses");
+    let pkg = sf
+        .items
+        .iter()
+        .find_map(|i| {
+            if let arch::ast::Item::Package(p) = i {
+                Some(p)
+            } else {
+                None
+            }
+        })
+        .expect("parsed package");
+    assert_eq!(
+        pkg.structs.len(),
+        1,
+        "struct should still parse alongside bus"
+    );
+    assert_eq!(
+        pkg.buses.len(),
+        1,
+        "bus should be collected into package.buses"
+    );
     assert_eq!(pkg.buses[0].name.name, "MyBus");
 }
 
@@ -5873,10 +6612,14 @@ fn test_package_nested_bus_used_as_wire_and_port() {
     ";
     // Sim codegen: struct MyBus lands in VStructs header.
     let sim_h = compile_to_sim_h(source, false);
-    assert!(sim_h.contains("struct MyBus {"),
-            "expected `struct MyBus` in sim structs header:\n{sim_h}");
-    assert!(sim_h.contains("uint8_t cmd_valid;") && sim_h.contains("uint8_t cmd_data;"),
-            "expected bus fields as struct members:\n{sim_h}");
+    assert!(
+        sim_h.contains("struct MyBus {"),
+        "expected `struct MyBus` in sim structs header:\n{sim_h}"
+    );
+    assert!(
+        sim_h.contains("uint8_t cmd_valid;") && sim_h.contains("uint8_t cmd_data;"),
+        "expected bus fields as struct members:\n{sim_h}"
+    );
 
     // SV codegen: package emits no bus type; wires flatten to per-signal.
     use arch::codegen::Codegen;
@@ -5889,12 +6632,18 @@ fn test_package_nested_bus_used_as_wire_and_port() {
     let (_w, overload_map) = checker.check().expect("type check");
     let mut cg = Codegen::new(&symbols, &ast, overload_map);
     let sv = cg.generate();
-    assert!(sv.contains("logic b_cmd_valid;"),
-            "bus wire should flatten to b_cmd_valid:\n{sv}");
-    assert!(sv.contains("logic [7:0] b_cmd_data;"),
-            "bus wire should flatten to b_cmd_data:\n{sv}");
-    assert!(sv.contains(".p_cmd_data(b_cmd_data)"),
-            "inst binding should use flat wire names:\n{sv}");
+    assert!(
+        sv.contains("logic b_cmd_valid;"),
+        "bus wire should flatten to b_cmd_valid:\n{sv}"
+    );
+    assert!(
+        sv.contains("logic [7:0] b_cmd_data;"),
+        "bus wire should flatten to b_cmd_data:\n{sv}"
+    );
+    assert!(
+        sv.contains(".p_cmd_data(b_cmd_data)"),
+        "inst binding should use flat wire names:\n{sv}"
+    );
 }
 
 #[test]
@@ -5927,9 +6676,12 @@ fn test_bus_port_connected_via_per_field_bindings_no_warning() {
         end module Parent
     ";
     let ws = warnings_from(source);
-    assert!(!ws.iter().any(|m| m.contains("output port `p`")
-                               && m.contains("not connected")),
-            "per-field bus binding should not trigger 'not connected': {:?}", ws);
+    assert!(
+        !ws.iter()
+            .any(|m| m.contains("output port `p`") && m.contains("not connected")),
+        "per-field bus binding should not trigger 'not connected': {:?}",
+        ws
+    );
 }
 
 #[test]
@@ -5956,9 +6708,12 @@ fn test_bus_port_unconnected_still_warns() {
         end module Parent
     ";
     let ws = warnings_from(source);
-    assert!(ws.iter().any(|m| m.contains("output port `p`")
-                              && m.contains("not connected")),
-            "completely-unbound bus port should still warn: {:?}", ws);
+    assert!(
+        ws.iter()
+            .any(|m| m.contains("output port `p`") && m.contains("not connected")),
+        "completely-unbound bus port should still warn: {:?}",
+        ws
+    );
 }
 
 #[test]
@@ -5984,9 +6739,13 @@ fn test_handshake_payload_guard_via_short_circuit_and() {
         end module Consumer
     ";
     let ws = warnings_from(source);
-    assert!(!ws.iter().any(|m| m.contains("cmd_op") && m.contains("unguarded")
-                               || (m.contains("cmd_op") && m.contains("outside"))),
-            "short-circuit `and` should guard cmd_op read; got: {:?}", ws);
+    assert!(
+        !ws.iter()
+            .any(|m| m.contains("cmd_op") && m.contains("unguarded")
+                || (m.contains("cmd_op") && m.contains("outside"))),
+        "short-circuit `and` should guard cmd_op read; got: {:?}",
+        ws
+    );
 }
 
 #[test]
@@ -6012,8 +6771,12 @@ fn test_handshake_payload_guard_via_ternary_condition() {
         end module Consumer
     ";
     let ws = warnings_from(source);
-    assert!(!ws.iter().any(|m| m.contains("cmd_op") && m.contains("outside")),
-            "ternary condition should guard cmd_op read; got: {:?}", ws);
+    assert!(
+        !ws.iter()
+            .any(|m| m.contains("cmd_op") && m.contains("outside")),
+        "ternary condition should guard cmd_op read; got: {:?}",
+        ws
+    );
 }
 
 #[test]
@@ -6037,8 +6800,12 @@ fn test_handshake_payload_truly_unguarded_still_warns() {
         end module Consumer
     ";
     let ws = warnings_from(source);
-    assert!(ws.iter().any(|m| m.contains("cmd_op") && m.contains("outside")),
-            "genuinely unguarded cmd_op read should still warn: {:?}", ws);
+    assert!(
+        ws.iter()
+            .any(|m| m.contains("cmd_op") && m.contains("outside")),
+        "genuinely unguarded cmd_op read should still warn: {:?}",
+        ws
+    );
 }
 
 fn compile_to_pybind_cpps(source: &str) -> Vec<(String, String)> {
@@ -6051,7 +6818,10 @@ fn compile_to_pybind_cpps(source: &str) -> Vec<(String, String)> {
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     let (_warnings, overload_map) = checker.check().expect("type check");
     let sim = SimCodegen::new(&symbols, &ast, overload_map);
-    sim.generate_pybind().into_iter().map(|m| (m.class_name, m.impl_)).collect()
+    sim.generate_pybind()
+        .into_iter()
+        .map(|m| (m.class_name, m.impl_))
+        .collect()
 }
 
 #[test]
@@ -6114,34 +6884,62 @@ fn test_pybind_struct_bindings_are_scoped_to_module() {
     ";
 
     let pybinds = compile_to_pybind_cpps(source);
-    let prim = pybinds.iter().find(|(n, _)| n.contains("PrimitivesOnly"))
-        .expect("PrimitivesOnly pybind wrapper").1.clone();
-    let one = pybinds.iter().find(|(n, _)| n.contains("UsesOneStruct"))
-        .expect("UsesOneStruct pybind wrapper").1.clone();
-    let uses = pybinds.iter().find(|(n, _)| n.contains("UsesStructs"))
-        .expect("UsesStructs pybind wrapper").1.clone();
+    let prim = pybinds
+        .iter()
+        .find(|(n, _)| n.contains("PrimitivesOnly"))
+        .expect("PrimitivesOnly pybind wrapper")
+        .1
+        .clone();
+    let one = pybinds
+        .iter()
+        .find(|(n, _)| n.contains("UsesOneStruct"))
+        .expect("UsesOneStruct pybind wrapper")
+        .1
+        .clone();
+    let uses = pybinds
+        .iter()
+        .find(|(n, _)| n.contains("UsesStructs"))
+        .expect("UsesStructs pybind wrapper")
+        .1
+        .clone();
 
     // PrimitivesOnly: no struct bindings at all.
-    assert!(!prim.contains("py::class_<Reg1>"),
-            "PrimitivesOnly must not bind Reg1:\n{prim}");
-    assert!(!prim.contains("py::class_<Reg2>"),
-            "PrimitivesOnly must not bind Reg2:\n{prim}");
-    assert!(!prim.contains("py::class_<PipeBus>"),
-            "PrimitivesOnly must not bind PipeBus:\n{prim}");
+    assert!(
+        !prim.contains("py::class_<Reg1>"),
+        "PrimitivesOnly must not bind Reg1:\n{prim}"
+    );
+    assert!(
+        !prim.contains("py::class_<Reg2>"),
+        "PrimitivesOnly must not bind Reg2:\n{prim}"
+    );
+    assert!(
+        !prim.contains("py::class_<PipeBus>"),
+        "PrimitivesOnly must not bind PipeBus:\n{prim}"
+    );
 
     // UsesOneStruct: binds PipeBus, nothing else.
-    assert!(one.contains("py::class_<PipeBus>"),
-            "UsesOneStruct must bind PipeBus:\n{one}");
-    assert!(!one.contains("py::class_<Reg1>"),
-            "UsesOneStruct must not bind Reg1:\n{one}");
-    assert!(!one.contains("py::class_<Reg2>"),
-            "UsesOneStruct must not bind Reg2:\n{one}");
+    assert!(
+        one.contains("py::class_<PipeBus>"),
+        "UsesOneStruct must bind PipeBus:\n{one}"
+    );
+    assert!(
+        !one.contains("py::class_<Reg1>"),
+        "UsesOneStruct must not bind Reg1:\n{one}"
+    );
+    assert!(
+        !one.contains("py::class_<Reg2>"),
+        "UsesOneStruct must not bind Reg2:\n{one}"
+    );
 
     // UsesStructs: binds Reg1 and Reg2 (internal reg types).
-    assert!(uses.contains("py::class_<Reg1>"),
-            "UsesStructs must bind Reg1:\n{uses}");
-    assert!(uses.contains("py::class_<Reg2>"),
-            "UsesStructs must bind Reg2:\n{uses}");
+    assert!(
+        uses.contains("py::class_<Reg1>"),
+        "UsesStructs must bind Reg1:\n{uses}"
+    );
+    assert!(
+        uses.contains("py::class_<Reg2>"),
+        "UsesStructs must bind Reg2:\n{uses}"
+    );
 }
 
 #[test]
@@ -6167,11 +6965,17 @@ fn test_pybind_struct_bindings_transitive_closure() {
         end module M
     ";
     let pybinds = compile_to_pybind_cpps(source);
-    let m = pybinds.iter().find(|(n, _)| n.contains("VM_pybind"))
-        .expect("M pybind wrapper").1.clone();
+    let m = pybinds
+        .iter()
+        .find(|(n, _)| n.contains("VM_pybind"))
+        .expect("M pybind wrapper")
+        .1
+        .clone();
     assert!(m.contains("py::class_<Outer>"), "must bind Outer:\n{m}");
-    assert!(m.contains("py::class_<Inner>"),
-            "must bind Inner (transitive via Outer.inner):\n{m}");
+    assert!(
+        m.contains("py::class_<Inner>"),
+        "must bind Inner (transitive via Outer.inner):\n{m}"
+    );
 }
 
 #[test]
@@ -6202,10 +7006,14 @@ fn test_trace_skips_struct_typed_let_and_wire() {
         end module M
     ";
     let h = compile_to_sim_h(source, false);
-    assert!(!h.contains("(_let_scratch >> _i)"),
-            "scratch (struct wire) leaked into trace:\n{h}");
-    assert!(!h.contains("(_let_view >> _i)"),
-            "view (struct let) leaked into trace:\n{h}");
+    assert!(
+        !h.contains("(_let_scratch >> _i)"),
+        "scratch (struct wire) leaked into trace:\n{h}"
+    );
+    assert!(
+        !h.contains("(_let_view >> _i)"),
+        "view (struct let) leaked into trace:\n{h}"
+    );
 }
 
 #[test]
@@ -6225,17 +7033,27 @@ fn test_find_first_destructure_basic() {
     ";
     let sv = compile_to_sv(source);
     // Typedef emitted for the synthesized result struct.
-    assert!(sv.contains("typedef struct packed { logic found; logic [1:0] index; } __ArchFindResult_2;"),
-            "expected ArchFindResult typedef: {sv}");
+    assert!(
+        sv.contains(
+            "typedef struct packed { logic found; logic [1:0] index; } __ArchFindResult_2;"
+        ),
+        "expected ArchFindResult typedef: {sv}"
+    );
     // Raw OR reduction for `found`, no spurious struct literal:
-    assert!(sv.contains("assign found = vec[0] == needle || vec[1] == needle"),
-            "expected OR reduction: {sv}");
+    assert!(
+        sv.contains("assign found = vec[0] == needle || vec[1] == needle"),
+        "expected OR reduction: {sv}"
+    );
     // Priority encoder for `index`, nested ternary:
-    assert!(sv.contains("assign index = (vec[0] == needle) ? 2'd0 : (vec[1] == needle) ? 2'd1"),
-            "expected priority encoder: {sv}");
+    assert!(
+        sv.contains("assign index = (vec[0] == needle) ? 2'd0 : (vec[1] == needle) ? 2'd1"),
+        "expected priority encoder: {sv}"
+    );
     // Correct width on `index`:
-    assert!(sv.contains("logic [1:0] index;"),
-            "expected 2-bit index wire: {sv}");
+    assert!(
+        sv.contains("logic [1:0] index;"),
+        "expected 2-bit index wire: {sv}"
+    );
 }
 
 #[test]
@@ -6253,13 +7071,18 @@ fn test_find_first_partial_destructure() {
         end module M
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("logic found;") && sv.contains("assign found ="),
-            "expected `found` wire + assign: {sv}");
+    assert!(
+        sv.contains("logic found;") && sv.contains("assign found ="),
+        "expected `found` wire + assign: {sv}"
+    );
     // No `index` wire should be emitted since the user didn't bind it.
     // (It can still appear as a module port in the future; for now, assert
     // no `logic index` declaration at module scope.)
-    assert!(!sv.lines().any(|l| l.trim_start().starts_with("logic ") && l.contains(" index;")),
-            "did not expect unbound `index`: {sv}");
+    assert!(
+        !sv.lines()
+            .any(|l| l.trim_start().starts_with("logic ") && l.contains(" index;")),
+        "did not expect unbound `index`: {sv}"
+    );
 }
 
 #[test]
@@ -6283,11 +7106,15 @@ fn test_find_first_unknown_binding_errors() {
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     let result = checker.check();
-    assert!(result.is_err(),
-            "expected type-check error for bad destructure binding");
+    assert!(
+        result.is_err(),
+        "expected type-check error for bad destructure binding"
+    );
     let msg = format!("{:?}", result.unwrap_err());
-    assert!(msg.contains("find_first result has no field named `wrong_name`"),
-            "expected specific error message, got: {msg}");
+    assert!(
+        msg.contains("find_first result has no field named `wrong_name`"),
+        "expected specific error message, got: {msg}"
+    );
 }
 
 #[test]
@@ -6317,8 +7144,11 @@ fn test_pipe_reg_port_n1_equivalent_to_port_reg() {
           end seq
         end module M
     ";
-    assert_eq!(compile_to_sv(src_new), compile_to_sv(src_old),
-        "pipe_reg<T, 1> + @1 should be byte-identical to port reg");
+    assert_eq!(
+        compile_to_sv(src_new),
+        compile_to_sv(src_old),
+        "pipe_reg<T, 1> + @1 should be byte-identical to port reg"
+    );
 }
 
 #[test]
@@ -6337,14 +7167,24 @@ fn test_pipe_reg_port_n3_emits_cascade() {
     ";
     let sv = compile_to_sv(source);
     // Two intermediate stage regs should be declared + cascade assigns.
-    assert!(sv.contains("q_stg1") && sv.contains("q_stg2"),
-        "expected 2 intermediate stages for depth=3:\n{sv}");
+    assert!(
+        sv.contains("q_stg1") && sv.contains("q_stg2"),
+        "expected 2 intermediate stages for depth=3:\n{sv}"
+    );
     assert!(sv.contains("q_stg1 <= a;"), "stage 0 write missing:\n{sv}");
-    assert!(sv.contains("q_stg2 <= q_stg1;"), "stage 1 shift missing:\n{sv}");
-    assert!(sv.contains("q <= q_stg2;"), "final output write missing:\n{sv}");
+    assert!(
+        sv.contains("q_stg2 <= q_stg1;"),
+        "stage 1 shift missing:\n{sv}"
+    );
+    assert!(
+        sv.contains("q <= q_stg2;"),
+        "final output write missing:\n{sv}"
+    );
     // Uniform reset across all stages:
-    assert!(sv.contains("q_stg1 <= 0") && sv.contains("q_stg2 <= 0") && sv.contains("q <= 0"),
-        "expected uniform reset across all stages:\n{sv}");
+    assert!(
+        sv.contains("q_stg1 <= 0") && sv.contains("q_stg2 <= 0") && sv.contains("q <= 0"),
+        "expected uniform reset across all stages:\n{sv}"
+    );
 }
 
 #[test]
@@ -6369,8 +7209,10 @@ fn test_pipe_reg_port_depth_mismatch_errors() {
     let result = arch::elaborate::lower_pipe_reg_ports(ast);
     assert!(result.is_err(), "expected depth-mismatch error");
     let msg = format!("{:?}", result.unwrap_err());
-    assert!(msg.contains("exceeds declared latency 3"),
-        "expected specific error message, got: {msg}");
+    assert!(
+        msg.contains("exceeds declared latency 3"),
+        "expected specific error message, got: {msg}"
+    );
 }
 
 #[test]
@@ -6395,8 +7237,10 @@ fn test_pipe_reg_port_bare_assign_ambiguous_errors() {
     let result = arch::elaborate::lower_pipe_reg_ports(ast);
     assert!(result.is_err(), "expected ambiguous-assignment error");
     let msg = format!("{:?}", result.unwrap_err());
-    assert!(msg.contains("is ambiguous"),
-        "expected specific error message, got: {msg}");
+    assert!(
+        msg.contains("is ambiguous"),
+        "expected specific error message, got: {msg}"
+    );
 }
 
 #[test]
@@ -6419,7 +7263,9 @@ fn test_stdlib_bus_axi_stream_discovery() {
     // by running the real compiler binary against a stub test case.
     let td = tempfile::tempdir().expect("tempdir");
     let src = td.path().join("Prod.arch");
-    std::fs::write(&src, "\
+    std::fs::write(
+        &src,
+        "\
         use BusAxiStream;\n\
         module Prod\n\
           port clk: in Clock<SysDomain>;\n\
@@ -6432,16 +7278,20 @@ fn test_stdlib_bus_axi_stream_discovery() {
             m_axis.t_keep  = 4'h0;\n\
           end comb\n\
         end module Prod\n\
-    ").unwrap();
+    ",
+    )
+    .unwrap();
     let arch_bin = env!("CARGO_BIN_EXE_arch");
     let out = std::process::Command::new(arch_bin)
         .arg("check")
         .arg(&src)
         .output()
         .expect("run arch check");
-    assert!(out.status.success(),
+    assert!(
+        out.status.success(),
         "arch check should succeed with stdlib discovery; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -6464,8 +7314,10 @@ fn test_stdlib_disabled_via_env() {
         .env("ARCH_NO_STDLIB", "1")
         .output()
         .expect("run arch check");
-    assert!(!out.status.success(),
-        "expected failure when ARCH_NO_STDLIB=1 disables stdlib resolution");
+    assert!(
+        !out.status.success(),
+        "expected failure when ARCH_NO_STDLIB=1 disables stdlib resolution"
+    );
 }
 
 #[test]
@@ -6509,18 +7361,31 @@ fn test_handshake_generate_if_payload_toggle() {
     ";
     let sv = compile_to_sv(source);
     // Full config emits all four optional ports.
-    assert!(sv.contains("output logic [15:0] p_t_data"), "Full: data 16-bit expected:\n{sv}");
-    assert!(sv.contains("output logic p_t_last"), "Full: t_last present:\n{sv}");
-    assert!(sv.contains("output logic [3:0] p_t_id"), "Full: t_id [3:0]:\n{sv}");
+    assert!(
+        sv.contains("output logic [15:0] p_t_data"),
+        "Full: data 16-bit expected:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic p_t_last"),
+        "Full: t_last present:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic [3:0] p_t_id"),
+        "Full: t_id [3:0]:\n{sv}"
+    );
     // Bare config omits t_last (USE_LAST=0) AND t_id (ID_W=0).
     // Both Full and Bare emit into the same SV string; check Bare's
     // module block specifically for the absence of those fields.
     let bare = sv.split("module Bare").nth(1).expect("Bare module present");
     let bare_until_end = bare.split("endmodule").next().unwrap_or("");
-    assert!(!bare_until_end.contains("t_last"),
-        "Bare config should omit t_last: {bare_until_end}");
-    assert!(!bare_until_end.contains("t_id"),
-        "Bare config should omit t_id: {bare_until_end}");
+    assert!(
+        !bare_until_end.contains("t_last"),
+        "Bare config should omit t_last: {bare_until_end}"
+    );
+    assert!(
+        !bare_until_end.contains("t_id"),
+        "Bare config should omit t_id: {bare_until_end}"
+    );
 }
 
 #[test]
@@ -6545,15 +7410,19 @@ fn test_handshake_generate_if_nested_in_bus_genif_errors() {
     let result = parser.parse_source_file();
     assert!(result.is_err(), "expected parser error");
     let msg = format!("{:?}", result.unwrap_err());
-    assert!(msg.contains("not supported when the handshake itself is nested"),
-        "expected specific nesting-error message, got: {msg}");
+    assert!(
+        msg.contains("not supported when the handshake itself is nested"),
+        "expected specific nesting-error message, got: {msg}"
+    );
 }
 
 #[test]
 fn test_stdlib_bus_apb_discovery_apb3_minimal() {
     let td = tempfile::tempdir().expect("tempdir");
     let src = td.path().join("Csr.arch");
-    std::fs::write(&src, "\
+    std::fs::write(
+        &src,
+        "\
         use BusApb;\n\
         module Csr\n\
           port clk: in Clock<SysDomain>;\n\
@@ -6561,13 +7430,20 @@ fn test_stdlib_bus_apb_discovery_apb3_minimal() {
           port s_apb: target BusApb<ADDR_W=12, DATA_W=32>;\n\
           comb s_apb.pready = 1'b1; s_apb.prdata = 32'h0; end comb\n\
         end module Csr\n\
-    ").unwrap();
+    ",
+    )
+    .unwrap();
     let arch_bin = env!("CARGO_BIN_EXE_arch");
     let out = std::process::Command::new(arch_bin)
-        .arg("check").arg(&src).output().expect("run arch check");
-    assert!(out.status.success(),
+        .arg("check")
+        .arg(&src)
+        .output()
+        .expect("run arch check");
+    assert!(
+        out.status.success(),
         "APB3 minimal should compile; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -6589,7 +7465,9 @@ fn test_stdlib_bus_apb_pslverr_decoupled_from_pprot() {
         // drive it whenever USE_PSLVERR=1.
         let pslverr_drive = if *use_pslverr == 1 {
             "s_apb.pslverr = 1'b0;\n            "
-        } else { "" };
+        } else {
+            ""
+        };
         std::fs::write(&src, format!("\
             use BusApb;\n\
             module {name}\n\
@@ -6606,25 +7484,42 @@ fn test_stdlib_bus_apb_pslverr_decoupled_from_pprot() {
 
         // arch check should succeed for every combination.
         let chk = std::process::Command::new(arch_bin)
-            .arg("check").arg(&src).output().expect("run arch check");
-        assert!(chk.status.success(),
+            .arg("check")
+            .arg(&src)
+            .output()
+            .expect("run arch check");
+        assert!(
+            chk.status.success(),
             "arch check failed for USE_PSLVERR={use_pslverr} USE_PPROT={use_pprot}; stderr:\n{}",
-            String::from_utf8_lossy(&chk.stderr));
+            String::from_utf8_lossy(&chk.stderr)
+        );
 
         // Build SV and inspect the generated port list.
         let sv_out = td.path().join(format!("{name}.sv"));
         let bld = std::process::Command::new(arch_bin)
-            .arg("build").arg(&src).arg("-o").arg(&sv_out)
-            .output().expect("run arch build");
-        assert!(bld.status.success(),
+            .arg("build")
+            .arg(&src)
+            .arg("-o")
+            .arg(&sv_out)
+            .output()
+            .expect("run arch build");
+        assert!(
+            bld.status.success(),
             "arch build failed for USE_PSLVERR={use_pslverr} USE_PPROT={use_pprot}; stderr:\n{}",
-            String::from_utf8_lossy(&bld.stderr));
+            String::from_utf8_lossy(&bld.stderr)
+        );
         let sv = std::fs::read_to_string(&sv_out).expect("read sv");
 
         // Baseline APB v2 signals always present.
-        for s in ["s_apb_psel", "s_apb_penable", "s_apb_pwrite",
-                  "s_apb_paddr", "s_apb_pwdata", "s_apb_pready",
-                  "s_apb_prdata"] {
+        for s in [
+            "s_apb_psel",
+            "s_apb_penable",
+            "s_apb_pwrite",
+            "s_apb_paddr",
+            "s_apb_pwdata",
+            "s_apb_pready",
+            "s_apb_prdata",
+        ] {
             assert!(sv.contains(s),
                 "missing baseline signal {s} for USE_PSLVERR={use_pslverr} USE_PPROT={use_pprot}\nSV:\n{sv}");
         }
@@ -6661,12 +7556,16 @@ fn test_port_reg_deprecation_warning_fires() {
     let ast = arch::elaborate::lower_threads(ast).expect("lower threads");
     let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg");
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
-    let (warnings, _) = arch::typecheck::TypeChecker::new(&symbols, &ast).check().expect("typecheck");
-    assert!(warnings.iter().any(|w| w.message.contains("`port reg q")
+    let (warnings, _) = arch::typecheck::TypeChecker::new(&symbols, &ast)
+        .check()
+        .expect("typecheck");
+    assert!(
+        warnings.iter().any(|w| w.message.contains("`port reg q")
             && w.message.contains("deprecated")
             && w.message.contains("pipe_reg<T, 1>")),
         "expected deprecation warning, got: {:?}",
-        warnings.iter().map(|w| &w.message).collect::<Vec<_>>());
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -6689,10 +7588,14 @@ fn test_pipe_reg_port_no_deprecation_warning() {
     let ast = arch::elaborate::lower_threads(ast).expect("lower threads");
     let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg");
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
-    let (warnings, _) = arch::typecheck::TypeChecker::new(&symbols, &ast).check().expect("typecheck");
-    assert!(!warnings.iter().any(|w| w.message.contains("deprecated")),
+    let (warnings, _) = arch::typecheck::TypeChecker::new(&symbols, &ast)
+        .check()
+        .expect("typecheck");
+    assert!(
+        !warnings.iter().any(|w| w.message.contains("deprecated")),
         "did not expect deprecation warning for pipe_reg<T,1>, got: {:?}",
-        warnings.iter().map(|w| &w.message).collect::<Vec<_>>());
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -6715,12 +7618,18 @@ fn test_handshake_channel_parses_new_keyword() {
         end module M
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("output logic p_cmd_valid"),
-        "handshake_channel should expand to the same ports as legacy `handshake`:\n{sv}");
-    assert!(sv.contains("input logic p_cmd_ready"),
-        "handshake_channel should emit the ready signal:\n{sv}");
-    assert!(sv.contains("output logic [31:0] p_cmd_addr"),
-        "handshake_channel should emit the payload:\n{sv}");
+    assert!(
+        sv.contains("output logic p_cmd_valid"),
+        "handshake_channel should expand to the same ports as legacy `handshake`:\n{sv}"
+    );
+    assert!(
+        sv.contains("input logic p_cmd_ready"),
+        "handshake_channel should emit the ready signal:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic [31:0] p_cmd_addr"),
+        "handshake_channel should emit the payload:\n{sv}"
+    );
 }
 
 #[test]
@@ -6749,13 +7658,16 @@ fn test_handshake_legacy_keyword_emits_deprecation_warning() {
     let ast = arch::elaborate::lower_threads(ast).expect("lower threads");
     let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg");
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
-    let (warnings, _) = arch::typecheck::TypeChecker::new(&symbols, &ast).check().expect("typecheck");
-    assert!(warnings.iter().any(|w|
-        w.message.contains("`handshake cmd")
-        && w.message.contains("deprecated")
-        && w.message.contains("handshake_channel")),
+    let (warnings, _) = arch::typecheck::TypeChecker::new(&symbols, &ast)
+        .check()
+        .expect("typecheck");
+    assert!(
+        warnings.iter().any(|w| w.message.contains("`handshake cmd")
+            && w.message.contains("deprecated")
+            && w.message.contains("handshake_channel")),
         "expected deprecation warning, got: {:?}",
-        warnings.iter().map(|w| &w.message).collect::<Vec<_>>());
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -6784,11 +7696,16 @@ fn test_handshake_channel_no_deprecation_warning() {
     let ast = arch::elaborate::lower_threads(ast).expect("lower threads");
     let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg");
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
-    let (warnings, _) = arch::typecheck::TypeChecker::new(&symbols, &ast).check().expect("typecheck");
-    assert!(!warnings.iter().any(|w| w.message.contains("handshake_channel")
-                                    && w.message.contains("deprecated")),
+    let (warnings, _) = arch::typecheck::TypeChecker::new(&symbols, &ast)
+        .check()
+        .expect("typecheck");
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.message.contains("handshake_channel") && w.message.contains("deprecated")),
         "did not expect deprecation warning for handshake_channel form, got: {:?}",
-        warnings.iter().map(|w| &w.message).collect::<Vec<_>>());
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -6807,10 +7724,14 @@ fn test_credit_channel_parses_as_bus_sub_construct() {
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
     let ast = parser.parse_source_file().expect("parse");
-    let bus = ast.items.iter().find_map(|it| match it {
-        arch::ast::Item::Bus(b) if b.name.name == "DmaCh" => Some(b),
-        _ => None,
-    }).expect("DmaCh bus should be in AST");
+    let bus = ast
+        .items
+        .iter()
+        .find_map(|it| match it {
+            arch::ast::Item::Bus(b) if b.name.name == "DmaCh" => Some(b),
+            _ => None,
+        })
+        .expect("DmaCh bus should be in AST");
     assert_eq!(bus.credit_channels.len(), 1);
     let cc = &bus.credit_channels[0];
     assert_eq!(cc.name.name, "data");
@@ -6845,12 +7766,18 @@ fn test_credit_channel_wires_flatten_at_bus_port() {
         end module Prod
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("output logic p_data_send_valid"),
-        "credit_channel should emit send_valid as an initiator output:\n{sv}");
-    assert!(sv.contains("output logic [15:0] p_data_send_data"),
-        "credit_channel should emit send_data with the payload type:\n{sv}");
-    assert!(sv.contains("input logic p_data_credit_return"),
-        "credit_channel should emit credit_return as an initiator input:\n{sv}");
+    assert!(
+        sv.contains("output logic p_data_send_valid"),
+        "credit_channel should emit send_valid as an initiator output:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic [15:0] p_data_send_data"),
+        "credit_channel should emit send_data with the payload type:\n{sv}"
+    );
+    assert!(
+        sv.contains("input logic p_data_credit_return"),
+        "credit_channel should emit credit_return as an initiator input:\n{sv}"
+    );
 }
 
 #[test]
@@ -6873,12 +7800,18 @@ fn test_credit_channel_wires_flip_on_target_perspective() {
         end module Cons
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("input logic p_data_send_valid"),
-        "on target perspective, send_valid should be an input:\n{sv}");
-    assert!(sv.contains("input logic [15:0] p_data_send_data"),
-        "on target perspective, send_data should be an input:\n{sv}");
-    assert!(sv.contains("output logic p_data_credit_return"),
-        "on target perspective, credit_return should be an output:\n{sv}");
+    assert!(
+        sv.contains("input logic p_data_send_valid"),
+        "on target perspective, send_valid should be an input:\n{sv}"
+    );
+    assert!(
+        sv.contains("input logic [15:0] p_data_send_data"),
+        "on target perspective, send_data should be an input:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic p_data_credit_return"),
+        "on target perspective, credit_return should be an output:\n{sv}"
+    );
 }
 
 #[test]
@@ -6908,18 +7841,30 @@ fn test_credit_channel_emits_sender_counter_state() {
         end module Prod
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("__p_data_credit"),
-        "credit register should be declared:\n{sv}");
-    assert!(sv.contains("__p_data_can_send"),
-        "can_send wire should be declared:\n{sv}");
-    assert!(sv.contains("__p_data_can_send = __p_data_credit != 0"),
-        "can_send wire should read the credit reg:\n{sv}");
-    assert!(sv.contains("p_data_send_valid && !p_data_credit_return"),
-        "counter-update should decrement on pure send:\n{sv}");
-    assert!(sv.contains("p_data_credit_return && !p_data_send_valid"),
-        "counter-update should increment on pure credit_return:\n{sv}");
-    assert!(sv.contains("always_ff"),
-        "counter should update in an always_ff block:\n{sv}");
+    assert!(
+        sv.contains("__p_data_credit"),
+        "credit register should be declared:\n{sv}"
+    );
+    assert!(
+        sv.contains("__p_data_can_send"),
+        "can_send wire should be declared:\n{sv}"
+    );
+    assert!(
+        sv.contains("__p_data_can_send = __p_data_credit != 0"),
+        "can_send wire should read the credit reg:\n{sv}"
+    );
+    assert!(
+        sv.contains("p_data_send_valid && !p_data_credit_return"),
+        "counter-update should decrement on pure send:\n{sv}"
+    );
+    assert!(
+        sv.contains("p_data_credit_return && !p_data_send_valid"),
+        "counter-update should increment on pure credit_return:\n{sv}"
+    );
+    assert!(
+        sv.contains("always_ff"),
+        "counter should update in an always_ff block:\n{sv}"
+    );
 }
 
 #[test]
@@ -6946,22 +7891,38 @@ fn test_credit_channel_emits_target_fifo() {
         end module Cons
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("__p_data_buf"),
-        "target FIFO buffer array should be declared:\n{sv}");
-    assert!(sv.contains("__p_data_head"),
-        "FIFO head pointer should be declared:\n{sv}");
-    assert!(sv.contains("__p_data_tail"),
-        "FIFO tail pointer should be declared:\n{sv}");
-    assert!(sv.contains("__p_data_occ"),
-        "FIFO occupancy should be declared:\n{sv}");
-    assert!(sv.contains("__p_data_valid = __p_data_occ != 0"),
-        "valid wire should report non-empty:\n{sv}");
-    assert!(sv.contains("__p_data_data = __p_data_buf[__p_data_head]"),
-        "data wire should read the head slot:\n{sv}");
-    assert!(sv.contains("if (p_data_send_valid)"),
-        "push path should be gated on send_valid:\n{sv}");
-    assert!(sv.contains("p_data_credit_return && __p_data_valid"),
-        "pop should fire on user-driven credit_return when FIFO non-empty:\n{sv}");
+    assert!(
+        sv.contains("__p_data_buf"),
+        "target FIFO buffer array should be declared:\n{sv}"
+    );
+    assert!(
+        sv.contains("__p_data_head"),
+        "FIFO head pointer should be declared:\n{sv}"
+    );
+    assert!(
+        sv.contains("__p_data_tail"),
+        "FIFO tail pointer should be declared:\n{sv}"
+    );
+    assert!(
+        sv.contains("__p_data_occ"),
+        "FIFO occupancy should be declared:\n{sv}"
+    );
+    assert!(
+        sv.contains("__p_data_valid = __p_data_occ != 0"),
+        "valid wire should report non-empty:\n{sv}"
+    );
+    assert!(
+        sv.contains("__p_data_data = __p_data_buf[__p_data_head]"),
+        "data wire should read the head slot:\n{sv}"
+    );
+    assert!(
+        sv.contains("if (p_data_send_valid)"),
+        "push path should be gated on send_valid:\n{sv}"
+    );
+    assert!(
+        sv.contains("p_data_credit_return && __p_data_valid"),
+        "pop should fire on user-driven credit_return when FIFO non-empty:\n{sv}"
+    );
 }
 
 #[test]
@@ -6990,8 +7951,10 @@ fn test_credit_channel_no_target_fifo_on_send_role() {
         end module Prod
     ";
     let sv = compile_to_sv(source);
-    assert!(!sv.contains("__p_data_buf"),
-        "sender-role module must not emit target FIFO buffer:\n{sv}");
+    assert!(
+        !sv.contains("__p_data_buf"),
+        "sender-role module must not emit target FIFO buffer:\n{sv}"
+    );
 }
 
 #[test]
@@ -7020,8 +7983,10 @@ fn test_credit_channel_no_counter_on_receive_role() {
         end module Cons
     ";
     let sv = compile_to_sv(source);
-    assert!(!sv.contains("__p_data_credit"),
-        "target-role module should not emit sender counter:\n{sv}");
+    assert!(
+        !sv.contains("__p_data_credit"),
+        "target-role module should not emit sender counter:\n{sv}"
+    );
 }
 
 #[test]
@@ -7051,10 +8016,14 @@ fn test_credit_channel_can_send_method_dispatch() {
         end module Prod
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("__p_data_can_send"),
-        "dispatch should rewrite p.data.can_send → __p_data_can_send:\n{sv}");
-    assert!(sv.contains("p_data_send_valid = __p_data_can_send"),
-        "valid assignment should reference the rewritten name:\n{sv}");
+    assert!(
+        sv.contains("__p_data_can_send"),
+        "dispatch should rewrite p.data.can_send → __p_data_can_send:\n{sv}"
+    );
+    assert!(
+        sv.contains("p_data_send_valid = __p_data_can_send"),
+        "valid assignment should reference the rewritten name:\n{sv}"
+    );
 }
 
 #[test]
@@ -7082,10 +8051,14 @@ fn test_credit_channel_valid_and_data_method_dispatch_on_receiver() {
         end module Cons
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("latest = __p_data_data"),
-        "receiver read of p.data.data should rewrite to __p_data_data:\n{sv}");
-    assert!(sv.contains("__p_data_valid"),
-        "p.data.valid should rewrite to __p_data_valid:\n{sv}");
+    assert!(
+        sv.contains("latest = __p_data_data"),
+        "receiver read of p.data.data should rewrite to __p_data_data:\n{sv}"
+    );
+    assert!(
+        sv.contains("__p_data_valid"),
+        "p.data.valid should rewrite to __p_data_valid:\n{sv}"
+    );
 }
 
 #[test]
@@ -7116,14 +8089,20 @@ fn test_credit_channel_can_send_registered_emits_flop() {
     ";
     let sv = compile_to_sv(source);
     // Registered form declares can_send as `logic` (register), not `wire`.
-    assert!(sv.contains("logic __p_data_can_send;"),
-        "CAN_SEND_REGISTERED=1 should declare can_send as a register:\n{sv}");
+    assert!(
+        sv.contains("logic __p_data_can_send;"),
+        "CAN_SEND_REGISTERED=1 should declare can_send as a register:\n{sv}"
+    );
     // And assigns it inside the always_ff block.
-    assert!(sv.contains("__p_data_can_send <="),
-        "registered can_send should be updated via non-blocking assign:\n{sv}");
+    assert!(
+        sv.contains("__p_data_can_send <="),
+        "registered can_send should be updated via non-blocking assign:\n{sv}"
+    );
     // No `wire` form for can_send.
-    assert!(!sv.contains("wire  __p_data_can_send"),
-        "CAN_SEND_REGISTERED=1 must not emit the combinational wire form:\n{sv}");
+    assert!(
+        !sv.contains("wire  __p_data_can_send"),
+        "CAN_SEND_REGISTERED=1 must not emit the combinational wire form:\n{sv}"
+    );
 }
 
 #[test]
@@ -7151,8 +8130,10 @@ fn test_credit_channel_can_send_default_is_combinational() {
         end module Prod
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("wire  __p_data_can_send = __p_data_credit != 0"),
-        "default (unregistered) can_send should stay combinational:\n{sv}");
+    assert!(
+        sv.contains("wire  __p_data_can_send = __p_data_credit != 0"),
+        "default (unregistered) can_send should stay combinational:\n{sv}"
+    );
 }
 
 #[test]
@@ -7178,14 +8159,22 @@ fn test_credit_channel_tier2_sender_assertions() {
         end module Prod
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_auto_cc_p_data_credit_bounds"),
-        "credit_bounds assertion label should be present on sender:\n{sv}");
-    assert!(sv.contains("__p_data_credit <= (4)"),
-        "credit_bounds property should compare credit reg to DEPTH:\n{sv}");
-    assert!(sv.contains("_auto_cc_p_data_send_requires_credit"),
-        "send_requires_credit assertion should be present:\n{sv}");
-    assert!(sv.contains("p_data_send_valid |-> __p_data_credit > 0"),
-        "send_requires_credit property should encode valid-implies-credit:\n{sv}");
+    assert!(
+        sv.contains("_auto_cc_p_data_credit_bounds"),
+        "credit_bounds assertion label should be present on sender:\n{sv}"
+    );
+    assert!(
+        sv.contains("__p_data_credit <= (4)"),
+        "credit_bounds property should compare credit reg to DEPTH:\n{sv}"
+    );
+    assert!(
+        sv.contains("_auto_cc_p_data_send_requires_credit"),
+        "send_requires_credit assertion should be present:\n{sv}"
+    );
+    assert!(
+        sv.contains("p_data_send_valid |-> __p_data_credit > 0"),
+        "send_requires_credit property should encode valid-implies-credit:\n{sv}"
+    );
 }
 
 #[test]
@@ -7210,10 +8199,14 @@ fn test_credit_channel_tier2_receiver_assertion() {
         end module Cons
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_auto_cc_p_data_credit_return_requires_buffered"),
-        "receiver-side assertion should be present:\n{sv}");
-    assert!(sv.contains("p_data_credit_return |-> __p_data_valid"),
-        "credit_return should imply buffer-non-empty:\n{sv}");
+    assert!(
+        sv.contains("_auto_cc_p_data_credit_return_requires_buffered"),
+        "receiver-side assertion should be present:\n{sv}"
+    );
+    assert!(
+        sv.contains("p_data_credit_return |-> __p_data_valid"),
+        "credit_return should imply buffer-non-empty:\n{sv}"
+    );
 }
 
 #[test]
@@ -7245,11 +8238,14 @@ fn test_credit_channel_send_sugar() {
         end module Prod
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("p_data_send_valid = 1'd1")
-          || sv.contains("p_data_send_valid = 1'b1"),
-        ".send() should set send_valid to 1:\n{sv}");
-    assert!(sv.contains("p_data_send_data = payload"),
-        ".send(payload) should set send_data to payload:\n{sv}");
+    assert!(
+        sv.contains("p_data_send_valid = 1'd1") || sv.contains("p_data_send_valid = 1'b1"),
+        ".send() should set send_valid to 1:\n{sv}"
+    );
+    assert!(
+        sv.contains("p_data_send_data = payload"),
+        ".send(payload) should set send_data to payload:\n{sv}"
+    );
 }
 
 #[test]
@@ -7278,9 +8274,10 @@ fn test_credit_channel_pop_sugar() {
         end module Cons
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("p_data_credit_return = 1'd1")
-          || sv.contains("p_data_credit_return = 1'b1"),
-        ".pop() should assert credit_return:\n{sv}");
+    assert!(
+        sv.contains("p_data_credit_return = 1'd1") || sv.contains("p_data_credit_return = 1'b1"),
+        ".pop() should assert credit_return:\n{sv}"
+    );
 }
 
 #[test]
@@ -7359,29 +8356,62 @@ fn test_credit_channel_end_to_end_noc_producer_consumer() {
     let sv = compile_to_sv(source);
 
     // Sender-side checks
-    assert!(sv.contains("__out_flits_credit"), "sender credit reg:\n{sv}");
-    assert!(sv.contains("__out_flits_can_send"), "sender can_send:\n{sv}");
-    assert!(sv.contains("_auto_cc_out_flits_credit_bounds"), "sender SVA:\n{sv}");
-    assert!(sv.contains("_auto_cc_out_flits_send_requires_credit"), "sender SVA:\n{sv}");
+    assert!(
+        sv.contains("__out_flits_credit"),
+        "sender credit reg:\n{sv}"
+    );
+    assert!(
+        sv.contains("__out_flits_can_send"),
+        "sender can_send:\n{sv}"
+    );
+    assert!(
+        sv.contains("_auto_cc_out_flits_credit_bounds"),
+        "sender SVA:\n{sv}"
+    );
+    assert!(
+        sv.contains("_auto_cc_out_flits_send_requires_credit"),
+        "sender SVA:\n{sv}"
+    );
 
     // .send(x) sugar must materialize both signals
-    assert!(sv.contains("out_flits_send_valid = 1'd1"), "send sugar valid:\n{sv}");
-    assert!(sv.contains("out_flits_send_data = seq_no"), "send sugar data:\n{sv}");
+    assert!(
+        sv.contains("out_flits_send_valid = 1'd1"),
+        "send sugar valid:\n{sv}"
+    );
+    assert!(
+        sv.contains("out_flits_send_data = seq_no"),
+        "send sugar data:\n{sv}"
+    );
 
     // Receiver-side checks
-    assert!(sv.contains("__incoming_flits_buf"), "receiver buffer:\n{sv}");
-    assert!(sv.contains("__incoming_flits_valid"), "receiver valid wire:\n{sv}");
-    assert!(sv.contains("__incoming_flits_data"), "receiver data wire:\n{sv}");
-    assert!(sv.contains("_auto_cc_incoming_flits_credit_return_requires_buffered"),
-        "receiver SVA:\n{sv}");
+    assert!(
+        sv.contains("__incoming_flits_buf"),
+        "receiver buffer:\n{sv}"
+    );
+    assert!(
+        sv.contains("__incoming_flits_valid"),
+        "receiver valid wire:\n{sv}"
+    );
+    assert!(
+        sv.contains("__incoming_flits_data"),
+        "receiver data wire:\n{sv}"
+    );
+    assert!(
+        sv.contains("_auto_cc_incoming_flits_credit_return_requires_buffered"),
+        "receiver SVA:\n{sv}"
+    );
 
     // .pop() sugar
-    assert!(sv.contains("incoming_flits_credit_return = 1'd1"),
-        "pop sugar credit_return:\n{sv}");
+    assert!(
+        sv.contains("incoming_flits_credit_return = 1'd1"),
+        "pop sugar credit_return:\n{sv}"
+    );
 
     // Read-side dispatch in seq and comb contexts
-    assert!(sv.contains("last_seq <= __incoming_flits_data"),
-        "read-side dispatch in seq:\n{sv}");
+    assert!(
+        sv.contains("last_seq <= __incoming_flits_data"),
+        "read-side dispatch in seq:\n{sv}"
+    );
 }
 
 #[test]
@@ -7411,18 +8441,30 @@ fn test_credit_channel_sim_emits_sender_state() {
         end module Prod
     ";
     let out = compile_to_sim_h(source, false);
-    assert!(out.contains("uint32_t __p_data_credit;"),
-        "sender credit field should be declared:\n{out}");
-    assert!(out.contains("uint8_t  __p_data_can_send;"),
-        "sender can_send field should be declared:\n{out}");
-    assert!(out.contains("__p_data_credit = 4;"),
-        "constructor should initialize credit to DEPTH:\n{out}");
-    assert!(out.contains("__p_data_can_send = (__p_data_credit != 0)"),
-        "eval_comb should assign can_send combinationally:\n{out}");
-    assert!(out.contains("__p_data_credit--"),
-        "eval_posedge should decrement on pure send:\n{out}");
-    assert!(out.contains("__p_data_credit++"),
-        "eval_posedge should increment on pure credit_return:\n{out}");
+    assert!(
+        out.contains("uint32_t __p_data_credit;"),
+        "sender credit field should be declared:\n{out}"
+    );
+    assert!(
+        out.contains("uint8_t  __p_data_can_send;"),
+        "sender can_send field should be declared:\n{out}"
+    );
+    assert!(
+        out.contains("__p_data_credit = 4;"),
+        "constructor should initialize credit to DEPTH:\n{out}"
+    );
+    assert!(
+        out.contains("__p_data_can_send = (__p_data_credit != 0)"),
+        "eval_comb should assign can_send combinationally:\n{out}"
+    );
+    assert!(
+        out.contains("__p_data_credit--"),
+        "eval_posedge should decrement on pure send:\n{out}"
+    );
+    assert!(
+        out.contains("__p_data_credit++"),
+        "eval_posedge should increment on pure credit_return:\n{out}"
+    );
 }
 
 #[test]
@@ -7447,17 +8489,28 @@ fn test_credit_channel_sim_emits_receiver_state() {
         end module Cons
     ";
     let out = compile_to_sim_h(source, false);
-    assert!(out.contains("uint8_t __p_data_buf[4];"),
-        "receiver buffer array should be declared with correct width + depth:\n{out}");
-    assert!(out.contains("__p_data_head;") && out.contains("__p_data_tail;")
-         && out.contains("__p_data_occ;"),
-        "head/tail/occ pointers should be declared:\n{out}");
-    assert!(out.contains("__p_data_valid = (__p_data_occ != 0)"),
-        "valid should be computed in eval_comb:\n{out}");
-    assert!(out.contains("__p_data_data  = __p_data_buf[__p_data_head]"),
-        "data should read front of buffer in eval_comb:\n{out}");
-    assert!(out.contains("p_data_credit_return && __p_data_valid"),
-        "pop should fire on user-driven credit_return when valid:\n{out}");
+    assert!(
+        out.contains("uint8_t __p_data_buf[4];"),
+        "receiver buffer array should be declared with correct width + depth:\n{out}"
+    );
+    assert!(
+        out.contains("__p_data_head;")
+            && out.contains("__p_data_tail;")
+            && out.contains("__p_data_occ;"),
+        "head/tail/occ pointers should be declared:\n{out}"
+    );
+    assert!(
+        out.contains("__p_data_valid = (__p_data_occ != 0)"),
+        "valid should be computed in eval_comb:\n{out}"
+    );
+    assert!(
+        out.contains("__p_data_data  = __p_data_buf[__p_data_head]"),
+        "data should read front of buffer in eval_comb:\n{out}"
+    );
+    assert!(
+        out.contains("p_data_credit_return && __p_data_valid"),
+        "pop should fire on user-driven credit_return when valid:\n{out}"
+    );
 }
 
 #[test]
@@ -7474,10 +8527,14 @@ fn test_tlm_method_parses_as_bus_sub_construct() {
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
     let ast = parser.parse_source_file().expect("parse");
-    let bus = ast.items.iter().find_map(|it| match it {
-        arch::ast::Item::Bus(b) if b.name.name == "Mem" => Some(b),
-        _ => None,
-    }).expect("Mem bus in AST");
+    let bus = ast
+        .items
+        .iter()
+        .find_map(|it| match it {
+            arch::ast::Item::Bus(b) if b.name.name == "Mem" => Some(b),
+            _ => None,
+        })
+        .expect("Mem bus in AST");
     assert_eq!(bus.tlm_methods.len(), 3);
 
     let r = &bus.tlm_methods[0];
@@ -7528,20 +8585,28 @@ fn test_tlm_method_out_of_order_tags_parse_and_flatten() {
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
     let ast = parser.parse_source_file().expect("parse");
-    let bus = ast.items.iter().find_map(|it| match it {
-        arch::ast::Item::Bus(b) if b.name.name == "Mem" => Some(b),
-        _ => None,
-    }).expect("Mem bus in AST");
+    let bus = ast
+        .items
+        .iter()
+        .find_map(|it| match it {
+            arch::ast::Item::Bus(b) if b.name.name == "Mem" => Some(b),
+            _ => None,
+        })
+        .expect("Mem bus in AST");
     assert_eq!(bus.tlm_methods[0].mode.name, "out_of_order");
     assert!(bus.tlm_methods[0].out_of_order_tags.is_some());
 
     let sv = compile_to_sv(source);
-    assert!(sv.contains("output logic [2:0] m_read_req_tag")
-         && sv.contains("input logic [2:0] m_read_rsp_tag"),
-        "initiator should expose out-of-order tag wires:\n{sv}");
-    assert!(sv.contains("input logic [2:0] s_read_req_tag")
-         && sv.contains("output logic [2:0] s_read_rsp_tag"),
-        "target perspective should flip tag wire directions:\n{sv}");
+    assert!(
+        sv.contains("output logic [2:0] m_read_req_tag")
+            && sv.contains("input logic [2:0] m_read_rsp_tag"),
+        "initiator should expose out-of-order tag wires:\n{sv}"
+    );
+    assert!(
+        sv.contains("input logic [2:0] s_read_req_tag")
+            && sv.contains("output logic [2:0] s_read_rsp_tag"),
+        "target perspective should flip tag wire directions:\n{sv}"
+    );
 }
 
 #[test]
@@ -7568,18 +8633,30 @@ fn test_tlm_method_wires_flatten_at_bus_port() {
         end module Initiator
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("output logic m_read_req_valid"),
-        "req_valid should be an initiator output:\n{sv}");
-    assert!(sv.contains("output logic [31:0] m_read_addr"),
-        "arg should appear as initiator output with its declared type:\n{sv}");
-    assert!(sv.contains("input logic m_read_req_ready"),
-        "req_ready should flow back to initiator:\n{sv}");
-    assert!(sv.contains("input logic m_read_rsp_valid"),
-        "rsp_valid should be an initiator input:\n{sv}");
-    assert!(sv.contains("input logic [63:0] m_read_rsp_data"),
-        "rsp_data should appear with declared ret type:\n{sv}");
-    assert!(sv.contains("output logic m_read_rsp_ready"),
-        "rsp_ready flows back from initiator to target:\n{sv}");
+    assert!(
+        sv.contains("output logic m_read_req_valid"),
+        "req_valid should be an initiator output:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic [31:0] m_read_addr"),
+        "arg should appear as initiator output with its declared type:\n{sv}"
+    );
+    assert!(
+        sv.contains("input logic m_read_req_ready"),
+        "req_ready should flow back to initiator:\n{sv}"
+    );
+    assert!(
+        sv.contains("input logic m_read_rsp_valid"),
+        "rsp_valid should be an initiator input:\n{sv}"
+    );
+    assert!(
+        sv.contains("input logic [63:0] m_read_rsp_data"),
+        "rsp_data should appear with declared ret type:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic m_read_rsp_ready"),
+        "rsp_ready flows back from initiator to target:\n{sv}"
+    );
 }
 
 #[test]
@@ -7616,14 +8693,22 @@ fn test_tlm_method_param_widths_substitute_in_implicit_bus_wires() {
         end module Parent
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("logic [2:0] link_read_req_tag;"),
-        "implicit req tag wire should use overridden KV_HEAD_W:\n{sv}");
-    assert!(sv.contains("logic [4:0] link_read_tile;"),
-        "implicit arg wire should use overridden TILE_W:\n{sv}");
-    assert!(sv.contains("logic [16:0] link_read_rsp_data;"),
-        "implicit response wire should use overridden TOKEN_W:\n{sv}");
-    assert!(!sv.contains("KV_HEAD_W") && !sv.contains("TILE_W") && !sv.contains("TOKEN_W"),
-        "generated SV should not leak bus param identifiers into Parent plumbing:\n{sv}");
+    assert!(
+        sv.contains("logic [2:0] link_read_req_tag;"),
+        "implicit req tag wire should use overridden KV_HEAD_W:\n{sv}"
+    );
+    assert!(
+        sv.contains("logic [4:0] link_read_tile;"),
+        "implicit arg wire should use overridden TILE_W:\n{sv}"
+    );
+    assert!(
+        sv.contains("logic [16:0] link_read_rsp_data;"),
+        "implicit response wire should use overridden TOKEN_W:\n{sv}"
+    );
+    assert!(
+        !sv.contains("KV_HEAD_W") && !sv.contains("TILE_W") && !sv.contains("TOKEN_W"),
+        "generated SV should not leak bus param identifiers into Parent plumbing:\n{sv}"
+    );
 }
 
 #[test]
@@ -7689,14 +8774,22 @@ fn test_tlm_method_param_widths_substitute_in_lowered_target_and_initiator() {
         end module Top
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("logic [4:0] _tlm_m_read_tile_latched;"),
-        "target latch reg should use substituted TILE_W:\n{sv}");
-    assert!(sv.contains("output logic [16:0] m_read_rsp_data"),
-        "target response data should use substituted TOKEN_W:\n{sv}");
-    assert!(sv.contains("assign m_read_tile = _tlm_init_m_read_grant_0 ? 5'd3 : 0;"),
-        "initiator request drive should use substituted TILE_W:\n{sv}");
-    assert!(!sv.contains("TILE_W") && !sv.contains("TOKEN_W"),
-        "lowered generated SV should not leak bus param identifiers:\n{sv}");
+    assert!(
+        sv.contains("logic [4:0] _tlm_m_read_tile_latched;"),
+        "target latch reg should use substituted TILE_W:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic [16:0] m_read_rsp_data"),
+        "target response data should use substituted TOKEN_W:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign m_read_tile = _tlm_init_m_read_grant_0 ? 5'd3 : 0;"),
+        "initiator request drive should use substituted TILE_W:\n{sv}"
+    );
+    assert!(
+        !sv.contains("TILE_W") && !sv.contains("TOKEN_W"),
+        "lowered generated SV should not leak bus param identifiers:\n{sv}"
+    );
 }
 
 #[test]
@@ -7719,10 +8812,14 @@ fn test_tlm_method_void_omits_rsp_data() {
         end module I
     ";
     let sv = compile_to_sv(source);
-    assert!(!sv.contains("poke_rsp_data"),
-        "void methods must not emit rsp_data:\n{sv}");
-    assert!(sv.contains("poke_rsp_valid"),
-        "void methods still need rsp_valid/ready for back-pressure:\n{sv}");
+    assert!(
+        !sv.contains("poke_rsp_data"),
+        "void methods must not emit rsp_data:\n{sv}"
+    );
+    assert!(
+        sv.contains("poke_rsp_valid"),
+        "void methods still need rsp_valid/ready for back-pressure:\n{sv}"
+    );
 }
 
 #[test]
@@ -7750,15 +8847,26 @@ fn test_tlm_target_thread_parses_with_dotted_name() {
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
     let ast = parser.parse_source_file().expect("parse");
-    let m = ast.items.iter().find_map(|it| match it {
-        arch::ast::Item::Module(m) if m.name.name == "MemTarget" => Some(m),
-        _ => None,
-    }).expect("MemTarget in AST");
-    let t = m.body.iter().find_map(|i| match i {
-        arch::ast::ModuleBodyItem::Thread(t) => Some(t),
-        _ => None,
-    }).expect("thread in MemTarget body");
-    let binding = t.tlm_target.as_ref().expect("tlm_target should be populated");
+    let m = ast
+        .items
+        .iter()
+        .find_map(|it| match it {
+            arch::ast::Item::Module(m) if m.name.name == "MemTarget" => Some(m),
+            _ => None,
+        })
+        .expect("MemTarget in AST");
+    let t = m
+        .body
+        .iter()
+        .find_map(|i| match i {
+            arch::ast::ModuleBodyItem::Thread(t) => Some(t),
+            _ => None,
+        })
+        .expect("thread in MemTarget body");
+    let binding = t
+        .tlm_target
+        .as_ref()
+        .expect("tlm_target should be populated");
     assert_eq!(binding.port.name, "s");
     assert_eq!(binding.method.name, "read");
     assert_eq!(binding.args.len(), 1);
@@ -7787,14 +8895,19 @@ fn test_tlm_initiator_call_site_end_to_end_sv() {
         end module Initiator
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_tlm_init_driver_state"),
-        "state reg should be emitted:\n{sv}");
-    assert!(sv.contains("m_read_req_valid"),
-        "SV should drive req_valid:\n{sv}");
-    assert!(sv.contains("m_read_addr"),
-        "SV should drive the arg:\n{sv}");
-    assert!(sv.contains("m_read_rsp_ready"),
-        "SV should drive rsp_ready:\n{sv}");
+    assert!(
+        sv.contains("_tlm_init_driver_state"),
+        "state reg should be emitted:\n{sv}"
+    );
+    assert!(
+        sv.contains("m_read_req_valid"),
+        "SV should drive req_valid:\n{sv}"
+    );
+    assert!(sv.contains("m_read_addr"), "SV should drive the arg:\n{sv}");
+    assert!(
+        sv.contains("m_read_rsp_ready"),
+        "SV should drive rsp_ready:\n{sv}"
+    );
 }
 
 #[test]
@@ -7822,10 +8935,14 @@ fn test_tlm_target_sim_mirror_works_via_inlined_state_machine() {
         end module MemTarget
     ";
     let out = compile_to_sim_h(source, false);
-    assert!(out.contains("_tlm_s_read_state"),
-        "state reg should appear in sim C++:\n{out}");
-    assert!(out.contains("_tlm_s_read_addr_latched"),
-        "arg latch reg should appear in sim C++:\n{out}");
+    assert!(
+        out.contains("_tlm_s_read_state"),
+        "state reg should appear in sim C++:\n{out}"
+    );
+    assert!(
+        out.contains("_tlm_s_read_addr_latched"),
+        "arg latch reg should appear in sim C++:\n{out}"
+    );
 }
 
 #[test]
@@ -7848,8 +8965,10 @@ fn test_tlm_initiator_sim_mirror_works() {
         end module Initiator
     ";
     let out = compile_to_sim_h(source, false);
-    assert!(out.contains("_tlm_init_driver_state"),
-        "initiator state reg should appear in sim C++:\n{out}");
+    assert!(
+        out.contains("_tlm_init_driver_state"),
+        "initiator state reg should appear in sim C++:\n{out}"
+    );
 }
 
 #[test]
@@ -7877,12 +8996,18 @@ fn test_tlm_vec_return_sim_mirror_uses_array_copy() {
             && out.contains("uint32_t& m_read4_rsp_data_0;"),
         "bus Vec payload should expose a C++ array with flat compatibility aliases:\n{out}"
     );
-    assert!(out.contains("uint32_t _m_read4_rsp_data[4];"),
-        "flattened bus Vec payload should have an internal array:\n{out}");
-    assert!(out.contains("_m_read4_rsp_data[0] = m_read4_rsp_data_0;"),
-        "input bridge should copy flat fields into the internal array:\n{out}");
-    assert!(out.contains("for (size_t _i = 0; _i < 4; ++_i) { _n_data[_i] = _m_read4_rsp_data[_i]; }"),
-        "whole-Vec TLM response assignment should lower to element copy:\n{out}");
+    assert!(
+        out.contains("uint32_t _m_read4_rsp_data[4];"),
+        "flattened bus Vec payload should have an internal array:\n{out}"
+    );
+    assert!(
+        out.contains("_m_read4_rsp_data[0] = m_read4_rsp_data_0;"),
+        "input bridge should copy flat fields into the internal array:\n{out}"
+    );
+    assert!(
+        out.contains("for (size_t _i = 0; _i < 4; ++_i) { _n_data[_i] = _m_read4_rsp_data[_i]; }"),
+        "whole-Vec TLM response assignment should lower to element copy:\n{out}"
+    );
 }
 
 #[test]
@@ -7915,14 +9040,22 @@ fn test_struct_vec_field_sim_mirror_uses_array_field() {
         end module StructVecFieldsSmoke
     ";
     let out = compile_to_sim_h(source, false);
-    assert!(out.contains("uint32_t data[4];"),
-        "struct Vec field should emit as a C++ array:\n{out}");
-    assert!(out.contains("out0  = _r.data[0];"),
-        "struct Vec field read should use array indexing, not bit extraction:\n{out}");
-    assert!(out.contains("_n_r.data[0]  = in0;"),
-        "struct Vec field write should use array indexing:\n{out}");
-    assert!(!out.contains("((_n_r.data) >> (0)) & 1"),
-        "struct Vec field must not be treated as scalar bit indexing:\n{out}");
+    assert!(
+        out.contains("uint32_t data[4];"),
+        "struct Vec field should emit as a C++ array:\n{out}"
+    );
+    assert!(
+        out.contains("out0  = _r.data[0];"),
+        "struct Vec field read should use array indexing, not bit extraction:\n{out}"
+    );
+    assert!(
+        out.contains("_n_r.data[0]  = in0;"),
+        "struct Vec field write should use array indexing:\n{out}"
+    );
+    assert!(
+        !out.contains("((_n_r.data) >> (0)) & 1"),
+        "struct Vec field must not be treated as scalar bit indexing:\n{out}"
+    );
 }
 
 #[test]
@@ -7959,12 +9092,18 @@ fn test_tlm_struct_vec_response_sim_mirror_compiles_shape() {
         end module StructVecTlmCaller
     ";
     let out = compile_to_sim_h(source, false);
-    assert!(out.contains("BoundedVecResp32x4 m_read_burst_rsp_data;"),
-        "TLM struct response should expose the struct payload in sim:\n{out}");
-    assert!(out.contains("_n_r  = m_read_burst_rsp_data;"),
-        "TLM struct response should copy into the destination register:\n{out}");
-    assert!(!out.contains("m_read_burst_rsp_data >>"),
-        "struct response should not be emitted as a scalar trace expression:\n{out}");
+    assert!(
+        out.contains("BoundedVecResp32x4 m_read_burst_rsp_data;"),
+        "TLM struct response should expose the struct payload in sim:\n{out}"
+    );
+    assert!(
+        out.contains("_n_r  = m_read_burst_rsp_data;"),
+        "TLM struct response should copy into the destination register:\n{out}"
+    );
+    assert!(
+        !out.contains("m_read_burst_rsp_data >>"),
+        "struct response should not be emitted as a scalar trace expression:\n{out}"
+    );
 }
 
 #[test]
@@ -7976,35 +9115,48 @@ fn test_tlm_canonical_end_to_end_initiator_plus_target() {
     let sv = compile_to_sv(source);
 
     // Target-side state machines.
-    assert!(sv.contains("_tlm_s_read_state"),
-        "target: read state reg should appear:\n{sv}");
-    assert!(sv.contains("_tlm_s_write_state"),
-        "target: write state reg should appear:\n{sv}");
-    assert!(sv.contains("_tlm_s_read_addr_latched"),
-        "target: read arg latch reg should appear:\n{sv}");
-    assert!(sv.contains("_tlm_s_write_addr_latched")
-         && sv.contains("_tlm_s_write_data_latched"),
-        "target: write arg latch regs should appear:\n{sv}");
+    assert!(
+        sv.contains("_tlm_s_read_state"),
+        "target: read state reg should appear:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_s_write_state"),
+        "target: write state reg should appear:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_s_read_addr_latched"),
+        "target: read arg latch reg should appear:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_s_write_addr_latched") && sv.contains("_tlm_s_write_data_latched"),
+        "target: write arg latch regs should appear:\n{sv}"
+    );
 
     // Initiator state machine + wire drives.
-    assert!(sv.contains("_tlm_init_driver_state"),
-        "initiator: driver state reg should appear:\n{sv}");
-    assert!(sv.contains("m_read_req_valid")
-         && sv.contains("m_write_req_valid"),
-        "initiator: both methods should drive req_valid:\n{sv}");
-    assert!(sv.contains("m_read_addr")
-         && sv.contains("m_write_addr")
-         && sv.contains("m_write_data"),
-        "initiator: arg signals should appear:\n{sv}");
-    assert!(sv.contains("module TlmOneToOneTop")
-         && sv.contains("link_read_req_valid"),
-        "top-level one-to-one bus wire connection should appear:\n{sv}");
+    assert!(
+        sv.contains("_tlm_init_driver_state"),
+        "initiator: driver state reg should appear:\n{sv}"
+    );
+    assert!(
+        sv.contains("m_read_req_valid") && sv.contains("m_write_req_valid"),
+        "initiator: both methods should drive req_valid:\n{sv}"
+    );
+    assert!(
+        sv.contains("m_read_addr") && sv.contains("m_write_addr") && sv.contains("m_write_data"),
+        "initiator: arg signals should appear:\n{sv}"
+    );
+    assert!(
+        sv.contains("module TlmOneToOneTop") && sv.contains("link_read_req_valid"),
+        "top-level one-to-one bus wire connection should appear:\n{sv}"
+    );
 
     // Compile to sim C++ too — same path should flow through the existing
     // reg/seq/comb sim mirror without issues.
     let sim = compile_to_sim_h(source, false);
-    assert!(sim.contains("_tlm_s_read_state") && sim.contains("_tlm_init_driver_state"),
-        "sim C++ should mirror the state regs for both sides");
+    assert!(
+        sim.contains("_tlm_s_read_state") && sim.contains("_tlm_init_driver_state"),
+        "sim C++ should mirror the state regs for both sides"
+    );
 }
 
 #[test]
@@ -8012,18 +9164,26 @@ fn test_tlm_connect_one_to_one_sugar_lowers_to_bus_wire() {
     let source = include_str!("axi_dma_tlm/TlmConnectOneToOne.arch");
     let sv = compile_to_sv(source);
 
-    assert!(sv.contains("module TlmConnectOneToOneTop"),
-        "connect-sugar top should build:\n{sv}");
-    assert!(sv.contains("_tlm_conn_i_m_t_s_read_req_valid")
-         && sv.contains("_tlm_conn_i_m_t_s_write_req_valid"),
-        "connect sugar should synthesize a private flattened TLM bus wire:\n{sv}");
-    assert!(sv.contains(".m_read_req_valid(_tlm_conn_i_m_t_s_read_req_valid)")
-         && sv.contains(".s_read_req_valid(_tlm_conn_i_m_t_s_read_req_valid)"),
-        "connect sugar should wire initiator and target endpoints together:\n{sv}");
+    assert!(
+        sv.contains("module TlmConnectOneToOneTop"),
+        "connect-sugar top should build:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_conn_i_m_t_s_read_req_valid")
+            && sv.contains("_tlm_conn_i_m_t_s_write_req_valid"),
+        "connect sugar should synthesize a private flattened TLM bus wire:\n{sv}"
+    );
+    assert!(
+        sv.contains(".m_read_req_valid(_tlm_conn_i_m_t_s_read_req_valid)")
+            && sv.contains(".s_read_req_valid(_tlm_conn_i_m_t_s_read_req_valid)"),
+        "connect sugar should wire initiator and target endpoints together:\n{sv}"
+    );
 
     let sim = compile_to_sim_h(source, false);
-    assert!(sim.contains("class VTlmConnectOneToOneTop"),
-        "sim C++ should include the connect-sugar top");
+    assert!(
+        sim.contains("class VTlmConnectOneToOneTop"),
+        "sim C++ should include the connect-sugar top"
+    );
 }
 
 #[test]
@@ -8031,20 +9191,28 @@ fn test_tlm_connect_inside_generate_for_lowers_to_per_iteration_wires() {
     let source = include_str!("axi_dma_tlm/TlmConnectGenerate.arch");
     let sv = compile_to_sv(source);
 
-    assert!(sv.contains("module TlmConnectGenerateTop"),
-        "generate-for connect-sugar top should build:\n{sv}");
-    assert!(sv.contains("_tlm_conn_src_0_m_dst_0_s_read_req_valid")
-         && sv.contains("_tlm_conn_src_1_m_dst_1_s_read_req_valid"),
-        "generate-for connect sugar should synthesize one private TLM bus per iteration:\n{sv}");
-    assert!(sv.contains(".m_read_req_valid(_tlm_conn_src_0_m_dst_0_s_read_req_valid)")
-         && sv.contains(".s_read_req_valid(_tlm_conn_src_0_m_dst_0_s_read_req_valid)")
-         && sv.contains(".m_read_req_valid(_tlm_conn_src_1_m_dst_1_s_read_req_valid)")
-         && sv.contains(".s_read_req_valid(_tlm_conn_src_1_m_dst_1_s_read_req_valid)"),
-        "unrolled initiator and target endpoints should be wired pairwise:\n{sv}");
+    assert!(
+        sv.contains("module TlmConnectGenerateTop"),
+        "generate-for connect-sugar top should build:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_conn_src_0_m_dst_0_s_read_req_valid")
+            && sv.contains("_tlm_conn_src_1_m_dst_1_s_read_req_valid"),
+        "generate-for connect sugar should synthesize one private TLM bus per iteration:\n{sv}"
+    );
+    assert!(
+        sv.contains(".m_read_req_valid(_tlm_conn_src_0_m_dst_0_s_read_req_valid)")
+            && sv.contains(".s_read_req_valid(_tlm_conn_src_0_m_dst_0_s_read_req_valid)")
+            && sv.contains(".m_read_req_valid(_tlm_conn_src_1_m_dst_1_s_read_req_valid)")
+            && sv.contains(".s_read_req_valid(_tlm_conn_src_1_m_dst_1_s_read_req_valid)"),
+        "unrolled initiator and target endpoints should be wired pairwise:\n{sv}"
+    );
 
     let sim = compile_to_sim_h(source, false);
-    assert!(sim.contains("class VTlmConnectGenerateTop"),
-        "sim C++ should include the generate-for connect-sugar top");
+    assert!(
+        sim.contains("class VTlmConnectGenerateTop"),
+        "sim C++ should include the generate-for connect-sugar top"
+    );
 }
 
 fn tlm_connect_elaborate_error(source: &str) -> String {
@@ -8057,7 +9225,8 @@ fn tlm_connect_elaborate_error(source: &str) -> String {
 
 #[test]
 fn test_tlm_connect_unknown_instance_diagnostic() {
-    let msg = tlm_connect_elaborate_error(r#"
+    let msg = tlm_connect_elaborate_error(
+        r#"
 bus Mem
   tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
 end bus Mem
@@ -8073,14 +9242,18 @@ module Top
   end inst t
   connect missing.m -> t.s;
 end module Top
-"#);
-    assert!(msg.contains("unknown TLM connect instance `missing`"),
-        "expected unknown-instance diagnostic, got: {msg}");
+"#,
+    );
+    assert!(
+        msg.contains("unknown TLM connect instance `missing`"),
+        "expected unknown-instance diagnostic, got: {msg}"
+    );
 }
 
 #[test]
 fn test_tlm_connect_unknown_port_diagnostic() {
-    let msg = tlm_connect_elaborate_error(r#"
+    let msg = tlm_connect_elaborate_error(
+        r#"
 bus Mem
   tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
 end bus Mem
@@ -8098,14 +9271,18 @@ module Top
   end inst t
   connect i.nope -> t.s;
 end module Top
-"#);
-    assert!(msg.contains("module `Initiator` has no port `nope`"),
-        "expected unknown-port diagnostic, got: {msg}");
+"#,
+    );
+    assert!(
+        msg.contains("module `Initiator` has no port `nope`"),
+        "expected unknown-port diagnostic, got: {msg}"
+    );
 }
 
 #[test]
 fn test_tlm_connect_non_bus_port_diagnostic() {
-    let msg = tlm_connect_elaborate_error(r#"
+    let msg = tlm_connect_elaborate_error(
+        r#"
 bus Mem
   tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
 end bus Mem
@@ -8124,14 +9301,18 @@ module Top
   end inst t
   connect i.scalar -> t.s;
 end module Top
-"#);
-    assert!(msg.contains("non-bus port `scalar`"),
-        "expected non-bus-port diagnostic, got: {msg}");
+"#,
+    );
+    assert!(
+        msg.contains("non-bus port `scalar`"),
+        "expected non-bus-port diagnostic, got: {msg}"
+    );
 }
 
 #[test]
 fn test_tlm_connect_direction_mismatch_diagnostic() {
-    let msg = tlm_connect_elaborate_error(r#"
+    let msg = tlm_connect_elaborate_error(
+        r#"
 bus Mem
   tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
 end bus Mem
@@ -8149,16 +9330,23 @@ module Top
   end inst t
   connect t.s -> i.m;
 end module Top
-"#);
-    assert!(msg.contains("requires `connect initiator_inst.initiator_port -> target_inst.target_port;`")
-         && msg.contains("t.s") && msg.contains("Target")
-         && msg.contains("i.m") && msg.contains("Initiator"),
-        "expected direction-mismatch diagnostic, got: {msg}");
+"#,
+    );
+    assert!(
+        msg.contains(
+            "requires `connect initiator_inst.initiator_port -> target_inst.target_port;`"
+        ) && msg.contains("t.s")
+            && msg.contains("Target")
+            && msg.contains("i.m")
+            && msg.contains("Initiator"),
+        "expected direction-mismatch diagnostic, got: {msg}"
+    );
 }
 
 #[test]
 fn test_tlm_connect_bus_mismatch_diagnostic() {
-    let msg = tlm_connect_elaborate_error(r#"
+    let msg = tlm_connect_elaborate_error(
+        r#"
 bus MemA
   tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
 end bus MemA
@@ -8180,15 +9368,18 @@ module Top
   end inst t
   connect i.m -> t.s;
 end module Top
-"#);
-    assert!(msg.contains("TLM connect bus mismatch")
-         && msg.contains("MemA") && msg.contains("MemB"),
-        "expected bus-mismatch diagnostic, got: {msg}");
+"#,
+    );
+    assert!(
+        msg.contains("TLM connect bus mismatch") && msg.contains("MemA") && msg.contains("MemB"),
+        "expected bus-mismatch diagnostic, got: {msg}"
+    );
 }
 
 #[test]
 fn test_tlm_connect_duplicate_explicit_connection_diagnostic() {
-    let msg = tlm_connect_elaborate_error(r#"
+    let msg = tlm_connect_elaborate_error(
+        r#"
 bus Mem
   tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
 end bus Mem
@@ -8208,15 +9399,18 @@ module Top
   end inst t
   connect i.m -> t.s;
 end module Top
-"#);
-    assert!(msg.contains("duplicates an explicit connection")
-         && msg.contains("i.m"),
-        "expected duplicate-explicit-connection diagnostic, got: {msg}");
+"#,
+    );
+    assert!(
+        msg.contains("duplicates an explicit connection") && msg.contains("i.m"),
+        "expected duplicate-explicit-connection diagnostic, got: {msg}"
+    );
 }
 
 #[test]
 fn test_tlm_connect_endpoint_reuse_diagnostic() {
-    let msg = tlm_connect_elaborate_error(r#"
+    let msg = tlm_connect_elaborate_error(
+        r#"
 bus Mem
   tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
 end bus Mem
@@ -8237,14 +9431,18 @@ module Top
   connect i.m -> t0.s;
   connect i.m -> t1.s;
 end module Top
-"#);
-    assert!(msg.contains("TLM connect endpoint `i.m` is connected more than once"),
-        "expected endpoint-reuse diagnostic, got: {msg}");
+"#,
+    );
+    assert!(
+        msg.contains("TLM connect endpoint `i.m` is connected more than once"),
+        "expected endpoint-reuse diagnostic, got: {msg}"
+    );
 }
 
 #[test]
 fn test_tlm_connect_endpoint_reuse_after_generate_for_diagnostic() {
-    let msg = tlm_connect_elaborate_error(r#"
+    let msg = tlm_connect_elaborate_error(
+        r#"
 bus Mem
   tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
 end bus Mem
@@ -8264,108 +9462,152 @@ module Top
     connect i.m -> t_n.s;
   end generate_for
 end module Top
-"#);
-    assert!(msg.contains("TLM connect endpoint `i.m` is connected more than once"),
-        "expected endpoint-reuse-after-generate diagnostic, got: {msg}");
+"#,
+    );
+    assert!(
+        msg.contains("TLM connect endpoint `i.m` is connected more than once"),
+        "expected endpoint-reuse-after-generate diagnostic, got: {msg}"
+    );
 }
 
 #[test]
 fn test_tlm_one_initiator_many_targets_router_example_compiles() {
     let source = include_str!("axi_dma_tlm/TlmOneToMany.arch");
     let sv = compile_to_sv(source);
-    assert!(sv.contains("module TlmAddrRouter2"),
-        "one-to-many TLM router should build:\n{sv}");
-    assert!(sv.contains("lo_read_req_valid = up_read_req_valid && read_to_hi == 1'b0")
-         && sv.contains("hi_read_req_valid = up_read_req_valid && read_to_hi"),
-        "router should decode request valid to exactly one downstream target:\n{sv}");
-    assert!(sv.contains("up_read_rsp_data = read_sel_hi ? hi_read_rsp_data : lo_read_rsp_data")
-         && sv.contains("up_write_rsp_data = write_sel_hi ? hi_write_rsp_data : lo_write_rsp_data"),
-        "router should mux responses through the latched request target:\n{sv}");
-    assert!(sv.contains("module TlmOneToManyTop")
-         && sv.contains("cpu_link_read_req_valid")
-         && sv.contains("lo_link_read_req_valid")
-         && sv.contains("hi_link_read_req_valid"),
-        "top should connect one initiator through router to two target links:\n{sv}");
+    assert!(
+        sv.contains("module TlmAddrRouter2"),
+        "one-to-many TLM router should build:\n{sv}"
+    );
+    assert!(
+        sv.contains("lo_read_req_valid = up_read_req_valid && read_to_hi == 1'b0")
+            && sv.contains("hi_read_req_valid = up_read_req_valid && read_to_hi"),
+        "router should decode request valid to exactly one downstream target:\n{sv}"
+    );
+    assert!(
+        sv.contains("up_read_rsp_data = read_sel_hi ? hi_read_rsp_data : lo_read_rsp_data")
+            && sv.contains(
+                "up_write_rsp_data = write_sel_hi ? hi_write_rsp_data : lo_write_rsp_data"
+            ),
+        "router should mux responses through the latched request target:\n{sv}"
+    );
+    assert!(
+        sv.contains("module TlmOneToManyTop")
+            && sv.contains("cpu_link_read_req_valid")
+            && sv.contains("lo_link_read_req_valid")
+            && sv.contains("hi_link_read_req_valid"),
+        "top should connect one initiator through router to two target links:\n{sv}"
+    );
 
     let sim = compile_to_sim_h(source, false);
-    assert!(sim.contains("class VTlmAddrRouter2")
-         && sim.contains("class VTlmOneToManyTop"),
-        "sim C++ should include router and top mirrors");
+    assert!(
+        sim.contains("class VTlmAddrRouter2") && sim.contains("class VTlmOneToManyTop"),
+        "sim C++ should include router and top mirrors"
+    );
 }
 
 #[test]
 fn test_tlm_one_initiator_many_targets_ooo_router_example_compiles() {
     let source = include_str!("axi_dma_tlm/TlmOneToManyOoo.arch");
     let sv = compile_to_sv(source);
-    assert!(sv.contains("module TlmOooAddrRouter2"),
-        "OOO one-to-many TLM router should build:\n{sv}");
-    assert!(sv.contains("logic [3:0] read_route_hi;")
-         && sv.contains("read_route_hi[up_read_req_tag] <= read_to_hi"),
-        "OOO router should record downstream route per upstream tag:\n{sv}");
-    assert!(sv.contains("lo_read_req_tag = up_read_req_tag")
-         && sv.contains("hi_read_req_tag = up_read_req_tag"),
-        "OOO router should forward upstream tags unchanged downstream:\n{sv}");
-    assert!(sv.contains("up_read_rsp_tag = choose_hi_rsp ? hi_read_rsp_tag : lo_read_rsp_tag")
-         && sv.contains("hi_read_rsp_ready = up_read_rsp_ready && choose_hi_rsp"),
-        "OOO router should mux responses by saved route and downstream response tag:\n{sv}");
-    assert!(sv.contains("module TlmOneToManyOooTop")
-         && sv.contains("cpu_link_read_req_tag")
-         && sv.contains("lo_link_read_req_tag")
-         && sv.contains("hi_link_read_req_tag"),
-        "OOO top should connect tag signals through one-to-many links:\n{sv}");
+    assert!(
+        sv.contains("module TlmOooAddrRouter2"),
+        "OOO one-to-many TLM router should build:\n{sv}"
+    );
+    assert!(
+        sv.contains("logic [3:0] read_route_hi;")
+            && sv.contains("read_route_hi[up_read_req_tag] <= read_to_hi"),
+        "OOO router should record downstream route per upstream tag:\n{sv}"
+    );
+    assert!(
+        sv.contains("lo_read_req_tag = up_read_req_tag")
+            && sv.contains("hi_read_req_tag = up_read_req_tag"),
+        "OOO router should forward upstream tags unchanged downstream:\n{sv}"
+    );
+    assert!(
+        sv.contains("up_read_rsp_tag = choose_hi_rsp ? hi_read_rsp_tag : lo_read_rsp_tag")
+            && sv.contains("hi_read_rsp_ready = up_read_rsp_ready && choose_hi_rsp"),
+        "OOO router should mux responses by saved route and downstream response tag:\n{sv}"
+    );
+    assert!(
+        sv.contains("module TlmOneToManyOooTop")
+            && sv.contains("cpu_link_read_req_tag")
+            && sv.contains("lo_link_read_req_tag")
+            && sv.contains("hi_link_read_req_tag"),
+        "OOO top should connect tag signals through one-to-many links:\n{sv}"
+    );
 
     let sim = compile_to_sim_h(source, false);
-    assert!(sim.contains("class VTlmOooAddrRouter2")
-         && sim.contains("class VTlmOneToManyOooTop"),
-        "sim C++ should include OOO router and top mirrors");
+    assert!(
+        sim.contains("class VTlmOooAddrRouter2") && sim.contains("class VTlmOneToManyOooTop"),
+        "sim C++ should include OOO router and top mirrors"
+    );
 }
 
 #[test]
 fn test_tlm_one_initiator_many_targets_response_router_example_compiles() {
     let source = include_str!("axi_dma_tlm/TlmOneToManyResp.arch");
     let sv = compile_to_sv(source);
-    assert!(sv.contains("module TlmAddrRouter4Resp"),
-        "response-typed one-to-many TLM router should build:\n{sv}");
-    assert!(sv.contains("typedef struct packed")
-         && sv.contains("MemResp64"),
-        "struct response payload should be emitted:\n{sv}");
-    assert!(sv.contains("read_err_valid")
-         && sv.contains("up_read_rsp_data = read_err_valid ?"),
-        "router should synthesize its own decode-error response:\n{sv}");
-    assert!(sv.contains("s_read_rsp_data = {64'd1152921504606846976, 2'd0}")
-         && sv.contains("up_read_rsp_data = read_err_valid ? {64'd0, 2'd1}"),
-        "SV codegen should emit packed struct literals as iverilog-friendly concatenations:\n{sv}");
-    assert!(sv.contains("_auto_tlm_m_read_req_stable")
-         && sv.contains("$stable(m_read_addr)")
-         && sv.contains("_auto_tlm_m_read_rsp_stable")
-         && sv.contains("$stable(m_read_rsp_data)"),
-        "TLM protocol assertions should track request args and struct response payloads:\n{sv}");
-    assert!(sv.contains("t0_read_req_valid = up_read_req_valid && read_to_0")
-         && sv.contains("t3_read_req_valid = up_read_req_valid && read_to_3"),
-        "router should decode requests across four downstream targets:\n{sv}");
+    assert!(
+        sv.contains("module TlmAddrRouter4Resp"),
+        "response-typed one-to-many TLM router should build:\n{sv}"
+    );
+    assert!(
+        sv.contains("typedef struct packed") && sv.contains("MemResp64"),
+        "struct response payload should be emitted:\n{sv}"
+    );
+    assert!(
+        sv.contains("read_err_valid") && sv.contains("up_read_rsp_data = read_err_valid ?"),
+        "router should synthesize its own decode-error response:\n{sv}"
+    );
+    assert!(
+        sv.contains("s_read_rsp_data = {64'd1152921504606846976, 2'd0}")
+            && sv.contains("up_read_rsp_data = read_err_valid ? {64'd0, 2'd1}"),
+        "SV codegen should emit packed struct literals as iverilog-friendly concatenations:\n{sv}"
+    );
+    assert!(
+        sv.contains("_auto_tlm_m_read_req_stable")
+            && sv.contains("$stable(m_read_addr)")
+            && sv.contains("_auto_tlm_m_read_rsp_stable")
+            && sv.contains("$stable(m_read_rsp_data)"),
+        "TLM protocol assertions should track request args and struct response payloads:\n{sv}"
+    );
+    assert!(
+        sv.contains("t0_read_req_valid = up_read_req_valid && read_to_0")
+            && sv.contains("t3_read_req_valid = up_read_req_valid && read_to_3"),
+        "router should decode requests across four downstream targets:\n{sv}"
+    );
 
     let sim = compile_to_sim_h(source, false);
-    assert!(sim.contains("class VTlmAddrRouter4Resp")
-         && sim.contains("MemResp64 up_read_rsp_data"),
-        "sim C++ should include struct response router mirror:\n{sim}");
-    assert!(sim.contains("if (_let_read_mapped == 0)"),
-        "sim C++ if conditions should not double-wrap comparison expressions:\n{sim}");
-    assert!(!sim.contains("if ((_let_read_mapped == 0))"),
-        "sim C++ should avoid Clang -Wparentheses-equality noise:\n{sim}");
+    assert!(
+        sim.contains("class VTlmAddrRouter4Resp") && sim.contains("MemResp64 up_read_rsp_data"),
+        "sim C++ should include struct response router mirror:\n{sim}"
+    );
+    assert!(
+        sim.contains("if (_let_read_mapped == 0)"),
+        "sim C++ if conditions should not double-wrap comparison expressions:\n{sim}"
+    );
+    assert!(
+        !sim.contains("if ((_let_read_mapped == 0))"),
+        "sim C++ should avoid Clang -Wparentheses-equality noise:\n{sim}"
+    );
 }
 
 #[test]
 fn test_tlm_ooo_protocol_asserts_track_tags() {
     let source = include_str!("axi_dma_tlm/TlmOneToManyOoo.arch");
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_auto_tlm_m_read_req_stable")
-         && sv.contains("$stable(m_read_req_tag)")
-         && sv.contains("$stable(m_read_addr)"),
-        "OOO request assertion should track req_tag under backpressure:\n{sv}");
-    assert!(sv.contains("_auto_tlm_m_read_rsp_stable")
-         && sv.contains("$stable(m_read_rsp_tag)")
-         && sv.contains("$stable(m_read_rsp_data)"),
-        "OOO response assertion should track rsp_tag under backpressure:\n{sv}");
+    assert!(
+        sv.contains("_auto_tlm_m_read_req_stable")
+            && sv.contains("$stable(m_read_req_tag)")
+            && sv.contains("$stable(m_read_addr)"),
+        "OOO request assertion should track req_tag under backpressure:\n{sv}"
+    );
+    assert!(
+        sv.contains("_auto_tlm_m_read_rsp_stable")
+            && sv.contains("$stable(m_read_rsp_tag)")
+            && sv.contains("$stable(m_read_rsp_data)"),
+        "OOO response assertion should track rsp_tag under backpressure:\n{sv}"
+    );
 }
 
 #[test]
@@ -8381,13 +9623,17 @@ fn test_tlm_one_initiator_many_targets_router_arch_sim_behavior() {
         .arg(td.path())
         .output()
         .expect("run arch sim for one-to-many router");
-    assert!(out.status.success(),
+    assert!(
+        out.status.success(),
         "one-to-many router sim should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS one-to-many blocking"),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS one-to-many blocking"),
         "expected PASS marker in stdout:\n{}",
-        String::from_utf8_lossy(&out.stdout));
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 #[test]
@@ -8403,13 +9649,17 @@ fn test_tlm_one_initiator_many_targets_ooo_router_arch_sim_behavior() {
         .arg(td.path())
         .output()
         .expect("run arch sim for OOO one-to-many router");
-    assert!(out.status.success(),
+    assert!(
+        out.status.success(),
         "OOO one-to-many router sim should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS one-to-many OOO"),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS one-to-many OOO"),
         "expected PASS marker in stdout:\n{}",
-        String::from_utf8_lossy(&out.stdout));
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 #[test]
@@ -8425,13 +9675,17 @@ fn test_tlm_one_initiator_many_targets_response_router_arch_sim_behavior() {
         .arg(td.path())
         .output()
         .expect("run arch sim for response-typed one-to-many router");
-    assert!(out.status.success(),
+    assert!(
+        out.status.success(),
         "response-typed one-to-many router sim should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS one-to-many response router"),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS one-to-many response router"),
         "expected PASS marker in stdout:\n{}",
-        String::from_utf8_lossy(&out.stdout));
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 #[test]
@@ -8452,7 +9706,10 @@ fn test_reentrant_thread_keyword_rejected_by_parser() {
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
     let result = parser.parse_source_file();
-    assert!(result.is_err(), "reentrant thread syntax should no longer parse");
+    assert!(
+        result.is_err(),
+        "reentrant thread syntax should no longer parse"
+    );
 }
 
 #[test]
@@ -8479,14 +9736,22 @@ fn test_implement_initiator_parses() {
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
     let ast = parser.parse_source_file().expect("parse");
-    let m = ast.items.iter().find_map(|it| match it {
-        arch::ast::Item::Module(m) if m.name.name == "M" => Some(m),
-        _ => None,
-    }).expect("module M");
-    let t = m.body.iter().find_map(|i| match i {
-        arch::ast::ModuleBodyItem::Thread(t) => Some(t),
-        _ => None,
-    }).expect("thread");
+    let m = ast
+        .items
+        .iter()
+        .find_map(|it| match it {
+            arch::ast::Item::Module(m) if m.name.name == "M" => Some(m),
+            _ => None,
+        })
+        .expect("module M");
+    let t = m
+        .body
+        .iter()
+        .find_map(|i| match i {
+            arch::ast::ModuleBodyItem::Thread(t) => Some(t),
+            _ => None,
+        })
+        .expect("thread");
     let b = t.implement.as_ref().expect("implement should be populated");
     assert_eq!(b.kind, arch::ast::TlmImplementKind::Initiator);
     assert_eq!(b.port.name, "m");
@@ -8517,14 +9782,22 @@ fn test_implement_target_parses() {
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
     let ast = parser.parse_source_file().expect("parse");
-    let m = ast.items.iter().find_map(|it| match it {
-        arch::ast::Item::Module(m) if m.name.name == "T" => Some(m),
-        _ => None,
-    }).expect("module T");
-    let t = m.body.iter().find_map(|i| match i {
-        arch::ast::ModuleBodyItem::Thread(t) => Some(t),
-        _ => None,
-    }).expect("thread");
+    let m = ast
+        .items
+        .iter()
+        .find_map(|it| match it {
+            arch::ast::Item::Module(m) if m.name.name == "T" => Some(m),
+            _ => None,
+        })
+        .expect("module T");
+    let t = m
+        .body
+        .iter()
+        .find_map(|i| match i {
+            arch::ast::ModuleBodyItem::Thread(t) => Some(t),
+            _ => None,
+        })
+        .expect("thread");
     let b = t.implement.as_ref().expect("implement should be populated");
     assert_eq!(b.kind, arch::ast::TlmImplementKind::Target);
     assert_eq!(b.args.len(), 1);
@@ -8555,12 +9828,18 @@ fn test_implement_target_single_compiles_end_to_end() {
         end module MemTarget
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_tlm_s_read_state"),
-        "state reg should appear in SV:\n{sv}");
-    assert!(sv.contains("_tlm_s_read_addr_latched"),
-        "arg latch reg should appear in SV:\n{sv}");
-    assert!(sv.contains("s_read_req_ready"),
-        "req_ready driver should appear:\n{sv}");
+    assert!(
+        sv.contains("_tlm_s_read_state"),
+        "state reg should appear in SV:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_s_read_addr_latched"),
+        "arg latch reg should appear in SV:\n{sv}"
+    );
+    assert!(
+        sv.contains("s_read_req_ready"),
+        "req_ready driver should appear:\n{sv}"
+    );
 }
 
 #[test]
@@ -8594,10 +9873,15 @@ fn test_implement_target_multi_implementer_rejected() {
     let ast = parser.parse_source_file().expect("parse");
     let ast = arch::elaborate::elaborate(ast).expect("elaborate");
     let r = arch::elaborate::lower_tlm_target_threads(ast);
-    assert!(r.is_err(), "non-indexed multi-implementer target should error");
+    assert!(
+        r.is_err(),
+        "non-indexed multi-implementer target should error"
+    );
     let msg = format!("{:?}", r.unwrap_err());
-    assert!(msg.contains("multi-implementer target") && msg.contains("s.read"),
-        "expected targeted error, got: {msg}");
+    assert!(
+        msg.contains("multi-implementer target") && msg.contains("s.read"),
+        "expected targeted error, got: {msg}"
+    );
 }
 
 #[test]
@@ -8622,18 +9906,23 @@ fn test_tlm_indexed_target_generate_for_lowers_tag_lanes() {
         end module MemTarget
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_tlm_s_read_tag0_state")
-         && sv.contains("_tlm_s_read_tag3_state"),
-        "indexed target lanes should lower to independent lane FSMs:\n{sv}");
-    assert!(sv.contains("_tlm_s_read_tag0_req_ready")
-         && sv.contains("_tlm_s_read_tag3_rsp_valid"),
-        "indexed target lanes should use private endpoint wires:\n{sv}");
-    assert!(sv.contains("s_read_req_tag == 2'd0")
-         && sv.contains("s_read_req_tag == 2'd3"),
-        "shared target endpoint should route requests by tag lane:\n{sv}");
-    assert!(sv.contains("s_read_rsp_tag = _tlm_s_read_tag0_rsp_tag")
-         && sv.contains("s_read_rsp_data = _tlm_s_read_tag0_rsp_data"),
-        "shared response endpoint should mux lane responses:\n{sv}");
+    assert!(
+        sv.contains("_tlm_s_read_tag0_state") && sv.contains("_tlm_s_read_tag3_state"),
+        "indexed target lanes should lower to independent lane FSMs:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_s_read_tag0_req_ready") && sv.contains("_tlm_s_read_tag3_rsp_valid"),
+        "indexed target lanes should use private endpoint wires:\n{sv}"
+    );
+    assert!(
+        sv.contains("s_read_req_tag == 2'd0") && sv.contains("s_read_req_tag == 2'd3"),
+        "shared target endpoint should route requests by tag lane:\n{sv}"
+    );
+    assert!(
+        sv.contains("s_read_rsp_tag = _tlm_s_read_tag0_rsp_tag")
+            && sv.contains("s_read_rsp_data = _tlm_s_read_tag0_rsp_data"),
+        "shared response endpoint should mux lane responses:\n{sv}"
+    );
 }
 
 #[test]
@@ -8662,38 +9951,57 @@ fn test_tlm_indexed_target_response_lock_uses_resource_policy() {
         end module MemTarget
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("module _arb_MemTarget_read_rsp"),
-        "response lock should synthesize a policy arbiter module:\n{sv}");
+    assert!(
+        sv.contains("module _arb_MemTarget_read_rsp"),
+        "response lock should synthesize a policy arbiter module:\n{sv}"
+    );
     // Round-robin pointer-advance shape inside the synthesized
     // `_arb_MemTarget_read_rsp` arbiter module — uses the bare
     // `grant_requester` port. The bare `rr_ptr_r + 1` form was incorrect
     // for non-power-of-2 NUM_REQ.
-    assert!(sv.contains("rr_ptr_r <= (grant_requester ==")
-         && sv.contains("? '0 : grant_requester + 1'b1;"),
-        "response arbiter should use the resource's round-robin policy:\n{sv}");
+    assert!(
+        sv.contains("rr_ptr_r <= (grant_requester ==")
+            && sv.contains("? '0 : grant_requester + 1'b1;"),
+        "response arbiter should use the resource's round-robin policy:\n{sv}"
+    );
     assert!(sv.contains("_tlm_s_read_rsp_arb_req_packed[0] = !_tlm_s_read_rsp_arb_hold_valid_r && _tlm_s_read_tag0_rsp_valid")
          && sv.contains("_tlm_s_read_rsp_arb_req_packed[3] = !_tlm_s_read_rsp_arb_hold_valid_r && _tlm_s_read_tag3_rsp_valid"),
         "lane response valids should feed the response arbiter:\n{sv}");
-    assert!(sv.contains("_tlm_s_read_rsp_arb_hold_idx_r == 2'd0 || _tlm_s_read_rsp_arb_grant_packed[0]")
-         && sv.contains("_tlm_s_read_rsp_arb_hold_idx_r == 2'd3 || _tlm_s_read_rsp_arb_grant_packed[3]"),
-        "shared response mux should be gated by the granted lane:\n{sv}");
-    assert!(sv.contains("_tlm_s_read_rsp_arb_hold_valid_r <= 1'd1")
-         && sv.contains("_tlm_s_read_rsp_arb_hold_idx_r <= _tlm_s_read_rsp_arb_grant_requester"),
-        "backpressured response selection should be held stable:\n{sv}");
-    assert!(sv.contains("_tlm_s_read_tag0_rsp_ready = s_read_rsp_ready"),
-        "only the selected lane should receive shared response ready:\n{sv}");
+    assert!(
+        sv.contains(
+            "_tlm_s_read_rsp_arb_hold_idx_r == 2'd0 || _tlm_s_read_rsp_arb_grant_packed[0]"
+        ) && sv.contains(
+            "_tlm_s_read_rsp_arb_hold_idx_r == 2'd3 || _tlm_s_read_rsp_arb_grant_packed[3]"
+        ),
+        "shared response mux should be gated by the granted lane:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_s_read_rsp_arb_hold_valid_r <= 1'd1")
+            && sv.contains("_tlm_s_read_rsp_arb_hold_idx_r <= _tlm_s_read_rsp_arb_grant_requester"),
+        "backpressured response selection should be held stable:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_s_read_tag0_rsp_ready = s_read_rsp_ready"),
+        "only the selected lane should receive shared response ready:\n{sv}"
+    );
 }
 
 #[test]
 fn test_axi_dma_tlm_indexed_burst_target_example_compiles() {
     let source = include_str!("axi_dma_tlm/TlmIndexedBurstTarget.arch");
     let sv = compile_to_sv(source);
-    assert!(sv.contains("module TlmIndexedBurstTarget"),
-        "indexed burst target example should build:\n{sv}");
-    assert!(sv.contains("BoundedVecResp32x4 _tlm_s_read_burst_tag0_rsp_data"),
-        "bounded Vec response should stay struct-typed through target lane lowering:\n{sv}");
-    assert!(sv.contains("s_read_burst_req_tag == 2'd3"),
-        "generated target lanes should route by request tag:\n{sv}");
+    assert!(
+        sv.contains("module TlmIndexedBurstTarget"),
+        "indexed burst target example should build:\n{sv}"
+    );
+    assert!(
+        sv.contains("BoundedVecResp32x4 _tlm_s_read_burst_tag0_rsp_data"),
+        "bounded Vec response should stay struct-typed through target lane lowering:\n{sv}"
+    );
+    assert!(
+        sv.contains("s_read_burst_req_tag == 2'd3"),
+        "generated target lanes should route by request tag:\n{sv}"
+    );
 }
 
 #[test]
@@ -8709,18 +10017,26 @@ fn test_axi_dma_tlm_indexed_burst_target_arch_sim_behavior() {
         .arg(td.path())
         .output()
         .expect("run arch sim for indexed burst target response arbiter");
-    assert!(out.status.success(),
+    assert!(
+        out.status.success(),
         "indexed burst target arch sim should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS indexed response arb"),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS indexed response arb"),
         "expected PASS marker in stdout:\n{}",
-        String::from_utf8_lossy(&out.stdout));
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 #[test]
 fn test_axi_dma_tlm_indexed_burst_target_verilator_behavior() {
-    if std::process::Command::new("verilator").arg("--version").output().is_err() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         eprintln!("skipping Verilator indexed burst target smoke: verilator not found");
         return;
     }
@@ -8737,10 +10053,12 @@ fn test_axi_dma_tlm_indexed_burst_target_verilator_behavior() {
         .arg(&sv_out)
         .output()
         .expect("build indexed burst target SV");
-    assert!(build.status.success(),
+    assert!(
+        build.status.success(),
         "arch build should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&build.stdout),
-        String::from_utf8_lossy(&build.stderr));
+        String::from_utf8_lossy(&build.stderr)
+    );
 
     let verilate = std::process::Command::new("verilator")
         .arg("--cc")
@@ -8759,34 +10077,46 @@ fn test_axi_dma_tlm_indexed_burst_target_verilator_behavior() {
         .arg("tests/axi_dma_tlm/tb_tlm_indexed_burst_target.cpp")
         .output()
         .expect("verilate indexed burst target");
-    assert!(verilate.status.success(),
+    assert!(
+        verilate.status.success(),
         "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&verilate.stdout),
-        String::from_utf8_lossy(&verilate.stderr));
+        String::from_utf8_lossy(&verilate.stderr)
+    );
 
     let exe = obj_dir.join("VTlmIndexedBurstTarget");
     let run = std::process::Command::new(&exe)
         .output()
         .expect("run Verilator indexed burst target");
-    assert!(run.status.success(),
+    assert!(
+        run.status.success(),
         "Verilator sim should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&run.stdout),
-        String::from_utf8_lossy(&run.stderr));
-    assert!(String::from_utf8_lossy(&run.stdout).contains("PASS indexed response arb"),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("PASS indexed response arb"),
         "expected PASS marker in Verilator stdout:\n{}",
-        String::from_utf8_lossy(&run.stdout));
+        String::from_utf8_lossy(&run.stdout)
+    );
 }
 
 #[test]
 fn test_axi_read_beat_interleave_example_compiles() {
     let source = include_str!("axi_dma_thread/ThreadAxiReadBeatInterleave.arch");
     let sv = compile_to_sv(source);
-    assert!(sv.contains("module ThreadAxiReadBeatInterleave"),
-        "beat-interleaving thread example should build:\n{sv}");
-    assert!(sv.contains("_arb_ThreadAxiReadBeatInterleave_r_ch"),
-        "response channel mutex should lower to a generated arbiter:\n{sv}");
-    assert!(sv.contains("r_id = 1"),
-        "generate_for lanes should become concrete response IDs:\n{sv}");
+    assert!(
+        sv.contains("module ThreadAxiReadBeatInterleave"),
+        "beat-interleaving thread example should build:\n{sv}"
+    );
+    assert!(
+        sv.contains("_arb_ThreadAxiReadBeatInterleave_r_ch"),
+        "response channel mutex should lower to a generated arbiter:\n{sv}"
+    );
+    assert!(
+        sv.contains("r_id = 1"),
+        "generate_for lanes should become concrete response IDs:\n{sv}"
+    );
 }
 
 #[test]
@@ -8802,18 +10132,26 @@ fn test_axi_read_beat_interleave_arch_sim_behavior() {
         .arg(td.path())
         .output()
         .expect("run arch sim for beat-interleaving response target");
-    assert!(out.status.success(),
+    assert!(
+        out.status.success(),
         "beat-interleaving arch sim should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS beat interleave alternating"),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS beat interleave alternating"),
         "expected PASS marker in stdout:\n{}",
-        String::from_utf8_lossy(&out.stdout));
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 #[test]
 fn test_axi_read_beat_interleave_verilator_behavior() {
-    if std::process::Command::new("verilator").arg("--version").output().is_err() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         eprintln!("skipping Verilator beat-interleaving smoke: verilator not found");
         return;
     }
@@ -8830,10 +10168,12 @@ fn test_axi_read_beat_interleave_verilator_behavior() {
         .arg(&sv_out)
         .output()
         .expect("build beat-interleaving SV");
-    assert!(build.status.success(),
+    assert!(
+        build.status.success(),
         "arch build should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&build.stdout),
-        String::from_utf8_lossy(&build.stderr));
+        String::from_utf8_lossy(&build.stderr)
+    );
 
     let verilate = std::process::Command::new("verilator")
         .arg("--cc")
@@ -8852,22 +10192,28 @@ fn test_axi_read_beat_interleave_verilator_behavior() {
         .arg("tests/axi_dma_thread/tb_axi_read_beat_interleave.cpp")
         .output()
         .expect("verilate beat-interleaving response target");
-    assert!(verilate.status.success(),
+    assert!(
+        verilate.status.success(),
         "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&verilate.stdout),
-        String::from_utf8_lossy(&verilate.stderr));
+        String::from_utf8_lossy(&verilate.stderr)
+    );
 
     let exe = obj_dir.join("VThreadAxiReadBeatInterleave");
     let run = std::process::Command::new(&exe)
         .output()
         .expect("run Verilator beat-interleaving response target");
-    assert!(run.status.success(),
+    assert!(
+        run.status.success(),
         "Verilator sim should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&run.stdout),
-        String::from_utf8_lossy(&run.stderr));
-    assert!(String::from_utf8_lossy(&run.stdout).contains("PASS beat interleave alternating"),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("PASS beat interleave alternating"),
         "expected PASS marker in Verilator stdout:\n{}",
-        String::from_utf8_lossy(&run.stdout));
+        String::from_utf8_lossy(&run.stdout)
+    );
 }
 
 #[test]
@@ -8892,10 +10238,14 @@ fn test_implement_initiator_single_compiles_end_to_end() {
         end module M
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_tlm_init_driver_state"),
-        "single-implementer initiator should use v1 inline lowering:\n{sv}");
-    assert!(sv.contains("m_read_req_valid") && sv.contains("m_read_rsp_ready"),
-        "bus signals should be driven:\n{sv}");
+    assert!(
+        sv.contains("_tlm_init_driver_state"),
+        "single-implementer initiator should use v1 inline lowering:\n{sv}"
+    );
+    assert!(
+        sv.contains("m_read_req_valid") && sv.contains("m_read_rsp_ready"),
+        "bus signals should be driven:\n{sv}"
+    );
 }
 
 #[test]
@@ -8925,12 +10275,14 @@ fn test_implement_initiator_multi_implementer_compiles_end_to_end() {
         end module M
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_tlm_init_w0_state")
-         && sv.contains("_tlm_init_w1_state"),
-        "multi-implementer initiator should lower both workers:\n{sv}");
-    assert!(sv.contains("m_read_req_valid")
-         && sv.contains("m_read_rsp_ready"),
-        "shared method driver should still drive req/rsp handshake:\n{sv}");
+    assert!(
+        sv.contains("_tlm_init_w0_state") && sv.contains("_tlm_init_w1_state"),
+        "multi-implementer initiator should lower both workers:\n{sv}"
+    );
+    assert!(
+        sv.contains("m_read_req_valid") && sv.contains("m_read_rsp_ready"),
+        "shared method driver should still drive req/rsp handshake:\n{sv}"
+    );
 }
 
 #[test]
@@ -8955,7 +10307,10 @@ fn test_implement_initiator_with_args_in_parens_errors() {
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
     let r = parser.parse_source_file();
-    assert!(r.is_err(), "initiator implement with args should be a parse error");
+    assert!(
+        r.is_err(),
+        "initiator implement with args should be a parse error"
+    );
 }
 
 #[test]
@@ -8985,14 +10340,18 @@ fn test_tlm_multi_thread_direct_calls_lower_to_in_order_pool() {
         end module Shared
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_tlm_pool_m_read_fifo"),
-        "cohort lowering should emit issue-order FIFO:\n{sv}");
-    assert!(sv.contains("_tlm_pool_m_read_t0_state")
-         && sv.contains("_tlm_pool_m_read_t1_state"),
-        "cohort lowering should emit per-thread state regs:\n{sv}");
-    assert!(sv.contains("m_read_req_valid")
-         && sv.contains("m_read_rsp_ready"),
-        "cohort lowering should drive shared TLM handshakes:\n{sv}");
+    assert!(
+        sv.contains("_tlm_pool_m_read_fifo"),
+        "cohort lowering should emit issue-order FIFO:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_pool_m_read_t0_state") && sv.contains("_tlm_pool_m_read_t1_state"),
+        "cohort lowering should emit per-thread state regs:\n{sv}"
+    );
+    assert!(
+        sv.contains("m_read_req_valid") && sv.contains("m_read_rsp_ready"),
+        "cohort lowering should drive shared TLM handshakes:\n{sv}"
+    );
 }
 
 #[test]
@@ -9018,12 +10377,16 @@ fn test_tlm_generate_for_workers_share_method() {
         end module Shared
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_tlm_pool_m_read_fifo"),
-        "generated worker cohort should use pooled TLM lowering:\n{sv}");
-    assert!(sv.contains("data[0] <= m_read_rsp_data")
-         && sv.contains("data[1] <= m_read_rsp_data")
-         && sv.contains("data[2] <= m_read_rsp_data"),
-        "each generated worker should capture its routed response:\n{sv}");
+    assert!(
+        sv.contains("_tlm_pool_m_read_fifo"),
+        "generated worker cohort should use pooled TLM lowering:\n{sv}"
+    );
+    assert!(
+        sv.contains("data[0] <= m_read_rsp_data")
+            && sv.contains("data[1] <= m_read_rsp_data")
+            && sv.contains("data[2] <= m_read_rsp_data"),
+        "each generated worker should capture its routed response:\n{sv}"
+    );
 }
 
 #[test]
@@ -9051,11 +10414,14 @@ fn test_tlm_fork_join_workers_share_method() {
         end module Shared
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_tlm_pool_m_read_fifo"),
-        "fork/join TLM workers should use pooled TLM lowering:\n{sv}");
-    assert!(sv.contains("data[0] <= m_read_rsp_data")
-         && sv.contains("data[1] <= m_read_rsp_data"),
-        "fork/join worker responses should route by issue order:\n{sv}");
+    assert!(
+        sv.contains("_tlm_pool_m_read_fifo"),
+        "fork/join TLM workers should use pooled TLM lowering:\n{sv}"
+    );
+    assert!(
+        sv.contains("data[0] <= m_read_rsp_data") && sv.contains("data[1] <= m_read_rsp_data"),
+        "fork/join worker responses should route by issue order:\n{sv}"
+    );
 }
 
 #[test]
@@ -9082,13 +10448,18 @@ fn test_tlm_rhs_fork_join_all_workers_share_method() {
         end module Shared
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_tlm_fork_workers_m_read_age"),
-        "forked RHS TLM lowering should emit an issue-age counter:\n{sv}");
-    assert!(sv.contains("_tlm_fork_workers_m_read_fifo"),
-        "blocking forked RHS TLM should route responses by issue-order FIFO:\n{sv}");
-    assert!(sv.contains("data[0] <= m_read_rsp_data")
-         && sv.contains("data[1] <= m_read_rsp_data"),
-        "forked RHS worker responses should capture routed data:\n{sv}");
+    assert!(
+        sv.contains("_tlm_fork_workers_m_read_age"),
+        "forked RHS TLM lowering should emit an issue-age counter:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_fork_workers_m_read_fifo"),
+        "blocking forked RHS TLM should route responses by issue-order FIFO:\n{sv}"
+    );
+    assert!(
+        sv.contains("data[0] <= m_read_rsp_data") && sv.contains("data[1] <= m_read_rsp_data"),
+        "forked RHS worker responses should capture routed data:\n{sv}"
+    );
 }
 
 #[test]
@@ -9118,7 +10489,10 @@ fn test_tlm_rhs_fork_requires_join_all() {
     let r = arch::elaborate::lower_tlm_initiator_calls(ast);
     assert!(r.is_err(), "forked RHS TLM calls should require join all");
     let msg = format!("{:?}", r.unwrap_err());
-    assert!(msg.contains("join all"), "expected join-all diagnostic, got: {msg}");
+    assert!(
+        msg.contains("join all"),
+        "expected join-all diagnostic, got: {msg}"
+    );
 }
 
 #[test]
@@ -9180,11 +10554,14 @@ fn test_tlm_cohort_multi_arg_method() {
         end module Shared
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_tlm_pool_m_read_fifo"),
-        "multi-arg method should use pooled TLM lowering:\n{sv}");
-    assert!(sv.contains("m_read_addr")
-         && sv.contains("m_read_len"),
-        "cohort lowering should mux every method arg:\n{sv}");
+    assert!(
+        sv.contains("_tlm_pool_m_read_fifo"),
+        "multi-arg method should use pooled TLM lowering:\n{sv}"
+    );
+    assert!(
+        sv.contains("m_read_addr") && sv.contains("m_read_len"),
+        "cohort lowering should mux every method arg:\n{sv}"
+    );
 }
 
 #[test]
@@ -9219,8 +10596,10 @@ fn test_tlm_unsupported_fork_join_call_errors() {
     let r = arch::elaborate::lower_tlm_initiator_calls(ast);
     assert!(r.is_err(), "unsupported fork/join TLM shape should error");
     let msg = format!("{:?}", r.unwrap_err());
-    assert!(msg.contains("multi-thread sharing") || msg.contains("TLM initiator thread body"),
-        "expected targeted TLM fork/join error, got: {msg}");
+    assert!(
+        msg.contains("multi-thread sharing") || msg.contains("TLM initiator thread body"),
+        "expected targeted TLM fork/join error, got: {msg}"
+    );
 }
 
 #[test]
@@ -9248,14 +10627,18 @@ fn test_tlm_out_of_order_fork_join_routes_by_tag() {
         end module Shared
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("m_read_req_tag"),
-        "out-of-order cohort should drive request tags:\n{sv}");
-    assert!(sv.contains("m_read_rsp_tag == 2'd0")
-         && sv.contains("m_read_rsp_tag == 2'd1"),
-        "out-of-order cohort should route responses by rsp_tag:\n{sv}");
-    assert!(sv.contains("data[0] <= m_read_rsp_data")
-         && sv.contains("data[1] <= m_read_rsp_data"),
-        "tag-routed responses should capture into each worker destination:\n{sv}");
+    assert!(
+        sv.contains("m_read_req_tag"),
+        "out-of-order cohort should drive request tags:\n{sv}"
+    );
+    assert!(
+        sv.contains("m_read_rsp_tag == 2'd0") && sv.contains("m_read_rsp_tag == 2'd1"),
+        "out-of-order cohort should route responses by rsp_tag:\n{sv}"
+    );
+    assert!(
+        sv.contains("data[0] <= m_read_rsp_data") && sv.contains("data[1] <= m_read_rsp_data"),
+        "tag-routed responses should capture into each worker destination:\n{sv}"
+    );
 }
 
 #[test]
@@ -9282,12 +10665,14 @@ fn test_tlm_rhs_fork_out_of_order_routes_by_tag() {
         end module Shared
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("m_read_req_tag")
-         && sv.contains("m_read_rsp_tag"),
-        "OOO forked RHS TLM should drive and consume tag wires:\n{sv}");
-    assert!(sv.contains("m_read_rsp_tag == 2'd0")
-         && sv.contains("m_read_rsp_tag == 2'd1"),
-        "OOO forked RHS responses should route by worker tag:\n{sv}");
+    assert!(
+        sv.contains("m_read_req_tag") && sv.contains("m_read_rsp_tag"),
+        "OOO forked RHS TLM should drive and consume tag wires:\n{sv}"
+    );
+    assert!(
+        sv.contains("m_read_rsp_tag == 2'd0") && sv.contains("m_read_rsp_tag == 2'd1"),
+        "OOO forked RHS responses should route by worker tag:\n{sv}"
+    );
 }
 
 #[test]
@@ -9340,7 +10725,11 @@ fn test_tlm_rhs_fork_tail_arch_sim_behavior() {
 
 #[test]
 fn test_tlm_rhs_fork_tail_verilator_behavior() {
-    if std::process::Command::new("verilator").arg("--version").output().is_err() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         eprintln!("skipping Verilator RHS-fork tail smoke: verilator not found");
         return;
     }
@@ -9415,9 +10804,11 @@ fn test_axi_dma_tlm_burst_vec_example_compiles() {
     assert!(sv.contains("mem_read_burst_req_tag"));
     assert!(sv.contains("mem_read_burst_rsp_tag"));
     assert!(sv.contains("_tlm_fork_issue_bursts_mem_read_burst"));
-    assert!(sv.contains("mem_read_burst_rsp_tag == 2'd0")
-        && sv.contains("mem_read_burst_rsp_tag == 2'd1"),
-        "burst Vec OOO responses should route by worker tag:\n{sv}");
+    assert!(
+        sv.contains("mem_read_burst_rsp_tag == 2'd0")
+            && sv.contains("mem_read_burst_rsp_tag == 2'd1"),
+        "burst Vec OOO responses should route by worker tag:\n{sv}"
+    );
 
     let sim = compile_to_sim_h(source, false);
     assert!(
@@ -9425,11 +10816,18 @@ fn test_axi_dma_tlm_burst_vec_example_compiles() {
             && sim.contains("uint32_t& mem_read_burst_rsp_data_0;"),
         "sim API should preserve Vec response lanes as an array with flat aliases:\n{sim}"
     );
-    assert!(sim.contains("uint32_t _mem_read_burst_rsp_data[4];"),
-        "sim model should mirror the flattened Vec response as an internal array:\n{sim}");
-    assert!(sim.contains("for (size_t _i = 0; _i < 4; ++_i) { _n_burst0_r[_i] = _mem_read_burst_rsp_data[_i]; }")
-        && sim.contains("for (size_t _i = 0; _i < 4; ++_i) { _n_burst1_r[_i] = _mem_read_burst_rsp_data[_i]; }"),
-        "burst Vec responses should copy into both destination arrays:\n{sim}");
+    assert!(
+        sim.contains("uint32_t _mem_read_burst_rsp_data[4];"),
+        "sim model should mirror the flattened Vec response as an internal array:\n{sim}"
+    );
+    assert!(
+        sim.contains(
+            "for (size_t _i = 0; _i < 4; ++_i) { _n_burst0_r[_i] = _mem_read_burst_rsp_data[_i]; }"
+        ) && sim.contains(
+            "for (size_t _i = 0; _i < 4; ++_i) { _n_burst1_r[_i] = _mem_read_burst_rsp_data[_i]; }"
+        ),
+        "burst Vec responses should copy into both destination arrays:\n{sim}"
+    );
 }
 
 #[test]
@@ -9582,10 +10980,14 @@ fn test_tlm_out_of_order_target_echoes_tag() {
         end module MemTarget
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_tlm_s_read_tag_latched"),
-        "target should latch accepted request tag:\n{sv}");
-    assert!(sv.contains("s_read_rsp_tag = _tlm_s_read_tag_latched"),
-        "target should echo the latched tag on response:\n{sv}");
+    assert!(
+        sv.contains("_tlm_s_read_tag_latched"),
+        "target should latch accepted request tag:\n{sv}"
+    );
+    assert!(
+        sv.contains("s_read_rsp_tag = _tlm_s_read_tag_latched"),
+        "target should echo the latched tag on response:\n{sv}"
+    );
 }
 
 #[test]
@@ -9617,8 +11019,10 @@ fn test_tlm_call_rejected_outside_seq_assign_rhs() {
     let r = arch::elaborate::lower_tlm_initiator_calls(ast);
     assert!(r.is_err(), "nested TLM call in RHS should be rejected");
     let msg = format!("{:?}", r.unwrap_err());
-    assert!(msg.contains("direct right-hand side") || msg.contains("direct"),
-        "expected direct-RHS error, got: {msg}");
+    assert!(
+        msg.contains("direct right-hand side") || msg.contains("direct"),
+        "expected direct-RHS error, got: {msg}"
+    );
 }
 
 #[test]
@@ -9737,18 +11141,26 @@ fn test_tlm_conditional_initiator_arch_sim_behavior() {
         .arg(td.path())
         .output()
         .expect("run arch sim for conditional TLM initiator");
-    assert!(out.status.success(),
+    assert!(
+        out.status.success(),
         "conditional TLM initiator arch sim should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS TlmConditionalInitiator"),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS TlmConditionalInitiator"),
         "expected PASS marker in stdout:\n{}",
-        String::from_utf8_lossy(&out.stdout));
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 #[test]
 fn test_tlm_conditional_initiator_verilator_behavior() {
-    if std::process::Command::new("verilator").arg("--version").output().is_err() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         eprintln!("skipping Verilator conditional TLM smoke: verilator not found");
         return;
     }
@@ -9765,10 +11177,12 @@ fn test_tlm_conditional_initiator_verilator_behavior() {
         .arg(&sv_out)
         .output()
         .expect("build conditional TLM initiator SV");
-    assert!(build.status.success(),
+    assert!(
+        build.status.success(),
         "arch build should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&build.stdout),
-        String::from_utf8_lossy(&build.stderr));
+        String::from_utf8_lossy(&build.stderr)
+    );
 
     let verilate = std::process::Command::new("verilator")
         .arg("--cc")
@@ -9787,22 +11201,28 @@ fn test_tlm_conditional_initiator_verilator_behavior() {
         .arg("tests/axi_dma_tlm/tb_tlm_conditional_initiator.cpp")
         .output()
         .expect("verilate conditional TLM initiator");
-    assert!(verilate.status.success(),
+    assert!(
+        verilate.status.success(),
         "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&verilate.stdout),
-        String::from_utf8_lossy(&verilate.stderr));
+        String::from_utf8_lossy(&verilate.stderr)
+    );
 
     let exe = obj_dir.join("VTlmConditionalInitiator");
     let run = std::process::Command::new(&exe)
         .output()
         .expect("run Verilator conditional TLM initiator");
-    assert!(run.status.success(),
+    assert!(
+        run.status.success(),
         "Verilator sim should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&run.stdout),
-        String::from_utf8_lossy(&run.stderr));
-    assert!(String::from_utf8_lossy(&run.stdout).contains("PASS TlmConditionalInitiator"),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("PASS TlmConditionalInitiator"),
         "expected PASS marker in Verilator stdout:\n{}",
-        String::from_utf8_lossy(&run.stdout));
+        String::from_utf8_lossy(&run.stdout)
+    );
 }
 
 #[test]
@@ -9814,8 +11234,7 @@ fn test_fpt26_runtime_loop_tlm_initiator_compiles() {
         "runtime TLM for loop should allocate a loop counter:\n{sv}"
     );
     assert!(
-        sv.contains("assign hbm_read_k_req_valid")
-            && sv.contains("assign qk_qk_tile_req_valid"),
+        sv.contains("assign hbm_read_k_req_valid") && sv.contains("assign qk_qk_tile_req_valid"),
         "runtime loop should still drive both serialized TLM request channels:\n{sv}"
     );
 }
@@ -9861,18 +11280,26 @@ fn test_fpt26_runtime_loop_tlm_arch_sim_behavior() {
         .arg(td.path())
         .output()
         .expect("run arch sim for FPT26 runtime-loop TLM");
-    assert!(out.status.success(),
+    assert!(
+        out.status.success(),
         "FPT26 runtime-loop TLM arch sim should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS Fpt26RuntimeLoopTlm"),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS Fpt26RuntimeLoopTlm"),
         "expected PASS marker in stdout:\n{}",
-        String::from_utf8_lossy(&out.stdout));
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 #[test]
 fn test_fpt26_runtime_loop_tlm_verilator_behavior() {
-    if std::process::Command::new("verilator").arg("--version").output().is_err() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         eprintln!("skipping Verilator runtime-loop TLM smoke: verilator not found");
         return;
     }
@@ -9889,10 +11316,12 @@ fn test_fpt26_runtime_loop_tlm_verilator_behavior() {
         .arg(&sv_out)
         .output()
         .expect("build FPT26 runtime-loop TLM SV");
-    assert!(build.status.success(),
+    assert!(
+        build.status.success(),
         "arch build should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&build.stdout),
-        String::from_utf8_lossy(&build.stderr));
+        String::from_utf8_lossy(&build.stderr)
+    );
 
     let verilate = std::process::Command::new("verilator")
         .arg("--cc")
@@ -9912,22 +11341,28 @@ fn test_fpt26_runtime_loop_tlm_verilator_behavior() {
         .arg("tests/fpt26_tlm/tb_fpt26_runtime_loop_tlm.cpp")
         .output()
         .expect("verilate FPT26 runtime-loop TLM");
-    assert!(verilate.status.success(),
+    assert!(
+        verilate.status.success(),
         "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&verilate.stdout),
-        String::from_utf8_lossy(&verilate.stderr));
+        String::from_utf8_lossy(&verilate.stderr)
+    );
 
     let exe = obj_dir.join("VFpt26RuntimeLoopTlm");
     let run = std::process::Command::new(&exe)
         .output()
         .expect("run Verilator FPT26 runtime-loop TLM");
-    assert!(run.status.success(),
+    assert!(
+        run.status.success(),
         "Verilator sim should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&run.stdout),
-        String::from_utf8_lossy(&run.stderr));
-    assert!(String::from_utf8_lossy(&run.stdout).contains("PASS Fpt26RuntimeLoopTlm"),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("PASS Fpt26RuntimeLoopTlm"),
         "expected PASS marker in Verilator stdout:\n{}",
-        String::from_utf8_lossy(&run.stdout));
+        String::from_utf8_lossy(&run.stdout)
+    );
 }
 
 #[test]
@@ -10085,14 +11520,22 @@ fn test_tlm_target_thread_lowers_inline_to_state_machine() {
         end module MemTarget
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_tlm_s_read_state"),
-        "state register should appear in SV:\n{sv}");
-    assert!(sv.contains("_tlm_s_read_addr_latched"),
-        "arg latch reg should appear in SV:\n{sv}");
-    assert!(sv.contains("s_read_req_ready"),
-        "req_ready driver should appear in SV:\n{sv}");
-    assert!(sv.contains("s_read_rsp_valid"),
-        "rsp_valid driver should appear in SV:\n{sv}");
+    assert!(
+        sv.contains("_tlm_s_read_state"),
+        "state register should appear in SV:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_s_read_addr_latched"),
+        "arg latch reg should appear in SV:\n{sv}"
+    );
+    assert!(
+        sv.contains("s_read_req_ready"),
+        "req_ready driver should appear in SV:\n{sv}"
+    );
+    assert!(
+        sv.contains("s_read_rsp_valid"),
+        "rsp_valid driver should appear in SV:\n{sv}"
+    );
 }
 
 #[test]
@@ -10115,10 +11558,14 @@ fn test_tlm_target_thread_accepts_wait_cycles_before_return() {
         end module MemTarget
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("_tlm_s_read_wait_cnt"),
-        "wait-cycle target should allocate a counter:\n{sv}");
-    assert!(sv.contains("32'd6"),
-        "wait 7 cycle should initialize the counter to 6:\n{sv}");
+    assert!(
+        sv.contains("_tlm_s_read_wait_cnt"),
+        "wait-cycle target should allocate a counter:\n{sv}"
+    );
+    assert!(
+        sv.contains("32'd6"),
+        "wait 7 cycle should initialize the counter to 6:\n{sv}"
+    );
 }
 
 #[test]
@@ -10204,7 +11651,11 @@ fn test_tlm_target_thread_rich_body_thread_sim_both() {
 
 #[test]
 fn test_tlm_target_thread_rich_body_verilator_behavior() {
-    if std::process::Command::new("verilator").arg("--version").output().is_err() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         eprintln!("skipping Verilator rich TLM target smoke: verilator not found");
         return;
     }
@@ -10350,7 +11801,11 @@ fn test_tlm_target_thread_early_return_thread_sim_both() {
 
 #[test]
 fn test_tlm_target_thread_early_return_verilator_behavior() {
-    if std::process::Command::new("verilator").arg("--version").output().is_err() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         eprintln!("skipping Verilator early-return TLM target smoke: verilator not found");
         return;
     }
@@ -10474,15 +11929,26 @@ fn test_tlm_target_thread_parses_return_stmt() {
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
     let ast = parser.parse_source_file().expect("parse");
-    let m = ast.items.iter().find_map(|it| match it {
-        arch::ast::Item::Module(m) if m.name.name == "MemTarget" => Some(m),
-        _ => None,
-    }).expect("MemTarget in AST");
-    let t = m.body.iter().find_map(|i| match i {
-        arch::ast::ModuleBodyItem::Thread(t) => Some(t),
-        _ => None,
-    }).expect("thread in body");
-    let has_return = t.body.iter().any(|s| matches!(s, arch::ast::ThreadStmt::Return(_, _)));
+    let m = ast
+        .items
+        .iter()
+        .find_map(|it| match it {
+            arch::ast::Item::Module(m) if m.name.name == "MemTarget" => Some(m),
+            _ => None,
+        })
+        .expect("MemTarget in AST");
+    let t = m
+        .body
+        .iter()
+        .find_map(|i| match i {
+            arch::ast::ModuleBodyItem::Thread(t) => Some(t),
+            _ => None,
+        })
+        .expect("thread in body");
+    let has_return = t
+        .body
+        .iter()
+        .any(|s| matches!(s, arch::ast::ThreadStmt::Return(_, _)));
     assert!(has_return, "body should contain a Return stmt");
 }
 
@@ -10513,8 +11979,10 @@ fn test_return_in_regular_thread_errors_in_lower_threads() {
     let result = arch::elaborate::lower_threads(ast);
     assert!(result.is_err(), "regular thread with return should error");
     let msg = format!("{:?}", result.unwrap_err());
-    assert!(msg.contains("return") && msg.contains("TLM method target thread"),
-        "expected targeted error, got: {msg}");
+    assert!(
+        msg.contains("return") && msg.contains("TLM method target thread"),
+        "expected targeted error, got: {msg}"
+    );
 }
 
 #[test]
@@ -10539,8 +12007,10 @@ fn test_tlm_target_thread_accepts_matched_closing_method_name() {
     ";
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
-    assert!(parser.parse_source_file().is_err(),
-        "mismatched closing method name should be a parse error");
+    assert!(
+        parser.parse_source_file().is_err(),
+        "mismatched closing method name should be a parse error"
+    );
 }
 
 #[test]
@@ -10562,16 +12032,26 @@ fn test_tlm_method_target_perspective_flips() {
         end module Target
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("input logic s_read_req_valid"),
-        "target perspective: req_valid should be an input:\n{sv}");
-    assert!(sv.contains("output logic s_read_req_ready"),
-        "target perspective: req_ready flows back as output:\n{sv}");
-    assert!(sv.contains("output logic s_read_rsp_valid"),
-        "target perspective: rsp_valid is output:\n{sv}");
-    assert!(sv.contains("output logic [63:0] s_read_rsp_data"),
-        "target perspective: rsp_data is output:\n{sv}");
-    assert!(sv.contains("input logic s_read_rsp_ready"),
-        "target perspective: rsp_ready flows back as input:\n{sv}");
+    assert!(
+        sv.contains("input logic s_read_req_valid"),
+        "target perspective: req_valid should be an input:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic s_read_req_ready"),
+        "target perspective: req_ready flows back as output:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic s_read_rsp_valid"),
+        "target perspective: rsp_valid is output:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic [63:0] s_read_rsp_data"),
+        "target perspective: rsp_data is output:\n{sv}"
+    );
+    assert!(
+        sv.contains("input logic s_read_rsp_ready"),
+        "target perspective: rsp_ready flows back as input:\n{sv}"
+    );
 }
 
 #[test]
@@ -10585,8 +12065,10 @@ fn test_tlm_method_unsupported_modes_rejected() {
         let tokens = arch::lexer::tokenize(&source).expect("lexer");
         let mut parser = arch::parser::Parser::new(tokens, &source);
         let result = parser.parse_source_file();
-        assert!(result.is_err(),
-            "mode `{mode}` should be rejected in v1: source={source}");
+        assert!(
+            result.is_err(),
+            "mode `{mode}` should be rejected in v1: source={source}"
+        );
     }
 }
 
@@ -10602,8 +12084,10 @@ fn test_credit_channel_mismatched_closing_keyword_errors() {
     ";
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
-    assert!(parser.parse_source_file().is_err(),
-        "mismatched credit_channel close should be a parse error");
+    assert!(
+        parser.parse_source_file().is_err(),
+        "mismatched credit_channel close should be a parse error"
+    );
 }
 
 #[test]
@@ -10620,7 +12104,10 @@ fn test_handshake_mismatched_closing_keyword_errors() {
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
     let result = parser.parse_source_file();
-    assert!(result.is_err(), "expected parse error for mismatched opening/closing keyword");
+    assert!(
+        result.is_err(),
+        "expected parse error for mismatched opening/closing keyword"
+    );
 }
 
 #[test]
@@ -10635,8 +12122,10 @@ fn test_temporal_sva_past_emits_dollar_past() {
         end module M
     "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("$past(b, 2)"),
-        "past(b, 2) should emit SV $past(b, 2):\n{sv}");
+    assert!(
+        sv.contains("$past(b, 2)"),
+        "past(b, 2) should emit SV $past(b, 2):\n{sv}"
+    );
 }
 
 #[test]
@@ -10651,8 +12140,10 @@ fn test_temporal_sva_implies_next_emits_pipe_arrow() {
         end module M
     "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("a |=> b"),
-        "a |=> b should emit SV a |=> b:\n{sv}");
+    assert!(
+        sv.contains("a |=> b"),
+        "a |=> b should emit SV a |=> b:\n{sv}"
+    );
 }
 
 #[test]
@@ -10677,8 +12168,10 @@ fn test_past_outside_assert_rejected() {
     let result = checker.check();
     assert!(result.is_err(), "past() outside assert should be rejected");
     let errs = result.err().unwrap();
-    assert!(errs.iter().any(|e| format!("{e:?}").contains("past")),
-        "error should mention past: {errs:?}");
+    assert!(
+        errs.iter().any(|e| format!("{e:?}").contains("past")),
+        "error should mention past: {errs:?}"
+    );
 }
 
 #[test]
@@ -10720,7 +12213,10 @@ fn test_past_arity_errors() {
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate");
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = TypeChecker::new(&symbols, &ast);
-    assert!(checker.check().is_err(), "past with wrong arity should error");
+    assert!(
+        checker.check().is_err(),
+        "past with wrong arity should error"
+    );
 }
 
 #[test]
@@ -10782,7 +12278,10 @@ fn test_phase2_hashhash_emits_sva_delay() {
         end module M
     "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("##2 b") || sv.contains("##2b"), "expected ##2 in SV:\n{sv}");
+    assert!(
+        sv.contains("##2 b") || sv.contains("##2b"),
+        "expected ##2 in SV:\n{sv}"
+    );
 }
 
 #[test]
@@ -10802,7 +12301,10 @@ fn test_phase2_rose_outside_assert_rejected() {
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate");
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = TypeChecker::new(&symbols, &ast);
-    assert!(checker.check().is_err(), "rose() outside assert should be rejected");
+    assert!(
+        checker.check().is_err(),
+        "rose() outside assert should be rejected"
+    );
 }
 
 #[test]
@@ -10822,7 +12324,10 @@ fn test_phase2_hashhash_outside_assert_rejected() {
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate");
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = TypeChecker::new(&symbols, &ast);
-    assert!(checker.check().is_err(), "##N outside assert should be rejected");
+    assert!(
+        checker.check().is_err(),
+        "##N outside assert should be rejected"
+    );
 }
 
 #[test]
@@ -10870,13 +12375,19 @@ fn test_inst_site_type_param_override_translates_to_data_width() {
     "#;
     let sv = compile_to_sv(source);
     // Type param `T = UInt<W>` should translate to `.DATA_WIDTH(W)` in the SV inst.
-    assert!(sv.contains(".DATA_WIDTH(W)"),
-        "type override `T = UInt<W>` should emit `.DATA_WIDTH(W)`:\n{sv}");
-    assert!(sv.contains(".DEPTH(4)"),
-        "value override `DEPTH = 4` should emit `.DEPTH(4)`:\n{sv}");
+    assert!(
+        sv.contains(".DATA_WIDTH(W)"),
+        "type override `T = UInt<W>` should emit `.DATA_WIDTH(W)`:\n{sv}"
+    );
+    assert!(
+        sv.contains(".DEPTH(4)"),
+        "value override `DEPTH = 4` should emit `.DEPTH(4)`:\n{sv}"
+    );
     // Sanity: no `.T(...)` raw type in the inst — the fifo doesn't expose `T` at SV level.
-    assert!(!sv.contains(".T(logic"),
-        "should not emit raw `.T(logic ...)` for fifo whose T was synthesized to DATA_WIDTH:\n{sv}");
+    assert!(
+        !sv.contains(".T(logic"),
+        "should not emit raw `.T(logic ...)` for fifo whose T was synthesized to DATA_WIDTH:\n{sv}"
+    );
 }
 
 #[test]
@@ -10904,9 +12415,18 @@ fn test_pipe_reg_tap_reads_q_at_k() {
         end module M
     "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("assign o0 = a;"), "q@0 should be source `a`:\n{sv}");
-    assert!(sv.contains("assign o1 = q_stg1;"), "q@1 should be q_stg1:\n{sv}");
-    assert!(sv.contains("assign o2 = q_stg2;"), "q@2 should be q_stg2:\n{sv}");
+    assert!(
+        sv.contains("assign o0 = a;"),
+        "q@0 should be source `a`:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign o1 = q_stg1;"),
+        "q@1 should be q_stg1:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign o2 = q_stg2;"),
+        "q@2 should be q_stg2:\n{sv}"
+    );
     assert!(sv.contains("assign o3 = q;"), "q@3 should be bare q:\n{sv}");
 }
 
@@ -10930,8 +12450,11 @@ fn test_pipe_reg_tap_out_of_range_errors() {
     let result = elaborate::lower_pipe_reg_ports(parsed_ast);
     assert!(result.is_err(), "q@4 should be rejected for stages=3");
     let errs = result.err().unwrap();
-    assert!(errs.iter().any(|e| format!("{e:?}").contains("exceeds pipe_reg depth")),
-        "error should mention depth: {errs:?}");
+    assert!(
+        errs.iter()
+            .any(|e| format!("{e:?}").contains("exceeds pipe_reg depth")),
+        "error should mention depth: {errs:?}"
+    );
 }
 
 #[test]
@@ -10961,10 +12484,14 @@ fn test_fsm_sint_uses_arithmetic_shift() {
         end fsm F
     "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("a >>> 1"),
-        "fsm-scope SInt port `a` shifted right should emit `>>>` (arithmetic):\n{sv}");
-    assert!(!sv.contains("a >> 1"),
-        "should not emit `>>` (logical) for SInt:\n{sv}");
+    assert!(
+        sv.contains("a >>> 1"),
+        "fsm-scope SInt port `a` shifted right should emit `>>>` (arithmetic):\n{sv}"
+    );
+    assert!(
+        !sv.contains("a >> 1"),
+        "should not emit `>>` (logical) for SInt:\n{sv}"
+    );
 }
 
 #[test]
@@ -10980,14 +12507,20 @@ fn test_vec_of_const_param_emits_packed_and_indexes() {
         end module M
     "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("parameter logic [(4)*(8)-1:0] coeffs"),
-        "expected packed parameter:\n{sv}");
+    assert!(
+        sv.contains("parameter logic [(4)*(8)-1:0] coeffs"),
+        "expected packed parameter:\n{sv}"
+    );
     // Default packed in reverse so coeffs[0] = parts[0] = 1 (LSB).
-    assert!(sv.contains("(8)'(4), (8)'(3), (8)'(2), (8)'(1)"),
-        "expected reversed default chunks (MSB-first packing):\n{sv}");
+    assert!(
+        sv.contains("(8)'(4), (8)'(3), (8)'(2), (8)'(1)"),
+        "expected reversed default chunks (MSB-first packing):\n{sv}"
+    );
     // Indexing rewritten to part-select.
-    assert!(sv.contains("coeffs[(0) * (8) +: (8)]"),
-        "expected coeffs[0] → coeffs[(0) * (8) +: (8)]:\n{sv}");
+    assert!(
+        sv.contains("coeffs[(0) * (8) +: (8)]"),
+        "expected coeffs[0] → coeffs[(0) * (8) +: (8)]:\n{sv}"
+    );
 }
 
 #[test]
@@ -11009,11 +12542,15 @@ fn test_uint_as_vec_cast_for_find_first() {
     "#;
     let sv = compile_to_sv(source);
     // No bit-unpack `for` loop or intermediate Vec wire.
-    assert!(!sv.contains("for ("),
-        "should not synthesize a for-loop bit unpack:\n{sv}");
+    assert!(
+        !sv.contains("for ("),
+        "should not synthesize a for-loop bit unpack:\n{sv}"
+    );
     // Should index `d[i]` directly in the priority encoder.
-    assert!(sv.contains("d[0]") && sv.contains("d[7]"),
-        "expected direct bit indexing of `d`:\n{sv}");
+    assert!(
+        sv.contains("d[0]") && sv.contains("d[7]"),
+        "expected direct bit indexing of `d`:\n{sv}"
+    );
 }
 
 #[test]
@@ -11036,14 +12573,20 @@ fn test_counter_runtime_max_port() {
     "#;
     let sv = compile_to_sv(source);
     // Wrap compare uses the runtime `max` port, not a const.
-    assert!(sv.contains("count_r == max"),
-        "expected wrap compare against `max` port:\n{sv}");
+    assert!(
+        sv.contains("count_r == max"),
+        "expected wrap compare against `max` port:\n{sv}"
+    );
     // at_max output mirrors the same compare.
-    assert!(sv.contains("assign at_max = (count_r == max)"),
-        "expected at_max against `max` port:\n{sv}");
+    assert!(
+        sv.contains("assign at_max = (count_r == max)"),
+        "expected at_max against `max` port:\n{sv}"
+    );
     // No const MAX appears (no MAX param declared).
-    assert!(!sv.contains("'(MAX)"),
-        "should not emit const MAX comparator when port is present:\n{sv}");
+    assert!(
+        !sv.contains("'(MAX)"),
+        "should not emit const MAX comparator when port is present:\n{sv}"
+    );
 }
 
 // ── Wait-1-cycle elision optimisation ─────────────────────────────────────────
@@ -11081,19 +12624,25 @@ fn test_wait_1_cycle_between_seq_writes_takes_one_cycle() {
     // The dedicated wait_cycles state's body decrements a counter and
     // checks `_t0_cnt == 0`; its absence means `wait 1 cycle` produced
     // no extra state between the phase writes.
-    assert!(!sv.contains("_t0_cnt <= 32'(_t0_cnt - 32'd1);"),
-        "should not emit counter-decrement state for `wait 1 cycle`:\n{sv}");
+    assert!(
+        !sv.contains("_t0_cnt <= 32'(_t0_cnt - 32'd1);"),
+        "should not emit counter-decrement state for `wait 1 cycle`:\n{sv}"
+    );
     // Three phase writes appear, each transitioning to the next state.
     // State numbering after elision: 0=initial wait, 1=phase=1,
     // 2=phase=2, 3=phase=3, then loop back to 0. Issue #247 changed
     // state assignments to reference per-state `localparam` names
     // (`_t0_S<N>_<role>`) instead of bare numeric literals.
-    assert!(sv.contains("phase <= 2'd1;") && sv.contains("phase <= 2'd2;")
+    assert!(
+        sv.contains("phase <= 2'd1;")
+            && sv.contains("phase <= 2'd2;")
             && sv.contains("phase <= 2'd3;"),
-        "expected three phase writes:\n{sv}");
-    assert!(sv.contains("_t0_state <= _t0_S2_action;")
-            && sv.contains("_t0_state <= _t0_S3_action;"),
-        "expected state transitions 1->2 and 2->3 via state-name localparams:\n{sv}");
+        "expected three phase writes:\n{sv}"
+    );
+    assert!(
+        sv.contains("_t0_state <= _t0_S2_action;") && sv.contains("_t0_state <= _t0_S3_action;"),
+        "expected state transitions 1->2 and 2->3 via state-name localparams:\n{sv}"
+    );
 }
 
 #[test]
@@ -11128,8 +12677,10 @@ fn test_wait_1_cycle_in_else_branch_kept() {
         end module M
     "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("module _M_threads"),
-        "thread with wait-1-cycle in else branch should compile:\n{sv}");
+    assert!(
+        sv.contains("module _M_threads"),
+        "thread with wait-1-cycle in else branch should compile:\n{sv}"
+    );
 }
 
 #[test]
@@ -11152,8 +12703,14 @@ fn test_lowered_threads_codegen_has_no_extra_blank_separator_or_eof_blank() {
         end module M
     "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("module _M_threads"), "expected lowered helper:\n{sv}");
-    assert!(sv.contains("endmodule\nmodule M"), "expected tight helper/public boundary:\n{sv}");
+    assert!(
+        sv.contains("module _M_threads"),
+        "expected lowered helper:\n{sv}"
+    );
+    assert!(
+        sv.contains("endmodule\nmodule M"),
+        "expected tight helper/public boundary:\n{sv}"
+    );
     assert!(
         !sv.contains("endmodule\n\nmodule M"),
         "helper/public boundary must not contain a blank separator:\n{sv}"
@@ -11170,8 +12727,10 @@ fn test_lowered_threads_codegen_has_no_extra_blank_separator_or_eof_blank() {
 fn test_auto_thread_asserts_off_by_default() {
     let source = include_str!("../tests/thread/wait_cycles.arch");
     let sv = compile_to_sv(source);
-    assert!(!sv.contains("_auto_thread_"),
-        "default lowering must not emit auto-thread asserts:\n{sv}");
+    assert!(
+        !sv.contains("_auto_thread_"),
+        "default lowering must not emit auto-thread asserts:\n{sv}"
+    );
 }
 
 #[test]
@@ -11181,32 +12740,49 @@ fn test_auto_thread_asserts_wait_cycles_and_until() {
     // emit, wrapped in `synopsys translate_off/on`, with reset-guarded
     // antecedents.
     let source = include_str!("../tests/thread/wait_cycles.arch");
-    let opts = elaborate::ThreadLowerOpts { auto_asserts: true, ..Default::default() };
+    let opts = elaborate::ThreadLowerOpts {
+        auto_asserts: true,
+        ..Default::default()
+    };
     let sv = compile_to_sv_with_opts(source, &opts);
 
     // Wait-until: state 0 transitions on `start`. Issue #247 changed
     // state comparisons in auto-asserts to reference per-state
     // `localparam` names (`_t0_S<N>_<role>`) instead of bare literals.
-    assert!(sv.contains("_auto_thread_t0_wait_until_s0:"),
-        "expected wait_until property at state 0:\n{sv}");
-    assert!(sv.contains("|=> _t0_state == _t0_S1_wait_cycles"),
-        "expected next-cycle implication to state 1 (wait_cycles) via state-name localparam:\n{sv}");
+    assert!(
+        sv.contains("_auto_thread_t0_wait_until_s0:"),
+        "expected wait_until property at state 0:\n{sv}"
+    );
+    assert!(
+        sv.contains("|=> _t0_state == _t0_S1_wait_cycles"),
+        "expected next-cycle implication to state 1 (wait_cycles) via state-name localparam:\n{sv}"
+    );
 
     // Wait-cycles: stay + done assertions.
-    assert!(sv.contains("_auto_thread_t0_wait_stay_s1:"),
-        "expected wait-cycles stay assertion:\n{sv}");
-    assert!(sv.contains("_auto_thread_t0_wait_done_s1:"),
-        "expected wait-cycles done assertion:\n{sv}");
+    assert!(
+        sv.contains("_auto_thread_t0_wait_stay_s1:"),
+        "expected wait-cycles stay assertion:\n{sv}"
+    );
+    assert!(
+        sv.contains("_auto_thread_t0_wait_done_s1:"),
+        "expected wait-cycles done assertion:\n{sv}"
+    );
 
     // Reset guard: rst_n is active-low, so `not_in_reset == rst_n`.
-    assert!(sv.contains("rst_n &&"),
-        "expected reset guard `rst_n && ...` in antecedent:\n{sv}");
+    assert!(
+        sv.contains("rst_n &&"),
+        "expected reset guard `rst_n && ...` in antecedent:\n{sv}"
+    );
 
     // SVA wrapped in translate_off/on (so synth ignores it).
-    assert!(sv.contains("// synopsys translate_off"),
-        "expected translate_off wrapping:\n{sv}");
-    assert!(sv.contains("// synopsys translate_on"),
-        "expected translate_on wrapping:\n{sv}");
+    assert!(
+        sv.contains("// synopsys translate_off"),
+        "expected translate_off wrapping:\n{sv}"
+    );
+    assert!(
+        sv.contains("// synopsys translate_on"),
+        "expected translate_on wrapping:\n{sv}"
+    );
 }
 
 #[test]
@@ -11214,10 +12790,15 @@ fn test_auto_thread_asserts_fork_join_branches() {
     // fork/join produces multi_transitions. Each branch transition gets
     // an `_auto_thread_t{i}_branch_s{s}_b{b}` assertion.
     let source = include_str!("../tests/thread/fork_join.arch");
-    let opts = elaborate::ThreadLowerOpts { auto_asserts: true, ..Default::default() };
+    let opts = elaborate::ThreadLowerOpts {
+        auto_asserts: true,
+        ..Default::default()
+    };
     let sv = compile_to_sv_with_opts(source, &opts);
-    assert!(sv.contains("_auto_thread_t0_branch_s"),
-        "expected at least one fork/join branch assertion:\n{sv}");
+    assert!(
+        sv.contains("_auto_thread_t0_branch_s"),
+        "expected at least one fork/join branch assertion:\n{sv}"
+    );
 }
 
 #[test]
@@ -11237,18 +12818,26 @@ fn test_auto_thread_asserts_active_high_reset() {
           end thread
         end module M
     "#;
-    let opts = elaborate::ThreadLowerOpts { auto_asserts: true, ..Default::default() };
+    let opts = elaborate::ThreadLowerOpts {
+        auto_asserts: true,
+        ..Default::default()
+    };
     let sv = compile_to_sv_with_opts(source, &opts);
-    assert!(sv.contains("!rst &&"),
-        "expected `!rst` guard for active-high reset:\n{sv}");
-    assert!(!sv.contains("(rst) &&"),
-        "should not use bare `rst` as guard for active-high:\n{sv}");
+    assert!(
+        sv.contains("!rst &&"),
+        "expected `!rst` guard for active-high reset:\n{sv}"
+    );
+    assert!(
+        !sv.contains("(rst) &&"),
+        "should not use bare `rst` as guard for active-high:\n{sv}"
+    );
 }
 
 // ── Thread map HTML sidecar ──────────────────────────────────────────────────
 
 fn thread_map_smoke_source(module_name: &str) -> String {
-    format!(r#"
+    format!(
+        r#"
         module {module_name}
           port clk:  in Clock<SysDomain>;
           port rst:  in Reset<Async, Low>;
@@ -11261,7 +12850,131 @@ fn thread_map_smoke_source(module_name: &str) -> String {
             wait 2 cycle;
           end thread T
         end module {module_name}
-    "#)
+    "#
+    )
+}
+
+fn thread_map_control_flow_source(module_name: &str) -> String {
+    format!(
+        r#"
+        module {module_name}
+          port clk:  in Clock<SysDomain>;
+          port rst:  in Reset<Async, Low>;
+          port go:   in Bool;
+          port sel:  in Bool;
+          port ack:  in Bool;
+          port done: out Bool;
+          thread T on clk rising, rst low
+            wait until go;
+            if sel
+              wait until ack;
+            else
+              wait 2 cycle;
+            end if
+            done = 1;
+            wait 1 cycle;
+          end thread T
+        end module {module_name}
+    "#
+    )
+}
+
+fn thread_proof_fold_source(module_name: &str) -> String {
+    format!(
+        r#"
+        module {module_name}
+          port clk:  in Clock<SysDomain>;
+          port rst:  in Reset<Async, Low>;
+          port go:   in Bool;
+          port done: out Bool;
+          reg done_r: Bool reset rst => false;
+          thread T on clk rising, rst low
+            done_r <= false;
+            wait until go;
+            done_r <= true;
+            wait 2 cycle;
+            done_r <= false;
+          end thread T
+          comb
+            done = done_r;
+          end comb
+        end module {module_name}
+    "#
+    )
+}
+
+fn thread_proof_multi_seq_source(module_name: &str) -> String {
+    format!(
+        r#"
+        module {module_name}
+          port clk:  in Clock<SysDomain>;
+          port rst:  in Reset<Async, Low>;
+          port go:   in Bool;
+          port a: out Bool;
+          port b: out Bool;
+          reg a_r: Bool reset rst => false;
+          reg b_r: Bool reset rst => false;
+          thread T on clk rising, rst low
+            a_r <= true;
+            b_r <= false;
+            wait until go;
+            a_r <= false;
+            b_r <= true;
+            wait 1 cycle;
+          end thread T
+          comb
+            a = a_r;
+            b = b_r;
+          end comb
+        end module {module_name}
+    "#
+    )
+}
+
+fn thread_proof_once_source(module_name: &str) -> String {
+    format!(
+        r#"
+        module {module_name}
+          port clk:  in Clock<SysDomain>;
+          port rst:  in Reset<Async, Low>;
+          port go:   in Bool;
+          port done: out Bool;
+          reg done_r: Bool reset rst => false;
+          thread once T on clk rising, rst low
+            wait until go;
+            wait 2 cycle;
+            done_r <= true;
+          end thread T
+          comb
+            done = done_r;
+          end comb
+        end module {module_name}
+    "#
+    )
+}
+
+fn thread_proof_once_folded_terminal_source(module_name: &str) -> String {
+    format!(
+        r#"
+        module {module_name}
+          port clk:       in Clock<SysDomain>;
+          port rst:       in Reset<Async, Low>;
+          port go:        in Bool;
+          port start:     out Bool;
+          port done:      out Bool;
+          reg done_r: Bool reset rst => false;
+          thread once T on clk rising, rst low
+            start = true;
+            wait until go;
+            start = false;
+            done_r <= true;
+          end thread T
+          comb
+            done = done_r;
+          end comb
+        end module {module_name}
+    "#
+    )
 }
 
 #[test]
@@ -11281,15 +12994,34 @@ fn test_build_emit_thread_map_bare_path() {
         .arg("--emit-thread-map")
         .output()
         .expect("run arch build --emit-thread-map");
-    assert!(out.status.success(),
+    assert!(
+        out.status.success(),
         "build should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr));
-    assert!(html_out.exists(), "expected bare flag to write {}", html_out.display());
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        html_out.exists(),
+        "expected bare flag to write {}",
+        html_out.display()
+    );
     let html = std::fs::read_to_string(&html_out).expect("read thread map");
-    assert!(html.contains("_t0_S0_wait_until"), "expected generated state name in HTML:\n{html}");
-    assert!(html.contains("wait until go"), "expected source line in HTML:\n{html}");
-    assert!(html.contains("done = 1"), "expected source assignment in HTML:\n{html}");
+    assert!(
+        html.contains("_t0_S0_wait_until"),
+        "expected generated state name in HTML:\n{html}"
+    );
+    assert!(
+        html.contains("thread-flow-chart"),
+        "expected flow chart in HTML:\n{html}"
+    );
+    assert!(
+        html.contains("wait until go"),
+        "expected source line in HTML:\n{html}"
+    );
+    assert!(
+        html.contains("done = 1"),
+        "expected source assignment in HTML:\n{html}"
+    );
 }
 
 #[test]
@@ -11309,11 +13041,742 @@ fn test_build_emit_thread_map_explicit_path() {
         .arg(format!("--emit-thread-map={}", html_out.display()))
         .output()
         .expect("run arch build --emit-thread-map=path");
-    assert!(out.status.success(),
+    assert!(
+        out.status.success(),
         "build should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr));
-    assert!(html_out.exists(), "expected explicit map path to be written");
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        html_out.exists(),
+        "expected explicit map path to be written"
+    );
+}
+
+#[test]
+fn test_build_emit_thread_proof_records_folded_target() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("ProofFlow.arch");
+    let sv_out = td.path().join("ProofFlow.sv");
+    let proof_out = td.path().join("ProofFlow.thread-proof.json");
+    std::fs::write(&src, thread_proof_fold_source("ProofFlow")).expect("write source");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_NO_LEARN", "1")
+        .arg("build")
+        .arg(&src)
+        .arg("-o")
+        .arg(&sv_out)
+        .arg("--emit-thread-proof")
+        .output()
+        .expect("run arch build --emit-thread-proof");
+    assert!(
+        out.status.success(),
+        "build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json = std::fs::read_to_string(&proof_out).expect("read proof certificate");
+    assert!(
+        json.contains("\"schema\": \"arch.thread_lowering_proof.v5\""),
+        "expected schema in proof certificate:\n{json}"
+    );
+    assert!(
+        json.contains("\"state_name\": \"_t0_S1_wait_until\""),
+        "expected wait_until state in proof certificate:\n{json}"
+    );
+    assert!(
+        json.contains("\"target_index\": 3"),
+        "folded wait state should target the emitted wait_cycles state:\n{json}"
+    );
+    assert!(
+        json.contains("\"source_next_index\": 3"),
+        "folded wait source-next should skip the absorbed action state:\n{json}"
+    );
+    assert!(
+        json.contains("\"source_next_name\": \"_t0_S3_wait_cycles\""),
+        "folded wait source-next name should identify the emitted wait state:\n{json}"
+    );
+    assert!(
+        json.contains("\"state_name\": \"_t0_S2_action\""),
+        "expected absorbed action state to remain documented:\n{json}"
+    );
+    assert!(
+        json.contains("\"emitted\": false"),
+        "expected absorbed action state to be marked non-emitted:\n{json}"
+    );
+    assert!(
+        json.contains("\"wait_cycles_count\": \"2\""),
+        "expected structured wait-cycle count in proof certificate:\n{json}"
+    );
+    assert!(
+        json.contains("\"seq_updates\": [\"done_r <= false\"]"),
+        "expected entry state's ordinary update in proof certificate:\n{json}"
+    );
+    assert!(
+        json.contains("\"folded_exit_updates\": [\"done_r <= true\"]"),
+        "expected folded wait-exit update in proof certificate:\n{json}"
+    );
+    assert!(
+        json.contains("\"seq_assignments\": [{\"target\": \"done_r\", \"value\": \"false\"}]"),
+        "expected structured ordinary assignment in proof certificate:\n{json}"
+    );
+    assert!(
+        json.contains(
+            "\"folded_exit_assignments\": [{\"target\": \"done_r\", \"value\": \"true\"}]"
+        ),
+        "expected structured folded assignment in proof certificate:\n{json}"
+    );
+    assert!(
+        json.contains("\"source_transitions\": [{\"condition\": \"go\""),
+        "expected compacted pre-fold source transition in proof certificate:\n{json}"
+    );
+    assert!(
+        json.contains("\"condition_guard\": {\"kind\":\"atom\",\"name\":\"go\"}"),
+        "expected structured source transition guard in proof certificate:\n{json}"
+    );
+    assert!(
+        json.contains("\"target_index\": 3")
+            && json.contains("\"target_name\": \"_t0_S3_wait_cycles\""),
+        "expected compacted pre-fold source transition target in proof certificate:\n{json}"
+    );
+    assert!(
+        json.contains("\"source_transition_origin\": \"pre_fold_snapshot\""),
+        "expected source transition provenance in proof certificate:\n{json}"
+    );
+
+    let sv = std::fs::read_to_string(&sv_out).expect("read sv");
+    assert!(
+        sv.contains("_t0_state <= _t0_S3_wait_cycles"),
+        "SV should skip folded S2 and jump to S3:\n{sv}"
+    );
+}
+
+#[test]
+fn test_build_emit_thread_proof_lean_proves_multi_assignment_store_effects() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("ProofMulti.arch");
+    let sv_out = td.path().join("ProofMulti.sv");
+    let lean_out = td.path().join("ProofMulti.thread-proof.lean");
+    std::fs::write(&src, thread_proof_multi_seq_source("ProofMulti")).expect("write source");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_NO_LEARN", "1")
+        .arg("build")
+        .arg(&src)
+        .arg("-o")
+        .arg(&sv_out)
+        .arg("--emit-thread-proof-lean")
+        .output()
+        .expect("run arch build --emit-thread-proof-lean");
+    assert!(
+        out.status.success(),
+        "build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let lean = std::fs::read_to_string(&lean_out).expect("read Lean proof certificate");
+    assert!(
+        lean.contains("[Arch.ThreadLoweringProof.FoldedExit.setVar 0 0, Arch.ThreadLoweringProof.FoldedExit.setVar 1 1]"),
+        "Lean artifact should model both assignments in one action update list:\n{lean}"
+    );
+    assert!(
+        lean.contains("Arch.ThreadLoweringProof.FoldedExit.applyUpdates ProofMulti_T_0__t0_S0_entry_seq_0Updates store 0 = 0"),
+        "Lean artifact should prove the first assignment's final store effect:\n{lean}"
+    );
+    assert!(
+        lean.contains("Arch.ThreadLoweringProof.FoldedExit.applyUpdates ProofMulti_T_0__t0_S0_entry_seq_0Updates store 1 = 1"),
+        "Lean artifact should prove the second assignment's final store effect:\n{lean}"
+    );
+    assert!(
+        lean.contains("((Arch.ThreadLoweringProof.FoldedExit.sourceStep ProofMulti_T_0__t0_S1_wait_until_folded_0Source env natEnv cfg).store 0 = 1)")
+            && lean.contains("((Arch.ThreadLoweringProof.FoldedExit.sourceStep ProofMulti_T_0__t0_S1_wait_until_folded_0Source env natEnv cfg).store 1 = 0)"),
+        "Lean artifact should prove folded multi-assignment source store effects:\n{lean}"
+    );
+    assert!(
+        lean.contains("((Arch.ThreadLoweringProof.FoldedExit.fsmStep ProofMulti_T_0__t0_S1_wait_until_folded_0Fsm env natEnv cfg).store 0 = 1)")
+            && lean.contains("((Arch.ThreadLoweringProof.FoldedExit.fsmStep ProofMulti_T_0__t0_S1_wait_until_folded_0Fsm env natEnv cfg).store 1 = 0)"),
+        "Lean artifact should prove folded multi-assignment FSM store effects:\n{lean}"
+    );
+}
+
+#[test]
+fn test_build_emit_thread_proof_lean_records_replay_artifact() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("ProofFlow.arch");
+    let sv_out = td.path().join("ProofFlow.sv");
+    let lean_out = td.path().join("ProofFlow.thread-proof.lean");
+    std::fs::write(&src, thread_proof_fold_source("ProofFlow")).expect("write source");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_NO_LEARN", "1")
+        .arg("build")
+        .arg(&src)
+        .arg("-o")
+        .arg(&sv_out)
+        .arg("--emit-thread-proof-lean")
+        .output()
+        .expect("run arch build --emit-thread-proof-lean");
+    assert!(
+        out.status.success(),
+        "build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        lean_out.exists(),
+        "expected bare flag to write {}",
+        lean_out.display()
+    );
+
+    let lean = std::fs::read_to_string(&lean_out).expect("read Lean proof certificate");
+    assert!(
+        lean.contains("import ArchThreadLoweringProof.CountedWait"),
+        "Lean artifact should import the CountedWait model:\n{lean}"
+    );
+    assert!(
+        lean.contains(
+            "forall t, sourceTraceObs ProofFlow_T_0Source inputs natInputs cfg0 t = fsmTraceObs ProofFlow_T_0Fsm inputs natInputs cfg0 t"
+        ),
+        "Lean artifact should include an unbounded trace-equivalence theorem:\n{lean}"
+    );
+    assert!(
+        lean.contains("Control.waitUntil (GuardExpr.atom 0)"),
+        "Lean artifact should carry structured CountedWait guard expressions:\n{lean}"
+    );
+    assert!(
+        lean.contains("Arch.ThreadLoweringProof.FoldedExit.Control.waitUntil (Arch.ThreadLoweringProof.FoldedExit.GuardExpr.atom 0)"),
+        "Lean artifact should carry structured FoldedExit guard expressions:\n{lean}"
+    );
+    assert!(
+        lean.contains("ProofFlow_T_0__t0_S0_entry_seq_0Updates"),
+        "Lean artifact should define ordinary seq-assignment update proofs:\n{lean}"
+    );
+    assert!(
+        lean.contains("Arch.ThreadLoweringProof.FoldedExit.applyUpdates ProofFlow_T_0__t0_S0_entry_seq_0Updates store 0 = 0"),
+        "Lean artifact should prove the ordinary assignment's store effect:\n{lean}"
+    );
+    assert!(
+        !lean.contains("Control.waitUntil 0"),
+        "Lean artifact should not use opaque numeric guard IDs in controls:\n{lean}"
+    );
+}
+
+#[test]
+fn test_build_check_thread_proof_lean_missing_project_fails_cleanly() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("ProofFlow.arch");
+    let sv_out = td.path().join("ProofFlow.sv");
+    let missing_project = td.path().join("missing_lean_project");
+    std::fs::write(&src, thread_proof_fold_source("ProofFlow")).expect("write source");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_NO_LEARN", "1")
+        .arg("build")
+        .arg(&src)
+        .arg("-o")
+        .arg(&sv_out)
+        .arg("--check-thread-proof-lean")
+        .arg(format!(
+            "--thread-proof-lean-project={}",
+            missing_project.display()
+        ))
+        .output()
+        .expect("run arch build --check-thread-proof-lean");
+    assert!(
+        !out.status.success(),
+        "build should fail when Lean project is missing\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Lean thread proof project not found"),
+        "expected clean missing-project diagnostic, got:\n{stderr}"
+    );
+    assert!(
+        td.path().join("ProofFlow.thread-proof.lean").exists(),
+        "check mode should still emit the replay artifact before checking"
+    );
+}
+
+#[test]
+fn test_formal_emit_thread_proof_lean_writes_artifact_before_smt_run() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("ProofEq.arch");
+    let proof_out = td.path().join("ProofEq.thread-proof.lean");
+    std::fs::write(
+        &src,
+        r#"
+module ProofEq
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port idx: in UInt<3>;
+  port done: out pipe_reg<Bool, 1> reset rst => false;
+
+  thread T on clk rising, rst high
+    wait until idx == 2;
+    wait until idx != 1;
+    done <= true;
+  end thread T
+end module ProofEq
+"#,
+    )
+    .expect("write source");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_NO_LEARN", "1")
+        .arg("formal")
+        .arg(&src)
+        .arg("--bound")
+        .arg("2")
+        .arg("--timeout")
+        .arg("5")
+        .arg(format!(
+            "--emit-thread-proof-lean={}",
+            proof_out.to_string_lossy()
+        ))
+        .output()
+        .expect("run arch formal --emit-thread-proof-lean");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&format!("Wrote {}", proof_out.display())),
+        "formal command should write the Lean proof before SMT handoff\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        stderr
+    );
+    let lean = std::fs::read_to_string(&proof_out).expect("read Lean proof");
+    assert!(
+        lean.contains("GuardExpr.eq") && lean.contains("GuardExpr.ne"),
+        "formal-emitted Lean proof should preserve structured equality guards:\n{lean}"
+    );
+}
+
+#[test]
+fn test_formal_thread_proof_only_skips_smt_backend() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("ProofEq.arch");
+    let proof_out = td.path().join("ProofEq.thread-proof.lean");
+    std::fs::write(
+        &src,
+        r#"
+module ProofEq
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port idx: in UInt<3>;
+  port done: out pipe_reg<Bool, 1> reset rst => false;
+
+  thread T on clk rising, rst high
+    wait until idx == 2;
+    wait until idx != 1;
+    done <= true;
+  end thread T
+end module ProofEq
+"#,
+    )
+    .expect("write source");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_NO_LEARN", "1")
+        .arg("formal")
+        .arg(&src)
+        .arg(format!(
+            "--emit-thread-proof-lean={}",
+            proof_out.to_string_lossy()
+        ))
+        .arg("--thread-proof-only")
+        .output()
+        .expect("run arch formal --thread-proof-only");
+
+    assert!(
+        out.status.success(),
+        "thread-proof-only should skip the SMT backend\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("unknown identifier"),
+        "thread-proof-only should not reach the current SMT thread limitation:\n{stderr}"
+    );
+    let lean = std::fs::read_to_string(&proof_out).expect("read Lean proof");
+    assert!(
+        lean.contains("GuardExpr.eq") && lean.contains("GuardExpr.ne"),
+        "proof-only formal mode should emit the Lean certificate:\n{lean}"
+    );
+}
+
+#[test]
+fn test_formal_thread_proof_only_requires_lean_output() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("Plain.arch");
+    std::fs::write(
+        &src,
+        r#"
+module Plain
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<4>;
+  port b: out pipe_reg<UInt<4>, 1> reset rst => 0;
+
+  seq on clk rising
+    b <= a;
+  end seq
+end module Plain
+"#,
+    )
+    .expect("write source");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_NO_LEARN", "1")
+        .arg("formal")
+        .arg(&src)
+        .arg("--thread-proof-only")
+        .output()
+        .expect("run arch formal --thread-proof-only");
+
+    assert!(
+        !out.status.success(),
+        "thread-proof-only without Lean output/check should fail\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--thread-proof-only requires --emit-thread-proof-lean"),
+        "expected thread-proof-only guardrail diagnostic, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_formal_check_thread_proof_lean_missing_project_fails_cleanly() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("ProofFlow.arch");
+    let proof_out = td.path().join("ProofFlow.thread-proof.lean");
+    let missing_project = td.path().join("missing_lean_project");
+    std::fs::write(&src, thread_proof_fold_source("ProofFlow")).expect("write source");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_NO_LEARN", "1")
+        .arg("formal")
+        .arg(&src)
+        .arg("--bound")
+        .arg("2")
+        .arg("--timeout")
+        .arg("5")
+        .arg(format!(
+            "--emit-thread-proof-lean={}",
+            proof_out.to_string_lossy()
+        ))
+        .arg("--check-thread-proof-lean")
+        .arg(format!(
+            "--thread-proof-lean-project={}",
+            missing_project.to_string_lossy()
+        ))
+        .output()
+        .expect("run arch formal --check-thread-proof-lean");
+
+    assert!(
+        !out.status.success(),
+        "missing Lean project should fail before SMT run\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Lean thread proof project not found"),
+        "expected clean missing-project diagnostic, got:\n{stderr}"
+    );
+    assert!(
+        proof_out.exists(),
+        "Lean proof should still be written before replay failure"
+    );
+}
+
+#[test]
+fn test_build_emit_thread_proof_records_once_terminal_hold() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("ProofOnce.arch");
+    let sv_out = td.path().join("ProofOnce.sv");
+    let proof_out = td.path().join("ProofOnce.thread-proof.json");
+    std::fs::write(&src, thread_proof_once_source("ProofOnce")).expect("write source");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_NO_LEARN", "1")
+        .arg("build")
+        .arg(&src)
+        .arg("-o")
+        .arg(&sv_out)
+        .arg("--emit-thread-proof")
+        .output()
+        .expect("run arch build --emit-thread-proof");
+    assert!(
+        out.status.success(),
+        "build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json = std::fs::read_to_string(&proof_out).expect("read proof certificate");
+    assert!(
+        json.contains("\"once\": true"),
+        "expected one-shot thread flag in proof certificate:\n{json}"
+    );
+    assert!(
+        json.contains("\"state_name\": \"_t0_S2_action\""),
+        "expected terminal action state in proof certificate:\n{json}"
+    );
+    assert!(
+        json.contains("\"target_index\": 2"),
+        "thread once terminal state should hold instead of wrapping:\n{json}"
+    );
+    assert!(
+        json.contains("\"source_next_index\": 2"),
+        "thread once terminal source-next should hold instead of wrapping:\n{json}"
+    );
+
+    let sv = std::fs::read_to_string(&sv_out).expect("read sv");
+    assert!(
+        sv.contains("_t0_state <= _t0_S2_action"),
+        "SV terminal state should hold in S2:\n{sv}"
+    );
+}
+
+#[test]
+fn test_build_emit_thread_proof_lean_accepts_once_folded_terminal_action() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("ProofOnceFold.arch");
+    let sv_out = td.path().join("ProofOnceFold.sv");
+    let lean_out = td.path().join("ProofOnceFold.thread-proof.lean");
+    std::fs::write(
+        &src,
+        thread_proof_once_folded_terminal_source("ProofOnceFold"),
+    )
+    .expect("write source");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_NO_LEARN", "1")
+        .arg("build")
+        .arg(&src)
+        .arg("-o")
+        .arg(&sv_out)
+        .arg("--emit-thread-proof-lean")
+        .output()
+        .expect("run arch build --emit-thread-proof-lean");
+    assert!(
+        out.status.success(),
+        "build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let lean = std::fs::read_to_string(&lean_out).expect("read Lean proof certificate");
+    assert!(
+        lean.contains("once := true"),
+        "Lean artifact should model one-shot thread hold semantics:\n{lean}"
+    );
+    assert!(
+        lean.contains(
+            "forall t, sourceTraceObs ProofOnceFold_T_0Source inputs natInputs cfg0 t = fsmTraceObs ProofOnceFold_T_0Fsm inputs natInputs cfg0 t"
+        ),
+        "Lean artifact should include the once trace-equivalence theorem:\n{lean}"
+    );
+    assert!(
+        lean.contains(
+            "Arch.ThreadLoweringProof.FoldedExit.sourceStep ProofOnceFold_T_0__t0_S0_wait_until_folded_0Source"
+        ),
+        "Lean artifact should include the folded terminal action proof:\n{lean}"
+    );
+}
+
+#[test]
+fn test_build_emit_thread_proof_records_branch_guarded_transitions() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("ProofBranch.arch");
+    let sv_out = td.path().join("ProofBranch.sv");
+    let proof_out = td.path().join("ProofBranch.thread-proof.json");
+    std::fs::write(&src, thread_map_control_flow_source("ProofBranch")).expect("write source");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_NO_LEARN", "1")
+        .arg("build")
+        .arg(&src)
+        .arg("-o")
+        .arg(&sv_out)
+        .arg("--emit-thread-proof")
+        .output()
+        .expect("run arch build --emit-thread-proof");
+    assert!(
+        out.status.success(),
+        "build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json = std::fs::read_to_string(&proof_out).expect("read proof certificate");
+    assert!(
+        json.contains("\"state_name\": \"_t0_S0_dispatch\""),
+        "expected fused go/sel dispatch state in proof certificate:\n{json}"
+    );
+    assert!(
+        json.contains("\"source_transitions\": [{\"condition\": \"go && sel\""),
+        "dispatch source transitions should preserve both branch targets:\n{json}"
+    );
+    assert!(
+        json.contains("\"condition\": \"go && !sel\""),
+        "dispatch source transitions should preserve both branch guards:\n{json}"
+    );
+    assert!(json.contains("\"condition_guard\": {\"kind\":\"and\",\"lhs\":{\"kind\":\"atom\",\"name\":\"go\"},\"rhs\":{\"kind\":\"atom\",\"name\":\"sel\"}}"),
+        "dispatch source transition should carry structured positive guard:\n{json}");
+    assert!(json.contains("\"condition_guard\": {\"kind\":\"and\",\"lhs\":{\"kind\":\"atom\",\"name\":\"go\"},\"rhs\":{\"kind\":\"not\",\"expr\":{\"kind\":\"atom\",\"name\":\"sel\"}}}"),
+        "dispatch source transition should carry structured negated guard:\n{json}");
+    assert!(
+        json.contains("\"target_index\": 1") && json.contains("\"target_name\": \"_t0_S1_action\""),
+        "dispatch source transitions should preserve first branch target:\n{json}"
+    );
+    assert!(
+        json.contains("\"target_index\": 2")
+            && json.contains("\"target_name\": \"_t0_S2_wait_cycles\""),
+        "dispatch source transitions should preserve second branch target:\n{json}"
+    );
+    assert!(json.contains("\"condition\": \"ack\", \"condition_guard\": {\"kind\":\"atom\",\"name\":\"ack\"}, \"target_index\": 3, \"target_name\": \"_t0_S3_action\""),
+        "single guarded branch wait should preserve its non-natural target:\n{json}");
+    assert!(
+        json.contains("\"source_next_index\": 2"),
+        "single guarded branch state's natural fallback should remain source-next:\n{json}"
+    );
+}
+
+#[test]
+fn test_build_emit_thread_proof_records_fork_join_rejoin_jumps() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("AxiWrite.arch");
+    let sv_out = td.path().join("AxiWrite.sv");
+    let proof_out = td.path().join("AxiWrite.thread-proof.json");
+    std::fs::write(&src, include_str!("../tests/thread/fork_join.arch")).expect("write source");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_NO_LEARN", "1")
+        .arg("build")
+        .arg(&src)
+        .arg("-o")
+        .arg(&sv_out)
+        .arg("--emit-thread-proof")
+        .output()
+        .expect("run arch build --emit-thread-proof");
+    assert!(
+        out.status.success(),
+        "build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json = std::fs::read_to_string(&proof_out).expect("read proof certificate");
+    assert!(
+        json.contains("\"state_name\": \"_t0_S0_dispatch\""),
+        "fork/join should begin with a product-state dispatch:\n{json}"
+    );
+    assert!(json.contains("\"condition\": \"aw_ready && w_ready\", \"condition_guard\": {\"kind\":\"and\",\"lhs\":{\"kind\":\"atom\",\"name\":\"aw_ready\"},\"rhs\":{\"kind\":\"atom\",\"name\":\"w_ready\"}}, \"target_index\": 4"),
+        "fork/join dispatch should record the both-branches-done transition:\n{json}");
+    assert!(json.contains("\"condition\": \"true\", \"condition_guard\": {\"kind\":\"true\"}, \"target_index\": 8"),
+        "completed fork branch states should record unconditional non-natural rejoin jumps:\n{json}");
+    assert!(json.contains("\"source_next_index\": 5"),
+        "unconditional rejoin jump state should still preserve natural source-next fallback:\n{json}");
+}
+
+#[test]
+fn test_build_emit_thread_proof_records_loop_bound_constants_as_structured_nat() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("NestedForRepro.arch");
+    let sv_out = td.path().join("NestedForRepro.sv");
+    let proof_out = td.path().join("NestedForRepro.thread-proof.json");
+    std::fs::write(
+        &src,
+        include_str!("regression/issues/nested_for_threads/NestedForRepro.arch"),
+    )
+    .expect("write source");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_NO_LEARN", "1")
+        .arg("build")
+        .arg(&src)
+        .arg("-o")
+        .arg(&sv_out)
+        .arg("--emit-thread-proof")
+        .output()
+        .expect("run arch build --emit-thread-proof");
+    assert!(
+        out.status.success(),
+        "build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json = std::fs::read_to_string(&proof_out).expect("read proof certificate");
+    assert!(
+        json.contains("\"kind\":\"lt\",\"lhs\":{\"kind\":\"var\",\"name\":\"_t0_loop_cnt_1\"},\"rhs\":{\"kind\":\"const\",\"value\":3}"),
+        "inner loop bound should remain a structured Nat constant:\n{json}"
+    );
+    assert!(
+        json.contains("\"kind\":\"ge\",\"lhs\":{\"kind\":\"var\",\"name\":\"_t0_loop_cnt_0\"},\"rhs\":{\"kind\":\"const\",\"value\":2}"),
+        "outer loop bound should remain a structured Nat constant:\n{json}"
+    );
+}
+
+#[test]
+fn test_build_emit_thread_proof_records_equality_as_structured_nat() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("ProofEq.arch");
+    let sv_out = td.path().join("ProofEq.sv");
+    let proof_out = td.path().join("ProofEq.thread-proof.json");
+    std::fs::write(
+        &src,
+        r#"
+module ProofEq
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port idx: in UInt<3>;
+  port done: out pipe_reg<Bool, 1> reset rst => false;
+
+  thread T on clk rising, rst high
+    wait until idx == 2;
+    wait until idx != 1;
+    done <= true;
+  end thread T
+end module ProofEq
+"#,
+    )
+    .expect("write source");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_NO_LEARN", "1")
+        .arg("build")
+        .arg(&src)
+        .arg("-o")
+        .arg(&sv_out)
+        .arg("--emit-thread-proof")
+        .output()
+        .expect("run arch build --emit-thread-proof");
+    assert!(
+        out.status.success(),
+        "build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json = std::fs::read_to_string(&proof_out).expect("read proof certificate");
+    assert!(
+        json.contains("\"kind\":\"eq\",\"lhs\":{\"kind\":\"var\",\"name\":\"idx\"},\"rhs\":{\"kind\":\"const\",\"value\":2}"),
+        "equality guard should remain structured in the proof certificate:\n{json}"
+    );
+    assert!(
+        json.contains("\"kind\":\"ne\",\"lhs\":{\"kind\":\"var\",\"name\":\"idx\"},\"rhs\":{\"kind\":\"const\",\"value\":1}"),
+        "inequality guard should remain structured in the proof certificate:\n{json}"
+    );
 }
 
 #[test]
@@ -11332,12 +13795,20 @@ fn test_build_emit_thread_map_multifile_paths_and_explicit_error() {
         .arg("--emit-thread-map")
         .output()
         .expect("run multi-file build");
-    assert!(ok.status.success(),
+    assert!(
+        ok.status.success(),
         "multi-file bare map should pass\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&ok.stdout),
-        String::from_utf8_lossy(&ok.stderr));
-    assert!(td.path().join("A.thread.html").exists(), "expected A.thread.html");
-    assert!(td.path().join("B.thread.html").exists(), "expected B.thread.html");
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    assert!(
+        td.path().join("A.thread.html").exists(),
+        "expected A.thread.html"
+    );
+    assert!(
+        td.path().join("B.thread.html").exists(),
+        "expected B.thread.html"
+    );
 
     let explicit = td.path().join("all.html");
     let err = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
@@ -11350,43 +13821,181 @@ fn test_build_emit_thread_map_multifile_paths_and_explicit_error() {
         .expect("run multi-file explicit map build");
     assert!(!err.status.success(), "explicit map without -o should fail");
     let stderr = String::from_utf8_lossy(&err.stderr);
-    assert!(stderr.contains("--emit-thread-map=PATH requires"),
-        "expected explicit multi-file diagnostic, got:\n{stderr}");
+    assert!(
+        stderr.contains("--emit-thread-map=PATH requires"),
+        "expected explicit multi-file diagnostic, got:\n{stderr}"
+    );
 }
 
 #[test]
 fn test_thread_map_metadata_records_dispatch_and_wait_roles() {
     let simple = collect_thread_map(&thread_map_smoke_source("Simple"));
     let simple_thread = &simple.modules[0].threads[0];
-    assert!(simple_thread.states.iter().any(|s| s.role == "wait_until" && s.labels.iter().any(|l| l.contains("go"))),
-        "expected simple wait_until state labelled with go: {simple_thread:#?}");
+    assert!(
+        simple_thread
+            .states
+            .iter()
+            .any(|s| s.role == "wait_until" && s.labels.iter().any(|l| l.contains("go"))),
+        "expected simple wait_until state labelled with go: {simple_thread:#?}"
+    );
 
-    let source = r#"
-        module M
-          port clk:  in Clock<SysDomain>;
-          port rst:  in Reset<Async, Low>;
-          port go:   in Bool;
-          port sel:  in Bool;
-          port ack:  in Bool;
-          port done: out Bool;
-          thread T on clk rising, rst low
-            wait until go;
-            if sel
-              wait until ack;
-            else
-              wait 2 cycle;
-            end if
-            done = 1;
-            wait 1 cycle;
-          end thread T
-        end module M
-    "#;
+    let source = thread_map_control_flow_source("M");
+    let map = collect_thread_map(&source);
+    let thread = &map.modules[0].threads[0];
+    assert!(
+        thread.states.iter().any(|s| s.role == "wait_cycles"),
+        "expected wait_cycles state: {thread:#?}"
+    );
+    assert!(
+        thread
+            .states
+            .iter()
+            .any(|s| s.role == "dispatch"
+                && s.transitions.iter().any(|t| t.condition.contains("sel"))),
+        "expected dispatch state with sel transition: {thread:#?}"
+    );
+}
+
+#[test]
+fn test_thread_map_html_renders_control_flow_chart() {
+    let source = thread_map_control_flow_source("Branchy");
+    let map = collect_thread_map(&source);
+    let sources = vec![arch::thread_map::ThreadMapSource {
+        start: 0,
+        end: source.len(),
+        filename: "Branchy.arch".to_string(),
+        source,
+    }];
+    let html = arch::thread_map::render_html(&map, &sources, "Branchy.thread.html");
+    assert!(
+        html.contains("<h2>Thread Flow</h2>"),
+        "expected right pane to be a flow-chart pane:\n{html}"
+    );
+    assert!(
+        html.contains("thread-flow-chart"),
+        "expected generated graph-style flow chart:\n{html}"
+    );
+    assert!(
+        html.contains("graph-edge"),
+        "expected graph transition edges:\n{html}"
+    );
+    assert!(
+        html.contains("marker-end"),
+        "expected arrowheads on graph edges:\n{html}"
+    );
+    assert!(
+        html.contains("then") && html.contains("else"),
+        "expected source-like branch labels in graph:\n{html}"
+    );
+    assert!(
+        html.contains("data-state=\"S"),
+        "expected state nodes in flow chart:\n{html}"
+    );
+    assert!(
+        html.contains("dispatch"),
+        "expected branch dispatch state in chart/table:\n{html}"
+    );
+    assert!(
+        html.contains("sel"),
+        "expected branch condition label in chart/table:\n{html}"
+    );
+    assert!(
+        html.contains("wait until ack"),
+        "expected then-branch wait label in chart/table:\n{html}"
+    );
+}
+
+#[test]
+fn test_thread_map_source_bands_anchor_broad_control_spans() {
+    let source = include_str!(
+        "regression/issues/nested_if_lock_outer_for_continuation/IfLockOuterForRepro.arch"
+    );
+    let map = collect_thread_map(source);
+    let sources = vec![arch::thread_map::ThreadMapSource {
+        start: 0,
+        end: source.len(),
+        filename: "IfLockOuterForRepro.arch".to_string(),
+        source: source.to_string(),
+    }];
+    let html = arch::thread_map::render_html(&map, &sources, "IfLockOuterForRepro.thread.html");
+    let row_for_line = |line: usize| {
+        let needle = format!("<span class=\"ln\">{line}</span>");
+        let pos = html
+            .find(&needle)
+            .unwrap_or_else(|| panic!("missing source line {line}"));
+        let row_start = html[..pos].rfind("<div class=\"src-line\">").unwrap();
+        let row_end = html[pos..].find("</div>").map(|off| pos + off).unwrap();
+        &html[row_start..row_end]
+    };
+
+    assert!(
+        row_for_line(30).contains(">S0<"),
+        "wait-until state should mark the wait line:\n{}",
+        row_for_line(30)
+    );
+    assert!(
+        row_for_line(32).contains(">S3<") || row_for_line(32).contains(">S4<"),
+        "broad loop/dispatch states should anchor to the loop header:\n{}",
+        row_for_line(32)
+    );
+    assert!(
+        !row_for_line(33).contains("class=\"band "),
+        "comment lines inside a broad span should not be painted:\n{}",
+        row_for_line(33)
+    );
+    assert!(
+        !row_for_line(39).contains("class=\"band "),
+        "nested comment lines inside a broad span should not be painted:\n{}",
+        row_for_line(39)
+    );
+}
+
+#[test]
+fn test_thread_map_spans_ignore_generated_counter_loads() {
+    let source = include_str!("../tests/thread/wait_cycles.arch");
     let map = collect_thread_map(source);
     let thread = &map.modules[0].threads[0];
-    assert!(thread.states.iter().any(|s| s.role == "wait_cycles"),
-        "expected wait_cycles state: {thread:#?}");
-    assert!(thread.states.iter().any(|s| s.role == "dispatch" && s.transitions.iter().any(|t| t.condition.contains("sel"))),
-        "expected dispatch state with sel transition: {thread:#?}");
+    let line_range = |span: lexer::Span| {
+        let start_line = source[..span.start].bytes().filter(|b| *b == b'\n').count() + 1;
+        let end_line = source[..span.end].bytes().filter(|b| *b == b'\n').count() + 1;
+        (start_line, end_line)
+    };
+
+    let wait_until = thread
+        .states
+        .iter()
+        .find(|s| s.role == "wait_until")
+        .expect("wait_until state");
+    assert_eq!(
+        line_range(wait_until.span),
+        (8, 8),
+        "S0 should render only on the wait-until source line: {wait_until:#?}"
+    );
+    let wait_until_src = &source[wait_until.span.start..wait_until.span.end];
+    assert!(
+        !wait_until_src.contains("wait 5 cycle"),
+        "S0 span should stop before the following wait-cycle source: {wait_until_src:?}"
+    );
+    assert!(
+        !wait_until_src.contains("end module"),
+        "S0 span should not stretch to the whole module: {wait_until_src:?}"
+    );
+
+    let wait_cycles = thread
+        .states
+        .iter()
+        .find(|s| s.role == "wait_cycles")
+        .expect("wait_cycles state");
+    assert_eq!(
+        line_range(wait_cycles.span),
+        (9, 9),
+        "S1 should render only on the wait-cycle source line: {wait_cycles:#?}"
+    );
+    let wait_cycles_src = &source[wait_cycles.span.start..wait_cycles.span.end];
+    assert!(
+        !wait_cycles_src.contains("pulse = 1"),
+        "wait_cycles span should stop before the action source: {wait_cycles_src:?}"
+    );
 }
 
 // ── If/else with internal waits — dispatch-and-rejoin ─────────────────────────
@@ -11415,8 +14024,10 @@ fn test_if_wait_then_only() {
     "#;
     let sv = compile_to_sv(source);
     // Compiles without rejection.
-    assert!(sv.contains("module _M_threads"),
-        "merged thread module should be emitted:\n{sv}");
+    assert!(
+        sv.contains("module _M_threads"),
+        "merged thread module should be emitted:\n{sv}"
+    );
 }
 
 #[test]
@@ -11440,8 +14051,10 @@ fn test_if_wait_else_only() {
         end module M
     "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("module _M_threads"),
-        "merged thread module should be emitted:\n{sv}");
+    assert!(
+        sv.contains("module _M_threads"),
+        "merged thread module should be emitted:\n{sv}"
+    );
 }
 
 #[test]
@@ -11482,12 +14095,16 @@ fn test_if_wait_both_branches() {
         end module M
     "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("module _M_threads"),
-        "merged thread module should be emitted:\n{sv}");
+    assert!(
+        sv.contains("module _M_threads"),
+        "merged thread module should be emitted:\n{sv}"
+    );
     // The dispatch state's transition table negates the if condition for
     // the else branch. Verify both arms land at distinct branch bases.
-    assert!(sv.contains("is_wr") && sv.contains("!"),
-        "expected dispatch to use `is_wr` and `!is_wr` arms:\n{sv}");
+    assert!(
+        sv.contains("is_wr") && sv.contains("!"),
+        "expected dispatch to use `is_wr` and `!is_wr` arms:\n{sv}"
+    );
 }
 
 #[test]
@@ -11534,20 +14151,20 @@ fn test_thread_without_wait_or_do_until_errors_with_seq_hint() {
         let mut parser = arch::parser::Parser::new(tokens, source);
         let parsed_ast = parser.parse_source_file().expect("parse error");
         let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
-        let ast = arch::elaborate::lower_tlm_target_threads(ast)
-            .expect("tlm target lowering");
-        let ast = arch::elaborate::lower_tlm_initiator_calls(ast)
-            .expect("tlm initiator lowering");
+        let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target lowering");
+        let ast = arch::elaborate::lower_tlm_initiator_calls(ast).expect("tlm initiator lowering");
         let result = arch::elaborate::lower_threads(ast);
-        let errs = result.expect_err(
-            "thread with no wait / do until should fail lower_threads"
-        );
+        let errs = result.expect_err("thread with no wait / do until should fail lower_threads");
         assert!(!errs.is_empty(), "expected at least one error");
         let msg = errs[0].to_string();
-        assert!(msg.contains("must contain at least one `wait` or `do until`"),
-            "error should mention wait + do until: {msg}");
-        assert!(msg.contains("seq on clk"),
-            "error should suggest `seq on clk` alternative: {msg}");
+        assert!(
+            msg.contains("must contain at least one `wait` or `do until`"),
+            "error should mention wait + do until: {msg}"
+        );
+        assert!(
+            msg.contains("seq on clk"),
+            "error should suggest `seq on clk` alternative: {msg}"
+        );
     }
 }
 
@@ -11571,8 +14188,10 @@ fn test_thread_with_do_until_only_is_accepted() {
         end module M
     "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("always_ff"),
-        "do/until thread should still compile to SV:\n{sv}");
+    assert!(
+        sv.contains("always_ff"),
+        "do/until thread should still compile to SV:\n{sv}"
+    );
 }
 
 #[test]
@@ -11612,8 +14231,10 @@ fn test_do_until_rejects_nested_lock() {
     let ast = parser.parse_source_file().expect("parse");
     let err = arch::elaborate::lower_threads(ast).expect_err("expected lowering error");
     let msg = err.iter().map(|e| format!("{e:?}")).collect::<String>();
-    assert!(msg.contains("`lock`") && msg.contains("`do ... until`"),
-            "expected do-until-rejects-lock diagnostic, got: {msg}");
+    assert!(
+        msg.contains("`lock`") && msg.contains("`do ... until`"),
+        "expected do-until-rejects-lock diagnostic, got: {msg}"
+    );
 }
 
 #[test]
@@ -11641,8 +14262,10 @@ fn test_do_until_rejects_nested_wait() {
     let ast = parser.parse_source_file().expect("parse");
     let err = arch::elaborate::lower_threads(ast).expect_err("expected lowering error");
     let msg = err.iter().map(|e| format!("{e:?}")).collect::<String>();
-    assert!(msg.contains("`wait until`") && msg.contains("`do ... until`"),
-            "expected do-until-rejects-nested-wait diagnostic, got: {msg}");
+    assert!(
+        msg.contains("`wait until`") && msg.contains("`do ... until`"),
+        "expected do-until-rejects-nested-wait diagnostic, got: {msg}"
+    );
 }
 
 #[test]
@@ -11670,8 +14293,10 @@ fn test_do_until_rejects_nested_for() {
     let ast = parser.parse_source_file().expect("parse");
     let err = arch::elaborate::lower_threads(ast).expect_err("expected lowering error");
     let msg = err.iter().map(|e| format!("{e:?}")).collect::<String>();
-    assert!(msg.contains("`for`") && msg.contains("`do ... until`"),
-            "expected do-until-rejects-nested-for diagnostic, got: {msg}");
+    assert!(
+        msg.contains("`for`") && msg.contains("`do ... until`"),
+        "expected do-until-rejects-nested-for diagnostic, got: {msg}"
+    );
 }
 
 #[test]
@@ -11702,8 +14327,10 @@ fn test_do_until_allows_nested_ifelse_with_simple_assigns() {
         end module M
     "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("always_ff"),
-            "do/until with simple if/else body should compile:\n{sv}");
+    assert!(
+        sv.contains("always_ff"),
+        "do/until with simple if/else body should compile:\n{sv}"
+    );
 }
 
 #[test]
@@ -11739,12 +14366,18 @@ fn test_thread_wait_ifelse_fuses_dispatch_and_first_branch_action() {
     "#;
     let sv = compile_to_sv(source);
 
-    assert!(sv.contains("if (req && is_mul) begin\n          phase <= 4'd1;"),
-        "then-branch first action should be hoisted onto the wait-exit edge:\n{sv}");
-    assert!(sv.contains("if (req && !is_mul) begin\n          phase <= 4'd3;"),
-        "else-branch first action should be hoisted onto the wait-exit edge:\n{sv}");
-    assert!(!sv.contains("_t0_state == 3"),
-        "fused lowering should not emit old wait->dispatch->prefix state chain:\n{sv}");
+    assert!(
+        sv.contains("if (req && is_mul) begin\n          phase <= 4'd1;"),
+        "then-branch first action should be hoisted onto the wait-exit edge:\n{sv}"
+    );
+    assert!(
+        sv.contains("if (req && !is_mul) begin\n          phase <= 4'd3;"),
+        "else-branch first action should be hoisted onto the wait-exit edge:\n{sv}"
+    );
+    assert!(
+        !sv.contains("_t0_state == 3"),
+        "fused lowering should not emit old wait->dispatch->prefix state chain:\n{sv}"
+    );
 }
 
 #[test]
@@ -11777,20 +14410,34 @@ fn test_thread_wait_elsif_chain_fuses_to_single_dispatch() {
     "#;
     let sv = compile_to_sv(source);
 
-    assert!(sv.contains("phase <= 4'd1;"),
-        "first arm should keep its first action:\n{sv}");
-    assert!(sv.contains("phase <= 4'd2;"),
-        "elsif arm should keep its first action:\n{sv}");
-    assert!(sv.contains("phase <= 4'd3;"),
-        "else arm should keep its first action:\n{sv}");
-    assert!(sv.contains("req && sel == 2'd0"),
-        "first arm guard should include the wait condition:\n{sv}");
-    assert!(sv.contains("req && !(sel == 2'd0) && sel == 2'd1"),
-        "elsif guard should be flattened onto the original wait state:\n{sv}");
-    assert!(sv.contains("req && !(sel == 2'd0) && !(sel == 2'd1)"),
-        "else guard should be flattened onto the original wait state:\n{sv}");
-    assert!(!sv.contains("_t0_state == 3"),
-        "flattened three-arm dispatch should not leave a nested dispatch state:\n{sv}");
+    assert!(
+        sv.contains("phase <= 4'd1;"),
+        "first arm should keep its first action:\n{sv}"
+    );
+    assert!(
+        sv.contains("phase <= 4'd2;"),
+        "elsif arm should keep its first action:\n{sv}"
+    );
+    assert!(
+        sv.contains("phase <= 4'd3;"),
+        "else arm should keep its first action:\n{sv}"
+    );
+    assert!(
+        sv.contains("req && sel == 2'd0"),
+        "first arm guard should include the wait condition:\n{sv}"
+    );
+    assert!(
+        sv.contains("req && !(sel == 2'd0) && sel == 2'd1"),
+        "elsif guard should be flattened onto the original wait state:\n{sv}"
+    );
+    assert!(
+        sv.contains("req && !(sel == 2'd0) && !(sel == 2'd1)"),
+        "else guard should be flattened onto the original wait state:\n{sv}"
+    );
+    assert!(
+        !sv.contains("_t0_state == 3"),
+        "flattened three-arm dispatch should not leave a nested dispatch state:\n{sv}"
+    );
 }
 
 #[test]
@@ -11827,14 +14474,20 @@ fn test_thread_default_comb_applies_before_state_comb_and_collects_reads() {
         end module M
     "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("input logic [7:0] payload"),
-        "`default comb` RHS-only signal must be wired into the lowered thread module:\n{sv}");
-    let default_pos = sv.find("data = payload;")
+    assert!(
+        sv.contains("input logic [7:0] payload"),
+        "`default comb` RHS-only signal must be wired into the lowered thread module:\n{sv}"
+    );
+    let default_pos = sv
+        .find("data = payload;")
         .expect("expected unconditional default data assignment");
-    let state_pos = sv.find("if (_t0_state")
+    let state_pos = sv
+        .find("if (_t0_state")
         .expect("expected state-guarded comb assignments");
-    assert!(default_pos < state_pos,
-        "`default comb` assignments must precede state-specific comb assignments:\n{sv}");
+    assert!(
+        default_pos < state_pos,
+        "`default comb` assignments must precede state-specific comb assignments:\n{sv}"
+    );
     assert!(sv.contains("data = 8'd255;"),
         "state-specific comb assignment should still override the default later in the block:\n{sv}");
 }
@@ -11862,8 +14515,10 @@ fn test_thread_default_comb_rejects_seq_driven_target() {
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
     let err = elaborate::lower_threads(ast).expect_err("default comb must not drive seq target");
     let msg = format!("{err:?}");
-    assert!(msg.contains("default comb") && msg.contains("done") && msg.contains("<="),
-        "expected targeted diagnostic for default-comb/seq-driver conflict, got: {msg}");
+    assert!(
+        msg.contains("default comb") && msg.contains("done") && msg.contains("<="),
+        "expected targeted diagnostic for default-comb/seq-driver conflict, got: {msg}"
+    );
 }
 
 #[test]
@@ -11890,10 +14545,15 @@ fn test_if_wait_with_auto_asserts() {
           end thread
         end module M
     "#;
-    let opts = elaborate::ThreadLowerOpts { auto_asserts: true, ..Default::default() };
+    let opts = elaborate::ThreadLowerOpts {
+        auto_asserts: true,
+        ..Default::default()
+    };
     let sv = compile_to_sv_with_opts(source, &opts);
-    assert!(sv.contains("_auto_thread_t0_branch_"),
-        "expected dispatch-state branch assertions:\n{sv}");
+    assert!(
+        sv.contains("_auto_thread_t0_branch_"),
+        "expected dispatch-state branch assertions:\n{sv}"
+    );
 }
 
 // ── resource arbiter policies ─────────────────────────────────────────────────
@@ -11938,14 +14598,20 @@ fn test_resource_lock_priority_default() {
     "#;
     let sv = compile_to_sv(source);
     // Synthesized arbiter is named _arb_<Mod>_<res>.
-    assert!(sv.contains("module _arb_M_shared_lk"),
-        "expected synthesized arbiter module:\n{sv}");
+    assert!(
+        sv.contains("module _arb_M_shared_lk"),
+        "expected synthesized arbiter module:\n{sv}"
+    );
     // Default = priority arbiter (linear pri_i loop).
-    assert!(sv.contains("for (int pri_i = 0; pri_i < 3"),
-        "default policy should be priority:\n{sv}");
+    assert!(
+        sv.contains("for (int pri_i = 0; pri_i < 3"),
+        "default policy should be priority:\n{sv}"
+    );
     // Inst inside the merged module.
-    assert!(sv.contains("_arb_M_shared_lk _arb_inst_shared_lk"),
-        "expected arbiter instance inside merged module:\n{sv}");
+    assert!(
+        sv.contains("_arb_M_shared_lk _arb_inst_shared_lk"),
+        "expected arbiter instance inside merged module:\n{sv}"
+    );
 }
 
 #[test]
@@ -11978,14 +14644,18 @@ fn test_resource_lock_round_robin() {
         end module M
     "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("logic [0:0] rr_ptr_r;"),
-        "round_robin should emit rr_ptr_r register:\n{sv}");
+    assert!(
+        sv.contains("logic [0:0] rr_ptr_r;"),
+        "round_robin should emit rr_ptr_r register:\n{sv}"
+    );
     // Pointer advances from the actual grantee (not the scan start) and wraps
     // explicitly at NUM_REQ; the bare `rr_ptr_r + 1` form was incorrect for
     // non-power-of-2 NUM_REQ. See `emit_arbiter_round_robin`.
-    assert!(sv.contains("rr_ptr_r <= (grant_requester ==")
-        && sv.contains("? '0 : grant_requester + 1'b1;"),
-        "round_robin should advance from grant_requester with explicit wrap:\n{sv}");
+    assert!(
+        sv.contains("rr_ptr_r <= (grant_requester ==")
+            && sv.contains("? '0 : grant_requester + 1'b1;"),
+        "round_robin should advance from grant_requester with explicit wrap:\n{sv}"
+    );
 }
 
 #[test]
@@ -12026,13 +14696,19 @@ fn test_resource_lock_custom_policy_with_hook() {
     "#;
     let sv = compile_to_sv(source);
     // Custom policy emits the user's function inside the synthesized arbiter.
-    assert!(sv.contains("function automatic"),
-        "custom-policy arbiter should embed the user function:\n{sv}");
-    assert!(sv.contains("PickHigh"),
-        "expected user function name in arbiter:\n{sv}");
+    assert!(
+        sv.contains("function automatic"),
+        "custom-policy arbiter should embed the user function:\n{sv}"
+    );
+    assert!(
+        sv.contains("PickHigh"),
+        "expected user function name in arbiter:\n{sv}"
+    );
     // last_grant_r register comes from the custom-arbiter codegen.
-    assert!(sv.contains("last_grant_r"),
-        "custom-policy arbiter should track last_grant_r:\n{sv}");
+    assert!(
+        sv.contains("last_grant_r"),
+        "custom-policy arbiter should track last_grant_r:\n{sv}"
+    );
 }
 
 #[test]
@@ -12065,8 +14741,10 @@ fn test_if_wait_nested() {
         end module M
     "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("module _M_threads"),
-        "nested if/else with waits should compile:\n{sv}");
+    assert!(
+        sv.contains("module _M_threads"),
+        "nested if/else with waits should compile:\n{sv}"
+    );
 }
 
 #[test]
@@ -12108,8 +14786,10 @@ fn test_if_wait_for_in_then_branch() {
         end module M
     "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("module _M_threads"),
-        "for-loop in then-branch should compile:\n{sv}");
+    assert!(
+        sv.contains("module _M_threads"),
+        "for-loop in then-branch should compile:\n{sv}"
+    );
     // Bug witness: the buggy lowering emitted `if (1'b1) _t0_state <= <rejoin>`
     // inside the for-loop's last state, causing the body to execute exactly once.
     // The fix removes this unconditional override, so the only state-write
@@ -12117,8 +14797,10 @@ fn test_if_wait_for_in_then_branch() {
     // arms — both guarded by `_t0_loop_cnt_0` comparisons against `burst_len - 1`.
     // (The counter is named `_t0_loop_cnt_0` since issue #414: each `for`
     // instance in a thread allocates its own `_loop_cnt_{id}` register.)
-    assert!(!sv.contains("if (1'b1) begin\n          _t0_state"),
-        "buggy unconditional override should not be emitted:\n{sv}");
+    assert!(
+        !sv.contains("if (1'b1) begin\n          _t0_state"),
+        "buggy unconditional override should not be emitted:\n{sv}"
+    );
     // The for-loop's exit arm should land at the rejoin state (post-if
     // wait_cycles), not at the start of the else branch.
     // The else branch is `wait 1 cycle` (one state); the rejoin is the
@@ -12126,8 +14808,10 @@ fn test_if_wait_for_in_then_branch() {
     // (burst_len - 1)` should write the rejoin state, not else_base.
     let exit_arm = sv.contains("if (_t0_loop_cnt_0 >= 16'(burst_len - 1)) begin")
         || sv.contains("if (_t0_loop_cnt_0 >= 16'(burst_len-1)) begin");
-    assert!(exit_arm,
-        "for-loop exit arm should compare loop_cnt_0 against burst_len-1:\n{sv}");
+    assert!(
+        exit_arm,
+        "for-loop exit arm should compare loop_cnt_0 against burst_len-1:\n{sv}"
+    );
 }
 
 // ── Doc comments and frontmatter (V1) ─────────────────────────────────────────
@@ -12156,10 +14840,14 @@ fn test_doc_outer_attaches_to_module() {
         _ => panic!("expected module"),
     };
     let doc = m.doc.as_ref().expect("module should have outer doc");
-    assert!(doc.contains("Saturating up-counter."),
-        "outer doc text missing first line: {doc:?}");
-    assert!(doc.contains("Wraps to MAX"),
-        "outer doc text missing third line: {doc:?}");
+    assert!(
+        doc.contains("Saturating up-counter."),
+        "outer doc text missing first line: {doc:?}"
+    );
+    assert!(
+        doc.contains("Wraps to MAX"),
+        "outer doc text missing third line: {doc:?}"
+    );
 }
 
 #[test]
@@ -12179,8 +14867,15 @@ fn test_doc_inner_attaches_to_module() {
         _ => panic!("expected module"),
     };
     let inner = m.inner_doc.as_ref().expect("module should have inner doc");
-    assert!(inner.contains("CSR access"), "inner doc text missing: {inner:?}");
-    assert!(m.doc.is_none(), "outer doc should be None, got: {:?}", m.doc);
+    assert!(
+        inner.contains("CSR access"),
+        "inner doc text missing: {inner:?}"
+    );
+    assert!(
+        m.doc.is_none(),
+        "outer doc should be None, got: {:?}",
+        m.doc
+    );
 }
 
 #[test]
@@ -12201,18 +14896,32 @@ end module Top
 ";
     let ast = parse_to_ast(source);
     let inner = ast.inner_doc.as_ref().expect("file should carry inner_doc");
-    assert!(inner.contains("Multi-channel DMA engine"),
-        "file inner_doc should preserve the prose summary:\n{inner}");
-    assert!(inner.contains("---"),
-        "file inner_doc should retain the frontmatter delimiters verbatim:\n{inner}");
-    let fm = ast.frontmatter.as_ref().expect("file should carry frontmatter");
-    assert!(fm.contains("spec_md: doc/specs/dma_engine.md"),
-        "frontmatter should preserve spec_md field:\n{fm}");
-    assert!(fm.contains("tags: [dma, axi]"),
-        "frontmatter should preserve tags:\n{fm}");
+    assert!(
+        inner.contains("Multi-channel DMA engine"),
+        "file inner_doc should preserve the prose summary:\n{inner}"
+    );
+    assert!(
+        inner.contains("---"),
+        "file inner_doc should retain the frontmatter delimiters verbatim:\n{inner}"
+    );
+    let fm = ast
+        .frontmatter
+        .as_ref()
+        .expect("file should carry frontmatter");
+    assert!(
+        fm.contains("spec_md: doc/specs/dma_engine.md"),
+        "frontmatter should preserve spec_md field:\n{fm}"
+    );
+    assert!(
+        fm.contains("tags: [dma, axi]"),
+        "frontmatter should preserve tags:\n{fm}"
+    );
     let open_close: Vec<_> = fm.lines().filter(|l| l.trim() == "---").collect();
-    assert_eq!(open_close.len(), 2,
-        "frontmatter should contain exactly 2 `---` delimiter lines:\n{fm}");
+    assert_eq!(
+        open_close.len(),
+        2,
+        "frontmatter should contain exactly 2 `---` delimiter lines:\n{fm}"
+    );
 }
 
 #[test]
@@ -12234,7 +14943,11 @@ fn test_doc_outer_on_counter() {
         arch::ast::Item::Counter(c) => c,
         _ => panic!("expected counter"),
     };
-    let doc = c.common.doc.as_ref().expect("counter should have outer doc");
+    let doc = c
+        .common
+        .doc
+        .as_ref()
+        .expect("counter should have outer doc");
     assert!(doc.contains("watchdog"), "outer doc text missing: {doc:?}");
 }
 
@@ -12253,8 +14966,11 @@ fn test_four_slashes_dropped_as_regular_comment() {
         arch::ast::Item::Module(m) => m,
         _ => panic!("expected module"),
     };
-    assert!(m.doc.is_none(),
-        "4-slash banner should not attach as a doc comment, got: {:?}", m.doc);
+    assert!(
+        m.doc.is_none(),
+        "4-slash banner should not attach as a doc comment, got: {:?}",
+        m.doc
+    );
 }
 
 // ── PR-doc-1.5: outer-doc + inner-doc on every top-level item kind ────────────
@@ -12284,20 +15000,35 @@ fn test_doc_outer_on_struct_enum_function() {
         arch::ast::Item::Struct(s) => s,
         _ => panic!("expected struct"),
     };
-    assert!(s.doc.as_ref().map_or(false, |d| d.contains("Cache line state")),
-        "struct should have outer doc, got {:?}", s.doc);
+    assert!(
+        s.doc
+            .as_ref()
+            .map_or(false, |d| d.contains("Cache line state")),
+        "struct should have outer doc, got {:?}",
+        s.doc
+    );
     let e = match &ast.items[1] {
         arch::ast::Item::Enum(e) => e,
         _ => panic!("expected enum"),
     };
-    assert!(e.doc.as_ref().map_or(false, |d| d.contains("Branch direction")),
-        "enum should have outer doc, got {:?}", e.doc);
+    assert!(
+        e.doc
+            .as_ref()
+            .map_or(false, |d| d.contains("Branch direction")),
+        "enum should have outer doc, got {:?}",
+        e.doc
+    );
     let f = match &ast.items[2] {
         arch::ast::Item::Function(f) => f,
         _ => panic!("expected function"),
     };
-    assert!(f.doc.as_ref().map_or(false, |d| d.contains("Saturating add")),
-        "function should have outer doc, got {:?}", f.doc);
+    assert!(
+        f.doc
+            .as_ref()
+            .map_or(false, |d| d.contains("Saturating add")),
+        "function should have outer doc, got {:?}",
+        f.doc
+    );
 }
 
 #[test]
@@ -12325,14 +15056,20 @@ fn test_doc_outer_on_bus_synchronizer_clkgate() {
         arch::ast::Item::Bus(b) => b,
         _ => panic!("expected bus"),
     };
-    assert!(b.doc.as_ref().map_or(false, |d| d.contains("AXI4")),
-        "bus should have outer doc, got {:?}", b.doc);
+    assert!(
+        b.doc.as_ref().map_or(false, |d| d.contains("AXI4")),
+        "bus should have outer doc, got {:?}",
+        b.doc
+    );
     let s = match &ast.items[1] {
         arch::ast::Item::Synchronizer(s) => s,
         _ => panic!("expected synchronizer"),
     };
-    assert!(s.doc.as_ref().map_or(false, |d| d.contains("2-FF")),
-        "synchronizer should have outer doc, got {:?}", s.doc);
+    assert!(
+        s.doc.as_ref().map_or(false, |d| d.contains("2-FF")),
+        "synchronizer should have outer doc, got {:?}",
+        s.doc
+    );
 }
 
 #[test]
@@ -12368,14 +15105,26 @@ fn test_inner_doc_on_counter_and_arbiter() {
         arch::ast::Item::Counter(c) => c,
         _ => panic!("expected counter"),
     };
-    assert!(c.common.inner_doc.as_ref().map_or(false, |d| d.contains("watchdog timer")),
-        "counter inner_doc missing, got {:?}", c.common.inner_doc);
+    assert!(
+        c.common
+            .inner_doc
+            .as_ref()
+            .map_or(false, |d| d.contains("watchdog timer")),
+        "counter inner_doc missing, got {:?}",
+        c.common.inner_doc
+    );
     let a = match &ast.items[1] {
         arch::ast::Item::Arbiter(a) => a,
         _ => panic!("expected arbiter"),
     };
-    assert!(a.common.inner_doc.as_ref().map_or(false, |d| d.contains("Round-robin")),
-        "arbiter inner_doc missing, got {:?}", a.common.inner_doc);
+    assert!(
+        a.common
+            .inner_doc
+            .as_ref()
+            .map_or(false, |d| d.contains("Round-robin")),
+        "arbiter inner_doc missing, got {:?}",
+        a.common.inner_doc
+    );
 }
 
 #[test]
@@ -12390,8 +15139,11 @@ fn test_doc_outer_on_use_decl() {
         arch::ast::Item::Use(u) => u,
         _ => panic!("expected use"),
     };
-    assert!(u.doc.as_ref().map_or(false, |d| d.contains("cache-line")),
-        "use decl should have outer doc, got {:?}", u.doc);
+    assert!(
+        u.doc.as_ref().map_or(false, |d| d.contains("cache-line")),
+        "use decl should have outer doc, got {:?}",
+        u.doc
+    );
 }
 
 // ── Member-level doc tokens are silently ignored (not yet attached) ──────────
@@ -12422,7 +15174,11 @@ fn test_doc_above_port_silently_ignored() {
     assert_eq!(m.ports.len(), 3, "expected 3 ports, got {}", m.ports.len());
     // Module-level outer doc is still None (the `///` was member-level
     // and got silently dropped, NOT promoted to module).
-    assert!(m.doc.is_none(), "module doc should be None, got {:?}", m.doc);
+    assert!(
+        m.doc.is_none(),
+        "module doc should be None, got {:?}",
+        m.doc
+    );
 }
 
 #[test]
@@ -12453,10 +15209,19 @@ fn test_doc_above_reg_wire_inst_silently_ignored() {
         arch::ast::Item::Module(m) => m,
         _ => panic!("expected module"),
     };
-    let has_reg = m.body.iter().any(|i| matches!(i, arch::ast::ModuleBodyItem::RegDecl(_)));
-    let has_wire = m.body.iter().any(|i| matches!(i, arch::ast::ModuleBodyItem::WireDecl(_)));
+    let has_reg = m
+        .body
+        .iter()
+        .any(|i| matches!(i, arch::ast::ModuleBodyItem::RegDecl(_)));
+    let has_wire = m
+        .body
+        .iter()
+        .any(|i| matches!(i, arch::ast::ModuleBodyItem::WireDecl(_)));
     assert!(has_reg, "reg should be present despite leading doc comment");
-    assert!(has_wire, "wire should be present despite leading doc comment");
+    assert!(
+        has_wire,
+        "wire should be present despite leading doc comment"
+    );
 }
 
 #[test]
@@ -12482,8 +15247,11 @@ fn test_inner_doc_inside_body_silently_ignored() {
     };
     // A `//!` not immediately after `module M` is a stray — should NOT
     // attach to inner_doc (which only catches the post-name position).
-    assert!(m.inner_doc.is_none(),
-        "stray //! mid-body should not attach to inner_doc, got: {:?}", m.inner_doc);
+    assert!(
+        m.inner_doc.is_none(),
+        "stray //! mid-body should not attach to inner_doc, got: {:?}",
+        m.inner_doc
+    );
 }
 
 // ── regfile `kind: latch` (PR #200) ───────────────────────────────────────────
@@ -12512,7 +15280,8 @@ const LATCH_RF_DECL: &str = "
 
 #[test]
 fn test_regfile_latch_emits_always_latch_per_row() {
-    let source = format!("{LATCH_RF_DECL}
+    let source = format!(
+        "{LATCH_RF_DECL}
         module Top
           port clk: in Clock<SysDomain>;
           port rst: in Reset<Sync>;
@@ -12541,21 +15310,40 @@ fn test_regfile_latch_emits_always_latch_per_row() {
             read_data  -> q;
           end inst rf
         end module Top
-    ");
+    "
+    );
     let sv = compile_to_sv(&source);
     let n = sv.matches("always_latch").count();
-    assert_eq!(n, 4, "expected 4 always_latch blocks (NREGS=4), got {n}:\n{sv}");
-    assert!(sv.contains("write_addr == 2'd0"), "row 0 enable missing:\n{sv}");
-    assert!(sv.contains("write_addr == 2'd3"), "row 3 enable missing:\n{sv}");
-    let module_body: String = sv.split("module LatchRf").nth(1).unwrap_or(&sv)
-        .split("endmodule").next().unwrap_or(&sv).to_string();
-    assert!(!module_body.contains("always_ff"),
-        "latch RF body should not contain always_ff:\n{module_body}");
+    assert_eq!(
+        n, 4,
+        "expected 4 always_latch blocks (NREGS=4), got {n}:\n{sv}"
+    );
+    assert!(
+        sv.contains("write_addr == 2'd0"),
+        "row 0 enable missing:\n{sv}"
+    );
+    assert!(
+        sv.contains("write_addr == 2'd3"),
+        "row 3 enable missing:\n{sv}"
+    );
+    let module_body: String = sv
+        .split("module LatchRf")
+        .nth(1)
+        .unwrap_or(&sv)
+        .split("endmodule")
+        .next()
+        .unwrap_or(&sv)
+        .to_string();
+    assert!(
+        !module_body.contains("always_ff"),
+        "latch RF body should not contain always_ff:\n{module_body}"
+    );
 }
 
 #[test]
 fn test_regfile_latch_rejects_let_source() {
-    let source = format!("{LATCH_RF_DECL}
+    let source = format!(
+        "{LATCH_RF_DECL}
         module Top
           port clk: in Clock<SysDomain>;
           port rst: in Reset<Sync>;
@@ -12577,7 +15365,8 @@ fn test_regfile_latch_rejects_let_source() {
             read_data  -> q;
           end inst rf
         end module Top
-    ");
+    "
+    );
     let tokens = lexer::tokenize(&source).expect("lex");
     let mut parser = Parser::new(tokens, &source);
     let ast = parser.parse_source_file().expect("parse");
@@ -12587,8 +15376,10 @@ fn test_regfile_latch_rejects_let_source() {
     let result = TypeChecker::new(&symbols, &ast).check();
     assert!(result.is_err(), "latch RF with `let` source should error");
     let err_msg = format!("{:?}", result.err().unwrap());
-    assert!(err_msg.contains("kind: latch regfile") && err_msg.contains("flop"),
-        "diagnostic should explain the flop-source requirement; got: {err_msg}");
+    assert!(
+        err_msg.contains("kind: latch regfile") && err_msg.contains("flop"),
+        "diagnostic should explain the flop-source requirement; got: {err_msg}"
+    );
 }
 
 const LATCH_RF_INTERNAL_DECL: &str = "
@@ -12616,7 +15407,8 @@ const LATCH_RF_INTERNAL_DECL: &str = "
 
 #[test]
 fn test_regfile_latch_internal_emits_sample_flops_and_gated_latches() {
-    let source = format!("{LATCH_RF_INTERNAL_DECL}
+    let source = format!(
+        "{LATCH_RF_INTERNAL_DECL}
         module Top
           port clk: in Clock<SysDomain>;
           port we_in:    in Bool;
@@ -12634,22 +15426,44 @@ fn test_regfile_latch_internal_emits_sample_flops_and_gated_latches() {
             read_data  -> q;
           end inst rf
         end module Top
-    ");
+    "
+    );
     let sv = compile_to_sv(&source);
-    let body: String = sv.split("module LatchRfInt").nth(1).unwrap_or(&sv)
-        .split("endmodule").next().unwrap_or(&sv).to_string();
-    assert!(body.contains("we_q"),     "expected we_q sample flop:\n{body}");
-    assert!(body.contains("waddr_q"),  "expected waddr_q sample flop:\n{body}");
-    assert!(body.contains("wdata_q"),  "expected wdata_q sample flop:\n{body}");
-    assert!(body.contains("always_ff @(posedge clk)"),
-        "expected sample flop always_ff:\n{body}");
+    let body: String = sv
+        .split("module LatchRfInt")
+        .nth(1)
+        .unwrap_or(&sv)
+        .split("endmodule")
+        .next()
+        .unwrap_or(&sv)
+        .to_string();
+    assert!(body.contains("we_q"), "expected we_q sample flop:\n{body}");
+    assert!(
+        body.contains("waddr_q"),
+        "expected waddr_q sample flop:\n{body}"
+    );
+    assert!(
+        body.contains("wdata_q"),
+        "expected wdata_q sample flop:\n{body}"
+    );
+    assert!(
+        body.contains("always_ff @(posedge clk)"),
+        "expected sample flop always_ff:\n{body}"
+    );
     let n_latch = body.matches("always_latch").count();
-    assert_eq!(n_latch, 4, "expected 4 always_latch blocks (NREGS=4):\n{body}");
+    assert_eq!(
+        n_latch, 4,
+        "expected 4 always_latch blocks (NREGS=4):\n{body}"
+    );
     // ICG-equivalent gating: latch transparent only when clk is low.
-    assert!(body.contains("!clk"),
-        "expected `!clk` gating in latch enable for ICG-equivalent path:\n{body}");
-    assert!(body.contains("we_q && waddr_q == 2'd0"),
-        "row 0 enable should use sampled (q) signals:\n{body}");
+    assert!(
+        body.contains("!clk"),
+        "expected `!clk` gating in latch enable for ICG-equivalent path:\n{body}"
+    );
+    assert!(
+        body.contains("we_q && waddr_q == 2'd0"),
+        "row 0 enable should use sampled (q) signals:\n{body}"
+    );
 }
 
 #[test]
@@ -12657,7 +15471,8 @@ fn test_regfile_latch_internal_skips_flop_source_check() {
     // With flops: internal the regfile owns its own sample flops, so the
     // caller is allowed to drive write pins from a `let` (combinational
     // expression). This is the static-check skip property.
-    let source = format!("{LATCH_RF_INTERNAL_DECL}
+    let source = format!(
+        "{LATCH_RF_INTERNAL_DECL}
         module Top
           port clk: in Clock<SysDomain>;
           port a: in UInt<8>;
@@ -12678,7 +15493,8 @@ fn test_regfile_latch_internal_skips_flop_source_check() {
             read_data  -> q;
           end inst rf
         end module Top
-    ");
+    "
+    );
     let tokens = lexer::tokenize(&source).expect("lex");
     let mut parser = Parser::new(tokens, &source);
     let ast = parser.parse_source_file().expect("parse");
@@ -12686,8 +15502,11 @@ fn test_regfile_latch_internal_skips_flop_source_check() {
     let ast = elaborate::lower_threads(ast).expect("lower threads");
     let symbols = resolve::resolve(&ast).expect("resolve");
     let result = TypeChecker::new(&symbols, &ast).check();
-    assert!(result.is_ok(),
-        "flops: internal should skip flop-source check; got error: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "flops: internal should skip flop-source check; got error: {:?}",
+        result.err()
+    );
 }
 
 #[test]
@@ -12697,23 +15516,45 @@ fn test_regfile_latch_internal_sim_codegen_emits_sample_flops_and_gated_capture(
     // during clk-low (the half-cycle latch transparency window).
     let source = format!("{LATCH_RF_INTERNAL_DECL}");
     let cpp = compile_to_sim_h(&source, false);
-    assert!(cpp.contains("_we_q"),    "expected _we_q sample flop in sim:\n{cpp}");
-    assert!(cpp.contains("_waddr_q"), "expected _waddr_q sample flop in sim:\n{cpp}");
-    assert!(cpp.contains("_wdata_q"), "expected _wdata_q sample flop in sim:\n{cpp}");
+    assert!(
+        cpp.contains("_we_q"),
+        "expected _we_q sample flop in sim:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("_waddr_q"),
+        "expected _waddr_q sample flop in sim:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("_wdata_q"),
+        "expected _wdata_q sample flop in sim:\n{cpp}"
+    );
     // Posedge: sample.
-    assert!(cpp.contains("_we_q = write_en;"),
-        "sim should sample _we_q from write_en on posedge:\n{cpp}");
+    assert!(
+        cpp.contains("_we_q = write_en;"),
+        "sim should sample _we_q from write_en on posedge:\n{cpp}"
+    );
     // Comb: latch transparency gated by `!clk && _we_q`.
-    assert!(cpp.contains("if (!clk && _we_q)"),
-        "sim should gate latch capture with `!clk && _we_q`:\n{cpp}");
-    assert!(cpp.contains("_rf[_waddr_q] = _wdata_q;"),
-        "sim should capture _wdata_q into _rf[_waddr_q]:\n{cpp}");
+    assert!(
+        cpp.contains("if (!clk && _we_q)"),
+        "sim should gate latch capture with `!clk && _we_q`:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("_rf[_waddr_q] = _wdata_q;"),
+        "sim should capture _wdata_q into _rf[_waddr_q]:\n{cpp}"
+    );
     // Posedge must NOT contain a direct flop-style write — that would
     // collapse the latch into a flop and lose the 1-cycle latency.
-    let posedge = cpp.split("eval_posedge() {").nth(1).unwrap_or("")
-        .split("}").next().unwrap_or("");
-    assert!(!posedge.contains("_rf[write_addr]"),
-        "eval_posedge must NOT do a flop-style _rf write under flops:internal:\n{posedge}");
+    let posedge = cpp
+        .split("eval_posedge() {")
+        .nth(1)
+        .unwrap_or("")
+        .split("}")
+        .next()
+        .unwrap_or("");
+    assert!(
+        !posedge.contains("_rf[write_addr]"),
+        "eval_posedge must NOT do a flop-style _rf write under flops:internal:\n{posedge}"
+    );
 }
 
 #[test]
@@ -12743,16 +15584,27 @@ fn test_regfile_latch_external_sim_codegen_uses_comb_latch() {
         end regfile LatchExtRf
     ";
     let cpp = compile_to_sim_h(source, false);
-    assert!(!cpp.contains("_we_q"),
-        "external flops should NOT emit _we_q sample flop:\n{cpp}");
+    assert!(
+        !cpp.contains("_we_q"),
+        "external flops should NOT emit _we_q sample flop:\n{cpp}"
+    );
     // Comb-time latch update gated by write_en.
-    assert!(cpp.contains("if (write_en)") && cpp.contains("_rf[write_addr] = write_data;"),
-        "external flops sim should be a comb-gated _rf write:\n{cpp}");
+    assert!(
+        cpp.contains("if (write_en)") && cpp.contains("_rf[write_addr] = write_data;"),
+        "external flops sim should be a comb-gated _rf write:\n{cpp}"
+    );
     // Posedge eval must not directly sample _rf (that's flop semantics).
-    let posedge = cpp.split("eval_posedge() {").nth(1).unwrap_or("")
-        .split("}").next().unwrap_or("");
-    assert!(!posedge.contains("_rf[write_addr] = write_data"),
-        "eval_posedge must not be the only writer under kind:latch:\n{posedge}");
+    let posedge = cpp
+        .split("eval_posedge() {")
+        .nth(1)
+        .unwrap_or("")
+        .split("}")
+        .next()
+        .unwrap_or("");
+    assert!(
+        !posedge.contains("_rf[write_addr] = write_data"),
+        "eval_posedge must not be the only writer under kind:latch:\n{posedge}"
+    );
 }
 
 #[test]
@@ -12777,10 +15629,14 @@ fn test_regfile_flop_default_unchanged() {
         end regfile FlopRf
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("always_ff @(posedge clk)"),
-        "default kind:flop should emit always_ff:\n{sv}");
-    assert!(!sv.contains("always_latch"),
-        "default kind:flop should not emit always_latch:\n{sv}");
+    assert!(
+        sv.contains("always_ff @(posedge clk)"),
+        "default kind:flop should emit always_ff:\n{sv}"
+    );
+    assert!(
+        !sv.contains("always_latch"),
+        "default kind:flop should not emit always_latch:\n{sv}"
+    );
 }
 
 #[test]
@@ -12827,8 +15683,10 @@ fn test_sim_codegen_comb_match_arm_recurses_into_nested_for() {
     let case_0_body = case_0_section.split("break;").next().unwrap_or("");
     assert!(case_0_body.contains("for (int i ="),
         "comb match arm with nested for should emit the for loop (post-fix); pre-fix the comb walker dropped it:\n{cpp}");
-    assert!(case_0_body.contains("0xAA") || case_0_body.contains("170"),
-        "for-body assign of 0xAA should reach the C++ sim:\n{cpp}");
+    assert!(
+        case_0_body.contains("0xAA") || case_0_body.contains("170"),
+        "for-body assign of 0xAA should reach the C++ sim:\n{cpp}"
+    );
 }
 
 #[test]
@@ -12869,12 +15727,16 @@ fn test_sim_codegen_match_arm_let_bound_ident_emits_case_with_literal() {
     // emit, but it must NOT be `default:` for the three arms, and
     // must contain the three values 0/1/2.
     let default_count = cpp.matches("default:").count();
-    assert!(default_count <= 1,
-        "fix means only the wildcard arm emits `default:`; got {default_count}\n{cpp}");
+    assert!(
+        default_count <= 1,
+        "fix means only the wildcard arm emits `default:`; got {default_count}\n{cpp}"
+    );
     // All three case values should appear as case labels.
     for (n, lit) in [(0, "case 0"), (1, "case 1"), (2, "case 2")] {
-        assert!(cpp.contains(lit) || cpp.contains(&format!("case {n}u")) ,
-            "let-bound ident arm should emit `case {n}` for value {n}:\n{cpp}");
+        assert!(
+            cpp.contains(lit) || cpp.contains(&format!("case {n}u")),
+            "let-bound ident arm should emit `case {n}` for value {n}:\n{cpp}"
+        );
     }
     // The arm bodies should be paired with their case values, not
     // collapsed onto a single default. Search for the body marker.
@@ -12918,8 +15780,10 @@ fn test_sim_codegen_match_arm_local_param_const_emits_case_with_literal() {
     assert!(default_count <= 1,
         "literal-default `local param` arms must fold to `case <lit>:`, not `default:`; got {default_count}\n{cpp}");
     for (n, lit) in [(0, "case 0"), (1, "case 1"), (2, "case 2")] {
-        assert!(cpp.contains(lit) || cpp.contains(&format!("case {n}u")),
-            "param-bound ident arm should emit `case {n}`:\n{cpp}");
+        assert!(
+            cpp.contains(lit) || cpp.contains(&format!("case {n}u")),
+            "param-bound ident arm should emit `case {n}`:\n{cpp}"
+        );
     }
     assert!(cpp.contains("0xAA") || cpp.contains("170"));
     assert!(cpp.contains("0xBB") || cpp.contains("187"));
@@ -12959,8 +15823,10 @@ fn test_sim_codegen_concat_with_local_param_uses_declared_width() {
         "param OPCODE[6:0] must be treated as 7 bits wide in concat offsets; cpp lacks `<< 7`:\n{cpp}");
     // And the 7+5=12-bit boundary should produce `<< 12` for the 20-bit
     // imm field, not `<< 13`.
-    assert!(cpp.contains("<< 12"),
-        "7-bit OPCODE + 5-bit rd must place 20-bit imm at offset 12, not 13:\n{cpp}");
+    assert!(
+        cpp.contains("<< 12"),
+        "7-bit OPCODE + 5-bit rd must place 20-bit imm at offset 12, not 13:\n{cpp}"
+    );
 }
 
 #[test]
@@ -13001,8 +15867,10 @@ fn test_lower_threads_clones_parent_params_into_threads_submodule() {
     // own `localparam [1:0] OP_GO = 2'd2`.
     let sv = compile_to_sv(source);
     // Parent module still declares OP_GO.
-    assert!(sv.contains("localparam [1:0] OP_GO = 2'd2"),
-        "parent module must keep its localparam OP_GO:\n{sv}");
+    assert!(
+        sv.contains("localparam [1:0] OP_GO = 2'd2"),
+        "parent module must keep its localparam OP_GO:\n{sv}"
+    );
     // Synthetic threads submodule should ALSO declare OP_GO, not refer
     // to an undeclared identifier. The emit places submodule decls
     // ahead of the parent module, but both must contain it.
@@ -13011,8 +15879,10 @@ fn test_lower_threads_clones_parent_params_into_threads_submodule() {
         "both parent and `_M_threads` submodule should declare OP_GO; only {occurrences} occurrence(s):\n{sv}");
     // And the thread body's predicate must reference OP_GO (proves the
     // identifier survived lowering).
-    assert!(sv.contains("OP_GO") && sv.matches("OP_GO").count() >= 3,
-        "thread body should compare op_i against OP_GO:\n{sv}");
+    assert!(
+        sv.contains("OP_GO") && sv.matches("OP_GO").count() >= 3,
+        "thread body should compare op_i against OP_GO:\n{sv}"
+    );
 }
 
 #[test]
@@ -13062,9 +15932,7 @@ fn test_lower_threads_forwards_parent_params_to_threads_inst() {
         "top-level override should still be emitted:\n{sv}"
     );
     assert!(
-        sv.contains(
-            "_ParamThread_threads #(.DONE_VALUE(DONE_VALUE), .OUT_W(OUT_W)) _threads ("
-        ),
+        sv.contains("_ParamThread_threads #(.DONE_VALUE(DONE_VALUE), .OUT_W(OUT_W)) _threads ("),
         "wrapper must forward overridable params into the synthesized threads helper:\n{sv}"
     );
     assert!(
@@ -13095,16 +15963,26 @@ fn test_thread_sim_declares_module_params_used_by_thread_body() {
         end module M
     "#;
     let h = compile_to_thread_sim_h(source);
-    assert!(h.contains("static constexpr uint64_t SCHEDULED_CORE_CYCLES = 7ULL;"),
-        "thread sim header should declare module param constants:\n{h}");
-    assert!(h.contains("static constexpr uint64_t DONE_W = 8ULL;"),
-        "derived module params should be folded for C++ visibility:\n{h}");
-    assert!(h.contains("co_await arch_rt::wait_cycles(&_slot_0, SCHEDULED_CORE_CYCLES);"),
-        "wait-cycle expression should keep using the declared constexpr param:\n{h}");
-    assert!(h.contains("done = DONE_W;"),
-        "thread body should use the declared constexpr param:\n{h}");
-    assert!(h.contains("uint8_t done = 0;"),
-        "param-derived port widths should resolve in thread sim C++ types:\n{h}");
+    assert!(
+        h.contains("static constexpr uint64_t SCHEDULED_CORE_CYCLES = 7ULL;"),
+        "thread sim header should declare module param constants:\n{h}"
+    );
+    assert!(
+        h.contains("static constexpr uint64_t DONE_W = 8ULL;"),
+        "derived module params should be folded for C++ visibility:\n{h}"
+    );
+    assert!(
+        h.contains("co_await arch_rt::wait_cycles(&_slot_0, SCHEDULED_CORE_CYCLES);"),
+        "wait-cycle expression should keep using the declared constexpr param:\n{h}"
+    );
+    assert!(
+        h.contains("done = DONE_W;"),
+        "thread body should use the declared constexpr param:\n{h}"
+    );
+    assert!(
+        h.contains("uint8_t done = 0;"),
+        "param-derived port widths should resolve in thread sim C++ types:\n{h}"
+    );
 }
 
 #[test]
@@ -13130,16 +16008,26 @@ fn test_sim_codegen_declares_typed_module_params_used_by_lowered_thread_body() {
         end module M
     "#;
     let cpp = compile_to_sim_h(source, false);
-    assert!(cpp.contains("#define SCHEDULED_CORE_CYCLES 7ULL"),
-        "sim header should define typed module params for lowered thread bodies:\n{cpp}");
-    assert!(cpp.contains("#define DONE_W 8ULL"),
-        "derived typed module params should be folded for C++ visibility:\n{cpp}");
-    assert!(cpp.contains("#define CALLS 3ULL"),
-        "narrow typed module params should also be emitted:\n{cpp}");
-    assert!(cpp.contains("uint8_t done;"),
-        "param-derived port widths should resolve in normal sim C++ types:\n{cpp}");
-    assert!(cpp.contains("_n_calls_r  = CALLS;"),
-        "lowered thread body should keep using the declared C++ param constant:\n{cpp}");
+    assert!(
+        cpp.contains("#define SCHEDULED_CORE_CYCLES 7ULL"),
+        "sim header should define typed module params for lowered thread bodies:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("#define DONE_W 8ULL"),
+        "derived typed module params should be folded for C++ visibility:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("#define CALLS 3ULL"),
+        "narrow typed module params should also be emitted:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("uint8_t done;"),
+        "param-derived port widths should resolve in normal sim C++ types:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("_n_calls_r  = CALLS;"),
+        "lowered thread body should keep using the declared C++ param constant:\n{cpp}"
+    );
 }
 
 #[test]
@@ -13183,17 +16071,23 @@ fn test_sim_codegen_bit_slice_lhs_compiles_and_uses_param_width() {
     let cpp = compile_to_sim_h(source, false);
     // Slice-LHS must lower to a mask-and-OR write — not the pre-fix rvalue
     // form `((_n_counter_q >> 0) & MASK) = ...`.
-    assert!(!cpp.contains(") =") || cpp.contains("== "),
-        "slice-LHS regression: rvalue form must not appear:\n{cpp}");
+    assert!(
+        !cpp.contains(") =") || cpp.contains("== "),
+        "slice-LHS regression: rvalue form must not appear:\n{cpp}"
+    );
     // The clear-mask must be 32 bits (0xFFFFFFFFULL), not 33 (0x1FFFFFFFFULL).
-    assert!(cpp.contains("0xFFFFFFFFULL"),
-        "slice-LHS should use a 32-bit mask for [CounterWidth-1:0] when CounterWidth=32:\n{cpp}");
+    assert!(
+        cpp.contains("0xFFFFFFFFULL"),
+        "slice-LHS should use a 32-bit mask for [CounterWidth-1:0] when CounterWidth=32:\n{cpp}"
+    );
     assert!(!cpp.contains("0x1FFFFFFFFULL"),
         "slice-LHS must not use a 33-bit mask for [CounterWidth-1:0] (param folding regression):\n{cpp}");
     // Sanity: the mask-and-OR shape includes `& ~(uint64_t(0x...` for the clear
     // and `| ((uint64_t(...` for the set.
-    assert!(cpp.contains("_n_counter_q = (_n_counter_q & ~"),
-        "expected mask-and-OR LHS shape:\n{cpp}");
+    assert!(
+        cpp.contains("_n_counter_q = (_n_counter_q & ~"),
+        "expected mask-and-OR LHS shape:\n{cpp}"
+    );
 }
 
 #[test]
@@ -13237,19 +16131,30 @@ fn test_sim_codegen_async_reset_fires_outside_rising_edge() {
     // Anchor on the eval_posedge function definition and slice through
     // the function body (closes at the next `\n}\n` after the open).
     let start_marker = "void VM::eval_posedge() {";
-    let pe_start = cpp.find(start_marker)
+    let pe_start = cpp
+        .find(start_marker)
         .unwrap_or_else(|| panic!("expected eval_posedge body in:\n{cpp}"));
     let pe_body = &cpp[pe_start + start_marker.len()..];
     let pe_body = pe_body.split("\n}\n").next().unwrap_or("");
     let async_pos = pe_body.find("if ((!rst_ni))");
     let rising_pos = pe_body.find("if (_rising_clk)");
-    assert!(async_pos.is_some(), "async reset arm should be emitted in eval_posedge:\n{pe_body}");
-    assert!(rising_pos.is_some(), "rising-edge guard should be emitted in eval_posedge:\n{pe_body}");
-    assert!(async_pos.unwrap() < rising_pos.unwrap(),
-        "async reset arm must precede the rising-edge gate:\n{pe_body}");
+    assert!(
+        async_pos.is_some(),
+        "async reset arm should be emitted in eval_posedge:\n{pe_body}"
+    );
+    assert!(
+        rising_pos.is_some(),
+        "rising-edge guard should be emitted in eval_posedge:\n{pe_body}"
+    );
+    assert!(
+        async_pos.unwrap() < rising_pos.unwrap(),
+        "async reset arm must precede the rising-edge gate:\n{pe_body}"
+    );
     // The async arm writes to both `_q_r` (live) and `_n_q_r` (shadow).
-    assert!(pe_body.contains("_q_r = 0;") && pe_body.contains("_n_q_r = 0;"),
-        "async reset must write both live and shadow regs:\n{pe_body}");
+    assert!(
+        pe_body.contains("_q_r = 0;") && pe_body.contains("_n_q_r = 0;"),
+        "async reset must write both live and shadow regs:\n{pe_body}"
+    );
 }
 
 #[test]
@@ -13291,8 +16196,10 @@ fn test_sim_codegen_collect_assigns_walks_indexed_lhs() {
         end module M
     ";
     let cpp = compile_to_sim_h(source, false);
-    assert!(cpp.contains("_q_r = 0;"),
-        "indexed-LHS reg should still get its async reset arm:\n{cpp}");
+    assert!(
+        cpp.contains("_q_r = 0;"),
+        "indexed-LHS reg should still get its async reset arm:\n{cpp}"
+    );
 }
 
 #[test]
@@ -13345,8 +16252,10 @@ fn test_cc_dispatch_rewrites_seq_match_scrutinee() {
     let sv = compile_to_sv(source);
     // Scrutinee must be rewritten — pre-fix this would compile-error in the
     // resolver because `p.data.data` was untouched.
-    assert!(sv.contains("case (__p_data_data)"),
-        "seq-block match scrutinee should rewrite to __p_data_data:\n{sv}");
+    assert!(
+        sv.contains("case (__p_data_data)"),
+        "seq-block match scrutinee should rewrite to __p_data_data:\n{sv}"
+    );
 }
 
 #[test]
@@ -13411,11 +16320,15 @@ fn test_comb_for_loop_body_type_checked_as_comb() {
     let ast = elaborate::lower_threads(ast).expect("lower threads");
     let symbols = resolve::resolve(&ast).expect("resolve");
     let result = TypeChecker::new(&symbols, &ast).check();
-    assert!(result.is_err(),
-        "assigning to a `reg` in a comb-block for-loop body must be a typecheck error");
+    assert!(
+        result.is_err(),
+        "assigning to a `reg` in a comb-block for-loop body must be a typecheck error"
+    );
     let err_msg = format!("{:?}", result.err().unwrap());
-    assert!(err_msg.contains("`arr_r` is a reg") && err_msg.contains("seq"),
-        "diagnostic should explain reg-vs-seq rule; got: {err_msg}");
+    assert!(
+        err_msg.contains("`arr_r` is a reg") && err_msg.contains("seq"),
+        "diagnostic should explain reg-vs-seq rule; got: {err_msg}"
+    );
 }
 
 // ── unpacked-array port emission ─────────────────────────────────────────
@@ -13440,13 +16353,19 @@ end module unpacked_demo
 "#;
     let sv = compile_to_sv(source);
     // packed Vec port stays packed (default).
-    assert!(sv.contains("input logic [1:0] [31:0] packed_in"),
-            "packed Vec port should keep packed multi-dim shape, got: {sv}");
+    assert!(
+        sv.contains("input logic [1:0] [31:0] packed_in"),
+        "packed Vec port should keep packed multi-dim shape, got: {sv}"
+    );
     // unpacked Vec port flips to SV unpacked-array shape.
-    assert!(sv.contains("input logic [31:0] unpacked_in [1:0]"),
-            "unpacked Vec port should emit SV unpacked array, got: {sv}");
-    assert!(sv.contains("output logic [31:0] unpacked_out [1:0]"),
-            "unpacked Vec output port should emit SV unpacked array, got: {sv}");
+    assert!(
+        sv.contains("input logic [31:0] unpacked_in [1:0]"),
+        "unpacked Vec port should emit SV unpacked array, got: {sv}"
+    );
+    assert!(
+        sv.contains("output logic [31:0] unpacked_out [1:0]"),
+        "unpacked Vec output port should emit SV unpacked array, got: {sv}"
+    );
     // Internal body indexing is identical regardless of port shape.
     assert!(sv.contains("assign unpacked_out[0] = unpacked_in[0]"));
 }
@@ -13471,13 +16390,19 @@ end module unpacked_asc_demo
 "#;
     let sv = compile_to_sv(source);
     // `ascending` flips both directions.
-    assert!(sv.contains("input logic [5:0] asc_in [0:3]"),
-            "ascending unpacked input should emit [0:N-1], got: {sv}");
-    assert!(sv.contains("output logic [5:0] asc_out [0:3]"),
-            "ascending unpacked output should emit [0:N-1], got: {sv}");
+    assert!(
+        sv.contains("input logic [5:0] asc_in [0:3]"),
+        "ascending unpacked input should emit [0:N-1], got: {sv}"
+    );
+    assert!(
+        sv.contains("output logic [5:0] asc_out [0:3]"),
+        "ascending unpacked output should emit [0:N-1], got: {sv}"
+    );
     // Plain `unpacked` (no `ascending`) keeps default descending.
-    assert!(sv.contains("input logic [5:0] desc_in [3:0]"),
-            "plain unpacked stays descending, got: {sv}");
+    assert!(
+        sv.contains("input logic [5:0] desc_in [3:0]"),
+        "plain unpacked stays descending, got: {sv}"
+    );
     // ARCH-side indexing is unchanged — `asc_in[0]` is still the first
     // element regardless of SV dim direction.
     assert!(sv.contains("assign asc_out[0] = asc_in[0]"));
@@ -13506,8 +16431,10 @@ module asc_wire_demo
 end module asc_wire_demo
 "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("logic [5:0] w [0:3]"),
-            "ascending unpacked wire should emit [0:N-1], got: {sv}");
+    assert!(
+        sv.contains("logic [5:0] w [0:3]"),
+        "ascending unpacked wire should emit [0:N-1], got: {sv}"
+    );
 }
 
 #[test]
@@ -13526,12 +16453,16 @@ end module AscIface
     let tokens = lexer::tokenize(source).expect("lexer error");
     let mut parser = Parser::new(tokens, source);
     let parsed = parser.parse_source_file().expect("parse error");
-    let item = parsed.items.iter()
+    let item = parsed
+        .items
+        .iter()
         .find(|i| matches!(i, arch::ast::Item::Module(_)))
         .expect("expected a module item");
     let body = arch::interface::emit_interface(item).expect("emit_interface");
-    assert!(body.contains("port asc_in: in unpacked ascending Vec"),
-            ".archi should preserve `unpacked ascending`: {body}");
+    assert!(
+        body.contains("port asc_in: in unpacked ascending Vec"),
+        ".archi should preserve `unpacked ascending`: {body}"
+    );
 }
 
 #[test]
@@ -13554,7 +16485,9 @@ end module PipeIface
     let tokens = lexer::tokenize(source).expect("lexer error");
     let mut parser = Parser::new(tokens, source);
     let parsed = parser.parse_source_file().expect("parse error");
-    let item = parsed.items.iter()
+    let item = parsed
+        .items
+        .iter()
         .find(|i| matches!(i, arch::ast::Item::Module(_)))
         .expect("expected a module item");
     let body = arch::interface::emit_interface(item).expect("emit_interface");
@@ -13582,10 +16515,15 @@ end module unpacked_neg
     let tokens = lexer::tokenize(source).expect("lex");
     let mut parser = Parser::new(tokens, source);
     let result = parser.parse_source_file();
-    assert!(result.is_err(), "unpacked on non-Vec should be a parse error");
+    assert!(
+        result.is_err(),
+        "unpacked on non-Vec should be a parse error"
+    );
     let msg = format!("{:?}", result.err().unwrap());
-    assert!(msg.contains("`unpacked` is only valid on `Vec<T,N>` ports"),
-            "diagnostic should explain Vec-only restriction, got: {msg}");
+    assert!(
+        msg.contains("`unpacked` is only valid on `Vec<T,N>` ports"),
+        "diagnostic should explain Vec-only restriction, got: {msg}"
+    );
 }
 
 #[test]
@@ -13598,10 +16536,15 @@ end module unpacked_neg2
     let tokens = lexer::tokenize(source).expect("lex");
     let mut parser = Parser::new(tokens, source);
     let result = parser.parse_source_file();
-    assert!(result.is_err(), "unpacked + port reg should be a parse error");
+    assert!(
+        result.is_err(),
+        "unpacked + port reg should be a parse error"
+    );
     let msg = format!("{:?}", result.err().unwrap());
-    assert!(msg.contains("`unpacked` is not allowed on `port reg`"),
-            "diagnostic should explain port-reg restriction, got: {msg}");
+    assert!(
+        msg.contains("`unpacked` is not allowed on `port reg`"),
+        "diagnostic should explain port-reg restriction, got: {msg}"
+    );
 }
 
 #[test]
@@ -13655,8 +16598,10 @@ end module BadRdc
     assert!(
         errs.iter().any(|e| {
             let s = e.to_string();
-            s.contains("RDC violation") && s.contains("rst")
-                && s.contains("DomA") && s.contains("DomB")
+            s.contains("RDC violation")
+                && s.contains("rst")
+                && s.contains("DomA")
+                && s.contains("DomB")
         }),
         "expected RDC error naming both domains, got: {:?}",
         errs
@@ -13708,7 +16653,11 @@ end module GoodRdc
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = TypeChecker::new(&symbols, &ast);
     let result = checker.check();
-    assert!(result.is_ok(), "expected no RDC error, got: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "expected no RDC error, got: {:?}",
+        result.err()
+    );
 }
 
 #[test]
@@ -13747,8 +16696,11 @@ end module M
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = TypeChecker::new(&symbols, &ast);
     let result = checker.check();
-    assert!(result.is_ok(),
-        "expected guard-waivered RDC to pass, got: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "expected guard-waivered RDC to pass, got: {:?}",
+        result.err()
+    );
 }
 
 #[test]
@@ -13788,15 +16740,18 @@ end module M
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = TypeChecker::new(&symbols, &ast);
     let result = checker.check();
-    assert!(result.is_err(), "expected RDC error (sync guard doesn't qualify)");
+    assert!(
+        result.is_err(),
+        "expected RDC error (sync guard doesn't qualify)"
+    );
     let errs = result.unwrap_err();
     assert!(
         errs.iter().any(|e| {
             let s = e.to_string();
-            s.contains("RDC violation") && s.contains("data_q")
-                && s.contains("not async-reset")
+            s.contains("RDC violation") && s.contains("data_q") && s.contains("not async-reset")
         }),
-        "expected hint about non-async guard, got: {:?}", errs
+        "expected hint about non-async guard, got: {:?}",
+        errs
     );
 }
 
@@ -13832,15 +16787,20 @@ end module M
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = TypeChecker::new(&symbols, &ast);
     let result = checker.check();
-    assert!(result.is_err(), "expected RDC error (port guard doesn't qualify)");
+    assert!(
+        result.is_err(),
+        "expected RDC error (port guard doesn't qualify)"
+    );
     let errs = result.unwrap_err();
     assert!(
         errs.iter().any(|e| {
             let s = e.to_string();
-            s.contains("RDC violation") && s.contains("data_q")
+            s.contains("RDC violation")
+                && s.contains("data_q")
                 && s.contains("not a register in this module")
         }),
-        "expected hint about port-input guard, got: {:?}", errs
+        "expected hint about port-input guard, got: {:?}",
+        errs
     );
 }
 
@@ -13887,14 +16847,18 @@ end module M
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = TypeChecker::new(&symbols, &ast);
     let result = checker.check();
-    assert!(result.is_err(), "expected RDC error (cross-domain guard doesn't waive)");
+    assert!(
+        result.is_err(),
+        "expected RDC error (cross-domain guard doesn't waive)"
+    );
     let errs = result.unwrap_err();
     assert!(
         errs.iter().any(|e| {
             let s = e.to_string();
             s.contains("RDC violation") && s.contains("data_q")
         }),
-        "expected RDC error on data_q, got: {:?}", errs
+        "expected RDC error on data_q, got: {:?}",
+        errs
     );
 }
 
@@ -13933,7 +16897,6 @@ end module SingleDomain
     assert!(checker.check().is_ok());
 }
 
-
 // ─── RDC phase 2a: data-path reset domain crossing tests ────────────────────
 // Rule (option 1, sync flops are transparent):
 //   reach[f] = { f.reset } if f.reset_kind == Async, else union of reach[srcs]
@@ -13955,7 +16918,11 @@ fn rdc_check(source: &str) -> Result<(), Vec<arch::diagnostics::CompileError>> {
 
 fn assert_rdc_ok(label: &str, source: &str) {
     let r = rdc_check(source);
-    assert!(r.is_ok(), "[{label}] expected no RDC error, got: {:?}", r.err());
+    assert!(
+        r.is_ok(),
+        "[{label}] expected no RDC error, got: {:?}",
+        r.err()
+    );
 }
 
 fn assert_rdc_fails(label: &str, source: &str, must_contain: &[&str]) {
@@ -13968,9 +16935,11 @@ fn assert_rdc_fails(label: &str, source: &str, must_contain: &[&str]) {
         // shares its diagnostic shape across both hazard classes.
         (s.contains("RDC") || s.contains("CDC")) && must_contain.iter().all(|m| s.contains(m))
     });
-    assert!(any_match,
+    assert!(
+        any_match,
         "[{label}] expected RDC/CDC error containing all of {:?}, got: {:?}",
-        must_contain, errs);
+        must_contain, errs
+    );
 }
 
 // ── Group A: direct edges (1-hop) ───────────────────────────────────────────
@@ -13978,7 +16947,9 @@ fn assert_rdc_fails(label: &str, source: &str, must_contain: &[&str]) {
 #[test]
 fn rdc_a1_same_async_direct_ok() {
     // ra (rst_a, async) → rb (rst_a, async); same domain → no violation.
-    assert_rdc_ok("A1", r#"
+    assert_rdc_ok(
+        "A1",
+        r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -13995,20 +16966,26 @@ module M
   end seq
   let q = rb;
 end module M
-"#);
+"#,
+    );
 }
 
 #[test]
 fn rdc_reset_type_cast_at_inst_is_direct_reset_ok() {
     // `rst <- rst_async_n as Reset<Async, Low>` is a reset type override at
     // the inst boundary. It should not be classified as reset-combining logic.
-    assert_rdc_ok("reset-cast-inst", include_str!("../examples/param_reset.arch"));
+    assert_rdc_ok(
+        "reset-cast-inst",
+        include_str!("../examples/param_reset.arch"),
+    );
 }
 
 #[test]
 fn rdc_a2_diff_async_direct_fails() {
     // ra (rst_a, async) → rb (rst_b, async); different async domains → FAIL.
-    assert_rdc_fails("A2", r#"
+    assert_rdc_fails(
+        "A2",
+        r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -14028,7 +17005,9 @@ module M
   end seq
   let q = rb;
 end module M
-"#, &["rst_a", "rst_b"]);
+"#,
+        &["rst_a", "rst_b"],
+    );
 }
 
 #[test]
@@ -14037,7 +17016,9 @@ fn rdc_a3_async_to_sync_fails() {
     // transparent for propagation but cannot gate its data input on the
     // upstream's async reset event; mid-deassert transients on `ra`
     // metastabilise `rb` and propagate downstream. Flag.
-    assert_rdc_fails("A3", r#"
+    assert_rdc_fails(
+        "A3",
+        r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -14057,7 +17038,9 @@ module M
   end seq
   let q = rb;
 end module M
-"#, &["rst_a", "rb"]);
+"#,
+        &["rst_a", "rb"],
+    );
 }
 
 #[test]
@@ -14065,7 +17048,9 @@ fn rdc_a4_async_to_none_fails() {
     // ra (rst_a, async) → rb (reset none). Strict rule: a reset-less
     // flop cannot gate its data input on the source's async reset
     // event; mid-deassert transients on `ra` metastabilise `rb`. Flag.
-    assert_rdc_fails("A4", r#"
+    assert_rdc_fails(
+        "A4",
+        r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -14084,14 +17069,18 @@ module M
   end seq
   let q = rb;
 end module M
-"#, &["rst_a", "rb"]);
+"#,
+        &["rst_a", "rb"],
+    );
 }
 
 #[test]
 fn rdc_a5_sync_source_ok() {
     // ra (rst_a, sync) sourced from a port has reach[ra]=∅. Then rb
     // (rst_b, async) reads ra → reach[rb's src]=∅ → no violation.
-    assert_rdc_ok("A5", r#"
+    assert_rdc_ok(
+        "A5",
+        r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -14111,7 +17100,8 @@ module M
   end seq
   let q = rb;
 end module M
-"#);
+"#,
+    );
 }
 
 // ── Group B: 2-hop chains (the canonical reset-less / sync-bridge bug) ─────
@@ -14120,7 +17110,9 @@ end module M
 fn rdc_b1_async_none_async_diff_fails() {
     // ra (rst_a) → rx (none) → rb (rst_b). reach[rx]={rst_a};
     // reach[rb's src]={rst_a} ≠ rb.reset=rst_b → FAIL at rb.
-    assert_rdc_fails("B1", r#"
+    assert_rdc_fails(
+        "B1",
+        r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -14144,7 +17136,9 @@ module M
   end seq
   let q = rb;
 end module M
-"#, &["rst_a", "rst_b"]);
+"#,
+        &["rst_a", "rst_b"],
+    );
 }
 
 #[test]
@@ -14154,7 +17148,9 @@ fn rdc_b2_async_none_async_same_fails() {
     // being gated on the upstream reset; even though both async flops
     // share rst_a, the middle hop is the metastability propagator.
     // Fix is to also reset `rx` by rst_a (or add a synchroniser).
-    assert_rdc_fails("B2", r#"
+    assert_rdc_fails(
+        "B2",
+        r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -14175,13 +17171,17 @@ module M
   end seq
   let q = rb;
 end module M
-"#, &["rst_a", "rx"]);
+"#,
+        &["rst_a", "rx"],
+    );
 }
 
 #[test]
 fn rdc_b3_async_sync_async_diff_fails() {
     // Sync rx is transparent like none → still flagged.
-    assert_rdc_fails("B3", r#"
+    assert_rdc_fails(
+        "B3",
+        r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -14206,7 +17206,9 @@ module M
   end seq
   let q = rb;
 end module M
-"#, &["rst_a", "rst_b"]);
+"#,
+        &["rst_a", "rst_b"],
+    );
 }
 
 // ── Group C: convergence at non-async flop ─────────────────────────────────
@@ -14215,7 +17217,9 @@ end module M
 fn rdc_c1_two_async_converge_at_none_fails() {
     // ra (rst_a) and rb (rst_b) both feed rx (none).
     // reach[rx]={rst_a, rst_b} → FAIL at rx.
-    assert_rdc_fails("C1", r#"
+    assert_rdc_fails(
+        "C1",
+        r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -14240,7 +17244,9 @@ module M
   end seq
   let q = rx;
 end module M
-"#, &["rst_a", "rst_b"]);
+"#,
+        &["rst_a", "rst_b"],
+    );
 }
 
 #[test]
@@ -14249,7 +17255,9 @@ fn rdc_c2_two_same_domain_converge_fails() {
     // Strict rule: rx is reset-less, captures async-domain data without
     // gating on the upstream reset event → flag, even though only one
     // async domain reaches it. The fix is to also reset `rx` by rst_a.
-    assert_rdc_fails("C2", r#"
+    assert_rdc_fails(
+        "C2",
+        r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -14271,7 +17279,9 @@ module M
   end seq
   let q = rx;
 end module M
-"#, &["rst_a", "rx"]);
+"#,
+        &["rst_a", "rx"],
+    );
 }
 
 #[test]
@@ -14279,7 +17289,9 @@ fn rdc_c3_async_plus_port_at_none_fails() {
     // ra (rst_a) + port input → rx (reset none). Port contributes no
     // async, but rx still captures async-domain data from `ra` without
     // a reset gate — flag.
-    assert_rdc_fails("C3", r#"
+    assert_rdc_fails(
+        "C3",
+        r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -14299,7 +17311,9 @@ module M
   end seq
   let q = rx;
 end module M
-"#, &["rst_a", "rx"]);
+"#,
+        &["rst_a", "rx"],
+    );
 }
 
 // ── Group D: multi-clock-domain interactions ───────────────────────────────
@@ -14310,7 +17324,9 @@ fn rdc_d1_same_async_two_clocks_no_data_path_phase1_flags() {
     // two clock domains, regardless of whether a data path exists. Phase
     // 2's data-path rule alone would let this pass; we keep phase 1 as a
     // structural backstop so the test pins the union of both checks.
-    assert_rdc_fails("D1", r#"
+    assert_rdc_fails(
+        "D1",
+        r#"
 domain DA
   freq_mhz: 100
 end domain DA
@@ -14336,7 +17352,9 @@ module M
   let qa = ra;
   let qb = rb;
 end module M
-"#, &["rst", "DA", "DB"]);
+"#,
+        &["rst", "DA", "DB"],
+    );
 }
 
 #[test]
@@ -14344,7 +17362,9 @@ fn rdc_d2_diff_async_diff_clocks_with_path_fails() {
     // Two clocks, two async resets, data path between them → FAIL.
     // Module marks itself `cdc_safe` to opt out of the CDC check (which
     // would otherwise also fire on this design); RDC must still flag.
-    assert_rdc_fails("D2", r#"
+    assert_rdc_fails(
+        "D2",
+        r#"
 domain DA
   freq_mhz: 100
 end domain DA
@@ -14369,14 +17389,18 @@ module M
   end seq
   let q = rb;
 end module M
-"#, &["rst_a", "rst_b"]);
+"#,
+        &["rst_a", "rst_b"],
+    );
 }
 
 // ── Group E: feedback loops (require fixpoint) ─────────────────────────────
 
 #[test]
 fn rdc_e1_self_loop_same_domain_ok() {
-    assert_rdc_ok("E1", r#"
+    assert_rdc_ok(
+        "E1",
+        r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -14390,14 +17414,17 @@ module M
   end seq
   let q = ra;
 end module M
-"#);
+"#,
+    );
 }
 
 #[test]
 fn rdc_e2_mutual_feedback_diff_domains_fails() {
     // ra ↔ rb across different async domains. Fixpoint converges with
     // reach[rb's src]={rst_a} and reach[ra's src]={rst_b}; both flagged.
-    assert_rdc_fails("E2", r#"
+    assert_rdc_fails(
+        "E2",
+        r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -14416,7 +17443,9 @@ module M
   end seq
   let q = ra;
 end module M
-"#, &["rst_a", "rst_b"]);
+"#,
+        &["rst_a", "rst_b"],
+    );
 }
 
 // ── Group F: trivial / sanity ──────────────────────────────────────────────
@@ -14424,7 +17453,9 @@ end module M
 #[test]
 fn rdc_f1_single_async_domain_ok() {
     // Several flops all reset by rst_a → no violation.
-    assert_rdc_ok("F1", r#"
+    assert_rdc_ok(
+        "F1",
+        r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -14443,13 +17474,16 @@ module M
   end seq
   let q = r3;
 end module M
-"#);
+"#,
+    );
 }
 
 #[test]
 fn rdc_f2_no_async_flops_ok() {
     // All sync — phase-2 rule originates no domain → no violation.
-    assert_rdc_ok("F2", r#"
+    assert_rdc_ok(
+        "F2",
+        r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -14466,7 +17500,8 @@ module M
   end seq
   let q = r2;
 end module M
-"#);
+"#,
+    );
 }
 
 // ── Group G: Phase 2b — clock-gating cell enable from async reset ─────────
@@ -14501,15 +17536,16 @@ fn rdc_g3_clkgate_enable_from_sync_flop_ok() {
 
 #[test]
 fn rdc_h1_reconvergent_two_syncs_same_domain_fails() {
-    let src = std::fs::read_to_string("tests/rdc/rdc_h1_reconvergent_two_syncs_same_domain_fail.arch")
-        .expect("read H1");
+    let src =
+        std::fs::read_to_string("tests/rdc/rdc_h1_reconvergent_two_syncs_same_domain_fail.arch")
+            .expect("read H1");
     assert_rdc_fails("H1", &src, &["raw_rst", "sync_a", "sync_b", "Dst"]);
 }
 
 #[test]
 fn rdc_h2_single_reset_sync_ok() {
-    let src = std::fs::read_to_string("tests/rdc/rdc_h2_single_reset_sync_ok.arch")
-        .expect("read H2");
+    let src =
+        std::fs::read_to_string("tests/rdc/rdc_h2_single_reset_sync_ok.arch").expect("read H2");
     assert_rdc_ok("H2", &src);
 }
 
@@ -14522,8 +17558,9 @@ fn rdc_h3_reset_syncs_to_diff_domains_ok() {
 
 #[test]
 fn rdc_h4_reconvergent_three_syncs_same_domain_fails() {
-    let src = std::fs::read_to_string("tests/rdc/rdc_h4_reconvergent_three_syncs_same_domain_fail.arch")
-        .expect("read H4");
+    let src =
+        std::fs::read_to_string("tests/rdc/rdc_h4_reconvergent_three_syncs_same_domain_fail.arch")
+            .expect("read H4");
     assert_rdc_fails("H4", &src, &["raw_rst", "sync_1", "Dst"]);
 }
 
@@ -14532,15 +17569,17 @@ fn rdc_h4_reconvergent_three_syncs_same_domain_fails() {
 
 #[test]
 fn rdc_j1_cdc_reconvergent_two_ff_syncs_same_domain_fails() {
-    let src = std::fs::read_to_string("tests/rdc/rdc_j1_cdc_reconvergent_two_ff_syncs_same_domain_fail.arch")
-        .expect("read J1");
+    let src = std::fs::read_to_string(
+        "tests/rdc/rdc_j1_cdc_reconvergent_two_ff_syncs_same_domain_fail.arch",
+    )
+    .expect("read J1");
     assert_rdc_fails("J1", &src, &["CDC", "flag", "sync_a", "sync_b", "Dst"]);
 }
 
 #[test]
 fn rdc_j2_cdc_single_ff_sync_ok() {
-    let src = std::fs::read_to_string("tests/rdc/rdc_j2_cdc_single_ff_sync_ok.arch")
-        .expect("read J2");
+    let src =
+        std::fs::read_to_string("tests/rdc/rdc_j2_cdc_single_ff_sync_ok.arch").expect("read J2");
     assert_rdc_ok("J2", &src);
 }
 
@@ -14553,8 +17592,10 @@ fn rdc_j3_cdc_syncs_to_diff_domains_ok() {
 
 #[test]
 fn rdc_j4_mixed_reset_and_data_sync_same_source_fails() {
-    let src = std::fs::read_to_string("tests/rdc/rdc_j4_mixed_reset_and_data_sync_same_source_same_domain_fail.arch")
-        .expect("read J4");
+    let src = std::fs::read_to_string(
+        "tests/rdc/rdc_j4_mixed_reset_and_data_sync_same_source_same_domain_fail.arch",
+    )
+    .expect("read J4");
     assert_rdc_fails("J4", &src, &["RDC/CDC", "shared", "Dst"]);
 }
 
@@ -14582,13 +17623,19 @@ fn package_width_qualified_param_emits_bracket_form() {
     ";
     let sv = compile_to_sv(source);
     // Untyped const stays `localparam int`.
-    assert!(sv.contains("localparam int NARROW = 42;"),
-            "untyped const must keep `int`:\n{sv}");
+    assert!(
+        sv.contains("localparam int NARROW = 42;"),
+        "untyped const must keep `int`:\n{sv}"
+    );
     // Width-qualified params must keep the [hi:lo] qualifier.
-    assert!(sv.contains("localparam [31:0] WIDE32 = 42;"),
-            "32-bit width qualifier dropped:\n{sv}");
-    assert!(sv.contains("localparam [63:0] WIDE64 = 24314014034;"),
-            "64-bit width qualifier dropped (would truncate):\n{sv}");
+    assert!(
+        sv.contains("localparam [31:0] WIDE32 = 42;"),
+        "32-bit width qualifier dropped:\n{sv}"
+    );
+    assert!(
+        sv.contains("localparam [63:0] WIDE64 = 24314014034;"),
+        "64-bit width qualifier dropped (would truncate):\n{sv}"
+    );
 }
 
 #[test]
@@ -14615,14 +17662,18 @@ fn package_enum_typed_param_emits_typedef_before_localparam() {
         end module M
     ";
     let sv = compile_to_sv(source);
-    let typedef_pos = sv.find("typedef enum")
-        .expect("typedef enum missing");
-    let param_pos = sv.find("DEFAULT_OP")
+    let typedef_pos = sv.find("typedef enum").expect("typedef enum missing");
+    let param_pos = sv
+        .find("DEFAULT_OP")
         .expect("DEFAULT_OP localparam missing");
-    assert!(typedef_pos < param_pos,
-        "enum typedef must precede localparam that references it:\n{sv}");
-    assert!(sv.contains("localparam Op DEFAULT_OP = "),
-        "EnumConst must emit typed `localparam Op …`:\n{sv}");
+    assert!(
+        typedef_pos < param_pos,
+        "enum typedef must precede localparam that references it:\n{sv}"
+    );
+    assert!(
+        sv.contains("localparam Op DEFAULT_OP = "),
+        "EnumConst must emit typed `localparam Op …`:\n{sv}"
+    );
 }
 
 // ── Group K: Phase 2d — combiner-derived reset glitches at inst boundaries
@@ -14631,29 +17682,29 @@ fn package_enum_typed_param_emits_typedef_before_localparam() {
 
 #[test]
 fn rdc_k1_combiner_or_at_inst_fails() {
-    let src = std::fs::read_to_string("tests/rdc/rdc_k1_combiner_or_at_inst_fail.arch")
-        .expect("read K1");
+    let src =
+        std::fs::read_to_string("tests/rdc/rdc_k1_combiner_or_at_inst_fail.arch").expect("read K1");
     assert_rdc_fails("K1", &src, &["sub", "rst", "combinational"]);
 }
 
 #[test]
 fn rdc_k2_negation_at_inst_fails() {
-    let src = std::fs::read_to_string("tests/rdc/rdc_k2_negation_at_inst_fail.arch")
-        .expect("read K2");
+    let src =
+        std::fs::read_to_string("tests/rdc/rdc_k2_negation_at_inst_fail.arch").expect("read K2");
     assert_rdc_fails("K2", &src, &["sub", "rst", "combinational"]);
 }
 
 #[test]
 fn rdc_k3_direct_reset_at_inst_ok() {
-    let src = std::fs::read_to_string("tests/rdc/rdc_k3_direct_reset_at_inst_ok.arch")
-        .expect("read K3");
+    let src =
+        std::fs::read_to_string("tests/rdc/rdc_k3_direct_reset_at_inst_ok.arch").expect("read K3");
     assert_rdc_ok("K3", &src);
 }
 
 #[test]
 fn rdc_k4_sync_output_to_reset_ok() {
-    let src = std::fs::read_to_string("tests/rdc/rdc_k4_sync_output_to_reset_ok.arch")
-        .expect("read K4");
+    let src =
+        std::fs::read_to_string("tests/rdc/rdc_k4_sync_output_to_reset_ok.arch").expect("read K4");
     assert_rdc_ok("K4", &src);
 }
 
@@ -14695,8 +17746,8 @@ fn rdc_m4_cdc_let_alias_same_source_fails() {
 
 #[test]
 fn rdc_m5_cdc_distinct_sources_ok() {
-    let src = std::fs::read_to_string("tests/rdc/rdc_m5_cdc_distinct_sources_ok.arch")
-        .expect("read M5");
+    let src =
+        std::fs::read_to_string("tests/rdc/rdc_m5_cdc_distinct_sources_ok.arch").expect("read M5");
     assert_rdc_ok("M5", &src);
 }
 
@@ -14714,22 +17765,25 @@ fn rdc_m6_cdc_bit_slice_distinct_vecs_ok() {
 
 #[test]
 fn rdc_l1_pragma_rdc_safe_suppresses_phase2a() {
-    let src = std::fs::read_to_string("tests/rdc/rdc_l1_pragma_rdc_safe_suppresses_phase2a_ok.arch")
-        .expect("read L1");
+    let src =
+        std::fs::read_to_string("tests/rdc/rdc_l1_pragma_rdc_safe_suppresses_phase2a_ok.arch")
+            .expect("read L1");
     assert_rdc_ok("L1", &src);
 }
 
 #[test]
 fn rdc_l2_pragma_rdc_safe_suppresses_phase2c() {
-    let src = std::fs::read_to_string("tests/rdc/rdc_l2_pragma_rdc_safe_suppresses_phase2c_ok.arch")
-        .expect("read L2");
+    let src =
+        std::fs::read_to_string("tests/rdc/rdc_l2_pragma_rdc_safe_suppresses_phase2c_ok.arch")
+            .expect("read L2");
     assert_rdc_ok("L2", &src);
 }
 
 #[test]
 fn rdc_l3_pragma_rdc_safe_suppresses_phase2d() {
-    let src = std::fs::read_to_string("tests/rdc/rdc_l3_pragma_rdc_safe_suppresses_phase2d_ok.arch")
-        .expect("read L3");
+    let src =
+        std::fs::read_to_string("tests/rdc/rdc_l3_pragma_rdc_safe_suppresses_phase2d_ok.arch")
+            .expect("read L3");
     assert_rdc_ok("L3", &src);
 }
 
@@ -14766,8 +17820,10 @@ end module M
     let result = parser.parse_source_file();
     assert!(result.is_err(), "unknown pragma should be a parse error");
     let msg = format!("{:?}", result.err().unwrap());
-    assert!(msg.contains("unknown pragma") && msg.contains("totally_unsafe"),
-        "expected unknown-pragma diagnostic, got: {msg}");
+    assert!(
+        msg.contains("unknown pragma") && msg.contains("totally_unsafe"),
+        "expected unknown-pragma diagnostic, got: {msg}"
+    );
 }
 
 #[test]
@@ -14813,7 +17869,9 @@ end module Parent
     let mut parsed_ast = parser.parse_source_file().expect("parse");
     for item in parsed_ast.items.iter_mut() {
         if let arch::ast::Item::Module(m) = item {
-            if m.name.name == "ChildStub" { m.is_interface = true; }
+            if m.name.name == "ChildStub" {
+                m.is_interface = true;
+            }
         }
     }
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate");
@@ -14825,13 +17883,19 @@ end module Parent
     let ast = elaborate::lower_credit_channel_dispatch(ast).expect("credit_channel dispatch");
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = TypeChecker::new(&symbols, &ast);
-    let (_warnings, overload_map) = checker.check()
+    let (_warnings, overload_map) = checker
+        .check()
         .expect("typecheck must not report 'output port out_o is not driven' on interface stub");
     let mut codegen = Codegen::new(&symbols, &ast, overload_map);
     let sv = codegen.generate();
-    assert!(sv.contains("module Parent"), "parent module should be emitted");
-    assert!(!sv.contains("module ChildStub"),
-        "interface stub must not be emitted to SV (real impl lives in a separately-built file)");
+    assert!(
+        sv.contains("module Parent"),
+        "parent module should be emitted"
+    );
+    assert!(
+        !sv.contains("module ChildStub"),
+        "interface stub must not be emitted to SV (real impl lives in a separately-built file)"
+    );
 }
 
 #[test]
@@ -14875,14 +17939,17 @@ end module Parent
 "#;
     let tokens = lexer::tokenize(source).expect("lex");
     let mut parser = Parser::new(tokens, source);
-    let mut parsed_ast = parser.parse_source_file()
+    let mut parsed_ast = parser
+        .parse_source_file()
         .expect("parser must accept body-less fsm (interface stub)");
     // Mimic main.rs's post-parse tagger: items loaded from `.archi` get
     // is_interface = true. Here we tag the FSM by name to simulate
     // "loaded from <name>.archi".
     for item in parsed_ast.items.iter_mut() {
         if let arch::ast::Item::Fsm(f) = item {
-            if f.name.name == "ChildFsm" { f.common.is_interface = true; }
+            if f.name.name == "ChildFsm" {
+                f.common.is_interface = true;
+            }
         }
     }
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate");
@@ -14895,13 +17962,19 @@ end module Parent
     let symbols = resolve::resolve(&ast)
         .expect("resolve must accept fsm interface stub (no default_state validation)");
     let checker = TypeChecker::new(&symbols, &ast);
-    let (_warnings, overload_map) = checker.check()
+    let (_warnings, overload_map) = checker
+        .check()
         .expect("typecheck must skip body checks on fsm interface stub");
     let mut codegen = Codegen::new(&symbols, &ast, overload_map);
     let sv = codegen.generate();
-    assert!(sv.contains("module Parent"), "parent module should be emitted");
-    assert!(!sv.contains("module ChildFsm"),
-        "fsm interface stub must not be emitted to SV (real impl lives in a separately-built file)");
+    assert!(
+        sv.contains("module Parent"),
+        "parent module should be emitted"
+    );
+    assert!(
+        !sv.contains("module ChildFsm"),
+        "fsm interface stub must not be emitted to SV (real impl lives in a separately-built file)"
+    );
 }
 
 #[test]
@@ -14929,14 +18002,18 @@ end fsm BrokenFsm
 "#;
     let tokens = lexer::tokenize(source).expect("lex");
     let mut parser = Parser::new(tokens, source);
-    let parsed_ast = parser.parse_source_file()
+    let parsed_ast = parser
+        .parse_source_file()
         .expect("parser accepts body-less fsm now; default-state check moved to resolve");
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate");
-    let resolve_err = resolve::resolve(&ast).err()
+    let resolve_err = resolve::resolve(&ast)
+        .err()
         .expect("real fsm without default_state must still error");
     let msg = format!("{resolve_err:?}");
-    assert!(msg.contains("default state"),
-        "expected `default state` diagnostic, got: {msg}");
+    assert!(
+        msg.contains("default state"),
+        "expected `default state` diagnostic, got: {msg}"
+    );
 }
 
 #[test]
@@ -14987,8 +18064,10 @@ end fsm Painter
 "#;
     let sv = compile_to_sv(source);
     // Package is emitted up front (no change here — that's package codegen).
-    assert!(sv.contains("package SharedPkg;"),
-        "package SharedPkg should be emitted to SV");
+    assert!(
+        sv.contains("package SharedPkg;"),
+        "package SharedPkg should be emitted to SV"
+    );
     assert!(sv.contains("import SharedPkg::*;"),
         "fsm consumer of `use SharedPkg;` must emit `import SharedPkg::*;` so the module body can reference `Color` without a fully-qualified name");
     // Sanity: the import comes BEFORE the module declaration so the type
@@ -15100,13 +18179,20 @@ end module M
         panic!("no `begin` precedes the assign; SV malformed:\n{}", sv);
     });
     // Extract the line containing that `begin`.
-    let line_start = preceding[..last_begin_at].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let line_start = preceding[..last_begin_at]
+        .rfind('\n')
+        .map(|p| p + 1)
+        .unwrap_or(0);
     let begin_line = &preceding[line_start..last_begin_at + "begin".len()];
-    assert!(!begin_line.contains("if (cond_b)"),
+    assert!(
+        !begin_line.contains("if (cond_b)"),
         "inter-yield seq assign `x <= 8'd42` must NOT be wrapped in \
          `if (cond_b) begin ... end` — that's the pre-fix merge-into-wait-state \
          behavior, which conflicts with spec §7a.2 (only TRAILING assigns merge). \
-         Enclosing begin-line was: {:?}\nFull SV:\n{}", begin_line, sv);
+         Enclosing begin-line was: {:?}\nFull SV:\n{}",
+        begin_line,
+        sv
+    );
 }
 
 #[test]
@@ -15163,9 +18249,11 @@ end module M
         panic!("missing S0 wait branch in SV:\n{sv}");
     });
     let after_s0 = &sv[s0_start + s0_marker.len()..];
-    let s1_rel = after_s0.find("if (_t0_state == _t0_S1_action) begin").unwrap_or_else(|| {
-        panic!("missing S1 action branch after S0 in SV:\n{sv}");
-    });
+    let s1_rel = after_s0
+        .find("if (_t0_state == _t0_S1_action) begin")
+        .unwrap_or_else(|| {
+            panic!("missing S1 action branch after S0 in SV:\n{sv}");
+        });
     let s0_branch = &sv[s0_start..s0_start + s0_marker.len() + s1_rel];
 
     assert!(
@@ -15322,7 +18410,9 @@ end module M
     let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
 
     assert!(
-        trimmed.contains("if (_t0_state == _t0_S0_wait_until) begin if (start) begin done = done | 1'b1"),
+        trimmed.contains(
+            "if (_t0_state == _t0_S0_wait_until) begin if (start) begin done = done | 1'b1"
+        ),
         "comb assign after fast gate should be gated by start in the S0 comb block:\n{sv}"
     );
 }
@@ -15402,7 +18492,9 @@ end module M
     let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
 
     assert!(
-        trimmed.contains("_t0_state == _t0_S0_wait_until) begin if (start) begin _t0_state <= _t0_S1_wait_until"),
+        trimmed.contains(
+            "_t0_state == _t0_S0_wait_until) begin if (start) begin _t0_state <= _t0_S1_wait_until"
+        ),
         "S0 should wait for start before entering the following fast-gate fused state:\n{sv}"
     );
     assert!(
@@ -15481,7 +18573,9 @@ end module M
         "lock after fast gate should preserve the start wait before entering lock arbitration:\n{sv}"
     );
     assert!(
-        trimmed.contains("_t0_state == _t0_S0_wait_until) begin if (start) begin _t0_state <= _t0_S1_wait_until"),
+        trimmed.contains(
+            "_t0_state == _t0_S0_wait_until) begin if (start) begin _t0_state <= _t0_S1_wait_until"
+        ),
         "S0 should transition into the lock state only when start is true:\n{sv}"
     );
 }
@@ -15525,12 +18619,15 @@ end module M
         "fork/join after fast gate should preserve the start wait and enter fork product states after it:\n{sv}"
     );
     assert!(
-        trimmed.contains("_t0_state == _t0_S0_wait_until) begin if (start) begin _t0_state <= _t0_S1_action"),
+        trimmed.contains(
+            "_t0_state == _t0_S0_wait_until) begin if (start) begin _t0_state <= _t0_S1_action"
+        ),
         "S0 should transition into fork/join lowering only when start is true:\n{sv}"
     );
     assert!(
         !trimmed.contains("_t0_state == _t0_S0_wait_until) begin if (start) begin a_r <= 1'b1")
-            && !trimmed.contains("_t0_state == _t0_S0_wait_until) begin if (start) begin b_r <= 1'b1"),
+            && !trimmed
+                .contains("_t0_state == _t0_S0_wait_until) begin if (start) begin b_r <= 1'b1"),
         "fork branch bodies should remain in fork product states, not collapse into S0:\n{sv}"
     );
 }
@@ -15567,13 +18664,22 @@ fn test_unpacked_wire_modifier_emits_unpacked_sv() {
     ";
     let sv = compile_to_sv(source);
     // Wire emits unpacked-array shape, not packed multi-dim.
-    assert!(sv.contains("logic [31:0] bridge [1:0]") || sv.contains("logic [31:0] bridge [0:1]"),
-        "expected unpacked wire shape `logic [31:0] bridge [N-1:0]`, got:\n{}", sv);
-    assert!(!sv.contains("logic [1:0][31:0] bridge"),
-        "must NOT emit packed multi-dim for `unpacked` wire, got:\n{}", sv);
+    assert!(
+        sv.contains("logic [31:0] bridge [1:0]") || sv.contains("logic [31:0] bridge [0:1]"),
+        "expected unpacked wire shape `logic [31:0] bridge [N-1:0]`, got:\n{}",
+        sv
+    );
+    assert!(
+        !sv.contains("logic [1:0][31:0] bridge"),
+        "must NOT emit packed multi-dim for `unpacked` wire, got:\n{}",
+        sv
+    );
     // Parent's port still uses unpacked (sanity).
-    assert!(sv.contains("input logic [31:0] pq [1:0]") || sv.contains("input logic [31:0] pq [0:1]"),
-        "expected unpacked port shape on parent, got:\n{}", sv);
+    assert!(
+        sv.contains("input logic [31:0] pq [1:0]") || sv.contains("input logic [31:0] pq [0:1]"),
+        "expected unpacked port shape on parent, got:\n{}",
+        sv
+    );
 }
 
 #[test]
@@ -15606,14 +18712,19 @@ end cam TestCam
     let tokens = lexer::tokenize(source).expect("lexer error");
     let mut parser = Parser::new(tokens, source);
     let parsed = parser.parse_source_file().expect("parse error");
-    let item = parsed.items.iter()
+    let item = parsed
+        .items
+        .iter()
         .find(|i| matches!(i, arch::ast::Item::Cam(_)))
         .expect("expected a cam item");
-    let body = arch::interface::emit_interface(item)
-        .expect("cam should now emit an .archi interface");
+    let body =
+        arch::interface::emit_interface(item).expect("cam should now emit an .archi interface");
     assert!(body.starts_with("cam TestCam\n"), "body: {body}");
     assert!(body.contains("param DEPTH: const = 8;"), "body: {body}");
-    assert!(body.contains("port search_first: out UInt<3>;"), "body: {body}");
+    assert!(
+        body.contains("port search_first: out UInt<3>;"),
+        "body: {body}"
+    );
     assert!(body.ends_with("end cam TestCam\n"), "body: {body}");
 }
 
@@ -15645,19 +18756,29 @@ end arbiter TestArb
     let tokens = lexer::tokenize(source).expect("lexer error");
     let mut parser = Parser::new(tokens, source);
     let parsed = parser.parse_source_file().expect("parse error");
-    let item = parsed.items.iter()
+    let item = parsed
+        .items
+        .iter()
         .find(|i| matches!(i, arch::ast::Item::Arbiter(_)))
         .expect("expected an arbiter item");
-    let body = arch::interface::emit_interface(item)
-        .expect("arbiter should emit an .archi interface");
-    assert!(body.contains("ports[NUM_REQ] request"),
-            ".archi must include the ports[N] group: {body}");
-    assert!(body.contains("    valid: in Bool;"),
-            ".archi must include per-requester valid signal: {body}");
-    assert!(body.contains("    ready: out Bool;"),
-            ".archi must include per-requester ready signal: {body}");
-    assert!(body.contains("  end ports request"),
-            ".archi ports group must be properly closed: {body}");
+    let body =
+        arch::interface::emit_interface(item).expect("arbiter should emit an .archi interface");
+    assert!(
+        body.contains("ports[NUM_REQ] request"),
+        ".archi must include the ports[N] group: {body}"
+    );
+    assert!(
+        body.contains("    valid: in Bool;"),
+        ".archi must include per-requester valid signal: {body}"
+    );
+    assert!(
+        body.contains("    ready: out Bool;"),
+        ".archi must include per-requester ready signal: {body}"
+    );
+    assert!(
+        body.contains("  end ports request"),
+        ".archi ports group must be properly closed: {body}"
+    );
 }
 
 #[test]
@@ -15721,22 +18842,34 @@ end module Parent
 ";
     let sv = compile_to_sv(source);
     // Synthesized wire is declared.
-    assert!(sv.contains("logic [3:0] __arb_request_valid;"),
-            "expected synthesized vector wire: {sv}");
+    assert!(
+        sv.contains("logic [3:0] __arb_request_valid;"),
+        "expected synthesized vector wire: {sv}"
+    );
     // Each bit of the wire is driven from the user's per-index
     // expression.
-    assert!(sv.contains("assign __arb_request_valid[0] = req0;"),
-            "expected per-index drive [0]: {sv}");
-    assert!(sv.contains("assign __arb_request_valid[3] = req3;"),
-            "expected per-index drive [3]: {sv}");
+    assert!(
+        sv.contains("assign __arb_request_valid[0] = req0;"),
+        "expected per-index drive [0]: {sv}"
+    );
+    assert!(
+        sv.contains("assign __arb_request_valid[3] = req3;"),
+        "expected per-index drive [3]: {sv}"
+    );
     // The whole vector is connected to the inst's `request_valid` port.
-    assert!(sv.contains(".request_valid(__arb_request_valid)"),
-            "expected whole-vector connection: {sv}");
+    assert!(
+        sv.contains(".request_valid(__arb_request_valid)"),
+        "expected whole-vector connection: {sv}"
+    );
     // The non-existent flattened port names must NOT appear.
-    assert!(!sv.contains(".request0_valid("),
-            "must not emit per-index port name: {sv}");
-    assert!(!sv.contains(".request3_valid("),
-            "must not emit per-index port name: {sv}");
+    assert!(
+        !sv.contains(".request0_valid("),
+        "must not emit per-index port name: {sv}"
+    );
+    assert!(
+        !sv.contains(".request3_valid("),
+        "must not emit per-index port name: {sv}"
+    );
 }
 
 #[test]
@@ -15775,17 +18908,23 @@ end ram TagRam
 ";
     let sv = compile_to_sv(source);
     // SV header includes the user param.
-    assert!(sv.contains("parameter int TagW = 22"),
-            "user param TagW must appear in SV header: {sv}");
+    assert!(
+        sv.contains("parameter int TagW = 22"),
+        "user param TagW must appear in SV header: {sv}"
+    );
     // DATA_WIDTH is derived from the store element type. Default may
     // be the symbolic param `TagW` (forward-resolves via the user
     // param decl above) or the literal `22`; either is correct SV.
-    assert!(sv.contains("parameter int DATA_WIDTH = TagW")
-         || sv.contains("parameter int DATA_WIDTH = 22"),
-            "DATA_WIDTH should follow the store element width: {sv}");
+    assert!(
+        sv.contains("parameter int DATA_WIDTH = TagW")
+            || sv.contains("parameter int DATA_WIDTH = 22"),
+        "DATA_WIDTH should follow the store element width: {sv}"
+    );
     // Port refs to TagW now resolve.
-    assert!(sv.contains("[TagW-1:0]"),
-            "port type must keep referencing TagW: {sv}");
+    assert!(
+        sv.contains("[TagW-1:0]"),
+        "port type must keep referencing TagW: {sv}"
+    );
 }
 
 #[test]
@@ -15816,10 +18955,14 @@ module DocLocal
 end module DocLocal
 ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("parameter int Foo = 32"),
-            "regular param should still emit: {sv}");
-    assert!(sv.contains("localparam int Bar = 64"),
-            "local param after doc comment should still emit: {sv}");
+    assert!(
+        sv.contains("parameter int Foo = 32"),
+        "regular param should still emit: {sv}"
+    );
+    assert!(
+        sv.contains("localparam int Bar = 64"),
+        "local param after doc comment should still emit: {sv}"
+    );
 }
 
 #[test]
@@ -15849,21 +18992,31 @@ end module UpkPort
     let tokens = lexer::tokenize(source).expect("lexer error");
     let mut parser = Parser::new(tokens, source);
     let parsed = parser.parse_source_file().expect("parse error");
-    let item = parsed.items.iter()
+    let item = parsed
+        .items
+        .iter()
         .find(|i| matches!(i, arch::ast::Item::Module(_)))
         .expect("expected a module item");
     let body = arch::interface::emit_interface(item).expect("emit_interface");
-    assert!(body.contains("port a: in unpacked Vec<UInt<W>, N>;"),
-            "unpacked input port should round-trip into .archi: {body}");
+    assert!(
+        body.contains("port a: in unpacked Vec<UInt<W>, N>;"),
+        "unpacked input port should round-trip into .archi: {body}"
+    );
     // Issue #246 Phase 2: output ports may pick up a `comb_dep_on(...)`
     // suffix listing the precise input ports that feed each output.
-    assert!(body.contains("port b: out unpacked Vec<UInt<W>, N>"),
-            "unpacked output port should round-trip into .archi: {body}");
+    assert!(
+        body.contains("port b: out unpacked Vec<UInt<W>, N>"),
+        "unpacked output port should round-trip into .archi: {body}"
+    );
     // Packed Vec port (no `unpacked` modifier) still emits without it.
-    assert!(body.contains("port c: in Vec<UInt<W>, N>;"),
-            "packed Vec port must NOT gain the `unpacked` keyword: {body}");
-    assert!(!body.contains("port c: in unpacked Vec"),
-            "packed Vec port must NOT gain the `unpacked` keyword: {body}");
+    assert!(
+        body.contains("port c: in Vec<UInt<W>, N>;"),
+        "packed Vec port must NOT gain the `unpacked` keyword: {body}"
+    );
+    assert!(
+        !body.contains("port c: in unpacked Vec"),
+        "packed Vec port must NOT gain the `unpacked` keyword: {body}"
+    );
 }
 
 #[test]
@@ -15876,10 +19029,15 @@ fn test_unpacked_wire_rejected_on_non_vec() {
     ";
     let tokens = lexer::tokenize(source).expect("lexer");
     let mut parser = Parser::new(tokens, source);
-    let err = parser.parse_source_file().expect_err("must reject `unpacked UInt<32>`");
+    let err = parser
+        .parse_source_file()
+        .expect_err("must reject `unpacked UInt<32>`");
     let msg = format!("{:?}", err);
-    assert!(msg.contains("unpacked") && msg.contains("Vec"),
-        "error should mention the `unpacked` + Vec constraint, got: {}", msg);
+    assert!(
+        msg.contains("unpacked") && msg.contains("Vec"),
+        "error should mention the `unpacked` + Vec constraint, got: {}",
+        msg
+    );
 }
 
 #[test]
@@ -15925,8 +19083,10 @@ fn test_emit_bound_asserts_elides_for_loop_iterator_index() {
     // Sanity: bound-assertion block should be absent entirely (no
     // other Vec writes here), confirming the for-loop iterator was
     // the only candidate and it was correctly elided.
-    assert!(!sv.contains("_auto_bound_vec_"),
-        "no bound assertion expected when the only Vec index is a for-loop iterator:\n{sv}");
+    assert!(
+        !sv.contains("_auto_bound_vec_"),
+        "no bound assertion expected when the only Vec index is a for-loop iterator:\n{sv}"
+    );
 }
 
 #[test]
@@ -15969,15 +19129,21 @@ fn test_codegen_vec_uint1_collapses_inner_zero_dim() {
     ";
     let sv = compile_to_sv(source);
     // `Vec<UInt<1>, 4>` should emit as single-dim packed `logic [3:0]`.
-    assert!(sv.contains("output logic [3:0] en_v"),
-        "Vec<UInt<1>, 4> should emit as `logic [3:0]` (no inner [0:0]):\n{sv}");
-    assert!(!sv.contains("[3:0] [0:0]"),
-        "no `[N-1:0] [0:0]` multi-dim form expected for Vec<UInt<1>, _>:\n{sv}");
+    assert!(
+        sv.contains("output logic [3:0] en_v"),
+        "Vec<UInt<1>, 4> should emit as `logic [3:0]` (no inner [0:0]):\n{sv}"
+    );
+    assert!(
+        !sv.contains("[3:0] [0:0]"),
+        "no `[N-1:0] [0:0]` multi-dim form expected for Vec<UInt<1>, _>:\n{sv}"
+    );
     // Vec<Bool, 4> behaves the same (Bool is 1-bit) — sanity check the
     // emission stays single-packed (was always `logic [3:0]` pre-fix
     // because Bool's emit_type_str returns just `logic`).
-    assert!(sv.contains("output logic [3:0] mask"),
-        "Vec<Bool, 4> should still emit as `logic [3:0]`:\n{sv}");
+    assert!(
+        sv.contains("output logic [3:0] mask"),
+        "Vec<Bool, 4> should still emit as `logic [3:0]`:\n{sv}"
+    );
 }
 
 /// Loading both an `.archi` interface stub *and* the real `.arch`
@@ -16097,28 +19263,44 @@ fn test_uint_48_param_width_emits_uint64_storage() {
     let out = compile_to_sim_h(source, false);
 
     // Storage types: ports + internal regs all 48 bits → uint64_t.
-    assert!(out.contains("uint64_t score_out"),
-            "score_out port should be uint64_t for UInt<48>; got:\n{out}");
-    assert!(out.contains("uint64_t inc_in"),
-            "inc_in port should be uint64_t for UInt<48>; got:\n{out}");
-    assert!(out.contains("uint64_t _accumulator"),
-            "accumulator reg should be uint64_t for UInt<48>; got:\n{out}");
-    assert!(out.contains("uint64_t _score_reg"),
-            "score_reg reg should be uint64_t for UInt<48>; got:\n{out}");
+    assert!(
+        out.contains("uint64_t score_out"),
+        "score_out port should be uint64_t for UInt<48>; got:\n{out}"
+    );
+    assert!(
+        out.contains("uint64_t inc_in"),
+        "inc_in port should be uint64_t for UInt<48>; got:\n{out}"
+    );
+    assert!(
+        out.contains("uint64_t _accumulator"),
+        "accumulator reg should be uint64_t for UInt<48>; got:\n{out}"
+    );
+    assert!(
+        out.contains("uint64_t _score_reg"),
+        "score_reg reg should be uint64_t for UInt<48>; got:\n{out}"
+    );
 
     // _n_ shadow should match.
-    assert!(out.contains("uint64_t _n_accumulator"),
-            "_n_accumulator shadow should be uint64_t; got:\n{out}");
+    assert!(
+        out.contains("uint64_t _n_accumulator"),
+        "_n_accumulator shadow should be uint64_t; got:\n{out}"
+    );
 
     // Truncating arithmetic should mask to 48 bits (12 F's), not 32.
-    assert!(out.contains("0xFFFFFFFFFFFFULL"),
-            "expected 48-bit mask 0xFFFFFFFFFFFFULL; got:\n{out}");
-    assert!(!out.contains(" 0xFFFFFFFFULL"),
-            "must not emit 32-bit mask 0xFFFFFFFFULL for 48-bit accumulator; got:\n{out}");
+    assert!(
+        out.contains("0xFFFFFFFFFFFFULL"),
+        "expected 48-bit mask 0xFFFFFFFFFFFFULL; got:\n{out}"
+    );
+    assert!(
+        !out.contains(" 0xFFFFFFFFULL"),
+        "must not emit 32-bit mask 0xFFFFFFFFULL for 48-bit accumulator; got:\n{out}"
+    );
 
     // The seq-assign cast must be (uint64_t), not (uint32_t).
-    assert!(out.contains("(uint64_t)((((_accumulator + inc_in))"),
-            "trunc cast should be (uint64_t)(...); got:\n{out}");
+    assert!(
+        out.contains("(uint64_t)((((_accumulator + inc_in))"),
+        "trunc cast should be (uint64_t)(...); got:\n{out}"
+    );
 }
 
 #[test]
@@ -16146,18 +19328,28 @@ fn test_uint_width_boundary_buckets_with_param() {
         end module W
     "#;
     let out = compile_to_sim_h(source, false);
-    assert!(out.contains("uint32_t a32"),
-            "UInt<32> port should be uint32_t; got:\n{out}");
-    assert!(out.contains("uint64_t a33"),
-            "UInt<33> port should be uint64_t; got:\n{out}");
-    assert!(out.contains("uint64_t a64"),
-            "UInt<64> port should be uint64_t; got:\n{out}");
+    assert!(
+        out.contains("uint32_t a32"),
+        "UInt<32> port should be uint32_t; got:\n{out}"
+    );
+    assert!(
+        out.contains("uint64_t a33"),
+        "UInt<33> port should be uint64_t; got:\n{out}"
+    );
+    assert!(
+        out.contains("uint64_t a64"),
+        "UInt<64> port should be uint64_t; got:\n{out}"
+    );
     // 65 bits → wide (VlWide). Don't pin the exact word count here — just
     // assert it isn't the legacy uint32_t bucket.
-    assert!(out.contains("VlWide") && out.contains("a65"),
-            "UInt<65> port should be VlWide<...>; got:\n{out}");
-    assert!(!out.contains("uint32_t a65"),
-            "UInt<65> must not be uint32_t; got:\n{out}");
+    assert!(
+        out.contains("VlWide") && out.contains("a65"),
+        "UInt<65> port should be VlWide<...>; got:\n{out}"
+    );
+    assert!(
+        !out.contains("uint32_t a65"),
+        "UInt<65> must not be uint32_t; got:\n{out}"
+    );
 }
 
 #[test]
@@ -16180,14 +19372,22 @@ fn test_uint_48_literal_width_emits_uint64_storage() {
         end module Acc
     "#;
     let out = compile_to_sim_h(source, false);
-    assert!(out.contains("uint64_t a"),
-            "UInt<48> port should be uint64_t; got:\n{out}");
-    assert!(out.contains("uint64_t inc"),
-            "UInt<48> port should be uint64_t; got:\n{out}");
-    assert!(out.contains("uint64_t _r"),
-            "UInt<48> reg should be uint64_t; got:\n{out}");
-    assert!(out.contains("0xFFFFFFFFFFFFULL"),
-            "expected 48-bit mask; got:\n{out}");
+    assert!(
+        out.contains("uint64_t a"),
+        "UInt<48> port should be uint64_t; got:\n{out}"
+    );
+    assert!(
+        out.contains("uint64_t inc"),
+        "UInt<48> port should be uint64_t; got:\n{out}"
+    );
+    assert!(
+        out.contains("uint64_t _r"),
+        "UInt<48> reg should be uint64_t; got:\n{out}"
+    );
+    assert!(
+        out.contains("0xFFFFFFFFFFFFULL"),
+        "expected 48-bit mask; got:\n{out}"
+    );
 }
 
 #[test]
@@ -16216,25 +19416,45 @@ fn test_sint_40_param_width_emits_int64_storage_and_signed_trunc() {
     "#;
     let out = compile_to_sim_h(source, false);
 
-    assert!(out.contains("int64_t score_out"),
-            "SInt<40> output port should use int64_t storage; got:\n{out}");
-    assert!(out.contains("int64_t inc_in"),
-            "SInt<40> input port should use int64_t storage; got:\n{out}");
-    assert!(out.contains("int64_t _accumulator"),
-            "SInt<40> internal reg should use int64_t storage; got:\n{out}");
-    assert!(out.contains("int64_t _score_reg"),
-            "SInt<40> internal reg should use int64_t storage; got:\n{out}");
-    assert!(out.contains("int64_t _n_accumulator"),
-            "SInt<40> _n_ shadow should use int64_t storage; got:\n{out}");
-    assert!(!out.contains("uint32_t _accumulator"),
-            "SInt<40> accumulator must not fall into uint32_t storage; got:\n{out}");
-    assert!(!out.contains("uint64_t _accumulator"),
-            "SInt<40> accumulator must not use unsigned 64-bit storage; got:\n{out}");
+    assert!(
+        out.contains("int64_t score_out"),
+        "SInt<40> output port should use int64_t storage; got:\n{out}"
+    );
+    assert!(
+        out.contains("int64_t inc_in"),
+        "SInt<40> input port should use int64_t storage; got:\n{out}"
+    );
+    assert!(
+        out.contains("int64_t _accumulator"),
+        "SInt<40> internal reg should use int64_t storage; got:\n{out}"
+    );
+    assert!(
+        out.contains("int64_t _score_reg"),
+        "SInt<40> internal reg should use int64_t storage; got:\n{out}"
+    );
+    assert!(
+        out.contains("int64_t _n_accumulator"),
+        "SInt<40> _n_ shadow should use int64_t storage; got:\n{out}"
+    );
+    assert!(
+        !out.contains("uint32_t _accumulator"),
+        "SInt<40> accumulator must not fall into uint32_t storage; got:\n{out}"
+    );
+    assert!(
+        !out.contains("uint64_t _accumulator"),
+        "SInt<40> accumulator must not use unsigned 64-bit storage; got:\n{out}"
+    );
 
-    assert!(out.contains("0xFFFFFFFFFFULL"),
-            "SInt<40> trunc should still mask to exactly 40 bits; got:\n{out}");
-    assert!(out.contains("((int64_t)(((uint64_t)((_accumulator + inc_in)) & 0xFFFFFFFFFFULL) << 24) >> 24)"),
-            "SInt<40> trunc should sign-extend from bit 39 into int64_t; got:\n{out}");
+    assert!(
+        out.contains("0xFFFFFFFFFFULL"),
+        "SInt<40> trunc should still mask to exactly 40 bits; got:\n{out}"
+    );
+    assert!(
+        out.contains(
+            "((int64_t)(((uint64_t)((_accumulator + inc_in)) & 0xFFFFFFFFFFULL) << 24) >> 24)"
+        ),
+        "SInt<40> trunc should sign-extend from bit 39 into int64_t; got:\n{out}"
+    );
 }
 
 #[test]
@@ -16275,8 +19495,10 @@ fn test_thread_driven_sint_reg_keeps_parent_wire_type() {
     "#;
 
     let sv = compile_to_sv(source);
-    assert!(sv.contains("logic signed [W-1:0] acc;"),
-            "parent-side wire for thread-driven SInt reg should keep signedness/width:\n{sv}");
+    assert!(
+        sv.contains("logic signed [W-1:0] acc;"),
+        "parent-side wire for thread-driven SInt reg should keep signedness/width:\n{sv}"
+    );
     assert!(sv.contains("assign next_acc = W'(acc + product_ext);"),
             "parent expression should see typed signed acc/product_ext and emit the trunc assignment:\n{sv}");
 }
@@ -16322,14 +19544,22 @@ fn test_sint_40_inst_output_wire_keeps_signed_storage() {
     "#;
     let out = compile_to_sim_h(source, false);
 
-    assert!(out.contains("int64_t _let_score_wire"),
-            "SInt<40> child output wire should use int64_t storage in wrapper/native sim; got:\n{out}");
-    assert!(!out.contains("uint32_t _let_score_wire"),
-            "SInt<40> child output wire must not use uint32_t storage; got:\n{out}");
-    assert!(!out.contains("uint64_t _let_score_wire"),
-            "SInt<40> child output wire must not use unsigned storage; got:\n{out}");
-    assert!(out.contains("score  = _let_score_wire"),
-            "wrapper should forward the signed child output to its public port; got:\n{out}");
+    assert!(
+        out.contains("int64_t _let_score_wire"),
+        "SInt<40> child output wire should use int64_t storage in wrapper/native sim; got:\n{out}"
+    );
+    assert!(
+        !out.contains("uint32_t _let_score_wire"),
+        "SInt<40> child output wire must not use uint32_t storage; got:\n{out}"
+    );
+    assert!(
+        !out.contains("uint64_t _let_score_wire"),
+        "SInt<40> child output wire must not use unsigned storage; got:\n{out}"
+    );
+    assert!(
+        out.contains("score  = _let_score_wire"),
+        "wrapper should forward the signed child output to its public port; got:\n{out}"
+    );
 }
 
 #[test]
@@ -16448,19 +19678,30 @@ fn test_sint_40_lowered_thread_regs_keep_signed_storage() {
     "#;
     let out = compile_to_sim_h(source, false);
 
-    assert!(out.contains("int64_t accumulator"),
-            "lowered thread submodule ports for SInt<40> regs should use int64_t; got:\n{out}");
+    assert!(
+        out.contains("int64_t accumulator"),
+        "lowered thread submodule ports for SInt<40> regs should use int64_t; got:\n{out}"
+    );
     assert!(out.contains("int64_t _accumulator"),
             "parent/native sim SInt<40> reg storage should use int64_t after thread lowering; got:\n{out}");
-    assert!(out.contains("int64_t _n_accumulator"),
-            "lowered thread/native sim _n_ temporaries should use int64_t for SInt<40>; got:\n{out}");
-    assert!(!out.contains("uint32_t _accumulator"),
-            "lowered thread/native sim must not use uint32_t for SInt<40> accumulator; got:\n{out}");
+    assert!(
+        out.contains("int64_t _n_accumulator"),
+        "lowered thread/native sim _n_ temporaries should use int64_t for SInt<40>; got:\n{out}"
+    );
+    assert!(
+        !out.contains("uint32_t _accumulator"),
+        "lowered thread/native sim must not use uint32_t for SInt<40> accumulator; got:\n{out}"
+    );
     assert!(!out.contains("uint64_t _accumulator"),
             "lowered thread/native sim must not use unsigned storage for SInt<40> accumulator; got:\n{out}");
-    assert!(out.contains("((int64_t)(((uint64_t)((_accumulator + inc_in)) & 0xFFFFFFFFFFULL) << 24) >> 24)")
-            || out.contains("((int64_t)(((uint64_t)((accumulator + inc_in)) & 0xFFFFFFFFFFULL) << 24) >> 24)"),
-            "lowered thread/native sim trunc should sign-extend SInt<40>; got:\n{out}");
+    assert!(
+        out.contains(
+            "((int64_t)(((uint64_t)((_accumulator + inc_in)) & 0xFFFFFFFFFFULL) << 24) >> 24)"
+        ) || out.contains(
+            "((int64_t)(((uint64_t)((accumulator + inc_in)) & 0xFFFFFFFFFFULL) << 24) >> 24)"
+        ),
+        "lowered thread/native sim trunc should sign-extend SInt<40>; got:\n{out}"
+    );
 }
 
 // ── Thread state-name localparams (issue #247) ──────────────────────────────
@@ -16492,35 +19733,53 @@ fn test_thread_state_localparams_emitted() {
     //     (wait 2 cycle), S3 = action (final seq write — not folded because
     //     the preceding state is wait_cycles, not wait_until).
     //     Localparams are still emitted for all states including folded ones.
-    assert!(sv.contains("localparam [1:0] _t0_S0_wait_until = 0"),
-        "expected S0 wait_until localparam:\n{sv}");
-    assert!(sv.contains("localparam [1:0] _t0_S1_action = 1"),
-        "expected S1 action localparam (folded but still declared):\n{sv}");
-    assert!(sv.contains("localparam [1:0] _t0_S2_wait_cycles = 2"),
-        "expected S2 wait_cycles localparam:\n{sv}");
-    assert!(sv.contains("localparam [1:0] _t0_S3_action = 3"),
-        "expected S3 action localparam:\n{sv}");
+    assert!(
+        sv.contains("localparam [1:0] _t0_S0_wait_until = 0"),
+        "expected S0 wait_until localparam:\n{sv}"
+    );
+    assert!(
+        sv.contains("localparam [1:0] _t0_S1_action = 1"),
+        "expected S1 action localparam (folded but still declared):\n{sv}"
+    );
+    assert!(
+        sv.contains("localparam [1:0] _t0_S2_wait_cycles = 2"),
+        "expected S2 wait_cycles localparam:\n{sv}"
+    );
+    assert!(
+        sv.contains("localparam [1:0] _t0_S3_action = 3"),
+        "expected S3 action localparam:\n{sv}"
+    );
 
     // (2) Localparams declared in the merged threads module's parameter list,
     //     not inside the procedural block.
-    assert!(sv.contains("module _M_threads #("),
-        "merged threads module should have a parameter list:\n{sv}");
+    assert!(
+        sv.contains("module _M_threads #("),
+        "merged threads module should have a parameter list:\n{sv}"
+    );
 
     // (3) State comparisons use the name, not a bare literal.
-    assert!(sv.contains("_t0_state == _t0_S0_wait_until"),
-        "expected name-form state comparison for S0:\n{sv}");
-    assert!(sv.contains("_t0_state == _t0_S2_wait_cycles"),
-        "expected name-form state comparison for S2:\n{sv}");
+    assert!(
+        sv.contains("_t0_state == _t0_S0_wait_until"),
+        "expected name-form state comparison for S0:\n{sv}"
+    );
+    assert!(
+        sv.contains("_t0_state == _t0_S2_wait_cycles"),
+        "expected name-form state comparison for S2:\n{sv}"
+    );
 
     // (4) State-register assignments use the name, not a bare literal.
     //     Issue #306: S0's cond-exit arm now folds S1's `done <= true` and
     //     transitions directly to S2 (skipping S1).  So `_t0_S1_action` no
     //     longer appears as a transition target; `_t0_S2_wait_cycles` still
     //     does (from the folded S0 exit arm).
-    assert!(!sv.contains("_t0_state <= _t0_S1_action"),
-        "S1 was folded into S0's exit; S0 must jump directly to S2:\n{sv}");
-    assert!(sv.contains("_t0_state <= _t0_S2_wait_cycles"),
-        "expected name-form state assignment to S2 (folded from S0 exit arm):\n{sv}");
+    assert!(
+        !sv.contains("_t0_state <= _t0_S1_action"),
+        "S1 was folded into S0's exit; S0 must jump directly to S2:\n{sv}"
+    );
+    assert!(
+        sv.contains("_t0_state <= _t0_S2_wait_cycles"),
+        "expected name-form state assignment to S2 (folded from S0 exit arm):\n{sv}"
+    );
     // The folded seq assign must appear inside the if(req) block.
     let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
@@ -16537,10 +19796,18 @@ fn test_thread_state_localparams_emitted() {
         let bad_assign = format!("_t0_state <= {};", n);
         // Reset assigns to literal 0 (acceptable). All other uses must be name-form.
         if n != 0 {
-            assert!(!sv.contains(&bad_cmp),
-                "state comparison should use name-form, found bare `{}`:\n{}", bad_cmp, sv);
-            assert!(!sv.contains(&bad_assign),
-                "state assignment should use name-form, found bare `{}`:\n{}", bad_assign, sv);
+            assert!(
+                !sv.contains(&bad_cmp),
+                "state comparison should use name-form, found bare `{}`:\n{}",
+                bad_cmp,
+                sv
+            );
+            assert!(
+                !sv.contains(&bad_assign),
+                "state assignment should use name-form, found bare `{}`:\n{}",
+                bad_assign,
+                sv
+            );
         }
     }
 }
@@ -16568,14 +19835,19 @@ fn test_thread_state_names_distinguish_wait_until_vs_wait_cycles() {
     // The wait-until state and the wait-cycles state must carry distinct
     // role suffixes so a waveform reader can tell at a glance what kind
     // of wait the FSM is sitting in.
-    assert!(sv.contains("_t0_S0_wait_until"),
-        "expected wait_until role suffix on S0:\n{sv}");
-    assert!(sv.contains("_wait_cycles"),
-        "expected wait_cycles role suffix on the wait-cycles state:\n{sv}");
+    assert!(
+        sv.contains("_t0_S0_wait_until"),
+        "expected wait_until role suffix on S0:\n{sv}"
+    );
+    assert!(
+        sv.contains("_wait_cycles"),
+        "expected wait_cycles role suffix on the wait-cycles state:\n{sv}"
+    );
     // Sanity: the two roles are NOT collapsed to the same name.
-    assert!(sv.matches("_t0_S0_wait_until").count() >= 1
-            && sv.matches("_wait_cycles =").count() >= 1,
-        "wait_until and wait_cycles must produce distinct localparam decls:\n{sv}");
+    assert!(
+        sv.matches("_t0_S0_wait_until").count() >= 1 && sv.matches("_wait_cycles =").count() >= 1,
+        "wait_until and wait_cycles must produce distinct localparam decls:\n{sv}"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -16585,8 +19857,7 @@ fn test_thread_state_names_distinguish_wait_until_vs_wait_cycles() {
 fn comb_loop_warnings(source: &str) -> Vec<String> {
     warnings_from(source)
         .into_iter()
-        .filter(|m| m.contains("combinational feedback cycle")
-                 || m.starts_with("arch check:"))
+        .filter(|m| m.contains("combinational feedback cycle") || m.starts_with("arch check:"))
         .collect()
 }
 
@@ -16609,8 +19880,12 @@ fn test_comb_loop_within_module_detected() {
         end module M
     "#;
     let ws = comb_loop_warnings(source);
-    assert!(ws.iter().any(|m| m.contains("combinational feedback cycle")),
-        "expected a comb-loop warning, got: {:?}", ws);
+    assert!(
+        ws.iter()
+            .any(|m| m.contains("combinational feedback cycle")),
+        "expected a comb-loop warning, got: {:?}",
+        ws
+    );
 }
 
 #[test]
@@ -16649,8 +19924,12 @@ fn test_comb_loop_across_two_instances_detected() {
         end module Top
     "#;
     let ws = comb_loop_warnings(source);
-    assert!(ws.iter().any(|m| m.contains("combinational feedback cycle")),
-        "expected a comb-loop warning, got: {:?}", ws);
+    assert!(
+        ws.iter()
+            .any(|m| m.contains("combinational feedback cycle")),
+        "expected a comb-loop warning, got: {:?}",
+        ws
+    );
 }
 
 #[test]
@@ -16691,13 +19970,24 @@ fn test_comb_loop_suppressed_by_pragma() {
     // No cycle warnings should remain; the summary line MAY still fire
     // mentioning suppression — but no "combinational feedback cycle (…)"
     // node-listing warning should be present.
-    let cycle_msgs: Vec<_> = ws.iter().filter(|m| m.contains("combinational feedback cycle (")).collect();
-    assert!(cycle_msgs.is_empty(),
-        "expected pragma to suppress cycle warning, got: {:?}", ws);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        cycle_msgs.is_empty(),
+        "expected pragma to suppress cycle warning, got: {:?}",
+        ws
+    );
     // Sanity: the summary should report 1 SCC found / 1 suppressed.
     let summary: Vec<_> = ws.iter().filter(|m| m.starts_with("arch check:")).collect();
-    assert!(summary.iter().any(|m| m.contains("1 comb SCC(s) found") && m.contains("1 suppressed")),
-        "expected suppression-summary line, got: {:?}", ws);
+    assert!(
+        summary
+            .iter()
+            .any(|m| m.contains("1 comb SCC(s) found") && m.contains("1 suppressed")),
+        "expected suppression-summary line, got: {:?}",
+        ws
+    );
 }
 
 #[test]
@@ -16728,9 +20018,15 @@ fn test_comb_loop_through_register_not_flagged() {
         end module M
     "#;
     let ws = comb_loop_warnings(source);
-    let cycle_msgs: Vec<_> = ws.iter().filter(|m| m.contains("combinational feedback cycle (")).collect();
-    assert!(cycle_msgs.is_empty(),
-        "register should break the cycle, but got: {:?}", ws);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        cycle_msgs.is_empty(),
+        "register should break the cycle, but got: {:?}",
+        ws
+    );
 }
 
 #[test]
@@ -16796,8 +20092,12 @@ fn test_interface_module_treated_as_opaque() {
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     let (warnings, _) = checker.check().expect("type check error");
     let ws: Vec<String> = warnings.into_iter().map(|w| w.message).collect();
-    assert!(ws.iter().any(|m| m.contains("combinational feedback cycle")),
-        "expected opaque-interface module to participate in a detected cycle; warnings: {:?}", ws);
+    assert!(
+        ws.iter()
+            .any(|m| m.contains("combinational feedback cycle")),
+        "expected opaque-interface module to participate in a detected cycle; warnings: {:?}",
+        ws
+    );
 }
 
 #[test]
@@ -16872,12 +20172,15 @@ fn test_opaque_interface_pipe_reg_output_does_not_close_cycle() {
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     let (warnings, _) = checker.check().expect("type check error");
     let ws: Vec<String> = warnings.into_iter().map(|w| w.message).collect();
-    let cycle_msgs: Vec<_> = ws.iter()
+    let cycle_msgs: Vec<_> = ws
+        .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
         .collect();
-    assert!(cycle_msgs.is_empty(),
+    assert!(
+        cycle_msgs.is_empty(),
         "pipe_reg / port reg outputs on an opaque stub must not close a comb cycle; got: {:?}",
-        cycle_msgs);
+        cycle_msgs
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -16902,30 +20205,46 @@ fn test_archi_comb_dep_annotation_parses() {
     let tokens = lexer::tokenize(source).expect("lexer");
     let mut parser = Parser::new(tokens, source);
     let parsed = parser.parse_source_file().expect("parse");
-    let m = parsed.items.iter().find_map(|i| match i {
-        arch::ast::Item::Module(m) => Some(m),
-        _ => None,
-    }).expect("module");
+    let m = parsed
+        .items
+        .iter()
+        .find_map(|i| match i {
+            arch::ast::Item::Module(m) => Some(m),
+            _ => None,
+        })
+        .expect("module");
 
     let by_name: std::collections::HashMap<&str, &arch::ast::PortDecl> =
         m.ports.iter().map(|p| (p.name.name.as_str(), p)).collect();
 
-    let x_deps: Vec<&str> = by_name["x"].comb_deps.as_ref()
+    let x_deps: Vec<&str> = by_name["x"]
+        .comb_deps
+        .as_ref()
         .expect("x must carry comb_deps")
-        .iter().map(|i| i.name.as_str()).collect();
+        .iter()
+        .map(|i| i.name.as_str())
+        .collect();
     assert_eq!(x_deps, vec!["a"], "x deps");
 
-    let y_deps: Vec<&str> = by_name["y"].comb_deps.as_ref()
+    let y_deps: Vec<&str> = by_name["y"]
+        .comb_deps
+        .as_ref()
         .expect("y must carry comb_deps")
-        .iter().map(|i| i.name.as_str()).collect();
+        .iter()
+        .map(|i| i.name.as_str())
+        .collect();
     assert_eq!(y_deps, vec!["a", "b"], "y deps");
 
-    let z_deps: &Vec<arch::ast::Ident> = by_name["z"].comb_deps.as_ref()
+    let z_deps: &Vec<arch::ast::Ident> = by_name["z"]
+        .comb_deps
+        .as_ref()
         .expect("z must carry comb_deps (empty list = pure)");
     assert!(z_deps.is_empty(), "z must be pure (empty deps)");
 
-    assert!(by_name["w"].comb_deps.is_none(),
-        "w must carry no annotation (opaque fallback)");
+    assert!(
+        by_name["w"].comb_deps.is_none(),
+        "w must carry no annotation (opaque fallback)"
+    );
 }
 
 #[test]
@@ -16950,16 +20269,24 @@ fn test_archi_comb_dep_annotation_round_trip() {
     let tokens = lexer::tokenize(source).expect("lexer");
     let mut parser = Parser::new(tokens, source);
     let parsed = parser.parse_source_file().expect("parse");
-    let item = parsed.items.iter()
+    let item = parsed
+        .items
+        .iter()
         .find(|i| matches!(i, arch::ast::Item::Module(_)))
         .expect("module");
     let body = arch::interface::emit_interface(item).expect("emit_interface");
-    assert!(body.contains("port x: out UInt<8> comb_dep_on(a);"),
-        "x must depend only on a: {body}");
-    assert!(body.contains("port y: out UInt<8> comb_dep_on(a, b);"),
-        "y must depend on a and b: {body}");
-    assert!(body.contains("port z: out UInt<8> comb_dep_on();"),
-        "z is pure (constant): {body}");
+    assert!(
+        body.contains("port x: out UInt<8> comb_dep_on(a);"),
+        "x must depend only on a: {body}"
+    );
+    assert!(
+        body.contains("port y: out UInt<8> comb_dep_on(a, b);"),
+        "y must depend on a and b: {body}"
+    );
+    assert!(
+        body.contains("port z: out UInt<8> comb_dep_on();"),
+        "z is pure (constant): {body}"
+    );
 }
 
 #[test]
@@ -17011,25 +20338,33 @@ fn test_archi_comb_dep_precise_eliminates_false_positive() {
     // Mark `Stub` as an interface to mimic the .archi path.
     for item in parsed_ast.items.iter_mut() {
         if let arch::ast::Item::Module(m) = item {
-            if m.name.name == "Stub" { m.is_interface = true; }
+            if m.name.name == "Stub" {
+                m.is_interface = true;
+            }
         }
     }
     let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate");
     let mut ast = ast;
     for item in ast.items.iter_mut() {
         if let arch::ast::Item::Module(m) = item {
-            if m.name.name.starts_with("Stub") { m.is_interface = true; }
+            if m.name.name.starts_with("Stub") {
+                m.is_interface = true;
+            }
         }
     }
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     let (warnings, _) = checker.check().expect("type check");
     let ws: Vec<String> = warnings.into_iter().map(|w| w.message).collect();
-    let cycle_msgs: Vec<_> = ws.iter()
+    let cycle_msgs: Vec<_> = ws
+        .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
         .collect();
-    assert!(cycle_msgs.is_empty(),
-        "comb_dep_on(in_a) should restrict edges so no cycle fires; got: {:?}", cycle_msgs);
+    assert!(
+        cycle_msgs.is_empty(),
+        "comb_dep_on(in_a) should restrict edges so no cycle fires; got: {:?}",
+        cycle_msgs
+    );
 }
 
 #[test]
@@ -17068,25 +20403,33 @@ fn test_archi_comb_dep_empty_marks_output_pure() {
     let mut parsed_ast = parser.parse_source_file().expect("parse");
     for item in parsed_ast.items.iter_mut() {
         if let arch::ast::Item::Module(m) = item {
-            if m.name.name == "Stub" { m.is_interface = true; }
+            if m.name.name == "Stub" {
+                m.is_interface = true;
+            }
         }
     }
     let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate");
     let mut ast = ast;
     for item in ast.items.iter_mut() {
         if let arch::ast::Item::Module(m) = item {
-            if m.name.name.starts_with("Stub") { m.is_interface = true; }
+            if m.name.name.starts_with("Stub") {
+                m.is_interface = true;
+            }
         }
     }
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     let (warnings, _) = checker.check().expect("type check");
     let ws: Vec<String> = warnings.into_iter().map(|w| w.message).collect();
-    let cycle_msgs: Vec<_> = ws.iter()
+    let cycle_msgs: Vec<_> = ws
+        .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
         .collect();
-    assert!(cycle_msgs.is_empty(),
-        "comb_dep_on() (pure) must produce no incoming comb edges; got: {:?}", cycle_msgs);
+    assert!(
+        cycle_msgs.is_empty(),
+        "comb_dep_on() (pure) must produce no incoming comb edges; got: {:?}",
+        cycle_msgs
+    );
 }
 
 #[test]
@@ -17126,22 +20469,30 @@ fn test_archi_comb_dep_absent_falls_back_to_opaque() {
     let mut parsed_ast = parser.parse_source_file().expect("parse");
     for item in parsed_ast.items.iter_mut() {
         if let arch::ast::Item::Module(m) = item {
-            if m.name.name == "Stub" { m.is_interface = true; }
+            if m.name.name == "Stub" {
+                m.is_interface = true;
+            }
         }
     }
     let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate");
     let mut ast = ast;
     for item in ast.items.iter_mut() {
         if let arch::ast::Item::Module(m) = item {
-            if m.name.name.starts_with("Stub") { m.is_interface = true; }
+            if m.name.name.starts_with("Stub") {
+                m.is_interface = true;
+            }
         }
     }
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     let (warnings, _) = checker.check().expect("type check");
     let ws: Vec<String> = warnings.into_iter().map(|w| w.message).collect();
-    assert!(ws.iter().any(|m| m.contains("combinational feedback cycle")),
-        "absent annotation must keep opaque fallback that fires cycle: {:?}", ws);
+    assert!(
+        ws.iter()
+            .any(|m| m.contains("combinational feedback cycle")),
+        "absent annotation must keep opaque fallback that fires cycle: {:?}",
+        ws
+    );
 }
 
 #[test]
@@ -17161,11 +20512,15 @@ fn test_archi_comb_dep_on_registered_output_rejected_at_parse() {
     ";
     let tokens = lexer::tokenize(source).expect("lexer");
     let mut parser = Parser::new(tokens, source);
-    let err = parser.parse_source_file()
+    let err = parser
+        .parse_source_file()
         .expect_err("must reject comb_dep_on on registered output");
     let msg = format!("{:?}", err);
-    assert!(msg.contains("comb_dep_on") && msg.contains("registered"),
-        "error should mention comb_dep_on + registered; got: {}", msg);
+    assert!(
+        msg.contains("comb_dep_on") && msg.contains("registered"),
+        "error should mention comb_dep_on + registered; got: {}",
+        msg
+    );
 }
 
 #[test]
@@ -17178,11 +20533,15 @@ fn test_archi_comb_dep_on_input_port_rejected_at_parse() {
     ";
     let tokens = lexer::tokenize(source).expect("lexer");
     let mut parser = Parser::new(tokens, source);
-    let err = parser.parse_source_file()
+    let err = parser
+        .parse_source_file()
         .expect_err("must reject comb_dep_on on input port");
     let msg = format!("{:?}", err);
-    assert!(msg.contains("comb_dep_on"),
-        "error should mention comb_dep_on; got: {}", msg);
+    assert!(
+        msg.contains("comb_dep_on"),
+        "error should mention comb_dep_on; got: {}",
+        msg
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -17242,12 +20601,16 @@ fn test_comb_loop_bodied_per_output_precision_eliminates_false_positive() {
         end module Top
     "#;
     let ws = comb_loop_warnings(source);
-    let cycle_msgs: Vec<_> = ws.iter()
+    let cycle_msgs: Vec<_> = ws
+        .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
         .collect();
-    assert!(cycle_msgs.is_empty(),
+    assert!(
+        cycle_msgs.is_empty(),
         "per-output precision must eliminate the aggregate-only phantom \
-         cycle; got: {:?}", cycle_msgs);
+         cycle; got: {:?}",
+        cycle_msgs
+    );
 }
 
 #[test]
@@ -17296,12 +20659,16 @@ fn test_comb_loop_bodied_real_cycle_still_detected() {
         end module Top
     "#;
     let ws = comb_loop_warnings(source);
-    let cycle_msgs: Vec<_> = ws.iter()
+    let cycle_msgs: Vec<_> = ws
+        .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
         .collect();
-    assert!(!cycle_msgs.is_empty(),
+    assert!(
+        !cycle_msgs.is_empty(),
         "real cycle (u1.out_a ← w2; u2.out_b ← w1) must still fire; \
-         warnings: {:?}", ws);
+         warnings: {:?}",
+        ws
+    );
 }
 
 #[test]
@@ -17357,12 +20724,16 @@ fn test_comb_loop_bodied_output_missing_from_per_output_map_falls_back() {
         end module Top
     "#;
     let ws = comb_loop_warnings(source);
-    let cycle_msgs: Vec<_> = ws.iter()
+    let cycle_msgs: Vec<_> = ws
+        .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
         .collect();
-    assert!(cycle_msgs.is_empty(),
+    assert!(
+        cycle_msgs.is_empty(),
         "pure output (per-output map empty) must not close a comb cycle; \
-         got: {:?}", cycle_msgs);
+         got: {:?}",
+        cycle_msgs
+    );
 }
 
 #[test]
@@ -17418,12 +20789,15 @@ fn test_comb_loop_bodied_per_output_cache_handles_repeated_insts() {
         end module Top
     "#;
     let ws = comb_loop_warnings(source);
-    let cycle_msgs: Vec<_> = ws.iter()
+    let cycle_msgs: Vec<_> = ws
+        .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
         .collect();
-    assert!(cycle_msgs.is_empty(),
+    assert!(
+        cycle_msgs.is_empty(),
         "per-output precision must hold across 3 cross-wired insts; got: {:?}",
-        cycle_msgs);
+        cycle_msgs
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -17497,12 +20871,16 @@ fn test_comb_loop_fsm_per_output_precision_eliminates_false_positive() {
         end module Top
     "#;
     let ws = comb_loop_warnings(source);
-    let cycle_msgs: Vec<_> = ws.iter()
+    let cycle_msgs: Vec<_> = ws
+        .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
         .collect();
-    assert!(cycle_msgs.is_empty(),
+    assert!(
+        cycle_msgs.is_empty(),
         "fsm per-output precision must eliminate the aggregate-only \
-         phantom cycle; got: {:?}", cycle_msgs);
+         phantom cycle; got: {:?}",
+        cycle_msgs
+    );
 }
 
 #[test]
@@ -17563,12 +20941,16 @@ fn test_comb_loop_fsm_real_cycle_still_detected() {
         end module Top
     "#;
     let ws = comb_loop_warnings(source);
-    let cycle_msgs: Vec<_> = ws.iter()
+    let cycle_msgs: Vec<_> = ws
+        .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
         .collect();
-    assert!(!cycle_msgs.is_empty(),
+    assert!(
+        !cycle_msgs.is_empty(),
         "real cycle (u1.out_a ← w2; u2.out_b ← w1) through fsm \
-         must still fire; warnings: {:?}", ws);
+         must still fire; warnings: {:?}",
+        ws
+    );
 }
 
 #[test]
@@ -17599,16 +20981,24 @@ fn test_archi_fsm_emit_includes_comb_dep_on() {
     let tokens = lexer::tokenize(source).expect("lexer");
     let mut parser = Parser::new(tokens, source);
     let parsed = parser.parse_source_file().expect("parse");
-    let item = parsed.items.iter()
+    let item = parsed
+        .items
+        .iter()
         .find(|i| matches!(i, arch::ast::Item::Fsm(_)))
         .expect("fsm");
     let body = arch::interface::emit_interface(item).expect("emit_interface");
-    assert!(body.contains("port x: out UInt<8> comb_dep_on(a);"),
-        "x must depend only on a: {body}");
-    assert!(body.contains("port y: out UInt<8> comb_dep_on(a, b);"),
-        "y must depend on a and b: {body}");
-    assert!(body.contains("port z: out UInt<8> comb_dep_on();"),
-        "z is pure (constant): {body}");
+    assert!(
+        body.contains("port x: out UInt<8> comb_dep_on(a);"),
+        "x must depend only on a: {body}"
+    );
+    assert!(
+        body.contains("port y: out UInt<8> comb_dep_on(a, b);"),
+        "y must depend on a and b: {body}"
+    );
+    assert!(
+        body.contains("port z: out UInt<8> comb_dep_on();"),
+        "z is pure (constant): {body}"
+    );
 }
 
 #[test]
@@ -17663,12 +21053,16 @@ fn test_comb_loop_fsm_default_comb_deps_included() {
     // The cross-wire w1 → in_z → out_a → w1 is a legitimate cycle.
     // Per-output FSM walker must include in_z in out_a's dep set.
     let ws = comb_loop_warnings(source);
-    let cycle_msgs: Vec<_> = ws.iter()
+    let cycle_msgs: Vec<_> = ws
+        .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
         .collect();
-    assert!(!cycle_msgs.is_empty(),
+    assert!(
+        !cycle_msgs.is_empty(),
         "default_comb reads in_z driving out_a; w1 → in_z → out_a → w1 \
-         must fire as a comb cycle; warnings: {:?}", ws);
+         must fire as a comb cycle; warnings: {:?}",
+        ws
+    );
 }
 
 #[test]
@@ -17716,12 +21110,16 @@ fn test_comb_loop_fsm_output_default_expr_deps_included() {
         end module Top
     "#;
     let ws = comb_loop_warnings(source);
-    let cycle_msgs: Vec<_> = ws.iter()
+    let cycle_msgs: Vec<_> = ws
+        .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
         .collect();
-    assert!(!cycle_msgs.is_empty(),
+    assert!(
+        !cycle_msgs.is_empty(),
         "out_a's default expression reads in_y; w1 → in_y → out_a → w1 \
-         must fire as a comb cycle; warnings: {:?}", ws);
+         must fire as a comb cycle; warnings: {:?}",
+        ws
+    );
 
     // And the dual: with cross-wire through in_a (NOT a dep), no cycle.
     let source2 = r#"
@@ -17759,12 +21157,16 @@ fn test_comb_loop_fsm_output_default_expr_deps_included() {
         end module Top
     "#;
     let ws2 = comb_loop_warnings(source2);
-    let cycle_msgs2: Vec<_> = ws2.iter()
+    let cycle_msgs2: Vec<_> = ws2
+        .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
         .collect();
-    assert!(cycle_msgs2.is_empty(),
+    assert!(
+        cycle_msgs2.is_empty(),
         "out_a's default reads only in_x; w1 → in_y is NOT a dep, \
-         so no cycle should fire; got: {:?}", cycle_msgs2);
+         so no cycle should fire; got: {:?}",
+        cycle_msgs2
+    );
 }
 
 // ─── multicycle reg annotation (Phase A) ─────────────────────────────────────
@@ -17849,10 +21251,12 @@ end module M
 "#;
     let (sv_ctrl, sdc_ctrl) = compile_to_sv_with_sdc(control);
     let (sv_mc, sdc_mc) = compile_to_sv_with_sdc(mc);
-    assert_eq!(sv_ctrl, sv_mc,
-        "multicycle annotation must not alter SV emission");
+    assert_eq!(
+        sv_ctrl, sv_mc,
+        "multicycle annotation must not alter SV emission"
+    );
     assert!(sdc_ctrl.is_none(), "control case: no .sdc expected");
-    assert!(sdc_mc.is_some(),  "multicycle case: .sdc expected");
+    assert!(sdc_mc.is_some(), "multicycle case: .sdc expected");
 }
 
 #[test]
@@ -17879,29 +21283,47 @@ end module M
 "#;
     let (_sv, sdc) = compile_to_sv_with_sdc(source);
     let sdc = sdc.expect(".sdc expected when multicycle reg is present");
-    assert!(sdc.contains("set_multicycle_path 3 -setup -to [get_cells -hierarchical {*result_reg*}]"),
-        "expected setup constraint with N=3; got:\n{}", sdc);
-    assert!(sdc.contains("set_multicycle_path 2 -hold -to [get_cells -hierarchical {*result_reg*}]"),
-        "expected hold constraint with N-1=2; got:\n{}", sdc);
-    assert!(sdc.contains("Module M: multicycle reg result"),
-        "expected per-reg header comment; got:\n{}", sdc);
+    assert!(
+        sdc.contains("set_multicycle_path 3 -setup -to [get_cells -hierarchical {*result_reg*}]"),
+        "expected setup constraint with N=3; got:\n{}",
+        sdc
+    );
+    assert!(
+        sdc.contains("set_multicycle_path 2 -hold -to [get_cells -hierarchical {*result_reg*}]"),
+        "expected hold constraint with N-1=2; got:\n{}",
+        sdc
+    );
+    assert!(
+        sdc.contains("Module M: multicycle reg result"),
+        "expected per-reg header comment; got:\n{}",
+        sdc
+    );
     // The leading `*` in the glob is load-bearing: it lets the constraint
     // attach under both flat synth (no instance prefix) and hierarchical
     // synth (any number of `top/.../<Module>/` levels). A regression that
     // re-introduces the `<Module>/` prefix would silently fail to attach
     // under flat / standalone synth (OpenSTA warns `instance not found`).
-    assert!(sdc.contains("[get_cells -hierarchical {*result_reg*}]"),
-        "expected wildcard-prefix glob `*result_reg*` with -hierarchical; got:\n{}", sdc);
-    assert!(!sdc.contains("{M/result_reg"),
-        "expected NO hierarchical `M/result_reg` prefix in glob; got:\n{}", sdc);
+    assert!(
+        sdc.contains("[get_cells -hierarchical {*result_reg*}]"),
+        "expected wildcard-prefix glob `*result_reg*` with -hierarchical; got:\n{}",
+        sdc
+    );
+    assert!(
+        !sdc.contains("{M/result_reg"),
+        "expected NO hierarchical `M/result_reg` prefix in glob; got:\n{}",
+        sdc
+    );
     // `-hierarchical` is mandatory: under hierarchical synth (parent +
     // child module), OpenSTA's `get_cells` is non-recursive by default, so
     // the `*` glob does not descend into instance subhierarchies. Without
     // the flag the multicycle constraint silently attaches to zero cells
     // and the path is treated as single-cycle (verified with the
     // MultdivMulticycleHier two-pass example).
-    assert!(sdc.contains("get_cells -hierarchical"),
-        "expected `-hierarchical` flag on get_cells; got:\n{}", sdc);
+    assert!(
+        sdc.contains("get_cells -hierarchical"),
+        "expected `-hierarchical` flag on get_cells; got:\n{}",
+        sdc
+    );
 }
 
 #[test]
@@ -17927,7 +21349,8 @@ end module M
     // N >= 1 requirement so the diagnostic is actionable.
     let msg = format!("{:?}", err);
     assert!(
-        msg.contains("multicycle") && (msg.contains(">= 1") || msg.contains("N=0") || msg.contains("meaningless")),
+        msg.contains("multicycle")
+            && (msg.contains(">= 1") || msg.contains("N=0") || msg.contains("meaningless")),
         "expected an N >= 1 diagnostic mentioning `multicycle`; got: {}",
         msg
     );
@@ -17954,10 +21377,16 @@ end module M
 "#;
     let (_sv, sdc) = compile_to_sv_with_sdc(source);
     let sdc = sdc.expect("unused multicycle reg still emits SDC");
-    assert!(sdc.contains("set_multicycle_path 4 -setup -to [get_cells -hierarchical {*_unused_reg*}]"),
-        "got:\n{}", sdc);
-    assert!(sdc.contains("set_multicycle_path 3 -hold -to [get_cells -hierarchical {*_unused_reg*}]"),
-        "got:\n{}", sdc);
+    assert!(
+        sdc.contains("set_multicycle_path 4 -setup -to [get_cells -hierarchical {*_unused_reg*}]"),
+        "got:\n{}",
+        sdc
+    );
+    assert!(
+        sdc.contains("set_multicycle_path 3 -hold -to [get_cells -hierarchical {*_unused_reg*}]"),
+        "got:\n{}",
+        sdc
+    );
 }
 
 #[test]
@@ -17981,9 +21410,11 @@ end module M
 "#;
     let (sv, sdc) = compile_to_sv_with_sdc(source);
     assert!(sv.contains("module M"));
-    assert!(sdc.is_none(),
+    assert!(
+        sdc.is_none(),
         "no multicycle annotation → `emit_sdc` must return None so the driver \
-         skips writing a `.sdc` companion file");
+         skips writing a `.sdc` companion file"
+    );
 }
 
 #[test]
@@ -18025,10 +21456,16 @@ end fsm F
 "#;
     let (_sv, sdc) = compile_to_sv_with_sdc(source);
     let sdc = sdc.expect(".sdc expected for multicycle reg inside fsm");
-    assert!(sdc.contains("set_multicycle_path 5 -setup -to [get_cells -hierarchical {*slow_r_reg*}]"),
-        "got:\n{}", sdc);
-    assert!(sdc.contains("set_multicycle_path 4 -hold -to [get_cells -hierarchical {*slow_r_reg*}]"),
-        "got:\n{}", sdc);
+    assert!(
+        sdc.contains("set_multicycle_path 5 -setup -to [get_cells -hierarchical {*slow_r_reg*}]"),
+        "got:\n{}",
+        sdc
+    );
+    assert!(
+        sdc.contains("set_multicycle_path 4 -hold -to [get_cells -hierarchical {*slow_r_reg*}]"),
+        "got:\n{}",
+        sdc
+    );
 }
 
 /// Regression: a module-internal `function` whose body references a
@@ -18052,13 +21489,17 @@ fn test_sim_function_uses_package_param() {
         .arg(td.path())
         .output()
         .expect("run arch sim for pkg_param_in_function repro");
-    assert!(out.status.success(),
+    assert!(
+        out.status.success(),
         "pkg_param_in_function sim should compile + run\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS pkg_param_in_function"),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS pkg_param_in_function"),
         "expected PASS marker in stdout:\n{}",
-        String::from_utf8_lossy(&out.stdout));
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 #[test]
@@ -18109,8 +21550,10 @@ fn test_inst_for_loop_unrolls_connections() {
     // (big-endian, so chans[1] is the MSB).
     assert!(sv.contains(".chans_v({w_1_v, w_0_v})") || sv.contains(".chans_v ({w_1_v, w_0_v})"),
             "expected `.chans_v({{w_1_v, w_0_v}})` packed concat from unrolled inst-for-loop in SV:\n{sv}");
-    assert!(sv.contains(".chans_d({w_1_d, w_0_d})") || sv.contains(".chans_d ({w_1_d, w_0_d})"),
-            "expected `.chans_d({{w_1_d, w_0_d}})` packed concat in SV:\n{sv}");
+    assert!(
+        sv.contains(".chans_d({w_1_d, w_0_d})") || sv.contains(".chans_d ({w_1_d, w_0_d})"),
+        "expected `.chans_d({{w_1_d, w_0_d}})` packed concat in SV:\n{sv}"
+    );
 }
 
 #[test]
@@ -18140,7 +21583,8 @@ fn test_inst_for_loop_matches_hand_enumerated_form() {
         end module Slave
     ";
 
-    let fabric_handw = format!("{bus_and_slave}
+    let fabric_handw = format!(
+        "{bus_and_slave}
         module Fabric
           param NM: const = 2;
           param NS: const = 2;
@@ -18165,9 +21609,11 @@ fn test_inst_for_loop_matches_hand_enumerated_form() {
             end inst sp_j
           end generate_for
         end module Fabric
-    ");
+    "
+    );
 
-    let fabric_loop = format!("{bus_and_slave}
+    let fabric_loop = format!(
+        "{bus_and_slave}
         module Fabric
           param NM: const = 2;
           param NS: const = 2;
@@ -18193,22 +21639,29 @@ fn test_inst_for_loop_matches_hand_enumerated_form() {
             end inst sp_j
           end generate_for
         end module Fabric
-    ");
+    "
+    );
 
     let sv_handw = compile_to_sv(&fabric_handw);
-    let sv_loop  = compile_to_sv(&fabric_loop);
-    assert_eq!(sv_handw, sv_loop,
+    let sv_loop = compile_to_sv(&fabric_loop);
+    assert_eq!(
+        sv_handw, sv_loop,
         "inst-body for-loop must produce byte-identical SV to the \
          hand-enumerated form. Diff:\n\
          === hand-enumerated ===\n{sv_handw}\n\
-         === loop-unrolled ===\n{sv_loop}");
+         === loop-unrolled ===\n{sv_loop}"
+    );
 
     // Sanity: the SV actually contains the expected per-index connections
     // (so this isn't just `equal-but-empty`).
-    assert!(sv_loop.contains("sp_0") && sv_loop.contains("sp_1"),
-            "expected sp_0 and sp_1 instances in SV:\n{sv_loop}");
-    assert!(sv_loop.contains("edges[0][0]") && sv_loop.contains("edges[1][1]"),
-            "expected per-index edges refs in SV:\n{sv_loop}");
+    assert!(
+        sv_loop.contains("sp_0") && sv_loop.contains("sp_1"),
+        "expected sp_0 and sp_1 instances in SV:\n{sv_loop}"
+    );
+    assert!(
+        sv_loop.contains("edges[0][0]") && sv_loop.contains("edges[1][1]"),
+        "expected per-index edges refs in SV:\n{sv_loop}"
+    );
 }
 
 #[test]
@@ -18225,10 +21678,14 @@ fn test_type_alias_uint_scalar() {
         end module M
     "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("input logic [31:0] a"),
-            "alias should expand to UInt<32> at the port: {sv}");
-    assert!(sv.contains("output logic [31:0] out"),
-            "alias should expand to UInt<32> at the output port: {sv}");
+    assert!(
+        sv.contains("input logic [31:0] a"),
+        "alias should expand to UInt<32> at the port: {sv}"
+    );
+    assert!(
+        sv.contains("output logic [31:0] out"),
+        "alias should expand to UInt<32> at the output port: {sv}"
+    );
 }
 
 #[test]
@@ -18251,8 +21708,10 @@ fn test_type_alias_struct() {
     "#;
     let sv = compile_to_sv(source);
     // Aliased struct port should look identical to an inline Pair port.
-    assert!(sv.contains("in_p") && sv.contains("struct"),
-            "struct alias should expand at port site: {sv}");
+    assert!(
+        sv.contains("in_p") && sv.contains("struct"),
+        "struct alias should expand at port site: {sv}"
+    );
 }
 
 #[test]
@@ -18277,9 +21736,11 @@ fn test_type_alias_bus_parameterized_port() {
     let sv = compile_to_sv(source);
     // ADDR_W should expand to 16 via the alias, so the port carries
     // [15:0] not [31:0].
-    assert!(sv.contains("output logic [15:0] m_addr")
+    assert!(
+        sv.contains("output logic [15:0] m_addr")
             || sv.contains("output logic [ADDR_W-1:0] m_addr"),
-            "bus alias with ADDR_W=16 override should produce 16-bit addr port: {sv}");
+        "bus alias with ADDR_W=16 override should produce 16-bit addr port: {sv}"
+    );
 }
 
 #[test]
@@ -18297,10 +21758,14 @@ fn test_type_alias_chain() {
         end module M
     "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("input logic [7:0] a"),
-            "chained alias should resolve through to UInt<8>: {sv}");
-    assert!(sv.contains("output logic [7:0] out"),
-            "chained alias should resolve through to UInt<8>: {sv}");
+    assert!(
+        sv.contains("input logic [7:0] a"),
+        "chained alias should resolve through to UInt<8>: {sv}"
+    );
+    assert!(
+        sv.contains("output logic [7:0] out"),
+        "chained alias should resolve through to UInt<8>: {sv}"
+    );
 }
 
 #[test]
@@ -18329,11 +21794,13 @@ fn test_type_alias_undeclared_errors() {
                     let checker = TypeChecker::new(&symbols, &ast3);
                     checker.check().is_err()
                 }
-            }
-        }
+            },
+        },
     };
-    assert!(pipeline_errors_out,
-            "unknown type name 'Frobnitz' should error somewhere in the compile pipeline");
+    assert!(
+        pipeline_errors_out,
+        "unknown type name 'Frobnitz' should error somewhere in the compile pipeline"
+    );
 }
 
 #[test]
@@ -18353,9 +21820,12 @@ fn test_type_alias_circular_errors() {
     assert!(r.is_err(), "circular alias should error: {r:?}");
     let errs = r.unwrap_err();
     let msg: String = errs.iter().map(|e| format!("{e:?}")).collect();
-    assert!(msg.to_lowercase().contains("circular") || msg.to_lowercase().contains("cycle")
+    assert!(
+        msg.to_lowercase().contains("circular")
+            || msg.to_lowercase().contains("cycle")
             || msg.to_lowercase().contains("recursive"),
-            "expected circular/cycle/recursive in diagnostic, got: {msg}");
+        "expected circular/cycle/recursive in diagnostic, got: {msg}"
+    );
 }
 
 #[test]
@@ -18379,8 +21849,10 @@ fn test_generate_for_wire_decls() {
     let sv = compile_to_sv(source);
     // Three flat wires named w_0, w_1, w_2 — one per iteration value.
     for i in 0..3 {
-        assert!(sv.contains(&format!("logic [7:0] w_{i};")),
-                "missing `logic [7:0] w_{i};` in SV:\n{sv}");
+        assert!(
+            sv.contains(&format!("logic [7:0] w_{i};")),
+            "missing `logic [7:0] w_{i};` in SV:\n{sv}"
+        );
     }
 }
 
@@ -18416,14 +21888,22 @@ fn test_generate_for_wire_inst_loopback() {
         end module Top
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("logic [7:0] stage_0;"),
-            "missing `logic [7:0] stage_0;` (wire from generate_for iter 0):\n{sv}");
-    assert!(sv.contains("logic [7:0] stage_1;"),
-            "missing `logic [7:0] stage_1;` (wire from generate_for iter 1):\n{sv}");
-    assert!(sv.contains("assign out0 = stage_0;"),
-            "expected `out0 = stage_0` read of per-iter wire:\n{sv}");
-    assert!(sv.contains("assign out1 = stage_1;"),
-            "expected `out1 = stage_1` read of per-iter wire:\n{sv}");
+    assert!(
+        sv.contains("logic [7:0] stage_0;"),
+        "missing `logic [7:0] stage_0;` (wire from generate_for iter 0):\n{sv}"
+    );
+    assert!(
+        sv.contains("logic [7:0] stage_1;"),
+        "missing `logic [7:0] stage_1;` (wire from generate_for iter 1):\n{sv}"
+    );
+    assert!(
+        sv.contains("assign out0 = stage_0;"),
+        "expected `out0 = stage_0` read of per-iter wire:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign out1 = stage_1;"),
+        "expected `out1 = stage_1` read of per-iter wire:\n{sv}"
+    );
 }
 
 #[test]
@@ -18450,10 +21930,14 @@ fn test_generate_for_wire_param_size() {
     ";
     let sv = compile_to_sv(source);
     // Wire width should fold to 16 bits via the W param's default.
-    assert!(sv.contains("logic [W-1:0] bus_0;") || sv.contains("logic [15:0] bus_0;"),
-            "missing `logic [W-1:0] bus_0;` (param-driven width wire):\n{sv}");
-    assert!(sv.contains("logic [W-1:0] bus_1;") || sv.contains("logic [15:0] bus_1;"),
-            "missing `logic [W-1:0] bus_1;` (param-driven width wire):\n{sv}");
+    assert!(
+        sv.contains("logic [W-1:0] bus_0;") || sv.contains("logic [15:0] bus_0;"),
+        "missing `logic [W-1:0] bus_0;` (param-driven width wire):\n{sv}"
+    );
+    assert!(
+        sv.contains("logic [W-1:0] bus_1;") || sv.contains("logic [15:0] bus_1;"),
+        "missing `logic [W-1:0] bus_1;` (param-driven width wire):\n{sv}"
+    );
 }
 
 #[test]
@@ -18504,19 +21988,27 @@ fn test_generate_if_variant_discovery_with_param_expr() {
     let sv = compile_to_sv(source);
     // Two specialized variants must be emitted, one per distinct
     // `param I = <expr>` value resolved against enclosing module params.
-    assert!(sv.contains("module Inner__I_10"),
-            "missing `Inner__I_10` specialized variant — variant discovery \
-             didn't resolve `param I = TEN` against enclosing module's params:\n{sv}");
-    assert!(sv.contains("module Inner__I_20"),
-            "missing `Inner__I_20` specialized variant — variant discovery \
-             didn't resolve `param I = TWENTY` against enclosing module's params:\n{sv}");
+    assert!(
+        sv.contains("module Inner__I_10"),
+        "missing `Inner__I_10` specialized variant — variant discovery \
+             didn't resolve `param I = TEN` against enclosing module's params:\n{sv}"
+    );
+    assert!(
+        sv.contains("module Inner__I_20"),
+        "missing `Inner__I_20` specialized variant — variant discovery \
+             didn't resolve `param I = TWENTY` against enclosing module's params:\n{sv}"
+    );
     // Inst sites should reference the specialized variant by name.
-    assert!(sv.contains("Inner__I_10 inner_a")
+    assert!(
+        sv.contains("Inner__I_10 inner_a")
             || sv.contains("Inner__I_10 #") && sv.contains("inner_a"),
-            "expected sp_0 to reference Inner__I_10 variant:\n{sv}");
-    assert!(sv.contains("Inner__I_20 inner_b")
+        "expected sp_0 to reference Inner__I_10 variant:\n{sv}"
+    );
+    assert!(
+        sv.contains("Inner__I_20 inner_b")
             || sv.contains("Inner__I_20 #") && sv.contains("inner_b"),
-            "expected sp_1 to reference Inner__I_20 variant:\n{sv}");
+        "expected sp_1 to reference Inner__I_20 variant:\n{sv}"
+    );
 }
 
 #[test]
@@ -18561,8 +22053,10 @@ fn test_generate_if_variant_discovery_with_default_branch_values() {
     // Both branches' values get discovered. The cond=1 branch's inst
     // actually survives; the cond=0 branch's variant is emitted but
     // never instantiated — synthesis tools dead-code it.
-    assert!(sv.contains("module Inner__I_7"),
-            "missing `Inner__I_7` variant (active branch's param):\n{sv}");
+    assert!(
+        sv.contains("module Inner__I_7"),
+        "missing `Inner__I_7` variant (active branch's param):\n{sv}"
+    );
 }
 
 #[test]
@@ -18589,13 +22083,17 @@ fn test_sim_nested_vec_reg_round_trips_all_cells() {
         .arg(td.path())
         .output()
         .expect("run arch sim for nested_vec_sim probe");
-    assert!(out.status.success(),
+    assert!(
+        out.status.success(),
         "nested-Vec sim should compile + run\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS nested-Vec storage"),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS nested-Vec storage"),
         "expected PASS marker in stdout:\n{}",
-        String::from_utf8_lossy(&out.stdout));
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 #[test]
@@ -18843,8 +22341,10 @@ fn test_nic400_master_port_marks_non_power_of_two_decode_holes_oor() {
     // power of two: with NUM_SLAVES=3 and NS_W=2, slave index 3 has no
     // backing thread and must still route to the default slave.
     let bus = include_str!("nic400/BusAxi4.arch");
-    let master = include_str!("nic400/Nic400MasterPort.arch")
-        .replace("param NUM_SLAVES:    const = 4;", "param NUM_SLAVES:    const = 3;");
+    let master = include_str!("nic400/Nic400MasterPort.arch").replace(
+        "param NUM_SLAVES:    const = 4;",
+        "param NUM_SLAVES:    const = 3;",
+    );
     let sv = compile_to_sv(&format!("{bus}\n{master}"));
     let trimmed: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
@@ -18930,9 +22430,8 @@ fn test_elaborate_440_bus_port_type_param_binary() {
     // when `lower_threads` synthesizes the `_<mod>_threads` sub-module.
     // Pre-#440, the inner `DATA_W` ident leaked into the sub-module's
     // port list (which only knows the outer module's `DATA_WIDTH`).
-    let source = include_str!(
-        "regression/issues/elaborate_440/bus_port_type_param_binary/Probe.arch"
-    );
+    let source =
+        include_str!("regression/issues/elaborate_440/bus_port_type_param_binary/Probe.arch");
     let sv = compile_to_sv(source);
 
     // The lowered `_Probe_threads` sub-module is the one that exercises
@@ -18943,7 +22442,10 @@ fn test_elaborate_440_bus_port_type_param_binary() {
         "expected lowered sub-module `_Probe_threads` in SV (the thread \
          lowering is what exercises `subst_type_expr_for_lower`):\n{sv}",
     );
-    let threads_end = sv[threads_start..].find("endmodule").map(|e| threads_start + e).unwrap_or(sv.len());
+    let threads_end = sv[threads_start..]
+        .find("endmodule")
+        .map(|e| threads_start + e)
+        .unwrap_or(sv.len());
     let threads_body = &sv[threads_start..threads_end];
 
     assert!(
@@ -18971,9 +22473,8 @@ fn test_elaborate_440_for_loop_iter_in_function_call() {
     // referenced inside a function-call argument substitutes to the
     // per-loop counter ident. Pre-#440, the raw `b` leaked into the
     // lowered SV as an undeclared variable.
-    let source = include_str!(
-        "regression/issues/elaborate_440/for_loop_iter_in_function_call/Probe.arch"
-    );
+    let source =
+        include_str!("regression/issues/elaborate_440/for_loop_iter_in_function_call/Probe.arch");
     let sv = compile_to_sv(source);
 
     // Single thread → ti=0 → counter ident = `_t0_loop_cnt_0`.
@@ -19005,9 +22506,8 @@ fn test_elaborate_440_rename_ident_in_function_call() {
     // substitutes the user-written iter var into `_loop_cnt_{id}`, 3
     // renames `_loop_cnt_{id}` to its per-thread form. A multi-thread
     // fixture exercises the rename for both ti=0 and ti=1.
-    let source = include_str!(
-        "regression/issues/elaborate_440/rename_ident_in_function_call/Probe.arch"
-    );
+    let source =
+        include_str!("regression/issues/elaborate_440/rename_ident_in_function_call/Probe.arch");
     let sv = compile_to_sv(source);
 
     // Both threads' function-call args must carry the per-thread
@@ -19028,8 +22528,7 @@ fn test_elaborate_440_rename_ident_in_function_call() {
     // Pre-#440 buggy fingerprints: raw `a`/`b` (site 2 missing the
     // FunctionCall arm) or bare `_loop_cnt_0` (site 3 missing it).
     assert!(
-        !sv.contains("step_8(8'($unsigned(a)))")
-            && !sv.contains("step_8(8'($unsigned(b)))"),
+        !sv.contains("step_8(8'($unsigned(a)))") && !sv.contains("step_8(8'($unsigned(b)))"),
         "found buggy raw iter var (`a` or `b`) in `step_8(...)` \
          argument — `rewrite_var_expr` failed to recurse into \
          FunctionCall args (site 2 paired with site 3). SV:\n{sv}"
@@ -19083,7 +22582,9 @@ fn test_thread_sim_honors_round_robin_mutex_policy_without_warning() {
     "#;
     let warnings = compile_to_thread_sim_collect_warnings(source);
     assert!(
-        warnings.iter().all(|w| !w.message.contains("--thread-sim ignores mutex policy")),
+        warnings
+            .iter()
+            .all(|w| !w.message.contains("--thread-sim ignores mutex policy")),
         "thread-sim should implement mutex policy instead of warning; got: {:?}",
         warnings.iter().map(|w| &w.message).collect::<Vec<_>>(),
     );
@@ -19136,7 +22637,9 @@ fn test_thread_sim_emits_lru_and_weighted_mutex_policy_state() {
 
     let warnings = compile_to_thread_sim_collect_warnings(source);
     assert!(
-        warnings.iter().all(|w| !w.message.contains("--thread-sim ignores mutex policy")),
+        warnings
+            .iter()
+            .all(|w| !w.message.contains("--thread-sim ignores mutex policy")),
         "lru/weighted mutex policies should not be downgraded to warnings: {:?}",
         warnings.iter().map(|w| &w.message).collect::<Vec<_>>(),
     );
@@ -19197,7 +22700,8 @@ fn test_thread_sim_no_warning_on_priority_mutex_policy() {
         end module SharedBus
     "#;
     let warnings = compile_to_thread_sim_collect_warnings(source);
-    let policy_warnings: Vec<&str> = warnings.iter()
+    let policy_warnings: Vec<&str> = warnings
+        .iter()
         .filter(|w| w.message.contains("--thread-sim ignores mutex policy"))
         .map(|w| w.message.as_str())
         .collect();
@@ -19247,7 +22751,9 @@ fn test_thread_sim_honors_custom_mutex_policy_with_hook() {
     "#;
     let warnings = compile_to_thread_sim_collect_warnings(source);
     assert!(
-        warnings.iter().all(|w| !w.message.contains("--thread-sim ignores mutex policy")),
+        warnings
+            .iter()
+            .all(|w| !w.message.contains("--thread-sim ignores mutex policy")),
         "custom mutex policy should dispatch its hook instead of warning; got: {:?}",
         warnings.iter().map(|w| &w.message).collect::<Vec<_>>(),
     );
@@ -19778,7 +23284,8 @@ end module IntraTop
 "#;
     let hz = dead_skid_hazards(source, "IntraTop");
     assert!(
-        hz.iter().any(|h| h.read_signal == "fb" && h.driven_signal == "x"),
+        hz.iter()
+            .any(|h| h.read_signal == "fb" && h.driven_signal == "x"),
         "expected intra-module dead-skid hazard `x -> fb`, got {hz:?}"
     );
 }
@@ -19824,7 +23331,8 @@ end module Top
 "#;
     let hz = dead_skid_hazards(source, "Top");
     assert!(
-        hz.iter().any(|h| h.read_signal == "z_w" && h.driven_signal == "a_drv"),
+        hz.iter()
+            .any(|h| h.read_signal == "z_w" && h.driven_signal == "a_drv"),
         "expected default-comb read hazard `a_drv -> z_w`, got {hz:?}"
     );
 }
@@ -19900,6 +23408,7 @@ fn test_thread_map_html_renders_hazard_overlay() {
             threads: vec![ThreadMapThread {
                 name: "Worker".into(),
                 index: 0,
+                once: false,
                 span: Span::new(0, 18),
                 states: vec![],
                 hazards: vec![CombFeedbackHazard {
@@ -19939,6 +23448,7 @@ fn test_thread_map_html_no_hazard_no_overlay() {
             threads: vec![ThreadMapThread {
                 name: "W".into(),
                 index: 0,
+                once: false,
                 span: Span::new(0, 10),
                 states: vec![],
                 hazards: vec![],
@@ -19997,7 +23507,10 @@ fn test_comb_reachable_from_transitive() {
     let seeds: HashSet<String> = ["a".to_string()].into_iter().collect();
     let reached = arch::signal_flow::comb_reachable_from(&seeds, &fwd);
     assert!(reached.contains("b") && reached.contains("c"));
-    assert!(!reached.contains("a"), "seed must not appear unless via a cycle");
+    assert!(
+        !reached.contains("a"),
+        "seed must not appear unless via a cycle"
+    );
 }
 
 /// AW-side mirror of `test_nic400_apb_bridge_wrap_illegal_len_is_rejected_by_sva`.

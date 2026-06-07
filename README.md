@@ -83,10 +83,11 @@ Always-on runtime checks: out-of-range `Vec<T,N>` indexing, bit-selects `val[i]`
 
 ## Formal verification
 
-Two paths, both driven by the same `assert` / `cover` clauses in the source:
+Three paths:
 
 1. **SV-SVA path** — `arch build` emits SystemVerilog with concurrent assertions consumable by EBMC, Verilator `--assert`, and SymbiYosys. Nothing extra to configure.
 2. **Direct SMT-LIB2 path** — `arch formal` lowers a module straight to SMT-LIB2 and shells out to a bit-vector solver. No Yosys in the loop; ARCH semantics (wrapping arithmetic, width casts) are encoded precisely.
+3. **Lean thread-lowering proof path** — `arch formal --emit-thread-proof-lean` emits a Lean replay file proving the compiler-recorded thread-to-FSM lowering certificate. `--check-thread-proof-lean` immediately replays it with `lake env lean`. This is a compiler-lowering proof artifact, not a bounded design-property proof.
 
 ```sh
 arch formal MyModule.arch                            # defaults: z3, bound=20, 60s timeout
@@ -94,6 +95,12 @@ arch formal MyModule.arch --bound 64                 # deeper unroll
 arch formal MyModule.arch --solver boolector         # or bitwuzla
 arch formal MyModule.arch --emit-smt model.smt2      # dump the SMT-LIB2 for inspection
 arch formal multi.arch --top MyTop                   # pick a top when the file has >1 module
+arch formal MyModule.arch --emit-thread-proof-lean    # emit <input>.thread-proof.lean
+arch formal MyModule.arch --check-thread-proof-lean \
+  --thread-proof-lean-project proofs/lean_thread_lowering
+arch formal MyModule.arch --check-thread-proof-lean \
+  --thread-proof-lean-project proofs/lean_thread_lowering \
+  --thread-proof-only                              # replay Lean and skip SMT
 ```
 
 Output is one line per property — `PROVED up to bound N`, `REFUTED at cycle C` (with a per-cycle signal counterexample), `HIT at cycle C` for covers, `NOT REACHED within bound N`, or `INCONCLUSIVE` on solver timeout. Exit codes: `0` all-good, `1` any failure, `2` inconclusive, `3` compile error. Scope in v1 is flat modules with scalar signals (`UInt<N>` / `SInt<N>` / `Bool` / `Bit`), single clock, no sub-`inst`; anything out of scope errors out with a pointer at the offending construct.
