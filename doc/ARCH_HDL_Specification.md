@@ -5919,7 +5919,7 @@ The first column lists sources of undefined values. The second column indicates 
 
 **20.2 Arch Intermediate Representation (FIR)**
 
-All three Arch output targets --- native simulation binary, SystemVerilog for synthesis, and SMT-LIB for formal verification --- are lowered from a common intermediate representation called FIR (Arch Intermediate Representation). FIR is a typed, clock-domain-aware dataflow graph.
+Arch's primary executable/RTL/formal output targets --- native simulation binary, SystemVerilog for synthesis, and SMT-LIB for bounded property checking --- are lowered from a common intermediate representation called FIR (Arch Intermediate Representation). FIR is a typed, clock-domain-aware dataflow graph. Compiler-lowering proof artifacts, such as the Lean thread-lowering certificate, are emitted from compiler metadata captured during lowering rather than from FIR.
 
 +--------------------------------------------------------------------------------------+
 | *fir_conceptual.fir*                                                                 |
@@ -5989,7 +5989,11 @@ From FIR, the three backends diverge:
   **Synthesis**           arch build         FIR nodes → SystemVerilog always_ff / always_comb / assign            Synthesisable SV for FPGA/ASIC tools
 
   **Formal**              arch formal        FIR nodes → SMT-LIB2 bit-vector transition relation                  Self-contained SMT-LIB2 + invocation of Z3 / Boolector / Bitwuzla
+
+  **Thread proof**        arch build/formal  Thread-lowering map → JSON or Lean proof certificate                 Per-design thread-to-FSM lowering replay artifact
   ------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+The Lean thread proof target is a compiler-lowering proof path, not a bounded design-property proof. `arch build --emit-thread-proof` writes a JSON certificate for the recorded thread-to-FSM lowering map. `arch build --emit-thread-proof-lean` and `arch formal --emit-thread-proof-lean` write a Lean replay file; `--check-thread-proof-lean` immediately runs `lake env lean` against that file. `arch formal --thread-proof-only` may be used with Lean proof emission/checking to skip the SMT-LIB2 backend when the desired result is only certificate replay. The Lean project defaults to `proofs/lean_thread_lowering`, or can be supplied with `--thread-proof-lean-project=DIR` / `ARCH_THREAD_PROOF_LEAN_PROJECT`.
 
 **20.3 The Simulation Execution Model**
 
@@ -7987,7 +7991,7 @@ A practical AI workflow: generate a correct skeleton with todo! for all logic, t
 
   **Micro-Arch Lowering**   Pipeline hazard generation, FIFO implementation, arbiter logic, FSM encoding
 
-  **Verification Emit**     assert/cover/assume converted to SystemVerilog Assertions (SVA)
+  **Verification Emit**     assert/cover/assume converted to SystemVerilog Assertions (SVA); optional thread-lowering certificates emitted as JSON/Lean replay files
 
   **SV Emit**               One deterministic, lint-clean SystemVerilog file per Arch top-level module
   ---------------------------------------------------------------------------------------------------------
@@ -8047,6 +8051,8 @@ The compiler emits warnings (non-fatal, printed before "OK: no errors") for the 
   **SystemVerilog (FPGA Intel)**    arch build \--target fpga \--vendor intel    Inserts Intel BRAM/DSP primitives
 
   **Formal verification**           arch formal \[\--bound N\] \[\--solver z3\|boolector\|bitwuzla\]   Direct SMT-LIB2 BMC; the SV-SVA path (arch build + EBMC/Verilator \--assert) still ships as an alternative
+
+  **Thread-lowering proof**         arch build/formal \--emit-thread-proof-lean \[\--check-thread-proof-lean\]   Per-design Lean certificate replay for compiler thread-to-FSM lowering; use \--thread-proof-only on arch formal to skip SMT
 
   **Simulation**                    arch sim \--tb MyTb                          Compiles with Verilator or ModelSim/Questa
 
