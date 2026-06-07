@@ -123,26 +123,6 @@ arch learn-clear                    # wipe the store
 
 Design goals: **local-first** (no telemetry, no network); **capped** (100 MB default via `ARCH_LEARN_MAX_MB`, warns at 90% full); **opt-out** (`ARCH_NO_LEARN=1` disables capture entirely). The long-term roadmap — idiom capture, contributor sharing, promoting stable patterns to compiler lints — lives in [`doc/plan_arch_learning_system.md`](doc/plan_arch_learning_system.md).
 
-## AI assistant support
-
-This repo includes two optional Codex-facing helpers:
-
-- [`mcp/`](mcp/) — an ARCH MCP server that exposes compiler-backed tools for
-  construct syntax, file writing/checking, SystemVerilog build/lint, simulation,
-  formal checks, and local `arch advise` learning-store retrieval.
-- [`skills/arch-programming`](skills/arch-programming/) — an installable Codex
-  skill with bundled ARCH reference snapshots and a workflow that prefers the
-  MCP server when available.
-
-Install the skill into the default Codex skill directory with:
-
-```sh
-mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
-cp -R skills/arch-programming "${CODEX_HOME:-$HOME/.codex}/skills/"
-```
-
-Register the MCP server separately by following [`mcp/README.md`](mcp/README.md).
-
 ## Language snapshot
 
 ### Combinational logic

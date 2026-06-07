@@ -1,0 +1,4 @@
+interface:
+  display_name: "Arch Programming"
+  short_description: "Write and debug ARCH HDL designs."
+  default_prompt: "Use the arch-programming skill to implement or debug an ARCH HDL module."
