@@ -539,7 +539,7 @@ static int test_wrap4_read() {
 // test `test_nic400_width_adapter_fixed_burst_is_rejected_by_sva` in
 // `tests/integration_test.rs` (consumes the `expect_verilator_fatal`
 // harness from PR #453). The manual repro recipe in
-// `doc/nic400_interconnect_spec.md` §15.1 is still useful for ad-hoc
+// `nic400_interconnect_spec.md` §15.1 is still useful for ad-hoc
 // investigation.
 
 int main() {

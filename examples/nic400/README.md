@@ -6,7 +6,7 @@ arbitration, ID remap, ID-prefix return routing) and grew into a
 full-featured demo of the language's bus / thread / generate / pipeline
 constructs against a real-IP target.
 
-Reference spec: [`doc/nic400_interconnect_spec.md`](../../doc/nic400_interconnect_spec.md)
+Reference spec: [`nic400_interconnect_spec.md`](nic400_interconnect_spec.md)
 
 ## What's shipped
 

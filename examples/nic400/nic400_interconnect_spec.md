@@ -91,7 +91,7 @@ Key design choices, with the ARCH construct that expresses each:
 
 ```arch
 //! ---
-//! spec_md: doc/nic400_interconnect_spec.md
+//! spec_md: examples/nic400/nic400_interconnect_spec.md
 //! tags: [interconnect, nic400, axi4, crossbar, qos]
 //! ---
 
@@ -1113,6 +1113,7 @@ A verification pass against the ARM TRM (DDI 0475E, *CoreLink NIC-400 Network In
 | Parameterizable M×N matrix | ✅ | `Nic400Fabric.arch`; demo is 3×4. [TRM] §1.2 caps NIC-400 at 1-128 slave IFs × 1-64 master IFs and up to 5 cascaded switches between any master/slave pair. |
 | ID remap (master idx prefix) | ✅ | `MASTER_ID_W → SLAVE_ID_W = MASTER_ID_W + ceil(log2(M))`. [TRM] §2.3.12 names the components "Interconnect ID (IID) + Virtual ID (VID) + Slave-Interface ID (SIID)"; global ID width is 1-24 bits with an optional "ID reduction" pass at AMIB. Our shim does a single SIID prefix; we do not implement ID reduction. |
 | Address decode | 🟡 | Compile-time, top-NS_W bits of REGION_BITS=28 page. [TRM] §2.3.11 names the runtime knob "Remap" (8 remap-state bits, GPV-programmable, can alias/move/add/remove regions); we don't implement it. |
+| Per-master address maps / interior decode holes | 🟡 | **Single global map shared by every master.** `Nic400MasterPort` is identical across instances (only `param I` differs), so all masters see the same valid window and the same OOR definition. Two sub-gaps: (a) **per-master distinct maps** — each ASIB seeing its own valid-region set — is not supported; the decode is hard-coded in the shared shim. (b) **interior holes** — only the *top-of-range* OOR is caught (`addr[ADDR_WIDTH-1:REGION_BITS+NS_W] != 0`); the non-power-of-two-`NUM_SLAVES` case where a mid-map region has no populated slave *is* now flagged → DECERR (see `test_nic400_master_port_marks_non_power_of_two_decode_holes_oor`), but arbitrary user-defined holes *between* populated slaves are not. Closing (a) needs a per-`I` valid-region bitmap param (or the GPV-remap route); (b) is largely handled for the structural case. Surfaced in the 2026-06 ASIB design discussion. |
 | Decode-error (DECERR) response on unmatched address | ✅ | `Nic400DefaultSlave.arch` (per-master Rd/Wr thread pair returning RRESP/BRESP=2'b11). `Nic400MasterPort` decodes OOR via `m_ar_oor`/`m_aw_oor` (`addr[ADDR_WIDTH-1:REGION_BITS+NS_W] != 0`) and routes OOR AR/AW to the `default_s` port; the default slave echoes the request ID in the error response. Verified by `Nic400DefaultSlave_test.harc` (OOR read + OOR write → DECERR, valid decode intact). [TRM] §2.2.1: real NIC-400 builds this into the ASIB rather than a separate module; we model it as a standalone default-slave block for clarity. |
 | Per-master / per-slave clock domains | ❌ | All ports share `clk: in Clock<SysDomain>`. [TRM] §2.2.1 / §2.3.5: each ASIB/AMIB can select SYNC 1:1, SYNC 1:n, SYNC n:1, SYNC n:m, or ASYNC frequency-domain crossing with a per-FIFO depth of 2-32, and the `sync_mode` is GPV-programmable. CDC via `fifo kind: async` is doable but not wired. |
 | Cyclic Dependency Avoidance Schemes (CDAS) — Single-Slave / Single-Slave-per-ID | ❌ | [TRM] §2.3.7: per-ASIB knob that stalls transactions to a different destination than outstanding ones of the same type (or same ID), to break AW/W-channel ordering deadlocks. Not modelled. |
@@ -1180,11 +1181,14 @@ Roughly ordered by likely effort × value, picked from the rows above:
 2. **Per-slave reg slice wrapper** — symmetric to `Nic400FabricRs1` but on the s side. Mostly copy-paste; useful as a real-SoC pattern. [TRM §2.2.1/§2.2.2]
 3. **Wire width adapter into a system variant** — `Nic400SystemWide` with a 64-bit AXI master and the 32-bit APB target, so the adapter is exercised in-system.
 4. **GPV regfile sketch** — AXI4 target (TRM §3.2: GPV is AXI-accessed, AxSIZE=32-bit only, Secure-only, non-cacheable, no interleaved WDATA) plus a `regfile` block with a few mapped registers (`read_qos`/`write_qos` from Table 3-1, decode-table / remap-state override). Lowest-cost path to "programmable" status on the QoS, decode, and remap rows.
+5. **Per-master address maps** — give `Nic400MasterPort` a per-`I` valid-region param (bitmap or base/limit list) so each master can see a distinct memory map with its own decode holes, instead of the single global window all masters share today. The substantive correctness gap from the ASIB discussion; see the "Per-master address maps / interior decode holes" row above. (The heavier alternative is to fold it into the GPV-remap item.)
 
 Items deliberately deferred: AXI3, AxUSER, QVN, LPI, EX-monitor — each is a real chunk of work and none has a current pull from a benchmark.
 
+**Naming alignment (cosmetic, optional).** Our `Nic400MasterPort` / `Nic400SlavePort` are named for *what attaches* (a master / a slave), the inverse of ARM's convention, which names the block for *the interface the NIC presents*: **ASIB** (AXI Slave Interface Block, where an external master attaches) ↔ our `Nic400MasterPort`; **AMIB** (AXI Master Interface Block, where an external slave attaches) ↔ our `Nic400SlavePort`. A rename to `Nic400Asib` / `Nic400Amib` would match the TRM but touches every test, the README, and this spec — deferred until there's a reason to churn the names.
+
 ```
-doc/nic400_interconnect_spec.md                 ← this file
+examples/nic400/nic400_interconnect_spec.md                 ← this file
 
 src lives under examples/nic400/ (suggested):
 examples/nic400/PkgNic400.arch
