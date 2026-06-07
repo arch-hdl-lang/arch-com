@@ -22340,8 +22340,8 @@ fn test_nic400_master_port_marks_non_power_of_two_decode_holes_oor() {
     // REGION_BITS+NS_W. That misses decode holes when NUM_SLAVES is not a
     // power of two: with NUM_SLAVES=3 and NS_W=2, slave index 3 has no
     // backing thread and must still route to the default slave.
-    let bus = include_str!("nic400/BusAxi4.arch");
-    let master = include_str!("nic400/Nic400MasterPort.arch").replace(
+    let bus = include_str!("../examples/nic400/BusAxi4.arch");
+    let master = include_str!("../examples/nic400/Nic400MasterPort.arch").replace(
         "param NUM_SLAVES:    const = 4;",
         "param NUM_SLAVES:    const = 3;",
     );
@@ -22393,10 +22393,10 @@ fn test_expect_fatal_harness_catches_bounds_violation() {
 fn test_nic400_width_adapter_fixed_burst_is_rejected_by_sva() {
     common::expect_verilator_fatal_multi(
         &[
-            "tests/nic400/Nic400WidthAdapter.arch",
-            "tests/nic400/BusAxi4.arch",
+            "examples/nic400/Nic400WidthAdapter.arch",
+            "examples/nic400/BusAxi4.arch",
         ],
-        "tests/nic400/tb_nic400_width_adapter_fixed_reject.cpp",
+        "examples/nic400/tb_nic400_width_adapter_fixed_reject.cpp",
         "Nic400WidthAdapter",
         // Matches the $fatal string emitted by `assert ar_burst_supported:`
         // at Nic400WidthAdapter.arch:299. Verifying the exact SV codegen
@@ -22777,11 +22777,11 @@ fn test_thread_sim_honors_custom_mutex_policy_with_hook() {
 fn test_nic400_apb_bridge_wrap_illegal_len_is_rejected_by_sva() {
     common::expect_verilator_fatal_multi(
         &[
-            "tests/nic400/Nic400ApbBridge.arch",
-            "tests/nic400/BusAxi4.arch",
+            "examples/nic400/Nic400ApbBridge.arch",
+            "examples/nic400/BusAxi4.arch",
             "stdlib/BusApb.arch",
         ],
-        "tests/nic400/tb_nic400_apb_bridge_wrap_len_illegal.cpp",
+        "examples/nic400/tb_nic400_apb_bridge_wrap_len_illegal.cpp",
         "Nic400ApbBridge",
         "ASSERTION FAILED: Nic400ApbBridge.ar_wrap_len_legal_apb",
     );
@@ -22797,11 +22797,11 @@ fn test_nic400_apb_bridge_wrap_illegal_len_is_rejected_by_sva() {
 fn test_nic400_apb_bridge_wrap_unaligned_addr_is_rejected_by_sva() {
     common::expect_verilator_fatal_multi(
         &[
-            "tests/nic400/Nic400ApbBridge.arch",
-            "tests/nic400/BusAxi4.arch",
+            "examples/nic400/Nic400ApbBridge.arch",
+            "examples/nic400/BusAxi4.arch",
             "stdlib/BusApb.arch",
         ],
-        "tests/nic400/tb_nic400_apb_bridge_wrap_addr_unaligned.cpp",
+        "examples/nic400/tb_nic400_apb_bridge_wrap_addr_unaligned.cpp",
         "Nic400ApbBridge",
         "ASSERTION FAILED: Nic400ApbBridge.ar_wrap_addr_aligned_apb",
     );
@@ -22819,10 +22819,10 @@ fn test_nic400_apb_bridge_wrap_unaligned_addr_is_rejected_by_sva() {
 fn test_nic400_width_adapter_wrap_illegal_len_is_rejected_by_sva() {
     common::expect_verilator_fatal_multi(
         &[
-            "tests/nic400/Nic400WidthAdapter.arch",
-            "tests/nic400/BusAxi4.arch",
+            "examples/nic400/Nic400WidthAdapter.arch",
+            "examples/nic400/BusAxi4.arch",
         ],
-        "tests/nic400/tb_nic400_width_adapter_wrap_len_illegal.cpp",
+        "examples/nic400/tb_nic400_width_adapter_wrap_len_illegal.cpp",
         "Nic400WidthAdapter",
         "ASSERTION FAILED: Nic400WidthAdapter.ar_wrap_len_legal_widthadapter",
     );
@@ -22837,10 +22837,10 @@ fn test_nic400_width_adapter_wrap_illegal_len_is_rejected_by_sva() {
 fn test_nic400_width_adapter_wrap_unaligned_addr_is_rejected_by_sva() {
     common::expect_verilator_fatal_multi(
         &[
-            "tests/nic400/Nic400WidthAdapter.arch",
-            "tests/nic400/BusAxi4.arch",
+            "examples/nic400/Nic400WidthAdapter.arch",
+            "examples/nic400/BusAxi4.arch",
         ],
-        "tests/nic400/tb_nic400_width_adapter_wrap_addr_unaligned.cpp",
+        "examples/nic400/tb_nic400_width_adapter_wrap_addr_unaligned.cpp",
         "Nic400WidthAdapter",
         "ASSERTION FAILED: Nic400WidthAdapter.ar_wrap_addr_aligned_widthadapter",
     );
@@ -22866,10 +22866,10 @@ fn test_nic400_width_adapter_wrap_unaligned_addr_is_rejected_by_sva() {
 fn test_nic400_width_adapter_incr_4k_cross_is_rejected_by_sva() {
     common::expect_verilator_fatal_multi(
         &[
-            "tests/nic400/Nic400WidthAdapter.arch",
-            "tests/nic400/BusAxi4.arch",
+            "examples/nic400/Nic400WidthAdapter.arch",
+            "examples/nic400/BusAxi4.arch",
         ],
-        "tests/nic400/tb_nic400_width_adapter_incr_4k_cross.cpp",
+        "examples/nic400/tb_nic400_width_adapter_incr_4k_cross.cpp",
         "Nic400WidthAdapter",
         "ASSERTION FAILED: Nic400WidthAdapter.ar_incr_no_4k_cross_widthadapter",
     );
@@ -23523,11 +23523,11 @@ fn test_comb_reachable_from_transitive() {
 fn test_nic400_apb_bridge_wrap_illegal_aw_len_is_rejected_by_sva() {
     common::expect_verilator_fatal_multi(
         &[
-            "tests/nic400/Nic400ApbBridge.arch",
-            "tests/nic400/BusAxi4.arch",
+            "examples/nic400/Nic400ApbBridge.arch",
+            "examples/nic400/BusAxi4.arch",
             "stdlib/BusApb.arch",
         ],
-        "tests/nic400/tb_nic400_apb_bridge_wrap_len_illegal_aw.cpp",
+        "examples/nic400/tb_nic400_apb_bridge_wrap_len_illegal_aw.cpp",
         "Nic400ApbBridge",
         "ASSERTION FAILED: Nic400ApbBridge.aw_wrap_len_legal_apb",
     );
@@ -23543,11 +23543,11 @@ fn test_nic400_apb_bridge_wrap_illegal_aw_len_is_rejected_by_sva() {
 fn test_nic400_apb_bridge_wrap_unaligned_aw_addr_is_rejected_by_sva() {
     common::expect_verilator_fatal_multi(
         &[
-            "tests/nic400/Nic400ApbBridge.arch",
-            "tests/nic400/BusAxi4.arch",
+            "examples/nic400/Nic400ApbBridge.arch",
+            "examples/nic400/BusAxi4.arch",
             "stdlib/BusApb.arch",
         ],
-        "tests/nic400/tb_nic400_apb_bridge_wrap_addr_unaligned_aw.cpp",
+        "examples/nic400/tb_nic400_apb_bridge_wrap_addr_unaligned_aw.cpp",
         "Nic400ApbBridge",
         "ASSERTION FAILED: Nic400ApbBridge.aw_wrap_addr_aligned_apb",
     );
@@ -23563,11 +23563,11 @@ fn test_nic400_apb_bridge_wrap_unaligned_aw_addr_is_rejected_by_sva() {
 fn test_nic400_apb_bridge_incr_4k_cross_is_rejected_by_sva() {
     common::expect_verilator_fatal_multi(
         &[
-            "tests/nic400/Nic400ApbBridge.arch",
-            "tests/nic400/BusAxi4.arch",
+            "examples/nic400/Nic400ApbBridge.arch",
+            "examples/nic400/BusAxi4.arch",
             "stdlib/BusApb.arch",
         ],
-        "tests/nic400/tb_nic400_apb_bridge_incr_4k_cross.cpp",
+        "examples/nic400/tb_nic400_apb_bridge_incr_4k_cross.cpp",
         "Nic400ApbBridge",
         "ASSERTION FAILED: Nic400ApbBridge.ar_incr_no_4k_cross_apb",
     );
@@ -23583,11 +23583,11 @@ fn test_nic400_apb_bridge_incr_4k_cross_is_rejected_by_sva() {
 fn test_nic400_apb_bridge_excl_len_illegal_is_rejected_by_sva() {
     common::expect_verilator_fatal_multi(
         &[
-            "tests/nic400/Nic400ApbBridge.arch",
-            "tests/nic400/BusAxi4.arch",
+            "examples/nic400/Nic400ApbBridge.arch",
+            "examples/nic400/BusAxi4.arch",
             "stdlib/BusApb.arch",
         ],
-        "tests/nic400/tb_nic400_apb_bridge_excl_len_illegal.cpp",
+        "examples/nic400/tb_nic400_apb_bridge_excl_len_illegal.cpp",
         "Nic400ApbBridge",
         "ASSERTION FAILED: Nic400ApbBridge.ar_excl_len_legal_apb",
     );

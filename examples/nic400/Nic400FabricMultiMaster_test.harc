@@ -3,11 +3,11 @@
 // Closes §16.1 gap: "Multi-master contention (M=2..3 active at once)".
 //
 // Run with:
-//   harc sim --dut tests/nic400/BusAxi4.arch \
-//             tests/nic400/Nic400Fabric.arch \
-//             tests/nic400/Nic400MasterPort.arch \
-//             tests/nic400/Nic400SlavePort.arch \
-//             tests/nic400/Nic400FabricMultiMaster_test.harc \
+//   harc sim --dut examples/nic400/BusAxi4.arch \
+//             examples/nic400/Nic400Fabric.arch \
+//             examples/nic400/Nic400MasterPort.arch \
+//             examples/nic400/Nic400SlavePort.arch \
+//             examples/nic400/Nic400FabricMultiMaster_test.harc \
 //             --top Nic400Fabric
 //
 // Address decode (NS_W=2, REGION_BITS=28):

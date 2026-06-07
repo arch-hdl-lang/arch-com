@@ -1017,7 +1017,7 @@ Backpressure: when a master fills its `aw_route_fifo`, the `AwDecode` thread sta
 > `test_nic400_width_adapter_fixed_burst_is_rejected_by_sva` in
 > `tests/integration_test.rs` (consumes the `expect_verilator_fatal`
 > harness from PR #453; standalone TB at
-> `tests/nic400/tb_nic400_width_adapter_fixed_reject.cpp`). The manual
+> `examples/nic400/tb_nic400_width_adapter_fixed_reject.cpp`). The manual
 > recipe below is retained for ad-hoc investigation.
 
 `Nic400WidthAdapter.arch` carries two concurrent SVAs (PR #441) that reject
@@ -1031,15 +1031,15 @@ assert aw_burst_supported: (m.aw_valid and m.aw_ready) |-> (m.aw_burst == 1 or m
 The default `tb_nic400_width_adapter.cpp` only exercises legal INCR/WRAP,
 so by default these SVAs are dormant. To confirm they fire end-to-end:
 
-1. Open `tests/nic400/tb_nic400_width_adapter.cpp` and find the
+1. Open `examples/nic400/tb_nic400_width_adapter.cpp` and find the
    `#if 0`-gated `test_fixed_burst_rejected` scenario near the bottom.
    Flip the guard to `#if 1` and wire the call into `main()` (single line).
 2. Rebuild + run under Verilator with `--assert` enabled:
 
    ```
-   arch build tests/nic400/Nic400WidthAdapter.arch -o /tmp/wadapt
+   arch build examples/nic400/Nic400WidthAdapter.arch -o /tmp/wadapt
    verilator --binary --assert --top Nic400WidthAdapter \
-     /tmp/wadapt/Nic400WidthAdapter.sv tests/nic400/tb_nic400_width_adapter.cpp \
+     /tmp/wadapt/Nic400WidthAdapter.sv examples/nic400/tb_nic400_width_adapter.cpp \
      -o /tmp/wadapt/sim && /tmp/wadapt/sim
    ```
 
@@ -1097,7 +1097,7 @@ A verification pass against the ARM TRM (DDI 0475E, *CoreLink NIC-400 Network In
 #### Protocol bridges and interfaces
 | Feature | Status | Where / next step |
 |---|---|---|
-| AXI4 (full) master/slave shim | ✅ | `tests/nic400/BusAxi4.arch`, `Nic400Master/SlavePort.arch` |
+| AXI4 (full) master/slave shim | ✅ | `examples/nic400/BusAxi4.arch`, `Nic400Master/SlavePort.arch` |
 | AXI4-Lite shim | ⏭ | [TRM] NIC-400 TRM §1.2 enumerates AXI3, AXI4, AHB-Lite, APB2/3/4 as the endpoint protocols — AXI4-Lite is **not** a NIC-400 endpoint option. AMBA Designer reaches AXI4-Lite peripherals via an external AXI→AXI4-Lite bridge, not inside the NIC. |
 | AXI3 shim (locked-rd/wr, WID) | ❌ | [TRM] AXI3 is a first-class NIC-400 slave **and** master interface option (TRM §1.2, §2.2.1, §2.3.1). NIC-400 also does AXI3↔AXI4 protocol conversion (split long bursts, optional burst limiter), which the demo does not model. |
 | AHB-Lite master bridge (CPU→fabric) | ✅ | `Nic400AhbBridge.arch` + multi-burst + INCR-undef chunking. [TRM] Mapping table (§2.2.2 Table 2-2) and 1KB-boundary break rule confirmed. |
@@ -1186,21 +1186,21 @@ Items deliberately deferred: AXI3, AxUSER, QVN, LPI, EX-monitor — each is a re
 ```
 doc/nic400_interconnect_spec.md                 ← this file
 
-src lives under tests/nic400/ (suggested):
-tests/nic400/PkgNic400.arch
-tests/nic400/BusAxi4.arch                       ← copy from tests/axi_dma_thread/, extend with AXI4 sideband
-tests/nic400/Nic400ArbiterPolicy.arch
-tests/nic400/RegSliceChannel.arch
-tests/nic400/Nic400RegSliceAxi4.arch
-tests/nic400/Nic400MasterPort.arch
-tests/nic400/Nic400SlavePort.arch
-tests/nic400/Nic400Fabric.arch
-tests/nic400/Nic400Interconnect.arch
+src lives under examples/nic400/ (suggested):
+examples/nic400/PkgNic400.arch
+examples/nic400/BusAxi4.arch                       ← copy from tests/axi_dma_thread/, extend with AXI4 sideband
+examples/nic400/Nic400ArbiterPolicy.arch
+examples/nic400/RegSliceChannel.arch
+examples/nic400/Nic400RegSliceAxi4.arch
+examples/nic400/Nic400MasterPort.arch
+examples/nic400/Nic400SlavePort.arch
+examples/nic400/Nic400Fabric.arch
+examples/nic400/Nic400Interconnect.arch
 
 Testbenches:
-tests/nic400/tb_smoke.cpp                       ← single-master single-slave
-tests/nic400/tb_disjoint_parallel.cpp           ← M=4 to disjoint slaves
-tests/nic400/tb_hot_slave_qos.cpp               ← contention with QoS verification
-tests/nic400/tb_id_remap.cpp                    ← end-to-end ID round-trip
-tests/nic400/tb_ooo_completion.cpp              ← interleaved B responses
+examples/nic400/tb_smoke.cpp                       ← single-master single-slave
+examples/nic400/tb_disjoint_parallel.cpp           ← M=4 to disjoint slaves
+examples/nic400/tb_hot_slave_qos.cpp               ← contention with QoS verification
+examples/nic400/tb_id_remap.cpp                    ← end-to-end ID round-trip
+examples/nic400/tb_ooo_completion.cpp              ← interleaved B responses
 ```

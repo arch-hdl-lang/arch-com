@@ -42,8 +42,8 @@
 //! Default for every toggle is 0 so a bare instantiation
 //! (`BusApb<ADDR_W=12, DATA_W=32>`) yields an APB v2.0-shaped bundle.
 //!
-//! Consolidated user: tests/nic400/Nic400ApbBridge.arch and
-//! tests/nic400/Nic400System.arch instantiate this bus as
+//! Consolidated user: examples/nic400/Nic400ApbBridge.arch and
+//! examples/nic400/Nic400System.arch instantiate this bus as
 //! `BusApb<..., USE_PSLVERR=1, USE_PPROT=1, USE_PSTRB=1>` to model the
 //! NIC-400 reference's APB4-with-error initiator port.
 //!

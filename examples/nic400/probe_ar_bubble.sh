@@ -17,19 +17,19 @@
 # rising edges again and the asymmetry is visible at a glance.
 #
 # Usage: from the repo root,
-#   arch sim --wave tests/nic400/fab_latency.vcd \
-#     tests/nic400/Nic400Fabric.arch \
-#     tests/nic400/Nic400MasterPort.arch \
-#     tests/nic400/Nic400SlavePort.arch \
-#     tests/nic400/BusAxi4.arch \
-#     --tb tests/nic400/tb_nic400_fabric_latency.cpp \
+#   arch sim --wave examples/nic400/fab_latency.vcd \
+#     examples/nic400/Nic400Fabric.arch \
+#     examples/nic400/Nic400MasterPort.arch \
+#     examples/nic400/Nic400SlavePort.arch \
+#     examples/nic400/BusAxi4.arch \
+#     --tb examples/nic400/tb_nic400_fabric_latency.cpp \
 #     -o /tmp/fab_wave
-#   tests/nic400/probe_ar_bubble.sh tests/nic400/fab_latency.vcd
+#   examples/nic400/probe_ar_bubble.sh examples/nic400/fab_latency.vcd
 #
 # Or open the VCD directly in a viewer (gtkwave / surfer).
 
 set -e
-VCD=${1:-tests/nic400/fab_latency.vcd}
+VCD=${1:-examples/nic400/fab_latency.vcd}
 [ -r "$VCD" ] || { echo "VCD file '$VCD' not found"; exit 1; }
 
 awk '
