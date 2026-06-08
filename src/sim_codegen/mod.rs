@@ -3461,13 +3461,17 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
             };
             if let Some(dst_name) = vec_name_of_expr(&a.target) {
                 if ctx.vec_names.map_or(false, |s| s.contains(dst_name.as_str())) {
+                    let lhs = cpp_expr_lhs(&a.target, ctx);
+                    let rhs = cpp_expr(&a.value, ctx);
+                    let count = ctx.vec_sizes
+                        .and_then(|m| m.get(dst_name.as_str()).copied())
+                        .unwrap_or(0);
+                    if rhs == "0" {
+                        out.push_str(&format!("{}memset({lhs}, 0, sizeof({lhs}));\n", ind(indent)));
+                        return;
+                    }
                     if let Some(rhs_name) = vec_name_of_expr(&a.value) {
                         if ctx.vec_names.map_or(false, |s| s.contains(rhs_name.as_str())) {
-                            let lhs = cpp_expr_lhs(&a.target, ctx);
-                            let rhs = cpp_expr(&a.value, ctx);
-                            let count = ctx.vec_sizes
-                                .and_then(|m| m.get(dst_name.as_str()).copied())
-                                .unwrap_or(0);
                             if count > 0 {
                                 out.push_str(&format!(
                                     "{}for (size_t _i = 0; _i < {count}; ++_i) {{ {lhs}[_i] = {rhs}[_i]; }}\n",

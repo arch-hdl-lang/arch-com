@@ -9011,6 +9011,69 @@ fn test_tlm_vec_return_sim_mirror_uses_array_copy() {
 }
 
 #[test]
+fn test_whole_vec_scalar_zero_seq_assign_uses_memset() {
+    let source = "
+        module VecClear
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          reg data: Vec<SInt<32>, 4> reset rst => 0;
+
+          thread driver on clk rising, rst high
+            data <= 0;
+            wait 1 cycle;
+          end thread driver
+        end module VecClear
+    ";
+    let out = compile_to_sim_h(source, false);
+    assert!(
+        out.contains("memset(_n_data, 0, sizeof(_n_data));"),
+        "whole-Vec scalar zero assignment should lower to memset, not C++ array assignment:\n{out}"
+    );
+    assert!(
+        !out.contains("_n_data  = 0") && !out.contains("_n_data = 0"),
+        "whole-Vec scalar zero assignment must not emit array assignment:\n{out}"
+    );
+}
+
+#[test]
+fn test_thread_loop_vec_bounds_assertion_is_state_guarded() {
+    let source = "
+        module ThreadLoopVecBounds
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port start: in Bool;
+          port value: in UInt<8>;
+          port done: out pipe_reg<Bool, 1> reset rst => false;
+          reg data: Vec<UInt<8>, 4> reset rst => 0;
+
+          thread driver on clk rising, rst high
+            wait until start;
+            for pos in 0..3
+              data[pos] <= value;
+              wait 1 cycle;
+            end for
+            done <= true;
+            wait 1 cycle;
+            done <= false;
+          end thread driver
+        end module ThreadLoopVecBounds
+    ";
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("_auto_bound_vec_0: assert property"),
+        "expected generated Vec bounds assertion:\n{sv}"
+    );
+    assert!(
+        sv.contains("|-> (int'(_t0_loop_cnt_0) < (4))"),
+        "thread-loop Vec bounds assertion should be guarded by the active state, not always-on:\n{sv}"
+    );
+    assert!(
+        sv.contains("_t0_state == _t0_S"),
+        "thread-loop Vec bounds assertion should mention the lowering state guard:\n{sv}"
+    );
+}
+
+#[test]
 fn test_struct_vec_field_sim_mirror_uses_array_field() {
     let source = "
         struct BoundedVecResp32x4
