@@ -38,6 +38,17 @@ def ptrOccupancy (inst : Instance) (wrPtr rdPtr : Nat) : Nat :=
 def updateMem (mem : Nat -> α) (idx : Nat) (data : α) : Nat -> α :=
   fun query => if query = idx then data else mem query
 
+def abstractFifoStep (inst : Instance) (contents : List α) (push : Option α) (popReady : Bool) : List α :=
+  let canPop := popReady && (0 < contents.length)
+  let afterPop := if canPop then contents.drop 1 else contents
+  (match push with
+   | none => afterPop
+   | some value =>
+      if contents.length < inst.depth then
+        afterPop ++ [value]
+      else
+        afterPop).take inst.depth
+
 structure SyncGenerated (inst : Instance) (α : Type) where
   full : Nat -> Nat -> Bool
   empty : Nat -> Nat -> Bool
@@ -182,15 +193,38 @@ structure LifoEquationsHold (inst : Instance) (eqs : LifoGenerated inst α) : Pr
         if doPush then updateMem mem (if doPop then sp - 1 else sp) data else mem
 
 def fifoStep (inst : Instance) (contents : List α) (push : Option α) (popReady : Bool) : List α :=
-  let canPop := popReady && (0 < contents.length)
-  let afterPop := if canPop then contents.drop 1 else contents
-  (match push with
-   | none => afterPop
-   | some value =>
-      if contents.length < inst.depth then
-        afterPop ++ [value]
-      else
-        afterPop).take inst.depth
+  abstractFifoStep inst contents push popReady
+
+structure SyncParametricProof (inst : Instance) (eqs : SyncGenerated inst α) : Prop where
+  depth_pos : 0 < inst.depth
+  data_width_pos : 0 < inst.dataWidth
+  ptr_mod_pos : 0 < ptrMod inst
+  equations : SyncEquationsHold inst eqs
+  write_index_lt :
+    forall wrPtr,
+      eqs.writeIndex wrPtr < inst.depth
+  read_index_lt :
+    forall rdPtr,
+      eqs.readIndex rdPtr < inst.depth
+  occupancy_lt_ptr_mod :
+    forall wrPtr rdPtr,
+      ptrOccupancy inst wrPtr rdPtr < ptrMod inst
+  next_wr_ptr_bounded :
+    forall wrPtr doPush,
+      wrPtr < ptrMod inst -> eqs.nextWrPtr wrPtr doPush < ptrMod inst
+  next_rd_ptr_bounded :
+    forall rdPtr doPop,
+      rdPtr < ptrMod inst -> eqs.nextRdPtr rdPtr doPop < ptrMod inst
+  next_mem_eq :
+    forall mem wrPtr data doPush,
+      eqs.nextMem mem wrPtr data doPush =
+        if doPush then updateMem mem (ptrIndex inst wrPtr) data else mem
+  step_refines_abstract :
+    forall (contents : List α) push popReady,
+      fifoStep inst contents push popReady = abstractFifoStep inst contents push popReady
+  abstract_step_preserves_bound :
+    forall (contents : List α) push popReady,
+      bounded inst contents -> bounded inst (abstractFifoStep inst contents push popReady)
 
 def lifoStep (inst : Instance) (contents : List α) (push : Option α) (popReady : Bool) : List α :=
   let canPop := popReady && (0 < contents.length)
@@ -247,6 +281,96 @@ theorem step_preserves_bound
   | lifo =>
       exact lifo_step_preserves_bound inst contents push popReady hbounded
 
+theorem ptr_mod_pos
+    (inst : Instance)
+    (h_depth : 0 < inst.depth) :
+    0 < ptrMod inst := by
+  unfold ptrMod
+  omega
+
+theorem ptr_index_lt
+    (inst : Instance)
+    (h_depth : 0 < inst.depth)
+    (ptr : Nat) :
+    ptrIndex inst ptr < inst.depth := by
+  unfold ptrIndex
+  exact Nat.mod_lt ptr h_depth
+
+theorem ptr_occupancy_lt
+    (inst : Instance)
+    (h_depth : 0 < inst.depth)
+    (wrPtr rdPtr : Nat) :
+    ptrOccupancy inst wrPtr rdPtr < ptrMod inst := by
+  unfold ptrOccupancy
+  exact Nat.mod_lt _ (ptr_mod_pos inst h_depth)
+
+theorem fifo_step_refines_abstract
+    (inst : Instance)
+    (contents : List α)
+    (push : Option α)
+    (popReady : Bool) :
+    fifoStep inst contents push popReady = abstractFifoStep inst contents push popReady := by
+  rfl
+
+theorem abstract_fifo_step_preserves_bound
+    (inst : Instance)
+    (contents : List α)
+    (push : Option α)
+    (popReady : Bool)
+    (_hbounded : bounded inst contents) :
+    bounded inst (abstractFifoStep inst contents push popReady) := by
+  unfold bounded abstractFifoStep
+  exact List.length_take_le _ _
+
+theorem sync_parametric_proof
+    (inst : Instance)
+    (eqs : SyncGenerated inst α)
+    (h_depth : 0 < inst.depth)
+    (h_width : 0 < inst.dataWidth) :
+    SyncParametricProof inst eqs := by
+  refine
+    { depth_pos := h_depth
+      data_width_pos := h_width
+      ptr_mod_pos := ptr_mod_pos inst h_depth
+      equations :=
+        { full_eq := eqs.full_eq
+          empty_eq := eqs.empty_eq
+          push_ready_eq := eqs.push_ready_eq
+          pop_valid_eq := eqs.pop_valid_eq
+          write_index_eq := eqs.write_index_eq
+          read_index_eq := eqs.read_index_eq
+          next_wr_ptr_eq := eqs.next_wr_ptr_eq
+          next_rd_ptr_eq := eqs.next_rd_ptr_eq
+          next_mem_eq := eqs.next_mem_eq }
+      write_index_lt := ?_
+      read_index_lt := ?_
+      occupancy_lt_ptr_mod := ?_
+      next_wr_ptr_bounded := ?_
+      next_rd_ptr_bounded := ?_
+      next_mem_eq := ?_
+      step_refines_abstract := ?_
+      abstract_step_preserves_bound := ?_ }
+  · intro wrPtr
+    rw [eqs.write_index_eq]
+    exact ptr_index_lt inst h_depth wrPtr
+  · intro rdPtr
+    rw [eqs.read_index_eq]
+    exact ptr_index_lt inst h_depth rdPtr
+  · intro wrPtr rdPtr
+    exact ptr_occupancy_lt inst h_depth wrPtr rdPtr
+  · intro wrPtr doPush h_bound
+    rw [eqs.next_wr_ptr_eq]
+    cases doPush <;> simp [h_bound, Nat.mod_lt _ (ptr_mod_pos inst h_depth)]
+  · intro rdPtr doPop h_bound
+    rw [eqs.next_rd_ptr_eq]
+    cases doPop <;> simp [h_bound, Nat.mod_lt _ (ptr_mod_pos inst h_depth)]
+  · intro mem wrPtr data doPush
+    exact eqs.next_mem_eq mem wrPtr data doPush
+  · intro contents push popReady
+    exact fifo_step_refines_abstract inst contents push popReady
+  · intro contents push popReady hbounded
+    exact abstract_fifo_step_preserves_bound inst contents push popReady hbounded
+
 theorem certificate_checks
     (inst : Instance)
     (h_depth : 0 < inst.depth)
@@ -265,6 +389,7 @@ theorem sync_certificate_checks
     0 < inst.depth
       /\ 0 < inst.dataWidth
       /\ SyncEquationsHold inst eqs
+      /\ SyncParametricProof inst eqs
       /\ forall (contents : List (BitVec inst.dataWidth)) (push : Option (BitVec inst.dataWidth)) popReady,
         bounded inst contents -> bounded inst (step inst contents push popReady) := by
   exact
@@ -278,6 +403,7 @@ theorem sync_certificate_checks
         next_wr_ptr_eq := eqs.next_wr_ptr_eq
         next_rd_ptr_eq := eqs.next_rd_ptr_eq
         next_mem_eq := eqs.next_mem_eq },
+      sync_parametric_proof inst eqs h_depth h_width,
       step_preserves_bound inst⟩
 
 theorem lifo_certificate_checks

@@ -398,6 +398,12 @@ end fifo NonPow2Queue
     );
 
     let proof = std::fs::read_to_string(&proof_path).expect("read proof");
+    assert!(
+        proof.contains(
+            "Fifo.SyncParametricProof NonPow2Queue_fifo NonPow2Queue_fifo_sync_equations"
+        ),
+        "expected DEPTH=3 FIFO certificate to include parametric FIFO proof:\n{proof}"
+    );
     let bad_proof = proof
         .replace(
             "(wrPtr + 1) % Fifo.ptrMod NonPow2Queue_fifo",
