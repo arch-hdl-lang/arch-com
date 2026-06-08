@@ -5997,9 +5997,13 @@ From FIR, the three backends diverge:
   **Formal**              arch formal        FIR nodes → SMT-LIB2 bit-vector transition relation                  Self-contained SMT-LIB2 + invocation of Z3 / Boolector / Bitwuzla
 
   **Thread proof**        arch build/formal  Thread-lowering map → JSON or Lean proof certificate                 Per-design thread-to-FSM lowering replay artifact
+
+  **Construct proof**     arch build         FIFO/arbiter declarations → Lean or SMT-LIB2 proof certificate        Per-instance first-class construct semantic replay / solver artifact
   ------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-The Lean thread proof target is a compiler-lowering proof path, not a bounded design-property proof. `arch build --emit-thread-proof` writes a JSON certificate for the recorded thread-to-FSM lowering map. `arch build --emit-thread-proof-lean` and `arch formal --emit-thread-proof-lean` write a Lean replay file; `--check-thread-proof-lean` immediately runs `lake env lean` against that file. `arch formal --thread-proof-only` may be used with Lean proof emission/checking to skip the SMT-LIB2 backend when the desired result is only certificate replay. The Lean project defaults to `proofs/lean_thread_lowering`, or can be supplied with `--thread-proof-lean-project=DIR` / `ARCH_THREAD_PROOF_LEAN_PROJECT`.
+The Lean thread proof target is a compiler-lowering proof path, not a bounded design-property proof. `arch build --emit-thread-proof` writes a JSON certificate for the recorded thread-to-FSM lowering map. `arch build --emit-thread-proof-lean` and `arch formal --emit-thread-proof-lean` write a Lean replay file; `--check-thread-proof-lean` immediately runs `lake env lean` against that file. The compiler resolves `lake` from `PATH`, `ELAN_HOME/bin/lake`, or `~/.elan/bin/lake`. `arch formal --thread-proof-only` may be used with Lean proof emission/checking to skip the SMT-LIB2 backend when the desired result is only certificate replay. The Lean project defaults to `proofs/lean_thread_lowering`, or can be supplied with `--thread-proof-lean-project=DIR` / `ARCH_THREAD_PROOF_LEAN_PROJECT`.
+
+The construct proof target is a per-instance first-class construct proof path. `arch build --emit-construct-proof-lean` writes a Lean replay file for supported FIFO/LIFO and arbiter declarations; `--check-construct-proof-lean` immediately runs `lake env lean` against that file using the same `lake` resolver. `arch build --emit-construct-proof-smt` writes SMT-LIB2 sanity queries for the same construct models; `--check-construct-proof-smt` runs the selected solver and requires every query to return `unsat`. The certificates include generated implementation equations for FIFO/LIFO full/empty, ready/valid, pointer/index, and memory-update behavior, plus arbiter grant-selection and round-robin next-pointer behavior. These equations are emitted from the compiler's shared construct formal IR, which also feeds the `credit_channel` BMC state equations used by `arch formal`. Current construct-proof scope is synchronous FIFO/LIFO with no enabled overflow mode and built-in `priority` / `round_robin` arbiters with `latency >= 1`. Async FIFOs and custom/weighted/LRU arbiters are rejected until their semantics have dedicated formal models. The Lean project defaults to `proofs/lean_thread_lowering`, or can be supplied with `--construct-proof-lean-project=DIR` / `ARCH_CONSTRUCT_PROOF_LEAN_PROJECT`; the SMT solver defaults to `z3`, or can be supplied with `--construct-proof-smt-solver=SOLVER`.
 
 **20.3 The Simulation Execution Model**
 
@@ -8059,6 +8063,8 @@ The compiler emits warnings (non-fatal, printed before "OK: no errors") for the 
   **Formal verification**           arch formal \[\--bound N\] \[\--solver z3\|boolector\|bitwuzla\]   Direct SMT-LIB2 BMC; the SV-SVA path (arch build + EBMC/Verilator \--assert) still ships as an alternative
 
   **Thread-lowering proof**         arch build/formal \--emit-thread-proof-lean \[\--check-thread-proof-lean\]   Per-design Lean certificate replay for compiler thread-to-FSM lowering; use \--thread-proof-only on arch formal to skip SMT
+
+  **Construct proof**               arch build \--emit-construct-proof-lean \[\--check-construct-proof-lean\]     Per-instance Lean certificate replay for supported FIFO/LIFO and priority/round-robin arbiter constructs
 
   **Simulation**                    arch sim \--tb MyTb                          Compiles with Verilator or ModelSim/Questa
 

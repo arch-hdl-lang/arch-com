@@ -120,6 +120,34 @@ enum Command {
         /// Lean project directory used by `--check-thread-proof-lean`.
         #[arg(long)]
         thread_proof_lean_project: Option<PathBuf>,
+        /// Emit a Lean replay file for first-class fifo/arbiter construct
+        /// proof certificates. Bare flag writes
+        /// `<sv-output-stem>.construct-proof.lean`; `=PATH` writes the
+        /// explicit path.
+        #[arg(long, num_args = 0..=1, require_equals = true)]
+        emit_construct_proof_lean: Option<Option<PathBuf>>,
+        /// Emit the Lean construct proof file and immediately replay it with
+        /// `lake env lean`. Use `--construct-proof-lean-project=DIR` or
+        /// `ARCH_CONSTRUCT_PROOF_LEAN_PROJECT` to locate the Lean project.
+        #[arg(long)]
+        check_construct_proof_lean: bool,
+        /// Lean project directory used by `--check-construct-proof-lean`.
+        #[arg(long)]
+        construct_proof_lean_project: Option<PathBuf>,
+        /// Emit SMT-LIB2 sanity queries for first-class fifo/arbiter
+        /// construct proof certificates. Bare flag writes
+        /// `<sv-output-stem>.construct-proof.smt2`; `=PATH` writes the
+        /// explicit path.
+        #[arg(long, num_args = 0..=1, require_equals = true)]
+        emit_construct_proof_smt: Option<Option<PathBuf>>,
+        /// Emit the SMT-LIB2 construct proof file and immediately check
+        /// each query with the selected solver. Every query must return
+        /// `unsat`.
+        #[arg(long)]
+        check_construct_proof_smt: bool,
+        /// Solver used by `--check-construct-proof-smt`.
+        #[arg(long, default_value = "z3")]
+        construct_proof_smt_solver: String,
         /// Auto-emit SVA properties from `thread` lowering (wait_until / wait
         /// N cycle progress, fork-join branch transitions). Wrapped in
         /// `synopsys translate_off/on` so they don't reach synthesis. Off by
@@ -350,7 +378,8 @@ fn check_thread_proof_lean_file(
     let proof_path = proof_path
         .canonicalize()
         .unwrap_or_else(|_| proof_path.to_path_buf());
-    let output = std::process::Command::new("lake")
+    let lake = resolve_lake_bin();
+    let output = std::process::Command::new(&lake)
         .arg("env")
         .arg("lean")
         .arg(&proof_path)
@@ -359,7 +388,8 @@ fn check_thread_proof_lean_file(
         .into_diagnostic()
         .map_err(|err| {
             miette::miette!(
-                "failed to run Lean proof replay via `lake`; set PATH so `lake` is available: {err}"
+                "failed to run Lean proof replay via `{}`; install elan or set PATH/ELAN_HOME so `lake` is available: {err}",
+                lake.display()
             )
         })?;
     if !output.status.success() {
@@ -377,6 +407,123 @@ fn check_thread_proof_lean_file(
     Ok(())
 }
 
+fn check_construct_proof_lean_file(
+    proof_path: &Path,
+    explicit_project: Option<&Path>,
+) -> miette::Result<()> {
+    let project_dir = construct_proof_lean_project_dir(explicit_project)?;
+    let proof_path = proof_path
+        .canonicalize()
+        .unwrap_or_else(|_| proof_path.to_path_buf());
+    let lake = resolve_lake_bin();
+    let output = std::process::Command::new(&lake)
+        .arg("env")
+        .arg("lean")
+        .arg(&proof_path)
+        .current_dir(&project_dir)
+        .output()
+        .into_diagnostic()
+        .map_err(|err| {
+            miette::miette!(
+                "failed to run Lean construct proof replay via `{}`; install elan or set PATH/ELAN_HOME so `lake` is available: {err}",
+                lake.display()
+            )
+        })?;
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(miette::miette!(
+            "Lean construct proof replay failed for {} in {}\nstdout:\n{}\nstderr:\n{}",
+            proof_path.display(),
+            project_dir.display(),
+            stdout,
+            stderr
+        ));
+    }
+    eprintln!("Lean construct proof replay OK {}", proof_path.display());
+    Ok(())
+}
+
+fn resolve_lake_bin() -> PathBuf {
+    find_executable_on_path("lake")
+        .or_else(|| {
+            std::env::var_os("ELAN_HOME")
+                .map(PathBuf::from)
+                .map(|p| p.join("bin").join("lake"))
+                .filter(|p| p.is_file())
+        })
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|p| p.join(".elan").join("bin").join("lake"))
+                .filter(|p| p.is_file())
+        })
+        .unwrap_or_else(|| PathBuf::from("lake"))
+}
+
+fn find_executable_on_path(name: &str) -> Option<PathBuf> {
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+fn check_construct_proof_smt_file(proof_path: &Path, solver: &str) -> miette::Result<()> {
+    let output = std::process::Command::new(solver)
+        .arg(proof_path)
+        .output()
+        .into_diagnostic()
+        .map_err(|err| {
+            miette::miette!(
+                "failed to run construct SMT proof solver `{solver}`; set PATH so it is available: {err}"
+            )
+        })?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        return Err(miette::miette!(
+            "construct SMT proof solver `{solver}` failed for {}\nstdout:\n{}\nstderr:\n{}",
+            proof_path.display(),
+            stdout,
+            stderr
+        ));
+    }
+    let results: Vec<_> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| matches!(*line, "sat" | "unsat" | "unknown"))
+        .collect();
+    if results.is_empty() {
+        return Err(miette::miette!(
+            "construct SMT proof solver `{solver}` produced no check-sat result for {}\nstdout:\n{}\nstderr:\n{}",
+            proof_path.display(),
+            stdout,
+            stderr
+        ));
+    }
+    if let Some((idx, status)) = results
+        .iter()
+        .enumerate()
+        .find(|(_, status)| **status != "unsat")
+    {
+        return Err(miette::miette!(
+            "construct SMT proof query {} returned `{}` for {}; expected `unsat`\nstdout:\n{}\nstderr:\n{}",
+            idx,
+            status,
+            proof_path.display(),
+            stdout,
+            stderr
+        ));
+    }
+    eprintln!(
+        "Construct SMT proof OK {} ({} queries via {})",
+        proof_path.display(),
+        results.len(),
+        solver
+    );
+    Ok(())
+}
+
 fn thread_proof_lean_project_dir(explicit_project: Option<&Path>) -> miette::Result<PathBuf> {
     let candidate = if let Some(path) = explicit_project {
         path.to_path_buf()
@@ -388,6 +535,25 @@ fn thread_proof_lean_project_dir(explicit_project: Option<&Path>) -> miette::Res
     if !candidate.join("lakefile.toml").exists() {
         return Err(miette::miette!(
             "Lean thread proof project not found at {}; pass --thread-proof-lean-project=DIR or set ARCH_THREAD_PROOF_LEAN_PROJECT",
+            candidate.display()
+        ));
+    }
+    Ok(candidate)
+}
+
+fn construct_proof_lean_project_dir(explicit_project: Option<&Path>) -> miette::Result<PathBuf> {
+    let candidate = if let Some(path) = explicit_project {
+        path.to_path_buf()
+    } else if let Ok(path) = std::env::var("ARCH_CONSTRUCT_PROOF_LEAN_PROJECT") {
+        PathBuf::from(path)
+    } else if let Ok(path) = std::env::var("ARCH_THREAD_PROOF_LEAN_PROJECT") {
+        PathBuf::from(path)
+    } else {
+        PathBuf::from("proofs/lean_thread_lowering")
+    };
+    if !candidate.join("lakefile.toml").exists() {
+        return Err(miette::miette!(
+            "Lean construct proof project not found at {}; pass --construct-proof-lean-project=DIR or set ARCH_CONSTRUCT_PROOF_LEAN_PROJECT",
             candidate.display()
         ));
     }
@@ -711,6 +877,12 @@ fn main() -> miette::Result<()> {
             emit_thread_proof_lean,
             check_thread_proof_lean,
             thread_proof_lean_project,
+            emit_construct_proof_lean,
+            check_construct_proof_lean,
+            construct_proof_lean_project,
+            emit_construct_proof_smt,
+            check_construct_proof_smt,
+            construct_proof_smt_solver,
             auto_thread_asserts,
             no_inline_deps,
         } => {
@@ -732,8 +904,28 @@ fn main() -> miette::Result<()> {
                     "--emit-thread-proof-lean=PATH requires a single combined build output; pass -o or use bare --emit-thread-proof-lean for per-file Lean certificates"
                 ));
                 }
+                if matches!(emit_construct_proof_lean, Some(Some(_)))
+                    && files.len() > 1
+                    && o.is_none()
+                {
+                    return Err(miette::miette!(
+                    "--emit-construct-proof-lean=PATH requires a single combined build output; pass -o or use bare --emit-construct-proof-lean for per-file Lean certificates"
+                ));
+                }
+                if matches!(emit_construct_proof_smt, Some(Some(_)))
+                    && files.len() > 1
+                    && o.is_none()
+                {
+                    return Err(miette::miette!(
+                    "--emit-construct-proof-smt=PATH requires a single combined build output; pass -o or use bare --emit-construct-proof-smt for per-file SMT certificates"
+                ));
+                }
                 let need_thread_proof_lean =
                     emit_thread_proof_lean.is_some() || check_thread_proof_lean;
+                let need_construct_proof_lean =
+                    emit_construct_proof_lean.is_some() || check_construct_proof_lean;
+                let need_construct_proof_smt =
+                    emit_construct_proof_smt.is_some() || check_construct_proof_smt;
                 let all_files = resolve_use_imports(&files)?;
                 let ms = MultiSource::from_files(&all_files)?;
                 let collect_thread_metadata = emit_thread_map.is_some()
@@ -890,6 +1082,94 @@ fn main() -> miette::Result<()> {
                             )?;
                         }
                     }
+                    if need_construct_proof_lean {
+                        let proof_path = emit_construct_proof_lean
+                            .as_ref()
+                            .and_then(|req| req.clone())
+                            .unwrap_or_else(|| out_path.with_extension("construct-proof.lean"));
+                        let construct_items: Vec<_> = if no_inline_deps {
+                            let keep: Vec<(usize, usize)> = ms
+                                .segments
+                                .iter()
+                                .filter_map(|(start, end, filename, _)| {
+                                    if original_names.contains(filename) {
+                                        Some((*start, *end))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            ast.items
+                                .iter()
+                                .filter(|item| {
+                                    let s = item.span().start;
+                                    keep.iter()
+                                        .any(|(seg_start, seg_end)| s >= *seg_start && s < *seg_end)
+                                })
+                                .cloned()
+                                .collect()
+                        } else {
+                            ast.items.clone()
+                        };
+                        let lean = arch::construct_proof_cert::render_lean_checked_items(
+                            construct_items.iter(),
+                        )
+                        .map_err(|err| {
+                            miette::miette!("construct proof Lean emission failed: {err}")
+                        })?;
+                        fs::write(&proof_path, lean).into_diagnostic()?;
+                        eprintln!("Wrote {}", proof_path.display());
+                        if check_construct_proof_lean {
+                            check_construct_proof_lean_file(
+                                &proof_path,
+                                construct_proof_lean_project.as_deref(),
+                            )?;
+                        }
+                    }
+                    if need_construct_proof_smt {
+                        let proof_path = emit_construct_proof_smt
+                            .as_ref()
+                            .and_then(|req| req.clone())
+                            .unwrap_or_else(|| out_path.with_extension("construct-proof.smt2"));
+                        let construct_items: Vec<_> = if no_inline_deps {
+                            let keep: Vec<(usize, usize)> = ms
+                                .segments
+                                .iter()
+                                .filter_map(|(start, end, filename, _)| {
+                                    if original_names.contains(filename) {
+                                        Some((*start, *end))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            ast.items
+                                .iter()
+                                .filter(|item| {
+                                    let s = item.span().start;
+                                    keep.iter()
+                                        .any(|(seg_start, seg_end)| s >= *seg_start && s < *seg_end)
+                                })
+                                .cloned()
+                                .collect()
+                        } else {
+                            ast.items.clone()
+                        };
+                        let smt = arch::construct_proof_cert::render_smt2_checked_items(
+                            construct_items.iter(),
+                        )
+                        .map_err(|err| {
+                            miette::miette!("construct proof SMT emission failed: {err}")
+                        })?;
+                        fs::write(&proof_path, smt).into_diagnostic()?;
+                        eprintln!("Wrote {}", proof_path.display());
+                        if check_construct_proof_smt {
+                            check_construct_proof_smt_file(
+                                &proof_path,
+                                &construct_proof_smt_solver,
+                            )?;
+                        }
+                    }
                     // Companion .sdc file: only written if any module contained
                     // a `multicycle <N>` reg. No-op for legacy `.arch` sources.
                     if let Some(sdc_text) = sdc {
@@ -978,6 +1258,46 @@ fn main() -> miette::Result<()> {
                                 check_thread_proof_lean_file(
                                     &proof_path,
                                     thread_proof_lean_project.as_deref(),
+                                )?;
+                            }
+                        }
+                        if need_construct_proof_lean {
+                            let proof_path = out_path.with_extension("construct-proof.lean");
+                            let lean = arch::construct_proof_cert::render_lean_checked_items(
+                                file_items.iter(),
+                            )
+                            .map_err(|err| {
+                                miette::miette!(
+                                    "construct proof Lean emission failed for {}: {err}",
+                                    filename
+                                )
+                            })?;
+                            fs::write(&proof_path, lean).into_diagnostic()?;
+                            eprintln!("Wrote {}", proof_path.display());
+                            if check_construct_proof_lean {
+                                check_construct_proof_lean_file(
+                                    &proof_path,
+                                    construct_proof_lean_project.as_deref(),
+                                )?;
+                            }
+                        }
+                        if need_construct_proof_smt {
+                            let proof_path = out_path.with_extension("construct-proof.smt2");
+                            let smt = arch::construct_proof_cert::render_smt2_checked_items(
+                                file_items.iter(),
+                            )
+                            .map_err(|err| {
+                                miette::miette!(
+                                    "construct proof SMT emission failed for {}: {err}",
+                                    filename
+                                )
+                            })?;
+                            fs::write(&proof_path, smt).into_diagnostic()?;
+                            eprintln!("Wrote {}", proof_path.display());
+                            if check_construct_proof_smt {
+                                check_construct_proof_smt_file(
+                                    &proof_path,
+                                    &construct_proof_smt_solver,
                                 )?;
                             }
                         }

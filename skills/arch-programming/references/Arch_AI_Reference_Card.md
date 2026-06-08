@@ -1441,11 +1441,18 @@ arch build F.arch --emit-thread-proof          // JSON thread-lowering proof cer
 arch build F.arch --emit-thread-proof-lean     // Lean replay file for thread-to-FSM lowering certificate
 arch build F.arch --check-thread-proof-lean \
   --thread-proof-lean-project proofs/lean_thread_lowering
+arch build F.arch --check-construct-proof-lean \
+  --construct-proof-lean-project proofs/lean_thread_lowering
+arch build F.arch --check-construct-proof-smt \
+  --construct-proof-smt-solver z3
 arch formal F.arch --check-thread-proof-lean \
   --thread-proof-lean-project proofs/lean_thread_lowering \
   --thread-proof-only                          // replay Lean certificate and skip SMT
 // v1 scope: flat module, scalar types (UInt/SInt/Bool/Bit), single clock, no sub-`inst`
 // Lean thread proof scope: per-design compiler-lowering certificate replay, not bounded design-property proof
+// Lean replay resolves lake from PATH, ELAN_HOME/bin/lake, or ~/.elan/bin/lake
+// Construct proof scope: sync FIFO/LIFO pointer+memory equations plus built-in priority/round_robin arbiter selection equations
+// Construct formal IR feeds Lean construct certificates, FIFO/arbiter SMT-LIB2 checks, and credit_channel BMC equations
 // Exit codes: 0 all PROVED/HIT · 1 any REFUTED/NOT-REACHED · 2 any INCONCLUSIVE · 3 compile error
 ```
 
