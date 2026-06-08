@@ -5566,6 +5566,47 @@ fn test_nested_for_in_thread_uses_distinct_loop_counters() {
 }
 
 #[test]
+fn test_vec_bus_param_forward_no_stack_overflow() {
+    // Regression: a `target Vec<Bus, N>` forwarded across an inst boundary
+    // where the count N is itself an inst-forwarded param (`param NUM = NUM`).
+    //
+    //  * Whole-vector (`mm <- m`): `arch check` passed but `arch build`
+    //    stack-overflowed (abort 134). `emit_inst` copied the inst override
+    //    RHS verbatim into the child param list, so `param NUM = NUM` became a
+    //    self-referential child default `NUM => NUM`, and `eval_const_u32`
+    //    (resolving the Vec<Bus> count) recursed forever. Fixed by folding the
+    //    override in the parent scope before substitution, plus a depth guard.
+    //
+    //  * Per-element (`mm[k] <- m[k]`): never crashed but failed single-driver
+    //    checking ("output port m_0_ready is not driven") — the parser-
+    //    flattened LHS `mm_<k>` didn't match the child's Vec-of-bus port `mm`
+    //    in the inst driver-tracking, so the reverse (ready) direction went
+    //    uncredited. Fixed by stripping the `_<idx>` suffix to the base.
+    //
+    // Both shapes must now build to Verilator-clean SV (lint verified in CI
+    // via the standing repro; here we assert the structural SV shape).
+    let source = include_str!(
+        "regression/issues/vec_bus_param_forward/VecBusParamForward.arch"
+    );
+    let sv = compile_to_sv(source);
+    // All three modules emit.
+    for m in ["module CrashSink", "module CrashWhole", "module CrashPerElem"] {
+        assert!(sv.contains(m), "expected `{m}` in SV:\n{sv}");
+    }
+    // Whole-vector forward packs each bus signal whole.
+    assert!(
+        sv.contains(".mm_ready(m_ready)") && sv.contains(".mm_valid(m_valid)"),
+        "expected whole-Vec packed forwarding in CrashWhole:\n{sv}"
+    );
+    // Per-element forward packs element-wise via a concat over the Vec count.
+    assert!(
+        sv.contains(".mm_ready({m_ready[1], m_ready[0]})")
+            && sv.contains(".mm_valid({m_valid[1], m_valid[0]})"),
+        "expected per-element packed forwarding in CrashPerElem:\n{sv}"
+    );
+}
+
+#[test]
 fn test_vec_bus_whole_vec_forward_to_child_inst() {
     // Regression for issue #424: forwarding a `target Vec<Bus, N>`
     // parent port to a child instance via a whole-Vec connection
@@ -21658,9 +21699,18 @@ fn test_inst_for_loop_matches_hand_enumerated_form() {
         sv_loop.contains("sp_0") && sv_loop.contains("sp_1"),
         "expected sp_0 and sp_1 instances in SV:\n{sv_loop}"
     );
+    // The `param NMC = NM` forwarding makes the child's `ins: Vec<B, NMC>`
+    // count resolve to 2 in the parent scope, so each `ins[k] <- edges[k][j]`
+    // packs into the per-bus-signal concat form `.ins_v({edges_v[1][j],
+    // edges_v[0][j]})` / `.ins_d(...)`. (Before the inst param-forwarding fix
+    // the count was unresolved and codegen fell back to the invalid pins
+    // `.ins_0(edges[0][0])` — non-existent on the child and referencing the
+    // bus-typed name `edges` that SV had already split into `edges_v`/`edges_d`;
+    // Verilator rejected it with "Pin not found: 'ins_1'".)
     assert!(
-        sv_loop.contains("edges[0][0]") && sv_loop.contains("edges[1][1]"),
-        "expected per-index edges refs in SV:\n{sv_loop}"
+        sv_loop.contains(".ins_v({edges_v[1][0], edges_v[0][0]})")
+            && sv_loop.contains(".ins_d({edges_d[1][1], edges_d[0][1]})"),
+        "expected packed per-bus-signal Vec-of-bus forwarding refs in SV:\n{sv_loop}"
     );
 }
 

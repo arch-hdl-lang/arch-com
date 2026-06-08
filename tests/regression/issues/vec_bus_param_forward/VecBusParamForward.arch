@@ -1,0 +1,70 @@
+// Regression: forwarding a `target Vec<Bus, N>` across an inst boundary
+// where the Vec count N is itself an inst-forwarded param
+// (`param NUM = NUM`, parent NUM → child's same-named NUM).
+//
+// Two bugs lived here, both in the Vec-of-bus inst-boundary forwarding:
+//
+//  1. STACK OVERFLOW in `arch build` (check passed, build aborted 134).
+//     `emit_inst` built the child param list by copying the inst override
+//     RHS verbatim, so `param NUM = NUM` produced a self-referential child
+//     default `NUM => NUM`. `eval_const_u32` (resolving the Vec<Bus> count)
+//     then recursed NUM→NUM→NUM… until the stack blew. Fix: resolve the
+//     override RHS in the *parent* param scope and substitute the folded
+//     literal; a depth guard in eval_const_u32 backstops any future cycle.
+//
+//  2. PER-ELEMENT passthrough `mm[k] <- m[k]` failed single-driver
+//     checking ("output port m_0_ready is not driven"). The parser
+//     flattens the LHS `mm[k]` to port_name `mm_<k>`, but the inst
+//     driver-tracking in `check_inst_decl` only matched the bare child bus
+//     port name `mm`, so the reverse (ready) direction was never credited.
+//     Fix: strip the `_<idx>` suffix back to the Vec-of-bus base when
+//     looking up the child bus port for driver bookkeeping.
+//
+// Both whole-vector (`mm <- m`) and per-element (`mm[k] <- m[k]`) shapes
+// are exercised here; both must `arch build` to Verilator-clean SV.
+bus BusVr
+  param DATA_W: const = 8;
+  valid: out Bool;
+  ready: in  Bool;
+  data:  out UInt<DATA_W>;
+end bus BusVr
+
+module CrashSink
+  param NUM: const = 2;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port mm: target Vec<BusVr<DATA_W=8>, NUM>;
+  comb
+    mm[0].ready = true;
+    mm[1].ready = true;
+  end comb
+end module CrashSink
+
+// Whole-vector forward: `mm <- m`.
+module CrashWhole
+  param NUM: const = 2;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port m: target Vec<BusVr<DATA_W=8>, NUM>;
+  inst sink: CrashSink
+    param NUM = NUM;
+    clk <- clk;
+    rst <- rst;
+    mm <- m;
+  end inst sink
+end module CrashWhole
+
+// Per-element forward: `mm[k] <- m[k]`.
+module CrashPerElem
+  param NUM: const = 2;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port m: target Vec<BusVr<DATA_W=8>, NUM>;
+  inst sink: CrashSink
+    param NUM = NUM;
+    clk <- clk;
+    rst <- rst;
+    mm[0] <- m[0];
+    mm[1] <- m[1];
+  end inst sink
+end module CrashPerElem

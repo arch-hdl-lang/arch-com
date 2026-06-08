@@ -1421,8 +1421,38 @@ impl<'a> TypeChecker<'a> {
                 }
             }
 
+            // Base names of the child's Vec-of-bus ports (`port mm: ...
+            // Vec<Bus, N>`). The parser flattens a per-element connection
+            // `mm[k] <- ...` into port_name `mm_<k>`, so to credit the right
+            // parent driver below we must recognise `mm_<k>` as element k of
+            // the child's `mm` port. We only need to know which child ports are
+            // Vec-of-bus (count present) — not the concrete N — so this avoids
+            // resolving a possibly param-dependent count here.
+            let child_vob_bases: Vec<String> = self.source.items.iter()
+                .find_map(|item| match item {
+                    Item::Module(m2) if m2.name.name == inst.module_name.name => Some(m2.ports.as_slice()),
+                    Item::Fsm(f2)    if f2.name.name == inst.module_name.name => Some(f2.ports.as_slice()),
+                    Item::Pipeline(p2) if p2.name.name == inst.module_name.name => Some(p2.ports.as_slice()),
+                    _ => None,
+                })
+                .map(|ports| ports.iter()
+                    .filter(|p| p.bus_info.as_ref().map_or(false, |bi| bi.count.is_some()))
+                    .map(|p| p.name.name.clone())
+                    .collect())
+                .unwrap_or_default();
+
             // Mark connected output ports as driven
             for conn in &inst.connections {
+                // Resolve the child bus port this connection targets. Whole-bus
+                // (`mm <- ...`) keeps the port name verbatim; per-element
+                // (`mm[k] <- ...`, flattened to `mm_<k>`) strips the trailing
+                // `_<idx>` back to the Vec-of-bus base `mm`.
+                let conn_port_base: String = child_vob_bases.iter()
+                    .find_map(|base| {
+                        let rest = conn.port_name.name.strip_prefix(&format!("{base}_"))?;
+                        rest.parse::<u32>().ok().map(|_| base.clone())
+                    })
+                    .unwrap_or_else(|| conn.port_name.name.clone());
                 if conn.direction == ConnectDir::Output {
                     if let ExprKind::Ident(name) = &conn.signal.kind {
                         driven.insert(name.clone());
@@ -1454,7 +1484,7 @@ impl<'a> TypeChecker<'a> {
                 // Whole-bus connection: axi_rd -> m_axi_mm2s expands to N signals.
                 // The inst's bus port drives/receives signals based on its perspective.
                 // We need to mark parent signals as "driven" when the inst OUTPUTS them.
-                if let Some((_, bus_name)) = target_bus_ports.iter().find(|(pn, _)| *pn == conn.port_name.name) {
+                if let Some((_, bus_name)) = target_bus_ports.iter().find(|(pn, _)| *pn == conn_port_base) {
                     if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
                         // Find the inst's bus port perspective, params, and Vec count.
                         let inst_bus_info = self.source.items.iter()
@@ -1464,7 +1494,7 @@ impl<'a> TypeChecker<'a> {
                                 _ => None,
                             })
                             .and_then(|ports| ports.iter()
-                                .find(|p| p.name.name == conn.port_name.name)
+                                .find(|p| p.name.name == conn_port_base)
                                 .and_then(|p| p.bus_info.as_ref()));
                         let inst_perspective = inst_bus_info.map(|bi| bi.perspective);
                         // Inst port's Vec count (Some(N) means `port: ... Vec<Bus, N>`).

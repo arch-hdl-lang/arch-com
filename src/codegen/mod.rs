@@ -2228,7 +2228,24 @@ impl<'a> Codegen<'a> {
         let mut child_params_overridden = child_params.clone();
         for pa in &inst.param_assigns {
             if let Some(p) = child_params_overridden.iter_mut().find(|p| p.name.name == pa.name.name) {
-                p.default = Some(pa.value.clone());
+                // The override RHS is written in the *parent* param scope, so
+                // resolve it there before substituting into the child param
+                // list. Without this, `param NUM = NUM` (parent NUM forwarded
+                // into the child's same-named NUM) yields a self-referential
+                // child default `NUM => NUM`, and a later eval_const_u32 against
+                // the child params recurses forever (stack overflow). Folding to
+                // a literal in the parent scope severs that cycle; if the parent
+                // value isn't reducible at codegen we keep the original expr
+                // (eval_const_u32's visited-guard then safely bails to None).
+                let resolved = self
+                    .eval_const_u32(&pa.value, &self.current_module_params.clone())
+                    .map(|n| Expr {
+                        kind: ExprKind::Literal(LitKind::Dec(n as u64)),
+                        span: pa.value.span,
+                        parenthesized: false,
+                    })
+                    .unwrap_or_else(|| pa.value.clone());
+                p.default = Some(resolved);
             }
         }
         let target_bus_ports: Vec<(String, String, Vec<ParamAssign>)> = target_ports_ref
@@ -4358,6 +4375,19 @@ impl<'a> Codegen<'a> {
     /// Returns None if the expression can't be reduced — caller then treats
     /// the receiver as size-unknown and skips Vec method lowering.
     fn eval_const_u32(&self, e: &Expr, params: &[ParamDecl]) -> Option<u32> {
+        self.eval_const_u32_depth(e, params, 0)
+    }
+
+    /// Depth-guarded core of `eval_const_u32`. A self-referential param default
+    /// (e.g. a child param `NUM => NUM` produced by an inst override that shares
+    /// a name with a parent param) would otherwise recurse until the stack
+    /// overflows. Bail to None past a generous depth — no legitimate
+    /// compile-time size expression nests anywhere near this far.
+    fn eval_const_u32_depth(&self, e: &Expr, params: &[ParamDecl], depth: u32) -> Option<u32> {
+        const MAX_DEPTH: u32 = 64;
+        if depth > MAX_DEPTH {
+            return None;
+        }
         match &e.kind {
             ExprKind::Literal(LitKind::Dec(v)) => Some(*v as u32),
             ExprKind::Literal(LitKind::Hex(v))
@@ -4370,11 +4400,11 @@ impl<'a> Codegen<'a> {
                     _ => return None,
                 }
                 let d = p.default.as_ref()?;
-                self.eval_const_u32(d, params)
+                self.eval_const_u32_depth(d, params, depth + 1)
             }
             ExprKind::Binary(op, l, r) => {
-                let lv = self.eval_const_u32(l, params)?;
-                let rv = self.eval_const_u32(r, params)?;
+                let lv = self.eval_const_u32_depth(l, params, depth + 1)?;
+                let rv = self.eval_const_u32_depth(r, params, depth + 1)?;
                 Some(match op {
                     BinOp::Add => lv + rv,
                     BinOp::Sub => lv.saturating_sub(rv),
