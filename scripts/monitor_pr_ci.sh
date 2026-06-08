@@ -34,12 +34,34 @@ if [[ -z "$pr" ]]; then
 fi
 
 echo "monitor-pr-ci: watching PR ${pr}"
-if gh pr checks "$pr" --watch --interval "${ARCH_PR_CI_POLL_SECONDS:-10}"; then
+deadline=$((SECONDS + ${ARCH_PR_CI_MAX_WAIT_SECONDS:-900}))
+status=0
+while true; do
+  set +e
+  output="$(gh pr checks "$pr" --watch --interval "${ARCH_PR_CI_POLL_SECONDS:-10}" 2>&1)"
+  status=$?
+  set -e
+
+  if [[ "$output" != *"no checks reported"* ]]; then
+    printf '%s\n' "$output"
+    break
+  fi
+
+  if (( SECONDS >= deadline )); then
+    printf '%s\n' "$output"
+    status=8
+    break
+  fi
+
+  echo "monitor-pr-ci: no checks reported yet; waiting for GitHub to enqueue CI"
+  sleep "${ARCH_PR_CI_POLL_SECONDS:-10}"
+done
+
+if [[ "$status" -eq 0 ]]; then
   echo "monitor-pr-ci: all PR checks passed for ${pr}"
   exit 0
 fi
 
-status=$?
 echo "monitor-pr-ci: one or more PR checks failed or did not complete for ${pr}" >&2
 echo >&2
 gh pr checks "$pr" || true
