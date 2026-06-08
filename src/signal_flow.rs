@@ -70,8 +70,9 @@ fn lhs_base_name(expr: &Expr) -> Option<String> {
     }
 }
 
-/// Like [`lhs_base_name`], but preserves a trailing **constant-literal**
-/// index as part of the key (`out[0]` → `"out[0]"`, `out[i]` → `"out"`).
+/// Like [`lhs_base_name`], but preserves every **leading constant-literal**
+/// index as part of the key (`out[0]` → `"out[0]"`, `out[i]` → `"out"`,
+/// `edges[1][0]` → `"edges[1][0]"`).
 ///
 /// Used ONLY for `inst` output connections.  An inst output wired to a
 /// vector element (`last -> out[0]`) lowers to a continuous driver of that
@@ -82,10 +83,18 @@ fn lhs_base_name(expr: &Expr) -> Option<String> {
 /// `out[<const i>]`.  Collapsing them to a bare `out` reported a phantom
 /// multi-driver.
 ///
-/// A *variable* index (`out[i]`) is still stripped to the bare name — it
-/// conservatively aliases the whole vector — so two inst items driving the
-/// same constant element (`out[0]` twice) still collide, preserving
-/// genuine multi-driver detection.
+/// Nested vectors (`Vec<Vec<Bus>>`) unroll to multi-level constant indices
+/// (`edges[1][0]`, `edges[1][1]`).  ALL consecutive leading constant indices
+/// are retained so distinct nested elements stay distinct keys — retaining
+/// only one level would collapse `edges[1][0]` and `edges[1][1]` onto the
+/// same `edges[1]` key and report a phantom multi-driver (the bug this
+/// generalizes #528 to fix).
+///
+/// A *variable* index at any level (`out[i]`, `edges[r][c]`) terminates the
+/// retention: it conservatively aliases the whole (sub)vector, so the access
+/// from that level inward is dropped and the name keys at the bare base.  Two
+/// inst items driving the same constant element (`edges[1][0]` twice) still
+/// collide, preserving genuine multi-driver detection.
 ///
 /// This granularity is deliberately NOT applied to `comb`/`seq` blocks:
 /// each such block is one `always_comb`/`always_ff` over the whole array,
@@ -93,12 +102,29 @@ fn lhs_base_name(expr: &Expr) -> Option<String> {
 /// SV conflict and must keep erroring (see
 /// `test_multi_driver_vec_index_from_two_blocks_errors`).
 fn inst_conn_driver_name(expr: &Expr) -> Option<String> {
-    if let ExprKind::Index(base, idx) = &expr.kind {
-        if let Some(v) = const_index_value(idx) {
-            return lhs_base_name(base).map(|b| format!("{}[{}]", b, v));
+    // Walk down the chain of `Index` accesses (outermost first), collecting
+    // leading constant indices until a non-index base or a non-constant index
+    // stops us.  A non-constant index (or any other access kind) terminates
+    // retention: from there inward the access aliases the whole (sub)vector.
+    let mut indices: Vec<u64> = Vec::new();
+    let mut cur = expr;
+    while let ExprKind::Index(base, idx) = &cur.kind {
+        match const_index_value(idx) {
+            Some(v) => {
+                indices.push(v);
+                cur = base;
+            }
+            None => return lhs_base_name(expr),
         }
     }
-    lhs_base_name(expr)
+    lhs_base_name(cur).map(|b| {
+        let mut key = b;
+        // `indices` was collected inner-most-last; render outermost-first.
+        for v in indices.iter().rev() {
+            key.push_str(&format!("[{}]", v));
+        }
+        key
+    })
 }
 
 /// Collect every distinct signal name driven by `stmts`, storing the

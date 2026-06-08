@@ -23681,6 +23681,168 @@ end module ParentDistinctElem
     );
 }
 
+/// POSITIVE regression (extends #528 to nested vectors): a `generate_for`
+/// over a 2-D `Vec<Vec<Bus>>` wire whose body forwards inst outputs to
+/// `edges[r][c]` (two const indices) must type-check.  The producer
+/// generate_for unrolls into separate inst blocks each driving a DISTINCT
+/// nested element (`edges[0][0]`, `edges[0][1]`, `edges[1][0]`,
+/// `edges[1][1]`).  #528 retained only ONE trailing constant index, so
+/// `edges[r][c]` collapsed to the key `edges[<c>]` and every row aliased
+/// onto the same key — `edges[1][0]` and `edges[1][1]` both became
+/// `edges[1]` and looked double-driven.  Retaining ALL leading constant
+/// indices keeps the four elements distinct.
+#[test]
+fn test_multi_driver_genfor_nested2d_vecbus_distinct_elements_no_error() {
+    let source = r#"
+bus BusVr
+  param DATA_W: const = 8;
+  valid: out Bool;
+  ready: in  Bool;
+  data:  out UInt<DATA_W>;
+end bus BusVr
+
+module Fx6Prod
+  param COLS:   const = 2;
+  param DATA_W: const = 8;
+  port v: in Bool;
+  port d: in UInt<DATA_W>;
+  port o: initiator Vec<BusVr<DATA_W=DATA_W>, COLS>;
+  comb
+    o[0].valid = v; o[0].data = d;
+    o[1].valid = v; o[1].data = d;
+  end comb
+end module Fx6Prod
+
+module Fx6Cons
+  param ROWS:   const = 2;
+  param DATA_W: const = 8;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port ins: target    Vec<BusVr<DATA_W=DATA_W>, ROWS>;
+  port acc: initiator BusVr<DATA_W=DATA_W>;
+  reg acc_r: UInt<DATA_W> reset rst => 0;
+  comb
+    ins[0].ready = true;
+    ins[1].ready = true;
+    acc.valid = true;
+    acc.data  = acc_r;
+  end comb
+  seq on clk rising
+    if ins[0].valid and ins[1].valid
+      acc_r <= acc_r +% (ins[0].data +% ins[1].data);
+    elsif ins[0].valid
+      acc_r <= acc_r +% ins[0].data;
+    elsif ins[1].valid
+      acc_r <= acc_r +% ins[1].data;
+    end if
+  end seq
+end module Fx6Cons
+
+module Fx6Nested2D
+  param ROWS:   const = 2;
+  param COLS:   const = 2;
+  param DATA_W: const = 8;
+  type EdgeBus = BusVr<DATA_W=DATA_W>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port v:   in unpacked Vec<Bool, ROWS>;
+  port d:   in unpacked Vec<UInt<DATA_W>, ROWS>;
+  port acc: initiator Vec<EdgeBus, COLS>;
+  wire edges: Vec<Vec<EdgeBus, COLS>, ROWS>;
+  generate_for r in 0..ROWS-1
+    inst prod_r: Fx6Prod
+      param COLS = COLS;
+      param DATA_W = DATA_W;
+      v <- v[r];
+      d <- d[r];
+      for c in 0..COLS-1
+        o[c] -> edges[r][c];
+      end for
+    end inst prod_r
+  end generate_for
+  generate_for c in 0..COLS-1
+    inst cons_c: Fx6Cons
+      param ROWS = ROWS;
+      param DATA_W = DATA_W;
+      clk <- clk;
+      rst <- rst;
+      for k in 0..ROWS-1
+        ins[k] <- edges[k][c];
+      end for
+      acc -> acc[c];
+    end inst cons_c
+  end generate_for
+end module Fx6Nested2D
+"#;
+    assert!(
+        typecheck_source(source).is_ok(),
+        "generate_for over a 2-D Vec<Vec<Bus>> forwarding distinct nested \
+         elements (edges[r][c] per iteration) must NOT be a multi-driver — \
+         each (r,c) is a separate element"
+    );
+}
+
+/// NEGATIVE regression (nested-vector sibling of
+/// `test_multi_driver_two_inst_same_vec_element_errors`): two `inst` items
+/// both forwarding to the SAME nested constant element `edges[0][0]` IS a
+/// genuine multiple-driver and must still error.  This pins that retaining
+/// all leading constant indices keeps "distinct nested element" legal while
+/// "same nested element twice" stays illegal — the fix must not weaken
+/// multi-driver detection for nested vectors.
+#[test]
+fn test_multi_driver_two_inst_same_nested2d_element_errors() {
+    let source = r#"
+bus BusVr
+  param DATA_W: const = 8;
+  valid: out Bool;
+  ready: in  Bool;
+  data:  out UInt<DATA_W>;
+end bus BusVr
+
+module Fx6Prod
+  param COLS:   const = 2;
+  param DATA_W: const = 8;
+  port v: in Bool;
+  port d: in UInt<DATA_W>;
+  port o: initiator Vec<BusVr<DATA_W=DATA_W>, COLS>;
+  comb
+    o[0].valid = v; o[0].data = d;
+    o[1].valid = v; o[1].data = d;
+  end comb
+end module Fx6Prod
+
+module Fx6Bad2D
+  param COLS:   const = 2;
+  param DATA_W: const = 8;
+  type EdgeBus = BusVr<DATA_W=DATA_W>;
+  port v:   in Bool;
+  port d:   in UInt<DATA_W>;
+  wire edges: Vec<Vec<EdgeBus, COLS>, 2>;
+  inst prod_a: Fx6Prod
+    param COLS = COLS;
+    param DATA_W = DATA_W;
+    v <- v;
+    d <- d;
+    o[0] -> edges[0][0];
+    o[1] -> edges[0][1];
+  end inst prod_a
+  inst prod_b: Fx6Prod
+    param COLS = COLS;
+    param DATA_W = DATA_W;
+    v <- v;
+    d <- d;
+    o[0] -> edges[0][0];
+    o[1] -> edges[1][1];
+  end inst prod_b
+end module Fx6Bad2D
+"#;
+    assert!(
+        has_multi_driver_error(source, "edges[0][0]"),
+        "two inst outputs driving the same nested Vec element edges[0][0] \
+         must still trigger MultipleDrivers"
+    );
+}
+
 /// Bus-typed wires connected from both initiator and target insts must NOT
 /// trigger multi-driver.  This is the canonical TLM bus wire pattern.
 #[test]
