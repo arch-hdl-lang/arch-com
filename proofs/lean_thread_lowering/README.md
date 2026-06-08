@@ -115,9 +115,11 @@ generated ready-selection equation and round-robin next-pointer equation.
 
 The compiler-side equation source is `construct_formal_ir`: Lean certificates
 and SMT-LIB2 sanity checks are emitted from the same typed construct model.
-The existing `credit_channel` BMC path also consumes this IR for its synthesized
-credit/occupancy/pointer equations, which keeps the SMT and Lean-facing
-construct semantics from drifting into separate implementations.
+For FIFO/LIFO this includes the full/empty, ready/valid, pointer-index, and
+next-pointer equations used by the generated Lean records and by the SMT-LIB2
+sanity queries. The existing `credit_channel` BMC path also consumes this IR
+for its synthesized credit/occupancy/pointer equations, which keeps the SMT and
+Lean-facing construct semantics from drifting into separate implementations.
 
 Current construct-proof scope:
 
