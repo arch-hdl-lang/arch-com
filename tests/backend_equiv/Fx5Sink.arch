@@ -1,0 +1,28 @@
+// Child for Fixture 5 (A+D+E). One scalar BusVr target per child instance;
+// accumulates accepted data into acc. Ready always high (free sink).
+// Scalar (non-Vec) bus passthrough across the inst boundary is the form that
+// actually works — see Fx5bWholeVecForwardCrash.arch for the Vec<Bus>
+// whole-vector forward that crashes arch build.
+module Fx5Sink
+  param DATA_W: const = 8;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  port mm:  target    BusVr<DATA_W=DATA_W>;
+  port acc: initiator BusVr<DATA_W=DATA_W>;   // acc.data = running accumulator
+
+  reg acc_r: UInt<DATA_W> reset rst => 0;
+
+  comb
+    mm.ready  = true;
+    acc.valid = true;
+    acc.data  = acc_r;
+  end comb
+
+  seq on clk rising
+    if mm.valid
+      acc_r <= acc_r +% mm.data;
+    end if
+  end seq
+end module Fx5Sink

@@ -1,0 +1,52 @@
+// Fixture 2 — axes A+B+C.
+// A: Vec<Bus,LANES> initiator port (o).  B: thread + lock (shared mutex).
+// C: generate_for spawning LANES threads.
+// Each lane i has a thread that, when its request input req[i] is high, takes
+// a shared lock and pushes the word d[i] onto o[i] until accepted (ready).
+// The shared lock serializes the side-effect of bumping a shared "tickets"
+// counter so only one lane completes per grant window — exercising B's mutex
+// over A's per-element Vec<Bus> drive, replicated by C.
+module Fx2GenThreadLock
+  param LANES:  const = 3;
+  param DATA_W: const = 8;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  port req: in unpacked Vec<Bool, LANES>;
+  port d:   in unpacked Vec<UInt<DATA_W>, LANES>;
+  port o:   initiator   Vec<BusVr<DATA_W=DATA_W>, LANES>;
+  port grants: out UInt<DATA_W>;          // total accepted beats, shared
+
+  reg grants_r: UInt<DATA_W> reset rst => 0;
+  resource push_ch: mutex<round_robin>;
+
+  comb
+    grants = grants_r;
+  end comb
+
+  generate_for i in 0..LANES-1
+    thread Push_i on clk rising, rst low
+      default comb
+        o[i].valid = false;
+        o[i].data  = 0;
+      end default
+      if not req[i]
+        wait until req[i];
+      end if
+      lock push_ch
+        do
+          o[i].valid = true;
+          o[i].data  = d[i];
+        until o[i].ready;
+      end lock push_ch
+    end thread Push_i
+  end generate_for
+
+  // Shared accounting: one increment per any-lane accepted beat.
+  seq on clk rising
+    if (o[0].valid and o[0].ready) or (o[1].valid and o[1].ready) or (o[2].valid and o[2].ready)
+      grants_r <= grants_r +% 1;
+    end if
+  end seq
+end module Fx2GenThreadLock

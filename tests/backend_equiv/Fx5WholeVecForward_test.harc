@@ -1,0 +1,49 @@
+// Backend-equivalence test for Fixture 5 (A+D+E).
+// Whole-vector Vec<Bus> forwarded across an inst boundary. Push a few beats
+// into each lane and check each lane's accumulator equals its running sum.
+testbench Fx5Tb
+    dut : Fx5WholeVecForward
+end testbench Fx5Tb
+
+impl Fx5Test for Fx5Tb
+    run
+        log(info, "Fx5 A+D+E whole-vec forward")
+
+        dut.rst = 0
+        dut.m_valid[0] = 0
+        dut.m_valid[1] = 0
+        dut.m_valid[2] = 0
+        dut.m_data[0] = 0
+        dut.m_data[1] = 0
+        dut.m_data[2] = 0
+        dut.acc_ready[0] = 0
+        dut.acc_ready[1] = 0
+        dut.acc_ready[2] = 0
+        wait 4 cycles
+        dut.rst = 1
+        wait 2 cycles
+
+        // One cycle: lane0 += 5, lane1 += 7, lane2 += 9
+        dut.m_valid[0] = 1
+        dut.m_data[0] = 5
+        dut.m_valid[1] = 1
+        dut.m_data[1] = 7
+        dut.m_valid[2] = 1
+        dut.m_data[2] = 9
+        wait 1 cycle
+        // Second cycle: lane0 += 5, lane1 += 7, lane2 += 9
+        wait 1 cycle
+        dut.m_valid[0] = 0
+        dut.m_valid[1] = 0
+        dut.m_valid[2] = 0
+        wait 2 cycles
+
+        assert dut.acc_data[0] == 10
+            else fail("acc0=${dut.acc_data[0]} expected 10")
+        assert dut.acc_data[1] == 14
+            else fail("acc1=${dut.acc_data[1]} expected 14")
+        assert dut.acc_data[2] == 18
+            else fail("acc2=${dut.acc_data[2]} expected 18")
+        log(info, "PASS Fx5: whole-vec forward, per-lane accumulators correct")
+    end run
+end impl Fx5Test

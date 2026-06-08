@@ -1,0 +1,98 @@
+// Fixture 3 — axes A+B+D.
+// A: Vec<Bus,LANES> initiator port.  B: a thread + lock.  D: payload width is
+// a param DATA_W (default 12 — deliberately non-power-of-8 to stress odd-width
+// handling through the bus + thread lowering).
+//
+// NOTE: a variable-index write to a Vec<Bus> element directly inside the
+// thread lock body (`o[sel].valid = ...`) trips a FALSE latch-inference error
+// in thread lowering (see Fx3bVarIndexVecBusBug.arch). Workaround used
+// here: the thread drives a scalar (drive_valid/drive_sel/drive_data) and a
+// plain comb block demuxes that onto the Vec<Bus> by the runtime sel — the
+// variable index in comb is accepted. The interaction (thread+lock producing a
+// runtime-selected Vec<Bus> drive at param width) is still exercised end-to-end.
+module Fx3ThreadVecParamW
+  param LANES:  const = 4;
+  param DATA_W: const = 12;
+  param SEL_W:  const = 2;            // ceil(log2(LANES))
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  port start: in Bool;
+  port sel:   in UInt<SEL_W>;
+  port d:     in UInt<DATA_W>;
+  port o:     initiator Vec<BusVr<DATA_W=DATA_W>, LANES>;
+  port busy:  out Bool;
+
+  // The thread's `until o[sel].ready` is a genuine handshake read-back of the
+  // bus ready (an external input), so the conservative dead-skid feedback
+  // warning is expected and acknowledged.
+  pragma allow_dead_skid_feedback;
+
+  resource drv_ch: mutex<priority>;
+  reg busy_r: Bool reset rst => false;
+
+  wire drive_valid: Bool;
+  wire drive_sel:   UInt<SEL_W>;
+  wire drive_data:  UInt<DATA_W>;
+  wire sel_ready:   Bool;
+
+  comb
+    busy = busy_r;
+  end comb
+
+  // Surface the selected lane's ready as a scalar the thread can read.
+  // Constant-index reads only, to stay clear of the variable-index Vec<Bus>
+  // arch-sim codegen bug.
+  comb
+    if sel == 0
+      sel_ready = o[0].ready;
+    elsif sel == 1
+      sel_ready = o[1].ready;
+    elsif sel == 2
+      sel_ready = o[2].ready;
+    else
+      sel_ready = o[3].ready;
+    end if
+  end comb
+
+  thread Drive on clk rising, rst low
+    default comb
+      drive_valid = false;
+      drive_sel   = 0;
+      drive_data  = 0;
+    end default
+    if not start
+      wait until start;
+    end if
+    lock drv_ch
+      do
+        drive_valid = true;
+        drive_sel   = sel;
+        drive_data  = d;
+      until sel_ready;
+    end lock drv_ch
+  end thread Drive
+
+  // Demux the thread's scalar drive onto the Vec<Bus> by runtime sel.
+  // NOTE: written as explicit per-lane comparisons rather than the natural
+  // `o[drive_sel].valid = drive_valid;` because a variable-index WRITE to a
+  // Vec<Bus> element miscompiles in the arch C++ sim backend (it emits a
+  // scalar bit-select `((o) >> sel) & 1` against an undefined `o`) even though
+  // it lowers correctly in the SV backend — a backend capability divergence.
+  // See Fx3bVarIndexVecBusBug.arch.
+  comb
+    o[0].valid = drive_valid and (drive_sel == 0);
+    o[0].data  = drive_data;
+    o[1].valid = drive_valid and (drive_sel == 1);
+    o[1].data  = drive_data;
+    o[2].valid = drive_valid and (drive_sel == 2);
+    o[2].data  = drive_data;
+    o[3].valid = drive_valid and (drive_sel == 3);
+    o[3].data  = drive_data;
+  end comb
+
+  seq on clk rising
+    busy_r <= start;
+  end seq
+end module Fx3ThreadVecParamW

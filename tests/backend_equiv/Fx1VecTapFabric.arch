@@ -1,0 +1,28 @@
+// Fixture 1 — axes A+C+E.
+// A: Vec<Bus,LANES> ports (m, o).  C: generate_for replication.  E: inst
+// hierarchy + per-element cross-boundary forwarding (m[i] -> taps[i].b,
+// taps[i].o -> o[i]). Pure structural wiring, no threads. Each external
+// master bus element is forwarded into one VrTap child; each tap re-exports
+// its latched word on the outbound Vec<Bus> port o.
+module Fx1VecTapFabric
+  param LANES:  const = 3;
+  param DATA_W: const = 8;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  port m:  target      Vec<BusVr<DATA_W=DATA_W>, LANES>;
+  port en: in unpacked Vec<Bool, LANES>;
+  port o:  initiator   Vec<BusVr<DATA_W=DATA_W>, LANES>;
+
+  generate_for i in 0..LANES-1
+    inst tap_i: VrTap
+      param DATA_W = DATA_W;
+      clk <- clk;
+      rst <- rst;
+      b   <- m[i];
+      en  <- en[i];
+      o   -> o[i];
+    end inst tap_i
+  end generate_for
+end module Fx1VecTapFabric

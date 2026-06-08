@@ -1,0 +1,66 @@
+// Backend-equivalence test for Fixture 1 (A+C+E).
+// Drives each Vec<Bus> input element with a distinct data word, accepts it on
+// a different cycle per lane, and checks each VrTap re-exported its own word on
+// the outbound Vec<Bus> port (o_data[i]).
+testbench Fx1Tb
+    dut : Fx1VecTapFabric
+end testbench Fx1Tb
+
+impl Fx1Test for Fx1Tb
+    run
+        log(info, "Fx1 A+C+E vec-tap fabric")
+
+        dut.rst = 0
+        dut.m_valid[0] = 0
+        dut.m_valid[1] = 0
+        dut.m_valid[2] = 0
+        dut.m_data[0]  = 0
+        dut.m_data[1]  = 0
+        dut.m_data[2]  = 0
+        dut.en[0] = 0
+        dut.en[1] = 0
+        dut.en[2] = 0
+        dut.o_ready[0] = 0
+        dut.o_ready[1] = 0
+        dut.o_ready[2] = 0
+        wait 4 cycles
+        dut.rst = 1
+        wait 2 cycles
+
+        // Lane 0 accepts a word.
+        dut.m_valid[0] = 1
+        dut.m_data[0]  = 0xA1
+        dut.en[0] = 1
+        wait 2 cycles
+        dut.en[0] = 0
+        dut.m_valid[0] = 0
+
+        // Lane 1 accepts a different word.
+        dut.m_valid[1] = 1
+        dut.m_data[1]  = 0xB2
+        dut.en[1] = 1
+        wait 2 cycles
+        dut.en[1] = 0
+        dut.m_valid[1] = 0
+
+        // Lane 2 accepts a third word.
+        dut.m_valid[2] = 1
+        dut.m_data[2]  = 0xC3
+        dut.en[2] = 1
+        wait 2 cycles
+        dut.en[2] = 0
+        dut.m_valid[2] = 0
+        wait 2 cycles
+
+        assert dut.o_data[0] == 0xA1
+            else fail("lane0 latched ${dut.o_data[0]} expected 0xA1")
+        assert dut.o_data[1] == 0xB2
+            else fail("lane1 latched ${dut.o_data[1]} expected 0xB2")
+        assert dut.o_data[2] == 0xC3
+            else fail("lane2 latched ${dut.o_data[2]} expected 0xC3")
+        // valid is always asserted on every lane
+        assert dut.o_valid[0] == 1
+            else fail("lane0 o_valid not high")
+        log(info, "PASS Fx1: per-lane Vec<Bus> forwarding to inst children")
+    end run
+end impl Fx1Test

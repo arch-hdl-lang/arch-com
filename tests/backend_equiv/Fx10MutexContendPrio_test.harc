@@ -1,0 +1,58 @@
+// Backend-equivalence test for Fixture 10 (B+C+D, mutex<priority>).
+// Mirror of Fx4 but asserting PRIORITY semantics: with all lanes contending
+// continuously and lane 0 highest priority, lane 0 must win the lion's share
+// of grants and lanes 1/2 must be largely starved. This is the divergence
+// trap: if priority silently behaves like round_robin, g0≈g1≈g2 and the
+// assertion below (g0 strictly dominates) fails.
+testbench Fx10Tb
+    dut : Fx10MutexContendPrio
+end testbench Fx10Tb
+
+impl Fx10Test for Fx10Tb
+    run
+        log(info, "Fx10 B+C+D mutex priority parity")
+
+        dut.rst = 0
+        dut.req[0] = 0
+        dut.req[1] = 0
+        dut.req[2] = 0
+        dut.o_ready = 0
+        wait 4 cycles
+        dut.rst = 1
+        wait 2 cycles
+
+        dut.req[0] = 1
+        dut.req[1] = 1
+        dut.req[2] = 1
+        dut.o_ready = 1
+
+        let g0 : uint<32> = 0
+        let g1 : uint<32> = 0
+        let g2 : uint<32> = 0
+        let total : uint<32> = 0
+        for _ in 0 .. 60
+            wait 1 cycle
+            if dut.o_valid == 1 && dut.o_ready == 1 && total < 30
+                let tag = dut.o_data
+                if tag == 0
+                    g0 = g0 + 1
+                elsif tag == 1
+                    g1 = g1 + 1
+                elsif tag == 2
+                    g2 = g2 + 1
+                end if
+                total = total + 1
+            end if
+        end for
+
+        assert total == 30
+            else fail("total grants=${total} expected 30")
+        // Priority: lane 0 dominates. Strictly: g0 > g1 and g0 > g2.
+        // (Round-robin would give g0==g1==g2; this catches a silent RR fallback.)
+        assert g0 > g1
+            else fail("priority violated: g0=${g0} !> g1=${g1} (RR fallback?)")
+        assert g0 > g2
+            else fail("priority violated: g0=${g0} !> g2=${g2} (RR fallback?)")
+        log(info, "PASS Fx10 PRIO: total=${total} g0=${g0} g1=${g1} g2=${g2}")
+    end run
+end impl Fx10Test

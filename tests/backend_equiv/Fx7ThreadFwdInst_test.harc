@@ -1,0 +1,31 @@
+// Backend-equivalence test for Fixture 7 (B+D+E).
+// Thread produces a 10-bit word that crosses an inst boundary into a latch.
+// Drive start with d=0x2AB (10-bit), expect got == 0x2AB.
+testbench Fx7Tb
+    dut : Fx7ThreadFwdInst
+end testbench Fx7Tb
+
+impl Fx7Test for Fx7Tb
+    run
+        log(info, "Fx7 B+D+E thread-fwd-inst")
+
+        dut.rst = 0
+        dut.start = 0
+        dut.d = 0
+        wait 4 cycles
+        dut.rst = 1
+        wait 2 cycles
+
+        dut.start = 1
+        dut.d = 0x2AB
+        // Hold start; the thread takes the lock and drives; the always-ready
+        // child latches on the accepted beat. Allow a few cycles.
+        wait 4 cycles
+        dut.start = 0
+        wait 2 cycles
+
+        assert dut.got == 0x2AB
+            else fail("got=${dut.got} expected 0x2AB")
+        log(info, "PASS Fx7: 10-bit thread output crossed inst boundary, got=0x${dut.got}")
+    end run
+end impl Fx7Test

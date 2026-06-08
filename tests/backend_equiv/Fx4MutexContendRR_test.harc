@@ -1,0 +1,63 @@
+// Backend-equivalence test for Fixture 4 (B+C+D) round_robin.
+// All NUM lanes request; o.ready held high. Count grants per tag (lane index
+// appears on o.data). Round-robin must serve every lane (no starvation) and
+// keep ~1 beat/cycle.
+testbench Fx4Tb
+    dut : Fx4MutexContendRR
+end testbench Fx4Tb
+
+impl Fx4Test for Fx4Tb
+    run
+        log(info, "Fx4 B+C+D mutex round_robin")
+
+        dut.rst = 0
+        dut.req[0] = 0
+        dut.req[1] = 0
+        dut.req[2] = 0
+        dut.o_ready = 0
+        wait 4 cycles
+        dut.rst = 1
+        wait 2 cycles
+
+        dut.req[0] = 1
+        dut.req[1] = 1
+        dut.req[2] = 1
+        dut.o_ready = 1
+
+        let g0 : uint<32> = 0
+        let g1 : uint<32> = 0
+        let g2 : uint<32> = 0
+        let total : uint<32> = 0
+        let cyc : uint<32> = 0
+        let lastc : uint<32> = 1
+        for _ in 0 .. 60
+            wait 1 cycle
+            cyc = cyc + 1
+            if dut.o_valid == 1 && dut.o_ready == 1 && total < 30
+                let tag = dut.o_data
+                if tag == 0
+                    g0 = g0 + 1
+                elsif tag == 1
+                    g1 = g1 + 1
+                elsif tag == 2
+                    g2 = g2 + 1
+                end if
+                total = total + 1
+                lastc = cyc
+            end if
+        end for
+
+        assert total == 30
+            else fail("total grants=${total} expected 30")
+        assert g0 > 0
+            else fail("lane0 starved")
+        assert g1 > 0
+            else fail("lane1 starved")
+        assert g2 > 0
+            else fail("lane2 starved")
+        // throughput >= 0.9 beat/cyc
+        assert (total * 10) >= (lastc * 9)
+            else fail("throughput low: ${total} in ${lastc}")
+        log(info, "PASS Fx4 RR: total=${total} g0=${g0} g1=${g1} g2=${g2}")
+    end run
+end impl Fx4Test

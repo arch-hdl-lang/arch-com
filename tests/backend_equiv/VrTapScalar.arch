@@ -1,0 +1,12 @@
+// Companion leaf for Fx1bMultiDriverBug (A+C+E). One scalar BusVr target +
+// a scalar output, so the parent can forward `b <- m[i]` (Vec<Bus> elem)
+// beside `last -> out[i]` (non-bus elem) in one generate_for body.
+module VrTapScalar
+  port b:    target BusVr<DATA_W=8>;
+  port en:   in Bool;
+  port last: out UInt<8>;
+  comb
+    b.ready = en;
+    last    = b.data;
+  end comb
+end module VrTapScalar

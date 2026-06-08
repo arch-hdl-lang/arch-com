@@ -1,0 +1,36 @@
+// Fixture 8 — axes C+D+E.
+// C: generate_if (param-gated).  D: param MODE selects behavior; param DATA_W.
+// E: each generate_if arm instantiates a DIFFERENT child module, forwarding the
+// same external signals to it.
+//
+// MODE==0 → instantiate Fx8Inc (output = in + 1).
+// MODE!=0 → instantiate Fx8Dbl (output = in * 2, wrapping at DATA_W).
+// Whichever arm is active drives `y` via a forwarded child inst. MODE fixed to 0 here so the inc arm is selected (twin of Fx8GenIfSelect).
+// is 1 here; the companion Fx8GenIfSelectMode0.arch fixes MODE=0 for the other
+// arm so both paths are exercised by the same source.
+module Fx8GenIfSelectMode0
+  param MODE:   const = 0;            // exercises the OTHER (inc) arm
+  param DATA_W: const = 8;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  port a: in  UInt<DATA_W>;
+  port y: out UInt<DATA_W>;
+
+  generate_if MODE == 0
+    inst u_inc: Fx8Inc
+      param DATA_W = DATA_W;
+      x <- a;
+      r -> y;
+    end inst u_inc
+  end generate_if
+
+  generate_if MODE != 0
+    inst u_dbl: Fx8Dbl
+      param DATA_W = DATA_W;
+      x <- a;
+      r -> y;
+    end inst u_dbl
+  end generate_if
+end module Fx8GenIfSelectMode0

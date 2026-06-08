@@ -1,30 +1,38 @@
-// Regression: variable-index access to a Vec<Bus> element.
+// Fixture 3b — BUG REPRO (axes A+B+D). Builds SV but MISCOMPILES under the
+// arch C++ sim backend; the `until` form ALSO produces invalid SV.
 //
-// `arch build` lowers `o[sel].valid` to the packed-array form
-// `o_valid[sel]`; the C++ sim backend (`arch sim`) must do the same. Before
-// the fix the sim emitter mis-treated the Vec<Bus> element as a scalar
-// bit-select (`((o) >> sel) & 1`) against an undefined `o`, producing
-// uncompilable C++. Both backends must select lane `sel`.
+// Two related defects in variable-index Vec<Bus> element access:
 //
-// See also Fx3bVarIndexVecBusThread.arch for the `thread`-lowering mirror.
-bus BusVr
-  param DATA_W: const = 8;
-  valid: out Bool;
-  ready: in  Bool;
-  data:  out UInt<DATA_W>;
-end bus BusVr
-
-module Vsel
+// (1) arch-sim C++ codegen — a variable-index WRITE to a Vec<Bus> element in
+//     a plain comb block:
+//         o[sel].valid = dv;        // sel : UInt<2>, o : Vec<BusVr,4>
+//     lowers to invalid C++:
+//         (... (((o) >> (sel)) & 1)).data = dv;
+//     i.e. it is treated as a bit-select on a (nonexistent) scalar `o`
+//     instead of selecting Vec<Bus> element `sel`. The SV backend lowers the
+//     SAME source correctly to `assign o_data[sel] = dv;` — a backend
+//     capability divergence (SV ok, arch-sim broken).
+//
+// (2) thread lowering — a variable-index Vec<Bus> read in an `until`
+//     condition:
+//         until o[sel].ready;
+//     lowers to invalid SV `if (start && o[sel].ready)` where `o` is undefined
+//     (the bus was flattened to o_ready[0..3]); arch-sim emits the same
+//     undefined-`o` reference. Constant-index `o[2].ready` lowers fine.
+//
+// Minimal reproducer for (1) below. Workaround in Fx3ThreadVecParamW.arch:
+// expand the variable index into explicit per-lane constant-index branches.
+module Fx3bVarIndexVecBusBug
   param LANES: const = 4;
   port sel: in UInt<2>;
-  port dv: in UInt<8>;
-  port o: initiator Vec<BusVr<DATA_W=8>, LANES>;
+  port dv:  in UInt<8>;
+  port o:   initiator Vec<BusVr<DATA_W=8>, LANES>;
   comb
     o[0].valid = false; o[0].data = 0;
     o[1].valid = false; o[1].data = 0;
     o[2].valid = false; o[2].data = 0;
     o[3].valid = false; o[3].data = 0;
-    o[sel].valid = true;     // variable index
+    o[sel].valid = true;     // SV: assign o_valid[sel] = 1; arch-sim: ((o)>>sel)&1  <-- BUG
     o[sel].data  = dv;
   end comb
-end module Vsel
+end module Fx3bVarIndexVecBusBug
