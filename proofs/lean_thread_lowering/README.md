@@ -104,10 +104,14 @@ backend after the Lean artifact is emitted and checked.
 `ArchConstructProof/Fifo.lean` and `ArchConstructProof/Arbiter.lean` provide
 generic proof models for first-class FIFO/LIFO and built-in arbiter constructs.
 The compiler emits one Lean instance per supported construct plus generated
-equation records for the implementation shape. FIFO/LIFO records cover
-full/empty, ready/valid, pointer/index, and memory-update equations. Arbiter
-records cover the generated ready-selection equation and round-robin next-pointer
-equation.
+equation records for the implementation shape. FIFO certificates instantiate a
+parametric proof over arbitrary depth and data width: generated full/empty,
+ready/valid, pointer/index, next-pointer, and memory-update equations replay;
+pointer indexes stay below `DEPTH`; modulo pointers stay below `2 * DEPTH`;
+next-pointer equations preserve that bound; and the FIFO transition refines an
+abstract queue step. LIFO records currently cover stack full/empty,
+ready/valid, pointer, and memory-update equations. Arbiter records cover the
+generated ready-selection equation and round-robin next-pointer equation.
 
 The compiler-side equation source is `construct_formal_ir`: Lean certificates
 and SMT-LIB2 sanity checks are emitted from the same typed construct model.

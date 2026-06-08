@@ -318,7 +318,7 @@ fn push_fifo_lean(out: &mut String, fifo: &FifoCert) {
     match model.kind {
         FifoKind::Fifo => {
             out.push_str(&format!(
-                "    0 < {base}.depth /\\ 0 < {base}.dataWidth /\\ Fifo.SyncEquationsHold {base} {base}_sync_equations /\\ forall (contents : List (BitVec {base}.dataWidth)) (push : Option (BitVec {base}.dataWidth)) popReady,\n"
+                "    0 < {base}.depth /\\ 0 < {base}.dataWidth /\\ Fifo.SyncEquationsHold {base} {base}_sync_equations /\\ Fifo.SyncParametricProof {base} {base}_sync_equations /\\ forall (contents : List (BitVec {base}.dataWidth)) (push : Option (BitVec {base}.dataWidth)) popReady,\n"
             ));
             out.push_str(&format!(
                 "      Fifo.bounded {base} contents -> Fifo.bounded {base} (Fifo.step {base} contents push popReady) := by\n"
@@ -454,6 +454,7 @@ end arbiter BusArbiter
         let lean = render_lean_checked(&source).unwrap();
         assert!(lean.contains("def TxQueue_fifo : Fifo.Instance"));
         assert!(lean.contains("Fifo.SyncEquationsHold TxQueue_fifo TxQueue_fifo_sync_equations"));
+        assert!(lean.contains("Fifo.SyncParametricProof TxQueue_fifo TxQueue_fifo_sync_equations"));
         assert!(lean.contains("def BusArbiter_arbiter : Arbiter.Instance"));
         assert!(lean.contains(
             "Arbiter.RoundRobinEquationsHold BusArbiter_arbiter BusArbiter_arbiter_round_robin_equations"
