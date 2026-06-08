@@ -258,17 +258,202 @@ pub struct ArbiterFormalModel {
     pub latency: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FifoNatExpr {
+    Var(&'static str),
+    Zero,
+    Depth,
+    PtrMod,
+    PtrOccupancy(&'static str, &'static str),
+    PtrIndex(&'static str),
+    Add(&'static str, u64),
+    Sub(&'static str, u64),
+    Mod(Box<FifoNatExpr>, Box<FifoNatExpr>),
+    Ite {
+        cond: FifoBoolExpr,
+        then_expr: Box<FifoNatExpr>,
+        else_expr: Box<FifoNatExpr>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FifoBoolExpr {
+    Var(&'static str),
+    Eq(Box<FifoNatExpr>, Box<FifoNatExpr>),
+    Not(Box<FifoBoolExpr>),
+    And(Box<FifoBoolExpr>, Box<FifoBoolExpr>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FifoMemExpr {
+    Var(&'static str),
+    Update {
+        mem: &'static str,
+        idx: FifoNatExpr,
+        data: &'static str,
+    },
+    Ite {
+        cond: FifoBoolExpr,
+        then_expr: Box<FifoMemExpr>,
+        else_expr: Box<FifoMemExpr>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SyncFifoIr {
+    full: FifoBoolExpr,
+    empty: FifoBoolExpr,
+    push_ready: FifoBoolExpr,
+    pop_valid: FifoBoolExpr,
+    write_index: FifoNatExpr,
+    read_index: FifoNatExpr,
+    next_wr_ptr: FifoNatExpr,
+    next_rd_ptr: FifoNatExpr,
+    next_mem: FifoMemExpr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LifoIr {
+    full: FifoBoolExpr,
+    empty: FifoBoolExpr,
+    push_ready: FifoBoolExpr,
+    pop_valid: FifoBoolExpr,
+    write_index: FifoNatExpr,
+    read_index: FifoNatExpr,
+    next_sp: FifoNatExpr,
+    next_mem: FifoMemExpr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArbiterSelectIr {
+    Priority,
+    RoundRobin,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ArbiterIr {
+    select: ArbiterSelectIr,
+}
+
+impl FifoFormalModel {
+    fn sync_ir(&self) -> SyncFifoIr {
+        let full = FifoBoolExpr::Eq(
+            Box::new(FifoNatExpr::PtrOccupancy("wrPtr", "rdPtr")),
+            Box::new(FifoNatExpr::Depth),
+        );
+        let empty = FifoBoolExpr::Eq(
+            Box::new(FifoNatExpr::PtrOccupancy("wrPtr", "rdPtr")),
+            Box::new(FifoNatExpr::Zero),
+        );
+        SyncFifoIr {
+            full: full.clone(),
+            empty: empty.clone(),
+            push_ready: FifoBoolExpr::Not(Box::new(full)),
+            pop_valid: FifoBoolExpr::Not(Box::new(empty)),
+            write_index: FifoNatExpr::PtrIndex("wrPtr"),
+            read_index: FifoNatExpr::PtrIndex("rdPtr"),
+            next_wr_ptr: FifoNatExpr::Ite {
+                cond: FifoBoolExpr::Var("doPush"),
+                then_expr: Box::new(FifoNatExpr::Mod(
+                    Box::new(FifoNatExpr::Add("wrPtr", 1)),
+                    Box::new(FifoNatExpr::PtrMod),
+                )),
+                else_expr: Box::new(FifoNatExpr::Var("wrPtr")),
+            },
+            next_rd_ptr: FifoNatExpr::Ite {
+                cond: FifoBoolExpr::Var("doPop"),
+                then_expr: Box::new(FifoNatExpr::Mod(
+                    Box::new(FifoNatExpr::Add("rdPtr", 1)),
+                    Box::new(FifoNatExpr::PtrMod),
+                )),
+                else_expr: Box::new(FifoNatExpr::Var("rdPtr")),
+            },
+            next_mem: FifoMemExpr::Ite {
+                cond: FifoBoolExpr::Var("doPush"),
+                then_expr: Box::new(FifoMemExpr::Update {
+                    mem: "mem",
+                    idx: FifoNatExpr::PtrIndex("wrPtr"),
+                    data: "data",
+                }),
+                else_expr: Box::new(FifoMemExpr::Var("mem")),
+            },
+        }
+    }
+
+    fn lifo_ir(&self) -> LifoIr {
+        let full = FifoBoolExpr::Eq(
+            Box::new(FifoNatExpr::Var("sp")),
+            Box::new(FifoNatExpr::Depth),
+        );
+        let empty = FifoBoolExpr::Eq(
+            Box::new(FifoNatExpr::Var("sp")),
+            Box::new(FifoNatExpr::Zero),
+        );
+        LifoIr {
+            full: full.clone(),
+            empty: empty.clone(),
+            push_ready: FifoBoolExpr::Not(Box::new(full)),
+            pop_valid: FifoBoolExpr::Not(Box::new(empty)),
+            write_index: FifoNatExpr::Ite {
+                cond: FifoBoolExpr::Var("doPop"),
+                then_expr: Box::new(FifoNatExpr::Sub("sp", 1)),
+                else_expr: Box::new(FifoNatExpr::Var("sp")),
+            },
+            read_index: FifoNatExpr::Sub("sp", 1),
+            next_sp: FifoNatExpr::Ite {
+                cond: FifoBoolExpr::And(
+                    Box::new(FifoBoolExpr::Var("doPush")),
+                    Box::new(FifoBoolExpr::Var("doPop")),
+                ),
+                then_expr: Box::new(FifoNatExpr::Var("sp")),
+                else_expr: Box::new(FifoNatExpr::Ite {
+                    cond: FifoBoolExpr::Var("doPush"),
+                    then_expr: Box::new(FifoNatExpr::Add("sp", 1)),
+                    else_expr: Box::new(FifoNatExpr::Ite {
+                        cond: FifoBoolExpr::Var("doPop"),
+                        then_expr: Box::new(FifoNatExpr::Sub("sp", 1)),
+                        else_expr: Box::new(FifoNatExpr::Var("sp")),
+                    }),
+                }),
+            },
+            next_mem: FifoMemExpr::Ite {
+                cond: FifoBoolExpr::Var("doPush"),
+                then_expr: Box::new(FifoMemExpr::Update {
+                    mem: "mem",
+                    idx: FifoNatExpr::Ite {
+                        cond: FifoBoolExpr::Var("doPop"),
+                        then_expr: Box::new(FifoNatExpr::Sub("sp", 1)),
+                        else_expr: Box::new(FifoNatExpr::Var("sp")),
+                    },
+                    data: "data",
+                }),
+                else_expr: Box::new(FifoMemExpr::Var("mem")),
+            },
+        }
+    }
+}
+
+impl ArbiterFormalModel {
+    fn ir(&self) -> ArbiterIr {
+        let select = match self.policy {
+            ArbiterFormalPolicy::Priority => ArbiterSelectIr::Priority,
+            ArbiterFormalPolicy::RoundRobin => ArbiterSelectIr::RoundRobin,
+        };
+        ArbiterIr { select }
+    }
+}
+
 pub fn render_lean_fifo_equations(out: &mut String, base: &str, model: &FifoFormalModel) {
     match model.kind {
-        FifoKind::Fifo => render_lean_sync_fifo_equations(out, base),
-        FifoKind::Lifo => render_lean_lifo_equations(out, base),
+        FifoKind::Fifo => render_lean_sync_fifo_equations(out, base, &model.sync_ir()),
+        FifoKind::Lifo => render_lean_lifo_equations(out, base, &model.lifo_ir()),
     }
 }
 
 pub fn render_lean_arbiter_equations(out: &mut String, base: &str, model: &ArbiterFormalModel) {
-    match model.policy {
-        ArbiterFormalPolicy::Priority => render_lean_priority_arbiter_equations(out, base),
-        ArbiterFormalPolicy::RoundRobin => render_lean_round_robin_arbiter_equations(out, base),
+    match model.ir().select {
+        ArbiterSelectIr::Priority => render_lean_priority_arbiter_equations(out, base),
+        ArbiterSelectIr::RoundRobin => render_lean_round_robin_arbiter_equations(out, base),
     }
 }
 
@@ -277,11 +462,22 @@ pub fn render_smt2_fifo_sanity(model: &FifoFormalModel) -> String {
 }
 
 pub fn render_smt2_fifo_sanity_with_prefix(model: &FifoFormalModel, prefix: &str) -> String {
-    let width = clog2_u32(model.depth + 1).max(1);
-    let depth = bv_lit(model.depth, width);
-    let zero = bv_lit(0, width);
-    let one = bv_lit(1, width);
-    let occ = format!("{prefix}_occ");
+    match model.kind {
+        FifoKind::Fifo => render_smt2_sync_fifo_sanity_with_prefix(model, prefix, &model.sync_ir()),
+        FifoKind::Lifo => render_smt2_lifo_sanity_with_prefix(model, prefix, &model.lifo_ir()),
+    }
+}
+
+fn render_smt2_sync_fifo_sanity_with_prefix(
+    model: &FifoFormalModel,
+    prefix: &str,
+    ir: &SyncFifoIr,
+) -> String {
+    let ptr_width = clog2_u32(2 * model.depth + 1).max(1);
+    let ptr_mod = bv_lit(2 * model.depth, ptr_width);
+    let depth = bv_lit(model.depth, ptr_width);
+    let wr_ptr = format!("{prefix}_wrPtr");
+    let rd_ptr = format!("{prefix}_rdPtr");
     let push_valid = format!("{prefix}_push_valid");
     let pop_ready = format!("{prefix}_pop_ready");
     let full = format!("{prefix}_full");
@@ -290,19 +486,50 @@ pub fn render_smt2_fifo_sanity_with_prefix(model: &FifoFormalModel, prefix: &str
     let pop_valid = format!("{prefix}_pop_valid");
     let do_push = format!("{prefix}_do_push");
     let do_pop = format!("{prefix}_do_pop");
-    let next_occ = format!("{prefix}_next_occ");
+    let write_index = format!("{prefix}_write_index");
+    let read_index = format!("{prefix}_read_index");
+    let next_wr_ptr = format!("{prefix}_next_wr_ptr");
+    let next_rd_ptr = format!("{prefix}_next_rd_ptr");
+    let mut vars = std::collections::BTreeMap::new();
+    vars.insert("wrPtr", wr_ptr.as_str());
+    vars.insert("rdPtr", rd_ptr.as_str());
+    vars.insert("doPush", do_push.as_str());
+    vars.insert("doPop", do_pop.as_str());
+    let ctx = FifoSmtCtx {
+        model,
+        width: ptr_width,
+        vars: &vars,
+    };
     let mut out = String::new();
     out.push_str("; auto-generated construct formal IR sanity check\n");
-    out.push_str("; model: FIFO/LIFO control equations\n");
+    out.push_str("; model: sync FIFO pointer/control equations\n");
     out.push_str("(set-logic QF_BV)\n");
-    out.push_str(&format!("(declare-fun {occ} () (_ BitVec {width}))\n"));
+    out.push_str(&format!(
+        "(declare-fun {wr_ptr} () (_ BitVec {ptr_width}))\n"
+    ));
+    out.push_str(&format!(
+        "(declare-fun {rd_ptr} () (_ BitVec {ptr_width}))\n"
+    ));
     out.push_str(&format!("(declare-fun {push_valid} () Bool)\n"));
     out.push_str(&format!("(declare-fun {pop_ready} () Bool)\n"));
-    out.push_str(&format!("(assert (bvule {occ} {depth}))\n"));
-    out.push_str(&format!("(define-fun {full} () Bool (= {occ} {depth}))\n"));
-    out.push_str(&format!("(define-fun {empty} () Bool (= {occ} {zero}))\n"));
-    out.push_str(&format!("(define-fun {push_ready} () Bool (not {full}))\n"));
-    out.push_str(&format!("(define-fun {pop_valid} () Bool (not {empty}))\n"));
+    out.push_str(&format!("(assert (bvult {wr_ptr} {ptr_mod}))\n"));
+    out.push_str(&format!("(assert (bvult {rd_ptr} {ptr_mod}))\n"));
+    out.push_str(&format!(
+        "(define-fun {full} () Bool {})\n",
+        smt_bool(&ir.full, &ctx)
+    ));
+    out.push_str(&format!(
+        "(define-fun {empty} () Bool {})\n",
+        smt_bool(&ir.empty, &ctx)
+    ));
+    out.push_str(&format!(
+        "(define-fun {push_ready} () Bool {})\n",
+        smt_bool(&ir.push_ready, &ctx)
+    ));
+    out.push_str(&format!(
+        "(define-fun {pop_valid} () Bool {})\n",
+        smt_bool(&ir.pop_valid, &ctx)
+    ));
     out.push_str(&format!(
         "(define-fun {do_push} () Bool (and {push_valid} {push_ready}))\n"
     ));
@@ -310,12 +537,97 @@ pub fn render_smt2_fifo_sanity_with_prefix(model: &FifoFormalModel, prefix: &str
         "(define-fun {do_pop} () Bool (and {pop_ready} {pop_valid}))\n"
     ));
     out.push_str(&format!(
-        "(define-fun {next_occ} () (_ BitVec {width}) (ite (and {do_push} (not {do_pop})) (bvadd {occ} {one}) (ite (and (not {do_push}) {do_pop}) (bvsub {occ} {one}) {occ})))\n"
+        "(define-fun {write_index} () (_ BitVec {ptr_width}) {})\n",
+        smt_nat(&ir.write_index, &ctx)
+    ));
+    out.push_str(&format!(
+        "(define-fun {read_index} () (_ BitVec {ptr_width}) {})\n",
+        smt_nat(&ir.read_index, &ctx)
+    ));
+    out.push_str(&format!(
+        "(define-fun {next_wr_ptr} () (_ BitVec {ptr_width}) {})\n",
+        smt_nat(&ir.next_wr_ptr, &ctx)
+    ));
+    out.push_str(&format!(
+        "(define-fun {next_rd_ptr} () (_ BitVec {ptr_width}) {})\n",
+        smt_nat(&ir.next_rd_ptr, &ctx)
     ));
     out.push_str("(assert (not (and\n");
     out.push_str(&format!("  (= {push_ready} (not {full}))\n"));
     out.push_str(&format!("  (= {pop_valid} (not {empty}))\n"));
-    out.push_str(&format!("  (bvule {next_occ} {depth})\n"));
+    out.push_str(&format!("  (bvult {write_index} {depth})\n"));
+    out.push_str(&format!("  (bvult {read_index} {depth})\n"));
+    out.push_str(&format!("  (bvult {next_wr_ptr} {ptr_mod})\n"));
+    out.push_str(&format!("  (bvult {next_rd_ptr} {ptr_mod})\n"));
+    out.push_str(")))\n");
+    out.push_str("(check-sat)\n");
+    out
+}
+
+fn render_smt2_lifo_sanity_with_prefix(
+    model: &FifoFormalModel,
+    prefix: &str,
+    ir: &LifoIr,
+) -> String {
+    let width = clog2_u32(model.depth + 1).max(1);
+    let depth = bv_lit(model.depth, width);
+    let sp = format!("{prefix}_sp");
+    let push_valid = format!("{prefix}_push_valid");
+    let pop_ready = format!("{prefix}_pop_ready");
+    let full = format!("{prefix}_full");
+    let empty = format!("{prefix}_empty");
+    let push_ready = format!("{prefix}_push_ready");
+    let pop_valid = format!("{prefix}_pop_valid");
+    let do_push = format!("{prefix}_do_push");
+    let do_pop = format!("{prefix}_do_pop");
+    let next_sp = format!("{prefix}_next_sp");
+    let mut vars = std::collections::BTreeMap::new();
+    vars.insert("sp", sp.as_str());
+    vars.insert("doPush", do_push.as_str());
+    vars.insert("doPop", do_pop.as_str());
+    let ctx = FifoSmtCtx {
+        model,
+        width,
+        vars: &vars,
+    };
+    let mut out = String::new();
+    out.push_str("; auto-generated construct formal IR sanity check\n");
+    out.push_str("; model: LIFO stack pointer/control equations\n");
+    out.push_str("(set-logic QF_BV)\n");
+    out.push_str(&format!("(declare-fun {sp} () (_ BitVec {width}))\n"));
+    out.push_str(&format!("(declare-fun {push_valid} () Bool)\n"));
+    out.push_str(&format!("(declare-fun {pop_ready} () Bool)\n"));
+    out.push_str(&format!("(assert (bvule {sp} {depth}))\n"));
+    out.push_str(&format!(
+        "(define-fun {full} () Bool {})\n",
+        smt_bool(&ir.full, &ctx)
+    ));
+    out.push_str(&format!(
+        "(define-fun {empty} () Bool {})\n",
+        smt_bool(&ir.empty, &ctx)
+    ));
+    out.push_str(&format!(
+        "(define-fun {push_ready} () Bool {})\n",
+        smt_bool(&ir.push_ready, &ctx)
+    ));
+    out.push_str(&format!(
+        "(define-fun {pop_valid} () Bool {})\n",
+        smt_bool(&ir.pop_valid, &ctx)
+    ));
+    out.push_str(&format!(
+        "(define-fun {do_push} () Bool (and {push_valid} {push_ready}))\n"
+    ));
+    out.push_str(&format!(
+        "(define-fun {do_pop} () Bool (and {pop_ready} {pop_valid}))\n"
+    ));
+    out.push_str(&format!(
+        "(define-fun {next_sp} () (_ BitVec {width}) {})\n",
+        smt_nat(&ir.next_sp, &ctx)
+    ));
+    out.push_str("(assert (not (and\n");
+    out.push_str(&format!("  (= {push_ready} (not {full}))\n"));
+    out.push_str(&format!("  (= {pop_valid} (not {empty}))\n"));
+    out.push_str(&format!("  (bvule {next_sp} {depth})\n"));
     out.push_str(")))\n");
     out.push_str("(check-sat)\n");
     out
@@ -331,9 +643,9 @@ pub fn render_smt2_arbiter_sanity_with_prefix(model: &ArbiterFormalModel, prefix
     let grant = format!("{prefix}_grant");
     let start_name = format!("{prefix}_start");
     let start_width = clog2_u32(model.num_req + 1).max(1);
-    let grant_expr = match model.policy {
-        ArbiterFormalPolicy::Priority => priority_grant_expr(&req, n, &(0..n).collect::<Vec<_>>()),
-        ArbiterFormalPolicy::RoundRobin => {
+    let grant_expr = match model.ir().select {
+        ArbiterSelectIr::Priority => priority_grant_expr(&req, n, &(0..n).collect::<Vec<_>>()),
+        ArbiterSelectIr::RoundRobin => {
             let mut expr = bv_zero(n);
             for start in (0..n).rev() {
                 let order = (0..n).map(|off| (start + off) % n).collect::<Vec<_>>();
@@ -353,7 +665,7 @@ pub fn render_smt2_arbiter_sanity_with_prefix(model: &ArbiterFormalModel, prefix
     out.push_str("; model: arbiter grant equations\n");
     out.push_str("(set-logic QF_BV)\n");
     out.push_str(&format!("(declare-fun {req} () (_ BitVec {n}))\n"));
-    if matches!(model.policy, ArbiterFormalPolicy::RoundRobin) {
+    if matches!(model.ir().select, ArbiterSelectIr::RoundRobin) {
         out.push_str(&format!(
             "(declare-fun {start_name} () (_ BitVec {start_width}))\n"
         ));
@@ -375,41 +687,46 @@ pub fn render_smt2_arbiter_sanity_with_prefix(model: &ArbiterFormalModel, prefix
     out
 }
 
-fn render_lean_sync_fifo_equations(out: &mut String, base: &str) {
+fn render_lean_sync_fifo_equations(out: &mut String, base: &str, ir: &SyncFifoIr) {
     out.push_str(&format!(
         "\ndef {base}_sync_equations : Fifo.SyncGenerated {base} (BitVec {base}.dataWidth) :=\n"
     ));
-    out.push_str("  { full := fun wrPtr rdPtr => (Fifo.ptrOccupancy ");
-    out.push_str(base);
-    out.push_str(" wrPtr rdPtr == ");
-    out.push_str(base);
-    out.push_str(".depth)\n");
-    out.push_str("    empty := fun wrPtr rdPtr => (Fifo.ptrOccupancy ");
-    out.push_str(base);
-    out.push_str(" wrPtr rdPtr == 0)\n");
-    out.push_str("    pushReady := fun wrPtr rdPtr => !((Fifo.ptrOccupancy ");
-    out.push_str(base);
-    out.push_str(" wrPtr rdPtr == ");
-    out.push_str(base);
-    out.push_str(".depth))\n");
-    out.push_str("    popValid := fun wrPtr rdPtr => !((Fifo.ptrOccupancy ");
-    out.push_str(base);
-    out.push_str(" wrPtr rdPtr == 0))\n");
-    out.push_str("    writeIndex := fun wrPtr => Fifo.ptrIndex ");
-    out.push_str(base);
-    out.push_str(" wrPtr\n");
-    out.push_str("    readIndex := fun rdPtr => Fifo.ptrIndex ");
-    out.push_str(base);
-    out.push_str(" rdPtr\n");
-    out.push_str("    nextWrPtr := fun wrPtr doPush => if doPush then (wrPtr + 1) % Fifo.ptrMod ");
-    out.push_str(base);
-    out.push_str(" else wrPtr\n");
-    out.push_str("    nextRdPtr := fun rdPtr doPop => if doPop then (rdPtr + 1) % Fifo.ptrMod ");
-    out.push_str(base);
-    out.push_str(" else rdPtr\n");
-    out.push_str("    nextMem := fun mem wrPtr data doPush => if doPush then Fifo.updateMem mem (Fifo.ptrIndex ");
-    out.push_str(base);
-    out.push_str(" wrPtr) data else mem\n");
+    out.push_str(&format!(
+        "  {{ full := fun wrPtr rdPtr => {}\n",
+        lean_bool(&ir.full, base)
+    ));
+    out.push_str(&format!(
+        "    empty := fun wrPtr rdPtr => {}\n",
+        lean_bool(&ir.empty, base)
+    ));
+    out.push_str(&format!(
+        "    pushReady := fun wrPtr rdPtr => {}\n",
+        lean_bool(&ir.push_ready, base)
+    ));
+    out.push_str(&format!(
+        "    popValid := fun wrPtr rdPtr => {}\n",
+        lean_bool(&ir.pop_valid, base)
+    ));
+    out.push_str(&format!(
+        "    writeIndex := fun wrPtr => {}\n",
+        lean_nat(&ir.write_index, base)
+    ));
+    out.push_str(&format!(
+        "    readIndex := fun rdPtr => {}\n",
+        lean_nat(&ir.read_index, base)
+    ));
+    out.push_str(&format!(
+        "    nextWrPtr := fun wrPtr doPush => {}\n",
+        lean_nat(&ir.next_wr_ptr, base)
+    ));
+    out.push_str(&format!(
+        "    nextRdPtr := fun rdPtr doPop => {}\n",
+        lean_nat(&ir.next_rd_ptr, base)
+    ));
+    out.push_str(&format!(
+        "    nextMem := fun mem wrPtr data doPush => {}\n",
+        lean_mem(&ir.next_mem, base)
+    ));
     out.push_str("    full_eq := by intro wrPtr rdPtr; rfl\n");
     out.push_str("    empty_eq := by intro wrPtr rdPtr; rfl\n");
     out.push_str("    push_ready_eq := by intro wrPtr rdPtr; rfl\n");
@@ -421,22 +738,42 @@ fn render_lean_sync_fifo_equations(out: &mut String, base: &str) {
     out.push_str("    next_mem_eq := by intro mem wrPtr data doPush; rfl }\n\n");
 }
 
-fn render_lean_lifo_equations(out: &mut String, base: &str) {
+fn render_lean_lifo_equations(out: &mut String, base: &str, ir: &LifoIr) {
     out.push_str(&format!(
         "\ndef {base}_lifo_equations : Fifo.LifoGenerated {base} (BitVec {base}.dataWidth) :=\n"
     ));
-    out.push_str("  { full := fun sp => (sp == ");
-    out.push_str(base);
-    out.push_str(".depth)\n");
-    out.push_str("    empty := fun sp => (sp == 0)\n");
-    out.push_str("    pushReady := fun sp => !((sp == ");
-    out.push_str(base);
-    out.push_str(".depth))\n");
-    out.push_str("    popValid := fun sp => !((sp == 0))\n");
-    out.push_str("    writeIndex := fun sp doPop => if doPop then sp - 1 else sp\n");
-    out.push_str("    readIndex := fun sp => sp - 1\n");
-    out.push_str("    nextSp := fun sp doPush doPop => if doPush && doPop then sp else if doPush then sp + 1 else if doPop then sp - 1 else sp\n");
-    out.push_str("    nextMem := fun mem sp data doPush doPop => if doPush then Fifo.updateMem mem (if doPop then sp - 1 else sp) data else mem\n");
+    out.push_str(&format!(
+        "  {{ full := fun sp => {}\n",
+        lean_bool(&ir.full, base)
+    ));
+    out.push_str(&format!(
+        "    empty := fun sp => {}\n",
+        lean_bool(&ir.empty, base)
+    ));
+    out.push_str(&format!(
+        "    pushReady := fun sp => {}\n",
+        lean_bool(&ir.push_ready, base)
+    ));
+    out.push_str(&format!(
+        "    popValid := fun sp => {}\n",
+        lean_bool(&ir.pop_valid, base)
+    ));
+    out.push_str(&format!(
+        "    writeIndex := fun sp doPop => {}\n",
+        lean_nat(&ir.write_index, base)
+    ));
+    out.push_str(&format!(
+        "    readIndex := fun sp => {}\n",
+        lean_nat(&ir.read_index, base)
+    ));
+    out.push_str(&format!(
+        "    nextSp := fun sp doPush doPop => {}\n",
+        lean_nat(&ir.next_sp, base)
+    ));
+    out.push_str(&format!(
+        "    nextMem := fun mem sp data doPush doPop => {}\n",
+        lean_mem(&ir.next_mem, base)
+    ));
     out.push_str("    full_eq := by intro sp; rfl\n");
     out.push_str("    empty_eq := by intro sp; rfl\n");
     out.push_str("    push_ready_eq := by intro sp; rfl\n");
@@ -477,6 +814,127 @@ fn render_lean_round_robin_arbiter_equations(out: &mut String, base: &str) {
     out.push_str("    ready_selected_eq := by intro start req idx; rfl\n");
     out.push_str("    ready_vector_eq := by intro start req idx h; rfl\n");
     out.push_str("    next_ptr_eq := by intro start idx; rfl }\n\n");
+}
+
+fn lean_bool(expr: &FifoBoolExpr, base: &str) -> String {
+    match expr {
+        FifoBoolExpr::Var(name) => (*name).to_string(),
+        FifoBoolExpr::Eq(lhs, rhs) => {
+            format!("({} == {})", lean_nat(lhs, base), lean_nat(rhs, base))
+        }
+        FifoBoolExpr::Not(inner) => format!("!({})", lean_bool(inner, base)),
+        FifoBoolExpr::And(lhs, rhs) => {
+            format!("{} && {}", lean_bool(lhs, base), lean_bool(rhs, base))
+        }
+    }
+}
+
+fn lean_nat(expr: &FifoNatExpr, base: &str) -> String {
+    match expr {
+        FifoNatExpr::Var(name) => (*name).to_string(),
+        FifoNatExpr::Zero => "0".to_string(),
+        FifoNatExpr::Depth => format!("{base}.depth"),
+        FifoNatExpr::PtrMod => format!("Fifo.ptrMod {base}"),
+        FifoNatExpr::PtrOccupancy(wr, rd) => format!("Fifo.ptrOccupancy {base} {wr} {rd}"),
+        FifoNatExpr::PtrIndex(ptr) => format!("Fifo.ptrIndex {base} {ptr}"),
+        FifoNatExpr::Add(var, value) => format!("{var} + {value}"),
+        FifoNatExpr::Sub(var, value) => format!("{var} - {value}"),
+        FifoNatExpr::Mod(lhs, rhs) => {
+            format!("({}) % {}", lean_nat(lhs, base), lean_nat(rhs, base))
+        }
+        FifoNatExpr::Ite {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            format!(
+                "if {} then {} else {}",
+                lean_bool(cond, base),
+                lean_nat(then_expr, base),
+                lean_nat(else_expr, base)
+            )
+        }
+    }
+}
+
+fn lean_mem(expr: &FifoMemExpr, base: &str) -> String {
+    match expr {
+        FifoMemExpr::Var(name) => (*name).to_string(),
+        FifoMemExpr::Update { mem, idx, data } => {
+            format!("Fifo.updateMem {mem} ({}) {data}", lean_nat(idx, base))
+        }
+        FifoMemExpr::Ite {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            format!(
+                "if {} then {} else {}",
+                lean_bool(cond, base),
+                lean_mem(then_expr, base),
+                lean_mem(else_expr, base)
+            )
+        }
+    }
+}
+
+struct FifoSmtCtx<'a> {
+    model: &'a FifoFormalModel,
+    width: u32,
+    vars: &'a std::collections::BTreeMap<&'static str, &'a str>,
+}
+
+fn smt_bool(expr: &FifoBoolExpr, ctx: &FifoSmtCtx<'_>) -> String {
+    match expr {
+        FifoBoolExpr::Var(name) => ctx.vars.get(name).copied().unwrap_or(name).to_string(),
+        FifoBoolExpr::Eq(lhs, rhs) => format!("(= {} {})", smt_nat(lhs, ctx), smt_nat(rhs, ctx)),
+        FifoBoolExpr::Not(inner) => format!("(not {})", smt_bool(inner, ctx)),
+        FifoBoolExpr::And(lhs, rhs) => {
+            format!("(and {} {})", smt_bool(lhs, ctx), smt_bool(rhs, ctx))
+        }
+    }
+}
+
+fn smt_nat(expr: &FifoNatExpr, ctx: &FifoSmtCtx<'_>) -> String {
+    match expr {
+        FifoNatExpr::Var(name) => ctx.vars.get(name).copied().unwrap_or(name).to_string(),
+        FifoNatExpr::Zero => bv_lit(0, ctx.width),
+        FifoNatExpr::Depth => bv_lit(ctx.model.depth, ctx.width),
+        FifoNatExpr::PtrMod => bv_lit(2 * ctx.model.depth, ctx.width),
+        FifoNatExpr::PtrOccupancy(wr, rd) => {
+            let wr = ctx.vars.get(wr).copied().unwrap_or(wr);
+            let rd = ctx.vars.get(rd).copied().unwrap_or(rd);
+            let ptr_mod = bv_lit(2 * ctx.model.depth, ctx.width);
+            format!("(bvurem (bvsub (bvadd {wr} {ptr_mod}) {rd}) {ptr_mod})")
+        }
+        FifoNatExpr::PtrIndex(ptr) => {
+            let ptr = ctx.vars.get(ptr).copied().unwrap_or(ptr);
+            format!("(bvurem {ptr} {})", bv_lit(ctx.model.depth, ctx.width))
+        }
+        FifoNatExpr::Add(var, value) => {
+            let var = ctx.vars.get(var).copied().unwrap_or(var);
+            format!("(bvadd {var} {})", bv_lit(*value, ctx.width))
+        }
+        FifoNatExpr::Sub(var, value) => {
+            let var = ctx.vars.get(var).copied().unwrap_or(var);
+            format!("(bvsub {var} {})", bv_lit(*value, ctx.width))
+        }
+        FifoNatExpr::Mod(lhs, rhs) => {
+            format!("(bvurem {} {})", smt_nat(lhs, ctx), smt_nat(rhs, ctx))
+        }
+        FifoNatExpr::Ite {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            format!(
+                "(ite {} {} {})",
+                smt_bool(cond, ctx),
+                smt_nat(then_expr, ctx),
+                smt_nat(else_expr, ctx)
+            )
+        }
+    }
 }
 
 fn clog2_u32(value: u64) -> u32 {
@@ -601,7 +1059,25 @@ mod tests {
         };
         let smt = render_smt2_fifo_sanity(&model);
         assert!(smt.contains("(set-logic QF_BV)"));
-        assert!(smt.contains("next_occ"));
+        assert!(smt.contains("TxQueue_next_wr_ptr"));
+        assert!(smt.contains("TxQueue_write_index"));
+        assert!(smt.contains("(bvurem (bvadd TxQueue_wrPtr #b0001) #b1000)"));
+        assert_z3_unsat_or_skip(&smt);
+    }
+
+    #[test]
+    fn lifo_smt2_sanity_is_unsat_under_z3() {
+        let model = FifoFormalModel {
+            name: "RxStack".to_string(),
+            kind: FifoKind::Lifo,
+            depth: 3,
+            data_width: 8,
+            overflow: false,
+        };
+        let smt = render_smt2_fifo_sanity(&model);
+        assert!(smt.contains("; model: LIFO stack pointer/control equations"));
+        assert!(smt.contains("RxStack_next_sp"));
+        assert!(smt.contains("(and RxStack_do_push RxStack_do_pop)"));
         assert_z3_unsat_or_skip(&smt);
     }
 

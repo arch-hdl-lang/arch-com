@@ -288,6 +288,8 @@ end arbiter BusArbiter
     let smt = std::fs::read_to_string(&smt_path).expect("read smt");
     assert_eq!(smt.matches("(check-sat)").count(), 2, "expected FIFO+arbiter queries:\n{smt}");
     assert!(smt.contains("; fifo TxQueue"));
+    assert!(smt.contains("TxQueue_fifo_0_next_wr_ptr"));
+    assert!(smt.contains("TxQueue_fifo_0_write_index"));
     assert!(smt.contains("; arbiter BusArbiter"));
 }
 
