@@ -890,6 +890,75 @@ fn test_arbiter_round_robin_arch_sim_nonpow2_behavior() {
     );
 }
 
+// ── ARCH_CXX env override selects the C++ compiler for `arch sim` ──────────────
+//
+// `arch sim` compiles the generated C++ testbench/sim with a C++ compiler that
+// defaults to `g++`. On Linux, real GCC miscompiles harc's C++20 coroutine
+// testbench scheduler, so harc-driven testbenches need `ARCH_CXX=clang++`
+// (mirrors harc's own `HARC_CXX` knob). These two tests pin the override:
+//   - a bogus `ARCH_CXX` must make the sim build fail (proves the var is
+//     actually consulted, independent of which compilers are installed);
+//   - `ARCH_CXX=clang++` must still build and pass when clang++ is available.
+#[test]
+fn test_arch_cxx_override_bogus_compiler_fails_sim_build() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .env("ARCH_CXX", "arch-no-such-cxx-compiler-xyz")
+        .arg("sim")
+        .arg("tests/arbiter_rr_nonpow2/RRArb3.arch")
+        .arg("--tb")
+        .arg("tests/arbiter_rr_nonpow2/tb_rr_arb3.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim with bogus ARCH_CXX");
+    assert!(
+        !out.status.success(),
+        "arch sim must fail when ARCH_CXX names a non-existent compiler — \
+         proves the override is consulted at the compile site\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn test_arch_cxx_override_clang_builds_and_passes() {
+    // Skip cleanly if clang++ is not on PATH (e.g. a minimal CI image).
+    let have_clang = std::process::Command::new("clang++")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !have_clang {
+        eprintln!("skipping: clang++ not available on PATH");
+        return;
+    }
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .env("ARCH_CXX", "clang++")
+        .arg("sim")
+        .arg("tests/arbiter_rr_nonpow2/RRArb3.arch")
+        .arg("--tb")
+        .arg("tests/arbiter_rr_nonpow2/tb_rr_arb3.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim with ARCH_CXX=clang++");
+    assert!(
+        out.status.success(),
+        "arch sim should pass with ARCH_CXX=clang++\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("PASS rr_arb3"),
+        "expected `PASS rr_arb3` under ARCH_CXX=clang++; got:\n{stdout}"
+    );
+}
+
 // ── Variable-index Vec<Bus> element access — backend equivalence ──────────────
 //
 // Regression for the silent backend-capability divergence where `arch build`
