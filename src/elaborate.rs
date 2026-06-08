@@ -2606,7 +2606,7 @@ fn lower_module_threads(
     let mut all_seq_driven: HashSet<String> = HashSet::new();
     let mut all_read: HashSet<String> = HashSet::new();
     for (_, t) in &threads {
-        let (cd, sd, ar) = collect_thread_signals_with_buses(&t.body, &bus_port_map);
+        let (cd, sd, ar) = collect_thread_signals_with_buses(&t.body, &bus_port_map, &vob_counts);
         all_comb_driven.extend(cd);
         all_seq_driven.extend(sd);
         all_read.extend(ar);
@@ -2615,7 +2615,8 @@ fn lower_module_threads(
         collect_thread_bus_reads(&t.body, &bus_port_map, &vob_counts, &mut all_read);
         // Also collect signals referenced in the `default when` clause
         if let Some((dw_cond, dw_stmts)) = &t.default_when {
-            let (dw_cd, dw_sd, dw_ar) = collect_thread_signals_with_buses(dw_stmts, &bus_port_map);
+            let (dw_cd, dw_sd, dw_ar) =
+                collect_thread_signals_with_buses(dw_stmts, &bus_port_map, &vob_counts);
             all_comb_driven.extend(dw_cd);
             all_seq_driven.extend(dw_sd);
             all_read.extend(dw_ar);
@@ -4506,6 +4507,37 @@ fn expr_target_flat_name(e: &Expr, bus_port_map: &HashMap<String, String>) -> Op
     }
 }
 
+/// For a *variable*-index Vec<Bus> write target (`arr[idx].field` with a
+/// non-literal `idx`), return every flattened per-lane signal name
+/// (`arr_0_field` … `arr_{N-1}_field`). These all become driven outputs of
+/// the synthesized thread sub-module because the write is lowered to a
+/// per-lane demux (see `rewrite_bus_targets_in_body`). Returns `None` for
+/// constant indices and non-bus / non-Vec<Bus> targets.
+fn vob_write_lane_names(
+    e: &Expr,
+    bus_port_map: &HashMap<String, String>,
+    vob_counts: &HashMap<String, u32>,
+) -> Option<Vec<String>> {
+    let ExprKind::FieldAccess(base, field) = &e.kind else {
+        return None;
+    };
+    let ExprKind::Index(arr, idx) = &base.kind else {
+        return None;
+    };
+    let ExprKind::Ident(arr_name) = &arr.kind else {
+        return None;
+    };
+    if matches!(idx.kind, ExprKind::Literal(LitKind::Dec(_))) {
+        return None;
+    }
+    if !bus_port_map.contains_key(arr_name) {
+        return None;
+    }
+    vob_counts
+        .get(arr_name)
+        .map(|&n| (0..n).map(|i| format!("{}_{}_{}", arr_name, i, field.name)).collect())
+}
+
 /// Walk every `Stmt` in the synthesized thread sub-module body and
 /// replace bus-port FieldAccess expressions (`b.v`) with the flat ident
 /// (`b_v`) on both LHS and RHS. The sub-module exposes the flat signals
@@ -4624,6 +4656,107 @@ fn rewrite_bus_targets_in_body(
             e.kind = new_kind;
         }
     }
+    // Detect an assignment target of the form `arr[idx].field` where `arr`
+    // is a Vec<Bus> port and `idx` is *not* a compile-time literal. Returns
+    // `(arr, field, idx, N)`. Such a write can't pick a static lane, so it
+    // is expanded into a per-lane demux (see `rw_stmts`). Constant indices
+    // are handled by the in-place `rw_expr` rewrite (single lane).
+    fn var_index_bus_write_target<'a>(
+        e: &'a Expr,
+        bus_port_map: &HashMap<String, String>,
+        vob_counts: &'a HashMap<String, u32>,
+    ) -> Option<(&'a str, &'a str, &'a Expr, u32)> {
+        let ExprKind::FieldAccess(base, field) = &e.kind else {
+            return None;
+        };
+        let ExprKind::Index(arr, idx) = &base.kind else {
+            return None;
+        };
+        let ExprKind::Ident(arr_name) = &arr.kind else {
+            return None;
+        };
+        if matches!(idx.kind, ExprKind::Literal(LitKind::Dec(_))) {
+            return None;
+        }
+        if !bus_port_map.contains_key(arr_name) {
+            return None;
+        }
+        vob_counts
+            .get(arr_name)
+            .map(|&n| (arr_name.as_str(), field.name.as_str(), idx.as_ref(), n))
+    }
+    // Rewrite a statement *list*, allowing one statement to expand into many.
+    // A variable-index Vec<Bus> write `arr[idx].field <op> v` is expanded to
+    // a per-lane demux — one guarded assign per lane:
+    //   if (idx == 0) arr_0_field <op> v;
+    //   …
+    //   if (idx == N-1) arr_{N-1}_field <op> v;
+    // For seq (`<=`) targets the unselected lanes simply hold; for comb the
+    // surrounding default assignment covers them. This is the write-side
+    // mirror of the read-side lane mux in `rw_expr`.
+    fn rw_stmts(
+        stmts: &mut Vec<Stmt>,
+        bus_port_map: &HashMap<String, String>,
+        vob_counts: &HashMap<String, u32>,
+    ) {
+        let mut i = 0;
+        while i < stmts.len() {
+            let expansion: Option<Vec<Stmt>> = if let Stmt::Assign(a) = &stmts[i] {
+                var_index_bus_write_target(&a.target, bus_port_map, vob_counts).map(
+                    |(arr, field, idx, n)| {
+                        let span = a.span;
+                        // The RHS (and the index) are read positions — apply
+                        // the normal rewrite (incl. read-side lane mux) once,
+                        // then reuse for every lane.
+                        let mut value = a.value.clone();
+                        rw_expr(&mut value, bus_port_map, vob_counts, false);
+                        let mut idx_e = idx.clone();
+                        rw_expr(&mut idx_e, bus_port_map, vob_counts, false);
+                        (0..n)
+                            .map(|lane| {
+                                let cond = Expr::new(
+                                    ExprKind::Binary(
+                                        BinOp::Eq,
+                                        Box::new(idx_e.clone()),
+                                        Box::new(Expr::new(
+                                            ExprKind::Literal(LitKind::Dec(lane as u64)),
+                                            span,
+                                        )),
+                                    ),
+                                    span,
+                                );
+                                let assign = Stmt::Assign(Assign {
+                                    target: Expr::new(
+                                        ExprKind::Ident(format!("{arr}_{lane}_{field}")),
+                                        span,
+                                    ),
+                                    value: value.clone(),
+                                    span,
+                                });
+                                Stmt::IfElse(IfElseOf {
+                                    cond,
+                                    then_stmts: vec![assign],
+                                    else_stmts: vec![],
+                                    unique: false,
+                                    span,
+                                })
+                            })
+                            .collect()
+                    },
+                )
+            } else {
+                None
+            };
+            if let Some(expanded) = expansion {
+                let cnt = expanded.len();
+                stmts.splice(i..=i, expanded);
+                i += cnt;
+                continue;
+            }
+            rw_stmt(&mut stmts[i], bus_port_map, vob_counts);
+            i += 1;
+        }
+    }
     fn rw_stmt(
         s: &mut Stmt,
         bus_port_map: &HashMap<String, String>,
@@ -4636,36 +4769,24 @@ fn rewrite_bus_targets_in_body(
             }
             Stmt::IfElse(ie) => {
                 rw_expr(&mut ie.cond, bus_port_map, vob_counts, false);
-                for s in &mut ie.then_stmts {
-                    rw_stmt(s, bus_port_map, vob_counts);
-                }
-                for s in &mut ie.else_stmts {
-                    rw_stmt(s, bus_port_map, vob_counts);
-                }
+                rw_stmts(&mut ie.then_stmts, bus_port_map, vob_counts);
+                rw_stmts(&mut ie.else_stmts, bus_port_map, vob_counts);
             }
             Stmt::Match(m) => {
                 rw_expr(&mut m.scrutinee, bus_port_map, vob_counts, false);
                 for arm in &mut m.arms {
-                    for s in &mut arm.body {
-                        rw_stmt(s, bus_port_map, vob_counts);
-                    }
+                    rw_stmts(&mut arm.body, bus_port_map, vob_counts);
                 }
             }
             Stmt::For(f) => {
-                for s in &mut f.body {
-                    rw_stmt(s, bus_port_map, vob_counts);
-                }
+                rw_stmts(&mut f.body, bus_port_map, vob_counts);
             }
             Stmt::Init(ib) => {
-                for s in &mut ib.body {
-                    rw_stmt(s, bus_port_map, vob_counts);
-                }
+                rw_stmts(&mut ib.body, bus_port_map, vob_counts);
             }
             Stmt::DoUntil { body, cond, .. } => {
                 rw_expr(cond, bus_port_map, vob_counts, false);
-                for s in body {
-                    rw_stmt(s, bus_port_map, vob_counts);
-                }
+                rw_stmts(body, bus_port_map, vob_counts);
             }
             Stmt::WaitUntil(e, _) => rw_expr(e, bus_port_map, vob_counts, false),
             Stmt::Log(l) => {
@@ -4678,19 +4799,13 @@ fn rewrite_bus_targets_in_body(
     for item in body.iter_mut() {
         match item {
             ModuleBodyItem::CombBlock(cb) => {
-                for s in &mut cb.stmts {
-                    rw_stmt(s, bus_port_map, vob_counts);
-                }
+                rw_stmts(&mut cb.stmts, bus_port_map, vob_counts);
             }
             ModuleBodyItem::RegBlock(rb) => {
-                for s in &mut rb.stmts {
-                    rw_stmt(s, bus_port_map, vob_counts);
-                }
+                rw_stmts(&mut rb.stmts, bus_port_map, vob_counts);
             }
             ModuleBodyItem::LatchBlock(lb) => {
-                for s in &mut lb.stmts {
-                    rw_stmt(s, bus_port_map, vob_counts);
-                }
+                rw_stmts(&mut lb.stmts, bus_port_map, vob_counts);
             }
             ModuleBodyItem::LetBinding(lb) => rw_expr(&mut lb.value, bus_port_map, vob_counts, false),
             ModuleBodyItem::RegDecl(r) => {
@@ -4829,51 +4944,62 @@ fn collect_comb_stmt_signals_with_buses(
 fn collect_thread_signals_with_buses(
     body: &[ThreadStmt],
     bus_port_map: &HashMap<String, String>,
+    vob_counts: &HashMap<String, u32>,
 ) -> (HashSet<String>, HashSet<String>, HashSet<String>) {
     let (mut comb_driven, mut seq_driven, all_read) = collect_thread_signals(body);
     comb_driven.retain(|n| !bus_port_map.contains_key(n));
     seq_driven.retain(|n| !bus_port_map.contains_key(n));
+    fn record(
+        target: &Expr,
+        driven: &mut HashSet<String>,
+        bus_port_map: &HashMap<String, String>,
+        vob_counts: &HashMap<String, u32>,
+    ) {
+        // A variable-index Vec<Bus> write lowers to a per-lane demux, so
+        // every lane becomes a driven output. Constant / scalar targets keep
+        // the single-name path.
+        if let Some(lanes) = vob_write_lane_names(target, bus_port_map, vob_counts) {
+            driven.extend(lanes);
+        } else if let Some(name) = expr_target_flat_name(target, bus_port_map) {
+            if !bus_port_map.contains_key(&name) {
+                driven.insert(name);
+            }
+        }
+    }
     fn walk(
         stmts: &[ThreadStmt],
         comb_driven: &mut HashSet<String>,
         seq_driven: &mut HashSet<String>,
         bus_port_map: &HashMap<String, String>,
+        vob_counts: &HashMap<String, u32>,
     ) {
         for s in stmts {
             match s {
                 ThreadStmt::CombAssign(a) => {
-                    if let Some(name) = expr_target_flat_name(&a.target, bus_port_map) {
-                        if !bus_port_map.contains_key(&name) {
-                            comb_driven.insert(name);
-                        }
-                    }
+                    record(&a.target, comb_driven, bus_port_map, vob_counts);
                 }
                 ThreadStmt::SeqAssign(a) | ThreadStmt::ForkTlmAssign(a) => {
-                    if let Some(name) = expr_target_flat_name(&a.target, bus_port_map) {
-                        if !bus_port_map.contains_key(&name) {
-                            seq_driven.insert(name);
-                        }
-                    }
+                    record(&a.target, seq_driven, bus_port_map, vob_counts);
                 }
                 ThreadStmt::IfElse(ie) => {
-                    walk(&ie.then_stmts, comb_driven, seq_driven, bus_port_map);
-                    walk(&ie.else_stmts, comb_driven, seq_driven, bus_port_map);
+                    walk(&ie.then_stmts, comb_driven, seq_driven, bus_port_map, vob_counts);
+                    walk(&ie.else_stmts, comb_driven, seq_driven, bus_port_map, vob_counts);
                 }
                 ThreadStmt::For { body, .. }
                 | ThreadStmt::Lock { body, .. }
                 | ThreadStmt::DoUntil { body, .. } => {
-                    walk(body, comb_driven, seq_driven, bus_port_map)
+                    walk(body, comb_driven, seq_driven, bus_port_map, vob_counts)
                 }
                 ThreadStmt::ForkJoin(branches, _) => {
                     for b in branches {
-                        walk(b, comb_driven, seq_driven, bus_port_map);
+                        walk(b, comb_driven, seq_driven, bus_port_map, vob_counts);
                     }
                 }
                 _ => {}
             }
         }
     }
-    walk(body, &mut comb_driven, &mut seq_driven, bus_port_map);
+    walk(body, &mut comb_driven, &mut seq_driven, bus_port_map, vob_counts);
     (comb_driven, seq_driven, all_read)
 }
 
@@ -5224,11 +5350,21 @@ fn collect_expr_reads(e: &Expr, out: &mut HashSet<String>) {
 /// Collect reads from index expressions in a target (e.g. `buf[i]` — `i` is a read).
 fn collect_expr_index_reads(e: &Expr, out: &mut HashSet<String>) {
     match &e.kind {
-        ExprKind::Index(_, idx) => collect_expr_reads(idx, out),
-        ExprKind::BitSlice(_, hi, lo) => {
+        // Recurse into the base too: a 2D target `mem[i][j]` reads both `i`
+        // and `j`, and a bus-element target `o[sel].field` carries the index
+        // `sel` *under* the FieldAccess — without descending we'd miss it and
+        // the synthesized thread sub-module would reference an undeclared
+        // index signal.
+        ExprKind::Index(base, idx) => {
+            collect_expr_reads(idx, out);
+            collect_expr_index_reads(base, out);
+        }
+        ExprKind::BitSlice(base, hi, lo) => {
             collect_expr_reads(hi, out);
             collect_expr_reads(lo, out);
+            collect_expr_index_reads(base, out);
         }
+        ExprKind::FieldAccess(base, _) => collect_expr_index_reads(base, out),
         _ => {}
     }
 }

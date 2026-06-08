@@ -1,0 +1,36 @@
+// Regression: variable-index Vec<Bus> *write* inside a `thread`.
+//
+// `o[sel].valid <= true;` (variable `sel`) can't pick a static lane, so
+// thread lowering expands it into a per-lane demux — one guarded assign per
+// lane (`if (sel==i) o_i_valid <= true;`). All lanes become driven
+// sub-module outputs. Before this fix the write was dropped, leaving an
+// undefined `o` in BOTH the emitted SV and the C++ sim. This is the
+// write-side mirror of Fx3bVarIndexVecBusThread.arch (read in `wait until`).
+//
+// The thread drives constant per-lane defaults first, then overrides the
+// selected lane — the demux assigns land after the defaults so last-write-
+// wins yields a clean one-hot on `sel`.
+bus BusVrW
+  param DATA_W: const = 8;
+  valid: out Bool;
+  ready: in  Bool;
+  data:  out UInt<DATA_W>;
+end bus BusVrW
+
+module VselWr
+  param LANES: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port sel: in UInt<2>;
+  port dv:  in UInt<8>;
+  port o: initiator Vec<BusVrW<DATA_W=8>, LANES>;
+  thread on clk rising, rst low
+    o[0].valid <= false; o[0].data <= 0;
+    o[1].valid <= false; o[1].data <= 0;
+    o[2].valid <= false; o[2].data <= 0;
+    o[3].valid <= false; o[3].data <= 0;
+    o[sel].valid <= true;     // variable-index write (demux)
+    o[sel].data  <= dv;
+    wait 1 cycle;
+  end thread
+end module VselWr
