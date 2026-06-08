@@ -30,6 +30,25 @@ pub struct DriveEntry {
     pub span: Span,
 }
 
+/// Extracts the integer value of a compile-time-constant literal index.
+///
+/// Returns `Some(v)` only for bare numeric literals (`out[2]`).  Any
+/// non-literal index — a variable (`out[i]`), an arithmetic expression,
+/// or a param reference — returns `None`.  This is deliberately narrow:
+/// a literal index targets ONE element that downstream codegen emits as a
+/// distinct flat signal, whereas a variable index conservatively aliases
+/// the whole vector (a single `always_comb` writing `out[idx]` is one
+/// driver regardless of which element it hits at runtime).
+fn const_index_value(idx: &Expr) -> Option<u64> {
+    match &idx.kind {
+        ExprKind::Literal(LitKind::Dec(v))
+        | ExprKind::Literal(LitKind::Hex(v))
+        | ExprKind::Literal(LitKind::Bin(v)) => Some(*v),
+        ExprKind::Literal(LitKind::Sized(_, v)) => Some(*v),
+        _ => None,
+    }
+}
+
 /// Extracts the signal name from an LHS expression.
 ///
 /// Bit-slices, part-selects, index accesses, and latency annotations are
@@ -49,6 +68,37 @@ fn lhs_base_name(expr: &Expr) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// Like [`lhs_base_name`], but preserves a trailing **constant-literal**
+/// index as part of the key (`out[0]` → `"out[0]"`, `out[i]` → `"out"`).
+///
+/// Used ONLY for `inst` output connections.  An inst output wired to a
+/// vector element (`last -> out[0]`) lowers to a continuous driver of that
+/// single element (`.last(out[0])` in the SV port map), so two inst items
+/// driving distinct constant elements (`out[0]` and `out[1]`) are NOT a
+/// conflict.  This is the shape a `generate_for` over a Vec-of-bus port
+/// unrolls into at elaboration time: N separate inst blocks each driving
+/// `out[<const i>]`.  Collapsing them to a bare `out` reported a phantom
+/// multi-driver.
+///
+/// A *variable* index (`out[i]`) is still stripped to the bare name — it
+/// conservatively aliases the whole vector — so two inst items driving the
+/// same constant element (`out[0]` twice) still collide, preserving
+/// genuine multi-driver detection.
+///
+/// This granularity is deliberately NOT applied to `comb`/`seq` blocks:
+/// each such block is one `always_comb`/`always_ff` over the whole array,
+/// so two blocks writing different constant indices of one Vec ARE a real
+/// SV conflict and must keep erroring (see
+/// `test_multi_driver_vec_index_from_two_blocks_errors`).
+fn inst_conn_driver_name(expr: &Expr) -> Option<String> {
+    if let ExprKind::Index(base, idx) = &expr.kind {
+        if let Some(v) = const_index_value(idx) {
+            return lhs_base_name(base).map(|b| format!("{}[{}]", b, v));
+        }
+    }
+    lhs_base_name(expr)
 }
 
 /// Collect every distinct signal name driven by `stmts`, storing the
@@ -178,11 +228,18 @@ pub fn collect_module_drivers(m: &ModuleDecl, source: &SourceFile) -> HashMap<St
                 let mut t = HashMap::new();
                 for conn in &inst.connections {
                     if conn.direction == ConnectDir::Output {
-                        if let Some(name) = lhs_base_name(&conn.signal) {
+                        if let Some(name) = inst_conn_driver_name(&conn.signal) {
                             // Skip connections to explicitly-declared bus/struct
                             // wires — these are driven by multiple inst items by
-                            // design.
-                            if named_wire_names.contains(name.as_str()) {
+                            // design.  Match on the BASE name: `name` may carry a
+                            // constant-index suffix (`link[0]`), but the skip-set
+                            // is keyed by the bare declaration name (`link`).
+                            let base = lhs_base_name(&conn.signal);
+                            if base
+                                .as_deref()
+                                .map(|b| named_wire_names.contains(b))
+                                .unwrap_or(false)
+                            {
                                 continue;
                             }
                             // Skip connections where the child port is a bus

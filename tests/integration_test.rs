@@ -23521,6 +23521,166 @@ end module VecIndexSingleBlock
     );
 }
 
+/// POSITIVE regression: a `generate_for` over a Vec-of-bus port whose body
+/// also forwards a sibling non-bus output element (`last -> out[i]`) must
+/// type-check.  The Vec-of-bus connection (`b <- m[i]`) forces the
+/// generate_for to unroll at elaboration time into N separate `inst`
+/// blocks, each driving a DISTINCT element `out[<const i>]`.  Before the
+/// fix, `lhs_base_name` collapsed every `out[0..N-1]` to a bare `out`, so
+/// the inst-output driver tracker counted N drivers on `out` and reported a
+/// phantom "multiple drivers" — rejecting valid code.  Each iteration
+/// drives a different element, so this is legal.
+#[test]
+fn test_multi_driver_genfor_vecbus_sibling_element_no_error() {
+    let source = r#"
+bus BusVr
+  param DATA_W: const = 8;
+  valid: out Bool;
+  ready: in  Bool;
+  data:  out UInt<DATA_W>;
+end bus BusVr
+
+module VrTapScalar
+  port b:    target BusVr<DATA_W=8>;
+  port en:   in Bool;
+  port last: out UInt<8>;
+  comb
+    b.ready = en;
+    last    = b.data;
+  end comb
+end module VrTapScalar
+
+module Fx1bMultiDriver
+  param LANES: const = 3;
+  port m:   target      Vec<BusVr<DATA_W=8>, LANES>;
+  port en:  in unpacked Vec<Bool, LANES>;
+  port out: out unpacked Vec<UInt<8>, LANES>;
+  generate_for i in 0..LANES-1
+    inst tap_i: VrTapScalar
+      b    <- m[i];
+      en   <- en[i];
+      last -> out[i];
+    end inst tap_i
+  end generate_for
+end module Fx1bMultiDriver
+"#;
+    assert!(
+        typecheck_source(source).is_ok(),
+        "generate_for over Vec-of-bus forwarding distinct sibling elements \
+         (out[i] per iteration) must NOT be a multi-driver — each iteration \
+         drives a different element"
+    );
+}
+
+/// NEGATIVE regression: even with the same Vec-of-bus generate_for shape,
+/// if every iteration forwards to the SAME constant element (`last ->
+/// out[0]`, not `out[i]`), that IS a genuine multiple-driver of `out[0]`
+/// and must still error.  This pins that the fix distinguishes "distinct
+/// element per iteration" (legal) from "same element driven N times"
+/// (illegal) — it must not blanket-suppress the inst-output multi-driver
+/// check for Vec elements.
+#[test]
+fn test_multi_driver_genfor_same_const_element_errors() {
+    let source = r#"
+bus BusVr
+  param DATA_W: const = 8;
+  valid: out Bool;
+  ready: in  Bool;
+  data:  out UInt<DATA_W>;
+end bus BusVr
+
+module VrTapScalar
+  port b:    target BusVr<DATA_W=8>;
+  port en:   in Bool;
+  port last: out UInt<8>;
+  comb
+    b.ready = en;
+    last    = b.data;
+  end comb
+end module VrTapScalar
+
+module GenConstDrive
+  param LANES: const = 3;
+  port m:   target      Vec<BusVr<DATA_W=8>, LANES>;
+  port en:  in unpacked Vec<Bool, LANES>;
+  port out: out unpacked Vec<UInt<8>, LANES>;
+  generate_for i in 0..LANES-1
+    inst tap_i: VrTapScalar
+      b    <- m[i];
+      en   <- en[i];
+      last -> out[0];
+    end inst tap_i
+  end generate_for
+end module GenConstDrive
+"#;
+    assert!(
+        has_multi_driver_error(source, "out[0]"),
+        "all generate_for iterations driving the same constant element \
+         out[0] must still trigger MultipleDrivers"
+    );
+}
+
+/// NEGATIVE regression (no generate_for): two plain `inst` items both wired
+/// to the same constant element `out[0]` must error.  Pins that the
+/// per-constant-index inst-output granularity still catches a same-element
+/// double drive.
+#[test]
+fn test_multi_driver_two_inst_same_vec_element_errors() {
+    let source = r#"
+module Src
+  port v: out UInt<8>;
+  comb
+    v = 8'd1;
+  end comb
+end module Src
+
+module ParentDoubleElem
+  port out: out unpacked Vec<UInt<8>, 2>;
+  inst a: Src
+    v -> out[0];
+  end inst a
+  inst b: Src
+    v -> out[0];
+  end inst b
+end module ParentDoubleElem
+"#;
+    assert!(
+        has_multi_driver_error(source, "out[0]"),
+        "two inst outputs driving the same Vec element out[0] must trigger \
+         MultipleDrivers"
+    );
+}
+
+/// POSITIVE sister case: two plain `inst` items wired to DISTINCT constant
+/// elements (`out[0]` and `out[1]`) must NOT error — each drives a separate
+/// element via its own continuous driver, which is legal in SV.
+#[test]
+fn test_multi_driver_two_inst_distinct_vec_elements_no_error() {
+    let source = r#"
+module Src
+  port v: out UInt<8>;
+  comb
+    v = 8'd1;
+  end comb
+end module Src
+
+module ParentDistinctElem
+  port out: out unpacked Vec<UInt<8>, 2>;
+  inst a: Src
+    v -> out[0];
+  end inst a
+  inst b: Src
+    v -> out[1];
+  end inst b
+end module ParentDistinctElem
+"#;
+    assert!(
+        typecheck_source(source).is_ok(),
+        "two inst outputs driving distinct Vec elements out[0]/out[1] must \
+         NOT be a multi-driver"
+    );
+}
+
 /// Bus-typed wires connected from both initiator and target insts must NOT
 /// trigger multi-driver.  This is the canonical TLM bus wire pattern.
 #[test]
