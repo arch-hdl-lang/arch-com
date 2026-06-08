@@ -22,7 +22,7 @@
 //
 // Minimal reproducer for (1) below. Workaround in Fx3ThreadVecParamW.arch:
 // expand the variable index into explicit per-lane constant-index branches.
-module Fx3bVarIndexVecBusBug
+module Vsel
   param LANES: const = 4;
   port sel: in UInt<2>;
   port dv:  in UInt<8>;
@@ -35,4 +35,4 @@ module Fx3bVarIndexVecBusBug
     o[sel].valid = true;     // SV: assign o_valid[sel] = 1; arch-sim: ((o)>>sel)&1  <-- BUG
     o[sel].data  = dv;
   end comb
-end module Fx3bVarIndexVecBusBug
+end module Vsel

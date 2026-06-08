@@ -42,6 +42,12 @@ def roundRobinReady (start : Fin n) (req : Fin n -> Bool) (idx : Fin n) : Prop :
           (exists earlier : Nat, earlier < off /\ j.val = (start.val + earlier) % n) ->
             req j = false
 
+def roundRobinScanOffset (start idx : Fin n) : Nat :=
+  if start.val <= idx.val then
+    idx.val - start.val
+  else
+    n - start.val + idx.val
+
 structure CorrectGrant (inst : Instance) : Prop where
   priority_subset :
     forall req : RequestVec inst, forall idx : Fin inst.numReq,
@@ -95,6 +101,17 @@ structure RoundRobinEquationsHold (inst : Instance) (eqs : RoundRobinGenerated i
   next_ptr_eq :
     forall start idx,
       eqs.nextPtr start idx = if idx.val + 1 = inst.numReq then 0 else (idx.val + 1) % inst.numReq
+  bounded_fair_scan :
+    forall
+      (_h_req : 0 < inst.numReq)
+      (start : Fin inst.numReq)
+      (req : RequestVec inst)
+      (idx : Fin inst.numReq),
+      req idx = true ->
+        exists off : Nat,
+          off < inst.numReq
+            /\ idx.val = (start.val + off) % inst.numReq
+            /\ req idx = true
 
 theorem priority_subset
     (req : Fin n -> Bool)
@@ -110,6 +127,65 @@ theorem round_robin_subset
     (h : roundRobinReady start req idx) :
     req idx = true := by
   exact h.1
+
+theorem round_robin_scan_offset_lt
+    (_h_req : 0 < n)
+    (start idx : Fin n) :
+    roundRobinScanOffset start idx < n := by
+  unfold roundRobinScanOffset
+  split
+  · omega
+  · omega
+
+theorem round_robin_scan_offset_hits
+    (_h_req : 0 < n)
+    (start idx : Fin n) :
+    idx.val = (start.val + roundRobinScanOffset start idx) % n := by
+  unfold roundRobinScanOffset
+  split
+  · have hsum : start.val + (idx.val - start.val) = idx.val := by
+      omega
+    rw [hsum]
+    exact (Nat.mod_eq_of_lt idx.isLt).symm
+  · have hsum : start.val + (n - start.val + idx.val) = n + idx.val := by
+      omega
+    rw [hsum, Nat.add_mod_left, Nat.mod_eq_of_lt idx.isLt]
+
+theorem round_robin_bounded_fair_scan
+    (h_req : 0 < n)
+    (start : Fin n)
+    (req : Fin n -> Bool)
+    (idx : Fin n)
+    (h_asserted : req idx = true) :
+    exists off : Nat,
+      off < n
+        /\ idx.val = (start.val + off) % n
+        /\ req idx = true := by
+  exact
+    ⟨roundRobinScanOffset start idx,
+      round_robin_scan_offset_lt h_req start idx,
+      round_robin_scan_offset_hits h_req start idx,
+      h_asserted⟩
+
+theorem round_robin_ready_at_scan_offset
+    (h_req : 0 < n)
+    (start : Fin n)
+    (req : Fin n -> Bool)
+    (idx : Fin n)
+    (h_asserted : req idx = true)
+    (h_no_earlier :
+      forall j : Fin n,
+        (exists earlier : Nat,
+          earlier < roundRobinScanOffset start idx
+            /\ j.val = (start.val + earlier) % n) ->
+          req j = false) :
+    roundRobinReady start req idx := by
+  refine ⟨h_asserted, ?_⟩
+  exact
+    ⟨roundRobinScanOffset start idx,
+      round_robin_scan_offset_lt h_req start idx,
+      round_robin_scan_offset_hits h_req start idx,
+      h_no_earlier⟩
 
 theorem onehot_witness
     (inst : Instance)
@@ -158,11 +234,13 @@ theorem round_robin_certificate_checks
     (h_req : 0 < inst.numReq)
     (h_latency : 0 < inst.latency) :
     0 < inst.numReq /\ 0 < inst.latency /\ RoundRobinEquationsHold inst eqs /\ CorrectGrant inst := by
-  exact
-    ⟨h_req, h_latency,
-      { ready_selected_eq := eqs.ready_selected_eq
-        ready_vector_eq := eqs.ready_vector_eq
-        next_ptr_eq := eqs.next_ptr_eq },
-      generic_correct inst⟩
+  refine ⟨h_req, h_latency, ?_, generic_correct inst⟩
+  refine
+    { ready_selected_eq := eqs.ready_selected_eq
+      ready_vector_eq := eqs.ready_vector_eq
+      next_ptr_eq := eqs.next_ptr_eq
+      bounded_fair_scan := ?_ }
+  intro h_req start req idx h_asserted
+  exact round_robin_bounded_fair_scan h_req start req idx h_asserted
 
 end Arch.ConstructProof.Arbiter

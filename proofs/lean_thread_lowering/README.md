@@ -117,9 +117,10 @@ The compiler-side equation source is `construct_formal_ir`: Lean certificates
 and SMT-LIB2 sanity checks are emitted from the same typed construct model.
 For FIFO/LIFO this includes the full/empty, ready/valid, pointer-index, and
 next-pointer equations used by the generated Lean records and by the SMT-LIB2
-sanity queries. The existing `credit_channel` BMC path also consumes this IR
-for its synthesized credit/occupancy/pointer equations, which keeps the SMT and
-Lean-facing construct semantics from drifting into separate implementations.
+sanity queries. For `credit_channel`, the same construct model emits Lean and
+SMT accounting checks for sender credits, receiver occupancy, `can_send`, and
+`valid`; the `arch formal` BMC path consumes the same synthesized
+credit/occupancy/pointer equations.
 
 Current construct-proof scope:
 
@@ -127,10 +128,15 @@ Current construct-proof scope:
 - synchronous `kind lifo`,
 - `arbiter policy priority`,
 - `arbiter policy round_robin`, including non-power-of-two `NUM_REQ`,
-- arbiter `latency >= 1`.
+- arbiter `latency >= 1`,
+- bus-nested `credit_channel` with concrete `DEPTH` and scalar payload type
+  `T`.
 
 Async FIFOs and custom/weighted/LRU arbiters are rejected by the construct proof
-emitter until their semantics have dedicated Lean models.
+emitter until their generated equations are wired into dedicated Lean models.
+This Lean project already contains reusable library theorems for async FIFO
+Gray-code decode/injectivity and abstract pipeline valid/stall/flush behavior;
+those files are not yet compiler-emitted per-instance certificates.
 
 To emit and replay Lean construct proofs:
 

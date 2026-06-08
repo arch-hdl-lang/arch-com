@@ -88,7 +88,7 @@ Four paths:
 1. **SV-SVA path** — `arch build` emits SystemVerilog with concurrent assertions consumable by EBMC, Verilator `--assert`, and SymbiYosys. Nothing extra to configure.
 2. **Direct SMT-LIB2 path** — `arch formal` lowers a module straight to SMT-LIB2 and shells out to a bit-vector solver. No Yosys in the loop; ARCH semantics (wrapping arithmetic, width casts) are encoded precisely.
 3. **Lean thread-lowering proof path** — `arch formal --emit-thread-proof-lean` emits a Lean replay file proving the compiler-recorded thread-to-FSM lowering certificate. `--check-thread-proof-lean` immediately replays it with `lake env lean`; the compiler resolves `lake` from `PATH`, `ELAN_HOME/bin/lake`, or `~/.elan/bin/lake`. This is a compiler-lowering proof artifact, not a bounded design-property proof.
-4. **Construct proof path** — `arch build --emit-construct-proof-lean` emits a Lean replay file for supported first-class FIFO/LIFO and built-in priority/round-robin arbiter instances; `--emit-construct-proof-smt` emits SMT-LIB2 sanity queries for the same construct models. FIFO Lean certificates instantiate a parametric proof over arbitrary `DEPTH` and data width, including pointer/index range safety, next-pointer boundedness, generated equation replay, and refinement to an abstract queue step. FIFO SMT queries exercise the same IR-level full/empty, ready/valid, pointer-index, and next-pointer equations rather than a separate abstract counter model. Those equations come from the shared construct formal IR, which also feeds the `credit_channel` BMC equations. `--check-construct-proof-lean` replays Lean with the same `lake` resolver; `--check-construct-proof-smt` checks every SMT query returns `unsat`.
+4. **Construct proof path** — `arch build --emit-construct-proof-lean` emits a Lean replay file for supported first-class FIFO/LIFO, built-in priority/round-robin arbiter, and bus `credit_channel` instances; `--emit-construct-proof-smt` emits SMT-LIB2 sanity queries for the same construct models. FIFO Lean certificates instantiate a parametric proof over arbitrary `DEPTH` and data width, including pointer/index range safety, next-pointer boundedness, generated equation replay, and refinement to an abstract queue step. FIFO SMT queries exercise the same IR-level full/empty, ready/valid, pointer-index, and next-pointer equations rather than a separate abstract counter model. Credit-channel certificates replay the sender-credit/receiver-occupancy accounting equations and prove legal send/credit-return steps preserve `credit + occupancy = DEPTH`. Those equations come from the shared construct formal IR, which also feeds the `credit_channel` BMC equations. `--check-construct-proof-lean` replays Lean with the same `lake` resolver; `--check-construct-proof-smt` checks every SMT query returns `unsat`.
 
 ```sh
 arch formal MyModule.arch                            # defaults: z3, bound=20, 60s timeout
@@ -309,6 +309,15 @@ scripts/pre_pr_review.sh check
 
 The installed `pre-push` hook checks `codex/*` branches and blocks the push when
 the review marker is missing or stale, so review happens before PR creation.
+After opening a PR, monitor GitHub Actions and fix any branch-caused failures:
+
+```sh
+scripts/monitor_pr_ci.sh              # current branch PR
+scripts/monitor_pr_ci.sh 537          # explicit PR
+```
+
+If the monitor reports failed checks, inspect the linked logs, fix the branch,
+push, and rerun the monitor until the PR checks pass.
 
 ## Tests
 

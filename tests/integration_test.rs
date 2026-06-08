@@ -903,7 +903,11 @@ fn test_arbiter_round_robin_arch_sim_nonpow2_behavior() {
 /// bit-select against an undefined bus name.
 #[test]
 fn test_var_index_vec_bus_comb_lowering_matches_backends() {
-    let source = include_str!("backend_equiv/Fx3bVarIndexVecBusBug.arch");
+    let source = concat!(
+        include_str!("backend_equiv/BusVr.arch"),
+        "\n",
+        include_str!("backend_equiv/Fx3bVarIndexVecBusBug.arch")
+    );
     let sv = compile_to_sv(source);
     assert!(sv.contains("o_valid[sel]"), "SV must select lane `sel`:\n{sv}");
     assert!(sv.contains("o_data[sel]"), "SV must select lane `sel`:\n{sv}");
@@ -961,11 +965,14 @@ fn test_var_index_vec_bus_backend_equivalence_e2e() {
     let arch_bin = env!("CARGO_BIN_EXE_arch");
 
     // Helper: run `arch sim <arch> --tb <tb>` and assert a PASS marker.
-    let run_arch_sim = |arch: &str, tb: &str, marker: &str| {
+    let run_arch_sim = |archs: &[&str], tb: &str, marker: &str| {
         let td = tempfile::tempdir().expect("tempdir");
-        let out = std::process::Command::new(arch_bin)
-            .arg("sim")
-            .arg(arch)
+        let mut cmd = std::process::Command::new(arch_bin);
+        cmd.arg("sim");
+        for arch in archs {
+            cmd.arg(arch);
+        }
+        let out = cmd
             .arg("--tb")
             .arg(tb)
             .arg("--outdir")
@@ -976,17 +983,20 @@ fn test_var_index_vec_bus_backend_equivalence_e2e() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             out.status.success() && stdout.contains(marker),
-            "arch sim should pass for {arch}\nwant marker: {marker}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+            "arch sim should pass for {archs:?}\nwant marker: {marker}\nstdout:\n{stdout}\nstderr:\n{stderr}"
         );
     };
 
     run_arch_sim(
-        "tests/backend_equiv/Fx3bVarIndexVecBusBug.arch",
+        &[
+            "tests/backend_equiv/BusVr.arch",
+            "tests/backend_equiv/Fx3bVarIndexVecBusBug.arch",
+        ],
         "tests/backend_equiv/Vsel_arch_tb.cpp",
         "PASS vsel_varidx",
     );
     run_arch_sim(
-        "tests/backend_equiv/Fx3bVarIndexVecBusThread.arch",
+        &["tests/backend_equiv/Fx3bVarIndexVecBusThread.arch"],
         "tests/backend_equiv/VselThread_arch_tb.cpp",
         "PASS vsel_thread_varidx",
     );
@@ -1001,20 +1011,19 @@ fn test_var_index_vec_bus_backend_equivalence_e2e() {
     }
 
     // Helper: build SV, verilate with the matching TB, run, assert PASS marker.
-    let run_verilator = |arch: &str, tb: &str, top: &str, marker: &str| {
+    let run_verilator = |archs: &[&str], tb: &str, top: &str, marker: &str| {
         let td = tempfile::tempdir().expect("tempdir");
         let sv_out = td.path().join(format!("{top}.sv"));
         let obj_dir = td.path().join("obj_dir");
-        let build = std::process::Command::new(arch_bin)
-            .arg("build")
-            .arg(arch)
-            .arg("-o")
-            .arg(&sv_out)
-            .output()
-            .expect("arch build");
+        let mut cmd = std::process::Command::new(arch_bin);
+        cmd.arg("build");
+        for arch in archs {
+            cmd.arg(arch);
+        }
+        let build = cmd.arg("-o").arg(&sv_out).output().expect("arch build");
         assert!(
             build.status.success(),
-            "arch build should pass for {arch}\nstderr:\n{}",
+            "arch build should pass for {archs:?}\nstderr:\n{}",
             String::from_utf8_lossy(&build.stderr)
         );
         let tb_abs = std::fs::canonicalize(tb).expect("tb path");
@@ -1030,7 +1039,7 @@ fn test_var_index_vec_bus_backend_equivalence_e2e() {
             .expect("verilate");
         assert!(
             verilate.status.success(),
-            "Verilator build should pass for {arch}\nstdout:\n{}\nstderr:\n{}",
+            "Verilator build should pass for {archs:?}\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&verilate.stdout),
             String::from_utf8_lossy(&verilate.stderr)
         );
@@ -1040,18 +1049,21 @@ fn test_var_index_vec_bus_backend_equivalence_e2e() {
         let stdout = String::from_utf8_lossy(&run.stdout);
         assert!(
             run.status.success() && stdout.contains(marker),
-            "Verilator sim should pass for {arch}\nwant marker: {marker}\nstdout:\n{stdout}"
+            "Verilator sim should pass for {archs:?}\nwant marker: {marker}\nstdout:\n{stdout}"
         );
     };
 
     run_verilator(
-        "tests/backend_equiv/Fx3bVarIndexVecBusBug.arch",
+        &[
+            "tests/backend_equiv/BusVr.arch",
+            "tests/backend_equiv/Fx3bVarIndexVecBusBug.arch",
+        ],
         "tests/backend_equiv/Vsel_vl_tb.cpp",
         "Vsel",
         "PASS vsel_varidx",
     );
     run_verilator(
-        "tests/backend_equiv/Fx3bVarIndexVecBusThread.arch",
+        &["tests/backend_equiv/Fx3bVarIndexVecBusThread.arch"],
         "tests/backend_equiv/VselThread_vl_tb.cpp",
         "VselThread",
         "PASS vsel_thread_varidx",
@@ -13656,6 +13668,10 @@ fn test_build_emit_thread_proof_lean_records_replay_artifact() {
         "Lean artifact should include an unbounded trace-equivalence theorem:\n{lean}"
     );
     assert!(
+        lean.contains("example : StepEffectFaithful ProofFlow_T_0Source ProofFlow_T_0Fsm"),
+        "Lean artifact should prove one-step generated FSM state effects match the source thread:\n{lean}"
+    );
+    assert!(
         lean.contains("Control.waitUntil (GuardExpr.atom 0)"),
         "Lean artifact should carry structured CountedWait guard expressions:\n{lean}"
     );
@@ -13997,6 +14013,10 @@ fn test_build_emit_thread_proof_lean_accepts_once_folded_terminal_action() {
             "forall t, sourceTraceObs ProofOnceFold_T_0Source inputs natInputs cfg0 t = fsmTraceObs ProofOnceFold_T_0Fsm inputs natInputs cfg0 t"
         ),
         "Lean artifact should include the once trace-equivalence theorem:\n{lean}"
+    );
+    assert!(
+        lean.contains("example : StepEffectFaithful ProofOnceFold_T_0Source ProofOnceFold_T_0Fsm"),
+        "Lean artifact should include the once thread one-step state-effect theorem:\n{lean}"
     );
     assert!(
         lean.contains(

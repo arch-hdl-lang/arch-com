@@ -296,6 +296,33 @@ theorem one_step_equiv
           advance_equiv cert cfg (firstEnabledTarget env natEnv branches (fsm.state cfg.pc).target),
         ]
 
+structure StepEffectFaithful (src : SourceThread) (fsm : LoweredFsm) : Prop where
+  step_ok :
+    forall env natEnv cfg,
+      sourceStep src env natEnv cfg = fsmStep fsm env natEnv cfg
+  pc_ok :
+    forall env natEnv cfg,
+      (sourceStep src env natEnv cfg).pc = (fsmStep fsm env natEnv cfg).pc
+  counter_ok :
+    forall env natEnv cfg,
+      (sourceStep src env natEnv cfg).cnt = (fsmStep fsm env natEnv cfg).cnt
+
+theorem step_effect_faithful
+    {src : SourceThread}
+    {fsm : LoweredFsm}
+    (cert : LoweringCertifies src fsm) :
+    StepEffectFaithful src fsm := by
+  refine
+    { step_ok := ?_
+      pc_ok := ?_
+      counter_ok := ?_ }
+  · intro env natEnv cfg
+    exact (one_step_equiv cert env natEnv cfg).right
+  · intro env natEnv cfg
+    exact congrArg Config.pc ((one_step_equiv cert env natEnv cfg).right)
+  · intro env natEnv cfg
+    exact congrArg Config.cnt ((one_step_equiv cert env natEnv cfg).right)
+
 def sourceCfgAt
     (src : SourceThread)
     (inputs : Nat -> Env)

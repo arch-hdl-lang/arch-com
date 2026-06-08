@@ -1,2 +1,5 @@
 import ArchConstructProof.Arbiter
+import ArchConstructProof.AsyncFifo
+import ArchConstructProof.CreditChannel
 import ArchConstructProof.Fifo
+import ArchConstructProof.Pipeline

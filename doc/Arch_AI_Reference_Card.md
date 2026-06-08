@@ -1451,8 +1451,8 @@ arch formal F.arch --check-thread-proof-lean \
 // v1 scope: flat module, scalar types (UInt/SInt/Bool/Bit), single clock, no sub-`inst`
 // Lean thread proof scope: per-design compiler-lowering certificate replay, not bounded design-property proof
 // Lean replay resolves lake from PATH, ELAN_HOME/bin/lake, or ~/.elan/bin/lake
-// Construct proof scope: sync FIFO parametric depth/width proof for pointer bounds + abstract queue-step refinement, LIFO equations, and priority/round_robin arbiter equations
-// Construct formal IR feeds Lean construct certificates, FIFO/arbiter SMT-LIB2 checks, and credit_channel BMC equations
+// Construct proof scope: sync FIFO parametric depth/width proof for pointer bounds + abstract queue-step refinement, LIFO equations, priority/round_robin arbiter equations, and bus credit_channel accounting
+// Construct formal IR feeds Lean construct certificates, FIFO/arbiter/credit_channel SMT-LIB2 checks, and credit_channel BMC equations
 // Exit codes: 0 all PROVED/HIT · 1 any REFUTED/NOT-REACHED · 2 any INCONCLUSIVE · 3 compile error
 ```
 

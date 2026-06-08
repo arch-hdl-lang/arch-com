@@ -23,6 +23,11 @@ Use `git config core.hooksPath .githooks` in local clones to install the
 versioned `.githooks/pre-push` hook. The hook blocks pushes from `codex/*`
 branches when the review marker is missing or stale.
 
+After opening a PR, run `scripts/monitor_pr_ci.sh [pr-number-or-url]`. If any
+check fails, inspect the linked logs, fix the branch, push the fix, and rerun
+the monitor. Do not leave a PR with known failing GitHub Actions checks unless
+the failure is unrelated or explicitly accepted.
+
 ## Project Overview
 
 `arch-com` is a compiler for **ARCH**, a purpose-built hardware description language (HDL) for micro-architecture work. The compiler ingests `.arch` source files and emits deterministic, readable SystemVerilog. The language is explicitly designed to be generated correctly by LLMs from natural-language hardware descriptions.

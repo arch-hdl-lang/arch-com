@@ -346,6 +346,8 @@ class CertToLeanTests(unittest.TestCase):
         lean = cert_to_lean.render(base_cert())
         self.assertIn("def M_T_0Fsm : LoweredFsm :=", lean)
         self.assertIn("dispatch_branches_ok", lean)
+        self.assertIn("StepEffectFaithful M_T_0Source M_T_0Fsm", lean)
+        self.assertIn("step_effect_faithful (by", lean)
         self.assertIn("{ actions := [", lean)
         self.assertIn("target := 1", lean)
         self.assertIn("target := 0", lean)
@@ -873,6 +875,10 @@ class CertToLeanTests(unittest.TestCase):
         self.assertIn(
             "forall t, sourceTraceObs M_T_0Source inputs natInputs cfg0 t = "
             "fsmTraceObs M_T_0Fsm inputs natInputs cfg0 t",
+            lean,
+        )
+        self.assertIn(
+            "example : StepEffectFaithful M_T_0Source M_T_0Fsm",
             lean,
         )
 

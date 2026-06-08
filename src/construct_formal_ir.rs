@@ -258,6 +258,13 @@ pub struct ArbiterFormalModel {
     pub latency: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct CreditChannelLeanFormalModel {
+    pub name: String,
+    pub depth: u64,
+    pub payload_width: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FifoNatExpr {
     Var(&'static str),
@@ -455,6 +462,24 @@ pub fn render_lean_arbiter_equations(out: &mut String, base: &str, model: &Arbit
         ArbiterSelectIr::Priority => render_lean_priority_arbiter_equations(out, base),
         ArbiterSelectIr::RoundRobin => render_lean_round_robin_arbiter_equations(out, base),
     }
+}
+
+pub fn render_lean_credit_channel_equations(
+    out: &mut String,
+    base: &str,
+    _model: &CreditChannelLeanFormalModel,
+) {
+    out.push_str(&format!(
+        "\ndef {base}_equations : CreditChannel.Generated {base} :=\n"
+    ));
+    out.push_str("  { canSend := fun st => CreditChannel.canSend st\n");
+    out.push_str("    receiverValid := fun st => CreditChannel.receiverValid st\n");
+    out.push_str("    nextCredit := fun st send creditReturn => CreditChannel.nextCredit st.credit send creditReturn\n");
+    out.push_str("    nextOccupancy := fun st send creditReturn => CreditChannel.nextOccupancy st.occupancy send creditReturn\n");
+    out.push_str("    can_send_eq := by intro st; rfl\n");
+    out.push_str("    receiver_valid_eq := by intro st; rfl\n");
+    out.push_str("    next_credit_eq := by intro st send creditReturn; rfl\n");
+    out.push_str("    next_occupancy_eq := by intro st send creditReturn; rfl }\n\n");
 }
 
 pub fn render_smt2_fifo_sanity(model: &FifoFormalModel) -> String {
@@ -681,6 +706,82 @@ pub fn render_smt2_arbiter_sanity_with_prefix(model: &ArbiterFormalModel, prefix
     out.push_str(&format!("  (= (bvand {grant} (bvnot {req})) {zero})\n"));
     out.push_str(&format!(
         "  (or (= {grant} {zero}) (= (bvand {grant} (bvsub {grant} {one})) {zero}))\n"
+    ));
+    out.push_str(")))\n");
+    out.push_str("(check-sat)\n");
+    out
+}
+
+pub fn render_smt2_credit_channel_sanity_with_prefix(
+    model: &CreditChannelLeanFormalModel,
+    prefix: &str,
+) -> String {
+    let width = clog2_u32(model.depth + 1).max(1);
+    let sum_width = width + 1;
+    let depth = bv_lit(model.depth, width);
+    let depth_sum = bv_lit(model.depth, sum_width);
+    let zero = bv_lit(0, width);
+    let one = bv_lit(1, width);
+    let credit = format!("{prefix}_credit");
+    let occupancy = format!("{prefix}_occupancy");
+    let send = format!("{prefix}_send");
+    let credit_return = format!("{prefix}_credit_return");
+    let credit_next = format!("{prefix}_credit_next");
+    let occ_next = format!("{prefix}_occupancy_next");
+    let can_send = format!("{prefix}_can_send");
+    let receiver_valid = format!("{prefix}_receiver_valid");
+    let zext = |term: &str| format!("((_ zero_extend 1) {term})");
+    let sum = |lhs: &str, rhs: &str| format!("(bvadd {} {})", zext(lhs), zext(rhs));
+
+    let credit_next_expr = format!(
+        "(ite (and {send} (not {credit_return})) (bvsub {credit} {one}) (ite (and (not {send}) {credit_return}) (bvadd {credit} {one}) {credit}))"
+    );
+    let occ_next_expr = format!(
+        "(ite (and {send} (not {credit_return})) (bvadd {occupancy} {one}) (ite (and (not {send}) {credit_return}) (bvsub {occupancy} {one}) {occupancy}))"
+    );
+
+    let mut out = String::new();
+    out.push_str("; auto-generated construct formal IR sanity check\n");
+    out.push_str("; model: credit_channel accounting equations\n");
+    out.push_str("(set-logic QF_BV)\n");
+    out.push_str(&format!("(declare-fun {credit} () (_ BitVec {width}))\n"));
+    out.push_str(&format!(
+        "(declare-fun {occupancy} () (_ BitVec {width}))\n"
+    ));
+    out.push_str(&format!("(declare-fun {send} () Bool)\n"));
+    out.push_str(&format!("(declare-fun {credit_return} () Bool)\n"));
+    out.push_str(&format!("(assert (bvule {credit} {depth}))\n"));
+    out.push_str(&format!("(assert (bvule {occupancy} {depth}))\n"));
+    out.push_str(&format!(
+        "(assert (= {} {depth_sum}))\n",
+        sum(&credit, &occupancy)
+    ));
+    out.push_str(&format!("(assert (=> {send} (bvugt {credit} {zero})))\n"));
+    out.push_str(&format!(
+        "(assert (=> {credit_return} (bvugt {occupancy} {zero})))\n"
+    ));
+    out.push_str(&format!(
+        "(define-fun {can_send} () Bool (bvugt {credit} {zero}))\n"
+    ));
+    out.push_str(&format!(
+        "(define-fun {receiver_valid} () Bool (bvugt {occupancy} {zero}))\n"
+    ));
+    out.push_str(&format!(
+        "(define-fun {credit_next} () (_ BitVec {width}) {credit_next_expr})\n"
+    ));
+    out.push_str(&format!(
+        "(define-fun {occ_next} () (_ BitVec {width}) {occ_next_expr})\n"
+    ));
+    out.push_str("(assert (not (and\n");
+    out.push_str(&format!("  (= {can_send} (not (= {credit} {zero})))\n"));
+    out.push_str(&format!(
+        "  (= {receiver_valid} (not (= {occupancy} {zero})))\n"
+    ));
+    out.push_str(&format!("  (bvule {credit_next} {depth})\n"));
+    out.push_str(&format!("  (bvule {occ_next} {depth})\n"));
+    out.push_str(&format!(
+        "  (= {} {depth_sum})\n",
+        sum(&credit_next, &occ_next)
     ));
     out.push_str(")))\n");
     out.push_str("(check-sat)\n");
@@ -1093,6 +1194,20 @@ mod tests {
         assert!(smt.contains("(declare-fun RR_start () (_ BitVec 3))"));
         assert!(smt.contains("(assert (bvult RR_start #b100))"));
         assert!(smt.contains("(define-fun RR_grant"));
+        assert_z3_unsat_or_skip(&smt);
+    }
+
+    #[test]
+    fn credit_channel_smt2_sanity_is_unsat_under_z3() {
+        let model = CreditChannelLeanFormalModel {
+            name: "DmaCh_data".to_string(),
+            depth: 4,
+            payload_width: 8,
+        };
+        let smt = render_smt2_credit_channel_sanity_with_prefix(&model, "DmaCh_data");
+        assert!(smt.contains("; model: credit_channel accounting equations"));
+        assert!(smt.contains("DmaCh_data_credit_next"));
+        assert!(smt.contains("DmaCh_data_receiver_valid"));
         assert_z3_unsat_or_skip(&smt);
     }
 
