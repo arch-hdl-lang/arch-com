@@ -1,0 +1,24 @@
+// Backend-equivalence test for Fixture 8 (C+D+E), MODE=1 (double arm).
+// y should be 2*a (wrapping). a=0x40 -> 0x80; a=0xC0 -> 0x80 (wrap).
+testbench Fx8Tb
+    dut : Fx8GenIfSelect
+end testbench Fx8Tb
+
+impl Fx8Test for Fx8Tb
+    run
+        log(info, "Fx8 C+D+E gen-if MODE=1 (double)")
+        dut.rst = 0
+        dut.a = 0
+        wait 3 cycles
+        dut.rst = 1
+        dut.a = 0x40
+        wait 1 cycle
+        assert dut.y == 0x80
+            else fail("MODE1 a=0x40 y=${dut.y} expected 0x80")
+        dut.a = 0xC0
+        wait 1 cycle
+        assert dut.y == 0x80
+            else fail("MODE1 a=0xC0 y=${dut.y} expected 0x80 (wrap)")
+        log(info, "PASS Fx8 MODE1: double arm selected")
+    end run
+end impl Fx8Test

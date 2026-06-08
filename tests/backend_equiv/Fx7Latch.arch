@@ -1,0 +1,26 @@
+// Child for Fixture 7 (B+D+E). Latches an accepted (valid&ready) word at
+// param width DATA_W. Always ready.
+module Fx7Latch
+  param DATA_W: const = 10;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  port b_valid: in  Bool;
+  port b_data:  in  UInt<DATA_W>;
+  port b_ready: out Bool;
+  port got:     out UInt<DATA_W>;
+
+  reg got_r: UInt<DATA_W> reset rst => 0;
+
+  comb
+    b_ready = true;
+    got = got_r;
+  end comb
+
+  seq on clk rising
+    if b_valid
+      got_r <= b_data;
+    end if
+  end seq
+end module Fx7Latch

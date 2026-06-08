@@ -1,0 +1,61 @@
+// Fixture 6 — axes A+C+E (nested 2-D). BUG-BLOCKED: this combination cannot
+// currently be expressed in a form that builds. It is kept as a standing
+// repro of two interacting defects on a 2-D Vec<Vec<Bus,COLS>,ROWS> wire.
+//
+// (parse) The nested Vec<Vec<BusVr<DATA_W=DATA_W>,COLS>,ROWS> form fails to
+//   parse ("expected ,, found <") unless the inner bus is hidden behind a
+//   `type` alias (as Nic400Fabric does). With the alias it parses — but then:
+//
+// (build/elab) Forwarding the 2-D edge wire to child insts hits the same
+//   Vec<Bus>-across-boundary bug family as Fx5b:
+//     - whole-row forward  `o -> edges[r]`        → arch build STACK OVERFLOW
+//     - per-element forward `o[c] -> edges[r][c]`  → FALSE "signal `edges` has
+//       multiple drivers" (each edges[r][c] is a distinct element driven once;
+//       same false-positive class as Fx1bMultiDriverBug, now 2-D).
+//
+// Nic400Fabric DOES build a 2-D edge wire — but it drives each row from a
+// dedicated per-row inst's whole-Vec<Bus> initiator (`mp_i.outs -> edges[i]`)
+// where the producer drives `outs` from THREADS, and gathers on the consumer
+// side with `ins[k] <- edges[k][j]`. Reducing that to a tiny standalone
+// fixture (comb-driven producer, or explicit per-element row forward) trips
+// the bugs above. The minimal failing shape is preserved below.
+module Fx6Nested2D
+  param ROWS:   const = 2;
+  param COLS:   const = 2;
+  param DATA_W: const = 8;
+
+  type EdgeBus = BusVr<DATA_W=DATA_W>;            // alias needed for nested Vec to parse
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port v:   in unpacked Vec<Bool, ROWS>;
+  port d:   in unpacked Vec<UInt<DATA_W>, ROWS>;
+  port acc: initiator Vec<EdgeBus, COLS>;
+
+  wire edges: Vec<Vec<EdgeBus, COLS>, ROWS>;     // 2-D Vec<Bus> wire
+
+  generate_for r in 0..ROWS-1
+    inst prod_r: Fx6Prod
+      param COLS = COLS;
+      param DATA_W = DATA_W;
+      v <- v[r];
+      d <- d[r];
+      for c in 0..COLS-1
+        o[c] -> edges[r][c];     // FALSE "edges has multiple drivers" here
+      end for
+    end inst prod_r
+  end generate_for
+
+  generate_for c in 0..COLS-1
+    inst cons_c: Fx6Cons
+      param ROWS = ROWS;
+      param DATA_W = DATA_W;
+      clk <- clk;
+      rst <- rst;
+      for k in 0..ROWS-1
+        ins[k] <- edges[k][c];   // double-indexed gather (consumer side)
+      end for
+      acc -> acc[c];
+    end inst cons_c
+  end generate_for
+end module Fx6Nested2D

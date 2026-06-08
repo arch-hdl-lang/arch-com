@@ -1,0 +1,64 @@
+// Backend-equivalence test for Fixture 2 (A+B+C).
+// All LANES request simultaneously; accept all three with ready high. The
+// round-robin lock should let each lane push its word; the shared grants
+// counter must reach 3 (one per accepted beat).
+testbench Fx2Tb
+    dut : Fx2GenThreadLock
+end testbench Fx2Tb
+
+impl Fx2Test for Fx2Tb
+    run
+        log(info, "Fx2 A+B+C gen-thread-lock")
+
+        dut.rst = 0
+        dut.req[0] = 0
+        dut.req[1] = 0
+        dut.req[2] = 0
+        dut.d[0] = 0
+        dut.d[1] = 0
+        dut.d[2] = 0
+        dut.o_ready[0] = 0
+        dut.o_ready[1] = 0
+        dut.o_ready[2] = 0
+        wait 4 cycles
+        dut.rst = 1
+        wait 2 cycles
+
+        // All lanes request, all ready. Distinct payloads.
+        dut.d[0] = 0x11
+        dut.d[1] = 0x22
+        dut.d[2] = 0x33
+        dut.req[0] = 1
+        dut.req[1] = 1
+        dut.req[2] = 1
+        dut.o_ready[0] = 1
+        dut.o_ready[1] = 1
+        dut.o_ready[2] = 1
+
+        let seen0 : uint<32> = 0
+        let seen1 : uint<32> = 0
+        let seen2 : uint<32> = 0
+        for _ in 0 .. 30
+            if dut.o_valid[0] == 1 && dut.o_ready[0] == 1 && dut.o_data[0] == 0x11
+                seen0 = 1
+            end if
+            if dut.o_valid[1] == 1 && dut.o_ready[1] == 1 && dut.o_data[1] == 0x22
+                seen1 = 1
+            end if
+            if dut.o_valid[2] == 1 && dut.o_ready[2] == 1 && dut.o_data[2] == 0x33
+                seen2 = 1
+            end if
+            wait 1 cycle
+        end for
+
+        assert seen0 == 1
+            else fail("lane0 never pushed 0x11")
+        assert seen1 == 1
+            else fail("lane1 never pushed 0x22")
+        assert seen2 == 1
+            else fail("lane2 never pushed 0x33")
+        assert dut.grants >= 3
+            else fail("grants=${dut.grants} expected >=3")
+        log(info, "PASS Fx2: all lanes pushed under round_robin lock, grants=${dut.grants}")
+    end run
+end impl Fx2Test

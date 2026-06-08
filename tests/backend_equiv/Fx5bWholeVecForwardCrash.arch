@@ -1,0 +1,38 @@
+// Fixture 5b — BUG REPRO (axes A+D+E). `arch check` PASSES but `arch build`
+// STACK-OVERFLOWS (abort, exit 134) on whole-vector Vec<Bus> forwarding across
+// an inst boundary.
+//
+//   arch check  examples ... Fx5bWholeVecForwardCrash.arch  → "OK: no errors"
+//   arch build  examples ... Fx5bWholeVecForwardCrash.arch  →
+//       thread 'main' has overflowed its stack
+//       fatal runtime error: stack overflow, aborting
+//
+// Trigger (minimized to 2 lanes): a child with a `target Vec<Bus>` port wired
+// in ONE whole-vector connection `mm <- m`. The same crash reproduces with:
+//   - an internal `wire edges: Vec<Bus>` driven in comb and forwarded to a
+//     child Vec<Bus> port, and
+//   - a producer-inst -> wire -> consumer-inst chain over a 1-D Vec<Bus>.
+// Per-element Vec<Bus> target->target passthrough (`mm[k] <- m[k]`) does NOT
+// crash but instead fails single-driver checking ("output port m_0_ready is
+// not driven") — the reverse (ready) direction is not wired across the
+// boundary. Scalar (non-Vec) bus passthrough across an inst works fine.
+//
+// Companion child (inline for clarity):
+//   module CrashSink
+//     param NUM: const = 2;
+//     port clk: in Clock<SysDomain>; port rst: in Reset<Async, Low>;
+//     port mm: target Vec<BusVr<DATA_W=8>, NUM>;
+//     comb mm[0].ready = true; mm[1].ready = true; end comb
+//   end module CrashSink
+module Fx5bWholeVecForwardCrash
+  param NUM: const = 2;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port m: target Vec<BusVr<DATA_W=8>, NUM>;
+  inst sink: CrashSink
+    param NUM = NUM;
+    clk <- clk;
+    rst <- rst;
+    mm <- m;                 // <-- whole-vector Vec<Bus> forward: stack overflow
+  end inst sink
+end module Fx5bWholeVecForwardCrash

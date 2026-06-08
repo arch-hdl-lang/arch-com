@@ -1,0 +1,13 @@
+// Companion child for Fx5bWholeVecForwardCrash (A+D+E). Receives a whole
+// Vec<Bus> via a single `mm <- m` forward across the inst boundary.
+module CrashSink
+  param NUM: const = 2;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port mm: target Vec<BusVr<DATA_W=8>, NUM>;
+  comb
+    for i in 0..NUM-1
+      mm[i].ready = true;
+    end for
+  end comb
+end module CrashSink

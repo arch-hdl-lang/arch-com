@@ -1,0 +1,69 @@
+// Backend-equivalence test for Fixture 3 (A+B+D).
+// Drive lane sel=2 with a 12-bit payload 0xABC, ready high on that lane.
+// Expect o[2] to carry 0xABC and other lanes to stay quiet, then a second
+// transaction to lane 1 with payload 0x5A5.
+testbench Fx3Tb
+    dut : Fx3ThreadVecParamW
+end testbench Fx3Tb
+
+impl Fx3Test for Fx3Tb
+    run
+        log(info, "Fx3 A+B+D thread-vec param-width")
+
+        dut.rst = 0
+        dut.start = 0
+        dut.sel = 0
+        dut.d = 0
+        dut.o_ready[0] = 0
+        dut.o_ready[1] = 0
+        dut.o_ready[2] = 0
+        dut.o_ready[3] = 0
+        wait 4 cycles
+        dut.rst = 1
+        wait 2 cycles
+
+        // Txn 1 -> lane 2, payload 0xABC.
+        dut.sel = 2
+        dut.d = 0xABC
+        dut.o_ready[2] = 1
+        dut.start = 1
+
+        let hit2 : uint<32> = 0
+        for _ in 0 .. 12
+            if hit2 == 0 && dut.o_valid[2] == 1 && dut.o_ready[2] == 1
+                hit2 = 1
+                assert dut.o_data[2] == 0xABC
+                    else fail("lane2 data=${dut.o_data[2]} expected 0xABC")
+                assert dut.o_valid[0] == 0
+                    else fail("lane0 leaked valid")
+                assert dut.o_valid[1] == 0
+                    else fail("lane1 leaked valid")
+            end if
+            wait 1 cycle
+        end for
+        assert hit2 == 1
+            else fail("lane2 txn never accepted")
+        dut.start = 0
+        dut.o_ready[2] = 0
+        wait 3 cycles
+
+        // Txn 2 -> lane 1, payload 0x5A5.
+        dut.sel = 1
+        dut.d = 0x5A5
+        dut.o_ready[1] = 1
+        dut.start = 1
+        let hit1 : uint<32> = 0
+        for _ in 0 .. 12
+            if hit1 == 0 && dut.o_valid[1] == 1 && dut.o_ready[1] == 1
+                hit1 = 1
+                assert dut.o_data[1] == 0x5A5
+                    else fail("lane1 data=${dut.o_data[1]} expected 0x5A5")
+            end if
+            wait 1 cycle
+        end for
+        assert hit1 == 1
+            else fail("lane1 txn never accepted")
+
+        log(info, "PASS Fx3: runtime-selected Vec<Bus> drive at 12-bit width")
+    end run
+end impl Fx3Test

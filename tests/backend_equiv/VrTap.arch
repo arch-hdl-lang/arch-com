@@ -1,0 +1,29 @@
+// Leaf: latches the last accepted data word from a BusVr target port and
+// re-exposes it on an outbound BusVr initiator (o.data = latched value,
+// o.valid always true). Driving the result back out as a bus — rather than
+// a scalar `out` port — sidesteps the A+C+E multi-driver false-positive
+// documented in Fx1bMultiDriverBug.arch.
+module VrTap
+  param DATA_W: const = 8;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  port b:  target BusVr<DATA_W=DATA_W>;     // incoming beats
+  port en: in Bool;                          // ready source
+  port o:  initiator BusVr<DATA_W=DATA_W>;   // o.data = last accepted word
+
+  reg last_r: UInt<DATA_W> reset rst => 0;
+
+  comb
+    b.ready = en;
+    o.valid = true;
+    o.data  = last_r;
+  end comb
+
+  seq on clk rising
+    if b.valid and en
+      last_r <= b.data;
+    end if
+  end seq
+end module VrTap

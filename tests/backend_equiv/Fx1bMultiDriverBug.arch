@@ -1,0 +1,36 @@
+// Fixture 1b — BUG REPRO (axes A+C+E). Does NOT type-check; kept as a
+// standing regression marker for a false-positive multi-driver diagnostic.
+//
+// Symptom: `arch check` reports
+//     × signal `out` has multiple drivers   (at `last -> out[i]`)
+// even though each generate_for iteration drives a DISTINCT element out[i].
+//
+// Trigger (3-way interaction, minimized):
+//   - a `target Vec<Bus>` port forwarded per-element in a generate_for body
+//     (`b <- m[i]`), AND
+//   - a sibling non-bus per-element forward target in the SAME loop body
+//     (an `unpacked Vec` output element `out[i]`, or even a plain `wire`
+//     element).
+// Remove EITHER the Vec<Bus> port OR replace the unpacked-Vec output with a
+// Vec<Bus> output (see Fx1VecTapFabric.arch) and the error disappears.
+//
+// Root-cause hypothesis: the single-driver checker, when it sees the per-bus
+// signals fanned out from a forwarded `Vec<Bus>` element, over-attributes
+// those driver counts onto the sibling unpacked-Vec/wire element indexed by
+// the same loop var, so out[i] looks driven more than once.
+//
+// Companion leaf is intentionally inline-described; this file is a marker,
+// not a buildable design.
+module Fx1bMultiDriverBug
+  param LANES: const = 3;
+  port m:   target      Vec<BusVr<DATA_W=8>, LANES>;
+  port en:  in unpacked Vec<Bool, LANES>;
+  port out: out unpacked Vec<UInt<8>, LANES>;
+  generate_for i in 0..LANES-1
+    inst tap_i: VrTapScalar         // a leaf with `b: target BusVr`, `last: out UInt<8>`
+      b    <- m[i];
+      en   <- en[i];
+      last -> out[i];               // <-- FALSE "multiple drivers" here
+    end inst tap_i
+  end generate_for
+end module Fx1bMultiDriverBug

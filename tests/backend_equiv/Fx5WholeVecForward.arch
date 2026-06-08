@@ -1,0 +1,31 @@
+// Fixture 5 — axes A+D+E.
+// A: Vec<Bus,NUM> port (m).  D: param-driven NUM and DATA_W.  E: inst boundary
+// — each Vec<Bus> ELEMENT m[i] is forwarded across the boundary to one of NUM
+// child Fx5Sink instances (generate_for), as a scalar bus passthrough.
+//
+// NOTE: the natural "whole-vector forward to a single Vec<Bus> child"
+// (`mm <- m;` with a Vec<Bus> child port) CRASHES arch build with a stack
+// overflow (see Fx5bWholeVecForwardCrash.arch), and per-element Vec<Bus>
+// target->target passthrough fails to wire the reverse (ready) direction.
+// Slicing the Vec<Bus> into N scalar-bus children is the form that works.
+module Fx5WholeVecForward
+  param NUM:    const = 3;
+  param DATA_W: const = 8;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  port m:   target    Vec<BusVr<DATA_W=DATA_W>, NUM>;
+  port acc: initiator Vec<BusVr<DATA_W=DATA_W>, NUM>;   // acc[i].data = lane sum
+
+  generate_for i in 0..NUM-1
+    inst sink_i: Fx5Sink
+      param DATA_W = DATA_W;
+      clk <- clk;
+      rst <- rst;
+      mm  <- m[i];        // scalar-bus element passthrough across boundary
+      acc -> acc[i];      // Vec<Bus> output element (avoids the unpacked-Vec
+                          // multi-driver false-positive of Fx1b)
+    end inst sink_i
+  end generate_for
+end module Fx5WholeVecForward

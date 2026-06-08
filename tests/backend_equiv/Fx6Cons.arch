@@ -1,0 +1,32 @@
+// Consumer for Fixture 6. Gathers ROWS inbound buses (one per row) and sums
+// the accepted payloads into a running accumulator, re-exported on acc.
+// Constant-index body, ROWS fixed at 2.
+module Fx6Cons
+  param ROWS:   const = 2;
+  param DATA_W: const = 8;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  port ins: target    Vec<BusVr<DATA_W=DATA_W>, ROWS>;
+  port acc: initiator BusVr<DATA_W=DATA_W>;
+
+  reg acc_r: UInt<DATA_W> reset rst => 0;
+
+  comb
+    ins[0].ready = true;
+    ins[1].ready = true;
+    acc.valid = true;
+    acc.data  = acc_r;
+  end comb
+
+  seq on clk rising
+    if ins[0].valid and ins[1].valid
+      acc_r <= acc_r +% (ins[0].data +% ins[1].data);
+    elsif ins[0].valid
+      acc_r <= acc_r +% ins[0].data;
+    elsif ins[1].valid
+      acc_r <= acc_r +% ins[1].data;
+    end if
+  end seq
+end module Fx6Cons

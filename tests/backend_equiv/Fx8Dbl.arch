@@ -1,0 +1,9 @@
+// double child for Fixture 8 (C+D+E).
+module Fx8Dbl
+  param DATA_W: const = 8;
+  port x: in  UInt<DATA_W>;
+  port r: out UInt<DATA_W>;
+  comb
+    r = x +% x;
+  end comb
+end module Fx8Dbl

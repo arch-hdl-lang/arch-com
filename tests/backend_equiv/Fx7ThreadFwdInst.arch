@@ -1,0 +1,52 @@
+// Fixture 7 — axes B+D+E.
+// B: a thread (with lock) drives a scalar BusVr.  D: param-driven width DATA_W
+// (default 10 — odd width).  E: the thread's output bus is forwarded across an
+// inst boundary to a child sink that latches it.
+//
+// A producer thread, on `start`, takes a lock and drives an internal bus
+// `gen` with payload `d` until accepted; `gen` is forwarded whole (scalar bus)
+// to a child Fx7Latch which captures the word. Tests a thread output crossing
+// a module boundary at a param width.
+module Fx7ThreadFwdInst
+  param DATA_W: const = 10;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  port start: in Bool;
+  port d:     in UInt<DATA_W>;
+  port got:   out UInt<DATA_W>;
+
+  resource gen_ch: mutex<priority>;
+
+  // Internal scalar bus the thread drives and the child consumes.
+  wire gen_valid: Bool;
+  wire gen_data:  UInt<DATA_W>;
+  wire gen_ready: Bool;
+
+  thread Gen on clk rising, rst low
+    default comb
+      gen_valid = false;
+      gen_data  = 0;
+    end default
+    if not start
+      wait until start;
+    end if
+    lock gen_ch
+      do
+        gen_valid = true;
+        gen_data  = d;
+      until gen_ready;
+    end lock gen_ch
+  end thread Gen
+
+  inst lat: Fx7Latch
+    param DATA_W = DATA_W;
+    clk <- clk;
+    rst <- rst;
+    b_valid <- gen_valid;
+    b_data  <- gen_data;
+    b_ready -> gen_ready;
+    got     -> got;
+  end inst lat
+end module Fx7ThreadFwdInst

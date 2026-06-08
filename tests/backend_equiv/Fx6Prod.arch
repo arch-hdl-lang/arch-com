@@ -1,0 +1,15 @@
+// Producer for Fixture 6. Broadcasts a single (v,d) onto a whole row of
+// COLS outbound buses (constant-index body, COLS fixed at 2).
+module Fx6Prod
+  param COLS:   const = 2;
+  param DATA_W: const = 8;
+
+  port v: in Bool;
+  port d: in UInt<DATA_W>;
+  port o: initiator Vec<BusVr<DATA_W=DATA_W>, COLS>;
+
+  comb
+    o[0].valid = v; o[0].data = d;
+    o[1].valid = v; o[1].data = d;
+  end comb
+end module Fx6Prod

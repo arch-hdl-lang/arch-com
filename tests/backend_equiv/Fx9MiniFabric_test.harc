@@ -1,0 +1,77 @@
+// Backend-equivalence test for Fixture 9 (A+B+C+D mini-fabric).
+// All lanes present input beats; check (1) per-lane passthrough m[i]->o[i]
+// carries distinct payloads, and (2) the shared merged stream is served fairly
+// across lanes under round_robin (every lane tag appears).
+testbench Fx9Tb
+    dut : Fx9MiniFabric
+end testbench Fx9Tb
+
+impl Fx9Test for Fx9Tb
+    run
+        log(info, "Fx9 A+B+C+D mini-fabric")
+
+        dut.rst = 0
+        dut.m_valid[0] = 0
+        dut.m_valid[1] = 0
+        dut.m_valid[2] = 0
+        dut.m_data[0] = 0
+        dut.m_data[1] = 0
+        dut.m_data[2] = 0
+        dut.o_ready[0] = 0
+        dut.o_ready[1] = 0
+        dut.o_ready[2] = 0
+        dut.merged_ready = 0
+        wait 4 cycles
+        dut.rst = 1
+        wait 2 cycles
+
+        // Present distinct payloads on all lanes; accept passthrough + merged.
+        dut.m_data[0] = 0x1111
+        dut.m_data[1] = 0x2222
+        dut.m_data[2] = 0x3333
+        dut.m_valid[0] = 1
+        dut.m_valid[1] = 1
+        dut.m_valid[2] = 1
+        dut.o_ready[0] = 1
+        dut.o_ready[1] = 1
+        dut.o_ready[2] = 1
+        dut.merged_ready = 1
+
+        // (1) passthrough is combinational — check immediately after a tick.
+        wait 1 cycle
+        assert dut.o_valid[0] == 1 && dut.o_data[0] == 0x1111
+            else fail("passthrough lane0 o_data=${dut.o_data[0]}")
+        assert dut.o_valid[1] == 1 && dut.o_data[1] == 0x2222
+            else fail("passthrough lane1 o_data=${dut.o_data[1]}")
+        assert dut.o_valid[2] == 1 && dut.o_data[2] == 0x3333
+            else fail("passthrough lane2 o_data=${dut.o_data[2]}")
+
+        // (2) merged stream fairness — collect tags over a window.
+        let t0 : uint<32> = 0
+        let t1 : uint<32> = 0
+        let t2 : uint<32> = 0
+        let tot : uint<32> = 0
+        for _ in 0 .. 40
+            if dut.merged_valid == 1 && dut.merged_ready == 1 && tot < 30
+                let tag = dut.merged_data
+                if tag == 0
+                    t0 = t0 + 1
+                elsif tag == 1
+                    t1 = t1 + 1
+                elsif tag == 2
+                    t2 = t2 + 1
+                end if
+                tot = tot + 1
+            end if
+            wait 1 cycle
+        end for
+
+        assert t0 > 0
+            else fail("merged: lane0 tag never seen")
+        assert t1 > 0
+            else fail("merged: lane1 tag never seen")
+        assert t2 > 0
+            else fail("merged: lane2 tag never seen")
+        log(info, "PASS Fx9: passthrough + round_robin merge (t0=${t0} t1=${t1} t2=${t2})")
+    end run
+end impl Fx9Test

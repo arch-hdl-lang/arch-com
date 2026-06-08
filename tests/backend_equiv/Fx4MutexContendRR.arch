@@ -1,0 +1,39 @@
+// Fixture 4 — axes B+C+D (round_robin variant; see Fx10 for priority twin).
+// B: N threads contending on ONE shared mutex.  C: generate_for over N.
+// D: param-driven thread count NUM and width DATA_W.
+//
+// Each lane thread, while its req[i] holds, repeatedly acquires the shared
+// `bus_ch` mutex and drives the single shared output bus `o` with its own tag
+// (i) for one accepted beat, then releases. The TB holds all reqs high and
+// pulls o.ready every cycle; under round_robin the granted tag should rotate
+// fairly across lanes (no starvation).
+module Fx4MutexContendRR
+  param NUM:    const = 3;
+  param DATA_W: const = 8;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  port req: in unpacked Vec<Bool, NUM>;
+  port o:   initiator BusVr<DATA_W=DATA_W>;   // single shared sink
+
+  resource bus_ch: mutex<round_robin>;
+
+  generate_for i in 0..NUM-1
+    thread Lane_i on clk rising, rst low
+      default comb
+        o.valid = false;
+        o.data  = 0;
+      end default
+      if not req[i]
+        wait until req[i];
+      end if
+      lock bus_ch
+        do
+          o.valid = true;
+          o.data  = i;          // tag = lane index
+        until o.ready;
+      end lock bus_ch
+    end thread Lane_i
+  end generate_for
+end module Fx4MutexContendRR

@@ -1,0 +1,59 @@
+// Fixture 9 — axes A+B+C+D (the full small-scale stack).
+// A: per-lane Vec<Bus> input port (m) AND Vec<Bus> output port (o).
+// B: one thread per lane, all contending on a SHARED mutex to drive a single
+//    merged output, plus a lock-free per-lane passthrough.
+// C: generate_for over LANES.
+// D: param-driven LANES and DATA_W (default 16-bit).
+//
+// Each lane i forwards its input bus m[i] straight to its output bus o[i]
+// (registered acceptance), and ALSO, when m[i] presents a beat, a per-lane
+// thread contends on the shared `merge_ch` mutex to push that lane's tag onto
+// the single shared `merged` bus. Round-robin arbitration over LANES threads,
+// with the Vec<Bus> ports sized by param DATA_W.
+module Fx9MiniFabric
+  param LANES:  const = 3;
+  param DATA_W: const = 16;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  port m: target    Vec<BusVr<DATA_W=DATA_W>, LANES>;   // per-lane input
+  port o: initiator Vec<BusVr<DATA_W=DATA_W>, LANES>;   // per-lane passthrough out
+  port merged: initiator BusVr<DATA_W=DATA_W>;          // shared merged stream
+
+  resource merge_ch: mutex<round_robin>;
+
+  // Per-lane passthrough: o[i] mirrors m[i] (always ready in, always valid out
+  // when input valid). Constant-index body, LANES fixed at 3.
+  comb
+    m[0].ready = o[0].ready;
+    o[0].valid = m[0].valid;
+    o[0].data  = m[0].data;
+    m[1].ready = o[1].ready;
+    o[1].valid = m[1].valid;
+    o[1].data  = m[1].data;
+    m[2].ready = o[2].ready;
+    o[2].valid = m[2].valid;
+    o[2].data  = m[2].data;
+  end comb
+
+  // Per-lane merge threads contend on the shared mutex to stamp lane tag onto
+  // the merged stream when that lane's input is valid.
+  generate_for i in 0..LANES-1
+    thread Merge_i on clk rising, rst low
+      default comb
+        merged.valid = false;
+        merged.data  = 0;
+      end default
+      if not m[i].valid
+        wait until m[i].valid;
+      end if
+      lock merge_ch
+        do
+          merged.valid = true;
+          merged.data  = i;          // tag = lane index
+        until merged.ready;
+      end lock merge_ch
+    end thread Merge_i
+  end generate_for
+end module Fx9MiniFabric

@@ -1,0 +1,10 @@
+// Tiny valid/ready/data bus for backend-equivalence torture fixtures.
+// Parameterized payload width so fixtures can stress param-driven widths.
+// initiator drives valid+data, receives ready (target flips).
+bus BusVr
+  param DATA_W: const = 8;
+
+  valid: out Bool;
+  ready: in  Bool;
+  data:  out UInt<DATA_W>;
+end bus BusVr
