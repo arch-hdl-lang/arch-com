@@ -1,0 +1,39 @@
+// Regression: variable-index Vec<Bus> read inside a `thread` `wait until`.
+//
+// `thread` lowering extracts the body into a `_<mod>_threads` sub-module.
+// A constant index (`o[2].ready`) lowers to a flattened scalar sub-port
+// `o_2_ready`. A *variable* index (`o[sel].ready`) cannot pick a static
+// lane, so it lowers to a runtime mux over all N flattened lane ports
+// (`o_0_ready` … `o_{N-1}_ready`). Before the fix the bus reference was
+// dropped, leaving an undefined `o` in both the emitted SV and the C++ sim.
+//
+// See also Fx3bVarIndexVecBusBug.arch for the comb-block mirror.
+bus BusVrT
+  param DATA_W: const = 8;
+  valid: out Bool;
+  ready: in  Bool;
+  data:  out UInt<DATA_W>;
+end bus BusVrT
+
+module VselThread
+  param LANES: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port sel: in UInt<2>;
+  port dv:  in UInt<8>;
+  port o: initiator Vec<BusVrT<DATA_W=8>, LANES>;
+  port done: out Bool;
+  comb
+    o[0].valid = false; o[0].data = 0;
+    o[1].valid = false; o[1].data = 0;
+    o[2].valid = false; o[2].data = 0;
+    o[3].valid = false; o[3].data = 0;
+    o[sel].valid = true;
+    o[sel].data  = dv;
+  end comb
+  thread on clk rising, rst low
+    wait until o[sel].ready;   // variable-index Vec<Bus> read
+    done = 1;
+    wait 1 cycle;
+  end thread
+end module VselThread

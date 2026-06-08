@@ -2870,6 +2870,37 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                             return format!("{}_{}_{}", arr_name, i, field.name);
                         }
                     }
+                    // Variable (non-constant) index into a Vec<Bus>.
+                    //
+                    // The constant path above resolves to a per-element flat
+                    // field (`o_0_valid`). Those fields are reference aliases
+                    // into a real C array (`o_valid[N]` for ports,
+                    // `_let_o[N]` struct array for wires), so a runtime index
+                    // selects the right lane directly — the same packed-array
+                    // form the SV emitter uses (`o_valid[sel]`). Without this
+                    // the FieldAccess fell through to the scalar bit-select
+                    // path below, mis-lowering `o[sel].valid` to
+                    // `((o >> sel) & 1).valid` against an undefined `o`.
+                    // Bounds-checked like every other runtime index.
+                    if idx_val.is_none() {
+                        let fld = &field.name;
+                        if let Some(n) = ctx.vec_of_bus_port_count
+                            .and_then(|m| m.get(arr_name).copied())
+                        {
+                            let i = cpp_expr(idx, ctx);
+                            return format!(
+                                "(_ARCH_BCHK(({i}), {n}, \"{arr_name}[i].{fld}\"), {arr_name}_{fld}[{i}])"
+                            );
+                        }
+                        if let Some(n) = ctx.vec_of_bus_wire_count
+                            .and_then(|m| m.get(arr_name).copied())
+                        {
+                            let i = cpp_expr(idx, ctx);
+                            return format!(
+                                "(_ARCH_BCHK(({i}), {n}, \"{arr_name}[i].{fld}\"), _let_{arr_name}[{i}].{fld})"
+                            );
+                        }
+                    }
                 }
             }
             // Use is_lhs when evaluating base so struct reg fields get _n_ prefix on LHS

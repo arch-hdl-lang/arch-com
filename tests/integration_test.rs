@@ -890,6 +890,212 @@ fn test_arbiter_round_robin_arch_sim_nonpow2_behavior() {
     );
 }
 
+// ── Variable-index Vec<Bus> element access — backend equivalence ──────────────
+//
+// Regression for the silent backend-capability divergence where `arch build`
+// lowered `o[sel].valid` / `wait until o[sel].ready` correctly but `arch sim`
+// (and, for the thread case, both backends) mis-lowered the variable index.
+// See tests/backend_equiv/Fx3bVarIndexVecBusBug.arch (comb) and
+// Fx3bVarIndexVecBusThread.arch (thread `wait until`).
+
+/// Codegen-level guard (no Verilator needed): the comb-block variable index
+/// must flatten to the packed-array form in BOTH backends, never the scalar
+/// bit-select against an undefined bus name.
+#[test]
+fn test_var_index_vec_bus_comb_lowering_matches_backends() {
+    let source = include_str!("backend_equiv/Fx3bVarIndexVecBusBug.arch");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("o_valid[sel]"), "SV must select lane `sel`:\n{sv}");
+    assert!(sv.contains("o_data[sel]"), "SV must select lane `sel`:\n{sv}");
+    assert!(
+        !sv.contains("o[sel]"),
+        "SV must not leave the un-flattened Vec<Bus> index `o[sel]`:\n{sv}"
+    );
+
+    let sim = compile_to_sim_h(source, false);
+    assert!(
+        sim.contains("o_valid[sel]") && sim.contains("o_data[sel]"),
+        "sim C++ must select lane `sel` from the packed array, mirroring SV:\n{sim}"
+    );
+    assert!(
+        !sim.contains("(o) >> (sel)"),
+        "sim C++ must not mis-lower the Vec<Bus> element to a scalar bit-select \
+         against an undefined `o`:\n{sim}"
+    );
+}
+
+/// Codegen-level guard for the `thread` `wait until` mirror: the variable
+/// index lowers to a runtime mux over per-lane flattened sub-module ports in
+/// both backends.
+#[test]
+fn test_var_index_vec_bus_thread_lowering_matches_backends() {
+    let source = include_str!("backend_equiv/Fx3bVarIndexVecBusThread.arch");
+    let sv = compile_to_sv(source);
+    // Per-lane flattened sub-module input ports + the runtime lane mux.
+    for lane in ["o_0_ready", "o_1_ready", "o_2_ready", "o_3_ready"] {
+        assert!(sv.contains(lane), "SV thread sub-module needs port `{lane}`:\n{sv}");
+    }
+    assert!(
+        !sv.contains("o[sel]"),
+        "SV must not leave the un-flattened Vec<Bus> index `o[sel]` in the \
+         thread sub-module:\n{sv}"
+    );
+
+    let sim = compile_to_sim_h(source, false);
+    assert!(
+        sim.contains("o_0_ready") && sim.contains("o_3_ready"),
+        "sim C++ thread sub-module must read the flattened per-lane signals:\n{sim}"
+    );
+    assert!(
+        !sim.contains("(o) >> (sel)"),
+        "sim C++ must not mis-lower the thread-condition Vec<Bus> read:\n{sim}"
+    );
+}
+
+/// End-to-end value parity: run the comb and thread fixtures through `arch
+/// sim` (always) and `arch build` + Verilator (when available), asserting the
+/// same PASS markers from both backends. A regression makes the mis-lowered
+/// backend fail to compile, so the PASS assertion is the real guard.
+#[test]
+fn test_var_index_vec_bus_backend_equivalence_e2e() {
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    // Helper: run `arch sim <arch> --tb <tb>` and assert a PASS marker.
+    let run_arch_sim = |arch: &str, tb: &str, marker: &str| {
+        let td = tempfile::tempdir().expect("tempdir");
+        let out = std::process::Command::new(arch_bin)
+            .arg("sim")
+            .arg(arch)
+            .arg("--tb")
+            .arg(tb)
+            .arg("--outdir")
+            .arg(td.path())
+            .output()
+            .expect("run arch sim");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success() && stdout.contains(marker),
+            "arch sim should pass for {arch}\nwant marker: {marker}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+    };
+
+    run_arch_sim(
+        "tests/backend_equiv/Fx3bVarIndexVecBusBug.arch",
+        "tests/backend_equiv/Vsel_arch_tb.cpp",
+        "PASS vsel_varidx",
+    );
+    run_arch_sim(
+        "tests/backend_equiv/Fx3bVarIndexVecBusThread.arch",
+        "tests/backend_equiv/VselThread_arch_tb.cpp",
+        "PASS vsel_thread_varidx",
+    );
+
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping Verilator parity leg: verilator not found");
+        return;
+    }
+
+    // Helper: build SV, verilate with the matching TB, run, assert PASS marker.
+    let run_verilator = |arch: &str, tb: &str, top: &str, marker: &str| {
+        let td = tempfile::tempdir().expect("tempdir");
+        let sv_out = td.path().join(format!("{top}.sv"));
+        let obj_dir = td.path().join("obj_dir");
+        let build = std::process::Command::new(arch_bin)
+            .arg("build")
+            .arg(arch)
+            .arg("-o")
+            .arg(&sv_out)
+            .output()
+            .expect("arch build");
+        assert!(
+            build.status.success(),
+            "arch build should pass for {arch}\nstderr:\n{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let tb_abs = std::fs::canonicalize(tb).expect("tb path");
+        let verilate = std::process::Command::new("verilator")
+            .args([
+                "--cc", "--exe", "--build", "-Wno-WIDTH", "-Wno-UNOPTFLAT",
+                "-Wno-DECLFILENAME", "--top-module", top, "-Mdir",
+            ])
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg(&tb_abs)
+            .output()
+            .expect("verilate");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass for {arch}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let run = std::process::Command::new(obj_dir.join(format!("V{top}")))
+            .output()
+            .expect("run verilator sim");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains(marker),
+            "Verilator sim should pass for {arch}\nwant marker: {marker}\nstdout:\n{stdout}"
+        );
+    };
+
+    run_verilator(
+        "tests/backend_equiv/Fx3bVarIndexVecBusBug.arch",
+        "tests/backend_equiv/Vsel_vl_tb.cpp",
+        "Vsel",
+        "PASS vsel_varidx",
+    );
+    run_verilator(
+        "tests/backend_equiv/Fx3bVarIndexVecBusThread.arch",
+        "tests/backend_equiv/VselThread_vl_tb.cpp",
+        "VselThread",
+        "PASS vsel_thread_varidx",
+    );
+}
+
+/// Vec<Bus> *wire* mirror: a variable index into a `wire w: Vec<B,N>;`
+/// must resolve to the per-element struct-array storage in the sim backend
+/// (`_let_w[sel].v`), matching the SV packed-slice form (`w_v[sel]`).
+#[test]
+fn test_var_index_vec_bus_wire_lowering_matches_backends() {
+    let source = "
+        bus B
+          v: out Bool;
+          d: out UInt<8>;
+        end bus B
+
+        module M
+          port sel: in UInt<1>;
+          port o_v: out Bool;
+          port o_d: out UInt<8>;
+          wire w: Vec<B, 2>;
+          comb
+            w[0].v = true;  w[0].d = 8'h11;
+            w[1].v = false; w[1].d = 8'h22;
+            o_v = w[sel].v;
+            o_d = w[sel].d;
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("w_v[sel]") && sv.contains("w_d[sel]"), "SV must slice the packed wire:\n{sv}");
+
+    let sim = compile_to_sim_h(source, false);
+    assert!(
+        sim.contains("_let_w[sel].v") && sim.contains("_let_w[sel].d"),
+        "sim C++ must index the struct-array wire storage:\n{sim}"
+    );
+    assert!(
+        !sim.contains("(w) >> (sel)"),
+        "sim C++ must not mis-lower the Vec<Bus> wire element to a scalar bit-select:\n{sim}"
+    );
+}
+
 #[test]
 fn test_arbiter_latency2() {
     let source = include_str!("../examples/arbiter_latency2.arch");
