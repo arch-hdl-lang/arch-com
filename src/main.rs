@@ -18,6 +18,15 @@ fn cxx_std_flag() -> String {
     std::env::var("ARCH_CXX_STD").unwrap_or_else(|_| "-std=c++20".to_string())
 }
 
+/// C++ compiler used to build the `arch sim` testbench/simulation binary.
+/// Defaults to `g++`; override with `ARCH_CXX` (mirrors harc's `HARC_CXX`).
+/// Needed because the default `g++` is real GCC on Linux, which miscompiles
+/// the C++20 coroutine testbench scheduler harc emits — set `ARCH_CXX=clang++`
+/// there. (On macOS `g++` is already a clang shim, so the default works.)
+fn cxx_compiler() -> String {
+    std::env::var("ARCH_CXX").unwrap_or_else(|_| "g++".to_string())
+}
+
 #[derive(Parser)]
 #[command(name = "arch", version, about = "ARCH HDL compiler")]
 struct Cli {
@@ -1890,7 +1899,7 @@ fn run_sim_opts(
         for cpp in &generated_cpps {
             let obj =
                 build_dir.join(cpp.file_stem().unwrap().to_string_lossy().into_owned() + ".o");
-            let mut cmd = std::process::Command::new("g++");
+            let mut cmd = std::process::Command::new(cxx_compiler());
             cmd.arg(cxx_std_flag())
                 .arg("-O2")
                 .arg("-fPIC")
@@ -1928,7 +1937,7 @@ fn run_sim_opts(
                 wrapper.class_name.clone()
             };
             let so_path = build_dir.join(format!("{class_name}{ext_suffix}"));
-            let mut cmd = std::process::Command::new("g++");
+            let mut cmd = std::process::Command::new(cxx_compiler());
             cmd.arg(cxx_std_flag())
                 .arg("-O2")
                 .arg("-shared")
@@ -2095,7 +2104,7 @@ sys.exit(0 if ok else 1)
 
     // 5. Compile with g++
     let sim_bin = build_dir.join("sim_out");
-    let mut cmd = std::process::Command::new("g++");
+    let mut cmd = std::process::Command::new(cxx_compiler());
     cmd.arg(cxx_std_flag());
     // Phase 3.3: opt-in ThreadSanitizer for parallel multi-OS-thread
     // builds. Catches data races at runtime — useful in CI to verify
