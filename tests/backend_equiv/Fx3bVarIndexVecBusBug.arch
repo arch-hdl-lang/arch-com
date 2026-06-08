@@ -1,0 +1,30 @@
+// Regression: variable-index access to a Vec<Bus> element.
+//
+// `arch build` lowers `o[sel].valid` to the packed-array form
+// `o_valid[sel]`; the C++ sim backend (`arch sim`) must do the same. Before
+// the fix the sim emitter mis-treated the Vec<Bus> element as a scalar
+// bit-select (`((o) >> sel) & 1`) against an undefined `o`, producing
+// uncompilable C++. Both backends must select lane `sel`.
+//
+// See also Fx3bVarIndexVecBusThread.arch for the `thread`-lowering mirror.
+bus BusVr
+  param DATA_W: const = 8;
+  valid: out Bool;
+  ready: in  Bool;
+  data:  out UInt<DATA_W>;
+end bus BusVr
+
+module Vsel
+  param LANES: const = 4;
+  port sel: in UInt<2>;
+  port dv: in UInt<8>;
+  port o: initiator Vec<BusVr<DATA_W=8>, LANES>;
+  comb
+    o[0].valid = false; o[0].data = 0;
+    o[1].valid = false; o[1].data = 0;
+    o[2].valid = false; o[2].data = 0;
+    o[3].valid = false; o[3].data = 0;
+    o[sel].valid = true;     // variable index
+    o[sel].data  = dv;
+  end comb
+end module Vsel

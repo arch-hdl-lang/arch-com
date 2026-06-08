@@ -2464,6 +2464,34 @@ fn lower_module_threads(
                 .map(|bi| (p.name.name.clone(), bi.bus_name.name.clone()))
         })
         .collect();
+    // Vec-of-bus port name → element count N. A *variable* index into one
+    // of these (`o[sel].ready`) can't be resolved to a single static lane
+    // at lowering time, so reads of such expressions are lowered to a
+    // runtime mux over the N flattened per-lane signals (`o_0_ready` …
+    // `o_{N-1}_ready`). Constant indices keep the existing single-lane path.
+    let vob_counts: HashMap<String, u32> = {
+        let param_vals: HashMap<String, i64> = m
+            .params
+            .iter()
+            .filter_map(|p| {
+                p.default
+                    .as_ref()
+                    .and_then(|d| try_eval_i64(d, &HashMap::new()).map(|v| (p.name.name.clone(), v)))
+            })
+            .collect();
+        let mut out = HashMap::new();
+        for p in &m.ports {
+            if let Some(bi) = p.bus_info.as_ref() {
+                if let Some(count_expr) = bi.count.as_ref() {
+                    let n = try_eval_i64(count_expr, &param_vals).unwrap_or(0) as u32;
+                    if n > 0 {
+                        out.insert(p.name.name.clone(), n);
+                    }
+                }
+            }
+        }
+        out
+    };
     let _reg_map = build_module_reg_map(&m);
     let mut errors: Vec<CompileError> = Vec::new();
 
@@ -2584,16 +2612,16 @@ fn lower_module_threads(
         all_read.extend(ar);
         // Also seed flat bus-signal read names (`b.r` → `b_r`) so the
         // sub-module declares them as inputs.
-        collect_thread_bus_reads(&t.body, &bus_port_map, &mut all_read);
+        collect_thread_bus_reads(&t.body, &bus_port_map, &vob_counts, &mut all_read);
         // Also collect signals referenced in the `default when` clause
         if let Some((dw_cond, dw_stmts)) = &t.default_when {
             let (dw_cd, dw_sd, dw_ar) = collect_thread_signals_with_buses(dw_stmts, &bus_port_map);
             all_comb_driven.extend(dw_cd);
             all_seq_driven.extend(dw_sd);
             all_read.extend(dw_ar);
-            collect_thread_bus_reads(dw_stmts, &bus_port_map, &mut all_read);
+            collect_thread_bus_reads(dw_stmts, &bus_port_map, &vob_counts, &mut all_read);
             collect_expr_reads(dw_cond, &mut all_read);
-            collect_expr_bus_reads(dw_cond, &bus_port_map, &mut all_read);
+            collect_expr_bus_reads(dw_cond, &bus_port_map, &vob_counts, &mut all_read);
         }
     }
     for (_, t) in &threads {
@@ -3910,7 +3938,7 @@ fn lower_module_threads(
     // doesn't carry the bus ports themselves (only the flattened signal
     // outputs `b_v`, ...), so the original thread-body references to
     // `b.v` need to land on the flat names.
-    rewrite_bus_targets_in_body(&mut merged_body, &bus_port_map);
+    rewrite_bus_targets_in_body(&mut merged_body, &bus_port_map, &vob_counts);
 
     let merged_module = ModuleDecl {
         name: Ident::new(merged_name.clone(), sp),
@@ -4486,44 +4514,76 @@ fn expr_target_flat_name(e: &Expr, bus_port_map: &HashMap<String, String>) -> Op
 fn rewrite_bus_targets_in_body(
     body: &mut Vec<ModuleBodyItem>,
     bus_port_map: &HashMap<String, String>,
+    vob_counts: &HashMap<String, u32>,
 ) {
-    fn rw_expr(e: &mut Expr, bus_port_map: &HashMap<String, String>) {
-        // Bottom-up: rewrite children first.
+    // Build a runtime mux `(idx==0 ? arr_0_field : … : arr_{n-1}_field)`
+    // selecting the right flattened lane for a *variable* index into a
+    // Vec<Bus> read. Mirrors the SV/sim packed-array form `arr_field[idx]`
+    // but over the sub-module's per-lane scalar input ports.
+    fn build_lane_mux(arr: &str, field: &str, idx: &Expr, n: u32) -> ExprKind {
+        let sp = idx.span;
+        let mut acc = ExprKind::Ident(format!("{arr}_{}_{field}", n - 1));
+        for i in (0..n - 1).rev() {
+            let cond = Expr::new(
+                ExprKind::Binary(
+                    BinOp::Eq,
+                    Box::new(idx.clone()),
+                    Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(i as u64)), sp)),
+                ),
+                sp,
+            );
+            let then_e = Expr::new(ExprKind::Ident(format!("{arr}_{i}_{field}")), sp);
+            acc = ExprKind::Ternary(Box::new(cond), Box::new(then_e), Box::new(Expr::new(acc, sp)));
+        }
+        acc
+    }
+    // `is_lhs` gates the variable-index mux: a mux is not an lvalue, so it
+    // must only be substituted in read (RHS / condition) positions, never
+    // as an assignment target. (Variable-index bus *writes* in threads are
+    // a separate, currently-unsupported case — they are left unrewritten.)
+    fn rw_expr(
+        e: &mut Expr,
+        bus_port_map: &HashMap<String, String>,
+        vob_counts: &HashMap<String, u32>,
+        is_lhs: bool,
+    ) {
+        // Bottom-up: rewrite children first. Children are never themselves
+        // assignment targets, so they recurse with is_lhs = false.
         match &mut e.kind {
             ExprKind::Binary(_, l, r) => {
-                rw_expr(l, bus_port_map);
-                rw_expr(r, bus_port_map);
+                rw_expr(l, bus_port_map, vob_counts, false);
+                rw_expr(r, bus_port_map, vob_counts, false);
             }
             ExprKind::Unary(_, x)
             | ExprKind::Cast(x, _)
             | ExprKind::LatencyAt(x, _)
-            | ExprKind::SvaNext(_, x) => rw_expr(x, bus_port_map),
+            | ExprKind::SvaNext(_, x) => rw_expr(x, bus_port_map, vob_counts, false),
             ExprKind::Index(b, i) | ExprKind::BitSlice(b, i, _) => {
-                rw_expr(b, bus_port_map);
-                rw_expr(i, bus_port_map);
+                rw_expr(b, bus_port_map, vob_counts, false);
+                rw_expr(i, bus_port_map, vob_counts, false);
             }
             ExprKind::PartSelect(b, lo, hi, _) => {
-                rw_expr(b, bus_port_map);
-                rw_expr(lo, bus_port_map);
-                rw_expr(hi, bus_port_map);
+                rw_expr(b, bus_port_map, vob_counts, false);
+                rw_expr(lo, bus_port_map, vob_counts, false);
+                rw_expr(hi, bus_port_map, vob_counts, false);
             }
             ExprKind::Ternary(c, t, e2) => {
-                rw_expr(c, bus_port_map);
-                rw_expr(t, bus_port_map);
-                rw_expr(e2, bus_port_map);
+                rw_expr(c, bus_port_map, vob_counts, false);
+                rw_expr(t, bus_port_map, vob_counts, false);
+                rw_expr(e2, bus_port_map, vob_counts, false);
             }
             ExprKind::Concat(parts) | ExprKind::FunctionCall(_, parts) => {
                 for p in parts {
-                    rw_expr(p, bus_port_map);
+                    rw_expr(p, bus_port_map, vob_counts, false);
                 }
             }
             ExprKind::MethodCall(b, _, args) => {
-                rw_expr(b, bus_port_map);
+                rw_expr(b, bus_port_map, vob_counts, false);
                 for a in args {
-                    rw_expr(a, bus_port_map);
+                    rw_expr(a, bus_port_map, vob_counts, false);
                 }
             }
-            ExprKind::FieldAccess(b, _) => rw_expr(b, bus_port_map),
+            ExprKind::FieldAccess(b, _) => rw_expr(b, bus_port_map, vob_counts, false),
             _ => {}
         }
         // Now check if THIS node is a bus-port FieldAccess to rewrite.
@@ -4536,14 +4596,18 @@ fn rewrite_bus_targets_in_body(
                         None
                     }
                 } else if let ExprKind::Index(arr, idx) = &base.kind {
-                    if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) =
-                        (&arr.kind, &idx.kind)
-                    {
-                        if bus_port_map.contains_key(arr_name) {
-                            Some(ExprKind::Ident(format!(
-                                "{}_{}_{}",
-                                arr_name, i, field.name
-                            )))
+                    if let ExprKind::Ident(arr_name) = &arr.kind {
+                        if let ExprKind::Literal(LitKind::Dec(i)) = &idx.kind {
+                            if bus_port_map.contains_key(arr_name) {
+                                Some(ExprKind::Ident(format!("{}_{}_{}", arr_name, i, field.name)))
+                            } else {
+                                None
+                            }
+                        } else if !is_lhs {
+                            // Variable index in a read position → lane mux.
+                            vob_counts
+                                .get(arr_name)
+                                .map(|&n| build_lane_mux(arr_name, &field.name, idx, n))
                         } else {
                             None
                         }
@@ -4560,49 +4624,53 @@ fn rewrite_bus_targets_in_body(
             e.kind = new_kind;
         }
     }
-    fn rw_stmt(s: &mut Stmt, bus_port_map: &HashMap<String, String>) {
+    fn rw_stmt(
+        s: &mut Stmt,
+        bus_port_map: &HashMap<String, String>,
+        vob_counts: &HashMap<String, u32>,
+    ) {
         match s {
             Stmt::Assign(a) => {
-                rw_expr(&mut a.target, bus_port_map);
-                rw_expr(&mut a.value, bus_port_map);
+                rw_expr(&mut a.target, bus_port_map, vob_counts, true);
+                rw_expr(&mut a.value, bus_port_map, vob_counts, false);
             }
             Stmt::IfElse(ie) => {
-                rw_expr(&mut ie.cond, bus_port_map);
+                rw_expr(&mut ie.cond, bus_port_map, vob_counts, false);
                 for s in &mut ie.then_stmts {
-                    rw_stmt(s, bus_port_map);
+                    rw_stmt(s, bus_port_map, vob_counts);
                 }
                 for s in &mut ie.else_stmts {
-                    rw_stmt(s, bus_port_map);
+                    rw_stmt(s, bus_port_map, vob_counts);
                 }
             }
             Stmt::Match(m) => {
-                rw_expr(&mut m.scrutinee, bus_port_map);
+                rw_expr(&mut m.scrutinee, bus_port_map, vob_counts, false);
                 for arm in &mut m.arms {
                     for s in &mut arm.body {
-                        rw_stmt(s, bus_port_map);
+                        rw_stmt(s, bus_port_map, vob_counts);
                     }
                 }
             }
             Stmt::For(f) => {
                 for s in &mut f.body {
-                    rw_stmt(s, bus_port_map);
+                    rw_stmt(s, bus_port_map, vob_counts);
                 }
             }
             Stmt::Init(ib) => {
                 for s in &mut ib.body {
-                    rw_stmt(s, bus_port_map);
+                    rw_stmt(s, bus_port_map, vob_counts);
                 }
             }
             Stmt::DoUntil { body, cond, .. } => {
-                rw_expr(cond, bus_port_map);
+                rw_expr(cond, bus_port_map, vob_counts, false);
                 for s in body {
-                    rw_stmt(s, bus_port_map);
+                    rw_stmt(s, bus_port_map, vob_counts);
                 }
             }
-            Stmt::WaitUntil(e, _) => rw_expr(e, bus_port_map),
+            Stmt::WaitUntil(e, _) => rw_expr(e, bus_port_map, vob_counts, false),
             Stmt::Log(l) => {
                 for a in &mut l.args {
-                    rw_expr(a, bus_port_map);
+                    rw_expr(a, bus_port_map, vob_counts, false);
                 }
             }
         }
@@ -4611,23 +4679,23 @@ fn rewrite_bus_targets_in_body(
         match item {
             ModuleBodyItem::CombBlock(cb) => {
                 for s in &mut cb.stmts {
-                    rw_stmt(s, bus_port_map);
+                    rw_stmt(s, bus_port_map, vob_counts);
                 }
             }
             ModuleBodyItem::RegBlock(rb) => {
                 for s in &mut rb.stmts {
-                    rw_stmt(s, bus_port_map);
+                    rw_stmt(s, bus_port_map, vob_counts);
                 }
             }
             ModuleBodyItem::LatchBlock(lb) => {
                 for s in &mut lb.stmts {
-                    rw_stmt(s, bus_port_map);
+                    rw_stmt(s, bus_port_map, vob_counts);
                 }
             }
-            ModuleBodyItem::LetBinding(lb) => rw_expr(&mut lb.value, bus_port_map),
+            ModuleBodyItem::LetBinding(lb) => rw_expr(&mut lb.value, bus_port_map, vob_counts, false),
             ModuleBodyItem::RegDecl(r) => {
                 if let Some(init) = r.init.as_mut() {
-                    rw_expr(init, bus_port_map);
+                    rw_expr(init, bus_port_map, vob_counts, false);
                 }
             }
             _ => {}
@@ -4962,6 +5030,7 @@ fn expr_root_name(e: &Expr) -> Option<String> {
 fn collect_expr_bus_reads(
     e: &Expr,
     bus_port_map: &HashMap<String, String>,
+    vob_counts: &HashMap<String, u32>,
     out: &mut HashSet<String>,
 ) {
     if let ExprKind::FieldAccess(base, field) = &e.kind {
@@ -4971,11 +5040,18 @@ fn collect_expr_bus_reads(
             }
         }
         if let ExprKind::Index(arr, idx) = &base.kind {
-            if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) =
-                (&arr.kind, &idx.kind)
-            {
-                if bus_port_map.contains_key(arr_name) {
-                    out.insert(format!("{}_{}_{}", arr_name, i, field.name));
+            if let ExprKind::Ident(arr_name) = &arr.kind {
+                if let ExprKind::Literal(LitKind::Dec(i)) = &idx.kind {
+                    if bus_port_map.contains_key(arr_name) {
+                        out.insert(format!("{}_{}_{}", arr_name, i, field.name));
+                    }
+                } else if let Some(&n) = vob_counts.get(arr_name) {
+                    // Variable index into a Vec<Bus> port: the read is
+                    // lowered to a runtime mux over all N lanes, so every
+                    // per-lane signal becomes a sub-module input port.
+                    for i in 0..n {
+                        out.insert(format!("{}_{}_{}", arr_name, i, field.name));
+                    }
                 }
             }
         }
@@ -4983,39 +5059,39 @@ fn collect_expr_bus_reads(
     // Recurse into children.
     match &e.kind {
         ExprKind::Binary(_, l, r) => {
-            collect_expr_bus_reads(l, bus_port_map, out);
-            collect_expr_bus_reads(r, bus_port_map, out);
+            collect_expr_bus_reads(l, bus_port_map, vob_counts, out);
+            collect_expr_bus_reads(r, bus_port_map, vob_counts, out);
         }
         ExprKind::Unary(_, x)
         | ExprKind::Cast(x, _)
         | ExprKind::LatencyAt(x, _)
-        | ExprKind::SvaNext(_, x) => collect_expr_bus_reads(x, bus_port_map, out),
+        | ExprKind::SvaNext(_, x) => collect_expr_bus_reads(x, bus_port_map, vob_counts, out),
         ExprKind::Index(b, i) | ExprKind::BitSlice(b, i, _) => {
-            collect_expr_bus_reads(b, bus_port_map, out);
-            collect_expr_bus_reads(i, bus_port_map, out);
+            collect_expr_bus_reads(b, bus_port_map, vob_counts, out);
+            collect_expr_bus_reads(i, bus_port_map, vob_counts, out);
         }
         ExprKind::PartSelect(b, lo, hi, _) => {
-            collect_expr_bus_reads(b, bus_port_map, out);
-            collect_expr_bus_reads(lo, bus_port_map, out);
-            collect_expr_bus_reads(hi, bus_port_map, out);
+            collect_expr_bus_reads(b, bus_port_map, vob_counts, out);
+            collect_expr_bus_reads(lo, bus_port_map, vob_counts, out);
+            collect_expr_bus_reads(hi, bus_port_map, vob_counts, out);
         }
         ExprKind::Ternary(c, t, e2) => {
-            collect_expr_bus_reads(c, bus_port_map, out);
-            collect_expr_bus_reads(t, bus_port_map, out);
-            collect_expr_bus_reads(e2, bus_port_map, out);
+            collect_expr_bus_reads(c, bus_port_map, vob_counts, out);
+            collect_expr_bus_reads(t, bus_port_map, vob_counts, out);
+            collect_expr_bus_reads(e2, bus_port_map, vob_counts, out);
         }
         ExprKind::Concat(parts) | ExprKind::FunctionCall(_, parts) => {
             for p in parts {
-                collect_expr_bus_reads(p, bus_port_map, out);
+                collect_expr_bus_reads(p, bus_port_map, vob_counts, out);
             }
         }
         ExprKind::MethodCall(b, _, args) => {
-            collect_expr_bus_reads(b, bus_port_map, out);
+            collect_expr_bus_reads(b, bus_port_map, vob_counts, out);
             for a in args {
-                collect_expr_bus_reads(a, bus_port_map, out);
+                collect_expr_bus_reads(a, bus_port_map, vob_counts, out);
             }
         }
-        ExprKind::FieldAccess(b, _) => collect_expr_bus_reads(b, bus_port_map, out),
+        ExprKind::FieldAccess(b, _) => collect_expr_bus_reads(b, bus_port_map, vob_counts, out),
         _ => {}
     }
 }
@@ -5026,33 +5102,34 @@ fn collect_expr_bus_reads(
 fn collect_thread_bus_reads(
     body: &[ThreadStmt],
     bus_port_map: &HashMap<String, String>,
+    vob_counts: &HashMap<String, u32>,
     out: &mut HashSet<String>,
 ) {
     for s in body {
         match s {
             ThreadStmt::CombAssign(a) | ThreadStmt::SeqAssign(a) | ThreadStmt::ForkTlmAssign(a) => {
-                collect_expr_bus_reads(&a.value, bus_port_map, out);
-                collect_expr_bus_reads(&a.target, bus_port_map, out);
+                collect_expr_bus_reads(&a.value, bus_port_map, vob_counts, out);
+                collect_expr_bus_reads(&a.target, bus_port_map, vob_counts, out);
             }
-            ThreadStmt::WaitUntil(c, _) => collect_expr_bus_reads(c, bus_port_map, out),
+            ThreadStmt::WaitUntil(c, _) => collect_expr_bus_reads(c, bus_port_map, vob_counts, out),
             ThreadStmt::IfElse(ie) => {
-                collect_expr_bus_reads(&ie.cond, bus_port_map, out);
-                collect_thread_bus_reads(&ie.then_stmts, bus_port_map, out);
-                collect_thread_bus_reads(&ie.else_stmts, bus_port_map, out);
+                collect_expr_bus_reads(&ie.cond, bus_port_map, vob_counts, out);
+                collect_thread_bus_reads(&ie.then_stmts, bus_port_map, vob_counts, out);
+                collect_thread_bus_reads(&ie.else_stmts, bus_port_map, vob_counts, out);
             }
             ThreadStmt::For { body, .. } | ThreadStmt::Lock { body, .. } => {
-                collect_thread_bus_reads(body, bus_port_map, out)
+                collect_thread_bus_reads(body, bus_port_map, vob_counts, out)
             }
             ThreadStmt::DoUntil { body, cond, .. } => {
-                collect_expr_bus_reads(cond, bus_port_map, out);
-                collect_thread_bus_reads(body, bus_port_map, out);
+                collect_expr_bus_reads(cond, bus_port_map, vob_counts, out);
+                collect_thread_bus_reads(body, bus_port_map, vob_counts, out);
             }
             ThreadStmt::ForkJoin(branches, _) => {
                 for b in branches {
-                    collect_thread_bus_reads(b, bus_port_map, out);
+                    collect_thread_bus_reads(b, bus_port_map, vob_counts, out);
                 }
             }
-            ThreadStmt::Return(e, _) => collect_expr_bus_reads(e, bus_port_map, out),
+            ThreadStmt::Return(e, _) => collect_expr_bus_reads(e, bus_port_map, vob_counts, out),
             _ => {}
         }
     }
