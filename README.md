@@ -309,6 +309,15 @@ scripts/pre_pr_review.sh check
 
 The installed `pre-push` hook checks `codex/*` branches and blocks the push when
 the review marker is missing or stale, so review happens before PR creation.
+After opening a PR, monitor GitHub Actions and fix any branch-caused failures:
+
+```sh
+scripts/monitor_pr_ci.sh              # current branch PR
+scripts/monitor_pr_ci.sh 537          # explicit PR
+```
+
+If the monitor reports failed checks, inspect the linked logs, fix the branch,
+push, and rerun the monitor until the PR checks pass.
 
 ## Tests
 
