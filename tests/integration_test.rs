@@ -13656,6 +13656,10 @@ fn test_build_emit_thread_proof_lean_records_replay_artifact() {
         "Lean artifact should include an unbounded trace-equivalence theorem:\n{lean}"
     );
     assert!(
+        lean.contains("example : StepEffectFaithful ProofFlow_T_0Source ProofFlow_T_0Fsm"),
+        "Lean artifact should prove one-step generated FSM state effects match the source thread:\n{lean}"
+    );
+    assert!(
         lean.contains("Control.waitUntil (GuardExpr.atom 0)"),
         "Lean artifact should carry structured CountedWait guard expressions:\n{lean}"
     );
@@ -13997,6 +14001,10 @@ fn test_build_emit_thread_proof_lean_accepts_once_folded_terminal_action() {
             "forall t, sourceTraceObs ProofOnceFold_T_0Source inputs natInputs cfg0 t = fsmTraceObs ProofOnceFold_T_0Fsm inputs natInputs cfg0 t"
         ),
         "Lean artifact should include the once trace-equivalence theorem:\n{lean}"
+    );
+    assert!(
+        lean.contains("example : StepEffectFaithful ProofOnceFold_T_0Source ProofOnceFold_T_0Fsm"),
+        "Lean artifact should include the once thread one-step state-effect theorem:\n{lean}"
     );
     assert!(
         lean.contains(

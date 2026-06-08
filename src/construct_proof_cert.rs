@@ -2,16 +2,18 @@
 //!
 //! This backend is intentionally per-instance: it reads the checked AST and
 //! emits a small Lean replay file that instantiates reusable construct
-//! theorems with the concrete FIFO/arbiter parameters seen by the compiler.
+//! theorems with the concrete FIFO/arbiter/credit_channel parameters seen by
+//! the compiler.
 
 use crate::ast::{
-    ArbiterDecl, ArbiterPolicy, Expr, ExprKind, FifoDecl, FifoKind, Item, LitKind, ParamKind,
-    TypeExpr,
+    ArbiterDecl, ArbiterPolicy, BusDecl, CreditChannelMeta, Expr, ExprKind, FifoDecl, FifoKind,
+    Item, LitKind, ParamKind, TypeExpr,
 };
 use crate::construct_formal_ir::{
-    render_lean_arbiter_equations, render_lean_fifo_equations,
-    render_smt2_arbiter_sanity_with_prefix, render_smt2_fifo_sanity_with_prefix,
-    ArbiterFormalModel, ArbiterFormalPolicy, FifoFormalModel,
+    render_lean_arbiter_equations, render_lean_credit_channel_equations,
+    render_lean_fifo_equations, render_smt2_arbiter_sanity_with_prefix,
+    render_smt2_credit_channel_sanity_with_prefix, render_smt2_fifo_sanity_with_prefix,
+    ArbiterFormalModel, ArbiterFormalPolicy, CreditChannelLeanFormalModel, FifoFormalModel,
 };
 
 #[derive(Debug, Clone)]
@@ -24,10 +26,16 @@ struct ArbiterCert {
     model: ArbiterFormalModel,
 }
 
+#[derive(Debug, Clone)]
+struct CreditChannelCert {
+    model: CreditChannelLeanFormalModel,
+}
+
 #[derive(Debug, Default)]
 struct ConstructCerts {
     fifos: Vec<FifoCert>,
     arbiters: Vec<ArbiterCert>,
+    credit_channels: Vec<CreditChannelCert>,
     unsupported: Vec<String>,
 }
 
@@ -39,8 +47,8 @@ where
     if !certs.unsupported.is_empty() {
         return Err(certs.unsupported.join("\n"));
     }
-    if certs.fifos.is_empty() && certs.arbiters.is_empty() {
-        return Err("no supported fifo or arbiter constructs found".to_string());
+    if certs.fifos.is_empty() && certs.arbiters.is_empty() && certs.credit_channels.is_empty() {
+        return Err("no supported fifo, arbiter, or credit_channel constructs found".to_string());
     }
     Ok(render_lean(&certs))
 }
@@ -57,8 +65,8 @@ where
     if !certs.unsupported.is_empty() {
         return Err(certs.unsupported.join("\n"));
     }
-    if certs.fifos.is_empty() && certs.arbiters.is_empty() {
-        return Err("no supported fifo or arbiter constructs found".to_string());
+    if certs.fifos.is_empty() && certs.arbiters.is_empty() && certs.credit_channels.is_empty() {
+        return Err("no supported fifo, arbiter, or credit_channel constructs found".to_string());
     }
     Ok(render_smt2(&certs))
 }
@@ -82,10 +90,20 @@ where
                 Ok(cert) => out.arbiters.push(cert),
                 Err(err) => out.unsupported.push(err),
             },
+            Item::Bus(bus) => collect_bus_credit_channels(bus, &mut out),
             _ => {}
         }
     }
     out
+}
+
+fn collect_bus_credit_channels(bus: &BusDecl, out: &mut ConstructCerts) {
+    for cc in &bus.credit_channels {
+        match credit_channel_cert(bus, cc) {
+            Ok(cert) => out.credit_channels.push(cert),
+            Err(err) => out.unsupported.push(err),
+        }
+    }
 }
 
 fn fifo_cert(fifo: &FifoDecl) -> Result<FifoCert, String> {
@@ -196,6 +214,52 @@ fn arbiter_cert(arbiter: &ArbiterDecl) -> Result<ArbiterCert, String> {
     })
 }
 
+fn credit_channel_cert(bus: &BusDecl, cc: &CreditChannelMeta) -> Result<CreditChannelCert, String> {
+    let depth = const_param_u64(cc.params.as_slice(), "DEPTH")
+        .transpose()?
+        .ok_or_else(|| {
+            format!(
+                "credit_channel `{}.{}`: DEPTH must be a concrete const parameter for Lean proof",
+                bus.name.name, cc.name.name
+            )
+        })?;
+    if depth == 0 {
+        return Err(format!(
+            "credit_channel `{}.{}`: DEPTH must be greater than zero for Lean proof",
+            bus.name.name, cc.name.name
+        ));
+    }
+
+    let payload_width = cc
+        .params
+        .iter()
+        .find_map(|p| match &p.kind {
+            ParamKind::Type(ty) if p.name.name == "T" => Some(type_width_u64(ty)),
+            _ => None,
+        })
+        .transpose()?
+        .ok_or_else(|| {
+            format!(
+                "credit_channel `{}.{}`: missing scalar T type parameter width for Lean proof",
+                bus.name.name, cc.name.name
+            )
+        })?;
+    if payload_width == 0 {
+        return Err(format!(
+            "credit_channel `{}.{}`: payload width must be greater than zero for Lean proof",
+            bus.name.name, cc.name.name
+        ));
+    }
+
+    Ok(CreditChannelCert {
+        model: CreditChannelLeanFormalModel {
+            name: format!("{}_{}", bus.name.name, cc.name.name),
+            depth,
+            payload_width,
+        },
+    })
+}
+
 fn const_param_u64(params: &[crate::ast::ParamDecl], name: &str) -> Option<Result<u64, String>> {
     params
         .iter()
@@ -262,6 +326,10 @@ fn render_lean(certs: &ConstructCerts) -> String {
         push_arbiter_lean(&mut out, arbiter);
         out.push('\n');
     }
+    for credit_channel in &certs.credit_channels {
+        push_credit_channel_lean(&mut out, credit_channel);
+        out.push('\n');
+    }
     out.push_str("end Arch.ConstructProof.Generated\n");
     out
 }
@@ -289,6 +357,18 @@ fn render_smt2(certs: &ConstructCerts) -> String {
             &arbiter.model,
             &prefix,
         )));
+        out.push_str("(pop)\n\n");
+    }
+    for (idx, credit_channel) in certs.credit_channels.iter().enumerate() {
+        let prefix = smt_ident(&format!(
+            "{}_credit_channel_{idx}",
+            credit_channel.model.name
+        ));
+        out.push_str(&format!("; credit_channel {}\n", credit_channel.model.name));
+        out.push_str("(push)\n");
+        out.push_str(&strip_smt_logic(
+            &render_smt2_credit_channel_sanity_with_prefix(&credit_channel.model, &prefix),
+        ));
         out.push_str("(pop)\n\n");
     }
     out
@@ -373,6 +453,24 @@ fn push_arbiter_lean(out: &mut String, arbiter: &ArbiterCert) {
             ));
         }
     }
+}
+
+fn push_credit_channel_lean(out: &mut String, credit_channel: &CreditChannelCert) {
+    let model = &credit_channel.model;
+    let base = lean_ident(&format!("{}_credit_channel", model.name));
+    out.push_str(&format!("def {base} : CreditChannel.Instance :=\n"));
+    out.push_str(&format!(
+        "  {{ name := {:?}, depth := {}, payloadWidth := {} }}\n\n",
+        model.name, model.depth, model.payload_width
+    ));
+    render_lean_credit_channel_equations(out, &base, model);
+    out.push_str(&format!("theorem {base}_certificate :\n"));
+    out.push_str(&format!(
+        "    0 < {base}.depth /\\ 0 < {base}.payloadWidth /\\ CreditChannel.EquationsHold {base} {base}_equations /\\ CreditChannel.ParametricProof {base} {base}_equations := by\n"
+    ));
+    out.push_str(&format!(
+        "  exact CreditChannel.certificate_checks {base} {base}_equations (by native_decide) (by native_decide)\n"
+    ));
 }
 
 fn lean_ident(name: &str) -> String {
@@ -500,6 +598,29 @@ end arbiter BusArbiter
         assert!(smt.contains("; arbiter BusArbiter"));
         assert_eq!(smt.matches("(check-sat)").count(), 2);
         assert!(smt.contains("BusArbiter_arbiter_0_start"));
+    }
+
+    #[test]
+    fn emits_credit_channel_certificates() {
+        let source = parse_source(
+            r#"
+bus DmaCh
+  credit_channel data: send
+    param T: type = UInt<16>;
+    param DEPTH: const = 4;
+  end credit_channel data
+end bus DmaCh
+"#,
+        );
+        let lean = render_lean_checked(&source).unwrap();
+        assert!(lean.contains("def DmaCh_data_credit_channel : CreditChannel.Instance"));
+        assert!(lean.contains("CreditChannel.EquationsHold DmaCh_data_credit_channel DmaCh_data_credit_channel_equations"));
+        assert!(lean.contains("CreditChannel.ParametricProof DmaCh_data_credit_channel DmaCh_data_credit_channel_equations"));
+
+        let smt = render_smt2_checked(&source).unwrap();
+        assert!(smt.contains("; credit_channel DmaCh_data"));
+        assert!(smt.contains("; model: credit_channel accounting equations"));
+        assert_eq!(smt.matches("(check-sat)").count(), 1);
     }
 
     #[test]

@@ -1,7 +1,10 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-05-02
-> Compiler version: 0.60.0
+> Last updated: 2026-06-08
+> Compiler version: 0.70.4
+>
+> **0.70.4 release highlights:**
+> - **Lean construct proof expansion** — construct certificates now cover bus `credit_channel` accounting in Lean and SMT, strengthen round-robin arbiter certificates with a bounded scan witness, add one-step thread effect replay, and add reusable Lean theorem libraries for async FIFO Gray-code decoding and abstract pipeline valid/stall/flush behavior.
 >
 > **0.60.0 release highlights:**
 > - **Synthesizable TLM thread cohorts** — `tlm_method` supports blocking calls plus tagged `out_of_order tags N`; direct worker threads, `generate_for` worker threads, direct-call `fork ... and ... join` cohorts, serialized `for` loops, conditional `if`/`elsif`/`else` initiator branches, and RHS-fork groups (`dst <= fork m.read(addr); ... join all;`) lower to request arbitration and response routing. Initiator TLM calls are thread-body-only direct RHS assignments. `arch sim` is the executable semantics for the lowered design; `arch sim --thread-sim both` and Verilator simulation are the equivalence/codegen checks.
