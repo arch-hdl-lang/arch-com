@@ -15,7 +15,7 @@ arch sim --pybind --test test_mymodule.py MyModule.arch
 Under the hood this:
 
 1. Runs the ARCH → C++ codegen (`SimCodegen::generate_pybind`), producing `VMyModule_pybind.cpp` next to the normal `VMyModule.cpp`.
-2. Compiles the pybind11 wrapper with `python3 -m pybind11 --includes` plus the configured C++ compiler (`g++` by default; override with `ARCH_CXX`, e.g. `ARCH_CXX=clang++` — required on Linux, where GCC miscompiles the C++20 coroutine testbench scheduler), emitting `VMyModule_pybind.<ext>` into the build directory (default `arch_sim_build/`).
+2. Compiles the pybind11 wrapper with `python3 -m pybind11 --includes` plus the configured C++ compiler (`g++` by default; override with `ARCH_CXX`, e.g. `ARCH_CXX=clang++` — required on Linux, where GCC miscompiles the C++20 coroutine testbench scheduler), emitting `VMyModule_pybind.<ext>` into the build directory (`--outdir` if given, else `$ARCH_SIM_BUILD_DIR`, else `arch_sim_build/`).
 3. Spawns `python3 test_mymodule.py` with `PYTHONPATH` set to find three packages:
    - `python/cocotb_shim/cocotb/` — so `import cocotb` works unchanged
    - `python/arch_cocotb/` — the real implementation
