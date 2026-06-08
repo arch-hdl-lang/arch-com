@@ -1096,6 +1096,109 @@ fn test_var_index_vec_bus_wire_lowering_matches_backends() {
     );
 }
 
+/// Variable-index Vec<Bus> *write* inside a thread: codegen-level guard.
+/// The write must expand to a per-lane demux (`if (sel == i) o_i_field …`)
+/// driving all flattened lanes in BOTH backends — never a dangling `o[sel]`.
+#[test]
+fn test_var_index_vec_bus_thread_write_lowering_matches_backends() {
+    let source = include_str!("backend_equiv/Fx3bVarIndexVecBusThreadWrite.arch");
+    let sv = compile_to_sv(source);
+    for lane in ["o_0_valid", "o_1_valid", "o_2_valid", "o_3_valid"] {
+        assert!(sv.contains(lane), "SV thread sub-module must drive lane `{lane}`:\n{sv}");
+    }
+    assert!(
+        sv.contains("if (sel == 0)") && sv.contains("o_0_valid <= 1'b1"),
+        "SV must expand the variable-index write to a per-lane demux:\n{sv}"
+    );
+    assert!(
+        !sv.contains("o[sel]"),
+        "SV must not leave the un-flattened Vec<Bus> write `o[sel]`:\n{sv}"
+    );
+
+    let sim = compile_to_sim_h(source, false);
+    assert!(
+        sim.contains("if (sel == 0)") && sim.contains("o_0_valid"),
+        "sim C++ must expand the variable-index write to a per-lane demux:\n{sim}"
+    );
+}
+
+/// Variable-index Vec<Bus> *write* end-to-end value parity: `arch sim` and
+/// (when available) `arch build` + Verilator must agree that lane `sel`
+/// carries the written (valid, data) and all other lanes stay cleared.
+#[test]
+fn test_var_index_vec_bus_thread_write_backend_equivalence_e2e() {
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let arch = "tests/backend_equiv/Fx3bVarIndexVecBusThreadWrite.arch";
+
+    // arch sim leg (always).
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg(arch)
+        .arg("--tb")
+        .arg("tests/backend_equiv/VselWr_arch_tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("PASS vselwr_varidx"),
+        "arch sim should pass for the variable-index write\nstdout:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Verilator leg (when available).
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping Verilator parity leg: verilator not found");
+        return;
+    }
+    let td2 = tempfile::tempdir().expect("tempdir");
+    let sv_out = td2.path().join("VselWr.sv");
+    let obj_dir = td2.path().join("obj_dir");
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg(arch)
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("arch build");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let tb_abs = std::fs::canonicalize("tests/backend_equiv/VselWr_vl_tb.cpp").expect("tb path");
+    let verilate = std::process::Command::new("verilator")
+        .args([
+            "--cc", "--exe", "--build", "-Wno-WIDTH", "-Wno-UNOPTFLAT",
+            "-Wno-DECLFILENAME", "--top-module", "VselWr", "-Mdir",
+        ])
+        .arg(&obj_dir)
+        .arg(&sv_out)
+        .arg(&tb_abs)
+        .output()
+        .expect("verilate");
+    assert!(
+        verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr)
+    );
+    let run = std::process::Command::new(obj_dir.join("VVselWr"))
+        .output()
+        .expect("run verilator sim");
+    let vl_stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success() && vl_stdout.contains("PASS vselwr_varidx"),
+        "Verilator sim should pass for the variable-index write\nstdout:\n{vl_stdout}"
+    );
+}
+
 #[test]
 fn test_arbiter_latency2() {
     let source = include_str!("../examples/arbiter_latency2.arch");
