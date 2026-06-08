@@ -27,6 +27,37 @@ fn run_formal(file: &str, extra: &[&str]) -> (i32, String) {
     (out.status.code().unwrap_or(-1), merged)
 }
 
+fn run_build(file: &std::path::Path, extra: &[String]) -> (i32, String) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_arch"));
+    cmd.arg("build").arg(file);
+    for a in extra { cmd.arg(a); }
+    let out = cmd.output().expect("failed to spawn arch");
+    let merged = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    (out.status.code().unwrap_or(-1), merged)
+}
+
+fn run_build_with_env(
+    file: &std::path::Path,
+    extra: &[String],
+    envs: &[(&str, &str)],
+) -> (i32, String) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_arch"));
+    cmd.arg("build").arg(file);
+    for (key, value) in envs { cmd.env(key, value); }
+    for a in extra { cmd.arg(a); }
+    let out = cmd.output().expect("failed to spawn arch");
+    let merged = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    (out.status.code().unwrap_or(-1), merged)
+}
+
 #[test]
 fn formal_counter_simple_proves() {
     if !z3_available() { eprintln!("skipping: z3 not in PATH"); return; }
@@ -201,6 +232,206 @@ fn formal_credit_channel_invariant_proves() {
     assert_eq!(code, 0, "expected exit 0 (PROVED); got {code}\n{out}");
     assert!(out.contains("credit_balance"), "expected credit_balance label:\n{out}");
     assert!(out.contains("PROVED"), "expected PROVED in output:\n{out}");
+}
+
+#[test]
+fn construct_proof_smt_fifo_and_arbiter_checks() {
+    if !z3_available() { eprintln!("skipping: z3 not in PATH"); return; }
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("Constructs.arch");
+    let sv_path = td.path().join("Constructs.sv");
+    let smt_path = td.path().join("Constructs.construct-proof.smt2");
+    std::fs::write(
+        &arch_path,
+        r#"
+domain SysDomain
+end domain SysDomain
+
+fifo TxQueue
+  param DEPTH: const = 8;
+  param T: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+end fifo TxQueue
+
+arbiter BusArbiter
+  policy round_robin;
+  param NUM_REQ: const = 3;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[NUM_REQ] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+end arbiter BusArbiter
+"#,
+    )
+    .expect("write arch");
+    let args = vec![
+        "-o".to_string(),
+        sv_path.to_string_lossy().to_string(),
+        format!("--emit-construct-proof-smt={}", smt_path.display()),
+        "--check-construct-proof-smt".to_string(),
+        "--construct-proof-smt-solver=z3".to_string(),
+    ];
+    let (code, out) = run_build(&arch_path, &args);
+    assert_eq!(code, 0, "expected construct SMT check to pass; got {code}\n{out}");
+    assert!(out.contains("Construct SMT proof OK"), "expected solver check output:\n{out}");
+    let smt = std::fs::read_to_string(&smt_path).expect("read smt");
+    assert_eq!(smt.matches("(check-sat)").count(), 2, "expected FIFO+arbiter queries:\n{smt}");
+    assert!(smt.contains("; fifo TxQueue"));
+    assert!(smt.contains("; arbiter BusArbiter"));
+}
+
+#[test]
+fn construct_proof_lean_finds_home_elan_when_lake_not_on_path() {
+    let Some(home) = std::env::var_os("HOME") else {
+        eprintln!("skipping: HOME not set");
+        return;
+    };
+    let home_lake = std::path::PathBuf::from(home).join(".elan/bin/lake");
+    if !home_lake.exists() {
+        eprintln!("skipping: ~/.elan/bin/lake not installed");
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("ConstructLean.arch");
+    let sv_path = td.path().join("ConstructLean.sv");
+    std::fs::write(
+        &arch_path,
+        r#"
+domain SysDomain
+end domain SysDomain
+
+fifo TxQueue
+  param DEPTH: const = 4;
+  param T: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+end fifo TxQueue
+"#,
+    )
+    .expect("write arch");
+
+    let args = vec![
+        "-o".to_string(),
+        sv_path.to_string_lossy().to_string(),
+        "--check-construct-proof-lean".to_string(),
+        "--construct-proof-lean-project=proofs/lean_thread_lowering".to_string(),
+    ];
+    let (code, out) = run_build_with_env(&arch_path, &args, &[("PATH", "/usr/bin:/bin")]);
+    assert_eq!(
+        code, 0,
+        "expected Lean replay fallback to ~/.elan/bin/lake; got {code}\n{out}"
+    );
+    assert!(
+        out.contains("Lean construct proof replay OK"),
+        "expected Lean replay output:\n{out}"
+    );
+}
+
+#[test]
+fn construct_proof_lean_non_power_two_fifo_catches_depth_wrap_bug() {
+    let Some(home) = std::env::var_os("HOME") else {
+        eprintln!("skipping: HOME not set");
+        return;
+    };
+    let home_lake = std::path::PathBuf::from(home).join(".elan/bin/lake");
+    if !home_lake.exists() {
+        eprintln!("skipping: ~/.elan/bin/lake not installed");
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("NonPow2Fifo.arch");
+    let sv_path = td.path().join("NonPow2Fifo.sv");
+    let proof_path = td.path().join("NonPow2Fifo.construct-proof.lean");
+    let bad_proof_path = td.path().join("NonPow2Fifo.bad-wrap.construct-proof.lean");
+    std::fs::write(
+        &arch_path,
+        r#"
+domain SysDomain
+end domain SysDomain
+
+fifo NonPow2Queue
+  param DEPTH: const = 3;
+  param T: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+end fifo NonPow2Queue
+"#,
+    )
+    .expect("write arch");
+
+    let args = vec![
+        "-o".to_string(),
+        sv_path.to_string_lossy().to_string(),
+        format!("--emit-construct-proof-lean={}", proof_path.display()),
+        "--check-construct-proof-lean".to_string(),
+        "--construct-proof-lean-project=proofs/lean_thread_lowering".to_string(),
+    ];
+    let (code, out) = run_build(&arch_path, &args);
+    assert_eq!(
+        code, 0,
+        "expected valid DEPTH=3 FIFO Lean replay to pass; got {code}\n{out}"
+    );
+
+    let proof = std::fs::read_to_string(&proof_path).expect("read proof");
+    let bad_proof = proof
+        .replace(
+            "(wrPtr + 1) % Fifo.ptrMod NonPow2Queue_fifo",
+            "(wrPtr + 1) % NonPow2Queue_fifo.depth",
+        )
+        .replace(
+            "(rdPtr + 1) % Fifo.ptrMod NonPow2Queue_fifo",
+            "(rdPtr + 1) % NonPow2Queue_fifo.depth",
+        );
+    assert_ne!(proof, bad_proof, "expected proof mutation to change pointer wrap");
+    std::fs::write(&bad_proof_path, bad_proof).expect("write bad proof");
+
+    let output = Command::new(&home_lake)
+        .arg("env")
+        .arg("lean")
+        .arg(&bad_proof_path)
+        .current_dir("proofs/lean_thread_lowering")
+        .output()
+        .expect("run lake env lean");
+    assert!(
+        !output.status.success(),
+        "expected Lean to reject DEPTH wrap bug\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let diagnostics = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        diagnostics.contains("Fifo.ptrMod NonPow2Queue_fifo"),
+        "expected failure to mention expected ptrMod equation:\n{diagnostics}"
+    );
 }
 
 #[test]

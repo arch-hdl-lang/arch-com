@@ -83,11 +83,12 @@ Always-on runtime checks: out-of-range `Vec<T,N>` indexing, bit-selects `val[i]`
 
 ## Formal verification
 
-Three paths:
+Four paths:
 
 1. **SV-SVA path** — `arch build` emits SystemVerilog with concurrent assertions consumable by EBMC, Verilator `--assert`, and SymbiYosys. Nothing extra to configure.
 2. **Direct SMT-LIB2 path** — `arch formal` lowers a module straight to SMT-LIB2 and shells out to a bit-vector solver. No Yosys in the loop; ARCH semantics (wrapping arithmetic, width casts) are encoded precisely.
-3. **Lean thread-lowering proof path** — `arch formal --emit-thread-proof-lean` emits a Lean replay file proving the compiler-recorded thread-to-FSM lowering certificate. `--check-thread-proof-lean` immediately replays it with `lake env lean`. This is a compiler-lowering proof artifact, not a bounded design-property proof.
+3. **Lean thread-lowering proof path** — `arch formal --emit-thread-proof-lean` emits a Lean replay file proving the compiler-recorded thread-to-FSM lowering certificate. `--check-thread-proof-lean` immediately replays it with `lake env lean`; the compiler resolves `lake` from `PATH`, `ELAN_HOME/bin/lake`, or `~/.elan/bin/lake`. This is a compiler-lowering proof artifact, not a bounded design-property proof.
+4. **Construct proof path** — `arch build --emit-construct-proof-lean` emits a Lean replay file for supported first-class FIFO/LIFO and built-in priority/round-robin arbiter instances; `--emit-construct-proof-smt` emits SMT-LIB2 sanity queries for the same construct models. The certificates include generated implementation equations for FIFO/LIFO pointer and memory behavior and arbiter grant selection. Those equations come from the shared construct formal IR, which also feeds the `credit_channel` BMC equations. `--check-construct-proof-lean` replays Lean with the same `lake` resolver; `--check-construct-proof-smt` checks every SMT query returns `unsat`.
 
 ```sh
 arch formal MyModule.arch                            # defaults: z3, bound=20, 60s timeout
@@ -101,6 +102,10 @@ arch formal MyModule.arch --check-thread-proof-lean \
 arch formal MyModule.arch --check-thread-proof-lean \
   --thread-proof-lean-project proofs/lean_thread_lowering \
   --thread-proof-only                              # replay Lean and skip SMT
+arch build MyModule.arch --check-construct-proof-lean \
+  --construct-proof-lean-project proofs/lean_thread_lowering
+arch build MyModule.arch --check-construct-proof-smt \
+  --construct-proof-smt-solver z3
 ```
 
 Output is one line per property — `PROVED up to bound N`, `REFUTED at cycle C` (with a per-cycle signal counterexample), `HIT at cycle C` for covers, `NOT REACHED within bound N`, or `INCONCLUSIVE` on solver timeout. Exit codes: `0` all-good, `1` any failure, `2` inconclusive, `3` compile error. Scope in v1 is flat modules with scalar signals (`UInt<N>` / `SInt<N>` / `Bool` / `Bit`), single clock, no sub-`inst`; anything out of scope errors out with a pointer at the offending construct.

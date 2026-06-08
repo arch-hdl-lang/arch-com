@@ -1,7 +1,12 @@
-# Lean Thread Lowering Prototype
+# Lean Proof Backends
 
-This is a proof-of-concept Lean project for machine-checking ARCH thread-to-FSM
-lowering certificates.
+This Lean project contains proof models for compiler-emitted ARCH certificate
+replay files.
+
+## Thread Lowering
+
+The thread-lowering backend machine-checks ARCH thread-to-FSM lowering
+certificates.
 
 The first file, `ArchThreadLoweringProof/Simple.lean`, proves a small but useful
 theorem:
@@ -45,6 +50,13 @@ cd proofs/lean_thread_lowering
 lake build
 ```
 
+If `lake` is not on `PATH`, invoke it through elan directly:
+
+```sh
+cd proofs/lean_thread_lowering
+$HOME/.elan/bin/lake build
+```
+
 To emit and replay a compiler-emitted Lean certificate directly:
 
 ```sh
@@ -60,6 +72,10 @@ arch build Foo.arch \
   --check-thread-proof-lean \
   --thread-proof-lean-project=proofs/lean_thread_lowering
 ```
+
+The compiler resolves `lake` from `PATH`, then `ELAN_HOME/bin/lake`, then
+`~/.elan/bin/lake`, so replay can work even when the current shell has not added
+elan to `PATH`.
 
 The same Lean thread-lowering proof path is also available from the formal
 entry point:
@@ -83,6 +99,66 @@ arch formal Foo.arch \
 backend is only the Lean lowering replay; it skips the SMT-LIB2 design-property
 backend after the Lean artifact is emitted and checked.
 
+## FIFO And Arbiter Construct Proofs
+
+`ArchConstructProof/Fifo.lean` and `ArchConstructProof/Arbiter.lean` provide
+generic proof models for first-class FIFO/LIFO and built-in arbiter constructs.
+The compiler emits one Lean instance per supported construct plus generated
+equation records for the implementation shape. FIFO/LIFO records cover
+full/empty, ready/valid, pointer/index, and memory-update equations. Arbiter
+records cover the generated ready-selection equation and round-robin next-pointer
+equation.
+
+The compiler-side equation source is `construct_formal_ir`: Lean certificates
+and SMT-LIB2 sanity checks are emitted from the same typed construct model.
+The existing `credit_channel` BMC path also consumes this IR for its synthesized
+credit/occupancy/pointer equations, which keeps the SMT and Lean-facing
+construct semantics from drifting into separate implementations.
+
+Current construct-proof scope:
+
+- synchronous `fifo` with `OVERFLOW = 0` or no `OVERFLOW` parameter,
+- synchronous `kind lifo`,
+- `arbiter policy priority`,
+- `arbiter policy round_robin`, including non-power-of-two `NUM_REQ`,
+- arbiter `latency >= 1`.
+
+Async FIFOs and custom/weighted/LRU arbiters are rejected by the construct proof
+emitter until their semantics have dedicated Lean models.
+
+To emit and replay Lean construct proofs:
+
+```sh
+arch build Foo.arch --emit-construct-proof-lean=Foo.construct-proof.lean
+cd proofs/lean_thread_lowering
+lake env lean /path/to/Foo.construct-proof.lean
+```
+
+For the compiler to run the replay immediately:
+
+```sh
+arch build Foo.arch \
+  --check-construct-proof-lean \
+  --construct-proof-lean-project=proofs/lean_thread_lowering
+```
+
+If `--construct-proof-lean-project` is omitted, the compiler uses
+`ARCH_CONSTRUCT_PROOF_LEAN_PROJECT`, then `ARCH_THREAD_PROOF_LEAN_PROJECT`, then
+`proofs/lean_thread_lowering` relative to the current working directory.
+
+To emit and check the SMT-LIB2 side of the same construct model:
+
+```sh
+arch build Foo.arch --emit-construct-proof-smt=Foo.construct-proof.smt2
+arch build Foo.arch \
+  --check-construct-proof-smt \
+  --construct-proof-smt-solver=z3
+```
+
+Every SMT query in the certificate is expected to return `unsat`; a `sat` or
+`unknown` result fails the check. This is a solver sanity path for the generated
+construct equations, separate from `arch formal` module-property BMC.
+
 The JSON sidecar and Python bridge remain useful for debugging certificate
 schema changes:
 
@@ -95,9 +171,10 @@ cd proofs/lean_thread_lowering
 lake env lean ArchThreadLoweringProof/GeneratedFoo.lean
 ```
 
-The bridge regression suite can also execute Lean when `lake` is on `PATH`:
-it checks that a matching generated certificate replays successfully and that
-an intentionally mismatched source/FSM dispatch certificate is rejected.
+The bridge regression suite can also execute Lean when `lake` is available
+through `PATH` or the elan fallback paths: it checks that a matching generated
+certificate replays successfully and that an intentionally mismatched source/FSM
+dispatch certificate is rejected.
 
 The generated file proves the compiler-recorded lowered FSM table against the
 `CountedWait` source model, including repeating versus `thread once`
