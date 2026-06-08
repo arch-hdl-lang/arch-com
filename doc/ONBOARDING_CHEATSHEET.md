@@ -23,6 +23,7 @@ CLI commands:
 - `arch check <files...>`
 - `arch build <files...> [-o out.sv]`
 - `arch sim <arch_files...> --tb <tb.cpp...> [--outdir DIR] [--check-uninit] [--cdc-random] [--wave out.vcd]`
+  - Build artifacts go to `--outdir` if given, else `$ARCH_SIM_BUILD_DIR` if set, else `arch_sim_build/` in the cwd. Export `ARCH_SIM_BUILD_DIR=/tmp/arch_sim` to keep them out of the repo.
 
 ## 2) Core subsystem map
 

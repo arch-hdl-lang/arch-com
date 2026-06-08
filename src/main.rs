@@ -190,7 +190,8 @@ enum Command {
         /// C++ testbench file(s) to compile alongside the generated models
         #[arg(long = "tb", num_args = 1..)]
         tb_files: Vec<PathBuf>,
-        /// Output directory for generated C++ files (default: arch_sim_build/)
+        /// Output directory for generated C++ files
+        /// (default: $ARCH_SIM_BUILD_DIR, else arch_sim_build/)
         #[arg(short, long)]
         outdir: Option<PathBuf>,
         /// Enable uninitialized register read detection (reset-none regs + pipe_reg propagation)
@@ -1432,6 +1433,18 @@ fn main() -> miette::Result<()> {
     }
 }
 
+/// Default sim build/output directory used when neither `--outdir` nor an
+/// explicit path is supplied. Honors the `ARCH_SIM_BUILD_DIR` env var so
+/// callers can route build artifacts to a scratch location instead of
+/// dropping `arch_sim_build/` in the current directory; falls back to
+/// `arch_sim_build` (relative to cwd) when the var is unset or empty.
+fn default_sim_build_dir() -> PathBuf {
+    std::env::var_os("ARCH_SIM_BUILD_DIR")
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("arch_sim_build"))
+}
+
 /// `--thread-sim both` driver: build + run fsm and parallel sims
 /// independently with --debug, then diff their port-change traces.
 /// Mismatch ⇒ abort with the first divergence highlighted.
@@ -1442,7 +1455,7 @@ fn run_thread_sim_cross_check(
 ) -> miette::Result<()> {
     let base = outdir
         .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("arch_sim_build"));
+        .unwrap_or_else(default_sim_build_dir);
     let fsm_dir = base.with_file_name(format!(
         "{}_fsm",
         base.file_name()
@@ -1635,7 +1648,7 @@ fn run_sim_opts(
     // 2. Set up output directory
     let build_dir = outdir
         .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("arch_sim_build"));
+        .unwrap_or_else(default_sim_build_dir);
     fs::create_dir_all(&build_dir).into_diagnostic()?;
 
     // 3. Generate C++ models
