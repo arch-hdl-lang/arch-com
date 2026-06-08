@@ -18,6 +18,16 @@ fn cxx_std_flag() -> String {
     std::env::var("ARCH_CXX_STD").unwrap_or_else(|_| "-std=c++20".to_string())
 }
 
+/// C++ compiler used to build the generated sim/testbench. Override with the
+/// `ARCH_CXX` env var (mirrors harc's `HARC_CXX`); defaults to `g++`.
+///
+/// On Linux, real GCC miscompiles harc's C++20 coroutine testbench scheduler,
+/// so harc-driven testbenches need `ARCH_CXX=clang++`. On macOS `g++` is a
+/// clang shim, so the default works there.
+fn cxx_compiler() -> String {
+    std::env::var("ARCH_CXX").unwrap_or_else(|_| "g++".to_string())
+}
+
 #[derive(Parser)]
 #[command(name = "arch", version, about = "ARCH HDL compiler")]
 struct Cli {
@@ -166,7 +176,13 @@ enum Command {
     ///
     /// Example: arch sim Foo.arch Foo_tb.cpp
     ///
-    /// Generates Verilator-compatible C++ models, compiles with g++, and runs.
+    /// Generates Verilator-compatible C++ models, compiles with a C++ compiler, and runs.
+    ///
+    /// The compiler defaults to `g++`; override it with the `ARCH_CXX` env var
+    /// (e.g. `ARCH_CXX=clang++ arch sim ...`). On Linux, GCC miscompiles harc's
+    /// C++20 coroutine testbench scheduler, so harc-driven testbenches require
+    /// `ARCH_CXX=clang++`. Related: `ARCH_CXX_STD` (default `-std=c++20`) and
+    /// `ARCH_OPT` (default `-O2 -flto`).
     Sim {
         /// Input .arch file(s)
         #[arg(required = true)]
@@ -1890,7 +1906,7 @@ fn run_sim_opts(
         for cpp in &generated_cpps {
             let obj =
                 build_dir.join(cpp.file_stem().unwrap().to_string_lossy().into_owned() + ".o");
-            let mut cmd = std::process::Command::new("g++");
+            let mut cmd = std::process::Command::new(cxx_compiler());
             cmd.arg(cxx_std_flag())
                 .arg("-O2")
                 .arg("-fPIC")
@@ -1928,7 +1944,7 @@ fn run_sim_opts(
                 wrapper.class_name.clone()
             };
             let so_path = build_dir.join(format!("{class_name}{ext_suffix}"));
-            let mut cmd = std::process::Command::new("g++");
+            let mut cmd = std::process::Command::new(cxx_compiler());
             cmd.arg(cxx_std_flag())
                 .arg("-O2")
                 .arg("-shared")
@@ -2084,7 +2100,8 @@ sys.exit(0 if ok else 1)
             build_dir.display()
         );
         eprintln!(
-            "Compile with: g++ {} {}/verilated.cpp {}/V*.cpp <your_tb.cpp> -I{} -o sim_out",
+            "Compile with: {} {} {}/verilated.cpp {}/V*.cpp <your_tb.cpp> -I{} -o sim_out",
+            cxx_compiler(),
             cxx_std_flag(),
             build_dir.display(),
             build_dir.display(),
@@ -2093,9 +2110,9 @@ sys.exit(0 if ok else 1)
         return Ok(());
     }
 
-    // 5. Compile with g++
+    // 5. Compile with the configured C++ compiler (ARCH_CXX, default g++)
     let sim_bin = build_dir.join("sim_out");
-    let mut cmd = std::process::Command::new("g++");
+    let mut cmd = std::process::Command::new(cxx_compiler());
     cmd.arg(cxx_std_flag());
     // Phase 3.3: opt-in ThreadSanitizer for parallel multi-OS-thread
     // builds. Catches data races at runtime — useful in CI to verify
