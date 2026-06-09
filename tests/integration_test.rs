@@ -379,6 +379,80 @@ fn test_async_fifo() {
     insta::assert_snapshot!(sv);
 }
 
+/// Regression: a dual-clock (async) FIFO used as a SUB-INSTANCE must still
+/// advance its read/write pointers in arch sim. The sim-codegen convention is
+/// that a parent module drives each sub-instance by calling
+/// `_inst_X.eval_posedge()` — it never calls the sub-instance's `eval()` or
+/// `eval_posedge_dual()` directly. The async FIFO previously emitted an EMPTY
+/// `eval_posedge() {}` (with all the sequential logic only reachable from
+/// `eval()`), so a sub-instanced async FIFO never pushed/popped: push side
+/// looked ready, but pop never fired and no data ever crossed the boundary.
+/// `eval_posedge()` must self-gate on its own per-side clock edges and
+/// dispatch to `eval_posedge_dual`.
+///
+/// Also guards the `_mem` element-type width: the payload type param is named
+/// by the user (here `T`), not literally "TYPE", so a wide payload must lower
+/// to the matching C++ integer type (`uint64_t` for `UInt<64>`), not a
+/// silently-truncating `uint32_t`.
+#[test]
+fn test_async_fifo_subinstance_eval_posedge_and_mem_width() {
+    let source = r#"
+domain MDom
+  freq_mhz: 200
+end domain MDom
+
+domain SDom
+  freq_mhz: 100
+end domain SDom
+
+fifo WideAsyncFifo
+  param DEPTH: const = 8;
+  param T: type = UInt<64>;
+  port wr_clk: in Clock<MDom>;
+  port rd_clk: in Clock<SDom>;
+  port rst: in Reset<Async, Low>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+end fifo WideAsyncFifo
+"#;
+    let sim = compile_to_sim_h(source, false);
+
+    // eval_posedge() must dispatch to the dual-clock handler, NOT be an empty
+    // stub. (Match flexibly on whitespace by checking the dispatch call is
+    // present and an empty body is absent.)
+    assert!(
+        sim.contains("eval_posedge_dual(_wr_rising, _rd_rising)"),
+        "async FIFO eval_posedge_dual dispatch missing from sim codegen:\n{sim}"
+    );
+    assert!(
+        !sim.contains("::eval_posedge() {}"),
+        "async FIFO eval_posedge() must not be an empty stub (sub-instances \
+         would never advance their pointers):\n{sim}"
+    );
+    // The self-gating edge detection must live inside eval_posedge() so a
+    // parent's unconditional `_inst_X.eval_posedge()` call works.
+    assert!(
+        sim.contains("void VWideAsyncFifo::eval_posedge()"),
+        "expected a non-trivial eval_posedge() for the async FIFO:\n{sim}"
+    );
+
+    // _mem must be the full-width payload type, not a truncating uint32_t.
+    assert!(
+        sim.contains("uint64_t _mem["),
+        "async FIFO _mem must use uint64_t for a UInt<64> payload (the type \
+         param is named `T`, not \"TYPE\"); got truncating storage:\n{sim}"
+    );
+    assert!(
+        !sim.contains("uint32_t _mem["),
+        "async FIFO _mem must NOT fall back to uint32_t for a UInt<64> \
+         payload:\n{sim}"
+    );
+}
+
 #[test]
 fn test_fifo_missing_port_errors() {
     let source = r#"

@@ -1,0 +1,153 @@
+// Nic400CdcAxi4 dual-clock CDC bridge testbench.
+//
+// DUT: examples/nic400/Nic400CdcAxi4.arch — an AXI4 read-path bridge whose
+// master side runs on MClkDom (200 MHz) and slave side on SClkDom (100 MHz),
+// with the AR and R channels crossing through dual-clock async FIFOs.
+//
+// The TB plays BOTH endpoints: the master (driving AR / accepting R on m_clk)
+// and the slave (accepting AR / driving R on s_clk). It verifies an AR issued
+// in the master domain arrives intact in the slave domain, and an R issued in
+// the slave domain arrives intact back in the master domain — i.e. both
+// channels cross the async clock boundary with their payloads preserved.
+//
+// Run with:
+//   harc sim --dut examples/nic400/BusAxi4.arch \
+//            --dut examples/nic400/Nic400ArCdcFifo.arch \
+//            --dut examples/nic400/Nic400RCdcFifo.arch \
+//            --dut examples/nic400/Nic400CdcAxi4.arch \
+//             examples/nic400/Nic400CdcAxi4_test.harc \
+//             --top Nic400CdcAxi4
+
+domain MClkDom
+  freq_mhz: 200
+end domain MClkDom
+
+domain SClkDom
+  freq_mhz: 100
+end domain SClkDom
+
+testbench Nic400CdcAxi4Tb
+    dut : Nic400CdcAxi4
+end testbench Nic400CdcAxi4Tb
+
+impl Nic400CdcAxi4Test for Nic400CdcAxi4Tb
+    clock m_clk = MClkDom     // 200 MHz primary (5 ns)
+    clock s_clk = SClkDom     // 100 MHz        (10 ns)
+
+    run
+        log(info, "Nic400 async-clock CDC bridge test (AR: M->S, R: S->M)")
+
+        // ── Reset (active-low) ───────────────────────────────────────────
+        dut.rst        = 0
+        dut.m_ar_valid = 0
+        dut.m_ar_addr  = 0
+        dut.m_ar_id    = 0
+        dut.m_ar_len   = 0
+        dut.m_ar_size  = 0
+        dut.m_ar_burst = 0
+        dut.m_ar_lock  = 0
+        dut.m_ar_cache = 0
+        dut.m_ar_prot  = 0
+        dut.m_ar_qos   = 0
+        dut.m_ar_region = 0
+        dut.m_r_ready  = 0
+        dut.s_ar_ready = 0
+        dut.s_r_valid  = 0
+        dut.s_r_data   = 0
+        dut.s_r_id     = 0
+        dut.s_r_resp   = 0
+        dut.s_r_last   = 0
+        wait 80ns
+        dut.rst = 1
+        wait 40ns
+
+        // ── Master issues one AR (master domain) ─────────────────────────
+        // Hold the slave accept side LOW so the crossed AR is *held* in the
+        // FIFO (pop_valid stays high) rather than draining on the next s_clk
+        // edge. This makes the observation independent of clock phase: a
+        // polling loop sampling at m_clk granularity is guaranteed to catch
+        // the steady valid. We pulse s_ar_ready to drain only after capture.
+        dut.s_ar_ready  = 0
+        dut.m_ar_addr   = 0x0000CAFE
+        dut.m_ar_id     = 3
+        dut.m_ar_len    = 0
+        dut.m_ar_size   = 2
+        dut.m_ar_burst  = 1
+        dut.m_ar_region = 5
+        dut.m_ar_valid  = 1
+        wait 5ns                 // one m_clk edge → one push into the AR FIFO
+        dut.m_ar_valid  = 0
+
+        // ── Verify AR crossed to the slave domain (poll, CDC latency) ────
+        let ar_seen : uint<32> = 0
+        let ar_addr : uint<32> = 0
+        let ar_id   : uint<32> = 0
+        let ar_rgn  : uint<32> = 0
+        for _ in 0 .. 60
+            wait 5ns
+            if dut.s_ar_valid == 1 && ar_seen == 0
+                ar_seen = 1
+                ar_addr = dut.s_ar_addr
+                ar_id   = dut.s_ar_id
+                ar_rgn  = dut.s_ar_region
+            end if
+        end for
+        assert ar_seen == 1
+            else fail("AR never crossed M->S through the async FIFO")
+        assert ar_addr == 0x0000CAFE
+            else fail("AR addr corrupted across CDC: got 0x${ar_addr:x}")
+        assert ar_id == 3
+            else fail("AR id corrupted across CDC: got ${ar_id}")
+        assert ar_rgn == 5
+            else fail("AR region (sideband) corrupted across CDC: got ${ar_rgn}")
+        log(info, "AR crossed M->S intact (addr=0x${ar_addr:x} id=${ar_id} region=${ar_rgn})")
+
+        // Accept the AR on the slave side (one s_clk cycle of ready).
+        dut.s_ar_ready = 1
+        wait 10ns
+        dut.s_ar_ready = 0
+
+        // ── Slave issues the R response (slave domain) ───────────────────
+        // Symmetric: hold the master accept side LOW so the crossed R is
+        // held in the FIFO until we have captured it.
+        dut.m_r_ready = 0
+        dut.s_r_data  = 0x0000D00D
+        dut.s_r_id    = 3
+        dut.s_r_resp  = 0
+        dut.s_r_last  = 1
+        dut.s_r_valid = 1
+        wait 10ns                // one s_clk edge → one push into the R FIFO
+        dut.s_r_valid = 0
+
+        // ── Verify R crossed back to the master domain ───────────────────
+        let r_seen : uint<32> = 0
+        let r_data : uint<32> = 0
+        let r_id   : uint<32> = 0
+        let r_last : uint<32> = 0
+        for _ in 0 .. 60
+            wait 5ns
+            if dut.m_r_valid == 1 && r_seen == 0
+                r_seen = 1
+                r_data = dut.m_r_data
+                r_id   = dut.m_r_id
+                r_last = dut.m_r_last
+            end if
+        end for
+        assert r_seen == 1
+            else fail("R never crossed S->M through the async FIFO")
+        assert r_data == 0x0000D00D
+            else fail("R data corrupted across CDC: got 0x${r_data:x}")
+        assert r_id == 3
+            else fail("R id corrupted across CDC: got ${r_id}")
+        assert r_last == 1
+            else fail("R last corrupted across CDC: got ${r_last}")
+        log(info, "R crossed S->M intact (data=0x${r_data:x} id=${r_id} last=${r_last})")
+
+        // Accept the R on the master side.
+        dut.m_r_ready = 1
+        wait 5ns
+        dut.m_r_ready = 0
+
+        log(info, "PASS Nic400CdcAxi4: AR M->S and R S->M both crossed the async clock boundary intact")
+    end run
+end impl Nic400CdcAxi4Test

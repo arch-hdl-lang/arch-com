@@ -17,19 +17,31 @@ impl<'a> SimCodegen<'a> {
             .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v) } else { None })
             .unwrap_or(8);
 
-        let elem_ty: String = f.params.iter()
-            .find(|p| p.name.name == "TYPE")
-            .and_then(|p| if let ParamKind::Type(te) = &p.kind { Some(te) } else { None })
-            .map(|te| cpp_internal_type_with_params(te, &f.params))
-            .unwrap_or_else(|| "uint32_t".to_string());
-
-        let (rst_name, _is_async, is_low) = extract_reset_info(&f.ports);
-        let rst_cond = if is_low { format!("(!{rst_name})") } else { rst_name.clone() };
-
         // Build type-param substitution: param name → concrete TypeExpr (from default)
         let type_param_map: std::collections::HashMap<String, TypeExpr> = f.params.iter()
             .filter_map(|p| if let ParamKind::Type(te) = &p.kind { Some((p.name.name.clone(), te.clone())) } else { None })
             .collect();
+
+        // Internal storage (`_mem`) element type = the resolved payload type,
+        // taken from the `push_data` port. The payload type param is named by
+        // the user (commonly `T`), not literally "TYPE", so the previous
+        // `.find(name == "TYPE")` never matched and `_mem` always fell back to
+        // `uint32_t` — silently truncating payloads wider than 32 bits and
+        // type-mismatching struct payloads.
+        let elem_ty: String = f.ports.iter()
+            .find(|p| p.name.name == "push_data")
+            .or_else(|| f.ports.iter().find(|p| p.name.name == "pop_data"))
+            .map(|p| {
+                let resolved: TypeExpr = match &p.ty {
+                    TypeExpr::Named(n) => type_param_map.get(&n.name).cloned().unwrap_or_else(|| p.ty.clone()),
+                    other => other.clone(),
+                };
+                cpp_internal_type_with_params(&resolved, &f.params)
+            })
+            .unwrap_or_else(|| "uint32_t".to_string());
+
+        let (rst_name, _is_async, is_low) = extract_reset_info(&f.ports);
+        let rst_cond = if is_low { format!("(!{rst_name})") } else { rst_name.clone() };
         // Resolve a port's TypeExpr, substituting Named types that match type params
         let resolve_port_ty = |ty: &TypeExpr| -> String {
             if let TypeExpr::Named(n) = ty {
@@ -159,8 +171,23 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str("    _rd_ptr++;\n");
             cpp.push_str(&format!("    if (_rd_ptr >= 2u * {depth}) _rd_ptr = 0;\n  }}\n"));
             cpp.push_str("}\n\n");
-            // Keep the standard eval_posedge symbol for ABI parity (unused).
-            cpp.push_str(&format!("void {class}::eval_posedge() {{}}\n\n"));
+            // eval_posedge() — self-gating dual-clock entry point. A parent
+            // module drives a sub-instance by calling _inst_X.eval_posedge()
+            // (the sim_codegen convention); it never calls eval()/eval_posedge_dual
+            // directly. So eval_posedge() must do its OWN per-side edge detection
+            // (against the clocks the parent mirrored in just before) and dispatch
+            // to eval_posedge_dual. Without this, a dual-clock async FIFO used as a
+            // sub-instance would never advance its pointers — push works, pop never
+            // fires. The top-DUT path is unaffected: eval() calls eval_posedge_dual
+            // directly and owns _clk_prev_wr/_clk_prev_rd, while the sub-instance
+            // path only ever calls eval_comb()/eval_posedge(); the two never mix.
+            cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
+            cpp.push_str("  bool _wr_rising = (wr_clk && !_clk_prev_wr);\n");
+            cpp.push_str("  bool _rd_rising = (rd_clk && !_clk_prev_rd);\n");
+            cpp.push_str("  _clk_prev_wr = wr_clk;\n");
+            cpp.push_str("  _clk_prev_rd = rd_clk;\n");
+            cpp.push_str("  if (_wr_rising || _rd_rising) eval_posedge_dual(_wr_rising, _rd_rising);\n");
+            cpp.push_str("}\n\n");
         } else {
             // eval_posedge() — single-clock path. Self-gates on rising
             // edge so the parent's unconditional call is safe.

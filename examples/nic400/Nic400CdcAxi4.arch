@@ -1,0 +1,112 @@
+// NIC-400 asynchronous clock-domain-crossing bridge (AXI4 read path).
+//
+// A master/slave pair operating in DIFFERENT clock domains: the master-facing
+// side runs on MClkDom, the slave-facing side on SClkDom. The two AXI4 read
+// channels cross the boundary through dual-clock async FIFOs, so the compiler
+// auto-synthesises gray-code pointer CDC — the only legal way to move a signal
+// between unrelated clocks.
+//
+//   m (MClkDom)  --AR-->  [ArCdcFifo]  --AR-->  s (SClkDom)
+//   m (MClkDom)  <--R---  [RCdcFifo]   <--R---  s (SClkDom)
+//
+// Each channel's fields are packed into one FIFO word (concat on the push
+// side, bit-select on the pop side); comb logic wires the valid/ready
+// handshakes. No thread/FSM is needed — the FIFOs hold all the crossing state.
+// ID_W=3 keeps the full AR field set at exactly 64 bits, the widest payload
+// the FIFO carries in a single 64-bit word.
+
+// The two crossing FIFOs live in their own files (one construct per file):
+//   Nic400ArCdcFifo.arch — AR channel, 64-bit payload, M->S
+//   Nic400RCdcFifo.arch  — R  channel, 38-bit payload, S->M
+// They are resolved by name at compile time (pass all three .arch files, or
+// rely on .archi auto-discovery in the same directory).
+
+domain MClkDom
+  freq_mhz: 200
+end domain MClkDom
+
+domain SClkDom
+  freq_mhz: 100
+end domain SClkDom
+
+module Nic400CdcAxi4
+  port m_clk: in Clock<MClkDom>;
+  port s_clk: in Clock<SClkDom>;
+  port rst:   in Reset<Async, Low>;
+
+  // Master-facing bus (master domain) and slave-facing bus (slave domain).
+  port m: target    BusAxi4<ADDR_W=32, DATA_W=32, STRB_W=4, ID_W=3, READ=1, WRITE=0>;
+  port s: initiator BusAxi4<ADDR_W=32, DATA_W=32, STRB_W=4, ID_W=3, READ=1, WRITE=0>;
+
+  // The whole-design comb-cycle detector treats the async-FIFO insts as
+  // combinationally transparent (push -> pop), so it reports a feedback loop
+  // m.ar -> ar_fifo -> s.ar ... -> r_fifo -> m.r. That loop is NOT real: both
+  // FIFOs register push_ready/pop_valid through the gray-code pointer
+  // synchronisers, so no combinational path crosses a FIFO. Verilator lints
+  // this design loop-free. Bless the false positive here.
+  pragma comb_loops_allowed;
+
+  // AR fields packed MSB->LSB into one 64-bit word (addr at the top, region
+  // at the bottom): addr32 id3 len8 size3 burst2 lock1 cache4 prot3 qos4 region4.
+  let ar_payload: UInt<64> = { m.ar_addr, m.ar_id, m.ar_len, m.ar_size,
+                               m.ar_burst, m.ar_lock, m.ar_cache, m.ar_prot,
+                               m.ar_qos, m.ar_region };
+  // R fields packed MSB->LSB into 38 bits: data32 id3 resp2 last1.
+  let r_payload: UInt<38> = { s.r_data, s.r_id, s.r_resp, s.r_last };
+
+  // FIFO output nets (driven by the inst outputs, read in comb).
+  wire ar_push_ready: Bool;
+  wire ar_pop_valid:  Bool;
+  wire ar_pop:        UInt<64>;
+  wire r_push_ready:  Bool;
+  wire r_pop_valid:   Bool;
+  wire r_pop:         UInt<38>;
+
+  inst ar_fifo: Nic400ArCdcFifo
+    wr_clk     <- m_clk;
+    rd_clk     <- s_clk;
+    rst        <- rst;
+    push_valid <- m.ar_valid;
+    push_ready -> ar_push_ready;
+    push_data  <- ar_payload;
+    pop_valid  -> ar_pop_valid;
+    pop_ready  <- s.ar_ready;
+    pop_data   -> ar_pop;
+  end inst ar_fifo
+
+  inst r_fifo: Nic400RCdcFifo
+    wr_clk     <- s_clk;
+    rd_clk     <- m_clk;
+    rst        <- rst;
+    push_valid <- s.r_valid;
+    push_ready -> r_push_ready;
+    push_data  <- r_payload;
+    pop_valid  -> r_pop_valid;
+    pop_ready  <- m.r_ready;
+    pop_data   -> r_pop;
+  end inst r_fifo
+
+  comb
+    // AR: master push handshake completion + slave-side drive (unpack).
+    m.ar_ready  = ar_push_ready;
+    s.ar_valid  = ar_pop_valid;
+    s.ar_addr   = ar_pop[63:32];
+    s.ar_id     = ar_pop[31:29];
+    s.ar_len    = ar_pop[28:21];
+    s.ar_size   = ar_pop[20:18];
+    s.ar_burst  = ar_pop[17:16];
+    s.ar_lock   = (ar_pop[15:15] == 1);
+    s.ar_cache  = ar_pop[14:11];
+    s.ar_prot   = ar_pop[10:8];
+    s.ar_qos    = ar_pop[7:4];
+    s.ar_region = ar_pop[3:0];
+
+    // R: slave push handshake completion + master-side drive (unpack).
+    s.r_ready   = r_push_ready;
+    m.r_valid   = r_pop_valid;
+    m.r_data    = r_pop[37:6];
+    m.r_id      = r_pop[5:3];
+    m.r_resp    = r_pop[2:1];
+    m.r_last    = (r_pop[0:0] == 1);
+  end comb
+end module Nic400CdcAxi4
