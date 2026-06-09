@@ -99,6 +99,14 @@ Nic400Read2x2 — older 2×2 read-only crossbar (predates Nic400Fabric).
 - **`Nic400ApbBridge.arch`** — AXI4 target → APB initiator. Two threads sharing APB drives via `apb_lock`. Splits AXI bursts into sequential APB Setup → Access phases. Per-beat `paddr = base + (b << size)`.
 - **`Nic400WidthAdapter.arch`** — AXI4 downsize adapter (`M_DATA_W` > `S_DATA_W`). 5 per-channel threads. Master beats split into RATIO little-endian slave sub-beats; reads pack RATIO slave beats into one master beat with OR-reduced `r_resp`.
 
+### Clock-domain crossing (async master/slave)
+
+- **`Nic400CdcAxi4.arch`** — AXI4 read-path bridge whose master side runs on `MClkDom` (200 MHz) and slave side on `SClkDom` (100 MHz). The AR (M→S) and R (S→M) channels each cross the boundary through a dual-clock async FIFO; the compiler auto-synthesises gray-code pointer CDC because each FIFO's `wr_clk`/`rd_clk` reference different domains. Each channel's fields are packed into one FIFO word (concat on push, bit-select on pop) — `comb` wires the valid/ready handshakes, no thread/FSM needed. `pragma comb_loops_allowed` blesses the false whole-design comb-cycle report (both FIFOs register through the pointer synchronisers; Verilator lints loop-free).
+- **`Nic400ArCdcFifo.arch`** — AR-channel crossing FIFO. Write port `MClkDom`, read port `SClkDom`; 64-bit packed AR payload (`addr32 id3 len8 size3 burst2 lock1 cache4 prot3 qos4 region4`).
+- **`Nic400RCdcFifo.arch`** — R-channel crossing FIFO (reverse direction). Write port `SClkDom`, read port `MClkDom`; 38-bit packed R payload (`data32 id3 resp2 last1`).
+
+Verified with `Nic400CdcAxi4_test.harc` (a dual-clock HARC testbench that drives both endpoints): AR crosses M→S and R crosses S→M with payloads intact, on both the ARCH native sim and the Verilator backend, with matching cross-backend traces (`harc sim --check-backends`).
+
 ### Observability
 
 - **`Nic400Pmu.arch`** — performance monitor counters. Per-master AR/AW/R/W/B counters, `COUNTER_W`-wide (default 32). Inputs are pre-qualified one-cycle event pulses (typically `m[i].x_valid && m[i].x_ready`). `r`/`w` count beats; `ar`/`aw`/`b` count transactions.

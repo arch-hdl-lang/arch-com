@@ -1,0 +1,29 @@
+// AR-channel clock-domain-crossing FIFO for the NIC-400 async bridge.
+//
+// Write port in the master domain (MClkDom), read port in the slave domain
+// (SClkDom). The two differing Clock<...> domains make the compiler
+// auto-synthesise gray-code pointer synchronisers — the legal way to move a
+// multi-bit word between unrelated clocks. Payload is the full AXI4 AR channel
+// packed into one 64-bit word (see Nic400CdcAxi4 for the field layout).
+
+domain MClkDom
+  freq_mhz: 200
+end domain MClkDom
+
+domain SClkDom
+  freq_mhz: 100
+end domain SClkDom
+
+fifo Nic400ArCdcFifo
+  param DEPTH: const = 8;
+  param T: type = UInt<64>;
+  port wr_clk: in Clock<MClkDom>;
+  port rd_clk: in Clock<SClkDom>;
+  port rst: in Reset<Async, Low>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+end fifo Nic400ArCdcFifo
