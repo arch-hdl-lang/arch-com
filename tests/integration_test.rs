@@ -20759,6 +20759,193 @@ fn test_opaque_interface_pipe_reg_output_does_not_close_cycle() {
     );
 }
 
+// ── FIFO transparency regression (false-positive comb cycle) ──────────────────
+//
+// A `fifo` inst is a known first-class construct that is NOT a Module/Fsm decl,
+// so its `child_is_interface` is `None`. The old code conflated that `None`
+// with "unknown extern" and modeled the FIFO as combinationally transparent
+// (every input → every output), manufacturing a spurious comb cycle when
+// signals are routed input → fifo → output (e.g. an AXI4 CDC bridge). FIFO
+// outputs (push_ready/pop_valid/pop_data) are pure functions of internal
+// registered pointer/memory state — there is NO comb path across a FIFO. The
+// fix uses the construct-aware `CombInfo` (empty for a fifo) instead of the
+// opaque every-in→every-out fallback. These tests pin the corrected behavior
+// AND prove the detector is not disabled (a real comb cycle still fires, and a
+// latency-0 RAM in a real cycle is still flagged).
+
+fn whole_design_from(source: &str) -> arch::comb_graph::WholeDesignAnalysis {
+    let tokens = arch::lexer::tokenize(source).expect("lexer error");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve error");
+    arch::comb_graph::analyze_whole_design(&ast, &symbols)
+}
+
+#[test]
+fn test_fifo_inst_does_not_close_comb_cycle() {
+    // Route signals input → async fifo → output, with NO pragma present.
+    // Two differing Clock<...> domains make this a dual-clock async FIFO
+    // (gray-code CDC). Every FIFO output is registered through the pointer
+    // synchronisers — there is no combinational input→output path — so the
+    // whole-design detector must report ZERO SCCs.
+    let source = r#"
+        domain MClkDom
+          freq_mhz: 200
+        end domain MClkDom
+
+        domain SClkDom
+          freq_mhz: 100
+        end domain SClkDom
+
+        fifo Cdc
+          param DEPTH: const = 4;
+          param T: type = UInt<8>;
+          port wr_clk: in Clock<MClkDom>;
+          port rd_clk: in Clock<SClkDom>;
+          port rst: in Reset<Async, Low>;
+          port push_valid: in Bool;
+          port push_ready: out Bool;
+          port push_data: in T;
+          port pop_valid: out Bool;
+          port pop_ready: in Bool;
+          port pop_data: out T;
+        end fifo Cdc
+
+        module Top
+          port wr_clk: in Clock<MClkDom>;
+          port rd_clk: in Clock<SClkDom>;
+          port rst: in Reset<Async, Low>;
+          port in_valid: in Bool;
+          port in_data: in UInt<8>;
+          port in_ready: out Bool;
+          port out_valid: out Bool;
+          port out_data: out UInt<8>;
+          port out_ready: in Bool;
+
+          inst f: Cdc
+            wr_clk     <- wr_clk;
+            rd_clk     <- rd_clk;
+            rst        <- rst;
+            push_valid <- in_valid;
+            push_data  <- in_data;
+            push_ready -> in_ready;
+            pop_valid  -> out_valid;
+            pop_data   -> out_data;
+            pop_ready  <- out_ready;
+          end inst f
+        end module Top
+    "#;
+    let wd = whole_design_from(source);
+    assert_eq!(
+        wd.total_sccs, 0,
+        "FIFO inst must not manufacture a comb cycle; SCCs found: {:?}",
+        wd.sccs.iter().map(|s| &s.owning_modules).collect::<Vec<_>>()
+    );
+    assert_eq!(wd.suppressed, 0, "no pragma present, nothing should be suppressed");
+}
+
+#[test]
+fn test_real_comb_cycle_still_detected_after_fifo_fix() {
+    // Guard against over-correction: a genuine cross-instance comb loop
+    // (A.out → B.in → B.out → A.in through two purely-combinational Cells)
+    // must STILL be reported as exactly one SCC.
+    let source = r#"
+        module Cell
+          port i: in UInt<1>;
+          port o: out UInt<1>;
+          comb
+            o = i;
+          end comb
+        end module Cell
+
+        module Top
+          port s: in UInt<1>;
+          port q: out UInt<1>;
+          wire w1: UInt<1>;
+          wire w2: UInt<1>;
+
+          inst a: Cell
+            i <- w2;
+            o -> w1;
+          end inst a
+
+          inst b: Cell
+            i <- w1;
+            o -> w2;
+          end inst b
+
+          comb
+            q = w1;
+          end comb
+        end module Top
+    "#;
+    let wd = whole_design_from(source);
+    assert_eq!(
+        wd.total_sccs, 1,
+        "a real comb cycle through bodied modules must still be detected"
+    );
+}
+
+#[test]
+fn test_latency0_ram_in_real_cycle_still_flagged() {
+    // No under-approximation: a latency-0 (async) RAM combinationally drives
+    // its read data from addr/data inputs (comb_info_for_ram reports it as
+    // comb-coupled). Wiring that read data back into the RAM's write data
+    // through a parent comb wire forms a REAL comb cycle that must STILL be
+    // detected after the FIFO fix — the fix only suppresses constructs whose
+    // construct-aware CombInfo is empty (registered), and latency-0 RAM's is
+    // not empty.
+    let source = r#"
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+
+        ram AsyncMem
+          kind single;
+          latency 0;
+          param DEPTH: const = 16;
+          param T: type = UInt<8>;
+          port clk: in Clock<SysDomain>;
+          store
+            data: Vec<T, DEPTH>;
+          end store
+          port en: in Bool;
+          port wen: in Bool;
+          port addr: in UInt<4>;
+          port wdata: in T;
+          port rdata: out T;
+        end ram AsyncMem
+
+        module Top
+          port clk: in Clock<SysDomain>;
+          port en: in Bool;
+          port wen: in Bool;
+          port addr: in UInt<4>;
+          port q: out UInt<8>;
+          wire loop_data: UInt<8>;
+
+          inst m: AsyncMem
+            clk   <- clk;
+            en    <- en;
+            wen   <- wen;
+            addr  <- addr;
+            wdata <- loop_data;
+            rdata -> loop_data;
+          end inst m
+
+          comb
+            q = loop_data;
+          end comb
+        end module Top
+    "#;
+    let wd = whole_design_from(source);
+    assert_eq!(
+        wd.total_sccs, 1,
+        "a latency-0 RAM in a real comb cycle must still be flagged (no under-approximation)"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Issue #246 Phase 2: per-output `comb_dep_on(...)` annotation.
 // ─────────────────────────────────────────────────────────────────────────────

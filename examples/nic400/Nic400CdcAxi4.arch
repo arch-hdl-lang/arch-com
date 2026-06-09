@@ -38,14 +38,6 @@ module Nic400CdcAxi4
   port m: target    BusAxi4<ADDR_W=32, DATA_W=32, STRB_W=4, ID_W=3, READ=1, WRITE=0>;
   port s: initiator BusAxi4<ADDR_W=32, DATA_W=32, STRB_W=4, ID_W=3, READ=1, WRITE=0>;
 
-  // The whole-design comb-cycle detector treats the async-FIFO insts as
-  // combinationally transparent (push -> pop), so it reports a feedback loop
-  // m.ar -> ar_fifo -> s.ar ... -> r_fifo -> m.r. That loop is NOT real: both
-  // FIFOs register push_ready/pop_valid through the gray-code pointer
-  // synchronisers, so no combinational path crosses a FIFO. Verilator lints
-  // this design loop-free. Bless the false positive here.
-  pragma comb_loops_allowed;
-
   // AR fields packed MSB->LSB into one 64-bit word (addr at the top, region
   // at the bottom): addr32 id3 len8 size3 burst2 lock1 cache4 prot3 qos4 region4.
   let ar_payload: UInt<64> = { m.ar_addr, m.ar_id, m.ar_len, m.ar_size,

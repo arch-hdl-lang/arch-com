@@ -1179,6 +1179,21 @@ impl GraphBuilder {
             }
         }
 
+        // Is the inst a KNOWN first-class construct that is neither a
+        // Module nor an Fsm (fifo, ram, arbiter, counter, synchronizer,
+        // clkgate, regfile, …)? Such a construct has no `ModuleDecl`/
+        // `FsmDecl` (so `child_mod`/`child_fsm` are both `None`), yet it
+        // IS resolvable in the symbol table and `comb_info_for_symbol`
+        // already returns a construct-aware `CombInfo` for it:
+        //   * fifo/arbiter/counter/synchronizer/clkgate/regfile and
+        //     latency>0 ram → `CombInfo::default()` (PURE — outputs are
+        //     all functions of internal registered state, no comb path
+        //     from any input to any output).
+        //   * latency-0 (async) ram → a real per-port comb-dep set.
+        let symbol_is_known_construct = child_mod.is_none()
+            && child_fsm.is_none()
+            && symbols.globals.contains_key(&inst.module_name.name);
+
         // Treat the child as opaque (every-out-depends-on-every-in,
         // modulo any port-level `comb_dep_on(...)` annotations) when
         // either: (1) we couldn't find a declaration for it at all
@@ -1187,8 +1202,24 @@ impl GraphBuilder {
         // annotations). For a real bodied module or fsm, we have a
         // walker that produces precise per-output deps. Issue #246
         // Phase 3 = bodied module, Phase 4 = bodied fsm.
+        //
+        // A known first-class construct (fifo/ram/arbiter/…) must NOT be
+        // modeled as combinationally transparent: its `child_is_interface`
+        // is `None` only because it isn't a Module/Fsm decl, NOT because it
+        // is an unknown extern. Modeling a registered construct as
+        // every-input→every-output manufactures spurious comb edges — e.g.
+        // routing signals through async `fifo` insts (an AXI CDC bridge:
+        // `m.ar -> ar_fifo -> s.ar … s.r -> r_fifo -> m.r`) closes a false
+        // whole-design comb cycle, even though every FIFO output is a pure
+        // function of its internal gray-code/binary pointers and memory.
+        // For these we drop through to the non-opaque path, which uses the
+        // construct-aware `info` (`CombInfo` from `comb_info_for_symbol`):
+        // empty for a fifo (→ no edges), but a real dep set for a
+        // latency-0 ram (→ genuine async-RAM cycles are still caught).
         let treat_as_opaque = match child_is_interface {
-            None => true,            // extern — no decl found
+            // extern/unknown ⇒ opaque; known first-class construct ⇒ use
+            // its construct-aware CombInfo (`info`) instead.
+            None => !symbol_is_known_construct,
             Some(is_iface) => is_iface,
         };
 
