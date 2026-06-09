@@ -4,11 +4,32 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+# Skip entirely for delete-only pushes (`git push --delete`): there are no new
+# commits to review or claim-check, and the branch being deleted is unrelated
+# to whatever branch happens to be checked out.
+deleting_only=1
+zero="0000000000000000000000000000000000000000"
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+  [[ -z "${local_sha:-}" ]] && continue
+  [[ "$local_sha" != "$zero" ]] && deleting_only=0
+done
+[[ "$deleting_only" == 1 ]] && exit 0
+
 branch="$(git branch --show-current)"
+
+# Advisory duplicate-work check (never blocks). Skip with CLAIM_CHECK_SKIP=1.
+claim_check() {
+  [[ "${CLAIM_CHECK_SKIP:-0}" == 1 ]] && return 0
+  scripts/claim_check.sh || true
+}
 
 case "$branch" in
   codex/*)
-    scripts/pre_pr_review.sh check
+    scripts/pre_pr_review.sh check   # blocking: require a code-review marker
+    claim_check                       # advisory: warn on duplicate parallel work
+    ;;
+  claude/*)
+    claim_check                       # advisory: mirror dup-check for claude branches
     ;;
   *)
     ;;

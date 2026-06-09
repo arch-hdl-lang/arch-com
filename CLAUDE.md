@@ -55,6 +55,32 @@ Rules:
   agent-reported compiler bug as suspect until re-verified on a freshly built
   binary.
 
+## Claim work before you start it (avoid duplicate parallel work)
+
+Multiple autonomous agents and sessions (Claude on several machines, the
+`codex/*` pipeline) work this repo concurrently with no shared task queue, so
+the same visible issue regularly gets implemented two or three times before
+anyone notices — wasted work and duplicate PRs that must then be reconciled
+and closed.
+
+**Before you create a branch for a piece of work, claim it** with a quick scan
+for anyone already on it:
+
+```bash
+scripts/claim_check.sh --grep "sim build dir"   # by feature keyword (pre-code)
+scripts/claim_check.sh src/lower_threads.rs     # by file/dir you intend to touch
+scripts/claim_check.sh                          # by your current diff vs origin/main
+```
+
+It lists any open PR or active remote branch overlapping that area. If it finds
+one, reconcile (build on theirs, or coordinate) instead of opening a duplicate.
+The check is advisory — it informs, it does not decide.
+
+The same check is wired into `.githooks/pre-push` as a backstop for `codex/*`
+and `claude/*` branches: it warns on overlap at push time but **never blocks**
+(bypass with `--no-verify`, or `CLAIM_CHECK_SKIP=1` to skip just the claim
+scan). Delete-only pushes (`git push --delete`) skip the hook entirely.
+
 ## Project Overview
 
 `arch-com` is a compiler for **ARCH**, a purpose-built hardware description language (HDL) for micro-architecture work. The compiler ingests `.arch` source files and emits deterministic, readable SystemVerilog. The language is explicitly designed to be generated correctly by LLMs from natural-language hardware descriptions.
