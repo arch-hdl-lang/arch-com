@@ -1,0 +1,203 @@
+// LZ4 block decompressor — byte-stream I/O, 256-byte history window.
+//
+// Implements the core LZ4 block format (RFC-compatible subset):
+//   Token byte  → literal_len (high nibble) + match_len_nibble (low nibble)
+//   Literal run → literal_len bytes copied verbatim to output + history
+//   Match offset → 2 bytes little-endian (only low byte used; history ≤ 256 B)
+//   Match copy  → (match_len_nibble + 4) bytes copied from history
+//
+// Limitations (v1): extended lengths (nibble == 15) are not supported.
+// The last sequence in a block ends on a literal byte with in_last asserted.
+//
+// This is the ARCH implementation of the CAST LZ4SNP-D IP core function.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+// ── History buffer RAM ────────────────────────────────────────────────────────
+
+// 256-byte simple-dual-port history ring buffer.
+// Read and write ports are independent; latency-1 read.
+ram Lz4HistBuf
+  kind simple_dual;
+  latency 1;
+  port clk: in Clock<SysDomain>;
+  store
+    buf: Vec<UInt<8>, 256>;
+  end store
+  ports rd_port
+    en:    in Bool;
+    addr:  in UInt<8>;
+    rdata: out UInt<8>;
+  end ports rd_port
+  ports wr_port
+    en:    in Bool;
+    addr:  in UInt<8>;
+    wdata: in UInt<8>;
+  end ports wr_port
+end ram Lz4HistBuf
+
+// ── Decoder state enum ────────────────────────────────────────────────────────
+
+enum Lz4DecSt
+  TOKEN,
+  LIT,
+  OFF_LO,
+  OFF_HI,
+  MATCH_REQ,
+  MATCH_RECV,
+  DONE
+end enum Lz4DecSt
+
+// ── LZ4 block decompressor top module ────────────────────────────────────────
+
+module Lz4Dec
+  port clk:      in Clock<SysDomain>;
+  port rst:      in Reset<Sync>;
+
+  // Input byte stream (AXI-stream-like, byte-wide)
+  port in_valid: in Bool;
+  port in_data:  in UInt<8>;
+  port in_last:  in Bool;    // assert on last literal of last sequence
+  port in_ready: out Bool;
+
+  // Output byte stream (registered: valid one cycle after the byte is consumed)
+  port reg out_valid: out Bool  init false  reset rst => false;
+  port reg out_data:  out UInt<8>  init 0  reset none;
+
+  // Status
+  port busy: out Bool;
+  port done: out Bool;
+
+  // ── Decode registers ──────────────────────────────────────────────────────
+  reg state_r:  Lz4DecSt init Lz4DecSt::TOKEN  reset rst => Lz4DecSt::TOKEN;
+  reg llen_r:   UInt<8>  init 0                reset rst => 0;
+  reg mlen_r:   UInt<8>  init 0                reset rst => 0;
+  reg off_lo_r: UInt<8>  init 0                reset rst => 0;
+  reg wp_r:     UInt<8>  init 0                reset rst => 0;
+  reg rp_r:     UInt<8>  init 0                reset rst => 0;
+
+  // ── History RAM output (latency-1 registered read data) ──────────────────
+  reg hist_rdata_r: UInt<8> init 0 reset none;
+
+  // ── History RAM input signals (combinational, driven via let) ─────────────
+  // Read port: active only in MATCH_REQ so the latched data lands in MATCH_RECV
+  let hist_rd_en:    Bool    = (state_r == Lz4DecSt::MATCH_REQ);
+  let hist_rd_addr:  UInt<8> = rp_r;
+
+  // Write port: literal bytes (LIT state) or match bytes (MATCH_RECV state)
+  let hist_wr_lit:   Bool    = (state_r == Lz4DecSt::LIT) and in_valid;
+  let hist_wr_match: Bool    = (state_r == Lz4DecSt::MATCH_RECV);
+  let hist_wr_en:    Bool    = hist_wr_lit or hist_wr_match;
+  let hist_wr_addr:  UInt<8> = wp_r;
+  let hist_wr_data:  UInt<8> = (state_r == Lz4DecSt::LIT) ? in_data : hist_rdata_r;
+
+  // ── History buffer instance ───────────────────────────────────────────────
+  inst hist: Lz4HistBuf
+    clk           <- clk;
+    rd_port.en    <- hist_rd_en;
+    rd_port.addr  <- hist_rd_addr;
+    rd_port.rdata -> hist_rdata_r;
+    wr_port.en    <- hist_wr_en;
+    wr_port.addr  <- hist_wr_addr;
+    wr_port.wdata <- hist_wr_data;
+  end inst hist
+
+  // ── Combinational outputs ─────────────────────────────────────────────────
+  comb
+    in_ready  = false;
+    busy      = false;
+    done      = false;
+
+    if state_r == Lz4DecSt::TOKEN
+      in_ready = true;
+    elsif state_r == Lz4DecSt::LIT
+      in_ready = true;
+    elsif state_r == Lz4DecSt::OFF_LO
+      in_ready = true;
+    elsif state_r == Lz4DecSt::OFF_HI
+      in_ready = true;
+    elsif state_r == Lz4DecSt::MATCH_REQ
+      busy = true;
+    elsif state_r == Lz4DecSt::MATCH_RECV
+      busy = true;
+    elsif state_r == Lz4DecSt::DONE
+      done = true;
+    end if
+  end comb
+
+  // ── Sequential state machine ──────────────────────────────────────────────
+  seq on clk rising
+    if state_r == Lz4DecSt::TOKEN
+      if in_valid
+        llen_r <= in_data[7:4].zext<8>();
+        mlen_r <= (in_data[3:0].zext<8>() + 8'd4).trunc<8>();
+        if in_data[7:4] == 4'd0
+          if in_last
+            state_r <= Lz4DecSt::DONE;
+          else
+            state_r <= Lz4DecSt::OFF_LO;
+          end if
+        else
+          state_r <= Lz4DecSt::LIT;
+        end if
+      end if
+
+    elsif state_r == Lz4DecSt::LIT
+      if in_valid
+        wp_r   <= (wp_r   + 8'd1).trunc<8>();
+        llen_r <= (llen_r - 8'd1).trunc<8>();
+        if in_last
+          state_r <= Lz4DecSt::DONE;
+        elsif llen_r == 8'd1
+          state_r <= Lz4DecSt::OFF_LO;
+        end if
+      end if
+
+    elsif state_r == Lz4DecSt::OFF_LO
+      if in_valid
+        off_lo_r <= in_data;
+        state_r  <= Lz4DecSt::OFF_HI;
+      end if
+
+    elsif state_r == Lz4DecSt::OFF_HI
+      if in_valid
+        // Offset is little-endian 16-bit; only low byte used for 256-byte window.
+        // rp initialised to (wp - offset) so match starts at the correct position.
+        rp_r    <= (wp_r - off_lo_r).trunc<8>();
+        state_r <= Lz4DecSt::MATCH_REQ;
+      end if
+
+    elsif state_r == Lz4DecSt::MATCH_REQ
+      // Issue RAM read for rp_r; advance rp for the NEXT potential read.
+      rp_r    <= (rp_r + 8'd1).trunc<8>();
+      state_r <= Lz4DecSt::MATCH_RECV;
+
+    elsif state_r == Lz4DecSt::MATCH_RECV
+      // hist_rdata_r holds the byte read in the previous MATCH_REQ cycle.
+      wp_r   <= (wp_r   + 8'd1).trunc<8>();
+      mlen_r <= (mlen_r - 8'd1).trunc<8>();
+      if mlen_r == 8'd1
+        state_r <= Lz4DecSt::TOKEN;
+      else
+        state_r <= Lz4DecSt::MATCH_REQ;
+      end if
+
+    end if
+
+    // Registered output: asserts for one cycle after each output byte is consumed.
+    // Evaluated against the current (pre-transition) state so the byte is captured
+    // at the same posedge as the FSM consumes it, appearing at the port one cycle later.
+    if (state_r == Lz4DecSt::LIT) and in_valid
+      out_valid <= true;
+      out_data  <= in_data;
+    elsif state_r == Lz4DecSt::MATCH_RECV
+      out_valid <= true;
+      out_data  <= hist_rdata_r;
+    else
+      out_valid <= false;
+    end if
+  end seq
+
+end module Lz4Dec
