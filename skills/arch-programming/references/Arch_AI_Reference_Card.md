@@ -1412,7 +1412,7 @@ arch build F.arch                              // emit SystemVerilog
 arch build F.arch -o out.sv                   // combined output
 arch build a.arch b.arch                       // multi-file: one .sv per input
 arch sim F.arch --tb F_tb.cpp                 // compile + run C++ testbench
-arch sim F.arch --tb F_tb.cpp --outdir build/
+arch sim F.arch --tb F_tb.cpp --outdir build/        // build dir: --outdir > $ARCH_SIM_BUILD_DIR > arch_sim_build/
 arch sim F.arch --tb F_tb.cpp --check-uninit  // warn on uninitialized reset-none regs
 arch sim F.arch --tb F_tb.cpp --inputs-start-uninit  // warn on reads of TB-undriven inputs (TB calls dut.set_<port>() to mark init)
 arch sim F.arch --tb F_tb.cpp --check-uninit-ram  // warn on reads of RAM cells never written (per-cell valid bitmap; init: cells pre-marked; ROMs exempt)
