@@ -359,13 +359,24 @@ self.line("unique case (state_r)");
             self.line("");
             self.line("// synopsys translate_off");
 
-            // Assert: no illegal state (reset-guarded)
-            self.line(&format!(
-                "_auto_legal_state: assert property (@(posedge {clk}) {rst_inactive} |-> state_r < {n_states})"
-            ));
-            self.line(&format!(
-                "  else $fatal(1, \"FSM ILLEGAL STATE: {n}.state_r = %0d\", state_r);"
-            ));
+            // Assert: no illegal state (reset-guarded).
+            //
+            // `state_r` is ceil(log2(n_states)) bits wide. When `n_states` is an
+            // exact power of two, EVERY encoding is a legal state, so
+            // `state_r < n_states` is vacuously true — and the literal needs one
+            // more bit than `state_r`, which Verilator flags as WIDTHEXPAND
+            // (e.g. a 2-state FSM: 1-bit `state_r` vs the 2-bit `2`). Skip the
+            // assertion in that case; it only adds value when there are unused
+            // encodings (non-power-of-two state counts), where the widths match.
+            let is_pow2 = n_states >= 1 && (n_states & (n_states - 1)) == 0;
+            if !is_pow2 {
+                self.line(&format!(
+                    "_auto_legal_state: assert property (@(posedge {clk}) {rst_inactive} |-> state_r < {n_states})"
+                ));
+                self.line(&format!(
+                    "  else $fatal(1, \"FSM ILLEGAL STATE: {n}.state_r = %0d\", state_r);"
+                ));
+            }
 
             // Cover: each state is reachable
             for sn in &f.state_names {

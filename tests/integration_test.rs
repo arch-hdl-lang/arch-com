@@ -282,6 +282,80 @@ fn test_fsm_traffic_light() {
 }
 
 #[test]
+fn test_fsm_legal_state_assert_skipped_for_power_of_two_state_count() {
+    // The auto `_auto_legal_state: ... state_r < N` assertion is vacuous when N
+    // is a power of two (every encoding is a legal state) AND it width-mismatches
+    // (the N literal needs one more bit than `state_r`) → Verilator WIDTHEXPAND.
+    // It must be SKIPPED for power-of-two state counts and KEPT (and width-clean)
+    // for non-power-of-two counts where unused encodings exist.
+    let two_state = r#"
+fsm Toggle
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port flip: in Bool;
+  port q: out Bool;
+  state [A, B]
+  default state A;
+  default seq on clk rising;
+  state A
+    comb
+      q = false;
+    end comb
+    -> B when flip;
+  end state A
+  state B
+    comb
+      q = true;
+    end comb
+    -> A when flip;
+  end state B
+end fsm Toggle
+"#;
+    let sv2 = compile_to_sv(two_state);
+    assert!(
+        !sv2.contains("_auto_legal_state"),
+        "a 2-state (power-of-two) FSM must NOT emit the vacuous, width-mismatched \
+         legal-state assertion:\n{sv2}"
+    );
+
+    let three_state = r#"
+fsm Tri
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port go: in Bool;
+  port q: out UInt<2>;
+  state [A, B, C]
+  default state A;
+  default seq on clk rising;
+  state A
+    comb
+      q = 0;
+    end comb
+    -> B when go;
+  end state A
+  state B
+    comb
+      q = 1;
+    end comb
+    -> C when go;
+  end state B
+  state C
+    comb
+      q = 2;
+    end comb
+    -> A when go;
+  end state C
+end fsm Tri
+"#;
+    let sv3 = compile_to_sv(three_state);
+    assert!(
+        sv3.contains("_auto_legal_state") && sv3.contains("state_r < 3"),
+        "a 3-state (non-power-of-two) FSM must KEEP the legal-state assertion \
+         (`state_r < 3`):\n{sv3}"
+    );
+}
+
+#[test]
 fn test_fsm_missing_default_state_errors() {
     let source = r#"
 fsm Broken
