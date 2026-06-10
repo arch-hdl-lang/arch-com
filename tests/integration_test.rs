@@ -855,6 +855,85 @@ end arbiter RRArb3
 /// Builds RRArb3 (NUM_REQ=3, the canonical non-power-of-2 case) to SV,
 /// runs it under Verilator with all three requesters always asserted,
 /// and checks that the grant_requester sequence is strict
+/// A construct already defined in the input files must not also be pulled in
+/// from a stale `.archi` by auto-discovery — doing so emitted the construct
+/// twice (the stub copy missing its port-array ports → broken SV). The
+/// `.archi`-discovery defined-name set tracked module/fsm/fifo/ram/arbiter/...
+/// but omitted `regfile` (and cam/clkgate/linklist), so an in-source `regfile`
+/// + a present `Rf1.archi` (e.g. from a prior build) duplicate-emitted it.
+#[test]
+fn test_inscope_construct_not_duplicated_by_stale_archi() {
+    use std::fs;
+    let td = tempfile::tempdir().expect("tempdir");
+    let dir = td.path();
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let regfile = "\
+regfile Rf1
+  param NREGS: const = 4;
+  param T: type = UInt<32>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[1] read
+    addr: in UInt<2>;
+    data: out UInt<32>;
+  end ports read
+  ports[1] write
+    en:   in Bool;
+    addr: in UInt<2>;
+    data: in UInt<32>;
+  end ports write
+end regfile Rf1
+";
+    // 1) Build the regfile alone so its `Rf1.archi` lands in `dir`.
+    let rf_path = dir.join("Rf1.arch");
+    fs::write(&rf_path, regfile).unwrap();
+    let b1 = std::process::Command::new(arch_bin)
+        .arg("build").arg(&rf_path).arg("-o").arg(dir.join("Rf1.sv"))
+        .output().expect("build regfile");
+    assert!(b1.status.success(), "regfile build failed: {}",
+            String::from_utf8_lossy(&b1.stderr));
+    assert!(dir.join("Rf1.archi").exists(), "Rf1.archi should have been written");
+
+    // 2) Build a combined file that DEFINES Rf1 in-source AND insts it, in the
+    //    same dir as the stale Rf1.archi. The construct must emit exactly once.
+    let combined = format!("{regfile}
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<2>;
+  port d: out UInt<32>;
+  wire dw: UInt<32>;
+  inst rf: Rf1
+    clk <- clk;
+    rst <- rst;
+    read.addr <- a;
+    read.data -> dw;
+    write.en  <- false;
+    write.addr <- 0;
+    write.data <- 0;
+  end inst rf
+  comb
+    d = dw;
+  end comb
+end module Top
+");
+    let top_path = dir.join("Top.arch");
+    fs::write(&top_path, combined).unwrap();
+    let sv_out = dir.join("Top.sv");
+    let b2 = std::process::Command::new(arch_bin)
+        .arg("build").arg(&top_path).arg("-o").arg(&sv_out)
+        .output().expect("build combined");
+    assert!(b2.status.success(), "combined build failed: {}",
+            String::from_utf8_lossy(&b2.stderr));
+    let sv = fs::read_to_string(&sv_out).unwrap();
+    let n = sv.matches("\nmodule Rf1").count() + sv.starts_with("module Rf1") as usize;
+    assert_eq!(
+        n, 1,
+        "regfile defined in-source must emit exactly once even with a stale \
+         Rf1.archi present (got {n}):\n{sv}"
+    );
+}
+
 /// round-robin (each idx wins exactly 1/3 of cycles).
 ///
 /// Pre-fix grant pattern was `0,1,2,0,0,1,2,0,...` (idx 0 at 50%).

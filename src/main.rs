@@ -2336,37 +2336,34 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
             }
         }
 
-        // Track all module names defined across all input files
+        // Track every construct name defined across all input files, so the
+        // `.archi` auto-discovery below does NOT pull in a (possibly stale)
+        // interface stub for a construct that is ALREADY defined in-source —
+        // doing so adds a duplicate item and the construct emits twice (the
+        // stub copy missing its port-array ports → broken SV/sim).
         for item in &parsed.items {
             match item {
-                Item::Module(m) => {
-                    all_defined_modules.insert(m.name.name.clone());
-                }
-                Item::Fsm(f) => {
-                    all_defined_modules.insert(f.name.name.clone());
-                }
-                Item::Counter(c) => {
-                    all_defined_modules.insert(c.name.name.clone());
-                }
-                Item::Pipeline(p) => {
-                    all_defined_modules.insert(p.name.name.clone());
-                }
-                Item::Synchronizer(s) => {
-                    all_defined_modules.insert(s.name.name.clone());
-                }
-                Item::Fifo(f) => {
-                    all_defined_modules.insert(f.name.name.clone());
-                }
-                Item::Ram(r) => {
-                    all_defined_modules.insert(r.name.name.clone());
-                }
-                Item::Arbiter(a) => {
-                    all_defined_modules.insert(a.name.name.clone());
-                }
                 Item::Bus(b) => {
                     all_defined_buses.insert(b.name.name.clone());
                 }
-                _ => {}
+                // Types / values / packages / imports — never `inst` targets.
+                Item::Domain(_)
+                | Item::Struct(_)
+                | Item::Enum(_)
+                | Item::Function(_)
+                | Item::Package(_)
+                | Item::Use(_)
+                | Item::ExternPackage(_) => {}
+                // Everything else is an instantiable construct (module, fsm,
+                // fifo, ram, arbiter, regfile, cam, counter, synchronizer,
+                // pipeline, clkgate, linklist, template). Use the generic
+                // construct-name accessor rather than a per-variant arm so a
+                // future construct can't be silently omitted — the missing
+                // `regfile` arm here is exactly what duplicated GPV's regfile.
+                instantiable => {
+                    all_defined_modules
+                        .insert(instantiable.as_construct().name().name.clone());
+                }
             }
         }
 
