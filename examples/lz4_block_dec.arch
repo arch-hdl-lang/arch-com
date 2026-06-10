@@ -1,0 +1,172 @@
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+ram HistBuf
+  kind simple_dual;
+  latency 1;
+  param DEPTH: const = 4096;
+  port clk: in Clock<SysDomain>;
+  store
+    buf: Vec<UInt<8>, DEPTH>;
+  end store
+  ports rd_port
+    en:   in Bool;
+    addr: in UInt<12>;
+    data: out UInt<8>;
+  end ports rd_port
+  ports wr_port
+    en:   in Bool;
+    addr: in UInt<12>;
+    data: in UInt<8>;
+  end ports wr_port
+end ram HistBuf
+
+// LZ4 block decompressor.
+// Accepts a stream of raw LZ4-block bytes (token + literals + offset + match)
+// one byte per cycle via in_valid/in_data/in_ready handshake.
+// Emits decoded bytes via out_valid/out_data/out_ready.
+// last_seq must be asserted with the token byte of the final sequence
+// (the one with no match section).  done pulses for one cycle after the
+// last output byte is consumed.
+//
+// States:
+//   0 = WAIT_TOKEN  receive token byte, decode lit/mat nibbles
+//   1 = LIT_WAIT    wait for next literal byte on input
+//   2 = LIT_EMIT    present literal byte to output, write to history
+//   3 = OFF_BYTE0   receive offset low byte
+//   4 = OFF_BYTE1   receive offset high nibble, start match
+//   5 = MAT_RD      issue history read, absorb 1-cycle RAM latency
+//   6 = MAT_EMIT    present history byte to output, write to history
+//   7 = DONE        pulse done for one cycle then return to WAIT_TOKEN
+module Lz4BlockDec
+  port clk:       in  Clock<SysDomain>;
+  port rst:       in  Reset<Sync, High>;
+
+  port in_valid:  in  Bool;
+  port in_data:   in  UInt<8>;
+  port in_ready:  out Bool;
+
+  port last_seq:  in  Bool;
+
+  port out_valid: out Bool;
+  port out_data:  out UInt<8>;
+  port out_ready: in  Bool;
+
+  port done:      out Bool;
+
+  reg state:   UInt<3>  reset rst => 0;
+  reg lit_len: UInt<8>  reset rst => 0;
+  reg mat_len: UInt<8>  reset rst => 0;
+  reg byte_r:  UInt<8>  reset rst => 0;
+  reg off_lo:  UInt<8>  reset rst => 0;
+  reg wr_ptr:  UInt<12> reset rst => 0;
+  reg rd_ptr:  UInt<12> reset rst => 0;
+  reg is_last: Bool     reset rst => false;
+
+  // Token nibble decode
+  let tok_nib_hi:  UInt<4> = (in_data >> 4).trunc<4>();
+  let tok_nib_lo:  UInt<4> = in_data.trunc<4>();
+  let tok_lit_len: UInt<8> = tok_nib_hi.zext<8>();
+  // match length = low nibble + 4 (minimum match is 4)
+  let tok_mat_len: UInt<8> = tok_nib_lo.zext<8>() +% 8'd4;
+
+  // 12-bit offset assembled from two bytes (LZ4 uses little-endian 16-bit
+  // offset; we cap history at 4096 so only the low 12 bits are significant)
+  let off12: UInt<12> = {in_data.trunc<4>(), off_lo};
+
+  wire hist_rd_en:   Bool;
+  wire hist_rd_addr: UInt<12>;
+  wire hist_wr_en:   Bool;
+  wire hist_wr_data: UInt<8>;
+  // Latch for the 1-cycle-latency RAM read result
+  reg  hist_rd_data: UInt<8> init 0 reset none;
+
+  inst hist: HistBuf
+    clk          <- clk;
+    rd_port.en   <- hist_rd_en;
+    rd_port.addr <- hist_rd_addr;
+    rd_port.data -> hist_rd_data;
+    wr_port.en   <- hist_wr_en;
+    wr_port.addr <- wr_ptr;
+    wr_port.data <- hist_wr_data;
+  end inst hist
+
+  comb
+    in_ready     = (state == 3'd0) or (state == 3'd1) or
+                   (state == 3'd3) or (state == 3'd4);
+    out_valid    = (state == 3'd2) or (state == 3'd6);
+    out_data     = (state == 3'd2) ? byte_r : hist_rd_data;
+    done         = (state == 3'd7);
+    hist_rd_en   = (state == 3'd5);
+    hist_rd_addr = rd_ptr;
+    hist_wr_en   = ((state == 3'd2) or (state == 3'd6)) and out_ready;
+    hist_wr_data = (state == 3'd2) ? byte_r : hist_rd_data;
+  end comb
+
+  seq on clk rising
+    if state == 3'd0
+      if in_valid
+        lit_len <= tok_lit_len;
+        mat_len <= tok_mat_len;
+        is_last <= last_seq;
+        if tok_nib_hi == 4'd0
+          if last_seq
+            state <= 3'd7;
+          else
+            state <= 3'd3;
+          end if
+        else
+          state <= 3'd1;
+        end if
+      end if
+    elsif state == 3'd1
+      if in_valid
+        byte_r <= in_data;
+        state  <= 3'd2;
+      end if
+    elsif state == 3'd2
+      if out_ready
+        wr_ptr <= (wr_ptr +% 12'd1);
+        if lit_len <= 8'd1
+          lit_len <= 8'd0;
+          if is_last
+            state <= 3'd7;
+          else
+            state <= 3'd3;
+          end if
+        else
+          lit_len <= (lit_len -% 8'd1);
+          state   <= 3'd1;
+        end if
+      end if
+    elsif state == 3'd3
+      if in_valid
+        off_lo <= in_data;
+        state  <= 3'd4;
+      end if
+    elsif state == 3'd4
+      if in_valid
+        rd_ptr <= (wr_ptr -% off12);
+        state  <= 3'd5;
+      end if
+    elsif state == 3'd5
+      state <= 3'd6;
+    elsif state == 3'd6
+      if out_ready
+        wr_ptr <= (wr_ptr +% 12'd1);
+        rd_ptr <= (rd_ptr +% 12'd1);
+        if mat_len <= 8'd1
+          mat_len <= 8'd0;
+          state   <= 3'd0;
+        else
+          mat_len <= (mat_len -% 8'd1);
+          state   <= 3'd5;
+        end if
+      end if
+    elsif state == 3'd7
+      state <= 3'd0;
+    end if
+  end seq
+
+end module Lz4BlockDec
