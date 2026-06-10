@@ -1,7 +1,7 @@
 // Nic400CdcAxi4 dual-clock CDC bridge testbench.
 //
 // DUT: examples/nic400/Nic400CdcAxi4.arch — an AXI4 read-path bridge whose
-// master side runs on MClkDom (200 MHz) and slave side on SClkDom (100 MHz),
+// master side runs on MClkDom (200 MHz) and slave side on SClkDom (150 MHz),
 // with the AR and R channels crossing through dual-clock async FIFOs.
 //
 // The TB plays BOTH endpoints: the master (driving AR / accepting R on m_clk)
@@ -23,7 +23,7 @@ domain MClkDom
 end domain MClkDom
 
 domain SClkDom
-  freq_mhz: 100
+  freq_mhz: 150
 end domain SClkDom
 
 testbench Nic400CdcAxi4Tb
@@ -32,7 +32,10 @@ end testbench Nic400CdcAxi4Tb
 
 impl Nic400CdcAxi4Test for Nic400CdcAxi4Tb
     clock m_clk = MClkDom     // 200 MHz primary (5 ns)
-    clock s_clk = SClkDom     // 100 MHz        (10 ns)
+    clock s_clk = SClkDom     // 150 MHz        (~6.67 ns) — non-integer 4:3
+                              // ratio so the gray-code pointer sync crosses
+                              // genuinely non-aligned edges (a 2:1 ratio can
+                              // let edges line up and mask CDC bugs).
 
     run
         log(info, "Nic400 async-clock CDC bridge test (AR: M->S, R: S->M)")
@@ -102,7 +105,8 @@ impl Nic400CdcAxi4Test for Nic400CdcAxi4Tb
             else fail("AR region (sideband) corrupted across CDC: got ${ar_rgn}")
         log(info, "AR crossed M->S intact (addr=0x${ar_addr:x} id=${ar_id} region=${ar_rgn})")
 
-        // Accept the AR on the slave side (one s_clk cycle of ready).
+        // Accept the AR on the slave side (≥1 s_clk cycle of ready — 10 ns
+        // spans ~1.5 of the 6.67 ns slave period, so the pop is guaranteed).
         dut.s_ar_ready = 1
         wait 10ns
         dut.s_ar_ready = 0
@@ -116,7 +120,7 @@ impl Nic400CdcAxi4Test for Nic400CdcAxi4Tb
         dut.s_r_resp  = 0
         dut.s_r_last  = 1
         dut.s_r_valid = 1
-        wait 10ns                // one s_clk edge → one push into the R FIFO
+        wait 10ns                // ≥1 s_clk edge → push into the R FIFO
         dut.s_r_valid = 0
 
         // ── Verify R crossed back to the master domain ───────────────────
