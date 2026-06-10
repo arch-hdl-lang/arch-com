@@ -1,0 +1,175 @@
+// Nic400Gpv testbench — drives the GPV AXI4 target and checks:
+//   1. A Secure 32-bit write then read round-trips the data (BRESP/RRESP=OKAY).
+//   2. A Non-secure access is refused with DECERR (0b11) and does NOT write.
+//   3. A wrong-size (not 32-bit) access is refused with SLVERR (0b10).
+//
+// AXI-Lite single-beat handshakes (axlen=0). Secure = AxPROT[1]==0.
+//
+// Run:
+//   harc sim --dut examples/nic400/BusAxi4.arch \
+//            --dut examples/nic400/Nic400GpvRegs.arch \
+//            --dut examples/nic400/Nic400Gpv.arch \
+//            examples/nic400/Nic400Gpv_test.harc --top Nic400Gpv
+
+testbench Nic400GpvTb
+    dut : Nic400Gpv
+end testbench Nic400GpvTb
+
+impl Nic400GpvTest for Nic400GpvTb
+    clock clk = 10ns   // 100 MHz
+
+    run
+        log(info, "Nic400 GPV AXI4-target config-register test")
+
+        // ── Reset / idle all AXI inputs ──────────────────────────────────
+        dut.rst         = 1
+        dut.s_ar_valid  = 0
+        dut.s_ar_addr   = 0
+        dut.s_ar_id     = 0
+        dut.s_ar_size   = 2
+        dut.s_ar_prot   = 0
+        dut.s_r_ready   = 0
+        dut.s_aw_valid  = 0
+        dut.s_aw_addr   = 0
+        dut.s_aw_id     = 0
+        dut.s_aw_size   = 2
+        dut.s_aw_prot   = 0
+        dut.s_w_valid   = 0
+        dut.s_w_data    = 0
+        dut.s_w_strb    = 0xF
+        dut.s_b_ready   = 0
+        wait 3 cycles
+        dut.rst = 0
+        wait 2 cycles
+
+        // ── 1. Secure 32-bit write: reg[2] = 0xDEADBEEF ──────────────────
+        dut.s_aw_addr  = 0x008   // word index 2 (byte addr 8)
+        dut.s_aw_id    = 5
+        dut.s_aw_size  = 2
+        dut.s_aw_prot  = 0       // Secure
+        dut.s_w_data   = 0xDEADBEEF
+        dut.s_aw_valid = 1
+        dut.s_w_valid  = 1
+        dut.s_b_ready  = 1
+        // Single loop: deassert AW/W on accept, capture B on b_valid (holding
+        // b_ready high, so capture in the SAME loop to avoid missing the pulse).
+        let bresp : uint<32> = 9
+        for _ in 0 .. 12
+            wait 1 cycles
+            if dut.s_aw_ready == 1
+                dut.s_aw_valid = 0
+                dut.s_w_valid  = 0
+            end if
+            if dut.s_b_valid == 1 && bresp == 9
+                bresp = dut.s_b_resp
+            end if
+        end for
+        assert bresp == 0 else fail("secure write BRESP != OKAY: got ${bresp}")
+        dut.s_b_ready = 0
+        log(info, "secure write accepted, BRESP=OKAY")
+
+        // ── 2. Secure 32-bit read of reg[2] → expect 0xDEADBEEF, OKAY ────
+        dut.s_ar_addr  = 0x008
+        dut.s_ar_id    = 6
+        dut.s_ar_size  = 2
+        dut.s_ar_prot  = 0
+        dut.s_ar_valid = 1
+        dut.s_r_ready  = 1
+        let rdata : uint<32> = 0
+        let rresp : uint<32> = 9
+        let rid   : uint<32> = 0
+        let rseen : uint<32> = 0
+        for _ in 0 .. 12
+            wait 1 cycles
+            if dut.s_ar_ready == 1
+                dut.s_ar_valid = 0
+            end if
+            if dut.s_r_valid == 1 && rseen == 0
+                rseen = 1
+                rdata = dut.s_r_data
+                rresp = dut.s_r_resp
+                rid   = dut.s_r_id
+            end if
+        end for
+        assert rseen == 1 else fail("read R never returned")
+        assert rresp == 0 else fail("secure read RRESP != OKAY: got ${rresp}")
+        assert rdata == 0xDEADBEEF else fail("read data mismatch: got 0x${rdata:x}")
+        assert rid == 6 else fail("read RID mismatch: got ${rid}")
+        dut.s_r_ready = 0
+        log(info, "secure read returned 0x${rdata:x} RRESP=OKAY RID=${rid}")
+
+        // ── 3. Non-secure write to reg[3] → DECERR, and reg[3] stays 0 ───
+        dut.s_aw_addr  = 0x00C   // word index 3
+        dut.s_aw_id    = 7
+        dut.s_aw_size  = 2
+        dut.s_aw_prot  = 2       // Non-secure (bit1=1)
+        dut.s_w_data   = 0x12345678
+        dut.s_aw_valid = 1
+        dut.s_w_valid  = 1
+        dut.s_b_ready  = 1
+        let bns : uint<32> = 9
+        for _ in 0 .. 12
+            wait 1 cycles
+            if dut.s_aw_ready == 1
+                dut.s_aw_valid = 0
+                dut.s_w_valid  = 0
+            end if
+            if dut.s_b_valid == 1 && bns == 9
+                bns = dut.s_b_resp
+            end if
+        end for
+        assert bns == 3 else fail("non-secure write BRESP != DECERR: got ${bns}")
+        dut.s_b_ready = 0
+        log(info, "non-secure write refused with DECERR")
+
+        // Confirm reg[3] was NOT written: secure read must return 0.
+        dut.s_ar_addr  = 0x00C
+        dut.s_ar_id    = 8
+        dut.s_ar_size  = 2
+        dut.s_ar_prot  = 0
+        dut.s_ar_valid = 1
+        dut.s_r_ready  = 1
+        let rd3 : uint<32> = 7
+        let rseen3 : uint<32> = 0
+        for _ in 0 .. 12
+            wait 1 cycles
+            if dut.s_ar_ready == 1
+                dut.s_ar_valid = 0
+            end if
+            if dut.s_r_valid == 1 && rseen3 == 0
+                rseen3 = 1
+                rd3 = dut.s_r_data
+            end if
+        end for
+        assert rseen3 == 1 else fail("reg[3] readback never returned")
+        assert rd3 == 0 else fail("non-secure write leaked into reg[3]: got 0x${rd3:x}")
+        dut.s_r_ready = 0
+        log(info, "reg[3] confirmed unwritten (0)")
+
+        // ── 4. Wrong-size read (size=1, not 32-bit) → SLVERR ─────────────
+        dut.s_ar_addr  = 0x008
+        dut.s_ar_id    = 9
+        dut.s_ar_size  = 1       // 16-bit, illegal for GPV
+        dut.s_ar_prot  = 0
+        dut.s_ar_valid = 1
+        dut.s_r_ready  = 1
+        let rsz : uint<32> = 9
+        let rseensz : uint<32> = 0
+        for _ in 0 .. 12
+            wait 1 cycles
+            if dut.s_ar_ready == 1
+                dut.s_ar_valid = 0
+            end if
+            if dut.s_r_valid == 1 && rseensz == 0
+                rseensz = 1
+                rsz = dut.s_r_resp
+            end if
+        end for
+        assert rseensz == 1 else fail("wrong-size read never returned")
+        assert rsz == 2 else fail("wrong-size read RRESP != SLVERR: got ${rsz}")
+        dut.s_r_ready = 0
+        log(info, "wrong-size read refused with SLVERR")
+
+        log(info, "PASS Nic400Gpv: OKAY round-trip, DECERR (non-secure), SLVERR (bad size)")
+    end run
+end impl Nic400GpvTest
