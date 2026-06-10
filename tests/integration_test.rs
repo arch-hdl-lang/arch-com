@@ -15965,6 +15965,69 @@ const LATCH_RF_DECL: &str = "
 ";
 
 #[test]
+fn test_count1_port_array_inst_connection_uses_unindexed_name() {
+    // A `ports[1]` (count-1) regfile group flattens its member ports WITHOUT an
+    // index in the module declaration (`read_addr`, not `read0_addr`). An inst
+    // connection written with an explicit `read[0].addr` is parser-flattened to
+    // `read0_addr`, which mismatched the declaration → Verilator PINNOTFOUND and
+    // a sim `no member named 'read0_addr'`. Both `read.addr` and `read[0].addr`
+    // must resolve to the un-indexed `read_addr`.
+    let source = r#"
+regfile Rf1
+  param NREGS: const = 4;
+  param T: type = UInt<32>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[1] read
+    addr: in UInt<2>;
+    data: out UInt<32>;
+  end ports read
+  ports[1] write
+    en:   in Bool;
+    addr: in UInt<2>;
+    data: in UInt<32>;
+  end ports write
+end regfile Rf1
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<2>;
+  port d: out UInt<32>;
+  wire dw: UInt<32>;
+  inst rf: Rf1
+    clk <- clk;
+    rst <- rst;
+    read[0].addr <- a;
+    read[0].data -> dw;
+    write.en     <- false;
+    write.addr   <- 0;
+    write.data   <- 0;
+  end inst rf
+  comb
+    d = dw;
+  end comb
+end module Top
+"#;
+    let sv = compile_to_sv(source);
+    // The inst connection must use the un-indexed pin name matching the count-1
+    // declaration.
+    assert!(
+        sv.contains(".read_addr(") && sv.contains(".read_data("),
+        "count-1 `read[0]` connection must emit `.read_addr(`/`.read_data(`:\n{sv}"
+    );
+    assert!(
+        !sv.contains(".read0_addr(") && !sv.contains(".read0_data("),
+        "count-1 `read[0]` connection must NOT emit the indexed `.read0_addr(`:\n{sv}"
+    );
+    // The declaration side (always un-indexed for count-1) must agree.
+    assert!(
+        sv.contains("read_addr") && !sv.contains("read0_addr"),
+        "count-1 regfile declaration + connection names must both be un-indexed:\n{sv}"
+    );
+}
+
+#[test]
 fn test_regfile_latch_emits_always_latch_per_row() {
     let source = format!(
         "{LATCH_RF_DECL}
