@@ -2663,6 +2663,116 @@ end pipeline BadPipe
     );
 }
 
+/// `arch check` accepts `source` (returns Ok) iff there are no type errors.
+fn pipeline_checks_ok(source: &str) -> bool {
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let elaborated = elaborate::elaborate(ast).expect("elaborate");
+    let symbols = resolve::resolve(&elaborated).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &elaborated);
+    checker.check().is_ok()
+}
+
+// A `pipeline` output must come from a stage register, never a combinational
+// path through an input port. These three tests are differential: the ALLOW
+// case (output from a register) and the two REJECT cases (direct + via-let
+// comb passthrough) differ only in how the output is driven, so the delta
+// isolates exactly the new rule. Rationale: a comb input→output path inside a
+// pipeline is hidden from the whole-design comb-loop detector (which models a
+// pipeline inst as registered/PURE), so a feedback loop through it would go
+// undetected — Verilator flags the same SV `UNOPTFLAT`.
+
+#[test]
+fn test_pipeline_allows_comb_output_from_register() {
+    // `y = held` reads a stage REGISTER — no comb path from input `a` to
+    // output `y`. Must be accepted.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline RegPipe
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+  stage S
+    reg held: UInt<8> reset rst => 0;
+    seq on clk rising
+      held <= a;
+    end seq
+    comb
+      y = held;
+    end comb
+  end stage S
+end pipeline RegPipe
+"#;
+    assert!(
+        pipeline_checks_ok(source),
+        "a pipeline output driven from a stage register must be accepted"
+    );
+}
+
+#[test]
+fn test_pipeline_rejects_comb_input_to_output_passthrough() {
+    // `y = a` drives an output straight from an input — direct comb passthrough.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline CombPipe
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+  stage S
+    reg dummy: UInt<8> reset rst => 0;
+    seq on clk rising
+      dummy <= a;
+    end seq
+    comb
+      y = a;
+    end comb
+  end stage S
+end pipeline CombPipe
+"#;
+    assert!(
+        !pipeline_checks_ok(source),
+        "a pipeline output driven combinationally from an input must be rejected"
+    );
+}
+
+#[test]
+fn test_pipeline_rejects_comb_input_to_output_via_let() {
+    // Transitive: `let t = a + 1; ... y = t` — `t` carries the input
+    // combinationally into output `y`. Must be rejected (taint through let).
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline LetPipe
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+  stage S
+    let t: UInt<8> = a +% 1;
+    reg dummy: UInt<8> reset rst => 0;
+    seq on clk rising
+      dummy <= a;
+    end seq
+    comb
+      y = t;
+    end comb
+  end stage S
+end pipeline LetPipe
+"#;
+    assert!(
+        !pipeline_checks_ok(source),
+        "a pipeline output driven from a let that reads an input must be rejected"
+    );
+}
+
 #[test]
 fn test_pipeline_bad_flush_target_error() {
     let source = r#"

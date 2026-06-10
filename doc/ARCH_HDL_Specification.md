@@ -1535,6 +1535,21 @@ Each stage has a compiler-generated `valid_r` register that tracks whether the s
 
 > ◈ stall, flush, and forward are declarative. The compiler generates all enable signals, bubble insertion logic, and bypass muxes. The designer describes intent; the compiler generates mechanism.
 
+**6.2 Pipeline outputs must be registered (no combinational input→output path)**
+
+A pipeline output port may **not** combinationally depend on an input port --- neither directly (`comb out = in;`) nor transitively through a `let`/`wire`/comb intermediate or an `if`/`match` guard (`let t = in + 1; ... out = t;`). Every output must be driven from a **stage register**; reading a register, whether local (`out = result;`) or cross-stage (`out_pc = Fetch.pc;`), breaks the combinational path and is the intended pattern (see §6.1, where `out_pc`/`out_instr` come from `Fetch.pc`).
+
+This is enforced --- `arch check` rejects a combinational passthrough:
+
+```
+pipeline P output port `out` is driven combinationally from input port `in`;
+a pipeline output must come from a stage register, not a combinational path
+through an input. Move the combinational logic into a wrapping module and
+register the result in the pipeline.
+```
+
+Two reasons. First, intent: a `pipeline` *stages* a datapath --- it registers data as it advances --- so a pure combinational relay defeats the construct's purpose and belongs in a `module`. Second, soundness: the whole-design combinational-loop checker models a pipeline instance as having registered (combinationally pure) outputs, so a real comb input→output path *inside* a pipeline would let a feedback loop routed through it escape detection. Forbidding the path at the source keeps that model honest by construction. If you need combinational logic at the boundary, wrap the pipeline in a `module` that does the combinational work and feeds the pipeline, which then registers the result.
+
 **7. First-Class Construct: fsm**
 
 An fsm block declares a finite state machine with named states and exhaustive coverage enforced by the compiler. Missing transitions, undriven outputs in any state, and unreachable states are all compile-time errors.

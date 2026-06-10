@@ -5717,6 +5717,163 @@ impl<'a> TypeChecker<'a> {
                 });
             }
         }
+
+        // A `pipeline` exists to stage a datapath: every output must come from
+        // a stage register, never from a combinational path through an input
+        // port. A comb passthrough (`comb out = in`, or `out = f(in)`, possibly
+        // via a `let`/`wire`) defeats the construct's purpose AND breaks a
+        // soundness assumption downstream — the whole-design comb-loop detector
+        // models a pipeline inst as having registered (PURE) outputs, so a real
+        // comb input→output path inside one would let a feedback loop routed
+        // through the pipeline go undetected (Verilator flags it `UNOPTFLAT`).
+        // Reject it here; the combinational logic belongs in a wrapping
+        // `module` whose result the pipeline then registers.
+        self.check_pipeline_no_comb_input_to_output(p);
+    }
+
+    /// Reject any `pipeline` output port that combinationally depends on an
+    /// input port (directly, or transitively through `let`/`wire`/comb
+    /// intermediates, including `if`/`match` guards). Reading a register —
+    /// local (`result`) or cross-stage (`Fetch.captured`) — is safe: that
+    /// breaks the comb path. See the call site for the rationale.
+    fn check_pipeline_no_comb_input_to_output(&mut self, p: &PipelineDecl) {
+        use std::collections::HashSet;
+        let input_ports: HashSet<String> = p.ports.iter()
+            .filter(|pt| pt.direction == Direction::In)
+            .map(|pt| pt.name.name.clone())
+            .collect();
+        let output_ports: HashSet<String> = p.ports.iter()
+            .filter(|pt| pt.direction == Direction::Out)
+            .map(|pt| pt.name.name.clone())
+            .collect();
+        if input_ports.is_empty() || output_ports.is_empty() {
+            return;
+        }
+
+        // Registers across all stages — reading one breaks the comb path, so a
+        // register name is never tainted (`Stage.reg` surfaces as the stage
+        // ident via `collect_expr_idents`, so cross-stage reg reads are safe
+        // too).
+        let mut reg_names: HashSet<String> = HashSet::new();
+        for stage in &p.stages {
+            for item in &stage.body {
+                match item {
+                    ModuleBodyItem::RegDecl(r) => { reg_names.insert(r.name.name.clone()); }
+                    ModuleBodyItem::PipeRegDecl(pr) => { reg_names.insert(pr.name.name.clone()); }
+                    _ => {}
+                }
+            }
+        }
+
+        // Every combinational driver: (target-base-name, idents-read, span).
+        // `idents-read` folds in the value plus any enclosing if/match guards.
+        let mut drivers: Vec<(String, HashSet<String>, crate::lexer::Span)> = Vec::new();
+        for stage in &p.stages {
+            for item in &stage.body {
+                match item {
+                    ModuleBodyItem::LetBinding(lb) => {
+                        let mut reads = HashSet::new();
+                        crate::comb_graph::collect_expr_idents(&lb.value, &mut reads);
+                        drivers.push((lb.name.name.clone(), reads, lb.name.span));
+                    }
+                    ModuleBodyItem::CombBlock(cb) => {
+                        Self::collect_pipeline_comb_drivers(&cb.stmts, &HashSet::new(), &mut drivers);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Taint fixpoint: a signal is input-tainted if it reads an input port
+        // or another tainted signal (and isn't a register).
+        let mut tainted: HashSet<String> = input_ports.clone();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for (tgt, reads, _) in &drivers {
+                if reg_names.contains(tgt) || tainted.contains(tgt) {
+                    continue;
+                }
+                if reads.iter().any(|id| tainted.contains(id)) {
+                    tainted.insert(tgt.clone());
+                    changed = true;
+                }
+            }
+        }
+
+        // Flag output ports driven combinationally from a tainted expression.
+        for (tgt, reads, span) in &drivers {
+            if !output_ports.contains(tgt) {
+                continue;
+            }
+            let direct_input = reads.iter().find(|id| input_ports.contains(*id)).cloned();
+            let via = reads.iter()
+                .find(|id| tainted.contains(*id) && !input_ports.contains(*id))
+                .cloned();
+            let src_desc = match (&direct_input, &via) {
+                (Some(inp), _) => format!("input port `{inp}`"),
+                (None, Some(v)) => format!("`{v}` (combinationally derived from a pipeline input)"),
+                (None, None) => continue,
+            };
+            self.errors.push(CompileError::general(
+                &format!(
+                    "pipeline `{}` output port `{}` is driven combinationally from {}; a `pipeline` output must come from a stage register, not a combinational path through an input. Move the combinational logic into a wrapping `module` and register the result in the pipeline.",
+                    p.name.name, tgt, src_desc
+                ),
+                *span,
+            ));
+        }
+    }
+
+    /// Recursively collect `(target-base, idents-read, span)` for every
+    /// combinational assignment under `stmts`, threading enclosing `if`/`match`
+    /// guard idents into each driver's read set.
+    fn collect_pipeline_comb_drivers(
+        stmts: &[Stmt],
+        guards: &std::collections::HashSet<String>,
+        out: &mut Vec<(String, std::collections::HashSet<String>, crate::lexer::Span)>,
+    ) {
+        use crate::comb_graph::collect_expr_idents;
+        for s in stmts {
+            match s {
+                Stmt::Assign(a) => {
+                    if let Some(tgt) = Self::pipe_assign_base_name(&a.target) {
+                        let mut reads = guards.clone();
+                        collect_expr_idents(&a.value, &mut reads);
+                        out.push((tgt, reads, a.span));
+                    }
+                }
+                Stmt::IfElse(ie) => {
+                    let mut g = guards.clone();
+                    collect_expr_idents(&ie.cond, &mut g);
+                    Self::collect_pipeline_comb_drivers(&ie.then_stmts, &g, out);
+                    Self::collect_pipeline_comb_drivers(&ie.else_stmts, &g, out);
+                }
+                Stmt::Match(m) => {
+                    let mut g = guards.clone();
+                    collect_expr_idents(&m.scrutinee, &mut g);
+                    for arm in &m.arms {
+                        Self::collect_pipeline_comb_drivers(&arm.body, &g, out);
+                    }
+                }
+                Stmt::For(fl) => {
+                    Self::collect_pipeline_comb_drivers(&fl.body, guards, out);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The base port/signal name an assignment target writes — peels
+    /// `Index`/`BitSlice`/`PartSelect` wrappers off a partial assignment.
+    fn pipe_assign_base_name(e: &Expr) -> Option<String> {
+        match &e.kind {
+            ExprKind::Ident(n) => Some(n.clone()),
+            ExprKind::Index(b, _)
+            | ExprKind::BitSlice(b, _, _)
+            | ExprKind::PartSelect(b, _, _, _) => Self::pipe_assign_base_name(b),
+            _ => None,
+        }
     }
 
     // ── Linklist ──────────────────────────────────────────────────────────────
