@@ -21123,6 +21123,80 @@ fn test_arbiter_inst_comb_grant_loop_still_detected() {
     );
 }
 
+#[test]
+fn test_bus_ready_eq_valid_is_not_a_false_comb_cycle() {
+    // The universal AXI-style handshake: a target drives `ready` from `valid`
+    // (an input). `p.ready = f(p.valid)` is acyclic (valid is a primary input).
+    // The whole-design detector must NOT conflate the bus port `p` into one
+    // node — reading `p.valid` and driving `p.ready` are DISTINCT signals.
+    // Pre-fix this fabricated a self-cycle `fire -> p -> fire`; Verilator
+    // always reported the design loop-free.
+    let source = r#"
+        bus Hsk
+          valid: out Bool;
+          ready: in  Bool;
+          data:  out UInt<8>;
+        end bus Hsk
+
+        module HskTarget
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port p: target Hsk;
+          reg busy: Bool reset rst => false;
+          let fire: Bool = p.valid and (not busy);
+          comb
+            p.ready = fire;
+          end comb
+          seq on clk rising
+            if fire
+              busy <= true;
+            end if
+          end seq
+        end module HskTarget
+    "#;
+    let wd = whole_design_from(source);
+    assert_eq!(
+        wd.total_sccs, 0,
+        "a target's `ready = f(valid)` handshake must not be a comb cycle \
+         (bus members are distinct nodes); SCCs found: {:?}",
+        wd.sccs.iter().map(|s| &s.owning_modules).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_real_comb_cycle_through_bus_member_still_detected() {
+    // Soundness guard for the per-member bus-node fix: a genuine combinational
+    // loop routed through ONE bus member must still be caught. Here output
+    // member `p.ready` feeds `x` which drives `p.ready` — a real 1-cycle loop
+    // (`p.ready -> x -> p.ready`). Per-member granularity keeps it as a single
+    // node, so the SCC is still found (no under-approximation).
+    let source = r#"
+        bus Hsk
+          valid: out Bool;
+          ready: in  Bool;
+          data:  out UInt<8>;
+        end bus Hsk
+
+        module HskLoop
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port en: in Bool;
+          port p: target Hsk;
+          let x: Bool = p.ready and en;
+          comb
+            p.ready = x;
+          end comb
+        end module HskLoop
+    "#;
+    let wd = whole_design_from(source);
+    assert_eq!(
+        wd.total_sccs, 1,
+        "a real comb loop through a single bus member must still be detected; \
+         SCCs found: {:?}",
+        wd.sccs.iter().map(|s| &s.owning_modules).collect::<Vec<_>>()
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Issue #246 Phase 2: per-output `comb_dep_on(...)` annotation.
 // ─────────────────────────────────────────────────────────────────────────────
