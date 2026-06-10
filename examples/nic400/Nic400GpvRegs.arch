@@ -1,0 +1,23 @@
+// Backing register array for the NIC-400 Global Programmers View (GPV).
+//
+// A flat bank of NREGS 32-bit configuration registers, one read port and one
+// write port, with write-before-read forwarding so a same-cycle write is
+// visible to a read at the same index. The GPV shim (Nic400Gpv) maps AXI4
+// word accesses onto this regfile.
+
+regfile Nic400GpvRegs
+  param NREGS: const = 16;
+  param T: type = UInt<32>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[1] read
+    addr: in UInt<4>;
+    data: out UInt<32>;
+  end ports read
+  ports[1] write
+    en:   in Bool;
+    addr: in UInt<4>;
+    data: in UInt<32>;
+  end ports write
+  forward write_before_read: true;
+end regfile Nic400GpvRegs

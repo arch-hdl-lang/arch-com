@@ -1,0 +1,110 @@
+// NIC-400 Global Programmers View (GPV) — the interconnect's configuration
+// register file, presented as an AXI4 *target* (slave).
+//
+// Per the NIC-400 TRM (§3.2): the GPV is AXI-accessed, 32-bit (AxSIZE=2) only,
+// Secure-only, non-cacheable, aligned, single-beat. This shim implements an
+// AXI4-Lite-style target (one outstanding read, one outstanding write) backed
+// by the Nic400GpvRegs register bank, and enforces the two access constraints:
+//
+//   * AxSIZE must be 2 (32-bit). A wrong size → SLVERR (resp = 0b10).
+//   * AxPROT[1] (the Non-secure bit) must be 0. A Non-secure access → DECERR
+//     (resp = 0b11). DECERR takes priority over SLVERR.
+//
+// A rejected write does not update the register bank; a rejected read returns
+// zero data with the error response. Word address bits [REG_AW+1:2] select the
+// register; the bank is REG_AW bits wide (NREGS = 1 << REG_AW).
+
+module Nic400Gpv
+  param REG_AW: const = 4;   // 16 registers
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  // GPV is a 4 KB block (12-bit address), 32-bit data.
+  port s: target BusAxi4<ADDR_W=12, DATA_W=32, STRB_W=4, ID_W=4, READ=1, WRITE=1>;
+
+  // ── Read-response state (one outstanding) ────────────────────────────────
+  reg r_pending: Bool     reset rst => false;
+  reg r_data_r:  UInt<32> reset rst => 0;
+  reg r_resp_r:  UInt<2>  reset rst => 0;
+  reg r_id_r:    UInt<4>  reset rst => 0;
+
+  // ── Write-response state (one outstanding) ───────────────────────────────
+  reg b_pending: Bool     reset rst => false;
+  reg b_resp_r:  UInt<2>  reset rst => 0;
+  reg b_id_r:    UInt<4>  reset rst => 0;
+
+  // ── Access-constraint decode ─────────────────────────────────────────────
+  // AxPROT[1] = Non-secure bit (1 = Non-secure → DECERR). AxSIZE must be 2.
+  let ar_ns:    Bool = (s.ar_prot[1:1] == 1);
+  let ar_bad_sz: Bool = (s.ar_size != 2);
+  let ar_resp:  UInt<2> = ar_ns ? 3 : (ar_bad_sz ? 2 : 0);
+  let aw_ns:    Bool = (s.aw_prot[1:1] == 1);
+  let aw_bad_sz: Bool = (s.aw_size != 2);
+  let aw_resp:  UInt<2> = aw_ns ? 3 : (aw_bad_sz ? 2 : 0);
+
+  // Word-index decode (drop the 2 byte-offset bits).
+  let ar_index: UInt<4> = s.ar_addr[REG_AW+1:2];
+  let aw_index: UInt<4> = s.aw_addr[REG_AW+1:2];
+
+  // Handshake fires.
+  let ar_fire: Bool = s.ar_valid and (not r_pending);
+  let aw_w_fire: Bool = s.aw_valid and s.w_valid and (not b_pending);
+  let wr_ok: Bool = aw_w_fire and (aw_resp == 0);
+
+  // ── Register bank ────────────────────────────────────────────────────────
+  wire rf_rdata: UInt<32>;
+  inst rf: Nic400GpvRegs
+    clk          <- clk;
+    rst          <- rst;
+    read.addr    <- ar_index;
+    read.data    -> rf_rdata;
+    write.en     <- wr_ok;
+    write.addr   <- aw_index;
+    write.data   <- s.w_data;
+  end inst rf
+
+  // ── Combinational AXI drives ─────────────────────────────────────────────
+  comb
+    // Read address channel: accept a new AR only when not holding a response.
+    s.ar_ready = not r_pending;
+    // Read data channel.
+    s.r_valid  = r_pending;
+    s.r_data   = r_data_r;
+    s.r_resp   = r_resp_r;
+    s.r_id     = r_id_r;
+    s.r_last   = true;
+
+    // Write address + data channels: accept AW and W together.
+    s.aw_ready = aw_w_fire;
+    s.w_ready  = aw_w_fire;
+    // Write response channel.
+    s.b_valid  = b_pending;
+    s.b_resp   = b_resp_r;
+    s.b_id     = b_id_r;
+  end comb
+
+  // ── Sequential handshake / capture ───────────────────────────────────────
+  seq on clk rising
+    // Read: capture index→data and response on AR accept; clear on R complete.
+    if ar_fire
+      r_pending <= true;
+      r_id_r    <= s.ar_id;
+      r_resp_r  <= ar_resp;
+      r_data_r  <= (ar_resp == 0) ? rf_rdata : 0;
+    end if
+    if s.r_valid and s.r_ready
+      r_pending <= false;
+    end if
+
+    // Write: capture response on AW+W accept (the bank write itself is comb-
+    // gated by wr_ok); clear on B complete.
+    if aw_w_fire
+      b_pending <= true;
+      b_id_r    <= s.aw_id;
+      b_resp_r  <= aw_resp;
+    end if
+    if s.b_valid and s.b_ready
+      b_pending <= false;
+    end if
+  end seq
+end module Nic400Gpv
