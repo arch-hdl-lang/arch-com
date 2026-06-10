@@ -20946,6 +20946,73 @@ fn test_latency0_ram_in_real_cycle_still_flagged() {
     );
 }
 
+#[test]
+fn test_arbiter_inst_comb_grant_loop_still_detected() {
+    // Soundness guard for the comb-loop detector (regression for the over-
+    // correction in #545). An `arbiter`'s grant outputs — `grant_valid`,
+    // `grant_requester`, and the per-requester `ready` — are driven in
+    // `always_comb` from the request `valid` inputs (priority + round-robin
+    // policies). So there IS a real combinational path request → grant.
+    //
+    // #545 broadened "model fifo/ram as non-opaque" to ALL non-module/non-fsm
+    // constructs, which made `arbiter` use its empty (PURE) `CombInfo` and
+    // silently DROPPED real comb loops routed through an arbiter's grant — a
+    // false negative (Verilator flags the same design `UNOPTFLAT: Circular
+    // combinational logic`). This wires the priority arbiter's `ready` (grant)
+    // straight back into its `valid` request, forming a genuine 1-cycle comb
+    // loop that the whole-design detector must report as exactly one SCC.
+    let source = r#"
+        domain D
+          freq_mhz: 100
+        end domain D
+
+        arbiter PrioArb
+          policy priority;
+          param NUM_REQ: const = 2;
+          port clk: in Clock<D>;
+          port rst: in Reset<Sync>;
+          ports[NUM_REQ] request
+            valid: in Bool;
+            ready: out Bool;
+          end ports request
+          port grant_valid:     out Bool;
+          port grant_requester: out UInt<1>;
+        end arbiter PrioArb
+
+        module Top
+          port clk: in Clock<D>;
+          port rst: in Reset<Sync>;
+          port seed: in UInt<2>;
+          port gv: out Bool;
+          port gr: out UInt<1>;
+
+          wire req: UInt<2>;
+          wire rdy: UInt<2>;
+
+          inst a: PrioArb
+            clk             <- clk;
+            rst             <- rst;
+            request.valid   <- req;
+            request.ready   -> rdy;
+            grant_valid     -> gv;
+            grant_requester -> gr;
+          end inst a
+
+          comb
+            // req -> arb.valid -> arb.ready (comb grant) -> rdy -> req
+            req = rdy | seed;
+          end comb
+        end module Top
+    "#;
+    let wd = whole_design_from(source);
+    assert_eq!(
+        wd.total_sccs, 1,
+        "a real comb loop through an arbiter's combinational grant must be \
+         detected (no under-approximation); SCCs found: {:?}",
+        wd.sccs.iter().map(|s| &s.owning_modules).collect::<Vec<_>>()
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Issue #246 Phase 2: per-output `comb_dep_on(...)` annotation.
 // ─────────────────────────────────────────────────────────────────────────────
