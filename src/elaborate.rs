@@ -153,11 +153,88 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
     if !errors.is_empty() {
         Err(errors)
     } else {
-        lower_tlm_connects(SourceFile {
+        let mut sf = SourceFile {
             items: new_items,
             inner_doc: None,
             frontmatter: None,
-        })
+        };
+        normalize_count1_portarray_conns(&mut sf);
+        lower_tlm_connects(sf)
+    }
+}
+
+/// Normalize inst-connection names to a single-element (`ports[1]`) port-array
+/// member.
+///
+/// A first-class construct with a `ports[N]` group (regfile read/write, arbiter
+/// request, template) flattens its member ports as `{group}{i}_{sig}` for N>1
+/// but DROPS the index when N==1 — the count-1 declaration emits `read_addr`,
+/// not `read0_addr` (see `src/codegen/regfile.rs`). The parser, however,
+/// flattens an explicit `read[0].addr` connection to `read0_addr` regardless of
+/// the target's count. Against a count-1 target that produced a pin/member-name
+/// mismatch (`read0_addr` vs `read_addr`) — Verilator `PINNOTFOUND`, and a sim
+/// `no member named 'read0_addr'`. Both the idiomatic `read.addr` (no index) and
+/// the explicit `read[0].addr` should resolve to the same `read_addr`.
+///
+/// Here we rewrite any connection named `{group}0_{sig}` to `{group}_{sig}` when
+/// the inst's target construct has a LITERAL count-1 group `group` — once, in
+/// the AST, so every downstream backend (SV, sim, .archi) sees the consistent
+/// un-indexed name. Param-driven counts that resolve to 1 are out of scope (a
+/// literal `ports[1]` is the case that occurs in practice).
+fn normalize_count1_portarray_conns(sf: &mut SourceFile) {
+    use std::collections::HashMap;
+    fn count1_groups(groups: &[&PortArrayDecl]) -> Vec<(String, Vec<String>)> {
+        groups
+            .iter()
+            .filter(|pa| matches!(&pa.count_expr.kind, ExprKind::Literal(LitKind::Dec(1))))
+            .map(|pa| {
+                (
+                    pa.name.name.clone(),
+                    pa.signals.iter().map(|s| s.name.name.clone()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    // construct name → [(group_name, [signal names])] for literal count-1 groups
+    let mut count1: HashMap<String, Vec<(String, Vec<String>)>> = HashMap::new();
+    for item in &sf.items {
+        let (cname, groups): (&str, Vec<&PortArrayDecl>) = match item {
+            Item::Regfile(r) => (
+                &r.common.name.name,
+                r.read_ports.iter().chain(r.write_ports.iter()).collect(),
+            ),
+            Item::Arbiter(a) => (&a.common.name.name, a.port_arrays.iter().collect()),
+            Item::Template(t) => (&t.name.name, t.port_arrays.iter().collect()),
+            _ => continue,
+        };
+        let g1 = count1_groups(&groups);
+        if !g1.is_empty() {
+            count1.insert(cname.to_string(), g1);
+        }
+    }
+    if count1.is_empty() {
+        return;
+    }
+
+    for item in &mut sf.items {
+        if let Item::Module(m) = item {
+            for bi in &mut m.body {
+                if let ModuleBodyItem::Inst(inst) = bi {
+                    if let Some(groups) = count1.get(&inst.module_name.name) {
+                        for conn in &mut inst.connections {
+                            for (g, sigs) in groups {
+                                for s in sigs {
+                                    if conn.port_name.name == format!("{g}0_{s}") {
+                                        conn.port_name.name = format!("{g}_{s}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
