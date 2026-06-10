@@ -116,6 +116,11 @@ Verified with `Nic400CdcAxi4_test.harc` (a dual-clock HARC testbench that drives
 - **`Nic400Gpv.arch`** — the **Global Programmers View**: the interconnect's configuration register file, presented as an AXI4 *target* (slave). Per the NIC-400 TRM (§3.2), the GPV is AXI-accessed, **32-bit only** (`AxSIZE=2`), **Secure-only**, non-cacheable, aligned, single-beat. This shim is an AXI4-Lite-style target (one outstanding read, one outstanding write) backed by `Nic400GpvRegs`, enforcing the two constraints: a wrong size → **SLVERR** (`0b10`), a Non-secure access (`AxPROT[1]=1`) → **DECERR** (`0b11`, priority over SLVERR), and a rejected write leaves the bank unchanged. The lowest-cost path to programmable QoS/decode/remap state (spec §16.1 roadmap item #4). Verified by `Nic400Gpv_test.harc` on the ARCH sim **and** Verilator with matching cross-backend traces (`harc sim --check-backends`).
 - **`Nic400GpvRegs.arch`** — the backing `regfile` bank: `NREGS` 32-bit config registers, one read + one write port, write-before-read forwarding.
 
+### Low-power (clock gating)
+
+- **`Nic400CChannelClockGate.arch`** — the AMBA Low-Power Interface **C-channel** clock-gating controller for one clock domain (TRM §2.2.3). The system clock controller drives `cc.csysreq` to request the domain quiesce (0) or run (1); this 2-state `fsm` drops `cc.csysack` (and the `clk_en` output) only once the gated logic is idle (`busy == 0`), reflects pending work on `cc.cactive`, and wakes immediately on activity (`busy`) or a run request. Runs on the always-on controller clock so the handshake advances while the downstream domain is parked. Exercises an `fsm` driving a `target` bus + a fresh handshake bundle; verified by `Nic400CChannelClockGate_test.harc` (gate / wake-on-activity / wake-on-request) on the ARCH sim **and** Verilator with matching cross-backend traces (`harc sim --check-backends`).
+- **`BusCChannel.arch`** — the C-channel handshake bundle (`csysreq` / `csysack` / `cactive`), initiator = system clock controller.
+
 ### Helpers
 
 - **`Nic400ArbiterPolicy.arch`** — module-local `qos_grant_select(req_mask, last_grant, qos_vec)` for QoS-weighted grant selection.

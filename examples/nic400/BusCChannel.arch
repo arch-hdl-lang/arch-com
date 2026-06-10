@@ -1,0 +1,15 @@
+// AMBA Low-Power Interface "C-channel" — NIC-400's hierarchical clock-gating
+// handshake (TRM §2.2.3 / Appendix A.1.1), one set per clock domain.
+//
+// Initiator perspective = the system clock controller:
+//   csysreq  out  — request: 1 = keep clock running, 0 = quiesce/gate the domain
+//   csysack  in   — device acknowledge: follows csysreq once the device is idle
+//   cactive  in   — device activity: 1 = the domain has pending work (don't gate)
+//
+// A `target` flips these, so the gated domain's controller sees csysreq as an
+// input and drives csysack / cactive.
+bus BusCChannel
+  csysreq: out Bool;
+  csysack: in  Bool;
+  cactive: in  Bool;
+end bus BusCChannel

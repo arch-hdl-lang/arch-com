@@ -1,0 +1,73 @@
+// Nic400CChannelClockGate testbench — drives the C-channel low-power handshake
+// and checks the gate/wake behavior:
+//   1. csysreq=1, idle      → ACTIVE  (csysack=1, clk_en=1).
+//   2. csysreq=0 while idle  → GATED   (csysack=0, clk_en=0) after one edge.
+//   3. busy while gated      → WAKE    (back to ACTIVE, cactive=1).
+//   4. csysreq=0 but busy    → stays ACTIVE (a gate request can't gate active work).
+//   5. csysreq=1             → ACTIVE (run again).
+//
+// FSM outputs are combinational on the state register; `wait 1 cycles` advances
+// one clk edge so the post-edge state is observed.
+
+testbench Nic400CChannelTb
+    dut : Nic400CChannelClockGate
+end testbench Nic400CChannelTb
+
+impl Nic400CChannelTest for Nic400CChannelTb
+    clock clk = 10ns   // 100 MHz always-on controller clock
+
+    run
+        log(info, "Nic400 C-channel low-power clock-gating handshake test")
+
+        // ── Reset → ACTIVE, running ──────────────────────────────────────
+        dut.rst        = 1
+        dut.cc_csysreq = 1     // controller wants clock running
+        dut.busy       = 0
+        wait 2 cycles
+        dut.rst = 0
+        wait 1 cycles
+        assert dut.cc_csysack == 1 else fail("post-reset csysack != 1")
+        assert dut.clk_en == 1     else fail("post-reset clk_en != 1")
+        assert dut.cc_cactive == 0 else fail("idle cactive != 0")
+        log(info, "reset: ACTIVE, clock running")
+
+        // ── 1. Request quiesce while idle → GATED ────────────────────────
+        dut.cc_csysreq = 0     // controller requests gate
+        dut.busy       = 0
+        wait 1 cycles          // one edge to enter GATED
+        assert dut.cc_csysack == 0 else fail("gate: csysack != 0")
+        assert dut.clk_en == 0     else fail("gate: clk_en != 0 (clock not gated)")
+        log(info, "csysreq=0 while idle → GATED (clock off)")
+
+        // Stays gated while idle + request held low.
+        wait 3 cycles
+        assert dut.clk_en == 0 else fail("stayed gated: clk_en flipped on")
+
+        // ── 2. Activity while gated → immediate wake ─────────────────────
+        dut.busy = 1
+        wait 1 cycles
+        assert dut.clk_en == 1     else fail("busy wake: clk_en != 1")
+        assert dut.cc_csysack == 1 else fail("busy wake: csysack != 1")
+        assert dut.cc_cactive == 1 else fail("busy: cactive != 1")
+        log(info, "busy while gated → WAKE (clock on, cactive=1)")
+
+        // ── 3. csysreq still 0 but busy → cannot gate, stays ACTIVE ──────
+        wait 2 cycles
+        assert dut.clk_en == 1 else fail("busy held: gated despite activity")
+
+        // ── 4. Idle again with request low → GATED ──────────────────────
+        dut.busy = 0
+        wait 1 cycles
+        assert dut.clk_en == 0 else fail("idle again: did not re-gate")
+        log(info, "idle again with csysreq=0 → GATED")
+
+        // ── 5. Controller requests run → ACTIVE ─────────────────────────
+        dut.cc_csysreq = 1
+        wait 1 cycles
+        assert dut.cc_csysack == 1 else fail("run req: csysack != 1")
+        assert dut.clk_en == 1     else fail("run req: clk_en != 1")
+        log(info, "csysreq=1 → ACTIVE (clock running)")
+
+        log(info, "PASS Nic400CChannelClockGate: gate / wake-on-activity / wake-on-request all correct")
+    end run
+end impl Nic400CChannelTest
