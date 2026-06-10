@@ -423,6 +423,16 @@ through intermediate registers — rejected at typecheck. Forward reads
 (Decode → Execute for hazard checks) and references inside `stall when` /
 `flush when` / `forward` clauses are allowed.
 
+**Output rule:** a pipeline output port must come from a stage **register**; it
+may not combinationally depend on an input port — directly (`comb out = in;`)
+or transitively via a `let`/`wire`/comb intermediate or `if`/`match` guard.
+Reading a register (local `out = result;` or cross-stage `out = Fetch.pc;`)
+is the intended pattern and breaks the comb path. A combinational passthrough
+is rejected at typecheck — put that logic in a wrapping `module` and let the
+pipeline register the result. (Rationale: a pipeline *stages* a datapath, and
+the comb-loop checker treats pipeline outputs as registered, so an internal
+comb input→output path would hide a real feedback loop.)
+
 `flush <Stage> when <cond>` clears `valid_r` only (bubble). Add the
 `clear` modifier to also reset every data register in `<Stage>` to its
 declared reset value — useful for security / speculation scenarios where
