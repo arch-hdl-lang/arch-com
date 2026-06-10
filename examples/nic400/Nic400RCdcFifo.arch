@@ -10,7 +10,7 @@ domain MClkDom
 end domain MClkDom
 
 domain SClkDom
-  freq_mhz: 100
+  freq_mhz: 150
 end domain SClkDom
 
 fifo Nic400RCdcFifo
