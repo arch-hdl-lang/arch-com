@@ -619,6 +619,35 @@ fn comb_info_for_ram(ram: &RamDecl) -> CombInfo {
     }
 }
 
+/// Whether a non-Module/non-Fsm construct's `comb_info_for_symbol` SOUNDLY
+/// models its combinational input→output paths, so the whole-design comb-loop
+/// detector may take the non-opaque path for it (using its `CombInfo`) instead
+/// of the opaque every-input→every-output over-approximation.
+///
+/// Returns `true` ONLY for constructs whose `comb_info_for_symbol` is either
+/// genuinely PURE (all outputs registered) or latency-aware/conservative:
+///   * `fifo` / `counter` / `synchronizer` / `pipeline` — registered outputs.
+///   * `ram` — `comb_info_for_ram` is latency-aware (PURE for latency>0, a
+///     conservative comb-dep set for latency-0).
+///
+/// Returns `false` for every other construct (arbiter, cam, regfile, clkgate,
+/// linklist, …) because each has — or may have — a real combinational
+/// input→output path that `comb_info_for_symbol` currently reports as an
+/// empty (PURE) `CombInfo`. Modeling those as PURE is UNSOUND: it drops real
+/// comb cycles routed through them (a false negative). They must fall back to
+/// the opaque over-approximation. See the call site in `expand_inst` for the
+/// per-construct combinational-path rationale.
+fn construct_comb_info_is_sound(sym: &Symbol) -> bool {
+    matches!(
+        sym,
+        Symbol::Fifo(_)
+            | Symbol::Counter(_)
+            | Symbol::Synchronizer(_)
+            | Symbol::Pipeline(_)
+            | Symbol::Ram(_)
+    )
+}
+
 /// Look up the `CombInfo` for an instance whose construct is named `sym_name`.
 pub fn comb_info_for_symbol(sym_name: &str, symbols: &SymbolTable, source: &SourceFile) -> CombInfo {
     let sym = match symbols.globals.get(sym_name) {
@@ -1180,19 +1209,53 @@ impl GraphBuilder {
         }
 
         // Is the inst a KNOWN first-class construct that is neither a
-        // Module nor an Fsm (fifo, ram, arbiter, counter, synchronizer,
-        // clkgate, regfile, …)? Such a construct has no `ModuleDecl`/
-        // `FsmDecl` (so `child_mod`/`child_fsm` are both `None`), yet it
-        // IS resolvable in the symbol table and `comb_info_for_symbol`
-        // already returns a construct-aware `CombInfo` for it:
-        //   * fifo/arbiter/counter/synchronizer/clkgate/regfile and
-        //     latency>0 ram → `CombInfo::default()` (PURE — outputs are
-        //     all functions of internal registered state, no comb path
-        //     from any input to any output).
-        //   * latency-0 (async) ram → a real per-port comb-dep set.
+        // Module nor an Fsm, AND one whose `comb_info_for_symbol` SOUNDLY
+        // models its input→output combinational paths? Such a construct
+        // has no `ModuleDecl`/`FsmDecl` (so `child_mod`/`child_fsm` are
+        // both `None`), yet it is resolvable in the symbol table.
+        //
+        // CRUCIAL soundness caveat: a whole-design comb-loop detector must
+        // OVER-approximate — it may report a spurious cycle, but it must
+        // NEVER miss a real one. Routing an inst through the non-opaque
+        // path uses its `comb_info_for_symbol` `CombInfo`; if that
+        // `CombInfo` is empty (PURE) for a construct that actually HAS a
+        // combinational input→output path, the detector silently drops
+        // real cycles routed through it (a false NEGATIVE — unsound).
+        //
+        // Only these constructs may take the non-opaque path, because for
+        // them `comb_info_for_symbol` is provably sound:
+        //   * fifo / counter / synchronizer / pipeline → `CombInfo`
+        //     empty (PURE): outputs are all functions of internal
+        //     registered state, no comb path from any input to any output.
+        //   * ram → `comb_info_for_ram`, which is latency-aware: empty
+        //     (PURE) for latency>0, a conservative per-port comb-dep set
+        //     for latency-0 (async) ram (so async-RAM cycles are caught).
+        //
+        // DELIBERATELY EXCLUDED (must stay opaque): arbiter, cam, regfile,
+        // clkgate, linklist. Each has — or may have — a genuine
+        // combinational input→output path that `comb_info_for_symbol`
+        // currently reports as empty (PURE):
+        //   * arbiter — grant_valid/grant_requester/ready are driven in
+        //     `always_comb` from the request `valid` inputs (priority +
+        //     round-robin policies). A registered grant only exists for
+        //     latency>0 arbiters; the common latency-0 form is comb.
+        //   * cam — the match/hit outputs are a comb function of the
+        //     search key.
+        //   * regfile — a latency-0 (async-read) regfile drives read data
+        //     combinationally from the read address.
+        //   * clkgate — the gated clock is `clk & enable`, comb on enable.
+        //   * linklist — opaque internals; default to the safe model.
+        // Modeling any of these as PURE manufactured a false NEGATIVE:
+        // e.g. `req -> arbiter.valid -> arbiter.ready (comb) -> req` is a
+        // real comb loop (Verilator: UNOPTFLAT) that went undetected.
+        // Falling back to the opaque every-connected-in→every-connected-out
+        // model (built directly from the connection map) is the sound
+        // over-approximation and matches the pre-#545 behavior for them.
         let symbol_is_known_construct = child_mod.is_none()
             && child_fsm.is_none()
-            && symbols.globals.contains_key(&inst.module_name.name);
+            && symbols.globals.get(&inst.module_name.name)
+                .map(|(sym, _)| construct_comb_info_is_sound(sym))
+                .unwrap_or(false);
 
         // Treat the child as opaque (every-out-depends-on-every-in,
         // modulo any port-level `comb_dep_on(...)` annotations) when
@@ -1203,10 +1266,12 @@ impl GraphBuilder {
         // walker that produces precise per-output deps. Issue #246
         // Phase 3 = bodied module, Phase 4 = bodied fsm.
         //
-        // A known first-class construct (fifo/ram/arbiter/…) must NOT be
+        // A first-class construct whose `comb_info_for_symbol` is SOUND
+        // (`symbol_is_known_construct == true`: fifo/counter/synchronizer/
+        // pipeline/ram — see `construct_comb_info_is_sound`) must NOT be
         // modeled as combinationally transparent: its `child_is_interface`
         // is `None` only because it isn't a Module/Fsm decl, NOT because it
-        // is an unknown extern. Modeling a registered construct as
+        // is an unknown extern. Modeling such a registered construct as
         // every-input→every-output manufactures spurious comb edges — e.g.
         // routing signals through async `fifo` insts (an AXI CDC bridge:
         // `m.ar -> ar_fifo -> s.ar … s.r -> r_fifo -> m.r`) closes a false
@@ -1216,9 +1281,16 @@ impl GraphBuilder {
         // construct-aware `info` (`CombInfo` from `comb_info_for_symbol`):
         // empty for a fifo (→ no edges), but a real dep set for a
         // latency-0 ram (→ genuine async-RAM cycles are still caught).
+        //
+        // Constructs with a real comb input→output path but an empty
+        // `CombInfo` (arbiter/cam/regfile/clkgate/linklist) have
+        // `symbol_is_known_construct == false` and fall through to the
+        // opaque branch — the sound over-approximation that catches a comb
+        // loop routed through e.g. an arbiter's combinational grant.
         let treat_as_opaque = match child_is_interface {
-            // extern/unknown ⇒ opaque; known first-class construct ⇒ use
-            // its construct-aware CombInfo (`info`) instead.
+            // extern/unknown OR a construct whose CombInfo is not provably
+            // sound ⇒ opaque; a sound known construct ⇒ use its
+            // construct-aware CombInfo (`info`) instead.
             None => !symbol_is_known_construct,
             Some(is_iface) => is_iface,
         };
