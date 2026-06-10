@@ -638,14 +638,48 @@ fn comb_info_for_ram(ram: &RamDecl) -> CombInfo {
 /// the opaque over-approximation. See the call site in `expand_inst` for the
 /// per-construct combinational-path rationale.
 fn construct_comb_info_is_sound(sym: &Symbol) -> bool {
-    matches!(
-        sym,
-        Symbol::Fifo(_)
-            | Symbol::Counter(_)
-            | Symbol::Synchronizer(_)
-            | Symbol::Pipeline(_)
-            | Symbol::Ram(_)
-    )
+    // EXHAUSTIVE over `Symbol` ON PURPOSE — keep in lockstep with the buckets
+    // in `comb_info_for_symbol`. A new first-class construct must be
+    // classified sound (its `CombInfo` precisely models or conservatively
+    // covers every comb input→output path) or unsound (treat opaque) here,
+    // rather than silently inheriting a `matches!` default.
+    match sym {
+        // Precise (latency-aware for ram) or genuinely registered → the
+        // construct-aware `CombInfo` may be trusted.
+        Symbol::Ram(_)
+        | Symbol::Fifo(_)
+        | Symbol::Counter(_)
+        | Symbol::Synchronizer(_)
+        | Symbol::Pipeline(_) => true,
+
+        // A real comb input→output path that `comb_info_for_symbol` reports as
+        // an empty CombInfo → NOT sound; the expander must over-approximate
+        // these opaque (every-in→every-out).
+        Symbol::Arbiter(_)
+        | Symbol::Cam(_)
+        | Symbol::Regfile(_)
+        | Symbol::Clkgate(_)
+        | Symbol::Linklist(_) => false,
+
+        // Module/Fsm reach the expander's `child_mod`/`child_fsm` recursion
+        // BEFORE this gate, so the value is never observed for them; classify
+        // as `false` (opaque) defensively.
+        Symbol::Module(_) | Symbol::Fsm(_) => false,
+
+        // Not instantiable as a construct — never reaches this gate; opaque.
+        Symbol::Domain(_)
+        | Symbol::Struct(_)
+        | Symbol::Enum(_)
+        | Symbol::ExternEnum(_)
+        | Symbol::Function(_)
+        | Symbol::Template(_)
+        | Symbol::Bus(_)
+        | Symbol::Param(_)
+        | Symbol::Port(_)
+        | Symbol::Reg(_)
+        | Symbol::Let(_)
+        | Symbol::Instance(_) => false,
+    }
 }
 
 /// Look up the `CombInfo` for an instance whose construct is named `sym_name`.
@@ -654,7 +688,17 @@ pub fn comb_info_for_symbol(sym_name: &str, symbols: &SymbolTable, source: &Sour
         Some((s, _)) => s,
         None => return CombInfo::default(),
     };
+    // EXHAUSTIVE over `Symbol` ON PURPOSE — do NOT add a `_` catch-all. A new
+    // first-class construct must be deliberately classified here (and, in
+    // lockstep, in `construct_comb_info_is_sound`) rather than silently
+    // falling through to an empty (PURE) `CombInfo`. Reporting a construct
+    // that has a real combinational input→output path as PURE is a soundness
+    // trap: the whole-design comb-loop detector then drops real loops routed
+    // through it (a false negative — the #545→#546 fifo/arbiter incident).
+    // The buckets below mirror `construct_comb_info_is_sound`; keep them in
+    // sync when adding a construct.
     match sym {
+        // ── Precise: walk the body / honor latency for a per-output dep set ──
         Symbol::Fsm(_) => {
             for item in &source.items {
                 if let Item::Fsm(fsm) = item {
@@ -685,11 +729,55 @@ pub fn comb_info_for_symbol(sym_name: &str, symbols: &SymbolTable, source: &Sour
                     }
                 }
             }
+            // latency > 0: registered read port → PURE.
             CombInfo::default()
         }
-        // Counter, Arbiter, Regfile, Fifo, Synchronizer, Clkgate:
-        // Outputs are registered; no comb path tracked.
-        _ => CombInfo::default(),
+
+        // ── Registered outputs → an empty (PURE) CombInfo is SOUND ──
+        // Every output is a pure function of internal flopped state, so there
+        // is no combinational input→output edge. These are the constructs for
+        // which `construct_comb_info_is_sound` returns `true`.
+        Symbol::Fifo(_)
+        | Symbol::Counter(_)
+        | Symbol::Synchronizer(_)
+        | Symbol::Pipeline(_) => CombInfo::default(),
+
+        // ── Real (or possible) comb in→out path we do NOT precisely model ──
+        // The empty `CombInfo` returned here is OPTIMISTIC, not sound. Any
+        // consumer that needs soundness MUST over-approximate these as opaque
+        // (every-connected-input → every-connected-output) instead of trusting
+        // the empty info — `construct_comb_info_is_sound` returns `false` for
+        // them so the whole-design expander does exactly that, and the
+        // settle-order analyzer tolerates the optimism via its multi-pass
+        // `settle_depth`. (Replacing this with a conservative port-derived
+        // CombInfo would make the helper independently sound; until then these
+        // must stay in the unsound bucket.)
+        //   * arbiter  — grant is `always_comb` on the request valids.
+        //   * cam      — match line is comb on the search key.
+        //   * regfile  — a latency-0 read is comb from the read address.
+        //   * clkgate  — the gated clock is `clk & enable`, comb on enable.
+        //   * linklist — opaque internals; assume the safe (non-pure) model.
+        Symbol::Arbiter(_)
+        | Symbol::Cam(_)
+        | Symbol::Regfile(_)
+        | Symbol::Clkgate(_)
+        | Symbol::Linklist(_) => CombInfo::default(),
+
+        // ── Not a thing you can `inst` — types, values, packages, ports ──
+        // These never appear as an `inst`'s `module_name`; an empty CombInfo
+        // is the correct (and unreachable-in-practice) answer.
+        Symbol::Domain(_)
+        | Symbol::Struct(_)
+        | Symbol::Enum(_)
+        | Symbol::ExternEnum(_)
+        | Symbol::Function(_)
+        | Symbol::Template(_)
+        | Symbol::Bus(_)
+        | Symbol::Param(_)
+        | Symbol::Port(_)
+        | Symbol::Reg(_)
+        | Symbol::Let(_)
+        | Symbol::Instance(_) => CombInfo::default(),
     }
 }
 
@@ -1666,3 +1754,58 @@ fn tarjan_scc(adj: &[Vec<usize>], n: usize) -> Vec<Vec<usize>> {
     sccs
 }
 
+
+#[cfg(test)]
+mod soundness_classification_tests {
+    use super::*;
+    use crate::resolve::{
+        ArbiterInfo, CamInfo, FifoInfo, PipelineInfo, RegfileInfo, SynchronizerInfo,
+    };
+
+    /// Locks the comb-loop soundness classification of `construct_comb_info_is_sound`.
+    ///
+    /// `comb_info_for_symbol` is exhaustive over `Symbol` (no `_` arm) so that a
+    /// NEW construct can't silently default to an empty (PURE) `CombInfo`; this
+    /// test guards the *other* half — that the EXISTING constructs stay in the
+    /// correct bucket. Flipping a construct with a real combinational
+    /// input→output path (arbiter/cam/regfile/…) into the "sound" set silently
+    /// drops real comb loops routed through it — exactly the #545→#546
+    /// soundness regression. Keep this in sync with the buckets in
+    /// `comb_info_for_symbol`.
+    #[test]
+    fn construct_comb_info_soundness_classification_is_locked() {
+        // SOUND — precise or genuinely registered; the empty/precise CombInfo
+        // may be trusted by the whole-design expander.
+        assert!(construct_comb_info_is_sound(&Symbol::Fifo(FifoInfo {
+            name: "F".into(),
+            ports: vec![],
+            is_async: true,
+        })));
+        assert!(construct_comb_info_is_sound(&Symbol::Synchronizer(
+            SynchronizerInfo { name: "S".into(), stages: 2 }
+        )));
+        assert!(construct_comb_info_is_sound(&Symbol::Pipeline(PipelineInfo {
+            name: "P".into(),
+            params: vec![],
+            ports: vec![],
+            stage_names: vec![],
+        })));
+
+        // UNSOUND — a real comb input→output path reported as empty CombInfo;
+        // must be over-approximated opaque. Do NOT move these to the sound set.
+        assert!(!construct_comb_info_is_sound(&Symbol::Arbiter(ArbiterInfo {
+            name: "A".into(),
+            num_req: 2,
+        })));
+        assert!(!construct_comb_info_is_sound(&Symbol::Cam(CamInfo {
+            name: "C".into()
+        })));
+        assert!(!construct_comb_info_is_sound(&Symbol::Regfile(RegfileInfo {
+            name: "R".into()
+        })));
+
+        // Not instantiable as a construct → opaque (never reaches the gate).
+        assert!(!construct_comb_info_is_sound(&Symbol::Param("x".into())));
+        assert!(!construct_comb_info_is_sound(&Symbol::Let("y".into())));
+    }
+}
