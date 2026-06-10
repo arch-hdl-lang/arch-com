@@ -1,0 +1,47 @@
+// NIC-400 low-power C-channel clock-gating controller (device side).
+//
+// Implements the AMBA Low-Power Interface handshake for one clock domain
+// (TRM §2.2.3). The system clock controller drives `cc.csysreq` to request the
+// domain quiesce (0) or run (1); this FSM responds on `cc.csysack` only once
+// the gated logic is idle (`busy == 0`), and reflects pending work on
+// `cc.cactive`. `clk_en` is the resulting clock-enable for the gated domain
+// (1 = clock runs, 0 = clock gated).
+//
+// Runs on the always-on controller clock `clk` (NOT the gated clock), so the
+// handshake keeps advancing while the downstream domain is parked.
+//
+//   ACTIVE  (clock on):  csysack=1, clk_en=1.  → GATED when !csysreq && !busy.
+//   GATED   (clock off): csysack=0, clk_en=0.  → ACTIVE when  csysreq ||  busy.
+//
+// `cactive` mirrors `busy` in both states: the controller watches it to decide
+// whether a gate request is safe, and `busy` also forces an immediate wake.
+
+fsm Nic400CChannelClockGate
+  port clk:    in Clock<SysDomain>;
+  port rst:    in Reset<Sync>;
+  port cc:     target BusCChannel;
+  port busy:   in  Bool;
+  port clk_en: out Bool;
+
+  state [Active, Gated]
+  default state Active;
+  default seq on clk rising;
+
+  state Active
+    comb
+      cc.csysack = true;
+      cc.cactive = busy;
+      clk_en     = true;
+    end comb
+    -> Gated when (not cc.csysreq) and (not busy);
+  end state Active
+
+  state Gated
+    comb
+      cc.csysack = false;
+      cc.cactive = busy;
+      clk_en     = false;
+    end comb
+    -> Active when cc.csysreq or busy;
+  end state Gated
+end fsm Nic400CChannelClockGate
