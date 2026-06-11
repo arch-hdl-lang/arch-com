@@ -459,15 +459,30 @@ impl ModuleBodyItem {
 /// `connect initiator_inst.port -> target_inst.port;`
 ///
 /// Elaboration rewrites this into an internal bus wire plus ordinary whole-bus
-/// `inst` connections, so codegen/typecheck keep using the existing flattened
-/// bus machinery.
+/// `inst` connections. Decoded one-to-many connects additionally synthesize
+/// ordinary comb/seq routing logic, so codegen/typecheck keep using the
+/// existing flattened bus machinery.
 #[derive(Debug, Clone)]
 pub struct TlmConnectDecl {
     pub from_inst: Ident,
     pub from_port: Ident,
+    pub targets: Vec<TlmConnectTarget>,
+    pub decode_field: Option<Ident>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct TlmConnectTarget {
     pub to_inst: Ident,
     pub to_port: Ident,
+    pub decode: Option<TlmConnectDecode>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum TlmConnectDecode {
+    Range { lo: Expr, hi: Expr },
+    Default,
 }
 
 #[derive(Debug, Clone)]

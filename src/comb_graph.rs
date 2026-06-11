@@ -256,6 +256,21 @@ fn is_clk_or_rst(ty: &TypeExpr) -> bool {
     matches!(ty, TypeExpr::Clock(_) | TypeExpr::Reset(_, _))
 }
 
+fn bus_type_names(source: &SourceFile) -> HashSet<String> {
+    source
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Bus(b) => Some(b.name.name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn is_named_bus_type(ty: &TypeExpr, bus_names: &HashSet<String>) -> bool {
+    matches!(ty, TypeExpr::Named(name) if bus_names.contains(&name.name))
+}
+
 fn port_sets(ports: &[PortDecl]) -> (HashSet<String>, HashSet<String>) {
     use crate::ast::Direction;
     let inputs = ports.iter()
@@ -1252,14 +1267,27 @@ impl GraphBuilder {
         // 1) Parent-level comb blocks + let bindings + wire decls
         let (input_names, output_names) = port_sets(&m.ports);
         let _ = (&input_names, &output_names);
-        // Bus-port names: their members are tracked at field granularity so a
+        // Bus-valued names: their members are tracked at field granularity so a
         // signal that reads one member (`s.aw_valid`) and drives another
         // (`s.aw_ready`) — the universal AXI `ready = f(valid)` handshake — does
         // not collapse into one `s` node and fabricate a false self-cycle.
-        let bus_ports: HashSet<String> = m.ports.iter()
-            .filter(|p| p.bus_info.is_some())
+        //
+        // This must include both bus ports and bus-typed wires. Decoded TLM
+        // connect lowering synthesizes private bus wires and then drives their
+        // individual fields in generated comb logic; treating the whole wire as
+        // one node fabricates a cycle between request and response fields.
+        let bus_type_names = bus_type_names(source);
+        let mut bus_values: HashSet<String> = m.ports.iter()
+            .filter(|p| p.bus_info.is_some() || is_named_bus_type(&p.ty, &bus_type_names))
             .map(|p| p.name.name.clone())
             .collect();
+        for item in &m.body {
+            if let ModuleBodyItem::WireDecl(w) = item {
+                if is_named_bus_type(&w.ty, &bus_type_names) {
+                    bus_values.insert(w.name.name.clone());
+                }
+            }
+        }
         for item in &m.body {
             match item {
                 ModuleBodyItem::WireDecl(w) => { mk(self, &w.name.name); }
@@ -1270,13 +1298,13 @@ impl GraphBuilder {
                     // pipe_reg outputs are registered.
                 }
                 ModuleBodyItem::CombBlock(cb) => {
-                    self.scan_assignments(&cb.stmts, &path, &bus_ports);
+                    self.scan_assignments(&cb.stmts, &path, &bus_values);
                 }
                 ModuleBodyItem::LetBinding(lb) => {
                     // Edge: each RHS ident → lb.name
                     let lhs = mk(self, &lb.name.name);
                     let mut ids = HashSet::new();
-                    collect_expr_idents_bus(&lb.value, &bus_ports, &mut ids);
+                    collect_expr_idents_bus(&lb.value, &bus_values, &mut ids);
                     for id in &ids {
                         let from = mk(self, id);
                         self.add_edge(from, lhs);

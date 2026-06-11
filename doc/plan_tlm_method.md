@@ -129,9 +129,16 @@ stable under backpressure. Validate these with Verilator `--assert`.
   the worker cohort.
 - Dynamic-length return types are not supported; use static `Vec<T, MAX>` or a
   response struct carrying `data`, `len`, and `resp`.
-- `connect a.m -> b.s;` is point-to-point sugar. Address decode, decode-error
-  response ownership, and one-to-many routing belong in an explicit router
-  module.
+- `connect a.m -> b.s;` is point-to-point sugar.
+- Blocking TLM buses also support one-initiator-to-many-target sugar by
+  repeating ordinary `connect a.m -> b.s;` statements. Each target inst must
+  override literal `SLAVE_START_ADDR` / `SLAVE_END_ADDR` params, and every TLM
+  method on the bus must have an `addr` argument. Elaboration synthesizes
+  private bus wires plus comb/seq routing logic, using the enclosing module's
+  single Clock and Reset ports for response-route registers. Ranges must cover
+  the full decode width.
+- Tagged `out_of_order` decoded connect, decode-error response ownership, and
+  custom routing/arbitration policy still belong in an explicit router module.
 
 ## Refinement Guidance: TLM to Explicit Threads
 

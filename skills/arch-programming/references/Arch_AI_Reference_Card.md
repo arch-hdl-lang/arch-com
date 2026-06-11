@@ -1090,7 +1090,7 @@ Both sides lower to a parent-module state machine (state reg + RegBlock + CombBl
 
 Target bodies reuse ordinary thread lowering before generated response states. They may use assignments, waits, `if`/`elsif`/`else`, counted `for`, `fork`/`join`, `lock`, and branch-local `return expr;`. Statements after `return` in the same block are rejected.
 
-**One-to-one connection sugar** — after both instances are declared, bind an initiator bus port to a target bus port without spelling an intermediate wire:
+**Connection sugar** — after instances are declared, bind an initiator bus port to target bus ports without spelling intermediate wires:
 
 ```
 inst cpu: Initiator
@@ -1106,7 +1106,26 @@ end inst ram
 connect cpu.m -> ram.s;
 ```
 
-This elaborates to a private bus wire plus ordinary whole-bus inst connections. Current scope is one initiator endpoint to one target endpoint of the same bus type.
+This elaborates to a private bus wire plus ordinary whole-bus inst connections.
+
+Blocking TLM buses can use one-initiator-to-many-target decoded connect by repeating ordinary connect statements and overriding each target instance's address-map params:
+
+```
+inst ram0: MemTarget
+  param SLAVE_START_ADDR = 32'h0000_0000;
+  param SLAVE_END_ADDR = 32'h7fff_ffff;
+end inst ram0
+
+inst ram1: MemTarget
+  param SLAVE_START_ADDR = 32'h8000_0000;
+  param SLAVE_END_ADDR = 32'hffff_ffff;
+end inst ram1
+
+connect cpu.m -> ram0.s;
+connect cpu.m -> ram1.s;
+```
+
+One-to-many connect synthesizes private bus wires plus comb/seq routing logic. The bus must use a TLM method argument named `addr`; every repeated target instance must override literal `SLAVE_START_ADDR` / `SLAVE_END_ADDR` ranges, and those ranges must cover the full decode width. The enclosing module must have exactly one `Clock` port and one `Reset` port for the generated response-route registers. Tagged `out_of_order` routing and custom decode-error response synthesis still require an explicit router module.
 
 `connect` is also legal inside `generate_for` / `generate_if`. In `generate_for`, suffix-substituted instance names are expanded before TLM lowering, so `connect src_i.m -> dst_i.s;` creates independent private bus wires such as `src_0.m -> dst_0.s` and `src_1.m -> dst_1.s`. The usual one-endpoint-use rule still applies after expansion.
 
