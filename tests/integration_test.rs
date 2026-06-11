@@ -25663,3 +25663,169 @@ end module M
          by a wait N cycle (issue #306 wait-N-cycle unaffected):\n{sv}",
     );
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Inst-boundary clock-domain checking: rebind-OK vs cross-domain-data-NG
+// ────────────────────────────────────────────────────────────────────
+//
+// `check_inst_cdc` (src/typecheck.rs) implements the spec rule documented
+// at doc/ARCH_HDL_Specification.md §"CDC checking extends across `inst`
+// boundaries": the compiler traces *clock* port connections to map a
+// child's declared domains onto the parent's domains, then verifies that
+// each *data* connection respects those boundaries.
+//
+// The subtle, deliberate consequence is **clock domain rebind**: a
+// reusable child may declare a placeholder clock domain (commonly
+// `Clock<SysDomain>`) and be instantiated under a *different* parent
+// clock. That is NOT a violation — the connected clock fixes the
+// instance's domain at the boundary, and there is no crossing *inside*
+// the instance (it is clocked entirely by the one connected clock).
+// `examples/nic400/Nic400GpvRing.arch` relies on exactly this (a
+// `Clock<SysDomain>` GPV instantiated under `SClkDom`).
+//
+// What IS a violation is feeding a parent signal from domain A into a
+// child *data* port that the child clocks in domain B. These tests pin
+// both halves so a regression to `check_inst_cdc` cannot silently either
+// (a) start rejecting legitimate clock rebind, or (b) stop catching a
+// genuine cross-domain data crossing. The behaviour was previously
+// exercised only by the un-wired `examples/cdc_inst_violation.arch`.
+
+/// REBIND-OK: a `Clock<SysDomain>` child instantiated under a named
+/// parent domain (`SClkDom`), fed only by same-(parent-)domain data, must
+/// type-check clean. This is the `Nic400GpvRing` pattern in miniature.
+#[test]
+fn test_inst_clock_domain_rebind_is_not_a_violation() {
+    let source = r#"
+domain MClkDom
+  freq_mhz: 200
+end domain MClkDom
+
+domain SClkDom
+  freq_mhz: 150
+end domain SClkDom
+
+module GpvLike
+  port clk:   in Clock<SysDomain>;
+  port rst:   in Reset<Sync>;
+  port wdata: in UInt<8>;
+  port rdata: out UInt<8>;
+
+  reg r: UInt<8> reset rst => 0;
+
+  seq on clk rising
+    r <= wdata;
+  end seq
+
+  comb
+    rdata = r;
+  end comb
+end module GpvLike
+
+module RingLike
+  port m_clk: in Clock<MClkDom>;
+  port s_clk: in Clock<SClkDom>;
+  port rst:   in Reset<Sync>;
+  port wdata: in UInt<8>;
+  port rdata: out UInt<8>;
+
+  reg sd: UInt<8> reset rst => 0;
+
+  seq on s_clk rising
+    sd <= wdata;
+  end seq
+
+  inst gpv: GpvLike
+    clk   <- s_clk;
+    rst   <- rst;
+    wdata <- sd;
+    rdata -> rdata;
+  end inst gpv
+end module RingLike
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(
+        result.is_ok(),
+        "rebinding a Clock<SysDomain> child to a named parent clock domain, \
+         fed only by same-domain data, must NOT be a CDC violation \
+         (this is the GPV-ring pattern). Got: {:?}",
+        result.err()
+    );
+}
+
+/// CROSS-DOMAIN-DATA-NG: a parent register clocked in domain A wired into
+/// a child *data* port that the child clocks in domain B is a genuine CDC
+/// hazard and must be rejected at the inst boundary — the clock rebind is
+/// fine, the data crossing is not. Mirrors `examples/cdc_inst_violation.arch`.
+#[test]
+fn test_inst_cross_domain_data_is_a_violation() {
+    let source = r#"
+domain DomainA
+  freq_mhz: 100
+end domain DomainA
+
+domain DomainB
+  freq_mhz: 200
+end domain DomainB
+
+module Consumer
+  port clk:      in Clock<DomainB>;
+  port rst:      in Reset<Sync>;
+  port data_in:  in UInt<8>;
+  port data_out: out UInt<8>;
+
+  reg r: UInt<8> reset rst => 0;
+
+  seq on clk rising
+    r <= data_in;
+  end seq
+
+  let data_out = r;
+end module Consumer
+
+module TopBad
+  port clk_a:  in Clock<DomainA>;
+  port clk_b:  in Clock<DomainB>;
+  port rst:    in Reset<Sync>;
+  port result: out UInt<8>;
+
+  reg counter_a: UInt<8> reset rst => 0;
+
+  seq on clk_a rising
+    counter_a <= (counter_a + 1).trunc<8>();
+  end seq
+
+  inst cons: Consumer
+    clk      <- clk_b;
+    rst      <- rst;
+    data_in  <- counter_a;
+    data_out -> result;
+  end inst cons
+end module TopBad
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "expected an inst-boundary CDC violation");
+    let errs = result.unwrap_err();
+    assert!(
+        errs.iter().any(|e| {
+            let s = e.to_string();
+            s.contains("CDC violation at instance `cons`")
+                && s.contains("counter_a")
+                && s.contains("DomainA")
+        }),
+        "expected a CDC-violation error naming instance `cons`, signal \
+         `counter_a`, and its source domain `DomainA`, got: {:?}",
+        errs
+    );
+}
