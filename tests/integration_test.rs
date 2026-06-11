@@ -16888,6 +16888,73 @@ fn test_thread_sim_declares_module_params_used_by_thread_body() {
 }
 
 #[test]
+fn test_thread_sim_supports_1024_bit_thread_storage() {
+    // The pre-lowering coroutine thread sim used to reject UInt widths above
+    // 64 bits even though the normal sim path has VlWide storage. Keep this
+    // regression at the 1kb boundary requested for wide thread payloads.
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          port data_in: in UInt<1024>;
+          port data_out: out UInt<1024>;
+          reg payload_r: UInt<1024> reset rst => 0;
+          let mirrored: UInt<1024> = payload_r;
+
+          thread on clk rising, rst high
+            payload_r <= data_in;
+            wait 1 cycle;
+            data_out = mirrored;
+            wait 1 cycle;
+          end thread
+        end module M
+    "#;
+
+    let h = compile_to_thread_sim_h(source);
+    assert!(
+        h.contains("VlWide<32> data_in{};"),
+        "1024-bit input port should use VlWide<32> storage:\n{h}"
+    );
+    assert!(
+        h.contains("VlWide<32> data_out{};"),
+        "1024-bit output port should use VlWide<32> storage:\n{h}"
+    );
+    assert!(
+        h.contains("VlWide<32> payload_r{};"),
+        "1024-bit thread-written reg should use VlWide<32> storage:\n{h}"
+    );
+    assert!(
+        h.contains("VlWide<32> mirrored{};"),
+        "1024-bit let binding should use VlWide<32> storage:\n{h}"
+    );
+    assert!(
+        h.contains("payload_r = data_in;") && h.contains("data_out = mirrored;"),
+        "wide thread assignments should emit direct VlWide copies:\n{h}"
+    );
+}
+
+#[test]
+fn test_thread_sim_runs_1024_bit_payload_copy() {
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("--thread-sim")
+        .arg("parallel")
+        .arg("tests/thread_sim_wide_1024/ThreadWide1024.arch")
+        .arg("--tb")
+        .arg("tests/thread_sim_wide_1024/tb_thread_wide_1024.cpp")
+        .output()
+        .expect("run arch sim --thread-sim parallel for 1024-bit thread payload");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && stdout.contains("PASS thread_wide_1024"),
+        "1024-bit thread-sim payload copy should compile and run\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn test_sim_codegen_declares_typed_module_params_used_by_lowered_thread_body() {
     // Typed value params (`param X: UInt<W> = ...`) are valid ARCH params and
     // SV codegen emits them, but the native C++ sim header also has to expose

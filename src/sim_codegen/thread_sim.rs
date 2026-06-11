@@ -22,7 +22,7 @@
 //
 // Phase 2 scope:
 //   - Multiple threads/module
-//   - Scalar Bool/UInt<≤64> ports + regs
+//   - Scalar Bool/UInt ports + regs (wide UInt/SInt up to 1024 bits use VlWide)
 //   - Combinational `let` bindings
 //   - Thread body: CombAssign, SeqAssign, WaitUntil, WaitCycles,
 //     IfElse (no waits inside), `for i in s..e { … }` (no waits inside)
@@ -206,7 +206,7 @@ pub fn gen_module_thread_with_warnings(
     for p in &m.ports {
         let cpp_ty = port_or_reg_cpp_ty_with_params(&p.ty, &m.params)
             .map_err(|e| format!("module `{}` port `{}`: {}", class, p.name.name, e))?;
-        header.push_str(&format!("  {} {} = 0;\n", cpp_ty, p.name.name));
+        header.push_str(&format!("  {}\n", field_decl(&cpp_ty, &p.name.name)));
     }
     header.push('\n');
 
@@ -225,7 +225,7 @@ pub fn gen_module_thread_with_warnings(
             } else {
                 let cpp_ty = port_or_reg_cpp_ty_with_params(&r.ty, &m.params)
                     .map_err(|e| format!("module `{}` reg `{}`: {}", class, r.name.name, e))?;
-                header.push_str(&format!("  {} {} = 0;\n", cpp_ty, r.name.name));
+                header.push_str(&format!("  {}\n", field_decl(&cpp_ty, &r.name.name)));
             }
         }
     }
@@ -246,7 +246,7 @@ pub fn gen_module_thread_with_warnings(
                     .map_err(|e| format!("module `{}` let `{}`: {}", class, lb.name.name, e))?,
                 None => continue, // untyped lets must alias a port — handled by the filter above
             };
-            header.push_str(&format!("  {} {} = 0;\n", cpp_ty, lb.name.name));
+            header.push_str(&format!("  {}\n", field_decl(&cpp_ty, &lb.name.name)));
         }
     }
     header.push('\n');
@@ -692,7 +692,7 @@ pub fn gen_module_thread_with_warnings(
             if matches!(&p.ty, TypeExpr::Clock(_)) { continue; }
             let cpp_ty = port_or_reg_cpp_ty_with_params(&p.ty, &m.params)
                 .map_err(|e| format!("module `{}` port `{}`: {}", class, p.name.name, e))?;
-            header.push_str(&format!("  {cpp_ty} _dbg_prev_{} = 0;\n", p.name.name));
+            header.push_str(&format!("  {}\n", field_decl(&cpp_ty, &format!("_dbg_prev_{}", p.name.name))));
         }
     }
     // Per-user-thread scheduler. Each owns its main slot + its fork
@@ -1438,6 +1438,22 @@ fn port_or_reg_cpp_ty_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> Result
     }
 }
 
+fn wide_words(bits: u64) -> u64 {
+    (bits + 31) / 32
+}
+
+fn is_wide_cpp_ty(ty: &str) -> bool {
+    ty.starts_with("VlWide<")
+}
+
+fn field_decl(ty: &str, name: &str) -> String {
+    if is_wide_cpp_ty(ty) {
+        format!("{ty} {name}{{}};")
+    } else {
+        format!("{ty} {name} = 0;")
+    }
+}
+
 fn eval_const_with_params(e: &Expr, params: &[ParamDecl]) -> u64 {
     match &e.kind {
         ExprKind::Literal(LitKind::Dec(v)) => *v,
@@ -1492,7 +1508,8 @@ fn uint_cpp_ty(bits: u64) -> Result<String, String> {
         9..=16 => "uint16_t".to_string(),
         17..=32 => "uint32_t".to_string(),
         33..=64 => "uint64_t".to_string(),
-        _ => return Err(format!("UInt<{}> > 64 bits not supported", bits)),
+        65..=1024 => format!("VlWide<{}>", wide_words(bits)),
+        _ => return Err(format!("UInt<{}> > 1024 bits not supported by thread sim", bits)),
     })
 }
 
@@ -1503,7 +1520,8 @@ fn int_cpp_ty(bits: u64) -> Result<String, String> {
         9..=16 => "int16_t".to_string(),
         17..=32 => "int32_t".to_string(),
         33..=64 => "int64_t".to_string(),
-        _ => return Err(format!("SInt<{}> > 64 bits not supported", bits)),
+        65..=1024 => format!("VlWide<{}>", wide_words(bits)),
+        _ => return Err(format!("SInt<{}> > 1024 bits not supported by thread sim", bits)),
     })
 }
 
