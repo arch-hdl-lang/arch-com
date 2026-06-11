@@ -1,0 +1,24 @@
+//! ---
+//! tags: [thread-sim, wide, regression]
+//! ---
+//!
+//! Regression fixture for the pre-lowering coroutine thread simulator's wide
+//! scalar storage path. A 1024-bit payload is copied through a thread-written
+//! register and exposed on a combinational thread output.
+
+/// Thread simulator fixture with a 1024-bit payload path.
+module ThreadWide1024
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port data_in: in UInt<1024>;
+  port data_out: out UInt<1024>;
+
+  reg payload_r: UInt<1024> reset rst => 0;
+
+  thread on clk rising, rst high
+    payload_r <= data_in;
+    wait 1 cycle;
+    data_out = payload_r;
+    wait 1 cycle;
+  end thread
+end module ThreadWide1024
