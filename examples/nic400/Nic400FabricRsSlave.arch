@@ -1,0 +1,95 @@
+// 3×4 NIC-400 fabric wrapper with per-SLAVE register slices.
+//
+// Slave-side mirror of `Nic400FabricRs1`. Where Rs1 drops a 1-stage
+// `Nic400EdgeRegSlice` on every (master → fabric) edge (the ASIB / slave-IF
+// position), this variant drops the same slice on every (fabric → slave)
+// edge (the AMIB / master-IF position), so each slave's AXI4 handshake to
+// the inner fabric absorbs one cycle of pipeline latency. Per TRM
+// §2.2.1/§2.2.2, NIC-400 supports timing isolation at both the ASIB and the
+// AMIB; this is the AMIB form.
+//
+// External port shape is identical to `Nic400Fabric` — drop-in
+// replacement at the system level.
+//
+// Wiring strategy:
+//   • `inner: Nic400Fabric` — full 3×4 crossbar, no internal pipelining.
+//   • The master side uses whole-Vec bus forwarding (compiler fix #424):
+//       inner.m <- m;
+//     so the parent's `m: target Vec<MasterBus, NUM_MASTERS>` directly
+//     drives `inner.m` with no per-master gasket.
+//   • The slave side cannot whole-Vec forward because we insert a
+//     slice on each edge. We declare a `Vec<SlaveBus, NUM_SLAVES>`
+//     wire `s_int[]` that bridges the inner fabric's slave-facing `s[j]`
+//     ports into each slice's fabric-facing `up` port, and a
+//     `generate_for` instantiates one `Nic400EdgeRegSlice` per slave.
+//
+// Direction note (slave side):
+//   `inner.s` is the inner fabric's *initiator* perspective slave port —
+//   it drives outgoing AXI toward the downstream slaves. The reg slice's
+//   `up` is `target` (the transfer-issuer side, here the fabric) and `dn`
+//   is `initiator` (drives the actual slave). So per slave j:
+//       inner.s[j] -> s_int[j];   // fabric drives the bridge wire
+//       rs_j.up    <- s_int[j];   // slice up-target reads the wire
+//       rs_j.dn    -> s[j];       // slice dn-initiator drives the slave
+//   This is the exact mirror of Rs1's master-side `up <- m[i]; dn -> m_int[i]`.
+//
+// Caveats:
+//   • STAGES=1 only. Multi-stage slicing would require a parameter on
+//     the wrapper plus chained instances of `Nic400EdgeRegSlice`.
+//   • The slave-facing AXI4 id width is `SLAVE_ID_W = 5` (the fabric embeds
+//     the master index in the upper id bits), so each slice overrides
+//     `ID_W = SLAVE_ID_W` — unlike Rs1, whose master-side slices use the
+//     narrower default `ID_W = MASTER_ID_W = 3`.
+module Nic400FabricRsSlave
+  param NUM_MASTERS:   const = 3;
+  param NUM_SLAVES:    const = 4;
+  param ADDR_WIDTH:    const = 32;
+  param DATA_WIDTH:    const = 32;
+  param STRB_WIDTH:    const = 4;            // = DATA_WIDTH / 8
+  param MASTER_ID_W:   const = 3;
+  param SLAVE_ID_W:    const = 5;            // MASTER_ID_W + ceil(log2(NUM_MASTERS))
+  param NS_W:          const = 2;            // ceil(log2(NUM_SLAVES))
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  // Same bus aliases as `Nic400Fabric` so the external port shape is
+  // bit-identical to the un-sliced fabric.
+  type MasterBus = BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH,
+                            ID_W=MASTER_ID_W, READ=1, WRITE=1>;
+  type SlaveBus  = BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH,
+                            ID_W=SLAVE_ID_W,  READ=1, WRITE=1>;
+
+  port m: target    Vec<MasterBus, NUM_MASTERS>;
+  port s: initiator Vec<SlaveBus, NUM_SLAVES>;
+
+  // Internal wire carrying the inner-fabric-facing side of each per-slave
+  // register slice. `inner.s[j]` drives `s_int[j]`; each slice's `up`
+  // reads `s_int[j]`.
+  wire s_int: Vec<SlaveBus, NUM_SLAVES>;
+
+  // ── Inner crossbar ───────────────────────────────────────────────────
+  // Master side is forwarded directly (relies on fix #424); slave side
+  // is wired through `s_int[]` so the per-slave slices can sit in between.
+  inst inner: Nic400Fabric
+    clk <- clk;
+    rst <- rst;
+    m   <- m;
+    for j in 0..NUM_SLAVES-1
+      s[j] -> s_int[j];
+    end for
+  end inst inner
+
+  // ── Per-slave register slices ────────────────────────────────────────
+  // EdgeRegSlice defaults to ID_W=3, but the slave-facing AXI4 id is
+  // SLAVE_ID_W=5, so we override ID_W here.
+  generate_for j in 0..NUM_SLAVES-1
+    inst rs_j: Nic400EdgeRegSlice
+      param ID_W = SLAVE_ID_W;
+      clk <- clk;
+      rst <- rst;
+      up  <- s_int[j];
+      dn  -> s[j];
+    end inst rs_j
+  end generate_for
+end module Nic400FabricRsSlave
