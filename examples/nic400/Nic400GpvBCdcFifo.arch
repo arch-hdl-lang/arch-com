@@ -1,0 +1,28 @@
+// B-channel clock-domain-crossing FIFO for the NIC-400 GPV read+write ring.
+//
+// Reverse direction (write-response): write port in the slave domain (SClkDom),
+// read port in the master domain (MClkDom), mirroring the R channel. The
+// differing Clock<...> domains trigger gray-code pointer CDC. Payload is the
+// AXI4 B channel (id4 resp2) packed into 6 bits — see Nic400CdcAxi4Rw.
+
+domain MClkDom
+  freq_mhz: 200
+end domain MClkDom
+
+domain SClkDom
+  freq_mhz: 150
+end domain SClkDom
+
+fifo Nic400GpvBCdcFifo
+  param DEPTH: const = 8;
+  param T: type = UInt<6>;
+  port wr_clk: in Clock<SClkDom>;
+  port rd_clk: in Clock<MClkDom>;
+  port rst: in Reset<Async, Low>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+end fifo Nic400GpvBCdcFifo
