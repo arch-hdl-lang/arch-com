@@ -22333,6 +22333,74 @@ fn test_sim_function_uses_package_param() {
 }
 
 #[test]
+fn test_function_value_list_for_unroll_substitutes_loop_var() {
+    let source = r#"
+module FunctionValueListProbe
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+
+  function last_value(seed: UInt<8>) -> UInt<8>
+    let acc: UInt<8> = seed;
+    for i in {1, 2, 3}
+      acc = i.zext<8>();
+    end for
+    return acc;
+  end function last_value
+
+  comb
+    y = last_value(a);
+  end comb
+end module FunctionValueListProbe
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("acc = 8'($unsigned(1));")
+            && sv.contains("acc = 8'($unsigned(2));")
+            && sv.contains("acc = 8'($unsigned(3));"),
+        "value-list function for-loop should emit each substituted body:\n{sv}"
+    );
+    assert!(
+        !sv.contains("// i ="),
+        "function value-list loop must not emit placeholder-only comments:\n{sv}"
+    );
+}
+
+#[test]
+fn test_sim_function_emits_for_and_assign_body_items() {
+    let source = r#"
+module FunctionSimForAssignProbe
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+
+  function last_range(seed: UInt<8>) -> UInt<8>
+    let acc: UInt<8> = seed;
+    for i in 0..2
+      acc = i.zext<8>();
+    end for
+    return acc;
+  end function last_range
+
+  comb
+    y = last_range(a);
+  end comb
+end module FunctionSimForAssignProbe
+"#;
+    let cpp = compile_to_sim_h(source, false);
+    assert!(
+        cpp.contains("uint8_t acc = seed;"),
+        "function local let should be emitted as a mutable C++ local:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("for (int i = 0; i <= 2; i++)"),
+        "function for-loop body should be emitted in sim C++:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("acc = (uint8_t)(i);"),
+        "function assignment body should be emitted in sim C++:\n{cpp}"
+    );
+}
+
+#[test]
 fn test_inst_for_loop_unrolls_connections() {
     // A `for k in 0..N-1 ... end for` block inside an inst body unrolls at
     // elaboration into N flat `Connection`s — AST-identical to the hand-

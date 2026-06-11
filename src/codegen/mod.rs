@@ -1158,13 +1158,24 @@ impl<'a> Codegen<'a> {
                 self.line(&format!("for (int {var} = {lo_s}; {var} <= {hi_s}; {var}++) begin"));
             }
             ForRange::ValueList(_vals) => {
-                // Value-list for loops are compile-time unrolled — emit sequentially
-                // For simplicity in functions, just emit as sequential statements
                 if let ForRange::ValueList(vals) = &fl.range {
                     for val in vals {
-                        let v = self.emit_expr_str(val);
-                        self.line(&format!("// {var} = {v}"));
-                        // TODO: proper unrolling with variable substitution
+                        if let Some(v) = self.eval_const_u32(val, &self.current_module_params.clone()) {
+                            let old = self.loop_var_subst.insert(var.clone(), v);
+                            self.emit_function_body_items(&fl.body);
+                            if let Some(prev) = old {
+                                self.loop_var_subst.insert(var.clone(), prev);
+                            } else {
+                                self.loop_var_subst.remove(var);
+                            }
+                        } else {
+                            let v = self.emit_expr_str(val);
+                            self.line(&format!("for (int {var} = {v}; {var} == {v}; {var}++) begin"));
+                            self.indent += 1;
+                            self.emit_function_body_items(&fl.body);
+                            self.indent -= 1;
+                            self.line("end");
+                        }
                     }
                 }
                 return;
