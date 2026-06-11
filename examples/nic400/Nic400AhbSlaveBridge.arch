@@ -1,0 +1,248 @@
+// AXI4 ↔ AHB-Lite slave-side (mirrored) bridge.
+//
+// This is the MIRROR of Nic400AhbBridge.arch. That module is the AHB-MASTER
+// side: an AHB-Lite CPU master driving INTO the AXI4 fabric (AHB `target` +
+// AXI `initiator`). This module flips both roles — it is the AHB-Lite master
+// interface / "mirrored slave" flavour per TRM §2.2.1/§2.2.2:
+//
+//   • AXI4 `target` on `axi`  — the fabric's AMIB / SlavePort drives this side.
+//     The bridge sees AR/AW/W as IN and drives R/B + the *_ready backpressure.
+//   • AHB-Lite `initiator` (master) on `h` — the bridge drives the AHB address
+//     and data phases at an external AHB peripheral/slave and samples
+//     HRDATA/HREADY/HRESP back.
+//
+// Sized for the same DATA_W/ADDR_W as the fabric (32/32 default) so it drops in
+// alongside the AHB-master-side bridge and the APB bridge as one of the
+// fabric's SlavePort downstreams (an AHB peripheral).
+//
+// What v1 implements (single-beat, HBURST=SINGLE):
+//   • AXI4 AR (read) → AHB address phase (HTRANS=NONSEQ, HWRITE=0, HADDR=
+//     ar_addr, HSIZE=ar_size, HPROT from ar_prot, HMASTLOCK from ar_lock) →
+//     AHB data phase (capture HRDATA when HREADY) → AXI4 R response
+//     (RDATA=HRDATA, RRESP from HRESP, RLAST=1).
+//   • AXI4 AW+W (write) → AHB address phase (HWRITE=1) + data phase
+//     (HWDATA=w_data) → AXI4 B response (BRESP from HRESP).
+//   • Map: axsize→HSIZE (direct copy), axprot→HPROT (low bits, AHB HPROT[0]=
+//     data/opcode is forced to 1=data, [3:1] from axprot), axlock→HMASTLOCK.
+//   • HRESP OKAY(0)/ERROR(1) → AXI OKAY(0)/SLVERR(2). AHB-Lite collapses the
+//     two-cycle ERROR sequence to a one-bit HRESP asserted in the data phase;
+//     this bridge samples HRESP in the same cycle it samples HREADY=1, which
+//     matches the single-data-phase model used by the rest of the NIC-400 demo.
+//
+// AHB-Lite master protocol (single transfer), as driven by this bridge:
+//   • Address phase: while the previous transfer's HREADY=1, drive
+//     HTRANS=NONSEQ + HADDR + control. The address phase "completes" (the
+//     slave latches the address) on the rising edge where HREADY=1.
+//   • Data phase: the cycle after the address phase, HRDATA/HRESP are valid
+//     when HREADY=1. The slave may insert wait states by holding HREADY=0;
+//     the bridge stays in the data-phase state until HREADY=1.
+//   During the data phase the bridge drives HTRANS=IDLE so the slave does not
+//   start a second, unintended transfer.
+//
+// Limitations (v1):
+//   • Single-beat only (HBURST=SINGLE). The AXI side accepts ar_len/aw_len but
+//     v1 verifies axlen=0; multi-beat AHB streaming is a follow-on (mirrors the
+//     master-side bridge's own single-beat-first staging).
+//   • No AXI exclusive-access semantics on the AHB side beyond forwarding
+//     ar_lock/aw_lock to HMASTLOCK.
+//
+// Concurrency: the read and write paths run as independent threads. The single
+// AHB master port is time-shared; the two threads serialise their AHB drives
+// via the h_lock priority mutex (an AXI master rarely has a read and a write to
+// the same peripheral in flight at once, but the lock keeps the multi-driver
+// legal in the lowered FSM — same pattern as the master-side bridge and the
+// APB bridge).
+module Nic400AhbSlaveBridge
+  param ADDR_WIDTH: const = 32;
+  param DATA_WIDTH: const = 32;
+  param STRB_WIDTH: const = 4;         // = DATA_WIDTH/8
+  param ID_WIDTH:   const = 3;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  // AXI4 target — bridge sees AR/AW/W as IN, drives R/B and the *_ready
+  // backpressure signals.
+  port axi: target    BusAxi4<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH, STRB_W=STRB_WIDTH,
+                              ID_W=ID_WIDTH, READ=1, WRITE=1>;
+  // AHB-Lite initiator (master) — bridge drives address/control/HWDATA,
+  // samples HRDATA/HREADY/HRESP.
+  port h:   initiator BusAhbLite<ADDR_W=ADDR_WIDTH, DATA_W=DATA_WIDTH>;
+
+  // Mutex to serialise the multi-thread comb drives on h.*. In steady state
+  // the two threads do not contend; the lock keeps the multi-driver legal in
+  // the lowered FSM.
+  resource h_lock: mutex<priority>;
+
+  // ── Read-path captured state ────────────────────────────────────────
+  reg ar_addr_r: UInt<ADDR_WIDTH> reset rst => 0;
+  reg ar_size_r: UInt<3>          reset rst => 0;
+  reg ar_prot_r: UInt<3>          reset rst => 0;
+  reg ar_lock_r: Bool             reset rst => false;
+  reg ar_id_r:   UInt<ID_WIDTH>   reset rst => 0;
+  reg rdata_r:   UInt<DATA_WIDTH> reset rst => 0;
+  reg rerr_r:    Bool             reset rst => false;
+
+  // ── Write-path captured state ───────────────────────────────────────
+  reg aw_addr_r: UInt<ADDR_WIDTH> reset rst => 0;
+  reg aw_size_r: UInt<3>          reset rst => 0;
+  reg aw_prot_r: UInt<3>          reset rst => 0;
+  reg aw_lock_r: Bool             reset rst => false;
+  reg aw_id_r:   UInt<ID_WIDTH>   reset rst => 0;
+  reg wdata_r:   UInt<DATA_WIDTH> reset rst => 0;
+  reg werr_r:    Bool             reset rst => false;
+
+  // AXI {b,r}_resp from AHB HRESP. HRESP OKAY=0 → AXI OKAY=0; HRESP ERROR=1
+  // → AXI SLVERR=2 (0b10).
+  function ahb_resp_to_axi(hresp: Bool) -> UInt<2>
+    if hresp
+      return 2;
+    else
+      return 0;
+    end if
+  end function ahb_resp_to_axi
+
+  // AXI axprot[2:0] → AHB HPROT[3:0]. AHB HPROT bit0 (data/opcode) is forced
+  // to 1 (data access); bits [3:1] carry privilege/bufferable/cacheable hints
+  // from the AXI prot low bits. This is a pragmatic mapping for the demo — the
+  // real ARM bridge has a configurable HPROT remap table.
+  function axi_prot_to_ahb(axprot: UInt<3>) -> UInt<4>
+    return (axprot.zext<4>() << 1) | 1;
+  end function axi_prot_to_ahb
+
+  // ── Read thread ──────────────────────────────────────────────────────
+  // AXI AR → AHB read transfer → AXI R.
+  thread ReadXact on clk rising, rst low
+    default comb
+      axi.ar_ready = false;
+      axi.r_valid  = false;
+      axi.r_data   = 0;
+      axi.r_id     = 0;
+      axi.r_resp   = 0;
+      axi.r_last   = false;
+      h.hsel       = false;
+      h.haddr      = 0;
+      h.hwrite     = false;
+      h.hsize      = 0;
+      h.hburst     = 0;
+      h.hprot      = 0;
+      h.htrans     = 0;     // IDLE
+      h.hmastlock  = false;
+      h.hwdata     = 0;
+    end default
+    // AR handshake — Mealy-fuse the capture into the wake state.
+    if not (axi.ar_valid)
+      wait until axi.ar_valid;
+    end if
+    do
+      axi.ar_ready = true;
+      ar_addr_r <= axi.ar_addr;
+      ar_size_r <= axi.ar_size;
+      ar_prot_r <= axi.ar_prot;
+      ar_lock_r <= axi.ar_lock;
+      ar_id_r   <= axi.ar_id;
+    until true;
+    // AHB address phase — drive NONSEQ read. Completes when slave HREADY=1.
+    lock h_lock
+      do
+        h.hsel      = true;
+        h.htrans    = 2;     // NONSEQ
+        h.haddr     = ar_addr_r;
+        h.hwrite    = false;
+        h.hsize     = ar_size_r;
+        h.hburst    = 0;     // SINGLE
+        h.hprot     = axi_prot_to_ahb(ar_prot_r);
+        h.hmastlock = ar_lock_r;
+      until h.hready;
+    end lock h_lock
+    // AHB data phase — HTRANS=IDLE (no second transfer), capture HRDATA/HRESP
+    // on the HREADY=1 cycle.
+    lock h_lock
+      do
+        h.hsel   = true;
+        h.htrans = 0;        // IDLE
+        rdata_r <= h.hrdata;
+        rerr_r  <= h.hresp;
+      until h.hready;
+    end lock h_lock
+    // AXI R beat — single-beat, RLAST=1. Held until r_ready.
+    do
+      axi.r_valid = true;
+      axi.r_data  = rdata_r;
+      axi.r_id    = ar_id_r;
+      axi.r_resp  = ahb_resp_to_axi(rerr_r);
+      axi.r_last  = true;
+    until axi.r_ready;
+  end thread ReadXact
+
+  // ── Write thread ─────────────────────────────────────────────────────
+  // AXI AW+W → AHB write transfer → AXI B.
+  thread WriteXact on clk rising, rst low
+    default comb
+      axi.aw_ready = false;
+      axi.w_ready  = false;
+      axi.b_valid  = false;
+      axi.b_id     = 0;
+      axi.b_resp   = 0;
+      h.hsel       = false;
+      h.haddr      = 0;
+      h.hwrite     = false;
+      h.hsize      = 0;
+      h.hburst     = 0;
+      h.hprot      = 0;
+      h.htrans     = 0;     // IDLE
+      h.hmastlock  = false;
+      h.hwdata     = 0;
+    end default
+    // AW handshake — capture address/control, clear werr_r.
+    if not (axi.aw_valid)
+      wait until axi.aw_valid;
+    end if
+    do
+      axi.aw_ready = true;
+      aw_addr_r <= axi.aw_addr;
+      aw_size_r <= axi.aw_size;
+      aw_prot_r <= axi.aw_prot;
+      aw_lock_r <= axi.aw_lock;
+      aw_id_r   <= axi.aw_id;
+      werr_r    <= false;
+    until true;
+    // W handshake — capture the single write-data beat.
+    if not (axi.w_valid)
+      wait until axi.w_valid;
+    end if
+    do
+      axi.w_ready = true;
+      wdata_r <= axi.w_data;
+    until true;
+    // AHB address phase — drive NONSEQ write. Completes when slave HREADY=1.
+    lock h_lock
+      do
+        h.hsel      = true;
+        h.htrans    = 2;     // NONSEQ
+        h.haddr     = aw_addr_r;
+        h.hwrite    = true;
+        h.hsize     = aw_size_r;
+        h.hburst    = 0;     // SINGLE
+        h.hprot     = axi_prot_to_ahb(aw_prot_r);
+        h.hmastlock = aw_lock_r;
+      until h.hready;
+    end lock h_lock
+    // AHB data phase — drive HWDATA, HTRANS=IDLE, capture HRESP on HREADY=1.
+    lock h_lock
+      do
+        h.hsel   = true;
+        h.htrans = 0;        // IDLE
+        h.hwrite = true;
+        h.hwdata = wdata_r;
+        werr_r <= h.hresp;
+      until h.hready;
+    end lock h_lock
+    // AXI B response — single-beat write done.
+    do
+      axi.b_valid = true;
+      axi.b_id    = aw_id_r;
+      axi.b_resp  = ahb_resp_to_axi(werr_r);
+    until axi.b_ready;
+  end thread WriteXact
+end module Nic400AhbSlaveBridge

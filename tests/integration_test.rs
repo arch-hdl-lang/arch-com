@@ -25217,6 +25217,82 @@ fn test_nic400_apb_bridge_excl_len_illegal_is_rejected_by_sva() {
 }
 
 // ────────────────────────────────────────────────────────────────────
+// NIC-400 §16.1 — AHB-Lite slave-side (mirrored) bridge
+// ────────────────────────────────────────────────────────────────────
+//
+// Nic400AhbSlaveBridge.arch is the MIRROR of Nic400AhbBridge.arch: it
+// flips both bus roles so the AXI4 side is a `target` (driven by the
+// fabric) and the AHB-Lite side is an `initiator` (driving an external
+// AHB peripheral). This exercises bus target/initiator direction-flip
+// and thread lowering in the reverse direction from the shipped
+// master-side bridge. End-to-end behaviour (AXI read/write through to
+// the AHB peripheral, plus HRESP→AXI-resp SLVERR mapping) is verified by
+// examples/nic400/Nic400AhbSlaveBridge_test.harc under
+// `harc sim --check-backends` (ARCH native sim ≡ Verilator).
+//
+// This regression pins the direction-flip in the lowered SV: a rename or
+// a target/initiator regression in the bus flatten / thread-lowering path
+// would change these port directions and trip the test.
+#[test]
+fn test_nic400_ahb_slave_bridge_flips_bus_roles_in_lowered_sv() {
+    let source = concat!(
+        include_str!("../examples/nic400/Nic400AhbSlaveBridge.arch"),
+        "\n",
+        include_str!("../examples/nic400/BusAxi4.arch"),
+        "\n",
+        include_str!("../examples/nic400/BusAhbLite.arch"),
+    );
+    let sv = compile_to_sv(source);
+
+    // AXI4 is the `target`: the bridge SEES AR/AW/W as inputs and DRIVES
+    // the R/B channels + the *_ready backpressure as outputs. (On the
+    // master-side bridge these directions are reversed.)
+    assert!(
+        sv.contains("input logic axi_ar_valid,"),
+        "AXI4 target: ar_valid must be an INPUT to the bridge:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic axi_ar_ready,"),
+        "AXI4 target: ar_ready must be an OUTPUT of the bridge:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic axi_r_valid,") && sv.contains("input logic axi_r_ready,"),
+        "AXI4 target: r_valid is an OUTPUT, r_ready an INPUT:\n{sv}"
+    );
+
+    // AHB-Lite is the `initiator` (master): the bridge DRIVES the address/
+    // control/HWDATA as outputs and SAMPLES HRDATA/HREADY/HRESP as inputs.
+    assert!(
+        sv.contains("output logic h_hsel,") && sv.contains("output logic h_hwrite,"),
+        "AHB initiator: HSEL/HWRITE must be OUTPUTs of the bridge:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic [1:0] h_htrans,"),
+        "AHB initiator: HTRANS must be an OUTPUT of the bridge:\n{sv}"
+    );
+    assert!(
+        sv.contains("input logic h_hready") && sv.contains("input logic h_hresp"),
+        "AHB initiator: HREADY/HRESP must be INPUTs to the bridge:\n{sv}"
+    );
+    assert!(
+        sv.contains("input logic [DATA_WIDTH-1:0] h_hrdata,")
+            && sv.contains("output logic [DATA_WIDTH-1:0] h_hwdata,"),
+        "AHB initiator: HRDATA in, HWDATA out:\n{sv}"
+    );
+
+    // Two independent threads (read + write) lower to two state machines
+    // in the `_threads` sub-module.
+    assert!(
+        sv.contains("module _Nic400AhbSlaveBridge_threads"),
+        "expected lowered `_Nic400AhbSlaveBridge_threads` sub-module:\n{sv}"
+    );
+    assert!(
+        sv.contains("_t0_state") && sv.contains("_t1_state"),
+        "expected two lowered thread state registers (read + write):\n{sv}"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────
 // NIC-400 read+write async-clock CDC bridge (GPV ring)
 // ────────────────────────────────────────────────────────────────────
 //
