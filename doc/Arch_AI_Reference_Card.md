@@ -670,6 +670,7 @@ Notes:
 - `kind ff` with multi-bit data (`UInt<N>` where N>1) warns — use `kind gray` or `kind handshake`
 - `kind reset` and `kind pulse` error if data is not `Bool`
 - CDC checking extends across `inst` boundaries; comb→seq crossings across domains are compile errors
+- Connecting a parent clock to a child `clk` port of a *different* declared domain (e.g. a reusable `Clock<SysDomain>` child under a named domain) is a **legitimate rebind**, not a violation — the connected clock fixes the instance's domain; only cross-domain *data* into a child port is flagged
 
 ---
 
