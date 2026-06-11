@@ -25829,3 +25829,105 @@ end module TopBad
         errs
     );
 }
+
+// ────────────────────────────────────────────────────────────────────
+// NIC-400 AXI3 endpoint shim + AXI4↔AXI3 protocol conversion
+// (nic400_interconnect_spec.md §16.1, TRM DDI 0475E §1.2/§2.3.1)
+// ────────────────────────────────────────────────────────────────────
+//
+// Three new examples: examples/nic400/BusAxi3.arch (AXI3 bus bundle),
+// Nic400Axi4ToAxi3.arch (AXI4→AXI3 long-burst splitter), and
+// Nic400Axi3ToAxi4.arch (AXI3→AXI4 programmable burst limiter).
+//
+// End-to-end behaviour is verified by the pre/post-edge C++ TBs
+// tb_nic400_axi4_to_axi3_split.cpp and tb_nic400_axi3_to_axi4_limit.cpp
+// (PASS under BOTH `arch sim` and Verilator — see PR description) and by
+// the HARC TB Nic400Axi4ToAxi3_test.harc (`--check-backends` reports no
+// divergence). These cargo tests pin the load-bearing SV codegen of the
+// burst-split arithmetic so a future thread-lowering / width regression
+// trips a dedicated test.
+
+#[test]
+fn test_nic400_axi4_to_axi3_burst_split_arithmetic_sv() {
+    // The AXI4→AXI3 splitter lowers to a `_threads` sub-module that must:
+    //   1. compute num_sub = ceil((ar_len+1)/16) as (ar_len + 16) >> 4;
+    //   2. step each sub-burst start address by (i*16) << size;
+    //   3. truncate the per-sub-burst AXI3 ar_len to 4 bits (max 16 beats);
+    //   4. suppress the merged RLAST except on the final sub-burst
+    //      (loop_cnt == num_sub-1).
+    let bus4 = include_str!("../examples/nic400/BusAxi4.arch");
+    let bus3 = include_str!("../examples/nic400/BusAxi3.arch");
+    let dut = include_str!("../examples/nic400/Nic400Axi4ToAxi3.arch");
+    let sv = compile_to_sv(&format!("{bus4}\n{bus3}\n{dut}"));
+    let flat: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    // 1. ceil-div sub-burst count: (ar_len + 16) >> 4.
+    assert!(
+        flat.contains("num_sub_r <= 5'(9'(9'($unsigned(m_ar_len)) + 16) >> 4)"),
+        "num_sub must be ceil((ar_len+1)/16) = (ar_len+16)>>4:\n{sv}",
+    );
+    // 2. INCR-stepped sub-burst start address: base + (beats_done << size).
+    assert!(
+        flat.contains("logic [ADDR_W-1:0] stepped = done << size;")
+            && flat.contains("return ADDR_W'(base + stepped);"),
+        "sub-burst start address must step by (i*16)<<size:\n{sv}",
+    );
+    // 3. AXI3 ar_len is 4-bit and is sub_beats-1.
+    assert!(
+        flat.contains("output logic [3:0] s_ar_len"),
+        "AXI3 s_ar_len must be 4-bit (max 16-beat burst):\n{sv}",
+    );
+    assert!(
+        flat.contains("s_ar_len = 4'(sub_beats_5_9(_t0_loop_cnt_0, total_r) - 1)"),
+        "AXI3 ar_len must be (sub_beats - 1) truncated to 4 bits:\n{sv}",
+    );
+    // min(16, remaining) clamp inside sub_beats().
+    assert!(
+        flat.contains("if (remaining > 16) begin return 9'd16;"),
+        "sub_beats must clamp to min(16, remaining):\n{sv}",
+    );
+    // 4. merged RLAST only on the final sub-burst.
+    assert!(
+        flat.contains("m_r_last = _t0_loop_cnt_0 == num_sub_r - 1 && s_r_last"),
+        "merged RLAST must fire only on the final sub-burst:\n{sv}",
+    );
+}
+
+#[test]
+fn test_nic400_axi3_to_axi4_limiter_field_mapping_sv() {
+    // The AXI3→AXI4 limiter forwards (limits) AXI3 reads onto AXI4. It must:
+    //   1. zero AXI4 QoS / REGION (AXI3 has neither);
+    //   2. map AXI3 2-bit AxLOCK (EXCLUSIVE=01) to AXI4 1-bit lock (==1);
+    //   3. take MAX_BURST as the programmable onward-AxLEN cap.
+    let bus3 = include_str!("../examples/nic400/BusAxi3.arch");
+    let bus4 = include_str!("../examples/nic400/BusAxi4.arch");
+    let dut = include_str!("../examples/nic400/Nic400Axi3ToAxi4.arch");
+    let sv = compile_to_sv(&format!("{bus3}\n{bus4}\n{dut}"));
+    let flat: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    // 1. AXI3 AxLEN is 4-bit on the master-facing port (target flips dir →
+    //    input on this converter), AXI4 AxLEN is 8-bit on the slave port.
+    assert!(
+        flat.contains("input logic [3:0] m_ar_len"),
+        "AXI3 master-facing ar_len must be 4-bit:\n{sv}",
+    );
+    assert!(
+        flat.contains("output logic [7:0] s_ar_len"),
+        "AXI4 slave-facing ar_len must be 8-bit:\n{sv}",
+    );
+    // 2. AXI4 QoS / REGION held at 0.
+    assert!(
+        flat.contains("s_ar_qos = 0") && flat.contains("s_ar_region = 0"),
+        "AXI4 QoS/REGION must be tied to 0 (AXI3 has neither):\n{sv}",
+    );
+    // 3. AXI3 2-bit lock → AXI4 1-bit lock via (l == 1).
+    assert!(
+        flat.contains("return l == 1;"),
+        "AXI3 2-bit AxLOCK must map EXCLUSIVE(01)→1, else 0:\n{sv}",
+    );
+    // 4. MAX_BURST is the programmable cap parameter, default 16.
+    assert!(
+        flat.contains("parameter int MAX_BURST = 16"),
+        "MAX_BURST must be the GPV-programmable onward-AxLEN cap (default 16):\n{sv}",
+    );
+}
