@@ -1,0 +1,34 @@
+// Mid declares a base param `W` and two *derived* params (defaults that
+// reference `W`). It feeds those derived params into two `Leaf` instances and
+// sizes its own ports by them.
+//
+// When `Top` instantiates `Mid` with `W = 5` (override), the derived params
+// must re-evaluate (DA = 5+2 = 7, DB = 5+4 = 9). Before the fix:
+//   * the derived params stayed at their default-computed values (DA=5, DB=7),
+//     so `port a/ya: UInt<DA>` resolved to the wrong width — a type-check
+//     `width mismatch` on `{a, two}`; and
+//   * even with that masked, the inner `Leaf` insts rewrote to variants
+//     (PW=7 / PW=9) that transitive variant discovery never created —
+//     "undefined module Leaf".
+module Mid
+  param W:  const = 3;
+  param DA: const = W + 2;
+  param DB: const = W + 4;
+
+  port a:  in  UInt<DA>;
+  port b:  in  UInt<DB>;
+  port ya: out UInt<DA>;
+  port yb: out UInt<DB>;
+
+  inst la: Leaf
+    param PW = DA;
+    a <- a;
+    y -> ya;
+  end inst la
+
+  inst lb: Leaf
+    param PW = DB;
+    a <- b;
+    y -> yb;
+  end inst lb
+end module Mid

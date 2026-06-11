@@ -794,18 +794,21 @@ struct VlWide {
 /// 128-bit internal arithmetic type (used for 65–128 bit signals).
 typedef unsigned __int128 _arch_u128;
 
-/// Convert VlWide<4> → 128-bit integer (bit 127 = MSB = _data[3] MSB).
-static inline _arch_u128 _arch_vl_to_u128(const uint32_t* w) {
-    return ((_arch_u128)w[3] << 96) | ((_arch_u128)w[2] << 64)
-         | ((_arch_u128)w[1] << 32) | (_arch_u128)w[0];
+/// Convert a VlWide<N> backing array → 128-bit integer. `words` is the actual
+/// element count of the array (= ceil(W/32)); only those words are read, so a
+/// `VlWide<3>` (66–96-bit) payload is NOT read out of bounds. Missing high words
+/// contribute 0.
+static inline _arch_u128 _arch_vl_to_u128(const uint32_t* w, int words) {
+    _arch_u128 r = 0;
+    for (int i = 0; i < words && i < 4; i++) r |= ((_arch_u128)w[i]) << (32 * i);
+    return r;
 }
 
-/// Convert 128-bit integer → VlWide<4>.
-static inline void _arch_u128_to_vl(const _arch_u128 v, uint32_t* w) {
-    w[0] = (uint32_t)(v);
-    w[1] = (uint32_t)(v >> 32);
-    w[2] = (uint32_t)(v >> 64);
-    w[3] = (uint32_t)(v >> 96);
+/// Convert 128-bit integer → a VlWide<N> backing array. `words` is the actual
+/// element count; only those words are written, so writing into a `VlWide<3>`
+/// payload does NOT clobber the adjacent struct member past `_data[2]`.
+static inline void _arch_u128_to_vl(const _arch_u128 v, uint32_t* w, int words) {
+    for (int i = 0; i < words && i < 4; i++) w[i] = (uint32_t)(v >> (32 * i));
 }
 
 /// Extract up to 64 bits [hi:lo] from a VlWide _data array.
@@ -1660,7 +1663,19 @@ fn expand_bus_connections(
                                 BindKind::Wire2DIndex(arr_name.clone(), *m as u32, *n as u32)
                             } else { continue; }
                         } else if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) = (&arr.kind, &idx.kind) {
-                            if bus_wire_names.contains(arr_name.as_str()) {
+                            if bus_wire_names.contains(arr_name.as_str())
+                                || parent_vec_of_bus_wires.contains_key(arr_name.as_str())
+                            {
+                                // 1-D Vec-of-bus WIRE element (`wire s_int:
+                                // Vec<B, N>;` → `s_int[i]`) OR a scalar bus
+                                // wire indexed as a struct-array element. Both
+                                // are stored as `B _let_<name>[N]`, so the
+                                // parent-side ref is `_let_<name>[i].<sig>`.
+                                // Without this branch a Vec-of-bus wire element
+                                // fell through to `continue`, silently DROPPING
+                                // the connection (inst port left undriven in the
+                                // ARCH sim while the SV backend wired it) — the
+                                // per-slave reg-slice `up <- s_int[j]` bug.
                                 BindKind::WireIndex(arr_name.clone(), *i as u32)
                             } else if parent_vec_of_bus_ports.contains_key(arr_name.as_str()) {
                                 // Vec-of-bus PORT element on the parent
@@ -2383,8 +2398,11 @@ impl<'a> Ctx<'a> {
                 // Internal and port both VlWide<N> — no conversion needed
                 base
             } else {
-                // 65–128 bit: port is VlWide<4>, internal arithmetic uses _arch_u128
-                format!("_arch_vl_to_u128({base}._data)")
+                // 65–128 bit: port is VlWide<ceil(W/32)>, internal arithmetic
+                // uses _arch_u128. Pass the real word count so a VlWide<3>
+                // (66–96 bit) backing array is not read out of bounds.
+                let words = wide_words(bits);
+                format!("_arch_vl_to_u128({base}._data, {words})")
             }
         } else {
             base
@@ -3573,9 +3591,12 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
                         // >128 bits: both internal and port are VlWide<N> — direct assign.
                         out.push_str(&format!("{}{} = {};\n", ind(indent), target_name, rhs));
                     } else {
-                        // 65–128 bits: internal is _arch_u128, port is VlWide<4>.
-                        out.push_str(&format!("{}  _arch_u128_to_vl({}, {}._data);\n",
-                            ind(indent), rhs, target_name));
+                        // 65–128 bits: internal is _arch_u128, port is
+                        // VlWide<ceil(W/32)>. Pass the real word count so a
+                        // VlWide<3> (66–96 bit) port is not written out of
+                        // bounds (which clobbers the adjacent struct member).
+                        out.push_str(&format!("{}  _arch_u128_to_vl({}, {}._data, {});\n",
+                            ind(indent), rhs, target_name, wide_words(bits)));
                     }
                 } else {
                     out.push_str(&format!("{}{}  = {};\n", ind(indent), resolved_target, rhs));
@@ -3896,7 +3917,8 @@ fn emit_port_reg_public_copy(
 
     let bits = widths.get(name).copied().unwrap_or(0);
     if bits > 64 && bits <= 128 {
-        cpp.push_str(&format!("{indent}_arch_u128_to_vl(_{name}, {name}._data);\n"));
+        cpp.push_str(&format!("{indent}_arch_u128_to_vl(_{name}, {name}._data, {});\n",
+            wide_words(bits)));
     } else {
         cpp.push_str(&format!("{indent}{name} = _{name};\n"));
     }
@@ -6393,8 +6415,8 @@ impl<'a> SimCodegen<'a> {
                             widths.get(n.as_str()).copied().unwrap_or(0)
                         } else { 0 };
                         if _out_w > 64 {
-                            cpp.push_str(&format!("    {} = _arch_vl_to_u128(_inst_{}.{}.data());\n",
-                                sig, inst.name.name, conn.port_name.name));
+                            cpp.push_str(&format!("    {} = _arch_vl_to_u128(_inst_{}.{}.data(), {});\n",
+                                sig, inst.name.name, conn.port_name.name, wide_words(_out_w)));
                         } else {
                             cpp.push_str(&format!("    {} = _inst_{}.{};\n",
                                 sig, inst.name.name, conn.port_name.name));
@@ -6570,8 +6592,8 @@ impl<'a> SimCodegen<'a> {
                             widths.get(n.as_str()).copied().unwrap_or(0)
                         } else { 0 };
                         if _out_w > 64 {
-                            cpp.push_str(&format!("    {} = _arch_vl_to_u128(_inst_{}.{}.data());\n",
-                                sig, inst.name.name, conn.port_name.name));
+                            cpp.push_str(&format!("    {} = _arch_vl_to_u128(_inst_{}.{}.data(), {});\n",
+                                sig, inst.name.name, conn.port_name.name, wide_words(_out_w)));
                         } else {
                             cpp.push_str(&format!("    {} = _inst_{}.{};\n",
                                 sig, inst.name.name, conn.port_name.name));
@@ -7323,8 +7345,8 @@ impl<'a> SimCodegen<'a> {
                             widths.get(n.as_str()).copied().unwrap_or(0)
                         } else { 0 };
                         if _in_w > 64 {
-                            cpp.push_str(&format!("  _arch_u128_to_vl({}, _inst_{}.{}.data());\n",
-                                sig, inst.name.name, conn.port_name.name));
+                            cpp.push_str(&format!("  _arch_u128_to_vl({}, _inst_{}.{}.data(), {});\n",
+                                sig, inst.name.name, conn.port_name.name, wide_words(_in_w)));
                         } else {
                             cpp.push_str(&format!("  _inst_{}.{} = {};\n",
                                 inst.name.name, conn.port_name.name, sig));
@@ -7374,8 +7396,8 @@ impl<'a> SimCodegen<'a> {
                             widths.get(n.as_str()).copied().unwrap_or(0)
                         } else { 0 };
                         if _out_w > 64 {
-                            cpp.push_str(&format!("  {} = _arch_vl_to_u128(_inst_{}.{}.data());\n",
-                                sig, inst.name.name, conn.port_name.name));
+                            cpp.push_str(&format!("  {} = _arch_vl_to_u128(_inst_{}.{}.data(), {});\n",
+                                sig, inst.name.name, conn.port_name.name, wide_words(_out_w)));
                         } else {
                             cpp.push_str(&format!("  {} = _inst_{}.{};\n",
                                 sig, inst.name.name, conn.port_name.name));

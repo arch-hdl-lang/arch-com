@@ -1,0 +1,16 @@
+// Top overrides Mid's base param `W = 5`. The derived params DA/DB and the
+// nested Leaf variants must all track the override.
+module Top
+  port a:  in  UInt<7>;
+  port b:  in  UInt<9>;
+  port ya: out UInt<7>;
+  port yb: out UInt<9>;
+
+  inst mid: Mid
+    param W = 5;
+    a  <- a;
+    b  <- b;
+    ya -> ya;
+    yb -> yb;
+  end inst mid
+end module Top
