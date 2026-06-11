@@ -83,20 +83,52 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
         })
         .collect();
 
-    // Step 2 — raw overrides from every inst site in the file
-    let mut inst_raw: HashMap<String, Vec<HashMap<String, i64>>> = HashMap::new();
-    for item in &ast.items {
-        if let Item::Module(m) = item {
-            let param_vals = module_defaults
-                .get(&m.name.name)
-                .cloned()
-                .unwrap_or_default();
-            collect_raw_overrides_from_body(&m.body, &mut inst_raw, &param_vals);
+    // Step 2 + 3 — discover all instantiation variants, transitively.
+    //
+    // A variant of module M is one distinct (effective param) set M is ever
+    // instantiated with. Discovery is a FIXPOINT over the instantiation graph:
+    // an override of a *base* param on M (`param W = 5`) can flow through M's
+    // *derived* params (`param PW = W + 2`) into the param expressions of M's
+    // own inner insts, producing inner-module variants that don't exist under
+    // M's default params. Walking each module body only once with its DEFAULT
+    // params (the old behavior) misses those — the inner inst then rewrites to a
+    // variant name that was never emitted ("undefined module" at SV/sim build).
+    //
+    // So we iterate: collect raw overrides using each *currently known* variant
+    // of the enclosing module as the enclosing param context, recompute
+    // variants, and repeat until no new variant appears. Modules form a DAG
+    // (no recursive instantiation in ARCH), so this terminates.
+    let mut module_variants =
+        compute_all_variants(&ast.items, &module_defaults, &HashMap::new());
+    loop {
+        let mut inst_raw: HashMap<String, Vec<HashMap<String, i64>>> = HashMap::new();
+        for item in &ast.items {
+            if let Item::Module(m) = item {
+                // Re-walk this module's body once per known variant, using that
+                // variant's effective params as the enclosing context so inner
+                // inst param expressions (which may reference derived params)
+                // resolve against the overridden values.
+                let enclosing_sets: Vec<HashMap<String, i64>> = module_variants
+                    .get(&m.name.name)
+                    .map(|vs| vs.iter().map(|(p, _)| p.clone()).collect())
+                    .unwrap_or_else(|| {
+                        vec![module_defaults
+                            .get(&m.name.name)
+                            .cloned()
+                            .unwrap_or_default()]
+                    });
+                for enclosing in &enclosing_sets {
+                    collect_raw_overrides_from_body(&m.body, &mut inst_raw, enclosing);
+                }
+            }
         }
+        let next = compute_all_variants(&ast.items, &module_defaults, &inst_raw);
+        if next == module_variants {
+            module_variants = next;
+            break;
+        }
+        module_variants = next;
     }
-
-    // Step 3 — distinct effective-param sets and variant names per module
-    let module_variants = compute_all_variants(&ast.items, &module_defaults, &inst_raw);
 
     // Child-module port info: needed by expand_generate_for to detect
     // Vec-of-bus child ports that disqualify the SV-genvar preservation.
@@ -362,6 +394,14 @@ fn compute_all_variants(
                 for raw in raw_list {
                     let mut effective = defaults.clone();
                     effective.extend(raw.iter().map(|(k, v)| (k.clone(), *v)));
+                    // Re-evaluate derived params (defaults that reference other
+                    // params) against the overridden values. Without this, an
+                    // inst override of a base param (`param W = 5`) leaves a
+                    // dependent param (`param DERIVED = W + 2`) stuck at its
+                    // default-computed value, so port/wire types sized by the
+                    // derived param resolve to the wrong width. Params the inst
+                    // explicitly overrode are pinned and never recomputed.
+                    recompute_derived_params(&m.params, raw, &mut effective);
                     if !effective_sets.contains(&effective) {
                         effective_sets.push(effective);
                     }
@@ -2239,6 +2279,43 @@ fn expr_references_params(expr: &Expr, param_names: &std::collections::HashSet<&
 // ── Const evaluation ──────────────────────────────────────────────────────────
 
 /// Compute default values for all `const` params (used in Step 1).
+/// After inst-site overrides have been merged into `effective`, recompute any
+/// *derived* param — one whose default expression references other params — so
+/// it tracks the overridden value. Params the inst explicitly overrode (keys in
+/// `raw`) are pinned and never recomputed: an explicit `param X = ...` at the
+/// inst site always wins over the module's default expression.
+///
+/// Params are processed in declaration order so a derived param may depend on an
+/// earlier derived param (`B = A + 1; C = B + 1;`). Only params that already
+/// have an evaluable entry in `effective` are touched, mirroring
+/// `compute_defaults_with_enums` (which silently drops params it can't fold).
+fn recompute_derived_params(
+    params: &[ParamDecl],
+    raw: &HashMap<String, i64>,
+    effective: &mut HashMap<String, i64>,
+) {
+    // All param names that exist — used to decide whether a default is "derived"
+    // (references another param) vs a self-contained literal/const expr.
+    let param_names: std::collections::HashSet<&str> =
+        params.iter().map(|p| p.name.name.as_str()).collect();
+
+    for p in params {
+        // Explicitly overridden at the inst site → pinned, leave as-is.
+        if raw.contains_key(&p.name.name) {
+            continue;
+        }
+        let Some(default) = &p.default else { continue };
+        // Only derived defaults (those that reference other params) can change
+        // when an upstream param is overridden; literal-only defaults are stable.
+        if !expr_references_params(default, &param_names) {
+            continue;
+        }
+        if let Some(v) = try_eval_i64(default, effective) {
+            effective.insert(p.name.name.clone(), v);
+        }
+    }
+}
+
 fn compute_defaults_with_enums(
     params: &[ParamDecl],
     enum_values: &HashMap<String, Vec<(String, u64)>>,

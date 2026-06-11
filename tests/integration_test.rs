@@ -25354,6 +25354,192 @@ fn test_nic400_cdc_axi4_rw_bridge_crosses_all_five_axi_channels() {
 }
 
 // ────────────────────────────────────────────────────────────────────
+// Compiler fix: derived params re-evaluate under inst-level overrides,
+// and variant discovery is transitive through nested instantiation.
+// ────────────────────────────────────────────────────────────────────
+//
+// `Mid` has a base param `W` and derived params `DA = W+2`, `DB = W+4`.
+// `Top` instantiates `Mid` with `W = 5`. The derived params must re-evaluate
+// (DA=7, DB=9) so `Mid`'s ports are sized correctly, AND the nested `Leaf`
+// instances (param `PW = DA` / `PW = DB`) must rewrite to variants that
+// transitive variant discovery actually created (`Leaf__PW_7`, `Leaf__PW_9`).
+// Before the fix this failed two ways: a type-check width mismatch on the
+// derived-param-sized port, and an "undefined module Leaf" for the variant
+// that default-param discovery never produced.
+#[test]
+fn test_derived_param_override_reevaluates_and_creates_nested_variants() {
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("dpo.sv");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/derived_param_override/Leaf.arch")
+        .arg("tests/derived_param_override/Mid.arch")
+        .arg("tests/derived_param_override/Top.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("invoke arch build");
+    assert!(
+        build.status.success(),
+        "arch build with derived-param override should succeed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let sv = std::fs::read_to_string(&sv_out).expect("read emitted SV");
+
+    // Both nested-Leaf variants — sized by the *re-evaluated* derived params
+    // (DA = 5+2 = 7, DB = 5+4 = 9) — must exist.
+    assert!(
+        sv.contains("module Leaf__PW_7"),
+        "missing Leaf__PW_7 variant (derived param DA=W+2 must re-evaluate to 7 \
+         under the W=5 override):\n{sv}"
+    );
+    assert!(
+        sv.contains("module Leaf__PW_9"),
+        "missing Leaf__PW_9 variant (derived param DB=W+4 must re-evaluate to 9 \
+         under the W=5 override):\n{sv}"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Compiler fix: VlWide<->_arch_u128 conversion respects the real word
+// count, so a 65–96-bit (VlWide<3>) payload is not written out of bounds.
+// ────────────────────────────────────────────────────────────────────
+//
+// A 66-bit payload reg maps to `VlWide<3>` in the ARCH sim. The conversion
+// helpers used to assume a 4-word `VlWide<4>` and touched `w[3]`, overrunning
+// the 3-word backing array and clobbering the adjacent 1-bit `dn_valid`
+// member (read back as 64 instead of 1). This test runs the slice in the
+// ARCH sim and asserts the valid bit and the wide payload survive.
+#[test]
+fn test_wide_payload_slice_conversion_does_not_clobber_adjacent_member() {
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/wide_payload_slice/WidePayloadSlice.arch")
+        .arg("--tb")
+        .arg("tests/wide_payload_slice/tb_wide_payload_slice.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for WidePayloadSlice");
+    assert!(
+        out.status.success(),
+        "arch sim of the 66-bit-payload slice should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("PASS wide_payload_slice"),
+        "expected `PASS wide_payload_slice` (dn_valid==1, payload intact) in \
+         arch sim stdout — a VlWide<3> conversion overrun would corrupt \
+         dn_valid; got:\n{stdout}"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// NIC-400 per-SLAVE register-slice fabric (AMIB timing isolation)
+// ────────────────────────────────────────────────────────────────────
+//
+// `Nic400FabricRsSlave` drops a `Nic400EdgeRegSlice` on every (fabric →
+// slave) edge — the AMIB / master-IF position, the slave-side mirror of
+// `Nic400FabricRs1`'s per-master ASIB slices. The slave-side AXI4 id width
+// is `SLAVE_ID_W = 5`, so each slice is instantiated with `ID_W =
+// SLAVE_ID_W`, which forces the derived per-channel payload params
+// (AR/AW=66, R=40, W=37, B=7) to re-evaluate and creates distinct
+// `RegSliceChannel` variants for those widths.
+//
+// This test pins three things that broke real compiler bugs while building
+// this IP (all fixed in the same PR):
+//   1. The `RegSliceChannel__PAYLOAD_W_{66,40,37,7}` variants exist — i.e.
+//      derived params re-evaluate under the inst-level `ID_W` override and
+//      variant discovery is transitive through the nested instantiation.
+//   2. The per-slave slice's whole-bus `up <- s_int[j]` connection to the
+//      `Vec<SlaveBus, N>` *wire* `s_int` emits a packed indexed reference
+//      `s_int_<sig>[j]`, NOT the broken flattened `s_int_<j>_<sig>` that
+//      referenced a non-existent net.
+//   3. Four slices are instantiated, one per slave, each with
+//      `.ID_W(SLAVE_ID_W)`.
+#[test]
+fn test_nic400_fabric_rs_slave_inserts_per_slave_reg_slices_with_packed_wire_conns() {
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("rs_slave.sv");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("examples/nic400/BusAxi4.arch")
+        .arg("examples/nic400/RegSliceChannel.arch")
+        .arg("examples/nic400/Nic400EdgeRegSlice.arch")
+        .arg("examples/nic400/Nic400MasterPort.arch")
+        .arg("examples/nic400/Nic400SlavePort.arch")
+        .arg("examples/nic400/Nic400DefaultSlave.arch")
+        .arg("examples/nic400/Nic400Fabric.arch")
+        .arg("examples/nic400/Nic400FabricRsSlave.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("invoke arch build");
+    assert!(
+        build.status.success(),
+        "arch build of the per-slave reg-slice fabric should succeed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let sv = std::fs::read_to_string(&sv_out).expect("read emitted SV");
+
+    // (1) Derived params re-evaluated under ID_W=5: the slave-side payload
+    // widths produce these RegSliceChannel variants. PAYLOAD_W_66 (= AR/AW
+    // with ID_W=5) is the one that does NOT exist under the default ID_W=3,
+    // so its presence proves the override flowed through the derived params
+    // and transitive variant discovery.
+    for variant in [
+        "RegSliceChannel__PAYLOAD_W_66", // AR / AW : addr+id(5)+len+size+burst+lock+cache+prot+qos+region
+        "RegSliceChannel__PAYLOAD_W_40", // R       : data+id(5)+resp+last
+        "RegSliceChannel__PAYLOAD_W_37", // W       : data+strb+last
+        "RegSliceChannel__PAYLOAD_W_7",  // B       : id(5)+resp
+    ] {
+        assert!(
+            sv.contains(variant),
+            "per-slave reg-slice fabric SV is missing the {variant} variant — the \
+             inst-level `ID_W = SLAVE_ID_W` override must re-evaluate the derived \
+             payload params and create this variant:\n{sv}"
+        );
+    }
+
+    // (2) The whole-bus `up <- s_int[j]` connection to the Vec-of-bus *wire*
+    // `s_int` must emit a packed indexed reference, e.g. `s_int_ar_valid[0]`.
+    // The pre-fix codegen emitted the flattened `s_int_0_ar_valid`, which
+    // referenced a net that was never declared (Verilator IMPLICIT, and a
+    // dropped connection in the ARCH sim).
+    assert!(
+        sv.contains("s_int_ar_valid[0]"),
+        "per-slave slice `up <- s_int[j]` must connect to the packed Vec-of-bus \
+         wire element `s_int_ar_valid[0]`, not a flattened `s_int_0_ar_valid`:\n{sv}"
+    );
+    assert!(
+        !sv.contains("s_int_0_ar_valid"),
+        "per-slave slice connection must NOT emit the broken flattened \
+         `s_int_0_ar_valid` net name (Vec-of-bus *wire* indexed-connection bug):\n{sv}"
+    );
+
+    // (3) Exactly four EdgeRegSlice instances (one per slave), each overriding
+    // ID_W with SLAVE_ID_W.
+    let slice_insts = sv
+        .matches("Nic400EdgeRegSlice #(.ID_W(SLAVE_ID_W))")
+        .count();
+    assert_eq!(
+        slice_insts, 4,
+        "expected exactly 4 per-slave Nic400EdgeRegSlice instances each with \
+         .ID_W(SLAVE_ID_W); found {slice_insts}:\n{sv}"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────
 // User-written `assert` SVA reset gating
 // ────────────────────────────────────────────────────────────────────
 //
