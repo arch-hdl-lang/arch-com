@@ -1,0 +1,183 @@
+// Nic400GpvRing testbench — multi-clock-domain GPV config-access ring.
+//
+// DUT: examples/nic400/Nic400GpvRing.arch — a config master in domain A
+// (MClkDom, 200 MHz) reaches a GPV register block in domain B (SClkDom,
+// 150 MHz) through the read+write async-clock AXI4 CDC bridge
+// (Nic400CdcAxi4Rw). The TB plays the config master on m_clk and checks that a
+// Secure 32-bit WRITE crosses A->B, lands in the GPV register, and a following
+// READ crosses A->B->A returning the same data — i.e. the config path survives
+// the async clock-domain boundary intact, in both directions.
+//
+// CDC TB gotcha (per Nic400CdcAxi4_test.harc): hold the master accept side
+// (m_r_ready / m_b_ready) LOW and POLL until valid — the response FIFO holds
+// the payload until we pulse ready. Holding accept high can drain the payload
+// between polls.
+//
+// Run:
+//   harc sim --check-backends \
+//     --arch-bin <worktree>/target/debug/arch \
+//     --dut examples/nic400/BusAxi4.arch \
+//     --dut examples/nic400/Nic400GpvArCdcFifo.arch \
+//     --dut examples/nic400/Nic400GpvRCdcFifo.arch \
+//     --dut examples/nic400/Nic400GpvAwCdcFifo.arch \
+//     --dut examples/nic400/Nic400GpvWCdcFifo.arch \
+//     --dut examples/nic400/Nic400GpvBCdcFifo.arch \
+//     --dut examples/nic400/Nic400CdcAxi4Rw.arch \
+//     --dut examples/nic400/Nic400GpvRegs.arch \
+//     --dut examples/nic400/Nic400Gpv.arch \
+//     --dut examples/nic400/Nic400GpvRing.arch \
+//     --sv /tmp/gpv_ring.sv \
+//     examples/nic400/Nic400GpvRing_test.harc --top Nic400GpvRing
+
+domain MClkDom
+  freq_mhz: 200
+end domain MClkDom
+
+domain SClkDom
+  freq_mhz: 150
+end domain SClkDom
+
+testbench Nic400GpvRingTb
+    dut : Nic400GpvRing
+end testbench Nic400GpvRingTb
+
+impl Nic400GpvRingTest for Nic400GpvRingTb
+    clock m_clk = MClkDom     // 200 MHz primary (5 ns) — config master domain A
+    clock s_clk = SClkDom     // 150 MHz (~6.67 ns) — GPV domain B; non-integer
+                              // 4:3 ratio so the gray-code pointer sync crosses
+                              // genuinely non-aligned edges.
+
+    run
+        log(info, "Nic400 GPV ring: cross-domain config write+read (A=200MHz -> B=150MHz)")
+
+        // ── Reset: bridge async-low asserted (0), GPV sync-high asserted (1) ──
+        dut.rst_n   = 0
+        dut.gpv_rst = 1
+        dut.m_ar_valid = 0
+        dut.m_ar_addr  = 0
+        dut.m_ar_id    = 0
+        dut.m_ar_len   = 0
+        dut.m_ar_size  = 2
+        dut.m_ar_burst = 0
+        dut.m_ar_lock  = 0
+        dut.m_ar_cache = 0
+        dut.m_ar_prot  = 0
+        dut.m_ar_qos   = 0
+        dut.m_ar_region = 0
+        dut.m_r_ready  = 0
+        dut.m_aw_valid = 0
+        dut.m_aw_addr  = 0
+        dut.m_aw_id    = 0
+        dut.m_aw_len   = 0
+        dut.m_aw_size  = 2
+        dut.m_aw_burst = 0
+        dut.m_aw_lock  = 0
+        dut.m_aw_cache = 0
+        dut.m_aw_prot  = 0
+        dut.m_aw_qos   = 0
+        dut.m_aw_region = 0
+        dut.m_w_valid  = 0
+        dut.m_w_data   = 0
+        dut.m_w_strb   = 0xF
+        dut.m_w_last   = 1
+        dut.m_b_ready  = 0
+        wait 80ns
+        dut.rst_n   = 1
+        dut.gpv_rst = 0
+        wait 40ns
+
+        // ── 1. Secure 32-bit WRITE: GPV reg[2] = 0xDEADBEEF (crosses A->B) ───
+        // word index 2 → byte addr 0x008. Secure = AxPROT[1]==0, size=2.
+        dut.m_aw_addr  = 0x008
+        dut.m_aw_id    = 5
+        dut.m_aw_size  = 2
+        dut.m_aw_prot  = 0
+        dut.m_w_data   = 0xDEADBEEF
+        dut.m_w_strb   = 0xF
+        dut.m_w_last   = 1
+        // Assert AW and W together; hold until each is pushed into its CDC FIFO
+        // (m_aw_ready / m_w_ready = the FIFO push_ready). Drop each on push.
+        dut.m_aw_valid = 1
+        dut.m_w_valid  = 1
+        dut.m_b_ready  = 0          // hold B accept LOW; poll for the crossed B
+        let aw_done : uint<32> = 0
+        let w_done  : uint<32> = 0
+        for _ in 0 .. 40
+            wait 5ns
+            if dut.m_aw_ready == 1 && aw_done == 0
+                aw_done = 1
+                dut.m_aw_valid = 0
+            end if
+            if dut.m_w_ready == 1 && w_done == 0
+                w_done = 1
+                dut.m_w_valid = 0
+            end if
+        end for
+        assert aw_done == 1 else fail("AW never pushed into the CDC bridge")
+        assert w_done == 1  else fail("W never pushed into the CDC bridge")
+        log(info, "AW+W pushed M->S into the CDC bridge")
+
+        // ── Wait for the write response B to cross back B->A, then accept ────
+        let bseen : uint<32> = 0
+        let bresp : uint<32> = 9
+        let bid   : uint<32> = 0
+        for _ in 0 .. 80
+            wait 5ns
+            if dut.m_b_valid == 1 && bseen == 0
+                bseen = 1
+                bresp = dut.m_b_resp
+                bid   = dut.m_b_id
+            end if
+        end for
+        assert bseen == 1 else fail("write response B never crossed B->A")
+        assert bresp == 0 else fail("cross-domain write BRESP != OKAY: got ${bresp}")
+        assert bid   == 5 else fail("cross-domain write BID corrupted: got ${bid}")
+        log(info, "write B crossed B->A intact (BRESP=OKAY id=${bid})")
+        // Accept the B (>=1 m_clk edge of ready).
+        dut.m_b_ready = 1
+        wait 5ns
+        dut.m_b_ready = 0
+
+        // ── 2. Secure 32-bit READ of reg[2] → expect 0xDEADBEEF, OKAY ───────
+        dut.m_ar_addr  = 0x008
+        dut.m_ar_id    = 6
+        dut.m_ar_size  = 2
+        dut.m_ar_prot  = 0
+        dut.m_ar_valid = 1
+        dut.m_r_ready  = 0          // hold R accept LOW; poll for the crossed R
+        let ar_done : uint<32> = 0
+        for _ in 0 .. 40
+            wait 5ns
+            if dut.m_ar_ready == 1 && ar_done == 0
+                ar_done = 1
+                dut.m_ar_valid = 0
+            end if
+        end for
+        assert ar_done == 1 else fail("AR never pushed into the CDC bridge")
+
+        let rseen : uint<32> = 0
+        let rdata : uint<32> = 0
+        let rresp : uint<32> = 9
+        let rid   : uint<32> = 0
+        for _ in 0 .. 80
+            wait 5ns
+            if dut.m_r_valid == 1 && rseen == 0
+                rseen = 1
+                rdata = dut.m_r_data
+                rresp = dut.m_r_resp
+                rid   = dut.m_r_id
+            end if
+        end for
+        assert rseen == 1 else fail("read response R never crossed B->A")
+        assert rresp == 0 else fail("cross-domain read RRESP != OKAY: got ${rresp}")
+        assert rdata == 0xDEADBEEF
+            else fail("cross-domain read data mismatch: got 0x${rdata:x}")
+        assert rid == 6 else fail("cross-domain read RID corrupted: got ${rid}")
+        dut.m_r_ready = 1
+        wait 5ns
+        dut.m_r_ready = 0
+        log(info, "read R crossed B->A intact (data=0x${rdata:x} RRESP=OKAY id=${rid})")
+
+        log(info, "PASS Nic400GpvRing: Secure 32-bit config write+read crossed the async A<->B boundary, data intact")
+    end run
+end impl Nic400GpvRingTest

@@ -1,0 +1,191 @@
+// NIC-400 asynchronous clock-domain-crossing bridge (AXI4 read+write path).
+//
+// The read+write counterpart of Nic400CdcAxi4 (which crossed AR/R only). A
+// master/slave pair in DIFFERENT clock domains: the master-facing side runs on
+// MClkDom (200 MHz), the slave-facing side on SClkDom (150 MHz). All five AXI4
+// channels cross the boundary through dual-clock async FIFOs, so the compiler
+// auto-synthesises gray-code pointer CDC — the only legal way to move a signal
+// between unrelated clocks.
+//
+//   m (MClkDom)  --AR-->  [GpvArCdcFifo]  --AR-->  s (SClkDom)
+//   m (MClkDom)  <--R---  [GpvRCdcFifo]   <--R---  s (SClkDom)
+//   m (MClkDom)  --AW-->  [GpvAwCdcFifo]  --AW-->  s (SClkDom)
+//   m (MClkDom)  --W -->  [GpvWCdcFifo]   --W -->  s (SClkDom)
+//   m (MClkDom)  <--B---  [GpvBCdcFifo]   <--B---  s (SClkDom)
+//
+// Each channel's fields are packed into one FIFO word (concat on the push side,
+// bit-select on the pop side); comb logic wires the valid/ready handshakes. No
+// thread/FSM is needed — the FIFOs hold all the crossing state.
+//
+// Bus geometry matches the GPV target it fronts: ADDR_W=12 (4 KB GPV block),
+// DATA_W=32, ID_W=4. Payload widths:
+//   AR/AW : addr12 id4 len8 size3 burst2 lock1 cache4 prot3 qos4 region4 = 45b
+//   R     : data32 id4 resp2 last1                                       = 39b
+//   W     : data32 strb4 last1                                           = 37b
+//   B     : id4 resp2                                                    = 6b
+//
+// The five crossing FIFOs live in their own files (one construct per file):
+//   Nic400GpvArCdcFifo.arch / Nic400GpvRCdcFifo.arch
+//   Nic400GpvAwCdcFifo.arch / Nic400GpvWCdcFifo.arch / Nic400GpvBCdcFifo.arch
+
+domain MClkDom
+  freq_mhz: 200
+end domain MClkDom
+
+domain SClkDom
+  freq_mhz: 150
+end domain SClkDom
+
+module Nic400CdcAxi4Rw
+  port m_clk: in Clock<MClkDom>;
+  port s_clk: in Clock<SClkDom>;
+  port rst:   in Reset<Async, Low>;
+
+  // Master-facing bus (master domain) and slave-facing bus (slave domain).
+  port m: target    BusAxi4<ADDR_W=12, DATA_W=32, STRB_W=4, ID_W=4, READ=1, WRITE=1>;
+  port s: initiator BusAxi4<ADDR_W=12, DATA_W=32, STRB_W=4, ID_W=4, READ=1, WRITE=1>;
+
+  // ── Channel payload packs (MSB->LSB) ─────────────────────────────────────
+  let ar_payload: UInt<45> = { m.ar_addr, m.ar_id, m.ar_len, m.ar_size,
+                               m.ar_burst, m.ar_lock, m.ar_cache, m.ar_prot,
+                               m.ar_qos, m.ar_region };
+  let aw_payload: UInt<45> = { m.aw_addr, m.aw_id, m.aw_len, m.aw_size,
+                               m.aw_burst, m.aw_lock, m.aw_cache, m.aw_prot,
+                               m.aw_qos, m.aw_region };
+  let w_payload:  UInt<37> = { m.w_data, m.w_strb, m.w_last };
+  let r_payload:  UInt<39> = { s.r_data, s.r_id, s.r_resp, s.r_last };
+  let b_payload:  UInt<6>  = { s.b_id, s.b_resp };
+
+  // FIFO output nets (driven by inst outputs, read in comb).
+  wire ar_push_ready: Bool;
+  wire ar_pop_valid:  Bool;
+  wire ar_pop:        UInt<45>;
+  wire aw_push_ready: Bool;
+  wire aw_pop_valid:  Bool;
+  wire aw_pop:        UInt<45>;
+  wire w_push_ready:  Bool;
+  wire w_pop_valid:   Bool;
+  wire w_pop:         UInt<37>;
+  wire r_push_ready:  Bool;
+  wire r_pop_valid:   Bool;
+  wire r_pop:         UInt<39>;
+  wire b_push_ready:  Bool;
+  wire b_pop_valid:   Bool;
+  wire b_pop:         UInt<6>;
+
+  // ── AR channel: M -> S ───────────────────────────────────────────────────
+  inst ar_fifo: Nic400GpvArCdcFifo
+    wr_clk     <- m_clk;
+    rd_clk     <- s_clk;
+    rst        <- rst;
+    push_valid <- m.ar_valid;
+    push_ready -> ar_push_ready;
+    push_data  <- ar_payload;
+    pop_valid  -> ar_pop_valid;
+    pop_ready  <- s.ar_ready;
+    pop_data   -> ar_pop;
+  end inst ar_fifo
+
+  // ── R channel: S -> M ────────────────────────────────────────────────────
+  inst r_fifo: Nic400GpvRCdcFifo
+    wr_clk     <- s_clk;
+    rd_clk     <- m_clk;
+    rst        <- rst;
+    push_valid <- s.r_valid;
+    push_ready -> r_push_ready;
+    push_data  <- r_payload;
+    pop_valid  -> r_pop_valid;
+    pop_ready  <- m.r_ready;
+    pop_data   -> r_pop;
+  end inst r_fifo
+
+  // ── AW channel: M -> S ───────────────────────────────────────────────────
+  inst aw_fifo: Nic400GpvAwCdcFifo
+    wr_clk     <- m_clk;
+    rd_clk     <- s_clk;
+    rst        <- rst;
+    push_valid <- m.aw_valid;
+    push_ready -> aw_push_ready;
+    push_data  <- aw_payload;
+    pop_valid  -> aw_pop_valid;
+    pop_ready  <- s.aw_ready;
+    pop_data   -> aw_pop;
+  end inst aw_fifo
+
+  // ── W channel: M -> S ────────────────────────────────────────────────────
+  inst w_fifo: Nic400GpvWCdcFifo
+    wr_clk     <- m_clk;
+    rd_clk     <- s_clk;
+    rst        <- rst;
+    push_valid <- m.w_valid;
+    push_ready -> w_push_ready;
+    push_data  <- w_payload;
+    pop_valid  -> w_pop_valid;
+    pop_ready  <- s.w_ready;
+    pop_data   -> w_pop;
+  end inst w_fifo
+
+  // ── B channel: S -> M ────────────────────────────────────────────────────
+  inst b_fifo: Nic400GpvBCdcFifo
+    wr_clk     <- s_clk;
+    rd_clk     <- m_clk;
+    rst        <- rst;
+    push_valid <- s.b_valid;
+    push_ready -> b_push_ready;
+    push_data  <- b_payload;
+    pop_valid  -> b_pop_valid;
+    pop_ready  <- m.b_ready;
+    pop_data   -> b_pop;
+  end inst b_fifo
+
+  comb
+    // AR: master push handshake completion + slave-side drive (unpack).
+    m.ar_ready  = ar_push_ready;
+    s.ar_valid  = ar_pop_valid;
+    s.ar_addr   = ar_pop[44:33];
+    s.ar_id     = ar_pop[32:29];
+    s.ar_len    = ar_pop[28:21];
+    s.ar_size   = ar_pop[20:18];
+    s.ar_burst  = ar_pop[17:16];
+    s.ar_lock   = (ar_pop[15:15] == 1);
+    s.ar_cache  = ar_pop[14:11];
+    s.ar_prot   = ar_pop[10:8];
+    s.ar_qos    = ar_pop[7:4];
+    s.ar_region = ar_pop[3:0];
+
+    // R: slave push handshake completion + master-side drive (unpack).
+    s.r_ready   = r_push_ready;
+    m.r_valid   = r_pop_valid;
+    m.r_data    = r_pop[38:7];
+    m.r_id      = r_pop[6:3];
+    m.r_resp    = r_pop[2:1];
+    m.r_last    = (r_pop[0:0] == 1);
+
+    // AW: master push handshake completion + slave-side drive (unpack).
+    m.aw_ready  = aw_push_ready;
+    s.aw_valid  = aw_pop_valid;
+    s.aw_addr   = aw_pop[44:33];
+    s.aw_id     = aw_pop[32:29];
+    s.aw_len    = aw_pop[28:21];
+    s.aw_size   = aw_pop[20:18];
+    s.aw_burst  = aw_pop[17:16];
+    s.aw_lock   = (aw_pop[15:15] == 1);
+    s.aw_cache  = aw_pop[14:11];
+    s.aw_prot   = aw_pop[10:8];
+    s.aw_qos    = aw_pop[7:4];
+    s.aw_region = aw_pop[3:0];
+
+    // W: master push handshake completion + slave-side drive (unpack).
+    m.w_ready   = w_push_ready;
+    s.w_valid   = w_pop_valid;
+    s.w_data    = w_pop[36:5];
+    s.w_strb    = w_pop[4:1];
+    s.w_last    = (w_pop[0:0] == 1);
+
+    // B: slave push handshake completion + master-side drive (unpack).
+    s.b_ready   = b_push_ready;
+    m.b_valid   = b_pop_valid;
+    m.b_id      = b_pop[5:2];
+    m.b_resp    = b_pop[1:0];
+  end comb
+end module Nic400CdcAxi4Rw

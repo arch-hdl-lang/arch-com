@@ -25155,6 +25155,67 @@ fn test_nic400_apb_bridge_excl_len_illegal_is_rejected_by_sva() {
 }
 
 // ────────────────────────────────────────────────────────────────────
+// NIC-400 read+write async-clock CDC bridge (GPV ring)
+// ────────────────────────────────────────────────────────────────────
+//
+// `examples/nic400/Nic400CdcAxi4Rw.arch` extends the read-only
+// `Nic400CdcAxi4` to a full AXI4 read+write async-clock bridge: it adds
+// the AW/W (M->S) and B (S->M) channel-crossing FIFOs alongside the
+// existing AR (M->S) and R (S->M) ones, so a config access can write AND
+// read a GPV register across an unrelated clock-domain boundary. This
+// closes the write-path-CDC gap the read-only bridge left open.
+//
+// This regression pins the structural shape: the bridge must instantiate
+// all FIVE channel-crossing FIFOs. A lowering regression that drops a
+// write-path channel (e.g. an `inst`-emission or bus-port-direction bug
+// affecting only AW/W/B) trips this loudly rather than silently shipping
+// a read-only bridge under the read+write name.
+#[test]
+fn test_nic400_cdc_axi4_rw_bridge_crosses_all_five_axi_channels() {
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("gpv_ring.sv");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("examples/nic400/BusAxi4.arch")
+        .arg("examples/nic400/Nic400GpvArCdcFifo.arch")
+        .arg("examples/nic400/Nic400GpvRCdcFifo.arch")
+        .arg("examples/nic400/Nic400GpvAwCdcFifo.arch")
+        .arg("examples/nic400/Nic400GpvWCdcFifo.arch")
+        .arg("examples/nic400/Nic400GpvBCdcFifo.arch")
+        .arg("examples/nic400/Nic400CdcAxi4Rw.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("invoke arch build");
+    assert!(
+        build.status.success(),
+        "arch build of the read+write CDC bridge should succeed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let sv = std::fs::read_to_string(&sv_out).expect("read emitted SV");
+
+    // The bridge module body must instantiate every one of the five
+    // channel-crossing FIFOs. Verilator flattens the instance names, so
+    // each appears as a `<Fifo> <inst> (` instantiation header in the SV.
+    for fifo_module in [
+        "Nic400GpvArCdcFifo", // AR: M->S (read address)
+        "Nic400GpvRCdcFifo",  // R:  S->M (read data)
+        "Nic400GpvAwCdcFifo", // AW: M->S (write address)  ← write-path
+        "Nic400GpvWCdcFifo",  // W:  M->S (write data)      ← write-path
+        "Nic400GpvBCdcFifo",  // B:  S->M (write response)  ← write-path
+    ] {
+        assert!(
+            sv.contains(fifo_module),
+            "read+write CDC bridge SV is missing the {fifo_module} crossing FIFO \
+             (a dropped channel would silently regress the bridge to read-only):\n{sv}"
+        );
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────
 // User-written `assert` SVA reset gating
 // ────────────────────────────────────────────────────────────────────
 //
