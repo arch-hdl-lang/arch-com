@@ -1,0 +1,167 @@
+// NIC-400 AXI3 → AXI4 protocol converter with programmable burst limiter
+// (READ path).
+//
+// ARM NIC-400 TRM (DDI 0475E) §2.3.1: the AXI3→AXI4 direction is the easy one
+// for burst length — AXI3 AxLEN is already 4-bit (≤16 beats), well within
+// AXI4's 8-bit range, so a sub-burst SPLIT is never needed. What the NIC-400
+// exposes on this path is a GPV-programmable burst LIMITER: a knob that caps
+// the onward AXI4 AxLEN so a downstream slave that can't absorb long bursts
+// sees them chopped. Since AXI3 already maxes at 16 beats, MAX_BURST is the
+// programmable cap and the converter splits only when ar_len+1 > MAX_BURST.
+//
+//   m  : AXI3 master-facing port (target — accept the master's AR, drive R).
+//   s  : AXI4 slave-facing  port (initiator — issue AR, accept R).
+//
+// AXI3-vs-AXI4 field deltas handled here:
+//   • AxLEN: AXI3 4-bit → AXI4 8-bit (zero-extend; further capped by MAX_BURST).
+//   • AxLOCK: AXI3 2-bit → AXI4 1-bit. AXI4 dropped the LOCKED (2'b10) encoding;
+//     we map EXCLUSIVE (2'b01) → 1 and everything else → 0 (NORMAL).
+//   • QoS / REGION: absent on AXI3 → held at 0 on the AXI4 side.
+//
+// Limiter arithmetic (INCR only, same shape as the AXI4→AXI3 splitter but with
+// a programmable chunk instead of a fixed 16):
+//   total_beats = m.ar_len + 1                     (1..16)
+//   chunk       = MAX_BURST                        (programmable, 1..16)
+//   num_sub     = ceil(total_beats / chunk)
+//   for sub i:  sub_beats = min(chunk, total - i*chunk); INCR-stepped address.
+// With MAX_BURST >= 16 the loop runs once and the burst forwards unchanged.
+//
+// Scope (v1): READ path (AR→R limiter + merge). Write-path is tied off (the
+// AXI4 W channel has no WID, so AXI3 WID is simply dropped; AW/W/B limiting is
+// a follow-on mirroring the read path).
+module Nic400Axi3ToAxi4
+  param ADDR_W:    const = 32;
+  param DATA_W:    const = 32;
+  param STRB_W:    const = 4;       // = DATA_W/8
+  param ID_W:      const = 4;
+  // Programmable onward-AxLEN cap (beats per AXI4 sub-burst). GPV knob.
+  // 16 = forward AXI3 bursts unchanged; smaller chops them.
+  param MAX_BURST: const = 16;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  // AXI3 master-facing (target): READ only.
+  port m: target    BusAxi3<ADDR_W=ADDR_W, DATA_W=DATA_W, STRB_W=STRB_W,
+                            ID_W=ID_W, READ=1, WRITE=0>;
+  // AXI4 slave-facing (initiator): READ only.
+  port s: initiator BusAxi4<ADDR_W=ADDR_W, DATA_W=DATA_W, STRB_W=STRB_W,
+                            ID_W=ID_W, READ=1, WRITE=0>;
+
+  // Latched AXI3 AR fields.
+  reg base_addr_r: UInt<ADDR_W> reset rst => 0;
+  reg size_r:      UInt<3>      reset rst => 0;
+  reg id_r:        UInt<ID_W>   reset rst => 0;
+  reg cache_r:     UInt<4>      reset rst => 0;
+  reg prot_r:      UInt<3>      reset rst => 0;
+  reg lock_r:      Bool         reset rst => false;   // mapped AXI4 1-bit lock
+  reg total_r:     UInt<5>      reset rst => 0;        // total_beats (1..16)
+  reg num_sub_r:   UInt<5>      reset rst => 0;        // ceil(total/MAX_BURST)
+  reg err_r:       UInt<2>      reset rst => 0;        // sticky merged resp
+
+  // ── Sub-burst arithmetic helpers ───────────────────────────────────────
+  // beats covered by sub-bursts 0..i-1  (i*MAX_BURST).
+  function beats_done(i: UInt<5>) -> UInt<9>
+    return i.zext<9>() * MAX_BURST;
+  end function beats_done
+
+  // this sub-burst's beat count: min(MAX_BURST, total - i*MAX_BURST).
+  function sub_beats(i: UInt<5>, total: UInt<5>) -> UInt<9>
+    let done:      UInt<9> = beats_done(i);
+    let remaining: UInt<9> = total.zext<9>() - done;
+    if remaining > MAX_BURST
+      return (9'd0 + MAX_BURST).trunc<9>();
+    else
+      return remaining;
+    end if
+  end function sub_beats
+
+  // start address of sub-burst i: base + (i*MAX_BURST) << size.
+  function sub_addr(i: UInt<5>, base: UInt<ADDR_W>, size: UInt<3>) -> UInt<ADDR_W>
+    let done:    UInt<ADDR_W> = beats_done(i).zext<ADDR_W>();
+    let stepped: UInt<ADDR_W> = done << size;
+    return (base + stepped).trunc<ADDR_W>();
+  end function sub_addr
+
+  // AXI3 2-bit AxLOCK → AXI4 1-bit: EXCLUSIVE (01) → 1, else 0.
+  function lock3_to_lock4(l: UInt<2>) -> Bool
+    return l == 1;
+  end function lock3_to_lock4
+
+  // ── Limiter read thread ────────────────────────────────────────────────
+  thread Limit on clk rising, rst low
+    default comb
+      // AXI4 AR (initiator drives) — idle.
+      s.ar_valid  = false;
+      s.ar_addr   = 0;
+      s.ar_id     = 0;
+      s.ar_len    = 0;
+      s.ar_size   = 0;
+      s.ar_burst  = 0;
+      s.ar_lock   = false;
+      s.ar_cache  = 0;
+      s.ar_prot   = 0;
+      s.ar_qos    = 0;          // AXI3 has no QoS → 0
+      s.ar_region = 0;          // AXI3 has no REGION → 0
+      s.r_ready   = false;
+      // AXI3 master-facing drives — idle.
+      m.ar_ready  = false;
+      m.r_valid   = false;
+      m.r_data    = 0;
+      m.r_id      = 0;
+      m.r_resp    = 0;
+      m.r_last    = false;
+    end default
+
+    // ── AR accept ──────────────────────────────────────────────────────
+    if not (m.ar_valid)
+      wait until m.ar_valid;
+    end if
+    do
+      m.ar_ready  = true;
+      base_addr_r <= m.ar_addr;
+      size_r      <= m.ar_size;
+      id_r        <= m.ar_id;
+      cache_r     <= m.ar_cache;
+      prot_r      <= m.ar_prot;
+      lock_r      <= lock3_to_lock4(m.ar_lock);
+      total_r     <= (m.ar_len.zext<5>() + 1).trunc<5>();
+      // ceil(total / MAX_BURST) = (total + MAX_BURST - 1) / MAX_BURST.
+      // total = ar_len+1 ⇒ (ar_len + MAX_BURST) / MAX_BURST.
+      num_sub_r   <= ((m.ar_len.zext<9>() + MAX_BURST) / MAX_BURST).trunc<5>();
+      err_r       <= 0;
+    until m.ar_ready;
+
+    // ── Sub-burst loop ─────────────────────────────────────────────────
+    for i in 0..num_sub_r - 1
+      do
+        s.ar_valid  = true;
+        s.ar_addr   = sub_addr(i, base_addr_r, size_r);
+        s.ar_id     = id_r;
+        s.ar_len    = (sub_beats(i, total_r) - 1).trunc<8>();
+        s.ar_size   = size_r;
+        s.ar_burst  = 1;                  // INCR
+        s.ar_lock   = lock_r;
+        s.ar_cache  = cache_r;
+        s.ar_prot   = prot_r;
+        s.ar_qos    = 0;
+        s.ar_region = 0;
+      until s.ar_ready;
+
+      do
+        s.r_ready = m.r_ready;
+        m.r_valid = s.r_valid;
+        m.r_data  = s.r_data;
+        m.r_id    = s.r_id;
+        m.r_resp  = err_r | s.r_resp;
+        m.r_last  = (i == (num_sub_r - 1)) and s.r_last;
+        if s.r_valid and m.r_ready
+          err_r <= err_r | s.r_resp;
+        end if
+      until s.r_valid and s.r_last and m.r_ready;
+    end for
+  end thread Limit
+
+  // INCR-only limiter (FIXED/WRAP sub-burst stepping is out of scope).
+  assert ar_incr_only: (m.ar_valid and m.ar_ready) |-> (m.ar_burst == 1);
+end module Nic400Axi3ToAxi4
