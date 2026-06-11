@@ -17430,6 +17430,89 @@ end module AscIface
 }
 
 #[test]
+fn test_archi_bus_port_param_assignments_round_trip() {
+    // A port-level bus param override (`port s: target BusRw<WRITE=0>`) must
+    // survive `.archi` emit, and round-trip back through the parser into the
+    // same BusPortInfo.params. Before this, the emitter dropped the override
+    // (a `// TODO: bus param assignments`), so a consumer reading the `.archi`
+    // (e.g. harc modeling the DUT interface) couldn't see which `generate_if`
+    // channels the flattened port set actually omitted — a cross-interface
+    // divergence from what `arch build` emits.
+    let source = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+bus BusRw
+  param READ: const = 1;
+  param WRITE: const = 1;
+  generate_if WRITE
+    aw_valid: out Bool;
+  end generate_if
+  ar_valid: out Bool;
+end bus BusRw
+
+module Dut
+  port s: target BusRw<WRITE=0>;
+  port chans: initiator Vec<BusRw<READ=0>, 2>;
+end module Dut
+";
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse error");
+    let dut = parsed
+        .items
+        .iter()
+        .find(|i| matches!(i, arch::ast::Item::Module(m) if m.name.name == "Dut"))
+        .expect("expected Dut module");
+    let body = arch::interface::emit_interface(dut).expect("emit_interface");
+    assert!(
+        body.contains("port s: target BusRw<WRITE=0>;"),
+        ".archi must record the scalar bus-port param override: {body}"
+    );
+    assert!(
+        body.contains("port chans: initiator Vec<BusRw<READ=0>, 2>;"),
+        ".archi must record params inside a Vec-of-bus port: {body}"
+    );
+
+    // Round-trip: parse the emitted `.archi` module stub back and confirm the
+    // BusPortInfo.params survived (so harc / re-emit see the same override).
+    let rt_src = format!(
+        "domain SysDomain\n  freq_mhz: 100\nend domain SysDomain\n\n{body}"
+    );
+    let rt_tokens = lexer::tokenize(&rt_src).expect("re-lex emitted .archi");
+    let mut rt_parser = Parser::new(rt_tokens, &rt_src);
+    let rt_parsed = rt_parser
+        .parse_source_file()
+        .expect("re-parse emitted .archi");
+    let rt_dut = rt_parsed
+        .items
+        .iter()
+        .find(|i| matches!(i, arch::ast::Item::Module(_)))
+        .expect("module in re-parsed .archi");
+    let arch::ast::Item::Module(m) = rt_dut else {
+        unreachable!()
+    };
+    let s_port = m
+        .ports
+        .iter()
+        .find(|p| p.name.name == "s")
+        .expect("port s");
+    let bi = s_port.bus_info.as_ref().expect("s is a bus port");
+    assert!(
+        bi.params.iter().any(|pa| pa.name.name == "WRITE"),
+        "WRITE override must round-trip into BusPortInfo.params"
+    );
+    // Re-emit must be byte-identical — proves the override (incl. its value)
+    // survives a full emit → parse → emit cycle, not just appears once.
+    assert_eq!(
+        arch::interface::emit_interface(rt_dut).unwrap(),
+        body,
+        ".archi emit must be idempotent across a parse round-trip"
+    );
+}
+
+#[test]
 fn test_archi_registered_output_emits_pipe_reg_signature() {
     // `.archi` is the cross-file contract, so registered output latency should
     // be visible there even when the source used the deprecated `port reg`
