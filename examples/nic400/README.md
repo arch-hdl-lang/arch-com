@@ -85,6 +85,8 @@ Nic400Read2x2 — older 2×2 read-only crossbar (predates Nic400Fabric).
 - **`Nic400MasterPort.arch`** — per-master decode + route. One AR thread + one R thread + one AW→W→B thread *per slave*, contending on per-channel `mutex<priority>` resources. Address decode picks slave via `addr[REGION_BITS+NS_W-1:REGION_BITS]`.
 - **`Nic400SlavePort.arch`** — per-slave arbitration + return demux. One AR arbiter + one R demux + one AW→W→B thread *per master*. Same-slave write-pipeline depth is 1; cross-slave concurrency works.
 - **`PkgNic400.arch`** — shared package (currently minimal; reserved for cross-module constants).
+- **`Nic400SparseAddrDecode.arch`** — per-master **sparse connectivity** decoder (the real NIC-400 feature — each ASIB is wired to its own subset of slaves; *not* arbitrary per-master remap, which base NIC-400 lacks). Pure-combinational: params `NUM_SLAVES` / `REGION_BITS` / `ADDR_W` / `CONNECT_MASK` (a per-instance reachable-slave bitmap); outputs `slave_idx` and `decerr`. `decerr` asserts when the decoded slave is out of the populated map (in-window hole for non-power-of-two `NUM_SLAVES`, full-width compare keeps it Verilator-clean) **or** its bit is clear in `CONNECT_MASK` (not connected to this master). So each master sees a distinct valid-region view; a non-connected access returns DECERR.
+- **`Nic400SparseDemo.arch`** — instantiates two decoders over the same 4-slave map with different masks (M0 = `{0,1}` / `0x3`, M1 = `{1,2}` / `0x6`), showing distinct reachability per master. Verified by `Nic400SparseDemo_test.harc` (all region cases + a squelched `valid=0`) on both backends with matching traces.
 
 ### Timing closure
 
@@ -106,6 +108,9 @@ Nic400Read2x2 — older 2×2 read-only crossbar (predates Nic400Fabric).
 - **`Nic400RCdcFifo.arch`** — R-channel crossing FIFO (reverse direction). Write port `SClkDom`, read port `MClkDom`; 38-bit packed R payload (`data32 id3 resp2 last1`).
 
 Verified with `Nic400CdcAxi4_test.harc` (a dual-clock HARC testbench that drives both endpoints): AR crosses M→S and R crosses S→M with payloads intact, on both the ARCH native sim and the Verilator backend, with matching cross-backend traces (`harc sim --check-backends`).
+
+- **`Nic400CdcAxi4Rw.arch`** — the full read+write async-clock AXI4 CDC bridge. Extends `Nic400CdcAxi4` from read-only (AR/R) to all **five** AXI4 channels: AW + W cross M→S and B crosses S→M through additional dual-clock async FIFOs. The five per-channel crossing FIFOs are `Nic400GpvArCdcFifo` / `RCdcFifo` / `AwCdcFifo` / `WCdcFifo` / `BCdcFifo` (45/39/45/37/6 bits, sized to a 12-bit-addr / 32-bit-data / 4-bit-ID bus). Closes the write-path-CDC gap.
+- **`Nic400GpvRing.arch`** — the **hierarchical clock-gating GPV ring** demonstrator (spec §16.1, TRM §2.3.2): a config master in domain A (`MClkDom`, 200 MHz) writes **and** reads a `Nic400Gpv` register block in domain B (`SClkDom`, 150 MHz) across the `Nic400CdcAxi4Rw` async bridge — so the GPV stays reachable across a clock-domain boundary, the essence of the multi-domain GPV ring. Reuses `Nic400Gpv`/`Nic400GpvRegs`/`BusAxi4` unmodified; exposes two typed resets (async-low for the bridge, sync-high for the GPV). Verified by `Nic400GpvRing_test.harc`: a Secure 32-bit write of `0xDEADBEEF` to `reg[2]` crosses A→B, the B response crosses back, and a read returns `0xDEADBEEF` — on both backends with matching traces (`harc sim --check-backends`).
 
 ### Observability
 
