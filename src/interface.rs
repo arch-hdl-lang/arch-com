@@ -380,8 +380,38 @@ pub(crate) fn emit_ports_with_deps(
                 BusPerspective::Target => "target",
             };
             let bus_name = &bi.bus_name.name;
-            // TODO: bus param assignments
-            s.push_str(&format!("  port {name}: {persp} {bus_name};\n"));
+            // Bus-port param assignments (`BusAxi4<WRITE=0>`) must round-trip
+            // through `.archi`: they decide which `generate_if`-gated channels
+            // the flattened port set actually contains, so a consumer reading
+            // the `.archi` (e.g. harc modeling the DUT interface) sees the same
+            // ports `arch build` emits. Dropping them made a port-level override
+            // invisible across the interface boundary. Type-param overrides use
+            // the `ty` spelling; value params use the value expression.
+            let params_str = if bi.params.is_empty() {
+                String::new()
+            } else {
+                let inner = bi
+                    .params
+                    .iter()
+                    .map(|pa| {
+                        let rhs = match &pa.ty {
+                            Some(t) => type_str(t),
+                            None => expr_str(&pa.value),
+                        };
+                        format!("{}={}", pa.name.name, rhs)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("<{inner}>")
+            };
+            // `count` ⇒ array-of-bus port: the params bind to the element bus
+            // and the whole thing is wrapped `Vec<BusName<...>, N>`, matching
+            // the source form the parser accepts.
+            let bus_ty = match &bi.count {
+                Some(n) => format!("Vec<{bus_name}{params_str}, {}>", expr_str(n)),
+                None => format!("{bus_name}{params_str}"),
+            };
+            s.push_str(&format!("  port {name}: {persp} {bus_ty};\n"));
         } else {
             let ty = type_str(&p.ty);
             // Preserve the `unpacked` modifier (SV unpacked-array port
