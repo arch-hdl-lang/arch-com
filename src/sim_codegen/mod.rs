@@ -4502,15 +4502,43 @@ impl<'a> SimCodegen<'a> {
             // Concat part fell back to width=8, so a
             // `{bool, bool, UInt<3>}` concat emitted shifts at offsets
             // 0/8/16 instead of 0/3/4 and produced wildly wrong values.
-            let mut arg_ports: HashSet<String> = f.args.iter().map(|a| a.name.name.clone()).collect();
-            for item in &f.body {
-                if let FunctionBodyItem::Let(l) = item {
-                    arg_ports.insert(l.name.name.clone());
+            fn collect_function_locals(
+                items: &[FunctionBodyItem],
+                names: &mut HashSet<String>,
+                widths: &mut HashMap<String, u32>,
+                signed: &mut HashSet<String>,
+            ) {
+                for item in items {
+                    match item {
+                        FunctionBodyItem::Let(l) => {
+                            names.insert(l.name.name.clone());
+                            let w = match l.ty.as_ref() {
+                                Some(TypeExpr::UInt(w)) | Some(TypeExpr::SInt(w)) => eval_width(w),
+                                Some(TypeExpr::Bool) | Some(TypeExpr::Bit) => 1,
+                                _ => 32,
+                            };
+                            widths.insert(l.name.name.clone(), w);
+                            if l.ty.as_ref().map_or(false, type_is_signed_scalar) {
+                                signed.insert(l.name.name.clone());
+                            }
+                        }
+                        FunctionBodyItem::For(fl) => {
+                            names.insert(fl.var.name.clone());
+                            widths.insert(fl.var.name.clone(), 32);
+                            collect_function_locals(&fl.body, names, widths, signed);
+                        }
+                        FunctionBodyItem::IfElse(ie) => {
+                            collect_function_locals(&ie.then_body, names, widths, signed);
+                            collect_function_locals(&ie.else_body, names, widths, signed);
+                        }
+                        FunctionBodyItem::Return(_) | FunctionBodyItem::Assign(_) => {}
+                    }
                 }
             }
             let empty_bus: HashSet<String> = HashSet::new();
             let mut local_widths: HashMap<String, u32> = HashMap::new();
             let mut local_signed_names: HashSet<String> = HashSet::new();
+            let mut arg_ports: HashSet<String> = f.args.iter().map(|a| a.name.name.clone()).collect();
             for a in &f.args {
                 local_widths.insert(a.name.name.clone(), match &a.ty {
                     TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width(w),
@@ -4521,22 +4549,16 @@ impl<'a> SimCodegen<'a> {
                     local_signed_names.insert(a.name.name.clone());
                 }
             }
-            for item in &f.body {
-                if let FunctionBodyItem::Let(l) = item {
-                    let w = match l.ty.as_ref() {
-                        Some(TypeExpr::UInt(w)) | Some(TypeExpr::SInt(w)) => eval_width(w),
-                        Some(TypeExpr::Bool) | Some(TypeExpr::Bit) => 1,
-                        _ => 32,
-                    };
-                    local_widths.insert(l.name.name.clone(), w);
-                    if l.ty.as_ref().map_or(false, type_is_signed_scalar) {
-                        local_signed_names.insert(l.name.name.clone());
-                    }
-                }
-            }
-            let ctx = Ctx::new(&empty_regs, &arg_ports, &empty_lets, &empty_insts,
-                               &empty_wide, &local_widths, &enum_map, &empty_bus)
+            collect_function_locals(&f.body, &mut arg_ports, &mut local_widths, &mut local_signed_names);
+            let function_loop_var_subst: std::cell::RefCell<HashMap<String, u32>> =
+                std::cell::RefCell::new(HashMap::new());
+            let ctx_base = Ctx::new(&empty_regs, &arg_ports, &empty_lets, &empty_insts,
+                                    &empty_wide, &local_widths, &enum_map, &empty_bus)
                 .with_signed_names(&local_signed_names);
+            let ctx = Ctx {
+                loop_var_subst: Some(&function_loop_var_subst),
+                ..ctx_base
+            };
 
             // Recursive emitter for nested function-body items (if/elsif/else
             // with return statements inside). Pre-fix the if/for/assign arms
@@ -4556,7 +4578,7 @@ impl<'a> SimCodegen<'a> {
                             let ty = l.ty.as_ref().map(|t| cpp_internal_type_with_params(t, &[]))
                                 .unwrap_or_else(|| "uint32_t".to_string());
                             let val = cpp_expr(&l.value, ctx);
-                            out.push_str(&format!("{indent}const {ty} {} = {};\n", l.name.name, val));
+                            out.push_str(&format!("{indent}{ty} {} = {};\n", l.name.name, val));
                         }
                         FunctionBodyItem::Return(e) => {
                             let val = cpp_expr(e, ctx);
@@ -4575,8 +4597,31 @@ impl<'a> SimCodegen<'a> {
                                 out.push_str("\n");
                             }
                         }
-                        FunctionBodyItem::For(_) | FunctionBodyItem::Assign(_) => {
-                            // TODO: not yet needed by ARCH→sim consumers we ship today
+                        FunctionBodyItem::For(fl) => {
+                            let var = &fl.var.name;
+                            match &fl.range {
+                                ForRange::Range(lo, hi) => {
+                                    let lo_s = cpp_expr(lo, ctx);
+                                    let hi_s = cpp_expr(hi, ctx);
+                                    out.push_str(&format!("{indent}for (int {var} = {lo_s}; {var} <= {hi_s}; {var}++) {{\n"));
+                                    emit_fn_items(&fl.body, ctx, ret_ty, &format!("{indent}  "), out);
+                                    out.push_str(&format!("{indent}}}\n"));
+                                }
+                                ForRange::ValueList(vals) => {
+                                    for val in vals {
+                                        let v = cpp_expr(val, ctx);
+                                        out.push_str(&format!("{indent}{{\n"));
+                                        out.push_str(&format!("{indent}  int {var} = {v};\n"));
+                                        emit_fn_items(&fl.body, ctx, ret_ty, &format!("{indent}  "), out);
+                                        out.push_str(&format!("{indent}}}\n"));
+                                    }
+                                }
+                            }
+                        }
+                        FunctionBodyItem::Assign(a) => {
+                            let target = cpp_expr_lhs(&a.target, ctx);
+                            let val = cpp_expr(&a.value, ctx);
+                            out.push_str(&format!("{indent}{target} = {val};\n"));
                         }
                     }
                 }
@@ -4589,7 +4634,7 @@ impl<'a> SimCodegen<'a> {
                         let ty = l.ty.as_ref().map(|t| cpp_internal_type_with_params(t, &[]))
                             .unwrap_or_else(|| "uint32_t".to_string());
                         let val = cpp_expr(&l.value, &ctx);
-                        h.push_str(&format!("  const {ty} {} = {};\n", l.name.name, val));
+                        h.push_str(&format!("  {ty} {} = {};\n", l.name.name, val));
                     }
                     FunctionBodyItem::IfElse(ie) => {
                         let cond = cpp_expr(&ie.cond, &ctx);
@@ -4605,7 +4650,7 @@ impl<'a> SimCodegen<'a> {
                         }
                     }
                     FunctionBodyItem::For(_) | FunctionBodyItem::Assign(_) => {
-                        // TODO: emit C++ for for/assign in sim functions
+                        emit_fn_items(std::slice::from_ref(item), &ctx, &ret_ty, "  ", &mut h);
                     }
                     FunctionBodyItem::Return(e) => {
                         // If it's a match expression, emit as switch for efficiency

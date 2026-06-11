@@ -1535,6 +1535,21 @@ Each stage has a compiler-generated `valid_r` register that tracks whether the s
 
 > ◈ stall, flush, and forward are declarative. The compiler generates all enable signals, bubble insertion logic, and bypass muxes. The designer describes intent; the compiler generates mechanism.
 
+**6.2 Pipeline outputs must be registered (no combinational input→output path)**
+
+A pipeline output port may **not** combinationally depend on an input port --- neither directly (`comb out = in;`) nor transitively through a `let`/`wire`/comb intermediate or an `if`/`match` guard (`let t = in + 1; ... out = t;`). Every output must be driven from a **stage register**; reading a register, whether local (`out = result;`) or cross-stage (`out_pc = Fetch.pc;`), breaks the combinational path and is the intended pattern (see §6.1, where `out_pc`/`out_instr` come from `Fetch.pc`).
+
+This is enforced --- `arch check` rejects a combinational passthrough:
+
+```
+pipeline P output port `out` is driven combinationally from input port `in`;
+a pipeline output must come from a stage register, not a combinational path
+through an input. Move the combinational logic into a wrapping module and
+register the result in the pipeline.
+```
+
+Two reasons. First, intent: a `pipeline` *stages* a datapath --- it registers data as it advances --- so a pure combinational relay defeats the construct's purpose and belongs in a `module`. Second, soundness: the whole-design combinational-loop checker models a pipeline instance as having registered (combinationally pure) outputs, so a real comb input→output path *inside* a pipeline would let a feedback loop routed through it escape detection. Forbidding the path at the source keeps that model honest by construction. If you need combinational logic at the boundary, wrap the pipeline in a `module` that does the combinational work and feeds the pipeline, which then registers the result.
+
 **7. First-Class Construct: fsm**
 
 An fsm block declares a finite state machine with named states and exhaustive coverage enforced by the compiler. Missing transitions, undriven outputs in any state, and unreachable states are all compile-time errors.
@@ -2115,6 +2130,8 @@ The compiler enforces the following rules for synchronizer constructs:
 > ◈ **`--cdc-random` simulation flag.** When `arch sim` is invoked with `--cdc-random`, each synchronizer's FF-chain shift is probabilistically skipped on any given clock edge, adding +1 cycle of latency. This verifies that designs do not depend on exact synchronizer propagation delay. The probability is controlled by the `cdc_skip_pct` public member (0–100, default 25) on each generated C++ model, allowing testbenches to tune randomization intensity at runtime (e.g. `dut.cdc_skip_pct = 50;` for aggressive stress testing). Internally uses a 32-bit LFSR for deterministic pseudo-random sequencing.
 
 > ◈ CDC checking extends across `inst` boundaries. When a parent module instantiates a child, the compiler traces clock port connections to map child domains to parent domains, then verifies that all data connections respect clock domain boundaries. If a signal from DomainA is connected to a port that operates in DomainB inside the child, the compiler reports a CDC violation --- the same error and guidance as for intra-module crossings.
+>
+> **Clock domain rebind is not a crossing.** Because the mapping is *traced from the connected clock*, connecting a parent clock of one domain to a child clock port declared in a *different* domain (most commonly a reusable child declaring `Clock<SysDomain>` as a placeholder) is **not** a violation: the connected clock fixes the instance's domain at the hierarchy boundary, and the instance is clocked entirely by that one clock --- there is no crossing *inside* it. The domain annotation on the child's clock port is a default that the instantiation rebinds, not a constraint the connection must match. A violation arises only when a *data* signal sourced from one domain reaches a child port that the child clocks in another domain. (Example: `examples/nic400/Nic400GpvRing.arch` instantiates a `Clock<SysDomain>` GPV under the slave clock `s_clk: Clock<SClkDom>` --- a legitimate rebind; the genuine crossing between the master and slave clocks is handled by the explicit async `fifo`-based bridge, not by the rebind.)
 
 **9. First-Class Construct: arbiter**
 

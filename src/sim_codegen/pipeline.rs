@@ -572,7 +572,23 @@ impl<'a> SimCodegen<'a> {
                 match method.name.as_str() {
                     "trunc" => { if let Some(wa) = args.first() { let bits = eval_const_expr_with_params(wa, params); if bits < 64 { format!("({b} & 0x{:X}ULL)", (1u64 << bits) - 1) } else { b } } else { b } }
                     "zext" => { format!("(uint64_t)({b})") }
-                    "sext" => { b } // TODO: proper sign extension
+                    "sext" => {
+                        if let Some(width) = args.first() {
+                            let dst_bits = eval_const_expr_with_params(width, params) as u32;
+                            let src_bits = self.pipeline_sim_expr_width(base, prefix, si, srn, w, pn, params);
+                            if src_bits >= dst_bits || src_bits == 0 {
+                                format!("({})({b})", cpp_uint(dst_bits))
+                            } else {
+                                let dst_ty = cpp_uint(dst_bits);
+                                format!(
+                                    "((({b} >> {}) & 1) ? ({dst_ty})({b}) | ({dst_ty})(~(({dst_ty})0) << {src_bits}) : ({dst_ty})({b}))",
+                                    src_bits - 1,
+                                )
+                            }
+                        } else {
+                            b
+                        }
+                    }
                     _ => b
                 }
             }
