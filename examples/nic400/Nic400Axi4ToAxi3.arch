@@ -1,0 +1,189 @@
+// NIC-400 AXI4 → AXI3 protocol converter: long-burst splitter (READ path).
+//
+// ARM NIC-400 TRM (DDI 0475E) §1.2/§2.3.1: NIC-400 performs AXI4↔AXI3 protocol
+// conversion. The defining hazard of the AXI4→AXI3 direction is burst length:
+// AXI4 AxLEN is 8-bit (up to 256 beats) but AXI3 AxLEN is only 4-bit (max 16
+// beats). An AXI4 INCR burst longer than 16 beats CANNOT be forwarded as one
+// AXI3 burst — it must be SPLIT into ceil((len+1)/16) AXI3 sub-bursts.
+//
+// This module is the read-path splitter:
+//   m  : AXI4 master-facing port (target — we accept the master's AR, drive R).
+//   s  : AXI3 slave-facing  port (initiator — we issue AR, accept R).
+//
+// Split arithmetic (INCR only):
+//   total_beats = m.ar_len + 1                          (1..256)
+//   num_sub     = ceil(total_beats / 16) = (total+15)>>4 (1..16)
+//   for sub i in 0..num_sub-1:
+//     beats_done = i * 16
+//     sub_beats  = min(16, total_beats - beats_done)    (1..16)
+//     s.ar_len   = sub_beats - 1                         (AXI3 4-bit)
+//     s.ar_addr  = base + (beats_done << size)           (INCR step)
+//     s.ar_burst = INCR (01)
+//
+// Response merge (AXI4 R coalescing):
+//   • Each AXI3 sub-burst returns sub_beats R beats with its OWN r_last on its
+//     final beat. We forward every beat to the AXI4 master but SUPPRESS r_last
+//     except on the true final beat (last beat of the last sub-burst).
+//   • r_resp is sticky-OR'd across all sub-bursts into err_r so a SLVERR/DECERR
+//     on any sub-burst surfaces; the merged AXI4 r_resp on every beat carries
+//     the running max-severity (OR of {OKAY=0,..,DECERR=3} bit patterns, which
+//     orders OKAY<EXOKAY<SLVERR<DECERR monotonically under bitwise-OR for the
+//     2-bit AXI resp encoding).
+//
+// The whole transaction is sequenced by ONE thread: issue sub-burst i's AR,
+// drain its R beats, then move to sub-burst i+1. Non-pipelined (one AXI3
+// sub-burst outstanding at a time) — this keeps "which sub-burst is final"
+// and the RLAST/error merge in a single state machine with no cross-thread
+// coordination. NIC-400's base splitter does not interleave sub-bursts, so
+// this matches the TRM behaviour.
+//
+// Scope (v1): READ path fully (AR→R split + merge). Write-path splitting (AW→W
+// with WID generation per sub-burst + B coalescing) is a strictly larger design
+// (the W data stream must be re-segmented in lockstep with the AW sub-bursts)
+// and is tracked as a follow-on; the AXI3 W/B ports are tied off here.
+module Nic400Axi4ToAxi3
+  param ADDR_W: const = 32;
+  param DATA_W: const = 32;
+  param STRB_W: const = 4;       // = DATA_W/8
+  param ID_W:   const = 4;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  // AXI4 master-facing (target): READ only on this converter instance.
+  port m: target    BusAxi4<ADDR_W=ADDR_W, DATA_W=DATA_W, STRB_W=STRB_W,
+                            ID_W=ID_W, READ=1, WRITE=0>;
+  // AXI3 slave-facing (initiator): READ only.
+  port s: initiator BusAxi3<ADDR_W=ADDR_W, DATA_W=DATA_W, STRB_W=STRB_W,
+                            ID_W=ID_W, READ=1, WRITE=0>;
+
+  // Latched AXI4 AR fields (the master holds them only during the AR
+  // handshake; the split sequence runs for many cycles afterwards).
+  reg base_addr_r: UInt<ADDR_W> reset rst => 0;
+  reg size_r:      UInt<3>      reset rst => 0;
+  reg id_r:        UInt<ID_W>   reset rst => 0;
+  reg cache_r:     UInt<4>      reset rst => 0;
+  reg prot_r:      UInt<3>      reset rst => 0;
+  // total_beats-1 (the AXI4 ar_len) and total_beats live in 9 bits.
+  reg total_r:     UInt<9>      reset rst => 0;   // total_beats (1..256)
+  reg num_sub_r:   UInt<5>      reset rst => 0;   // ceil(total/16)  (1..16)
+  // Sticky OR of every sub-burst's r_resp — the merged AXI4 error.
+  reg err_r:       UInt<2>      reset rst => 0;
+
+  // ── Sub-burst arithmetic helpers ───────────────────────────────────────
+  // beats covered by sub-bursts 0..i-1  (i*16).
+  function beats_done(i: UInt<5>) -> UInt<9>
+    return i.zext<9>() << 4;
+  end function beats_done
+
+  // this sub-burst's beat count: min(16, total - i*16).  (1..16)
+  function sub_beats(i: UInt<5>, total: UInt<9>) -> UInt<9>
+    let done:      UInt<9> = beats_done(i);
+    let remaining: UInt<9> = total - done;
+    if remaining > 16
+      return 9'd16;
+    else
+      return remaining;
+    end if
+  end function sub_beats
+
+  // start address of sub-burst i: base + (i*16) << size.
+  function sub_addr(i: UInt<5>, base: UInt<ADDR_W>, size: UInt<3>) -> UInt<ADDR_W>
+    let done:    UInt<ADDR_W> = beats_done(i).zext<ADDR_W>();
+    let stepped: UInt<ADDR_W> = done << size;
+    return (base + stepped).trunc<ADDR_W>();
+  end function sub_addr
+
+  // ── Split read thread ──────────────────────────────────────────────────
+  thread Split on clk rising, rst low
+    default comb
+      // AXI3 AR (initiator drives) — idle.
+      s.ar_valid = false;
+      s.ar_addr  = 0;
+      s.ar_id    = 0;
+      s.ar_len   = 0;
+      s.ar_size  = 0;
+      s.ar_burst = 0;
+      s.ar_lock  = 0;
+      s.ar_cache = 0;
+      s.ar_prot  = 0;
+      s.r_ready  = false;
+      // AXI4 master-facing drives — idle.
+      m.ar_ready = false;
+      m.r_valid  = false;
+      m.r_data   = 0;
+      m.r_id     = 0;
+      m.r_resp   = 0;
+      m.r_last   = false;
+    end default
+
+    // ── AR accept ──────────────────────────────────────────────────────
+    // Accept the AXI4 AR, latch its fields, compute the sub-burst count.
+    if not (m.ar_valid)
+      wait until m.ar_valid;
+    end if
+    do
+      m.ar_ready  = true;
+      base_addr_r <= m.ar_addr;
+      size_r      <= m.ar_size;
+      id_r        <= m.ar_id;
+      cache_r     <= m.ar_cache;
+      prot_r      <= m.ar_prot[2:0];
+      total_r     <= (m.ar_len.zext<9>() + 1).trunc<9>();
+      // ceil(total/16) = (total_beats + 15) >> 4. total_beats = ar_len+1,
+      // so (ar_len + 16) >> 4. ar_len ∈ 0..255 ⇒ result ∈ 1..16.
+      num_sub_r   <= (((m.ar_len.zext<9>() + 16).trunc<9>()) >> 4).trunc<5>();
+      err_r       <= 0;
+    until m.ar_ready;
+
+    // ── Sub-burst loop ─────────────────────────────────────────────────
+    // For each sub-burst i: issue the AXI3 AR (short, ≤16 beats, stepped
+    // address) then drain that sub-burst's R beats into the AXI4 master.
+    for i in 0..num_sub_r - 1
+      // AXI3 AR for this sub-burst. sub_addr()/sub_beats() compute the
+      // INCR-stepped start address and the min(16, remaining) length.
+      do
+        s.ar_valid = true;
+        s.ar_addr  = sub_addr(i, base_addr_r, size_r);
+        s.ar_id    = id_r;
+        s.ar_len   = (sub_beats(i, total_r) - 1).trunc<4>();   // AXI3 4-bit
+        s.ar_size  = size_r;
+        s.ar_burst = 1;                                          // INCR
+        s.ar_lock  = 0;
+        s.ar_cache = cache_r;
+        s.ar_prot  = prot_r;
+      until s.ar_ready;
+
+      // Drain this sub-burst's R beats. Forward each beat to the AXI4
+      // master; suppress AXI3 r_last unless this is the final sub-burst
+      // (i == num_sub_r-1). Sticky-OR the response into err_r and present
+      // the running merged error on every beat.
+      do
+        s.r_ready = m.r_ready;
+        m.r_valid = s.r_valid;
+        m.r_data  = s.r_data;
+        m.r_id    = s.r_id;
+        m.r_resp  = err_r | s.r_resp;
+        m.r_last  = (i == (num_sub_r - 1)) and s.r_last;
+        if s.r_valid and m.r_ready
+          err_r <= err_r | s.r_resp;
+        end if
+      until s.r_valid and s.r_last and m.r_ready;
+    end for
+  end thread Split
+
+  // The AXI3 write channel is absent on this READ-only converter instance
+  // (WRITE=0 on both bus ports — see file header for write-path scope).
+
+  // INCR-only: this splitter computes per-sub-burst INCR addresses. A FIXED
+  // (00) or WRAP (10) AXI4 burst would need different sub-burst address
+  // arithmetic and is rejected here.
+  assert ar_incr_only: (m.ar_valid and m.ar_ready) |-> (m.ar_burst == 1);
+
+  // AXI4 §A3.4.1 4 KB boundary: an INCR burst must not cross a 4 KB region.
+  // The splitter inherits this from the master — each 16-beat sub-burst is a
+  // contiguous slice of the same INCR, so honouring it on the whole burst
+  // keeps every sub-burst inside the same 4 KB window.
+  assert ar_no_4k_cross: (m.ar_valid and m.ar_ready and m.ar_burst == 1)
+    |-> (m.ar_addr[11:0].zext<21>() + ((m.ar_len.zext<9>() + 1) << m.ar_size).zext<21>() <= 21'd4096);
+end module Nic400Axi4ToAxi3

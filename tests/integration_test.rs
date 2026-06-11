@@ -282,6 +282,80 @@ fn test_fsm_traffic_light() {
 }
 
 #[test]
+fn test_fsm_legal_state_assert_skipped_for_power_of_two_state_count() {
+    // The auto `_auto_legal_state: ... state_r < N` assertion is vacuous when N
+    // is a power of two (every encoding is a legal state) AND it width-mismatches
+    // (the N literal needs one more bit than `state_r`) → Verilator WIDTHEXPAND.
+    // It must be SKIPPED for power-of-two state counts and KEPT (and width-clean)
+    // for non-power-of-two counts where unused encodings exist.
+    let two_state = r#"
+fsm Toggle
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port flip: in Bool;
+  port q: out Bool;
+  state [A, B]
+  default state A;
+  default seq on clk rising;
+  state A
+    comb
+      q = false;
+    end comb
+    -> B when flip;
+  end state A
+  state B
+    comb
+      q = true;
+    end comb
+    -> A when flip;
+  end state B
+end fsm Toggle
+"#;
+    let sv2 = compile_to_sv(two_state);
+    assert!(
+        !sv2.contains("_auto_legal_state"),
+        "a 2-state (power-of-two) FSM must NOT emit the vacuous, width-mismatched \
+         legal-state assertion:\n{sv2}"
+    );
+
+    let three_state = r#"
+fsm Tri
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port go: in Bool;
+  port q: out UInt<2>;
+  state [A, B, C]
+  default state A;
+  default seq on clk rising;
+  state A
+    comb
+      q = 0;
+    end comb
+    -> B when go;
+  end state A
+  state B
+    comb
+      q = 1;
+    end comb
+    -> C when go;
+  end state B
+  state C
+    comb
+      q = 2;
+    end comb
+    -> A when go;
+  end state C
+end fsm Tri
+"#;
+    let sv3 = compile_to_sv(three_state);
+    assert!(
+        sv3.contains("_auto_legal_state") && sv3.contains("state_r < 3"),
+        "a 3-state (non-power-of-two) FSM must KEEP the legal-state assertion \
+         (`state_r < 3`):\n{sv3}"
+    );
+}
+
+#[test]
 fn test_fsm_missing_default_state_errors() {
     let source = r#"
 fsm Broken
@@ -855,6 +929,85 @@ end arbiter RRArb3
 /// Builds RRArb3 (NUM_REQ=3, the canonical non-power-of-2 case) to SV,
 /// runs it under Verilator with all three requesters always asserted,
 /// and checks that the grant_requester sequence is strict
+/// A construct already defined in the input files must not also be pulled in
+/// from a stale `.archi` by auto-discovery — doing so emitted the construct
+/// twice (the stub copy missing its port-array ports → broken SV). The
+/// `.archi`-discovery defined-name set tracked module/fsm/fifo/ram/arbiter/...
+/// but omitted `regfile` (and cam/clkgate/linklist), so an in-source `regfile`
+/// + a present `Rf1.archi` (e.g. from a prior build) duplicate-emitted it.
+#[test]
+fn test_inscope_construct_not_duplicated_by_stale_archi() {
+    use std::fs;
+    let td = tempfile::tempdir().expect("tempdir");
+    let dir = td.path();
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let regfile = "\
+regfile Rf1
+  param NREGS: const = 4;
+  param T: type = UInt<32>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[1] read
+    addr: in UInt<2>;
+    data: out UInt<32>;
+  end ports read
+  ports[1] write
+    en:   in Bool;
+    addr: in UInt<2>;
+    data: in UInt<32>;
+  end ports write
+end regfile Rf1
+";
+    // 1) Build the regfile alone so its `Rf1.archi` lands in `dir`.
+    let rf_path = dir.join("Rf1.arch");
+    fs::write(&rf_path, regfile).unwrap();
+    let b1 = std::process::Command::new(arch_bin)
+        .arg("build").arg(&rf_path).arg("-o").arg(dir.join("Rf1.sv"))
+        .output().expect("build regfile");
+    assert!(b1.status.success(), "regfile build failed: {}",
+            String::from_utf8_lossy(&b1.stderr));
+    assert!(dir.join("Rf1.archi").exists(), "Rf1.archi should have been written");
+
+    // 2) Build a combined file that DEFINES Rf1 in-source AND insts it, in the
+    //    same dir as the stale Rf1.archi. The construct must emit exactly once.
+    let combined = format!("{regfile}
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<2>;
+  port d: out UInt<32>;
+  wire dw: UInt<32>;
+  inst rf: Rf1
+    clk <- clk;
+    rst <- rst;
+    read.addr <- a;
+    read.data -> dw;
+    write.en  <- false;
+    write.addr <- 0;
+    write.data <- 0;
+  end inst rf
+  comb
+    d = dw;
+  end comb
+end module Top
+");
+    let top_path = dir.join("Top.arch");
+    fs::write(&top_path, combined).unwrap();
+    let sv_out = dir.join("Top.sv");
+    let b2 = std::process::Command::new(arch_bin)
+        .arg("build").arg(&top_path).arg("-o").arg(&sv_out)
+        .output().expect("build combined");
+    assert!(b2.status.success(), "combined build failed: {}",
+            String::from_utf8_lossy(&b2.stderr));
+    let sv = fs::read_to_string(&sv_out).unwrap();
+    let n = sv.matches("\nmodule Rf1").count() + sv.starts_with("module Rf1") as usize;
+    assert_eq!(
+        n, 1,
+        "regfile defined in-source must emit exactly once even with a stale \
+         Rf1.archi present (got {n}):\n{sv}"
+    );
+}
+
 /// round-robin (each idx wins exactly 1/3 of cycles).
 ///
 /// Pre-fix grant pattern was `0,1,2,0,0,1,2,0,...` (idx 0 at 50%).
@@ -2660,6 +2813,116 @@ end pipeline BadPipe
     assert!(
         result.is_err(),
         "expected error for comb-only pipeline stage"
+    );
+}
+
+/// `arch check` accepts `source` (returns Ok) iff there are no type errors.
+fn pipeline_checks_ok(source: &str) -> bool {
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let elaborated = elaborate::elaborate(ast).expect("elaborate");
+    let symbols = resolve::resolve(&elaborated).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &elaborated);
+    checker.check().is_ok()
+}
+
+// A `pipeline` output must come from a stage register, never a combinational
+// path through an input port. These three tests are differential: the ALLOW
+// case (output from a register) and the two REJECT cases (direct + via-let
+// comb passthrough) differ only in how the output is driven, so the delta
+// isolates exactly the new rule. Rationale: a comb input→output path inside a
+// pipeline is hidden from the whole-design comb-loop detector (which models a
+// pipeline inst as registered/PURE), so a feedback loop through it would go
+// undetected — Verilator flags the same SV `UNOPTFLAT`.
+
+#[test]
+fn test_pipeline_allows_comb_output_from_register() {
+    // `y = held` reads a stage REGISTER — no comb path from input `a` to
+    // output `y`. Must be accepted.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline RegPipe
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+  stage S
+    reg held: UInt<8> reset rst => 0;
+    seq on clk rising
+      held <= a;
+    end seq
+    comb
+      y = held;
+    end comb
+  end stage S
+end pipeline RegPipe
+"#;
+    assert!(
+        pipeline_checks_ok(source),
+        "a pipeline output driven from a stage register must be accepted"
+    );
+}
+
+#[test]
+fn test_pipeline_rejects_comb_input_to_output_passthrough() {
+    // `y = a` drives an output straight from an input — direct comb passthrough.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline CombPipe
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+  stage S
+    reg dummy: UInt<8> reset rst => 0;
+    seq on clk rising
+      dummy <= a;
+    end seq
+    comb
+      y = a;
+    end comb
+  end stage S
+end pipeline CombPipe
+"#;
+    assert!(
+        !pipeline_checks_ok(source),
+        "a pipeline output driven combinationally from an input must be rejected"
+    );
+}
+
+#[test]
+fn test_pipeline_rejects_comb_input_to_output_via_let() {
+    // Transitive: `let t = a + 1; ... y = t` — `t` carries the input
+    // combinationally into output `y`. Must be rejected (taint through let).
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline LetPipe
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+  stage S
+    let t: UInt<8> = a +% 1;
+    reg dummy: UInt<8> reset rst => 0;
+    seq on clk rising
+      dummy <= a;
+    end seq
+    comb
+      y = t;
+    end comb
+  end stage S
+end pipeline LetPipe
+"#;
+    assert!(
+        !pipeline_checks_ok(source),
+        "a pipeline output driven from a let that reads an input must be rejected"
     );
 }
 
@@ -15855,6 +16118,69 @@ const LATCH_RF_DECL: &str = "
 ";
 
 #[test]
+fn test_count1_port_array_inst_connection_uses_unindexed_name() {
+    // A `ports[1]` (count-1) regfile group flattens its member ports WITHOUT an
+    // index in the module declaration (`read_addr`, not `read0_addr`). An inst
+    // connection written with an explicit `read[0].addr` is parser-flattened to
+    // `read0_addr`, which mismatched the declaration → Verilator PINNOTFOUND and
+    // a sim `no member named 'read0_addr'`. Both `read.addr` and `read[0].addr`
+    // must resolve to the un-indexed `read_addr`.
+    let source = r#"
+regfile Rf1
+  param NREGS: const = 4;
+  param T: type = UInt<32>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[1] read
+    addr: in UInt<2>;
+    data: out UInt<32>;
+  end ports read
+  ports[1] write
+    en:   in Bool;
+    addr: in UInt<2>;
+    data: in UInt<32>;
+  end ports write
+end regfile Rf1
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<2>;
+  port d: out UInt<32>;
+  wire dw: UInt<32>;
+  inst rf: Rf1
+    clk <- clk;
+    rst <- rst;
+    read[0].addr <- a;
+    read[0].data -> dw;
+    write.en     <- false;
+    write.addr   <- 0;
+    write.data   <- 0;
+  end inst rf
+  comb
+    d = dw;
+  end comb
+end module Top
+"#;
+    let sv = compile_to_sv(source);
+    // The inst connection must use the un-indexed pin name matching the count-1
+    // declaration.
+    assert!(
+        sv.contains(".read_addr(") && sv.contains(".read_data("),
+        "count-1 `read[0]` connection must emit `.read_addr(`/`.read_data(`:\n{sv}"
+    );
+    assert!(
+        !sv.contains(".read0_addr(") && !sv.contains(".read0_data("),
+        "count-1 `read[0]` connection must NOT emit the indexed `.read0_addr(`:\n{sv}"
+    );
+    // The declaration side (always un-indexed for count-1) must agree.
+    assert!(
+        sv.contains("read_addr") && !sv.contains("read0_addr"),
+        "count-1 regfile declaration + connection names must both be un-indexed:\n{sv}"
+    );
+}
+
+#[test]
 fn test_regfile_latch_emits_always_latch_per_row() {
     let source = format!(
         "{LATCH_RF_DECL}
@@ -16607,6 +16933,68 @@ fn test_sim_codegen_declares_typed_module_params_used_by_lowered_thread_body() {
 }
 
 #[test]
+fn test_sim_codegen_inst_override_of_derived_default_param_wins_in_define() {
+    // Regression (NIC-400 sparse-connectivity decoder): a sub-module param
+    // whose *default* references another param (`CONNECT_MASK = (1 << N) - 1`)
+    // but which is EXPLICITLY OVERRIDDEN at the inst site must bake the
+    // overridden value — not the default expression's value — into the sim
+    // backend's `#define`.
+    //
+    // Pre-fix: monomorphize_module preserved the derived-default expression
+    // for any param referencing other params, even when the inst site
+    // overrode it. The SV backend masked this (it re-applies the override as
+    // an inst param), but the C++ sim backend emits `#define CONNECT_MASK
+    // <default>`, so the override was silently dropped — two instances with
+    // different masks both evaluated against the default value. The two
+    // backends then diverged under harc --check-backends.
+    let source = r#"
+        module Sub
+          param N: const = 4;
+          param MASK: const = (1 << N) - 1;
+          port sel:  in  UInt<2>;
+          port hit:  out Bool;
+          let bit_v: UInt<1> = ((MASK >> sel) & 1).trunc<1>();
+          comb
+            hit = (bit_v == 1);
+          end comb
+        end module Sub
+
+        module Top
+          port sel:   in  UInt<2>;
+          port hit_a: out Bool;
+          port hit_b: out Bool;
+          inst a: Sub
+            param N    = 4;
+            param MASK = 3;
+            sel <- sel;
+            hit -> hit_a;
+          end inst a
+          inst b: Sub
+            param N    = 4;
+            param MASK = 6;
+            sel <- sel;
+            hit -> hit_b;
+          end inst b
+        end module Top
+    "#;
+    let cpp = compile_to_sim_h(source, false);
+    // The two specialized variants must carry their OVERRIDDEN mask values,
+    // not the derived default `(1 << 4) - 1 == 15`.
+    assert!(
+        cpp.contains("#define MASK 3ULL"),
+        "overridden derived-default param must bake the override (3), not the default (15):\n{cpp}"
+    );
+    assert!(
+        cpp.contains("#define MASK 6ULL"),
+        "second instance's overridden mask (6) must also be baked, not the default (15):\n{cpp}"
+    );
+    assert!(
+        !cpp.contains("#define MASK 15ULL"),
+        "the derived default (15) must NOT leak into either specialized sim header:\n{cpp}"
+    );
+}
+
+#[test]
 fn test_sim_codegen_bit_slice_lhs_compiles_and_uses_param_width() {
     // Regression: pre-fix, `name[hi:lo] = val` in a seq block lowered to
     // the read-side bit-slice form `((name >> lo) & MASK) = val`, an
@@ -17038,6 +17426,89 @@ end module AscIface
     assert!(
         body.contains("port asc_in: in unpacked ascending Vec"),
         ".archi should preserve `unpacked ascending`: {body}"
+    );
+}
+
+#[test]
+fn test_archi_bus_port_param_assignments_round_trip() {
+    // A port-level bus param override (`port s: target BusRw<WRITE=0>`) must
+    // survive `.archi` emit, and round-trip back through the parser into the
+    // same BusPortInfo.params. Before this, the emitter dropped the override
+    // (a `// TODO: bus param assignments`), so a consumer reading the `.archi`
+    // (e.g. harc modeling the DUT interface) couldn't see which `generate_if`
+    // channels the flattened port set actually omitted — a cross-interface
+    // divergence from what `arch build` emits.
+    let source = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+bus BusRw
+  param READ: const = 1;
+  param WRITE: const = 1;
+  generate_if WRITE
+    aw_valid: out Bool;
+  end generate_if
+  ar_valid: out Bool;
+end bus BusRw
+
+module Dut
+  port s: target BusRw<WRITE=0>;
+  port chans: initiator Vec<BusRw<READ=0>, 2>;
+end module Dut
+";
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse error");
+    let dut = parsed
+        .items
+        .iter()
+        .find(|i| matches!(i, arch::ast::Item::Module(m) if m.name.name == "Dut"))
+        .expect("expected Dut module");
+    let body = arch::interface::emit_interface(dut).expect("emit_interface");
+    assert!(
+        body.contains("port s: target BusRw<WRITE=0>;"),
+        ".archi must record the scalar bus-port param override: {body}"
+    );
+    assert!(
+        body.contains("port chans: initiator Vec<BusRw<READ=0>, 2>;"),
+        ".archi must record params inside a Vec-of-bus port: {body}"
+    );
+
+    // Round-trip: parse the emitted `.archi` module stub back and confirm the
+    // BusPortInfo.params survived (so harc / re-emit see the same override).
+    let rt_src = format!(
+        "domain SysDomain\n  freq_mhz: 100\nend domain SysDomain\n\n{body}"
+    );
+    let rt_tokens = lexer::tokenize(&rt_src).expect("re-lex emitted .archi");
+    let mut rt_parser = Parser::new(rt_tokens, &rt_src);
+    let rt_parsed = rt_parser
+        .parse_source_file()
+        .expect("re-parse emitted .archi");
+    let rt_dut = rt_parsed
+        .items
+        .iter()
+        .find(|i| matches!(i, arch::ast::Item::Module(_)))
+        .expect("module in re-parsed .archi");
+    let arch::ast::Item::Module(m) = rt_dut else {
+        unreachable!()
+    };
+    let s_port = m
+        .ports
+        .iter()
+        .find(|p| p.name.name == "s")
+        .expect("port s");
+    let bi = s_port.bus_info.as_ref().expect("s is a bus port");
+    assert!(
+        bi.params.iter().any(|pa| pa.name.name == "WRITE"),
+        "WRITE override must round-trip into BusPortInfo.params"
+    );
+    // Re-emit must be byte-identical — proves the override (incl. its value)
+    // survives a full emit → parse → emit cycle, not just appears once.
+    assert_eq!(
+        arch::interface::emit_interface(rt_dut).unwrap(),
+        body,
+        ".archi emit must be idempotent across a parse round-trip"
     );
 }
 
@@ -21013,6 +21484,80 @@ fn test_arbiter_inst_comb_grant_loop_still_detected() {
     );
 }
 
+#[test]
+fn test_bus_ready_eq_valid_is_not_a_false_comb_cycle() {
+    // The universal AXI-style handshake: a target drives `ready` from `valid`
+    // (an input). `p.ready = f(p.valid)` is acyclic (valid is a primary input).
+    // The whole-design detector must NOT conflate the bus port `p` into one
+    // node — reading `p.valid` and driving `p.ready` are DISTINCT signals.
+    // Pre-fix this fabricated a self-cycle `fire -> p -> fire`; Verilator
+    // always reported the design loop-free.
+    let source = r#"
+        bus Hsk
+          valid: out Bool;
+          ready: in  Bool;
+          data:  out UInt<8>;
+        end bus Hsk
+
+        module HskTarget
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port p: target Hsk;
+          reg busy: Bool reset rst => false;
+          let fire: Bool = p.valid and (not busy);
+          comb
+            p.ready = fire;
+          end comb
+          seq on clk rising
+            if fire
+              busy <= true;
+            end if
+          end seq
+        end module HskTarget
+    "#;
+    let wd = whole_design_from(source);
+    assert_eq!(
+        wd.total_sccs, 0,
+        "a target's `ready = f(valid)` handshake must not be a comb cycle \
+         (bus members are distinct nodes); SCCs found: {:?}",
+        wd.sccs.iter().map(|s| &s.owning_modules).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_real_comb_cycle_through_bus_member_still_detected() {
+    // Soundness guard for the per-member bus-node fix: a genuine combinational
+    // loop routed through ONE bus member must still be caught. Here output
+    // member `p.ready` feeds `x` which drives `p.ready` — a real 1-cycle loop
+    // (`p.ready -> x -> p.ready`). Per-member granularity keeps it as a single
+    // node, so the SCC is still found (no under-approximation).
+    let source = r#"
+        bus Hsk
+          valid: out Bool;
+          ready: in  Bool;
+          data:  out UInt<8>;
+        end bus Hsk
+
+        module HskLoop
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port en: in Bool;
+          port p: target Hsk;
+          let x: Bool = p.ready and en;
+          comb
+            p.ready = x;
+          end comb
+        end module HskLoop
+    "#;
+    let wd = whole_design_from(source);
+    assert_eq!(
+        wd.total_sccs, 1,
+        "a real comb loop through a single bus member must still be detected; \
+         SCCs found: {:?}",
+        wd.sccs.iter().map(|s| &s.owning_modules).collect::<Vec<_>>()
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Issue #246 Phase 2: per-output `comb_dep_on(...)` annotation.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -24823,6 +25368,329 @@ fn test_nic400_apb_bridge_excl_len_illegal_is_rejected_by_sva() {
 }
 
 // ────────────────────────────────────────────────────────────────────
+// NIC-400 §16.1 — AHB-Lite slave-side (mirrored) bridge
+// ────────────────────────────────────────────────────────────────────
+//
+// Nic400AhbSlaveBridge.arch is the MIRROR of Nic400AhbBridge.arch: it
+// flips both bus roles so the AXI4 side is a `target` (driven by the
+// fabric) and the AHB-Lite side is an `initiator` (driving an external
+// AHB peripheral). This exercises bus target/initiator direction-flip
+// and thread lowering in the reverse direction from the shipped
+// master-side bridge. End-to-end behaviour (AXI read/write through to
+// the AHB peripheral, plus HRESP→AXI-resp SLVERR mapping) is verified by
+// examples/nic400/Nic400AhbSlaveBridge_test.harc under
+// `harc sim --check-backends` (ARCH native sim ≡ Verilator).
+//
+// This regression pins the direction-flip in the lowered SV: a rename or
+// a target/initiator regression in the bus flatten / thread-lowering path
+// would change these port directions and trip the test.
+#[test]
+fn test_nic400_ahb_slave_bridge_flips_bus_roles_in_lowered_sv() {
+    let source = concat!(
+        include_str!("../examples/nic400/Nic400AhbSlaveBridge.arch"),
+        "\n",
+        include_str!("../examples/nic400/BusAxi4.arch"),
+        "\n",
+        include_str!("../examples/nic400/BusAhbLite.arch"),
+    );
+    let sv = compile_to_sv(source);
+
+    // AXI4 is the `target`: the bridge SEES AR/AW/W as inputs and DRIVES
+    // the R/B channels + the *_ready backpressure as outputs. (On the
+    // master-side bridge these directions are reversed.)
+    assert!(
+        sv.contains("input logic axi_ar_valid,"),
+        "AXI4 target: ar_valid must be an INPUT to the bridge:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic axi_ar_ready,"),
+        "AXI4 target: ar_ready must be an OUTPUT of the bridge:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic axi_r_valid,") && sv.contains("input logic axi_r_ready,"),
+        "AXI4 target: r_valid is an OUTPUT, r_ready an INPUT:\n{sv}"
+    );
+
+    // AHB-Lite is the `initiator` (master): the bridge DRIVES the address/
+    // control/HWDATA as outputs and SAMPLES HRDATA/HREADY/HRESP as inputs.
+    assert!(
+        sv.contains("output logic h_hsel,") && sv.contains("output logic h_hwrite,"),
+        "AHB initiator: HSEL/HWRITE must be OUTPUTs of the bridge:\n{sv}"
+    );
+    assert!(
+        sv.contains("output logic [1:0] h_htrans,"),
+        "AHB initiator: HTRANS must be an OUTPUT of the bridge:\n{sv}"
+    );
+    assert!(
+        sv.contains("input logic h_hready") && sv.contains("input logic h_hresp"),
+        "AHB initiator: HREADY/HRESP must be INPUTs to the bridge:\n{sv}"
+    );
+    assert!(
+        sv.contains("input logic [DATA_WIDTH-1:0] h_hrdata,")
+            && sv.contains("output logic [DATA_WIDTH-1:0] h_hwdata,"),
+        "AHB initiator: HRDATA in, HWDATA out:\n{sv}"
+    );
+
+    // Two independent threads (read + write) lower to two state machines
+    // in the `_threads` sub-module.
+    assert!(
+        sv.contains("module _Nic400AhbSlaveBridge_threads"),
+        "expected lowered `_Nic400AhbSlaveBridge_threads` sub-module:\n{sv}"
+    );
+    assert!(
+        sv.contains("_t0_state") && sv.contains("_t1_state"),
+        "expected two lowered thread state registers (read + write):\n{sv}"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// NIC-400 read+write async-clock CDC bridge (GPV ring)
+// ────────────────────────────────────────────────────────────────────
+//
+// `examples/nic400/Nic400CdcAxi4Rw.arch` extends the read-only
+// `Nic400CdcAxi4` to a full AXI4 read+write async-clock bridge: it adds
+// the AW/W (M->S) and B (S->M) channel-crossing FIFOs alongside the
+// existing AR (M->S) and R (S->M) ones, so a config access can write AND
+// read a GPV register across an unrelated clock-domain boundary. This
+// closes the write-path-CDC gap the read-only bridge left open.
+//
+// This regression pins the structural shape: the bridge must instantiate
+// all FIVE channel-crossing FIFOs. A lowering regression that drops a
+// write-path channel (e.g. an `inst`-emission or bus-port-direction bug
+// affecting only AW/W/B) trips this loudly rather than silently shipping
+// a read-only bridge under the read+write name.
+#[test]
+fn test_nic400_cdc_axi4_rw_bridge_crosses_all_five_axi_channels() {
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("gpv_ring.sv");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("examples/nic400/BusAxi4.arch")
+        .arg("examples/nic400/Nic400GpvArCdcFifo.arch")
+        .arg("examples/nic400/Nic400GpvRCdcFifo.arch")
+        .arg("examples/nic400/Nic400GpvAwCdcFifo.arch")
+        .arg("examples/nic400/Nic400GpvWCdcFifo.arch")
+        .arg("examples/nic400/Nic400GpvBCdcFifo.arch")
+        .arg("examples/nic400/Nic400CdcAxi4Rw.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("invoke arch build");
+    assert!(
+        build.status.success(),
+        "arch build of the read+write CDC bridge should succeed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let sv = std::fs::read_to_string(&sv_out).expect("read emitted SV");
+
+    // The bridge module body must instantiate every one of the five
+    // channel-crossing FIFOs. Verilator flattens the instance names, so
+    // each appears as a `<Fifo> <inst> (` instantiation header in the SV.
+    for fifo_module in [
+        "Nic400GpvArCdcFifo", // AR: M->S (read address)
+        "Nic400GpvRCdcFifo",  // R:  S->M (read data)
+        "Nic400GpvAwCdcFifo", // AW: M->S (write address)  ← write-path
+        "Nic400GpvWCdcFifo",  // W:  M->S (write data)      ← write-path
+        "Nic400GpvBCdcFifo",  // B:  S->M (write response)  ← write-path
+    ] {
+        assert!(
+            sv.contains(fifo_module),
+            "read+write CDC bridge SV is missing the {fifo_module} crossing FIFO \
+             (a dropped channel would silently regress the bridge to read-only):\n{sv}"
+        );
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Compiler fix: derived params re-evaluate under inst-level overrides,
+// and variant discovery is transitive through nested instantiation.
+// ────────────────────────────────────────────────────────────────────
+//
+// `Mid` has a base param `W` and derived params `DA = W+2`, `DB = W+4`.
+// `Top` instantiates `Mid` with `W = 5`. The derived params must re-evaluate
+// (DA=7, DB=9) so `Mid`'s ports are sized correctly, AND the nested `Leaf`
+// instances (param `PW = DA` / `PW = DB`) must rewrite to variants that
+// transitive variant discovery actually created (`Leaf__PW_7`, `Leaf__PW_9`).
+// Before the fix this failed two ways: a type-check width mismatch on the
+// derived-param-sized port, and an "undefined module Leaf" for the variant
+// that default-param discovery never produced.
+#[test]
+fn test_derived_param_override_reevaluates_and_creates_nested_variants() {
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("dpo.sv");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/derived_param_override/Leaf.arch")
+        .arg("tests/derived_param_override/Mid.arch")
+        .arg("tests/derived_param_override/Top.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("invoke arch build");
+    assert!(
+        build.status.success(),
+        "arch build with derived-param override should succeed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let sv = std::fs::read_to_string(&sv_out).expect("read emitted SV");
+
+    // Both nested-Leaf variants — sized by the *re-evaluated* derived params
+    // (DA = 5+2 = 7, DB = 5+4 = 9) — must exist.
+    assert!(
+        sv.contains("module Leaf__PW_7"),
+        "missing Leaf__PW_7 variant (derived param DA=W+2 must re-evaluate to 7 \
+         under the W=5 override):\n{sv}"
+    );
+    assert!(
+        sv.contains("module Leaf__PW_9"),
+        "missing Leaf__PW_9 variant (derived param DB=W+4 must re-evaluate to 9 \
+         under the W=5 override):\n{sv}"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Compiler fix: VlWide<->_arch_u128 conversion respects the real word
+// count, so a 65–96-bit (VlWide<3>) payload is not written out of bounds.
+// ────────────────────────────────────────────────────────────────────
+//
+// A 66-bit payload reg maps to `VlWide<3>` in the ARCH sim. The conversion
+// helpers used to assume a 4-word `VlWide<4>` and touched `w[3]`, overrunning
+// the 3-word backing array and clobbering the adjacent 1-bit `dn_valid`
+// member (read back as 64 instead of 1). This test runs the slice in the
+// ARCH sim and asserts the valid bit and the wide payload survive.
+#[test]
+fn test_wide_payload_slice_conversion_does_not_clobber_adjacent_member() {
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/wide_payload_slice/WidePayloadSlice.arch")
+        .arg("--tb")
+        .arg("tests/wide_payload_slice/tb_wide_payload_slice.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for WidePayloadSlice");
+    assert!(
+        out.status.success(),
+        "arch sim of the 66-bit-payload slice should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("PASS wide_payload_slice"),
+        "expected `PASS wide_payload_slice` (dn_valid==1, payload intact) in \
+         arch sim stdout — a VlWide<3> conversion overrun would corrupt \
+         dn_valid; got:\n{stdout}"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// NIC-400 per-SLAVE register-slice fabric (AMIB timing isolation)
+// ────────────────────────────────────────────────────────────────────
+//
+// `Nic400FabricRsSlave` drops a `Nic400EdgeRegSlice` on every (fabric →
+// slave) edge — the AMIB / master-IF position, the slave-side mirror of
+// `Nic400FabricRs1`'s per-master ASIB slices. The slave-side AXI4 id width
+// is `SLAVE_ID_W = 5`, so each slice is instantiated with `ID_W =
+// SLAVE_ID_W`, which forces the derived per-channel payload params
+// (AR/AW=66, R=40, W=37, B=7) to re-evaluate and creates distinct
+// `RegSliceChannel` variants for those widths.
+//
+// This test pins three things that broke real compiler bugs while building
+// this IP (all fixed in the same PR):
+//   1. The `RegSliceChannel__PAYLOAD_W_{66,40,37,7}` variants exist — i.e.
+//      derived params re-evaluate under the inst-level `ID_W` override and
+//      variant discovery is transitive through the nested instantiation.
+//   2. The per-slave slice's whole-bus `up <- s_int[j]` connection to the
+//      `Vec<SlaveBus, N>` *wire* `s_int` emits a packed indexed reference
+//      `s_int_<sig>[j]`, NOT the broken flattened `s_int_<j>_<sig>` that
+//      referenced a non-existent net.
+//   3. Four slices are instantiated, one per slave, each with
+//      `.ID_W(SLAVE_ID_W)`.
+#[test]
+fn test_nic400_fabric_rs_slave_inserts_per_slave_reg_slices_with_packed_wire_conns() {
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("rs_slave.sv");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("examples/nic400/BusAxi4.arch")
+        .arg("examples/nic400/RegSliceChannel.arch")
+        .arg("examples/nic400/Nic400EdgeRegSlice.arch")
+        .arg("examples/nic400/Nic400MasterPort.arch")
+        .arg("examples/nic400/Nic400SlavePort.arch")
+        .arg("examples/nic400/Nic400DefaultSlave.arch")
+        .arg("examples/nic400/Nic400Fabric.arch")
+        .arg("examples/nic400/Nic400FabricRsSlave.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("invoke arch build");
+    assert!(
+        build.status.success(),
+        "arch build of the per-slave reg-slice fabric should succeed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let sv = std::fs::read_to_string(&sv_out).expect("read emitted SV");
+
+    // (1) Derived params re-evaluated under ID_W=5: the slave-side payload
+    // widths produce these RegSliceChannel variants. PAYLOAD_W_66 (= AR/AW
+    // with ID_W=5) is the one that does NOT exist under the default ID_W=3,
+    // so its presence proves the override flowed through the derived params
+    // and transitive variant discovery.
+    for variant in [
+        "RegSliceChannel__PAYLOAD_W_66", // AR / AW : addr+id(5)+len+size+burst+lock+cache+prot+qos+region
+        "RegSliceChannel__PAYLOAD_W_40", // R       : data+id(5)+resp+last
+        "RegSliceChannel__PAYLOAD_W_37", // W       : data+strb+last
+        "RegSliceChannel__PAYLOAD_W_7",  // B       : id(5)+resp
+    ] {
+        assert!(
+            sv.contains(variant),
+            "per-slave reg-slice fabric SV is missing the {variant} variant — the \
+             inst-level `ID_W = SLAVE_ID_W` override must re-evaluate the derived \
+             payload params and create this variant:\n{sv}"
+        );
+    }
+
+    // (2) The whole-bus `up <- s_int[j]` connection to the Vec-of-bus *wire*
+    // `s_int` must emit a packed indexed reference, e.g. `s_int_ar_valid[0]`.
+    // The pre-fix codegen emitted the flattened `s_int_0_ar_valid`, which
+    // referenced a net that was never declared (Verilator IMPLICIT, and a
+    // dropped connection in the ARCH sim).
+    assert!(
+        sv.contains("s_int_ar_valid[0]"),
+        "per-slave slice `up <- s_int[j]` must connect to the packed Vec-of-bus \
+         wire element `s_int_ar_valid[0]`, not a flattened `s_int_0_ar_valid`:\n{sv}"
+    );
+    assert!(
+        !sv.contains("s_int_0_ar_valid"),
+        "per-slave slice connection must NOT emit the broken flattened \
+         `s_int_0_ar_valid` net name (Vec-of-bus *wire* indexed-connection bug):\n{sv}"
+    );
+
+    // (3) Exactly four EdgeRegSlice instances (one per slave), each overriding
+    // ID_W with SLAVE_ID_W.
+    let slice_insts = sv
+        .matches("Nic400EdgeRegSlice #(.ID_W(SLAVE_ID_W))")
+        .count();
+    assert_eq!(
+        slice_insts, 4,
+        "expected exactly 4 per-slave Nic400EdgeRegSlice instances each with \
+         .ID_W(SLAVE_ID_W); found {slice_insts}:\n{sv}"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────
 // User-written `assert` SVA reset gating
 // ────────────────────────────────────────────────────────────────────
 //
@@ -25206,5 +26074,273 @@ end module M
         !trimmed.contains("if (go) begin x_r <= 8'd42"),
         "x_r must NOT be folded into state 0's if(go) arm when separated \
          by a wait N cycle (issue #306 wait-N-cycle unaffected):\n{sv}",
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Inst-boundary clock-domain checking: rebind-OK vs cross-domain-data-NG
+// ────────────────────────────────────────────────────────────────────
+//
+// `check_inst_cdc` (src/typecheck.rs) implements the spec rule documented
+// at doc/ARCH_HDL_Specification.md §"CDC checking extends across `inst`
+// boundaries": the compiler traces *clock* port connections to map a
+// child's declared domains onto the parent's domains, then verifies that
+// each *data* connection respects those boundaries.
+//
+// The subtle, deliberate consequence is **clock domain rebind**: a
+// reusable child may declare a placeholder clock domain (commonly
+// `Clock<SysDomain>`) and be instantiated under a *different* parent
+// clock. That is NOT a violation — the connected clock fixes the
+// instance's domain at the boundary, and there is no crossing *inside*
+// the instance (it is clocked entirely by the one connected clock).
+// `examples/nic400/Nic400GpvRing.arch` relies on exactly this (a
+// `Clock<SysDomain>` GPV instantiated under `SClkDom`).
+//
+// What IS a violation is feeding a parent signal from domain A into a
+// child *data* port that the child clocks in domain B. These tests pin
+// both halves so a regression to `check_inst_cdc` cannot silently either
+// (a) start rejecting legitimate clock rebind, or (b) stop catching a
+// genuine cross-domain data crossing. The behaviour was previously
+// exercised only by the un-wired `examples/cdc_inst_violation.arch`.
+
+/// REBIND-OK: a `Clock<SysDomain>` child instantiated under a named
+/// parent domain (`SClkDom`), fed only by same-(parent-)domain data, must
+/// type-check clean. This is the `Nic400GpvRing` pattern in miniature.
+#[test]
+fn test_inst_clock_domain_rebind_is_not_a_violation() {
+    let source = r#"
+domain MClkDom
+  freq_mhz: 200
+end domain MClkDom
+
+domain SClkDom
+  freq_mhz: 150
+end domain SClkDom
+
+module GpvLike
+  port clk:   in Clock<SysDomain>;
+  port rst:   in Reset<Sync>;
+  port wdata: in UInt<8>;
+  port rdata: out UInt<8>;
+
+  reg r: UInt<8> reset rst => 0;
+
+  seq on clk rising
+    r <= wdata;
+  end seq
+
+  comb
+    rdata = r;
+  end comb
+end module GpvLike
+
+module RingLike
+  port m_clk: in Clock<MClkDom>;
+  port s_clk: in Clock<SClkDom>;
+  port rst:   in Reset<Sync>;
+  port wdata: in UInt<8>;
+  port rdata: out UInt<8>;
+
+  reg sd: UInt<8> reset rst => 0;
+
+  seq on s_clk rising
+    sd <= wdata;
+  end seq
+
+  inst gpv: GpvLike
+    clk   <- s_clk;
+    rst   <- rst;
+    wdata <- sd;
+    rdata -> rdata;
+  end inst gpv
+end module RingLike
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(
+        result.is_ok(),
+        "rebinding a Clock<SysDomain> child to a named parent clock domain, \
+         fed only by same-domain data, must NOT be a CDC violation \
+         (this is the GPV-ring pattern). Got: {:?}",
+        result.err()
+    );
+}
+
+/// CROSS-DOMAIN-DATA-NG: a parent register clocked in domain A wired into
+/// a child *data* port that the child clocks in domain B is a genuine CDC
+/// hazard and must be rejected at the inst boundary — the clock rebind is
+/// fine, the data crossing is not. Mirrors `examples/cdc_inst_violation.arch`.
+#[test]
+fn test_inst_cross_domain_data_is_a_violation() {
+    let source = r#"
+domain DomainA
+  freq_mhz: 100
+end domain DomainA
+
+domain DomainB
+  freq_mhz: 200
+end domain DomainB
+
+module Consumer
+  port clk:      in Clock<DomainB>;
+  port rst:      in Reset<Sync>;
+  port data_in:  in UInt<8>;
+  port data_out: out UInt<8>;
+
+  reg r: UInt<8> reset rst => 0;
+
+  seq on clk rising
+    r <= data_in;
+  end seq
+
+  let data_out = r;
+end module Consumer
+
+module TopBad
+  port clk_a:  in Clock<DomainA>;
+  port clk_b:  in Clock<DomainB>;
+  port rst:    in Reset<Sync>;
+  port result: out UInt<8>;
+
+  reg counter_a: UInt<8> reset rst => 0;
+
+  seq on clk_a rising
+    counter_a <= (counter_a + 1).trunc<8>();
+  end seq
+
+  inst cons: Consumer
+    clk      <- clk_b;
+    rst      <- rst;
+    data_in  <- counter_a;
+    data_out -> result;
+  end inst cons
+end module TopBad
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "expected an inst-boundary CDC violation");
+    let errs = result.unwrap_err();
+    assert!(
+        errs.iter().any(|e| {
+            let s = e.to_string();
+            s.contains("CDC violation at instance `cons`")
+                && s.contains("counter_a")
+                && s.contains("DomainA")
+        }),
+        "expected a CDC-violation error naming instance `cons`, signal \
+         `counter_a`, and its source domain `DomainA`, got: {:?}",
+        errs
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// NIC-400 AXI3 endpoint shim + AXI4↔AXI3 protocol conversion
+// (nic400_interconnect_spec.md §16.1, TRM DDI 0475E §1.2/§2.3.1)
+// ────────────────────────────────────────────────────────────────────
+//
+// Three new examples: examples/nic400/BusAxi3.arch (AXI3 bus bundle),
+// Nic400Axi4ToAxi3.arch (AXI4→AXI3 long-burst splitter), and
+// Nic400Axi3ToAxi4.arch (AXI3→AXI4 programmable burst limiter).
+//
+// End-to-end behaviour is verified by the pre/post-edge C++ TBs
+// tb_nic400_axi4_to_axi3_split.cpp and tb_nic400_axi3_to_axi4_limit.cpp
+// (PASS under BOTH `arch sim` and Verilator — see PR description) and by
+// the HARC TB Nic400Axi4ToAxi3_test.harc (`--check-backends` reports no
+// divergence). These cargo tests pin the load-bearing SV codegen of the
+// burst-split arithmetic so a future thread-lowering / width regression
+// trips a dedicated test.
+
+#[test]
+fn test_nic400_axi4_to_axi3_burst_split_arithmetic_sv() {
+    // The AXI4→AXI3 splitter lowers to a `_threads` sub-module that must:
+    //   1. compute num_sub = ceil((ar_len+1)/16) as (ar_len + 16) >> 4;
+    //   2. step each sub-burst start address by (i*16) << size;
+    //   3. truncate the per-sub-burst AXI3 ar_len to 4 bits (max 16 beats);
+    //   4. suppress the merged RLAST except on the final sub-burst
+    //      (loop_cnt == num_sub-1).
+    let bus4 = include_str!("../examples/nic400/BusAxi4.arch");
+    let bus3 = include_str!("../examples/nic400/BusAxi3.arch");
+    let dut = include_str!("../examples/nic400/Nic400Axi4ToAxi3.arch");
+    let sv = compile_to_sv(&format!("{bus4}\n{bus3}\n{dut}"));
+    let flat: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    // 1. ceil-div sub-burst count: (ar_len + 16) >> 4.
+    assert!(
+        flat.contains("num_sub_r <= 5'(9'(9'($unsigned(m_ar_len)) + 16) >> 4)"),
+        "num_sub must be ceil((ar_len+1)/16) = (ar_len+16)>>4:\n{sv}",
+    );
+    // 2. INCR-stepped sub-burst start address: base + (beats_done << size).
+    assert!(
+        flat.contains("logic [ADDR_W-1:0] stepped = done << size;")
+            && flat.contains("return ADDR_W'(base + stepped);"),
+        "sub-burst start address must step by (i*16)<<size:\n{sv}",
+    );
+    // 3. AXI3 ar_len is 4-bit and is sub_beats-1.
+    assert!(
+        flat.contains("output logic [3:0] s_ar_len"),
+        "AXI3 s_ar_len must be 4-bit (max 16-beat burst):\n{sv}",
+    );
+    assert!(
+        flat.contains("s_ar_len = 4'(sub_beats_5_9(_t0_loop_cnt_0, total_r) - 1)"),
+        "AXI3 ar_len must be (sub_beats - 1) truncated to 4 bits:\n{sv}",
+    );
+    // min(16, remaining) clamp inside sub_beats().
+    assert!(
+        flat.contains("if (remaining > 16) begin return 9'd16;"),
+        "sub_beats must clamp to min(16, remaining):\n{sv}",
+    );
+    // 4. merged RLAST only on the final sub-burst.
+    assert!(
+        flat.contains("m_r_last = _t0_loop_cnt_0 == num_sub_r - 1 && s_r_last"),
+        "merged RLAST must fire only on the final sub-burst:\n{sv}",
+    );
+}
+
+#[test]
+fn test_nic400_axi3_to_axi4_limiter_field_mapping_sv() {
+    // The AXI3→AXI4 limiter forwards (limits) AXI3 reads onto AXI4. It must:
+    //   1. zero AXI4 QoS / REGION (AXI3 has neither);
+    //   2. map AXI3 2-bit AxLOCK (EXCLUSIVE=01) to AXI4 1-bit lock (==1);
+    //   3. take MAX_BURST as the programmable onward-AxLEN cap.
+    let bus3 = include_str!("../examples/nic400/BusAxi3.arch");
+    let bus4 = include_str!("../examples/nic400/BusAxi4.arch");
+    let dut = include_str!("../examples/nic400/Nic400Axi3ToAxi4.arch");
+    let sv = compile_to_sv(&format!("{bus3}\n{bus4}\n{dut}"));
+    let flat: String = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    // 1. AXI3 AxLEN is 4-bit on the master-facing port (target flips dir →
+    //    input on this converter), AXI4 AxLEN is 8-bit on the slave port.
+    assert!(
+        flat.contains("input logic [3:0] m_ar_len"),
+        "AXI3 master-facing ar_len must be 4-bit:\n{sv}",
+    );
+    assert!(
+        flat.contains("output logic [7:0] s_ar_len"),
+        "AXI4 slave-facing ar_len must be 8-bit:\n{sv}",
+    );
+    // 2. AXI4 QoS / REGION held at 0.
+    assert!(
+        flat.contains("s_ar_qos = 0") && flat.contains("s_ar_region = 0"),
+        "AXI4 QoS/REGION must be tied to 0 (AXI3 has neither):\n{sv}",
+    );
+    // 3. AXI3 2-bit lock → AXI4 1-bit lock via (l == 1).
+    assert!(
+        flat.contains("return l == 1;"),
+        "AXI3 2-bit AxLOCK must map EXCLUSIVE(01)→1, else 0:\n{sv}",
+    );
+    // 4. MAX_BURST is the programmable cap parameter, default 16.
+    assert!(
+        flat.contains("parameter int MAX_BURST = 16"),
+        "MAX_BURST must be the GPV-programmable onward-AxLEN cap (default 16):\n{sv}",
     );
 }

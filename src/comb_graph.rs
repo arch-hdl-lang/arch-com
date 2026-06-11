@@ -45,72 +45,107 @@ pub struct ModuleAnalysis {
 
 /// Recursively collect all bare identifiers referenced inside `expr`.
 pub fn collect_expr_idents(expr: &crate::ast::Expr, out: &mut HashSet<String>) {
+    collect_idents_impl(expr, None, out);
+}
+
+/// Bus-aware variant: when the base of a `FieldAccess` is one of `bus_ports`,
+/// the access yields a *field-qualified* name (`s.aw_valid`) rather than the
+/// bare bus-port base (`s`). The whole-design comb-loop graph builder uses this
+/// so that reading one bus member (`s.aw_valid`) and driving another
+/// (`s.aw_ready`) are DISTINCT nodes — otherwise the universal AXI
+/// `ready = f(valid)` handshake fabricates a false self-cycle through the
+/// single conflated `s` node. Every bus member is an independent SV signal,
+/// so per-member granularity is sound (a genuine cycle through one member is
+/// still `s.x -> … -> s.x`).
+pub fn collect_expr_idents_bus(
+    expr: &crate::ast::Expr,
+    bus_ports: &HashSet<String>,
+    out: &mut HashSet<String>,
+) {
+    collect_idents_impl(expr, Some(bus_ports), out);
+}
+
+fn collect_idents_impl(
+    expr: &crate::ast::Expr,
+    bus: Option<&HashSet<String>>,
+    out: &mut HashSet<String>,
+) {
     use ExprKind::*;
+    let rec = |e: &crate::ast::Expr, out: &mut HashSet<String>| collect_idents_impl(e, bus, out);
     match &expr.kind {
         Ident(name) => { out.insert(name.clone()); }
         Binary(_, a, b) => {
-            collect_expr_idents(a, out);
-            collect_expr_idents(b, out);
+            rec(a, out);
+            rec(b, out);
         }
-        Unary(_, a) => collect_expr_idents(a, out),
-        FieldAccess(base, _) => collect_expr_idents(base, out),
+        Unary(_, a) => rec(a, out),
+        FieldAccess(base, field) => {
+            // Bus member → field-qualified node; otherwise recurse into base.
+            if let (Some(bp), Ident(b)) = (bus, &base.kind) {
+                if bp.contains(b) {
+                    out.insert(format!("{b}.{}", field.name));
+                    return;
+                }
+            }
+            rec(base, out);
+        }
         MethodCall(recv, _, args) => {
-            collect_expr_idents(recv, out);
-            for a in args { collect_expr_idents(a, out); }
+            rec(recv, out);
+            for a in args { rec(a, out); }
         }
-        Cast(e, _) => collect_expr_idents(e, out),
+        Cast(e, _) => rec(e, out),
         Index(base, idx) => {
-            collect_expr_idents(base, out);
-            collect_expr_idents(idx, out);
+            rec(base, out);
+            rec(idx, out);
         }
         BitSlice(base, hi, lo) => {
-            collect_expr_idents(base, out);
-            collect_expr_idents(hi, out);
-            collect_expr_idents(lo, out);
+            rec(base, out);
+            rec(hi, out);
+            rec(lo, out);
         }
         PartSelect(base, start, width, _) => {
-            collect_expr_idents(base, out);
-            collect_expr_idents(start, out);
-            collect_expr_idents(width, out);
+            rec(base, out);
+            rec(start, out);
+            rec(width, out);
         }
         StructLiteral(_, fields) => {
-            for f in fields { collect_expr_idents(&f.value, out); }
+            for f in fields { rec(&f.value, out); }
         }
         Concat(exprs) => {
-            for e in exprs { collect_expr_idents(e, out); }
+            for e in exprs { rec(e, out); }
         }
         FunctionCall(_, args) => {
-            for a in args { collect_expr_idents(a, out); }
+            for a in args { rec(a, out); }
         }
         Repeat(e, n) => {
-            collect_expr_idents(e, out);
-            collect_expr_idents(n, out);
+            rec(e, out);
+            rec(n, out);
         }
         Ternary(c, t, f) => {
-            collect_expr_idents(c, out);
-            collect_expr_idents(t, out);
-            collect_expr_idents(f, out);
+            rec(c, out);
+            rec(t, out);
+            rec(f, out);
         }
         Inside(e, members) => {
-            collect_expr_idents(e, out);
+            rec(e, out);
             for m in members {
                 match m {
-                    InsideMember::Single(x)    => collect_expr_idents(x, out),
+                    InsideMember::Single(x)    => rec(x, out),
                     InsideMember::Range(a, b)  => {
-                        collect_expr_idents(a, out);
-                        collect_expr_idents(b, out);
+                        rec(a, out);
+                        rec(b, out);
                     }
                 }
             }
         }
         // Expression-level match: scrutinee + arm values
         ExprMatch(scrut, arms) => {
-            collect_expr_idents(scrut, out);
-            for arm in arms { collect_expr_idents(&arm.value, out); }
+            rec(scrut, out);
+            for arm in arms { rec(&arm.value, out); }
         }
         // Statement-level match used as expression (rare): just the scrutinee
-        Match(scrut, _) => collect_expr_idents(scrut, out),
-        Clog2(e) => collect_expr_idents(e, out),
+        Match(scrut, _) => rec(scrut, out),
+        Clog2(e) => rec(e, out),
         // Literals, Bool, EnumVariant, Todo — no identifiers
         _ => {}
     }
@@ -119,14 +154,30 @@ pub fn collect_expr_idents(expr: &crate::ast::Expr, out: &mut HashSet<String>) {
 /// Extract the base identifier name from an LHS expression
 /// (strips bit-slices, part-selects, array indexing, field access).
 fn lhs_base_name(expr: &crate::ast::Expr) -> Option<String> {
+    lhs_base_name_bus(expr, None)
+}
+
+/// Bus-aware LHS base: an assignment to a bus member (`s.aw_ready = …`) yields
+/// the field-qualified target `s.aw_ready` when `s` ∈ `bus_ports`, matching
+/// `collect_expr_idents_bus` on the read side so the two never conflate into a
+/// single `s` node. See `collect_expr_idents_bus` for why per-member
+/// granularity is sound.
+fn lhs_base_name_bus(expr: &crate::ast::Expr, bus_ports: Option<&HashSet<String>>) -> Option<String> {
     use ExprKind::*;
     match &expr.kind {
-        Ident(name)             => Some(name.clone()),
-        BitSlice(base, _, _)    => lhs_base_name(base),
-        PartSelect(base, _, _, _) => lhs_base_name(base),
-        Index(base, _)          => lhs_base_name(base),
-        FieldAccess(base, _)    => lhs_base_name(base),
-        _                       => None,
+        Ident(name)               => Some(name.clone()),
+        BitSlice(base, _, _)      => lhs_base_name_bus(base, bus_ports),
+        PartSelect(base, _, _, _) => lhs_base_name_bus(base, bus_ports),
+        Index(base, _)            => lhs_base_name_bus(base, bus_ports),
+        FieldAccess(base, field)  => {
+            if let (Some(bp), Ident(b)) = (bus_ports, &base.kind) {
+                if bp.contains(b) {
+                    return Some(format!("{b}.{}", field.name));
+                }
+            }
+            lhs_base_name_bus(base, bus_ports)
+        }
+        _                         => None,
     }
 }
 
@@ -1200,6 +1251,15 @@ impl GraphBuilder {
 
         // 1) Parent-level comb blocks + let bindings + wire decls
         let (input_names, output_names) = port_sets(&m.ports);
+        let _ = (&input_names, &output_names);
+        // Bus-port names: their members are tracked at field granularity so a
+        // signal that reads one member (`s.aw_valid`) and drives another
+        // (`s.aw_ready`) — the universal AXI `ready = f(valid)` handshake — does
+        // not collapse into one `s` node and fabricate a false self-cycle.
+        let bus_ports: HashSet<String> = m.ports.iter()
+            .filter(|p| p.bus_info.is_some())
+            .map(|p| p.name.name.clone())
+            .collect();
         for item in &m.body {
             match item {
                 ModuleBodyItem::WireDecl(w) => { mk(self, &w.name.name); }
@@ -1210,13 +1270,13 @@ impl GraphBuilder {
                     // pipe_reg outputs are registered.
                 }
                 ModuleBodyItem::CombBlock(cb) => {
-                    self.scan_assignments(&cb.stmts, &path, &input_names, &output_names);
+                    self.scan_assignments(&cb.stmts, &path, &bus_ports);
                 }
                 ModuleBodyItem::LetBinding(lb) => {
                     // Edge: each RHS ident → lb.name
                     let lhs = mk(self, &lb.name.name);
                     let mut ids = HashSet::new();
-                    collect_expr_idents(&lb.value, &mut ids);
+                    collect_expr_idents_bus(&lb.value, &bus_ports, &mut ids);
                     for id in &ids {
                         let from = mk(self, id);
                         self.add_edge(from, lhs);
@@ -1582,28 +1642,28 @@ impl GraphBuilder {
         &mut self,
         stmts: &[Stmt],
         path: &InstPath,
-        _input_names: &HashSet<String>,
-        _output_names: &HashSet<String>,
+        bus_ports: &HashSet<String>,
     ) {
         let mut cond_stack: Vec<HashSet<String>> = Vec::new();
-        self.scan_assignments_inner(stmts, path, &mut cond_stack);
+        self.scan_assignments_inner(stmts, path, bus_ports, &mut cond_stack);
     }
 
     fn scan_assignments_inner(
         &mut self,
         stmts: &[Stmt],
         path: &InstPath,
+        bus_ports: &HashSet<String>,
         cond_stack: &mut Vec<HashSet<String>>,
     ) {
         for stmt in stmts {
             match stmt {
                 Stmt::Assign(a) => {
-                    let lhs = match lhs_base_name(&a.target) {
+                    let lhs = match lhs_base_name_bus(&a.target, Some(bus_ports)) {
                         Some(n) => n,
                         None => continue,
                     };
                     let mut rhs = HashSet::new();
-                    collect_expr_idents(&a.value, &mut rhs);
+                    collect_expr_idents_bus(&a.value, bus_ports, &mut rhs);
                     // RHS for index/bit-slice on LHS also contributes to deps.
                     collect_lhs_index_reads(&a.target, &mut rhs);
                     let to = self.intern(NodeKey {
@@ -1629,23 +1689,23 @@ impl GraphBuilder {
                 }
                 Stmt::IfElse(ife) => {
                     let mut cond_ids = HashSet::new();
-                    collect_expr_idents(&ife.cond, &mut cond_ids);
+                    collect_expr_idents_bus(&ife.cond, bus_ports, &mut cond_ids);
                     cond_stack.push(cond_ids);
-                    self.scan_assignments_inner(&ife.then_stmts, path, cond_stack);
-                    self.scan_assignments_inner(&ife.else_stmts, path, cond_stack);
+                    self.scan_assignments_inner(&ife.then_stmts, path, bus_ports, cond_stack);
+                    self.scan_assignments_inner(&ife.else_stmts, path, bus_ports, cond_stack);
                     cond_stack.pop();
                 }
                 Stmt::Match(m) => {
                     let mut scrut_ids = HashSet::new();
-                    collect_expr_idents(&m.scrutinee, &mut scrut_ids);
+                    collect_expr_idents_bus(&m.scrutinee, bus_ports, &mut scrut_ids);
                     cond_stack.push(scrut_ids);
                     for arm in &m.arms {
-                        self.scan_assignments_inner(&arm.body, path, cond_stack);
+                        self.scan_assignments_inner(&arm.body, path, bus_ports, cond_stack);
                     }
                     cond_stack.pop();
                 }
                 Stmt::For(f) => {
-                    self.scan_assignments_inner(&f.body, path, cond_stack);
+                    self.scan_assignments_inner(&f.body, path, bus_ports, cond_stack);
                 }
                 _ => {}
             }

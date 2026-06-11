@@ -1,0 +1,303 @@
+// HARC testbench: Nic400AhbSlaveBridge (AXI4 target → AHB-Lite master mirror).
+//
+// Exercises the never-built reverse direction of Nic400AhbBridge: an AXI4
+// `target` driven by the fabric on one side, an AHB-Lite `initiator` (master)
+// driving an external AHB peripheral on the other. The TB plays both ends —
+// it is the AXI master (drives AR/AW/W, samples R/B) AND the AHB peripheral
+// (samples the bridge's HSEL/HADDR/HWRITE/HWDATA, drives HRDATA/HREADY/HRESP).
+//
+// Run with:
+//   harc sim --dut examples/nic400/Nic400AhbSlaveBridge.arch \
+//             examples/nic400/BusAxi4.arch \
+//             examples/nic400/BusAhbLite.arch \
+//             examples/nic400/Nic400AhbSlaveBridge_test.harc \
+//             --top Nic400AhbSlaveBridge
+//
+// Scenarios:
+//   S1. Single read: AXI AR(addr=0x4000_1000) → bridge drives AHB NONSEQ read
+//       → peripheral returns HRDATA=0xCAFEF00D, HRESP=OKAY → AXI R beat with
+//       RDATA=0xCAFEF00D, RRESP=0 (OKAY), RLAST=1. Also checks the bridge
+//       drove HADDR=0x4000_1000, HWRITE=0, HTRANS=NONSEQ on the AHB side.
+//   S2. Single write: AXI AW+W(addr=0x4000_2000, data=0x1234_5678) → bridge
+//       drives AHB NONSEQ write, HWDATA=0x1234_5678 → peripheral OKAY → AXI B
+//       with BRESP=0 (OKAY). Checks HADDR/HWRITE/HWDATA on the AHB side.
+//   S3. Read with AHB error: peripheral asserts HRESP=ERROR in the data phase
+//       → AXI R returns RRESP=2 (SLVERR). Confirms the HRESP→AXI-resp map.
+//   S4. Write with AHB error: peripheral asserts HRESP=ERROR → AXI B returns
+//       BRESP=2 (SLVERR).
+//
+// The peripheral model here is a zero-wait-state AHB-Lite slave (HREADY always
+// 1) that returns a fixed read word and a selectable HRESP. AHB samples the
+// address in the address phase and presents data/response in the data phase;
+// because this TB holds HREADY=1, the bridge advances one state per cycle.
+
+testbench Nic400AhbSlaveBridgeTb
+    dut : Nic400AhbSlaveBridge
+end testbench Nic400AhbSlaveBridgeTb
+
+impl Nic400AhbSlaveBridgeTest for Nic400AhbSlaveBridgeTb
+    run
+        log(info, "Nic400AhbSlaveBridge AXI4-target → AHB-master mirror test")
+
+        // ── Reset ────────────────────────────────────────────────────────
+        dut.rst         = 0
+        dut.axi_ar_valid = 0
+        dut.axi_ar_addr  = 0
+        dut.axi_ar_id    = 0
+        dut.axi_ar_len   = 0
+        dut.axi_ar_size  = 0
+        dut.axi_ar_burst = 0
+        dut.axi_ar_lock  = 0
+        dut.axi_ar_prot  = 0
+        dut.axi_r_ready  = 0
+        dut.axi_aw_valid = 0
+        dut.axi_aw_addr  = 0
+        dut.axi_aw_id    = 0
+        dut.axi_aw_len   = 0
+        dut.axi_aw_size  = 0
+        dut.axi_aw_burst = 0
+        dut.axi_aw_lock  = 0
+        dut.axi_aw_prot  = 0
+        dut.axi_w_valid  = 0
+        dut.axi_w_data   = 0
+        dut.axi_w_strb   = 0
+        dut.axi_w_last   = 0
+        dut.axi_b_ready  = 0
+        // AHB peripheral: zero-wait-state, OKAY by default, no data yet.
+        dut.h_hrdata = 0
+        dut.h_hready = 1
+        dut.h_hresp  = 0
+        wait 4 cycles
+        dut.rst = 1
+        wait 3 cycles
+
+        // ── S1: single AXI read → AHB read → AXI R (OKAY) ─────────────────
+        dut.axi_ar_valid = 1
+        dut.axi_ar_addr  = 0x40001000
+        dut.axi_ar_id    = 5
+        dut.axi_ar_size  = 2
+        dut.axi_ar_burst = 1
+        dut.axi_ar_len   = 0
+        dut.axi_ar_prot  = 0
+        dut.axi_r_ready  = 1
+
+        let s1_rdata   : uint<32> = 99
+        let s1_resp    : uint<32> = 99
+        let s1_id      : uint<32> = 99
+        let s1_last    : uint<32> = 99
+        let s1_done    : uint<32> = 0
+        let s1_haddr   : uint<32> = 99
+        let s1_hwrite  : uint<32> = 99
+        let s1_htrans  : uint<32> = 99
+        let s1_addrseen: uint<32> = 0
+
+        // Hold AR-valid until the R response is observed — the bridge's
+        // ar_ready pulse can fall in a cycle the TB does not sample (the AR
+        // handshake is Mealy-fused into the wake state), so dropping AR-valid
+        // on a sampled ar_ready races the handshake. Holding is the proven
+        // pattern (cf. Nic400DefaultSlave_test.harc S3).
+        for _ in 0 .. 30
+            wait 1 cycle
+            // AHB peripheral: when the bridge drives a NONSEQ transfer,
+            // capture the address-phase signals and present read data in the
+            // following data phase. HREADY is held 1 so HRDATA we drive now is
+            // sampled by the bridge on the next edge.
+            if dut.h_hsel == 1 && dut.h_htrans == 2 && s1_addrseen == 0
+                s1_addrseen = 1
+                s1_haddr  = dut.h_haddr
+                s1_hwrite = dut.h_hwrite
+                s1_htrans = dut.h_htrans
+                dut.h_hrdata = 0xCAFEF00D
+                dut.h_hresp  = 0
+            end if
+            if s1_done == 0 && dut.axi_r_valid == 1
+                s1_rdata = dut.axi_r_data
+                s1_resp  = dut.axi_r_resp
+                s1_id    = (dut.axi_r_id & 7)
+                s1_last  = dut.axi_r_last
+                s1_done  = 1
+                dut.axi_ar_valid = 0
+            end if
+        end for
+
+        assert s1_addrseen == 1
+            else fail("S1: bridge never drove an AHB NONSEQ read address phase")
+        assert s1_haddr == 0x40001000
+            else fail("S1: AHB HADDR=0x${s1_haddr:08x} (expected 0x40001000)")
+        assert s1_hwrite == 0
+            else fail("S1: AHB HWRITE=${s1_hwrite} (expected 0=read)")
+        assert s1_htrans == 2
+            else fail("S1: AHB HTRANS=${s1_htrans} (expected 2=NONSEQ)")
+        assert s1_done == 1
+            else fail("S1: AXI read got no R response")
+        assert s1_rdata == 0xCAFEF00D
+            else fail("S1: AXI RDATA=0x${s1_rdata:08x} (expected 0xCAFEF00D)")
+        assert s1_resp == 0
+            else fail("S1: AXI RRESP=${s1_resp} (expected 0=OKAY)")
+        assert s1_id == 5
+            else fail("S1: AXI R-id=${s1_id} (expected 5, echoed AR-id)")
+        assert s1_last == 1
+            else fail("S1: AXI RLAST=${s1_last} (expected 1)")
+        log(info, "PASS S1: AXI read → AHB read → AXI R OKAY (RDATA=0xCAFEF00D)")
+
+        dut.axi_ar_valid = 0
+        dut.axi_r_ready  = 0
+        dut.h_hresp = 0
+        wait 4 cycles
+
+        // ── S2: single AXI write → AHB write → AXI B (OKAY) ───────────────
+        dut.axi_aw_valid = 1
+        dut.axi_aw_addr  = 0x40002000
+        dut.axi_aw_id    = 3
+        dut.axi_aw_size  = 2
+        dut.axi_aw_burst = 1
+        dut.axi_aw_len   = 0
+        dut.axi_aw_prot  = 0
+        dut.axi_w_valid  = 1
+        dut.axi_w_data   = 0x12345678
+        dut.axi_w_strb   = 15
+        dut.axi_w_last   = 1
+        dut.axi_b_ready  = 1
+
+        let s2_resp   : uint<32> = 99
+        let s2_id     : uint<32> = 99
+        let s2_done   : uint<32> = 0
+        let s2_haddr  : uint<32> = 99
+        let s2_hwrite : uint<32> = 99
+        let s2_hwdata : uint<32> = 99
+        let s2_addrseen: uint<32> = 0
+        let s2_dataseen: uint<32> = 0
+
+        // Hold AW+W valid until B is observed (single-beat write). The
+        // bridge's aw_ready/w_ready pulses are Mealy-fused into their wake
+        // states and can fall in cycles the TB does not sample; dropping
+        // valid on a sampled ready races the handshake and aborts the
+        // transfer mid-flight.
+        for _ in 0 .. 40
+            wait 1 cycle
+            // AHB peripheral: capture write address phase, then HWDATA in the
+            // data phase. HTRANS=NONSEQ marks the address phase; HWRITE=1.
+            if dut.h_hsel == 1 && dut.h_htrans == 2 && dut.h_hwrite == 1 && s2_addrseen == 0
+                s2_addrseen = 1
+                s2_haddr  = dut.h_haddr
+                s2_hwrite = dut.h_hwrite
+                dut.h_hresp = 0
+            end if
+            // Data phase: bridge drives HTRANS=IDLE with HWRITE held and
+            // HWDATA present. Capture the first address-phase→data-phase cycle.
+            if s2_addrseen == 1 && s2_dataseen == 0 && dut.h_hwrite == 1 && dut.h_htrans == 0
+                s2_dataseen = 1
+                s2_hwdata = dut.h_hwdata
+            end if
+            if s2_done == 0 && dut.axi_b_valid == 1
+                s2_resp = dut.axi_b_resp
+                s2_id   = (dut.axi_b_id & 7)
+                s2_done = 1
+                dut.axi_aw_valid = 0
+                dut.axi_w_valid  = 0
+            end if
+        end for
+
+        assert s2_addrseen == 1
+            else fail("S2: bridge never drove an AHB NONSEQ write address phase")
+        assert s2_haddr == 0x40002000
+            else fail("S2: AHB HADDR=0x${s2_haddr:08x} (expected 0x40002000)")
+        assert s2_hwrite == 1
+            else fail("S2: AHB HWRITE=${s2_hwrite} (expected 1=write)")
+        assert s2_dataseen == 1
+            else fail("S2: bridge never drove an AHB write data phase")
+        assert s2_hwdata == 0x12345678
+            else fail("S2: AHB HWDATA=0x${s2_hwdata:08x} (expected 0x12345678)")
+        assert s2_done == 1
+            else fail("S2: AXI write got no B response")
+        assert s2_resp == 0
+            else fail("S2: AXI BRESP=${s2_resp} (expected 0=OKAY)")
+        assert s2_id == 3
+            else fail("S2: AXI B-id=${s2_id} (expected 3, echoed AW-id)")
+        log(info, "PASS S2: AXI write → AHB write → AXI B OKAY (HWDATA=0x12345678)")
+
+        dut.axi_aw_valid = 0
+        dut.axi_w_valid  = 0
+        dut.axi_b_ready  = 0
+        dut.h_hresp = 0
+        wait 4 cycles
+
+        // ── S3: read with AHB HRESP=ERROR → AXI RRESP=SLVERR ──────────────
+        dut.axi_ar_valid = 1
+        dut.axi_ar_addr  = 0x40003000
+        dut.axi_ar_id    = 1
+        dut.axi_ar_size  = 2
+        dut.axi_ar_burst = 1
+        dut.axi_ar_len   = 0
+        dut.axi_r_ready  = 1
+
+        let s3_resp    : uint<32> = 99
+        let s3_done    : uint<32> = 0
+        let s3_addrseen: uint<32> = 0
+
+        for _ in 0 .. 30
+            wait 1 cycle
+            // Peripheral asserts HRESP=ERROR in the data phase for this xact.
+            if dut.h_hsel == 1 && dut.h_htrans == 2 && s3_addrseen == 0
+                s3_addrseen = 1
+                dut.h_hrdata = 0xBADBAD00
+                dut.h_hresp  = 1
+            end if
+            if s3_done == 0 && dut.axi_r_valid == 1
+                s3_resp = dut.axi_r_resp
+                s3_done = 1
+                dut.axi_ar_valid = 0
+            end if
+        end for
+
+        assert s3_done == 1
+            else fail("S3: AXI read (error) got no R response")
+        assert s3_resp == 2
+            else fail("S3: AXI RRESP=${s3_resp} (expected 2=SLVERR from HRESP=ERROR)")
+        log(info, "PASS S3: AHB HRESP=ERROR → AXI RRESP=SLVERR")
+
+        dut.axi_ar_valid = 0
+        dut.axi_r_ready  = 0
+        dut.h_hresp = 0
+        wait 4 cycles
+
+        // ── S4: write with AHB HRESP=ERROR → AXI BRESP=SLVERR ─────────────
+        dut.axi_aw_valid = 1
+        dut.axi_aw_addr  = 0x40004000
+        dut.axi_aw_id    = 4
+        dut.axi_aw_size  = 2
+        dut.axi_aw_burst = 1
+        dut.axi_aw_len   = 0
+        dut.axi_w_valid  = 1
+        dut.axi_w_data   = 0xDEADBEEF
+        dut.axi_w_strb   = 15
+        dut.axi_w_last   = 1
+        dut.axi_b_ready  = 1
+
+        let s4_resp    : uint<32> = 99
+        let s4_done    : uint<32> = 0
+        let s4_addrseen: uint<32> = 0
+
+        for _ in 0 .. 40
+            wait 1 cycle
+            if dut.h_hsel == 1 && dut.h_htrans == 2 && dut.h_hwrite == 1 && s4_addrseen == 0
+                s4_addrseen = 1
+                dut.h_hresp = 1
+            end if
+            if s4_done == 0 && dut.axi_b_valid == 1
+                s4_resp = dut.axi_b_resp
+                s4_done = 1
+                dut.axi_aw_valid = 0
+                dut.axi_w_valid  = 0
+            end if
+        end for
+
+        assert s4_done == 1
+            else fail("S4: AXI write (error) got no B response")
+        assert s4_resp == 2
+            else fail("S4: AXI BRESP=${s4_resp} (expected 2=SLVERR from HRESP=ERROR)")
+        log(info, "PASS S4: AHB HRESP=ERROR → AXI BRESP=SLVERR")
+
+        log(info, "PASS Nic400AhbSlaveBridge: read/write OKAY + HRESP→AXI-resp SLVERR mapping")
+    end run
+end impl Nic400AhbSlaveBridgeTest

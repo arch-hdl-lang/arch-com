@@ -1,0 +1,64 @@
+// Sparse per-master address decoder (NIC-400 "sparse connectivity" feature).
+//
+// Each master interface (ASIB) in a NIC-400 is wired to its OWN subset of
+// slaves, configured per-master at build time. An access from a master to a
+// slave region it is NOT connected to returns DECERR (AXI resp 0b11). This
+// gives every master a distinct *view* of the global address map — the
+// faithful NIC-400 feature (NOT arbitrary per-master remapping, which base
+// NIC-400 does not have).
+//
+// This is the pure-combinational decode core, parameterised by a per-instance
+// connectivity bitmap CONNECT_MASK (bit j set = this master reaches slave j).
+// Instantiate two copies with DIFFERENT masks to give two masters different
+// reachable region sets over the SAME global address map.
+//
+// Address map (same shape as Nic400MasterPort, spec §3): NUM_SLAVES contiguous
+// 2^REGION_BITS regions. The decoder takes the top NS_W = $clog2(NUM_SLAVES)
+// bits below REGION_BITS to pick the slave index.
+//
+//   slot      = addr >> REGION_BITS
+//   slave_idx = slot[NS_W-1:0]
+//   oor       = (bits above the NS_W selector are non-zero)        // beyond the map
+//            or (slave_idx >= NUM_SLAVES)                          // hole in NS_W space
+//   not_conn  = CONNECT_MASK bit for slave_idx is 0                // sparse hole
+//   decerr    = valid and (oor or not_conn)
+//
+// Pure comb, no clock — a decode has no latency. `decerr=1` tells the caller to
+// synthesise a DECERR response instead of forwarding the transaction.
+module Nic400SparseAddrDecode
+  param NUM_SLAVES:  const = 4;
+  param REGION_BITS: const = 28;          // 256 MiB per region (with ADDR_W=32)
+  param ADDR_W:      const = 32;
+  // Per-instance connectivity bitmap: bit j = this master reaches slave j.
+  // Default = all slaves reachable (dense). Override per master for sparse view.
+  param CONNECT_MASK: const = (1 << NUM_SLAVES) - 1;
+
+  param NS_W: const = $clog2(NUM_SLAVES);
+
+  port addr:      in  UInt<ADDR_W>;
+  port valid:     in  Bool;
+
+  port slave_idx: out UInt<NS_W>;
+  port decerr:    out Bool;
+
+  // `slot` is the full region index of this address (ADDR_W wide). The low
+  // NS_W bits give the slave selector; a populated slave has slot < NUM_SLAVES.
+  let slot: UInt<ADDR_W> = addr >> REGION_BITS;
+  let sel:  UInt<NS_W>   = slot.trunc<NS_W>();
+
+  // Out-of-range: addr lands beyond the populated map. Comparing the full-width
+  // `slot` against NUM_SLAVES covers BOTH addresses above the NS_W window AND
+  // in-window holes when NUM_SLAVES is not a power of two (e.g. NUM_SLAVES=3,
+  // slot==3). `slot` is ADDR_W wide so this is a width-clean comparison.
+  let oor: Bool = (slot >= NUM_SLAVES);
+
+  // Not connected: this master's CONNECT_MASK does not have slave `sel` set.
+  // (CONNECT_MASK >> sel) & 1 == 0  ⇒  sparse hole for this master.
+  let mask_bit: UInt<1> = ((CONNECT_MASK >> sel) & 1).trunc<1>();
+  let not_conn: Bool = (mask_bit == 0);
+
+  comb
+    slave_idx = sel;
+    decerr    = valid and (oor or not_conn);
+  end comb
+end module Nic400SparseAddrDecode

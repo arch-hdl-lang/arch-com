@@ -1,0 +1,76 @@
+// NIC-400 hierarchical clock-gating "GPV ring" — multi-clock-domain config
+// access demonstrator.
+//
+// The interconnect's configuration registers (GPV) must stay reachable across
+// a clock-domain boundary: a config access issued by a master in domain A
+// (MClkDom, 200 MHz) reaches a GPV register block in domain B (SClkDom,
+// 150 MHz) through an asynchronous-clock AXI4 CDC bridge.
+//
+//   master (domain A / MClkDom)
+//        │  AR / AW / W   (config request)
+//        ▼
+//   Nic400CdcAxi4Rw  ── async gray-code CDC FIFOs (one per AXI channel) ──┐
+//        ▲  R / B        (config response)                                 │
+//        │                                                                 ▼
+//   master (domain A / MClkDom)                            Nic400Gpv (domain B / SClkDom)
+//                                                          AXI4-Lite target, Secure-only,
+//                                                          32-bit, backed by Nic400GpvRegs.
+//
+// The master-facing AXI bus `m` is exposed as a top-level `target` port so the
+// testbench plays the config master on m_clk. The bridge's slave-facing bus is
+// wired to the GPV's AXI target through an internal bus net `gpv_axi`, clocked
+// by s_clk — the GPV's `clk: Clock<SysDomain>` port runs in the slave domain
+// (the domain is fixed at the boundary by the connected clock).
+//
+// This composes constructs that already exist on main: the read+write async
+// CDC bridge (Nic400CdcAxi4Rw, new this change — it closes the write-path CDC
+// gap the read-only Nic400CdcAxi4 left open) and the GPV target + regfile.
+//
+// Run:
+//   arch build BusAxi4.arch Nic400GpvArCdcFifo.arch Nic400GpvRCdcFifo.arch \
+//     Nic400GpvAwCdcFifo.arch Nic400GpvWCdcFifo.arch Nic400GpvBCdcFifo.arch \
+//     Nic400CdcAxi4Rw.arch Nic400GpvRegs.arch Nic400Gpv.arch Nic400GpvRing.arch \
+//     -o /tmp/gpv_ring.sv
+
+domain MClkDom
+  freq_mhz: 200
+end domain MClkDom
+
+domain SClkDom
+  freq_mhz: 150
+end domain SClkDom
+
+module Nic400GpvRing
+  port m_clk:   in Clock<MClkDom>;          // domain A — config master clock (always-on)
+  port s_clk:   in Clock<SClkDom>;          // domain B — GPV register-block clock
+  // Two resets of distinct kind/polarity, one per block — there is no implicit
+  // reset conversion in ARCH, so the async-low CDC bridge and the sync-high GPV
+  // each take their own typed reset. A real SoC reset controller asserts both
+  // together; the testbench drives rst_n=0 & gpv_rst=1 as the joint "in reset".
+  port rst_n:   in Reset<Async, Low>;       // CDC bridge / FIFO reset (async, active-low)
+  port gpv_rst: in Reset<Sync>;             // GPV reset (sync, active-high)
+
+  // Config master bus (domain A). Driven by the testbench.
+  port m: target BusAxi4<ADDR_W=12, DATA_W=32, STRB_W=4, ID_W=4, READ=1, WRITE=1>;
+
+  // Internal AXI net bridging the CDC bridge's slave side to the GPV target.
+  wire gpv_axi: BusAxi4<ADDR_W=12, DATA_W=32, STRB_W=4, ID_W=4, READ=1, WRITE=1>;
+
+  // ── Async-clock CDC bridge: m (MClkDom) <-> gpv_axi (SClkDom) ─────────────
+  inst bridge: Nic400CdcAxi4Rw
+    m_clk <- m_clk;
+    s_clk <- s_clk;
+    rst   <- rst_n;
+    m     <- m;
+    s     -> gpv_axi;
+  end inst bridge
+
+  // ── GPV register block in domain B (clocked by s_clk) ─────────────────────
+  // GPV's clk port is Clock<SysDomain>; connecting s_clk (SClkDom) places the
+  // GPV in the slave domain at the hierarchy boundary.
+  inst gpv: Nic400Gpv
+    clk <- s_clk;
+    rst <- gpv_rst;
+    s   <- gpv_axi;
+  end inst gpv
+end module Nic400GpvRing

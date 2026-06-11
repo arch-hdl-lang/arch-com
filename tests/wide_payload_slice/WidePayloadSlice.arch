@@ -1,0 +1,44 @@
+// Regression fixture: a 1-stage register slice whose payload is 66 bits wide.
+//
+// 66 bits maps to a `VlWide<3>` (3 × 32-bit words) in the ARCH sim. Earlier
+// the `_arch_u128 <-> VlWide` conversion helpers hardcoded a 4-word layout
+// (`_arch_u128_to_vl`/`_arch_vl_to_u128` always touched `w[3]`), so writing a
+// VlWide<3> payload overran its backing array by one word and clobbered the
+// adjacent `dn_valid` (1-bit) member — `dn_valid` read back as garbage (64)
+// instead of 1. This fixture pins the fix: a 66-bit-payload slice must drive
+// `dn_valid == 1` after accepting a transfer.
+module WidePayloadSlice
+  param PAYLOAD_W: const = 66;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  port up_valid:   in  Bool;
+  port up_payload: in  UInt<PAYLOAD_W>;
+  port up_ready:   out Bool;
+
+  port dn_valid:   out Bool;
+  port dn_payload: out UInt<PAYLOAD_W>;
+  port dn_ready:   in  Bool;
+
+  reg occupied: Bool reset rst => false;
+  reg payload:  UInt<PAYLOAD_W> reset rst => 0;
+
+  let accept_fire: Bool = up_valid and (not occupied or dn_ready);
+  let drain_fire:  Bool = occupied and dn_ready;
+
+  seq on clk rising
+    if accept_fire
+      payload <= up_payload;
+      occupied <= true;
+    elsif drain_fire
+      occupied <= false;
+    end if
+  end seq
+
+  comb
+    up_ready   = not occupied or dn_ready;
+    dn_valid   = occupied;
+    dn_payload = payload;
+  end comb
+end module WidePayloadSlice

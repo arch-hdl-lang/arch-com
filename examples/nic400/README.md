@@ -15,8 +15,10 @@ Reference spec: [`nic400_interconnect_spec.md`](nic400_interconnect_spec.md)
 | Bus definitions | `BusAxi4`, `BusAhbLite`, `BusApb` | AXI4-full (with sideband), AHB-Lite v1.0, APB v2.0 |
 | Crossbar fabric | `Nic400Fabric` (3 masters × 4 slaves, full R/W) | ID-prefix routing, per-channel `mutex<priority>` arbitration |
 | Per-edge plumbing | `Nic400MasterPort`, `Nic400SlavePort` | Address decode + response demux by ID-prefix match |
-| Timing closure | `Nic400FabricRs1`, `Nic400EdgeRegSlice` | Per-master register slice via wrapper module |
-| AHB bridge | `Nic400AhbBridge` (+ `IncrHwdataFifo`) | SINGLE / INCRn / WRAPn / INCR-undef up to 64 beats (multi-chunk) |
+| Timing closure | `Nic400FabricRs1`, `Nic400FabricRsSlave`, `Nic400EdgeRegSlice` | Per-master (ASIB) and per-slave (AMIB) register slice via wrapper module |
+| AHB bridge (master attach) | `Nic400AhbBridge` (+ `IncrHwdataFifo`) | AHB master → AXI fabric. SINGLE / INCRn / WRAPn / INCR-undef up to 64 beats (multi-chunk) |
+| AHB bridge (slave attach) | `Nic400AhbSlaveBridge` | AXI fabric → AHB peripheral (reverse/mirrored). v1 single-beat; axsize/axprot/axlock + HRESP→RRESP/BRESP mapping |
+| AXI3 conversion | `BusAxi3`, `Nic400Axi4ToAxi3`, `Nic400Axi3ToAxi4` | AXI4→AXI3 long-burst split (≤16-beat sub-bursts, 4 KB-aware) + AXI3→AXI4 burst limiter. Read path |
 | APB bridge | `Nic400ApbBridge` | AXI4 target → APB initiator, burst-split into APB phases |
 | Width adapter | `Nic400WidthAdapter` | 64→32 downsize (1:RATIO beat split, w_strb forwarding) |
 | Performance counters | `Nic400Pmu` | Per-master AR/AW/R/W/B handshake counters |
@@ -85,17 +87,24 @@ Nic400Read2x2 — older 2×2 read-only crossbar (predates Nic400Fabric).
 - **`Nic400MasterPort.arch`** — per-master decode + route. One AR thread + one R thread + one AW→W→B thread *per slave*, contending on per-channel `mutex<priority>` resources. Address decode picks slave via `addr[REGION_BITS+NS_W-1:REGION_BITS]`.
 - **`Nic400SlavePort.arch`** — per-slave arbitration + return demux. One AR arbiter + one R demux + one AW→W→B thread *per master*. Same-slave write-pipeline depth is 1; cross-slave concurrency works.
 - **`PkgNic400.arch`** — shared package (currently minimal; reserved for cross-module constants).
+- **`Nic400SparseAddrDecode.arch`** — per-master **sparse connectivity** decoder (the real NIC-400 feature — each ASIB is wired to its own subset of slaves; *not* arbitrary per-master remap, which base NIC-400 lacks). Pure-combinational: params `NUM_SLAVES` / `REGION_BITS` / `ADDR_W` / `CONNECT_MASK` (a per-instance reachable-slave bitmap); outputs `slave_idx` and `decerr`. `decerr` asserts when the decoded slave is out of the populated map (in-window hole for non-power-of-two `NUM_SLAVES`, full-width compare keeps it Verilator-clean) **or** its bit is clear in `CONNECT_MASK` (not connected to this master). So each master sees a distinct valid-region view; a non-connected access returns DECERR.
+- **`Nic400SparseDemo.arch`** — instantiates two decoders over the same 4-slave map with different masks (M0 = `{0,1}` / `0x3`, M1 = `{1,2}` / `0x6`), showing distinct reachability per master. Verified by `Nic400SparseDemo_test.harc` (all region cases + a squelched `valid=0`) on both backends with matching traces.
 
 ### Timing closure
 
 - **`RegSliceChannel.arch`** — generic single-stage register slice for ONE channel. 1 cycle latency, 1 transfer/cycle sustained. Ready path stays combinational.
 - **`Nic400EdgeRegSlice.arch`** — per-edge AXI4 reg slice; wraps 5 `RegSliceChannel` instances (AR/R/AW/W/B) on packed `UInt<PAYLOAD_W>` payloads. Direction is per-channel: AR/AW/W use up→dn (master→fabric), R/B use dn→up (fabric→master).
 - **`Nic400FabricRs1.arch`** — wrapper around `Nic400Fabric` with one `Nic400EdgeRegSlice` per master between external `m[i]` and `inner.m[i]`. Slave side forwarded directly via whole-Vec forwarding (`inner.s -> s`).
+- **`Nic400FabricRsSlave.arch`** — the per-SLAVE mirror of `Nic400FabricRs1`: one `Nic400EdgeRegSlice` per slave between `inner.s[j]` and external `s[j]` (AMIB timing isolation), master side forwarded directly. Adds +1 cycle to the slave-edge round-trip. Each slice overrides `ID_W = SLAVE_ID_W`.
 
 ### Protocol bridges
 
 - **`Nic400AhbBridge.arch`** — AHB-Lite → AXI4. Two threads (`ReadXact`, `WriteXact`) sharing AHB target drives via `h_resp_lock` mutex. Handles SINGLE / INCRn / WRAPn / INCR-undef. INCR-undef spawns a Producer/Consumer pair coordinating through `IncrHwdataFifo` and issues up to `MAX_INCR_CHUNKS` (default 4) AXI bursts of `MAX_INCR_BEATS` (default 16) — supports up to 64-beat INCR-undef writes.
 - **`IncrHwdataFifo.arch`** — HWDATA buffer used by `Nic400AhbBridge`'s INCR-undef path. Depth = one chunk.
+- **`Nic400AhbSlaveBridge.arch`** — the reverse/mirrored bridge: AXI4 `target` → AHB-Lite `initiator` (master), for attaching an external AHB peripheral on the slave side of the fabric. Two threads mirroring `Nic400AhbBridge` with bus roles flipped. v1 single-beat (HBURST=SINGLE): AXI AR→AHB read→AXI R, AXI AW+W→AHB write→AXI B; axsize→HSIZE, axprot→HPROT, axlock→HMASTLOCK, HRESP OKAY/ERROR→AXI OKAY/SLVERR.
+- **`BusAxi3.arch`** — AXI3 bus bundle: 4-bit `AxLEN` (max 16-beat bursts), 2-bit `AxLOCK`, `WID` on the W channel, no QoS/REGION. Consumed by the AXI3↔AXI4 converters below.
+- **`Nic400Axi4ToAxi3.arch`** — AXI4→AXI3 long-burst splitter. One thread splits an AXI4 INCR AR (len ≤255) into `ceil((ar_len+1)/16)` AXI3 sub-bursts with per-sub-burst start address `base+((i*16)<<size)` and short final length; 4 KB-boundary SVA; merges R responses back to one AXI4 stream (RLAST only on the true final beat, `r_resp` sticky-OR'd). Read path.
+- **`Nic400Axi3ToAxi4.arch`** — AXI3→AXI4 converter with a GPV-programmable `MAX_BURST` limiter (caps issued onward `AxLEN`); maps 2-bit AXI3 lock → 1-bit AXI4, ties QoS/REGION to 0.
 - **`Nic400ApbBridge.arch`** — AXI4 target → APB initiator. Two threads sharing APB drives via `apb_lock`. Splits AXI bursts into sequential APB Setup → Access phases. Per-beat `paddr = base + (b << size)`.
 - **`Nic400WidthAdapter.arch`** — AXI4 downsize adapter (`M_DATA_W` > `S_DATA_W`). 5 per-channel threads. Master beats split into RATIO little-endian slave sub-beats; reads pack RATIO slave beats into one master beat with OR-reduced `r_resp`.
 
@@ -107,9 +116,22 @@ Nic400Read2x2 — older 2×2 read-only crossbar (predates Nic400Fabric).
 
 Verified with `Nic400CdcAxi4_test.harc` (a dual-clock HARC testbench that drives both endpoints): AR crosses M→S and R crosses S→M with payloads intact, on both the ARCH native sim and the Verilator backend, with matching cross-backend traces (`harc sim --check-backends`).
 
+- **`Nic400CdcAxi4Rw.arch`** — the full read+write async-clock AXI4 CDC bridge. Extends `Nic400CdcAxi4` from read-only (AR/R) to all **five** AXI4 channels: AW + W cross M→S and B crosses S→M through additional dual-clock async FIFOs. The five per-channel crossing FIFOs are `Nic400GpvArCdcFifo` / `RCdcFifo` / `AwCdcFifo` / `WCdcFifo` / `BCdcFifo` (45/39/45/37/6 bits, sized to a 12-bit-addr / 32-bit-data / 4-bit-ID bus). Closes the write-path-CDC gap.
+- **`Nic400GpvRing.arch`** — the **hierarchical clock-gating GPV ring** demonstrator (spec §16.1, TRM §2.3.2): a config master in domain A (`MClkDom`, 200 MHz) writes **and** reads a `Nic400Gpv` register block in domain B (`SClkDom`, 150 MHz) across the `Nic400CdcAxi4Rw` async bridge — so the GPV stays reachable across a clock-domain boundary, the essence of the multi-domain GPV ring. Reuses `Nic400Gpv`/`Nic400GpvRegs`/`BusAxi4` unmodified; exposes two typed resets (async-low for the bridge, sync-high for the GPV). Verified by `Nic400GpvRing_test.harc`: a Secure 32-bit write of `0xDEADBEEF` to `reg[2]` crosses A→B, the B response crosses back, and a read returns `0xDEADBEEF` — on both backends with matching traces (`harc sim --check-backends`).
+
 ### Observability
 
 - **`Nic400Pmu.arch`** — performance monitor counters. Per-master AR/AW/R/W/B counters, `COUNTER_W`-wide (default 32). Inputs are pre-qualified one-cycle event pulses (typically `m[i].x_valid && m[i].x_ready`). `r`/`w` count beats; `ar`/`aw`/`b` count transactions.
+
+### Configuration (GPV)
+
+- **`Nic400Gpv.arch`** — the **Global Programmers View**: the interconnect's configuration register file, presented as an AXI4 *target* (slave). Per the NIC-400 TRM (§3.2), the GPV is AXI-accessed, **32-bit only** (`AxSIZE=2`), **Secure-only**, non-cacheable, aligned, single-beat. This shim is an AXI4-Lite-style target (one outstanding read, one outstanding write) backed by `Nic400GpvRegs`, enforcing the two constraints: a wrong size → **SLVERR** (`0b10`), a Non-secure access (`AxPROT[1]=1`) → **DECERR** (`0b11`, priority over SLVERR), and a rejected write leaves the bank unchanged. The lowest-cost path to programmable QoS/decode/remap state (spec §16.1 roadmap item #4). Verified by `Nic400Gpv_test.harc` on the ARCH sim **and** Verilator with matching cross-backend traces (`harc sim --check-backends`).
+- **`Nic400GpvRegs.arch`** — the backing `regfile` bank: `NREGS` 32-bit config registers, one read + one write port, write-before-read forwarding.
+
+### Low-power (clock gating)
+
+- **`Nic400CChannelClockGate.arch`** — the AMBA Low-Power Interface **C-channel** clock-gating controller for one clock domain (TRM §2.2.3). The system clock controller drives `cc.csysreq` to request the domain quiesce (0) or run (1); this 2-state `fsm` drops `cc.csysack` (and the `clk_en` output) only once the gated logic is idle (`busy == 0`), reflects pending work on `cc.cactive`, and wakes immediately on activity (`busy`) or a run request. Runs on the always-on controller clock so the handshake advances while the downstream domain is parked. Exercises an `fsm` driving a `target` bus + a fresh handshake bundle; verified by `Nic400CChannelClockGate_test.harc` (gate / wake-on-activity / wake-on-request) on the ARCH sim **and** Verilator with matching cross-backend traces (`harc sim --check-backends`).
+- **`BusCChannel.arch`** — the C-channel handshake bundle (`csysreq` / `csysack` / `cactive`), initiator = system clock controller.
 
 ### Helpers
 

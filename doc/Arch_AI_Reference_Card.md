@@ -423,6 +423,16 @@ through intermediate registers — rejected at typecheck. Forward reads
 (Decode → Execute for hazard checks) and references inside `stall when` /
 `flush when` / `forward` clauses are allowed.
 
+**Output rule:** a pipeline output port must come from a stage **register**; it
+may not combinationally depend on an input port — directly (`comb out = in;`)
+or transitively via a `let`/`wire`/comb intermediate or `if`/`match` guard.
+Reading a register (local `out = result;` or cross-stage `out = Fetch.pc;`)
+is the intended pattern and breaks the comb path. A combinational passthrough
+is rejected at typecheck — put that logic in a wrapping `module` and let the
+pipeline register the result. (Rationale: a pipeline *stages* a datapath, and
+the comb-loop checker treats pipeline outputs as registered, so an internal
+comb input→output path would hide a real feedback loop.)
+
 `flush <Stage> when <cond>` clears `valid_r` only (bubble). Add the
 `clear` modifier to also reset every data register in `<Stage>` to its
 declared reset value — useful for security / speculation scenarios where
@@ -660,6 +670,7 @@ Notes:
 - `kind ff` with multi-bit data (`UInt<N>` where N>1) warns — use `kind gray` or `kind handshake`
 - `kind reset` and `kind pulse` error if data is not `Bool`
 - CDC checking extends across `inst` boundaries; comb→seq crossings across domains are compile errors
+- Connecting a parent clock to a child `clk` port of a *different* declared domain (e.g. a reusable `Clock<SysDomain>` child under a named domain) is a **legitimate rebind**, not a violation — the connected clock fixes the instance's domain; only cross-domain *data* into a child port is flagged
 
 ---
 

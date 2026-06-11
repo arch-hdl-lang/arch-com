@@ -1,0 +1,10 @@
+// Leaf of a 2-level instantiation chain. Its only param is the payload width,
+// passed down from `Mid` via a *derived* param of `Mid`.
+module Leaf
+  param PW: const = 4;
+  port a: in  UInt<PW>;
+  port y: out UInt<PW>;
+  comb
+    y = a;
+  end comb
+end module Leaf

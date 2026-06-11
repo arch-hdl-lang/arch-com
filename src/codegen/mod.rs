@@ -2525,11 +2525,21 @@ impl<'a> Codegen<'a> {
                         param_map.insert(pa.name.name.clone(), &pa.value);
                     }
                     let eff_signals = info.effective_signals(&param_map);
-                    // Vec-of-bus *port* on the parent: emit D2 indexed refs.
+                    // Vec-of-bus *port* OR 1-D Vec-of-bus *wire* on the parent:
+                    // both are declared in packed `<base>_<sig> [N-1:0]` form, so
+                    // an indexed element must emit `<base>_<sig>[<idx>]`, NOT the
+                    // flattened `<base>_<idx>_<sig>` (which would reference a
+                    // non-existent net — Verilator IMPLICIT, and a disconnected
+                    // signal in sim). The 2-D `Vec<Vec<Bus>>` edge-wire case
+                    // (`edges[m][n]`) is intentionally excluded — it is not in
+                    // `vec_of_bus_wire_count` and keeps its `edges_<m>_<n>` form
+                    // via the else branch below.
                     let vec_of_bus_port_ref: Option<(String, String)> = match &c.signal.kind {
                         ExprKind::Index(arr, idx) => {
                             if let ExprKind::Ident(arr_name) = &arr.kind {
-                                if self.vec_of_bus_port_count.contains_key(arr_name) {
+                                if self.vec_of_bus_port_count.contains_key(arr_name)
+                                    || self.vec_of_bus_wire_count.contains_key(arr_name)
+                                {
                                     let idx_str = match &idx.kind {
                                         ExprKind::Ident(loopvar) => {
                                             if let Some(&v) = self.loop_var_subst.get(loopvar) {
