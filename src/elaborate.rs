@@ -98,8 +98,7 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
     // of the enclosing module as the enclosing param context, recompute
     // variants, and repeat until no new variant appears. Modules form a DAG
     // (no recursive instantiation in ARCH), so this terminates.
-    let mut module_variants =
-        compute_all_variants(&ast.items, &module_defaults, &HashMap::new());
+    let mut module_variants = compute_all_variants(&ast.items, &module_defaults, &HashMap::new());
     loop {
         let mut inst_raw: HashMap<String, Vec<HashMap<String, i64>>> = HashMap::new();
         for item in &ast.items {
@@ -743,12 +742,20 @@ fn lower_tlm_connects(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> 
             _ => None,
         })
         .collect();
+    let bus_defs: HashMap<String, BusDecl> = ast
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Bus(b) => Some((b.name.name.clone(), b.clone())),
+            _ => None,
+        })
+        .collect();
 
     let mut errors = Vec::new();
     let mut items = Vec::new();
     for item in ast.items {
         match item {
-            Item::Module(m) => match lower_tlm_connects_in_module(m, &module_ports) {
+            Item::Module(m) => match lower_tlm_connects_in_module(m, &module_ports, &bus_defs) {
                 Ok(m) => items.push(Item::Module(m)),
                 Err(mut errs) => errors.append(&mut errs),
             },
@@ -770,6 +777,7 @@ fn lower_tlm_connects(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> 
 fn lower_tlm_connects_in_module(
     mut m: ModuleDecl,
     module_ports: &HashMap<String, Vec<PortDecl>>,
+    bus_defs: &HashMap<String, BusDecl>,
 ) -> Result<ModuleDecl, Vec<CompileError>> {
     let connects: Vec<TlmConnectDecl> = m
         .body
@@ -785,11 +793,13 @@ fn lower_tlm_connects_in_module(
 
     let mut errors = Vec::new();
     let mut inst_modules: HashMap<String, String> = HashMap::new();
+    let mut inst_params: HashMap<String, Vec<ParamAssign>> = HashMap::new();
     let mut used_names: HashSet<String> = HashSet::new();
     for item in &m.body {
         match item {
             ModuleBodyItem::Inst(inst) => {
                 inst_modules.insert(inst.name.name.clone(), inst.module_name.name.clone());
+                inst_params.insert(inst.name.name.clone(), inst.param_assigns.clone());
                 used_names.insert(inst.name.name.clone());
                 for c in &inst.connections {
                     if c.port_name.name.starts_with("_tlm_conn_") {
@@ -817,8 +827,10 @@ fn lower_tlm_connects_in_module(
     }
 
     let mut synthesized_wires = Vec::new();
+    let mut synthesized_logic = Vec::new();
     let mut synthesized_conns: HashMap<String, Vec<Connection>> = HashMap::new();
     let mut connected_endpoints: HashMap<(String, String), Span> = HashMap::new();
+    let connects = group_tlm_connects_by_initiator(connects, &inst_params, &mut errors);
     for conn in connects {
         let from = match tlm_connect_endpoint_bus(
             &conn.from_inst,
@@ -832,26 +844,34 @@ fn lower_tlm_connects_in_module(
                 continue;
             }
         };
-        let to = match tlm_connect_endpoint_bus(
-            &conn.to_inst,
-            &conn.to_port,
-            &inst_modules,
-            module_ports,
-        ) {
-            Ok(endpoint) => endpoint,
-            Err(err) => {
-                errors.push(err);
-                continue;
-            }
-        };
         let (from_bus, from_persp, from_span) = from;
-        let (to_bus, to_persp, to_span) = to;
+
+        let mut target_infos = Vec::new();
+        for target in &conn.targets {
+            match tlm_connect_endpoint_bus(
+                &target.to_inst,
+                &target.to_port,
+                &inst_modules,
+                module_ports,
+            ) {
+                Ok((to_bus, to_persp, to_span)) => {
+                    target_infos.push((target, to_bus, to_persp, to_span));
+                }
+                Err(err) => {
+                    errors.push(err);
+                }
+            }
+        }
+        if target_infos.len() != conn.targets.len() {
+            continue;
+        }
 
         let error_count_before_endpoint_checks = errors.len();
-        for endpoint in [
-            (&conn.from_inst, &conn.from_port),
-            (&conn.to_inst, &conn.to_port),
-        ] {
+        let mut endpoints = vec![(&conn.from_inst, &conn.from_port)];
+        for target in &conn.targets {
+            endpoints.push((&target.to_inst, &target.to_port));
+        }
+        for endpoint in endpoints {
             let key = (endpoint.0.name.clone(), endpoint.1.name.clone());
             if let Some(first_span) = connected_endpoints.get(&key) {
                 errors.push(CompileError::general(
@@ -868,37 +888,53 @@ fn lower_tlm_connects_in_module(
         if errors.len() != error_count_before_endpoint_checks {
             continue;
         }
-        if from_bus != to_bus {
-            errors.push(CompileError::general(
-                &format!(
-                    "TLM connect bus mismatch: `{}.{}` is `{from_bus}`, but `{}.{}` is `{to_bus}`",
-                    conn.from_inst.name, conn.from_port.name, conn.to_inst.name, conn.to_port.name
-                ),
-                conn.span,
-            ));
+        let mut bus_mismatch = false;
+        for (target, to_bus, _, _) in &target_infos {
+            if from_bus != *to_bus {
+                errors.push(CompileError::general(
+                    &format!(
+                        "TLM connect bus mismatch: `{}.{}` is `{from_bus}`, but `{}.{}` is `{to_bus}`",
+                        conn.from_inst.name,
+                        conn.from_port.name,
+                        target.to_inst.name,
+                        target.to_port.name
+                    ),
+                    conn.span,
+                ));
+                bus_mismatch = true;
+            }
+        }
+        if bus_mismatch {
             continue;
         }
-        if from_persp != BusPerspective::Initiator || to_persp != BusPerspective::Target {
-            errors.push(CompileError::general(
-                &format!(
-                    "TLM connect requires `connect initiator_inst.initiator_port -> target_inst.target_port;` \
-                     but `{}.{}` is {:?} and `{}.{}` is {:?}",
-                    conn.from_inst.name,
-                    conn.from_port.name,
-                    from_persp,
-                    conn.to_inst.name,
-                    conn.to_port.name,
-                    to_persp
-                ),
-                from_span.merge(to_span),
-            ));
+        let mut direction_mismatch = false;
+        for (target, _, to_persp, to_span) in &target_infos {
+            if from_persp != BusPerspective::Initiator || *to_persp != BusPerspective::Target {
+                errors.push(CompileError::general(
+                    &format!(
+                        "TLM connect requires `connect initiator_inst.initiator_port -> target_inst.target_port;` \
+                         but `{}.{}` is {:?} and `{}.{}` is {:?}",
+                        conn.from_inst.name,
+                        conn.from_port.name,
+                        from_persp,
+                        target.to_inst.name,
+                        target.to_port.name,
+                        to_persp
+                    ),
+                    from_span.merge(*to_span),
+                ));
+                direction_mismatch = true;
+            }
+        }
+        if direction_mismatch {
             continue;
         }
         let error_count_before_duplicate_checks = errors.len();
-        for (inst_name, port_name) in [
-            (&conn.from_inst, &conn.from_port),
-            (&conn.to_inst, &conn.to_port),
-        ] {
+        let mut endpoints = vec![(&conn.from_inst, &conn.from_port)];
+        for target in &conn.targets {
+            endpoints.push((&target.to_inst, &target.to_port));
+        }
+        for (inst_name, port_name) in endpoints {
             if let Some(existing) = m
                 .body
                 .iter()
@@ -925,49 +961,49 @@ fn lower_tlm_connects_in_module(
             continue;
         }
 
-        let base = format!(
-            "_tlm_conn_{}_{}_{}_{}",
-            conn.from_inst.name, conn.from_port.name, conn.to_inst.name, conn.to_port.name
-        );
-        let mut wire_name = base.clone();
-        let mut suffix = 0usize;
-        while used_names.contains(&wire_name) {
-            suffix += 1;
-            wire_name = format!("{base}_{suffix}");
+        if conn.decode_field.is_none() {
+            let target = &conn.targets[0];
+            let wire_name = fresh_tlm_connect_name(
+                &format!(
+                    "_tlm_conn_{}_{}_{}_{}",
+                    conn.from_inst.name,
+                    conn.from_port.name,
+                    target.to_inst.name,
+                    target.to_port.name
+                ),
+                &mut used_names,
+            );
+            synthesized_wires.push(tlm_connect_bus_wire(&wire_name, &from_bus, conn.span));
+            push_tlm_connect_connection(
+                &mut synthesized_conns,
+                &conn.from_inst,
+                &conn.from_port,
+                &wire_name,
+                conn.span,
+            );
+            push_tlm_connect_connection(
+                &mut synthesized_conns,
+                &target.to_inst,
+                &target.to_port,
+                &wire_name,
+                target.span,
+            );
+        } else {
+            match lower_decoded_tlm_connect(
+                &conn,
+                &from_bus,
+                bus_defs,
+                &m,
+                &mut used_names,
+                &mut synthesized_conns,
+            ) {
+                Ok(mut lowered) => {
+                    synthesized_wires.append(&mut lowered.wires);
+                    synthesized_logic.append(&mut lowered.logic);
+                }
+                Err(mut errs) => errors.append(&mut errs),
+            }
         }
-        used_names.insert(wire_name.clone());
-
-        let wire_ident = Ident::new(wire_name.clone(), conn.span);
-        synthesized_wires.push(ModuleBodyItem::WireDecl(WireDecl {
-            bus_params: Vec::new(),
-            name: wire_ident.clone(),
-            ty: TypeExpr::Named(Ident::new(from_bus.clone(), conn.span)),
-            unpacked: false,
-            unpacked_ascending: false,
-            span: conn.span,
-        }));
-
-        let signal = Expr::new(ExprKind::Ident(wire_name), conn.span);
-        synthesized_conns
-            .entry(conn.from_inst.name.clone())
-            .or_default()
-            .push(Connection {
-                port_name: conn.from_port.clone(),
-                direction: ConnectDir::Output,
-                signal: signal.clone(),
-                reset_override: None,
-                span: conn.span,
-            });
-        synthesized_conns
-            .entry(conn.to_inst.name.clone())
-            .or_default()
-            .push(Connection {
-                port_name: conn.to_port.clone(),
-                direction: ConnectDir::Output,
-                signal,
-                reset_override: None,
-                span: conn.span,
-            });
     }
 
     if !errors.is_empty() {
@@ -976,6 +1012,7 @@ fn lower_tlm_connects_in_module(
 
     let mut lowered_body = Vec::new();
     lowered_body.extend(synthesized_wires);
+    lowered_body.extend(synthesized_logic);
     for item in m.body {
         match item {
             ModuleBodyItem::Inst(mut inst) => {
@@ -990,6 +1027,678 @@ fn lower_tlm_connects_in_module(
     }
     m.body = lowered_body;
     Ok(m)
+}
+
+const TLM_CONNECT_SLAVE_START_PARAM: &str = "SLAVE_START_ADDR";
+const TLM_CONNECT_SLAVE_END_PARAM: &str = "SLAVE_END_ADDR";
+const TLM_CONNECT_DECODE_ARG: &str = "addr";
+
+fn group_tlm_connects_by_initiator(
+    connects: Vec<TlmConnectDecl>,
+    inst_params: &HashMap<String, Vec<ParamAssign>>,
+    errors: &mut Vec<CompileError>,
+) -> Vec<TlmConnectDecl> {
+    let mut groups: HashMap<(String, String), Vec<TlmConnectDecl>> = HashMap::new();
+    let mut order: Vec<(String, String)> = Vec::new();
+    for conn in connects {
+        let key = (conn.from_inst.name.clone(), conn.from_port.name.clone());
+        if !groups.contains_key(&key) {
+            order.push(key.clone());
+        }
+        groups.entry(key).or_default().push(conn);
+    }
+
+    let mut out = Vec::new();
+    for key in order {
+        let Some(group) = groups.remove(&key) else {
+            continue;
+        };
+        if group.len() == 1 || group.iter().any(|c| c.decode_field.is_some()) {
+            out.extend(group);
+            continue;
+        }
+
+        let mut targets = Vec::new();
+        let mut unknown_target_inst = false;
+        for conn in &group {
+            let Some(target) = conn.targets.first() else {
+                continue;
+            };
+            let Some(params) = inst_params.get(&target.to_inst.name) else {
+                unknown_target_inst = true;
+                break;
+            };
+            let Some(start) = tlm_connect_inst_param(params, TLM_CONNECT_SLAVE_START_PARAM) else {
+                errors.push(CompileError::general(
+                    &format!(
+                        "one initiator TLM connect to multiple targets requires target inst `{}` to override `param {TLM_CONNECT_SLAVE_START_PARAM} = ...;`",
+                        target.to_inst.name
+                    ),
+                    target.span,
+                ));
+                continue;
+            };
+            let Some(end) = tlm_connect_inst_param(params, TLM_CONNECT_SLAVE_END_PARAM) else {
+                errors.push(CompileError::general(
+                    &format!(
+                        "one initiator TLM connect to multiple targets requires target inst `{}` to override `param {TLM_CONNECT_SLAVE_END_PARAM} = ...;`",
+                        target.to_inst.name
+                    ),
+                    target.span,
+                ));
+                continue;
+            };
+            let mut target = target.clone();
+            target.decode = Some(TlmConnectDecode::Range { lo: start, hi: end });
+            targets.push(target);
+        }
+        if unknown_target_inst {
+            out.extend(group);
+            continue;
+        }
+        if targets.len() != group.len() {
+            continue;
+        }
+
+        let first = &group[0];
+        let span = group
+            .iter()
+            .fold(first.span, |acc, conn| acc.merge(conn.span));
+        out.push(TlmConnectDecl {
+            from_inst: first.from_inst.clone(),
+            from_port: first.from_port.clone(),
+            targets,
+            decode_field: Some(Ident::new(TLM_CONNECT_DECODE_ARG.to_string(), first.span)),
+            span,
+        });
+    }
+    out
+}
+
+fn tlm_connect_inst_param(params: &[ParamAssign], name: &str) -> Option<Expr> {
+    params
+        .iter()
+        .find(|p| p.name.name == name && p.ty.is_none())
+        .map(|p| p.value.clone())
+}
+
+struct LoweredDecodedTlmConnect {
+    wires: Vec<ModuleBodyItem>,
+    logic: Vec<ModuleBodyItem>,
+}
+
+fn fresh_tlm_connect_name(base: &str, used_names: &mut HashSet<String>) -> String {
+    let mut name = base.to_string();
+    let mut suffix = 0usize;
+    while used_names.contains(&name) {
+        suffix += 1;
+        name = format!("{base}_{suffix}");
+    }
+    used_names.insert(name.clone());
+    name
+}
+
+fn tlm_connect_bus_wire(name: &str, bus_name: &str, span: Span) -> ModuleBodyItem {
+    ModuleBodyItem::WireDecl(WireDecl {
+        bus_params: Vec::new(),
+        name: Ident::new(name.to_string(), span),
+        ty: TypeExpr::Named(Ident::new(bus_name.to_string(), span)),
+        unpacked: false,
+        unpacked_ascending: false,
+        span,
+    })
+}
+
+fn push_tlm_connect_connection(
+    conns: &mut HashMap<String, Vec<Connection>>,
+    inst: &Ident,
+    port: &Ident,
+    wire_name: &str,
+    span: Span,
+) {
+    conns
+        .entry(inst.name.clone())
+        .or_default()
+        .push(Connection {
+            port_name: port.clone(),
+            direction: ConnectDir::Output,
+            signal: Expr::new(ExprKind::Ident(wire_name.to_string()), span),
+            reset_override: None,
+            span,
+        });
+}
+
+fn lower_decoded_tlm_connect(
+    conn: &TlmConnectDecl,
+    bus_name: &str,
+    bus_defs: &HashMap<String, BusDecl>,
+    module: &ModuleDecl,
+    used_names: &mut HashSet<String>,
+    synthesized_conns: &mut HashMap<String, Vec<Connection>>,
+) -> Result<LoweredDecodedTlmConnect, Vec<CompileError>> {
+    let span = conn.span;
+    let Some(decode_field) = conn.decode_field.as_ref() else {
+        return Ok(LoweredDecodedTlmConnect {
+            wires: Vec::new(),
+            logic: Vec::new(),
+        });
+    };
+    let Some(bus) = bus_defs.get(bus_name) else {
+        return Err(vec![CompileError::general(
+            &format!("one-to-many TLM connect references unknown bus `{bus_name}`"),
+            span,
+        )]);
+    };
+    if bus.tlm_methods.is_empty() {
+        return Err(vec![CompileError::general(
+            "one-to-many TLM connect currently requires a bus with `tlm_method` declarations",
+            span,
+        )]);
+    }
+
+    let mut errors = Vec::new();
+    let mut default_count = 0usize;
+    for target in &conn.targets {
+        match target.decode {
+            Some(TlmConnectDecode::Default) => default_count += 1,
+            Some(TlmConnectDecode::Range { .. }) => {}
+            None => errors.push(CompileError::general(
+                "one-to-many TLM connect target is missing an address range",
+                target.span,
+            )),
+        }
+    }
+    if default_count > 1 {
+        errors.push(CompileError::general(
+            "one-to-many TLM connect allows at most one default target",
+            span,
+        ));
+    }
+
+    let (clk, rst) = match infer_single_clock_reset(module, span) {
+        Ok(pair) => pair,
+        Err(err) => {
+            errors.push(err);
+            (
+                Ident::new("clk".to_string(), span),
+                Ident::new("rst".to_string(), span),
+            )
+        }
+    };
+
+    let mut decode_width: Option<u32> = None;
+    for method in &bus.tlm_methods {
+        if method.mode.name != "blocking" {
+            errors.push(CompileError::general(
+                &format!(
+                    "one-to-many TLM connect currently supports only `blocking` TLM methods; `{}` is `{}`",
+                    method.name.name, method.mode.name
+                ),
+                method.span,
+            ));
+            continue;
+        }
+        let Some((_, ty)) = method
+            .args
+            .iter()
+            .find(|(arg, _)| arg.name == decode_field.name)
+        else {
+            errors.push(CompileError::general(
+                &format!(
+                    "one-to-many TLM connect routes on argument `{}` but method `{}` has no argument named `{}`",
+                    decode_field.name, method.name.name, decode_field.name
+                ),
+                decode_field.span.merge(method.span),
+            ));
+            continue;
+        };
+        let Some(width) = uint_type_literal_width(ty) else {
+            errors.push(CompileError::general(
+                &format!(
+                    "one-to-many TLM connect argument `{}` on method `{}` must be a literal-width UInt<N>",
+                    decode_field.name, method.name.name
+                ),
+                decode_field.span.merge(method.span),
+            ));
+            continue;
+        };
+        if width > 64 {
+            errors.push(CompileError::general(
+                "one-to-many TLM connect ranges currently support decode widths up to 64 bits",
+                decode_field.span.merge(method.span),
+            ));
+        }
+        if let Some(prev) = decode_width {
+            if prev != width {
+                errors.push(CompileError::general(
+                    &format!(
+                        "one-to-many TLM connect argument `{}` has inconsistent widths across methods: {prev} and {width}",
+                        decode_field.name
+                    ),
+                    decode_field.span.merge(method.span),
+                ));
+            }
+        } else {
+            decode_width = Some(width);
+        }
+    }
+    if default_count == 0 {
+        let width = decode_width.unwrap_or(0);
+        if width == 0 || !tlm_connect_ranges_cover_full_space(&conn.targets, width) {
+            errors.push(CompileError::general(
+                "one-to-many TLM connect requires literal ranges that cover the full decode address space",
+                span,
+            ));
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    let base = format!(
+        "_tlm_conn_{}_{}_decode",
+        conn.from_inst.name, conn.from_port.name
+    );
+    let up_wire = fresh_tlm_connect_name(&format!("{base}_up"), used_names);
+    let mut target_wires = Vec::new();
+    for (i, _) in conn.targets.iter().enumerate() {
+        target_wires.push(fresh_tlm_connect_name(&format!("{base}_t{i}"), used_names));
+    }
+
+    let mut wires = Vec::new();
+    wires.push(tlm_connect_bus_wire(&up_wire, bus_name, span));
+    for wire in &target_wires {
+        wires.push(tlm_connect_bus_wire(wire, bus_name, span));
+    }
+
+    push_tlm_connect_connection(
+        synthesized_conns,
+        &conn.from_inst,
+        &conn.from_port,
+        &up_wire,
+        span,
+    );
+    for (target, wire) in conn.targets.iter().zip(target_wires.iter()) {
+        push_tlm_connect_connection(
+            synthesized_conns,
+            &target.to_inst,
+            &target.to_port,
+            wire,
+            target.span,
+        );
+    }
+
+    let route_w = clog2_width(conn.targets.len() as u64).max(1) as u32;
+    let mut logic = Vec::new();
+    let mut comb_stmts = Vec::new();
+    let mut seq_stmts = Vec::new();
+
+    for method in &bus.tlm_methods {
+        let route_name =
+            fresh_tlm_connect_name(&format!("{base}_{}_route", method.name.name), used_names);
+        logic.push(ModuleBodyItem::RegDecl(RegDecl {
+            name: Ident::new(route_name.clone(), span),
+            ty: TypeExpr::UInt(Box::new(tlm_lit_dec(route_w as u64, span))),
+            init: None,
+            reset: RegReset::Inherit(rst.clone(), tlm_lit_dec(0, span)),
+            guard: None,
+            multicycle: None,
+            span,
+        }));
+
+        let selectors = tlm_connect_effective_selectors(
+            conn,
+            &up_wire,
+            &method.name.name,
+            &decode_field.name,
+            span,
+        );
+
+        for (target_wire, selector) in target_wires.iter().zip(selectors.iter()) {
+            comb_stmts.push(tlm_assign(
+                tlm_bus_field(
+                    target_wire,
+                    &format!("{}_req_valid", method.name.name),
+                    span,
+                ),
+                tlm_and(
+                    tlm_bus_field(&up_wire, &format!("{}_req_valid", method.name.name), span),
+                    selector.clone(),
+                    span,
+                ),
+                span,
+            ));
+            for (arg, _) in &method.args {
+                comb_stmts.push(tlm_assign(
+                    tlm_bus_field(
+                        target_wire,
+                        &format!("{}_{}", method.name.name, arg.name),
+                        span,
+                    ),
+                    tlm_bus_field(
+                        &up_wire,
+                        &format!("{}_{}", method.name.name, arg.name),
+                        span,
+                    ),
+                    span,
+                ));
+            }
+        }
+
+        let req_ready_terms: Vec<Expr> = target_wires
+            .iter()
+            .map(|wire| tlm_bus_field(wire, &format!("{}_req_ready", method.name.name), span))
+            .collect();
+        comb_stmts.push(tlm_assign(
+            tlm_bus_field(&up_wire, &format!("{}_req_ready", method.name.name), span),
+            tlm_mux_by_selectors(&selectors, &req_ready_terms, span),
+            span,
+        ));
+
+        let route_expr = tlm_mux_index_by_selectors(&selectors, route_w, span);
+        let req_fire = tlm_and(
+            tlm_bus_field(&up_wire, &format!("{}_req_valid", method.name.name), span),
+            tlm_bus_field(&up_wire, &format!("{}_req_ready", method.name.name), span),
+            span,
+        );
+        seq_stmts.push(Stmt::IfElse(IfElseOf {
+            cond: req_fire,
+            then_stmts: vec![tlm_assign(tlm_ident(&route_name, span), route_expr, span)],
+            else_stmts: Vec::new(),
+            unique: false,
+            span,
+        }));
+
+        let route_matches: Vec<Expr> = (0..target_wires.len())
+            .map(|i| {
+                tlm_bin(
+                    BinOp::Eq,
+                    tlm_ident(&route_name, span),
+                    tlm_lit_sized(route_w, i as u64, span),
+                    span,
+                )
+            })
+            .collect();
+
+        for ((target_wire, route_match), _) in target_wires
+            .iter()
+            .zip(route_matches.iter())
+            .zip(conn.targets.iter())
+        {
+            comb_stmts.push(tlm_assign(
+                tlm_bus_field(
+                    target_wire,
+                    &format!("{}_rsp_ready", method.name.name),
+                    span,
+                ),
+                tlm_and(
+                    tlm_bus_field(&up_wire, &format!("{}_rsp_ready", method.name.name), span),
+                    route_match.clone(),
+                    span,
+                ),
+                span,
+            ));
+        }
+
+        let rsp_valid_terms: Vec<Expr> = target_wires
+            .iter()
+            .zip(route_matches.iter())
+            .map(|(wire, route_match)| {
+                tlm_and(
+                    route_match.clone(),
+                    tlm_bus_field(wire, &format!("{}_rsp_valid", method.name.name), span),
+                    span,
+                )
+            })
+            .collect();
+        comb_stmts.push(tlm_assign(
+            tlm_bus_field(&up_wire, &format!("{}_rsp_valid", method.name.name), span),
+            tlm_or_chain(&rsp_valid_terms, span),
+            span,
+        ));
+
+        if method.ret.is_some() {
+            let rsp_data_terms: Vec<Expr> = target_wires
+                .iter()
+                .map(|wire| tlm_bus_field(wire, &format!("{}_rsp_data", method.name.name), span))
+                .collect();
+            comb_stmts.push(tlm_assign(
+                tlm_bus_field(&up_wire, &format!("{}_rsp_data", method.name.name), span),
+                tlm_mux_by_selectors(&route_matches, &rsp_data_terms, span),
+                span,
+            ));
+        }
+    }
+
+    logic.push(ModuleBodyItem::CombBlock(CombBlock {
+        stmts: comb_stmts,
+        span,
+    }));
+    logic.push(ModuleBodyItem::RegBlock(RegBlock {
+        clock: clk,
+        clock_edge: ClockEdge::Rising,
+        stmts: seq_stmts,
+        span,
+    }));
+
+    Ok(LoweredDecodedTlmConnect { wires, logic })
+}
+
+fn infer_single_clock_reset(
+    module: &ModuleDecl,
+    span: Span,
+) -> Result<(Ident, Ident), CompileError> {
+    let clocks: Vec<Ident> = module
+        .ports
+        .iter()
+        .filter(|p| matches!(p.ty, TypeExpr::Clock(_)))
+        .map(|p| p.name.clone())
+        .collect();
+    let resets: Vec<Ident> = module
+        .ports
+        .iter()
+        .filter(|p| matches!(p.ty, TypeExpr::Reset(_, _)))
+        .map(|p| p.name.clone())
+        .collect();
+    match (clocks.as_slice(), resets.as_slice()) {
+        ([clk], [rst]) => Ok((clk.clone(), rst.clone())),
+        _ => Err(CompileError::general(
+            "one-to-many TLM connect requires the enclosing module to have exactly one Clock port and one Reset port",
+            span,
+        )),
+    }
+}
+
+fn uint_type_literal_width(ty: &TypeExpr) -> Option<u32> {
+    let TypeExpr::UInt(width) = ty else {
+        return None;
+    };
+    match &width.kind {
+        ExprKind::Literal(LitKind::Dec(v))
+        | ExprKind::Literal(LitKind::Hex(v))
+        | ExprKind::Literal(LitKind::Bin(v))
+        | ExprKind::Literal(LitKind::Sized(_, v)) => Some(*v as u32),
+        _ => None,
+    }
+}
+
+fn tlm_connect_ranges_cover_full_space(targets: &[TlmConnectTarget], width: u32) -> bool {
+    if width == 0 || width > 64 {
+        return false;
+    }
+    let max = if width == 64 {
+        u64::MAX as u128
+    } else {
+        (1u128 << width) - 1
+    };
+    let mut ranges = Vec::new();
+    for target in targets {
+        let Some(TlmConnectDecode::Range { lo, hi }) = &target.decode else {
+            continue;
+        };
+        let (Some(lo), Some(hi)) = (tlm_literal_u128(lo), tlm_literal_u128(hi)) else {
+            return false;
+        };
+        if lo > hi || hi > max {
+            return false;
+        }
+        ranges.push((lo, hi));
+    }
+    ranges.sort_by_key(|(lo, _)| *lo);
+    let mut next = 0u128;
+    for (lo, hi) in ranges {
+        if lo > next {
+            return false;
+        }
+        if hi >= next {
+            next = hi.saturating_add(1);
+        }
+        if hi == max {
+            return true;
+        }
+    }
+    next > max
+}
+
+fn tlm_literal_u128(expr: &Expr) -> Option<u128> {
+    match &expr.kind {
+        ExprKind::Literal(LitKind::Dec(v))
+        | ExprKind::Literal(LitKind::Hex(v))
+        | ExprKind::Literal(LitKind::Bin(v))
+        | ExprKind::Literal(LitKind::Sized(_, v)) => Some(*v as u128),
+        _ => None,
+    }
+}
+
+fn tlm_connect_effective_selectors(
+    conn: &TlmConnectDecl,
+    up_wire: &str,
+    method: &str,
+    decode_field: &str,
+    span: Span,
+) -> Vec<Expr> {
+    let addr = tlm_bus_field(up_wire, &format!("{method}_{decode_field}"), span);
+    let mut raw_ranges = Vec::new();
+    for target in &conn.targets {
+        if let Some(TlmConnectDecode::Range { lo, hi }) = &target.decode {
+            raw_ranges.push(tlm_and(
+                tlm_bin(BinOp::Gte, addr.clone(), lo.clone(), span),
+                tlm_bin(BinOp::Lte, addr.clone(), hi.clone(), span),
+                span,
+            ));
+        }
+    }
+    let any_previous = |raw_ranges: &[Expr], end: usize| -> Option<Expr> {
+        if end == 0 {
+            return None;
+        }
+        Some(tlm_or_chain(&raw_ranges[..end], span))
+    };
+
+    let mut selectors = Vec::new();
+    let mut range_idx = 0usize;
+    for target in &conn.targets {
+        match &target.decode {
+            Some(TlmConnectDecode::Range { .. }) => {
+                let raw = raw_ranges[range_idx].clone();
+                let effective = if let Some(prev) = any_previous(&raw_ranges, range_idx) {
+                    tlm_and(raw, tlm_not(prev, span), span)
+                } else {
+                    raw
+                };
+                selectors.push(effective);
+                range_idx += 1;
+            }
+            Some(TlmConnectDecode::Default) => {
+                selectors.push(tlm_not(tlm_or_chain(&raw_ranges, span), span));
+            }
+            None => selectors.push(tlm_bool(false, span)),
+        }
+    }
+    selectors
+}
+
+fn tlm_assign(target: Expr, value: Expr, span: Span) -> Stmt {
+    Stmt::Assign(Assign {
+        target,
+        value,
+        span,
+    })
+}
+
+fn tlm_ident(name: &str, span: Span) -> Expr {
+    Expr::new(ExprKind::Ident(name.to_string()), span)
+}
+
+fn tlm_bus_field(bus: &str, field: &str, span: Span) -> Expr {
+    Expr::new(
+        ExprKind::FieldAccess(
+            Box::new(tlm_ident(bus, span)),
+            Ident::new(field.to_string(), span),
+        ),
+        span,
+    )
+}
+
+fn tlm_lit_dec(value: u64, span: Span) -> Expr {
+    Expr::new(ExprKind::Literal(LitKind::Dec(value)), span)
+}
+
+fn tlm_lit_sized(width: u32, value: u64, span: Span) -> Expr {
+    Expr::new(ExprKind::Literal(LitKind::Sized(width, value)), span)
+}
+
+fn tlm_bool(value: bool, span: Span) -> Expr {
+    Expr::new(ExprKind::Bool(value), span)
+}
+
+fn tlm_bin(op: BinOp, lhs: Expr, rhs: Expr, span: Span) -> Expr {
+    Expr::new(ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)), span)
+}
+
+fn tlm_and(lhs: Expr, rhs: Expr, span: Span) -> Expr {
+    tlm_bin(BinOp::And, lhs, rhs, span)
+}
+
+fn tlm_not(expr: Expr, span: Span) -> Expr {
+    Expr::new(ExprKind::Unary(UnaryOp::Not, Box::new(expr)), span)
+}
+
+fn tlm_or_chain(exprs: &[Expr], span: Span) -> Expr {
+    let mut iter = exprs.iter();
+    let Some(first) = iter.next() else {
+        return tlm_bool(false, span);
+    };
+    iter.fold(first.clone(), |acc, expr| {
+        tlm_bin(BinOp::Or, acc, expr.clone(), span)
+    })
+}
+
+fn tlm_ternary(cond: Expr, then_expr: Expr, else_expr: Expr, span: Span) -> Expr {
+    Expr::new(
+        ExprKind::Ternary(Box::new(cond), Box::new(then_expr), Box::new(else_expr)),
+        span,
+    )
+}
+
+fn tlm_mux_by_selectors(selectors: &[Expr], values: &[Expr], span: Span) -> Expr {
+    let mut acc = values
+        .last()
+        .cloned()
+        .unwrap_or_else(|| tlm_lit_dec(0, span));
+    for (selector, value) in selectors.iter().zip(values.iter()).rev().skip(1) {
+        acc = tlm_ternary(selector.clone(), value.clone(), acc, span);
+    }
+    acc
+}
+
+fn tlm_mux_index_by_selectors(selectors: &[Expr], width: u32, span: Span) -> Expr {
+    let values: Vec<Expr> = selectors
+        .iter()
+        .enumerate()
+        .map(|(i, _)| tlm_lit_sized(width, i as u64, span))
+        .collect();
+    tlm_mux_by_selectors(selectors, &values, span)
 }
 
 fn tlm_connect_endpoint_bus(
@@ -1613,8 +2322,23 @@ fn subst_tlm_connect(c: &TlmConnectDecl, var: &str, val: i64) -> TlmConnectDecl 
     TlmConnectDecl {
         from_inst: subst_ident(&c.from_inst, var, val),
         from_port: c.from_port.clone(),
-        to_inst: subst_ident(&c.to_inst, var, val),
-        to_port: c.to_port.clone(),
+        targets: c
+            .targets
+            .iter()
+            .map(|target| TlmConnectTarget {
+                to_inst: subst_ident(&target.to_inst, var, val),
+                to_port: target.to_port.clone(),
+                decode: target.decode.as_ref().map(|decode| match decode {
+                    TlmConnectDecode::Range { lo, hi } => TlmConnectDecode::Range {
+                        lo: subst_expr(lo.clone(), var, val),
+                        hi: subst_expr(hi.clone(), var, val),
+                    },
+                    TlmConnectDecode::Default => TlmConnectDecode::Default,
+                }),
+                span: target.span,
+            })
+            .collect(),
+        decode_field: c.decode_field.clone(),
         span: c.span,
     }
 }
@@ -2643,9 +3367,9 @@ fn lower_module_threads(
             .params
             .iter()
             .filter_map(|p| {
-                p.default
-                    .as_ref()
-                    .and_then(|d| try_eval_i64(d, &HashMap::new()).map(|v| (p.name.name.clone(), v)))
+                p.default.as_ref().and_then(|d| {
+                    try_eval_i64(d, &HashMap::new()).map(|v| (p.name.name.clone(), v))
+                })
             })
             .collect();
         let mut out = HashMap::new();
@@ -4702,9 +5426,11 @@ fn vob_write_lane_names(
     if !bus_port_map.contains_key(arr_name) {
         return None;
     }
-    vob_counts
-        .get(arr_name)
-        .map(|&n| (0..n).map(|i| format!("{}_{}_{}", arr_name, i, field.name)).collect())
+    vob_counts.get(arr_name).map(|&n| {
+        (0..n)
+            .map(|i| format!("{}_{}_{}", arr_name, i, field.name))
+            .collect()
+    })
 }
 
 /// Walk every `Stmt` in the synthesized thread sub-module body and
@@ -4734,7 +5460,11 @@ fn rewrite_bus_targets_in_body(
                 sp,
             );
             let then_e = Expr::new(ExprKind::Ident(format!("{arr}_{i}_{field}")), sp);
-            acc = ExprKind::Ternary(Box::new(cond), Box::new(then_e), Box::new(Expr::new(acc, sp)));
+            acc = ExprKind::Ternary(
+                Box::new(cond),
+                Box::new(then_e),
+                Box::new(Expr::new(acc, sp)),
+            );
         }
         acc
     }
@@ -4800,7 +5530,10 @@ fn rewrite_bus_targets_in_body(
                     if let ExprKind::Ident(arr_name) = &arr.kind {
                         if let ExprKind::Literal(LitKind::Dec(i)) = &idx.kind {
                             if bus_port_map.contains_key(arr_name) {
-                                Some(ExprKind::Ident(format!("{}_{}_{}", arr_name, i, field.name)))
+                                Some(ExprKind::Ident(format!(
+                                    "{}_{}_{}",
+                                    arr_name, i, field.name
+                                )))
                             } else {
                                 None
                             }
@@ -4976,7 +5709,9 @@ fn rewrite_bus_targets_in_body(
             ModuleBodyItem::LatchBlock(lb) => {
                 rw_stmts(&mut lb.stmts, bus_port_map, vob_counts);
             }
-            ModuleBodyItem::LetBinding(lb) => rw_expr(&mut lb.value, bus_port_map, vob_counts, false),
+            ModuleBodyItem::LetBinding(lb) => {
+                rw_expr(&mut lb.value, bus_port_map, vob_counts, false)
+            }
             ModuleBodyItem::RegDecl(r) => {
                 if let Some(init) = r.init.as_mut() {
                     rw_expr(init, bus_port_map, vob_counts, false);
@@ -5151,8 +5886,20 @@ fn collect_thread_signals_with_buses(
                     record(&a.target, seq_driven, bus_port_map, vob_counts);
                 }
                 ThreadStmt::IfElse(ie) => {
-                    walk(&ie.then_stmts, comb_driven, seq_driven, bus_port_map, vob_counts);
-                    walk(&ie.else_stmts, comb_driven, seq_driven, bus_port_map, vob_counts);
+                    walk(
+                        &ie.then_stmts,
+                        comb_driven,
+                        seq_driven,
+                        bus_port_map,
+                        vob_counts,
+                    );
+                    walk(
+                        &ie.else_stmts,
+                        comb_driven,
+                        seq_driven,
+                        bus_port_map,
+                        vob_counts,
+                    );
                 }
                 ThreadStmt::For { body, .. }
                 | ThreadStmt::Lock { body, .. }
@@ -5168,7 +5915,13 @@ fn collect_thread_signals_with_buses(
             }
         }
     }
-    walk(body, &mut comb_driven, &mut seq_driven, bus_port_map, vob_counts);
+    walk(
+        body,
+        &mut comb_driven,
+        &mut seq_driven,
+        bus_port_map,
+        vob_counts,
+    );
     (comb_driven, seq_driven, all_read)
 }
 

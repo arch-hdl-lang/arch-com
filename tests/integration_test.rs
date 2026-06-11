@@ -74,6 +74,22 @@ fn compile_to_sv_with_opts(source: &str, opts: &elaborate::ThreadLowerOpts) -> S
     codegen.generate()
 }
 
+fn warnings_after_full_lower(source: &str) -> Vec<String> {
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let ast = elaborate::lower_tlm_target_threads(ast).expect("tlm_target lowering error");
+    let ast = elaborate::lower_tlm_initiator_calls(ast).expect("tlm_initiator lowering error");
+    let ast = elaborate::lower_threads(ast).expect("lower_threads error");
+    let ast = elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg_ports error");
+    let ast = elaborate::lower_credit_channel_dispatch(ast).expect("credit_channel dispatch error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let (warnings, _) = checker.check().expect("type check error");
+    warnings.into_iter().map(|w| w.message).collect()
+}
+
 fn collect_thread_map(source: &str) -> arch::thread_map::ThreadMap {
     let tokens = lexer::tokenize(source).expect("lexer error");
     let mut parser = Parser::new(tokens, source);
@@ -10046,6 +10062,52 @@ fn test_tlm_connect_inside_generate_for_lowers_to_per_iteration_wires() {
     );
 }
 
+#[test]
+fn test_tlm_connect_decode_lowers_to_generated_router_logic() {
+    let source = include_str!("axi_dma_tlm/TlmConnectDecode.arch");
+    let sv = compile_to_sv(source);
+
+    assert!(
+        sv.contains("module TlmConnectDecodeTop"),
+        "decoded connect top should build:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_conn_i_m_decode_up_read_req_valid")
+            && sv.contains("_tlm_conn_i_m_decode_t0_read_req_valid")
+            && sv.contains("_tlm_conn_i_m_decode_t1_read_req_valid"),
+        "decoded connect should synthesize upstream and per-target private bus wires:\n{sv}"
+    );
+    assert!(
+        sv.contains(
+            "_tlm_conn_i_m_decode_t0_read_req_valid = _tlm_conn_i_m_decode_up_read_req_valid",
+        ) && sv.contains(
+            "_tlm_conn_i_m_decode_t1_read_req_valid = _tlm_conn_i_m_decode_up_read_req_valid",
+        ),
+        "decoded connect should gate request valid to target wires:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_conn_i_m_decode_read_route")
+            && sv.contains("_tlm_conn_i_m_decode_write_route"),
+        "decoded connect should remember response route per blocking method:\n{sv}"
+    );
+
+    let sim = compile_to_sim_h(source, false);
+    assert!(
+        sim.contains("class VTlmConnectDecodeTop"),
+        "sim C++ should include decoded connect top"
+    );
+}
+
+#[test]
+fn test_tlm_connect_decode_does_not_emit_false_comb_cycle_warning() {
+    let ws = warnings_after_full_lower(include_str!("axi_dma_tlm/TlmConnectDecode.arch"));
+    assert!(
+        ws.iter()
+            .all(|m| !m.contains("combinational feedback cycle")),
+        "decoded connect router should not fabricate bus-wire comb-loop warnings: {ws:?}"
+    );
+}
+
 fn tlm_connect_elaborate_error(source: &str) -> String {
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
@@ -10265,8 +10327,9 @@ end module Top
 "#,
     );
     assert!(
-        msg.contains("TLM connect endpoint `i.m` is connected more than once"),
-        "expected endpoint-reuse diagnostic, got: {msg}"
+        msg.contains("requires target inst `t0` to override `param SLAVE_START_ADDR = ...;`")
+            && msg.contains("requires target inst `t1` to override `param SLAVE_START_ADDR = ...;`"),
+        "expected missing-address-map-param diagnostic, got: {msg}"
     );
 }
 
@@ -10296,8 +10359,49 @@ end module Top
 "#,
     );
     assert!(
-        msg.contains("TLM connect endpoint `i.m` is connected more than once"),
-        "expected endpoint-reuse-after-generate diagnostic, got: {msg}"
+        msg.contains("requires target inst `t_0` to override `param SLAVE_START_ADDR = ...;`")
+            && msg.contains("requires target inst `t_1` to override `param SLAVE_START_ADDR = ...;`"),
+        "expected missing-address-map-param-after-generate diagnostic, got: {msg}"
+    );
+}
+
+#[test]
+fn test_tlm_connect_decode_requires_exhaustive_ranges_or_default() {
+    let msg = tlm_connect_elaborate_error(
+        r#"
+bus Mem
+  tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+end bus Mem
+use Mem;
+module Initiator
+  port m: initiator Mem;
+end module Initiator
+module Target
+  param SLAVE_START_ADDR: const = 0;
+  param SLAVE_END_ADDR: const = 0;
+  port s: target Mem;
+end module Target
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  inst i: Initiator
+  end inst i
+  inst t0: Target
+    param SLAVE_START_ADDR = 32'h0000_0000;
+    param SLAVE_END_ADDR = 32'h0000_ffff;
+  end inst t0
+  inst t1: Target
+    param SLAVE_START_ADDR = 32'h8000_0000;
+    param SLAVE_END_ADDR = 32'h8000_ffff;
+  end inst t1
+  connect i.m -> t0.s;
+  connect i.m -> t1.s;
+end module Top
+"#,
+    );
+    assert!(
+        msg.contains("requires literal ranges that cover the full decode address space"),
+        "expected non-exhaustive decoded-connect diagnostic, got: {msg}"
     );
 }
 
@@ -10438,6 +10542,32 @@ fn test_tlm_ooo_protocol_asserts_track_tags() {
             && sv.contains("$stable(m_read_rsp_tag)")
             && sv.contains("$stable(m_read_rsp_data)"),
         "OOO response assertion should track rsp_tag under backpressure:\n{sv}"
+    );
+}
+
+#[test]
+fn test_tlm_connect_decode_arch_sim_behavior() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/axi_dma_tlm/TlmConnectDecode.arch")
+        .arg("--tb")
+        .arg("tests/axi_dma_tlm/tb_tlm_connect_decode.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for decoded connect");
+    assert!(
+        out.status.success(),
+        "decoded connect sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS decoded connect"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
     );
 }
 

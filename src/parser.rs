@@ -1512,18 +1512,29 @@ impl Parser {
         Ok((inst, port))
     }
 
+    fn parse_tlm_connect_target(&mut self, start: Span) -> Result<TlmConnectTarget, CompileError> {
+        let (to_inst, to_port) = self.parse_tlm_connect_endpoint()?;
+        let end = self.expect(TokenKind::Semi)?.span;
+        Ok(TlmConnectTarget {
+            to_inst,
+            to_port,
+            decode: None,
+            span: start.merge(end),
+        })
+    }
+
     fn parse_tlm_connect(&mut self) -> Result<TlmConnectDecl, CompileError> {
         let start = self.expect_contextual("connect")?.span;
         let (from_inst, from_port) = self.parse_tlm_connect_endpoint()?;
         self.expect(TokenKind::RArrow)?;
-        let (to_inst, to_port) = self.parse_tlm_connect_endpoint()?;
-        let end = self.expect(TokenKind::Semi)?.span;
+        let target = self.parse_tlm_connect_target(start)?;
+        let span = start.merge(target.span);
         Ok(TlmConnectDecl {
             from_inst,
             from_port,
-            to_inst,
-            to_port,
-            span: start.merge(end),
+            targets: vec![target],
+            decode_field: None,
+            span,
         })
     }
 

@@ -1185,7 +1185,24 @@ The compiler validates that the default value fits within the declared range. Co
 >
 > ◈ **Whole-bus connections.** When an inst's bus port connects to a parent bus port (or wire), a single connection expands to all signals in the bus definition: `axi_rd -> m_axi_mm2s;` expands to `axi_rd_ar_valid -> m_axi_mm2s_ar_valid`, etc. Signal directions are derived from the bus definition and the port's perspective (`initiator` or `target`). This works for both `module` and `fsm` constructs.
 >
-> ◈ **Prototype TLM connect sugar.** For early design-phase one-to-one TLM binding, a module may write `connect cpu.mem -> ram.mem;` after both instances are declared. The left endpoint must be an instantiated `initiator` bus port and the right endpoint an instantiated `target` bus port of the same bus type. Elaboration creates a private bus wire and appends ordinary whole-bus inst connections, so generated SV remains the same flattened req/rsp signal protocol. `connect` is legal at module scope and inside `generate_for` / `generate_if`; generated suffix names are expanded first (`connect src_i.m -> dst_i.s;` becomes independent `src_0.m -> dst_0.s`, `src_1.m -> dst_1.s`, ... links). Current scope is one initiator endpoint to one target endpoint after expansion; decoded one-to-many routing still uses an explicit router module.
+> ◈ **Prototype TLM connect sugar.** For early design-phase TLM binding, a module may write `connect cpu.mem -> ram.mem;` after both instances are declared. The left endpoint must be an instantiated `initiator` bus port and each right endpoint an instantiated `target` bus port of the same bus type. Elaboration creates private bus wires and appends ordinary whole-bus inst connections, so generated SV remains the same flattened req/rsp signal protocol. `connect` is legal at module scope and inside `generate_for` / `generate_if`; generated suffix names are expanded first (`connect src_i.m -> dst_i.s;` becomes independent `src_0.m -> dst_0.s`, `src_1.m -> dst_1.s`, ... links). Blocking TLM buses also support one-initiator-to-many-target address decode by repeating ordinary connect statements and overriding each target instance's address-map params:
+>
+> ```
+> inst ram0: MemTarget
+>   param SLAVE_START_ADDR = 32'h0000_0000;
+>   param SLAVE_END_ADDR = 32'h7fff_ffff;
+> end inst ram0
+>
+> inst ram1: MemTarget
+>   param SLAVE_START_ADDR = 32'h8000_0000;
+>   param SLAVE_END_ADDR = 32'hffff_ffff;
+> end inst ram1
+>
+> connect cpu.mem -> ram0.mem;
+> connect cpu.mem -> ram1.mem;
+> ```
+>
+> Repeated connects from one initiator endpoint decode the TLM method argument named `addr`, which must be present on every method in the bus. The enclosing module must have exactly one `Clock` port and one `Reset` port; elaboration uses them for the generated response-route registers. The `SLAVE_START_ADDR` / `SLAVE_END_ADDR` overrides must be literal ranges that cover the full decode width. Tagged `out_of_order` routing is deferred; use an explicit router module for OOO, decode-error response synthesis, arbitration, or custom routing policy.
 >
 > ◈ **Indexed bus port expressions.** Generated bus port arrays (via `generate for i in 0..N / port m_axi_i: initiator Bus`) can be referenced in comb/seq blocks using bracket-dot syntax: `m_axi[0].ar_valid = true;` flattens to `m_axi_0_ar_valid`. The index must be an integer literal.
 >
