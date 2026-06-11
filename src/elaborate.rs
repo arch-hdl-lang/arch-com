@@ -566,14 +566,29 @@ fn elaborate_module_variant(
         .into_iter()
         .map(|mut p| {
             if let Some(&val) = param_vals.get(&p.name.name) {
-                if matches!(p.kind, ParamKind::EnumConst(_)) {
-                    // Preserve the EnumVariant expression for clean SV output
-                } else if p
+                // A derived default (one that references other params) is only
+                // safe to *preserve* when this variant's resolved value still
+                // equals re-evaluating that expression under the variant's
+                // params. If the inst site explicitly overrode the param, the
+                // resolved `val` diverges from the expression — preserving the
+                // expression would silently drop the override (the SV backend
+                // re-applies it as an inst param, but the sim backend bakes the
+                // module default into a `#define`, so the override is lost).
+                // In that case fall through to the literal-replacement path so
+                // both backends see the overridden value.
+                let derived_default_tracks = p
                     .default
                     .as_ref()
                     .map_or(false, |d| expr_references_params(d, &param_names))
-                {
-                    // Preserve original expression for derived params
+                    && p.default
+                        .as_ref()
+                        .and_then(|d| try_eval_i64(d, &param_vals))
+                        .map_or(false, |dv| dv == val);
+                if matches!(p.kind, ParamKind::EnumConst(_)) {
+                    // Preserve the EnumVariant expression for clean SV output
+                } else if derived_default_tracks {
+                    // Preserve original expression for derived params that were
+                    // NOT overridden (value still tracks the parent param).
                 } else {
                     // Width-typed params (`param NAME[hi:lo]: const = ...`) emit
                     // SV `parameter [hi:lo] NAME = <default>`. If we replaced

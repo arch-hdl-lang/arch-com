@@ -1,0 +1,118 @@
+// HARC unit test for the NIC-400 sparse-connectivity address decoder.
+//
+// Nic400SparseDemo instantiates TWO Nic400SparseAddrDecode copies over one
+// global address map (4 slaves, 256 MiB each, REGION_BITS=28):
+//   M0  CONNECT_MASK = 0x3 → reaches slaves {0, 1}
+//   M1  CONNECT_MASK = 0x6 → reaches slaves {1, 2}
+//
+// Same addr/valid drives both; they must produce DIFFERENT reachability.
+// slave_idx is the same on both (same global decode); only decerr differs.
+//
+// Run:
+//   harc sim --dut examples/nic400/Nic400SparseAddrDecode.arch \
+//            --dut examples/nic400/Nic400SparseDemo.arch \
+//            examples/nic400/Nic400SparseDemo_test.harc --top Nic400SparseDemo
+//
+// Region base addresses: slave j = j << 28.
+//   S0 = 0x0000_0000   S1 = 0x1000_0000   S2 = 0x2000_0000   S3 = 0x3000_0000
+//   OOR = 0x4000_0000+
+testbench Nic400SparseDemoTb
+    dut : Nic400SparseDemo
+end testbench Nic400SparseDemoTb
+
+impl Nic400SparseDemoTest for Nic400SparseDemoTb
+    run
+        log(info, "Nic400 sparse-connectivity decode test: M0={0,1}, M1={1,2}")
+
+        dut.valid = 1
+
+        // ── Slave 0 region (0x0000_0000) ────────────────────────────────
+        // M0 connected → decerr=0; M1 NOT connected → decerr=1. idx=0 both.
+        dut.addr = 0x00000000
+        wait 1 cycle
+        assert dut.m0_slave_idx == 0
+            else fail("S0: m0_slave_idx=0x${dut.m0_slave_idx:x}, expected 0")
+        assert dut.m1_slave_idx == 0
+            else fail("S0: m1_slave_idx=0x${dut.m1_slave_idx:x}, expected 0")
+        assert dut.m0_decerr == 0
+            else fail("S0: M0 should reach S0 (decerr=0), got ${dut.m0_decerr}")
+        assert dut.m1_decerr == 1
+            else fail("S0: M1 must NOT reach S0 (decerr=1), got ${dut.m1_decerr}")
+
+        // mid-region address (0x0ABC_DEF0) must decode identically to base.
+        dut.addr = 0x0ABCDEF0
+        wait 1 cycle
+        assert dut.m0_slave_idx == 0
+            else fail("S0-mid: m0_slave_idx=0x${dut.m0_slave_idx:x}, expected 0")
+        assert dut.m0_decerr == 0
+            else fail("S0-mid: M0 decerr=0 expected, got ${dut.m0_decerr}")
+        assert dut.m1_decerr == 1
+            else fail("S0-mid: M1 decerr=1 expected, got ${dut.m1_decerr}")
+
+        // ── Slave 1 region (0x1000_0000) ────────────────────────────────
+        // Both connected → decerr=0 both. idx=1 both.
+        dut.addr = 0x10000000
+        wait 1 cycle
+        assert dut.m0_slave_idx == 1
+            else fail("S1: m0_slave_idx=0x${dut.m0_slave_idx:x}, expected 1")
+        assert dut.m1_slave_idx == 1
+            else fail("S1: m1_slave_idx=0x${dut.m1_slave_idx:x}, expected 1")
+        assert dut.m0_decerr == 0
+            else fail("S1: M0 should reach S1 (decerr=0), got ${dut.m0_decerr}")
+        assert dut.m1_decerr == 0
+            else fail("S1: M1 should reach S1 (decerr=0), got ${dut.m1_decerr}")
+
+        // ── Slave 2 region (0x2000_0000) ────────────────────────────────
+        // M0 NOT connected → decerr=1; M1 connected → decerr=0. idx=2 both.
+        dut.addr = 0x20000000
+        wait 1 cycle
+        assert dut.m0_slave_idx == 2
+            else fail("S2: m0_slave_idx=0x${dut.m0_slave_idx:x}, expected 2")
+        assert dut.m1_slave_idx == 2
+            else fail("S2: m1_slave_idx=0x${dut.m1_slave_idx:x}, expected 2")
+        assert dut.m0_decerr == 1
+            else fail("S2: M0 must NOT reach S2 (decerr=1), got ${dut.m0_decerr}")
+        assert dut.m1_decerr == 0
+            else fail("S2: M1 should reach S2 (decerr=0), got ${dut.m1_decerr}")
+
+        // ── Slave 3 region (0x3000_0000) ────────────────────────────────
+        // In-map but neither master is connected (S3 in neither mask) → decerr=1 both.
+        dut.addr = 0x30000000
+        wait 1 cycle
+        assert dut.m0_slave_idx == 3
+            else fail("S3: m0_slave_idx=0x${dut.m0_slave_idx:x}, expected 3")
+        assert dut.m0_decerr == 1
+            else fail("S3: M0 not connected to S3 (decerr=1), got ${dut.m0_decerr}")
+        assert dut.m1_decerr == 1
+            else fail("S3: M1 not connected to S3 (decerr=1), got ${dut.m1_decerr}")
+
+        // ── Out-of-range (0x4000_0000) ──────────────────────────────────
+        // Beyond the populated map → decerr=1 for both masters.
+        dut.addr = 0x40000000
+        wait 1 cycle
+        assert dut.m0_decerr == 1
+            else fail("OOR: M0 decerr=1 expected, got ${dut.m0_decerr}")
+        assert dut.m1_decerr == 1
+            else fail("OOR: M1 decerr=1 expected, got ${dut.m1_decerr}")
+
+        // top of address space (0xFFFF_FFFF) → OOR for both.
+        dut.addr = 0xFFFFFFFF
+        wait 1 cycle
+        assert dut.m0_decerr == 1
+            else fail("OOR-top: M0 decerr=1 expected, got ${dut.m0_decerr}")
+        assert dut.m1_decerr == 1
+            else fail("OOR-top: M1 decerr=1 expected, got ${dut.m1_decerr}")
+
+        // ── valid=0 squelches decerr (no transaction) ───────────────────
+        // Same OOR addr, but valid=0 → decerr must be 0 (no access in flight).
+        dut.valid = 0
+        dut.addr = 0x40000000
+        wait 1 cycle
+        assert dut.m0_decerr == 0
+            else fail("valid=0: M0 decerr must squelch to 0, got ${dut.m0_decerr}")
+        assert dut.m1_decerr == 0
+            else fail("valid=0: M1 decerr must squelch to 0, got ${dut.m1_decerr}")
+
+        log(info, "PASS: Nic400SparseDemo — per-master distinct reachability (S0/S1/S2/S3/OOR/valid-gate) all OK")
+    end run
+end impl Nic400SparseDemoTest
