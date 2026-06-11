@@ -16933,6 +16933,68 @@ fn test_sim_codegen_declares_typed_module_params_used_by_lowered_thread_body() {
 }
 
 #[test]
+fn test_sim_codegen_inst_override_of_derived_default_param_wins_in_define() {
+    // Regression (NIC-400 sparse-connectivity decoder): a sub-module param
+    // whose *default* references another param (`CONNECT_MASK = (1 << N) - 1`)
+    // but which is EXPLICITLY OVERRIDDEN at the inst site must bake the
+    // overridden value — not the default expression's value — into the sim
+    // backend's `#define`.
+    //
+    // Pre-fix: monomorphize_module preserved the derived-default expression
+    // for any param referencing other params, even when the inst site
+    // overrode it. The SV backend masked this (it re-applies the override as
+    // an inst param), but the C++ sim backend emits `#define CONNECT_MASK
+    // <default>`, so the override was silently dropped — two instances with
+    // different masks both evaluated against the default value. The two
+    // backends then diverged under harc --check-backends.
+    let source = r#"
+        module Sub
+          param N: const = 4;
+          param MASK: const = (1 << N) - 1;
+          port sel:  in  UInt<2>;
+          port hit:  out Bool;
+          let bit_v: UInt<1> = ((MASK >> sel) & 1).trunc<1>();
+          comb
+            hit = (bit_v == 1);
+          end comb
+        end module Sub
+
+        module Top
+          port sel:   in  UInt<2>;
+          port hit_a: out Bool;
+          port hit_b: out Bool;
+          inst a: Sub
+            param N    = 4;
+            param MASK = 3;
+            sel <- sel;
+            hit -> hit_a;
+          end inst a
+          inst b: Sub
+            param N    = 4;
+            param MASK = 6;
+            sel <- sel;
+            hit -> hit_b;
+          end inst b
+        end module Top
+    "#;
+    let cpp = compile_to_sim_h(source, false);
+    // The two specialized variants must carry their OVERRIDDEN mask values,
+    // not the derived default `(1 << 4) - 1 == 15`.
+    assert!(
+        cpp.contains("#define MASK 3ULL"),
+        "overridden derived-default param must bake the override (3), not the default (15):\n{cpp}"
+    );
+    assert!(
+        cpp.contains("#define MASK 6ULL"),
+        "second instance's overridden mask (6) must also be baked, not the default (15):\n{cpp}"
+    );
+    assert!(
+        !cpp.contains("#define MASK 15ULL"),
+        "the derived default (15) must NOT leak into either specialized sim header:\n{cpp}"
+    );
+}
+
+#[test]
 fn test_sim_codegen_bit_slice_lhs_compiles_and_uses_param_width() {
     // Regression: pre-fix, `name[hi:lo] = val` in a seq block lowered to
     // the read-side bit-slice form `((name >> lo) & MASK) = val`, an

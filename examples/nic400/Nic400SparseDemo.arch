@@ -1,0 +1,63 @@
+// Sparse-connectivity demonstrator: two masters, one global address map, two
+// DIFFERENT views of it via per-instance CONNECT_MASK.
+//
+// Global map (NUM_SLAVES=4, REGION_BITS=28, 256 MiB each):
+//   slave 0 : 0x0000_0000 .. 0x0FFF_FFFF
+//   slave 1 : 0x1000_0000 .. 0x1FFF_FFFF
+//   slave 2 : 0x2000_0000 .. 0x2FFF_FFFF
+//   slave 3 : 0x3000_0000 .. 0x3FFF_FFFF
+//   >= 0x4000_0000 : out-of-range
+//
+// Per-master connectivity:
+//   M0  CONNECT_MASK = 0b0011 = 0x3  → reaches slaves {0, 1}
+//   M1  CONNECT_MASK = 0b0110 = 0x6  → reaches slaves {1, 2}
+//
+// Both decoders see the SAME addr/valid, but produce different reachability:
+//   - addr in slave-0 region : M0 decerr=0, M1 decerr=1  (M1 not connected to S0)
+//   - addr in slave-1 region : M0 decerr=0, M1 decerr=0  (both connected to S1)
+//   - addr in slave-2 region : M0 decerr=1, M1 decerr=0  (M0 not connected to S2)
+//   - addr in slave-3 region : M0 decerr=1, M1 decerr=1  (neither connected, in-map hole)
+//   - addr >= 0x4000_0000    : M0 decerr=1, M1 decerr=1  (out-of-range for both)
+// slave_idx is the same on both ports (same global decode); only decerr differs.
+//
+// Pure combinational — instantiates two Nic400SparseAddrDecode copies.
+module Nic400SparseDemo
+  param NUM_SLAVES:  const = 4;
+  param REGION_BITS: const = 28;
+  param ADDR_W:      const = 32;
+  param NS_W:        const = $clog2(NUM_SLAVES);
+
+  port addr:  in  UInt<ADDR_W>;
+  port valid: in  Bool;
+
+  // M0 view
+  port m0_slave_idx: out UInt<NS_W>;
+  port m0_decerr:    out Bool;
+  // M1 view
+  port m1_slave_idx: out UInt<NS_W>;
+  port m1_decerr:    out Bool;
+
+  // M0 reaches slaves {0,1}.
+  inst dec_m0: Nic400SparseAddrDecode
+    param NUM_SLAVES   = NUM_SLAVES;
+    param REGION_BITS  = REGION_BITS;
+    param ADDR_W       = ADDR_W;
+    param CONNECT_MASK = 0x3;
+    addr      <- addr;
+    valid     <- valid;
+    slave_idx -> m0_slave_idx;
+    decerr    -> m0_decerr;
+  end inst dec_m0
+
+  // M1 reaches slaves {1,2}.
+  inst dec_m1: Nic400SparseAddrDecode
+    param NUM_SLAVES   = NUM_SLAVES;
+    param REGION_BITS  = REGION_BITS;
+    param ADDR_W       = ADDR_W;
+    param CONNECT_MASK = 0x6;
+    addr      <- addr;
+    valid     <- valid;
+    slave_idx -> m1_slave_idx;
+    decerr    -> m1_decerr;
+  end inst dec_m1
+end module Nic400SparseDemo
