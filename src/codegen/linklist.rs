@@ -653,9 +653,10 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.line("end");
             }
-            _ => {
-                // Unknown op — emit a comment placeholder
-                self.line(&format!("// op `{on}` — not implemented"));
+            other => {
+                unreachable!(
+                    "unsupported linklist op `{other}` should have been rejected by typecheck"
+                );
             }
         }
         self.line("");
