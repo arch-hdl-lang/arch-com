@@ -993,12 +993,12 @@ end bus BusAxiLite
 - `ready_only` — pull model; rare
 - `valid_stall` — inverted backpressure; pipeline interlocks
 - `req_ack_4phase` — async return-to-zero handshake
-- `req_ack_2phase` — async NRZ handshake (Tier-2 SVA deferred)
+- `req_ack_2phase` — async NRZ handshake
 
 **Free correctness layers**:
-- **Tier 2 SVA**: `arch build` auto-emits protocol assertions (`_auto_hs_<port>_<ch>_<rule>`) for `valid_ready` / `valid_stall` / `req_ack_4phase`. Consumed by Verilator `--assert` and EBMC.
-- **Tier 1.5 producer bug**: `arch sim --inputs-start-uninit` warns only when valid is asserted and payload was never `set_`'d.
-- **Tier 1.5 consumer bug**: `arch check` warns when a payload is read outside `if <port>.<valid>` (or AND-conjunct of that).
+- **Tier 2 SVA**: `arch build` auto-emits protocol assertions (`_auto_hs_<port>_<ch>_<rule>`) for `valid_ready` / `valid_stall` / `req_ack_4phase` / `req_ack_2phase`. Consumed by Verilator `--assert` and EBMC.
+- **Tier 1.5 producer bug**: `arch sim --inputs-start-uninit` warns only when the variant's payload guard is active and payload was never `set_`'d.
+- **Tier 1.5 consumer bug**: `arch check` warns when a payload is read outside the variant guard: `if <port>.<valid>`, `if <port>.<req>`, or `if <port>.<req> != <port>.<ack>` for `req_ack_2phase`.
 
 Full spec: `doc/ARCH_HDL_Specification.md` §18a.
 
