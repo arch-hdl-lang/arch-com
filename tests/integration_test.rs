@@ -2931,6 +2931,37 @@ end pipeline RegPipe
 }
 
 #[test]
+fn test_pipeline_sim_codegen_sign_extends_sext() {
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline SextPipe
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port y: out SInt<16>;
+  stage S
+    reg held: SInt<16> reset rst => 0;
+    seq on clk rising
+      held <= a.sext<16>();
+    end seq
+    comb
+      y = held;
+    end comb
+  end stage S
+end pipeline SextPipe
+"#;
+    let sim = compile_to_sim_h(source, false);
+    assert!(
+        sim.contains("((a >> 7) & 1)")
+            && sim.contains("~((uint16_t)0) << 8")
+            && sim.contains("(uint16_t)(a)"),
+        "pipeline simulator .sext<16>() should sign-extend from bit 7:\n{sim}"
+    );
+}
+
+#[test]
 fn test_pipeline_rejects_comb_input_to_output_passthrough() {
     // `y = a` drives an output straight from an input — direct comb passthrough.
     let source = r#"
