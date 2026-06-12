@@ -978,15 +978,26 @@ end regfile Rf1
     let rf_path = dir.join("Rf1.arch");
     fs::write(&rf_path, regfile).unwrap();
     let b1 = std::process::Command::new(arch_bin)
-        .arg("build").arg(&rf_path).arg("-o").arg(dir.join("Rf1.sv"))
-        .output().expect("build regfile");
-    assert!(b1.status.success(), "regfile build failed: {}",
-            String::from_utf8_lossy(&b1.stderr));
-    assert!(dir.join("Rf1.archi").exists(), "Rf1.archi should have been written");
+        .arg("build")
+        .arg(&rf_path)
+        .arg("-o")
+        .arg(dir.join("Rf1.sv"))
+        .output()
+        .expect("build regfile");
+    assert!(
+        b1.status.success(),
+        "regfile build failed: {}",
+        String::from_utf8_lossy(&b1.stderr)
+    );
+    assert!(
+        dir.join("Rf1.archi").exists(),
+        "Rf1.archi should have been written"
+    );
 
     // 2) Build a combined file that DEFINES Rf1 in-source AND insts it, in the
     //    same dir as the stale Rf1.archi. The construct must emit exactly once.
-    let combined = format!("{regfile}
+    let combined = format!(
+        "{regfile}
 module Top
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
@@ -1006,15 +1017,23 @@ module Top
     d = dw;
   end comb
 end module Top
-");
+"
+    );
     let top_path = dir.join("Top.arch");
     fs::write(&top_path, combined).unwrap();
     let sv_out = dir.join("Top.sv");
     let b2 = std::process::Command::new(arch_bin)
-        .arg("build").arg(&top_path).arg("-o").arg(&sv_out)
-        .output().expect("build combined");
-    assert!(b2.status.success(), "combined build failed: {}",
-            String::from_utf8_lossy(&b2.stderr));
+        .arg("build")
+        .arg(&top_path)
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build combined");
+    assert!(
+        b2.status.success(),
+        "combined build failed: {}",
+        String::from_utf8_lossy(&b2.stderr)
+    );
     let sv = fs::read_to_string(&sv_out).unwrap();
     let n = sv.matches("\nmodule Rf1").count() + sv.starts_with("module Rf1") as usize;
     assert_eq!(
@@ -1221,8 +1240,14 @@ fn test_var_index_vec_bus_comb_lowering_matches_backends() {
         include_str!("backend_equiv/Fx3bVarIndexVecBusBug.arch")
     );
     let sv = compile_to_sv(source);
-    assert!(sv.contains("o_valid[sel]"), "SV must select lane `sel`:\n{sv}");
-    assert!(sv.contains("o_data[sel]"), "SV must select lane `sel`:\n{sv}");
+    assert!(
+        sv.contains("o_valid[sel]"),
+        "SV must select lane `sel`:\n{sv}"
+    );
+    assert!(
+        sv.contains("o_data[sel]"),
+        "SV must select lane `sel`:\n{sv}"
+    );
     assert!(
         !sv.contains("o[sel]"),
         "SV must not leave the un-flattened Vec<Bus> index `o[sel]`:\n{sv}"
@@ -1249,7 +1274,10 @@ fn test_var_index_vec_bus_thread_lowering_matches_backends() {
     let sv = compile_to_sv(source);
     // Per-lane flattened sub-module input ports + the runtime lane mux.
     for lane in ["o_0_ready", "o_1_ready", "o_2_ready", "o_3_ready"] {
-        assert!(sv.contains(lane), "SV thread sub-module needs port `{lane}`:\n{sv}");
+        assert!(
+            sv.contains(lane),
+            "SV thread sub-module needs port `{lane}`:\n{sv}"
+        );
     }
     assert!(
         !sv.contains("o[sel]"),
@@ -1341,8 +1369,15 @@ fn test_var_index_vec_bus_backend_equivalence_e2e() {
         let tb_abs = std::fs::canonicalize(tb).expect("tb path");
         let verilate = std::process::Command::new("verilator")
             .args([
-                "--cc", "--exe", "--build", "-Wno-WIDTH", "-Wno-UNOPTFLAT",
-                "-Wno-DECLFILENAME", "--top-module", top, "-Mdir",
+                "--cc",
+                "--exe",
+                "--build",
+                "-Wno-WIDTH",
+                "-Wno-UNOPTFLAT",
+                "-Wno-DECLFILENAME",
+                "--top-module",
+                top,
+                "-Mdir",
             ])
             .arg(&obj_dir)
             .arg(&sv_out)
@@ -1407,7 +1442,10 @@ fn test_var_index_vec_bus_wire_lowering_matches_backends() {
         end module M
     ";
     let sv = compile_to_sv(source);
-    assert!(sv.contains("w_v[sel]") && sv.contains("w_d[sel]"), "SV must slice the packed wire:\n{sv}");
+    assert!(
+        sv.contains("w_v[sel]") && sv.contains("w_d[sel]"),
+        "SV must slice the packed wire:\n{sv}"
+    );
 
     let sim = compile_to_sim_h(source, false);
     assert!(
@@ -1428,7 +1466,10 @@ fn test_var_index_vec_bus_thread_write_lowering_matches_backends() {
     let source = include_str!("backend_equiv/Fx3bVarIndexVecBusThreadWrite.arch");
     let sv = compile_to_sv(source);
     for lane in ["o_0_valid", "o_1_valid", "o_2_valid", "o_3_valid"] {
-        assert!(sv.contains(lane), "SV thread sub-module must drive lane `{lane}`:\n{sv}");
+        assert!(
+            sv.contains(lane),
+            "SV thread sub-module must drive lane `{lane}`:\n{sv}"
+        );
     }
     assert!(
         sv.contains("if (sel == 0)") && sv.contains("o_0_valid <= 1'b1"),
@@ -1499,8 +1540,15 @@ fn test_var_index_vec_bus_thread_write_backend_equivalence_e2e() {
     let tb_abs = std::fs::canonicalize("tests/backend_equiv/VselWr_vl_tb.cpp").expect("tb path");
     let verilate = std::process::Command::new("verilator")
         .args([
-            "--cc", "--exe", "--build", "-Wno-WIDTH", "-Wno-UNOPTFLAT",
-            "-Wno-DECLFILENAME", "--top-module", "VselWr", "-Mdir",
+            "--cc",
+            "--exe",
+            "--build",
+            "-Wno-WIDTH",
+            "-Wno-UNOPTFLAT",
+            "-Wno-DECLFILENAME",
+            "--top-module",
+            "VselWr",
+            "-Mdir",
         ])
         .arg(&obj_dir)
         .arg(&sv_out)
@@ -6328,12 +6376,14 @@ fn test_vec_bus_param_forward_no_stack_overflow() {
     //
     // Both shapes must now build to Verilator-clean SV (lint verified in CI
     // via the standing repro; here we assert the structural SV shape).
-    let source = include_str!(
-        "regression/issues/vec_bus_param_forward/VecBusParamForward.arch"
-    );
+    let source = include_str!("regression/issues/vec_bus_param_forward/VecBusParamForward.arch");
     let sv = compile_to_sv(source);
     // All three modules emit.
-    for m in ["module CrashSink", "module CrashWhole", "module CrashPerElem"] {
+    for m in [
+        "module CrashSink",
+        "module CrashWhole",
+        "module CrashPerElem",
+    ] {
         assert!(sv.contains(m), "expected `{m}` in SV:\n{sv}");
     }
     // Whole-vector forward packs each bus signal whole.
@@ -10270,6 +10320,44 @@ end module Top
 }
 
 #[test]
+fn test_tlm_connect_bus_shape_mismatch_diagnostic() {
+    let msg = tlm_connect_elaborate_error(
+        r#"
+bus BusRw
+  param READ: const = 1;
+  param WRITE: const = 1;
+  generate_if READ
+    ar_valid: out Bool;
+  end generate_if
+  generate_if WRITE
+    aw_valid: out Bool;
+  end generate_if
+end bus BusRw
+use BusRw;
+module Initiator
+  port m: initiator BusRw<WRITE=0>;
+end module Initiator
+module Target
+  port s: target BusRw<READ=0>;
+end module Target
+module Top
+  inst i: Initiator
+  end inst i
+  inst t: Target
+  end inst t
+  connect i.m -> t.s;
+end module Top
+"#,
+    );
+    assert!(
+        msg.contains("TLM connect bus-shape mismatch")
+            && msg.contains("ar_valid")
+            && msg.contains("aw_valid"),
+        "expected bus-shape mismatch diagnostic, got: {msg}"
+    );
+}
+
+#[test]
 fn test_tlm_connect_duplicate_explicit_connection_diagnostic() {
     let msg = tlm_connect_elaborate_error(
         r#"
@@ -10328,7 +10416,8 @@ end module Top
     );
     assert!(
         msg.contains("requires target inst `t0` to override `param SLAVE_START_ADDR = ...;`")
-            && msg.contains("requires target inst `t1` to override `param SLAVE_START_ADDR = ...;`"),
+            && msg
+                .contains("requires target inst `t1` to override `param SLAVE_START_ADDR = ...;`"),
         "expected missing-address-map-param diagnostic, got: {msg}"
     );
 }
@@ -10360,7 +10449,8 @@ end module Top
     );
     assert!(
         msg.contains("requires target inst `t_0` to override `param SLAVE_START_ADDR = ...;`")
-            && msg.contains("requires target inst `t_1` to override `param SLAVE_START_ADDR = ...;`"),
+            && msg
+                .contains("requires target inst `t_1` to override `param SLAVE_START_ADDR = ...;`"),
         "expected missing-address-map-param-after-generate diagnostic, got: {msg}"
     );
 }
@@ -17674,9 +17764,7 @@ end module Dut
 
     // Round-trip: parse the emitted `.archi` module stub back and confirm the
     // BusPortInfo.params survived (so harc / re-emit see the same override).
-    let rt_src = format!(
-        "domain SysDomain\n  freq_mhz: 100\nend domain SysDomain\n\n{body}"
-    );
+    let rt_src = format!("domain SysDomain\n  freq_mhz: 100\nend domain SysDomain\n\n{body}");
     let rt_tokens = lexer::tokenize(&rt_src).expect("re-lex emitted .archi");
     let mut rt_parser = Parser::new(rt_tokens, &rt_src);
     let rt_parsed = rt_parser
@@ -17690,11 +17778,7 @@ end module Dut
     let arch::ast::Item::Module(m) = rt_dut else {
         unreachable!()
     };
-    let s_port = m
-        .ports
-        .iter()
-        .find(|p| p.name.name == "s")
-        .expect("port s");
+    let s_port = m.ports.iter().find(|p| p.name.name == "s").expect("port s");
     let bi = s_port.bus_info.as_ref().expect("s is a bus port");
     assert!(
         bi.params.iter().any(|pa| pa.name.name == "WRITE"),
@@ -21506,11 +21590,18 @@ fn test_fifo_inst_does_not_close_comb_cycle() {
     "#;
     let wd = whole_design_from(source);
     assert_eq!(
-        wd.total_sccs, 0,
+        wd.total_sccs,
+        0,
         "FIFO inst must not manufacture a comb cycle; SCCs found: {:?}",
-        wd.sccs.iter().map(|s| &s.owning_modules).collect::<Vec<_>>()
+        wd.sccs
+            .iter()
+            .map(|s| &s.owning_modules)
+            .collect::<Vec<_>>()
     );
-    assert_eq!(wd.suppressed, 0, "no pragma present, nothing should be suppressed");
+    assert_eq!(
+        wd.suppressed, 0,
+        "no pragma present, nothing should be suppressed"
+    );
 }
 
 #[test]
@@ -21674,10 +21765,14 @@ fn test_arbiter_inst_comb_grant_loop_still_detected() {
     "#;
     let wd = whole_design_from(source);
     assert_eq!(
-        wd.total_sccs, 1,
+        wd.total_sccs,
+        1,
         "a real comb loop through an arbiter's combinational grant must be \
          detected (no under-approximation); SCCs found: {:?}",
-        wd.sccs.iter().map(|s| &s.owning_modules).collect::<Vec<_>>()
+        wd.sccs
+            .iter()
+            .map(|s| &s.owning_modules)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -21714,10 +21809,14 @@ fn test_bus_ready_eq_valid_is_not_a_false_comb_cycle() {
     "#;
     let wd = whole_design_from(source);
     assert_eq!(
-        wd.total_sccs, 0,
+        wd.total_sccs,
+        0,
         "a target's `ready = f(valid)` handshake must not be a comb cycle \
          (bus members are distinct nodes); SCCs found: {:?}",
-        wd.sccs.iter().map(|s| &s.owning_modules).collect::<Vec<_>>()
+        wd.sccs
+            .iter()
+            .map(|s| &s.owning_modules)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -21748,10 +21847,14 @@ fn test_real_comb_cycle_through_bus_member_still_detected() {
     "#;
     let wd = whole_design_from(source);
     assert_eq!(
-        wd.total_sccs, 1,
+        wd.total_sccs,
+        1,
         "a real comb loop through a single bus member must still be detected; \
          SCCs found: {:?}",
-        wd.sccs.iter().map(|s| &s.owning_modules).collect::<Vec<_>>()
+        wd.sccs
+            .iter()
+            .map(|s| &s.owning_modules)
+            .collect::<Vec<_>>()
     );
 }
 

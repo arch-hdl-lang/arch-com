@@ -732,13 +732,13 @@ fn rewrite_inst(
 // ── TLM/bus connect sugar ───────────────────────────────────────────────────
 
 fn lower_tlm_connects(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
-    let module_ports: HashMap<String, Vec<PortDecl>> = ast
+    let module_defs: HashMap<String, (Vec<ParamDecl>, Vec<PortDecl>)> = ast
         .items
         .iter()
         .filter_map(|item| match item {
-            Item::Module(m) => Some((m.name.name.clone(), m.ports.clone())),
-            Item::Fsm(f) => Some((f.name.name.clone(), f.ports.clone())),
-            Item::Pipeline(p) => Some((p.name.name.clone(), p.ports.clone())),
+            Item::Module(m) => Some((m.name.name.clone(), (m.params.clone(), m.ports.clone()))),
+            Item::Fsm(f) => Some((f.name.name.clone(), (f.params.clone(), f.ports.clone()))),
+            Item::Pipeline(p) => Some((p.name.name.clone(), (p.params.clone(), p.ports.clone()))),
             _ => None,
         })
         .collect();
@@ -755,7 +755,7 @@ fn lower_tlm_connects(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> 
     let mut items = Vec::new();
     for item in ast.items {
         match item {
-            Item::Module(m) => match lower_tlm_connects_in_module(m, &module_ports, &bus_defs) {
+            Item::Module(m) => match lower_tlm_connects_in_module(m, &module_defs, &bus_defs) {
                 Ok(m) => items.push(Item::Module(m)),
                 Err(mut errs) => errors.append(&mut errs),
             },
@@ -776,7 +776,7 @@ fn lower_tlm_connects(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> 
 
 fn lower_tlm_connects_in_module(
     mut m: ModuleDecl,
-    module_ports: &HashMap<String, Vec<PortDecl>>,
+    module_defs: &HashMap<String, (Vec<ParamDecl>, Vec<PortDecl>)>,
     bus_defs: &HashMap<String, BusDecl>,
 ) -> Result<ModuleDecl, Vec<CompileError>> {
     let connects: Vec<TlmConnectDecl> = m
@@ -836,7 +836,9 @@ fn lower_tlm_connects_in_module(
             &conn.from_inst,
             &conn.from_port,
             &inst_modules,
-            module_ports,
+            module_defs,
+            &inst_params,
+            bus_defs,
         ) {
             Ok(endpoint) => endpoint,
             Err(err) => {
@@ -844,7 +846,7 @@ fn lower_tlm_connects_in_module(
                 continue;
             }
         };
-        let (from_bus, from_persp, from_span) = from;
+        let (from_bus, from_persp, from_span, from_shape) = from;
 
         let mut target_infos = Vec::new();
         for target in &conn.targets {
@@ -852,10 +854,12 @@ fn lower_tlm_connects_in_module(
                 &target.to_inst,
                 &target.to_port,
                 &inst_modules,
-                module_ports,
+                module_defs,
+                &inst_params,
+                bus_defs,
             ) {
-                Ok((to_bus, to_persp, to_span)) => {
-                    target_infos.push((target, to_bus, to_persp, to_span));
+                Ok((to_bus, to_persp, to_span, to_shape)) => {
+                    target_infos.push((target, to_bus, to_persp, to_span, to_shape));
                 }
                 Err(err) => {
                     errors.push(err);
@@ -889,7 +893,7 @@ fn lower_tlm_connects_in_module(
             continue;
         }
         let mut bus_mismatch = false;
-        for (target, to_bus, _, _) in &target_infos {
+        for (target, to_bus, _, _, _) in &target_infos {
             if from_bus != *to_bus {
                 errors.push(CompileError::general(
                     &format!(
@@ -907,8 +911,29 @@ fn lower_tlm_connects_in_module(
         if bus_mismatch {
             continue;
         }
+        let mut bus_shape_mismatch = false;
+        for (target, _, _, _, to_shape) in &target_infos {
+            if from_shape != *to_shape {
+                errors.push(CompileError::general(
+                    &format!(
+                        "TLM connect bus-shape mismatch: `{}.{}` exposes {}, but `{}.{}` exposes {}",
+                        conn.from_inst.name,
+                        conn.from_port.name,
+                        format_tlm_connect_shape(&from_shape),
+                        target.to_inst.name,
+                        target.to_port.name,
+                        format_tlm_connect_shape(to_shape)
+                    ),
+                    conn.span,
+                ));
+                bus_shape_mismatch = true;
+            }
+        }
+        if bus_shape_mismatch {
+            continue;
+        }
         let mut direction_mismatch = false;
-        for (target, _, to_persp, to_span) in &target_infos {
+        for (target, _, to_persp, to_span, _) in &target_infos {
             if from_persp != BusPerspective::Initiator || *to_persp != BusPerspective::Target {
                 errors.push(CompileError::general(
                     &format!(
@@ -1705,15 +1730,17 @@ fn tlm_connect_endpoint_bus(
     inst: &Ident,
     port: &Ident,
     inst_modules: &HashMap<String, String>,
-    module_ports: &HashMap<String, Vec<PortDecl>>,
-) -> Result<(String, BusPerspective, Span), CompileError> {
+    module_defs: &HashMap<String, (Vec<ParamDecl>, Vec<PortDecl>)>,
+    inst_params: &HashMap<String, Vec<ParamAssign>>,
+    bus_defs: &HashMap<String, BusDecl>,
+) -> Result<(String, BusPerspective, Span, TlmConnectShape), CompileError> {
     let Some(module_name) = inst_modules.get(&inst.name) else {
         return Err(CompileError::general(
             &format!("unknown TLM connect instance `{}`", inst.name),
             inst.span,
         ));
     };
-    let Some(ports) = module_ports.get(module_name) else {
+    let Some((module_params, ports)) = module_defs.get(module_name) else {
         return Err(CompileError::general(
             &format!(
                 "TLM connect instance `{}` has construct type `{}` whose ports are not supported by connect",
@@ -1740,7 +1767,84 @@ fn tlm_connect_endpoint_bus(
             p.span,
         ));
     };
-    Ok((bi.bus_name.name.clone(), bi.perspective, p.span))
+    let Some(bus_decl) = bus_defs.get(&bi.bus_name.name) else {
+        return Err(CompileError::general(
+            &format!(
+                "TLM connect endpoint `{}.{}` references unknown bus `{}`",
+                inst.name, port.name, bi.bus_name.name
+            ),
+            p.span,
+        ));
+    };
+    let shape = tlm_connect_shape_for_port(
+        bus_decl,
+        bi,
+        module_params,
+        inst_params
+            .get(&inst.name)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
+    );
+    Ok((bi.bus_name.name.clone(), bi.perspective, p.span, shape))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TlmConnectShape {
+    count: Option<u64>,
+    signals: Vec<(String, String)>,
+}
+
+fn tlm_connect_shape_for_port(
+    bus_decl: &BusDecl,
+    bi: &BusPortInfo,
+    module_params: &[ParamDecl],
+    inst_param_assigns: &[ParamAssign],
+) -> TlmConnectShape {
+    let mut module_param_map: HashMap<String, &Expr> = module_params
+        .iter()
+        .filter_map(|p| p.default.as_ref().map(|d| (p.name.name.clone(), d)))
+        .collect();
+    for pa in inst_param_assigns {
+        module_param_map.insert(pa.name.name.clone(), &pa.value);
+    }
+
+    let mut bus_param_map = module_param_map.clone();
+    for p in &bus_decl.params {
+        if let Some(default) = p.default.as_ref() {
+            bus_param_map.insert(p.name.name.clone(), default);
+        }
+    }
+    for pa in &bi.params {
+        bus_param_map.insert(pa.name.name.clone(), &pa.value);
+    }
+
+    let count = bi
+        .count
+        .as_ref()
+        .and_then(|e| eval_const_expr_from_param_map_for_lower(e, &module_param_map));
+    let mut signals: Vec<(String, String)> = bus_effective_signals(bus_decl, &bus_param_map)
+        .into_iter()
+        .map(|(name, _dir, ty)| {
+            let subst = subst_type_expr_for_lower(&ty, &bus_param_map);
+            (name, format!("{subst:?}"))
+        })
+        .collect();
+    signals.sort();
+    TlmConnectShape { count, signals }
+}
+
+fn format_tlm_connect_shape(shape: &TlmConnectShape) -> String {
+    let count = shape
+        .count
+        .map(|n| format!("count={n}, "))
+        .unwrap_or_default();
+    let sigs = shape
+        .signals
+        .iter()
+        .map(|(name, ty)| format!("{name}:{ty}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{count}signals [{sigs}]")
 }
 
 // ── Generate expansion ────────────────────────────────────────────────────────
@@ -5288,6 +5392,57 @@ fn gen_if_cond_truthy(e: &Expr, params: &HashMap<String, &Expr>) -> bool {
             .get(name)
             .map_or(false, |v| gen_if_cond_truthy(v, params)),
         _ => false,
+    }
+}
+
+fn eval_const_expr_from_param_map_for_lower(
+    expr: &Expr,
+    params: &HashMap<String, &Expr>,
+) -> Option<u64> {
+    match &expr.kind {
+        ExprKind::Literal(LitKind::Dec(n))
+        | ExprKind::Literal(LitKind::Hex(n))
+        | ExprKind::Literal(LitKind::Bin(n))
+        | ExprKind::Literal(LitKind::Sized(_, n)) => Some(*n),
+        ExprKind::Bool(b) => Some(if *b { 1 } else { 0 }),
+        ExprKind::Ident(name) => params
+            .get(name)
+            .and_then(|v| eval_const_expr_from_param_map_for_lower(v, params)),
+        ExprKind::Unary(op, expr) => {
+            let v = eval_const_expr_from_param_map_for_lower(expr, params)?;
+            match op {
+                UnaryOp::Neg => Some((0u64).wrapping_sub(v)),
+                UnaryOp::Not => Some(if v == 0 { 1 } else { 0 }),
+                UnaryOp::BitNot => Some(!v),
+                _ => None,
+            }
+        }
+        ExprKind::Binary(op, lhs, rhs) => {
+            let a = eval_const_expr_from_param_map_for_lower(lhs, params)?;
+            let b = eval_const_expr_from_param_map_for_lower(rhs, params)?;
+            match op {
+                BinOp::Add => Some(a.wrapping_add(b)),
+                BinOp::Sub => Some(a.wrapping_sub(b)),
+                BinOp::Mul => Some(a.wrapping_mul(b)),
+                BinOp::Div => (b != 0).then_some(a / b),
+                BinOp::Mod => (b != 0).then_some(a % b),
+                BinOp::Shl => Some(a.wrapping_shl(b as u32)),
+                BinOp::Shr => Some(a.wrapping_shr(b as u32)),
+                BinOp::BitAnd => Some(a & b),
+                BinOp::BitOr => Some(a | b),
+                BinOp::BitXor => Some(a ^ b),
+                BinOp::Eq => Some((a == b) as u64),
+                BinOp::Neq => Some((a != b) as u64),
+                BinOp::Lt => Some((a < b) as u64),
+                BinOp::Lte => Some((a <= b) as u64),
+                BinOp::Gt => Some((a > b) as u64),
+                BinOp::Gte => Some((a >= b) as u64),
+                BinOp::And => Some((a != 0 && b != 0) as u64),
+                BinOp::Or => Some((a != 0 || b != 0) as u64),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 
