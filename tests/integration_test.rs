@@ -10572,6 +10572,38 @@ fn test_tlm_connect_decode_arch_sim_behavior() {
 }
 
 #[test]
+fn test_tlm_connect_decode_three_way_arch_sim_behavior() {
+    // The two-target decode fixture exercises only a single-bit route register
+    // and a two-way selector. A third target makes the synthesized
+    // response-route register multi-bit (route_w == 2) and forces the middle
+    // target through the priority-decode `raw && !any_previous` selector path.
+    // Each target returns a distinct tag, so a mis-route surfaces as a wrong
+    // value at the corresponding output port.
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/axi_dma_tlm/TlmConnectDecodeThree.arch")
+        .arg("--tb")
+        .arg("tests/axi_dma_tlm/tb_tlm_connect_decode_three.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for 3-way decoded connect");
+    assert!(
+        out.status.success(),
+        "3-way decoded connect sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS decoded connect 3way"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
 fn test_tlm_one_initiator_many_targets_router_arch_sim_behavior() {
     let td = tempfile::tempdir().expect("tempdir");
     let arch_bin = env!("CARGO_BIN_EXE_arch");
@@ -25748,6 +25780,61 @@ fn test_derived_param_override_reevaluates_and_creates_nested_variants() {
         sv.contains("module Leaf__PW_9"),
         "missing Leaf__PW_9 variant (derived param DB=W+4 must re-evaluate to 9 \
          under the W=5 override):\n{sv}"
+    );
+}
+
+#[test]
+fn test_variant_name_with_bit63_param_is_valid_identifier() {
+    // A `const` param value with bit 63 set is a negative `i64`. The variant
+    // name mangler used to format it directly, splicing a bare `-` into the
+    // emitted module/class name (`Leaf__TAG_-9223372036854775807`) — illegal in
+    // both SystemVerilog and C++ identifiers, so the design would emit
+    // uncompilable SV and the sim model would not build. The minus is now
+    // rendered as `n` (`TAG_n9223...`); positive values stay pure digits, so the
+    // mapping is collision-free. Two distinct high-bit variants exercise it.
+    let source = r#"
+module Leaf
+  param TAG: const = 64'h0;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port o: out UInt<64>;
+  reg r: UInt<64> reset rst => 0;
+  comb o = r; end comb
+  seq on clk rising
+    r <= TAG;
+  end seq
+end module Leaf
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port o0: out UInt<64>;
+  port o1: out UInt<64>;
+  inst l0: Leaf
+    param TAG = 64'h0000_0000_0000_0001;
+    clk <- clk; rst <- rst; o -> o0;
+  end inst l0
+  inst l1: Leaf
+    param TAG = 64'h8000_0000_0000_0001;
+    clk <- clk; rst <- rst; o -> o1;
+  end inst l1
+end module Top
+"#;
+    let sv = compile_to_sv(source);
+    // The high-bit variant must appear with an `n`-rendered suffix, never a
+    // bare `-` that would break the SV/C++ identifier.
+    assert!(
+        sv.contains("module Leaf__TAG_n9223372036854775807"),
+        "bit-63 param variant must mangle the leading minus to `n`:\n{sv}"
+    );
+    assert!(
+        !sv.contains("Leaf__TAG_-"),
+        "variant name must not contain a bare `-` (invalid identifier):\n{sv}"
+    );
+    // The low-bit variant is unchanged (pure digits).
+    assert!(
+        sv.contains("module Leaf__TAG_1"),
+        "positive param variant naming must be unchanged:\n{sv}"
     );
 }
 
