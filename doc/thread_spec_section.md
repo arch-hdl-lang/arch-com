@@ -290,8 +290,8 @@ end
 ### 20.8.5  Rules
 
 - **Exclusive drive**: signals driven inside a `lock` block must not be driven outside any `lock` on the same resource.  The compiler enforces this — these signals have no defined driver when no thread holds the lock (the mux defaults to zero or the last granted value, configurable).
-- **Multiple resources**: a thread may lock different resources in sequence or hold multiple locks simultaneously (nested `lock` blocks on different resources).
-- **Deadlock warning**: if two threads lock resources A and B in opposite order, the compiler emits a warning.  The compiler performs static lock-order analysis across all threads in the module.
+- **Multiple resources**: a thread may lock different resources in sequence, but nested `lock` blocks are a compile error.  The compiler currently does not support holding multiple resource locks simultaneously.
+- **Nested locks**: any `lock` block inside another `lock` block is rejected at elaboration time.  This keeps the implemented mutual-exclusion invariant simple and avoids deadlock-prone lock-order interactions.
 - **No lock in `comb`/`seq`**: `lock` is only valid inside `thread` blocks.
 
 ## 20.9  Interaction with Other Blocks
