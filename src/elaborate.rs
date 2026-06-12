@@ -454,11 +454,20 @@ fn find_varying_params(param_sets: &[HashMap<String, i64>]) -> Vec<String> {
 }
 
 fn make_variant_name(base: &str, params: &HashMap<String, i64>, varying: &[String]) -> String {
-    // Regular param suffixes (skip __ro__* synthetic reset-override keys)
+    // Regular param suffixes (skip __ro__* synthetic reset-override keys).
+    // A param value whose bit 63 is set is a negative `i64`, and formatting it
+    // directly would splice a bare `-` into the variant name — illegal in both
+    // SystemVerilog and C++ identifiers, so `arch build`/`arch sim` would emit
+    // an uncompilable `Mod__P_-9223372036854775807`. Render the leading minus as
+    // `n` (e.g. `P_-5` → `P_n5`); positive values are pure digits, so this stays
+    // collision-free while keeping the magnitude readable.
     let regular: Vec<String> = varying
         .iter()
         .filter(|k| !k.starts_with("__ro__"))
-        .map(|k| format!("{}_{}", k, params.get(k).copied().unwrap_or(0)))
+        .map(|k| {
+            let v = params.get(k).copied().unwrap_or(0);
+            format!("{}_{}", k, format!("{v}").replace('-', "n"))
+        })
         .collect();
 
     // Reset-override suffixes: group by port name for a clean suffix like rst_Async_Low
