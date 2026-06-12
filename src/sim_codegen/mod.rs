@@ -5308,8 +5308,8 @@ impl<'a> SimCodegen<'a> {
         // Variant guard map:
         //   valid_ready | valid_only | valid_stall  -> "valid"
         //   req_ack_4phase                          -> "req"
-        //   ready_only                              -> no guard (silent on all reads)
-        //   req_ack_2phase                          -> deferred (stateful toggle)
+        //   req_ack_2phase                          -> active transfer window (req != ack)
+        //   ready_only                              -> no guard (continuous payload)
         let mut payload_guards: HashMap<String, String> = HashMap::new();
         if self.inputs_start_uninit {
             for p in m.ports.iter() {
@@ -5318,15 +5318,24 @@ impl<'a> SimCodegen<'a> {
                     self.symbols.globals.get(&bi.bus_name.name).map(|(s, _)| s)
                     else { continue; };
                 for hs in &info.handshakes {
-                    let guard_sig = match hs.variant.name.as_str() {
-                        "valid_ready" | "valid_only" | "valid_stall" => "valid",
-                        "req_ack_4phase" => "req",
-                        _ => continue, // ready_only / req_ack_2phase: no guard
+                    let guard_expr = match hs.variant.name.as_str() {
+                        "valid_ready" | "valid_only" | "valid_stall" => {
+                            format!("{}_{}_valid", p.name.name, hs.name.name)
+                        }
+                        "req_ack_4phase" => {
+                            format!("{}_{}_req", p.name.name, hs.name.name)
+                        }
+                        "req_ack_2phase" => {
+                            format!(
+                                "({}_{}_req != {}_{}_ack)",
+                                p.name.name, hs.name.name, p.name.name, hs.name.name
+                            )
+                        }
+                        _ => continue, // ready_only: no producer-valid guard
                     };
-                    let guard_flat = format!("{}_{}_{}", p.name.name, hs.name.name, guard_sig);
                     for payload in &hs.payload_names {
                         let payload_flat = format!("{}_{}_{}", p.name.name, hs.name.name, payload.name);
-                        payload_guards.insert(payload_flat, guard_flat.clone());
+                        payload_guards.insert(payload_flat, guard_expr.clone());
                     }
                 }
             }

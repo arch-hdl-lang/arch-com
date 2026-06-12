@@ -236,9 +236,9 @@ fire:             ^
 
 Used in high-speed async links and off-chip serdes where transition
 count dominates power. Subtle to verify — the compiler's auto-emitted
-`X_req_toggle_exactly_once` assertion (Tier 2) catches the usual
-implementation bugs. Reference: same Sparsø & Furber, ch. 2,
-"Two-Phase (NRZ) Handshake."
+2-phase toggle-ordering assertions (Tier 2) catch the usual duplicate-req
+and spurious-ack implementation bugs. Reference: same Sparsø & Furber,
+ch. 2, "Two-Phase (NRZ) Handshake."
 
 ### Quick-pick guidance
 
@@ -333,14 +333,17 @@ patterns.
 D (runtime guard on uninit warning):
 - `valid_ready`, `valid_only`, `valid_stall` → guard on `<port>_<ch>_valid`
 - `req_ack_4phase` → guard on `<port>_<ch>_req`
+- `req_ack_2phase` → guard on active transfer window
+  (`<port>_<ch>_req != <port>_<ch>_ack`)
 - `ready_only` → no guard (no valid/req signal); warning fires unconditionally
-- `req_ack_2phase` → skipped; stateful toggle guard (`req ^ req_d`) deferred
 
 A (compile-time lint):
-- All variants that have a valid/req signal use it as the expected guard.
+- `valid_ready`, `valid_only`, `valid_stall`, and `req_ack_4phase` use the
+  level valid/req signal as the expected guard.
+- `req_ack_2phase` uses the active transfer window (`req != ack`) as the
+  expected guard.
 - `ready_only` is semantically "producer drives continuously" — reads are
   always legitimate, lint skips the variant.
-- `req_ack_2phase` skipped for the same stateful-guard reason.
 
 ### Implementation roadmap
 
@@ -372,8 +375,8 @@ A (compile-time lint):
   written-value reaching valid=1". Requires tracing comb/let chains
   from port back to reg; genuinely harder. Tier 2 SVA + EBMC already
   catch this class formally.
-- `req_ack_2phase` guard semantics. The guard is `req ^ req_d`, which
-  is a one-cycle-history expression. Doable but deferred.
+- `req_ack_2phase` guard semantics. The shipped guard is the active transfer
+  window (`req != ack`), which stays true while the payload is meaningful.
 - Auto-fix suggestions in the consumer-side lint. The lint message
   will include a pointer at the channel name; users manually add the
   `if` guard.
@@ -402,8 +405,10 @@ Effects:
   the classic "producer bug" that today only shows up as X-propagation in
   4-state simulation.
 
-For `req_ack_2phase`, the valid-qualifier is `X_req ^ X_req_d` (toggle edge)
-rather than `X_req`. The compiler encodes this; the user never writes it.
+For `req_ack_2phase`, the valid-qualifier is the active transfer window
+`X_req != X_ack` rather than the `X_req` level. The compiler encodes this
+for runtime uninit guarding, and the compile-time lint accepts the same
+condition in source.
 
 `ready_only` has no natural valid signal for guarding — payload is
 interpreted as "producer drives continuously, consumer decides when to
@@ -416,7 +421,8 @@ wrote no guard at all.
 - `valid_ready`: `_auto_hs_<port>_<ch>_valid_stable` — once valid is asserted it stays asserted until ready is observed.
 - `valid_stall`: `_auto_hs_<port>_<ch>_valid_stable_while_stall` — valid must not change while stall is asserted.
 - `req_ack_4phase`: `_auto_hs_<port>_<ch>_req_holds_until_ack` — req stays asserted until ack is observed.
-- `valid_only`, `ready_only`, `req_ack_2phase`: parsed + ports expand correctly, but no Tier-2 assertion emitted yet (valid_only has no back-signal; ready_only has no valid; 2-phase req-toggle needs `$past` tracking — deferred).
+- `req_ack_2phase`: `_auto_hs_<port>_<ch>_req_toggles_only_when_idle` and `_auto_hs_<port>_<ch>_ack_toggles_only_when_pending` — req may toggle only when no transfer is pending, and ack may toggle only after a req toggle.
+- `valid_only`, `ready_only`: parsed + ports expand correctly, but no Tier-2 protocol assertion is emitted because the variants lack a valid/backpressure signal pair to constrain.
 
 All properties are concurrent SVA wrapped in `synopsys translate_off/on`, using the module's first Clock port and `disable iff (<reset>)` on the first Reset port — same convention as `_auto_bound_*` / `_auto_div0_*`. Modules with no clock skip assertion emission (the ports still expand).
 
@@ -459,8 +465,10 @@ Assertions per variant:
   new transaction.
 
 ### `req_ack_2phase`
-- `X_req_toggle_exactly_once`: between any two `X_ack` toggles, `X_req`
-  toggles exactly once.
+- `X_req_toggles_only_when_idle`: `X_req` may toggle only when the previous
+  sampled `req`/`ack` state was idle (`req == ack`).
+- `X_ack_toggles_only_when_pending`: `X_ack` may toggle only when the previous
+  sampled `req`/`ack` state had a pending transfer (`req != ack`).
 
 Each assertion inherits the module's reset polarity and clock, same as
 `_auto_bound_*`. Labels follow the pattern `_auto_hs_<channel>_<rule>`.

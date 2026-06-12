@@ -21,6 +21,23 @@ pub enum Ty {
     Error,
 }
 
+#[derive(Clone)]
+pub(crate) enum HandshakePayloadGuard {
+    Field(String),
+    ReqAck2PhasePending { req_field: String, ack_field: String },
+}
+
+impl HandshakePayloadGuard {
+    fn display(&self, port: &str) -> String {
+        match self {
+            HandshakePayloadGuard::Field(field) => format!("{port}.{field}"),
+            HandshakePayloadGuard::ReqAck2PhasePending { req_field, ack_field } => {
+                format!("({port}.{req_field} != {port}.{ack_field})")
+            }
+        }
+    }
+}
+
 impl Ty {
     pub fn width(&self) -> Option<u32> {
         match self {
@@ -1343,7 +1360,7 @@ impl<'a> TypeChecker<'a> {
     ///   known false-positive and documented in the plan. If this becomes
     ///   noisy, extend by resolving single-ident let RHS before matching.
     /// - Variants with no valid signal (`ready_only`) are skipped entirely;
-    ///   `req_ack_2phase` skipped pending the stateful toggle guard design.
+    ///   `req_ack_2phase` uses the pending-transfer guard (`req != ack`).
 
     /// Check an `inst` declaration: validates port connections (unconnected
     /// inputs error, unconnected outputs warn), expands whole-bus connections
@@ -1563,8 +1580,8 @@ impl<'a> TypeChecker<'a> {
     }
     pub(crate) fn check_handshake_reads(&mut self, m: &ModuleDecl) {
         use std::collections::HashMap as Map;
-        // port_name -> Vec<(channel_name, guard_field_name, payload_field_names)>
-        let mut info: Map<String, Vec<(String, String, Vec<String>)>> = Map::new();
+        // port_name -> Vec<(channel_name, guard, payload_field_names)>
+        let mut info: Map<String, Vec<(String, HandshakePayloadGuard, Vec<String>)>> = Map::new();
         for p in &m.ports {
             let Some(ref bi) = p.bus_info else { continue; };
             let Some(crate::resolve::Symbol::Bus(binfo)) =
@@ -1572,8 +1589,16 @@ impl<'a> TypeChecker<'a> {
                 else { continue; };
             for hs in &binfo.handshakes {
                 let guard = match hs.variant.name.as_str() {
-                    "valid_ready" | "valid_only" | "valid_stall" => "valid",
-                    "req_ack_4phase" => "req",
+                    "valid_ready" | "valid_only" | "valid_stall" => {
+                        HandshakePayloadGuard::Field(format!("{}_valid", hs.name.name))
+                    }
+                    "req_ack_4phase" => {
+                        HandshakePayloadGuard::Field(format!("{}_req", hs.name.name))
+                    }
+                    "req_ack_2phase" => HandshakePayloadGuard::ReqAck2PhasePending {
+                        req_field: format!("{}_req", hs.name.name),
+                        ack_field: format!("{}_ack", hs.name.name),
+                    },
                     _ => continue,
                 };
                 let payloads: Vec<String> = hs.payload_names.iter()
@@ -1581,7 +1606,7 @@ impl<'a> TypeChecker<'a> {
                     .collect();
                 info.entry(p.name.name.clone()).or_default().push((
                     hs.name.name.clone(),
-                    format!("{}_{}", hs.name.name, guard),
+                    guard,
                     payloads.into_iter().map(|n| format!("{}_{}", hs.name.name, n)).collect(),
                 ));
             }
@@ -1614,7 +1639,7 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         stmt: &Stmt,
         enclosing: &[&Expr],
-        info: &std::collections::HashMap<String, Vec<(String, String, Vec<String>)>>,
+        info: &std::collections::HashMap<String, Vec<(String, HandshakePayloadGuard, Vec<String>)>>,
     ) {
         match stmt {
             Stmt::Assign(a) => {
@@ -1656,7 +1681,7 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         stmt: &Stmt,
         enclosing: &[&Expr],
-        info: &std::collections::HashMap<String, Vec<(String, String, Vec<String>)>>,
+        info: &std::collections::HashMap<String, Vec<(String, HandshakePayloadGuard, Vec<String>)>>,
     ) {
         match stmt {
             Stmt::Assign(a) => {
@@ -1711,17 +1736,17 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         expr: &Expr,
         enclosing: &[&Expr],
-        info: &std::collections::HashMap<String, Vec<(String, String, Vec<String>)>>,
+        info: &std::collections::HashMap<String, Vec<(String, HandshakePayloadGuard, Vec<String>)>>,
         default_span: Span,
     ) {
         match &expr.kind {
             ExprKind::FieldAccess(base, field) => {
                 if let ExprKind::Ident(port) = &base.kind {
                     if let Some(channels) = info.get(port) {
-                        for (ch_name, guard_field, payload_fields) in channels {
+                        for (ch_name, guard, payload_fields) in channels {
                             if payload_fields.iter().any(|pf| pf == &field.name) {
-                                let needs_guard = format!("{}.{}", port, guard_field);
-                                if !enclosing.iter().any(|c| cond_contains_access(c, port, guard_field)) {
+                                let needs_guard = guard.display(port);
+                                if !enclosing.iter().any(|c| cond_contains_guard(c, port, guard)) {
                                     let span = if expr.span.start == 0 && expr.span.end == 0 {
                                         default_span
                                     } else {
@@ -1746,7 +1771,7 @@ impl<'a> TypeChecker<'a> {
                 // Short-circuit `and` / `&`: the right-hand side only evaluates
                 // when the left-hand side is true, so `l` acts as an enclosing
                 // guard while we check `r`. Matches the recursive walk in
-                // `cond_contains_access` which also treats And/BitAnd as
+                // `cond_contains_guard` which also treats And/BitAnd as
                 // conjunction. `Or` does not short-circuit this way (either
                 // side can be the deciding operand), so leave it alone.
                 if matches!(op, BinOp::And | BinOp::BitAnd) {
@@ -1786,7 +1811,7 @@ impl<'a> TypeChecker<'a> {
                 // Then-branch only evaluates when `c` is true → treat `c` as
                 // an enclosing guard. Else-branch stays un-augmented because
                 // we can't easily synthesize `!c` as a condition the existing
-                // `cond_contains_access` walker understands (it only accepts
+                // `cond_contains_guard` walker understands (it only accepts
                 // positive AND-conjunctions of guard fields).
                 let mut then_encl: Vec<&Expr> = enclosing.to_vec();
                 then_encl.push(c);
@@ -6182,32 +6207,51 @@ impl<'a> TypeChecker<'a> {
     }
 }
 
-/// Returns true if the expression's top-level operation is a shift (`<<` or `>>`).
-/// Does `cond` contain a top-level AND-conjunct that is the field access
-/// `<port>.<guard_field>`? Used by the handshake-read lint to decide
-/// whether an enclosing `if` condition properly guards a payload read.
+/// Does `cond` contain a top-level AND-conjunct that is the channel's positive
+/// guard? Used by the handshake-read lint to decide whether an enclosing `if`
+/// condition properly guards a payload read.
 ///
 /// Accepted patterns:
-///   - `port.valid`                              (exact match)
-///   - `port.valid && X`                         (AND conjunct, either side)
-///   - `(port.valid) && X`                       (parens are transparent in AST)
+///   - `port.valid` / `port.req`                 (exact level guard)
+///   - `port.req != port.ack`                    (2-phase pending guard)
+///   - `guard && X`                              (AND conjunct, either side)
+///   - `(guard) && X`                            (parens are transparent in AST)
 /// Not accepted:
 ///   - `port.valid || X`                         (not guaranteed)
 ///   - `let g = port.valid; if g ...`            (v1 does not trace lets)
 ///   - `!port.valid` / else branch               (negation not modeled)
-fn cond_contains_access(cond: &Expr, port: &str, guard_field: &str) -> bool {
+fn cond_contains_guard(cond: &Expr, port: &str, guard: &HandshakePayloadGuard) -> bool {
     match &cond.kind {
         ExprKind::FieldAccess(base, field) => {
-            matches!(&base.kind, ExprKind::Ident(p) if p == port) && field.name == guard_field
+            matches!(guard, HandshakePayloadGuard::Field(guard_field)
+                if matches!(&base.kind, ExprKind::Ident(p) if p == port)
+                    && field.name == *guard_field)
+        }
+        ExprKind::Binary(BinOp::Neq, lhs, rhs) => {
+            matches!(guard, HandshakePayloadGuard::ReqAck2PhasePending { req_field, ack_field }
+                if (expr_is_port_field(lhs, port, req_field)
+                    && expr_is_port_field(rhs, port, ack_field))
+                    || (expr_is_port_field(lhs, port, ack_field)
+                        && expr_is_port_field(rhs, port, req_field)))
         }
         ExprKind::Binary(BinOp::And, lhs, rhs) | ExprKind::Binary(BinOp::BitAnd, lhs, rhs) => {
-            cond_contains_access(lhs, port, guard_field)
-                || cond_contains_access(rhs, port, guard_field)
+            cond_contains_guard(lhs, port, guard)
+                || cond_contains_guard(rhs, port, guard)
         }
         _ => false,
     }
 }
 
+fn expr_is_port_field(expr: &Expr, port: &str, field_name: &str) -> bool {
+    match &expr.kind {
+        ExprKind::FieldAccess(base, field) => {
+            matches!(&base.kind, ExprKind::Ident(p) if p == port) && field.name == field_name
+        }
+        _ => false,
+    }
+}
+
+/// Returns true if the expression's top-level operation is a shift (`<<` or `>>`).
 fn expr_is_shift(e: &Expr) -> bool {
     matches!(&e.kind, ExprKind::Binary(BinOp::Shl | BinOp::Shr, _, _))
 }

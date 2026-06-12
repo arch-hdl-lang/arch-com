@@ -4950,9 +4950,13 @@ Every module that has a bus port whose bus contains one or more handshakes gets 
   `valid_stall`        `_auto_hs_<port>_<ch>_valid_stable_while_stall` `(valid && stall) \|=> valid`
 
   `req_ack_4phase`     `_auto_hs_<port>_<ch>_req_holds_until_ack`     `(req && !ack) \|=> req`
+
+  `req_ack_2phase`     `_auto_hs_<port>_<ch>_req_toggles_only_when_idle` `(req != $past(req)) \|-> ($past(req) == $past(ack))`
+
+  `req_ack_2phase`     `_auto_hs_<port>_<ch>_ack_toggles_only_when_pending` `(ack != $past(ack)) \|-> ($past(req) != $past(ack))`
   --------------------------------------------------------------------------------------------------
 
-`valid_only`, `ready_only`, and `req_ack_2phase` parse + expand ports correctly but emit no Tier-2 assertion (no back-signal / no valid / stateful toggle guard deferred). Modules without a Clock port skip assertion emission.
+`valid_only` and `ready_only` parse + expand ports correctly but emit no Tier-2 assertion because they lack a valid/backpressure signal pair to constrain. Modules without a Clock port skip assertion emission.
 
 Verified end-to-end against Verilator 5.034 `--assert` (violating TB trips, clean TB silent) and EBMC 5.11 (unconstrained input → REFUTED; constrained wrapper → PROVED up to the chosen bound).
 
@@ -4960,9 +4964,9 @@ Verified end-to-end against Verilator 5.034 `--assert` (violating TB trips, clea
 
 Two stages catch the two bug classes adjacent to protocol timing:
 
-- **Producer bug — valid asserted, payload never driven.** At `arch sim` with `--inputs-start-uninit`, every flattened bus input has an uninit shadow bit (#23). For handshake payload signals, the shadow-bit warning is gated on the channel's valid/req — so the legitimate "TB hasn't driven valid yet, payload doesn't matter" case stays silent while the real bug ("valid high, payload never `set_`'d") fires.
+- **Producer bug — valid asserted, payload never driven.** At `arch sim` with `--inputs-start-uninit`, every flattened bus input has an uninit shadow bit (#23). For handshake payload signals, the shadow-bit warning is gated on the channel's valid/req, or on `req != ack` for `req_ack_2phase` — so the legitimate "TB hasn't driven valid yet, payload doesn't matter" case stays silent while the real bug ("valid high, payload never `set_`'d") fires.
 
-- **Consumer bug — payload read without checking valid.** At `arch check`, a compile-time lint warns when any read of `<port>.<payload_field>` is not inside an `if <port>.<valid_field>` scope. The guard is recognized as a direct field access or as an AND-conjunct of the if-condition; let-binding indirection is not yet traced (known false-positive source). `ready_only` is exempt from the lint (no valid signal exists).
+- **Consumer bug — payload read without checking valid.** At `arch check`, a compile-time lint warns when any read of `<port>.<payload_field>` is not inside the variant guard (`if <port>.<valid>`, `if <port>.<req>`, or `if <port>.<req> != <port>.<ack>` for `req_ack_2phase`). The guard is recognized directly or as an AND-conjunct of the if-condition; let-binding indirection is not yet traced (known false-positive source). `ready_only` is exempt from the lint (no valid signal exists).
 
 **18a.6 Conditional Payload Fields**
 
@@ -4998,7 +5002,6 @@ v1 scope: nested `generate_if` inside a payload branch is a compile error. A han
 
 - **Stateful protocols** (credit-based flow control, PCIe credit accounting). These are not variants of `handshake_channel`; they belong in the sibling `credit_channel` sub-construct (see §18c) because they imply the compiler owns counter + credit-return logic, not just port shape.
 - **Handshake at the module port level directly.** Valid only inside a `bus` body. A single-channel interface is expressed by a one-handshake bus declaration plus an ordinary bus port.
-- **`req_ack_2phase` Tier-2 assertions** — requires `$past` tracking; deferred.
 
 **18c. First-Class Sub-Construct: credit_channel (inside bus)**
 
@@ -5378,7 +5381,6 @@ The `$ARCH_STDLIB_PATH` env var overrides the compiler's install-relative search
 
 - **Stateful protocols** (credit-based flow control, PCIe credit accounting). These are not variants of `handshake`; they belong in a future `credit_channel` construct (not yet designed) because they imply the compiler owns counter + credit-return logic, not just port shape.
 - **Handshake at the module port level directly.** Valid only inside a `bus` body. A single-channel interface is expressed by a one-handshake bus declaration plus an ordinary bus port.
-- **`req_ack_2phase` Tier-2 assertions** — requires `$past` tracking; deferred.
 
 **19. Compile-Time Generation: generate**
 

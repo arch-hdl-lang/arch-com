@@ -3098,12 +3098,11 @@ impl<'a> Codegen<'a> {
     /// perspective-flip on the bus port doesn't change which signals
     /// participate in the property.
     ///
-    /// Current coverage (v1): valid_ready → valid-stable-until-ready,
+    /// Current coverage: valid_ready → valid-stable-until-ready,
     /// valid_stall → valid-stable-while-stalled, req_ack_4phase →
-    /// req-holds-until-ack. Other variants are parsed and their ports
-    /// expand correctly, but no auto-SVA is emitted for them yet
-    /// (valid_only has no back-signal; ready_only has no valid;
-    /// req_ack_2phase requires $past tracking that's deferred).
+    /// req-holds-until-ack, req_ack_2phase → req/ack toggle ordering.
+    /// valid_only and ready_only have no backpressure/producer-valid signal
+    /// pair to constrain, so they intentionally emit no protocol SVA.
     fn emit_handshake_asserts(&mut self, m: &ModuleDecl) {
         // Gather (port_name, HandshakeMeta) for each bus-typed port whose
         // bus declares one or more handshake channels.
@@ -3129,6 +3128,11 @@ impl<'a> Codegen<'a> {
                 TypeExpr::Reset(_, ResetLevel::Low) => format!("!{}", p.name.name),
                 _ => p.name.name.clone(),
             });
+        let any_emits = emissions.iter().any(|(_, hs)| matches!(
+            hs.variant.name.as_str(),
+            "valid_ready" | "valid_stall" | "req_ack_4phase" | "req_ack_2phase"
+        ));
+        if !any_emits { return; }
 
         self.line("// synopsys translate_off");
         self.line("// Auto-generated handshake protocol assertions (Tier 2)");
@@ -3187,6 +3191,13 @@ impl<'a> Codegen<'a> {
             .map(|r| format!(" disable iff ({r})"))
             .unwrap_or_default();
 
+        if !matches!(
+            variant,
+            "valid_ready" | "valid_stall" | "req_ack_4phase" | "req_ack_2phase"
+        ) {
+            return;
+        }
+
         // Vector channels (arbiter `handshake_channel name[N]: ...`) get a
         // genvar-indexed wrapper. The bus-body path always passes
         // `array_count = None`, so this branch is dead for buses and the
@@ -3236,8 +3247,16 @@ impl<'a> Codegen<'a> {
                     format!("({rq} && !{ak}) |=> {rq}"),
                     "req must stay asserted until ack");
             }
-            // Variants with no Tier-2 v1 property are silently skipped.
-            _ => {}
+            "req_ack_2phase" => {
+                let rq = sig("req"); let ak = sig("ack");
+                emit_property(self, "req_toggles_only_when_idle",
+                    format!("({rq} != $past({rq})) |-> ($past({rq}) == $past({ak}))"),
+                    "req may toggle only when no transfer is pending");
+                emit_property(self, "ack_toggles_only_when_pending",
+                    format!("({ak} != $past({ak})) |-> ($past({rq}) != $past({ak}))"),
+                    "ack may toggle only after a req toggle");
+            }
+            _ => unreachable!("unsupported handshake variant pre-filtered"),
         }
 
         if hs.array_count.is_some() {
@@ -3279,7 +3298,7 @@ impl<'a> Codegen<'a> {
         // emission would land).
         let any_emits = a.handshakes.iter().any(|hs| matches!(
             hs.variant.name.as_str(),
-            "valid_ready" | "valid_stall" | "req_ack_4phase"
+            "valid_ready" | "valid_stall" | "req_ack_4phase" | "req_ack_2phase"
         ));
         if !any_emits { return; }
 
