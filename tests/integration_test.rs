@@ -2962,6 +2962,44 @@ end pipeline SextPipe
 }
 
 #[test]
+fn test_pipeline_comb_match_emits_case() {
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline MatchPipe
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port sel: in UInt<2>;
+  port y: out UInt<8>;
+  stage S
+    reg sel_r: UInt<2> reset rst => 0;
+    seq on clk rising
+      sel_r <= sel;
+    end seq
+    comb
+      match sel_r
+        2'd0 => y = 8'h11;
+        2'd1 => y = 8'h22;
+        _ => y = 8'h33;
+      end match
+    end comb
+  end stage S
+end pipeline MatchPipe
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("case (s_sel_r)")
+            && sv.contains("2'd0: begin")
+            && sv.contains("y = 8'd17;")
+            && sv.contains("default: begin")
+            && sv.contains("y = 8'd51;")
+            && sv.contains("endcase"),
+        "pipeline comb match should emit a stage-aware case statement:\n{sv}"
+    );
+}
+
+#[test]
 fn test_pipeline_rejects_comb_input_to_output_passthrough() {
     // `y = a` drives an output straight from an input — direct comb passthrough.
     let source = r#"
