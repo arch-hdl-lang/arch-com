@@ -351,7 +351,7 @@ pub fn gen_module_thread_with_warnings(
             for (si, seg) in info.main_segs.iter().enumerate() {
                 header.push_str(&format!("      case {si}: {{\n"));
                 for cs in &seg.hold_comb {
-                    emit_comb_stmt(cs, &mut header, 8);
+                    emit_comb_stmt(cs, &mut header, 8)?;
                 }
                 header.push_str("        break;\n");
                 header.push_str("      }\n");
@@ -371,7 +371,7 @@ pub fn gen_module_thread_with_warnings(
             for (si, seg) in br.segs.iter().enumerate() {
                 header.push_str(&format!("        case {si}: {{\n"));
                 for cs in &seg.hold_comb {
-                    emit_comb_stmt(cs, &mut header, 10);
+                    emit_comb_stmt(cs, &mut header, 10)?;
                 }
                 header.push_str("          break;\n");
                 header.push_str("        }\n");
@@ -393,7 +393,7 @@ pub fn gen_module_thread_with_warnings(
     for item in &m.body {
         if let ModuleBodyItem::CombBlock(cb) = item {
             for cs in &cb.stmts {
-                emit_comb_stmt(cs, &mut header, 4);
+                emit_comb_stmt(cs, &mut header, 4)?;
             }
         }
     }
@@ -1292,26 +1292,32 @@ fn emit_seq_stmt(s: &crate::ast::Stmt, out: &mut String, indent: usize) -> Resul
     Ok(())
 }
 
-fn emit_comb_stmt(cs: &Stmt, out: &mut String, indent: usize) {
+fn emit_comb_stmt(cs: &Stmt, out: &mut String, indent: usize) -> Result<(), String> {
     let pad = " ".repeat(indent);
     match cs {
         Stmt::Assign(a) => {
-            let lhs = expr_to_cpp(&a.target).unwrap_or_else(|e| format!("/* err: {e} */"));
-            let rhs = expr_to_cpp(&a.value).unwrap_or_else(|e| format!("/* err: {e} */"));
+            let lhs = expr_to_cpp(&a.target)?;
+            let rhs = expr_to_cpp(&a.value)?;
             out.push_str(&format!("{pad}{lhs} = {rhs};\n"));
         }
         Stmt::IfElse(ie) => {
-            let cond = expr_to_cpp_bool(&ie.cond).unwrap_or_else(|e| format!("/* err: {e} */"));
+            let cond = expr_to_cpp_bool(&ie.cond)?;
             out.push_str(&format!("{pad}if ({cond}) {{\n"));
-            for s in &ie.then_stmts { emit_comb_stmt(s, out, indent + 2); }
+            for s in &ie.then_stmts { emit_comb_stmt(s, out, indent + 2)?; }
             if !ie.else_stmts.is_empty() {
                 out.push_str(&format!("{pad}}} else {{\n"));
-                for s in &ie.else_stmts { emit_comb_stmt(s, out, indent + 2); }
+                for s in &ie.else_stmts { emit_comb_stmt(s, out, indent + 2)?; }
             }
             out.push_str(&format!("{pad}}}\n"));
         }
-        _ => out.push_str(&format!("{pad}/* unsupported Stmt */\n")),
+        other => {
+            return Err(format!(
+                "comb stmt kind not yet supported by thread sim: {:?}",
+                std::mem::discriminant(other)
+            ));
+        }
     }
+    Ok(())
 }
 
 fn emit_seq_if(ie: &IfElseOf<ThreadStmt>, out: &mut String, indent: usize) -> Result<(), String> {

@@ -5166,6 +5166,10 @@ fn compile_to_sim_h(source: &str, inputs_start_uninit: bool) -> String {
 }
 
 fn compile_to_thread_sim_h(source: &str) -> String {
+    compile_to_thread_sim_result(source).expect("thread sim codegen")
+}
+
+fn compile_to_thread_sim_result(source: &str) -> Result<String, String> {
     let tokens = arch::lexer::tokenize(source).expect("lexer error");
     let mut parser = arch::parser::Parser::new(tokens, source);
     let parsed_ast = parser.parse_source_file().expect("parse error");
@@ -5178,7 +5182,8 @@ fn compile_to_thread_sim_h(source: &str) -> String {
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     checker.check().expect("type check error");
 
-    ast.items
+    let models = ast
+        .items
         .iter()
         .filter_map(|item| match item {
             arch::ast::Item::Module(m)
@@ -5186,16 +5191,19 @@ fn compile_to_thread_sim_h(source: &str) -> String {
                     .iter()
                     .any(|i| matches!(i, arch::ast::ModuleBodyItem::Thread(_))) =>
             {
-                Some(
-                    arch::sim_codegen::thread_sim::gen_module_thread(m, false, false, 1)
-                        .expect("thread sim codegen"),
-                )
+                Some(arch::sim_codegen::thread_sim::gen_module_thread(
+                    m, false, false, 1,
+                ))
             }
             _ => None,
         })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(models
+        .iter()
         .map(|m| format!("{}\n// ---\n{}", m.header, m.impl_))
         .collect::<Vec<_>>()
-        .join("\n// ---\n")
+        .join("\n// ---\n"))
 }
 
 /// Mirror of `compile_to_thread_sim_h` that also collects the warnings
@@ -17324,6 +17332,31 @@ fn test_thread_sim_rejects_wide_arithmetic_until_codegen_supports_it() {
         err.contains("currently supports wide (>64-bit) values only as direct copies")
             && err.contains("assignment value"),
         "expected a direct-copy-only diagnostic for unsupported wide arithmetic:\n{err}"
+    );
+}
+
+#[test]
+fn test_thread_sim_rejects_unsupported_comb_expr_before_cpp_codegen() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          port hi: in UInt<8>;
+          port lo: in UInt<8>;
+          port out: out UInt<16>;
+
+          thread on clk rising, rst high
+            out = {hi, lo};
+            wait 1 cycle;
+          end thread
+        end module M
+    "#;
+
+    let err = compile_to_thread_sim_result(source)
+        .expect_err("unsupported thread-sim expression should be a codegen error");
+    assert!(
+        err.contains("expr shape not supported"),
+        "expected unsupported expression diagnostic, got: {err}"
     );
 }
 
