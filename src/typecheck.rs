@@ -5692,11 +5692,7 @@ impl<'a> TypeChecker<'a> {
         for stage in &p.stages {
             for item in &stage.body {
                 if let ModuleBodyItem::CombBlock(cb) = item {
-                    for stmt in &cb.stmts {
-                        if let Stmt::Assign(a) = stmt {
-                            if let ExprKind::Ident(name) = &a.target.kind { driven.insert(name.clone()); }
-                        }
-                    }
+                    Self::collect_comb_stmt_targets(&cb.stmts, &mut driven);
                 }
                 if let ModuleBodyItem::Inst(inst) = item {
                     for conn in &inst.connections {

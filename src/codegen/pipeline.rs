@@ -847,18 +847,33 @@ impl<'a> Codegen<'a> {
                 }
                 Stmt::IfElse(ie) => {
                     for t in Self::collect_comb_targets(&ie.then_stmts) {
-                        if !targets.contains(&t) { targets.push(t); }
+                        if !targets.contains(&t) {
+                            targets.push(t);
+                        }
                     }
                     for t in Self::collect_comb_targets(&ie.else_stmts) {
-                        if !targets.contains(&t) { targets.push(t); }
+                        if !targets.contains(&t) {
+                            targets.push(t);
+                        }
                     }
                 }
-                Stmt::Match(_) | Stmt::Log(_) => {}
+                Stmt::Match(m) => {
+                    for arm in &m.arms {
+                        for t in Self::collect_comb_targets(&arm.body) {
+                            if !targets.contains(&t) {
+                                targets.push(t);
+                            }
+                        }
+                    }
+                }
+                Stmt::Log(_) => {}
                 Stmt::For(f) => {
                     for s in &f.body {
                         if let Stmt::Assign(a) = s {
                             if let ExprKind::Ident(name) = &a.target.kind {
-                                if !targets.contains(name) { targets.push(name.clone()); }
+                                if !targets.contains(name) {
+                                    targets.push(name.clone());
+                                }
                             }
                         }
                     }
@@ -980,6 +995,19 @@ impl<'a> Codegen<'a> {
                         return Some(ty);
                     }
                 }
+                Stmt::Match(m) => {
+                    for arm in &m.arms {
+                        if let Some(ty) = Self::resolve_comb_wire_type(
+                            target,
+                            &arm.body,
+                            current_stage_idx,
+                            stage_regs,
+                            stage_names,
+                        ) {
+                            return Some(ty);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -1012,17 +1040,77 @@ impl<'a> Codegen<'a> {
                 self.line(&format!("{} = {};", target, val));
             }
             Stmt::IfElse(ie) => {
-                self.emit_pipeline_comb_if_else(ie, current_prefix, current_stage_idx, stage_names, stage_regs, port_names, false);
+                self.emit_pipeline_comb_if_else(
+                    ie,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                    false,
+                );
             }
-            Stmt::Match(_) => {} // TODO if needed
+            Stmt::Match(m) => {
+                self.emit_pipeline_comb_match(
+                    m,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
+            }
             Stmt::Log(l) => { self.emit_log_stmt(l); }
             Stmt::For(f) => {
                 self.emit_for_loop_sv(f, |s, stmt| {
                     s.emit_pipeline_comb_stmt(stmt, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
                 });
             }
-                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
+            Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {
+                unreachable!("seq-only Stmt variant inside comb-context walker")
+            }
         }
+    }
+
+    fn emit_pipeline_comb_match(
+        &mut self,
+        m: &MatchStmt,
+        current_prefix: &str,
+        current_stage_idx: usize,
+        stage_names: &[&str],
+        stage_regs: &[Vec<(String, String, String)>],
+        port_names: &std::collections::HashSet<String>,
+    ) {
+        let scrut = self.emit_pipeline_stage_expr_str(
+            &m.scrutinee,
+            current_prefix,
+            current_stage_idx,
+            stage_names,
+            stage_regs,
+            port_names,
+        );
+        let u = if m.unique { "unique " } else { "" };
+        self.line(&format!("{}case ({})", u, scrut));
+        self.indent += 1;
+        for arm in &m.arms {
+            let pat = self.emit_pattern(&arm.pattern);
+            self.line(&format!("{}: begin", pat));
+            self.indent += 1;
+            for s in &arm.body {
+                self.emit_pipeline_comb_stmt(
+                    s,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
+            }
+            self.indent -= 1;
+            self.line("end");
+        }
+        self.indent -= 1;
+        self.line("endcase");
     }
 
     fn emit_pipeline_reg_if_else(
