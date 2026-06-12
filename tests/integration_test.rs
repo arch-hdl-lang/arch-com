@@ -4973,15 +4973,15 @@ fn test_handshake_tier2_valid_ready_assertion() {
 
 #[test]
 fn test_handshake_tier2_multiple_variants() {
-    // Tier 2: a bus with mixed variants should emit exactly the
-    // properties covered by v1 — valid_stable, valid_stable_while_stall,
-    // and req_holds_until_ack. Other variants are silently skipped.
+    // Tier 2: a bus with mixed variants should emit per-variant protocol
+    // properties where the variant has a temporal safety contract.
     let source = "
         bus BusMix
           handshake a: send kind: valid_ready  end handshake a
           handshake b: send kind: valid_only   end handshake b
           handshake c: send kind: valid_stall  end handshake c
           handshake d: send kind: req_ack_4phase end handshake d
+          handshake e: send kind: req_ack_2phase end handshake e
         end bus BusMix
 
         module Top
@@ -4993,6 +4993,7 @@ fn test_handshake_tier2_multiple_variants() {
             p.b_valid = 1'b0;
             p.c_valid = 1'b0;
             p.d_req   = 1'b0;
+            p.e_req   = 1'b0;
           end comb
         end module Top
     ";
@@ -5001,6 +5002,10 @@ fn test_handshake_tier2_multiple_variants() {
     assert!(sv.contains("_auto_hs_p_a_valid_stable"));
     assert!(sv.contains("_auto_hs_p_c_valid_stable_while_stall"));
     assert!(sv.contains("_auto_hs_p_d_req_holds_until_ack"));
+    assert!(sv.contains("_auto_hs_p_e_req_toggles_only_when_idle"));
+    assert!(sv.contains("_auto_hs_p_e_ack_toggles_only_when_pending"));
+    assert!(sv.contains("(p_e_req != $past(p_e_req)) |-> ($past(p_e_req) == $past(p_e_ack))"));
+    assert!(sv.contains("(p_e_ack != $past(p_e_ack)) |-> ($past(p_e_req) != $past(p_e_ack))"));
     // valid_only has no back-signal, so no property is emitted for `b`:
     assert!(!sv.contains("_auto_hs_p_b_"));
 }
@@ -5453,6 +5458,86 @@ fn test_handshake_tier15_req_ack_4phase_uses_req_as_guard() {
     assert!(
         cpp.contains("!_b_ch_payload_vinit && b_ch_req"),
         "req_ack_4phase payload should gate on b_ch_req:\n{cpp}"
+    );
+}
+
+#[test]
+fn test_handshake_tier15_req_ack_2phase_pending_guards_payload_lint() {
+    let source = "
+        bus BusRA2
+          handshake ch: send kind: req_ack_2phase
+            payload: UInt<16>;
+          end handshake ch
+        end bus BusRA2
+
+        use BusRA2;
+
+        module C
+          port b: target BusRA2;
+          port o: out UInt<16>;
+          comb
+            if b.ch_req != b.ch_ack
+              o = b.ch_payload;
+            else
+              o = 16'h0;
+            end if
+            b.ch_ack = b.ch_req;
+          end comb
+        end module C
+    ";
+    let ws = warnings_from(source);
+    assert!(
+        !ws.iter().any(|m| m.contains("handshake payload")),
+        "if b.ch_req != b.ch_ack should guard req_ack_2phase payload; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_handshake_tier15_req_ack_2phase_uninit_uses_pending_guard() {
+    use arch::sim_codegen::SimCodegen;
+    let source = "
+        bus BusRA2
+          handshake ch: send kind: req_ack_2phase
+            payload: UInt<16>;
+          end handshake ch
+        end bus BusRA2
+
+        use BusRA2;
+
+        module C
+          port b: target BusRA2;
+          port o: out UInt<16>;
+          comb
+            if b.ch_req != b.ch_ack
+              o = b.ch_payload;
+            else
+              o = 16'h0;
+            end if
+            b.ch_ack = b.ch_req;
+          end comb
+        end module C
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer error");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve error");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let (_warnings, overload_map) = checker.check().expect("type check error");
+    let sim = SimCodegen::new(&symbols, &ast, overload_map)
+        .check_uninit(true)
+        .inputs_start_uninit(true);
+    let models = sim.generate();
+    let cpp = models
+        .iter()
+        .find(|m| m.class_name == "VC")
+        .unwrap()
+        .impl_
+        .clone();
+    assert!(
+        cpp.contains("!_b_ch_payload_vinit && (b_ch_req != b_ch_ack)"),
+        "req_ack_2phase payload should gate on pending transfer:\n{cpp}"
     );
 }
 
