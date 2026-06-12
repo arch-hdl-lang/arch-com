@@ -4562,6 +4562,44 @@ end linklist BadList
 }
 
 #[test]
+fn test_linklist_unknown_op_is_type_error() {
+    let source = r#"
+linklist BadList
+  param DEPTH: const = 8;
+  param DATA: type = UInt<32>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  kind singly;
+  track tail: false;
+  track length: false;
+  op compact
+    latency: 1;
+    port req_valid: in Bool;
+  end op compact
+end linklist BadList
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "expected type error for unknown linklist op");
+    let errs = result.unwrap_err();
+    assert!(
+        errs.iter().any(|e| {
+            let s = e.to_string();
+            s.contains("linklist `BadList`: unknown op `compact`; known ops:")
+                && s.contains("insert_tail")
+                && s.contains("read_data")
+        }),
+        "expected unknown-op diagnostic with known ops list, got: {:?}",
+        errs
+    );
+}
+
+#[test]
 fn test_linklist_inst_in_module() {
     // PacketQueue wraps TaskQueue linklist as a push/pop FIFO interface.
     // Verifies that: linklist can be instantiated inside a module,
