@@ -29,12 +29,13 @@
 //   - Predicate / expression shapes: idents, literals, !/~, all binops
 
 use crate::ast::{
-    ArbiterPolicy, BinOp, CombAssign, Stmt, Direction, Expr, ExprKind, IfElseOf,
+    ArbiterPolicy, BinOp, CombAssign, ForRange, Stmt, Direction, Expr, ExprKind, IfElseOf,
     LitKind, ModuleBodyItem, ModuleDecl, RegAssign, ResetLevel,
     ParamDecl, ThreadBlock, ThreadStmt, TypeExpr, UnaryOp,
 };
 use crate::diagnostics::CompileWarning;
 use crate::sim_codegen::SimModel;
+use std::collections::HashSet;
 
 /// One segment of a thread, demarcated by a `wait` boundary.
 struct Segment {
@@ -132,6 +133,7 @@ pub fn gen_module_thread_with_warnings(
     if threads.is_empty() {
         return Err(format!("module `{}` has no thread blocks", class));
     }
+    validate_wide_thread_sim_exprs(m, &class)?;
     for (i, t) in threads.iter().enumerate() {
         if t.tlm_target.is_some() || t.implement.is_some() {
             return Err(format!("module `{}` thread #{}: TLM/implement not yet supported", class, i));
@@ -1440,6 +1442,263 @@ fn port_or_reg_cpp_ty_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> Result
 
 fn wide_words(bits: u64) -> u64 {
     (bits + 31) / 32
+}
+
+fn scalar_width_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> Option<u64> {
+    match ty {
+        TypeExpr::Bool | TypeExpr::Bit => Some(1),
+        TypeExpr::UInt(w) | TypeExpr::SInt(w) => Some(eval_const_with_params(w, params)),
+        _ => None,
+    }
+}
+
+fn collect_wide_scalar_names(m: &ModuleDecl) -> HashSet<String> {
+    let mut wide = HashSet::new();
+    for p in &m.ports {
+        if scalar_width_with_params(&p.ty, &m.params).is_some_and(|w| w > 64) {
+            wide.insert(p.name.name.clone());
+        }
+    }
+    for item in &m.body {
+        match item {
+            ModuleBodyItem::RegDecl(r) => {
+                if scalar_width_with_params(&r.ty, &m.params).is_some_and(|w| w > 64) {
+                    wide.insert(r.name.name.clone());
+                }
+            }
+            ModuleBodyItem::LetBinding(lb) => {
+                if let Some(ty) = &lb.ty {
+                    if scalar_width_with_params(ty, &m.params).is_some_and(|w| w > 64) {
+                        wide.insert(lb.name.name.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    wide
+}
+
+fn expr_uses_wide_name(expr: &Expr, wide_names: &HashSet<String>) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => wide_names.contains(name),
+        ExprKind::Unary(_, inner)
+        | ExprKind::Signed(inner)
+        | ExprKind::Unsigned(inner)
+        | ExprKind::Cast(inner, _)
+        | ExprKind::Clog2(inner) => expr_uses_wide_name(inner, wide_names),
+        ExprKind::Index(base, idx)
+        | ExprKind::BitSlice(base, idx, _)
+        | ExprKind::PartSelect(base, idx, _, _) => {
+            expr_uses_wide_name(base, wide_names) || expr_uses_wide_name(idx, wide_names)
+        }
+        ExprKind::FieldAccess(base, _) => expr_uses_wide_name(base, wide_names),
+        ExprKind::Binary(_, lhs, rhs) => {
+            expr_uses_wide_name(lhs, wide_names) || expr_uses_wide_name(rhs, wide_names)
+        }
+        ExprKind::Ternary(cond, then_expr, else_expr) => {
+            expr_uses_wide_name(cond, wide_names)
+                || expr_uses_wide_name(then_expr, wide_names)
+                || expr_uses_wide_name(else_expr, wide_names)
+        }
+        ExprKind::MethodCall(base, _, args) => {
+            expr_uses_wide_name(base, wide_names)
+                || args.iter().any(|arg| expr_uses_wide_name(arg, wide_names))
+        }
+        ExprKind::Concat(parts) => parts.iter().any(|part| expr_uses_wide_name(part, wide_names)),
+        ExprKind::Literal(_) | ExprKind::Bool(_) => false,
+        _ => false,
+    }
+}
+
+fn wide_expr_is_direct_copy(expr: &Expr, wide_names: &HashSet<String>) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => wide_names.contains(name),
+        ExprKind::MethodCall(base, method, _)
+            if matches!(method.name.as_str(), "trunc" | "zext" | "sext" | "resize") =>
+        {
+            wide_expr_is_direct_copy(base, wide_names)
+        }
+        ExprKind::Signed(inner) | ExprKind::Unsigned(inner) | ExprKind::Cast(inner, _) => {
+            wide_expr_is_direct_copy(inner, wide_names)
+        }
+        _ => false,
+    }
+}
+
+fn validate_wide_expr(
+    expr: &Expr,
+    wide_names: &HashSet<String>,
+    class: &str,
+    context: &str,
+) -> Result<(), String> {
+    if expr_uses_wide_name(expr, wide_names) && !wide_expr_is_direct_copy(expr, wide_names) {
+        return Err(format!(
+            "module `{class}`: thread sim currently supports wide (>64-bit) values only as direct copies; unsupported {context}: {expr:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_stmt_wide_exprs(
+    stmt: &Stmt,
+    wide_names: &HashSet<String>,
+    class: &str,
+) -> Result<(), String> {
+    match stmt {
+        Stmt::Assign(a) => {
+            validate_wide_expr(&a.target, wide_names, class, "assignment target")?;
+            validate_wide_expr(&a.value, wide_names, class, "assignment value")?;
+        }
+        Stmt::IfElse(ie) => {
+            validate_wide_expr(&ie.cond, wide_names, class, "if condition")?;
+            for stmt in &ie.then_stmts {
+                validate_stmt_wide_exprs(stmt, wide_names, class)?;
+            }
+            for stmt in &ie.else_stmts {
+                validate_stmt_wide_exprs(stmt, wide_names, class)?;
+            }
+        }
+        Stmt::For(fl) => {
+            match &fl.range {
+                ForRange::Range(start, end) => {
+                    validate_wide_expr(start, wide_names, class, "for-range start")?;
+                    validate_wide_expr(end, wide_names, class, "for-range end")?;
+                }
+                ForRange::ValueList(values) => {
+                    for value in values {
+                        validate_wide_expr(value, wide_names, class, "for-range value")?;
+                    }
+                }
+            }
+            for stmt in &fl.body {
+                validate_stmt_wide_exprs(stmt, wide_names, class)?;
+            }
+        }
+        Stmt::WaitUntil(cond, _) => {
+            validate_wide_expr(cond, wide_names, class, "wait-until condition")?;
+        }
+        Stmt::DoUntil { body, cond, .. } => {
+            for stmt in body {
+                validate_stmt_wide_exprs(stmt, wide_names, class)?;
+            }
+            validate_wide_expr(cond, wide_names, class, "do-until condition")?;
+        }
+        Stmt::Match(m) => {
+            validate_wide_expr(&m.scrutinee, wide_names, class, "match scrutinee")?;
+            for arm in &m.arms {
+                for stmt in &arm.body {
+                    validate_stmt_wide_exprs(stmt, wide_names, class)?;
+                }
+            }
+        }
+        Stmt::Init(ib) => {
+            for stmt in &ib.body {
+                validate_stmt_wide_exprs(stmt, wide_names, class)?;
+            }
+        }
+        Stmt::Log(_) => {}
+    }
+    Ok(())
+}
+
+fn validate_thread_stmt_wide_exprs(
+    stmt: &ThreadStmt,
+    wide_names: &HashSet<String>,
+    class: &str,
+) -> Result<(), String> {
+    match stmt {
+        ThreadStmt::CombAssign(a) | ThreadStmt::SeqAssign(a) => {
+            validate_wide_expr(&a.target, wide_names, class, "assignment target")?;
+            validate_wide_expr(&a.value, wide_names, class, "assignment value")?;
+        }
+        ThreadStmt::IfElse(ie) => {
+            validate_wide_expr(&ie.cond, wide_names, class, "if condition")?;
+            for stmt in &ie.then_stmts {
+                validate_thread_stmt_wide_exprs(stmt, wide_names, class)?;
+            }
+            for stmt in &ie.else_stmts {
+                validate_thread_stmt_wide_exprs(stmt, wide_names, class)?;
+            }
+        }
+        ThreadStmt::WaitUntil(cond, _) => {
+            validate_wide_expr(cond, wide_names, class, "wait-until condition")?;
+        }
+        ThreadStmt::WaitCycles(expr, _) => {
+            validate_wide_expr(expr, wide_names, class, "wait-cycles count")?;
+        }
+        ThreadStmt::For { start, end, body, .. } => {
+            validate_wide_expr(start, wide_names, class, "for-range start")?;
+            validate_wide_expr(end, wide_names, class, "for-range end")?;
+            for stmt in body {
+                validate_thread_stmt_wide_exprs(stmt, wide_names, class)?;
+            }
+        }
+        ThreadStmt::DoUntil { body, cond, .. } => {
+            for stmt in body {
+                validate_thread_stmt_wide_exprs(stmt, wide_names, class)?;
+            }
+            validate_wide_expr(cond, wide_names, class, "do-until condition")?;
+        }
+        ThreadStmt::Lock { body, .. } => {
+            for stmt in body {
+                validate_thread_stmt_wide_exprs(stmt, wide_names, class)?;
+            }
+        }
+        ThreadStmt::ForkJoin(branches, _) => {
+            for branch in branches {
+                for stmt in branch {
+                    validate_thread_stmt_wide_exprs(stmt, wide_names, class)?;
+                }
+            }
+        }
+        ThreadStmt::ForkTlmAssign(a) => {
+            validate_wide_expr(&a.target, wide_names, class, "assignment target")?;
+            validate_wide_expr(&a.value, wide_names, class, "assignment value")?;
+        }
+        ThreadStmt::Return(expr, _) => {
+            validate_wide_expr(expr, wide_names, class, "return value")?;
+        }
+        ThreadStmt::JoinAll(_) | ThreadStmt::Log(_) => {}
+    }
+    Ok(())
+}
+
+fn validate_wide_thread_sim_exprs(m: &ModuleDecl, class: &str) -> Result<(), String> {
+    let wide_names = collect_wide_scalar_names(m);
+    if wide_names.is_empty() {
+        return Ok(());
+    }
+    for item in &m.body {
+        match item {
+            ModuleBodyItem::LetBinding(lb) => {
+                validate_wide_expr(&lb.value, &wide_names, class, "let binding value")?;
+            }
+            ModuleBodyItem::CombBlock(cb) => {
+                for stmt in &cb.stmts {
+                    validate_stmt_wide_exprs(stmt, &wide_names, class)?;
+                }
+            }
+            ModuleBodyItem::RegBlock(rb) => {
+                for stmt in &rb.stmts {
+                    validate_stmt_wide_exprs(stmt, &wide_names, class)?;
+                }
+            }
+            ModuleBodyItem::Thread(t) => {
+                for stmt in &t.body {
+                    validate_thread_stmt_wide_exprs(stmt, &wide_names, class)?;
+                }
+                if let Some((cond, body)) = &t.default_when {
+                    validate_wide_expr(cond, &wide_names, class, "default-when condition")?;
+                    for stmt in body {
+                        validate_thread_stmt_wide_exprs(stmt, &wide_names, class)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn is_wide_cpp_ty(ty: &str) -> bool {

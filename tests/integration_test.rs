@@ -17085,6 +17085,52 @@ fn test_thread_sim_runs_1024_bit_payload_copy() {
 }
 
 #[test]
+fn test_thread_sim_rejects_wide_arithmetic_until_codegen_supports_it() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          port a: in UInt<128>;
+          port y: out UInt<128>;
+          reg r: UInt<128> reset rst => 0;
+
+          thread on clk rising, rst high
+            r <= a;
+            wait 1 cycle;
+            y = r + 128'd1;
+            wait 1 cycle;
+          end thread
+        end module M
+    "#;
+
+    let tokens = arch::lexer::tokenize(source).expect("lexer error");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target lowering");
+    let ast = arch::elaborate::lower_tlm_initiator_calls(ast).expect("tlm initiator lowering");
+    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg error");
+    let ast = arch::elaborate::lower_credit_channel_dispatch(ast).expect("cc dispatch error");
+    let m = ast
+        .items
+        .iter()
+        .find_map(|item| match item {
+            arch::ast::Item::Module(m) => Some(m),
+            _ => None,
+        })
+        .expect("module");
+    let err = match arch::sim_codegen::thread_sim::gen_module_thread(m, false, false, 1) {
+        Ok(_) => panic!("wide arithmetic should be rejected until the thread-sim emitter lowers VlWide ops"),
+        Err(err) => err,
+    };
+    assert!(
+        err.contains("currently supports wide (>64-bit) values only as direct copies")
+            && err.contains("assignment value"),
+        "expected a direct-copy-only diagnostic for unsupported wide arithmetic:\n{err}"
+    );
+}
+
+#[test]
 fn test_sim_codegen_declares_typed_module_params_used_by_lowered_thread_body() {
     // Typed value params (`param X: UInt<W> = ...`) are valid ARCH params and
     // SV codegen emits them, but the native C++ sim header also has to expose
