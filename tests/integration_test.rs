@@ -10721,6 +10721,33 @@ fn test_tlm_connect_decode_lowers_to_generated_router_logic() {
 }
 
 #[test]
+fn test_tlm_connect_decode_allows_target_method_subset() {
+    let source = include_str!("axi_dma_tlm/TlmConnectSubtype.arch");
+    let sv = compile_to_sv(source);
+
+    assert!(
+        sv.contains("module TlmConnectSubtypeTop"),
+        "decoded subtype connect top should build:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_conn_i_m_decode_t0_write_req_valid")
+            && !sv.contains("_tlm_conn_i_m_decode_t1_write_req_valid"),
+        "router should drive write only to the read/write target wire:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_conn_i_m_decode_write_err_valid")
+            && sv.contains("_tlm_conn_i_m_decode_up_write_rsp_data = _tlm_conn_i_m_decode_write_err_valid ? 1'b0"),
+        "router should synthesize a failed Bool response for writes decoded to the read-only target:\n{sv}"
+    );
+
+    let sim = compile_to_sim_h(source, false);
+    assert!(
+        sim.contains("class VTlmConnectSubtypeTop"),
+        "sim C++ should include decoded subtype connect top"
+    );
+}
+
+#[test]
 fn test_tlm_connect_decode_does_not_emit_false_comb_cycle_warning() {
     let ws = warnings_after_full_lower(include_str!("axi_dma_tlm/TlmConnectDecode.arch"));
     assert!(
@@ -11228,6 +11255,32 @@ fn test_tlm_connect_decode_arch_sim_behavior() {
     );
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("PASS decoded connect"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn test_tlm_connect_decode_subtype_arch_sim_behavior() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/axi_dma_tlm/TlmConnectSubtype.arch")
+        .arg("--tb")
+        .arg("tests/axi_dma_tlm/tb_tlm_connect_subtype.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for decoded subtype connect");
+    assert!(
+        out.status.success(),
+        "decoded subtype connect sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS decoded subtype connect"),
         "expected PASS marker in stdout:\n{}",
         String::from_utf8_lossy(&out.stdout)
     );

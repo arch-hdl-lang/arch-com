@@ -173,6 +173,8 @@ pub struct BusGenerateIf {
     pub cond: Expr,
     pub then_signals: Vec<PortDecl>,
     pub else_signals: Vec<PortDecl>,
+    pub then_tlm_methods: Vec<TlmMethodMeta>,
+    pub else_tlm_methods: Vec<TlmMethodMeta>,
     pub span: Span,
 }
 
