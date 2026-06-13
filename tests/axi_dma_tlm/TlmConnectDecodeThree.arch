@@ -1,0 +1,105 @@
+//! ---
+//! tags: [tlm_method, connect, address_decode, one_to_many, three_way]
+//! refs:
+//!   - "compiler decoded TLM connect regression (3-way priority decode)"
+//! ---
+//!
+//! Three-target decoded connect regression. The landed two-target fixture
+//! (`TlmConnectDecode.arch`) exercises a single-bit route register and a
+//! two-way selector. This fixture adds a middle target so the generated
+//! response-route register is multi-bit (`route_w == 2`) and the middle
+//! selector takes the priority-decode `raw && !any_previous` path. Each
+//! target returns a distinct tag so a mis-route shows up as a wrong value.
+
+/// Blocking memory transaction bus used by the 3-way decoded connect test.
+bus DecodeMem3
+  tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+end bus DecodeMem3
+
+use DecodeMem3;
+
+/// One address-mapped memory target; the returned tag is param-selected so a
+/// single module definition can stand in for all three slaves.
+module DecodeMem3Target
+  param SLAVE_START_ADDR: const = 32'h0000_0000;
+  param SLAVE_END_ADDR: const = 32'h0000_0000;
+  param TAG: const = 64'h0;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port s: target DecodeMem3;
+
+  thread s.read(addr) on clk rising, rst high
+    return TAG;
+  end thread s.read
+end module DecodeMem3Target
+
+/// Initiator that issues one transaction into each of the three address ranges.
+module DecodeMem3Initiator
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port m: initiator DecodeMem3;
+  port lo_o: out UInt<64>;
+  port mid_o: out UInt<64>;
+  port hi_o: out UInt<64>;
+
+  reg lo_r: UInt<64> reset rst => 0;
+  reg mid_r: UInt<64> reset rst => 0;
+  reg hi_r: UInt<64> reset rst => 0;
+
+  comb
+    lo_o = lo_r;
+    mid_o = mid_r;
+    hi_o = hi_r;
+  end comb
+
+  thread driver on clk rising, rst high
+    lo_r <= m.read(32'h0000_0010);
+    mid_r <= m.read(32'h4000_0010);
+    hi_r <= m.read(32'h9000_0010);
+  end thread driver
+end module DecodeMem3Initiator
+
+/// Top-level: one initiator decoded across three address-mapped targets.
+module TlmConnectDecodeThreeTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port lo_o: out UInt<64>;
+  port mid_o: out UInt<64>;
+  port hi_o: out UInt<64>;
+
+  inst i: DecodeMem3Initiator
+    clk <- clk;
+    rst <- rst;
+    lo_o -> lo_o;
+    mid_o -> mid_o;
+    hi_o -> hi_o;
+  end inst i
+
+  inst lo_t: DecodeMem3Target
+    param SLAVE_START_ADDR = 32'h0000_0000;
+    param SLAVE_END_ADDR = 32'h3fff_ffff;
+    param TAG = 64'hAAAA_0000_0000_0000;
+    clk <- clk;
+    rst <- rst;
+  end inst lo_t
+
+  inst mid_t: DecodeMem3Target
+    param SLAVE_START_ADDR = 32'h4000_0000;
+    param SLAVE_END_ADDR = 32'h7fff_ffff;
+    param TAG = 64'hBBBB_0000_0000_0000;
+    clk <- clk;
+    rst <- rst;
+  end inst mid_t
+
+  inst hi_t: DecodeMem3Target
+    param SLAVE_START_ADDR = 32'h8000_0000;
+    param SLAVE_END_ADDR = 32'hffff_ffff;
+    param TAG = 64'hCCCC_0000_0000_0000;
+    clk <- clk;
+    rst <- rst;
+  end inst hi_t
+
+  connect i.m -> lo_t.s;
+  connect i.m -> mid_t.s;
+  connect i.m -> hi_t.s;
+end module TlmConnectDecodeThreeTop
