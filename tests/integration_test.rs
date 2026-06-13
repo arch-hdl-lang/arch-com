@@ -3931,6 +3931,126 @@ end pipeline WorkerPipe
 }
 
 #[test]
+fn test_pipeline_wait_until_do_until_runs_in_sim() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("WaitPipe.arch");
+    let tb_path = td.path().join("tb_wait_pipe.cpp");
+    std::fs::write(
+        &arch_path,
+        r#"
+pipeline WaitPipe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port ready: in Bool;
+  port out_flag: out Bool;
+  port out_done: out Bool;
+  port out_cnt: out UInt<3>;
+
+  stage Work
+    reg flag: Bool reset rst => false;
+    reg done: Bool reset rst => false;
+    reg cnt: UInt<3> reset rst => 0;
+
+    seq on clk rising
+      wait until go;
+      flag <= true;
+      do
+        cnt <= (cnt + 1).trunc<3>();
+      until ready;
+      done <= true;
+    end seq
+
+    comb
+      out_flag = flag;
+      out_done = done;
+      out_cnt = cnt;
+    end comb
+  end stage Work
+end pipeline WaitPipe
+"#,
+    )
+    .expect("write arch");
+    std::fs::write(
+        &tb_path,
+        r#"
+#include "VWaitPipe.h"
+#include <cstdio>
+
+static void tick(VWaitPipe& dut) {
+  dut.clk = 0;
+  dut.eval();
+  dut.clk = 1;
+  dut.eval();
+  dut.clk = 0;
+  dut.eval();
+}
+
+int main() {
+  VWaitPipe dut;
+  dut.rst = 1;
+  dut.go = 0;
+  dut.ready = 0;
+  tick(dut);
+  if (dut.out_flag || dut.out_done || dut.out_cnt != 0) {
+    std::printf("FAIL reset outputs flag=%u done=%u cnt=%u\n",
+                (unsigned)dut.out_flag, (unsigned)dut.out_done,
+                (unsigned)dut.out_cnt);
+    return 1;
+  }
+
+  dut.rst = 0;
+  tick(dut);        // enter the wait-until state while go is low
+  dut.go = 1;
+  tick(dut);        // wait-until completes, pre-do assignment fires
+  if (!dut.out_flag || dut.out_done) {
+    std::printf("FAIL after go flag=%u done=%u cnt=%u\n",
+                (unsigned)dut.out_flag, (unsigned)dut.out_done,
+                (unsigned)dut.out_cnt);
+    return 1;
+  }
+
+  dut.go = 0;
+  tick(dut);        // do-until body runs while ready is low
+  if (dut.out_cnt != 1 || dut.out_done) {
+    std::printf("FAIL waiting cnt=%u done=%u\n",
+                (unsigned)dut.out_cnt, (unsigned)dut.out_done);
+    return 1;
+  }
+
+  dut.ready = 1;
+  tick(dut);        // do-until exit cycle runs body and trailing done assignment
+  if (!dut.out_done || dut.out_cnt != 2) {
+    std::printf("FAIL ready cnt=%u done=%u\n",
+                (unsigned)dut.out_cnt, (unsigned)dut.out_done);
+    return 1;
+  }
+
+  std::printf("PASS pipeline wait/do-until sim\n");
+  return 0;
+}
+"#,
+    )
+    .expect("write tb");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("sim")
+        .arg(&arch_path)
+        .arg("--tb")
+        .arg(&tb_path)
+        .arg("--outdir")
+        .arg(td.path().join("build"))
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && stdout.contains("PASS pipeline wait/do-until sim"),
+        "pipeline wait/do-until sim should compile and run\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn test_clog2_in_type_args() {
     // $clog2(DEPTH) in type width expressions
     let source = r#"
