@@ -465,6 +465,7 @@ impl<'a> SimCodegen<'a> {
         }
 
         // Internal registers (exposed as readonly for testbench inspection)
+        let mut internal_reg_helpers = String::new();
         for item in &m.body {
             if let ModuleBodyItem::RegDecl(r) = item {
                 let rname = &r.name.name;
@@ -473,17 +474,29 @@ impl<'a> SimCodegen<'a> {
                 let width = self.reg_width(&r.ty);
                 let is_signed = matches!(r.ty, TypeExpr::SInt(_));
                 let cpp_field = format!("_{rname}");
-                if wide_names.contains(rname) {
-                    // Wide internal reg — emit lambda getter
-                    bindings.push(format!(
-                        "        .def_property_readonly(\"{rname}\", [](const {class}& self) {{ return self.{cpp_field}; }})"
-                    ));
-                } else if vec_array_info_with_params(&r.ty, &m.params).is_some() {
+                let helper_name = format!("read_internal_{rname}");
+                if vec_array_info_with_params(&r.ty, &m.params).is_some() {
                     // Vec reg — skip for now (complex)
                     continue;
-                } else {
-                    bindings.push(format!("        .def_readonly(\"{rname}\", &{class}::{cpp_field})"));
                 }
+                // Normal sim stores internal regs as `_reg`, while
+                // pre-lowering thread sim stores them as `reg`. This helper
+                // covers both scalar and wide internal regs.
+                internal_reg_helpers.push_str(&format!(
+                    r#"
+template <typename T>
+auto {helper_name}(const T& self) {{
+    if constexpr (requires(const T& t) {{ t.{cpp_field}; }}) {{
+        return self.{cpp_field};
+    }} else {{
+        return self.{rname};
+    }}
+}}
+"#
+                ));
+                bindings.push(format!(
+                    "        .def_property_readonly(\"{rname}\", &arch_pybind_detail::{helper_name}<{class}>)"
+                ));
                 port_info.push((rname.clone(), width, is_signed, false, false, true));
             }
         }
@@ -529,10 +542,14 @@ impl<'a> SimCodegen<'a> {
             }
         }
 
-        // Methods
+        // Methods. Normal sim models expose eval_comb/eval_posedge in
+        // addition to eval(); pre-lowering thread-sim models intentionally
+        // expose edge-sensitive eval() only. Bind compatibility shims so the
+        // same pybind wrapper generator can target both model APIs.
         bindings.push(format!("        .def(\"eval\", &{class}::eval)"));
-        bindings.push(format!("        .def(\"eval_comb\", &{class}::eval_comb)"));
-        bindings.push(format!("        .def(\"eval_posedge\", &{class}::eval_posedge)"));
+        bindings.push(format!("        .def(\"eval_comb\", &arch_pybind_detail::eval_comb<{class}>)"));
+        bindings.push(format!("        .def(\"eval_posedge\", &arch_pybind_detail::eval_posedge<{class}>)"));
+        bindings.push(format!("        .def(\"run_cycles\", &arch_pybind_detail::run_cycles<{class}>)"));
 
         // _port_info static method
         let port_info_entries: Vec<String> = port_info.iter()
@@ -597,8 +614,39 @@ impl<'a> SimCodegen<'a> {
 r#"// Auto-generated pybind11 wrapper for {class}
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <cstdint>
 #include "{class}.h"
 namespace py = pybind11;
+
+namespace arch_pybind_detail {{
+template <typename T>
+void eval_comb(T& self) {{
+    if constexpr (requires(T& t) {{ t.eval_comb(); }}) {{
+        self.eval_comb();
+    }} else {{
+        self.eval();
+    }}
+}}
+
+template <typename T>
+void eval_posedge(T& self) {{
+    if constexpr (requires(T& t) {{ t.eval_posedge(); }}) {{
+        self.eval_posedge();
+    }} else {{
+        self.eval();
+    }}
+}}
+
+template <typename T>
+void run_cycles(T& self, uint64_t cycles) {{
+    if constexpr (requires(T& t, uint64_t n) {{ t.run_cycles(n); }}) {{
+        self.run_cycles(cycles);
+    }} else {{
+        for (uint64_t i = 0; i < cycles; ++i) self.eval();
+    }}
+}}
+{internal_reg_helpers}
+}} // namespace arch_pybind_detail
 
 PYBIND11_MODULE({pybind_module}, m) {{
 {struct_bindings}    py::class_<{class}>(m, "{class}")

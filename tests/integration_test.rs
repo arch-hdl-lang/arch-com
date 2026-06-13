@@ -7859,6 +7859,74 @@ fn compile_to_pybind_cpps(source: &str) -> Vec<(String, String)> {
 }
 
 #[test]
+fn test_pybind_wrapper_uses_thread_sim_api_compat_shims() {
+    // `--thread-sim parallel` models intentionally expose an edge-sensitive
+    // `eval()` API instead of the normal sim model's separate
+    // `eval_comb()` / `eval_posedge()` methods. The pybind wrapper must use
+    // compile-time shims so the same wrapper compiles against both model
+    // shapes; otherwise `arch sim --pybind --thread-sim parallel` fails at
+    // C++ compile time even after the CLI accepts the option combination.
+    let source = "
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          port start: in Bool;
+          port done: out Bool;
+
+          thread on clk rising, rst high
+            wait until start;
+            done = true;
+            wait 1 cycle;
+          end thread
+        end module M
+    ";
+
+    let pybinds = compile_to_pybind_cpps(source);
+    let (_, wrapper) = pybinds
+        .iter()
+        .find(|(n, _)| n == "VM_pybind")
+        .expect("M pybind wrapper");
+    assert!(
+        wrapper.contains("namespace arch_pybind_detail")
+            && wrapper.contains("requires(T& t) { t.eval_comb(); }")
+            && wrapper.contains("requires(T& t) { t.eval_posedge(); }")
+            && wrapper.contains("requires(T& t, uint64_t n) { t.run_cycles(n); }"),
+        "pybind wrapper should provide compile-time API compatibility shims:\n{wrapper}"
+    );
+    assert!(
+        wrapper.contains(".def(\"eval_comb\", &arch_pybind_detail::eval_comb<VM>)")
+            && wrapper.contains(".def(\"eval_posedge\", &arch_pybind_detail::eval_posedge<VM>)")
+            && wrapper.contains(".def(\"run_cycles\", &arch_pybind_detail::run_cycles<VM>)")
+            && !wrapper.contains("&VM::eval_comb")
+            && !wrapper.contains("&VM::eval_posedge"),
+        "pybind wrapper should not directly bind normal-sim-only methods:\n{wrapper}"
+    );
+
+    let tokens = arch::lexer::tokenize(source).expect("lexer error");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let module = ast
+        .items
+        .iter()
+        .find_map(|item| match item {
+            arch::ast::Item::Module(m) => Some(m),
+            _ => None,
+        })
+        .expect("module");
+    let thread_model =
+        arch::sim_codegen::thread_sim::gen_module_thread(module, false, false, 1)
+            .expect("thread sim model");
+    assert!(
+        thread_model.header.contains("void eval()")
+            && !thread_model.header.contains("eval_comb")
+            && !thread_model.header.contains("eval_posedge"),
+        "test fixture should exercise the thread-sim-only eval API:\n{}",
+        thread_model.header
+    );
+}
+
+#[test]
 fn test_pybind_struct_bindings_are_scoped_to_module() {
     // When a shared package declares structs used by only one of several
     // sibling modules, each module's pybind wrapper must bind ONLY the
