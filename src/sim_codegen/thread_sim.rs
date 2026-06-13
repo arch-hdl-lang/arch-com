@@ -79,6 +79,14 @@ enum WaitKind {
     /// all of them to reach `Done`. Branch indices are into
     /// ThreadInfo.branches.
     ForkJoin(Vec<usize>),
+    /// Source-level if/else whose branches contain waits. Launches
+    /// exactly one branch coroutine based on the condition, then rejoins
+    /// when that selected branch completes.
+    IfElseJoin {
+        cond: Expr,
+        then_branch: usize,
+        else_branch: usize,
+    },
     /// Wait until the named resource's holder is either free (-1) or
     /// already this thread (priority-arbitrated; lower thread index
     /// wins ties because pass 2 of the scheduler resumes slots in
@@ -851,6 +859,17 @@ pub fn gen_module_thread_with_warnings(
                         "{pad2}co_await arch_rt::wait_until(&_slot_{ti}, [this]{{ return {pred}; }});\n"
                     ));
                 }
+                WaitKind::IfElseJoin { cond, then_branch, else_branch } => {
+                    emit_ifelse_join_wait(
+                        &mut body_cpp,
+                        &pad2,
+                        ti,
+                        &format!("_slot_{ti}"),
+                        cond,
+                        *then_branch,
+                        *else_branch,
+                    )?;
+                }
                 WaitKind::LockAcquire(res, my_id) => {
                     // Register this thread as a requester, then wait until
                     // the resource's policy selector chooses it. Re-check
@@ -955,9 +974,28 @@ pub fn gen_module_thread_with_warnings(
                     WaitKind::ForkJoin(_) => {
                         return Err("nested fork/join inside fork branch not yet supported".into());
                     }
+                    WaitKind::IfElseJoin { cond, then_branch, else_branch } => {
+                        emit_ifelse_join_wait(
+                            &mut header,
+                            pad2,
+                            ti,
+                            &format!("_t{ti}_br{}_slot", br.id),
+                            cond,
+                            *then_branch,
+                            *else_branch,
+                        )?;
+                    }
                     WaitKind::LockAcquire(_, _) => {
                         return Err("`lock` inside fork branch not yet supported".into());
                     }
+                }
+                for sa in &seg.post_wait_seq {
+                    let lhs = expr_to_cpp(&sa.target)?;
+                    let rhs = expr_to_cpp(&sa.value)?;
+                    header.push_str(&format!("{pad2}{lhs} = {rhs};\n"));
+                }
+                for ie in &seg.post_wait_seq_if {
+                    emit_seq_if(ie, &mut header, if seg.for_loop.is_some() { 6 } else { 4 })?;
                 }
                 if seg.for_loop.is_some() {
                     header.push_str("    }\n");
@@ -1030,7 +1068,27 @@ fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>, thread_id: usize) 
             }
             ThreadStmt::IfElse(ie) => {
                 if contains_wait(&ie.then_stmts) || contains_wait(&ie.else_stmts) {
-                    return Err("`if/else` containing `wait` not yet supported by thread sim".into());
+                    let then_segs = partition(&ie.then_stmts, branches, thread_id)?;
+                    let then_branch = branches.len();
+                    branches.push(Branch {
+                        id: then_branch,
+                        segs: then_segs,
+                    });
+
+                    let else_segs = partition(&ie.else_stmts, branches, thread_id)?;
+                    let else_branch = branches.len();
+                    branches.push(Branch {
+                        id: else_branch,
+                        segs: else_segs,
+                    });
+
+                    cur.wait_kind = WaitKind::IfElseJoin {
+                        cond: ie.cond.clone(),
+                        then_branch,
+                        else_branch,
+                    };
+                    segs.push(std::mem::replace(&mut cur, new_segment()));
+                    continue;
                 }
                 let kind = classify_ifelse(ie);
                 match kind {
@@ -1093,8 +1151,8 @@ fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>, thread_id: usize) 
                 // Allocate a Branch per branch body, partition each.
                 let mut branch_ids: Vec<usize> = Vec::new();
                 for body in branch_bodies {
-                    let id = branches.len();
                     let segs = partition(body, branches, thread_id)?;
+                    let id = branches.len();
                     branches.push(Branch { id, segs });
                     branch_ids.push(id);
                 }
@@ -1184,7 +1242,10 @@ fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>, thread_id: usize) 
     } else if !cur.entry_seq.is_empty() || !cur.entry_seq_if.is_empty() {
         if let Some(prev) = segs.last_mut() {
             // Only fold into a wait segment (not Terminal/ForkJoin etc.).
-            if matches!(prev.wait_kind, WaitKind::Until(_) | WaitKind::Cycles(_)) {
+            if matches!(
+                prev.wait_kind,
+                WaitKind::Until(_) | WaitKind::Cycles(_) | WaitKind::IfElseJoin { .. }
+            ) {
                 prev.post_wait_seq.extend(std::mem::take(&mut cur.entry_seq));
                 prev.post_wait_seq_if.extend(std::mem::take(&mut cur.entry_seq_if));
             } else {
@@ -1263,6 +1324,38 @@ fn lower_thread_ifelse_to_comb(ie: &IfElseOf<ThreadStmt>) -> Result<IfElseOf<Stm
         unique: ie.unique,
         span: ie.span,
     })
+}
+
+fn emit_branch_launch(out: &mut String, pad: &str, ti: usize, bid: usize) {
+    out.push_str(&format!("{pad}_t{ti}_br{bid}_slot.thread.destroy();\n"));
+    out.push_str(&format!("{pad}_t{ti}_br{bid}_slot.thread = _t{ti}_br{bid}_make();\n"));
+    out.push_str(&format!("{pad}_t{ti}_br{bid}_slot.kind = arch_rt::WaitKind::Ready;\n"));
+    out.push_str(&format!("{pad}_t{ti}_br{bid}_slot.cycles_remaining = 0;\n"));
+    out.push_str(&format!("{pad}_t{ti}_br{bid}_slot.pred = nullptr;\n"));
+    out.push_str(&format!("{pad}_t{ti}_br{bid}_seg = 0;\n"));
+}
+
+fn emit_ifelse_join_wait(
+    out: &mut String,
+    pad: &str,
+    ti: usize,
+    slot_name: &str,
+    cond: &Expr,
+    then_branch: usize,
+    else_branch: usize,
+) -> Result<(), String> {
+    let cond_cpp = expr_to_cpp_bool(cond)?;
+    let sel_name = format!("_if_sel_{then_branch}_{else_branch}");
+    out.push_str(&format!("{pad}bool {sel_name} = ({cond_cpp});\n"));
+    out.push_str(&format!("{pad}if ({sel_name}) {{\n"));
+    emit_branch_launch(out, &format!("{pad}  "), ti, then_branch);
+    out.push_str(&format!("{pad}}} else {{\n"));
+    emit_branch_launch(out, &format!("{pad}  "), ti, else_branch);
+    out.push_str(&format!("{pad}}}\n"));
+    out.push_str(&format!(
+        "{pad}co_await arch_rt::wait_until(&{slot_name}, [this, {sel_name}]{{ return {sel_name} ? _t{ti}_br{then_branch}_slot.kind == arch_rt::WaitKind::Done : _t{ti}_br{else_branch}_slot.kind == arch_rt::WaitKind::Done; }});\n"
+    ));
+    Ok(())
 }
 
 // Emit a sequential statement (from a module-level `seq on clk rising`

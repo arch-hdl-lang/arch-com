@@ -16012,6 +16012,15 @@ fn test_thread_wait_ifelse_fuses_dispatch_and_first_branch_action() {
 }
 
 #[test]
+fn test_thread_wait_ifelse_thread_sim_both_branch_latency() {
+    run_tlm_thread_sim_both(
+        "tests/thread/if_wait_thread_sim_both.arch",
+        "tests/thread/tb_if_wait_thread_sim_both.cpp",
+        "PASS IfWaitThreadSimBoth",
+    );
+}
+
+#[test]
 fn test_thread_wait_elsif_chain_fuses_to_single_dispatch() {
     // An `elsif` parses as a nested `else { if ... }`. The wait-dispatch
     // fusion should flatten that chain so later arms do not pay an extra
