@@ -1,0 +1,237 @@
+//! ---
+//! tags: [compression, lz4, decompressor, streaming, ram, thread]
+//! refs:
+//!   - "LZ4 Block Format Specification v1.9.3"
+//!   - "CAST LZ4SNP-D IP Core (reference architecture)"
+//! ---
+//!
+//! LZ4 block decompressor — streaming byte-wide implementation.
+//!
+//! Accepts a raw LZ4 block (no frame header) as a byte stream and emits
+//! the decompressed output. Handles token / literal / offset / match
+//! sequences including one level of extended lengths.
+//! History window: 256 bytes (offsets 1–255 supported).
+//!
+//! Interface: AXI4-Stream-compatible handshake on both sides.
+//!   in_valid / in_ready / in_data / in_last  — compressed input
+//!   out_valid / out_ready / out_data / out_last — decompressed output
+//!
+//! Thread semantics: the Decompress thread processes ONE LZ4 sequence per
+//! invocation, then restarts. `wait until not saw_last_r` at the top
+//! gates out after the last sequence (saw_last_r set when in_last fires
+//! during the literal copy phase). Reset clears all state for a new block.
+
+domain SysDomain
+  freq_mhz: 200
+end domain SysDomain
+
+/// 256-byte circular history buffer — simple-dual-port BRAM.
+ram HistBuf
+  kind simple_dual;
+  latency 1;
+  write: no_change;
+  init: zero;
+  port clk: in Clock<SysDomain>;
+  ports rd_port
+    addr:  in UInt<8>;
+    en:    in Bool;
+    rdata: out UInt<8>;
+  end ports rd_port
+  ports wr_port
+    addr:  in UInt<8>;
+    en:    in Bool;
+    wen:   in Bool;
+    wdata: in UInt<8>;
+  end ports wr_port
+end ram HistBuf
+
+/// LZ4 block decompressor.
+module Lz4Decomp
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  // Compressed input
+  port in_valid: in Bool;
+  port in_ready: out Bool;
+  port in_data:  in UInt<8>;
+  port in_last:  in Bool;
+
+  // Decompressed output
+  port out_valid: out Bool;
+  port out_ready: in Bool;
+  port out_data:  out UInt<8>;
+  port out_last:  out Bool;
+
+  // ── History RAM wires ─────────────────────────────────────────────────────
+  wire h_rd_en_w:   Bool;
+  wire h_rd_addr_w: UInt<8>;
+  wire h_rd_data_w: UInt<8>;
+  wire h_wr_en_w:   Bool;
+  wire h_wr_wen_w:  Bool;
+  wire h_wr_addr_w: UInt<8>;
+  wire h_wr_data_w: UInt<8>;
+
+  inst hist: HistBuf
+    clk           <- clk;
+    rd_port.en    <- h_rd_en_w;
+    rd_port.addr  <- h_rd_addr_w;
+    rd_port.rdata -> h_rd_data_w;
+    wr_port.en    <- h_wr_en_w;
+    wr_port.wen   <- h_wr_wen_w;
+    wr_port.addr  <- h_wr_addr_w;
+    wr_port.wdata <- h_wr_data_w;
+  end inst hist
+
+  // ── Working registers ─────────────────────────────────────────────────────
+  reg token_hi_r:  UInt<4>  reset rst => 0;
+  reg token_lo_r:  UInt<4>  reset rst => 0;
+  reg lit_len_r:   UInt<16> reset rst => 0;
+  reg mat_len_r:   UInt<16> reset rst => 0;
+  reg offset_r:    UInt<16> reset rst => 0;
+  reg wr_ptr_r:    UInt<8>  reset rst => 0;
+  reg rd_ptr_r:    UInt<8>  reset rst => 0;
+  reg byte_r:      UInt<8>  reset rst => 0;
+  reg byte_last_r: Bool     reset rst => false;
+  reg ext_r:       UInt<8>  reset rst => 0;
+  reg saw_last_r:  Bool     reset rst => false;
+
+  // ── LZ4 decompressor thread ───────────────────────────────────────────────
+  // One LZ4 sequence per thread execution; implicit restart loops back.
+  // `saw_last_r` latches on `in_last` and gates the restart condition.
+  thread Decompress on clk rising, rst high
+    default comb
+      in_ready    = false;
+      out_valid   = false;
+      out_data    = 8'd0;
+      out_last    = false;
+      h_rd_en_w   = false;
+      h_rd_addr_w = 8'd0;
+      h_wr_en_w   = false;
+      h_wr_wen_w  = false;
+      h_wr_addr_w = 8'd0;
+      h_wr_data_w = 8'd0;
+    end default
+
+    // Entry gate: stall here once the block is fully decoded.
+    wait until not saw_last_r;
+
+    // ── Phase A: consume token byte ─────────────────────────────────────────
+    do
+      in_ready = 1;
+    until in_valid;
+    token_hi_r <= in_data[7:4];
+    token_lo_r <= in_data[3:0];
+    saw_last_r <= saw_last_r or in_last;
+    wait 1 cycle;
+
+    // ── Phase B: initial literal length from high nibble ────────────────────
+    lit_len_r <= token_hi_r.zext<16>();
+    wait 1 cycle;
+
+    // ── Phase C: one extension byte for literal length (if nibble == 15) ────
+    // Handles lit_len up to 15 + 255 = 270 bytes per sequence.
+    if (token_hi_r == 4'd15)
+      do
+        in_ready = 1;
+      until in_valid;
+      ext_r      <= in_data;
+      saw_last_r <= saw_last_r or in_last;
+      wait 1 cycle;
+      lit_len_r <= lit_len_r +% ext_r.zext<16>();
+      wait 1 cycle;
+    end if
+
+    // ── Phase D: copy lit_len literal bytes ─────────────────────────────────
+    if (lit_len_r > 16'd0)
+      for li in 0..lit_len_r-1
+        // Consume input byte
+        do
+          in_ready = 1;
+        until in_valid;
+        byte_r      <= in_data;
+        byte_last_r <= in_last;
+        saw_last_r  <= saw_last_r or in_last;
+        wait 1 cycle;
+
+        // Drive output until consumer accepts
+        do
+          out_valid = 1;
+          out_data  = byte_r;
+          out_last  = byte_last_r;
+        until out_ready;
+
+        // Write literal to history ring buffer
+        h_wr_en_w   = 1;
+        h_wr_wen_w  = 1;
+        h_wr_addr_w = wr_ptr_r;
+        h_wr_data_w = byte_r;
+        wr_ptr_r   <= wr_ptr_r +% 8'd1;
+        wait 1 cycle;
+      end for
+    end if
+
+    // ── Phase E–H: match section (absent in the last sequence) ──────────────
+    if (not saw_last_r)
+
+      // Phase E: match offset low byte
+      do
+        in_ready = 1;
+      until in_valid;
+      offset_r   <= in_data.zext<16>();
+      saw_last_r <= saw_last_r or in_last;
+      wait 1 cycle;
+
+      // Phase F: match offset high byte
+      do
+        in_ready = 1;
+      until in_valid;
+      offset_r   <= {in_data, offset_r[7:0]};
+      saw_last_r <= saw_last_r or in_last;
+      wait 1 cycle;
+
+      // Phase G: initial match length = low nibble + 4
+      mat_len_r <= token_lo_r.zext<16>() +% 16'd4;
+      wait 1 cycle;
+
+      // Phase G2: one extension byte for match length (if nibble == 15)
+      if (token_lo_r == 4'd15)
+        do
+          in_ready = 1;
+        until in_valid;
+        ext_r <= in_data;
+        wait 1 cycle;
+        mat_len_r <= mat_len_r +% ext_r.zext<16>();
+        wait 1 cycle;
+      end if
+
+      // Phase H: copy mat_len bytes from history
+      // rd_ptr_r = wr_ptr_r − offset (wrapping, 256-byte window)
+      rd_ptr_r <= wr_ptr_r -% offset_r.trunc<8>();
+      wait 1 cycle;
+
+      for mi in 0..mat_len_r-1
+        // Issue latency-1 RAM read
+        h_rd_en_w   = 1;
+        h_rd_addr_w = rd_ptr_r;
+        wait 1 cycle;
+
+        // Data available: drive output
+        do
+          out_valid = 1;
+          out_data  = h_rd_data_w;
+        until out_ready;
+
+        // Write match byte to history (h_rd_data_w stable: rd.en=0 here)
+        h_wr_en_w   = 1;
+        h_wr_wen_w  = 1;
+        h_wr_addr_w = wr_ptr_r;
+        h_wr_data_w = h_rd_data_w;
+        wr_ptr_r  <= wr_ptr_r +% 8'd1;
+        rd_ptr_r  <= rd_ptr_r +% 8'd1;
+        wait 1 cycle;
+      end for
+
+    end if
+    // Thread restarts from `wait until not saw_last_r`.
+  end thread Decompress
+end module Lz4Decomp
