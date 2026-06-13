@@ -159,6 +159,19 @@ impl<'a> SimCodegen<'a> {
                 h.push_str(&format!("    memset(&{}, 0, sizeof({}));\n", fs.full_name, fs.full_name));
             }
         }
+        for fs in &out_sigs {
+            if is_wide {
+                h.push_str(&format!("    memset(&_r_{}, 0, sizeof(_r_{}));\n", fs.full_name, fs.full_name));
+                if r.latency == 2 {
+                    h.push_str(&format!("    memset(&_r2_{}, 0, sizeof(_r2_{}));\n", fs.full_name, fs.full_name));
+                }
+            } else {
+                h.push_str(&format!("    _r_{} = 0;\n", fs.full_name));
+                if r.latency == 2 {
+                    h.push_str(&format!("    _r2_{} = 0;\n", fs.full_name));
+                }
+            }
+        }
         h.push_str("  }\n");
         h.push_str(&format!("  explicit {class}(VerilatedContext*) : {class}() {{}}\n"));
         h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() { trace_close(); }\n");
@@ -183,6 +196,9 @@ impl<'a> SimCodegen<'a> {
         // Read check uses a static guard so each RAM warns at most once per run.
         let write_mark = |addr: &str| -> String {
             if uninit_ram_check { format!("    _mem_valid[{addr}] = true;\n") } else { String::new() }
+        };
+        let write_mark_indented = |addr: &str, indent: &str| -> String {
+            if uninit_ram_check { format!("{indent}_mem_valid[{addr}] = true;\n") } else { String::new() }
         };
         let read_check = |addr: &str, indent: &str| -> String {
             if !uninit_ram_check { return String::new(); }
@@ -287,7 +303,65 @@ impl<'a> SimCodegen<'a> {
                 }
             }
             RamKind::TrueDual => {
-                cpp.push_str("  // TrueDual: not yet implemented\n");
+                for pg in &r.port_groups {
+                    let pfx = &pg.name.name;
+                    let has_wen = pg.signals.iter().any(|s| s.name.name == "wen");
+                    let wdata_name = pg.signals.iter()
+                        .find(|s| s.direction == Direction::In && (s.name.name == "wdata" || s.name.name == "data"))
+                        .map(|s| format!("{pfx}_{}", s.name.name))
+                        .unwrap_or_else(|| format!("{pfx}_wdata"));
+                    let out_name = pg.signals.iter()
+                        .find(|s| s.direction == Direction::Out)
+                        .map(|s| format!("{pfx}_{}", s.name.name));
+                    let addr = format!("{pfx}_addr");
+
+                    cpp.push_str(&format!("  if ({pfx}_en) {{\n"));
+                    if has_wen {
+                        cpp.push_str(&format!("    if ({pfx}_wen) {{\n"));
+                        if is_wide {
+                            cpp.push_str(&format!("      memcpy(&_mem[{pfx}_addr], &{wdata_name}, sizeof({elem_ty}));\n"));
+                        } else {
+                            cpp.push_str(&format!("      _mem[{pfx}_addr] = {wdata_name};\n"));
+                        }
+                        cpp.push_str(&write_mark_indented(&addr, "      "));
+                        cpp.push_str("    }");
+                        if matches!(r.latency, 1 | 2) {
+                            if let Some(out_name) = &out_name {
+                                cpp.push_str(" else {\n");
+                                cpp.push_str(&read_check(&addr, "      "));
+                                if is_wide {
+                                    cpp.push_str(&format!("      memcpy(&_r_{out_name}, &_mem[{pfx}_addr], sizeof({elem_ty}));\n"));
+                                } else {
+                                    cpp.push_str(&format!("      _r_{out_name} = _mem[{pfx}_addr];\n"));
+                                }
+                                cpp.push_str("    }\n");
+                            } else {
+                                cpp.push('\n');
+                            }
+                        } else {
+                            cpp.push('\n');
+                        }
+                    } else if matches!(r.latency, 1 | 2) {
+                        if let Some(out_name) = &out_name {
+                            cpp.push_str(&read_check(&addr, "    "));
+                            if is_wide {
+                                cpp.push_str(&format!("    memcpy(&_r_{out_name}, &_mem[{pfx}_addr], sizeof({elem_ty}));\n"));
+                            } else {
+                                cpp.push_str(&format!("    _r_{out_name} = _mem[{pfx}_addr];\n"));
+                            }
+                        }
+                    }
+                    cpp.push_str("  }\n");
+                }
+                if r.latency == 2 {
+                    for fs in &out_sigs {
+                        if is_wide {
+                            cpp.push_str(&format!("  memcpy(&_r2_{}, &_r_{}, sizeof({elem_ty}));\n", fs.full_name, fs.full_name));
+                        } else {
+                            cpp.push_str(&format!("  _r2_{} = _r_{};\n", fs.full_name, fs.full_name));
+                        }
+                    }
+                }
             }
             RamKind::Rom => {
                 // ROM: read-only, no writes in posedge
@@ -315,7 +389,10 @@ impl<'a> SimCodegen<'a> {
             match r.latency {
                 0 => {
                     let rpfx = r.port_groups.iter()
-                        .find(|pg| pg.signals.iter().any(|s| s.direction == Direction::Out))
+                        .find(|pg| pg.signals.iter().any(|s| {
+                            s.direction == Direction::Out
+                                && format!("{}_{}", pg.name.name, s.name.name) == fs.full_name
+                        }))
                         .map(|pg| pg.name.name.as_str())
                         .unwrap_or("access");
                     let rd_addr = format!("{rpfx}_addr");

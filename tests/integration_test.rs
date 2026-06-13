@@ -708,6 +708,190 @@ fn test_simple_dual_ram() {
     insta::assert_snapshot!(sv);
 }
 
+#[test]
+fn test_true_dual_ram_runs_in_native_sim() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("TrueDualMem.arch");
+    let tb_path = td.path().join("tb_true_dual.cpp");
+    std::fs::write(
+        &arch_path,
+        r#"
+//! ---
+//! tags: [ram, true_dual, native_sim]
+//! ---
+//!
+//! Regression fixture for true-dual RAM native C++ simulation.
+
+/// 16x8 true-dual RAM with independent read/write ports.
+ram TrueDualMem
+  kind true_dual;
+  latency 1;
+  init: zero;
+  param DEPTH: const = 16;
+  param T: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  store
+    data: Vec<T, DEPTH>;
+  end store
+  ports a
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports a
+  ports b
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports b
+end ram TrueDualMem
+"#,
+    )
+    .expect("write arch");
+    std::fs::write(
+        &tb_path,
+        r#"
+#include "VTrueDualMem.h"
+#include <cstdio>
+
+static void tick(VTrueDualMem& dut) {
+  dut.clk = 0;
+  dut.eval();
+  dut.clk = 1;
+  dut.eval();
+  dut.clk = 0;
+  dut.eval();
+}
+
+int main() {
+  VTrueDualMem dut;
+
+  dut.a_en = 1;
+  dut.a_wen = 1;
+  dut.a_addr = 3;
+  dut.a_wdata = 0x2a;
+  dut.b_en = 1;
+  dut.b_wen = 1;
+  dut.b_addr = 5;
+  dut.b_wdata = 0x55;
+  tick(dut);
+
+  dut.a_wen = 0;
+  dut.a_addr = 3;
+  dut.b_wen = 0;
+  dut.b_addr = 5;
+  tick(dut);
+  if (dut.a_rdata != 0x2a || dut.b_rdata != 0x55) {
+    std::printf("FAIL first read a=%u b=%u\n",
+                (unsigned)dut.a_rdata, (unsigned)dut.b_rdata);
+    return 1;
+  }
+
+  dut.a_en = 1;
+  dut.a_wen = 1;
+  dut.a_addr = 7;
+  dut.a_wdata = 0xc3;
+  dut.b_en = 1;
+  dut.b_wen = 0;
+  dut.b_addr = 3;
+  tick(dut);
+  if (dut.b_rdata != 0x2a) {
+    std::printf("FAIL read while other port writes b=%u\n",
+                (unsigned)dut.b_rdata);
+    return 1;
+  }
+
+  dut.a_wen = 0;
+  dut.a_addr = 7;
+  dut.b_en = 0;
+  tick(dut);
+  if (dut.a_rdata != 0xc3) {
+    std::printf("FAIL read back port-a write a=%u\n",
+                (unsigned)dut.a_rdata);
+    return 1;
+  }
+
+  std::printf("PASS true_dual_ram_native_sim\n");
+  return 0;
+}
+"#,
+    )
+    .expect("write tb");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("sim")
+        .arg(&arch_path)
+        .arg("--tb")
+        .arg(&tb_path)
+        .arg("--outdir")
+        .arg(td.path().join("build"))
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && stdout.contains("PASS true_dual_ram_native_sim"),
+        "true-dual RAM native sim should compile and run\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_true_dual_ram_sv_honors_latency() {
+    let source = |latency: u32| {
+        format!(
+            r#"
+ram TrueDualLat{latency}
+  kind true_dual;
+  latency {latency};
+  param DEPTH: const = 16;
+  param T: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  store
+    data: Vec<T, DEPTH>;
+  end store
+  ports a
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports a
+  ports b
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports b
+end ram TrueDualLat{latency}
+"#
+        )
+    };
+
+    let sv0 = compile_to_sv(&source(0));
+    assert!(
+        sv0.contains("assign a_rdata = mem[a_addr];")
+            && sv0.contains("assign b_rdata = mem[b_addr];"),
+        "latency-0 true-dual RAM should emit async read assigns:\n{sv0}"
+    );
+    assert!(
+        !sv0.contains("a_rdata_r"),
+        "latency-0 true-dual RAM should not emit read pipeline regs:\n{sv0}"
+    );
+
+    let sv2 = compile_to_sv(&source(2));
+    assert!(
+        sv2.contains("logic [DATA_WIDTH-1:0] a_rdata_r2;")
+            && sv2.contains("logic [DATA_WIDTH-1:0] b_rdata_r2;")
+            && sv2.contains("assign a_rdata = a_rdata_r2;")
+            && sv2.contains("assign b_rdata = b_rdata_r2;"),
+        "latency-2 true-dual RAM should emit output pipeline regs:\n{sv2}"
+    );
+}
+
 // ── Counter ───────────────────────────────────────────────────────────────────
 
 #[test]
