@@ -21,6 +21,10 @@ impl<'a> SimCodegen<'a> {
             .map(|s| s.name.name.clone()).collect();
         let stage_prefixes: Vec<String> = stage_names.iter()
             .map(|s| s.to_lowercase()).collect();
+        let wait_stage_flags: Vec<bool> = p.stages.iter()
+            .map(Self::pipeline_stage_has_wait)
+            .collect();
+        let has_any_wait_stage = wait_stage_flags.iter().any(|f| *f);
 
         // Flatten stage registers and let bindings
         struct StageReg { prefixed: String, ty: String, reset_val: String, bits: u32, is_let: bool }
@@ -63,9 +67,13 @@ impl<'a> SimCodegen<'a> {
             else { reg_names.insert(sr.prefixed.clone()); }
             widths.insert(sr.prefixed.clone(), sr.bits);
         }
-        for prefix in &stage_prefixes {
+        for (si, prefix) in stage_prefixes.iter().enumerate() {
             reg_names.insert(format!("{}_valid_r", prefix));
             widths.insert(format!("{}_valid_r", prefix), 1);
+            if wait_stage_flags[si] {
+                reg_names.insert(format!("{}_fsm_state", prefix));
+                widths.insert(format!("{}_fsm_state", prefix), 32);
+            }
         }
         // Add port widths
         for pt in &p.ports {
@@ -214,6 +222,11 @@ impl<'a> SimCodegen<'a> {
         inits.push("_clk_prev(0)".to_string());
         for sr in &all_regs { if !sr.is_let { inits.push(format!("_{}(0)", sr.prefixed)); } }
         for prefix in &stage_prefixes { inits.push(format!("_{}_valid_r(0)", prefix)); }
+        for (si, prefix) in stage_prefixes.iter().enumerate() {
+            if wait_stage_flags[si] {
+                inits.push(format!("_{}_fsm_state(0)", prefix));
+            }
+        }
         for stage_wires in &implicit_wires {
             for w in stage_wires { inits.push(format!("{}(0)", w.prefixed)); }
         }
@@ -227,6 +240,11 @@ impl<'a> SimCodegen<'a> {
         h.push_str("  uint8_t _clk_prev;\n");
         for sr in &all_regs { if !sr.is_let { h.push_str(&format!("  {} _{};\n", sr.ty, sr.prefixed)); } }
         for prefix in &stage_prefixes { h.push_str(&format!("  uint8_t _{}_valid_r;\n", prefix)); }
+        for (si, prefix) in stage_prefixes.iter().enumerate() {
+            if wait_stage_flags[si] {
+                h.push_str(&format!("  uint32_t _{}_fsm_state;\n", prefix));
+            }
+        }
         // Implicit wires (comb-block LHS targets and inst-output drivers).
         for stage_wires in &implicit_wires {
             for w in stage_wires {
@@ -255,6 +273,11 @@ impl<'a> SimCodegen<'a> {
             }
         }
         for prefix in &stage_prefixes { cpp.push_str(&format!("  _{}_valid_r = 0;\n", prefix)); }
+        for (si, prefix) in stage_prefixes.iter().enumerate() {
+            if wait_stage_flags[si] {
+                cpp.push_str(&format!("  _{}_fsm_state = 0;\n", prefix));
+            }
+        }
         cpp.push_str("}\n\n");
 
         // eval_posedge()
@@ -286,7 +309,7 @@ impl<'a> SimCodegen<'a> {
         // stage order so each stage sees its downstream's resolved value.
         let has_per_stage_stall = p.stages.iter().any(|s| s.stall_cond.is_some());
         let has_global_stall = !p.stall_conds.is_empty();
-        let has_any_stall = has_per_stage_stall || has_global_stall;
+        let has_any_stall = has_per_stage_stall || has_global_stall || has_any_wait_stage;
         if has_global_stall {
             let parts: Vec<String> = p.stall_conds.iter().map(|c| {
                 self.pipeline_sim_expr(&c.condition, "", 0,
@@ -305,6 +328,9 @@ impl<'a> SimCodegen<'a> {
                         &port_names, &reg_names, &let_names, &widths, &_enum_map, &p.common.params);
                     parts.push(format!("({s})"));
                 }
+                if wait_stage_flags[si] {
+                    parts.push(format!("(_{prefix}_fsm_state != 0)"));
+                }
                 if has_global_stall { parts.push("_pipeline_stall".to_string()); }
                 if si + 1 < p.stages.len() {
                     parts.push(format!("_{}_stall", stage_prefixes[si + 1]));
@@ -319,6 +345,12 @@ impl<'a> SimCodegen<'a> {
         for si in (0..p.stages.len()).rev() {
             let stage = &p.stages[si];
             let prefix = &stage_prefixes[si];
+            if wait_stage_flags[si] {
+                self.emit_pipeline_sim_wait_stage(&mut cpp, stage, prefix, si,
+                    &stage_names, &stage_prefixes, &stage_reg_names,
+                    &port_names, &reg_names, &let_names, &widths, &_enum_map, &p.common.params, 6);
+                continue;
+            }
             // When stall is in play, this stage advances only if not stalled.
             // valid_r propagation: if upstream is stalled, insert a bubble.
             let (open_guard, close_guard, indent_extra) = if has_any_stall {
@@ -422,6 +454,146 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("}\n");
 
         SimModel { class_name: class, header: h, impl_: cpp }
+    }
+
+    fn pipeline_stage_has_wait(stage: &StageDecl) -> bool {
+        stage.body.iter().any(|item| {
+            if let ModuleBodyItem::RegBlock(rb) = item {
+                Self::pipeline_stmts_contain_wait(&rb.stmts)
+            } else {
+                false
+            }
+        })
+    }
+
+    fn pipeline_stmts_contain_wait(stmts: &[Stmt]) -> bool {
+        stmts.iter().any(|stmt| match stmt {
+            Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => true,
+            Stmt::IfElse(ie) => {
+                Self::pipeline_stmts_contain_wait(&ie.then_stmts)
+                    || Self::pipeline_stmts_contain_wait(&ie.else_stmts)
+            }
+            Stmt::For(f) => Self::pipeline_stmts_contain_wait(&f.body),
+            _ => false,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_pipeline_sim_wait_stage(
+        &self, cpp: &mut String, stage: &StageDecl, prefix: &str, si: usize,
+        sn: &[String], sp: &[String], srn: &[HashSet<String>],
+        pn: &HashSet<String>, rn: &HashSet<String>, ln: &HashSet<String>,
+        w: &HashMap<String, u32>, em: &HashMap<String, Vec<(String, u64)>>,
+        params: &[ParamDecl], indent: usize,
+    ) {
+        let mut seq_stmts: &[Stmt] = &[];
+        for item in &stage.body {
+            if let ModuleBodyItem::RegBlock(rb) = item {
+                seq_stmts = &rb.stmts;
+                break;
+            }
+        }
+
+        struct WaitGroup<'a> {
+            pre_assigns: Vec<&'a Stmt>,
+            cond: &'a Expr,
+            hold_assigns: Vec<&'a Stmt>,
+        }
+
+        let mut groups = Vec::new();
+        let mut cur_assigns = Vec::new();
+        for stmt in seq_stmts {
+            match stmt {
+                Stmt::WaitUntil(cond, _) => {
+                    groups.push(WaitGroup {
+                        pre_assigns: std::mem::take(&mut cur_assigns),
+                        cond,
+                        hold_assigns: Vec::new(),
+                    });
+                }
+                Stmt::DoUntil { body, cond, .. } => {
+                    groups.push(WaitGroup {
+                        pre_assigns: std::mem::take(&mut cur_assigns),
+                        cond,
+                        hold_assigns: body.iter().collect(),
+                    });
+                }
+                other => cur_assigns.push(other),
+            }
+        }
+        let trailing = std::mem::take(&mut cur_assigns);
+        if groups.is_empty() {
+            return;
+        }
+
+        let pad = " ".repeat(indent);
+        let pad2 = " ".repeat(indent + 2);
+        let upstream_valid = if si > 0 {
+            format!("_{}_valid_r", sp[si - 1])
+        } else {
+            "1".to_string()
+        };
+
+        cpp.push_str(&format!("{pad}switch (_{prefix}_fsm_state) {{\n"));
+
+        // Idle state: accepts new data when upstream is valid. If the first
+        // wait condition is already true, fast-path through it; otherwise
+        // enter state 1 and run do-until hold assignments once.
+        let first = &groups[0];
+        let first_cond = self.pipeline_sim_expr(first.cond, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
+        cpp.push_str(&format!("{pad2}case 0: {{\n"));
+        cpp.push_str(&format!("{pad2}  if ({upstream_valid}) {{\n"));
+        for stmt in &first.pre_assigns {
+            self.emit_pipeline_sim_stmt(cpp, stmt, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent + 4);
+        }
+        cpp.push_str(&format!("{pad2}    if ({first_cond}) {{\n"));
+        if groups.len() == 1 {
+            for stmt in &trailing {
+                self.emit_pipeline_sim_stmt(cpp, stmt, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent + 6);
+            }
+            cpp.push_str(&format!("{pad2}      _{prefix}_valid_r = {upstream_valid};\n"));
+        } else {
+            cpp.push_str(&format!("{pad2}      _{prefix}_fsm_state = 2;\n"));
+        }
+        cpp.push_str(&format!("{pad2}    }} else {{\n"));
+        cpp.push_str(&format!("{pad2}      _{prefix}_fsm_state = 1;\n"));
+        for stmt in &first.hold_assigns {
+            self.emit_pipeline_sim_stmt(cpp, stmt, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent + 6);
+        }
+        cpp.push_str(&format!("{pad2}    }}\n"));
+        cpp.push_str(&format!("{pad2}  }}\n"));
+        cpp.push_str(&format!("{pad2}  break;\n"));
+        cpp.push_str(&format!("{pad2}}}\n"));
+
+        for (gi, group) in groups.iter().enumerate() {
+            let state = gi + 1;
+            let cond = self.pipeline_sim_expr(group.cond, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
+            cpp.push_str(&format!("{pad2}case {state}: {{\n"));
+            for stmt in &group.hold_assigns {
+                self.emit_pipeline_sim_stmt(cpp, stmt, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent + 4);
+            }
+            cpp.push_str(&format!("{pad2}  if ({cond}) {{\n"));
+            let is_last = gi + 1 >= groups.len();
+            if is_last {
+                for stmt in &trailing {
+                    self.emit_pipeline_sim_stmt(cpp, stmt, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent + 4);
+                }
+                cpp.push_str(&format!("{pad2}    _{prefix}_fsm_state = 0;\n"));
+                cpp.push_str(&format!("{pad2}    _{prefix}_valid_r = 1;\n"));
+            } else {
+                let next_group = &groups[gi + 1];
+                for stmt in &next_group.pre_assigns {
+                    self.emit_pipeline_sim_stmt(cpp, stmt, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params, indent + 4);
+                }
+                cpp.push_str(&format!("{pad2}    _{prefix}_fsm_state = {};\n", state + 1));
+            }
+            cpp.push_str(&format!("{pad2}  }}\n"));
+            cpp.push_str(&format!("{pad2}  break;\n"));
+            cpp.push_str(&format!("{pad2}}}\n"));
+        }
+
+        cpp.push_str(&format!("{pad2}default: _{prefix}_fsm_state = 0; break;\n"));
+        cpp.push_str(&format!("{pad}}}\n"));
     }
 
     fn emit_pipeline_sim_stmt(
