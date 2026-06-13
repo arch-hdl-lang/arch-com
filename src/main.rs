@@ -1802,11 +1802,6 @@ fn run_sim_opts(
 
     // ── Pybind11 mode ────────────────────────────────────────────────────
     if pybind {
-        if thread_sim_parallel {
-            return Err(miette::miette!(
-                "--pybind not yet supported with --thread-sim parallel"
-            ));
-        }
         let mut sim = SimCodegen::new(&symbols, &ast, overload_map.clone())
             .check_uninit(check_uninit)
             .inputs_start_uninit(inputs_start_uninit)

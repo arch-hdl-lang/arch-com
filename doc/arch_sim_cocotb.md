@@ -1,6 +1,6 @@
 # `arch sim` — cocotb Integration Guide
 
-`arch sim --pybind --test` runs Python testbenches against an ARCH design using a cocotb-compatible API, with no Verilator, iverilog, or VPI in the loop. The generated C++ model is wrapped with pybind11, and a thin scheduler (`arch_cocotb`) drives it tick-by-tick from an asyncio event loop.
+`arch sim --pybind --test` runs Python testbenches against an ARCH design using a cocotb-compatible API, with no Verilator, iverilog, or VPI in the loop. The generated C++ model is wrapped with pybind11, and a thin scheduler (`arch_cocotb`) drives it tick-by-tick from an asyncio event loop. This flow also supports `--thread-sim parallel`; the pybind wrapper adapts to the pre-lowering thread-sim model's edge-sensitive `eval()` API.
 
 The intent is "write the same testbench you would for real cocotb" — same decorators, triggers, signal handles, and coroutine patterns — while trading VPI fidelity for deterministic timing and faster iteration.
 
@@ -10,6 +10,7 @@ The intent is "write the same testbench you would for real cocotb" — same deco
 
 ```sh
 arch sim --pybind --test test_mymodule.py MyModule.arch
+arch sim --thread-sim parallel --pybind --test test_mymodule.py MyThreadModule.arch
 ```
 
 Under the hood this:
