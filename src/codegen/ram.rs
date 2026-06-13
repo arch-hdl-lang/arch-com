@@ -396,39 +396,75 @@ impl<'a> Codegen<'a> {
 
         let rdata_a_r = format!("{pfx_a}_{rdata_a}_r");
         let rdata_b_r = format!("{pfx_b}_{rdata_b}_r");
-        self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_a_r};"));
-        self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_b_r};"));
-        self.line("");
-        self.line(&format!("always_ff @(posedge {clk}) begin"));
-        self.indent += 1;
-        self.line(&format!("if ({pfx_a}_en) begin"));
-        self.indent += 1;
-        self.line(&format!("if ({pfx_a}_wen)"));
-        self.indent += 1;
-        self.line(&format!("mem[{pfx_a}_addr] <= {pfx_a}_wdata;"));
-        self.indent -= 1;
-        self.line("else");
-        self.indent += 1;
-        self.line(&format!("{rdata_a_r} <= mem[{pfx_a}_addr];"));
-        self.indent -= 1;
-        self.indent -= 1;
-        self.line("end");
-        self.line(&format!("if ({pfx_b}_en) begin"));
-        self.indent += 1;
-        self.line(&format!("if ({pfx_b}_wen)"));
-        self.indent += 1;
-        self.line(&format!("mem[{pfx_b}_addr] <= {pfx_b}_wdata;"));
-        self.indent -= 1;
-        self.line("else");
-        self.indent += 1;
-        self.line(&format!("{rdata_b_r} <= mem[{pfx_b}_addr];"));
-        self.indent -= 1;
-        self.indent -= 1;
-        self.line("end");
-        self.indent -= 1;
-        self.line("end");
-        self.line(&format!("assign {pfx_a}_{rdata_a} = {rdata_a_r};"));
-        self.line(&format!("assign {pfx_b}_{rdata_b} = {rdata_b_r};"));
+        match r.latency {
+            0 => {
+                self.line(&format!("always_ff @(posedge {clk}) begin"));
+                self.indent += 1;
+                self.line(&format!("if ({pfx_a}_en && {pfx_a}_wen)"));
+                self.indent += 1;
+                self.line(&format!("mem[{pfx_a}_addr] <= {pfx_a}_wdata;"));
+                self.indent -= 1;
+                self.line(&format!("if ({pfx_b}_en && {pfx_b}_wen)"));
+                self.indent += 1;
+                self.line(&format!("mem[{pfx_b}_addr] <= {pfx_b}_wdata;"));
+                self.indent -= 1;
+                self.indent -= 1;
+                self.line("end");
+                self.line(&format!("assign {pfx_a}_{rdata_a} = mem[{pfx_a}_addr];"));
+                self.line(&format!("assign {pfx_b}_{rdata_b} = mem[{pfx_b}_addr];"));
+            }
+            1 | 2 => {
+                self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_a_r};"));
+                self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_b_r};"));
+                self.line("");
+                self.line(&format!("always_ff @(posedge {clk}) begin"));
+                self.indent += 1;
+                self.line(&format!("if ({pfx_a}_en) begin"));
+                self.indent += 1;
+                self.line(&format!("if ({pfx_a}_wen)"));
+                self.indent += 1;
+                self.line(&format!("mem[{pfx_a}_addr] <= {pfx_a}_wdata;"));
+                self.indent -= 1;
+                self.line("else");
+                self.indent += 1;
+                self.line(&format!("{rdata_a_r} <= mem[{pfx_a}_addr];"));
+                self.indent -= 1;
+                self.indent -= 1;
+                self.line("end");
+                self.line(&format!("if ({pfx_b}_en) begin"));
+                self.indent += 1;
+                self.line(&format!("if ({pfx_b}_wen)"));
+                self.indent += 1;
+                self.line(&format!("mem[{pfx_b}_addr] <= {pfx_b}_wdata;"));
+                self.indent -= 1;
+                self.line("else");
+                self.indent += 1;
+                self.line(&format!("{rdata_b_r} <= mem[{pfx_b}_addr];"));
+                self.indent -= 1;
+                self.indent -= 1;
+                self.line("end");
+                self.indent -= 1;
+                self.line("end");
+                if r.latency == 2 {
+                    let rdata_a_r2 = format!("{pfx_a}_{rdata_a}_r2");
+                    let rdata_b_r2 = format!("{pfx_b}_{rdata_b}_r2");
+                    self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_a_r2};"));
+                    self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_b_r2};"));
+                    self.line(&format!("always_ff @(posedge {clk}) begin"));
+                    self.indent += 1;
+                    self.line(&format!("{rdata_a_r2} <= {rdata_a_r};"));
+                    self.line(&format!("{rdata_b_r2} <= {rdata_b_r};"));
+                    self.indent -= 1;
+                    self.line("end");
+                    self.line(&format!("assign {pfx_a}_{rdata_a} = {rdata_a_r2};"));
+                    self.line(&format!("assign {pfx_b}_{rdata_b} = {rdata_b_r2};"));
+                } else {
+                    self.line(&format!("assign {pfx_a}_{rdata_a} = {rdata_a_r};"));
+                    self.line(&format!("assign {pfx_b}_{rdata_b} = {rdata_b_r};"));
+                }
+            }
+            _ => {}
+        }
     }
 
     fn emit_ram_rom(&mut self, r: &RamDecl, clk: &str) {
