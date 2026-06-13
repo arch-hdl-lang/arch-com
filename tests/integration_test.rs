@@ -4600,6 +4600,48 @@ end linklist BadList
 }
 
 #[test]
+fn test_linklist_op_length_is_type_error_not_codegen_panic() {
+    // `length` is a status port (`port length: out ...` maintained by
+    // `track length:`), never an op. It was mistakenly listed in the
+    // typechecker's known-ops allow-list, so `op length` type-checked and then
+    // panicked at codegen via the `unreachable!` in emit_ll_op_controller
+    // (which has no `length` dispatch arm). It must be rejected at typecheck.
+    let source = r#"
+linklist LenList
+  param DEPTH: const = 16;
+  param DATA: type = UInt<32>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  kind singly;
+  op length
+    latency: 1;
+    port req_valid:  in Bool;
+    port req_ready:  out Bool;
+    port resp_valid: out Bool;
+    port resp_data:  out UInt<8>;
+  end op length
+end linklist LenList
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "expected type error for `op length`");
+    let errs = result.unwrap_err();
+    assert!(
+        errs.iter().any(|e| {
+            let s = e.to_string();
+            s.contains("linklist `LenList`: unknown op `length`; known ops:")
+        }),
+        "expected unknown-op diagnostic for `length`, got: {:?}",
+        errs
+    );
+}
+
+#[test]
 fn test_linklist_inst_in_module() {
     // PacketQueue wraps TaskQueue linklist as a push/pop FIFO interface.
     // Verifies that: linklist can be instantiated inside a module,
