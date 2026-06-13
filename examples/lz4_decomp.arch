@@ -1,0 +1,144 @@
+//! ---
+//! tags: [compression, lz4, decompressor, thread, vec, tutorial]
+//! refs:
+//!   - "LZ4 Block Format Description — lz4.org/lz4_Block_format.html"
+//!   - "CAST LZ4SNP-D LZ4/Snappy Data Decompressor IP Core"
+//! ---
+//!
+//! LZ4 block decompressor (simplified).
+//!
+//! Implements the LZ4 block format byte-serial decompressor with a 16-byte
+//! circular history window.  Two constraints relative to full LZ4:
+//!   (1) Literal-length and match-length nibbles must be < 15 (no extension
+//!       bytes).  Streams that exceed this will silently mis-decode.
+//!   (2) Match offsets are taken mod 16 (only the low 4 bits of the 16-bit
+//!       little-endian offset field are used).  Offsets up to 15 work
+//!       correctly for the 16-byte history window.
+//!
+//! Interface
+//!   in_data / in_valid / in_last / in_ready  — compressed input stream.
+//!     Assert in_last on the final compressed byte of the block.
+//!   out_data / out_valid / out_ready          — decompressed output stream.
+//!   done                                      — pulses high for one cycle
+//!     after the last output byte is accepted (same cycle out_ready fires
+//!     the last byte).  Stays high until reset.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module Lz4Decomp
+  port clk:      in Clock<SysDomain>;
+  port rst:      in Reset<Sync, High>;
+
+  // Compressed input stream (byte-serial, valid/ready)
+  port in_data:  in UInt<8>;
+  port in_valid: in Bool;
+  port in_last:  in Bool;   // high on the last compressed byte of the block
+  port in_ready: out Bool;
+
+  // Decompressed output stream (byte-serial, valid/ready)
+  port out_data:  out UInt<8>;
+  port out_valid: out Bool;
+  port out_ready: in Bool;
+
+  // Status: asserted once all output bytes of the block have been accepted
+  port done: out Bool;
+
+  // ── Internal state ──────────────────────────────────────────────────────
+  // 16-byte circular history buffer (Vec register, no RAM latency)
+  reg history:    Vec<UInt<8>, 16> reset rst => 0;
+  reg wr_ptr_r:   UInt<4>  reset rst => 0;   // next write slot
+
+  reg done_r:      Bool    reset rst => false;
+  reg seen_last_r: Bool    reset rst => false;
+
+  // Per-sequence working registers
+  reg token_r:      UInt<8> reset rst => 0;   // captured token byte
+  reg byte_r:       UInt<8> reset rst => 0;   // captured literal byte
+  reg mat_off_lo_r: UInt<8> reset rst => 0;   // match offset low byte
+  reg copy_src_r:   UInt<4> reset rst => 0;   // current match-copy read ptr
+
+  let done = done_r;
+
+  // ── Decompressor thread ─────────────────────────────────────────────────
+  // Each pass through the thread body handles ONE LZ4 sequence
+  // (token → literals → [match_offset → match_copy]).
+  // The thread loops indefinitely; once done_r is true it stalls at the
+  // opening guard and waits for reset.
+  thread Decomp on clk rising, rst high
+    default comb
+      in_ready  = false;
+      out_valid = false;
+      out_data  = 0;
+    end default
+
+    // Stall here after the block is done (until reset).
+    wait until not done_r;
+
+    // ── Step 1: Read token byte ─────────────────────────────────────────
+    do
+      in_ready = 1;
+    until in_valid;
+    token_r     <= in_data;
+    seen_last_r <= in_last;   // reset per sequence; true if token itself is last
+
+    // ── Step 2: Read literal bytes (token[7:4] of them) ────────────────
+    // token_r is valid in the next state (registered in previous cycle).
+    if token_r[7:4] != 4'd0
+      for lit_i in 0..(token_r[7:4] -% 4'd1)
+        // Consume one literal from the input stream.
+        do
+          in_ready = 1;
+        until in_valid;
+        byte_r      <= in_data;
+        seen_last_r <= seen_last_r or in_last;
+
+        // Forward literal to output and write into history.
+        do
+          out_valid = 1;
+          out_data  = byte_r;
+        until out_ready;
+        history[wr_ptr_r] <= byte_r;
+        wr_ptr_r <= (wr_ptr_r + 1).trunc<4>();
+      end for
+    end if
+
+    // ── Step 3: Check for end-of-block ─────────────────────────────────
+    if seen_last_r
+      // Last sequence has no match — decompression complete.
+      done_r <= true;
+    else
+      // ── Step 4: Read match offset (16-bit little-endian) ────────────
+      do
+        in_ready = 1;
+      until in_valid;
+      mat_off_lo_r <= in_data;   // low byte; high byte consumed next
+
+      do
+        in_ready = 1;
+      until in_valid;
+      // High byte consumed but not stored (offset mod 16 for 16-entry history).
+
+      // Compute match-copy source pointer: wraps mod 16.
+      // mat_off_lo_r is valid (captured two states ago).
+      copy_src_r <= wr_ptr_r -% mat_off_lo_r[3:0];
+
+      // ── Step 5: Copy match bytes (4 + token[3:0] of them) ──────────
+      // copy_src_r and wr_ptr_r are updated after the do-until exits;
+      // the for-loop counter evaluates token_r[3:0] which hasn't changed.
+      for mat_i in 0..(token_r[3:0].zext<8>() +% 8'd3)
+        // Output one match byte (comb read of Vec history, no latency).
+        do
+          out_valid = 1;
+          out_data  = history[copy_src_r];
+        until out_ready;
+        // Byte-by-byte copy into history (handles overlapping matches).
+        history[wr_ptr_r] <= history[copy_src_r];
+        wr_ptr_r   <= (wr_ptr_r + 1).trunc<4>();
+        copy_src_r <= (copy_src_r + 1).trunc<4>();
+      end for
+    end if
+    // Thread loops back to 'wait until not done_r' — processes next sequence.
+  end thread Decomp
+end module Lz4Decomp
