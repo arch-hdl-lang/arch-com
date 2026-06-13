@@ -3786,8 +3786,9 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
             if !is_seq {
                 unreachable!("Stmt::WaitUntil/DoUntil reached emit_stmt(Comb) — typecheck bug");
             }
-            // Seq path: pipeline-stage wait/do-until isn't yet sim-supported.
-            panic!("pipeline wait-stages not yet supported in sim");
+            // Pipeline wait-stage seq blocks are emitted by `gen_pipeline`;
+            // the generic module stmt walker should never lower them.
+            unreachable!("Stmt::WaitUntil/DoUntil reached generic sim stmt emitter");
         }
     }
 }
