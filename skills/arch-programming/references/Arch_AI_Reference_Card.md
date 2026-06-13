@@ -1125,7 +1125,7 @@ connect cpu.m -> ram0.s;
 connect cpu.m -> ram1.s;
 ```
 
-One-to-many connect synthesizes private bus wires plus comb/seq routing logic. The bus must use a TLM method argument named `addr`; every repeated target instance must override literal `SLAVE_START_ADDR` / `SLAVE_END_ADDR` ranges, and those ranges must cover the full decode width. The enclosing module must have exactly one `Clock` port and one `Reset` port for the generated response-route registers. Tagged `out_of_order` routing and custom decode-error response synthesis still require an explicit router module.
+One-to-many connect synthesizes private bus wires plus comb/seq routing logic. The bus must use a TLM method argument named `addr`; every repeated target instance must override literal `SLAVE_START_ADDR` / `SLAVE_END_ADDR` ranges, and those ranges must cover the full decode width. The enclosing module must have exactly one `Clock` port and one `Reset` port for the generated response-route registers. A target may expose a bus-param method subset, such as `Mem<WRITE=0>` for read-only ranges; requests decoded to a target that lacks the method get a synthesized local response (zero/false, or `resp=1` for struct responses with a `resp` field). Tagged `out_of_order` routing and custom routing/arbitration policy still require an explicit router module.
 
 `connect` is also legal inside `generate_for` / `generate_if`. In `generate_for`, suffix-substituted instance names are expanded before TLM lowering, so `connect src_i.m -> dst_i.s;` creates independent private bus wires such as `src_0.m -> dst_0.s` and `src_1.m -> dst_1.s`. The usual one-endpoint-use rule still applies after expansion.
 
