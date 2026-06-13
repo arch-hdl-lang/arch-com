@@ -6013,10 +6013,15 @@ impl<'a> TypeChecker<'a> {
                 ));
             }
 
-            // Known op names
+            // Known op names. NOTE: `length` is intentionally NOT an op — it is a
+            // status port (`port length: out ...`) maintained by `track length:`.
+            // It was previously listed here, which let `op length` type-check and
+            // then hit the `unreachable!` in codegen (src/codegen/linklist.rs), since
+            // there is no codegen arm for it. Keep this list in lockstep with the
+            // dispatch arms in emit_ll_op_controller.
             let known_ops = [
                 "alloc", "free", "insert_head", "insert_tail", "insert_after",
-                "delete_head", "delete", "read_data", "write_data", "next", "prev", "length",
+                "delete_head", "delete", "read_data", "write_data", "next", "prev",
             ];
             if !known_ops.contains(&op.name.name.as_str()) {
                 self.errors.push(CompileError::general(
