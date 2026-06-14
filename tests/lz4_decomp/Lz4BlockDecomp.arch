@@ -1,0 +1,163 @@
+// LZ4 raw-block decompressor (CAST LZ4SNP-D reference implementation).
+//
+// Streaming byte interface with AXI4-Stream handshake (valid/ready).
+// Assert in_last on the last compressed input byte.
+// out_last pulses on the last decompressed output byte.
+//
+// Supports up to 255-byte backward match offsets (8-bit history ring).
+// The LZ4 spec uses a 16-bit offset field; the high byte is consumed
+// and discarded — the low byte drives the 256-entry history buffer.
+//
+// Reference: CAST LZ4SNP-D lossless data decompressor IP.
+module Lz4BlockDecomp
+  port clk:       in Clock<SysDomain>;
+  port rst:       in Reset<Sync>;
+
+  port in_data:   in  UInt<8>;
+  port in_valid:  in  Bool;
+  port in_last:   in  Bool;
+  port in_ready:  out Bool;
+
+  port out_data:  out UInt<8>;
+  port out_valid: out Bool;
+  port out_last:  out Bool;
+  port out_ready: in  Bool;
+
+  // State encoding constants.
+  let ST_TOKEN:       UInt<4> = 4'd0;
+  let ST_EXTRA_LIT:   UInt<4> = 4'd1;
+  let ST_EMIT_LIT:    UInt<4> = 4'd2;
+  let ST_OFF_LO:      UInt<4> = 4'd3;
+  let ST_OFF_HI:      UInt<4> = 4'd4;
+  let ST_EXTRA_MATCH: UInt<4> = 4'd5;
+  let ST_COPY_MATCH:  UInt<4> = 4'd6;
+
+  // 256-byte history ring — Vec of regs.
+  // UInt<8> index into Vec<_,256> is always in-bounds (2^8 = 256).
+  reg history: Vec<UInt<8>, 256> reset rst => 0;
+
+  // FSM state
+  reg state:        UInt<4>  reset rst => 0;
+  reg lit_remain:   UInt<16> reset rst => 0;
+  reg match_len:    UInt<16> reset rst => 0;
+  reg match_nibble: UInt<4>  reset rst => 0;
+  reg match_remain: UInt<16> reset rst => 0;
+  reg offset:       UInt<8>  reset rst => 0;
+  reg copy_rd_ptr:  UInt<8>  reset rst => 0;
+  reg wptr:         UInt<8>  reset rst => 0;
+  reg saw_last:     Bool     reset rst => false;
+
+  // Combinational read of history at the current copy read pointer.
+  let hist_rd_val: UInt<8> = history[copy_rd_ptr];
+
+  // Combinational output logic.
+  // Default everything to 0/false; override per state.
+  comb
+    in_ready  = false;
+    out_data  = 0;
+    out_valid = false;
+    out_last  = false;
+
+    if state == ST_EMIT_LIT
+      in_ready  = out_ready;
+      out_valid = in_valid;
+      out_data  = in_data;
+      out_last  = (in_valid and in_last) and (lit_remain == 1);
+    elsif state == ST_COPY_MATCH
+      out_valid = true;
+      out_data  = hist_rd_val;
+      out_last  = saw_last and (match_remain == 1);
+    else
+      // ST_TOKEN / ST_EXTRA_LIT / ST_OFF_LO / ST_OFF_HI / ST_EXTRA_MATCH
+      in_ready = true;
+    end if
+  end comb
+
+  // Sequential FSM.
+  seq on clk rising
+
+    if state == ST_TOKEN
+      if in_valid
+        lit_remain   <= in_data[7:4].zext<16>();
+        match_nibble <= in_data[3:0];
+        match_len    <= (in_data[3:0].zext<16>() + 4).trunc<16>();
+        saw_last     <= in_last;
+        if in_data[7:4] == 15
+          state <= ST_EXTRA_LIT;
+        elsif in_data[7:4] != 0
+          state <= ST_EMIT_LIT;
+        else
+          state <= ST_OFF_LO;
+        end if
+      end if
+
+    elsif state == ST_EXTRA_LIT
+      if in_valid
+        lit_remain <= (lit_remain + in_data.zext<16>()).trunc<16>();
+        saw_last   <= in_last;
+        if in_data != 255
+          state <= ST_EMIT_LIT;
+        end if
+      end if
+
+    elsif state == ST_EMIT_LIT
+      if in_valid and out_ready
+        history[wptr] <= in_data;
+        wptr       <= wptr +% 1;
+        lit_remain <= (lit_remain - 1).trunc<16>();
+        saw_last   <= in_last;
+        if lit_remain == 1
+          if in_last
+            state <= ST_TOKEN;
+          else
+            state <= ST_OFF_LO;
+          end if
+        end if
+      end if
+
+    elsif state == ST_OFF_LO
+      if in_valid
+        offset   <= in_data;
+        saw_last <= in_last;
+        state    <= ST_OFF_HI;
+      end if
+
+    elsif state == ST_OFF_HI
+      if in_valid
+        saw_last <= in_last;
+        if match_nibble == 15
+          state <= ST_EXTRA_MATCH;
+        else
+          match_remain <= match_len;
+          copy_rd_ptr  <= wptr -% offset;
+          state        <= ST_COPY_MATCH;
+        end if
+      end if
+
+    elsif state == ST_EXTRA_MATCH
+      if in_valid
+        saw_last  <= in_last;
+        match_len <= (match_len + in_data.zext<16>()).trunc<16>();
+        if in_data != 255
+          match_remain <= (match_len + in_data.zext<16>()).trunc<16>();
+          copy_rd_ptr  <= wptr -% offset;
+          state        <= ST_COPY_MATCH;
+        end if
+      end if
+
+    elsif state == ST_COPY_MATCH
+      if out_ready
+        history[wptr] <= hist_rd_val;
+        wptr         <= wptr +% 1;
+        copy_rd_ptr  <= copy_rd_ptr +% 1;
+        match_remain <= (match_remain - 1).trunc<16>();
+        if match_remain == 1
+          state <= ST_TOKEN;
+        end if
+      end if
+
+    end if
+
+  end seq
+
+end module Lz4BlockDecomp
