@@ -1,0 +1,29 @@
+/// LZ4 history ring buffer.
+///
+/// 65536-byte simple_dual-port SRAM backing the back-reference copy
+/// window.  Write port and read port operate independently at 1-cycle
+/// read latency.  The write-then-read overlap that LZ4's RLE-style
+/// sequences require is handled at the FSM level: the read address for
+/// copy byte N is issued one cycle before the data is needed, so a byte
+/// written at cycle T is visible to a read address issued at cycle T+1.
+
+ram Lz4HistBuf
+  kind simple_dual;
+  latency 1;
+  param DEPTH: const = 65536;
+  param T: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  store
+    mem: Vec<T, DEPTH>;
+  end store
+  ports wr
+    en:   in Bool;
+    addr: in UInt<16>;
+    data: in T;
+  end ports wr
+  ports rd
+    en:   in Bool;
+    addr: in UInt<16>;
+    data: out T;
+  end ports rd
+end ram Lz4HistBuf

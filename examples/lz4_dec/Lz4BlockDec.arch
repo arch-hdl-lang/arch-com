@@ -1,0 +1,92 @@
+/// LZ4 block decompressor — top-level wrapper.
+///
+/// Instantiates Lz4DecFsm (decode state machine) and Lz4HistBuf
+/// (65 536-byte history RAM), wiring the RAM access ports together.
+/// Exposes only the clean byte-stream I/O to the outside world.
+///
+/// This is the direct hardware analogue of the CAST LZ4SNP-D IP
+/// (LZ4/Snappy Data Decompressor), restricted to the LZ4 block format.
+///
+/// Ports
+/// ─────
+///   clk        100 MHz system clock
+///   rst        Synchronous active-high reset
+///
+///   in_valid   Compressed input byte valid
+///   in_data    Compressed input byte data
+///   in_ready   Decoder ready to accept (back-pressure to source)
+///   in_last    Assert on the last byte of the compressed block
+///
+///   out_valid  Decompressed output byte valid
+///   out_data   Decompressed output byte data
+///   out_ready  Downstream ready (back-pressure from sink)
+
+module Lz4BlockDec
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  port in_valid: in  Bool;
+  port in_data:  in  UInt<8>;
+  port in_ready: out Bool;
+  port in_last:  in  Bool;
+
+  port out_valid: out Bool;
+  port out_data:  out UInt<8>;
+  port out_ready: in  Bool;
+
+  // ── Internal connections ─────────────────────────────────────────────────
+
+  // FSM → RAM write port (combinational FSM outputs; use wire)
+  wire hist_wr_en_w:   Bool;
+  wire hist_wr_addr_w: UInt<16>;
+  wire hist_wr_data_w: UInt<8>;
+
+  // FSM → RAM read address (combinational)
+  wire hist_rd_en_w:   Bool;
+  wire hist_rd_addr_w: UInt<16>;
+
+  // RAM → FSM read data (registered output of the RAM; use reg reset none)
+  reg  hist_rd_data_w: UInt<8> init 0 reset none;
+
+  // FSM → module output ports (combinational; routed through wires + comb)
+  wire dec_in_ready_w:  Bool;
+  wire dec_out_valid_w: Bool;
+  wire dec_out_data_w:  UInt<8>;
+
+  comb
+    in_ready  = dec_in_ready_w;
+    out_valid = dec_out_valid_w;
+    out_data  = dec_out_data_w;
+  end comb
+
+  // ── History RAM ──────────────────────────────────────────────────────────
+  inst hist: Lz4HistBuf
+    clk      <- clk;
+    wr.en    <- hist_wr_en_w;
+    wr.addr  <- hist_wr_addr_w;
+    wr.data  <- hist_wr_data_w;
+    rd.en    <- hist_rd_en_w;
+    rd.addr  <- hist_rd_addr_w;
+    rd.data  -> hist_rd_data_w;
+  end inst hist
+
+  // ── Decode FSM ───────────────────────────────────────────────────────────
+  inst dec: Lz4DecFsm
+    clk          <- clk;
+    rst          <- rst;
+    in_valid     <- in_valid;
+    in_data      <- in_data;
+    in_ready     -> dec_in_ready_w;
+    in_last      <- in_last;
+    out_valid    -> dec_out_valid_w;
+    out_data     -> dec_out_data_w;
+    out_ready    <- out_ready;
+    hist_wr_en   -> hist_wr_en_w;
+    hist_wr_addr -> hist_wr_addr_w;
+    hist_wr_data -> hist_wr_data_w;
+    hist_rd_en   -> hist_rd_en_w;
+    hist_rd_addr -> hist_rd_addr_w;
+    hist_rd_data <- hist_rd_data_w;
+  end inst dec
+
+end module Lz4BlockDec

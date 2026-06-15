@@ -1,0 +1,8 @@
+/// Shared package for LZ4 block decompressor IP.
+/// Defines the 100 MHz system clock domain used by all sub-modules.
+
+package PkgLz4
+  domain SysDomain
+    freq_mhz: 100
+  end domain SysDomain
+end package PkgLz4

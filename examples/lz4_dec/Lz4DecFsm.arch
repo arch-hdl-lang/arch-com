@@ -1,0 +1,241 @@
+/// LZ4 block decompressor — decode state machine.
+///
+/// Implements the LZ4 block format (RFC-lz4 block spec):
+///
+///   repeat until end-of-block:
+///     token := read_byte()         // high nibble = lit_len, low = match_len
+///     if lit_nibble == 15: accumulate extra lit-len bytes (stop at < 255)
+///     copy lit_len literal bytes   → output + history
+///     if not last-sequence:
+///       offset := read_u16_le()    // back-reference distance
+///       if match_nibble == 15: accumulate extra match-len bytes
+///       copy (match_len + 4) bytes from history[write_ptr - offset]
+///
+/// Ports:
+///   in_valid/in_data/in_ready/in_last  — compressed byte stream (AXI-S style)
+///   out_valid/out_data/out_ready       — decompressed byte stream
+///   hist_*                             — connect to Lz4HistBuf RAM
+///
+/// Throughput (with out_ready = 1):
+///   Literal copy: 1 byte/cycle
+///   Match copy:   1 byte / 2 cycles (IssueMRead → CopyMatch pipeline)
+///
+/// The FSM ports for the history RAM are exposed so the wrapper module
+/// (Lz4BlockDec) can instantiate the RAM separately and wire it in.
+
+fsm Lz4DecFsm
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  // Compressed input stream
+  port in_valid: in  Bool;
+  port in_data:  in  UInt<8>;
+  port in_ready: out Bool;
+  // Assert in_last on the final byte of the compressed block.
+  // For well-formed LZ4 input this is the last literal of the last sequence.
+  port in_last:  in  Bool;
+
+  // Decompressed output stream
+  port out_valid: out Bool;
+  port out_data:  out UInt<8>;
+  port out_ready: in  Bool;
+
+  // History RAM — write port (combinational; driven from comb blocks)
+  port hist_wr_en:   out Bool;
+  port hist_wr_addr: out UInt<16>;
+  port hist_wr_data: out UInt<8>;
+
+  // History RAM — read port (1-cycle latency; addr issued in IssueMRead,
+  // data arrives in CopyMatch)
+  port hist_rd_en:   out Bool;
+  port hist_rd_addr: out UInt<16>;
+  port hist_rd_data: in  UInt<8>;
+
+  // Datapath registers
+  reg lit_len_r:   UInt<16> reset rst => 0;   // accumulated literal length
+  reg match_len_r: UInt<16> reset rst => 0;   // token match nibble (0-15)
+  reg match_off_r: UInt<16> reset rst => 0;   // 16-bit back-reference offset
+  reg copy_cnt_r:  UInt<16> reset rst => 0;   // bytes remaining in current copy
+  reg write_ptr_r: UInt<16> reset rst => 0;   // output byte index (mod 65536)
+  reg off_lo_r:    UInt<8>  reset rst => 0;   // offset low byte (held for ReadOffHi)
+
+  state [ReadToken, ExtLitLen, CopyLit,
+         ReadOffLo, ReadOffHi, ExtMatchLen,
+         IssueMRead, CopyMatch,
+         Done]
+  default state ReadToken;
+  default seq on clk rising;
+
+  // Default combinational outputs (all quiesced; per-state blocks override).
+  default
+    comb
+      in_ready      = false;
+      out_valid     = false;
+      out_data      = 0;
+      hist_wr_en    = false;
+      hist_wr_addr  = 0;
+      hist_wr_data  = 0;
+      hist_rd_en    = false;
+      hist_rd_addr  = 0;
+    end comb
+  end default
+
+  // ── ReadToken ────────────────────────────────────────────────────────────
+  // Consume one token byte, split into lit_len and match_len nibbles.
+  state ReadToken
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        lit_len_r   <= in_data[7:4].zext<16>();
+        match_len_r <= in_data[3:0].zext<16>();
+        copy_cnt_r  <= in_data[7:4].zext<16>();
+      end if
+    end seq
+    // in_last on the token byte signals a zero-literal last sequence → done.
+    -> Done      when (in_valid and in_last);
+    -> ExtLitLen when (in_valid and (not in_last) and (in_data[7:4] == 15));
+    -> CopyLit   when (in_valid and (not in_last) and (in_data[7:4] > 0) and (in_data[7:4] < 15));
+    -> ReadOffLo when (in_valid and (not in_last) and (in_data[7:4] == 0));
+  end state ReadToken
+
+  // ── ExtLitLen ────────────────────────────────────────────────────────────
+  // Accumulate extended literal-length bytes until one reads < 255.
+  // On each 255 byte: lit_len_r += 255, stay.
+  // On final byte X (<255): lit_len_r += X, copy_cnt_r = total, → CopyLit.
+  state ExtLitLen
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        lit_len_r <= (lit_len_r + in_data.zext<16>()).trunc<16>();
+        if in_data != 255
+          copy_cnt_r <= (lit_len_r + in_data.zext<16>()).trunc<16>();
+        end if
+      end if
+    end seq
+    -> CopyLit when (in_valid and (in_data != 255));
+  end state ExtLitLen
+
+  // ── CopyLit ──────────────────────────────────────────────────────────────
+  // Pass copy_cnt_r literal bytes from input to output and to history.
+  // Handshake: accept input only when output can accept (in_ready = out_ready).
+  // One byte per cycle when both sides are ready.
+  state CopyLit
+    comb
+      in_ready     = out_ready;
+      out_valid    = in_valid;
+      out_data     = in_data;
+      hist_wr_en   = in_valid and out_ready;
+      hist_wr_addr = write_ptr_r;
+      hist_wr_data = in_data;
+    end comb
+    seq
+      if in_valid and out_ready
+        copy_cnt_r  <= (copy_cnt_r - 1).trunc<16>();
+        write_ptr_r <= (write_ptr_r + 1).trunc<16>();
+      end if
+    end seq
+    // last byte of last sequence: done
+    -> Done      when (in_valid and out_ready and (copy_cnt_r == 1) and in_last);
+    // last byte of non-last sequence: read match offset
+    -> ReadOffLo when (in_valid and out_ready and (copy_cnt_r == 1) and (not in_last));
+  end state CopyLit
+
+  // ── ReadOffLo ─────────────────────────────────────────────────────────────
+  // Consume match offset low byte (little-endian, byte 0 of 2).
+  state ReadOffLo
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        off_lo_r <= in_data;
+      end if
+    end seq
+    -> ReadOffHi when in_valid;
+  end state ReadOffLo
+
+  // ── ReadOffHi ─────────────────────────────────────────────────────────────
+  // Consume match offset high byte, form 16-bit offset, initialise copy_cnt.
+  state ReadOffHi
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        match_off_r <= {in_data, off_lo_r};
+        if match_len_r == 15
+          copy_cnt_r <= 15;
+        else
+          copy_cnt_r <= (match_len_r + 4).trunc<16>();
+        end if
+      end if
+    end seq
+    -> ExtMatchLen when (in_valid and (match_len_r == 15));
+    -> IssueMRead  when (in_valid and (match_len_r < 15));
+  end state ReadOffHi
+
+  // ── ExtMatchLen ───────────────────────────────────────────────────────────
+  // Accumulate extended match-length bytes (same scheme as ExtLitLen).
+  // copy_cnt_r enters as 15 (from nibble); on the final byte +4 is added
+  // to form the actual match length.
+  state ExtMatchLen
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        if in_data != 255
+          copy_cnt_r <= (copy_cnt_r + in_data.zext<16>() + 4).trunc<16>();
+        else
+          copy_cnt_r <= (copy_cnt_r + in_data.zext<16>()).trunc<16>();
+        end if
+      end if
+    end seq
+    -> IssueMRead when (in_valid and (in_data != 255));
+  end state ExtMatchLen
+
+  // ── IssueMRead ────────────────────────────────────────────────────────────
+  // Issue a RAM read for the next match byte.  Address = write_ptr - offset,
+  // which naturally wraps (both UInt<16>) to give the ring-buffer index.
+  // Data arrives one cycle later in CopyMatch.
+  state IssueMRead
+    comb
+      hist_rd_en   = true;
+      hist_rd_addr = (write_ptr_r - match_off_r).trunc<16>();
+    end comb
+    -> CopyMatch when true;
+  end state IssueMRead
+
+  // ── CopyMatch ─────────────────────────────────────────────────────────────
+  // Output the match byte received from the RAM and write it to history so
+  // overlapping copies (match_off < copy_cnt) produce the correct RLE bytes.
+  // Stays until out_ready: the registered RAM output is stable while rd_en = 0.
+  state CopyMatch
+    comb
+      out_valid    = true;
+      out_data     = hist_rd_data;
+      hist_wr_en   = out_ready;
+      hist_wr_addr = write_ptr_r;
+      hist_wr_data = hist_rd_data;
+    end comb
+    seq
+      if out_ready
+        copy_cnt_r  <= (copy_cnt_r - 1).trunc<16>();
+        write_ptr_r <= (write_ptr_r + 1).trunc<16>();
+      end if
+    end seq
+    -> IssueMRead when (out_ready and (copy_cnt_r > 1));
+    -> ReadToken  when (out_ready and (copy_cnt_r == 1));
+  end state CopyMatch
+
+  // ── Done ──────────────────────────────────────────────────────────────────
+  // One-cycle interlude; returns to ReadToken for the next block.
+  state Done
+    -> ReadToken when true;
+  end state Done
+
+end fsm Lz4DecFsm
