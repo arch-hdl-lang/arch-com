@@ -892,6 +892,43 @@ end ram TrueDualLat{latency}
     );
 }
 
+#[test]
+fn test_ram_latency_out_of_range_errors() {
+    // RAM codegen only handles latency 0/1/2; a higher value would
+    // silently emit an undriven `rdata` output. Reject it at check time.
+    let source = r#"
+ram BadLatRam
+  kind single;
+  latency 3;
+  param DEPTH: const = 16;
+  param T: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  store
+    data: Vec<T, DEPTH>;
+  end store
+  ports a
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports a
+end ram BadLatRam
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "latency 3 RAM should be rejected");
+    let errs = result.err().unwrap();
+    assert!(
+        errs.iter().any(|e| format!("{e:?}").contains("latency 3 is out of range")),
+        "error should name the out-of-range latency: {errs:?}"
+    );
+}
+
 // ── Counter ───────────────────────────────────────────────────────────────────
 
 #[test]

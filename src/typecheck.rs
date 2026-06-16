@@ -5131,6 +5131,19 @@ impl<'a> TypeChecker<'a> {
                 r.name.span,
             ));
         }
+        // latency must be 0 (async), 1 (sync), or 2 (sync_out). Higher
+        // values are unsupported by codegen — the SV/sim emitters only
+        // handle 0/1/2 and would otherwise silently leave `rdata` outputs
+        // undriven. Reject loudly instead.
+        if r.latency > 2 {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "ram `{}`: latency {} is out of range — must be 0 (async), 1 (sync), or 2 (sync_out)",
+                    r.name.name, r.latency
+                ),
+                r.name.span,
+            ));
+        }
         // true_dual requires exactly 2 port groups
         if r.kind == crate::ast::RamKind::TrueDual && r.port_groups.len() != 2 {
             self.errors.push(CompileError::general(
