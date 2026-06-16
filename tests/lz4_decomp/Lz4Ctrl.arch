@@ -1,0 +1,275 @@
+// LZ4 block decompressor — control FSM.
+//
+// Decodes a single LZ4 block (lz4.org/lz4_Block_format.html):
+//   token byte  : high nibble = literal_len (LL), low nibble = match_base (MB)
+//   ext bytes   : read while byte == 255, accumulating into LL or match_len
+//   literal bytes: LL of them, copied straight to output and history
+//   match offset: 2 bytes little-endian; absent for the last sequence
+//   match copy  : match_len = MB + 4 bytes from (wr_ptr - offset) in history
+//
+// The last compressed byte has in_last=1.  For well-formed LZ4, in_last
+// appears on the final literal byte of the final sequence (which has no
+// match section).
+//
+// Assumes the history RAM is simple_dual latency-1: rd.rdata is valid one
+// cycle after rd.en/rd.addr are presented.
+//
+// States
+// ──────
+//   Idle        waiting for a new block (busy=false)
+//   TkWait      consume token byte from input
+//   TkDec       route based on literal count (1-cycle decision state)
+//   LitLenExt   consume extension bytes until byte < 255, accumulate into lit_cnt
+//   LitCons     consume one literal byte; write to history; latch to byte_r
+//   LitSend     present byte_r on output; wait for out_ready
+//   OffLoWait   consume offset low byte
+//   OffHiWait   consume offset high byte; compute offset_r and mat_cnt_r
+//   MatLenExt   consume match-length extension bytes
+//   MatRdIssue  issue history RAM read at (wr_ptr - offset)
+//   MatSend     present RAM data on output; write to history; wait for out_ready
+fsm Lz4Ctrl
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  // Compressed byte-stream input (AXI-S compatible)
+  port in_valid: in  Bool;
+  port in_ready: out Bool;
+  port in_data:  in  UInt<8>;
+  port in_last:  in  Bool;
+
+  // Decompressed byte-stream output (AXI-S compatible)
+  port out_valid: out Bool;
+  port out_ready: in  Bool;
+  port out_data:  out UInt<8>;
+  port out_last:  out Bool;
+
+  port busy: out Bool;
+
+  // History RAM — read port (latency 1)
+  port hist_rd_en:    out Bool;
+  port hist_rd_addr:  out UInt<16>;
+  port hist_rd_rdata: in  UInt<8>;
+
+  // History RAM — write port
+  port hist_wr_en:    out Bool;
+  port hist_wr_addr:  out UInt<16>;
+  port hist_wr_wdata: out UInt<8>;
+
+  reg lit_cnt_r:  UInt<17> reset rst => 0;  // remaining literals to emit
+  reg mat_cnt_r:  UInt<17> reset rst => 0;  // remaining match bytes to copy
+  reg offset_r:   UInt<16> reset rst => 0;  // match backward offset
+  reg wr_ptr_r:   UInt<16> reset rst => 0;  // history write pointer (wraps mod 64K)
+  reg mat_base_r: UInt<4>  reset rst => 0;  // low nibble of token (match_len - 4)
+  reg off_lo_r:   UInt<8>  reset rst => 0;  // offset low byte
+  reg last_r:     Bool     reset rst => false;  // sticky: in_last seen for this block
+  reg byte_r:     UInt<8>  reset rst => 0;  // registered literal byte awaiting output
+
+  state [Idle, TkWait, TkDec, LitLenExt, LitCons, LitSend,
+         OffLoWait, OffHiWait, MatLenExt, MatRdIssue, MatSend]
+  default state Idle;
+  default seq on clk rising;
+
+  default
+    comb
+      in_ready      = false;
+      out_valid     = false;
+      out_data      = 0;
+      out_last      = false;
+      busy          = true;
+      hist_rd_en    = false;
+      hist_rd_addr  = 0;
+      hist_wr_en    = false;
+      hist_wr_addr  = 0;
+      hist_wr_wdata = 0;
+    end comb
+  end default
+
+  // ── Idle ─────────────────────────────────────────────────────────────────
+  // Signal to the host that the decompressor is free. Reset per-block state
+  // (wr_ptr, last flag) then hand off to TkWait unconditionally.
+  state Idle
+    comb
+      busy = false;
+    end comb
+    seq
+      wr_ptr_r <= 0;
+      last_r   <= false;
+    end seq
+    -> TkWait;
+  end state Idle
+
+  // ── TkWait ───────────────────────────────────────────────────────────────
+  // Assert in_ready, wait for the token byte.
+  state TkWait
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        lit_cnt_r  <= in_data[7:4].zext<17>();
+        mat_base_r <= in_data[3:0];
+        last_r     <= last_r or in_last;
+      end if
+    end seq
+    -> TkDec when in_valid;
+  end state TkWait
+
+  // ── TkDec ────────────────────────────────────────────────────────────────
+  // One-cycle routing state: choose next state based on literal count.
+  // All transitions are mutually exclusive.
+  state TkDec
+    -> LitLenExt when (lit_cnt_r == 15);
+    -> LitCons   when (lit_cnt_r != 15) and (lit_cnt_r != 0);
+    -> OffLoWait when (lit_cnt_r == 0) and !last_r;
+    -> Idle      when (lit_cnt_r == 0) and last_r;
+  end state TkDec
+
+  // ── LitLenExt ────────────────────────────────────────────────────────────
+  // Read extra literal-length bytes.  While in_data == 255, stay and
+  // accumulate.  When in_data < 255, add the final byte and move to LitCons.
+  // lit_cnt_r >= 15 when entering; always > 0 when leaving.
+  state LitLenExt
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        lit_cnt_r <= (lit_cnt_r + in_data.zext<17>()).trunc<17>();
+        last_r    <= last_r or in_last;
+      end if
+    end seq
+    -> LitCons when in_valid and (in_data != 255);
+    // in_data == 255: no transition fires, stays in LitLenExt
+  end state LitLenExt
+
+  // ── LitCons ──────────────────────────────────────────────────────────────
+  // Consume one literal from the input stream.
+  // Write it to history and latch it for output in LitSend.
+  state LitCons
+    comb
+      in_ready      = true;
+      hist_wr_en    = in_valid;
+      hist_wr_addr  = wr_ptr_r;
+      hist_wr_wdata = in_data;
+    end comb
+    seq
+      if in_valid
+        byte_r    <= in_data;
+        wr_ptr_r  <= (wr_ptr_r + 1).trunc<16>();
+        lit_cnt_r <= (lit_cnt_r - 1).trunc<17>();
+        last_r    <= last_r or in_last;
+      end if
+    end seq
+    -> LitSend when in_valid;
+  end state LitCons
+
+  // ── LitSend ──────────────────────────────────────────────────────────────
+  // Present the latched literal byte on the output.
+  // lit_cnt_r was already decremented in LitCons, so lit_cnt_r == 0 means
+  // this was the last literal in the sequence.
+  // out_last is asserted on the final decompressed byte of the block.
+  state LitSend
+    comb
+      out_valid = true;
+      out_data  = byte_r;
+      out_last  = (lit_cnt_r == 0) and last_r;
+    end comb
+    -> LitCons   when out_ready and (lit_cnt_r != 0);
+    -> OffLoWait when out_ready and (lit_cnt_r == 0) and !last_r;
+    -> Idle      when out_ready and (lit_cnt_r == 0) and last_r;
+  end state LitSend
+
+  // ── OffLoWait ────────────────────────────────────────────────────────────
+  // Consume match-offset low byte (little-endian, byte 0 of 2).
+  state OffLoWait
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        off_lo_r <= in_data;
+        last_r   <= last_r or in_last;
+      end if
+    end seq
+    -> OffHiWait when in_valid;
+  end state OffLoWait
+
+  // ── OffHiWait ────────────────────────────────────────────────────────────
+  // Consume match-offset high byte; compute full 16-bit offset and initial
+  // match length (4 + mat_base).  Route to MatLenExt if mat_base == 15.
+  state OffHiWait
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        offset_r  <= (in_data.zext<16>() << 8) | off_lo_r.zext<16>();
+        mat_cnt_r <= (mat_base_r.zext<17>() + 17'd4).trunc<17>();
+        last_r    <= last_r or in_last;
+      end if
+    end seq
+    -> MatLenExt  when in_valid and (mat_base_r == 15);
+    -> MatRdIssue when in_valid and (mat_base_r != 15);
+  end state OffHiWait
+
+  // ── MatLenExt ────────────────────────────────────────────────────────────
+  // Read extra match-length bytes.  While in_data == 255, accumulate.
+  // When in_data < 255, add it and proceed to MatRdIssue.
+  // mat_cnt_r >= 19 when entering; always > 0 when leaving.
+  state MatLenExt
+    comb
+      in_ready = true;
+    end comb
+    seq
+      if in_valid
+        mat_cnt_r <= (mat_cnt_r + in_data.zext<17>()).trunc<17>();
+        last_r    <= last_r or in_last;
+      end if
+    end seq
+    -> MatRdIssue when in_valid and (in_data != 255);
+    // in_data == 255: no transition fires, stays in MatLenExt
+  end state MatLenExt
+
+  // ── MatRdIssue ───────────────────────────────────────────────────────────
+  // Issue history RAM read at address (wr_ptr - offset), wrapping mod 64K.
+  // The RAM has latency 1: rdata is valid in the next cycle (MatSend).
+  state MatRdIssue
+    comb
+      hist_rd_en   = true;
+      hist_rd_addr = wr_ptr_r -% offset_r;
+    end comb
+    -> MatSend;
+  end state MatRdIssue
+
+  // ── MatSend ──────────────────────────────────────────────────────────────
+  // Present hist_rd_rdata (latency-1 output from MatRdIssue's read) on the
+  // output stream.  On handshake: write the byte into history, advance
+  // wr_ptr, decrement mat_cnt.  Loop back to MatRdIssue for next byte;
+  // after last byte, return to TkWait for the next sequence.
+  //
+  // hist_wr_en is gated on out_ready so the write only commits when the
+  // consumer actually accepts the byte (idempotent if out_ready stays low).
+  // out_last is asserted on the final match byte of the block (mat_cnt==1
+  // and last_r set), covering blocks whose last compressed byte is the
+  // match offset (no trailing literal sequence).
+  state MatSend
+    comb
+      out_valid     = true;
+      out_data      = hist_rd_rdata;
+      out_last      = (mat_cnt_r == 1) and last_r;
+      hist_wr_en    = out_ready;
+      hist_wr_addr  = wr_ptr_r;
+      hist_wr_wdata = hist_rd_rdata;
+    end comb
+    seq
+      if out_ready
+        wr_ptr_r  <= (wr_ptr_r + 1).trunc<16>();
+        mat_cnt_r <= (mat_cnt_r - 1).trunc<17>();
+      end if
+    end seq
+    -> MatRdIssue when out_ready and (mat_cnt_r > 1);
+    -> TkWait     when out_ready and (mat_cnt_r == 1) and !last_r;
+    -> Idle       when out_ready and (mat_cnt_r == 1) and last_r;
+  end state MatSend
+
+end fsm Lz4Ctrl

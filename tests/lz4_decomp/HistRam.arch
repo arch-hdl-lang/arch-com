@@ -1,0 +1,30 @@
+// 64KB sliding-window history buffer for the LZ4 block decompressor.
+//
+// simple_dual latency-1: read data appears on the rising edge one cycle
+// after rd.en / rd.addr are presented.  Writes committed in the same
+// cycle are NOT visible on a read in the same cycle, but ARE visible
+// on reads issued in the next cycle — which satisfies LZ4's RLE case
+// (offset=1 copy of the byte just written).
+
+domain SysDomain
+  freq_mhz: 200
+end domain SysDomain
+
+ram HistRam
+  kind simple_dual;
+  latency 1;
+  port clk: in Clock<SysDomain>;
+  store
+    data: Vec<UInt<8>, 65536>;
+  end store
+  ports rd
+    en:    in  Bool;
+    addr:  in  UInt<16>;
+    rdata: out UInt<8>;
+  end ports rd
+  ports wr
+    en:    in  Bool;
+    addr:  in  UInt<16>;
+    wdata: in  UInt<8>;
+  end ports wr
+end ram HistRam

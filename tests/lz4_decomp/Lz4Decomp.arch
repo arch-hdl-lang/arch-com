@@ -1,0 +1,96 @@
+// LZ4 block decompressor — top-level module.
+//
+// Integrates Lz4Ctrl (state-machine) with HistRam (64KB sliding-window
+// history buffer).
+//
+// Ports
+// ─────
+//   clk / rst      : standard clock and synchronous active-high reset
+//   in_*           : AXI-S byte-stream input  (compressed LZ4 block)
+//   out_*          : AXI-S byte-stream output (decompressed bytes)
+//   busy           : high while a block is being decompressed; falls for
+//                    exactly one cycle (Idle) between blocks
+//
+// Usage
+// ─────
+//   1. Deassert rst.  busy falls for one cycle, then rises (TkWait).
+//   2. Stream the compressed block byte-by-byte on in_*.  Assert in_last
+//      on the final compressed byte.
+//   3. Collect decompressed bytes from out_* while asserting out_ready.
+//      out_last is set on the final decompressed byte of the block.
+//   4. After out_last (or busy=0), the decompressor returns to TkWait
+//      ready for the next block.
+module Lz4Decomp
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  // AXI-S compressed input
+  port in_valid: in  Bool;
+  port in_ready: out Bool;
+  port in_data:  in  UInt<8>;
+  port in_last:  in  Bool;
+
+  // AXI-S decompressed output
+  port out_valid: out Bool;
+  port out_ready: in  Bool;
+  port out_data:  out UInt<8>;
+  port out_last:  out Bool;
+
+  port busy: out Bool;
+
+  // ── Internal wires ────────────────────────────────────────────────────────
+  wire in_ready_w:  Bool;
+  wire out_valid_w: Bool;
+  wire out_data_w:  UInt<8>;
+  wire out_last_w:  Bool;
+  wire busy_w:      Bool;
+
+  wire hist_rd_en_w:    Bool;
+  wire hist_rd_addr_w:  UInt<16>;
+  wire hist_rd_rdata_w: UInt<8>;
+  wire hist_wr_en_w:    Bool;
+  wire hist_wr_addr_w:  UInt<16>;
+  wire hist_wr_wdata_w: UInt<8>;
+
+  // ── History RAM ───────────────────────────────────────────────────────────
+  inst hist: HistRam
+    clk      <- clk;
+    rd.en    <- hist_rd_en_w;
+    rd.addr  <- hist_rd_addr_w;
+    rd.rdata -> hist_rd_rdata_w;
+    wr.en    <- hist_wr_en_w;
+    wr.addr  <- hist_wr_addr_w;
+    wr.wdata <- hist_wr_wdata_w;
+  end inst hist
+
+  // ── Control FSM ───────────────────────────────────────────────────────────
+  inst ctrl: Lz4Ctrl
+    clk       <- clk;
+    rst       <- rst;
+    in_valid  <- in_valid;
+    in_ready  -> in_ready_w;
+    in_data   <- in_data;
+    in_last   <- in_last;
+    out_valid -> out_valid_w;
+    out_ready <- out_ready;
+    out_data  -> out_data_w;
+    out_last  -> out_last_w;
+    busy      -> busy_w;
+    hist_rd_en    -> hist_rd_en_w;
+    hist_rd_addr  -> hist_rd_addr_w;
+    hist_rd_rdata <- hist_rd_rdata_w;
+    hist_wr_en    -> hist_wr_en_w;
+    hist_wr_addr  -> hist_wr_addr_w;
+    hist_wr_wdata -> hist_wr_wdata_w;
+  end inst ctrl
+
+  // ── Route wires to top-level output ports ─────────────────────────────────
+  comb
+    in_ready  = in_ready_w;
+    out_valid = out_valid_w;
+    out_data  = out_data_w;
+    out_last  = out_last_w;
+    busy      = busy_w;
+  end comb
+
+end module Lz4Decomp
