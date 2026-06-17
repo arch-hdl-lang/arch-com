@@ -1,0 +1,220 @@
+//! ---
+//! tags: [lz4, decompressor, compression, streaming, axi_stream, cast_ip]
+//! refs:
+//!   - "LZ4 Block Format Description (lz4.org/frame_format.html)"
+//!   - "CAST LZ4SNP-D (LZ4/Snappy Block Decompressor)"
+//! ---
+//!
+//! LZ4 block decompressor — streaming AXI-Stream byte-wide input to output.
+//! Accepts a single LZ4 block on the in_* ports and emits raw bytes on the
+//! out_* ports. `done` pulses high (combinationally) when the last output
+//! byte has been accepted; `error` pulses for a zero match offset.
+//!
+//! LZ4 block format (one sequence):
+//!   token | (lit_len_extra)* | literals | offset_lo | offset_hi | (match_len_extra)*
+//! The last sequence is literals-only (no offset/match); `in_last` is asserted
+//! on its final byte.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+/// 4 KB sliding-window history — simple-dual-port, 1-cycle read latency.
+///
+/// Every decompressed byte (literal or match copy) is recorded here so future
+/// match-copy sequences can reference it. The write pointer (`out_pos`) wraps
+/// modulo 4096; match reads use `out_pos - offset` (also mod 4096).
+ram HistBuf
+  kind simple_dual;
+  latency 1;
+  init: zero;
+  param DEPTH: const = 4096;
+  param ADDR_W: const = 12;
+  port clk: in Clock<SysDomain>;
+  store
+    mem: Vec<UInt<8>, DEPTH>;
+  end store
+  ports rd_port
+    en:   in Bool;
+    addr: in UInt<ADDR_W>;
+    data: out UInt<8>;
+  end ports rd_port
+  ports wr_port
+    en:   in Bool;
+    addr: in UInt<ADDR_W>;
+    data: in UInt<8>;
+  end ports wr_port
+end ram HistBuf
+
+/// LZ4 block decompressor with AXI-Stream handshake on both sides.
+///
+/// FSM states (encoded in `state` UInt<4>):
+///   0 TOKEN       — consume token byte: lit_nibble[7:4], match_nibble[3:0]
+///   1 LIT_EXTRA   — accumulate extended literal length (0xFF bytes → continue)
+///   2 LIT_COPY    — pass literal bytes to output; record each in history
+///   3 OFF_LO      — latch low byte of match offset
+///   4 OFF_HI      — latch high byte; form 16-bit offset; validate non-zero
+///   5 MATCH_EXTRA — accumulate extended match length (0xFF bytes → continue)
+///   6 MATCH_RD    — assert hist_rd_en for one cycle (RAM latency 1 pipeline)
+///   7 MATCH_WAIT  — capture RAM output, present to out_data, record in history
+///   8 DONE        — terminal success (in_last consumed)
+///   9 ERROR       — terminal error (zero offset)
+module Lz4Decomp
+  port clk:       in Clock<SysDomain>;
+  port rst:       in Reset<Sync>;
+
+  port in_valid:  in Bool;
+  port in_ready:  out Bool;
+  port in_data:   in UInt<8>;
+  port in_last:   in Bool;
+
+  port out_valid: out Bool;
+  port out_ready: in Bool;
+  port out_data:  out UInt<8>;
+
+  port done:  out Bool;
+  port error: out Bool;
+
+  reg state:           UInt<4>  reset rst => 4'd0;
+  reg lit_cnt:         UInt<16> reset rst => 16'd0;
+  reg match_cnt:       UInt<16> reset rst => 16'd0;
+  reg match_nibble_r:  UInt<4>  reset rst => 4'd0;
+  reg off_lo:          UInt<8>  reset rst => 8'd0;
+  reg offset:          UInt<16> reset rst => 16'd0;
+  reg out_pos:         UInt<12> reset rst => 12'd0;
+
+  wire hist_rd_en:   Bool;
+  wire hist_rd_addr: UInt<12>;
+  wire hist_rd_data: UInt<8>;
+  wire hist_wr_en:   Bool;
+  wire hist_wr_addr: UInt<12>;
+  wire hist_wr_data: UInt<8>;
+
+  inst hist: HistBuf
+    clk          <- clk;
+    rd_port.en   <- hist_rd_en;
+    rd_port.addr <- hist_rd_addr;
+    rd_port.data -> hist_rd_data;
+    wr_port.en   <- hist_wr_en;
+    wr_port.addr <- hist_wr_addr;
+    wr_port.data <- hist_wr_data;
+  end inst hist
+
+  let s_token:       Bool = (state == 4'd0);
+  let s_lit_extra:   Bool = (state == 4'd1);
+  let s_lit_copy:    Bool = (state == 4'd2);
+  let s_off_lo:      Bool = (state == 4'd3);
+  let s_off_hi:      Bool = (state == 4'd4);
+  let s_match_extra: Bool = (state == 4'd5);
+  let s_match_rd:    Bool = (state == 4'd6);
+  let s_match_wait:  Bool = (state == 4'd7);
+  let s_done:        Bool = (state == 4'd8);
+  let s_error:       Bool = (state == 4'd9);
+
+  // Input ready: all parsing states except LIT_COPY where we also need out_ready
+  let in_rdy: Bool =
+    s_token or s_lit_extra or s_off_lo or s_off_hi or s_match_extra or
+    (s_lit_copy and out_ready);
+
+  // Output valid: literal passthrough (combinational) or latency-1 match data
+  let out_v: Bool = (s_lit_copy and in_valid) or s_match_wait;
+
+  let in_fire:  Bool = in_valid and in_rdy;
+  let out_fire: Bool = out_v and out_ready;
+
+  // Match copy read address: current write pointer minus stored offset (mod 4096)
+  let match_rd_addr: UInt<12> = (out_pos -% offset.trunc<12>());
+
+  comb
+    in_ready  = in_rdy;
+    out_valid = out_v;
+    out_data  = s_match_wait ? hist_rd_data : in_data;
+    done      = s_done;
+    error     = s_error;
+
+    hist_rd_en   = s_match_rd;
+    hist_rd_addr = match_rd_addr;
+
+    // Write every decompressed byte into history (literal passthrough or match)
+    hist_wr_en   = (s_lit_copy and in_fire) or (s_match_wait and out_fire);
+    hist_wr_addr = out_pos;
+    hist_wr_data = s_match_wait ? hist_rd_data : in_data;
+  end comb
+
+  seq on clk rising
+    if s_token
+      if in_fire
+        match_nibble_r <= in_data[3:0];
+        match_cnt      <= (in_data[3:0].zext<16>() +% 16'd4);
+        lit_cnt        <= in_data[7:4].zext<16>();
+        if in_last
+          // Zero-literal last sequence: stream ends here
+          state <= 4'd8;
+        elsif (in_data[7:4] == 4'hf)
+          state <= 4'd1;
+        elsif (in_data[7:4] == 4'd0)
+          state <= 4'd3;
+        else
+          state <= 4'd2;
+        end if
+      end if
+    elsif s_lit_extra
+      if in_fire
+        lit_cnt <= (lit_cnt +% in_data.zext<16>());
+        if not (in_data == 8'hff)
+          state <= 4'd2;
+        end if
+      end if
+    elsif s_lit_copy
+      if in_fire
+        out_pos <= (out_pos +% 12'd1);
+        lit_cnt <= (lit_cnt -% 16'd1);
+        if in_last
+          // Last byte of compressed stream consumed — block complete
+          state <= 4'd8;
+        elsif (lit_cnt == 16'd1)
+          // Last literal of this sequence — read match offset next
+          state <= 4'd3;
+        end if
+      end if
+    elsif s_off_lo
+      if in_fire
+        off_lo <= in_data;
+        state  <= 4'd4;
+      end if
+    elsif s_off_hi
+      if in_fire
+        offset <= {in_data, off_lo};
+        if ((in_data == 8'd0) and (off_lo == 8'd0))
+          state <= 4'd9;
+        elsif (match_nibble_r == 4'hf)
+          state <= 4'd5;
+        else
+          state <= 4'd6;
+        end if
+      end if
+    elsif s_match_extra
+      if in_fire
+        match_cnt <= (match_cnt +% in_data.zext<16>());
+        if not (in_data == 8'hff)
+          state <= 4'd6;
+        end if
+      end if
+    elsif s_match_rd
+      // One-cycle pulse to pipeline the latency-1 RAM read
+      state <= 4'd7;
+    elsif s_match_wait
+      if out_fire
+        out_pos   <= (out_pos +% 12'd1);
+        match_cnt <= (match_cnt -% 16'd1);
+        if (match_cnt == 16'd1)
+          // Consumed last match byte; return to token parsing
+          state <= 4'd0;
+        else
+          state <= 4'd6;
+        end if
+      end if
+    end if
+  end seq
+
+end module Lz4Decomp
