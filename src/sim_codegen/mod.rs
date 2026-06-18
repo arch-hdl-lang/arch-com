@@ -2848,6 +2848,24 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             if let Some(v) = ctx.loop_var_subst.and_then(|c| c.borrow().get(name).copied()) {
                 return v.to_string();
             }
+            // Bare enum variant identifier (no `EnumName::` qualifier).
+            // Occurs in reset values: `reset rst => S_TOKEN` where the
+            // typechecker already validated the name against the reg's
+            // declared enum type, but the parser still emits an Ident node.
+            // Resolve to the variant's ordinal only when the name is not
+            // otherwise a signal, so a signal that coincidentally shares an
+            // enum variant name still resolves to the signal.
+            if !ctx.reg_names.contains(name)
+               && !ctx.port_names.contains(name)
+               && !ctx.let_names.contains(name)
+               && !ctx.inst_names.contains(name)
+            {
+                for variants in ctx.enum_map.values() {
+                    if let Some((_, idx)) = variants.iter().find(|(n, _)| n == name) {
+                        return idx.to_string();
+                    }
+                }
+            }
             if is_lhs {
                 ctx.resolve_name(name, true)
             } else {

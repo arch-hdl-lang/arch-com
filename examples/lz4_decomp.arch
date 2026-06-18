@@ -1,0 +1,287 @@
+//! ---
+//! tags: [lz4, decompression, compression, streaming, ram, fsm, ip]
+//! refs:
+//!   - "LZ4 Block Format Description — https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md"
+//!   - "CAST LZ4SNP-C / LZ4 Decompressor IP — https://www.cast-inc.com/compression/lossless-data-compression"
+//! ---
+//!
+//! LZ4 block decompressor — byte-streaming hardware IP.
+//!
+//! Implements the LZ4 block format (no framing / frame header).
+//! Input:  compressed byte stream, valid/ready handshake + `in_last`
+//!         asserted on the final compressed byte.
+//! Output: decompressed byte stream, valid/ready handshake.
+//! `done` pulses for one cycle after the last decompressed byte is accepted.
+//!
+//! History buffer: 1024-byte ring buffer (HIST_BITS=10).  Matches are
+//! limited to a 1024-byte window; LZ4 match offsets > 1023 are unsupported
+//! in this implementation.
+//!
+//! Protocol:
+//!   The last sequence of a valid LZ4 block ends after its literals with
+//!   no match copy.  The compressor must assert `in_last` on the last
+//!   literal byte of the last sequence (or on the token byte if the last
+//!   sequence has zero literals).
+//!
+//! States:
+//!   S_TOKEN     read 1-byte token (lit nibble | match nibble)
+//!   S_XLIT      accumulate extra literal-length bytes (nibble==15)
+//!   S_LIT       copy literal bytes to output + history
+//!   S_OFFLO     consume match-offset low byte
+//!   S_OFFHI     consume match-offset high byte, compute rd_ptr
+//!   S_XMATCH    accumulate extra match-length bytes (nibble==15)
+//!   S_MATCH     copy bytes from history ring buffer to output + history
+//!   S_DONE      end-of-block; `done` asserted until reset
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+enum DecState
+  S_TOKEN,
+  S_XLIT,
+  S_LIT,
+  S_OFFLO,
+  S_OFFHI,
+  S_XMATCH,
+  S_MATCH,
+  S_DONE
+end enum DecState
+
+// 1 KB ring-buffer for match history.
+// latency 0 = async (combinational) reads; writes commit on clk rising edge.
+ram HistBuf
+  kind simple_dual;
+  latency 0;
+  param DEPTH: const = 1024;
+  param HIST_BITS: const = 10;
+  port clk: in Clock<SysDomain>;
+  store
+    buf: Vec<UInt<8>, DEPTH>;
+  end store
+  ports rd
+    en:   in Bool;
+    addr: in UInt<HIST_BITS>;
+    data: out UInt<8>;
+  end ports rd
+  ports wr
+    en:   in Bool;
+    addr: in UInt<HIST_BITS>;
+    data: in UInt<8>;
+  end ports wr
+end ram HistBuf
+
+/// LZ4 block decompressor.
+///
+/// Byte-at-a-time streaming with AXI-style valid/ready handshake on both
+/// input (compressed) and output (decompressed) sides.
+module Lz4Decomp
+  port clk:       in Clock<SysDomain>;
+  port rst:       in Reset<Sync>;
+
+  // Compressed input stream.
+  port in_valid:  in Bool;
+  port in_ready:  out Bool;
+  port in_data:   in UInt<8>;
+  // Assert on the last byte of the compressed block.
+  port in_last:   in Bool;
+
+  // Decompressed output stream.
+  port out_valid: out Bool;
+  port out_ready: in Bool;
+  port out_data:  out UInt<8>;
+
+  // Pulses for one cycle once the last output byte is accepted.
+  port done:      out Bool;
+
+  // ── FSM state ─────────────────────────────────────────────────────────────
+  reg state:         DecState      reset rst => S_TOKEN;
+
+  // ── Datapath registers ────────────────────────────────────────────────────
+  reg lit_len:       UInt<16>      reset rst => 0;
+  reg match_len:     UInt<16>      reset rst => 0;
+  reg match_nibble_r: UInt<4>      reset rst => 0;
+  reg off_lo:        UInt<8>       reset rst => 0;
+  reg wr_ptr:        UInt<10>      reset rst => 0;
+  reg rd_ptr:        UInt<10>      reset rst => 0;
+  // Set when the last compressed byte has been consumed; causes the FSM
+  // to transition to S_DONE instead of S_TOKEN at end of current sequence.
+  reg last_flag:     Bool          reset rst => false;
+
+  // ── History buffer wiring ─────────────────────────────────────────────────
+  // hist_rd_byte: combinational output of the async-read history RAM.
+  // Available the same cycle the read address (rd_ptr) is presented.
+  wire hist_rd_byte: UInt<8>;
+
+  // hist_wr_en / hist_wr_data: driven by let bindings below.
+  // Write fires when an output byte is accepted (out_valid && out_ready).
+  let in_txn:      Bool = in_valid & in_ready;
+  let out_txn:     Bool = out_valid & out_ready;
+
+  // In S_LIT  the byte being saved is in_data.
+  // In S_MATCH the byte being saved is hist_rd_byte (copy from history).
+  let hist_wr_en:  Bool   = out_txn;
+  let hist_wr_dat: UInt<8> = (state == DecState::S_MATCH) ? hist_rd_byte : in_data;
+
+  // ── History RAM instance ───────────────────────────────────────────────────
+  inst hist: HistBuf
+    clk      <- clk;
+    rd.en    <- true;
+    rd.addr  <- rd_ptr;
+    rd.data  -> hist_rd_byte;
+    wr.en    <- hist_wr_en;
+    wr.addr  <- wr_ptr;
+    wr.data  <- hist_wr_dat;
+  end inst hist
+
+  // ── Combinational output steering ─────────────────────────────────────────
+  comb
+    // in_ready: accept input only when we're in a state that consumes it
+    // AND (for S_LIT) only when the output side can also accept (combined
+    // transaction: literal read = literal write = history write in one cycle).
+    in_ready = match state
+      DecState::S_TOKEN  => true,
+      DecState::S_XLIT   => true,
+      DecState::S_LIT    => out_ready,
+      DecState::S_OFFLO  => true,
+      DecState::S_OFFHI  => true,
+      DecState::S_XMATCH => true,
+      _                  => false
+    end match;
+
+    // out_valid: we have valid output data in S_LIT and S_MATCH.
+    out_valid = (state == DecState::S_LIT && in_valid) ||
+                (state == DecState::S_MATCH);
+
+    // out_data: literal bytes come from in_data; match bytes from history.
+    out_data = (state == DecState::S_MATCH) ? hist_rd_byte : in_data;
+
+    done = (state == DecState::S_DONE);
+  end comb
+
+  // ── Sequential FSM + datapath ─────────────────────────────────────────────
+  seq on clk rising
+
+    // ── S_TOKEN ───────────────────────────────────────────────────────────
+    if state == DecState::S_TOKEN
+      if in_valid
+        if in_last
+          last_flag <= true;
+        end if
+        match_nibble_r <= in_data[3:0];
+        lit_len        <= in_data[7:4].zext<16>();
+        if in_data[7:4] == 4'd15
+          state <= DecState::S_XLIT;
+        elsif in_data[7:4] == 4'd0
+          if in_last
+            state <= DecState::S_DONE;
+          else
+            state <= DecState::S_OFFLO;
+          end if
+        else
+          state <= DecState::S_LIT;
+        end if
+      end if
+    end if
+
+    // ── S_XLIT: accumulate extra literal-length bytes ─────────────────────
+    if state == DecState::S_XLIT
+      if in_valid
+        if in_last
+          last_flag <= true;
+        end if
+        lit_len <= (lit_len + in_data.zext<16>()).trunc<16>();
+        if in_data != 8'd255
+          state <= DecState::S_LIT;
+        end if
+      end if
+    end if
+
+    // ── S_LIT: copy literal bytes to output + history ─────────────────────
+    if state == DecState::S_LIT
+      if in_valid & out_ready
+        // Transaction fires: literal consumed from input, output, and saved.
+        if in_last
+          last_flag <= true;
+        end if
+        wr_ptr <= (wr_ptr + 1).trunc<10>();
+        if lit_len == 16'd1
+          // Last literal of this sequence.
+          if in_last || last_flag
+            state <= DecState::S_DONE;
+          else
+            state <= DecState::S_OFFLO;
+          end if
+          lit_len <= 0;
+        else
+          lit_len <= (lit_len - 1).trunc<16>();
+        end if
+      end if
+    end if
+
+    // ── S_OFFLO: consume match-offset low byte ────────────────────────────
+    if state == DecState::S_OFFLO
+      if in_valid
+        off_lo <= in_data;
+        if in_last
+          last_flag <= true;
+        end if
+        state <= DecState::S_OFFHI;
+      end if
+    end if
+
+    // ── S_OFFHI: consume match-offset high byte, compute rd_ptr ──────────
+    if state == DecState::S_OFFHI
+      if in_valid
+        if in_last
+          last_flag <= true;
+        end if
+        // rd_ptr = wr_ptr - offset (wrapping in 10-bit ring buffer).
+        rd_ptr <= (wr_ptr - {in_data, off_lo}.trunc<10>()).trunc<10>();
+        if match_nibble_r == 4'd15
+          match_len <= 16'd4;
+          state     <= DecState::S_XMATCH;
+        else
+          match_len <= (match_nibble_r.zext<16>() + 16'd4).trunc<16>();
+          state     <= DecState::S_MATCH;
+        end if
+      end if
+    end if
+
+    // ── S_XMATCH: accumulate extra match-length bytes ─────────────────────
+    if state == DecState::S_XMATCH
+      if in_valid
+        if in_last
+          last_flag <= true;
+        end if
+        match_len <= (match_len + in_data.zext<16>()).trunc<16>();
+        if in_data != 8'd255
+          state <= DecState::S_MATCH;
+        end if
+      end if
+    end if
+
+    // ── S_MATCH: copy bytes from history to output + history ──────────────
+    if state == DecState::S_MATCH
+      if out_ready
+        wr_ptr <= (wr_ptr + 1).trunc<10>();
+        rd_ptr <= (rd_ptr + 1).trunc<10>();
+        if match_len == 16'd1
+          // Last match byte: sequence complete.
+          if last_flag
+            state <= DecState::S_DONE;
+          else
+            state <= DecState::S_TOKEN;
+          end if
+          match_len <= 0;
+        else
+          match_len <= (match_len - 1).trunc<16>();
+        end if
+      end if
+    end if
+
+    // S_DONE is terminal until reset.
+
+  end seq
+
+end module Lz4Decomp
