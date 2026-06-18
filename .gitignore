@@ -15,6 +15,10 @@ a.out
 # arch build generated files
 *.archi
 
+# Simulation logs
+sim.log
+harc_sim_build/
+
 # Waveform dumps
 *.vcd
 *.fst
