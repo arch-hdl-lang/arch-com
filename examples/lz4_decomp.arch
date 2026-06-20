@@ -7,7 +7,20 @@
 // in_last is asserted with the TOKEN byte of the LAST sequence in a block.
 // The last sequence has literals only (no offset/match), per LZ4 spec §2.
 //
-// History RAM: 4096-byte circular buffer, latency 0 (combinational read).
+// Timing / synthesis notes:
+//   * All stream outputs (out_valid, out_data, out_last) are REGISTERED
+//     (`port reg`). There is no combinational path from an input pin to an
+//     output pin — the old `out_data = in_data` literal pass-through is gone.
+//     Each decompressed byte therefore appears one cycle after the byte/state
+//     that produces it, and back-pressure is honoured: a produced byte is held
+//     in the output register until `out_ready` accepts it (`can_emit`).
+//   * History RAM is `latency 0` (combinational read = distributed/LUTRAM).
+//     This is deliberate, NOT a timing shortcut: an overlapping LZ4 match
+//     (offset < match_len, e.g. RLE offset=1) reads a byte that was written
+//     on the *previous* cycle. A latency-1 BRAM would insert a read-pipeline
+//     bubble that breaks that single-cycle read-modify-write. The 4 KB buffer
+//     maps naturally to distributed RAM, and with the output now registered
+//     the timing path is reg(copy_src) -> RAM -> reg(out_data), not RAM -> pin.
 
 domain SysDomain
   freq_mhz: 100
@@ -49,10 +62,12 @@ module Lz4Decomp
   port in_data:   in UInt<8>;
   port in_last:   in Bool;
   port in_ready:  out Bool;
-  port out_valid: out Bool;
-  port out_data:  out UInt<8>;
   port out_ready: in Bool;
-  port out_last:  out Bool;
+
+  // Registered stream outputs — no combinational input->output path.
+  port out_valid: out pipe_reg<Bool, 1>    reset rst => 0;
+  port out_data:  out pipe_reg<UInt<8>, 1> reset rst => 0;
+  port out_last:  out pipe_reg<Bool, 1>    reset rst => 0;
 
   reg default: reset rst => 0;
   reg state:     LzState reset rst => LzState::TOKEN;
@@ -71,6 +86,14 @@ module Lz4Decomp
   // Offset reconstruction (only valid in OFFS_HI state).
   let full_offset: UInt<16> = ((in_data.zext<16>() << 8) | offs_lo.zext<16>());
 
+  // The output register slot is free when it is empty or being drained.
+  let can_emit: Bool = (not out_valid) or out_ready;
+
+  // A decompressed byte is produced this cycle when its source state is active
+  // and the output register can take it. Literals also require an input byte.
+  let produce_literal: Bool = (state == LzState::LITERAL) and in_valid and can_emit;
+  let produce_copy:    Bool = (state == LzState::COPY) and can_emit;
+
   wire hist_rd_data: UInt<8>;
   wire hist_wr_en:   Bool;
   wire hist_wr_data: UInt<8>;
@@ -85,24 +108,18 @@ module Lz4Decomp
   end inst hist
 
   comb
-    out_valid    = 0;
-    out_data     = 0;
-    out_last     = 0;
     in_ready     = 0;
     hist_wr_en   = 0;
     hist_wr_data = 0;
 
     if state == LzState::LITERAL
-      out_valid    = in_valid;
-      out_data     = in_data;
-      in_ready     = out_ready;
-      hist_wr_en   = in_valid and out_ready;
+      // Accept a literal byte only when we can emit it this cycle.
+      in_ready     = can_emit;
+      hist_wr_en   = produce_literal;
       hist_wr_data = in_data;
-      out_last     = is_last and (lit_rem == 1) and in_valid and out_ready;
     elsif state == LzState::COPY
-      out_valid    = 1;
-      out_data     = hist_rd_data;
-      hist_wr_en   = out_ready;
+      // Copy consumes no input; it streams from history.
+      hist_wr_en   = produce_copy;
       hist_wr_data = hist_rd_data;
     else
       // TOKEN, EXTRA_LL, OFFS_LO, OFFS_HI, EXTRA_ML: consume input byte.
@@ -111,6 +128,24 @@ module Lz4Decomp
   end comb
 
   seq on clk rising
+    // ---- Registered output / handshake ----
+    if produce_literal
+      out_data  <= in_data;
+      out_valid <= 1;
+      out_last  <= is_last and (lit_rem == 1);
+    elsif produce_copy
+      out_data  <= hist_rd_data;
+      out_valid <= 1;
+      // A copy is never the block's final byte: the last LZ4 sequence is
+      // literals-only, so out_last is asserted only on a final literal.
+      out_last  <= 0;
+    elsif out_ready
+      // Slot drained, nothing new produced.
+      out_valid <= 0;
+      out_last  <= 0;
+    end if
+
+    // ---- FSM ----
     if state == LzState::TOKEN
       if in_valid
         ml4      <= ml4_v;
@@ -147,7 +182,7 @@ module Lz4Decomp
       end if
 
     elsif state == LzState::LITERAL
-      if in_valid and out_ready
+      if produce_literal
         wr_ptr  <= (wr_ptr  +% 1);
         lit_rem <= (lit_rem - 1).trunc<16>();
         if lit_rem == 1
@@ -186,7 +221,7 @@ module Lz4Decomp
       end if
 
     elsif state == LzState::COPY
-      if out_ready
+      if produce_copy
         copy_src  <= (copy_src  +% 1);
         wr_ptr    <= (wr_ptr    +% 1);
         match_rem <= (match_rem - 1).trunc<16>();
