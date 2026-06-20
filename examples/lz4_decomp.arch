@@ -1,0 +1,200 @@
+// LZ4 block decompressor — streaming byte-serial FSM with circular history.
+//
+// Interface (AXI-Stream-like, no TKEEP/TSTRB):
+//   in_valid / in_data / in_last / in_ready   — compressed byte stream
+//   out_valid / out_data / out_last / out_ready — decompressed byte stream
+//
+// in_last is asserted with the TOKEN byte of the LAST sequence in a block.
+// The last sequence has literals only (no offset/match), per LZ4 spec §2.
+//
+// History RAM: 4096-byte circular buffer, latency 0 (combinational read).
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+ram HistBuf
+  kind simple_dual;
+  latency 0;
+  param DEPTH: const = 4096;
+  port clk: in Clock<SysDomain>;
+  store
+    buf: Vec<UInt<8>, DEPTH>;
+  end store
+  ports rd_port
+    addr: in UInt<12>;
+    data: out UInt<8>;
+  end ports rd_port
+  ports wr_port
+    en:   in Bool;
+    addr: in UInt<12>;
+    data: in UInt<8>;
+  end ports wr_port
+end ram HistBuf
+
+enum LzState
+  TOKEN,
+  EXTRA_LL,
+  LITERAL,
+  OFFS_LO,
+  OFFS_HI,
+  EXTRA_ML,
+  COPY
+end enum LzState
+
+module Lz4Decomp
+  port clk:       in Clock<SysDomain>;
+  port rst:       in Reset<Sync>;
+  port in_valid:  in Bool;
+  port in_data:   in UInt<8>;
+  port in_last:   in Bool;
+  port in_ready:  out Bool;
+  port out_valid: out Bool;
+  port out_data:  out UInt<8>;
+  port out_ready: in Bool;
+  port out_last:  out Bool;
+
+  reg default: reset rst => 0;
+  reg state:     LzState reset rst => LzState::TOKEN;
+  reg lit_rem:   UInt<16>;
+  reg match_rem: UInt<16>;
+  reg ml4:       UInt<4>;
+  reg offs_lo:   UInt<8>;
+  reg wr_ptr:    UInt<12>;
+  reg copy_src:  UInt<12>;
+  reg is_last:   Bool;
+
+  // Upper nibble = literal length, lower = match-length prefix (from TOKEN).
+  let ll4:   UInt<4> = in_data[7:4];
+  let ml4_v: UInt<4> = in_data[3:0];
+
+  // Offset reconstruction (only valid in OFFS_HI state).
+  let full_offset: UInt<16> = ((in_data.zext<16>() << 8) | offs_lo.zext<16>());
+
+  wire hist_rd_data: UInt<8>;
+  wire hist_wr_en:   Bool;
+  wire hist_wr_data: UInt<8>;
+
+  inst hist: HistBuf
+    clk          <- clk;
+    rd_port.addr <- copy_src;
+    rd_port.data -> hist_rd_data;
+    wr_port.en   <- hist_wr_en;
+    wr_port.addr <- wr_ptr;
+    wr_port.data <- hist_wr_data;
+  end inst hist
+
+  comb
+    out_valid    = 0;
+    out_data     = 0;
+    out_last     = 0;
+    in_ready     = 0;
+    hist_wr_en   = 0;
+    hist_wr_data = 0;
+
+    if state == LzState::LITERAL
+      out_valid    = in_valid;
+      out_data     = in_data;
+      in_ready     = out_ready;
+      hist_wr_en   = in_valid and out_ready;
+      hist_wr_data = in_data;
+      out_last     = is_last and (lit_rem == 1) and in_valid and out_ready;
+    elsif state == LzState::COPY
+      out_valid    = 1;
+      out_data     = hist_rd_data;
+      hist_wr_en   = out_ready;
+      hist_wr_data = hist_rd_data;
+    else
+      // TOKEN, EXTRA_LL, OFFS_LO, OFFS_HI, EXTRA_ML: consume input byte.
+      in_ready = 1;
+    end if
+  end comb
+
+  seq on clk rising
+    if state == LzState::TOKEN
+      if in_valid
+        ml4      <= ml4_v;
+        is_last  <= in_last;
+        if ll4 == 15
+          lit_rem   <= 15;
+        else
+          lit_rem   <= ll4.zext<16>();
+        end if
+        if ml4_v == 15
+          match_rem <= 15;
+        else
+          match_rem <= (ml4_v.zext<16>() + 4).trunc<16>();
+        end if
+        // Determine next state.
+        if ll4 == 15
+          state <= LzState::EXTRA_LL;
+        elsif ll4 != 0
+          state <= LzState::LITERAL;
+        elsif in_last
+          // Last sequence with zero literals: block done; stay idle.
+          state <= LzState::TOKEN;
+        else
+          state <= LzState::OFFS_LO;
+        end if
+      end if
+
+    elsif state == LzState::EXTRA_LL
+      if in_valid
+        lit_rem <= (lit_rem + in_data.zext<16>()).trunc<16>();
+        if in_data < 255
+          state <= LzState::LITERAL;
+        end if
+      end if
+
+    elsif state == LzState::LITERAL
+      if in_valid and out_ready
+        wr_ptr  <= (wr_ptr  +% 1);
+        lit_rem <= (lit_rem - 1).trunc<16>();
+        if lit_rem == 1
+          if is_last
+            state <= LzState::TOKEN;
+          else
+            state <= LzState::OFFS_LO;
+          end if
+        end if
+      end if
+
+    elsif state == LzState::OFFS_LO
+      if in_valid
+        offs_lo <= in_data;
+        state   <= LzState::OFFS_HI;
+      end if
+
+    elsif state == LzState::OFFS_HI
+      if in_valid
+        copy_src <= (wr_ptr.zext<16>() -% full_offset).trunc<12>();
+        if ml4 == 15
+          state <= LzState::EXTRA_ML;
+        else
+          state <= LzState::COPY;
+        end if
+      end if
+
+    elsif state == LzState::EXTRA_ML
+      if in_valid
+        if in_data == 255
+          match_rem <= (match_rem + 255).trunc<16>();
+        else
+          match_rem <= (match_rem + in_data.zext<16>() + 4).trunc<16>();
+          state     <= LzState::COPY;
+        end if
+      end if
+
+    elsif state == LzState::COPY
+      if out_ready
+        copy_src  <= (copy_src  +% 1);
+        wr_ptr    <= (wr_ptr    +% 1);
+        match_rem <= (match_rem - 1).trunc<16>();
+        if match_rem == 1
+          state <= LzState::TOKEN;
+        end if
+      end if
+    end if
+  end seq
+
+end module Lz4Decomp
