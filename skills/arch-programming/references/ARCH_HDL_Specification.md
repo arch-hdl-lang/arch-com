@@ -8105,6 +8105,8 @@ The compiler emits warnings (non-fatal, printed before "OK: no errors") for the 
   **Simulation**                    arch sim \--tb MyTb                          Compiles with Verilator or ModelSim/Questa
 
   **Documentation**                 arch doc                                     HTML reference from /// doc comments
+
+  **Code graph index**              arch graph index \<paths...\>                 Compiler-native JSONL graph for downstream tooling; query with arch graph query/callers/impact/context and render with arch graph html
   ------------------------------------------------------------------------------------------------------------------------------
 
 **28. Complete Example: 3-Stage RISC-V Integer Pipeline**

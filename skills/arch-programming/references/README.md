@@ -128,6 +128,27 @@ arch learn-clear                    # wipe the store
 
 Design goals: **local-first** (no telemetry, no network); **capped** (100 MB default via `ARCH_LEARN_MAX_MB`, warns at 90% full); **opt-out** (`ARCH_NO_LEARN=1` disables capture entirely). The long-term roadmap — idiom capture, contributor sharing, promoting stable patterns to compiler lints — lives in [`doc/plan_arch_learning_system.md`](doc/plan_arch_learning_system.md).
 
+## Code graph tooling
+
+`arch graph` emits and queries a compiler-native JSONL code graph for
+downstream tooling, review workflows, and agent context retrieval. The graph is
+a toolchain artifact, not HDL semantics: it summarizes files, constructs,
+doc-comment provenance, calls, dependencies, and impact neighborhoods.
+
+```sh
+arch graph index src/ examples/ --out .archgraph --clean
+arch graph query "fifo" --index .archgraph
+arch graph callers "helper_fn" --index .archgraph
+arch graph impact "AxiWriteArb" --depth 2 --index .archgraph
+arch graph context "add coverage to the write arbiter" --index .archgraph
+arch graph html --index .archgraph --out arch-graph.html
+```
+
+`query`, `callers`, `impact`, and `context` accept `--json` for
+machine-readable output. `graph html` renders a standalone searchable HTML
+viewer with clickable source links, node details, incoming/outgoing edges, and a
+local neighborhood view. The index directory defaults to `.archgraph/`.
+
 ## AI assistant support
 
 This repo includes two optional Codex-facing helpers:
