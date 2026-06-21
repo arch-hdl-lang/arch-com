@@ -445,6 +445,55 @@ def arch_sim(
 
 
 @mcp.tool()
+def arch_graph_query(query: str, index: str = ".archgraph", limit: int = 20) -> str:
+    """Query an ARCH graph index for symbols, paths, or doc text.
+
+    Build the index first with `arch graph index <paths> --out .archgraph`.
+    Returns compact file/line/symbol summaries, not raw graph dumps.
+    """
+    index_path = str(_resolve_safe(index))
+    capped = max(1, min(limit, 100))
+    return _run(
+        [ARCH_BIN, "graph", "query", query, "--index", index_path, "--limit", str(capped)],
+        timeout=20,
+    )
+
+
+@mcp.tool()
+def arch_graph_context(task: str, index: str = ".archgraph", limit: int = 30) -> str:
+    """Return a bounded graph context slice for a task description."""
+    index_path = str(_resolve_safe(index))
+    capped = max(1, min(limit, 100))
+    return _run(
+        [ARCH_BIN, "graph", "context", task, "--index", index_path, "--limit", str(capped)],
+        timeout=20,
+    )
+
+
+@mcp.tool()
+def arch_graph_impact(symbol: str, depth: int = 2, index: str = ".archgraph", limit: int = 40) -> str:
+    """Return a bounded impact neighborhood for a symbol in an ARCH graph."""
+    index_path = str(_resolve_safe(index))
+    capped_depth = max(0, min(depth, 6))
+    capped_limit = max(1, min(limit, 100))
+    return _run(
+        [
+            ARCH_BIN,
+            "graph",
+            "impact",
+            symbol,
+            "--depth",
+            str(capped_depth),
+            "--index",
+            index_path,
+            "--limit",
+            str(capped_limit),
+        ],
+        timeout=20,
+    )
+
+
+@mcp.tool()
 def write_and_check(path: str, content: str, extra_files: list[str] | None = None) -> str:
     """Write a .arch file AND immediately type-check it. Returns write
     confirmation + check diagnostics in one call. If the module instantiates

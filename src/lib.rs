@@ -6,6 +6,7 @@ pub mod construct_proof_cert;
 pub mod diagnostics;
 pub mod elaborate;
 pub mod formal;
+pub mod graph;
 pub mod interface;
 pub mod learn;
 pub mod lexer;

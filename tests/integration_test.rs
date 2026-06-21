@@ -4926,7 +4926,10 @@ end linklist BadList
     let symbols = resolve::resolve(&ast).expect("resolve error");
     let checker = TypeChecker::new(&symbols, &ast);
     let result = checker.check();
-    assert!(result.is_err(), "expected type error for unknown linklist op");
+    assert!(
+        result.is_err(),
+        "expected type error for unknown linklist op"
+    );
     let errs = result.unwrap_err();
     assert!(
         errs.iter().any(|e| {
@@ -8297,9 +8300,8 @@ fn test_pybind_wrapper_uses_thread_sim_api_compat_shims() {
             _ => None,
         })
         .expect("module");
-    let thread_model =
-        arch::sim_codegen::thread_sim::gen_module_thread(module, false, false, 1)
-            .expect("thread sim model");
+    let thread_model = arch::sim_codegen::thread_sim::gen_module_thread(module, false, false, 1)
+        .expect("thread sim model");
     assert!(
         thread_model.header.contains("void eval()")
             && !thread_model.header.contains("eval_comb")
@@ -17955,7 +17957,9 @@ fn test_thread_sim_rejects_wide_arithmetic_until_codegen_supports_it() {
         })
         .expect("module");
     let err = match arch::sim_codegen::thread_sim::gen_module_thread(m, false, false, 1) {
-        Ok(_) => panic!("wide arithmetic should be rejected until the thread-sim emitter lowers VlWide ops"),
+        Ok(_) => panic!(
+            "wide arithmetic should be rejected until the thread-sim emitter lowers VlWide ops"
+        ),
         Err(err) => err,
     };
     assert!(
@@ -27513,6 +27517,349 @@ fn test_nic400_axi3_to_axi4_limiter_field_mapping_sv() {
     assert!(
         flat.contains("parameter int MAX_BURST = 16"),
         "MAX_BURST must be the GPV-programmable onward-AxLEN cap (default 16):\n{sv}",
+    );
+}
+
+#[test]
+fn test_graph_index_query_callers_impact_context() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("GraphProbe.arch");
+    std::fs::write(
+        &src,
+        r#"
+/// Shared increment helper.
+function inc(x: UInt<8>) -> UInt<8>
+  return x +% 1;
+end function inc
+
+/// Uses inc so graph callers has an exact edge.
+module UseInc
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+  comb
+    y = inc(a);
+  end comb
+end module UseInc
+
+/// Width docs must not break </script><script>bad()</script> graph HTML.
+module WidthUser
+  param WIDTH: const = 8;
+  port x: in UInt<WIDTH>;
+  port y: out UInt<WIDTH>;
+  comb
+    y = x;
+  end comb
+end module WidthUser
+"#,
+    )
+    .expect("write source");
+    let graph = td.path().join("graph");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let index = std::process::Command::new(arch_bin)
+        .args(["graph", "index"])
+        .arg(&src)
+        .args(["--out"])
+        .arg(&graph)
+        .arg("--clean")
+        .output()
+        .expect("graph index");
+    assert!(
+        index.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&index.stderr)
+    );
+    assert!(graph.join("manifest.json").exists());
+    for name in ["files.jsonl", "nodes.jsonl", "edges.jsonl"] {
+        let raw = std::fs::read_to_string(graph.join(name)).expect(name);
+        for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+            serde_json::from_str::<serde_json::Value>(line).expect(line);
+        }
+    }
+    let edges = std::fs::read_to_string(graph.join("edges.jsonl")).expect("edges");
+    assert!(
+        !edges.contains("symbol:<unresolved>:WIDTH"),
+        "width params used inside types should resolve to local param nodes:\n{edges}"
+    );
+
+    let query = std::process::Command::new(arch_bin)
+        .args(["graph", "query", "UseInc", "--index"])
+        .arg(&graph)
+        .output()
+        .expect("graph query");
+    assert!(
+        query.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&query.stderr)
+    );
+    let query_stdout = String::from_utf8_lossy(&query.stdout);
+    assert!(
+        query_stdout.contains("module  UseInc"),
+        "stdout:\n{query_stdout}"
+    );
+
+    let callers = std::process::Command::new(arch_bin)
+        .args(["graph", "callers", "inc", "--index"])
+        .arg(&graph)
+        .output()
+        .expect("graph callers");
+    assert!(
+        callers.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&callers.stderr)
+    );
+    let callers_stdout = String::from_utf8_lossy(&callers.stdout);
+    assert!(
+        callers_stdout.contains("UseInc -> inc"),
+        "stdout:\n{callers_stdout}"
+    );
+    assert!(
+        callers_stdout.contains(":12"),
+        "callers should report call-site line, stdout:\n{callers_stdout}"
+    );
+
+    let impact = std::process::Command::new(arch_bin)
+        .args(["graph", "impact", "UseInc", "--depth", "1", "--index"])
+        .arg(&graph)
+        .output()
+        .expect("graph impact");
+    assert!(
+        impact.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&impact.stderr)
+    );
+    let impact_stdout = String::from_utf8_lossy(&impact.stdout);
+    assert!(
+        impact_stdout.contains("via=calls"),
+        "stdout:\n{impact_stdout}"
+    );
+
+    let context = std::process::Command::new(arch_bin)
+        .args(["graph", "context", "increment helper", "--index"])
+        .arg(&graph)
+        .output()
+        .expect("graph context");
+    assert!(
+        context.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&context.stderr)
+    );
+    let context_stdout = String::from_utf8_lossy(&context.stdout);
+    assert!(context_stdout.contains("inc"), "stdout:\n{context_stdout}");
+
+    let html_out = td.path().join("graph.html");
+    let html = std::process::Command::new(arch_bin)
+        .args(["graph", "html", "--index"])
+        .arg(&graph)
+        .args(["--out"])
+        .arg(&html_out)
+        .args(["--title", "UseInc graph"])
+        .output()
+        .expect("graph html");
+    assert!(
+        html.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&html.stderr)
+    );
+    let html = std::fs::read_to_string(&html_out).expect("read graph html");
+    assert!(
+        html.contains("arch-graph-viewer"),
+        "expected graph viewer shell:\n{html}"
+    );
+    assert!(
+        html.contains("UseInc graph") && html.contains("UseInc"),
+        "expected title and graph node in HTML:\n{html}"
+    );
+    assert!(
+        html.contains("data-node-id")
+            && html.contains("Neighborhood")
+            && html.contains("Outgoing")
+            && html.contains("Incoming"),
+        "expected clickable node/edge panes:\n{html}"
+    );
+    assert!(
+        !html.contains("</script><script>bad()</script>"),
+        "embedded graph data must not be able to close the viewer script:\n{html}"
+    );
+    assert!(
+        html.contains("\\u003c/script\\u003e"),
+        "expected script-breaking doc text to be escaped in embedded JSON:\n{html}"
+    );
+}
+
+#[test]
+fn test_graph_tlm_method_callers_resolve_through_bus_port_type() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let graph = td.path().join("graph");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/axi_dma_tlm/TlmOneToOne.arch");
+
+    let index = std::process::Command::new(arch_bin)
+        .args(["graph", "index"])
+        .arg(&src)
+        .args(["--root"])
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .args(["--out"])
+        .arg(&graph)
+        .arg("--clean")
+        .output()
+        .expect("graph index tlm");
+    assert!(
+        index.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&index.stderr)
+    );
+
+    let callers = std::process::Command::new(arch_bin)
+        .args(["graph", "callers", "Mem.read", "--index"])
+        .arg(&graph)
+        .output()
+        .expect("graph callers tlm");
+    assert!(
+        callers.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&callers.stderr)
+    );
+    let callers_stdout = String::from_utf8_lossy(&callers.stdout);
+    assert!(
+        callers_stdout.contains("Initiator -> read"),
+        "qualified bus method callers should include m.read call sites:\n{callers_stdout}"
+    );
+}
+
+#[test]
+fn test_graph_directory_index_is_best_effort_but_explicit_file_is_strict() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let good = td.path().join("Good.arch");
+    let bad = td.path().join("Bad.arch");
+    std::fs::write(
+        &good,
+        r#"
+module Good
+  port a: in Bool;
+  port y: out Bool;
+  comb
+    y = a;
+  end comb
+end module Good
+"#,
+    )
+    .expect("write good");
+    std::fs::write(
+        &bad,
+        r#"
+module Bad
+  port y: out Bool;
+  comb
+    y = @;
+  end comb
+end module Bad
+"#,
+    )
+    .expect("write bad");
+    let graph = td.path().join("graph");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let dir_index = std::process::Command::new(arch_bin)
+        .args(["graph", "index"])
+        .arg(td.path())
+        .args(["--out"])
+        .arg(&graph)
+        .arg("--clean")
+        .output()
+        .expect("directory graph index");
+    assert!(
+        dir_index.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&dir_index.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&dir_index.stderr).contains("skipped graph root"),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&dir_index.stderr)
+    );
+
+    let explicit_bad = std::process::Command::new(arch_bin)
+        .args(["graph", "index"])
+        .arg(&bad)
+        .args(["--out"])
+        .arg(td.path().join("bad_graph"))
+        .arg("--clean")
+        .output()
+        .expect("explicit bad graph index");
+    assert!(
+        !explicit_bad.status.success(),
+        "explicit bad file should fail"
+    );
+}
+
+#[test]
+fn test_graph_index_paths_are_stable_from_outside_indexed_directory() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let project = td.path().join("proj");
+    std::fs::create_dir(&project).expect("create project");
+    let src = project.join("Demo.arch");
+    std::fs::write(
+        &src,
+        r#"
+module Demo
+  port a: in Bool;
+  port y: out Bool;
+  comb
+    y = a;
+  end comb
+end module Demo
+"#,
+    )
+    .expect("write source");
+
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let inside_graph = td.path().join("inside_graph");
+    let outside_graph = td.path().join("outside_graph");
+
+    let inside = std::process::Command::new(arch_bin)
+        .current_dir(&project)
+        .args(["graph", "index", "Demo.arch", "--out"])
+        .arg(&inside_graph)
+        .arg("--clean")
+        .output()
+        .expect("inside graph index");
+    assert!(
+        inside.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&inside.stderr)
+    );
+
+    let outside = std::process::Command::new(arch_bin)
+        .current_dir(td.path())
+        .args(["graph", "index"])
+        .arg(&src)
+        .args(["--out"])
+        .arg(&outside_graph)
+        .arg("--clean")
+        .output()
+        .expect("outside graph index");
+    assert!(
+        outside.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&outside.stderr)
+    );
+
+    for name in ["manifest.json", "files.jsonl", "nodes.jsonl", "edges.jsonl"] {
+        let inside_raw = std::fs::read_to_string(inside_graph.join(name)).expect(name);
+        let outside_raw = std::fs::read_to_string(outside_graph.join(name)).expect(name);
+        assert_eq!(
+            inside_raw, outside_raw,
+            "{name} should not depend on caller cwd"
+        );
+    }
+
+    let nodes = std::fs::read_to_string(outside_graph.join("nodes.jsonl")).expect("nodes");
+    assert!(nodes.contains("\"file\":\"Demo.arch\""), "nodes:\n{nodes}");
+    assert!(
+        !nodes.contains("proj/Demo.arch"),
+        "paths should be index-root relative:\n{nodes}"
     );
 }
 
