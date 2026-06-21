@@ -161,12 +161,15 @@ impl BusInfo {
     /// using the given param map (bus defaults + port-site overrides).
     pub fn effective_signals(&self, param_map: &HashMap<String, &Expr>) -> Vec<(String, Direction, TypeExpr)> {
         let mut result = self.signals.clone();
+        let mut tlm_methods = self.tlm_methods.clone();
         for gen in &self.generates {
             let cond_val = eval_bus_cond(&gen.cond, param_map);
             let sigs = if cond_val { &gen.then_signals } else { &gen.else_signals };
             for s in sigs {
                 result.push((s.name.name.clone(), s.direction, s.ty.clone()));
             }
+            let methods = if cond_val { &gen.then_tlm_methods } else { &gen.else_tlm_methods };
+            tlm_methods.extend(methods.clone());
         }
         // Expand credit_channel sub-constructs into their wire protocol:
         //   <ch>_send_valid     : Bool (initiator→target)
@@ -213,7 +216,7 @@ impl BusInfo {
         //   <m>_rsp_ready   : Out Bool
         // The target bus-port flip inverts these uniformly. FSM lowering
         // on both sides lands in PR-tlm-3 / PR-tlm-4.
-        for m in &self.tlm_methods {
+        for m in &tlm_methods {
             let name = &m.name.name;
             let bool_ty = TypeExpr::Bool;
             result.push((format!("{name}_req_valid"), Direction::Out, bool_ty.clone()));

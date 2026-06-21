@@ -892,6 +892,43 @@ end ram TrueDualLat{latency}
     );
 }
 
+#[test]
+fn test_ram_latency_out_of_range_errors() {
+    // RAM codegen only handles latency 0/1/2; a higher value would
+    // silently emit an undriven `rdata` output. Reject it at check time.
+    let source = r#"
+ram BadLatRam
+  kind single;
+  latency 3;
+  param DEPTH: const = 16;
+  param T: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  store
+    data: Vec<T, DEPTH>;
+  end store
+  ports a
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports a
+end ram BadLatRam
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "latency 3 RAM should be rejected");
+    let errs = result.err().unwrap();
+    assert!(
+        errs.iter().any(|e| format!("{e:?}").contains("latency 3 is out of range")),
+        "error should name the out-of-range latency: {errs:?}"
+    );
+}
+
 // ── Counter ───────────────────────────────────────────────────────────────────
 
 #[test]
@@ -4902,6 +4939,48 @@ end linklist BadList
                 && s.contains("read_data")
         }),
         "expected unknown-op diagnostic with known ops list, got: {:?}",
+        errs
+    );
+}
+
+#[test]
+fn test_linklist_op_length_is_type_error_not_codegen_panic() {
+    // `length` is a status port (`port length: out ...` maintained by
+    // `track length:`), never an op. It was mistakenly listed in the
+    // typechecker's known-ops allow-list, so `op length` type-checked and then
+    // panicked at codegen via the `unreachable!` in emit_ll_op_controller
+    // (which has no `length` dispatch arm). It must be rejected at typecheck.
+    let source = r#"
+linklist LenList
+  param DEPTH: const = 16;
+  param DATA: type = UInt<32>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  kind singly;
+  op length
+    latency: 1;
+    port req_valid:  in Bool;
+    port req_ready:  out Bool;
+    port resp_valid: out Bool;
+    port resp_data:  out UInt<8>;
+  end op length
+end linklist LenList
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "expected type error for `op length`");
+    let errs = result.unwrap_err();
+    assert!(
+        errs.iter().any(|e| {
+            let s = e.to_string();
+            s.contains("linklist `LenList`: unknown op `length`; known ops:")
+        }),
+        "expected unknown-op diagnostic for `length`, got: {:?}",
         errs
     );
 }
@@ -10723,6 +10802,33 @@ fn test_tlm_connect_decode_lowers_to_generated_router_logic() {
 }
 
 #[test]
+fn test_tlm_connect_decode_allows_target_method_subset() {
+    let source = include_str!("axi_dma_tlm/TlmConnectSubtype.arch");
+    let sv = compile_to_sv(source);
+
+    assert!(
+        sv.contains("module TlmConnectSubtypeTop"),
+        "decoded subtype connect top should build:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_conn_i_m_decode_t0_write_req_valid")
+            && !sv.contains("_tlm_conn_i_m_decode_t1_write_req_valid"),
+        "router should drive write only to the read/write target wire:\n{sv}"
+    );
+    assert!(
+        sv.contains("_tlm_conn_i_m_decode_write_err_valid")
+            && sv.contains("_tlm_conn_i_m_decode_up_write_rsp_data = _tlm_conn_i_m_decode_write_err_valid ? 1'b0"),
+        "router should synthesize a failed Bool response for writes decoded to the read-only target:\n{sv}"
+    );
+
+    let sim = compile_to_sim_h(source, false);
+    assert!(
+        sim.contains("class VTlmConnectSubtypeTop"),
+        "sim C++ should include decoded subtype connect top"
+    );
+}
+
+#[test]
 fn test_tlm_connect_decode_does_not_emit_false_comb_cycle_warning() {
     let ws = warnings_after_full_lower(include_str!("axi_dma_tlm/TlmConnectDecode.arch"));
     assert!(
@@ -11230,6 +11336,64 @@ fn test_tlm_connect_decode_arch_sim_behavior() {
     );
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("PASS decoded connect"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn test_tlm_connect_decode_subtype_arch_sim_behavior() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/axi_dma_tlm/TlmConnectSubtype.arch")
+        .arg("--tb")
+        .arg("tests/axi_dma_tlm/tb_tlm_connect_subtype.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for decoded subtype connect");
+    assert!(
+        out.status.success(),
+        "decoded subtype connect sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS decoded subtype connect"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn test_tlm_connect_decode_three_way_arch_sim_behavior() {
+    // The two-target decode fixture exercises only a single-bit route register
+    // and a two-way selector. A third target makes the synthesized
+    // response-route register multi-bit (route_w == 2) and forces the middle
+    // target through the priority-decode `raw && !any_previous` selector path.
+    // Each target returns a distinct tag, so a mis-route surfaces as a wrong
+    // value at the corresponding output port.
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/axi_dma_tlm/TlmConnectDecodeThree.arch")
+        .arg("--tb")
+        .arg("tests/axi_dma_tlm/tb_tlm_connect_decode_three.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for 3-way decoded connect");
+    assert!(
+        out.status.success(),
+        "3-way decoded connect sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS decoded connect 3way"),
         "expected PASS marker in stdout:\n{}",
         String::from_utf8_lossy(&out.stdout)
     );
@@ -16010,6 +16174,15 @@ fn test_thread_wait_ifelse_fuses_dispatch_and_first_branch_action() {
     assert!(
         !sv.contains("_t0_state == 3"),
         "fused lowering should not emit old wait->dispatch->prefix state chain:\n{sv}"
+    );
+}
+
+#[test]
+fn test_thread_wait_ifelse_thread_sim_both_branch_latency() {
+    run_tlm_thread_sim_both(
+        "tests/thread/if_wait_thread_sim_both.arch",
+        "tests/thread/tb_if_wait_thread_sim_both.cpp",
+        "PASS IfWaitThreadSimBoth",
     );
 }
 
@@ -26501,6 +26674,61 @@ fn test_derived_param_override_reevaluates_and_creates_nested_variants() {
     );
 }
 
+#[test]
+fn test_variant_name_with_bit63_param_is_valid_identifier() {
+    // A `const` param value with bit 63 set is a negative `i64`. The variant
+    // name mangler used to format it directly, splicing a bare `-` into the
+    // emitted module/class name (`Leaf__TAG_-9223372036854775807`) — illegal in
+    // both SystemVerilog and C++ identifiers, so the design would emit
+    // uncompilable SV and the sim model would not build. The minus is now
+    // rendered as `n` (`TAG_n9223...`); positive values stay pure digits, so the
+    // mapping is collision-free. Two distinct high-bit variants exercise it.
+    let source = r#"
+module Leaf
+  param TAG: const = 64'h0;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port o: out UInt<64>;
+  reg r: UInt<64> reset rst => 0;
+  comb o = r; end comb
+  seq on clk rising
+    r <= TAG;
+  end seq
+end module Leaf
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port o0: out UInt<64>;
+  port o1: out UInt<64>;
+  inst l0: Leaf
+    param TAG = 64'h0000_0000_0000_0001;
+    clk <- clk; rst <- rst; o -> o0;
+  end inst l0
+  inst l1: Leaf
+    param TAG = 64'h8000_0000_0000_0001;
+    clk <- clk; rst <- rst; o -> o1;
+  end inst l1
+end module Top
+"#;
+    let sv = compile_to_sv(source);
+    // The high-bit variant must appear with an `n`-rendered suffix, never a
+    // bare `-` that would break the SV/C++ identifier.
+    assert!(
+        sv.contains("module Leaf__TAG_n9223372036854775807"),
+        "bit-63 param variant must mangle the leading minus to `n`:\n{sv}"
+    );
+    assert!(
+        !sv.contains("Leaf__TAG_-"),
+        "variant name must not contain a bare `-` (invalid identifier):\n{sv}"
+    );
+    // The low-bit variant is unchanged (pure digits).
+    assert!(
+        sv.contains("module Leaf__TAG_1"),
+        "positive param variant naming must be unchanged:\n{sv}"
+    );
+}
+
 // ────────────────────────────────────────────────────────────────────
 // Compiler fix: VlWide<->_arch_u128 conversion respects the real word
 // count, so a 65–96-bit (VlWide<3>) payload is not written out of bounds.
@@ -27632,5 +27860,312 @@ end module Demo
     assert!(
         !nodes.contains("proj/Demo.arch"),
         "paths should be index-root relative:\n{nodes}"
+    );
+}
+
+// The original #549 trio covers value-taint (direct + via-let) and the
+// register-read allow case. These three extend coverage to two distinct code
+// paths the trio doesn't touch: (1) the cross-stage register read (the key
+// "no false positive" guarantee — `Stage.reg` surfaces as the stage ident, so
+// it must not taint), and (2) the if-guard / mux-select taint threaded by
+// `collect_pipeline_comb_drivers` (an input used only as a mux SELECT still
+// drives the output combinationally, so it must be rejected — and a register
+// used the same way must NOT be).
+
+#[test]
+fn test_pipeline_allows_cross_stage_register_read() {
+    // `o = Fetch.captured` reads a register in ANOTHER stage. `Fetch.captured`
+    // surfaces as the stage ident `Fetch` (never an input/tainted name), so
+    // this must be accepted — the canonical pipeline data-flow pattern.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline XStagePipe
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port o: out UInt<8>;
+  stage Fetch
+    reg captured: UInt<8> reset rst => 0;
+    seq on clk rising
+      captured <= a;
+    end seq
+  end stage Fetch
+  stage WB
+    reg r2: UInt<8> reset rst => 0;
+    seq on clk rising
+      r2 <= Fetch.captured;
+    end seq
+    comb
+      o = Fetch.captured;
+    end comb
+  end stage WB
+end pipeline XStagePipe
+"#;
+    assert!(
+        pipeline_checks_ok(source),
+        "a pipeline output driven from a cross-stage register read must be accepted"
+    );
+}
+
+#[test]
+fn test_pipeline_rejects_input_used_as_comb_mux_select() {
+    // `o = r0; if sel: o = r1;` — `sel` is an INPUT used only as a mux select,
+    // yet it drives `o` combinationally (the output flips sub-cycle with the
+    // input). Must be rejected: the if-guard idents are threaded into the
+    // driver's read set, so `sel` taints `o`.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline GuardSelPipe
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port sel: in Bool;
+  port o: out UInt<8>;
+  stage S
+    reg r0: UInt<8> reset rst => 0;
+    reg r1: UInt<8> reset rst => 1;
+    seq on clk rising
+      r0 <= r0;
+      r1 <= r1;
+    end seq
+    comb
+      o = r0;
+      if sel
+        o = r1;
+      end if
+    end comb
+  end stage S
+end pipeline GuardSelPipe
+"#;
+    assert!(
+        !pipeline_checks_ok(source),
+        "an input used as a combinational mux select on an output must be rejected"
+    );
+}
+
+#[test]
+fn test_pipeline_allows_register_used_as_comb_mux_select() {
+    // Same shape as the reject case, but the mux select is a REGISTER
+    // (`sel_r`), so there is no comb path from any input to `o`. Reading a
+    // register as a guard must NOT taint — guards against an over-broad rule
+    // that would flag every conditional output.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline GuardRegPipe
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port sel: in Bool;
+  port o: out UInt<8>;
+  stage S
+    reg sel_r: Bool reset rst => false;
+    reg r0: UInt<8> reset rst => 0;
+    reg r1: UInt<8> reset rst => 1;
+    seq on clk rising
+      sel_r <= sel;
+      r0 <= r0;
+      r1 <= r1;
+    end seq
+    comb
+      o = r0;
+      if sel_r
+        o = r1;
+      end if
+    end comb
+  end stage S
+end pipeline GuardRegPipe
+"#;
+    assert!(
+        pipeline_checks_ok(source),
+        "a register used as a combinational mux select on an output must be accepted"
+    );
+}
+
+
+// ────────────────────────────────────────────────────────────────────
+// NIC-400 GPV (PR #551) + C-channel clock-gate (PR #555) — coverage
+// ────────────────────────────────────────────────────────────────────
+//
+// Both designs landed as example .arch files with only harc-side
+// `_test.harc` coverage — nothing in arch-com's own integration suite
+// exercised them, so an arch-com codegen regression could silently break
+// either design (the harc tests run through a different repo's harness).
+// These tests close that gap: a behavioral cross-check of the C-channel
+// handshake on both the arch-sim and Verilator backends, and a
+// build + lint-clean + structure pin for the GPV AXI4-target regfile.
+
+/// C-channel low-power clock-gating handshake — behavioral check on the
+/// arch-sim backend. Mirrors examples/nic400/Nic400CChannelClockGate_test.harc
+/// (gate / wake / busy-hold / regate / rerun) so the FSM's same-cycle
+/// combinational outputs (csysack / cactive / clk_en) are verified through
+/// arch-com's own sim, not only the harc harness.
+#[test]
+fn test_nic400_cchannel_clockgate_arch_sim_behavior() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("examples/nic400/Nic400CChannelClockGate.arch")
+        .arg("examples/nic400/BusCChannel.arch")
+        .arg("--tb")
+        .arg("examples/nic400/tb_nic400_cchannel_clockgate.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for Nic400CChannelClockGate");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "arch sim should pass for Nic400CChannelClockGate\nstdout:\n{}\nstderr:\n{}",
+        stdout,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("PASS cchannel_clockgate"),
+        "expected PASS marker in arch-sim stdout:\n{stdout}"
+    );
+}
+
+/// Verilator cross-check for the same C-channel handshake fixture — runs the
+/// identical TB through the SV backend so any divergence between the arch-sim
+/// scheduler and the generated SV trips both tests (or neither).
+#[test]
+fn test_nic400_cchannel_clockgate_verilator_behavior() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping Nic400CChannelClockGate Verilator behavior: verilator not found");
+        return;
+    }
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("cc.sv");
+    let obj_dir = td.path().join("obj_dir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("examples/nic400/Nic400CChannelClockGate.arch")
+        .arg("examples/nic400/BusCChannel.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build Nic400CChannelClockGate SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    // A 2-state FSM fills its 1-bit encoding completely, so PR #554's fix
+    // must have suppressed the (now vacuous) legal-state assertion. Pin it:
+    // if a future change re-introduces a power-of-2 legal-state assertion,
+    // this catches it before Verilator even runs.
+    let sv = std::fs::read_to_string(&sv_out).expect("read cc.sv");
+    assert!(
+        !sv.contains("legal_state"),
+        "a 2-state FSM must NOT emit a vacuous legal-state assertion (PR #554):\n{sv}"
+    );
+
+    let verilate = std::process::Command::new("verilator")
+        .arg("--cc")
+        .arg("--exe")
+        .arg("--build")
+        .arg("--sv")
+        .arg("--assert")
+        .arg("-Wno-DECLFILENAME")
+        .arg("--top-module")
+        .arg("Nic400CChannelClockGate")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&sv_out)
+        .arg("examples/nic400/tb_nic400_cchannel_clockgate.cpp")
+        .output()
+        .expect("verilate Nic400CChannelClockGate");
+    assert!(
+        verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr)
+    );
+
+    let run = std::process::Command::new(obj_dir.join("VNic400CChannelClockGate"))
+        .output()
+        .expect("run Verilator Nic400CChannelClockGate");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success() && stdout.contains("PASS cchannel_clockgate"),
+        "expected PASS marker in Verilator stdout:\n{stdout}"
+    );
+}
+
+/// GPV AXI4-target config register file (PR #551) — build + Verilator
+/// lint-clean + module-structure pin. The GPV is a multi-file design
+/// (Nic400Gpv + Nic400GpvRegs + BusAxi4); behavioral correctness is
+/// covered by the harc-side `_test.harc`, so this guards specifically
+/// against an arch-com codegen / elaboration regression that would make
+/// the design fail to build or lint clean.
+#[test]
+fn test_nic400_gpv_builds_and_verilator_lint_clean() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("gpv.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("examples/nic400/Nic400Gpv.arch")
+        .arg("examples/nic400/Nic400GpvRegs.arch")
+        .arg("examples/nic400/BusAxi4.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build Nic400Gpv SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass for Nic400Gpv\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let sv = std::fs::read_to_string(&sv_out).expect("read gpv.sv");
+    assert!(
+        sv.contains("module Nic400Gpv") && sv.contains("module Nic400GpvRegs"),
+        "both GPV modules must be emitted:\n{sv}"
+    );
+    // The bus flattens to individual AXI ports — pin a representative one so a
+    // bus-flattening regression on a `target` AXI4 port trips here.
+    assert!(
+        sv.contains("s_ar_addr") && sv.contains("s_r_resp"),
+        "GPV `target BusAxi4` ports must flatten (s_ar_addr / s_r_resp):\n{sv}"
+    );
+
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping Nic400Gpv Verilator lint: verilator not found");
+        return;
+    }
+    let lint = std::process::Command::new("verilator")
+        .arg("--lint-only")
+        .arg("--sv")
+        .arg("-Wno-DECLFILENAME")
+        .arg("--top-module")
+        .arg("Nic400Gpv")
+        .arg(&sv_out)
+        .output()
+        .expect("verilator lint Nic400Gpv");
+    assert!(
+        lint.status.success(),
+        "Nic400Gpv must lint clean under Verilator\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&lint.stdout),
+        String::from_utf8_lossy(&lint.stderr)
     );
 }

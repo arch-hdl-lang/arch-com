@@ -1,0 +1,24 @@
+module IfWaitThreadSimBoth
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, High>;
+  port req: in Bool;
+  port is_mul: in Bool;
+  port phase: out UInt<4>;
+
+  reg phase_q: UInt<4> reset rst => 0;
+  let phase = phase_q;
+
+  thread on clk rising, rst high
+    wait until req;
+    if is_mul
+      phase_q <= 1;
+      wait 1 cycle;
+      phase_q <= 2;
+    else
+      phase_q <= 3;
+      wait 1 cycle;
+      phase_q <= 4;
+    end if
+    wait 1 cycle;
+  end thread
+end module IfWaitThreadSimBoth

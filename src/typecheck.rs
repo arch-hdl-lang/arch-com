@@ -5131,6 +5131,19 @@ impl<'a> TypeChecker<'a> {
                 r.name.span,
             ));
         }
+        // latency must be 0 (async), 1 (sync), or 2 (sync_out). Higher
+        // values are unsupported by codegen — the SV/sim emitters only
+        // handle 0/1/2 and would otherwise silently leave `rdata` outputs
+        // undriven. Reject loudly instead.
+        if r.latency > 2 {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "ram `{}`: latency {} is out of range — must be 0 (async), 1 (sync), or 2 (sync_out)",
+                    r.name.name, r.latency
+                ),
+                r.name.span,
+            ));
+        }
         // true_dual requires exactly 2 port groups
         if r.kind == crate::ast::RamKind::TrueDual && r.port_groups.len() != 2 {
             self.errors.push(CompileError::general(
@@ -6013,10 +6026,15 @@ impl<'a> TypeChecker<'a> {
                 ));
             }
 
-            // Known op names
+            // Known op names. NOTE: `length` is intentionally NOT an op — it is a
+            // status port (`port length: out ...`) maintained by `track length:`.
+            // It was previously listed here, which let `op length` type-check and
+            // then hit the `unreachable!` in codegen (src/codegen/linklist.rs), since
+            // there is no codegen arm for it. Keep this list in lockstep with the
+            // dispatch arms in emit_ll_op_controller.
             let known_ops = [
                 "alloc", "free", "insert_head", "insert_tail", "insert_after",
-                "delete_head", "delete", "read_data", "write_data", "next", "prev", "length",
+                "delete_head", "delete", "read_data", "write_data", "next", "prev",
             ];
             if !known_ops.contains(&op.name.name.as_str()) {
                 self.errors.push(CompileError::general(

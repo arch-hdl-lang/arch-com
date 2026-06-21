@@ -454,11 +454,20 @@ fn find_varying_params(param_sets: &[HashMap<String, i64>]) -> Vec<String> {
 }
 
 fn make_variant_name(base: &str, params: &HashMap<String, i64>, varying: &[String]) -> String {
-    // Regular param suffixes (skip __ro__* synthetic reset-override keys)
+    // Regular param suffixes (skip __ro__* synthetic reset-override keys).
+    // A param value whose bit 63 is set is a negative `i64`, and formatting it
+    // directly would splice a bare `-` into the variant name — illegal in both
+    // SystemVerilog and C++ identifiers, so `arch build`/`arch sim` would emit
+    // an uncompilable `Mod__P_-9223372036854775807`. Render the leading minus as
+    // `n` (e.g. `P_-5` → `P_n5`); positive values are pure digits, so this stays
+    // collision-free while keeping the magnitude readable.
     let regular: Vec<String> = varying
         .iter()
         .filter(|k| !k.starts_with("__ro__"))
-        .map(|k| format!("{}_{}", k, params.get(k).copied().unwrap_or(0)))
+        .map(|k| {
+            let v = params.get(k).copied().unwrap_or(0);
+            format!("{}_{}", k, format!("{v}").replace('-', "n"))
+        })
         .collect();
 
     // Reset-override suffixes: group by port name for a clean suffix like rst_Async_Low
@@ -750,15 +759,25 @@ fn lower_tlm_connects(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> 
             _ => None,
         })
         .collect();
+    let struct_defs: HashMap<String, StructDecl> = ast
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(s) => Some((s.name.name.clone(), s.clone())),
+            _ => None,
+        })
+        .collect();
 
     let mut errors = Vec::new();
     let mut items = Vec::new();
     for item in ast.items {
         match item {
-            Item::Module(m) => match lower_tlm_connects_in_module(m, &module_defs, &bus_defs) {
-                Ok(m) => items.push(Item::Module(m)),
-                Err(mut errs) => errors.append(&mut errs),
-            },
+            Item::Module(m) => {
+                match lower_tlm_connects_in_module(m, &module_defs, &bus_defs, &struct_defs) {
+                    Ok(m) => items.push(Item::Module(m)),
+                    Err(mut errs) => errors.append(&mut errs),
+                }
+            }
             other => items.push(other),
         }
     }
@@ -778,6 +797,7 @@ fn lower_tlm_connects_in_module(
     mut m: ModuleDecl,
     module_defs: &HashMap<String, (Vec<ParamDecl>, Vec<PortDecl>)>,
     bus_defs: &HashMap<String, BusDecl>,
+    struct_defs: &HashMap<String, StructDecl>,
 ) -> Result<ModuleDecl, Vec<CompileError>> {
     let connects: Vec<TlmConnectDecl> = m
         .body
@@ -846,7 +866,6 @@ fn lower_tlm_connects_in_module(
                 continue;
             }
         };
-        let (from_bus, from_persp, from_span, from_shape) = from;
 
         let mut target_infos = Vec::new();
         for target in &conn.targets {
@@ -858,9 +877,7 @@ fn lower_tlm_connects_in_module(
                 &inst_params,
                 bus_defs,
             ) {
-                Ok((to_bus, to_persp, to_span, to_shape)) => {
-                    target_infos.push((target, to_bus, to_persp, to_span, to_shape));
-                }
+                Ok(endpoint) => target_infos.push((target, endpoint)),
                 Err(err) => {
                     errors.push(err);
                 }
@@ -893,15 +910,17 @@ fn lower_tlm_connects_in_module(
             continue;
         }
         let mut bus_mismatch = false;
-        for (target, to_bus, _, _, _) in &target_infos {
-            if from_bus != *to_bus {
+        for (target, to) in &target_infos {
+            if from.bus_name != to.bus_name {
                 errors.push(CompileError::general(
                     &format!(
                         "TLM connect bus mismatch: `{}.{}` is `{from_bus}`, but `{}.{}` is `{to_bus}`",
                         conn.from_inst.name,
                         conn.from_port.name,
                         target.to_inst.name,
-                        target.to_port.name
+                        target.to_port.name,
+                        from_bus = from.bus_name,
+                        to_bus = to.bus_name
                     ),
                     conn.span,
                 ));
@@ -912,17 +931,26 @@ fn lower_tlm_connects_in_module(
             continue;
         }
         let mut bus_shape_mismatch = false;
-        for (target, _, _, _, to_shape) in &target_infos {
-            if from_shape != *to_shape {
+        let decoded_connect = conn.decode_field.is_some();
+        let bus_decl = bus_defs.get(&from.bus_name);
+        for (target, to) in &target_infos {
+            let compatible = if decoded_connect {
+                bus_decl.map_or(false, |_| {
+                    tlm_connect_decoded_shapes_compatible(&from.shape, &to.shape, &from.methods)
+                })
+            } else {
+                from.shape == to.shape
+            };
+            if !compatible {
                 errors.push(CompileError::general(
                     &format!(
                         "TLM connect bus-shape mismatch: `{}.{}` exposes {}, but `{}.{}` exposes {}",
                         conn.from_inst.name,
                         conn.from_port.name,
-                        format_tlm_connect_shape(&from_shape),
+                        format_tlm_connect_shape(&from.shape),
                         target.to_inst.name,
                         target.to_port.name,
-                        format_tlm_connect_shape(to_shape)
+                        format_tlm_connect_shape(&to.shape)
                     ),
                     conn.span,
                 ));
@@ -933,20 +961,22 @@ fn lower_tlm_connects_in_module(
             continue;
         }
         let mut direction_mismatch = false;
-        for (target, _, to_persp, to_span, _) in &target_infos {
-            if from_persp != BusPerspective::Initiator || *to_persp != BusPerspective::Target {
+        for (target, to) in &target_infos {
+            if from.perspective != BusPerspective::Initiator
+                || to.perspective != BusPerspective::Target
+            {
                 errors.push(CompileError::general(
                     &format!(
                         "TLM connect requires `connect initiator_inst.initiator_port -> target_inst.target_port;` \
                          but `{}.{}` is {:?} and `{}.{}` is {:?}",
                         conn.from_inst.name,
                         conn.from_port.name,
-                        from_persp,
+                        from.perspective,
                         target.to_inst.name,
                         target.to_port.name,
-                        to_persp
+                        to.perspective
                     ),
-                    from_span.merge(*to_span),
+                    from.span.merge(to.span),
                 ));
                 direction_mismatch = true;
             }
@@ -998,7 +1028,12 @@ fn lower_tlm_connects_in_module(
                 ),
                 &mut used_names,
             );
-            synthesized_wires.push(tlm_connect_bus_wire(&wire_name, &from_bus, conn.span));
+            synthesized_wires.push(tlm_connect_bus_wire(
+                &wire_name,
+                &from.bus_name,
+                &from.bus_params,
+                conn.span,
+            ));
             push_tlm_connect_connection(
                 &mut synthesized_conns,
                 &conn.from_inst,
@@ -1016,8 +1051,13 @@ fn lower_tlm_connects_in_module(
         } else {
             match lower_decoded_tlm_connect(
                 &conn,
-                &from_bus,
+                &from,
+                &target_infos
+                    .iter()
+                    .map(|(_, endpoint)| (*endpoint).clone())
+                    .collect::<Vec<_>>(),
                 bus_defs,
+                struct_defs,
                 &m,
                 &mut used_names,
                 &mut synthesized_conns,
@@ -1163,9 +1203,14 @@ fn fresh_tlm_connect_name(base: &str, used_names: &mut HashSet<String>) -> Strin
     name
 }
 
-fn tlm_connect_bus_wire(name: &str, bus_name: &str, span: Span) -> ModuleBodyItem {
+fn tlm_connect_bus_wire(
+    name: &str,
+    bus_name: &str,
+    bus_params: &[ParamAssign],
+    span: Span,
+) -> ModuleBodyItem {
     ModuleBodyItem::WireDecl(WireDecl {
-        bus_params: Vec::new(),
+        bus_params: bus_params.to_vec(),
         name: Ident::new(name.to_string(), span),
         ty: TypeExpr::Named(Ident::new(bus_name.to_string(), span)),
         unpacked: false,
@@ -1195,8 +1240,10 @@ fn push_tlm_connect_connection(
 
 fn lower_decoded_tlm_connect(
     conn: &TlmConnectDecl,
-    bus_name: &str,
+    from: &TlmConnectEndpoint,
+    target_endpoints: &[TlmConnectEndpoint],
     bus_defs: &HashMap<String, BusDecl>,
+    struct_defs: &HashMap<String, StructDecl>,
     module: &ModuleDecl,
     used_names: &mut HashSet<String>,
     synthesized_conns: &mut HashMap<String, Vec<Connection>>,
@@ -1208,13 +1255,14 @@ fn lower_decoded_tlm_connect(
             logic: Vec::new(),
         });
     };
-    let Some(bus) = bus_defs.get(bus_name) else {
+    let bus_name = &from.bus_name;
+    if !bus_defs.contains_key(bus_name) {
         return Err(vec![CompileError::general(
             &format!("one-to-many TLM connect references unknown bus `{bus_name}`"),
             span,
         )]);
-    };
-    if bus.tlm_methods.is_empty() {
+    }
+    if from.methods.is_empty() {
         return Err(vec![CompileError::general(
             "one-to-many TLM connect currently requires a bus with `tlm_method` declarations",
             span,
@@ -1252,7 +1300,7 @@ fn lower_decoded_tlm_connect(
     };
 
     let mut decode_width: Option<u32> = None;
-    for method in &bus.tlm_methods {
+    for method in &from.methods {
         if method.mode.name != "blocking" {
             errors.push(CompileError::general(
                 &format!(
@@ -1331,9 +1379,19 @@ fn lower_decoded_tlm_connect(
     }
 
     let mut wires = Vec::new();
-    wires.push(tlm_connect_bus_wire(&up_wire, bus_name, span));
-    for wire in &target_wires {
-        wires.push(tlm_connect_bus_wire(wire, bus_name, span));
+    wires.push(tlm_connect_bus_wire(
+        &up_wire,
+        bus_name,
+        &from.bus_params,
+        span,
+    ));
+    for (wire, endpoint) in target_wires.iter().zip(target_endpoints.iter()) {
+        wires.push(tlm_connect_bus_wire(
+            wire,
+            bus_name,
+            &endpoint.bus_params,
+            span,
+        ));
     }
 
     push_tlm_connect_connection(
@@ -1358,7 +1416,12 @@ fn lower_decoded_tlm_connect(
     let mut comb_stmts = Vec::new();
     let mut seq_stmts = Vec::new();
 
-    for method in &bus.tlm_methods {
+    for method in &from.methods {
+        let target_supports_method: Vec<bool> = target_endpoints
+            .iter()
+            .map(|endpoint| tlm_connect_shape_has_method(&endpoint.shape, method))
+            .collect();
+        let any_missing_method = target_supports_method.iter().any(|supported| !*supported);
         let route_name =
             fresh_tlm_connect_name(&format!("{base}_{}_route", method.name.name), used_names);
         logic.push(ModuleBodyItem::RegDecl(RegDecl {
@@ -1370,6 +1433,24 @@ fn lower_decoded_tlm_connect(
             multicycle: None,
             span,
         }));
+        let err_valid_name = if any_missing_method {
+            let name = fresh_tlm_connect_name(
+                &format!("{base}_{}_err_valid", method.name.name),
+                used_names,
+            );
+            logic.push(ModuleBodyItem::RegDecl(RegDecl {
+                name: Ident::new(name.clone(), span),
+                ty: TypeExpr::Bool,
+                init: None,
+                reset: RegReset::Inherit(rst.clone(), tlm_bool(false, span)),
+                guard: None,
+                multicycle: None,
+                span,
+            }));
+            Some(name)
+        } else {
+            None
+        };
 
         let selectors = tlm_connect_effective_selectors(
             conn,
@@ -1379,7 +1460,14 @@ fn lower_decoded_tlm_connect(
             span,
         );
 
-        for (target_wire, selector) in target_wires.iter().zip(selectors.iter()) {
+        for ((target_wire, selector), supports_method) in target_wires
+            .iter()
+            .zip(selectors.iter())
+            .zip(target_supports_method.iter())
+        {
+            if !*supports_method {
+                continue;
+            }
             comb_stmts.push(tlm_assign(
                 tlm_bus_field(
                     target_wire,
@@ -1412,23 +1500,61 @@ fn lower_decoded_tlm_connect(
 
         let req_ready_terms: Vec<Expr> = target_wires
             .iter()
-            .map(|wire| tlm_bus_field(wire, &format!("{}_req_ready", method.name.name), span))
+            .zip(target_supports_method.iter())
+            .map(|(wire, supports_method)| {
+                if *supports_method {
+                    tlm_bus_field(wire, &format!("{}_req_ready", method.name.name), span)
+                } else if let Some(err_valid_name) = &err_valid_name {
+                    tlm_not(tlm_ident(err_valid_name, span), span)
+                } else {
+                    tlm_bool(false, span)
+                }
+            })
             .collect();
+        let mut req_ready = tlm_mux_by_selectors(&selectors, &req_ready_terms, span);
+        if let Some(err_valid_name) = &err_valid_name {
+            req_ready = tlm_ternary(
+                tlm_ident(err_valid_name, span),
+                tlm_bool(false, span),
+                req_ready,
+                span,
+            );
+        }
         comb_stmts.push(tlm_assign(
             tlm_bus_field(&up_wire, &format!("{}_req_ready", method.name.name), span),
-            tlm_mux_by_selectors(&selectors, &req_ready_terms, span),
+            req_ready,
             span,
         ));
 
         let route_expr = tlm_mux_index_by_selectors(&selectors, route_w, span);
+        let missing_method_selectors: Vec<Expr> = selectors
+            .iter()
+            .zip(target_supports_method.iter())
+            .filter_map(|(selector, supports_method)| (!*supports_method).then(|| selector.clone()))
+            .collect();
+        let missing_method_selected = tlm_or_chain(&missing_method_selectors, span);
         let req_fire = tlm_and(
             tlm_bus_field(&up_wire, &format!("{}_req_valid", method.name.name), span),
             tlm_bus_field(&up_wire, &format!("{}_req_ready", method.name.name), span),
             span,
         );
+        let mut req_fire_stmts = vec![tlm_assign(tlm_ident(&route_name, span), route_expr, span)];
+        if let Some(err_valid_name) = &err_valid_name {
+            req_fire_stmts.push(Stmt::IfElse(IfElseOf {
+                cond: missing_method_selected,
+                then_stmts: vec![tlm_assign(
+                    tlm_ident(err_valid_name, span),
+                    tlm_bool(true, span),
+                    span,
+                )],
+                else_stmts: Vec::new(),
+                unique: false,
+                span,
+            }));
+        }
         seq_stmts.push(Stmt::IfElse(IfElseOf {
             cond: req_fire,
-            then_stmts: vec![tlm_assign(tlm_ident(&route_name, span), route_expr, span)],
+            then_stmts: req_fire_stmts,
             else_stmts: Vec::new(),
             unique: false,
             span,
@@ -1445,11 +1571,14 @@ fn lower_decoded_tlm_connect(
             })
             .collect();
 
-        for ((target_wire, route_match), _) in target_wires
+        for ((target_wire, route_match), supports_method) in target_wires
             .iter()
             .zip(route_matches.iter())
-            .zip(conn.targets.iter())
+            .zip(target_supports_method.iter())
         {
+            if !*supports_method {
+                continue;
+            }
             comb_stmts.push(tlm_assign(
                 tlm_bus_field(
                     target_wire,
@@ -1468,14 +1597,21 @@ fn lower_decoded_tlm_connect(
         let rsp_valid_terms: Vec<Expr> = target_wires
             .iter()
             .zip(route_matches.iter())
-            .map(|(wire, route_match)| {
-                tlm_and(
-                    route_match.clone(),
-                    tlm_bus_field(wire, &format!("{}_rsp_valid", method.name.name), span),
-                    span,
-                )
+            .zip(target_supports_method.iter())
+            .filter_map(|((wire, route_match), supports_method)| {
+                (*supports_method).then(|| {
+                    tlm_and(
+                        route_match.clone(),
+                        tlm_bus_field(wire, &format!("{}_rsp_valid", method.name.name), span),
+                        span,
+                    )
+                })
             })
             .collect();
+        let mut rsp_valid_terms = rsp_valid_terms;
+        if let Some(err_valid_name) = &err_valid_name {
+            rsp_valid_terms.push(tlm_ident(err_valid_name, span));
+        }
         comb_stmts.push(tlm_assign(
             tlm_bus_field(&up_wire, &format!("{}_rsp_valid", method.name.name), span),
             tlm_or_chain(&rsp_valid_terms, span),
@@ -1483,15 +1619,54 @@ fn lower_decoded_tlm_connect(
         ));
 
         if method.ret.is_some() {
+            let supported_route_matches: Vec<Expr> = route_matches
+                .iter()
+                .zip(target_supports_method.iter())
+                .filter_map(|(route_match, supports_method)| {
+                    (*supports_method).then(|| route_match.clone())
+                })
+                .collect();
             let rsp_data_terms: Vec<Expr> = target_wires
                 .iter()
-                .map(|wire| tlm_bus_field(wire, &format!("{}_rsp_data", method.name.name), span))
+                .zip(target_supports_method.iter())
+                .filter_map(|(wire, supports_method)| {
+                    (*supports_method).then(|| {
+                        tlm_bus_field(wire, &format!("{}_rsp_data", method.name.name), span)
+                    })
+                })
                 .collect();
+            let mut rsp_data =
+                tlm_mux_by_selectors(&supported_route_matches, &rsp_data_terms, span);
+            if let (Some(err_valid_name), Some(ret_ty)) = (&err_valid_name, method.ret.as_ref()) {
+                rsp_data = tlm_ternary(
+                    tlm_ident(err_valid_name, span),
+                    tlm_error_response_expr(ret_ty, struct_defs, span),
+                    rsp_data,
+                    span,
+                );
+            }
             comb_stmts.push(tlm_assign(
                 tlm_bus_field(&up_wire, &format!("{}_rsp_data", method.name.name), span),
-                tlm_mux_by_selectors(&route_matches, &rsp_data_terms, span),
+                rsp_data,
                 span,
             ));
+        }
+        if let Some(err_valid_name) = &err_valid_name {
+            seq_stmts.push(Stmt::IfElse(IfElseOf {
+                cond: tlm_and(
+                    tlm_ident(err_valid_name, span),
+                    tlm_bus_field(&up_wire, &format!("{}_rsp_ready", method.name.name), span),
+                    span,
+                ),
+                then_stmts: vec![tlm_assign(
+                    tlm_ident(err_valid_name, span),
+                    tlm_bool(false, span),
+                    span,
+                )],
+                else_stmts: Vec::new(),
+                unique: false,
+                span,
+            }));
         }
     }
 
@@ -1677,6 +1852,36 @@ fn tlm_bool(value: bool, span: Span) -> Expr {
     Expr::new(ExprKind::Bool(value), span)
 }
 
+fn tlm_error_response_expr(
+    ty: &TypeExpr,
+    struct_defs: &HashMap<String, StructDecl>,
+    span: Span,
+) -> Expr {
+    match ty {
+        TypeExpr::Bool => tlm_bool(false, span),
+        TypeExpr::Named(name) => {
+            if let Some(strukt) = struct_defs.get(&name.name) {
+                let fields = strukt
+                    .fields
+                    .iter()
+                    .map(|field| FieldInit {
+                        name: field.name.clone(),
+                        value: if field.name.name == "resp" {
+                            tlm_lit_dec(1, span)
+                        } else {
+                            tlm_error_response_expr(&field.ty, struct_defs, span)
+                        },
+                    })
+                    .collect();
+                Expr::new(ExprKind::StructLiteral(name.clone(), fields), span)
+            } else {
+                tlm_lit_dec(0, span)
+            }
+        }
+        _ => tlm_lit_dec(0, span),
+    }
+}
+
 fn tlm_bin(op: BinOp, lhs: Expr, rhs: Expr, span: Span) -> Expr {
     Expr::new(ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)), span)
 }
@@ -1726,6 +1931,16 @@ fn tlm_mux_index_by_selectors(selectors: &[Expr], width: u32, span: Span) -> Exp
     tlm_mux_by_selectors(selectors, &values, span)
 }
 
+#[derive(Debug, Clone)]
+struct TlmConnectEndpoint {
+    bus_name: String,
+    perspective: BusPerspective,
+    span: Span,
+    shape: TlmConnectShape,
+    bus_params: Vec<ParamAssign>,
+    methods: Vec<TlmMethodMeta>,
+}
+
 fn tlm_connect_endpoint_bus(
     inst: &Ident,
     port: &Ident,
@@ -1733,7 +1948,7 @@ fn tlm_connect_endpoint_bus(
     module_defs: &HashMap<String, (Vec<ParamDecl>, Vec<PortDecl>)>,
     inst_params: &HashMap<String, Vec<ParamAssign>>,
     bus_defs: &HashMap<String, BusDecl>,
-) -> Result<(String, BusPerspective, Span, TlmConnectShape), CompileError> {
+) -> Result<TlmConnectEndpoint, CompileError> {
     let Some(module_name) = inst_modules.get(&inst.name) else {
         return Err(CompileError::general(
             &format!("unknown TLM connect instance `{}`", inst.name),
@@ -1785,7 +2000,23 @@ fn tlm_connect_endpoint_bus(
             .map(Vec::as_slice)
             .unwrap_or(&[]),
     );
-    Ok((bi.bus_name.name.clone(), bi.perspective, p.span, shape))
+    let methods = tlm_connect_methods_for_port(
+        bus_decl,
+        bi,
+        module_params,
+        inst_params
+            .get(&inst.name)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
+    );
+    Ok(TlmConnectEndpoint {
+        bus_name: bi.bus_name.name.clone(),
+        perspective: bi.perspective,
+        span: p.span,
+        shape,
+        bus_params: bi.params.clone(),
+        methods,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1831,6 +2062,113 @@ fn tlm_connect_shape_for_port(
         .collect();
     signals.sort();
     TlmConnectShape { count, signals }
+}
+
+fn tlm_connect_methods_for_port(
+    bus_decl: &BusDecl,
+    bi: &BusPortInfo,
+    module_params: &[ParamDecl],
+    inst_param_assigns: &[ParamAssign],
+) -> Vec<TlmMethodMeta> {
+    let mut module_param_map: HashMap<String, &Expr> = module_params
+        .iter()
+        .filter_map(|p| p.default.as_ref().map(|d| (p.name.name.clone(), d)))
+        .collect();
+    for pa in inst_param_assigns {
+        module_param_map.insert(pa.name.name.clone(), &pa.value);
+    }
+
+    let mut bus_param_map = module_param_map;
+    for p in &bus_decl.params {
+        if let Some(default) = p.default.as_ref() {
+            bus_param_map.insert(p.name.name.clone(), default);
+        }
+    }
+    for pa in &bi.params {
+        bus_param_map.insert(pa.name.name.clone(), &pa.value);
+    }
+
+    tlm_effective_methods_for_bus(bus_decl, &bus_param_map)
+        .iter()
+        .map(|method| specialize_tlm_method(method, &bus_param_map))
+        .collect()
+}
+
+fn tlm_connect_decoded_shapes_compatible(
+    from_shape: &TlmConnectShape,
+    to_shape: &TlmConnectShape,
+    methods: &[TlmMethodMeta],
+) -> bool {
+    if from_shape.count != to_shape.count {
+        return false;
+    }
+
+    let from: HashMap<&str, &str> = from_shape
+        .signals
+        .iter()
+        .map(|(name, ty)| (name.as_str(), ty.as_str()))
+        .collect();
+    let to: HashMap<&str, &str> = to_shape
+        .signals
+        .iter()
+        .map(|(name, ty)| (name.as_str(), ty.as_str()))
+        .collect();
+
+    for (name, ty) in &to {
+        if from.get(name).copied() != Some(*ty) {
+            return false;
+        }
+    }
+
+    let method_fields: HashSet<String> = methods.iter().flat_map(tlm_method_signal_names).collect();
+    for (name, _) in &from_shape.signals {
+        if to.contains_key(name.as_str()) {
+            continue;
+        }
+        if !method_fields.contains(name) {
+            return false;
+        }
+    }
+
+    methods.iter().all(|method| {
+        let fields = tlm_method_signal_names(method);
+        let present = fields
+            .iter()
+            .filter(|field| to.contains_key(field.as_str()))
+            .count();
+        present == 0 || present == fields.len()
+    })
+}
+
+fn tlm_connect_shape_has_method(shape: &TlmConnectShape, method: &TlmMethodMeta) -> bool {
+    let names: HashSet<&str> = shape
+        .signals
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    tlm_method_signal_names(method)
+        .iter()
+        .all(|field| names.contains(field.as_str()))
+}
+
+fn tlm_method_signal_names(method: &TlmMethodMeta) -> Vec<String> {
+    let mut fields = vec![
+        format!("{}_req_valid", method.name.name),
+        format!("{}_req_ready", method.name.name),
+        format!("{}_rsp_valid", method.name.name),
+        format!("{}_rsp_ready", method.name.name),
+    ];
+    if method.out_of_order_tags.is_some() {
+        fields.push(format!("{}_req_tag", method.name.name));
+        fields.push(format!("{}_rsp_tag", method.name.name));
+    }
+    for (arg, _) in &method.args {
+        fields.push(format!("{}_{}", method.name.name, arg.name));
+    }
+    if method.ret.is_some() {
+        fields.push(format!("{}_rsp_data", method.name.name));
+    }
+    fields
 }
 
 fn format_tlm_connect_shape(shape: &TlmConnectShape) -> String {
@@ -5378,6 +5716,66 @@ fn bus_effective_signals(
             out.push((s.name.name.clone(), s.direction, s.ty.clone()));
         }
     }
+    for method in tlm_effective_methods_for_bus(bd, param_map) {
+        out.extend(tlm_method_effective_signals(&method));
+    }
+    out
+}
+
+fn tlm_effective_methods_for_bus(
+    bd: &BusDecl,
+    param_map: &HashMap<String, &Expr>,
+) -> Vec<TlmMethodMeta> {
+    let mut methods = bd.tlm_methods.clone();
+    for gi in &bd.generates {
+        let cond_v = eval_const_expr_for_lower(&gi.cond, &[]);
+        let cond = if cond_v != 0 {
+            true
+        } else {
+            param_map.get(&format!("{:?}", gi.cond.kind)).is_some()
+        };
+        let cond = cond || gen_if_cond_truthy(&gi.cond, param_map);
+        let branch = if cond {
+            &gi.then_tlm_methods
+        } else {
+            &gi.else_tlm_methods
+        };
+        methods.extend(branch.clone());
+    }
+    methods
+}
+
+fn tlm_method_effective_signals(method: &TlmMethodMeta) -> Vec<(String, Direction, TypeExpr)> {
+    let name = &method.name.name;
+    let bool_ty = TypeExpr::Bool;
+    let mut out = vec![(format!("{name}_req_valid"), Direction::Out, bool_ty.clone())];
+    if let Some(tag_w) = &method.out_of_order_tags {
+        out.push((
+            format!("{name}_req_tag"),
+            Direction::Out,
+            TypeExpr::UInt(Box::new(tag_w.clone())),
+        ));
+    }
+    for (arg_name, arg_ty) in &method.args {
+        out.push((
+            format!("{name}_{}", arg_name.name),
+            Direction::Out,
+            arg_ty.clone(),
+        ));
+    }
+    out.push((format!("{name}_req_ready"), Direction::In, bool_ty.clone()));
+    out.push((format!("{name}_rsp_valid"), Direction::In, bool_ty.clone()));
+    if let Some(tag_w) = &method.out_of_order_tags {
+        out.push((
+            format!("{name}_rsp_tag"),
+            Direction::In,
+            TypeExpr::UInt(Box::new(tag_w.clone())),
+        ));
+    }
+    if let Some(ret_ty) = &method.ret {
+        out.push((format!("{name}_rsp_data"), Direction::In, ret_ty.clone()));
+    }
+    out.push((format!("{name}_rsp_ready"), Direction::Out, bool_ty));
     out
 }
 
@@ -10252,19 +10650,22 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
     // Build {bus_name -> Vec<TlmMethodMeta>}.
     let mut bus_methods: HashMap<String, Vec<TlmMethodMeta>> = HashMap::new();
     let mut bus_params: HashMap<String, Vec<ParamDecl>> = HashMap::new();
+    let mut bus_generates: HashMap<String, Vec<BusGenerateIf>> = HashMap::new();
     for it in &ast.items {
         match it {
             Item::Bus(b) => {
-                if !b.tlm_methods.is_empty() {
+                if bus_has_tlm_methods(b) {
                     bus_methods.insert(b.name.name.clone(), b.tlm_methods.clone());
                     bus_params.insert(b.name.name.clone(), b.params.clone());
+                    bus_generates.insert(b.name.name.clone(), b.generates.clone());
                 }
             }
             Item::Package(pkg) => {
                 for b in &pkg.buses {
-                    if !b.tlm_methods.is_empty() {
+                    if bus_has_tlm_methods(b) {
                         bus_methods.insert(b.name.name.clone(), b.tlm_methods.clone());
                         bus_params.insert(b.name.name.clone(), b.params.clone());
+                        bus_generates.insert(b.name.name.clone(), b.generates.clone());
                     }
                 }
             }
@@ -10281,8 +10682,12 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
         match it {
             Item::Module(mut m) => {
                 // Build port → bus_name map for this module.
-                let (port_buses, port_methods) =
-                    specialize_tlm_methods_for_module_ports(&m, &bus_methods, &bus_params);
+                let (port_buses, port_methods) = specialize_tlm_methods_for_module_ports(
+                    &m,
+                    &bus_methods,
+                    &bus_params,
+                    &bus_generates,
+                );
                 // Detect multi-implementer target cases. Indexed target
                 // lanes (`thread s.read[t](...)`) are handled below by
                 // generating private lane endpoints plus one shared mux.
@@ -10462,10 +10867,19 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
     })
 }
 
+fn bus_has_tlm_methods(bus: &BusDecl) -> bool {
+    !bus.tlm_methods.is_empty()
+        || bus
+            .generates
+            .iter()
+            .any(|gi| !gi.then_tlm_methods.is_empty() || !gi.else_tlm_methods.is_empty())
+}
+
 fn specialize_tlm_methods_for_module_ports(
     m: &ModuleDecl,
     bus_methods: &HashMap<String, Vec<TlmMethodMeta>>,
     bus_params: &HashMap<String, Vec<ParamDecl>>,
+    bus_generates: &HashMap<String, Vec<BusGenerateIf>>,
 ) -> (HashMap<String, String>, HashMap<String, Vec<TlmMethodMeta>>) {
     let mut port_buses: HashMap<String, String> = HashMap::new();
     let mut port_methods: HashMap<String, Vec<TlmMethodMeta>> = HashMap::new();
@@ -10489,9 +10903,21 @@ fn specialize_tlm_methods_for_module_ports(
         for pa in &bi.params {
             param_map.insert(pa.name.name.clone(), &pa.value);
         }
+        let mut effective_methods = methods.clone();
+        if let Some(generates) = bus_generates.get(&bus_name) {
+            for gi in generates {
+                let cond = gen_if_cond_truthy(&gi.cond, &param_map);
+                let branch = if cond {
+                    &gi.then_tlm_methods
+                } else {
+                    &gi.else_tlm_methods
+                };
+                effective_methods.extend(branch.clone());
+            }
+        }
         port_methods.insert(
             p.name.name.clone(),
-            methods
+            effective_methods
                 .iter()
                 .map(|method| specialize_tlm_method(method, &param_map))
                 .collect(),
@@ -10599,19 +11025,22 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
     use std::collections::HashMap;
     let mut bus_methods: HashMap<String, Vec<TlmMethodMeta>> = HashMap::new();
     let mut bus_params: HashMap<String, Vec<ParamDecl>> = HashMap::new();
+    let mut bus_generates: HashMap<String, Vec<BusGenerateIf>> = HashMap::new();
     for it in &ast.items {
         match it {
             Item::Bus(b) => {
-                if !b.tlm_methods.is_empty() {
+                if bus_has_tlm_methods(b) {
                     bus_methods.insert(b.name.name.clone(), b.tlm_methods.clone());
                     bus_params.insert(b.name.name.clone(), b.params.clone());
+                    bus_generates.insert(b.name.name.clone(), b.generates.clone());
                 }
             }
             Item::Package(pkg) => {
                 for b in &pkg.buses {
-                    if !b.tlm_methods.is_empty() {
+                    if bus_has_tlm_methods(b) {
                         bus_methods.insert(b.name.name.clone(), b.tlm_methods.clone());
                         bus_params.insert(b.name.name.clone(), b.params.clone());
+                        bus_generates.insert(b.name.name.clone(), b.generates.clone());
                     }
                 }
             }
@@ -10627,8 +11056,12 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
     for it in ast.items {
         match it {
             Item::Module(mut m) => {
-                let (_port_bus_names, port_methods) =
-                    specialize_tlm_methods_for_module_ports(&m, &bus_methods, &bus_params);
+                let (_port_bus_names, port_methods) = specialize_tlm_methods_for_module_ports(
+                    &m,
+                    &bus_methods,
+                    &bus_params,
+                    &bus_generates,
+                );
                 let port_buses: HashMap<String, String> = port_methods
                     .keys()
                     .map(|port| (port.clone(), port.clone()))

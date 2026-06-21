@@ -133,12 +133,15 @@ stable under backpressure. Validate these with Verilator `--assert`.
 - Blocking TLM buses also support one-initiator-to-many-target sugar by
   repeating ordinary `connect a.m -> b.s;` statements. Each target inst must
   override literal `SLAVE_START_ADDR` / `SLAVE_END_ADDR` params, and every TLM
-  method on the bus must have an `addr` argument. Elaboration synthesizes
-  private bus wires plus comb/seq routing logic, using the enclosing module's
-  single Clock and Reset ports for response-route registers. Ranges must cover
-  the full decode width.
-- Tagged `out_of_order` decoded connect, decode-error response ownership, and
-  custom routing/arbitration policy still belong in an explicit router module.
+  method exposed by the initiator bus port must have an `addr` argument.
+  Elaboration synthesizes private bus wires plus comb/seq routing logic, using
+  the enclosing module's single Clock and Reset ports for response-route
+  registers. Ranges must cover the full decode width. Target endpoints may be
+  method-subset subtypes via bus params (for example `Mem<WRITE=0>`); decoded
+  requests for missing target methods receive a local zero/false response, or a
+  zero-filled struct with `resp=1` when the response type has a `resp` field.
+- Tagged `out_of_order` decoded connect and custom routing/arbitration policy
+  still belong in an explicit router module.
 
 ## Refinement Guidance: TLM to Explicit Threads
 

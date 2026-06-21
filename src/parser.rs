@@ -446,6 +446,7 @@ impl Parser {
         let start = self.expect(TokenKind::GenerateIf)?.span;
         let cond = self.parse_expr()?;
         let mut then_signals = Vec::new();
+        let mut then_tlm_methods = Vec::new();
         // Parse then-branch signals until end generate_if or generate_else
         while !self.check_bus_gen_end() {
             if self.check(TokenKind::Handshake) || self.check(TokenKind::HandshakeChannel) {
@@ -457,14 +458,17 @@ impl Parser {
                     ));
                 }
                 then_signals.extend(ports);
+            } else if self.check(TokenKind::TlmMethod) {
+                then_tlm_methods.push(self.parse_tlm_method_decl()?);
             } else {
                 then_signals.push(self.parse_bus_signal(parent_span)?);
             }
         }
         // Optional generate_else
-        let else_signals = if self.check(TokenKind::GenerateElse) {
+        let (else_signals, else_tlm_methods) = if self.check(TokenKind::GenerateElse) {
             self.advance();
             let mut sigs = Vec::new();
+            let mut methods = Vec::new();
             while !(self.pos + 1 < self.tokens.len()
                 && self.tokens[self.pos].kind == TokenKind::End
                 && self.tokens[self.pos + 1].kind == TokenKind::GenerateIf)
@@ -478,13 +482,15 @@ impl Parser {
                         ));
                     }
                     sigs.extend(ports);
+                } else if self.check(TokenKind::TlmMethod) {
+                    methods.push(self.parse_tlm_method_decl()?);
                 } else {
                     sigs.push(self.parse_bus_signal(parent_span)?);
                 }
             }
-            sigs
+            (sigs, methods)
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         self.expect(TokenKind::End)?;
         let end_span = self.expect(TokenKind::GenerateIf)?.span;
@@ -492,6 +498,8 @@ impl Parser {
             cond,
             then_signals,
             else_signals,
+            then_tlm_methods,
+            else_tlm_methods,
             span: start.merge(end_span),
         })
     }
@@ -685,6 +693,8 @@ impl Parser {
                 cond,
                 then_signals: branch_signals,
                 else_signals: Vec::new(),
+                then_tlm_methods: Vec::new(),
+                else_tlm_methods: Vec::new(),
                 span: gi_span,
             });
         }
