@@ -460,6 +460,29 @@ def arch_graph_query(query: str, index: str = ".archgraph", limit: int = 20) -> 
 
 
 @mcp.tool()
+def arch_graph_index(
+    paths: list[str],
+    out: str = ".archgraph",
+    root: str | None = None,
+    clean: bool = False,
+    timeout: int = 60,
+) -> str:
+    """Build the compiler-native JSONL graph index for ARCH source paths.
+
+    Paths may be .arch files or directories under the configured workspace
+    roots. Pass clean=True to replace an existing graph directory.
+    """
+    resolved_paths = [str(_resolve_safe(path)) for path in paths]
+    out_path = str(_resolve_safe(out))
+    cmd = [ARCH_BIN, "graph", "index", *resolved_paths, "--out", out_path]
+    if root:
+        cmd += ["--root", str(_resolve_safe(root))]
+    if clean:
+        cmd.append("--clean")
+    return _run(cmd, timeout=timeout)
+
+
+@mcp.tool()
 def arch_graph_context(task: str, index: str = ".archgraph", limit: int = 30) -> str:
     """Return a bounded graph context slice for a task description."""
     index_path = str(_resolve_safe(index))
@@ -491,6 +514,28 @@ def arch_graph_impact(symbol: str, depth: int = 2, index: str = ".archgraph", li
         ],
         timeout=20,
     )
+
+
+@mcp.tool()
+def arch_graph_callers(target: str, index: str = ".archgraph", limit: int = 20, json: bool = False) -> str:
+    """Show indexed callers for a function or method name."""
+    index_path = str(_resolve_safe(index))
+    capped = max(1, min(limit, 100))
+    cmd = [ARCH_BIN, "graph", "callers", target, "--index", index_path, "--limit", str(capped)]
+    if json:
+        cmd.append("--json")
+    return _run(cmd, timeout=20)
+
+
+@mcp.tool()
+def arch_graph_html(index: str = ".archgraph", out: str = "arch-graph.html", title: str | None = None) -> str:
+    """Render an ARCH graph index as a standalone clickable HTML file."""
+    index_path = str(_resolve_safe(index))
+    out_path = str(_resolve_safe(out))
+    cmd = [ARCH_BIN, "graph", "html", "--index", index_path, "--out", out_path]
+    if title:
+        cmd += ["--title", title]
+    return _run(cmd, timeout=30)
 
 
 @mcp.tool()
