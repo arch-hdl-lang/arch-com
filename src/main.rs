@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use miette::{IntoDiagnostic, NamedSource, Report};
+use miette::{IntoDiagnostic, NamedSource, Report, WrapErr};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -96,6 +96,11 @@ enum Command {
         /// working directory).
         #[arg(default_value = "examples")]
         path: PathBuf,
+    },
+    /// Build and query the compiler-native ARCH code graph
+    Graph {
+        #[command(subcommand)]
+        command: GraphCommand,
     },
     /// Compile ARCH to SystemVerilog
     Build {
@@ -318,6 +323,96 @@ enum Command {
         /// by construction). See `arch build` help for the property set.
         #[arg(long)]
         auto_thread_asserts: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum GraphCommand {
+    /// Index ARCH source files into JSONL graph records
+    Index {
+        /// Input .arch files or directories to index
+        #[arg(required = true)]
+        inputs: Vec<PathBuf>,
+        /// Root used to make graph paths and IDs stable
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Output graph directory
+        #[arg(long, default_value = ".archgraph")]
+        out: PathBuf,
+        /// Replace an existing output graph directory
+        #[arg(long)]
+        clean: bool,
+    },
+    /// Query graph nodes by symbol, path, or doc text
+    Query {
+        /// Symbol or free-text query
+        query: String,
+        /// Input graph directory
+        #[arg(long, default_value = ".archgraph")]
+        index: PathBuf,
+        /// Emit JSON instead of compact human text
+        #[arg(long)]
+        json: bool,
+        /// Maximum result count
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Show indexed callers for a function or method name
+    Callers {
+        /// Function or method name
+        target: String,
+        /// Input graph directory
+        #[arg(long, default_value = ".archgraph")]
+        index: PathBuf,
+        /// Emit JSON instead of compact human text
+        #[arg(long)]
+        json: bool,
+        /// Maximum result count
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Show a bounded graph neighborhood for a symbol
+    Impact {
+        /// Symbol or text used to choose start nodes
+        symbol: String,
+        /// Traversal depth
+        #[arg(long, default_value_t = 2)]
+        depth: usize,
+        /// Input graph directory
+        #[arg(long, default_value = ".archgraph")]
+        index: PathBuf,
+        /// Emit JSON instead of compact human text
+        #[arg(long)]
+        json: bool,
+        /// Maximum result count
+        #[arg(long, default_value_t = 40)]
+        limit: usize,
+    },
+    /// Return a bounded context slice for a task description
+    Context {
+        /// Task description
+        task: String,
+        /// Input graph directory
+        #[arg(long, default_value = ".archgraph")]
+        index: PathBuf,
+        /// Emit JSON instead of compact human text
+        #[arg(long)]
+        json: bool,
+        /// Maximum result count
+        #[arg(long, default_value_t = 30)]
+        limit: usize,
+    },
+    /// Render an indexed graph as a standalone clickable HTML file
+    Html {
+        /// Input graph directory
+        #[arg(long, default_value = ".archgraph")]
+        index: PathBuf,
+        /// Output HTML file
+        #[arg(long, default_value = "arch-graph.html")]
+        out: PathBuf,
+        /// Page title
+        #[arg(long)]
+        title: Option<String>,
     },
 }
 
@@ -742,6 +837,40 @@ fn main() -> miette::Result<()> {
             Ok(())
         }
         Command::LearnBootstrap { path } => run_learn_bootstrap(&path),
+        Command::Graph { command } => match command {
+            GraphCommand::Index {
+                inputs,
+                root,
+                out,
+                clean,
+            } => run_graph_index(&inputs, root.as_deref(), &out, clean),
+            GraphCommand::Query {
+                query,
+                index,
+                json,
+                limit,
+            } => run_graph_query(&query, &index, json, limit),
+            GraphCommand::Callers {
+                target,
+                index,
+                json,
+                limit,
+            } => run_graph_callers(&target, &index, json, limit),
+            GraphCommand::Impact {
+                symbol,
+                depth,
+                index,
+                json,
+                limit,
+            } => run_graph_impact(&symbol, depth, &index, json, limit),
+            GraphCommand::Context {
+                task,
+                index,
+                json,
+                limit,
+            } => run_graph_context(&task, &index, json, limit),
+            GraphCommand::Html { index, out, title } => run_graph_html(&index, &out, title.as_deref()),
+        },
         Command::LearnClear => {
             arch::learn::clear_store().into_diagnostic()?;
             eprintln!("Cleared ~/.arch/learn/");
@@ -2356,8 +2485,7 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
                 // future construct can't be silently omitted — the missing
                 // `regfile` arm here is exactly what duplicated GPV's regfile.
                 instantiable => {
-                    all_defined_modules
-                        .insert(instantiable.as_construct().name().name.clone());
+                    all_defined_modules.insert(instantiable.as_construct().name().name.clone());
                 }
             }
         }
@@ -2632,6 +2760,332 @@ fn run_learn_bootstrap(path: &std::path::Path) -> miette::Result<()> {
     eprintln!("Indexed {} total events.", n_indexed);
     eprintln!("Try: arch advise --feature \"<query>\"");
     Ok(())
+}
+
+fn run_graph_index(
+    inputs: &[PathBuf],
+    root: Option<&std::path::Path>,
+    out: &std::path::Path,
+    clean: bool,
+) -> miette::Result<()> {
+    let index_root = graph_index_root(inputs, root)?;
+    let root_files = expand_graph_inputs(inputs)?;
+    if root_files.is_empty() {
+        return Err(miette::miette!("graph index found no .arch files"));
+    }
+
+    let has_directory_input = inputs.iter().any(|p| p.is_dir());
+    let index = if has_directory_input {
+        let mut indexes = Vec::new();
+        for root_file in &root_files {
+            match build_graph_index_for_roots(std::slice::from_ref(root_file), &index_root) {
+                Ok(index) => indexes.push(index),
+                Err(err) => {
+                    eprintln!(
+                        "warning: skipped graph root {}: {:?}",
+                        root_file.display(),
+                        err
+                    );
+                }
+            }
+        }
+        if indexes.is_empty() {
+            return Err(miette::miette!("graph index found no valid .arch roots"));
+        }
+        arch::graph::merge_indexes(indexes)
+    } else {
+        build_graph_index_for_roots(&root_files, &index_root)?
+    };
+    arch::graph::write_index(&index, out, clean).into_diagnostic()?;
+    eprintln!(
+        "Indexed {} file{}, {} node{}, {} edge{} into {}",
+        index.files.len(),
+        if index.files.len() == 1 { "" } else { "s" },
+        index.nodes.len(),
+        if index.nodes.len() == 1 { "" } else { "s" },
+        index.edges.len(),
+        if index.edges.len() == 1 { "" } else { "s" },
+        out.display()
+    );
+    eprintln!("Graph root: {}", index_root.display());
+    Ok(())
+}
+
+fn build_graph_index_for_roots(
+    root_files: &[PathBuf],
+    index_root: &std::path::Path,
+) -> miette::Result<arch::graph::GraphIndex> {
+    let all_files = resolve_use_imports(root_files)?;
+    let ms = MultiSource::from_files(&all_files)?;
+    // Validate through the normal compiler pipeline. The graph itself is
+    // built from source-level AST below so docs, imports, and thread bodies
+    // stay close to what users wrote.
+    let _ = run_check_multi(&ms)?;
+    let parsed_ast = parse_graph_source_ast(&ms)?;
+
+    let root_inputs: std::collections::BTreeSet<String> = root_files
+        .iter()
+        .flat_map(|p| {
+            let display = p.display().to_string();
+            let canon = p
+                .canonicalize()
+                .unwrap_or_else(|_| p.clone())
+                .display()
+                .to_string();
+            [display, canon]
+        })
+        .collect();
+    let segments: Vec<arch::graph::SourceSegment> = ms
+        .segments
+        .iter()
+        .map(
+            |(start, end, filename, source)| arch::graph::SourceSegment {
+                start: *start,
+                end: *end,
+                filename: filename.clone(),
+                source: source.clone(),
+            },
+        )
+        .collect();
+    arch::graph::build_index(&parsed_ast, &segments, &root_inputs, index_root).into_diagnostic()
+}
+
+fn graph_index_root(
+    inputs: &[PathBuf],
+    explicit_root: Option<&std::path::Path>,
+) -> miette::Result<PathBuf> {
+    if let Some(root) = explicit_root {
+        if !root.is_dir() {
+            return Err(miette::miette!(
+                "graph --root must be an existing directory: {}",
+                root.display()
+            ));
+        }
+        return root
+            .canonicalize()
+            .into_diagnostic()
+            .wrap_err_with(|| format!("failed to canonicalize graph root {}", root.display()));
+    }
+
+    let mut anchors = Vec::new();
+    for input in inputs {
+        if input.is_dir() {
+            anchors.push(input.canonicalize().into_diagnostic().wrap_err_with(|| {
+                format!("failed to canonicalize graph input {}", input.display())
+            })?);
+        } else if input.is_file() {
+            let file = input.canonicalize().into_diagnostic().wrap_err_with(|| {
+                format!("failed to canonicalize graph input {}", input.display())
+            })?;
+            anchors.push(
+                file.parent()
+                    .unwrap_or_else(|| std::path::Path::new("/"))
+                    .to_path_buf(),
+            );
+        } else {
+            return Err(miette::miette!(
+                "graph input does not exist: {}",
+                input.display()
+            ));
+        }
+    }
+
+    common_path_prefix(&anchors)
+        .or_else(|| std::env::current_dir().ok())
+        .ok_or_else(|| miette::miette!("failed to infer graph root"))
+}
+
+fn common_path_prefix(paths: &[PathBuf]) -> Option<PathBuf> {
+    let first = paths.first()?;
+    let mut prefix: Vec<_> = first.components().collect();
+    for path in &paths[1..] {
+        let mut n = 0;
+        for (a, b) in prefix.iter().zip(path.components()) {
+            if *a == b {
+                n += 1;
+            } else {
+                break;
+            }
+        }
+        prefix.truncate(n);
+    }
+    if prefix.is_empty() {
+        None
+    } else {
+        let mut out = PathBuf::new();
+        for component in prefix {
+            out.push(component.as_os_str());
+        }
+        Some(out)
+    }
+}
+
+fn run_graph_query(
+    query: &str,
+    index: &std::path::Path,
+    json: bool,
+    limit: usize,
+) -> miette::Result<()> {
+    if query.trim().is_empty() {
+        return Err(miette::miette!("graph query requires a non-empty query"));
+    }
+    if limit == 0 {
+        return Err(miette::miette!("--limit must be greater than 0"));
+    }
+    let graph = arch::graph::load_index(index).into_diagnostic()?;
+    let hits = arch::graph::query(&graph, query, limit);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&hits).into_diagnostic()?);
+    } else {
+        println!("{}", arch::graph::format_query_hits(&hits));
+    }
+    Ok(())
+}
+
+fn run_graph_callers(
+    target: &str,
+    index: &std::path::Path,
+    json: bool,
+    limit: usize,
+) -> miette::Result<()> {
+    if target.trim().is_empty() {
+        return Err(miette::miette!("graph callers requires a non-empty target"));
+    }
+    if limit == 0 {
+        return Err(miette::miette!("--limit must be greater than 0"));
+    }
+    let graph = arch::graph::load_index(index).into_diagnostic()?;
+    let hits = arch::graph::callers(&graph, target, limit);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&hits).into_diagnostic()?);
+    } else {
+        println!("{}", arch::graph::format_callers(&hits));
+    }
+    Ok(())
+}
+
+fn run_graph_impact(
+    symbol: &str,
+    depth: usize,
+    index: &std::path::Path,
+    json: bool,
+    limit: usize,
+) -> miette::Result<()> {
+    if symbol.trim().is_empty() {
+        return Err(miette::miette!("graph impact requires a non-empty symbol"));
+    }
+    if limit == 0 {
+        return Err(miette::miette!("--limit must be greater than 0"));
+    }
+    let graph = arch::graph::load_index(index).into_diagnostic()?;
+    let hits = arch::graph::impact(&graph, symbol, depth, limit);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&hits).into_diagnostic()?);
+    } else {
+        println!("{}", arch::graph::format_impact(&hits));
+    }
+    Ok(())
+}
+
+fn run_graph_context(
+    task: &str,
+    index: &std::path::Path,
+    json: bool,
+    limit: usize,
+) -> miette::Result<()> {
+    if task.trim().is_empty() {
+        return Err(miette::miette!(
+            "graph context requires a non-empty task description"
+        ));
+    }
+    if limit == 0 {
+        return Err(miette::miette!("--limit must be greater than 0"));
+    }
+    let graph = arch::graph::load_index(index).into_diagnostic()?;
+    let hits = arch::graph::context(&graph, task, limit);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&hits).into_diagnostic()?);
+    } else {
+        println!("{}", arch::graph::format_query_hits(&hits));
+    }
+    Ok(())
+}
+
+fn run_graph_html(
+    index: &std::path::Path,
+    out: &std::path::Path,
+    title: Option<&str>,
+) -> miette::Result<()> {
+    let graph = arch::graph::load_index(index).into_diagnostic()?;
+    let title = title.unwrap_or("ARCH graph");
+    let html = arch::graph::render_html(&graph, title).into_diagnostic()?;
+    if let Some(parent) = out.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).into_diagnostic()?;
+        }
+    }
+    fs::write(out, html).into_diagnostic()?;
+    eprintln!("Wrote {}", out.display());
+    Ok(())
+}
+
+fn expand_graph_inputs(inputs: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for input in inputs {
+        if input.is_dir() {
+            files.extend(
+                collect_arch_files(input)
+                    .into_iter()
+                    .filter(|p| !is_graph_directory_skip(p)),
+            );
+        } else if input.is_file() {
+            if input.extension().and_then(|s| s.to_str()) == Some("arch") {
+                files.push(input.clone());
+            }
+        } else {
+            return Err(miette::miette!(
+                "graph input does not exist: {}",
+                input.display()
+            ));
+        }
+    }
+    files.sort();
+    files.dedup_by(|a, b| {
+        a.canonicalize().unwrap_or_else(|_| a.clone())
+            == b.canonicalize().unwrap_or_else(|_| b.clone())
+    });
+    Ok(files)
+}
+
+fn is_graph_directory_skip(path: &std::path::Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map(|name| name.ends_with("_tb.arch"))
+        .unwrap_or(false)
+}
+
+fn parse_graph_source_ast(ms: &MultiSource) -> miette::Result<arch::ast::SourceFile> {
+    let tokens = lexer::tokenize(&ms.combined).map_err(|spans| {
+        let offset = spans.first().map(|s| s.start).unwrap_or(0);
+        let (filename, file_source, local_offset) = ms.locate(offset);
+        let err = CompileError::LexerError {
+            span: miette::SourceSpan::new(local_offset.into(), 1_usize.into()),
+        };
+        Report::new(err).with_source_code(NamedSource::new(
+            filename.to_string(),
+            file_source.to_string(),
+        ))
+    })?;
+    let mut p = parser::Parser::new(tokens, &ms.combined);
+    let mut parsed_ast = p.parse_source_file().map_err(|err| ms.report_error(err))?;
+    for item in parsed_ast.items.iter_mut() {
+        let span = item.span();
+        let (filename, _, _) = ms.locate(span.start);
+        if filename.ends_with(".archi") {
+            item.set_is_interface(true);
+        }
+    }
+    Ok(parsed_ast)
 }
 
 fn run_check_multi(
