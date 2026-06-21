@@ -87,6 +87,9 @@ session loads the server and exposes the MCP resources and tools.
 | `read_arch_file` | Read a .arch file from the project |
 | `write_arch_file` | Write a .arch file to the project |
 | `list_arch_files` | List all .arch files in a directory |
+| `arch_graph_query` | Query an existing `.archgraph` index for symbols, paths, or doc text |
+| `arch_graph_context` | Return a bounded graph context slice for a task description |
+| `arch_graph_impact` | Return a bounded impact neighborhood for a graph symbol |
 
 ## Environment Variables
 
