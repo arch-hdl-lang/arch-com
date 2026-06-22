@@ -332,6 +332,12 @@ impl<'a> Codegen<'a> {
             .map(|s| s.name.name.clone())
             .unwrap_or_else(|| "data".to_string());
 
+        // The read enable is optional: a `rd_port` without an `en` signal reads
+        // every cycle. Without this guard the registered-read path (latency 1|2)
+        // emits `if ({rpfx}_en)` referencing an undeclared signal. Mirrors the
+        // optional-`en` handling already in `emit_ram_rom`.
+        let has_rd_en = read_pg.unwrap().signals.iter().any(|s| s.name.name == "en");
+
         // Find write data signal (input data in write port)
         let wdata_sig = write_pg.unwrap().signals.iter()
             .find(|s| s.direction == Direction::In
@@ -363,10 +369,12 @@ impl<'a> Codegen<'a> {
                 self.indent += 1;
                 self.line(&format!("mem[{wpfx}_addr] <= {wpfx}_{wdata_sig};"));
                 self.indent -= 1;
-                self.line(&format!("if ({rpfx}_en)"));
-                self.indent += 1;
+                if has_rd_en {
+                    self.line(&format!("if ({rpfx}_en)"));
+                    self.indent += 1;
+                }
                 self.line(&format!("{rdata_r} <= mem[{rpfx}_addr];"));
-                self.indent -= 1;
+                if has_rd_en { self.indent -= 1; }
                 self.indent -= 1;
                 self.line("end");
                 if r.latency == 2 {
