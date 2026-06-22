@@ -709,6 +709,44 @@ fn test_simple_dual_ram() {
 }
 
 #[test]
+fn test_simple_dual_ram_latency1_no_read_enable() {
+    // Regression: a latency-1 simple_dual RAM whose read port omits `en`
+    // must NOT reference an undeclared `rd_port_en` in the registered-read
+    // path. The read enable is optional (read every cycle), mirroring ROM.
+    let source = r#"
+ram NoRdEnMem
+  kind simple_dual;
+  latency 1;
+  param DEPTH: const = 256;
+  port clk: in Clock<SysDomain>;
+  store
+    mem: Vec<UInt<8>, DEPTH>;
+  end store
+  ports rd_port
+    addr: in UInt<8>;
+    data: out UInt<8>;
+  end ports rd_port
+  ports wr_port
+    en:   in Bool;
+    addr: in UInt<8>;
+    data: in UInt<8>;
+  end ports wr_port
+end ram NoRdEnMem
+"#;
+    let sv = compile_to_sv(source);
+    // No `en` declared on the read port → no `rd_port_en` anywhere.
+    assert!(
+        !sv.contains("rd_port_en"),
+        "registered read referenced undeclared rd_port_en:\n{sv}"
+    );
+    // Registered read is still emitted, just unconditionally.
+    assert!(sv.contains("rd_port_data_r <= mem[rd_port_addr]"));
+    assert!(sv.contains("assign rd_port_data = rd_port_data_r"));
+    // Write port enable is unaffected.
+    assert!(sv.contains("if (wr_port_en)"));
+}
+
+#[test]
 fn test_true_dual_ram_runs_in_native_sim() {
     let td = tempfile::tempdir().expect("tempdir");
     let arch_path = td.path().join("TrueDualMem.arch");

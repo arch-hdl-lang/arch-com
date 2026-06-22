@@ -1,0 +1,272 @@
+// LZ4 block decompressor — streaming byte-serial FSM with circular history.
+//
+// Interface (AXI-Stream-like, no TKEEP/TSTRB):
+//   in_valid / in_data / in_last / in_ready   — compressed byte stream
+//   out_valid / out_data / out_last / out_ready — decompressed byte stream
+//
+// in_last is asserted with the TOKEN byte of the LAST sequence in a block.
+// The last sequence has literals only (no offset/match), per LZ4 spec §2.
+//
+// Timing / synthesis notes:
+//   * All stream outputs (out_valid, out_data, out_last) are REGISTERED
+//     (`pipe_reg<_,1>`): no combinational input pin -> output pin path.
+//   * History RAM is `latency 1` (REGISTERED read) so it maps to a single
+//     7-series block RAM (RAMB36E1) with a fast, fixed clock-to-out, instead
+//     of a 4096-deep distributed-RAM + LUT mux tree. Proven via yosys
+//     synth_xilinx: latency-0 = 192x RAM64M + 224x LUT6 (8 logic levels);
+//     latency-1 = 1x RAMB36E1 (4 logic levels).
+//
+//   The registered read costs one cycle of read latency, which the COPY state
+//   absorbs with a fill+emit pipeline:
+//     - On entry, COPY spends one "fill" cycle issuing the first read address.
+//     - Thereafter it emits one byte per cycle: present copy_src+1 while
+//       emitting the byte read for copy_src.
+//
+//   Overlap handling (LZ4 allows offset < match_len, e.g. RLE offset=1):
+//   when the read address being captured collides with the same-cycle write
+//   address (copy_src == wr_ptr, which happens iff offset == 1), the block RAM
+//   returns the stale (read-first) value. A 1-deep write->read forwarding
+//   register (fwd_pend / fwd_data) bypasses the just-written byte into the
+//   emit path. offset >= 2 needs no forwarding: the byte was committed at
+//   least one cycle before the read is presented.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+ram HistBuf
+  kind simple_dual;
+  latency 1;
+  param DEPTH: const = 4096;
+  port clk: in Clock<SysDomain>;
+  store
+    buf: Vec<UInt<8>, DEPTH>;
+  end store
+  ports rd_port
+    en:   in Bool;
+    addr: in UInt<12>;
+    data: out UInt<8>;
+  end ports rd_port
+  ports wr_port
+    en:   in Bool;
+    addr: in UInt<12>;
+    data: in UInt<8>;
+  end ports wr_port
+end ram HistBuf
+
+enum LzState
+  TOKEN,
+  EXTRA_LL,
+  LITERAL,
+  OFFS_LO,
+  OFFS_HI,
+  EXTRA_ML,
+  COPY
+end enum LzState
+
+module Lz4Decomp
+  port clk:       in Clock<SysDomain>;
+  port rst:       in Reset<Sync>;
+  port in_valid:  in Bool;
+  port in_data:   in UInt<8>;
+  port in_last:   in Bool;
+  port in_ready:  out Bool;
+  port out_ready: in Bool;
+
+  // Registered stream outputs — no combinational input->output path.
+  port out_valid: out pipe_reg<Bool, 1>    reset rst => 0;
+  port out_data:  out pipe_reg<UInt<8>, 1> reset rst => 0;
+  port out_last:  out pipe_reg<Bool, 1>    reset rst => 0;
+
+  reg default: reset rst => 0;
+  reg state:       LzState reset rst => LzState::TOKEN;
+  reg lit_rem:     UInt<16>;
+  reg match_rem:   UInt<16>;
+  reg ml4:         UInt<4>;
+  reg offs_lo:     UInt<8>;
+  reg wr_ptr:      UInt<12>;
+  reg copy_src:    UInt<12>;
+  reg is_last:     Bool;
+  // COPY read pipeline state.
+  reg copy_primed: Bool;   // hist_rd_data holds a valid copied byte this cycle
+  reg fwd_pend:    Bool;   // forward fwd_data instead of hist_rd_data this cycle
+  reg fwd_data:    UInt<8>;
+
+  // Upper nibble = literal length, lower = match-length prefix (from TOKEN).
+  let ll4:   UInt<4> = in_data[7:4];
+  let ml4_v: UInt<4> = in_data[3:0];
+
+  // Offset reconstruction (only valid in OFFS_HI state).
+  let full_offset: UInt<16> = ((in_data.zext<16>() << 8) | offs_lo.zext<16>());
+
+  // The output register slot is free when it is empty or being drained.
+  let can_emit: Bool = (not out_valid) or out_ready;
+
+  // COPY advances its read pipeline one step per cycle while it can emit.
+  let copy_step: Bool = (state == LzState::COPY) and can_emit;
+
+  // A decompressed byte is produced this cycle when its source state is active
+  // and the output register can take it. Literals also require an input byte;
+  // copies require the read pipeline to be primed.
+  let produce_literal: Bool = (state == LzState::LITERAL) and in_valid and can_emit;
+  let produce_copy:    Bool = (state == LzState::COPY) and copy_primed and can_emit;
+
+  wire hist_rd_data: UInt<8>;
+  wire hist_rd_en:   Bool;
+  wire hist_wr_en:   Bool;
+  wire hist_wr_data: UInt<8>;
+
+  // Byte emitted by COPY: forwarded write data on an offset-1 collision,
+  // otherwise the registered block-RAM output.
+  let copy_byte: UInt<8> = (fwd_pend ? fwd_data : hist_rd_data);
+
+  inst hist: HistBuf
+    clk          <- clk;
+    rd_port.en   <- hist_rd_en;
+    rd_port.addr <- copy_src;
+    rd_port.data -> hist_rd_data;
+    wr_port.en   <- hist_wr_en;
+    wr_port.addr <- wr_ptr;
+    wr_port.data <- hist_wr_data;
+  end inst hist
+
+  comb
+    in_ready     = 0;
+    hist_rd_en   = 0;
+    hist_wr_en   = 0;
+    hist_wr_data = 0;
+
+    if state == LzState::LITERAL
+      // Accept a literal byte only when we can emit it this cycle.
+      in_ready     = can_emit;
+      hist_wr_en   = produce_literal;
+      hist_wr_data = in_data;
+    elsif state == LzState::COPY
+      // Issue a read every step; write back the emitted byte.
+      hist_rd_en   = copy_step;
+      hist_wr_en   = produce_copy;
+      hist_wr_data = copy_byte;
+    else
+      // TOKEN, EXTRA_LL, OFFS_LO, OFFS_HI, EXTRA_ML: consume input byte.
+      in_ready = 1;
+    end if
+  end comb
+
+  seq on clk rising
+    // ---- Registered output / handshake ----
+    if produce_literal
+      out_data  <= in_data;
+      out_valid <= 1;
+      out_last  <= is_last and (lit_rem == 1);
+    elsif produce_copy
+      out_data  <= copy_byte;
+      out_valid <= 1;
+      // A copy is never the block's final byte: the last LZ4 sequence is
+      // literals-only, so out_last is asserted only on a final literal.
+      out_last  <= 0;
+    elsif out_ready
+      // Slot drained, nothing new produced.
+      out_valid <= 0;
+      out_last  <= 0;
+    end if
+
+    // ---- FSM ----
+    if state == LzState::TOKEN
+      if in_valid
+        ml4      <= ml4_v;
+        is_last  <= in_last;
+        if ll4 == 15
+          lit_rem   <= 15;
+        else
+          lit_rem   <= ll4.zext<16>();
+        end if
+        if ml4_v == 15
+          match_rem <= 15;
+        else
+          match_rem <= (ml4_v.zext<16>() + 4).trunc<16>();
+        end if
+        // Determine next state.
+        if ll4 == 15
+          state <= LzState::EXTRA_LL;
+        elsif ll4 != 0
+          state <= LzState::LITERAL;
+        elsif in_last
+          // Last sequence with zero literals: block done; stay idle.
+          state <= LzState::TOKEN;
+        else
+          state <= LzState::OFFS_LO;
+        end if
+      end if
+
+    elsif state == LzState::EXTRA_LL
+      if in_valid
+        lit_rem <= (lit_rem + in_data.zext<16>()).trunc<16>();
+        if in_data < 255
+          state <= LzState::LITERAL;
+        end if
+      end if
+
+    elsif state == LzState::LITERAL
+      if produce_literal
+        wr_ptr  <= (wr_ptr  +% 1);
+        lit_rem <= (lit_rem - 1).trunc<16>();
+        if lit_rem == 1
+          if is_last
+            state <= LzState::TOKEN;
+          else
+            state <= LzState::OFFS_LO;
+          end if
+        end if
+      end if
+
+    elsif state == LzState::OFFS_LO
+      if in_valid
+        offs_lo <= in_data;
+        state   <= LzState::OFFS_HI;
+      end if
+
+    elsif state == LzState::OFFS_HI
+      if in_valid
+        copy_src    <= (wr_ptr.zext<16>() -% full_offset).trunc<12>();
+        copy_primed <= 0;   // first COPY cycle is a read-address fill
+        fwd_pend    <= 0;
+        if ml4 == 15
+          state <= LzState::EXTRA_ML;
+        else
+          state <= LzState::COPY;
+        end if
+      end if
+
+    elsif state == LzState::EXTRA_ML
+      if in_valid
+        if in_data == 255
+          match_rem <= (match_rem + 255).trunc<16>();
+        else
+          match_rem   <= (match_rem + in_data.zext<16>() + 4).trunc<16>();
+          copy_primed <= 0;
+          fwd_pend    <= 0;
+          state       <= LzState::COPY;
+        end if
+      end if
+
+    elsif state == LzState::COPY
+      if copy_step
+        // Advance the read pointer every step (fill or emit).
+        copy_src    <= (copy_src +% 1);
+        copy_primed <= 1;
+        if copy_primed
+          // Emit cycle: write the byte back, update forwarding, count down.
+          wr_ptr    <= (wr_ptr +% 1);
+          match_rem <= (match_rem - 1).trunc<16>();
+          // Same-cycle read/write collision (offset == 1) → forward next cycle.
+          fwd_pend  <= (copy_src == wr_ptr);
+          fwd_data  <= copy_byte;
+          if match_rem == 1
+            state <= LzState::TOKEN;
+          end if
+        end if
+      end if
+    end if
+  end seq
+
+end module Lz4Decomp
