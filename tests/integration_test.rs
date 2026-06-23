@@ -747,6 +747,81 @@ end ram NoRdEnMem
 }
 
 #[test]
+fn test_single_ram_latency1_no_chip_enable() {
+    // Regression (sibling of the simple_dual fix): a latency-1 single-port RAM
+    // whose port omits `en` must NOT reference an undeclared `access_en` in the
+    // registered read/write path. The chip enable is optional (port always
+    // enabled: reads every cycle, writes whenever `wen`).
+    let source = r#"
+ram NoEnSingle
+  kind single;
+  latency 1;
+  write: no_change;
+  param DEPTH: const = 256;
+  port clk: in Clock<SysDomain>;
+  store
+    data: Vec<UInt<32>, DEPTH>;
+  end store
+  ports access
+    wen:   in Bool;
+    addr:  in UInt<8>;
+    wdata: in UInt<32>;
+    rdata: out UInt<32>;
+  end ports access
+end ram NoEnSingle
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        !sv.contains("access_en"),
+        "single-port registered path referenced undeclared access_en:\n{sv}"
+    );
+    // Write still gated by wen; read still emitted.
+    assert!(sv.contains("if (access_wen)"));
+    assert!(sv.contains("access_rdata_r <= mem[access_addr]"));
+    assert!(sv.contains("assign access_rdata = access_rdata_r"));
+}
+
+#[test]
+fn test_true_dual_ram_latency1_no_chip_enable() {
+    // Regression (sibling of the simple_dual fix): a latency-1 true_dual RAM
+    // whose ports omit `en` must NOT reference undeclared `a_en` / `b_en` in
+    // the registered read/write paths. Each port is always enabled.
+    let source = r#"
+ram NoEnTdp
+  kind true_dual;
+  latency 1;
+  param DEPTH: const = 256;
+  port clk: in Clock<SysDomain>;
+  store
+    data: Vec<UInt<32>, DEPTH>;
+  end store
+  ports a
+    wen:   in Bool;
+    addr:  in UInt<8>;
+    wdata: in UInt<32>;
+    rdata: out UInt<32>;
+  end ports a
+  ports b
+    wen:   in Bool;
+    addr:  in UInt<8>;
+    wdata: in UInt<32>;
+    rdata: out UInt<32>;
+  end ports b
+end ram NoEnTdp
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        !sv.contains("a_en") && !sv.contains("b_en"),
+        "true_dual registered path referenced undeclared a_en/b_en:\n{sv}"
+    );
+    // Both ports still write-gated by their own wen and read on the else path.
+    assert!(sv.contains("if (a_wen)"));
+    assert!(sv.contains("if (b_wen)"));
+    assert!(sv.contains("a_rdata_r <= mem[a_addr]"));
+    assert!(sv.contains("b_rdata_r <= mem[b_addr]"));
+}
+
+#[test]
 fn test_true_dual_ram_runs_in_native_sim() {
     let td = tempfile::tempdir().expect("tempdir");
     let arch_path = td.path().join("TrueDualMem.arch");

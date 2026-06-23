@@ -238,6 +238,12 @@ impl<'a> Codegen<'a> {
 
         // Detect signal names
         let has_wen = pg.signals.iter().any(|s| s.name.name == "wen");
+        // The chip enable is optional: a port without `en` is always enabled
+        // (reads every cycle, writes whenever `wen`). Without this guard the
+        // registered-read path (latency 1|2) emits `if ({pfx}_en)` referencing
+        // an undeclared signal. Mirrors the optional-`en` handling in
+        // `emit_ram_rom` / `emit_ram_simple_dual`.
+        let has_en = pg.signals.iter().any(|s| s.name.name == "en");
         let out_sig = pg.signals.iter().find(|s| s.direction == Direction::Out).cloned();
 
         match r.latency {
@@ -250,10 +256,18 @@ impl<'a> Codegen<'a> {
                 self.line("");
                 self.line(&format!("always_ff @(posedge {clk}) begin"));
                 self.indent += 1;
-                self.line(&format!("if ({pfx}_en && {pfx}_wen)"));
-                self.indent += 1;
+                // Write-gating condition: `en && wen`, dropping whichever of
+                // the two enables the port omits. Both omitted ⇒ write every
+                // cycle (unconditional).
+                let mut wr_conds: Vec<String> = Vec::new();
+                if has_en { wr_conds.push(format!("{pfx}_en")); }
+                if has_wen { wr_conds.push(format!("{pfx}_wen")); }
+                if !wr_conds.is_empty() {
+                    self.line(&format!("if ({})", wr_conds.join(" && ")));
+                    self.indent += 1;
+                }
                 self.line(&format!("mem[{pfx}_addr] <= {pfx}_wdata;"));
-                self.indent -= 1;
+                if !wr_conds.is_empty() { self.indent -= 1; }
                 self.indent -= 1;
                 self.line("end");
             }
@@ -265,8 +279,10 @@ impl<'a> Codegen<'a> {
                     let write_mode = r.write_mode.unwrap_or(RamWriteMode::NoChange);
                     self.line(&format!("always_ff @(posedge {clk}) begin"));
                     self.indent += 1;
-                    self.line(&format!("if ({pfx}_en) begin"));
-                    self.indent += 1;
+                    if has_en {
+                        self.line(&format!("if ({pfx}_en) begin"));
+                        self.indent += 1;
+                    }
                     match write_mode {
                         RamWriteMode::WriteFirst => {
                             if has_wen {
@@ -298,8 +314,10 @@ impl<'a> Codegen<'a> {
                             }
                         }
                     }
-                    self.indent -= 1;
-                    self.line("end");
+                    if has_en {
+                        self.indent -= 1;
+                        self.line("end");
+                    }
                     self.indent -= 1;
                     self.line("end");
                     self.line(&format!("assign {pfx}_{} = {rdata_r};", os.name.name));
@@ -397,6 +415,13 @@ impl<'a> Codegen<'a> {
         let pfx_a = pa.name.name.clone();
         let pfx_b = pb.name.name.clone();
 
+        // Per-port chip enable is optional: a port without `en` is always
+        // enabled. Without these guards the registered-read path emits
+        // `if ({pfx}_en)` referencing an undeclared signal (see the same
+        // optional-`en` handling in `emit_ram_single` / `emit_ram_simple_dual`).
+        let has_en_a = pa.signals.iter().any(|s| s.name.name == "en");
+        let has_en_b = pb.signals.iter().any(|s| s.name.name == "en");
+
         let rdata_a = pa.signals.iter().find(|s| s.direction == Direction::Out)
             .map(|s| s.name.name.clone()).unwrap_or_else(|| "rdata".to_string());
         let rdata_b = pb.signals.iter().find(|s| s.direction == Direction::Out)
@@ -408,11 +433,21 @@ impl<'a> Codegen<'a> {
             0 => {
                 self.line(&format!("always_ff @(posedge {clk}) begin"));
                 self.indent += 1;
-                self.line(&format!("if ({pfx_a}_en && {pfx_a}_wen)"));
+                let cond_a = if has_en_a {
+                    format!("{pfx_a}_en && {pfx_a}_wen")
+                } else {
+                    format!("{pfx_a}_wen")
+                };
+                self.line(&format!("if ({cond_a})"));
                 self.indent += 1;
                 self.line(&format!("mem[{pfx_a}_addr] <= {pfx_a}_wdata;"));
                 self.indent -= 1;
-                self.line(&format!("if ({pfx_b}_en && {pfx_b}_wen)"));
+                let cond_b = if has_en_b {
+                    format!("{pfx_b}_en && {pfx_b}_wen")
+                } else {
+                    format!("{pfx_b}_wen")
+                };
+                self.line(&format!("if ({cond_b})"));
                 self.indent += 1;
                 self.line(&format!("mem[{pfx_b}_addr] <= {pfx_b}_wdata;"));
                 self.indent -= 1;
@@ -427,8 +462,10 @@ impl<'a> Codegen<'a> {
                 self.line("");
                 self.line(&format!("always_ff @(posedge {clk}) begin"));
                 self.indent += 1;
-                self.line(&format!("if ({pfx_a}_en) begin"));
-                self.indent += 1;
+                if has_en_a {
+                    self.line(&format!("if ({pfx_a}_en) begin"));
+                    self.indent += 1;
+                }
                 self.line(&format!("if ({pfx_a}_wen)"));
                 self.indent += 1;
                 self.line(&format!("mem[{pfx_a}_addr] <= {pfx_a}_wdata;"));
@@ -437,10 +474,14 @@ impl<'a> Codegen<'a> {
                 self.indent += 1;
                 self.line(&format!("{rdata_a_r} <= mem[{pfx_a}_addr];"));
                 self.indent -= 1;
-                self.indent -= 1;
-                self.line("end");
-                self.line(&format!("if ({pfx_b}_en) begin"));
-                self.indent += 1;
+                if has_en_a {
+                    self.indent -= 1;
+                    self.line("end");
+                }
+                if has_en_b {
+                    self.line(&format!("if ({pfx_b}_en) begin"));
+                    self.indent += 1;
+                }
                 self.line(&format!("if ({pfx_b}_wen)"));
                 self.indent += 1;
                 self.line(&format!("mem[{pfx_b}_addr] <= {pfx_b}_wdata;"));
@@ -449,8 +490,10 @@ impl<'a> Codegen<'a> {
                 self.indent += 1;
                 self.line(&format!("{rdata_b_r} <= mem[{pfx_b}_addr];"));
                 self.indent -= 1;
-                self.indent -= 1;
-                self.line("end");
+                if has_en_b {
+                    self.indent -= 1;
+                    self.line("end");
+                }
                 self.indent -= 1;
                 self.line("end");
                 if r.latency == 2 {
