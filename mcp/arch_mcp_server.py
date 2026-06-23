@@ -24,12 +24,13 @@ def _workspace_roots_from_env() -> list[pathlib.Path]:
     those repositories through ARCH_MCP_WORKSPACE_ROOTS as a colon-separated
     list of roots.
     """
-    roots = [PROJECT_ROOT]
     raw_roots = os.environ.get("ARCH_MCP_WORKSPACE_ROOTS", "")
+    roots = []
     for raw_root in raw_roots.split(os.pathsep):
         raw_root = raw_root.strip()
         if raw_root:
             roots.append(pathlib.Path(raw_root).expanduser())
+    roots.append(PROJECT_ROOT)
     return list(dict.fromkeys(root.resolve() for root in roots))
 
 
@@ -210,7 +211,17 @@ def doc_comments_spec() -> str:
 def _resolve_safe(path: str) -> pathlib.Path:
     """Resolve *path* and ensure it stays under an allowed workspace root."""
     raw_path = pathlib.Path(path).expanduser()
-    resolved = (raw_path if raw_path.is_absolute() else PROJECT_ROOT / raw_path).resolve()
+    if raw_path.is_absolute():
+        resolved = raw_path.resolve()
+    else:
+        for root in WORKSPACE_ROOTS:
+            candidate = (root / raw_path).resolve()
+            if candidate.exists():
+                resolved = candidate
+                break
+        else:
+            resolved = (WORKSPACE_ROOTS[0] / raw_path).resolve()
+
     for root in WORKSPACE_ROOTS:
         try:
             resolved.relative_to(root)
