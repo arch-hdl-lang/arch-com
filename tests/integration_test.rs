@@ -28207,3 +28207,62 @@ fn test_nic400_gpv_builds_and_verilator_lint_clean() {
         String::from_utf8_lossy(&lint.stderr)
     );
 }
+
+#[test]
+fn test_coverage_merge_sums_verilator_dat_records() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let seed1 = td.path().join("seed1.dat");
+    let seed2 = td.path().join("seed2.dat");
+    let merged = td.path().join("merged.dat");
+
+    std::fs::write(
+        &seed1,
+        "# SystemC::Coverage-3\n\
+C '\u{1}file\u{2}Foo.arch\u{1}line\u{2}10\u{1}page\u{2}v_branch\u{1}comment\u{2}if ' 2\n\
+C '\u{1}file\u{2}Foo.arch\u{1}line\u{2}11\u{1}page\u{2}v_line\u{1}comment\u{2}comb comb' 0\n",
+    )
+    .expect("write seed1 coverage");
+    std::fs::write(
+        &seed2,
+        "# SystemC::Coverage-3\n\
+C '\u{1}file\u{2}Foo.arch\u{1}line\u{2}10\u{1}page\u{2}v_branch\u{1}comment\u{2}if ' 5\n\
+C '\u{1}file\u{2}Foo.arch\u{1}line\u{2}12\u{1}page\u{2}v_toggle\u{1}comment\u{2}toggle r' 7\n",
+    )
+    .expect("write seed2 coverage");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("coverage")
+        .arg("merge")
+        .arg("--out")
+        .arg(&merged)
+        .arg(&seed1)
+        .arg(&seed2)
+        .output()
+        .expect("run arch coverage merge");
+    assert!(
+        out.status.success(),
+        "coverage merge should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let merged_text = std::fs::read_to_string(&merged).expect("read merged coverage");
+    assert!(
+        merged_text.contains(
+            "C '\u{1}file\u{2}Foo.arch\u{1}line\u{2}10\u{1}page\u{2}v_branch\u{1}comment\u{2}if ' 7\n"
+        ),
+        "matching records should be summed:\n{merged_text}"
+    );
+    assert!(
+        merged_text.contains(
+            "C '\u{1}file\u{2}Foo.arch\u{1}line\u{2}11\u{1}page\u{2}v_line\u{1}comment\u{2}comb comb' 0\n"
+        ),
+        "seed1-only records should be preserved:\n{merged_text}"
+    );
+    assert!(
+        merged_text.contains(
+            "C '\u{1}file\u{2}Foo.arch\u{1}line\u{2}12\u{1}page\u{2}v_toggle\u{1}comment\u{2}toggle r' 7\n"
+        ),
+        "seed2-only records should be preserved:\n{merged_text}"
+    );
+}

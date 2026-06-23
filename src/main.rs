@@ -102,6 +102,11 @@ enum Command {
         #[command(subcommand)]
         command: GraphCommand,
     },
+    /// Work with ARCH/Verilator-compatible code coverage data
+    Coverage {
+        #[command(subcommand)]
+        command: CoverageCommand,
+    },
     /// Compile ARCH to SystemVerilog
     Build {
         /// Input .arch file(s)
@@ -413,6 +418,19 @@ enum GraphCommand {
         /// Page title
         #[arg(long)]
         title: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum CoverageCommand {
+    /// Merge Verilator-compatible coverage.dat files by summing matching counters
+    Merge {
+        /// Input coverage.dat files to merge
+        #[arg(required = true)]
+        inputs: Vec<PathBuf>,
+        /// Output merged coverage.dat path
+        #[arg(short, long, default_value = "coverage.dat")]
+        out: PathBuf,
     },
 }
 
@@ -870,6 +888,9 @@ fn main() -> miette::Result<()> {
                 limit,
             } => run_graph_context(&task, &index, json, limit),
             GraphCommand::Html { index, out, title } => run_graph_html(&index, &out, title.as_deref()),
+        },
+        Command::Coverage { command } => match command {
+            CoverageCommand::Merge { inputs, out } => run_coverage_merge(&inputs, &out),
         },
         Command::LearnClear => {
             arch::learn::clear_store().into_diagnostic()?;
@@ -2760,6 +2781,89 @@ fn run_learn_bootstrap(path: &std::path::Path) -> miette::Result<()> {
     eprintln!("Indexed {} total events.", n_indexed);
     eprintln!("Try: arch advise --feature \"<query>\"");
     Ok(())
+}
+
+fn run_coverage_merge(inputs: &[PathBuf], out: &Path) -> miette::Result<()> {
+    let mut order: Vec<String> = Vec::new();
+    let mut counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+
+    for input in inputs {
+        let text = fs::read_to_string(input)
+            .into_diagnostic()
+            .wrap_err_with(|| format!("failed to read coverage data {}", input.display()))?;
+        for (line_idx, raw_line) in text.lines().enumerate() {
+            let line_no = line_idx + 1;
+            let line = raw_line.trim_end();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if !line.starts_with("C ") {
+                return Err(miette::miette!(
+                    "{}:{}: unsupported coverage.dat record; expected `C ... <count>`",
+                    input.display(),
+                    line_no
+                ));
+            }
+
+            let (record, count) = parse_coverage_dat_record(line).ok_or_else(|| {
+                miette::miette!(
+                    "{}:{}: malformed coverage.dat record; expected `C ... <count>`",
+                    input.display(),
+                    line_no
+                )
+            })?;
+            if !counts.contains_key(record) {
+                order.push(record.to_string());
+            }
+            let total = counts.entry(record.to_string()).or_insert(0);
+            *total = total.checked_add(count).ok_or_else(|| {
+                miette::miette!(
+                    "{}:{}: coverage counter overflow while merging `{}`",
+                    input.display(),
+                    line_no,
+                    record
+                )
+            })?;
+        }
+    }
+
+    let mut merged = String::from("# SystemC::Coverage-3\n");
+    for record in &order {
+        let count = counts
+            .get(record)
+            .expect("coverage record order and count map diverged");
+        merged.push_str(record);
+        merged.push(' ');
+        merged.push_str(&count.to_string());
+        merged.push('\n');
+    }
+    fs::write(out, merged)
+        .into_diagnostic()
+        .wrap_err_with(|| format!("failed to write merged coverage data {}", out.display()))?;
+    eprintln!(
+        "Merged {} coverage file(s), {} point(s) -> {}",
+        inputs.len(),
+        order.len(),
+        out.display()
+    );
+    Ok(())
+}
+
+fn parse_coverage_dat_record(line: &str) -> Option<(&str, u64)> {
+    let mut split_idx = None;
+    for (idx, ch) in line.char_indices().rev() {
+        if ch.is_whitespace() {
+            split_idx = Some(idx);
+            break;
+        }
+    }
+    let idx = split_idx?;
+    let record = line[..idx].trim_end();
+    let count = line[idx..].trim().parse::<u64>().ok()?;
+    if record.is_empty() {
+        return None;
+    }
+    Some((record, count))
 }
 
 fn run_graph_index(
