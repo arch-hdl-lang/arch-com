@@ -435,6 +435,40 @@ end fsm BadFsm
     assert!(result.is_err(), "fsm with port named 'state' should error");
 }
 
+#[test]
+fn test_fsm_port_named_state_r_errors() {
+    // `state_r` is compiler-owned FSM state storage in both SV and native sim.
+    // User declarations with that name would collide with generated state.
+    let source = r#"
+fsm BadFsm
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port state_r: out UInt<2>;
+  state [A, B]
+  default state A;
+  state A
+    comb
+      state_r = 2'd0;
+    end comb
+    -> B when true;
+  end state A
+  state B
+    comb
+      state_r = 2'd1;
+    end comb
+    -> A when true;
+  end state B
+end fsm BadFsm
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "fsm with port named 'state_r' should error");
+}
+
 // ── FIFO ──────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -24876,6 +24910,35 @@ fn test_native_sim_bool_not_pipe_reg_outputs_and_ampamp() {
     assert!(
         !generated_cpp.contains("0xffULL") && !generated_cpp.contains("0xFFULL"),
         "Bool `not` should not be reduced as an 8-bit all-ones value:\n{generated_cpp}"
+    );
+}
+
+#[test]
+fn test_native_sim_fsm_state_r_is_public_and_synced() {
+    // HARC and SV-style white-box probes read `dut.state_r` for FSMs. Native
+    // sim already traced this name, but only generated a private `_state_r`,
+    // so generated C++ testbenches failed to compile when probing state.
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/native_fsm_state_r/Probe.arch")
+        .arg("--tb")
+        .arg("tests/native_fsm_state_r/tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for native FSM state_r probe");
+    assert!(
+        out.status.success(),
+        "native FSM state_r probe should compile + run\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS native FSM state_r probe"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
     );
 }
 

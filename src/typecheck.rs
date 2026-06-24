@@ -4963,13 +4963,20 @@ impl<'a> TypeChecker<'a> {
         }
 
         // `state` is reserved — the codegen maps it to the internal
-        // `state_r` register via ident_subst. A user port/signal named
-        // `state` would have its assignments rewritten to the enum-typed
-        // register, producing SV ENUMVALUE errors.
+        // `state_r` register via ident_subst. `state_r` is also reserved:
+        // SV/native codegen expose that compiler-owned state register name
+        // directly to support white-box probes. User declarations using either
+        // name would collide with generated state storage.
         for p in &f.ports {
             if p.name.name == "state" {
                 self.errors.push(CompileError::general(
                     "'state' is reserved in fsm (the codegen maps it to the internal state_r register). Rename the port (e.g. 'state_o').",
+                    p.name.span,
+                ));
+            }
+            if p.name.name == "state_r" {
+                self.errors.push(CompileError::general(
+                    "'state_r' is reserved in fsm for compiler-generated state storage. Rename the port (e.g. 'state_o').",
                     p.name.span,
                 ));
             }
@@ -4981,6 +4988,12 @@ impl<'a> TypeChecker<'a> {
                     r.name.span,
                 ));
             }
+            if r.name.name == "state_r" {
+                self.errors.push(CompileError::general(
+                    "'state_r' is reserved in fsm for compiler-generated state storage. Rename the signal.",
+                    r.name.span,
+                ));
+            }
         }
         for w in &f.wires {
             if w.name.name == "state" {
@@ -4989,11 +5002,23 @@ impl<'a> TypeChecker<'a> {
                     w.name.span,
                 ));
             }
+            if w.name.name == "state_r" {
+                self.errors.push(CompileError::general(
+                    "'state_r' is reserved in fsm for compiler-generated state storage. Rename the signal.",
+                    w.name.span,
+                ));
+            }
         }
         for l in &f.lets {
             if l.name.name == "state" {
                 self.errors.push(CompileError::general(
                     "'state' is reserved in fsm. Rename the binding.",
+                    l.name.span,
+                ));
+            }
+            if l.name.name == "state_r" {
+                self.errors.push(CompileError::general(
+                    "'state_r' is reserved in fsm for compiler-generated state storage. Rename the binding.",
                     l.name.span,
                 ));
             }

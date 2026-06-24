@@ -134,7 +134,8 @@ impl<'a> SimCodegen<'a> {
             let ty = cpp_port_type_with_params(flat_ty, &f.common.params);
             h.push_str(&format!("  {ty} {flat_name};\n"));
         }
-        // Datapath registers as public members (accessible from testbench)
+        // FSM state and datapath registers as public members (accessible from testbench)
+        h.push_str(&format!("  {state_ty} state_r;\n"));
         for reg in &f.regs {
             if let Some((elem_ty, count)) = vec_array_info_with_params(&reg.ty, &f.common.params) {
                 h.push_str(&format!("  {} {}[{}];\n", elem_ty, reg.name.name, count));
@@ -181,7 +182,11 @@ impl<'a> SimCodegen<'a> {
                     format!("{}(0)", r.name.name)
                 }
             }).collect();
-        let state_inits = vec!["_clk_prev(0)".to_string(), format!("_state_r({default_idx})")];
+        let state_inits = vec![
+            "_clk_prev(0)".to_string(),
+            format!("state_r({default_idx})"),
+            format!("_state_r({default_idx})"),
+        ];
         let all_inits: Vec<String> = port_inits.into_iter()
             .chain(vec_port_flat_inits)
             .chain(bus_flat_inits)
@@ -367,7 +372,7 @@ impl<'a> SimCodegen<'a> {
             }
             cpp.push_str("        break;\n");
         }
-        cpp.push_str("    }\n  }\n  _state_r = _n_state;\n");
+        cpp.push_str("    }\n  }\n  _state_r = _n_state;\n  state_r = _state_r;\n");
         // Commit datapath regs
         for reg in &f.regs {
             let n = &reg.name.name;
