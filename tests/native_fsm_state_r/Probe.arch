@@ -1,0 +1,44 @@
+//! ---
+//! tags: [native-sim, fsm, state-probe]
+//! ---
+//!
+//! Regression fixture for native C++ FSM state exposure. The testbench reads
+//! the generated public `state_r` field the same way SV-style white-box probes do.
+
+/// Small FSM used to verify native sim exposes its current state to testbenches.
+fsm FsmStateProbe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port advance: in Bool;
+  port state_code: out UInt<2>;
+
+  state [Idle, Busy, Done]
+  default state Idle;
+
+  default
+    comb
+      state_code = 0;
+    end comb
+  end default
+
+  state Idle
+    comb
+      state_code = 0;
+    end comb
+    -> Busy when advance;
+  end state Idle
+
+  state Busy
+    comb
+      state_code = 1;
+    end comb
+    -> Done when advance;
+  end state Busy
+
+  state Done
+    comb
+      state_code = 2;
+    end comb
+    -> Idle when advance;
+  end state Done
+end fsm FsmStateProbe
