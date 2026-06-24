@@ -1,0 +1,416 @@
+// Greedy LZ4 block compressor — single-pass, first-match-only.
+//
+// Accepts up to 16 bytes of input (written into InBuf by the testbench),
+// scans for the first 4-byte hash match, then emits a valid LZ4 block into
+// OutBuf:
+//
+//   [token][extra lit len?][literals][offset lo][offset hi][end token][extra?][end lits]
+//
+// Match length is always exactly 4 (the LZ4 minimum), so the match-len
+// nibble of every token is 0 and no extended match-length bytes are needed.
+// The offset is always < 16, so the high byte of the 2-byte LE offset is 0.
+//
+// Thread timing overview:
+//   wait until start → latch in_len, clear state (1 cy)
+//   for pidx 0..15   → scan input; on quad read: 5cy ibuf + 2cy htab + 5cy ref = 12cy/hit
+//   emit seq-1        → token + ext? + literals + offset (variable)
+//   emit end-seq      → token + ext? + remaining literals (variable)
+//   done pulse        → 1 cy
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+// 16×8-bit input buffer: TB writes via wr_port, engine reads via rd_port.
+ram InBuf
+  kind simple_dual;
+  latency 1;
+  port clk: in Clock<SysDomain>;
+  store
+    data: Vec<UInt<8>, 16>;
+  end store
+  ports wr_port
+    en:   in Bool;
+    addr: in UInt<4>;
+    data: in UInt<8>;
+  end ports wr_port
+  ports rd_port
+    en:   in Bool;
+    addr: in UInt<4>;
+    data: out UInt<8>;
+  end ports rd_port
+end ram InBuf
+
+// 32×8-bit output buffer: engine writes via wr_port, TB reads via rd_port.
+ram OutBuf
+  kind simple_dual;
+  latency 1;
+  port clk: in Clock<SysDomain>;
+  store
+    data: Vec<UInt<8>, 32>;
+  end store
+  ports wr_port
+    en:   in Bool;
+    addr: in UInt<5>;
+    data: in UInt<8>;
+  end ports wr_port
+  ports rd_port
+    en:   in Bool;
+    addr: in UInt<5>;
+    data: out UInt<8>;
+  end ports rd_port
+end ram OutBuf
+
+// 16×4-bit hash table: stores the last-seen input position for each hash bucket.
+// Zero-initialized so position 0 (default) fails the mpos_r < pos_r validity check
+// on the first iteration.
+ram HashTbl
+  kind single;
+  latency 1;
+  write: no_change;
+  init: zero;
+  port clk: in Clock<SysDomain>;
+  store
+    data: Vec<UInt<4>, 16>;
+  end store
+  ports access
+    en:    in Bool;
+    wen:   in Bool;
+    addr:  in UInt<4>;
+    wdata: in UInt<4>;
+    rdata: out UInt<4>;
+  end ports access
+end ram HashTbl
+
+module Lz4Compressor
+  port clk:     in  Clock<SysDomain>;
+  port rst:     in  Reset<Async, High>;
+
+  // Input buffer write interface (TB loads data before asserting start)
+  port ib_en:   in  Bool;
+  port ib_addr: in  UInt<4>;
+  port ib_data: in  UInt<8>;
+
+  // Compression control
+  port in_len:  in  UInt<5>;   // 1..16 bytes to compress
+  port start:   in  Bool;
+  port done:    out Bool;
+  port out_len: out UInt<6>;
+
+  // Output buffer read interface (TB reads after done asserts)
+  port ob_en:   in  Bool;
+  port ob_addr: in  UInt<5>;
+  port ob_data: out UInt<8>;
+
+  // InBuf read interface (driven by thread via default comb)
+  wire ibuf_rd_en:   Bool;
+  wire ibuf_rd_addr: UInt<4>;
+  wire ibuf_rd_data: UInt<8>;   // driven by inst ibuf
+
+  // OutBuf write interface (driven by thread via default comb)
+  wire obuf_wr_en:   Bool;
+  wire obuf_wr_addr: UInt<5>;
+  wire obuf_wr_data: UInt<8>;
+
+  // HashTbl access interface (driven by thread via default comb)
+  wire htab_en:    Bool;
+  wire htab_wen:   Bool;
+  wire htab_addr:  UInt<4>;
+  wire htab_wdata: UInt<4>;
+  wire htab_rdata: UInt<4>;   // driven by inst htab
+
+  // Compression state registers
+  reg in_len_r:      UInt<5>  reset rst => 0;
+  reg pos_r:         UInt<4>  reset rst => 0;
+  reg lit_count_r:   UInt<5>  reset rst => 0;  // literals before found match
+  reg lit_start_r:   UInt<5>  reset rst => 0;  // start of end-seq literals
+  reg out_pos_r:     UInt<6>  reset rst => 0;
+  reg match_found_r: Bool     reset rst => false;
+  reg match_at_r:    UInt<4>  reset rst => 0;  // input pos where match starts
+  reg mpos_r:        UInt<4>  reset rst => 0;  // hash-table candidate position
+  reg mpos_save_r:   UInt<4>  reset rst => 0;  // confirmed match source position
+
+  // Quad byte registers (current 4-byte window)
+  reg b0_r: UInt<8> reset rst => 0;
+  reg b1_r: UInt<8> reset rst => 0;
+  reg b2_r: UInt<8> reset rst => 0;
+  reg b3_r: UInt<8> reset rst => 0;
+
+  // Reference bytes for 4-byte match comparison
+  reg ref0_r: UInt<8> reset rst => 0;
+  reg ref1_r: UInt<8> reset rst => 0;
+  reg ref2_r: UInt<8> reset rst => 0;
+  reg ref3_r: UInt<8> reset rst => 0;
+
+  // Final output length (latched at end of compression)
+  reg out_len_r: UInt<6> reset rst => 0;
+
+  // Knuth multiplicative hash of the 4-byte quad (little-endian byte order)
+  let quad: UInt<32> = b0_r.zext<32>()
+                     | (b1_r.zext<32>() << 8)
+                     | (b2_r.zext<32>() << 16)
+                     | (b3_r.zext<32>() << 24);
+  let hash_idx: UInt<4> = ((quad *% 32'h9E3779B1) >> 28).trunc<4>();
+
+  // Number of end-sequence literals (bytes after the match, or all bytes if no match)
+  wire end_lit_count_w: UInt<5>;
+  comb
+    end_lit_count_w = in_len_r -% lit_start_r;
+  end comb
+
+  // Output port bindings
+  let out_len = out_len_r;
+
+  // RAM instances
+  inst ibuf: InBuf
+    clk          <- clk;
+    wr_port.en   <- ib_en;
+    wr_port.addr <- ib_addr;
+    wr_port.data <- ib_data;
+    rd_port.en   <- ibuf_rd_en;
+    rd_port.addr <- ibuf_rd_addr;
+    rd_port.data -> ibuf_rd_data;
+  end inst ibuf
+
+  inst obuf: OutBuf
+    clk          <- clk;
+    wr_port.en   <- obuf_wr_en;
+    wr_port.addr <- obuf_wr_addr;
+    wr_port.data <- obuf_wr_data;
+    rd_port.en   <- ob_en;
+    rd_port.addr <- ob_addr;
+    rd_port.data -> ob_data;
+  end inst obuf
+
+  inst htab: HashTbl
+    clk           <- clk;
+    access.en     <- htab_en;
+    access.wen    <- htab_wen;
+    access.addr   <- htab_addr;
+    access.wdata  <- htab_wdata;
+    access.rdata  -> htab_rdata;
+  end inst htab
+
+  // LZ4 compression thread
+  thread on clk rising, rst high
+    default comb
+      ibuf_rd_en   = false;
+      ibuf_rd_addr = 0;
+      obuf_wr_en   = false;
+      obuf_wr_addr = 0;
+      obuf_wr_data = 0;
+      htab_en      = false;
+      htab_wen     = false;
+      htab_addr    = 0;
+      htab_wdata   = 0;
+      done         = false;
+    end default
+
+    // Idle: wait for the testbench to assert start.
+    wait until start;
+
+    // Latch control inputs and reset compression state.
+    in_len_r      <= in_len;
+    pos_r         <= 0;
+    lit_count_r   <= 0;
+    lit_start_r   <= 0;
+    out_pos_r     <= 0;
+    match_found_r <= false;
+    wait 1 cycle;
+
+    // ── Scan phase ──────────────────────────────────────────────────────────
+    // Iterate over up to 16 input positions.  For each position where a full
+    // 4-byte quad fits and no match has been found yet:
+    //   1. Read 4 bytes pipelined (5 cycles: 4 back-to-back reads + settle)
+    //   2. Hash-table read + write (2 cycles)
+    //   3. If the table entry points to an earlier position, read 4 reference
+    //      bytes and compare (5 cycles + settle)
+    //   4. Record match or advance pos_r by 1.
+    for pidx in 0..15
+      if (pos_r.zext<5>() < in_len_r) and not match_found_r
+        if (pos_r.zext<6>() +% 6'd3) < in_len_r.zext<6>()
+          // ── Read 4-byte quad (pipelined) ──────────────────────────────
+          ibuf_rd_en = true;
+          ibuf_rd_addr = pos_r;
+          wait 1 cycle;
+          b0_r <= ibuf_rd_data;
+          ibuf_rd_en = true;
+          ibuf_rd_addr = pos_r +% 4'd1;
+          wait 1 cycle;
+          b1_r <= ibuf_rd_data;
+          ibuf_rd_en = true;
+          ibuf_rd_addr = pos_r +% 4'd2;
+          wait 1 cycle;
+          b2_r <= ibuf_rd_data;
+          ibuf_rd_en = true;
+          ibuf_rd_addr = pos_r +% 4'd3;
+          wait 1 cycle;
+          b3_r <= ibuf_rd_data;
+          wait 1 cycle;
+          // b0_r..b3_r valid; hash_idx computed combinationally from them.
+
+          // ── Hash-table lookup ─────────────────────────────────────────
+          htab_en  = true;
+          htab_wen = false;
+          htab_addr = hash_idx;
+          wait 1 cycle;
+          mpos_r <= htab_rdata;
+
+          // ── Hash-table update (write current position) ────────────────
+          htab_en   = true;
+          htab_wen  = true;
+          htab_addr = hash_idx;
+          htab_wdata = pos_r;
+          wait 1 cycle;
+          // mpos_r is now valid (captured in previous state).
+
+          // ── Try to match at mpos_r ────────────────────────────────────
+          if mpos_r < pos_r
+            // mpos_r points to an earlier (valid) position — read reference bytes.
+            ibuf_rd_en = true;
+            ibuf_rd_addr = mpos_r;
+            wait 1 cycle;
+            ref0_r <= ibuf_rd_data;
+            ibuf_rd_en = true;
+            ibuf_rd_addr = mpos_r +% 4'd1;
+            wait 1 cycle;
+            ref1_r <= ibuf_rd_data;
+            ibuf_rd_en = true;
+            ibuf_rd_addr = mpos_r +% 4'd2;
+            wait 1 cycle;
+            ref2_r <= ibuf_rd_data;
+            ibuf_rd_en = true;
+            ibuf_rd_addr = mpos_r +% 4'd3;
+            wait 1 cycle;
+            ref3_r <= ibuf_rd_data;
+            wait 1 cycle;
+            // ref0_r..ref3_r valid; compare with b0_r..b3_r.
+
+            if ref0_r == b0_r and ref1_r == b1_r and ref2_r == b2_r and ref3_r == b3_r
+              // 4-byte match found — record and stop scanning.
+              match_found_r <= true;
+              match_at_r    <= pos_r;
+              mpos_save_r   <= mpos_r;
+              // lit_count_r already holds count of literals before this match.
+              wait 1 cycle;
+            else
+              // Hash collision or no match; treat position as a literal.
+              pos_r       <= pos_r +% 4'd1;
+              lit_count_r <= lit_count_r +% 5'd1;
+              wait 1 cycle;
+            end if
+          else
+            // Hash-table entry is stale (mpos_r >= pos_r from wrap or zero-init).
+            pos_r       <= pos_r +% 4'd1;
+            lit_count_r <= lit_count_r +% 5'd1;
+            wait 1 cycle;
+          end if
+        else
+          // Fewer than 4 bytes remain: cannot form a quad; count as literal.
+          pos_r       <= pos_r +% 4'd1;
+          lit_count_r <= lit_count_r +% 5'd1;
+          wait 1 cycle;
+        end if
+      end if
+    end for
+
+    // ── Emit phase ──────────────────────────────────────────────────────────
+
+    if match_found_r
+      // ── Sequence 1: token + [extra lit-len] + literals + 2-byte offset ──
+
+      // Token byte: upper nibble = lit_count (capped at 15), lower nibble = 0
+      // (match_len=4 → match_len−4=0).
+      obuf_wr_en   = true;
+      obuf_wr_addr = out_pos_r.trunc<5>();
+      obuf_wr_data = (lit_count_r < 5'd15)
+                       ? (lit_count_r.zext<8>() << 4)
+                       : 8'hF0;
+      out_pos_r <= out_pos_r +% 6'd1;
+      wait 1 cycle;
+
+      // Extended literal-length byte (only when lit_count_r >= 15).
+      if lit_count_r >= 5'd15
+        obuf_wr_en   = true;
+        obuf_wr_addr = out_pos_r.trunc<5>();
+        obuf_wr_data = (lit_count_r -% 5'd15).zext<8>();
+        out_pos_r <= out_pos_r +% 6'd1;
+        wait 1 cycle;
+      end if
+
+      // Emit literals 0..lit_count_r-1 (all start at InBuf position 0).
+      for eli in 0..15
+        if eli.zext<5>() < lit_count_r
+          ibuf_rd_en   = true;
+          ibuf_rd_addr = eli;
+          wait 1 cycle;
+          obuf_wr_en   = true;
+          obuf_wr_addr = out_pos_r.trunc<5>();
+          obuf_wr_data = ibuf_rd_data;
+          out_pos_r <= out_pos_r +% 6'd1;
+          wait 1 cycle;
+        end if
+      end for
+
+      // Match offset: (match position − source position), little-endian.
+      // Low byte of offset:
+      obuf_wr_en   = true;
+      obuf_wr_addr = out_pos_r.trunc<5>();
+      obuf_wr_data = match_at_r.zext<8>() -% mpos_save_r.zext<8>();
+      out_pos_r <= out_pos_r +% 6'd1;
+      wait 1 cycle;
+      // High byte of offset (always 0 for ≤16-byte input):
+      obuf_wr_en   = true;
+      obuf_wr_addr = out_pos_r.trunc<5>();
+      obuf_wr_data = 0;
+      out_pos_r <= out_pos_r +% 6'd1;
+      wait 1 cycle;
+
+      // Update lit_start_r to the byte just after the 4-byte match.
+      // end_lit_count_w = in_len_r − lit_start_r is now computed combinationally.
+      lit_start_r <= (match_at_r.zext<5>() + 5'd4).trunc<5>();
+      wait 1 cycle;
+    end if
+
+    // ── End sequence: token + [extra lit-len] + remaining literals ──────────
+    // end_lit_count_w = in_len_r if no match (lit_start_r=0),
+    //                 = in_len_r − (match_at_r+4) after a match.
+
+    obuf_wr_en   = true;
+    obuf_wr_addr = out_pos_r.trunc<5>();
+    obuf_wr_data = (end_lit_count_w < 5'd15)
+                     ? (end_lit_count_w.zext<8>() << 4)
+                     : 8'hF0;
+    out_pos_r <= out_pos_r +% 6'd1;
+    wait 1 cycle;
+
+    if end_lit_count_w >= 5'd15
+      obuf_wr_en   = true;
+      obuf_wr_addr = out_pos_r.trunc<5>();
+      obuf_wr_data = (end_lit_count_w -% 5'd15).zext<8>();
+      out_pos_r <= out_pos_r +% 6'd1;
+      wait 1 cycle;
+    end if
+
+    for eli2 in 0..15
+      if eli2.zext<5>() < end_lit_count_w
+        ibuf_rd_en   = true;
+        ibuf_rd_addr = (lit_start_r +% eli2.zext<5>()).trunc<4>();
+        wait 1 cycle;
+        obuf_wr_en   = true;
+        obuf_wr_addr = out_pos_r.trunc<5>();
+        obuf_wr_data = ibuf_rd_data;
+        out_pos_r <= out_pos_r +% 6'd1;
+        wait 1 cycle;
+      end if
+    end for
+
+    // Latch output length, wait one cycle for it to register, then pulse done.
+    // (out_len_r is a register: the <=  takes effect at the next posedge.
+    //  The extra wait 1 cycle ensures out_len is valid when done fires.)
+    out_len_r <= out_pos_r;
+    wait 1 cycle;
+    done = true;
+    wait 1 cycle;
+  end thread
+end module Lz4Compressor
