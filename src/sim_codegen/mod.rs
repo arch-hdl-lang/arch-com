@@ -2867,6 +2867,24 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 // into past-state. Treat as Implies for fallback paths.
                 return format!("(!{l} || {r})");
             }
+            if matches!(op, BinOp::Mul | BinOp::MulWrap) {
+                let cast_ty = if infer_expr_signed(lhs, ctx) || infer_expr_signed(rhs, ctx) {
+                    "__int128_t"
+                } else {
+                    "_arch_u128"
+                };
+                let product = format!("((({cast_ty})({l})) * (({cast_ty})({r})))");
+                return if *op == BinOp::MulWrap {
+                    let bits = infer_expr_width(expr, ctx);
+                    if infer_expr_signed(expr, ctx) {
+                        cast_to_signed_bits(&product, bits)
+                    } else {
+                        cast_to_bits(&product, bits)
+                    }
+                } else {
+                    product
+                };
+            }
             let op_str = match op {
                 BinOp::Add | BinOp::AddWrap => "+",  BinOp::Sub | BinOp::SubWrap => "-",
                 BinOp::Mul | BinOp::MulWrap => "*",  BinOp::Div   => "/",

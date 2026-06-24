@@ -21678,6 +21678,48 @@ fn test_sint_40_param_width_emits_int64_storage_and_signed_trunc() {
 }
 
 #[test]
+fn test_native_sim_signed_multiply_widens_before_cpp_promotion() {
+    let source = r#"
+        module SignedMulNative
+          port a: in UInt<16>;
+          port b: in UInt<16>;
+          port out: out UInt<34>;
+          port wrap_a: in UInt<32>;
+          port wrap_b: in UInt<32>;
+          port wrap_out: out UInt<32>;
+
+          function Mul17(sign_a: Bool, op_a: UInt<16>,
+                         sign_b: Bool, op_b: UInt<16>) -> UInt<34>
+            let a17: SInt<17> = signed({sign_a, op_a});
+            let b17: SInt<17> = signed({sign_b, op_b});
+            let prod: SInt<34> = a17 * b17;
+            return unsigned(prod);
+          end function Mul17
+
+          comb
+            out = Mul17(false, a, false, b);
+            wrap_out = wrap_a *% wrap_b;
+          end comb
+        end module SignedMulNative
+    "#;
+
+    let out = compile_to_sim_h(source, false);
+    assert!(
+        out.contains("(((__int128_t)(a17)) * ((__int128_t)(b17)))"),
+        "native sim must widen signed multiply operands before C++ promotion; got:\n{out}"
+    );
+    assert!(
+        !out.contains("int64_t prod = (a17 * b17);"),
+        "native sim must not multiply SInt<17> operands in 32-bit C++ int; got:\n{out}"
+    );
+    assert!(
+        out.contains("0xFFFFFFFFULL")
+            && out.contains("(((_arch_u128)(wrap_a)) * ((_arch_u128)(wrap_b)))"),
+        "native sim *% must widen operands and wrap back to the result width; got:\n{out}"
+    );
+}
+
+#[test]
 fn test_thread_driven_sint_reg_keeps_parent_wire_type() {
     let source = r#"
         domain SysDomain
