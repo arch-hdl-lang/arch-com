@@ -1046,6 +1046,10 @@ pub enum TypeExpr {
     Reset(ResetKind, ResetLevel),
     Vec(Box<TypeExpr>, Box<Expr>),
     Named(Ident),
+    /// IEEE-754 binary32 floating point (1 sign + 8 exp + 23 mant = 32 bits).
+    FP32,
+    /// bfloat16 (1 sign + 8 exp + 7 mant = 16 bits).
+    BF16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1155,6 +1159,12 @@ pub enum LitKind {
     Hex(u64),
     Bin(u64),
     Sized(u32, u64), // width, value
+    /// Floating-point literal, e.g. `1.5`, `3.0e-2`. The decimal value is
+    /// parsed to an f64 (exact enough for source literals); the concrete
+    /// FP32/BF16 bit pattern is produced by rounding to the context type at
+    /// lowering. Stored as raw bits so the AST stays `Clone`/`Debug` without
+    /// pulling float `PartialEq` semantics into derived comparisons.
+    Float(u64), // f64::to_bits of the parsed literal value
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

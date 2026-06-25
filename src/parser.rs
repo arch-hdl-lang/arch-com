@@ -3554,6 +3554,14 @@ impl Parser {
                 self.advance();
                 Ok(TypeExpr::Bool)
             }
+            Some(TokenKind::FP32) => {
+                self.advance();
+                Ok(TypeExpr::FP32)
+            }
+            Some(TokenKind::BF16) => {
+                self.advance();
+                Ok(TypeExpr::BF16)
+            }
             Some(TokenKind::Bit) => {
                 self.advance();
                 Ok(TypeExpr::Bit)
@@ -4103,6 +4111,12 @@ impl Parser {
                     CompileError::general("invalid decimal literal", tok.span)
                 })?;
                 ExprKind::Literal(LitKind::Dec(v))
+            }
+            TokenKind::FloatLiteral(s) => {
+                let v = s.replace('_', "").parse::<f64>().map_err(|_| {
+                    CompileError::general("invalid float literal", tok.span)
+                })?;
+                ExprKind::Literal(LitKind::Float(v.to_bits()))
             }
             TokenKind::HexLiteral(s) => {
                 let v = u64::from_str_radix(&s[2..].replace('_', ""), 16).map_err(|_| {
@@ -6106,6 +6120,8 @@ fn is_method_name(name: &str) -> bool {
     matches!(
         name,
         "trunc" | "zext" | "sext" | "resize" | "reverse"
+        // float→int conversions carry a width type-arg: `.to_uint<N>()`
+        | "to_uint" | "to_sint"
         // credit_channel write-side sugar (PR #3b-vi). These are only
         // meaningful as bare statements; the parser's `parse_comb_stmt`
         // and `parse_reg_stmt` desugar `port.ch.send(x);` / `.pop();` to

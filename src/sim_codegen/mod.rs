@@ -686,6 +686,8 @@ PYBIND11_MODULE({pybind_module}, m) {{
         match ty {
             TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width(w),
             TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(..) => 1,
+            TypeExpr::FP32 => 32,
+            TypeExpr::BF16 => 16,
             TypeExpr::Named(_) => 32,
             TypeExpr::Vec(_, _) => 32,
         }
@@ -732,6 +734,7 @@ r#"        .def_property("{field}",
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 
 // --coverage-dat: forward declaration for the helper defined in
 // verilated.cpp. Each class's atexit dumper calls this to get a
@@ -911,6 +914,77 @@ static inline uint64_t _arch_repeat(uint64_t val, uint32_t n, uint32_t val_width
 #define _ARCH_DCHK(divisor, loc) \
     ((unsigned long long)(divisor) != 0 \
         ? (void)0 : _arch_div0_abort((loc)))
+
+// ── Floating-point (FP32 / BF16) runtime ─────────────────────────────────────
+// Floats are carried as raw bit patterns (FP32→uint32_t, BF16→uint16_t).
+// Arithmetic uses the host FPU, which is IEEE-754 round-to-nearest-even and
+// therefore bit-identical to Berkeley SoftFloat for + - * and fma. BF16 ops go
+// through an f32 intermediate then round once to bf16 — innocuous double
+// rounding (24 >= 2*8+2), so the result equals direct correctly-rounded bf16
+// (doc/plan_fp_types.md §5.3). NaN results are canonicalized to the RISC-V
+// default pattern (0x7FC00000 / 0x7FC0); float→int is toward-zero, saturating,
+// NaN→type-max (RISC-V profile, §6).
+static inline float    _arch_f32b(uint32_t b){ float f; memcpy(&f,&b,4); return f; }
+static inline uint32_t _arch_b32f(float f){ uint32_t b; memcpy(&b,&f,4); return b; }
+static inline uint32_t _arch_f32_canon(uint32_t b){
+    if (((b>>23)&0xFFu)==0xFFu && (b&0x7FFFFFu)!=0u) return 0x7FC00000u;
+    return b;
+}
+static inline uint32_t _arch_f32_add(uint32_t a,uint32_t b){ return _arch_f32_canon(_arch_b32f(_arch_f32b(a)+_arch_f32b(b))); }
+static inline uint32_t _arch_f32_sub(uint32_t a,uint32_t b){ return _arch_f32_canon(_arch_b32f(_arch_f32b(a)-_arch_f32b(b))); }
+static inline uint32_t _arch_f32_mul(uint32_t a,uint32_t b){ return _arch_f32_canon(_arch_b32f(_arch_f32b(a)*_arch_f32b(b))); }
+static inline uint32_t _arch_fma_f32(uint32_t a,uint32_t b,uint32_t c){ return _arch_f32_canon(_arch_b32f(fmaf(_arch_f32b(a),_arch_f32b(b),_arch_f32b(c)))); }
+static inline uint8_t _arch_f32_eq(uint32_t a,uint32_t b){ return _arch_f32b(a)==_arch_f32b(b); }
+static inline uint8_t _arch_f32_ne(uint32_t a,uint32_t b){ return _arch_f32b(a)!=_arch_f32b(b); }
+static inline uint8_t _arch_f32_lt(uint32_t a,uint32_t b){ return _arch_f32b(a)< _arch_f32b(b); }
+static inline uint8_t _arch_f32_gt(uint32_t a,uint32_t b){ return _arch_f32b(a)> _arch_f32b(b); }
+static inline uint8_t _arch_f32_le(uint32_t a,uint32_t b){ return _arch_f32b(a)<=_arch_f32b(b); }
+static inline uint8_t _arch_f32_ge(uint32_t a,uint32_t b){ return _arch_f32b(a)>=_arch_f32b(b); }
+static inline uint8_t _arch_f32_isnan(uint32_t a){ return std::isnan(_arch_f32b(a))?1:0; }
+
+// BF16 <-> f32: bf16 is the top 16 bits of binary32.
+static inline float    _arch_bf16f(uint16_t h){ return _arch_f32b(((uint32_t)h)<<16); }
+static inline uint16_t _arch_f2bf16(float f){
+    uint32_t x=_arch_b32f(f);
+    if (((x>>23)&0xFFu)==0xFFu && (x&0x7FFFFFu)!=0u) return 0x7FC0u; // canonical NaN
+    uint32_t lsb=(x>>16)&1u; x += 0x7FFFu+lsb; // round-to-nearest-even
+    return (uint16_t)(x>>16);
+}
+static inline uint32_t _arch_bf16_to_f32(uint16_t h){ return _arch_f32_canon(((uint32_t)h)<<16); }
+static inline uint16_t _arch_f32_to_bf16(uint32_t b){ return _arch_f2bf16(_arch_f32b(b)); }
+static inline uint16_t _arch_bf16_add(uint16_t a,uint16_t b){ return _arch_f2bf16(_arch_bf16f(a)+_arch_bf16f(b)); }
+static inline uint16_t _arch_bf16_sub(uint16_t a,uint16_t b){ return _arch_f2bf16(_arch_bf16f(a)-_arch_bf16f(b)); }
+static inline uint16_t _arch_bf16_mul(uint16_t a,uint16_t b){ return _arch_f2bf16(_arch_bf16f(a)*_arch_bf16f(b)); }
+static inline uint16_t _arch_fma_bf16(uint16_t a,uint16_t b,uint16_t c){ return _arch_f2bf16(fmaf(_arch_bf16f(a),_arch_bf16f(b),_arch_bf16f(c))); }
+static inline uint8_t _arch_bf16_eq(uint16_t a,uint16_t b){ return _arch_bf16f(a)==_arch_bf16f(b); }
+static inline uint8_t _arch_bf16_ne(uint16_t a,uint16_t b){ return _arch_bf16f(a)!=_arch_bf16f(b); }
+static inline uint8_t _arch_bf16_lt(uint16_t a,uint16_t b){ return _arch_bf16f(a)< _arch_bf16f(b); }
+static inline uint8_t _arch_bf16_gt(uint16_t a,uint16_t b){ return _arch_bf16f(a)> _arch_bf16f(b); }
+static inline uint8_t _arch_bf16_le(uint16_t a,uint16_t b){ return _arch_bf16f(a)<=_arch_bf16f(b); }
+static inline uint8_t _arch_bf16_ge(uint16_t a,uint16_t b){ return _arch_bf16f(a)>=_arch_bf16f(b); }
+static inline uint8_t _arch_bf16_isnan(uint16_t a){ return std::isnan(_arch_bf16f(a))?1:0; }
+
+// int <-> float conversions.
+static inline uint32_t _arch_i_to_f32(int64_t v){ return _arch_b32f((float)v); }
+static inline uint32_t _arch_u_to_f32(uint64_t v){ return _arch_b32f((float)v); }
+static inline uint16_t _arch_i_to_bf16(int64_t v){ return _arch_f2bf16((float)v); }
+static inline uint16_t _arch_u_to_bf16(uint64_t v){ return _arch_f2bf16((float)v); }
+static inline int64_t  _arch_f32_to_i(uint32_t b){
+    float f=_arch_f32b(b);
+    if (std::isnan(f)) return INT64_MAX;
+    if (f >= 9223372036854775808.0f) return INT64_MAX;
+    if (f <  -9223372036854775808.0f) return INT64_MIN;
+    return (int64_t)f; // truncates toward zero
+}
+static inline uint64_t _arch_f32_to_u(uint32_t b){
+    float f=_arch_f32b(b);
+    if (std::isnan(f)) return UINT64_MAX;
+    if (f <= 0.0f) return 0;
+    if (f >= 18446744073709551616.0f) return UINT64_MAX;
+    return (uint64_t)f;
+}
+static inline int64_t  _arch_bf16_to_i(uint16_t h){ return _arch_f32_to_i(_arch_bf16_to_f32(h)); }
+static inline uint64_t _arch_bf16_to_u(uint16_t h){ return _arch_f32_to_u(_arch_bf16_to_f32(h)); }
 "#.to_string()
     }
 
@@ -1333,6 +1407,11 @@ fn cpp_port_type_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> String {
             else { cpp_sint(b).to_string() }
         }
         TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(..) => "uint8_t".to_string(),
+        // Floats are carried as their raw bit pattern in an unsigned integer
+        // (FP32 → uint32_t, BF16 → uint16_t); arithmetic goes through the
+        // `_arch_fp.h` helpers, never C++ float operators on the storage.
+        TypeExpr::FP32 => "uint32_t".to_string(),
+        TypeExpr::BF16 => "uint16_t".to_string(),
         TypeExpr::Named(n) => n.name.clone(),
         TypeExpr::Vec(_, _) => "uint32_t".to_string(),
     }
@@ -1846,6 +1925,8 @@ fn cpp_internal_type_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> String 
             else { cpp_sint(b).to_string() }
         }
         TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(..) => "uint8_t".to_string(),
+        TypeExpr::FP32 => "uint32_t".to_string(),
+        TypeExpr::BF16 => "uint16_t".to_string(),
         TypeExpr::Named(n) => n.name.clone(),
         TypeExpr::Vec(_, _) => "uint32_t".to_string(),
     }
@@ -2163,6 +2244,8 @@ fn type_width_of(ty: &TypeExpr) -> u32 {
     match ty {
         TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width(w),
         TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(..) => 1,
+        TypeExpr::FP32 => 32,
+        TypeExpr::BF16 => 16,
         TypeExpr::Vec(..) | TypeExpr::Named(_) => 0,
     }
 }
@@ -2258,6 +2341,10 @@ struct Ctx<'a> {
     widths:      &'a HashMap<String, u32>,
     /// Signal names whose HDL scalar type is signed.
     signed_names: &'a HashSet<String>,
+    /// Signal name → floating-point format (FP32/BF16). Used to dispatch
+    /// `+ - *` and comparisons to the `_arch_fp.h` helpers instead of integer
+    /// operators on the bit-pattern carrier.
+    float_names: &'a HashMap<String, FpFmt>,
     posedge_lhs: bool,
     /// FSM mode: regs are public members, no `_` prefix on reads
     fsm_mode:    bool,
@@ -2319,11 +2406,13 @@ impl<'a> Ctx<'a> {
     ) -> Self {
         static EMPTY_RESET_LEVELS: std::sync::OnceLock<HashMap<String, ResetLevel>> = std::sync::OnceLock::new();
         static EMPTY_SIGNED_NAMES: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+        static EMPTY_FLOAT_NAMES: std::sync::OnceLock<HashMap<String, FpFmt>> = std::sync::OnceLock::new();
         let reset_levels = EMPTY_RESET_LEVELS.get_or_init(HashMap::new);
         let signed_names = EMPTY_SIGNED_NAMES.get_or_init(HashSet::new);
+        let float_names = EMPTY_FLOAT_NAMES.get_or_init(HashMap::new);
         static EMPTY_PARAMS: &[ParamDecl] = &[];
         Ctx { reg_names, port_names, let_names, let_values: None, inst_names, wide_names,
-              widths, signed_names, posedge_lhs: false, fsm_mode: false, enum_map, bus_ports,
+              widths, signed_names, float_names, posedge_lhs: false, fsm_mode: false, enum_map, bus_ports,
               reset_levels, vec_names: None, vec_2d_names: None, vec_sizes: None,
               fsm_vec_port_regs: None,
               ident_subst: None, loop_var_subst: None,
@@ -2345,6 +2434,11 @@ impl<'a> Ctx<'a> {
 
     fn with_signed_names(mut self, signed_names: &'a HashSet<String>) -> Self {
         self.signed_names = signed_names;
+        self
+    }
+
+    fn with_float_names(mut self, float_names: &'a HashMap<String, FpFmt>) -> Self {
+        self.float_names = float_names;
         self
     }
 
@@ -2676,6 +2770,49 @@ fn infer_expr_signed(expr: &Expr, ctx: &Ctx) -> bool {
     }
 }
 
+/// Floating-point format of a sim signal/expression. Mirrors `Ty::FP32`/`BF16`
+/// but local to the sim backend so it can live in `Ctx`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FpFmt { Fp32, Bf16 }
+
+impl FpFmt {
+    /// Suffix used in the `_arch_fp.h` helper names: `_arch_f32_add` / `_arch_bf16_add`.
+    fn helper_tag(self) -> &'static str {
+        match self { FpFmt::Fp32 => "f32", FpFmt::Bf16 => "bf16" }
+    }
+}
+
+/// Infer the floating-point format of an expression, or `None` if it is not a
+/// float. Drives dispatch of `+ - *` / comparisons to the `_arch_fp.h` helpers.
+fn infer_expr_float(expr: &Expr, ctx: &Ctx) -> Option<FpFmt> {
+    match &expr.kind {
+        ExprKind::Ident(name) => ctx.float_names.get(name.as_str()).copied(),
+        // Float literals default to FP32.
+        ExprKind::Literal(LitKind::Float(_)) => Some(FpFmt::Fp32),
+        ExprKind::Cast(_, ty) => match ty.as_ref() {
+            TypeExpr::FP32 => Some(FpFmt::Fp32),
+            TypeExpr::BF16 => Some(FpFmt::Bf16),
+            _ => None,
+        },
+        ExprKind::MethodCall(_, method, _) => match method.name.as_str() {
+            "to_fp32" => Some(FpFmt::Fp32),
+            "to_bf16" => Some(FpFmt::Bf16),
+            _ => None, // to_uint/to_sint produce integers
+        },
+        // Arithmetic preserves the float format; comparisons are not float.
+        ExprKind::Binary(op, lhs, rhs) => match op {
+            BinOp::Add | BinOp::Sub | BinOp::Mul =>
+                infer_expr_float(lhs, ctx).or_else(|| infer_expr_float(rhs, ctx)),
+            _ => None,
+        },
+        ExprKind::Ternary(_, then_expr, else_expr) =>
+            infer_expr_float(then_expr, ctx).or_else(|| infer_expr_float(else_expr, ctx)),
+        ExprKind::FunctionCall(name, args) if name == "fma" =>
+            args.first().and_then(|a| infer_expr_float(a, ctx)),
+        _ => None,
+    }
+}
+
 // ── Expression emitter ────────────────────────────────────────────────────────
 
 /// Lower a Vec method call (any/all/count/contains/reduce_*) to an
@@ -2706,6 +2843,7 @@ fn lower_vec_method_cpp(
             reg_names: ctx.reg_names, port_names: ctx.port_names,
             let_names: ctx.let_names, let_values: ctx.let_values, inst_names: ctx.inst_names,
             wide_names: ctx.wide_names, widths: ctx.widths, signed_names: ctx.signed_names,
+            float_names: ctx.float_names,
             posedge_lhs: ctx.posedge_lhs, fsm_mode: ctx.fsm_mode,
             enum_map: ctx.enum_map, bus_ports: ctx.bus_ports,
             reset_levels: ctx.reset_levels, vec_names: ctx.vec_names,
@@ -2833,6 +2971,9 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             LitKind::Hex(v) => format!("0x{v:X}"),
             LitKind::Bin(v) => format!("{v}"),
             LitKind::Sized(_, v) => format!("{v}"),
+            // Float literals are FP32 by default — emit the binary32 bit pattern
+            // as an unsigned hex constant (matches the uint32_t carrier).
+            LitKind::Float(bits) => format!("0x{:X}u", (f64::from_bits(*bits) as f32).to_bits()),
         },
         ExprKind::Bool(true)  => "1".to_string(),
         ExprKind::Bool(false) => "0".to_string(),
@@ -2866,6 +3007,21 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 // by the time it reaches expr lowering, lhs has been rewritten
                 // into past-state. Treat as Implies for fallback paths.
                 return format!("(!{l} || {r})");
+            }
+            // Floating-point operands: dispatch to the `_arch_fp.h` helpers
+            // (IEEE-754 RNE) instead of integer operators on the bit pattern.
+            if let Some(fmt) = infer_expr_float(lhs, ctx).or_else(|| infer_expr_float(rhs, ctx)) {
+                let tag = fmt.helper_tag();
+                let fop = match op {
+                    BinOp::Add => Some("add"), BinOp::Sub => Some("sub"), BinOp::Mul => Some("mul"),
+                    BinOp::Eq => Some("eq"), BinOp::Neq => Some("ne"),
+                    BinOp::Lt => Some("lt"), BinOp::Gt => Some("gt"),
+                    BinOp::Lte => Some("le"), BinOp::Gte => Some("ge"),
+                    _ => None,
+                };
+                if let Some(fop) = fop {
+                    return format!("_arch_{tag}_{fop}({l}, {r})");
+                }
             }
             if matches!(op, BinOp::Mul | BinOp::MulWrap) {
                 let cast_ty = if infer_expr_signed(lhs, ctx) || infer_expr_signed(rhs, ctx) {
@@ -3194,6 +3350,21 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             format!("(({c}) ? ({t}) : ({e}))")
         }
 
+        ExprKind::FunctionCall(name, args) if name == "fma" && args.len() == 3 => {
+            let fmt = infer_expr_float(&args[0], ctx)
+                .or_else(|| infer_expr_float(&args[1], ctx))
+                .or_else(|| infer_expr_float(&args[2], ctx))
+                .unwrap_or(FpFmt::Fp32);
+            let a = cpp_expr(&args[0], ctx);
+            let b = cpp_expr(&args[1], ctx);
+            let c = cpp_expr(&args[2], ctx);
+            format!("_arch_fma_{}({a}, {b}, {c})", fmt.helper_tag())
+        }
+        ExprKind::FunctionCall(name, args) if name == "is_nan" && args.len() == 1 => {
+            let fmt = infer_expr_float(&args[0], ctx).unwrap_or(FpFmt::Fp32);
+            let a = cpp_expr(&args[0], ctx);
+            format!("_arch_{}_isnan({a})", fmt.helper_tag())
+        }
         ExprKind::FunctionCall(name, args) => {
             let arg_strs: Vec<String> = args.iter().map(|a| cpp_expr(a, ctx)).collect();
             format!("{name}({})", arg_strs.join(", "))
@@ -3422,6 +3593,41 @@ fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &Ctx) -> Str
         "any" | "all" | "count" | "contains"
         | "reduce_or" | "reduce_and" | "reduce_xor" => {
             lower_vec_method_cpp(&b, base, method, args, ctx)
+        }
+        // Float conversions → `_arch_fp.h` helpers.
+        "to_fp32" => match infer_expr_float(base, ctx) {
+            Some(FpFmt::Bf16) => format!("_arch_bf16_to_f32({b})"),
+            Some(FpFmt::Fp32) => b, // no-op (typecheck rejects, but stay total)
+            None => {
+                if infer_expr_signed(base, ctx) {
+                    format!("_arch_i_to_f32((int64_t)({b}))")
+                } else {
+                    format!("_arch_u_to_f32((uint64_t)({b}))")
+                }
+            }
+        },
+        "to_bf16" => match infer_expr_float(base, ctx) {
+            Some(FpFmt::Fp32) => format!("_arch_f32_to_bf16({b})"),
+            Some(FpFmt::Bf16) => b,
+            None => {
+                if infer_expr_signed(base, ctx) {
+                    format!("_arch_i_to_bf16((int64_t)({b}))")
+                } else {
+                    format!("_arch_u_to_bf16((uint64_t)({b}))")
+                }
+            }
+        },
+        "to_uint" | "to_sint" => {
+            let bits = args.first().map(|w| eval_width_in(w, ctx)).unwrap_or(32);
+            let signed = method.name == "to_sint";
+            let conv = match infer_expr_float(base, ctx) {
+                Some(FpFmt::Bf16) if signed => format!("_arch_bf16_to_i({b})"),
+                Some(FpFmt::Bf16)           => format!("_arch_bf16_to_u({b})"),
+                _ if signed                 => format!("_arch_f32_to_i({b})"),
+                _                           => format!("_arch_f32_to_u({b})"),
+            };
+            let cast = if signed { cpp_sint(bits) } else { cpp_uint(bits) };
+            format!("(({cast})({conv}))")
         }
         _ => format!("{b}.{}()", method.name),
     }
@@ -4460,6 +4666,44 @@ fn build_signed_names(ports: &[PortDecl], body: &[ModuleBodyItem]) -> HashSet<St
     s
 }
 
+/// Floating-point format of a scalar TypeExpr, if any.
+fn type_float_fmt(ty: &TypeExpr) -> Option<FpFmt> {
+    match ty {
+        TypeExpr::FP32 => Some(FpFmt::Fp32),
+        TypeExpr::BF16 => Some(FpFmt::Bf16),
+        _ => None,
+    }
+}
+
+/// Collect scalar signal names whose HDL type is a float (FP32/BF16), mapping
+/// each to its format. Parallels [`build_signed_names`]; drives float-op
+/// dispatch in the expression emitter.
+fn build_float_names(ports: &[PortDecl], body: &[ModuleBodyItem]) -> HashMap<String, FpFmt> {
+    let mut m = HashMap::new();
+    for p in ports {
+        if let Some(f) = type_float_fmt(&p.ty) {
+            m.insert(p.name.name.clone(), f);
+        }
+    }
+    for item in body {
+        match item {
+            ModuleBodyItem::RegDecl(r) => {
+                if let Some(f) = type_float_fmt(&r.ty) { m.insert(r.name.name.clone(), f); }
+            }
+            ModuleBodyItem::WireDecl(w) => {
+                if let Some(f) = type_float_fmt(&w.ty) { m.insert(w.name.name.clone(), f); }
+            }
+            ModuleBodyItem::LetBinding(l) => {
+                if let Some(f) = l.ty.as_ref().and_then(type_float_fmt) {
+                    m.insert(l.name.name.clone(), f);
+                }
+            }
+            _ => {}
+        }
+    }
+    m
+}
+
 /// Collect names whose bit width exceeds 64 (require wide handling).
 fn collect_wide_names(ports: &[PortDecl], body: &[ModuleBodyItem], params: &[ParamDecl]) -> HashSet<String> {
     let mut s = HashSet::new();
@@ -5029,6 +5273,7 @@ impl<'a> SimCodegen<'a> {
         let mut wide_names  = collect_wide_names(&m.ports, &m.body, &m.params);
         let mut widths      = build_widths(&m.ports, &m.body, &m.params);
         let mut signed_names = build_signed_names(&m.ports, &m.body);
+        let float_names = build_float_names(&m.ports, &m.body);
 
         // Add bus flattened signals to wide_names and widths.
         // Use the param-aware width evaluator (issue #427): when a bus's
@@ -6317,7 +6562,7 @@ impl<'a> SimCodegen<'a> {
         // Returns (input_code, comb_call, output_read_code) per inst
         let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                            &wide_names, &widths, &enum_map, &bus_port_names)
-                      .with_signed_names(&signed_names)
+                      .with_signed_names(&signed_names).with_float_names(&float_names)
                       .with_reset_levels(&reset_levels)
                       .with_vec_names(&vec_reg_names).with_vec_2d_names(&vec_2d_names).with_vec_sizes(&vec_sizes)
                       .with_let_values(&let_values)
@@ -6859,7 +7104,7 @@ impl<'a> SimCodegen<'a> {
 
             let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                &wide_names, &widths, &enum_map, &bus_port_names)
-                          .with_signed_names(&signed_names)
+                          .with_signed_names(&signed_names).with_float_names(&float_names)
                           .with_vec_names(&vec_reg_names).with_vec_2d_names(&vec_2d_names).with_vec_sizes(&vec_sizes).posedge()
                           .with_coverage(cov_handle)
                           .with_let_values(&let_values)
@@ -6904,7 +7149,7 @@ impl<'a> SimCodegen<'a> {
                                         let tmp_ctx = Ctx::new(&reg_names, &port_names,
                                             &let_names, &inst_names, &wide_names, &widths,
                                             &enum_map, &bus_port_names)
-                                            .with_signed_names(&signed_names);
+                                            .with_signed_names(&signed_names).with_float_names(&float_names);
                                         cpp_expr(expr, &tmp_ctx)
                                     }
                                 }
@@ -7075,7 +7320,7 @@ impl<'a> SimCodegen<'a> {
                     }
                     let ctx_pe = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                            &wide_names, &widths, &enum_map, &bus_port_names)
-                                       .with_signed_names(&signed_names)
+                                       .with_signed_names(&signed_names).with_float_names(&float_names)
                                        .with_vec_names(&vec_reg_names).with_vec_2d_names(&vec_2d_names).with_vec_sizes(&vec_sizes)
                                        .with_let_values(&let_values)
                                        .with_params(&m.params);
@@ -7300,7 +7545,7 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
         let ctx_comb = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                 &wide_names, &widths, &enum_map, &bus_port_names)
-                           .with_signed_names(&signed_names)
+                           .with_signed_names(&signed_names).with_float_names(&float_names)
                            .with_vec_names(&vec_reg_names).with_vec_2d_names(&vec_2d_names).with_vec_sizes(&vec_sizes)
                            .with_coverage(cov_handle)
                            .with_let_values(&let_values)
@@ -7354,6 +7599,7 @@ impl<'a> SimCodegen<'a> {
                                         reg_names: ctx_comb.reg_names, port_names: ctx_comb.port_names,
                                         let_names: ctx_comb.let_names, let_values: ctx_comb.let_values, inst_names: ctx_comb.inst_names,
                                         wide_names: ctx_comb.wide_names, widths: ctx_comb.widths, signed_names: ctx_comb.signed_names,
+                                        float_names: ctx_comb.float_names,
                                         posedge_lhs: ctx_comb.posedge_lhs, fsm_mode: ctx_comb.fsm_mode,
                                         enum_map: ctx_comb.enum_map, bus_ports: ctx_comb.bus_ports,
                                         reset_levels: ctx_comb.reset_levels, vec_names: ctx_comb.vec_names,

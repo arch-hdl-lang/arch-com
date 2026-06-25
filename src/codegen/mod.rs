@@ -118,6 +118,90 @@ enum GroupKind {
     },
 }
 
+/// Behavioral SystemVerilog floating-point helper functions, emitted at
+/// compilation-unit ($unit) scope when a design uses FP32/BF16 ops. These are
+/// **simulation-oriented** (they use `$bitstoshortreal`/`$shortrealtobits` and
+/// `shortreal` arithmetic, which model IEEE-754 binary32). A synthesizable,
+/// CVFPU-referenced datapath replacing these is the documented P2/P3 follow-up
+/// (doc/plan_fp_types.md §7). Floats are carried as raw bit vectors; BF16 ops
+/// widen to f32, compute, and round once to bf16 (innocuous double rounding).
+const FP_SV_HELPERS: &str = r#"// ── arch floating-point helpers (behavioral; see doc/plan_fp_types.md §7) ──
+function automatic logic [15:0] arch_f32bits_to_bf16(input logic [31:0] x);
+  if ((x[30:23] == 8'hFF) && (x[22:0] != 23'b0)) arch_f32bits_to_bf16 = 16'h7FC0;
+  else arch_f32bits_to_bf16 = (x + 32'h00007FFF + {31'b0, x[16]})[31:16];
+endfunction
+function automatic logic [31:0] arch_f32_canon(input logic [31:0] x);
+  arch_f32_canon = ((x[30:23] == 8'hFF) && (x[22:0] != 23'b0)) ? 32'h7FC00000 : x;
+endfunction
+function automatic logic [31:0] arch_f32_add(input logic [31:0] a, input logic [31:0] b);
+  arch_f32_add = arch_f32_canon($shortrealtobits($bitstoshortreal(a) + $bitstoshortreal(b)));
+endfunction
+function automatic logic [31:0] arch_f32_sub(input logic [31:0] a, input logic [31:0] b);
+  arch_f32_sub = arch_f32_canon($shortrealtobits($bitstoshortreal(a) - $bitstoshortreal(b)));
+endfunction
+function automatic logic [31:0] arch_f32_mul(input logic [31:0] a, input logic [31:0] b);
+  arch_f32_mul = arch_f32_canon($shortrealtobits($bitstoshortreal(a) * $bitstoshortreal(b)));
+endfunction
+function automatic logic [31:0] arch_fma_f32(input logic [31:0] a, input logic [31:0] b, input logic [31:0] c);
+  arch_fma_f32 = arch_f32_canon($shortrealtobits($bitstoshortreal(a) * $bitstoshortreal(b) + $bitstoshortreal(c)));
+endfunction
+function automatic logic arch_f32_eq(input logic [31:0] a, input logic [31:0] b);
+  arch_f32_eq = ($bitstoshortreal(a) == $bitstoshortreal(b));
+endfunction
+function automatic logic arch_f32_ne(input logic [31:0] a, input logic [31:0] b);
+  arch_f32_ne = ($bitstoshortreal(a) != $bitstoshortreal(b));
+endfunction
+function automatic logic arch_f32_lt(input logic [31:0] a, input logic [31:0] b);
+  arch_f32_lt = ($bitstoshortreal(a) < $bitstoshortreal(b));
+endfunction
+function automatic logic arch_f32_gt(input logic [31:0] a, input logic [31:0] b);
+  arch_f32_gt = ($bitstoshortreal(a) > $bitstoshortreal(b));
+endfunction
+function automatic logic arch_f32_le(input logic [31:0] a, input logic [31:0] b);
+  arch_f32_le = ($bitstoshortreal(a) <= $bitstoshortreal(b));
+endfunction
+function automatic logic arch_f32_ge(input logic [31:0] a, input logic [31:0] b);
+  arch_f32_ge = ($bitstoshortreal(a) >= $bitstoshortreal(b));
+endfunction
+function automatic logic [31:0] arch_bf16_to_f32(input logic [15:0] h);
+  arch_bf16_to_f32 = arch_f32_canon({h, 16'b0});
+endfunction
+function automatic logic [15:0] arch_f32_to_bf16(input logic [31:0] x);
+  arch_f32_to_bf16 = arch_f32bits_to_bf16(x);
+endfunction
+function automatic logic [15:0] arch_bf16_add(input logic [15:0] a, input logic [15:0] b);
+  arch_bf16_add = arch_f32bits_to_bf16($shortrealtobits($bitstoshortreal({a,16'b0}) + $bitstoshortreal({b,16'b0})));
+endfunction
+function automatic logic [15:0] arch_bf16_sub(input logic [15:0] a, input logic [15:0] b);
+  arch_bf16_sub = arch_f32bits_to_bf16($shortrealtobits($bitstoshortreal({a,16'b0}) - $bitstoshortreal({b,16'b0})));
+endfunction
+function automatic logic [15:0] arch_bf16_mul(input logic [15:0] a, input logic [15:0] b);
+  arch_bf16_mul = arch_f32bits_to_bf16($shortrealtobits($bitstoshortreal({a,16'b0}) * $bitstoshortreal({b,16'b0})));
+endfunction
+function automatic logic [15:0] arch_fma_bf16(input logic [15:0] a, input logic [15:0] b, input logic [15:0] c);
+  arch_fma_bf16 = arch_f32bits_to_bf16($shortrealtobits($bitstoshortreal({a,16'b0}) * $bitstoshortreal({b,16'b0}) + $bitstoshortreal({c,16'b0})));
+endfunction
+function automatic logic arch_bf16_eq(input logic [15:0] a, input logic [15:0] b);
+  arch_bf16_eq = ($bitstoshortreal({a,16'b0}) == $bitstoshortreal({b,16'b0}));
+endfunction
+function automatic logic arch_bf16_ne(input logic [15:0] a, input logic [15:0] b);
+  arch_bf16_ne = ($bitstoshortreal({a,16'b0}) != $bitstoshortreal({b,16'b0}));
+endfunction
+function automatic logic arch_bf16_lt(input logic [15:0] a, input logic [15:0] b);
+  arch_bf16_lt = ($bitstoshortreal({a,16'b0}) < $bitstoshortreal({b,16'b0}));
+endfunction
+function automatic logic arch_bf16_gt(input logic [15:0] a, input logic [15:0] b);
+  arch_bf16_gt = ($bitstoshortreal({a,16'b0}) > $bitstoshortreal({b,16'b0}));
+endfunction
+function automatic logic arch_bf16_le(input logic [15:0] a, input logic [15:0] b);
+  arch_bf16_le = ($bitstoshortreal({a,16'b0}) <= $bitstoshortreal({b,16'b0}));
+endfunction
+function automatic logic arch_bf16_ge(input logic [15:0] a, input logic [15:0] b);
+  arch_bf16_ge = ($bitstoshortreal({a,16'b0}) >= $bitstoshortreal({b,16'b0}));
+endfunction
+
+"#;
+
 pub struct Codegen<'a> {
     pub symbols: &'a SymbolTable,
     pub source: &'a SourceFile,
@@ -158,6 +242,9 @@ pub struct Codegen<'a> {
     bus_wires: std::collections::HashMap<String, String>,
     /// Reset port names in the current module → (kind, level), for `.asserted` emission.
     reset_ports: std::collections::HashMap<String, (ResetKind, ResetLevel)>,
+    /// Set when any FP32/BF16 operation was emitted, so the `arch_f32_*` /
+    /// `arch_bf16_*` SystemVerilog helper package is prepended to the output.
+    fp_helpers_used: std::cell::Cell<bool>,
     /// Name of the construct currently being emitted (for symbol lookups).
     current_construct: String,
     /// Context-sensitive identifier substitutions.
@@ -240,6 +327,7 @@ impl<'a> Codegen<'a> {
             current_module_params: Vec::new(),
             bus_wires: std::collections::HashMap::new(),
             reset_ports: std::collections::HashMap::new(),
+            fp_helpers_used: std::cell::Cell::new(false),
             current_construct: String::new(),
             ident_subst: std::collections::HashMap::new(),
             loop_var_subst: std::collections::HashMap::new(),
@@ -427,6 +515,13 @@ impl<'a> Codegen<'a> {
                 ));
             }
             prefix.push('\n');
+            prefix.push_str(&self.out);
+            self.out = prefix;
+        }
+
+        // Prepend the floating-point helper functions if any FP op was emitted.
+        if self.fp_helpers_used.get() {
+            let mut prefix = String::from(FP_SV_HELPERS);
             prefix.push_str(&self.out);
             self.out = prefix;
         }
@@ -1751,6 +1846,90 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Floating-point format of an expression in the current scope, if any.
+    /// Drives dispatch of `+ - *` / comparisons / conversions to the emitted
+    /// `arch_f32_*` / `arch_bf16_*` SystemVerilog helper functions.
+    fn expr_float_fmt(&self, expr: &Expr) -> Option<&'static str> {
+        match &expr.kind {
+            ExprKind::Cast(_, ty) => match &**ty {
+                TypeExpr::FP32 => Some("f32"),
+                TypeExpr::BF16 => Some("bf16"),
+                _ => None,
+            },
+            ExprKind::Ident(name) => self.ident_float_fmt(name),
+            ExprKind::Literal(LitKind::Float(_)) => Some("f32"),
+            ExprKind::MethodCall(_, method, _) => match method.name.as_str() {
+                "to_fp32" => Some("f32"),
+                "to_bf16" => Some("bf16"),
+                _ => None,
+            },
+            ExprKind::FunctionCall(name, args) if name == "fma" =>
+                args.first().and_then(|a| self.expr_float_fmt(a)),
+            ExprKind::Binary(op, lhs, rhs) => match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul =>
+                    self.expr_float_fmt(lhs).or_else(|| self.expr_float_fmt(rhs)),
+                _ => None,
+            },
+            ExprKind::Ternary(_, t, e) => self.expr_float_fmt(t).or_else(|| self.expr_float_fmt(e)),
+            _ => None,
+        }
+    }
+
+    /// Float format of an identifier declared in the current construct's scope.
+    fn ident_float_fmt(&self, name: &str) -> Option<&'static str> {
+        if let Some(scope) = self.symbols.module_scopes.get(&self.current_construct) {
+            if let Some((sym, _)) = scope.get(name) {
+                let ty = match sym {
+                    Symbol::Port(p) => Some(&p.ty),
+                    Symbol::Reg(r) => Some(&r.ty),
+                    _ => None,
+                };
+                if let Some(ty) = ty {
+                    return match ty {
+                        TypeExpr::FP32 => Some("f32"),
+                        TypeExpr::BF16 => Some("bf16"),
+                        _ => None,
+                    };
+                }
+                if matches!(sym, Symbol::Let(_)) {
+                    return self.let_binding_float_fmt(name);
+                }
+            }
+        }
+        None
+    }
+
+    /// Float format of a `let` binding by AST lookup (modules + fsms).
+    fn let_binding_float_fmt(&self, name: &str) -> Option<&'static str> {
+        let fmt_of = |t: &TypeExpr| match t {
+            TypeExpr::FP32 => Some("f32"),
+            TypeExpr::BF16 => Some("bf16"),
+            _ => None,
+        };
+        for item in &self.source.items {
+            match item {
+                Item::Module(m) if m.name.name == self.current_construct => {
+                    for bi in &m.body {
+                        if let ModuleBodyItem::LetBinding(l) = bi {
+                            if l.name.name == name {
+                                return l.ty.as_ref().and_then(|t| fmt_of(t));
+                            }
+                        }
+                    }
+                }
+                Item::Fsm(f) if f.name.name == self.current_construct => {
+                    for l in &f.lets {
+                        if l.name.name == name {
+                            return l.ty.as_ref().and_then(|t| fmt_of(t));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// Check if an identifier is declared as SInt in the current construct's scope.
     fn ident_is_sint(&self, name: &str) -> bool {
         if let Some(scope) = self.symbols.module_scopes.get(&self.current_construct) {
@@ -1814,6 +1993,7 @@ impl<'a> Codegen<'a> {
                     let val = match lit {
                         LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v) => *v as i64,
                         LitKind::Sized(_, v) => *v as i64,
+                        LitKind::Float(_) => return None, // not an integer constant
                     };
                     Some(val)
                 }
@@ -1845,6 +2025,7 @@ impl<'a> Codegen<'a> {
                 ExprKind::Literal(lit) => match lit {
                     LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v) => format!("{v}"),
                     LitKind::Sized(w, v) => format!("{w}'{v}"),
+                    LitKind::Float(bits) => format!("f{bits}"),
                 },
                 ExprKind::Binary(op, lhs, rhs) => {
                     format!("({} {:?} {})", expr_key(lhs), op, expr_key(rhs))
@@ -1862,6 +2043,7 @@ impl<'a> Codegen<'a> {
                     let val = match lit {
                         LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v) => *v as i64,
                         LitKind::Sized(_, v) => *v as i64,
+                        LitKind::Float(_) => { terms.push((sign, None, expr_key(expr))); return; }
                     };
                     terms.push((sign, Some(val), String::new()));
                 }
@@ -1963,6 +2145,8 @@ impl<'a> Codegen<'a> {
             TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => {
                 Some("1".to_string())
             }
+            TypeExpr::FP32 => Some("32".to_string()),
+            TypeExpr::BF16 => Some("16".to_string()),
             TypeExpr::Vec(inner, size) => {
                 let iw = self.type_expr_data_width(inner)?;
                 let n = self.emit_expr_str(size);
@@ -4187,6 +4371,8 @@ impl<'a> Codegen<'a> {
         match ty {
             TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval(w),
             TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => Some(1),
+            TypeExpr::FP32 => Some(32),
+            TypeExpr::BF16 => Some(16),
             TypeExpr::Vec(inner, size) => {
                 let iw = self.type_expr_width(inner)?;
                 let n = eval(size)?;
@@ -4640,6 +4826,8 @@ impl<'a> Codegen<'a> {
                 LitKind::Hex(v) => format!("'h{v:X}"),
                 LitKind::Bin(v) => format!("'b{v:b}"),
                 LitKind::Sized(w, v) => format!("{w}'d{v}"),
+                // Float literal (FP32 by default) → 32-bit binary32 bit pattern.
+                LitKind::Float(bits) => format!("32'h{:08X}", (f64::from_bits(*bits) as f32).to_bits()),
             },
             ExprKind::Bool(true) => "1'b1".to_string(),
             ExprKind::Bool(false) => "1'b0".to_string(),
@@ -4659,6 +4847,23 @@ impl<'a> Codegen<'a> {
                 name.clone()
             }
             ExprKind::Binary(op, lhs, rhs) => {
+                // Floating-point operands dispatch to the emitted `arch_f32_*` /
+                // `arch_bf16_*` SystemVerilog helper functions.
+                if let Some(fmt) = self.expr_float_fmt(lhs).or_else(|| self.expr_float_fmt(rhs)) {
+                    let fop = match op {
+                        BinOp::Add => Some("add"), BinOp::Sub => Some("sub"), BinOp::Mul => Some("mul"),
+                        BinOp::Eq => Some("eq"), BinOp::Neq => Some("ne"),
+                        BinOp::Lt => Some("lt"), BinOp::Gt => Some("gt"),
+                        BinOp::Lte => Some("le"), BinOp::Gte => Some("ge"),
+                        _ => None,
+                    };
+                    if let Some(fop) = fop {
+                        self.fp_helpers_used.set(true);
+                        let l = self.emit_expr_prec(lhs, 0);
+                        let r = self.emit_expr_prec(rhs, 0);
+                        return format!("arch_{fmt}_{fop}({l}, {r})");
+                    }
+                }
                 // `implies` lowers to (!lhs || rhs)
                 if *op == BinOp::Implies {
                     let l = self.emit_expr_prec(lhs, 14); // unary prec for !
@@ -4915,6 +5120,40 @@ impl<'a> Codegen<'a> {
                     | "find_first" => {
                         self.emit_vec_method(&b, base, method, args)
                     }
+                    // Float conversions → emitted helper functions.
+                    "to_fp32" => {
+                        self.fp_helpers_used.set(true);
+                        match self.expr_float_fmt(base) {
+                            Some("bf16") => format!("arch_bf16_to_f32({b})"),
+                            Some("f32") => b,
+                            _ => {
+                                let src = if self.expr_is_signed(base) { format!("$signed({b})") } else { format!("$unsigned({b})") };
+                                format!("$shortrealtobits(shortreal'({src}))")
+                            }
+                        }
+                    }
+                    "to_bf16" => {
+                        self.fp_helpers_used.set(true);
+                        match self.expr_float_fmt(base) {
+                            Some("f32") => format!("arch_f32_to_bf16({b})"),
+                            Some("bf16") => b,
+                            _ => {
+                                let src = if self.expr_is_signed(base) { format!("$signed({b})") } else { format!("$unsigned({b})") };
+                                format!("arch_f32_to_bf16($shortrealtobits(shortreal'({src})))")
+                            }
+                        }
+                    }
+                    "to_uint" | "to_sint" => {
+                        self.fp_helpers_used.set(true);
+                        let width = args.first().map(|w| self.emit_expr_str(w)).unwrap_or_else(|| "32".to_string());
+                        let wp = Self::paren_width(&width);
+                        let f32bits = match self.expr_float_fmt(base) {
+                            Some("bf16") => format!("arch_bf16_to_f32({b})"),
+                            _ => b.clone(),
+                        };
+                        // Toward-zero via $rtoi on the decoded shortreal.
+                        format!("{wp}'($rtoi($bitstoshortreal({f32bits})))")
+                    }
                     _ => format!("{b}.{}()", method.name),
                 }
             }
@@ -5153,6 +5392,23 @@ impl<'a> Codegen<'a> {
                 if name == "past" || name == "rose" || name == "fell" {
                     return format!("${name}({})", arg_strs.join(", "));
                 }
+                // Float intrinsics → emitted helper functions.
+                if name == "fma" && args.len() == 3 {
+                    self.fp_helpers_used.set(true);
+                    let fmt = self.expr_float_fmt(&args[0])
+                        .or_else(|| self.expr_float_fmt(&args[1]))
+                        .or_else(|| self.expr_float_fmt(&args[2]))
+                        .unwrap_or("f32");
+                    return format!("arch_fma_{fmt}({})", arg_strs.join(", "));
+                }
+                if name == "is_nan" && args.len() == 1 {
+                    // exponent all-ones and mantissa nonzero.
+                    let a = &arg_strs[0];
+                    return match self.expr_float_fmt(&args[0]) {
+                        Some("bf16") => format!("(({a}[14:7] == 8'hFF) && ({a}[6:0] != 7'b0))"),
+                        _ => format!("(({a}[30:23] == 8'hFF) && ({a}[22:0] != 23'b0))"),
+                    };
+                }
                 // Resolve mangled name if this is an overloaded function.
                 let sv_name = if let Some((Symbol::Function(overloads), _)) = self.symbols.globals.get(name) {
                     if overloads.len() > 1 {
@@ -5212,6 +5468,10 @@ impl<'a> Codegen<'a> {
             }
             TypeExpr::Bool => "logic".to_string(),
             TypeExpr::Bit => "logic".to_string(),
+            // Floats are carried as packed bit vectors (the FP unit modules
+            // operate on the raw [W-1:0] bit pattern).
+            TypeExpr::FP32 => "logic [31:0]".to_string(),
+            TypeExpr::BF16 => "logic [15:0]".to_string(),
             TypeExpr::Clock(_) => "logic".to_string(),
             TypeExpr::Reset(_, _) => "logic".to_string(),
             TypeExpr::Vec(_, _) => {
