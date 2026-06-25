@@ -27,7 +27,29 @@
 //! Emitted once at `$unit` scope ahead of the modules that use FP, gated by
 //! `Codegen::fp_helpers_used`.
 
-pub(super) const FP_SV_HELPERS: &str = r#"// ── arch floating-point helpers (synthesizable RTL; see doc/plan_fp_types.md §7) ──
+use crate::FpCompat;
+
+/// SystemVerilog FP helper block for the given special-value profile
+/// (doc/plan_fp_types.md §6.2). The `riscv` (default) text is the canonical
+/// source below; `cuda` is a thin output-constant substitution — the canonical
+/// NaN pattern and the NaN→int saturation constant — leaving the arithmetic
+/// datapath, RNE rounding, subnormal handling, and in-range conversions
+/// bit-identical, exactly as §6.2 specifies.
+pub(super) fn fp_sv_helpers(profile: FpCompat) -> String {
+    match profile {
+        FpCompat::Riscv => FP_SV_HELPERS_RISCV.to_string(),
+        FpCompat::Cuda => FP_SV_HELPERS_RISCV
+            // canonical quiet NaN: 0x7FC00000 / 0x7FC0  ->  0x7FFFFFFF / 0x7FFF
+            .replace("32'h7FC00000", "32'h7FFFFFFF")
+            .replace("16'h7FC0", "16'h7FFF")
+            // float->int of NaN: type max  ->  0 (the `(u.is_nan)` prefix targets
+            // the NaN case only, never the structural saturate-to-max branches).
+            .replace("(u.is_nan)  return lim_pos[63:0];", "(u.is_nan)  return 64'd0;")
+            .replace("(u.is_nan)  return lim[63:0];", "(u.is_nan)  return 64'd0;"),
+    }
+}
+
+const FP_SV_HELPERS_RISCV: &str = r#"// ── arch floating-point helpers (synthesizable RTL; see doc/plan_fp_types.md §7) ──
 typedef struct packed {
   logic        sign;
   logic [23:0] mant;        // 24-bit significand (implicit bit included for normals)
@@ -265,7 +287,7 @@ function automatic logic [63:0] arch_f32_to_sint(input logic [31:0] x, input int
   u = arch_f32_decode(x);
   lim_pos = (128'd1 << (n - 1)) - 128'd1;   //  2^(n-1)-1
   lim_neg = (128'd1 << (n - 1));            // |min| = 2^(n-1)
-  if (u.is_nan)  return lim_pos[63:0];                       // NaN -> int max
+  if (u.is_nan)  return lim_pos[63:0];                       // NaN -> type max (riscv) / 0 (cuda)
   if (u.is_zero) return 64'd0;
   if (u.is_inf)  return u.sign ? (~lim_neg[63:0] + 64'd1) : lim_pos[63:0];
   if (u.eunb >= 64)      mag = {128{1'b1}};                  // |value| >= 2^64 -> saturate
@@ -285,7 +307,7 @@ function automatic logic [63:0] arch_f32_to_uint(input logic [31:0] x, input int
   integer sh;
   u = arch_f32_decode(x);
   lim = (128'd1 << n) - 128'd1;                              // 2^n - 1
-  if (u.is_nan)  return lim[63:0];                           // NaN -> uint max
+  if (u.is_nan)  return lim[63:0];                           // NaN -> type max (riscv) / 0 (cuda)
   if (u.is_zero) return 64'd0;
   if (u.sign)    return 64'd0;                               // negative (incl -inf) -> 0
   if (u.is_inf)  return lim[63:0];

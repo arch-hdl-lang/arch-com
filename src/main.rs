@@ -181,6 +181,12 @@ enum Command {
         /// .sv files and linked together downstream.
         #[arg(long)]
         no_inline_deps: bool,
+        /// Floating-point special-value compatibility profile (doc/plan_fp_types.md
+        /// §6.2): `riscv` (default) or `cuda`. Shares one IEEE-754 RNE arithmetic
+        /// core; selects only the canonical NaN pattern (0x7FC00000/0x7FC0 vs
+        /// 0x7FFFFFFF/0x7FFF) and the NaN→int result (type max vs 0).
+        #[arg(long = "fp-compat", default_value = "riscv")]
+        fp_compat: String,
     },
     /// Compile ARCH + C++ testbench and run simulation
     ///
@@ -280,6 +286,11 @@ enum Command {
         /// guard then defers to the command-line definition.
         #[arg(long = "param", value_name = "NAME=VALUE")]
         param_overrides: Vec<String>,
+        /// Floating-point special-value compatibility profile (doc/plan_fp_types.md
+        /// §6.2): `riscv` (default) or `cuda`. Honored identically by the SV and
+        /// sim backends so they never disagree.
+        #[arg(long = "fp-compat", default_value = "riscv")]
+        fp_compat: String,
     },
     /// Formal verification: emit SMT-LIB2 and invoke a bit-vector SMT solver.
     ///
@@ -328,6 +339,10 @@ enum Command {
         /// by construction). See `arch build` help for the property set.
         #[arg(long)]
         auto_thread_asserts: bool,
+        /// Floating-point special-value compatibility profile (doc/plan_fp_types.md
+        /// §6.2): `riscv` (default) or `cuda`. Accepted for parity with `build`/`sim`.
+        #[arg(long = "fp-compat", default_value = "riscv")]
+        fp_compat: String,
     },
 }
 
@@ -945,8 +960,10 @@ fn main() -> miette::Result<()> {
             pybind_module_name,
             auto_thread_asserts,
             param_overrides,
+            fp_compat,
         } => {
             let _ = auto_thread_asserts;
+            let fp_compat = arch::FpCompat::parse(&fp_compat).map_err(|e| miette::miette!(e))?;
 
             // Parse --param NAME=VALUE overrides
             let mut param_overrides_map: std::collections::HashMap<String, u64> =
@@ -997,6 +1014,7 @@ fn main() -> miette::Result<()> {
                         test.as_deref(),
                         pybind_module_name.as_deref(),
                         &param_overrides_map,
+                        fp_compat,
                     )
                 }),
                 "parallel" => learn_wrap(&arch_files, || {
@@ -1020,13 +1038,14 @@ fn main() -> miette::Result<()> {
                         test.as_deref(),
                         pybind_module_name.as_deref(),
                         &param_overrides_map,
+                        fp_compat,
                     )
                 }),
                 "both" => {
                     // Cross-check: build + run both fsm and parallel sims
                     // independently with --debug, then diff the port-change
                     // traces. Mismatch ⇒ abort with first divergence.
-                    run_thread_sim_cross_check(&arch_files, &tb_files, outdir.as_deref())
+                    run_thread_sim_cross_check(&arch_files, &tb_files, outdir.as_deref(), fp_compat)
                 }
                 other => {
                     return Err(miette::miette!(
@@ -1052,7 +1071,9 @@ fn main() -> miette::Result<()> {
             construct_proof_smt_solver,
             auto_thread_asserts,
             no_inline_deps,
+            fp_compat,
         } => {
+            let fp_compat = arch::FpCompat::parse(&fp_compat).map_err(|e| miette::miette!(e))?;
             let files_for_learn = files.clone();
             learn_wrap(&files_for_learn, move || {
                 if matches!(emit_thread_map, Some(Some(_))) && files.len() > 1 && o.is_none() {
@@ -1142,7 +1163,7 @@ fn main() -> miette::Result<()> {
                             .cloned()
                             .collect();
                         let mut codegen =
-                            Codegen::new(&symbols, &ast, overload_map).with_comments(comments);
+                            Codegen::new(&symbols, &ast, overload_map).with_comments(comments).with_fp_compat(fp_compat);
                         let sv = codegen.generate_items(&file_items);
                         let out_path_hint =
                             o.clone().unwrap_or_else(|| files[0].with_extension("sv"));
@@ -1150,7 +1171,7 @@ fn main() -> miette::Result<()> {
                         (sv, sdc)
                     } else {
                         let mut codegen =
-                            Codegen::new(&symbols, &ast, overload_map).with_comments(comments);
+                            Codegen::new(&symbols, &ast, overload_map).with_comments(comments).with_fp_compat(fp_compat);
                         let sv = codegen.generate();
                         let out_path_hint =
                             o.clone().unwrap_or_else(|| files[0].with_extension("sv"));
@@ -1374,7 +1395,8 @@ fn main() -> miette::Result<()> {
                             .collect();
 
                         let mut codegen = Codegen::new(&symbols, &ast, overload_map.clone())
-                            .with_comments(file_comments);
+                            .with_comments(file_comments)
+                            .with_fp_compat(fp_compat);
                         let sv = codegen.generate_items(&file_items);
 
                         let out_path = std::path::Path::new(filename).with_extension("sv");
@@ -1515,7 +1537,11 @@ fn main() -> miette::Result<()> {
             thread_proof_only,
             timeout,
             auto_thread_asserts,
+            fp_compat,
         } => {
+            // Validated for parity with build/sim; FP types are rejected by the
+            // formal backend in v1, so the profile has no effect here yet.
+            let _ = arch::FpCompat::parse(&fp_compat).map_err(|e| miette::miette!(e))?;
             let files_for_learn = files.clone();
             learn_wrap(&files_for_learn, move || {
                 let all_files = resolve_use_imports(&files)?;
@@ -1602,6 +1628,7 @@ fn run_thread_sim_cross_check(
     arch_files: &[PathBuf],
     tb_files: &[PathBuf],
     outdir: Option<&std::path::Path>,
+    fp_compat: arch::FpCompat,
 ) -> miette::Result<()> {
     let base = outdir
         .map(|p| p.to_path_buf())
@@ -1620,9 +1647,9 @@ fn run_thread_sim_cross_check(
     ));
 
     eprintln!("=== arch sim --thread-sim both: building fsm path ===");
-    let fsm_trace = build_and_capture(arch_files, tb_files, &fsm_dir, /*parallel=*/ false)?;
+    let fsm_trace = build_and_capture(arch_files, tb_files, &fsm_dir, /*parallel=*/ false, fp_compat)?;
     eprintln!("=== arch sim --thread-sim both: building parallel path ===");
-    let par_trace = build_and_capture(arch_files, tb_files, &par_dir, /*parallel=*/ true)?;
+    let par_trace = build_and_capture(arch_files, tb_files, &par_dir, /*parallel=*/ true, fp_compat)?;
 
     // Filter to just the [cycle][Mod.port](in/out) debug lines, ignore
     // TB stdout. The fsm path uses --debug --depth N to optionally
@@ -1674,6 +1701,7 @@ fn build_and_capture(
     tb_files: &[PathBuf],
     dir: &std::path::Path,
     parallel: bool,
+    fp_compat: arch::FpCompat,
 ) -> miette::Result<String> {
     // Capture stdout via a temp file: redirect the child's stdout to it,
     // then read it back. Easier than threading capture through run_sim.
@@ -1705,6 +1733,7 @@ fn build_and_capture(
         /*pybind_module_name_override*/ None,
         /*no_exit*/ true,
         &std::collections::HashMap::new(),
+        fp_compat,
     )?;
 
     // The sim_out binary was already executed by run_sim; capture its
@@ -1738,6 +1767,7 @@ fn run_sim(
     test_file: Option<&std::path::Path>,
     pybind_module_name_override: Option<&str>,
     param_overrides: &std::collections::HashMap<String, u64>,
+    fp_compat: arch::FpCompat,
 ) -> miette::Result<()> {
     run_sim_opts(
         arch_files,
@@ -1760,6 +1790,7 @@ fn run_sim(
         pybind_module_name_override,
         /*no_exit=*/ false,
         param_overrides,
+        fp_compat,
     )
 }
 
@@ -1785,6 +1816,7 @@ fn run_sim_opts(
     pybind_module_name_override: Option<&str>,
     no_exit: bool,
     param_overrides: &std::collections::HashMap<String, u64>,
+    fp_compat: arch::FpCompat,
 ) -> miette::Result<()> {
     // 1. Parse + type-check
     let all_files = resolve_use_imports(arch_files)?;
@@ -1937,7 +1969,7 @@ fn run_sim_opts(
     // 4. Write verilated.h / verilated.cpp stubs
     let verilated_h = build_dir.join("verilated.h");
     let verilated_cpp = build_dir.join("verilated.cpp");
-    fs::write(&verilated_h, SimCodegen::verilated_h()).into_diagnostic()?;
+    fs::write(&verilated_h, SimCodegen::verilated_h(fp_compat)).into_diagnostic()?;
     fs::write(&verilated_cpp, SimCodegen::verilated_cpp()).into_diagnostic()?;
     generated_cpps.push(verilated_cpp);
 

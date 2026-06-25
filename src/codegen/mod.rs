@@ -163,6 +163,9 @@ pub struct Codegen<'a> {
     /// Set when any FP32/BF16 operation was emitted, so the `arch_f32_*` /
     /// `arch_bf16_*` SystemVerilog helper package is prepended to the output.
     fp_helpers_used: std::cell::Cell<bool>,
+    /// Floating-point special-value profile (doc/plan_fp_types.md §6.2).
+    /// Selects the emitted NaN-canonicalization / NaN→int constants.
+    fp_compat: crate::FpCompat,
     /// Name of the construct currently being emitted (for symbol lookups).
     current_construct: String,
     /// Context-sensitive identifier substitutions.
@@ -246,6 +249,7 @@ impl<'a> Codegen<'a> {
             bus_wires: std::collections::HashMap::new(),
             reset_ports: std::collections::HashMap::new(),
             fp_helpers_used: std::cell::Cell::new(false),
+            fp_compat: crate::FpCompat::default(),
             current_construct: String::new(),
             ident_subst: std::collections::HashMap::new(),
             loop_var_subst: std::collections::HashMap::new(),
@@ -376,6 +380,12 @@ impl<'a> Codegen<'a> {
         self
     }
 
+    /// Select the floating-point special-value profile (§6.2). Default `Riscv`.
+    pub fn with_fp_compat(mut self, profile: crate::FpCompat) -> Self {
+        self.fp_compat = profile;
+        self
+    }
+
     pub fn generate(&mut self) -> String {
         // `source.items` is borrowed for the whole call but `generate_items`
         // only needs an `&[Item]` slice — clone the Vec into a local so we
@@ -439,7 +449,7 @@ impl<'a> Codegen<'a> {
 
         // Prepend the floating-point helper functions if any FP op was emitted.
         if self.fp_helpers_used.get() {
-            let mut prefix = String::from(fp::FP_SV_HELPERS);
+            let mut prefix = fp::fp_sv_helpers(self.fp_compat);
             prefix.push_str(&self.out);
             self.out = prefix;
         }

@@ -263,6 +263,13 @@ the alternative behind a flag (§6.2).
 
 ### 6.2 Compatibility profiles — `--fp-compat=riscv|cuda` (default `riscv`)
 
+**Status: landed.** `--fp-compat=riscv|cuda` is implemented on `arch build`,
+`arch sim`, and `arch formal` (validated there but inert, as FP is rejected by
+the formal backend). The SV backend (`src/codegen/fp.rs`) and the sim prelude
+(`src/sim_codegen` `verilated_h`) each apply the same thin constant
+substitution; covered by `fp_compat_build_profiles` / `fp_compat_sim_profiles`
+in `tests/fp_test.rs`.
+
 A single flag selects the special-value profile. The crucial design point is
 that the two profiles **share an identical arithmetic core** — both compute
 IEEE-754 RNE results and both canonicalize to a *single* NaN. They differ only
@@ -504,12 +511,14 @@ Landed and tested (`cargo test --test fp_test`, plus the full suite green):
    §8.2 differential Verilator campaign is wired in as a regression test. What
    remains of §7 is the *pipelined latency-N* variant (v1 is combinational, by
    design) and the §8.1 SMT equivalence proof.
-3. **`--fp-compat=cuda` (§6.2) is not yet wired**; the default RISC-V
-   special-value policy is implemented in both sim and the synthesizable SV.
-   `arch formal` still rejects FP types in a design with a clear message. The
-   **§8.1 SMT equivalence proof is partially wired** (compares + conversions
-   proven exhaustively under z3; RNE arithmetic deferred — see §8.1 status), and
-   the **§8.2 differential campaign is wired** (delta #2).
+3. **`--fp-compat=riscv|cuda` (§6.2) is wired** on `arch build`/`sim`/`formal`
+   (default `riscv`), honored identically by the SV and sim backends as a thin
+   output-constant shim (canonical NaN pattern + NaN→int result); the arithmetic
+   core is untouched. `arch formal` still rejects FP types in a design, so the
+   flag is validated-but-inert there. The **§8.1 SMT equivalence proof is
+   partially wired** (compares + conversions proven exhaustively under z3; RNE
+   arithmetic deferred — see §8.1 status), and the **§8.2 differential campaign
+   is wired** (delta #2).
 4. **Float literals default to `FP32`**; `BF16` immediates use `.to_bf16()`
    (§3.3, resolved open question — keeps no-implicit-conversion uniform).
 

@@ -337,3 +337,63 @@ fn fp_smt_equivalence_proofs() {
     cert.push_str("\nresult: ALL PROVED (unsat)\n");
     eprintln!("\n{cert}");
 }
+
+/// `--fp-compat=cuda` (doc/plan_fp_types.md §6.2) selects the CUDA special-value
+/// profile in the emitted SystemVerilog: canonical NaN 0x7FFFFFFF / 0x7FFF and
+/// NaN->int = 0. The default `riscv` profile keeps 0x7FC00000 / 0x7FC0 and
+/// NaN->type-max. The arithmetic datapath is identical across profiles.
+#[test]
+fn fp_compat_build_profiles() {
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let arch_src = format!("{manifest}/tests/fp_v1/FpArith.arch");
+
+    // default = riscv
+    let td = tempfile::tempdir().unwrap();
+    let sv = td.path().join("d.sv");
+    let out = arch().arg("build").arg(&arch_src).arg("-o").arg(&sv).output().unwrap();
+    assert!(out.status.success(), "default build failed: {}", String::from_utf8_lossy(&out.stderr));
+    let d = std::fs::read_to_string(&sv).unwrap();
+    assert!(d.contains("32'h7FC00000") && d.contains("16'h7FC0"), "riscv NaN constants missing");
+    assert!(!d.contains("32'h7FFFFFFF"), "default must not use the cuda NaN pattern");
+
+    // cuda
+    let sv2 = td.path().join("c.sv");
+    let out2 = arch().arg("build").arg(&arch_src).arg("--fp-compat=cuda").arg("-o").arg(&sv2).output().unwrap();
+    assert!(out2.status.success(), "cuda build failed: {}", String::from_utf8_lossy(&out2.stderr));
+    let c = std::fs::read_to_string(&sv2).unwrap();
+    assert!(c.contains("32'h7FFFFFFF") && c.contains("16'h7FFF"), "cuda NaN constants missing");
+    assert!(!c.contains("32'h7FC00000"), "cuda must not use the riscv NaN pattern");
+    assert!(c.contains("(u.is_nan)  return 64'd0;"), "cuda NaN->int should be 0");
+
+    // invalid profile rejected
+    let bad = arch().arg("build").arg(&arch_src).arg("--fp-compat=nvidia").arg("-o").arg(td.path().join("x.sv")).output().unwrap();
+    assert!(!bad.status.success(), "invalid --fp-compat must be rejected");
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("expected `riscv` or `cuda`"));
+}
+
+/// The sim backend honors `--fp-compat` identically to the SV backend: a NaN
+/// result and a NaN->int conversion follow the selected profile.
+#[test]
+fn fp_compat_sim_profiles() {
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let arch_src = format!("{manifest}/tests/fp_v1/NanProf.arch");
+    let tb = format!("{manifest}/tests/fp_v1/tb_nanprof.cpp");
+
+    let run = |extra: &[&str], dir: &str| -> String {
+        let td = tempfile::tempdir().unwrap();
+        let mut c = arch();
+        c.arg("sim").arg(&arch_src).arg("--tb").arg(&tb).arg("--outdir").arg(td.path().join(dir));
+        for a in extra { c.arg(a); }
+        let o = c.output().unwrap();
+        assert!(o.status.success(), "sim failed: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).to_string()
+    };
+
+    let riscv = run(&[], "r");
+    assert!(riscv.contains("nan_out=0x7FC00000 nan_to_int=2147483647"),
+        "riscv profile wrong:\n{riscv}");
+
+    let cuda = run(&["--fp-compat=cuda"], "c");
+    assert!(cuda.contains("nan_out=0x7FFFFFFF nan_to_int=0"),
+        "cuda profile wrong:\n{cuda}");
+}
