@@ -42,8 +42,11 @@ them):
    deterministic, readable SV structure" philosophy and pull in external IP.
 4. **The emitted RTL must be proven equivalent to SoftFloat** (i.e. to IEEE-754
    RNE). See §8 — this is the load-bearing part of the plan.
-5. **RNE only**, **full subnormals**, **single canonical quiet NaN** emitted by
-   ARCH (payload defined in §6).
+5. **RNE only**, **full subnormals**, **single canonical quiet NaN**. These are
+   not hand-rolled: we build SoftFloat with its **RISC-V specialization**, which
+   natively gives a canonical default NaN (`0x7FC00000`, no payload
+   propagation), full subnormals, and saturating round-toward-zero float→int
+   conversions. Sim and RTL both follow that spec (payloads/policy in §6).
 6. **Operators `+ - *` and `fma` are built-in and combinational**; users
    pipeline explicitly with `reg`/`seq`/`pipeline`. No hidden latency.
 
@@ -148,9 +151,16 @@ Direct SoftFloat calls on `float32_t`:
 | `fp32.to_bf16()` | see §5.3 |
 | int↔fp32 | `i32_to_f32`, `ui32_to_f32`, `f32_to_i32_r_minMag`, … |
 
-`softfloat_roundingMode = softfloat_round_near_even` globally; `softfloat_detectTininess`
-set to the after-rounding convention (754 default). Exception flags are computed
-by SoftFloat but ignored in v1 (cleared each op).
+`softfloat_roundingMode = softfloat_round_near_even` globally. SoftFloat is
+**built with the RISC-V specialization** (`source/RISCV/specialize.h`), which
+fixes the platform-dependent corners we care about — see §6. Exception flags are
+computed by SoftFloat but ignored in v1 (cleared each op). `softfloat_detectTininess`
+only affects the (ignored) underflow flag, not result values.
+
+The toward-zero float→int conversions use the `_r_minMag` ("round to minimum
+magnitude") named variants — `f32_to_i32_r_minMag`, `f32_to_ui32_r_minMag`,
+etc. — which is the C-cast / `fcvt`-rtz convention. Out-of-range and NaN inputs
+saturate per the RISC-V spec (§6).
 
 ### 5.3 BF16 operations — provably single-rounded via f64
 
@@ -195,10 +205,38 @@ These must be identical across all three backends or equivalence is meaningless.
   to this pattern. This matters because 754 leaves NaN payloads unspecified,
   SoftFloat has its own propagation rules, and SMT `FloatingPoint` has a single
   NaN — pinning a canonical pattern is what makes the bit-exact equivalence in
-  §8 well-defined. SoftFloat is configured (`softfloat_propagateNaNF32UI` /
-  build-time spec, or a post-op canonicalization wrapper) to emit exactly this
-  pattern, and the RTL is built to match.
-- **Rounding**: RNE everywhere, no mode plumbing.
+  §8 well-defined. **We do not write a canonicalization wrapper — we build
+  SoftFloat with the RISC-V specialization**, whose `defaultNaNF32UI` is exactly
+  `0x7FC00000` and whose `softfloat_propagateNaNF32UI` ignores input payloads and
+  always returns the default NaN. The RTL is built to match; BF16 (absent from
+  SoftFloat) mirrors the same convention with `0x7FC0`.
+- **float→int out-of-range / NaN**: saturating per the RISC-V spec — `+Inf` /
+  overflow → integer max, `−Inf` / underflow → integer min, **NaN → integer
+  max** (RISC-V `fcvt` convention; SoftFloat RISCV `i32_fromNaN`). Toward-zero
+  rounding (`_r_minMag`).
+- **Rounding**: RNE for arithmetic; toward-zero for float→int. No mode plumbing.
+
+### 6.1 Why RISC-V, and how this differs from NVIDIA CUDA / x86
+
+The platform-dependent corners (NaN pattern, NaN→int, FTZ) genuinely differ
+between vendors, so "follow IEEE" is not specific enough — we must name one. We
+pick **RISC-V** because it is the only mainstream profile that is *both* a clean
+single-canonical-NaN / full-subnormal model (so it lines up with the SMT
+`FloatingPoint` theory used for the §8 proof) *and* directly available as a
+SoftFloat build with no wrapper. For reference, the same three points elsewhere:
+
+| Point | ARCH v1 (RISC-V / SoftFloat) | NVIDIA CUDA / PTX | x86 (SSE / SoftFloat `8086`) |
+|---|---|---|---|
+| Canonical NaN (f32) | `0x7FC00000` | `0x7FFFFFFF` (PTX canonical) | `0xFFC00000` (sign set), propagates input payloads |
+| Subnormals | full (no FTZ) | supported; **FTZ is a compile flag** (`-ftz`, default off; `--use_fast_math` ⇒ on) | full |
+| float→int, out of range | saturate; **NaN → int max** | `cvt` saturates to min/max; **NaN → 0** | "integer indefinite" `0x80000000` |
+| float→int rounding | toward zero (`_r_minMag`); other modes deferred | explicit per-instruction (`cvt.rni/.rzi/.rmi/.rpi`); C cast ⇒ `rzi` | toward zero for C cast |
+
+Notable: CUDA converts **NaN → 0** for float→int while RISC-V gives **int max**,
+and CUDA's canonical NaN is `0x7FFFFFFF` (all-ones-ish), not `0x7FC00000`. We are
+deliberately *not* CUDA-compatible at these corners; the design value is
+provable sim/RTL/SMT agreement, not bug-for-bug GPU parity. (CUDA's FTZ-as-a-flag
+model is, however, a good template for the future FTZ knob.)
 
 ## 7. RTL backend — emit SV, reference CVFPU
 
@@ -259,6 +297,13 @@ z3) driven through the existing formal flow / EBMC.
   `mul`/`fma` are harder. Where a full proof times out, fall back to §8.2 for
   that operator and record the gap explicitly (the project's
   "no silent caps" rule — say what was and wasn't proven).
+- **Conversions are a partial-function caveat**: SMT-LIB `fp.to_sbv` / `fp.to_ubv`
+  are *partial* — the result for NaN / out-of-range inputs is unspecified by the
+  theory. So the float→int **saturation and NaN→int-max behavior (§6) cannot be
+  proven against `fp.to_sbv`**; only the in-range cases can. The out-of-range
+  conversion corners are signed off by the differential campaign (§8.2) instead,
+  with that boundary documented in the proof cert rather than silently claimed as
+  formally verified.
 - Emit an FP **proof certificate** alongside, consistent with the existing
   `*_proof_cert.rs` pattern, recording solver, version, formats, and result.
 
@@ -286,8 +331,9 @@ vectors against our configured instance once, in CI.
 
 ## 9. Open questions (resolve before/at implementation)
 
-1. **float→int rounding**: round-toward-zero (C cast) vs RNE. Proposal:
-   toward-zero, documented. Need a `.to_*_rne()` variant too?
+1. ~~float→int rounding~~ **Decided**: toward-zero, saturating, NaN → int max —
+   inherited from the SoftFloat RISC-V spec (`_r_minMag`, §6). Still open: do we
+   *also* expose a `.to_*_rne()` variant? Defer unless a workload needs it.
 2. **Surface for `fma`**: free function `fma(a,b,c)` vs method `a.fma(b,c)`.
    Proposal: free function, reads like the math.
 3. **NaN canonicalization cost in RTL**: forcing a canonical NaN adds a mux on
@@ -309,7 +355,7 @@ vectors against our configured instance once, in CI.
 | Lex/Parse | `src/lexer.rs`, `src/parser.rs` | `FP32`/`BF16` keywords, float literals |
 | Resolve | `src/resolve.rs`, `src/type_alias.rs` | format keyword → `Float{..}` |
 | Typecheck | `src/typecheck.rs`, `src/width.rs` | op typing, no-implicit-conv, conversions, `fma` |
-| Sim | `src/sim_codegen/` + `third_party/softfloat` + `build.rs` | link SoftFloat, FP32 direct, BF16-via-f64 helper, canonical-NaN wrapper |
+| Sim | `src/sim_codegen/` + `third_party/softfloat` + `build.rs` | link SoftFloat **built with RISC-V specialization** (gives canonical NaN / saturating conv for free — no wrapper), FP32 direct, BF16-via-f64 helper |
 | RTL | `src/codegen/fp.rs` (new), `codegen/mod.rs` | emit `arch_fp32_*`/`arch_bf16_*` SV modules |
 | Formal | `src/formal.rs`, new `fp_proof_cert.rs` | SMT miter vs `fp.*`, proof certs |
 | Const-eval | compiler-side SoftFloat link | bit-exact literal folding |
