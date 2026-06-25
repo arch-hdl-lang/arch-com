@@ -331,6 +331,20 @@ methods; we want **both**, with formal as the primary guarantee where tractable.
 
 ### 8.1 Formal equivalence via SMT FloatingPoint theory (primary)
 
+**Status (partial, landed):** proofs for the **non-rounding** operators are
+wired in under `tests/fp_v1/smt_proof/` and run by
+`cargo test --test fp_test fp_smt_equivalence_proofs` (z3, auto-skips if absent).
+Each emitted RTL operator is transcribed bit-for-bit into SMT-LIB and proven
+`unsat`-equivalent to the `FloatingPoint` theory over its **entire** input space:
+FP32 comparisons ×6 (2^64), `f32→bf16` narrow RNE (2^32), `bf16→f32` widen exact
+(2^16), and `f32→{sint,uint}` toward-zero in-range (vs the partial `fp.to_sbv` /
+`fp.to_ubv`). The **RNE arithmetic** (`+ - *`, `fma`, `int→float`) is *not* yet
+formally proved — the emitted rounder's packed-struct returns and early
+`return`/`break` are beyond the available SV→SMT frontend (Yosys 0.33), and a
+from-scratch SMT rounder would be an unfaithful second implementation; it stays
+on the §8.2 differential backstop pending an EBMC-class frontend. See
+`tests/fp_v1/smt_proof/README.md`.
+
 ARCH already has a formal backend (`src/formal.rs`, SMT-LIB2, EBMC) and a
 proof-certificate culture (`construct_proof_cert.rs`, `thread_proof_cert.rs`).
 We exploit that the **SMT-LIB `FloatingPoint` theory is exactly IEEE-754 RNE** —
@@ -435,7 +449,10 @@ vectors against our configured instance once, in CI.
 2. **P2 — RTL** ✅ *(landed)*: emit synthesizable `arch_f32_*`/`arch_bf16_*` SV;
    differential co-sim campaign (§8.2) green against the host-IEEE-754 reference
    under Verilator. Remaining P2 stretch: pipelined latency-N variant.
-3. **P3 — formal sign-off**: SMT equivalence (§8.1) — full proof for all BF16
+3. **P3 — formal sign-off** *(partial)*: SMT equivalence (§8.1) is wired for the
+   non-rounding operators (compares, bf16 widen/narrow, float→int in-range),
+   proven exhaustively under z3; the RNE arithmetic awaits an SV→SMT frontend
+   that accepts the emitted rounder. Original target — SMT equivalence: full proof for all BF16
    ops, FP32 where tractable, documented gaps backstopped by P2. Proof certs.
 4. **P4 — docs & examples**: spec sections, AI reference card entry, a small
    GEMM/attention example exercising `fma`.
@@ -487,10 +504,12 @@ Landed and tested (`cargo test --test fp_test`, plus the full suite green):
    §8.2 differential Verilator campaign is wired in as a regression test. What
    remains of §7 is the *pipelined latency-N* variant (v1 is combinational, by
    design) and the §8.1 SMT equivalence proof.
-3. **`--fp-compat=cuda` (§6.2) and the formal equivalence proof (§8.1) are not yet
-   wired** — the default RISC-V special-value policy is implemented in both sim
-   and the synthesizable SV; `arch formal` rejects FP types with a clear message.
-   (The §8.2 differential campaign **is** now wired — see delta #2.)
+3. **`--fp-compat=cuda` (§6.2) is not yet wired**; the default RISC-V
+   special-value policy is implemented in both sim and the synthesizable SV.
+   `arch formal` still rejects FP types in a design with a clear message. The
+   **§8.1 SMT equivalence proof is partially wired** (compares + conversions
+   proven exhaustively under z3; RNE arithmetic deferred — see §8.1 status), and
+   the **§8.2 differential campaign is wired** (delta #2).
 4. **Float literals default to `FP32`**; `BF16` immediates use `.to_bf16()`
    (§3.3, resolved open question — keeps no-implicit-conversion uniform).
 

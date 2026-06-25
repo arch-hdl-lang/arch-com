@@ -275,3 +275,65 @@ fn fp_rtl_differential_equiv_verilator() {
         String::from_utf8_lossy(&run.stderr)
     );
 }
+
+/// SMT equivalence proofs (doc/plan_fp_types.md §8.1): the emitted FP RTL
+/// (`src/codegen/fp.rs`), transcribed bit-for-bit into SMT-LIB, is proven
+/// equivalent to the IEEE-754 `FloatingPoint` theory by z3. Each `.smt2` in
+/// `tests/fp_v1/smt_proof/` must discharge `unsat` (no counterexample over the
+/// entire input space). Covers FP32 comparisons, BF16 widen/narrow, and
+/// float->int (in-range); the RNE arithmetic stays on the §8.2 differential
+/// backstop (see the directory README). Emits a small proof certificate.
+///
+/// Skips cleanly when `z3` is not installed.
+#[test]
+fn fp_smt_equivalence_proofs() {
+    fn z3_available() -> bool {
+        std::process::Command::new("z3")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    if !z3_available() {
+        eprintln!("skipping fp_smt_equivalence_proofs: z3 not in PATH");
+        return;
+    }
+    let z3ver = {
+        let o = std::process::Command::new("z3").arg("--version").output().unwrap();
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let dir = format!("{manifest}/tests/fp_v1/smt_proof");
+    let proofs = [
+        "fp32_compare.smt2",
+        "bf16_narrow.smt2",
+        "bf16_widen.smt2",
+        "f32_to_sint.smt2",
+        "f32_to_uint.smt2",
+    ];
+
+    let mut cert = String::new();
+    cert.push_str("ARCH FP RTL — SMT equivalence proof certificate (plan §8.1)\n");
+    cert.push_str(&format!("solver: {z3ver}\n"));
+    cert.push_str("property: emitted RTL (src/codegen/fp.rs) ≡ SMT FloatingPoint theory (IEEE-754 RNE)\n\n");
+
+    for p in proofs {
+        let path = format!("{dir}/{p}");
+        let out = std::process::Command::new("z3")
+            .arg("-T:600") // per-query 600s wall-clock cap
+            .arg(&path)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run z3 on {p}: {e}"));
+        let res = String::from_utf8_lossy(&out.stdout);
+        let first = res.lines().next().unwrap_or("").trim();
+        cert.push_str(&format!("{p}: {first}\n"));
+        assert_eq!(
+            first, "unsat",
+            "SMT proof {p} did not discharge as unsat (got {first:?})\nstdout:\n{res}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    cert.push_str("\nresult: ALL PROVED (unsat)\n");
+    eprintln!("\n{cert}");
+}
