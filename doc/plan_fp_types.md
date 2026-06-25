@@ -47,6 +47,9 @@ them):
    natively gives a canonical default NaN (`0x7FC00000`, no payload
    propagation), full subnormals, and saturating round-toward-zero float→int
    conversions. Sim and RTL both follow that spec (payloads/policy in §6).
+   A `--fp-compat=riscv|cuda` flag (default `riscv`) switches the two
+   GPU-divergent corners — NaN pattern and NaN→int — to CUDA semantics via a thin
+   output shim over the same arithmetic core (§6.2).
 6. **Operators `+ - *` and `fma` are built-in and combinational**; users
    pipeline explicitly with `reg`/`seq`/`pipeline`. No hidden latency.
 
@@ -233,10 +236,51 @@ SoftFloat build with no wrapper. For reference, the same three points elsewhere:
 | float→int rounding | toward zero (`_r_minMag`); other modes deferred | explicit per-instruction (`cvt.rni/.rzi/.rmi/.rpi`); C cast ⇒ `rzi` | toward zero for C cast |
 
 Notable: CUDA converts **NaN → 0** for float→int while RISC-V gives **int max**,
-and CUDA's canonical NaN is `0x7FFFFFFF` (all-ones-ish), not `0x7FC00000`. We are
-deliberately *not* CUDA-compatible at these corners; the design value is
-provable sim/RTL/SMT agreement, not bug-for-bug GPU parity. (CUDA's FTZ-as-a-flag
-model is, however, a good template for the future FTZ knob.)
+and CUDA's canonical NaN is `0x7FFFFFFF` (all-ones-ish), not `0x7FC00000`. RISC-V
+is the **default** for the provability reasons above — but because users
+targeting GPU-derived reference models will want bit-exact GPU parity, we expose
+the alternative behind a flag (§6.2).
+
+### 6.2 Compatibility profiles — `--fp-compat=riscv|cuda` (default `riscv`)
+
+A single flag selects the special-value profile. The crucial design point is
+that the two profiles **share an identical arithmetic core** — both compute
+IEEE-754 RNE results and both canonicalize to a *single* NaN. They differ only
+in two output constants:
+
+| Profile | canonical NaN (f32 / bf16) | NaN → int |
+|---|---|---|
+| `riscv` (default) | `0x7FC00000` / `0x7FC0` | int max |
+| `cuda` | `0x7FFFFFFF` / `0x7FFF` | `0` |
+
+What the flag does **not** touch: the add/mul/fma datapath, RNE rounding,
+subnormal handling, in-range conversions, and the toward-zero conversion mode —
+all bit-identical across profiles. (CUDA's per-instruction `cvt.rni/.rzi/...`
+modes and its FTZ flag are *orthogonal* future knobs; `--fp-compat=cuda` does
+**not** imply FTZ, matching CUDA's own `-ftz=false` default.)
+
+Because the difference is so contained, the implementation is a **thin
+output-canonicalization shim**, not a second arithmetic path:
+
+- **Sim**: SoftFloat stays built with the RISC-V specialization (the provable
+  core). A post-op shim remaps the NaN bit pattern and the NaN→int result when
+  the profile is `cuda`. Cheap, deterministic, and keeps one arithmetic
+  implementation.
+- **RTL**: the profile is a **compile-time** selection — the emitter substitutes
+  the NaN-mux constant and the conversion-saturation constant. We do **not** add
+  a runtime mode input to every FP unit (that would be un-hardware-like and
+  wasteful); a design is built for one profile.
+- The flag is therefore a **compile-time flag on the `arch` invocation**
+  (`arch build`/`arch sim`/`arch formal`), honored identically by sim and RTL so
+  the two never disagree. Default `riscv` if omitted.
+
+**Proof impact: none on the core.** The §8 formal proof already (a) canonicalizes
+NaN before comparison rather than asserting a specific payload, and (b) treats
+out-of-range/NaN conversion as outside the SMT `fp.to_sbv` partial function
+(§8.1) — so the only thing a profile switch changes is *which constant the
+differential campaign (§8.2) expects* at those two corners. The
+arithmetic-equivalence proof is profile-independent and is not re-run per
+profile.
 
 ## 7. RTL backend — emit SV, reference CVFPU
 
@@ -355,9 +399,10 @@ vectors against our configured instance once, in CI.
 | Lex/Parse | `src/lexer.rs`, `src/parser.rs` | `FP32`/`BF16` keywords, float literals |
 | Resolve | `src/resolve.rs`, `src/type_alias.rs` | format keyword → `Float{..}` |
 | Typecheck | `src/typecheck.rs`, `src/width.rs` | op typing, no-implicit-conv, conversions, `fma` |
-| Sim | `src/sim_codegen/` + `third_party/softfloat` + `build.rs` | link SoftFloat **built with RISC-V specialization** (gives canonical NaN / saturating conv for free — no wrapper), FP32 direct, BF16-via-f64 helper |
-| RTL | `src/codegen/fp.rs` (new), `codegen/mod.rs` | emit `arch_fp32_*`/`arch_bf16_*` SV modules |
-| Formal | `src/formal.rs`, new `fp_proof_cert.rs` | SMT miter vs `fp.*`, proof certs |
+| Sim | `src/sim_codegen/` + `third_party/softfloat` + `build.rs` | link SoftFloat **built with RISC-V specialization** (gives canonical NaN / saturating conv for free — no wrapper), FP32 direct, BF16-via-f64 helper, `--fp-compat` output shim |
+| RTL | `src/codegen/fp.rs` (new), `codegen/mod.rs` | emit `arch_fp32_*`/`arch_bf16_*` SV modules; profile-select NaN/conv constants |
+| CLI | `src/main.rs` | `--fp-compat=riscv\|cuda` (default `riscv`) on build/sim/formal, threaded to both backends |
+| Formal | `src/formal.rs`, new `fp_proof_cert.rs` | SMT miter vs `fp.*`, proof certs (profile-independent core) |
 | Const-eval | compiler-side SoftFloat link | bit-exact literal folding |
 | Tests | `tests/` | per-op golden, corner vectors, Verilator co-sim, formal harness |
 | Docs | `doc/ARCH_HDL_Specification.md`, `Arch_AI_Reference_Card.md` | document FP32/BF16, operators, conversions |
