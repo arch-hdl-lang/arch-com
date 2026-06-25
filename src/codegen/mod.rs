@@ -13,6 +13,7 @@ mod cam;
 mod clkgate;
 mod counter;
 mod fifo;
+mod fp;
 mod fsm;
 mod linklist;
 mod module;
@@ -118,93 +119,6 @@ enum GroupKind {
     },
 }
 
-/// Behavioral SystemVerilog floating-point helper functions, emitted at
-/// compilation-unit ($unit) scope when a design uses FP32/BF16 ops. These are
-/// **simulation-oriented** (they use `$bitstoshortreal`/`$shortrealtobits` and
-/// `shortreal` arithmetic, which model IEEE-754 binary32). A synthesizable,
-/// CVFPU-referenced datapath replacing these is the documented P2/P3 follow-up
-/// (doc/plan_fp_types.md §7). Floats are carried as raw bit vectors; BF16 ops
-/// widen to f32, compute, and round once to bf16 (innocuous double rounding).
-const FP_SV_HELPERS: &str = r#"// ── arch floating-point helpers (behavioral; see doc/plan_fp_types.md §7) ──
-function automatic logic [15:0] arch_f32bits_to_bf16(input logic [31:0] x);
-  logic [31:0] rounded;
-  if ((x[30:23] == 8'hFF) && (x[22:0] != 23'b0)) arch_f32bits_to_bf16 = 16'h7FC0;
-  else begin
-    rounded = x + 32'h00007FFF + {31'b0, x[16]};
-    arch_f32bits_to_bf16 = rounded[31:16];
-  end
-endfunction
-function automatic logic [31:0] arch_f32_canon(input logic [31:0] x);
-  arch_f32_canon = ((x[30:23] == 8'hFF) && (x[22:0] != 23'b0)) ? 32'h7FC00000 : x;
-endfunction
-function automatic logic [31:0] arch_f32_add(input logic [31:0] a, input logic [31:0] b);
-  arch_f32_add = arch_f32_canon($shortrealtobits($bitstoshortreal(a) + $bitstoshortreal(b)));
-endfunction
-function automatic logic [31:0] arch_f32_sub(input logic [31:0] a, input logic [31:0] b);
-  arch_f32_sub = arch_f32_canon($shortrealtobits($bitstoshortreal(a) - $bitstoshortreal(b)));
-endfunction
-function automatic logic [31:0] arch_f32_mul(input logic [31:0] a, input logic [31:0] b);
-  arch_f32_mul = arch_f32_canon($shortrealtobits($bitstoshortreal(a) * $bitstoshortreal(b)));
-endfunction
-function automatic logic [31:0] arch_fma_f32(input logic [31:0] a, input logic [31:0] b, input logic [31:0] c);
-  arch_fma_f32 = arch_f32_canon($shortrealtobits($bitstoshortreal(a) * $bitstoshortreal(b) + $bitstoshortreal(c)));
-endfunction
-function automatic logic arch_f32_eq(input logic [31:0] a, input logic [31:0] b);
-  arch_f32_eq = ($bitstoshortreal(a) == $bitstoshortreal(b));
-endfunction
-function automatic logic arch_f32_ne(input logic [31:0] a, input logic [31:0] b);
-  arch_f32_ne = ($bitstoshortreal(a) != $bitstoshortreal(b));
-endfunction
-function automatic logic arch_f32_lt(input logic [31:0] a, input logic [31:0] b);
-  arch_f32_lt = ($bitstoshortreal(a) < $bitstoshortreal(b));
-endfunction
-function automatic logic arch_f32_gt(input logic [31:0] a, input logic [31:0] b);
-  arch_f32_gt = ($bitstoshortreal(a) > $bitstoshortreal(b));
-endfunction
-function automatic logic arch_f32_le(input logic [31:0] a, input logic [31:0] b);
-  arch_f32_le = ($bitstoshortreal(a) <= $bitstoshortreal(b));
-endfunction
-function automatic logic arch_f32_ge(input logic [31:0] a, input logic [31:0] b);
-  arch_f32_ge = ($bitstoshortreal(a) >= $bitstoshortreal(b));
-endfunction
-function automatic logic [31:0] arch_bf16_to_f32(input logic [15:0] h);
-  arch_bf16_to_f32 = arch_f32_canon({h, 16'b0});
-endfunction
-function automatic logic [15:0] arch_f32_to_bf16(input logic [31:0] x);
-  arch_f32_to_bf16 = arch_f32bits_to_bf16(x);
-endfunction
-function automatic logic [15:0] arch_bf16_add(input logic [15:0] a, input logic [15:0] b);
-  arch_bf16_add = arch_f32bits_to_bf16($shortrealtobits($bitstoshortreal({a,16'b0}) + $bitstoshortreal({b,16'b0})));
-endfunction
-function automatic logic [15:0] arch_bf16_sub(input logic [15:0] a, input logic [15:0] b);
-  arch_bf16_sub = arch_f32bits_to_bf16($shortrealtobits($bitstoshortreal({a,16'b0}) - $bitstoshortreal({b,16'b0})));
-endfunction
-function automatic logic [15:0] arch_bf16_mul(input logic [15:0] a, input logic [15:0] b);
-  arch_bf16_mul = arch_f32bits_to_bf16($shortrealtobits($bitstoshortreal({a,16'b0}) * $bitstoshortreal({b,16'b0})));
-endfunction
-function automatic logic [15:0] arch_fma_bf16(input logic [15:0] a, input logic [15:0] b, input logic [15:0] c);
-  arch_fma_bf16 = arch_f32bits_to_bf16($shortrealtobits($bitstoshortreal({a,16'b0}) * $bitstoshortreal({b,16'b0}) + $bitstoshortreal({c,16'b0})));
-endfunction
-function automatic logic arch_bf16_eq(input logic [15:0] a, input logic [15:0] b);
-  arch_bf16_eq = ($bitstoshortreal({a,16'b0}) == $bitstoshortreal({b,16'b0}));
-endfunction
-function automatic logic arch_bf16_ne(input logic [15:0] a, input logic [15:0] b);
-  arch_bf16_ne = ($bitstoshortreal({a,16'b0}) != $bitstoshortreal({b,16'b0}));
-endfunction
-function automatic logic arch_bf16_lt(input logic [15:0] a, input logic [15:0] b);
-  arch_bf16_lt = ($bitstoshortreal({a,16'b0}) < $bitstoshortreal({b,16'b0}));
-endfunction
-function automatic logic arch_bf16_gt(input logic [15:0] a, input logic [15:0] b);
-  arch_bf16_gt = ($bitstoshortreal({a,16'b0}) > $bitstoshortreal({b,16'b0}));
-endfunction
-function automatic logic arch_bf16_le(input logic [15:0] a, input logic [15:0] b);
-  arch_bf16_le = ($bitstoshortreal({a,16'b0}) <= $bitstoshortreal({b,16'b0}));
-endfunction
-function automatic logic arch_bf16_ge(input logic [15:0] a, input logic [15:0] b);
-  arch_bf16_ge = ($bitstoshortreal({a,16'b0}) >= $bitstoshortreal({b,16'b0}));
-endfunction
-
-"#;
 
 pub struct Codegen<'a> {
     pub symbols: &'a SymbolTable,
@@ -525,7 +439,7 @@ impl<'a> Codegen<'a> {
 
         // Prepend the floating-point helper functions if any FP op was emitted.
         if self.fp_helpers_used.get() {
-            let mut prefix = String::from(FP_SV_HELPERS);
+            let mut prefix = String::from(fp::FP_SV_HELPERS);
             prefix.push_str(&self.out);
             self.out = prefix;
         }
@@ -5131,8 +5045,12 @@ impl<'a> Codegen<'a> {
                             Some("bf16") => format!("arch_bf16_to_f32({b})"),
                             Some("f32") => b,
                             _ => {
-                                let src = if self.expr_is_signed(base) { format!("$signed({b})") } else { format!("$unsigned({b})") };
-                                format!("$shortrealtobits(shortreal'({src}))")
+                                // int -> f32 (RNE) via the synthesizable helper.
+                                if self.expr_is_signed(base) {
+                                    format!("arch_i64_to_f32(64'($signed({b})))")
+                                } else {
+                                    format!("arch_u64_to_f32(64'($unsigned({b})))")
+                                }
                             }
                         }
                     }
@@ -5142,8 +5060,12 @@ impl<'a> Codegen<'a> {
                             Some("f32") => format!("arch_f32_to_bf16({b})"),
                             Some("bf16") => b,
                             _ => {
-                                let src = if self.expr_is_signed(base) { format!("$signed({b})") } else { format!("$unsigned({b})") };
-                                format!("arch_f32_to_bf16($shortrealtobits(shortreal'({src})))")
+                                // int -> f32 (RNE) -> bf16 (RNE) — innocuous double rounding.
+                                if self.expr_is_signed(base) {
+                                    format!("arch_f32_to_bf16(arch_i64_to_f32(64'($signed({b}))))")
+                                } else {
+                                    format!("arch_f32_to_bf16(arch_u64_to_f32(64'($unsigned({b}))))")
+                                }
                             }
                         }
                     }
@@ -5155,8 +5077,10 @@ impl<'a> Codegen<'a> {
                             Some("bf16") => format!("arch_bf16_to_f32({b})"),
                             _ => b.clone(),
                         };
-                        // Toward-zero via $rtoi on the decoded shortreal.
-                        format!("{wp}'($rtoi($bitstoshortreal({f32bits})))")
+                        // Toward-zero, saturating to the N-bit target, NaN -> type max
+                        // (synthesizable helper; returns a 64-bit value truncated to N).
+                        let conv = if method.name == "to_sint" { "arch_f32_to_sint" } else { "arch_f32_to_uint" };
+                        format!("{wp}'({conv}({f32bits}, {width}))")
                     }
                     _ => format!("{b}.{}()", method.name),
                 }
