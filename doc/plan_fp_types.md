@@ -346,15 +346,25 @@ bit-vector IR (`src/fp_ir.rs`); `render_sv` emits the `arch build` RTL and
 hand-transcribed to keep in sync (this replaced the earlier hand-maintained SV
 string literal + separately hand-written `.smt2`). `src/fp_smt_proof.rs` wraps
 the rendered model in a miter against the `FloatingPoint` theory; the test
-`fp_smt_equivalence_proofs` generates each miter and discharges it with z3
-(auto-skips if absent). Proven `unsat` over the **entire** input space: FP32
-comparisons ×6 (2^64), `f32→bf16` narrow RNE (2^32), `bf16→f32` widen exact
-(2^16), and `f32→{sint,uint}` toward-zero in-range (vs the partial `fp.to_sbv` /
-`fp.to_ubv`). The **RNE arithmetic** (`+ - *`, `fma`) is generated identically
-from the same IR (`dump_fp -- proof mul`), but its 2^64 / fused miter is not
-solver-tractable (z3 times out), so it stays on the §8.2 differential backstop.
-A tractable arithmetic proof (narrower datapath encodings, or a dedicated FP
-equivalence checker) is the remaining P3 item. See
+`fp_smt_equivalence_proofs` / `fp_smt_bf16_arith_proofs` generate each miter and
+discharge it with z3 (auto-skip if absent). Proven `unsat` over the **entire**
+input space:
+
+- FP32 comparisons ×6 (2^64); `f32→bf16` narrow RNE (2^32); `bf16→f32` widen
+  exact (2^16); `f32→{sint,uint}` toward-zero in-range (vs the partial
+  `fp.to_sbv`/`fp.to_ubv`).
+- **BF16 arithmetic** — the §8.1 *primary* target — `bf16_{mul,add,sub}` vs
+  `fp.{mul,add,sub}` on `(_ FloatingPoint 8 8)` (2^32), plus the six bf16
+  comparisons. The small input space makes the miters tractable even though they
+  route through the f32 datapath; `bf16_mul` cross-checked with cvc5 `--fp-exp`.
+
+Not yet machine-discharged: the **f32 RNE arithmetic** (`+ - *`, `fma`) —
+generated identically from the same IR (`dump_fp -- proof mul`), but its 2^64 /
+fused miter times out (§8.2 backstop). And **`bf16_fma`** — which *is* correct
+(innocuous double rounding: f32 keeps a 16-bit precision lead over bf16 at every
+magnitude, ≥ the `2p+2` margin since `p ≤ 8`; confirmed by an exhaustive
+deep-subnormal check) — but its `fp.fma` miter triggers a z3 4.8.12 soundness gap
+(spurious `sat`); a solver with sound `fp.fma` at `(8,8)` closes it. See
 `tests/fp_v1/smt_proof/README.md`.
 
 ARCH already has a formal backend (`src/formal.rs`, SMT-LIB2, EBMC) and a

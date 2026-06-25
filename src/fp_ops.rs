@@ -440,6 +440,17 @@ fn f32_to_uint(p: FpCompat) -> FpFn {
 }
 
 // ── bf16 arithmetic = widen -> f32 op -> narrow (calls into the f32 fns) ─────
+//
+// Correctness of the f32 intermediate (innocuous double rounding): f32's
+// subnormal range extends exactly 16 binades below bf16's (f32 to 2^-149, bf16
+// to 2^-133), so at every bf16-representable magnitude the f32 precision is
+// `p_bf16 + 16` bits. The double rounding is exact when `p_f32 >= 2*p_bf16 + 2`,
+// i.e. `p_bf16 + 16 >= 2*p_bf16 + 2`, i.e. `p_bf16 <= 14` — always true since
+// `p_bf16 <= 8`. So mul/add/sub/fma via f32 are correctly-rounded bf16.
+// `arch_bf16_{mul,add,sub}` are machine-proved `unsat` vs `fp.{mul,add,sub}` on
+// `(_ FloatingPoint 8 8)` (z3); `arch_fma_bf16` is correct by the same argument
+// (and an exhaustive deep-subnormal check) but its `fp.fma`-based miter is not
+// dischargeable by z3 4.8.12 (incomplete `fp.fma` -> spurious `sat`).
 
 fn bf16_bin(name: &str, f32fn: &str) -> FpFn {
     let a = var("a", 16);

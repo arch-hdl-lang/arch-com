@@ -19,8 +19,19 @@ use crate::FpCompat;
 pub const TRACTABLE: &[&str] =
     &["eq", "ne", "lt", "le", "gt", "ge", "narrow", "widen", "to_sint", "to_uint"];
 
-/// Generated identically from the IR, but not solver-tractable (2^64 / fused).
+/// f32 RNE arithmetic — generated identically from the IR, but the 2^64 (or
+/// fused) miter is not solver-tractable; these stay on the §8.2 backstop.
 pub const ARITHMETIC: &[&str] = &["mul", "add", "sub", "fma"];
+
+/// BF16 comparisons — route through the cheap f32 compare path; prove instantly.
+pub const BF16_CMP: &[&str] =
+    &["bf16_eq", "bf16_ne", "bf16_lt", "bf16_le", "bf16_gt", "bf16_ge"];
+
+/// BF16 RNE arithmetic — the §8.1 primary target. Routed through the f32
+/// datapath, but the small input space (2^32) makes the miter solver-tractable:
+/// z3 discharges each `unsat` (mul/add/sub in seconds–minutes). `bf16_fma`
+/// (2^48) is heavier — included when it converges within the test's cap.
+pub const BF16_ARITH: &[&str] = &["bf16_mul", "bf16_add", "bf16_sub"];
 
 fn nan32_hex(p: FpCompat) -> &'static str {
     match p {
@@ -98,6 +109,43 @@ pub fn equiv_proof(op: &str, profile: FpCompat) -> String {
              (define-fun fr () F (fp.fma RNE fa fb fc))\n(define-fun rr () (_ BitVec 32) (arch_fma_f32 a b c))\n\
              (assert (not (ite (fp.isNaN fr) (= rr {n32}) (= ((_ to_fp 8 24) rr) fr))))\n(check-sat)\n"
         )),
+        // ── bf16: spec on (_ FloatingPoint 8 8); RTL routes widen->f32->narrow ──
+        _ if op.starts_with("bf16_") => {
+            let bpre = "(declare-fun a () (_ BitVec 16))\n(declare-fun b () (_ BitVec 16))\n\
+                        (define-fun ga () (_ FloatingPoint 8 8) ((_ to_fp 8 8) a))\n\
+                        (define-fun gb () (_ FloatingPoint 8 8) ((_ to_fp 8 8) b))\n";
+            let bcmp = |f: &str, spec: &str| {
+                format!("{bpre}(assert (not (= (= ({f} a b) #b1) {spec})))\n(check-sat)\n")
+            };
+            let barith = |f: &str, fpop: &str| {
+                format!(
+                    "{bpre}(define-fun gr () (_ FloatingPoint 8 8) ({fpop} RNE ga gb))\n\
+                     (define-fun rr () (_ BitVec 16) ({f} a b))\n\
+                     (assert (not (ite (fp.isNaN gr) (= rr {n16}) (= ((_ to_fp 8 8) rr) gr))))\n(check-sat)\n"
+                )
+            };
+            match op {
+                "bf16_eq" => s.push_str(&bcmp("arch_bf16_eq", "(fp.eq ga gb)")),
+                "bf16_ne" => s.push_str(&bcmp("arch_bf16_ne", "(not (fp.eq ga gb))")),
+                "bf16_lt" => s.push_str(&bcmp("arch_bf16_lt", "(fp.lt ga gb)")),
+                "bf16_le" => s.push_str(&bcmp("arch_bf16_le", "(fp.leq ga gb)")),
+                "bf16_gt" => s.push_str(&bcmp("arch_bf16_gt", "(fp.gt ga gb)")),
+                "bf16_ge" => s.push_str(&bcmp("arch_bf16_ge", "(fp.geq ga gb)")),
+                "bf16_mul" => s.push_str(&barith("arch_bf16_mul", "fp.mul")),
+                "bf16_add" => s.push_str(&barith("arch_bf16_add", "fp.add")),
+                "bf16_sub" => s.push_str(&barith("arch_bf16_sub", "fp.sub")),
+                "bf16_fma" => s.push_str(&format!(
+                    "(declare-fun a () (_ BitVec 16))\n(declare-fun b () (_ BitVec 16))\n(declare-fun c () (_ BitVec 16))\n\
+                     (define-fun ga () (_ FloatingPoint 8 8) ((_ to_fp 8 8) a))\n\
+                     (define-fun gb () (_ FloatingPoint 8 8) ((_ to_fp 8 8) b))\n\
+                     (define-fun gc () (_ FloatingPoint 8 8) ((_ to_fp 8 8) c))\n\
+                     (define-fun gr () (_ FloatingPoint 8 8) (fp.fma RNE ga gb gc))\n\
+                     (define-fun rr () (_ BitVec 16) (arch_fma_bf16 a b c))\n\
+                     (assert (not (ite (fp.isNaN gr) (= rr {n16}) (= ((_ to_fp 8 8) rr) gr))))\n(check-sat)\n"
+                )),
+                other => panic!("unknown bf16 proof op {other}"),
+            }
+        }
         other => panic!("unknown proof op {other}"),
     }
     s

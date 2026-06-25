@@ -314,7 +314,12 @@ fn fp_smt_equivalence_proofs() {
     );
 
     let td = tempfile::tempdir().expect("tempdir");
-    for op in arch::fp_smt_proof::TRACTABLE {
+    let ops: Vec<&str> = arch::fp_smt_proof::TRACTABLE
+        .iter()
+        .chain(arch::fp_smt_proof::BF16_CMP.iter())
+        .copied()
+        .collect();
+    for op in ops {
         let smt = arch::fp_smt_proof::equiv_proof(op, arch::FpCompat::Riscv);
         let path = td.path().join(format!("{op}.smt2"));
         std::fs::write(&path, smt).unwrap();
@@ -332,12 +337,39 @@ fn fp_smt_equivalence_proofs() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    cert.push_str(&format!(
-        "\narithmetic ({}) — generated identically, not solver-tractable; §8.2 backstop\n",
-        arch::fp_smt_proof::ARITHMETIC.join(", ")
-    ));
-    cert.push_str("result: ALL TRACTABLE PROVED (unsat)\n");
+    cert.push_str("result: ALL PROVED (unsat)\n");
     eprintln!("\n{cert}");
+}
+
+/// BF16 RNE arithmetic equivalence (doc/plan_fp_types.md §8.1) — the §8.1
+/// primary target. The bf16 ops route through the f32 datapath, but the small
+/// input space (2^32) makes the miter solver-tractable: z3 discharges
+/// `arch_bf16_{mul,add,sub}` as `unsat` (proven equal to `fp.mul/add/sub` on
+/// `(_ FloatingPoint 8 8)` over every input). Slower than the comparisons
+/// (~minutes total); kept in its own test and z3-gated.
+///
+/// `bf16_fma` is excluded: its spec needs `fp.fma`, whose z3 4.8.12 support is
+/// incomplete (returns a spurious `sat` whose witness in fact satisfies the
+/// equivalence). It stays on the §8.2 differential backstop; see fp_ops.rs.
+#[test]
+fn fp_smt_bf16_arith_proofs() {
+    fn z3_available() -> bool {
+        std::process::Command::new("z3").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+    }
+    if !z3_available() {
+        eprintln!("skipping fp_smt_bf16_arith_proofs: z3 not in PATH");
+        return;
+    }
+    let td = tempfile::tempdir().expect("tempdir");
+    for op in arch::fp_smt_proof::BF16_ARITH {
+        let smt = arch::fp_smt_proof::equiv_proof(op, arch::FpCompat::Riscv);
+        let path = td.path().join(format!("{op}.smt2"));
+        std::fs::write(&path, smt).unwrap();
+        let out = std::process::Command::new("z3").arg("-T:600").arg(&path).output().unwrap();
+        let first = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").trim().to_string();
+        eprintln!("bf16 arith proof {op}: {first}");
+        assert_eq!(first, "unsat", "bf16 arith proof {op} did not discharge as unsat (got {first:?})");
+    }
 }
 
 /// `--fp-compat=cuda` (doc/plan_fp_types.md §6.2) selects the CUDA special-value

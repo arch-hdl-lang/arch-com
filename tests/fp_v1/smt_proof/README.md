@@ -51,14 +51,26 @@ Proven `unsat` exhaustively (z3 4.8.12):
 | `narrow` (`arch_f32_to_bf16`) | RNE round to `(FloatingPoint 8 8)` | 2^32 |
 | `widen` (`arch_bf16_to_f32`) | exact widen | 2^16 |
 | `to_sint` / `to_uint` (N=32) | `fp.to_sbv`/`fp.to_ubv` RTZ, in-range | 2^32 |
+| `bf16_eq … bf16_ge` | `fp.eq/lt/…` on `(FloatingPoint 8 8)` | 2^32 |
+| `bf16_mul` / `bf16_add` / `bf16_sub` | `fp.mul/add/sub` on `(FloatingPoint 8 8)` | 2^32 |
+
+The BF16 arithmetic ops route through the f32 datapath, but the small input
+space makes the miters solver-tractable (`fp_smt_bf16_arith_proofs`, ~minutes;
+mul cross-checked with cvc5 `--fp-exp`). They are the plan's §8.1 primary target.
 
 - **float→int** is proved in-range only — SMT-LIB `fp.to_sbv`/`fp.to_ubv` are
   *partial* (undefined for NaN / out-of-range), so the saturation / NaN→type-max
   corners are signed off by the §8.2 differential campaign, as §8.1 anticipates.
-- **RNE arithmetic** (`mul add sub fma`) is generated from the same IR (run
+- **f32 RNE arithmetic** (`mul add sub fma`) is generated from the same IR (run
   `dump_fp -- proof mul`), but its 2^64 / fused miter is not solver-tractable
   (z3 times out). It stays on the §8.2 differential Verilator campaign
-  (`fp_rtl_differential_equiv_verilator`), which checks it bit-exact against a
-  host-IEEE-754 reference over corner + randomized + cancellation-prone vectors.
-  A tractable arithmetic proof (narrower datapath encodings, or a dedicated FP
-  equivalence checker) is the remaining P3 item.
+  (`fp_rtl_differential_equiv_verilator`), bit-exact against a host-IEEE-754
+  reference over corner + randomized + cancellation-prone vectors.
+- **`bf16_fma`** is *correct* — via f32 the double rounding is innocuous (f32
+  keeps a 16-bit precision lead over bf16 at every magnitude, ≥ the `2p+2`
+  margin since `p ≤ 8`; confirmed by an exhaustive deep-subnormal check) — but
+  its proof needs `fp.fma`, whose z3 4.8.12 support is incomplete (it returns a
+  *spurious* `sat` whose own witness satisfies the equivalence). cvc5 `--fp-exp`
+  handles `(8,8)` but times out. So `bf16_fma` is verified by the theorem +
+  §8.2, not yet machine-discharged; a solver with sound `fp.fma` at `(8,8)`
+  would close it.
