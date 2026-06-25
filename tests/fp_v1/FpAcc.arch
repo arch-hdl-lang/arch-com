@@ -1,0 +1,16 @@
+// Registered FP32 accumulator — exercises the seq float path and a
+// float-literal reg reset value.
+module FpAcc
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port x: in FP32;
+  port acc: out FP32;
+  reg acc_r: FP32 reset rst => 0.0;
+  seq on clk rising
+    if en
+      acc_r <= acc_r + x;
+    end if
+  end seq
+  comb acc = acc_r; end comb
+end module FpAcc

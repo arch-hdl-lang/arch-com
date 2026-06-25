@@ -480,8 +480,34 @@ Landed and tested (`cargo test --test fp_test`, plus the full suite green):
    special-value policy is implemented in the sim helpers; `arch formal` rejects
    FP types with a clear message.
 4. **Float literals default to `FP32`**; `BF16` immediates use `.to_bf16()`
-   (§3.3, resolved open question — keeps no-implicit-conversion uniform). Floats
-   inside `function` bodies are not yet float-dispatched (module scope only).
+   (§3.3, resolved open question — keeps no-implicit-conversion uniform).
+
+### v1 scope restrictions (enforced — rejected, never miscompiled)
+
+Floats are supported only as **scalar** module signals (ports, `reg`, `wire`,
+`let`) and the operations on them. The float-op dispatch in the backends keys
+off a per-signal name→format map, so positions it can't resolve are **rejected
+at type-check** rather than silently emitting integer arithmetic on the bit
+pattern:
+
+- **`Vec<FP32/BF16, N>`** — rejected (element access can't be float-dispatched).
+- **Float `struct` fields** — rejected (field access can't be float-dispatched).
+- **Floats in module-local `function` signatures/bodies** — rejected (function
+  scope isn't threaded into the dispatch map).
+
+Each has a clear error and is a natural follow-up once dispatch is driven off the
+type-checker's resolved-type map instead of a backend-rebuilt name set. Also: a
+float `reg`'s reset value must be a **float literal** (`reset rst => 0.0`); an
+integer literal is rejected (it would store a bit pattern, not the value).
+
+### Conversion semantics (sim, validated)
+
+`float→int` (`.to_uint<N>()` / `.to_sint<N>()`) is toward-zero, **saturating to
+the N-bit target range**, NaN→type-max — verified for N<64 and at the bound. The
+SV emission of float→int is **behavioral and ≤32-bit** (`$rtoi`); full per-N
+saturation and >32-bit conversions ride with the synthesizable datapath
+follow-up. (No local SV simulator was available, so the emitted SV is
+structurally checked but not run in-tree.)
 
 These deltas keep v1 faithful to the *semantics* (IEEE-754 RNE, the special-value
 policy, no implicit conversions) while deferring the heavyweight infrastructure

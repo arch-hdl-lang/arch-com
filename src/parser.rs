@@ -4021,7 +4021,8 @@ impl Parser {
                     span: tok.span, parenthesized: false })
             }
             Some(TokenKind::DecLiteral(_)) | Some(TokenKind::HexLiteral(_))
-            | Some(TokenKind::BinLiteral(_)) | Some(TokenKind::SizedLiteral(_)) => {
+            | Some(TokenKind::BinLiteral(_)) | Some(TokenKind::SizedLiteral(_))
+            | Some(TokenKind::FloatLiteral(_)) => {
                 self.parse_literal()
             }
             Some(TokenKind::Ident(_)) | Some(TokenKind::Counter) => {

@@ -127,8 +127,12 @@ enum GroupKind {
 /// widen to f32, compute, and round once to bf16 (innocuous double rounding).
 const FP_SV_HELPERS: &str = r#"// ── arch floating-point helpers (behavioral; see doc/plan_fp_types.md §7) ──
 function automatic logic [15:0] arch_f32bits_to_bf16(input logic [31:0] x);
+  logic [31:0] rounded;
   if ((x[30:23] == 8'hFF) && (x[22:0] != 23'b0)) arch_f32bits_to_bf16 = 16'h7FC0;
-  else arch_f32bits_to_bf16 = (x + 32'h00007FFF + {31'b0, x[16]})[31:16];
+  else begin
+    rounded = x + 32'h00007FFF + {31'b0, x[16]};
+    arch_f32bits_to_bf16 = rounded[31:16];
+  end
 endfunction
 function automatic logic [31:0] arch_f32_canon(input logic [31:0] x);
   arch_f32_canon = ((x[30:23] == 8'hFF) && (x[22:0] != 23'b0)) ? 32'h7FC00000 : x;

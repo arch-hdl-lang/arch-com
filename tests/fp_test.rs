@@ -124,3 +124,80 @@ end module Bad2
     let out = arch().arg("check").arg(&path).output().expect("run arch check");
     assert!(!out.status.success(), "FP32 -> BF16 assignment without cast must error");
 }
+
+/// Registered FP32 accumulator simulates correctly, including a float-literal
+/// reg reset value driving the seq float path.
+#[test]
+fn fp_reg_accumulator_sim() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = arch()
+        .arg("sim")
+        .arg("tests/fp_v1/FpAcc.arch")
+        .arg("--tb")
+        .arg("tests/fp_v1/tb_acc.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("2 pass / 0 fail"),
+        "FP32 accumulator sim should pass; got:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+/// float→int conversions are toward-zero, per-N saturating, NaN→type-max.
+#[test]
+fn fp_to_int_saturation_sim() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = arch()
+        .arg("sim")
+        .arg("tests/fp_v1/FpSat.arch")
+        .arg("--tb")
+        .arg("tests/fp_v1/tb_sat.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("7 pass / 0 fail"),
+        "float->int saturation sim should pass; got:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+/// v1 rejects floats in positions the float-op dispatch can't resolve:
+/// inside `Vec`, in `struct` fields, and in module-local `function`
+/// signatures — rather than silently emitting integer arithmetic.
+#[test]
+fn fp_unsupported_positions_rejected() {
+    let cases = [
+        ("vec", "module M\n  port a: in Vec<FP32, 4>;\n  port o: out FP32;\n  comb o = a[0]; end comb\nend module M\n"),
+        ("struct", "struct P\n  x: FP32;\nend struct P\nmodule M\n  port p: in P;\n  port o: out FP32;\n  comb o = p.x; end comb\nend module M\n"),
+        ("function", "module M\n  function f(x: FP32) -> FP32\n    return x;\n  end function f\n  port a: in FP32;\n  port o: out FP32;\n  comb o = f(a); end comb\nend module M\n"),
+    ];
+    for (label, src) in cases {
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = td.path().join("M.arch");
+        std::fs::write(&path, src).unwrap();
+        let out = arch().arg("check").arg(&path).output().expect("run arch check");
+        assert!(
+            !out.status.success(),
+            "float in {label} position must be rejected in v1\nsrc:\n{src}"
+        );
+    }
+}
+
+/// A float `reg` reset value must be a float literal, not an integer literal
+/// (which would store a bit pattern, not the numeric value).
+#[test]
+fn fp_reg_integer_reset_rejected() {
+    let src = "module M\n  port clk: in Clock<S>;\n  port rst: in Reset<Sync>;\n  reg r: FP32 reset rst => 1;\n  seq on clk rising\n    r <= r;\n  end seq\nend module M\n";
+    let td = tempfile::tempdir().expect("tempdir");
+    let path = td.path().join("M.arch");
+    std::fs::write(&path, src).unwrap();
+    let out = arch().arg("check").arg(&path).output().expect("run arch check");
+    assert!(!out.status.success(), "integer reset for a float reg must be rejected");
+}

@@ -985,6 +985,25 @@ static inline uint64_t _arch_f32_to_u(uint32_t b){
 }
 static inline int64_t  _arch_bf16_to_i(uint16_t h){ return _arch_f32_to_i(_arch_bf16_to_f32(h)); }
 static inline uint64_t _arch_bf16_to_u(uint16_t h){ return _arch_f32_to_u(_arch_bf16_to_f32(h)); }
+// Width-aware float→int: toward-zero, saturating to the N-bit target range,
+// NaN→type-max (RISC-V profile). Builds on the 64-bit-safe conversions above
+// (which already map NaN→max and saturate to the 64-bit range) then clamps to
+// the requested width — so the int64 cast never sees an out-of-range float.
+static inline int64_t _arch_f32_to_sint(uint32_t b, int bits){
+    int64_t v = _arch_f32_to_i(b);
+    if (bits >= 64) return v;
+    int64_t maxv = ((int64_t)1 << (bits - 1)) - 1;
+    int64_t minv = -((int64_t)1 << (bits - 1));
+    if (v > maxv) return maxv;
+    if (v < minv) return minv;
+    return v;
+}
+static inline uint64_t _arch_f32_to_uint(uint32_t b, int bits){
+    uint64_t v = _arch_f32_to_u(b);
+    if (bits >= 64) return v;
+    uint64_t maxv = ((uint64_t)1 << bits) - 1;
+    return (v > maxv) ? maxv : v;
+}
 "#.to_string()
     }
 
@@ -3620,11 +3639,16 @@ fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &Ctx) -> Str
         "to_uint" | "to_sint" => {
             let bits = args.first().map(|w| eval_width_in(w, ctx)).unwrap_or(32);
             let signed = method.name == "to_sint";
-            let conv = match infer_expr_float(base, ctx) {
-                Some(FpFmt::Bf16) if signed => format!("_arch_bf16_to_i({b})"),
-                Some(FpFmt::Bf16)           => format!("_arch_bf16_to_u({b})"),
-                _ if signed                 => format!("_arch_f32_to_i({b})"),
-                _                           => format!("_arch_f32_to_u({b})"),
+            // Decode bf16 to f32 bits first; then a width-aware, saturating,
+            // toward-zero, NaN→type-max conversion to the N-bit integer.
+            let f32bits = match infer_expr_float(base, ctx) {
+                Some(FpFmt::Bf16) => format!("_arch_bf16_to_f32({b})"),
+                _ => b,
+            };
+            let conv = if signed {
+                format!("_arch_f32_to_sint({f32bits}, {bits})")
+            } else {
+                format!("_arch_f32_to_uint({f32bits}, {bits})")
             };
             let cast = if signed { cpp_sint(bits) } else { cpp_uint(bits) };
             format!("(({cast})({conv}))")
