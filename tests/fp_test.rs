@@ -341,34 +341,42 @@ fn fp_smt_equivalence_proofs() {
     eprintln!("\n{cert}");
 }
 
-/// BF16 RNE arithmetic equivalence (doc/plan_fp_types.md §8.1) — the §8.1
-/// primary target. The bf16 ops route through the f32 datapath, but the small
-/// input space (2^32) makes the miter solver-tractable: z3 discharges
-/// `arch_bf16_{mul,add,sub}` as `unsat` (proven equal to `fp.mul/add/sub` on
-/// `(_ FloatingPoint 8 8)` over every input). Slower than the comparisons
-/// (~minutes total); kept in its own test and z3-gated.
+/// RNE arithmetic equivalence (doc/plan_fp_types.md §8.1), the slower miters.
 ///
-/// `bf16_fma` is excluded: its spec needs `fp.fma`, whose z3 4.8.12 support is
-/// incomplete (returns a spurious `sat` whose witness in fact satisfies the
-/// equivalence). It stays on the §8.2 differential backstop; see fp_ops.rs.
+/// - **f32 `add`/`sub`** are proved `unsat` vs `fp.add`/`fp.sub` over all 2^64
+///   inputs (~80 s each). Tractable because the bounded adder keeps the datapath
+///   ~56-bit (no multiplier) so the SAT instance stays small — the 280-bit
+///   exact-wide version used to time out.
+/// - **bf16 `mul`/`add`/`sub`** are proved `unsat` vs `fp.{mul,add,sub}` on
+///   `(_ FloatingPoint 8 8)` (2^32) — the §8.1 primary target.
+///
+/// Not here: f32 `mul`/`fma` (24x24-multiplier equivalence is SAT-hard at 2^64,
+/// z3 times out) and `bf16_fma` (correct, but its `fp.fma` miter trips a z3
+/// 4.8.12 incompleteness — spurious `sat`). Both on the §8.2 backstop; see
+/// fp_ops.rs. Slower (~minutes total); z3-gated.
 #[test]
-fn fp_smt_bf16_arith_proofs() {
+fn fp_smt_arith_proofs() {
     fn z3_available() -> bool {
         std::process::Command::new("z3").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
     }
     if !z3_available() {
-        eprintln!("skipping fp_smt_bf16_arith_proofs: z3 not in PATH");
+        eprintln!("skipping fp_smt_arith_proofs: z3 not in PATH");
         return;
     }
+    let ops: Vec<&str> = arch::fp_smt_proof::F32_ADD
+        .iter()
+        .chain(arch::fp_smt_proof::BF16_ARITH.iter())
+        .copied()
+        .collect();
     let td = tempfile::tempdir().expect("tempdir");
-    for op in arch::fp_smt_proof::BF16_ARITH {
+    for op in ops {
         let smt = arch::fp_smt_proof::equiv_proof(op, arch::FpCompat::Riscv);
         let path = td.path().join(format!("{op}.smt2"));
         std::fs::write(&path, smt).unwrap();
         let out = std::process::Command::new("z3").arg("-T:600").arg(&path).output().unwrap();
         let first = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").trim().to_string();
-        eprintln!("bf16 arith proof {op}: {first}");
-        assert_eq!(first, "unsat", "bf16 arith proof {op} did not discharge as unsat (got {first:?})");
+        eprintln!("arith proof {op}: {first}");
+        assert_eq!(first, "unsat", "arith proof {op} did not discharge as unsat (got {first:?})");
     }
 }
 
