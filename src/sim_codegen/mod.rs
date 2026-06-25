@@ -728,8 +728,8 @@ r#"        .def_property("{field}",
     }
 
     /// Return the contents of the `verilated.h` stub.
-    pub fn verilated_h() -> String {
-        r#"#pragma once
+    pub fn verilated_h(fp_compat: crate::FpCompat) -> String {
+        let prelude = r#"#pragma once
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -1004,7 +1004,18 @@ static inline uint64_t _arch_f32_to_uint(uint32_t b, int bits){
     uint64_t maxv = ((uint64_t)1 << bits) - 1;
     return (v > maxv) ? maxv : v;
 }
-"#.to_string()
+"#.to_string();
+        // Profile shim (doc/plan_fp_types.md §6.2): the `cuda` profile differs
+        // from the default `riscv` only in the canonical NaN pattern and the
+        // NaN→int result; the arithmetic core is untouched.
+        match fp_compat {
+            crate::FpCompat::Riscv => prelude,
+            crate::FpCompat::Cuda => prelude
+                .replace("return 0x7FC00000u;", "return 0x7FFFFFFFu;")
+                .replace("return 0x7FC0u;", "return 0x7FFFu;")
+                .replace("if (std::isnan(f)) return INT64_MAX;", "if (std::isnan(f)) return 0;")
+                .replace("if (std::isnan(f)) return UINT64_MAX;", "if (std::isnan(f)) return 0;"),
+        }
     }
 
     pub fn verilated_cpp() -> String {
