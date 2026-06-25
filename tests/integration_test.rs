@@ -21720,6 +21720,34 @@ fn test_native_sim_signed_multiply_widens_before_cpp_promotion() {
 }
 
 #[test]
+fn test_native_sim_all_wide_port_module_ctor_is_valid_cpp() {
+    // Regression: a pure-comb module whose only members are wide (VlWide)
+    // ports has an empty member-init list. The native-sim constructor must
+    // omit the `:` entirely — a bare `Class() :  {` is a C++ syntax error
+    // (dangling colon with no initializers). VlWide members self-init via
+    // VlWide's default constructor, so no explicit init is needed.
+    let source = r#"
+        module WidePass
+          port a: in UInt<70>;
+          port p: out UInt<70>;
+          comb
+            p = a;
+          end comb
+        end module WidePass
+    "#;
+
+    let out = compile_to_sim_h(source, false);
+    assert!(
+        !out.contains("VWidePass() :  {") && !out.contains("VWidePass() : {"),
+        "native sim must not emit a dangling-colon constructor for all-wide modules; got:\n{out}"
+    );
+    assert!(
+        out.contains("VWidePass() {"),
+        "native sim must emit a bare `VWidePass() {{` when there are no scalar inits; got:\n{out}"
+    );
+}
+
+#[test]
 fn test_thread_driven_sint_reg_keeps_parent_wire_type() {
     let source = r#"
         domain SysDomain
