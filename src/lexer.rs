@@ -271,6 +271,10 @@ pub enum TokenKind {
     Async,
     #[token("Vec")]
     KwVec,
+    #[token("FP32")]
+    FP32,
+    #[token("BF16")]
+    BF16,
 
     // Operators and punctuation
     #[token("+:")]
@@ -367,6 +371,12 @@ pub enum TokenKind {
 
     #[regex(r"[0-9]+'[bhd][0-9a-fA-F_]+", |lex| lex.slice().to_string())]
     SizedLiteral(String),
+
+    // Float literal: must contain a decimal point (and may have an exponent),
+    // e.g. 1.5, 3.0, 1.0e-3, 2.5E10. Higher priority than DecLiteral so the
+    // integer part isn't matched on its own.
+    #[regex(r"[0-9][0-9_]*\.[0-9_]+([eE][+-]?[0-9]+)?", priority = 3, callback = |lex| lex.slice().to_string())]
+    FloatLiteral(String),
 
     #[regex(r"[0-9][0-9_]*", priority = 2, callback = |lex| lex.slice().to_string())]
     DecLiteral(String),
@@ -498,6 +508,8 @@ impl fmt::Display for TokenKind {
             TokenKind::Sync => write!(f, "Sync"),
             TokenKind::Async => write!(f, "Async"),
             TokenKind::KwVec => write!(f, "Vec"),
+            TokenKind::FP32 => write!(f, "FP32"),
+            TokenKind::BF16 => write!(f, "BF16"),
             TokenKind::Plus => write!(f, "+"),
             TokenKind::Minus => write!(f, "-"),
             TokenKind::Star => write!(f, "*"),
@@ -542,6 +554,7 @@ impl fmt::Display for TokenKind {
             TokenKind::HexLiteral(s) => write!(f, "{s}"),
             TokenKind::BinLiteral(s) => write!(f, "{s}"),
             TokenKind::SizedLiteral(s) => write!(f, "{s}"),
+            TokenKind::FloatLiteral(s) => write!(f, "{s}"),
             TokenKind::DecLiteral(s) => write!(f, "{s}"),
             TokenKind::Clog2 => write!(f, "$clog2"),
             TokenKind::Onehot => write!(f, "onehot"),

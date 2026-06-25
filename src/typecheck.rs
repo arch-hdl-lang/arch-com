@@ -11,6 +11,10 @@ pub enum Ty {
     UInt(u32),
     SInt(u32),
     Bool,
+    /// IEEE-754 binary32 (1+8+23 = 32 bits). Stored/carried as 32 bits.
+    FP32,
+    /// bfloat16 (1+8+7 = 16 bits). Stored/carried as 16 bits.
+    BF16,
     Clock(String), // domain name
     Reset(ResetKind, ResetLevel), // always concrete (Param resolved during elaboration)
     Vec(Box<Ty>, u32),
@@ -19,6 +23,13 @@ pub enum Ty {
     Bus(String),       // bus type name
     Todo,
     Error,
+}
+
+impl Ty {
+    /// True for the floating-point types (FP32, BF16).
+    pub fn is_float(&self) -> bool {
+        matches!(self, Ty::FP32 | Ty::BF16)
+    }
 }
 
 #[derive(Clone)]
@@ -43,6 +54,8 @@ impl Ty {
         match self {
             Ty::UInt(w) | Ty::SInt(w) => Some(*w),
             Ty::Bool => Some(1),
+            Ty::FP32 => Some(32),
+            Ty::BF16 => Some(16),
             Ty::Enum(_, w) => Some(*w),
             Ty::Vec(inner, count) => inner.width().map(|w| w * count),
             Ty::Struct(_) | Ty::Bus(_) => None,
@@ -56,6 +69,8 @@ impl Ty {
             Ty::UInt(w) => format!("UInt<{w}>"),
             Ty::SInt(w) => format!("SInt<{w}>"),
             Ty::Bool => "Bool".to_string(),
+            Ty::FP32 => "FP32".to_string(),
+            Ty::BF16 => "BF16".to_string(),
             Ty::Clock(d) => format!("Clock<{d}>"),
             Ty::Reset(k, l) => format!("Reset<{}, {}>",
                 match k { ResetKind::Sync => "Sync", ResetKind::Async => "Async" },
@@ -438,6 +453,19 @@ impl<'a> TypeChecker<'a> {
         self.check_pascal_case(&s.name);
         for field in &s.fields {
             self.check_snake_case(&field.name);
+            // v1: floats are only supported as scalar module signals. A float
+            // inside a struct would reach codegen via FieldAccess, which the
+            // float-op dispatch does not yet resolve — reject rather than
+            // silently emit integer arithmetic on the bit pattern.
+            if type_expr_contains_float(&field.ty) {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "floating-point types (FP32/BF16) are not supported in struct fields in v1 (field `{}` of `{}`)",
+                        field.name.name, s.name.name
+                    ),
+                    field.name.span,
+                ));
+            }
         }
     }
 
@@ -471,6 +499,59 @@ impl<'a> TypeChecker<'a> {
                     if let Some(n) = self.eval_const_expr(count_expr, &empty_types) {
                         if n > 0 {
                             self.vec_of_bus_ports.insert(p.name.name.clone(), n as u32);
+                        }
+                    }
+                }
+            }
+        }
+
+        // v1 float restriction: scalar FP32/BF16 signals are supported, but a
+        // float nested inside a Vec is not — `Vec<FP32,N>` element access
+        // (Index) is not yet resolved by the float-op dispatch, so it would
+        // silently emit integer arithmetic. Reject Vec-of-float on every
+        // declared signal type. (Scalar floats pass `is_float` but not the
+        // `Vec(...)` guard below.)
+        let mut float_decls: Vec<(&TypeExpr, Span, String)> = Vec::new();
+        for p in &m.ports {
+            float_decls.push((&p.ty, p.name.span, p.name.name.clone()));
+        }
+        for item in &m.body {
+            match item {
+                ModuleBodyItem::RegDecl(r)    => float_decls.push((&r.ty, r.name.span, r.name.name.clone())),
+                ModuleBodyItem::WireDecl(w)   => float_decls.push((&w.ty, w.name.span, w.name.name.clone())),
+                ModuleBodyItem::LetBinding(l) => {
+                    if let Some(t) = l.ty.as_ref() { float_decls.push((t, l.name.span, l.name.name.clone())); }
+                }
+                _ => {}
+            }
+        }
+        for (ty, span, name) in float_decls {
+            if matches!(ty, TypeExpr::Vec(..)) && type_expr_contains_float(ty) {
+                self.errors.push(CompileError::general(
+                    &format!("floating-point types (FP32/BF16) inside `Vec` are not supported in v1 (signal `{name}`)"),
+                    span,
+                ));
+            }
+        }
+
+        // A float `reg`'s reset value must be a float literal, not an integer
+        // literal (`reset rst => 1` would store the bit pattern 0x1, a tiny
+        // subnormal — almost never the intent). Catch the common foot-gun.
+        for item in &m.body {
+            if let ModuleBodyItem::RegDecl(r) = item {
+                if matches!(r.ty, TypeExpr::FP32 | TypeExpr::BF16) {
+                    let val = match &r.reset {
+                        RegReset::Explicit(_, _, _, v) => Some(v),
+                        RegReset::Inherit(_, v) => Some(v),
+                        RegReset::None => None,
+                    };
+                    if let Some(v) = val {
+                        if matches!(&v.kind, ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_) | LitKind::Sized(_, _))) {
+                            let tn = if matches!(r.ty, TypeExpr::FP32) { "FP32" } else { "BF16" };
+                            self.errors.push(CompileError::general(
+                                &format!("float `reg {}: {tn}` reset value must be a float literal (e.g. `=> 0.0`), not an integer literal", r.name.name),
+                                v.span,
+                            ));
                         }
                     }
                 }
@@ -2278,6 +2359,8 @@ impl<'a> TypeChecker<'a> {
         match ty {
             Ty::UInt(w) | Ty::SInt(w) => Some(*w),
             Ty::Bool | Ty::Clock(_) | Ty::Reset(_, _) => Some(1),
+            Ty::FP32 => Some(32),
+            Ty::BF16 => Some(16),
             Ty::Enum(_, w) => Some(*w),
             Ty::Vec(inner, count) => self.type_total_width(inner).map(|w| w * count),
             Ty::Struct(name) => {
@@ -2302,6 +2385,8 @@ impl<'a> TypeChecker<'a> {
         match ty {
             TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_type_width_expr(w),
             TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => Some(1),
+            TypeExpr::FP32 => Some(32),
+            TypeExpr::BF16 => Some(16),
             TypeExpr::Vec(inner, size) => {
                 let iw = self.type_expr_width(inner)?;
                 let n = eval_type_width_expr(size)?;
@@ -2387,6 +2472,23 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_width_compatible(&mut self, lhs_ty: &Ty, rhs_ty: &Ty, name: &str, span: Span) {
+        // Floating-point: no implicit conversion. The target and RHS must be the
+        // exact same float type; a float can't be assigned to/from a non-float
+        // either. (Errors and todo! propagate silently.)
+        if (lhs_ty.is_float() || rhs_ty.is_float())
+            && !matches!(lhs_ty, Ty::Error | Ty::Todo)
+            && !matches!(rhs_ty, Ty::Error | Ty::Todo)
+            && lhs_ty != rhs_ty
+        {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "type mismatch: `{name}` is {} but RHS is {} (no implicit float conversion; use .to_fp32()/.to_bf16()/.to_uint<N>()/.to_sint<N>())",
+                    lhs_ty.display(), rhs_ty.display()
+                ),
+                span,
+            ));
+            return;
+        }
         match (lhs_ty, rhs_ty) {
             (Ty::UInt(lw), Ty::UInt(rw)) if rw > lw => {
                 let hint = if *rw == lw + 1 { " (arithmetic widening)" } else { "" };
@@ -2893,6 +2995,8 @@ impl<'a> TypeChecker<'a> {
             }
             TypeExpr::Bool => Ty::Bool,
             TypeExpr::Bit => Ty::UInt(1),
+            TypeExpr::FP32 => Ty::FP32,
+            TypeExpr::BF16 => Ty::BF16,
             TypeExpr::Clock(domain) => Ty::Clock(domain.name.clone()),
             TypeExpr::Reset(kind, level) => Ty::Reset(*kind, *level),
             TypeExpr::Vec(inner, size_expr) => {
@@ -2999,6 +3103,9 @@ impl<'a> TypeChecker<'a> {
                     Ty::UInt(bits)
                 }
                 LitKind::Sized(w, _) => Ty::UInt(*w),
+                // Float literals default to FP32; BF16 values are written via an
+                // explicit `.to_bf16()` conversion (no implicit float narrowing).
+                LitKind::Float(_) => Ty::FP32,
             },
             ExprKind::Bool(_) => Ty::Bool,
             ExprKind::Ident(name) => {
@@ -3240,6 +3347,49 @@ impl<'a> TypeChecker<'a> {
                 Ty::Bool
             }
             ExprKind::FunctionCall(name, call_args) => {
+                // Built-in float intrinsics. `fma(a, b, c)` is a single-rounded
+                // fused multiply-add (a*b + c); all three operands must be the
+                // same float type, result is that type. `is_nan(x)` → Bool.
+                if name == "fma" {
+                    if call_args.len() != 3 {
+                        self.errors.push(CompileError::general(
+                            &format!("`fma(a, b, c)` takes 3 arguments, got {}", call_args.len()),
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    let ta = self.resolve_expr_type(&call_args[0], module_name, local_types);
+                    let tb = self.resolve_expr_type(&call_args[1], module_name, local_types);
+                    let tc = self.resolve_expr_type(&call_args[2], module_name, local_types);
+                    if ta == Ty::Error || tb == Ty::Error || tc == Ty::Error { return Ty::Error; }
+                    if !ta.is_float() || tb != ta || tc != ta {
+                        self.errors.push(CompileError::general(
+                            &format!("`fma` requires three operands of the same float type, got {}, {}, {}",
+                                ta.display(), tb.display(), tc.display()),
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    return ta;
+                }
+                if name == "is_nan" {
+                    if call_args.len() != 1 {
+                        self.errors.push(CompileError::general(
+                            &format!("`is_nan(x)` takes 1 argument, got {}", call_args.len()),
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    let tx = self.resolve_expr_type(&call_args[0], module_name, local_types);
+                    if tx != Ty::Error && !tx.is_float() {
+                        self.errors.push(CompileError::general(
+                            &format!("`is_nan(x)` requires a float operand, got {}", tx.display()),
+                            call_args[0].span,
+                        ));
+                        return Ty::Error;
+                    }
+                    return Ty::Bool;
+                }
                 // Built-in SVA edge sugar: `rose(a)` ≡ `a and not past(a, 1)`,
                 // `fell(a)` ≡ `not a and past(a, 1)`. Both Bool-returning,
                 // arity 1, SVA-context only.
@@ -3537,6 +3687,57 @@ impl<'a> TypeChecker<'a> {
                     Ty::Error
                 }
             }
+            // Float conversions. `.to_fp32()` / `.to_bf16()` take no args and
+            // widen/narrow/convert into the named float type. `.to_uint<N>()` /
+            // `.to_sint<N>()` convert a float to an integer (toward-zero,
+            // saturating per the RISC-V profile — see doc/plan_fp_types.md §6).
+            "to_fp32" | "to_bf16" => {
+                let target = if method.name == "to_fp32" { Ty::FP32 } else { Ty::BF16 };
+                match &base_ty {
+                    Ty::FP32 | Ty::BF16 | Ty::UInt(_) | Ty::SInt(_) | Ty::Bool => {
+                        if base_ty == target {
+                            self.errors.push(CompileError::general(
+                                &format!(".{}() on a {} value is a no-op — remove the cast", method.name, target.display()),
+                                method.span,
+                            ));
+                            return Ty::Error;
+                        }
+                        target
+                    }
+                    Ty::Todo => Ty::Todo,
+                    Ty::Error => Ty::Error,
+                    _ => {
+                        self.errors.push(CompileError::general(
+                            &format!(".{}() requires a float or integer operand, got {}", method.name, base_ty.display()),
+                            method.span,
+                        ));
+                        Ty::Error
+                    }
+                }
+            }
+            "to_uint" | "to_sint" => {
+                if !base_ty.is_float() && !matches!(base_ty, Ty::Todo | Ty::Error) {
+                    self.errors.push(CompileError::general(
+                        &format!(".{}<N>() requires a floating-point operand, got {}", method.name, base_ty.display()),
+                        method.span,
+                    ));
+                    return Ty::Error;
+                }
+                if let Some(width_expr) = args.first() {
+                    if let Some(w) = self.eval_const_expr(width_expr, local_types) {
+                        let target_w = w as u32;
+                        if method.name == "to_uint" { Ty::UInt(target_w) } else { Ty::SInt(target_w) }
+                    } else {
+                        Ty::Error
+                    }
+                } else {
+                    self.errors.push(CompileError::general(
+                        &format!(".{}<N>() requires a width type argument, e.g. .{}<32>()", method.name, method.name),
+                        method.span,
+                    ));
+                    Ty::Error
+                }
+            }
             "reverse" => {
                 if let Some(chunk_expr) = args.first() {
                     if let Some(chunk) = self.eval_const_expr(chunk_expr, local_types) {
@@ -3758,6 +3959,56 @@ impl<'a> TypeChecker<'a> {
         }
         if *lt == Ty::Error || *rt == Ty::Error {
             return Ty::Error;
+        }
+
+        // Floating-point operands: comparisons → Bool; `+ - *` → the same float
+        // type (no widening). The two operands must be the identical float type;
+        // there is no implicit float conversion (use `.to_fp32()`/`.to_bf16()`).
+        if lt.is_float() || rt.is_float() {
+            let sym = match op {
+                BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+                BinOp::Eq => "==", BinOp::Neq => "!=", BinOp::Lt => "<",
+                BinOp::Gt => ">", BinOp::Lte => "<=", BinOp::Gte => ">=",
+                _ => "<op>",
+            };
+            match op {
+                BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => {
+                    if lt != rt {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "floating-point comparison `{sym}` requires matching types, got {} and {}",
+                                lt.display(), rt.display()
+                            ),
+                            _span,
+                        ));
+                        return Ty::Error;
+                    }
+                    return Ty::Bool;
+                }
+                BinOp::Add | BinOp::Sub | BinOp::Mul => {
+                    if lt != rt {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "type mismatch in floating-point `{sym}`: {} vs {} (no implicit float conversion; use .to_fp32()/.to_bf16())",
+                                lt.display(), rt.display()
+                            ),
+                            _span,
+                        ));
+                        return Ty::Error;
+                    }
+                    return lt.clone();
+                }
+                _ => {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "operator `{sym}` is not supported on floating-point type {} (v1 supports + - * and comparisons; use fma() for fused multiply-add)",
+                            if lt.is_float() { lt.display() } else { rt.display() }
+                        ),
+                        _span,
+                    ));
+                    return Ty::Error;
+                }
+            }
         }
 
         match op {
@@ -6160,6 +6411,24 @@ impl<'a> TypeChecker<'a> {
         for arg in &f.args {
             self.check_snake_case(&arg.name);
         }
+        // v1: floats are not supported in module-local functions — function
+        // params/locals are not added to the backend float-op dispatch scope,
+        // so a float `x + y` inside a function would silently emit integer
+        // arithmetic. Reject float signatures rather than miscompile.
+        for arg in &f.args {
+            if type_expr_contains_float(&arg.ty) {
+                self.errors.push(CompileError::general(
+                    &format!("floating-point types (FP32/BF16) are not supported in function parameters in v1 (parameter `{}` of `{}`)", arg.name.name, f.name.name),
+                    arg.name.span,
+                ));
+            }
+        }
+        if type_expr_contains_float(&f.ret_ty) {
+            self.errors.push(CompileError::general(
+                &format!("floating-point types (FP32/BF16) are not supported as a function return type in v1 (function `{}`)", f.name.name),
+                f.name.span,
+            ));
+        }
 
         // Build local type environment with args
         let mut local_types: HashMap<String, Ty> = HashMap::new();
@@ -6658,6 +6927,17 @@ fn eval_type_width_expr(e: &Expr) -> Option<u32> {
 
 /// Returns true if `actual` is assignable to `expected` without an explicit cast.
 /// In hardware, narrower unsigned values zero-extend to wider wires.
+/// True if a TypeExpr is, or contains (via Vec nesting), a float type.
+/// Used to reject FP32/BF16 in positions the v1 float-op dispatch can't
+/// resolve (Vec elements, struct fields, function signatures).
+fn type_expr_contains_float(ty: &TypeExpr) -> bool {
+    match ty {
+        TypeExpr::FP32 | TypeExpr::BF16 => true,
+        TypeExpr::Vec(inner, _) => type_expr_contains_float(inner),
+        _ => false,
+    }
+}
+
 fn types_compatible(expected: &Ty, actual: &Ty) -> bool {
     match (expected, actual) {
         (Ty::UInt(em), Ty::UInt(am)) => am <= em,
@@ -6665,6 +6945,9 @@ fn types_compatible(expected: &Ty, actual: &Ty) -> bool {
         // Bool ≡ UInt<1>: freely assignable in both directions.
         (Ty::Bool, Ty::UInt(1)) | (Ty::UInt(1), Ty::Bool) => true,
         (Ty::Bool, Ty::Bool) => true,
+        // Floating-point: same type only — no implicit FP32↔BF16 conversion.
+        (Ty::FP32, Ty::FP32) => true,
+        (Ty::BF16, Ty::BF16) => true,
         _ => false,
     }
 }

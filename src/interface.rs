@@ -488,6 +488,8 @@ fn type_str(ty: &TypeExpr) -> String {
         TypeExpr::SInt(w) => format!("SInt<{}>", expr_str(w)),
         TypeExpr::Bool => "Bool".to_string(),
         TypeExpr::Bit => "Bit".to_string(),
+        TypeExpr::FP32 => "FP32".to_string(),
+        TypeExpr::BF16 => "BF16".to_string(),
         TypeExpr::Clock(domain) => format!("Clock<{}>", domain.name),
         TypeExpr::Reset(kind, level) => {
             let k = match kind {
@@ -513,6 +515,10 @@ fn expr_str(expr: &Expr) -> String {
             LitKind::Hex(v) => format!("0x{:X}", v),
             LitKind::Bin(v) => format!("0b{:b}", v),
             LitKind::Sized(width, val) => format!("{width}'d{val}"),
+            LitKind::Float(bits) => {
+                let v = f64::from_bits(*bits);
+                if v.fract() == 0.0 { format!("{v:.1}") } else { v.to_string() }
+            }
         },
         ExprKind::Bool(b) => if *b { "true".to_string() } else { "false".to_string() },
         ExprKind::Ident(name) => name.clone(),

@@ -2016,7 +2016,7 @@ impl Builder {
                 self.walk_expr(owner, &rel, scope, e, ExprUse::Read);
             }
             TypeExpr::Clock(domain) => self.add_uses_type(owner, &domain.name, domain.span),
-            TypeExpr::Reset(_, _) | TypeExpr::Bool | TypeExpr::Bit => {}
+            TypeExpr::Reset(_, _) | TypeExpr::Bool | TypeExpr::Bit | TypeExpr::FP32 | TypeExpr::BF16 => {}
             TypeExpr::Vec(inner, n) => {
                 self.walk_type(owner, scope, inner, span);
                 let rel = self.rel_for_span(n.span);

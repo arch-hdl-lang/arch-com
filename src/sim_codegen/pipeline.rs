@@ -673,7 +673,8 @@ impl<'a> SimCodegen<'a> {
     ) -> String {
         let empty = HashSet::new();
         let empty_rl: HashMap<String, ResetLevel> = HashMap::new();
-        let ctx = Ctx { reg_names: rn, port_names: pn, let_names: ln, let_values: None, inst_names: &empty, wide_names: &empty, widths: w, signed_names: &empty, posedge_lhs: false, fsm_mode: false, enum_map: em, bus_ports: &empty, reset_levels: &empty_rl, vec_names: None, vec_2d_names: None, vec_sizes: None, fsm_vec_port_regs: None, ident_subst: None, loop_var_subst: None, vec_of_bus_port_count: None, vec_of_bus_wire_count: None, coverage: None, params };
+        let empty_fn: HashMap<String, FpFmt> = HashMap::new();
+        let ctx = Ctx { reg_names: rn, port_names: pn, let_names: ln, let_values: None, inst_names: &empty, wide_names: &empty, widths: w, signed_names: &empty, float_names: &empty_fn, posedge_lhs: false, fsm_mode: false, enum_map: em, bus_ports: &empty, reset_levels: &empty_rl, vec_names: None, vec_2d_names: None, vec_sizes: None, fsm_vec_port_regs: None, ident_subst: None, loop_var_subst: None, vec_of_bus_port_count: None, vec_of_bus_wire_count: None, coverage: None, params };
         match &expr.kind {
             ExprKind::FieldAccess(base, field) => {
                 if let ExprKind::Ident(bn) = &base.kind {
@@ -774,7 +775,7 @@ impl<'a> SimCodegen<'a> {
                 let i = self.pipeline_sim_expr(idx, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
                 format!("(({b} >> {i}) & 1)")
             }
-            ExprKind::Literal(lit) => match lit { LitKind::Dec(v) => format!("{v}"), LitKind::Hex(v) | LitKind::Bin(v) => format!("0x{v:X}"), LitKind::Sized(_, v) => format!("{v}") },
+            ExprKind::Literal(lit) => match lit { LitKind::Dec(v) => format!("{v}"), LitKind::Hex(v) | LitKind::Bin(v) => format!("0x{v:X}"), LitKind::Sized(_, v) => format!("{v}"), LitKind::Float(bits) => format!("0x{:X}u", (f64::from_bits(*bits) as f32).to_bits()) },
             ExprKind::Bool(b) => if *b { "1".to_string() } else { "0".to_string() },
             ExprKind::Ternary(c, t, e) => {
                 let cv = self.pipeline_sim_expr(c, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);

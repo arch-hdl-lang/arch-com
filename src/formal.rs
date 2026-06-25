@@ -1591,6 +1591,10 @@ impl<'a> FormalCtx<'a> {
         match ty {
             TypeExpr::UInt(_) | TypeExpr::SInt(_) | TypeExpr::Bool | TypeExpr::Bit
                 | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => Ok(()),
+            TypeExpr::FP32 | TypeExpr::BF16 => Err(CompileError::general(
+                "floating-point types (FP32/BF16) are not supported by `arch formal` v1",
+                span,
+            )),
             TypeExpr::Vec(_, _) => Err(CompileError::general(
                 "Vec types are not supported by `arch formal` v1 — use scalars",
                 span,
@@ -1626,7 +1630,7 @@ impl<'a> FormalCtx<'a> {
             }
             TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) =>
                 Ok((1, false)),
-            TypeExpr::Vec(_, _) | TypeExpr::Named(_) => Err(CompileError::general(
+            TypeExpr::FP32 | TypeExpr::BF16 | TypeExpr::Vec(_, _) | TypeExpr::Named(_) => Err(CompileError::general(
                 "type not supported by arch formal v1",
                 span,
             )),
@@ -2602,6 +2606,13 @@ fn lit_to_term(l: &LitKind) -> SmtTerm {
             SmtTerm { s: bv_lit(*v, w), width: w, signed: false }
         }
         LitKind::Sized(w, v) => SmtTerm { s: bv_lit(*v, *w), width: *w, signed: false },
+        // Float literals are unreachable here in practice — FP types are rejected
+        // by `check_scalar_type` before emission. Fall back to the FP32 bit
+        // pattern as a 32-bit vector so this stays total.
+        LitKind::Float(bits) => {
+            let f = (f64::from_bits(*bits)) as f32;
+            SmtTerm { s: bv_lit(f.to_bits() as u64, 32), width: 32, signed: false }
+        }
     }
 }
 

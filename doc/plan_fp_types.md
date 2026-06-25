@@ -1,7 +1,8 @@
 # Plan: Floating-Point Types for LLM Inference (`FP32`, `BF16`)
 
-Status: **draft / design** — no code yet.
-Scope owner: TBD. Tracking issue: TBD (sibling of #605).
+Status: **v1 implemented** (front-end + simulation + SV emission, tested). See
+§12 for the implementation status and the deltas from this design.
+Tracking issue: #609 (sibling of #605).
 
 ## 1. Goal and scope
 
@@ -439,3 +440,75 @@ vectors against our configured instance once, in CI.
 Future (out of scope): FP16/FP8/MX block formats (reuse the generic
 `Float{exp,mant}` + a `Block<Elem,K,Scale>` wrapper), pipelined latency-N FP
 units, exception flags, additional rounding modes, FTZ.
+
+## 12. Implementation status (v1)
+
+Landed and tested (`cargo test --test fp_test`, plus the full suite green):
+
+- **Front-end**: `FP32`/`BF16` type keywords, float literals (`1.5`, `3.0e-2`),
+  and the operator/conversion surface parse and type-check. No-implicit-float-
+  conversion is enforced at assignment and in operators (mixing `FP32`/`BF16`,
+  or float↔int without a cast, is a compile error). Built-ins `fma(a,b,c)` and
+  `is_nan(x)` are typed. `Ty::FP32`/`Ty::BF16` carry 32/16-bit widths.
+- **Operators**: built-in combinational `+ - *` and ordered compares (`==` `!=`
+  `<` `>` `<=` `>=` → `Bool`); `fma` (fused); conversions `.to_fp32()`,
+  `.to_bf16()`, `.to_uint<N>()`, `.to_sint<N>()` (float↔float, int↔float).
+- **Simulation** (`arch sim`): floats carried as bit patterns
+  (`uint32_t`/`uint16_t`); ops dispatch to `_arch_*` helpers in the generated
+  prelude. NaN canonicalized to `0x7FC00000`/`0x7FC0`; sNaN quieted;
+  float→int toward-zero, saturating, NaN→type-max. Verified bit-exact against
+  host IEEE-754 across arithmetic, fma, is_nan, NaN/sNaN, and all conversions.
+- **SystemVerilog** (`arch build`): `FP32`→`logic [31:0]`, `BF16`→`logic [15:0]`;
+  ops dispatch to emitted `arch_f32_*`/`arch_bf16_*` `function automatic`
+  helpers, prepended once per file when FP is used.
+
+### Deltas from the design above (deliberate v1 simplifications)
+
+1. **Sim uses the host FPU, not a linked Berkeley SoftFloat** (§5). Native
+   `float`/`double` arithmetic is IEEE-754 RNE and therefore bit-identical to
+   SoftFloat for `+ - * fma` and the conversions; this avoids vendoring/building
+   the C library for v1. BF16 goes through an f32 intermediate (innocuous double
+   rounding, 24 ≥ 2·8+2 — a tighter but equally valid form of §5.3's f64 route).
+   Swapping in the RISC-V-spec SoftFloat build behind the same helper names is a
+   drop-in hardening step.
+2. **SV helpers are behavioral, not the synthesizable CVFPU datapath** (§7).
+   They use `shortreal`/`$bitstoshortreal`/`$shortrealtobits` — correct for
+   simulation, not synthesis. The hand-written CVFPU-referenced RTL is the P2/P3
+   follow-up. (No local SV simulator was available to run them in-tree.)
+3. **`--fp-compat=cuda` (§6.2), the formal equivalence proof (§8), and the
+   differential Verilator campaign are not yet wired** — the default RISC-V
+   special-value policy is implemented in the sim helpers; `arch formal` rejects
+   FP types with a clear message.
+4. **Float literals default to `FP32`**; `BF16` immediates use `.to_bf16()`
+   (§3.3, resolved open question — keeps no-implicit-conversion uniform).
+
+### v1 scope restrictions (enforced — rejected, never miscompiled)
+
+Floats are supported only as **scalar** module signals (ports, `reg`, `wire`,
+`let`) and the operations on them. The float-op dispatch in the backends keys
+off a per-signal name→format map, so positions it can't resolve are **rejected
+at type-check** rather than silently emitting integer arithmetic on the bit
+pattern:
+
+- **`Vec<FP32/BF16, N>`** — rejected (element access can't be float-dispatched).
+- **Float `struct` fields** — rejected (field access can't be float-dispatched).
+- **Floats in module-local `function` signatures/bodies** — rejected (function
+  scope isn't threaded into the dispatch map).
+
+Each has a clear error and is a natural follow-up once dispatch is driven off the
+type-checker's resolved-type map instead of a backend-rebuilt name set. Also: a
+float `reg`'s reset value must be a **float literal** (`reset rst => 0.0`); an
+integer literal is rejected (it would store a bit pattern, not the value).
+
+### Conversion semantics (sim, validated)
+
+`float→int` (`.to_uint<N>()` / `.to_sint<N>()`) is toward-zero, **saturating to
+the N-bit target range**, NaN→type-max — verified for N<64 and at the bound. The
+SV emission of float→int is **behavioral and ≤32-bit** (`$rtoi`); full per-N
+saturation and >32-bit conversions ride with the synthesizable datapath
+follow-up. (No local SV simulator was available, so the emitted SV is
+structurally checked but not run in-tree.)
+
+These deltas keep v1 faithful to the *semantics* (IEEE-754 RNE, the special-value
+policy, no implicit conversions) while deferring the heavyweight infrastructure
+(SoftFloat vendor build, synthesizable FP datapath, SMT proofs) to follow-ups.

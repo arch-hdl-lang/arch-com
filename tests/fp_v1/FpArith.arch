@@ -1,0 +1,38 @@
+// FP32 / BF16 v1 exercise: arithmetic, comparisons, fma, is_nan, and the
+// conversion surface (float↔float, int↔float). Plain comb outputs so the
+// testbench sees same-cycle results.
+module FpArith
+  port a: in FP32;
+  port b: in FP32;
+  port c: in FP32;
+  port sum:   out FP32;
+  port diff:  out FP32;
+  port prod:  out FP32;
+  port fused: out FP32;
+  port a_gt_b:  out Bool;
+  port a_is_nan: out Bool;
+
+  port ha: in BF16;
+  port hb: in BF16;
+  port hsum:    out BF16;
+  port a_to_h:  out BF16;
+  port ha_to_f: out FP32;
+
+  port i: in SInt<32>;
+  port i_to_f: out FP32;
+  port f_to_i: out SInt<32>;
+
+  comb sum   = a + b; end comb
+  comb diff  = a - b; end comb
+  comb prod  = a * b; end comb
+  comb fused = fma(a, b, c); end comb
+  comb a_gt_b   = a > b; end comb
+  comb a_is_nan = is_nan(a); end comb
+
+  comb hsum    = ha + hb; end comb
+  comb a_to_h  = a.to_bf16(); end comb
+  comb ha_to_f = ha.to_fp32(); end comb
+
+  comb i_to_f = i.to_fp32(); end comb
+  comb f_to_i = a.to_sint<32>(); end comb
+end module FpArith
