@@ -83,8 +83,8 @@ what lets FP16/FP8/MX drop in later without touching the type representation.
 - New keywords `FP32`, `BF16` in the type-expression position.
 - **Float literals**: `1.5`, `3.0`, `1.0e-3`. The literal is type-inferred from
   context (the assignment/operator target) and **const-evaluated through
-  SoftFloat in the compiler** so the rounded bit pattern is identical to what
-  sim/RTL would produce. A bare `1.5` with no FP context is a type error (no
+  SoftFloat in the compiler** (linking SoftFloat into the compiler itself — see
+  §9.6) so the rounded bit pattern is identical to what sim/RTL would produce. A bare `1.5` with no FP context is a type error (no
   implicit numeric type — consistent with ARCH's "no implicit conversions").
 - Optional: hex-float literals `0x1.8p0` (defer if it complicates the lexer).
 
@@ -182,14 +182,28 @@ incl. implicit bit) needs `p₁ ≥ 18`, and binary64 gives `p₁ = 53`. So
 `f64_add`/`f64_mul`/`f64_mulAdd` followed by a single RNE narrowing to BF16 is
 correctly rounded for every input. (For `*` an even simpler argument holds — the
 exact product of two 8-bit significands fits in 16 < 53 bits — but the f64 route
-gives `+` and `fma` uniformly, so we use it for all three.)
+gives `+` and `fma` uniformly, so we use it for all three.) The argument relies
+on the f64 intermediate being the **correctly-rounded-to-f64 result of the exact
+operation on exact operands** — which holds because BF16 operands convert to f64
+exactly and SoftFloat's `f64_*` ops are correctly rounded. The theorem rounds the
+exact real result twice regardless of which operation produced it, so `fma`
+(fused, single f64 rounding via `f64_mulAdd`) is covered identically to `+`/`*`.
 
 `round_bf16(float64_t)`: SoftFloat narrow `f64_to_f32` is *not* directly reusable
 (wrong target precision); instead implement RNE narrowing of the f64 to the
-8-bit BF16 significand with guard/round/sticky from the f64 mantissa. This helper
-is small, self-contained, and itself unit-tested against an exhaustive BF16 ×
-BF16 sweep (2³² pairs is large but `+`/`*` are cheap; a sampled + corner sweep
-plus the formal proof in §8 covers it).
+8-bit BF16 significand with guard/round/sticky from the f64 mantissa. The helper
+must handle the full range-mapping, not just mantissa GRS: f64's 11-bit exponent
+(bias 1023) re-mapped to BF16's 8-bit exponent (bias 127), **overflow → ±Inf**,
+**underflow into BF16 subnormals / signed zero**, and Inf/NaN passthrough (NaN →
+the canonical BF16 pattern of §6). The exponent re-bias and the over/underflow
+boundaries are the error-prone part and get dedicated corner vectors.
+
+Because BF16 is absent from SoftFloat, this entire BF16 special-value path
+(canonicalization, sNaN-quieting, saturation) is **hand-built, not inherited** —
+so unlike the FP32 path it needs its own corner vectors in §8.2 rather than
+getting them for free from SoftFloat. The helper is self-tested against a
+corner + sampled BF16 × BF16 sweep (the *exhaustive* sign-off for BF16 operators
+is the formal proof in §8.1; the C-helper sweep need only be sampled + corners).
 
 `BF16 → FP32` widening is exact (shift mantissa, copy sign/exp; NaN/Inf
 preserved). `FP32 → BF16` narrowing is RNE on the 23→7 mantissa.
@@ -213,10 +227,13 @@ These must be identical across all three backends or equivalence is meaningless.
   `0x7FC00000` and whose `softfloat_propagateNaNF32UI` ignores input payloads and
   always returns the default NaN. The RTL is built to match; BF16 (absent from
   SoftFloat) mirrors the same convention with `0x7FC0`.
-- **float→int out-of-range / NaN**: saturating per the RISC-V spec — `+Inf` /
-  overflow → integer max, `−Inf` / underflow → integer min, **NaN → integer
-  max** (RISC-V `fcvt` convention; SoftFloat RISCV `i32_fromNaN`). Toward-zero
-  rounding (`_r_minMag`).
+- **float→int out-of-range / NaN**: saturating per the RISC-V spec, **to the
+  target type's own min/max** — `+Inf` / positive overflow → type max (signed
+  `INT_MAX` = `0x7FFFFFFF`, **unsigned `UINT_MAX` = `0xFFFFFFFF`**), `−Inf` /
+  negative overflow → type min (signed `INT_MIN`, unsigned `0`), and **NaN →
+  type max** (signed `INT_MAX`, unsigned `UINT_MAX`). RISC-V `fcvt` convention;
+  SoftFloat `i32_fromNaN` / `ui32_fromNaN`, `f32_to_ui32_r_minMag` saturating at
+  `UINT_MAX`. Toward-zero rounding (`_r_minMag`).
 - **Rounding**: RNE for arithmetic; toward-zero for float→int. No mode plumbing.
 
 ### 6.1 Why RISC-V, and how this differs from NVIDIA CUDA / x86
@@ -387,9 +404,9 @@ vectors against our configured instance once, in CI.
    cheap and tests need it.
 5. **Vec of float**: `Vec<FP32, N>` should "just work" (Vec is element-type
    agnostic) — confirm no special-casing in `sim_codegen`/`codegen` Vec paths.
-6. **Const-eval engine in the compiler**: link SoftFloat into the compiler
-   itself (not just the generated sim) so literal folding is bit-identical.
-   Proposal: yes — one source of truth.
+6. ~~Const-eval engine~~ **Decided** (relied on by §3.2): link SoftFloat into the
+   compiler itself, not just the generated sim, so literal folding is
+   bit-identical to runtime — one source of truth.
 
 ## 10. File-by-file work breakdown
 
