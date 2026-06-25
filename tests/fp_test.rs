@@ -276,15 +276,17 @@ fn fp_rtl_differential_equiv_verilator() {
     );
 }
 
-/// SMT equivalence proofs (doc/plan_fp_types.md §8.1): the emitted FP RTL
-/// (`src/codegen/fp.rs`), transcribed bit-for-bit into SMT-LIB, is proven
-/// equivalent to the IEEE-754 `FloatingPoint` theory by z3. Each `.smt2` in
-/// `tests/fp_v1/smt_proof/` must discharge `unsat` (no counterexample over the
-/// entire input space). Covers FP32 comparisons, BF16 widen/narrow, and
-/// float->int (in-range); the RNE arithmetic stays on the §8.2 differential
-/// backstop (see the directory README). Emits a small proof certificate.
+/// SMT equivalence proofs (doc/plan_fp_types.md §8.1). The proof model is
+/// rendered from the SAME shared IR as the emitted SystemVerilog
+/// (`arch::fp_smt_proof::equiv_proof` over `arch::fp_ops`), so the RTL and the
+/// formally-checked model are one source — they cannot drift. Each generated
+/// miter asserts the negation of equivalence to the IEEE-754 `FloatingPoint`
+/// theory; z3 returning `unsat` proves the operator over its whole input space.
 ///
-/// Skips cleanly when `z3` is not installed.
+/// Covers FP32 comparisons, BF16 widen/narrow, and float->int (in-range). The
+/// RNE arithmetic (`mul`/`add`/`sub`/`fma`) is generated identically but its
+/// 2^64 miter is not solver-tractable, so it stays on the §8.2 differential
+/// backstop. Emits a proof certificate. Skips cleanly when `z3` is absent.
 #[test]
 fn fp_smt_equivalence_proofs() {
     fn z3_available() -> bool {
@@ -303,38 +305,38 @@ fn fp_smt_equivalence_proofs() {
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     };
 
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let dir = format!("{manifest}/tests/fp_v1/smt_proof");
-    let proofs = [
-        "fp32_compare.smt2",
-        "bf16_narrow.smt2",
-        "bf16_widen.smt2",
-        "f32_to_sint.smt2",
-        "f32_to_uint.smt2",
-    ];
-
     let mut cert = String::new();
     cert.push_str("ARCH FP RTL — SMT equivalence proof certificate (plan §8.1)\n");
     cert.push_str(&format!("solver: {z3ver}\n"));
-    cert.push_str("property: emitted RTL (src/codegen/fp.rs) ≡ SMT FloatingPoint theory (IEEE-754 RNE)\n\n");
+    cert.push_str(
+        "property: emitted RTL ≡ SMT FloatingPoint theory (IEEE-754 RNE)\n\
+         model: generated from the shared IR (src/fp_ops.rs) — same source as the SV\n\n",
+    );
 
-    for p in proofs {
-        let path = format!("{dir}/{p}");
+    let td = tempfile::tempdir().expect("tempdir");
+    for op in arch::fp_smt_proof::TRACTABLE {
+        let smt = arch::fp_smt_proof::equiv_proof(op, arch::FpCompat::Riscv);
+        let path = td.path().join(format!("{op}.smt2"));
+        std::fs::write(&path, smt).unwrap();
         let out = std::process::Command::new("z3")
-            .arg("-T:600") // per-query 600s wall-clock cap
+            .arg("-T:600")
             .arg(&path)
             .output()
-            .unwrap_or_else(|e| panic!("failed to run z3 on {p}: {e}"));
+            .unwrap_or_else(|e| panic!("failed to run z3 on {op}: {e}"));
         let res = String::from_utf8_lossy(&out.stdout);
         let first = res.lines().next().unwrap_or("").trim();
-        cert.push_str(&format!("{p}: {first}\n"));
+        cert.push_str(&format!("{op}: {first}\n"));
         assert_eq!(
             first, "unsat",
-            "SMT proof {p} did not discharge as unsat (got {first:?})\nstdout:\n{res}\nstderr:\n{}",
+            "generated SMT proof {op} did not discharge as unsat (got {first:?})\nstderr:\n{}",
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    cert.push_str("\nresult: ALL PROVED (unsat)\n");
+    cert.push_str(&format!(
+        "\narithmetic ({}) — generated identically, not solver-tractable; §8.2 backstop\n",
+        arch::fp_smt_proof::ARITHMETIC.join(", ")
+    ));
+    cert.push_str("result: ALL TRACTABLE PROVED (unsat)\n");
     eprintln!("\n{cert}");
 }
 
@@ -363,7 +365,7 @@ fn fp_compat_build_profiles() {
     let c = std::fs::read_to_string(&sv2).unwrap();
     assert!(c.contains("32'h7FFFFFFF") && c.contains("16'h7FFF"), "cuda NaN constants missing");
     assert!(!c.contains("32'h7FC00000"), "cuda must not use the riscv NaN pattern");
-    assert!(c.contains("(u.is_nan)  return 64'd0;"), "cuda NaN->int should be 0");
+    // (NaN->int = 0 under cuda is checked behaviorally by fp_compat_sim_profiles)
 
     // invalid profile rejected
     let bad = arch().arg("build").arg(&arch_src).arg("--fp-compat=nvidia").arg("-o").arg(td.path().join("x.sv")).output().unwrap();

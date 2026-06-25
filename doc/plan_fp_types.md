@@ -338,18 +338,23 @@ methods; we want **both**, with formal as the primary guarantee where tractable.
 
 ### 8.1 Formal equivalence via SMT FloatingPoint theory (primary)
 
-**Status (partial, landed):** proofs for the **non-rounding** operators are
-wired in under `tests/fp_v1/smt_proof/` and run by
-`cargo test --test fp_test fp_smt_equivalence_proofs` (z3, auto-skips if absent).
-Each emitted RTL operator is transcribed bit-for-bit into SMT-LIB and proven
-`unsat`-equivalent to the `FloatingPoint` theory over its **entire** input space:
-FP32 comparisons ×6 (2^64), `f32→bf16` narrow RNE (2^32), `bf16→f32` widen exact
+**Status (partial, landed) — single source.** The emitted SystemVerilog and the
+SMT proof model are now **both rendered from one in-Rust description** of each
+operator's bit-logic: `src/fp_ops.rs` defines the operators against a shared
+bit-vector IR (`src/fp_ir.rs`); `render_sv` emits the `arch build` RTL and
+`render_smt` emits the SMT-LIB2 used here. They cannot drift — there is nothing
+hand-transcribed to keep in sync (this replaced the earlier hand-maintained SV
+string literal + separately hand-written `.smt2`). `src/fp_smt_proof.rs` wraps
+the rendered model in a miter against the `FloatingPoint` theory; the test
+`fp_smt_equivalence_proofs` generates each miter and discharges it with z3
+(auto-skips if absent). Proven `unsat` over the **entire** input space: FP32
+comparisons ×6 (2^64), `f32→bf16` narrow RNE (2^32), `bf16→f32` widen exact
 (2^16), and `f32→{sint,uint}` toward-zero in-range (vs the partial `fp.to_sbv` /
-`fp.to_ubv`). The **RNE arithmetic** (`+ - *`, `fma`, `int→float`) is *not* yet
-formally proved — the emitted rounder's packed-struct returns and early
-`return`/`break` are beyond the available SV→SMT frontend (Yosys 0.33), and a
-from-scratch SMT rounder would be an unfaithful second implementation; it stays
-on the §8.2 differential backstop pending an EBMC-class frontend. See
+`fp.to_ubv`). The **RNE arithmetic** (`+ - *`, `fma`) is generated identically
+from the same IR (`dump_fp -- proof mul`), but its 2^64 / fused miter is not
+solver-tractable (z3 times out), so it stays on the §8.2 differential backstop.
+A tractable arithmetic proof (narrower datapath encodings, or a dedicated FP
+equivalence checker) is the remaining P3 item. See
 `tests/fp_v1/smt_proof/README.md`.
 
 ARCH already has a formal backend (`src/formal.rs`, SMT-LIB2, EBMC) and a
@@ -488,8 +493,10 @@ Landed and tested (`cargo test --test fp_test`, plus the full suite green):
 - **SystemVerilog** (`arch build`): `FP32`→`logic [31:0]`, `BF16`→`logic [15:0]`;
   ops dispatch to emitted `arch_f32_*`/`arch_bf16_*` `function automatic`
   helpers, prepended once per file when FP is used. These are now **synthesizable
-  RTL** (`src/codegen/fp.rs`) — decode, integer-mantissa arithmetic, leading-zero
-  normalization, RNE guard/round/sticky, pack — no `$bitstoshortreal`/`$rtoi`.
+  RTL generated from a shared bit-vector IR** (`src/fp_ops.rs` over
+  `src/fp_ir.rs`; `src/codegen/fp.rs` just renders it) — decode, integer-mantissa
+  arithmetic, binary-search normalization, RNE guard/round/sticky, pack — no
+  `$bitstoshortreal`/`$rtoi`. The same IR renders the §8.1 SMT model.
   A single shared rounder backs mul/add/sub/fma and int→float; BF16 arithmetic is
   `widen → f32 op → narrow`. **Differentially verified** bit-exact under Verilator
   against a host-IEEE-754 DPI reference over §8.2 corner + randomized +
