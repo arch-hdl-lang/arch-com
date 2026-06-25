@@ -19,9 +19,15 @@ use crate::FpCompat;
 pub const TRACTABLE: &[&str] =
     &["eq", "ne", "lt", "le", "gt", "ge", "narrow", "widen", "to_sint", "to_uint"];
 
-/// f32 RNE arithmetic — generated identically from the IR, but the 2^64 (or
-/// fused) miter is not solver-tractable; these stay on the §8.2 backstop.
-pub const ARITHMETIC: &[&str] = &["mul", "add", "sub", "fma"];
+/// f32 add/sub — machine-proved `unsat` vs `fp.add`/`fp.sub` over all 2^64
+/// inputs (~80 s each in z3). Tractable because the bounded adder keeps the
+/// datapath ~56-bit (no multiplier) — the SAT instance stays small.
+pub const F32_ADD: &[&str] = &["add", "sub"];
+
+/// f32 mul/fma — generated identically from the IR, but their 24x24-multiplier
+/// equivalence is SAT-hard at 2^64; z3 times out. These stay on the §8.2
+/// differential backstop.
+pub const ARITHMETIC: &[&str] = &["mul", "fma"];
 
 /// BF16 comparisons — route through the cheap f32 compare path; prove instantly.
 pub const BF16_CMP: &[&str] =

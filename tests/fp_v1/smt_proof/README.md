@@ -51,6 +51,7 @@ Proven `unsat` exhaustively (z3 4.8.12):
 | `narrow` (`arch_f32_to_bf16`) | RNE round to `(FloatingPoint 8 8)` | 2^32 |
 | `widen` (`arch_bf16_to_f32`) | exact widen | 2^16 |
 | `to_sint` / `to_uint` (N=32) | `fp.to_sbv`/`fp.to_ubv` RTZ, in-range | 2^32 |
+| **`add` / `sub`** | `fp.add` / `fp.sub` | **2^64** (~80 s each) |
 | `bf16_eq … bf16_ge` | `fp.eq/lt/…` on `(FloatingPoint 8 8)` | 2^32 |
 | `bf16_mul` / `bf16_add` / `bf16_sub` | `fp.mul/add/sub` on `(FloatingPoint 8 8)` | 2^32 |
 
@@ -61,11 +62,14 @@ mul cross-checked with cvc5 `--fp-exp`). They are the plan's §8.1 primary targe
 - **float→int** is proved in-range only — SMT-LIB `fp.to_sbv`/`fp.to_ubv` are
   *partial* (undefined for NaN / out-of-range), so the saturation / NaN→type-max
   corners are signed off by the §8.2 differential campaign, as §8.1 anticipates.
-- **f32 RNE arithmetic** (`mul add sub fma`) is generated from the same IR (run
-  `dump_fp -- proof mul`), but its 2^64 / fused miter is not solver-tractable
-  (z3 times out). It stays on the §8.2 differential Verilator campaign
+- **f32 `add`/`sub` ARE proved** (2^64) — the bounded adder keeps the datapath
+  ~56-bit, so the bit-blasted miter is small enough for z3 (~80 s). Only the
+  **multiplier-bearing** f32 ops remain: `mul` / `fma` (a 24×24-multiplier
+  equivalence is SAT-hard at 2^64 for any bit-blaster — z3, cvc5, or Lean's
+  `bv_decide` alike). They stay on the §8.2 differential Verilator campaign
   (`fp_rtl_differential_equiv_verilator`), bit-exact against a host-IEEE-754
-  reference over corner + randomized + cancellation-prone vectors.
+  reference over corner + randomized + cancellation-prone vectors. A structured
+  theorem prover (Lean/Coq) is the natural route for the multiplier ops.
 - **`bf16_fma`** is *correct* — via f32 the double rounding is innocuous (f32
   keeps a 16-bit precision lead over bf16 at every magnitude, ≥ the `2p+2`
   margin since `p ≤ 8`; confirmed by an exhaustive deep-subnormal check) — but

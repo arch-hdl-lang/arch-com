@@ -353,19 +353,26 @@ input space:
 - FP32 comparisons ×6 (2^64); `f32→bf16` narrow RNE (2^32); `bf16→f32` widen
   exact (2^16); `f32→{sint,uint}` toward-zero in-range (vs the partial
   `fp.to_sbv`/`fp.to_ubv`).
+- **f32 `add`/`sub`** vs `fp.add`/`fp.sub` over all 2^64 inputs (~80 s each in
+  z3). The decisive factor is *datapath width*, not the input space: the bounded
+  adder (§5 / `fp_ops.rs`) keeps the aligned magnitude ~56-bit (no multiplier),
+  so the bit-blasted miter stays small — the earlier 280-bit exact-wide adder
+  timed out purely from CNF size. (The proof now *is* the adder's correctness
+  certificate, superseding the differential check for these two ops.)
 - **BF16 arithmetic** — the §8.1 *primary* target — `bf16_{mul,add,sub}` vs
   `fp.{mul,add,sub}` on `(_ FloatingPoint 8 8)` (2^32), plus the six bf16
   comparisons. The small input space makes the miters tractable even though they
   route through the f32 datapath; `bf16_mul` cross-checked with cvc5 `--fp-exp`.
 
-Not yet machine-discharged: the **f32 RNE arithmetic** (`+ - *`, `fma`) —
-generated identically from the same IR (`dump_fp -- proof mul`), but its 2^64 /
-fused miter times out (§8.2 backstop). And **`bf16_fma`** — which *is* correct
-(innocuous double rounding: f32 keeps a 16-bit precision lead over bf16 at every
-magnitude, ≥ the `2p+2` margin since `p ≤ 8`; confirmed by an exhaustive
-deep-subnormal check) — but its `fp.fma` miter triggers a z3 4.8.12 soundness gap
-(spurious `sat`); a solver with sound `fp.fma` at `(8,8)` closes it. See
-`tests/fp_v1/smt_proof/README.md`.
+Not yet machine-discharged — **only the multiplier-bearing ops**: f32 `mul` /
+`fma` (a 24×24-multiplier equivalence is SAT-hard at 2^64 regardless of
+bit-blaster; z3 times out → §8.2 backstop). And **`bf16_fma`** — which *is*
+correct (innocuous double rounding: f32 keeps a 16-bit precision lead over bf16
+at every magnitude, ≥ the `2p+2` margin since `p ≤ 8`; confirmed by an exhaustive
+deep-subnormal check) — but its `fp.fma` miter trips a z3 4.8.12 soundness gap
+(spurious `sat`); a solver with sound `fp.fma` at `(8,8)` closes it. The
+remaining multiplier proofs are the natural fit for a structured theorem prover
+(Lean/Coq) rather than a bit-blaster. See `tests/fp_v1/smt_proof/README.md`.
 
 ARCH already has a formal backend (`src/formal.rs`, SMT-LIB2, EBMC) and a
 proof-certificate culture (`construct_proof_cert.rs`, `thread_proof_cert.rs`).

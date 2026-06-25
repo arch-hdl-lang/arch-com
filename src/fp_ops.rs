@@ -230,7 +230,7 @@ fn f32_to_bf16(p: FpCompat) -> FpFn {
 // guard/round/sticky). add: 23 + max-exponent-spread(253) + carry. fma: 48-bit
 // product + max product/addend spread. Correctness is by construction; the §8.2
 // differential harness is the oracle.
-const ADD_W: u32 = 280;
+const ADD_G: u32 = 30; // bounded-adder guard bits (field = 24 + ADD_G)
 const FMA_W: u32 = 470;
 
 fn f32_add_core(name: &str, flip_b_sign: bool, p: FpCompat) -> FpFn {
@@ -255,21 +255,34 @@ fn f32_add_core(name: &str, flip_b_sign: bool, p: FpCompat) -> FpFn {
     let sign_hi = pick(&da.sign, &db.sign);
     let sign_lo = pick(&db.sign, &da.sign);
 
+    // Bounded alignment: keep G guard bits below the larger significand's LSB
+    // and fold everything past that into one sticky bit. Catastrophic
+    // cancellation needs the exponents within ~1, where no bits are dropped
+    // (exact); otherwise the larger operand dominates and the sticky carries the
+    // rest. The sticky is appended as the LOW bit of each aligned operand, so the
+    // magnitude compare and the subtraction handle the borrow automatically (and
+    // resolve the HI==LO tie). Far narrower than exact-wide -> compact SV and a
+    // solver-tractable miter.
     let diff = sub(&eunb_hi, &eunb_lo); // >= 0
-    let hi_f = shl(&zext(&mant_hi, ADD_W), &diff);
-    let lo_f = zext(&mant_lo, ADD_W);
+    let fw = 24 + ADD_G; // aligned-field width
+    let hi_field = shl(&zext(&mant_hi, fw), &cst(ADD_G as u128, 16));
+    let lo_ext = shl(&zext(&mant_lo, fw), &cst(ADD_G as u128, 16));
+    let lo_field = lshr(&lo_ext, &diff);
+    let mask = sub(&shl(&cst(1, fw), &diff), &cst(1, fw)); // (1<<diff)-1
+    let sticky = ne(&band(&lo_ext, &mask), &cst(0, fw));
 
+    let hi_e = concat(&hi_field, &cst(0, 1)); // fw+1
+    let lo_e = concat(&lo_field, &sticky); // fw+1
     let same_sign = eq(&sign_hi, &sign_lo);
-    let hi_gt = ugt(&hi_f, &lo_f);
-    let mag = ite(
-        &same_sign,
-        &add(&hi_f, &lo_f),
-        &ite(&hi_gt, &sub(&hi_f, &lo_f), &sub(&lo_f, &hi_f)),
-    );
-    let res_sign = ite(&same_sign, &sign_hi, &ite(&hi_gt, &sign_hi, &sign_lo));
-    let rounded = normround(&res_sign, &mag, &eunb_lo);
-    // exact cancellation (opposite signs, equal magnitude) -> +0 (RNE)
-    let cancel = and(&bnot(&same_sign), &eq(&hi_f, &lo_f));
+    let ge = uge(&hi_e, &lo_e);
+    let raw = ite(&ge, &sub(&hi_e, &lo_e), &sub(&lo_e, &hi_e)); // fw+1
+    let mw = fw + 2; // add-carry headroom
+    let mag = ite(&same_sign, &add(&zext(&hi_e, mw), &zext(&lo_e, mw)), &zext(&raw, mw));
+    let res_sign = ite(&same_sign, &sign_hi, &ite(&ge, &sign_hi, &sign_lo));
+    let e0 = sub(&eunb_hi, &cst((ADD_G + 1) as u128, 16)); // LSB exponent of mag
+    let rounded = normround(&res_sign, &mag, &e0);
+    // exact cancellation (opposite signs, equal magnitude incl. sticky) -> +0
+    let cancel = and(&bnot(&same_sign), &eq(&raw, &cst(0, fw + 1)));
     let finite = ite(&cancel, &cst(0, 32), &rounded);
 
     // specials
