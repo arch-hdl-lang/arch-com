@@ -201,3 +201,77 @@ fn fp_reg_integer_reset_rejected() {
     let out = arch().arg("check").arg(&path).output().expect("run arch check");
     assert!(!out.status.success(), "integer reset for a float reg must be rejected");
 }
+
+/// Differential equivalence (doc/plan_fp_types.md §8.2): the emitted
+/// synthesizable FP helpers, verilated and run against a host IEEE-754 (DPI-C)
+/// reference over corner + randomized + cancellation-prone vectors, must be
+/// bit-exact for every op / compare / conversion / BF16 wrapper.
+///
+/// Skips cleanly when Verilator is not installed. The helper functions are
+/// `$unit`-scope in the `arch build` output, so the emitted `.sv` is verilated
+/// alongside the testbench (which calls them) and the DPI reference.
+#[test]
+fn fp_rtl_differential_equiv_verilator() {
+    fn verilator_available() -> bool {
+        std::process::Command::new("verilator")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    if !verilator_available() {
+        eprintln!("skipping fp_rtl_differential_equiv_verilator: verilator not in PATH");
+        return;
+    }
+
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv = td.path().join("FpArith.sv");
+
+    // `arch build` emits the full FP helper block (all ops + conversions + BF16)
+    // ahead of the module whenever a design uses FP.
+    let out = arch()
+        .arg("build")
+        .arg(format!("{manifest}/tests/fp_v1/FpArith.arch"))
+        .arg("-o")
+        .arg(&sv)
+        .output()
+        .expect("run arch build");
+    assert!(
+        out.status.success(),
+        "arch build failed\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let obj = td.path().join("obj");
+    let tb = format!("{manifest}/tests/fp_v1/rtl_diff/tb_fp_diff.sv");
+    let dpi = format!("{manifest}/tests/fp_v1/rtl_diff/dpi_ref.cpp");
+    let vout = std::process::Command::new("verilator")
+        .args(["--binary", "--timing", "-Wno-WIDTH", "-Wno-UNOPTFLAT",
+               "-Wno-WIDTHTRUNC", "-Wno-WIDTHEXPAND", "-Wno-SHORTREAL",
+               "-Wno-BLKANDNBLK", "-Wno-UNUSEDSIGNAL", "-Wno-MULTITOP",
+               "--top-module", "tb", "-o", "sim_diff"])
+        .arg("-Mdir")
+        .arg(&obj)
+        .arg(&sv)
+        .arg(&tb)
+        .arg(&dpi)
+        .output()
+        .expect("run verilator");
+    assert!(
+        vout.status.success(),
+        "verilator build failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&vout.stdout),
+        String::from_utf8_lossy(&vout.stderr)
+    );
+
+    let run = std::process::Command::new(obj.join("sim_diff"))
+        .output()
+        .expect("run verilated sim");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        stdout.contains("ARCH_FP_RTL_DIFF: ALL PASS"),
+        "RTL differential check failed\nstdout:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}

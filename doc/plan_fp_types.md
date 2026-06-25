@@ -1,7 +1,9 @@
 # Plan: Floating-Point Types for LLM Inference (`FP32`, `BF16`)
 
-Status: **v1 implemented** (front-end + simulation + SV emission, tested). See
-§12 for the implementation status and the deltas from this design.
+Status: **v1 implemented** (front-end + simulation + **synthesizable** SV
+emission, tested). P2 RTL has landed: the SV helpers are synthesizable and the
+§8.2 differential Verilator campaign is wired in as a regression test. See §12
+for the implementation status and the deltas from this design.
 Tracking issue: #609 (sibling of #605).
 
 ## 1. Goal and scope
@@ -430,8 +432,9 @@ vectors against our configured instance once, in CI.
 1. **P1 — types & sim**: AST/parse/typecheck for `FP32`/`BF16`, literals, ops
    (`+ - * fma`, compares, conversions), SoftFloat-backed sim, const-eval.
    Deliverable: `arch sim` runs FP designs correctly.
-2. **P2 — RTL**: emit `arch_fp*`/`arch_bf16*` SV; differential co-sim campaign
-   (§8.2) green against the P1 sim.
+2. **P2 — RTL** ✅ *(landed)*: emit synthesizable `arch_f32_*`/`arch_bf16_*` SV;
+   differential co-sim campaign (§8.2) green against the host-IEEE-754 reference
+   under Verilator. Remaining P2 stretch: pipelined latency-N variant.
 3. **P3 — formal sign-off**: SMT equivalence (§8.1) — full proof for all BF16
    ops, FP32 where tractable, documented gaps backstopped by P2. Proof certs.
 4. **P4 — docs & examples**: spec sections, AI reference card entry, a small
@@ -460,7 +463,14 @@ Landed and tested (`cargo test --test fp_test`, plus the full suite green):
   host IEEE-754 across arithmetic, fma, is_nan, NaN/sNaN, and all conversions.
 - **SystemVerilog** (`arch build`): `FP32`→`logic [31:0]`, `BF16`→`logic [15:0]`;
   ops dispatch to emitted `arch_f32_*`/`arch_bf16_*` `function automatic`
-  helpers, prepended once per file when FP is used.
+  helpers, prepended once per file when FP is used. These are now **synthesizable
+  RTL** (`src/codegen/fp.rs`) — decode, integer-mantissa arithmetic, leading-zero
+  normalization, RNE guard/round/sticky, pack — no `$bitstoshortreal`/`$rtoi`.
+  A single shared rounder backs mul/add/sub/fma and int→float; BF16 arithmetic is
+  `widen → f32 op → narrow`. **Differentially verified** bit-exact under Verilator
+  against a host-IEEE-754 DPI reference over §8.2 corner + randomized +
+  cancellation-prone vectors (`fp_rtl_differential_equiv_verilator`, auto-skips
+  when Verilator is absent).
 
 ### Deltas from the design above (deliberate v1 simplifications)
 
@@ -471,14 +481,16 @@ Landed and tested (`cargo test --test fp_test`, plus the full suite green):
    rounding, 24 ≥ 2·8+2 — a tighter but equally valid form of §5.3's f64 route).
    Swapping in the RISC-V-spec SoftFloat build behind the same helper names is a
    drop-in hardening step.
-2. **SV helpers are behavioral, not the synthesizable CVFPU datapath** (§7).
-   They use `shortreal`/`$bitstoshortreal`/`$shortrealtobits` — correct for
-   simulation, not synthesis. The hand-written CVFPU-referenced RTL is the P2/P3
-   follow-up. (No local SV simulator was available to run them in-tree.)
-3. **`--fp-compat=cuda` (§6.2), the formal equivalence proof (§8), and the
-   differential Verilator campaign are not yet wired** — the default RISC-V
-   special-value policy is implemented in the sim helpers; `arch formal` rejects
-   FP types with a clear message.
+2. ~~**SV helpers are behavioral, not synthesizable**~~ **Resolved (P2).** The SV
+   helpers are now synthesizable RTL (`src/codegen/fp.rs`), CVFPU-referenced in
+   datapath structure but written as deterministic, commented ARCH-owned SV. The
+   §8.2 differential Verilator campaign is wired in as a regression test. What
+   remains of §7 is the *pipelined latency-N* variant (v1 is combinational, by
+   design) and the §8.1 SMT equivalence proof.
+3. **`--fp-compat=cuda` (§6.2) and the formal equivalence proof (§8.1) are not yet
+   wired** — the default RISC-V special-value policy is implemented in both sim
+   and the synthesizable SV; `arch formal` rejects FP types with a clear message.
+   (The §8.2 differential campaign **is** now wired — see delta #2.)
 4. **Float literals default to `FP32`**; `BF16` immediates use `.to_bf16()`
    (§3.3, resolved open question — keeps no-implicit-conversion uniform).
 
@@ -504,11 +516,13 @@ integer literal is rejected (it would store a bit pattern, not the value).
 
 `float→int` (`.to_uint<N>()` / `.to_sint<N>()`) is toward-zero, **saturating to
 the N-bit target range**, NaN→type-max — verified for N<64 and at the bound. The
-SV emission of float→int is **behavioral and ≤32-bit** (`$rtoi`); full per-N
-saturation and >32-bit conversions ride with the synthesizable datapath
-follow-up. (No local SV simulator was available, so the emitted SV is
-structurally checked but not run in-tree.)
+SV emission now matches: `arch_f32_to_sint`/`arch_f32_to_uint` implement full
+per-N saturation up to 64-bit, differentially verified under Verilator at
+N ∈ {8,16,24,32,53,64}. int→float (`arch_i64_to_f32`/`arch_u64_to_f32`) is RNE
+via the shared rounder.
 
 These deltas keep v1 faithful to the *semantics* (IEEE-754 RNE, the special-value
-policy, no implicit conversions) while deferring the heavyweight infrastructure
-(SoftFloat vendor build, synthesizable FP datapath, SMT proofs) to follow-ups.
+policy, no implicit conversions). The synthesizable FP datapath has now landed
+(delta #2); the remaining deferred infrastructure is the SoftFloat vendor build,
+the §8.1 SMT equivalence proof, `--fp-compat=cuda`, and pipelined latency-N FP
+units.
