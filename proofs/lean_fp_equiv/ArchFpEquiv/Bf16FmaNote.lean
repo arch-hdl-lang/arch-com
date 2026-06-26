@@ -1,4 +1,4 @@
-import ArchFpEquiv.Model
+import ArchFpEquiv.Fma
 
 /-!
 # `bf16_fma` is fused f32-accumulate — NOT correctly-rounded bf16 fma
@@ -25,5 +25,25 @@ def archBf16Fma (a b c : BitVec 16) : BitVec 16 :=
 -- bf16 midpoint, so the narrow ties-to-even up). They differ by 1 ULP.
 #guard archBf16Fma 0x2a20#16 0x51a6#16 0x9359#16 = 0x3c50#16
 #guard archBf16Fma 0x2a20#16 0x51a6#16 0x9359#16 ≠ 0x3c4f#16
+
+/-- **The *true* bf16-fma characterization (f32-accumulate).** For bf16 operands
+    whose widened f32 values are finite nonzero and non-cancelling, `archBf16Fma`
+    is the f32→bf16 narrowing of the **correctly-rounded** f32 fma — i.e. `bf16_fma
+    = narrow(RNE_f32(a·b+c))`. This is the honest statement (derived directly from
+    the proved `arch_fma_f32_finite_correct`); the stricter `= RNE_bf16(a·b+c)` is
+    *false* (the `#guard` witness above). -/
+theorem archBf16Fma_eq_narrow_roundNE (a b c : BitVec 16)
+    (ha : finiteNonzero (arch_bf16_to_f32 a) = true)
+    (hb : finiteNonzero (arch_bf16_to_f32 b) = true)
+    (hc : finiteNonzero (arch_bf16_to_f32 c) = true)
+    (hnc : arch_fma_mag (arch_bf16_to_f32 a) (arch_bf16_to_f32 b) (arch_bf16_to_f32 c) ≠ 0#470) :
+    archBf16Fma a b c
+      = arch_f32_to_bf16
+          (roundNE_f32
+            (arch_fma_sign (arch_bf16_to_f32 a) (arch_bf16_to_f32 b) (arch_bf16_to_f32 c) == 1#1)
+            (arch_fma_mag (arch_bf16_to_f32 a) (arch_bf16_to_f32 b) (arch_bf16_to_f32 c)).toNat
+            (arch_fma_elo (arch_bf16_to_f32 a) (arch_bf16_to_f32 b) (arch_bf16_to_f32 c)).toInt) := by
+  unfold archBf16Fma
+  rw [arch_fma_f32_finite_correct _ _ _ ha hb hc hnc]
 
 end ArchFp
