@@ -686,7 +686,7 @@ let nan: Bool = is_nan(a);
   - `x.to_bf16()` — `FP32`→`BF16` (round-to-nearest-even).
   - `x.to_sint<N>()` / `x.to_uint<N>()` — float→integer, toward-zero, per-N saturating, NaN→type-max (RISC-V profile).
 
-**Literals.** Float literals (`1.5`, `3.0e-2`, `0.0`) are typed `FP32`. A `BF16` constant requires an explicit cast — `let h: BF16 = (1.5).to_bf16();` — because a bare `let h: BF16 = 1.5;` is rejected by the no-implicit-conversion rule. A float `reg` reset value must be a float literal (`reset rst => 0.0`), not an integer literal.
+**Literals.** Float literals (`1.5`, `3.0e-2`, `0.0`) are typed `FP32`. In two positions a bare float literal in a `BF16` slot is rounded to bf16 at compile time so no cast is needed: a **`BF16` reg reset value** (`reg acc: BF16 reset rst => 1.5;`) and a **typed-`BF16` `let`** (`let h: BF16 = 1.5;`). In all other positions — a `BF16` comb/seq assignment target, or a mixed-type operand such as `a_bf16 + 1.5` — a `BF16` constant requires an explicit cast (`(1.5).to_bf16()`) and is otherwise rejected by the no-implicit-conversion rule. A float `reg` reset value must be a float literal (`reset rst => 0.0`), not an integer literal.
 
 **v1 scope.** Floats are supported only as scalar signals plus the operators above. Floats inside `Vec`, in `struct` fields, and in module-local `function` signatures are rejected at type-check (never silently miscompiled); these are deferred follow-ups.
 

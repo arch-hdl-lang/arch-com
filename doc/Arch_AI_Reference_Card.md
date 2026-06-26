@@ -241,7 +241,7 @@ x.to_sint<N>()   // float→SInt<N>: toward-zero, per-N saturating, NaN→type-m
 x.to_uint<N>()   // float→UInt<N>: toward-zero, per-N saturating, negatives/NaN handling per profile
 ```
 
-**Float literals** (`1.5`, `3.0e-2`, `0.0`) are typed **FP32**. A BF16 constant needs an explicit cast: `let h: BF16 = (1.5).to_bf16();` (a bare `let h: BF16 = 1.5;` is rejected). A float `reg` reset value must be a float literal (`reset rst => 0.0`), not an integer literal. *(BF16 reg reset to a non-zero bare literal is currently mis-narrowed — use `(V).to_bf16()` until [#620](https://github.com/arch-hdl-lang/arch-com/issues/620) lands.)*
+**Float literals** (`1.5`, `3.0e-2`, `0.0`) are typed **FP32**, but in a **BF16 reset value** or a **typed-BF16 `let`** a bare float literal is rounded to bf16 automatically: `reg acc: BF16 reset rst => 1.5;` and `let h: BF16 = 1.5;` both work. Elsewhere (BF16 comb/seq assignment targets, mixed-type operands like `a_bf16 + 1.5`) a BF16 constant still needs an explicit cast — `(1.5).to_bf16()` — and is otherwise a type error. A float `reg` reset value must be a float literal (`reset rst => 0.0`), not an integer literal. *(BF16 reg `init` values still require `(V).to_bf16()` until [#624](https://github.com/arch-hdl-lang/arch-com/issues/624) lands.)*
 
 **v1 scope:** floats are scalar signals + the ops above only. **Not** supported (rejected at type-check, never silently miscompiled): floats inside `Vec`, in `struct` fields, in module-local `function` signatures; `/` `%` and bitwise/shift operators on floats.
 
