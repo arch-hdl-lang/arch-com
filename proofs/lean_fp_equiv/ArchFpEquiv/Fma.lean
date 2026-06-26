@@ -66,4 +66,58 @@ theorem arch_fma_f32_finite_correct (a b c : BitVec 32)
   obtain ⟨hlo, hhi⟩ := fma_elo_bounds a b c ha hb hc
   exact arch_round470_correct _ _ _ hlo hhi
 
+-- ── special-value lattice (machine-checked by bv_decide) ─────────────────────
+
+/-- Exact cancellation (`mag = 0`) of a finite fma is `+0`. Completes the finite
+    case alongside `arch_fma_f32_finite_correct` (`mag ≠ 0`). -/
+theorem fma_cancel (a b c : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true) (hc : finiteNonzero c = true)
+    (hcanc : arch_fma_mag a b c = 0#470) :
+    arch_fma_f32 a b c = 0#32 := by
+  unfold finiteNonzero isNaN isInf isZero expField fracField arch_fma_f32 arch_fma_mag at *
+  bv_decide (config := { timeout := 300 })
+
+/-- A NaN operand makes the fma NaN (canonical `0x7FC00000`). -/
+theorem fma_nan (a b c : BitVec 32)
+    (h : isNaN a = true ∨ isNaN b = true ∨ isNaN c = true) :
+    arch_fma_f32 a b c = BitVec.ofNat 32 2143289344 := by
+  unfold isNaN expField fracField arch_fma_f32 at *
+  bv_decide (config := { timeout := 300 })
+
+/-- `0 · ∞ ± c` is NaN. -/
+theorem fma_zero_times_inf (a b c : BitVec 32)
+    (h : (isZero a = true ∧ isInf b = true) ∨ (isInf a = true ∧ isZero b = true)) :
+    arch_fma_f32 a b c = BitVec.ofNat 32 2143289344 := by
+  unfold isZero isInf expField fracField arch_fma_f32 at *
+  bv_decide (config := { timeout := 300 })
+
+/-- An infinite addend whose sign opposes an infinite product gives NaN
+    (`∞ − ∞`). -/
+theorem fma_inf_minus_inf (a b c : BitVec 32)
+    (hna : isNaN a = false) (hnb : isNaN b = false)
+    (hpi : isInf a = true ∨ isInf b = true)
+    (hci : isInf c = true) (hsgn : sgn c ≠ sgn a ^^^ sgn b) :
+    arch_fma_f32 a b c = BitVec.ofNat 32 2143289344 := by
+  unfold isNaN isInf expField fracField sgn arch_fma_f32 at *
+  bv_decide (config := { timeout := 300 })
+
+/-- An infinite product (not `0·∞`, addend not the opposite infinity) gives the
+    product-signed infinity. -/
+theorem fma_inf_prod (a b c : BitVec 32)
+    (hna : isNaN a = false) (hnb : isNaN b = false) (hnc : isNaN c = false)
+    (hpi : isInf a = true ∨ isInf b = true)
+    (hzti : ¬((isZero a = true ∧ isInf b = true) ∨ (isInf a = true ∧ isZero b = true)))
+    (hcc : isInf c = false ∨ sgn c = sgn a ^^^ sgn b) :
+    arch_fma_f32 a b c = (sgn a ^^^ sgn b) ++ (0xFF#8 ++ 0#23) := by
+  unfold isNaN isInf isZero expField fracField sgn arch_fma_f32 at *
+  bv_decide (config := { timeout := 300 })
+
+/-- A finite product plus an infinite addend gives the addend's infinity. -/
+theorem fma_inf_c (a b c : BitVec 32)
+    (hna : isNaN a = false) (hnb : isNaN b = false) (hnc : isNaN c = false)
+    (hpa : isInf a = false) (hpb : isInf b = false) (hci : isInf c = true) :
+    arch_fma_f32 a b c = sgn c ++ (0xFF#8 ++ 0#23) := by
+  unfold isNaN isInf expField fracField sgn arch_fma_f32 at *
+  bv_decide (config := { timeout := 300 })
+
 end ArchFp
