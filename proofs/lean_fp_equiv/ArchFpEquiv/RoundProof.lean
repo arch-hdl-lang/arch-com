@@ -185,4 +185,45 @@ theorem kept_big_zero (zsig : BitVec 50) (sh : Nat) (h : 50 ≤ sh) :
   have h2 : (2:Nat) ^ 50 ≤ 2 ^ sh := Nat.pow_le_pow_right (by decide) h
   exact Nat.div_eq_of_lt (by omega)
 
+/-- `sig=0` case for the named-stage struct. -/
+theorem struct_zero (s : BitVec 1) (e0 : BitVec 16) :
+    round48_struct s 0#48 e0 = roundNE_f32 (s == 1#1) (0#48).toNat e0.toInt := by
+  rw [show (0#48).toNat = 0 from rfl, roundNE_zero]
+  unfold round48_struct
+  simp only [show ((0#48 : BitVec 48) == 0#48) = true from rfl, if_true]
+  rw [apply_ite (BitVec.ofNat 32)]; bv_decide
+
+/-- Shift value, normal branch (`k = ev-23`): `sh = log2 - 23`. -/
+theorem sh_normal (sig : BitVec 48) (e0 : BitVec 16) (h : sig ≠ 0#48)
+    (hlo : -298 ≤ e0.toInt) (hhi : e0.toInt ≤ 208) :
+    (arch_msb_index48 sig + e0 - 23#16 - e0).toInt = (Nat.log2 sig.toNat : Int) - 23 := by
+  obtain ⟨hp47, hpInt⟩ := p_facts sig h
+  have hl47 : Nat.log2 sig.toNat ≤ 47 := by rw [← msb_index_eq_log2 sig h]; exact hp47
+  have hev := (exp_facts sig e0 h hlo hhi).1
+  have h23 : (23#16).toInt = 23 := rfl
+  have hk : (arch_msb_index48 sig + e0 - 23#16).toInt = (Nat.log2 sig.toNat : Int) + e0.toInt - 23 := by
+    rw [toInt_sub_of_bounds _ _ (by rw [hev, h23]; omega) (by rw [hev, h23]; omega), hev, h23]
+  rw [toInt_sub_of_bounds _ _ (by rw [hk]; omega) (by rw [hk]; omega), hk]; omega
+
+/-- Shift value, subnormal branch (`k = -149`): `sh = -149 - e0`. -/
+theorem sh_sub (e0 : BitVec 16) (hlo : -298 ≤ e0.toInt) (hhi : e0.toInt ≤ 208) :
+    (65387#16 - e0).toInt = -149 - e0.toInt := by
+  have hk : (65387#16).toInt = -149 := rfl
+  rw [toInt_sub_of_bounds _ _ (by rw [hk]; omega) (by rw [hk]; omega), hk]
+
+/-- Subnormal-field packing identity. -/
+theorem combine_sub (s : BitVec 1) (kept : BitVec 50) :
+    (s ++ (0#31)) ||| (s ++ BitVec.extractLsb 30 0 kept)
+    = BitVec.ofNat 32 (s.toNat * 2 ^ 31 + kept.toNat % 2 ^ 31) := by
+  have hor : (s ++ (0#31)) ||| (s ++ BitVec.extractLsb 30 0 kept)
+      = s ++ BitVec.extractLsb 30 0 kept := by bv_decide
+  have hext : (BitVec.extractLsb 30 0 kept).toNat = kept.toNat % 2 ^ 31 := by
+    simp [BitVec.extractLsb, BitVec.extractLsb'_toNat]
+  rw [hor]
+  apply BitVec.eq_of_toNat_eq
+  simp only [BitVec.toNat_append, BitVec.toNat_ofNat, Nat.shiftLeft_eq, hext]
+  have hk : kept.toNat % 2 ^ 31 < 2 ^ 31 := Nat.mod_lt _ (by decide)
+  rw [Nat.mul_comm s.toNat (2 ^ 31), ← Nat.two_pow_add_eq_or_of_lt hk]
+  omega
+
 end ArchFp
