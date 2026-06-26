@@ -202,6 +202,35 @@ fn fp_reg_integer_reset_rejected() {
     assert!(!out.status.success(), "integer reset for a float reg must be rejected");
 }
 
+/// Operators outside the v1 float surface (`/ % << & ...`) are rejected, and
+/// the diagnostic names the *actual* operator — never a `<op>` placeholder.
+#[test]
+fn fp_unsupported_operator_named_in_error() {
+    for op in ["/", "%", "<<", "&"] {
+        let src = format!(
+            "module M\n  port a: in FP32;\n  port b: in FP32;\n  port o: out FP32;\n  comb o = a {op} b; end comb\nend module M\n"
+        );
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = td.path().join("M.arch");
+        std::fs::write(&path, &src).unwrap();
+        let out = arch().arg("check").arg(&path).output().expect("run arch check");
+        assert!(!out.status.success(), "float `{op}` must be rejected in v1");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            combined.contains(&format!("operator `{op}`")),
+            "error for float `{op}` should name the operator, not a placeholder; got:\n{combined}"
+        );
+        assert!(
+            !combined.contains("<op>"),
+            "error must never contain the `<op>` placeholder; got:\n{combined}"
+        );
+    }
+}
+
 /// Differential equivalence (doc/plan_fp_types.md §8.2): the emitted
 /// synthesizable FP helpers, verilated and run against a host IEEE-754 (DPI-C)
 /// reference over corner + randomized + cancellation-prone vectors, must be
