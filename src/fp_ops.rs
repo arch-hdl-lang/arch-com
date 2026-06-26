@@ -547,5 +547,9 @@ pub fn lean_extra_functions() -> Vec<FpFn> {
         let e0 = var("e0", 16);
         FpFn::new("arch_round48", &[("s", 1), ("sig", 48), ("e0", 16)], 32, normround(&s, &sig, &e0))
     };
-    vec![decode_mant, decode_eunb, round48]
+    let msb48 = {
+        let sig = var("sig", 48);
+        FpFn::new("arch_msb_index48", &[("sig", 48)], 16, msb_index(&sig))
+    };
+    vec![decode_mant, decode_eunb, round48, msb48]
 }

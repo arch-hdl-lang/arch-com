@@ -33,7 +33,10 @@ What is *not* here — and is the residual of `arch_round48_correct` — is the
 rounding **direction** for inexact (non-representable) arguments: that the rounder
 picks the nearer neighbour with ties-to-even. That alone is genuinely value-level
 (it compares the exact `sig · 2^e0` against two representable neighbours across an
-exponent scaling), so it needs the dyadic/`Rat` argument, not a bit-blaster.
+exponent scaling), so it needs the dyadic/`Rat` argument, not a bit-blaster. The
+final section here lays that argument's first stone: `msb_index_finds_msb` /
+`msb_index_bound` carry the optimized leading-zero count across to the `Nat` bound
+`2^p ≤ sig < 2^(p+1)` — entirely with Lean-core lemmas, no Mathlib.
 -/
 
 namespace ArchFp
@@ -90,5 +93,42 @@ theorem mul_one_right (x : BitVec 32) (h : isNaN x = false) :
   unfold isNaN expField fracField at h
   unfold arch_f32_mul
   bv_decide (config := { timeout := 300 })
+
+-- ── value-level bridge: the leading-zero count is mathematically correct ─────
+--
+-- The residual of `arch_round48_correct` is the rounding *direction* on inexact
+-- inputs, which is value-level (a `Nat` argument). Its first step is to know the
+-- normalized position — the MSB of the significand. `arch_round48` computes this
+-- with a binary-search count-leading-zeros (`arch_msb_index48`); these two lemmas
+-- carry that optimized bit-level search across into the value world, with **no
+-- Mathlib** — `bv_decide` for the bit fact, Lean-core `Nat` lemmas + `omega` for
+-- the arithmetic. This is the entry point a full rounding-direction proof builds on.
+
+/-- The binary-search clz finds the true most-significant bit: for nonzero `sig`,
+    `sig >>> msb_index(sig) = 1`, i.e. `floor(sig / 2^p) = 1`. Exhaustive
+    (`bv_decide`) over all 2^48 significands. -/
+theorem msb_index_finds_msb (sig : BitVec 48) (h : sig ≠ 0#48) :
+    sig >>> (arch_msb_index48 sig).toNat = 1#48 := by
+  unfold arch_msb_index48
+  bv_decide (config := { timeout := 300 })
+
+/-- Value-level corollary: the computed index `p` brackets the significand,
+    `2^p ≤ sig < 2^(p+1)` — i.e. `p = ⌊log₂ sig⌋`. Bridges the bit fact above to a
+    `Nat` bound using only core lemmas (`Nat.div_add_mod`, `Nat.pow_succ`, `omega`). -/
+theorem msb_index_bound (sig : BitVec 48) (h : sig ≠ 0#48) :
+    2 ^ (arch_msb_index48 sig).toNat ≤ sig.toNat
+      ∧ sig.toNat < 2 ^ ((arch_msb_index48 sig).toNat + 1) := by
+  have hb := msb_index_finds_msb sig h
+  have hdiv : sig.toNat / 2 ^ (arch_msb_index48 sig).toNat = 1 := by
+    have h2 := congrArg BitVec.toNat hb
+    simpa [BitVec.toNat_ushiftRight, Nat.shiftRight_eq_div_pow] using h2
+  have hpos : 0 < 2 ^ (arch_msb_index48 sig).toNat := Nat.pow_pos (by decide : 0 < 2)
+  have hdm := Nat.div_add_mod sig.toNat (2 ^ (arch_msb_index48 sig).toNat)
+  have hmod : sig.toNat % 2 ^ (arch_msb_index48 sig).toNat
+      < 2 ^ (arch_msb_index48 sig).toNat := Nat.mod_lt _ hpos
+  rw [hdiv, Nat.mul_one] at hdm
+  have hps : 2 ^ ((arch_msb_index48 sig).toNat + 1)
+      = 2 ^ (arch_msb_index48 sig).toNat * 2 := Nat.pow_succ 2 (arch_msb_index48 sig).toNat
+  omega
 
 end ArchFp

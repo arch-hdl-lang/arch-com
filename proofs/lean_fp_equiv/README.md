@@ -87,7 +87,15 @@ carried most of the way:
 | rounder shape: `round48_sign` (sign preserved), `round48_zero` (0 → ±0) | **proved** (`bv_decide`, `Round.lean`) |
 | `round48_exact_normal` / `round48_exact_subnormal`: rounding any representable value is the identity | **proved** — `arch_round48_correct` on the entire *exact* sub-domain |
 | `mul_one_left` / `mul_one_right`: `1·x = x` for every non-NaN `x` | **proved** end-to-end (constant operand → no variable multiplier) |
+| `msb_index_finds_msb`: the binary-search clz finds the true MSB (`sig >>> p = 1`) | **proved** (`bv_decide`, exhaustive over 2^48) |
+| `msb_index_bound`: value-level `2^p ≤ sig < 2^(p+1)` | **proved** (bit→`Nat` bridge, Lean-core lemmas only — no Mathlib) |
 | `arch_round48_correct`: the shared rounder rounds correctly | **open** (the one `sorry`) — only the *inexact* rounding direction remains |
+
+The last two are the first stone of the value-level argument the residual needs:
+they carry `arch_round48`'s optimized leading-zero count across into a `Nat`
+magnitude bound, establishing that the bit→value bridge works here with Lean core
+alone (`bv_decide` for the bit fact, `Nat.div_add_mod`/`Nat.pow_succ`/`omega` for
+the arithmetic) — the pattern the remaining rounding-direction lemmas follow.
 
 This is the whole point of the algebraic-lifting approach landing concretely: the
 multiplier theorem no longer faces a SAT wall. `mul`'s special values are proved,
