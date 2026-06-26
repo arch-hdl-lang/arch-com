@@ -522,3 +522,34 @@ pub fn fp_functions(p: FpCompat) -> Vec<FpFn> {
     v.push(bf16_cmp("arch_bf16_ge", "arch_f32_ge"));
     v
 }
+
+/// Extra helpers exposed to the **Lean** backend only (not part of `arch build`
+/// SV or `arch formal` SMT — they would be dead there). They surface the pieces
+/// that `f32_mul` inlines — the decode fields and the shared round-and-pack at
+/// the multiply width — as named functions, so the Lean proof can state the
+/// reduction `mul (finite) = round48(sign, mant_a·mant_b, e0)`. Because they are
+/// built from the *same* `decode`/`normround` as `f32_mul`, the multiplier
+/// appears identically on both sides of that equation and `bv_decide` discharges
+/// it structurally (no SAT-hard multiplier-equivalence). This isolates the entire
+/// remaining Tier-2 crux into one function: `arch_round48`.
+pub fn lean_extra_functions() -> Vec<FpFn> {
+    let decode_mant = {
+        let x = var("x", 32);
+        FpFn::new("arch_decode_mant", &[("x", 32)], 24, decode(&x).mant)
+    };
+    let decode_eunb = {
+        let x = var("x", 32);
+        FpFn::new("arch_decode_eunb", &[("x", 32)], 16, decode(&x).eunb)
+    };
+    let round48 = {
+        let s = var("s", 1);
+        let sig = var("sig", 48);
+        let e0 = var("e0", 16);
+        FpFn::new("arch_round48", &[("s", 1), ("sig", 48), ("e0", 16)], 32, normround(&s, &sig, &e0))
+    };
+    let msb48 = {
+        let sig = var("sig", 48);
+        FpFn::new("arch_msb_index48", &[("sig", 48)], 16, msb_index(&sig))
+    };
+    vec![decode_mant, decode_eunb, round48, msb48]
+}
