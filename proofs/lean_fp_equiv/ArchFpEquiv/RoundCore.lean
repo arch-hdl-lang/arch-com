@@ -97,4 +97,35 @@ theorem rne_matches (n sh : Nat) (hsh : 1 ≤ sh) :
         ∨ (n % 2 ^ sh = 2 ^ (sh - 1) ∧ (n / 2 ^ sh) % 2 = 1)) := fun h => hb (key.mpr h)
     rw [if_neg this]
 
+-- ── BitVec → Nat bridge ingredients for the rounding step ────────────────────
+-- These connect the actual bits arch extracts (the guard bit, via a right shift
+-- and low-bit select) to the `Nat` quantities `rne_matches`/`guardStickyUp` speak.
+
+/-- `w / b = 1 ⟺ b ≤ w`, given `w < 2·b`. (A quotient that can only be 0 or 1 is
+    1 exactly when `w` reaches `b`.) -/
+theorem div_eq_one_of_lt_two_mul (w b : Nat) (hpos : 0 < b) (hb : w < 2 * b) :
+    w / b = 1 ↔ b ≤ w := by
+  constructor
+  · intro hh
+    have : 1 * b ≤ w := (Nat.le_div_iff_mul_le hpos).mp (by omega)
+    simpa using this
+  · intro hle
+    have h1 : 1 ≤ w / b := (Nat.le_div_iff_mul_le hpos).mpr (by simpa using hle)
+    have h2 : w / b < 2 := (Nat.div_lt_iff_lt_mul hpos).mpr (by omega)
+    omega
+
+/-- The **guard-bit identity**: bit `h` of `v` (i.e. `(v / 2^h) % 2 = 1`) holds
+    exactly when the dropped remainder reaches the half-ULP boundary,
+    `2^h ≤ v % 2^(h+1)`. This is what lets arch's extracted guard bit drive
+    `guardStickyUp`'s `half ≤ r` comparison. -/
+theorem guard_bit_eq (v h : Nat) : (v / 2 ^ h) % 2 = 1 ↔ 2 ^ h ≤ v % 2 ^ (h + 1) := by
+  have key : v % 2 ^ (h + 1) / 2 ^ h = (v / 2 ^ h) % 2 := by
+    rw [Nat.pow_succ', Nat.mod_mul_left_div_self]
+  rw [← key]
+  have hpos : 0 < 2 ^ h := Nat.pow_pos (by decide : 0 < 2)
+  have hb : v % 2 ^ (h + 1) < 2 * 2 ^ h := by
+    have hm := Nat.mod_lt v (Nat.pow_pos (by decide : 0 < 2) (n := h + 1))
+    rw [Nat.pow_succ'] at hm; omega
+  exact div_eq_one_of_lt_two_mul _ _ hpos hb
+
 end ArchFp
