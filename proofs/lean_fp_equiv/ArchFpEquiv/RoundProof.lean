@@ -264,4 +264,57 @@ theorem rneQuot_big_zero (n sh : Nat) (hn : n < 2 ^ 50) (h : 51 ≤ sh) :
   have hge1 : (2:Nat) ^ 50 ≤ 2 ^ (sh - 1) := Nat.pow_le_pow_right (by decide) (by omega)
   rw [Nat.div_eq_of_lt (by omega), Nat.mod_eq_of_lt (by omega), if_neg (by omega)]
 
+/-- **Unified kept value.** arch's kept significand (the whole `if shLe0 … + roundup`
+    expression as it appears in `round48_struct`) equals the value-level `kept`:
+    `sig·2^(-sh)` on the exact left-shift path (`sh ≤ 0`), `rneQuot sig sh` on the
+    rounding right-shift path (`sh > 0`), covering the deep-underflow tail
+    (`sh > 50` ⟹ 0) too. The single lemma the kept-significand cases reduce to. -/
+theorem kept_unified (sig : BitVec 50) (sh : BitVec 16)
+    (hbnd : -200 ≤ sh.toInt) (hbnd2 : sh.toInt ≤ 200)
+    (hno : sh.toInt ≤ 0 → sig.toNat * 2 ^ (-sh.toInt).toNat < 2 ^ 50) :
+    ((if BitVec.sle sh 0#16 then sig <<< (BitVec.setWidth 50 (0#16 - sh)).toNat
+      else sig >>> (BitVec.setWidth 50 sh).toNat)
+     + BitVec.setWidth 50
+        ((if BitVec.sle sh 0#16 then 0#1
+          else BitVec.extractLsb 0 0 (sig >>> (BitVec.setWidth 50 (sh - 1#16)).toNat))
+          &&& ((if BitVec.sle sh 0#16 then 0#1
+                else BitVec.ofBool (sig &&& ((1#50 <<< (BitVec.setWidth 50 (sh - 1#16)).toNat) - 1#50) != 0#50))
+                ||| BitVec.extractLsb 0 0
+                      (if BitVec.sle sh 0#16 then sig <<< (BitVec.setWidth 50 (0#16 - sh)).toNat
+                       else sig >>> (BitVec.setWidth 50 sh).toNat)))).toNat
+    = (if sh.toInt ≤ 0 then sig.toNat * 2 ^ (-sh.toInt).toNat else rneQuot sig.toNat sh.toNat) := by
+  by_cases hle : BitVec.sle sh 0#16
+  · have hsi : sh.toInt ≤ 0 := by rw [BitVec.sle_iff_toInt_le] at hle; simpa using hle
+    simp only [hle, if_true, if_pos hsi]
+    have hadd : ∀ x : BitVec 50, x + BitVec.setWidth 50 ((0#1 : BitVec 1) &&& (0#1 ||| BitVec.extractLsb 0 0 x)) = x := by
+      intro x; bv_decide
+    rw [hadd, sw50_toNat, negsh_toNat sh hsi (by omega)]
+    exact kept_left sig _ (hno hsi)
+  · rw [Bool.not_eq_true] at hle
+    have hsi : 0 < sh.toInt := by
+      have h := hle
+      rw [BitVec.sle_eq_decide, decide_eq_false_iff_not] at h
+      have hz : (0#16).toInt = 0 := by decide
+      rw [hz] at h
+      omega
+    have hn1 : 1 ≤ sh.toNat := by rw [toNat_of_toInt_nonneg sh (by omega)]; omega
+    have hnle : ¬ sh.toInt ≤ 0 := by omega
+    rw [hle]
+    simp only [Bool.false_eq_true, if_false, if_neg hnle]
+    by_cases hsmall : sh.toNat ≤ 50
+    · exact kept_value sig sh hn1 hsmall
+    · have hsig50 : sig.toNat < 2 ^ 50 := sig.isLt
+      have hk0 : sig >>> (BitVec.setWidth 50 sh).toNat = 0#50 := by
+        apply BitVec.eq_of_toNat_eq
+        rw [BitVec.toNat_ushiftRight, Nat.shiftRight_eq_div_pow, sw50_toNat]
+        simp [kept_big_zero sig sh.toNat (by omega)]
+      have hg0 : sig >>> (BitVec.setWidth 50 (sh - 1#16)).toNat = 0#50 := by
+        apply BitVec.eq_of_toNat_eq
+        rw [BitVec.toNat_ushiftRight, Nat.shiftRight_eq_div_pow, sw50_sub1 sh hn1]
+        have hlt : sig.toNat < 2 ^ (sh.toNat - 1) := by
+          have : (2:Nat)^50 ≤ 2^(sh.toNat-1) := Nat.pow_le_pow_right (by decide) (by omega); omega
+        simp [Nat.div_eq_of_lt hlt]
+      rw [hk0, hg0, rneQuot_big_zero sig.toNat sh.toNat hsig50 (by omega)]
+      bv_decide
+
 end ArchFp
