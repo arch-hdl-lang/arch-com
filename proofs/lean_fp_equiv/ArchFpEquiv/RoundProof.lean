@@ -240,4 +240,28 @@ theorem negsh_toNat (sh : BitVec 16) (h0 : sh.toInt ≤ 0) (hb : -200 ≤ sh.toI
   rw [h1, Int.bmod_eq_emod] at h2
   split at h2 <;> omega
 
+/-- `toInt ≥ 0` (16-bit) ⟹ `toNat = toInt.toNat`. -/
+theorem toNat_of_toInt_nonneg (x : BitVec 16) (h : 0 ≤ x.toInt) : x.toNat = x.toInt.toNat := by
+  have h2 := BitVec.toInt_eq_toNat_bmod x
+  have h3 := x.isLt
+  rw [Int.bmod_eq_emod] at h2; split at h2 <;> omega
+
+/-- `guardStickyUp` is false for a deep shift (`sh ≥ 51`) of a 50-bit value. -/
+theorem gsu_big_false (n sh : Nat) (hn : n < 2 ^ 50) (h : 51 ≤ sh) :
+    guardStickyUp n sh = false := by
+  unfold guardStickyUp
+  have h1 : n % 2 ^ sh = n := Nat.mod_eq_of_lt (by
+    have : (2:Nat)^50 ≤ 2^sh := Nat.pow_le_pow_right (by decide) (by omega); omega)
+  have h2 : n < 2 ^ (sh - 1) := by
+    have : (2:Nat)^50 ≤ 2^(sh-1) := Nat.pow_le_pow_right (by decide) (by omega); omega
+  simp only [h1, Nat.not_le.mpr h2, decide_false, Bool.false_and]
+
+/-- Deep underflow: `rneQuot n sh = 0` for `n < 2^50` and `sh ≥ 51`. -/
+theorem rneQuot_big_zero (n sh : Nat) (hn : n < 2 ^ 50) (h : 51 ≤ sh) :
+    rneQuot n sh = 0 := by
+  unfold rneQuot
+  have hge : (2:Nat) ^ 50 ≤ 2 ^ sh := Nat.pow_le_pow_right (by decide) (by omega)
+  have hge1 : (2:Nat) ^ 50 ≤ 2 ^ (sh - 1) := Nat.pow_le_pow_right (by decide) (by omega)
+  rw [Nat.div_eq_of_lt (by omega), Nat.mod_eq_of_lt (by omega), if_neg (by omega)]
+
 end ArchFp
