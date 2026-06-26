@@ -226,4 +226,18 @@ theorem combine_sub (s : BitVec 1) (kept : BitVec 50) :
   rw [Nat.mul_comm s.toNat (2 ^ 31), ← Nat.two_pow_add_eq_or_of_lt hk]
   omega
 
+/-- The 50-bit widen of the significand keeps its `toNat`. -/
+theorem zsig_toNat (sig : BitVec 48) : (BitVec.setWidth 50 sig).toNat = sig.toNat := by
+  rw [BitVec.toNat_setWidth]; exact Nat.mod_eq_of_lt (by have := sig.isLt; omega)
+
+/-- Negated-shift amount bridge for the left-shift (exact) path. -/
+theorem negsh_toNat (sh : BitVec 16) (h0 : sh.toInt ≤ 0) (hb : -200 ≤ sh.toInt) :
+    (0#16 - sh).toNat = (-sh.toInt).toNat := by
+  have h1 : (0#16 - sh).toInt = - sh.toInt := by
+    rw [toInt_sub_of_bounds] <;> simp only [show (0#16).toInt = 0 from rfl] <;> omega
+  have h2 := BitVec.toInt_eq_toNat_bmod (0#16 - sh)
+  have h3 := (0#16 - sh).isLt
+  rw [h1, Int.bmod_eq_emod] at h2
+  split at h2 <;> omega
+
 end ArchFp
