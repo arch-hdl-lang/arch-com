@@ -131,4 +131,28 @@ theorem msb_index_bound (sig : BitVec 48) (h : sig ≠ 0#48) :
       = 2 ^ (arch_msb_index48 sig).toNat * 2 := Nat.pow_succ 2 (arch_msb_index48 sig).toNat
   omega
 
+/-- arch's binary-search count-leading-zeros **is** the canonical `Nat.log2`:
+    `msb_index(sig) = ⌊log₂ sig⌋`. Lets every downstream value-level lemma use
+    `Nat.log2` (and its core API) in place of arch's bespoke search. Proved from
+    `msb_index_bound` and `Nat.log2`'s own bracketing (`Nat.log2_self_le` /
+    `Nat.lt_log2_self`) — the exponent `k` with `2^k ≤ N < 2^(k+1)` is unique. -/
+theorem msb_index_eq_log2 (sig : BitVec 48) (h : sig ≠ 0#48) :
+    (arch_msb_index48 sig).toNat = Nat.log2 sig.toNat := by
+  have hn : sig.toNat ≠ 0 := by
+    intro hz
+    exact h (BitVec.eq_of_toNat_eq (by simpa using hz))
+  obtain ⟨_hlo, hhi⟩ := msb_index_bound sig h
+  have llo := Nat.log2_self_le hn
+  have lhi := Nat.lt_log2_self (n := sig.toNat)
+  rcases Nat.lt_trichotomy (arch_msb_index48 sig).toNat (Nat.log2 sig.toNat) with hc | hc | hc
+  · exfalso
+    have hp : 2 ^ ((arch_msb_index48 sig).toNat + 1) ≤ 2 ^ Nat.log2 sig.toNat :=
+      Nat.pow_le_pow_right (by decide) hc
+    omega
+  · exact hc
+  · exfalso
+    have hp : 2 ^ (Nat.log2 sig.toNat + 1) ≤ 2 ^ (arch_msb_index48 sig).toNat :=
+      Nat.pow_le_pow_right (by decide) hc
+    omega
+
 end ArchFp

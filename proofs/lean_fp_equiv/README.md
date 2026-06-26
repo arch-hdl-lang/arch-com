@@ -101,7 +101,8 @@ Mathlib olean cache is egress-blocked here, so this was done without it):
 
 * `Round.msb_index_bound` — normalization: arch's binary-search clz finds the true
   MSB, giving `2^p ≤ sig < 2^(p+1)` (`bv_decide` for the bit fact, `Nat` lemmas +
-  `omega` for the bound).
+  `omega` for the bound). `Round.msb_index_eq_log2` then identifies it with the
+  canonical `Nat.log2`, so downstream value lemmas use core `Nat.log2` directly.
 * `RoundCore.rne_matches` — rounding: arch's `guard ∧ (sticky ∨ odd)` equals
   `rneQuot` (round-to-nearest-even of `n / 2^sh`), where `guard ⟺ half ≤ r`,
   `sticky ⟺ r % half ≠ 0`, ties-to-even — proved in pure `Nat`.
