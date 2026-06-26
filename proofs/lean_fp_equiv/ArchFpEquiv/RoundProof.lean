@@ -173,4 +173,16 @@ theorem kept_value (zsig : BitVec 50) (sh : BitVec 16) (h1 : 1 ≤ sh.toNat) (h2
   rw [struct_roundup_eq zsig sh h1, sw50_toNat]
   exact round_step zsig sh.toNat h1 (by omega)
 
+/-- Left-shift (exact, no rounding) kept value, under no 50-bit overflow. -/
+theorem kept_left (zsig : BitVec 50) (amt : Nat) (hno : zsig.toNat * 2 ^ amt < 2 ^ 50) :
+    (zsig <<< amt).toNat = zsig.toNat * 2 ^ amt := by
+  rw [BitVec.toNat_shiftLeft, Nat.shiftLeft_eq, Nat.mod_eq_of_lt hno]
+
+/-- A right shift by ≥ 50 zeroes a 50-bit value. -/
+theorem kept_big_zero (zsig : BitVec 50) (sh : Nat) (h : 50 ≤ sh) :
+    zsig.toNat / 2 ^ sh = 0 := by
+  have h1 : zsig.toNat < 2 ^ 50 := zsig.isLt
+  have h2 : (2:Nat) ^ 50 ≤ 2 ^ sh := Nat.pow_le_pow_right (by decide) h
+  exact Nat.div_eq_of_lt (by omega)
+
 end ArchFp
