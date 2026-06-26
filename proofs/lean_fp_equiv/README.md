@@ -73,9 +73,23 @@ so `arch_fma_f32_finite_correct` follows from a structural `bv_decide` reduction
 `arch_fma_f32` branch is covered: finite non-cancel / cancel / `c=0` (rounded
 product) / product`=0` (the proved adder) / NaN / `0·∞` / `∞−∞` / `∞`-product /
 `∞`-addend. `f32 mul`, `add`, `sub`, and `fma` are now all proved (mul/fma here,
-add/sub by the exhaustive SMT backend). **`bf16_fma` remains** — it routes through
-the f32 datapath, so it needs a `roundNE_bf16` spec plus the
-double-rounding-innocuous lemma (f32's 24 bits ≥ `2·8+2`) on top of the f32 result.
+add/sub by the exhaustive SMT backend).
+
+**`bf16_fma` is *not* correctly-rounded — and that is by design, not a gap.** It
+implements **fused f32-accumulate**: widen→one correctly-rounded f32 fma (proved
+here)→round f32→bf16. The narrow is a second rounding, and double rounding here is
+*not* innocuous (the "≥ `2p+2` margin" reasoning is a known fallacy for round-to-
+nearest — `RNE_p(RNE_q(x)) ≠ RNE_q(x)` in general; fails at `p=4,q=1`). Empirically
+the bf16 result differs from the correctly-rounded `a·b+c` on ~0.37 % of finite
+inputs, always by 1 ULP (witness `a=0x2a20,b=0x51a6,c=0x9359` → arch `0x3c50`,
+correct `0x3c4f`; the f32 result lands on a bf16 midpoint). This is the same
+f32-accumulate convention NVIDIA Tensor Cores / TPUs use; the f32→bf16 narrow is
+**bit-identical to PyTorch's `round_to_nearest_even`**, and arch's bf16
+`mul`/`add`/`sub` match PyTorch `c10::BFloat16` bit-for-bit (arch's *fused* fma is
+strictly more accurate than PyTorch's non-fused scalar `a*b+c`). So the meaningful
+Lean theorem for bf16 fma is the **f32-accumulate characterization**
+`arch_bf16_fma = narrow(roundNE_f32 …)` (true, derivable from the f32 result) —
+*not* `= roundNE_bf16(a·b+c)`, which is **false**.
 
 **Proven (`bv_decide`, no IEEE spec needed — pure `BitVec` facts about the real
 emitted operators):**

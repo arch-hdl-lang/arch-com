@@ -8,4 +8,5 @@ import ArchFpEquiv.RoundProof
 import ArchFpEquiv.Equiv
 import ArchFpEquiv.RoundFma
 import ArchFpEquiv.Fma
+import ArchFpEquiv.Bf16FmaNote
 import ArchFpEquiv.SpecCheck

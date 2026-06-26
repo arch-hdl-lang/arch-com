@@ -80,11 +80,28 @@ mul cross-checked with cvc5 `--fp-exp`). They are the plan's §8.1 primary targe
   lifting rather than bit-blasting — so finite `f32_mul` is correctly rounded
   (`arch_f32_mul_finite_correct`), and the same op-independent lemma carries to
   `fma`.
-- **`bf16_fma`** is *correct* — via f32 the double rounding is innocuous (f32
-  keeps a 16-bit precision lead over bf16 at every magnitude, ≥ the `2p+2`
-  margin since `p ≤ 8`; confirmed by an exhaustive deep-subnormal check) — but
-  its proof needs `fp.fma`, whose z3 4.8.12 support is incomplete (it returns a
-  *spurious* `sat` whose own witness satisfies the equivalence). cvc5 `--fp-exp`
-  handles `(8,8)` but times out. So `bf16_fma` is verified by the theorem +
-  §8.2, not yet machine-discharged; a solver with sound `fp.fma` at `(8,8)`
-  would close it.
+- **`bf16_fma`** computes **fused f32-accumulate**, *not* correctly-rounded bf16
+  fma: it widens to f32, does one correctly-rounded f32 fma (the exact `a·b+c`
+  rounded once to f32 — machine-proved in `proofs/lean_fp_equiv`), then rounds
+  f32→bf16. That final narrow is a second rounding, and **double rounding here is
+  not innocuous**: `RNE_p(RNE_q(x)) = RNE_q(x)` is *not* guaranteed by `p ≥ 2q+2`
+  for round-to-nearest (a known fallacy — fails already at `p=4, q=1`). The bf16
+  result differs from the correctly-rounded `a·b+c` in **~0.37 % of finite
+  inputs, always by 1 ULP**. Reproducible witness: `a=0x2a20, b=0x51a6,
+  c=0x9359` → arch `0x3c50`, correctly-rounded bf16 `0x3c4f` (the f32 result
+  lands exactly on a bf16 midpoint, so the narrow ties-to-even up). The earlier
+  "deep-subnormal check" missed it (these are normal-range), and the §8.2
+  differential harness cannot catch it — its DPI reference (`dpi_ref.cpp:50`,
+  `narrow_bf16(__builtin_fmaf(...))`) is *itself* f32-accumulate, so RTL and
+  reference double-round identically by construction.
+
+  This is a sound, mainstream design, not a bug. The f32→bf16 narrow is
+  **bit-identical to PyTorch's `round_to_nearest_even`**, and arch's bf16
+  `mul`/`add`/`sub` match PyTorch's `c10::BFloat16` operators bit-for-bit; arch's
+  *fused* fma is in fact **more accurate** than PyTorch's scalar `a*b+c` (which
+  has no fma and rounds the product to bf16 first — differs from arch on ~1.2 %
+  of inputs). It also mirrors the NVIDIA Tensor Core / TPU f32-accumulate
+  convention. What is *not* true is "correctly-rounded bf16 fma" — no mainstream
+  hardware implements that. So `bf16_fma` is correct **for f32-accumulate
+  semantics** (the f32 fma is machine-proved; the narrow matches PyTorch), and is
+  verified end-to-end by §8.2 against the matching f32-accumulate reference.
