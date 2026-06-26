@@ -3,4 +3,5 @@ import ArchFpEquiv.Model
 import ArchFpEquiv.Spec
 import ArchFpEquiv.Round
 import ArchFpEquiv.RoundCore
+import ArchFpEquiv.RoundBridge
 import ArchFpEquiv.Equiv
