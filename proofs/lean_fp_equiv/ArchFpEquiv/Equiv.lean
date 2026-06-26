@@ -1,5 +1,6 @@
 import ArchFpEquiv.Model
 import ArchFpEquiv.Spec
+import ArchFpEquiv.RoundProof
 import Std.Tactic.BVDecide
 
 /-!
@@ -128,12 +129,8 @@ It is stated below against `roundNE_f32` and needs the algebraic-lifting argumen
 machine-proved against IEEE `fp.add`/`fp.sub` over all 2^64 inputs by the SMT
 backend; `fma` reduces the same way once its wide aligned product is named. -/
 
-/-- IEEE-754 round-to-nearest-even, value level: the correctly-rounded binary32
-    bit pattern of the real number `(-1)^neg · sig · 2^e0`. Left `opaque` — a full
-    development defines it via a dyadic/`Rat` model (Mathlib/Flocq, or a port of
-    the SMT `FloatingPoint` theory). It is the *only* abstract object remaining in
-    Tier-2 multiply; everything else is proved. -/
-opaque roundNE_f32 : (neg : Bool) → (sig : Nat) → (e0 : Int) → BitVec 32
+-- `roundNE_f32` is now a concrete value-level RNE spec (`RoundProof.lean`), no
+-- longer opaque; the `sig=0` case is discharged there (`round48_correct_zero`).
 
 /-- **The rounder crux.** The shared round-and-pack at the multiply width rounds
     its dyadic argument `(-1)^s · sig · 2^e0` to nearest-even.
