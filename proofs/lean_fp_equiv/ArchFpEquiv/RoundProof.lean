@@ -161,4 +161,16 @@ theorem struct_roundup_eq (zsig : BitVec 50) (sh : BitVec 16) (h1 : 1 ≤ sh.toN
     = roundupBit zsig sh.toNat := by
   rw [sw50_sub1 sh h1, sw50_toNat]; unfold roundupBit; bv_decide
 
+/-- Central rounding result: arch's kept significand (right-shift path) equals
+    the round-to-nearest-even quotient, for `1 ≤ sh ≤ 50`. -/
+theorem kept_value (zsig : BitVec 50) (sh : BitVec 16) (h1 : 1 ≤ sh.toNat) (h2 : sh.toNat ≤ 50) :
+    ((zsig >>> (BitVec.setWidth 50 sh).toNat)
+      + BitVec.setWidth 50
+          ((BitVec.extractLsb 0 0 (zsig >>> (BitVec.setWidth 50 (sh - 1#16)).toNat))
+            &&& ((BitVec.ofBool (zsig &&& ((1#50 <<< (BitVec.setWidth 50 (sh - 1#16)).toNat) - 1#50) != 0#50))
+                  ||| (BitVec.extractLsb 0 0 (zsig >>> (BitVec.setWidth 50 sh).toNat))))).toNat
+    = rneQuot zsig.toNat sh.toNat := by
+  rw [struct_roundup_eq zsig sh h1, sw50_toNat]
+  exact round_step zsig sh.toNat h1 (by omega)
+
 end ArchFp
