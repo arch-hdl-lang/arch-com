@@ -69,7 +69,10 @@ mul cross-checked with cvc5 `--fp-exp`). They are the plan's §8.1 primary targe
   `bv_decide` alike). They stay on the §8.2 differential Verilator campaign
   (`fp_rtl_differential_equiv_verilator`), bit-exact against a host-IEEE-754
   reference over corner + randomized + cancellation-prone vectors. A structured
-  theorem prover (Lean/Coq) is the natural route for the multiplier ops.
+  theorem prover is the natural route for the multiplier ops — see the Lean
+  backend scaffold in `proofs/lean_fp_equiv/`, which renders the *same* IR to
+  Lean `BitVec` defs (`fp_ir::render_lean`) and states the correct-rounding goal
+  for `mul`/`fma` to be discharged by algebraic lifting rather than bit-blasting.
 - **`bf16_fma`** is *correct* — via f32 the double rounding is innocuous (f32
   keeps a 16-bit precision lead over bf16 at every magnitude, ≥ the `2p+2`
   margin since `p ≤ 8`; confirmed by an exhaustive deep-subnormal check) — but
