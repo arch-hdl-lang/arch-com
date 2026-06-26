@@ -37,7 +37,8 @@ lean-toolchain           leanprover/lean4:v4.30.0  (matches proofs/lean_thread_l
 ArchFpEquiv.lean         root: imports Model + Spec + Equiv
 ArchFpEquiv/Model.lean   GENERATED snapshot of every operator (regen below)
 ArchFpEquiv/Spec.lean    Tier-2 multiply: special-value lattice + finite reduction (proved)
-ArchFpEquiv/Round.lean   Tier-2 rounder: sign/zero/exact-round-trip + 1·x=x (proved)
+ArchFpEquiv/Round.lean   Tier-2 rounder: sign/zero/exact-round-trip + 1·x=x + msb bridge (proved)
+ArchFpEquiv/RoundCore.lean  Tier-2 rounding kernel: guard/sticky = nearest-even (proved, pure Nat)
 ArchFpEquiv/Equiv.lean   Tier-1 structural lemmas (proved) + the rounder crux + derived mul
 scripts/regen_model.sh   re-render Model.lean from the IR
 ```
@@ -89,13 +90,26 @@ carried most of the way:
 | `mul_one_left` / `mul_one_right`: `1·x = x` for every non-NaN `x` | **proved** end-to-end (constant operand → no variable multiplier) |
 | `msb_index_finds_msb`: the binary-search clz finds the true MSB (`sig >>> p = 1`) | **proved** (`bv_decide`, exhaustive over 2^48) |
 | `msb_index_bound`: value-level `2^p ≤ sig < 2^(p+1)` | **proved** (bit→`Nat` bridge, Lean-core lemmas only — no Mathlib) |
-| `arch_round48_correct`: the shared rounder rounds correctly | **open** (the one `sorry`) — only the *inexact* rounding direction remains |
+| `RoundCore.rne_matches`: guard/round/sticky = round-to-nearest-even integer division | **proved** (pure `Nat`, the rounding kernel) |
+| `arch_round48_correct`: the shared rounder rounds correctly | **open** (the one `sorry`) — only bit-level plumbing into the two kernels remains |
 
-The last two are the first stone of the value-level argument the residual needs:
-they carry `arch_round48`'s optimized leading-zero count across into a `Nat`
-magnitude bound, establishing that the bit→value bridge works here with Lean core
-alone (`bv_decide` for the bit fact, `Nat.div_add_mod`/`Nat.pow_succ`/`omega` for
-the arithmetic) — the pattern the remaining rounding-direction lemmas follow.
+### The residual, and why it is now small
+
+The inexact rounding direction — all that is left of `arch_round48_correct` — has
+been reduced to two arithmetic kernels, **both proved with Lean core alone** (the
+Mathlib olean cache is egress-blocked here, so this was done without it):
+
+* `Round.msb_index_bound` — normalization: arch's binary-search clz finds the true
+  MSB, giving `2^p ≤ sig < 2^(p+1)` (`bv_decide` for the bit fact, `Nat` lemmas +
+  `omega` for the bound).
+* `RoundCore.rne_matches` — rounding: arch's `guard ∧ (sticky ∨ odd)` equals
+  `rneQuot` (round-to-nearest-even of `n / 2^sh`), where `guard ⟺ half ≤ r`,
+  `sticky ⟺ r % half ≠ 0`, ties-to-even — proved in pure `Nat`.
+
+What remains is the bit-level *plumbing* that threads `arch_round48`'s concrete
+shifts and exponent computation into these two kernels (e.g. `(zsig >>> sh).toNat
+= zsig.toNat / 2^sh` via `BitVec.toNat_ushiftRight`, already used in
+`msb_index_bound`). That is mechanical bridge work, not new mathematics.
 
 This is the whole point of the algebraic-lifting approach landing concretely: the
 multiplier theorem no longer faces a SAT wall. `mul`'s special values are proved,

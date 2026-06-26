@@ -146,10 +146,13 @@ opaque roundNE_f32 : (neg : Bool) → (sig : Nat) → (e0 : Int) → BitVec 32
     already holds on the entire *exact* sub-domain (no rounding error), with the
     optimized clz / appended-sticky datapath bit-blasted. The residual is only the
     rounding **direction** for *inexact* arguments (nearer neighbour, ties-to-
-    even): that genuinely compares `sig · 2^e0` to two representable neighbours
-    across an exponent scaling, so it is value-level (a dyadic/`Rat` argument),
-    not bit-blastable. Being op-independent, discharging it also unlocks
-    `add`/`fma` once they are reduced like `mul`. -/
+    even), and even that is now reduced to its two arithmetic kernels, both proved:
+    `Round.msb_index_bound` (the `BitVec`→`Nat` normalization bridge, `2^p ≤ sig <
+    2^(p+1)`) and `RoundCore.rne_matches` (guard/round/sticky = round-to-nearest-
+    even integer division). What is left is the bit-level plumbing that threads
+    arch_round48's concrete shifts/exponent into those two kernels — mechanical,
+    not conceptual. Being op-independent, discharging it also unlocks `add`/`fma`
+    once they are reduced like `mul`. -/
 theorem arch_round48_correct (s : BitVec 1) (sig : BitVec 48) (e0 : BitVec 16) :
     arch_round48 s sig e0 = roundNE_f32 (s == 1#1) sig.toNat e0.toInt := by
   sorry
