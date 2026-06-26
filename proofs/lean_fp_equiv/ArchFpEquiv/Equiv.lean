@@ -146,13 +146,21 @@ opaque roundNE_f32 : (neg : Bool) → (sig : Nat) → (e0 : Int) → BitVec 32
     already holds on the entire *exact* sub-domain (no rounding error), with the
     optimized clz / appended-sticky datapath bit-blasted. The residual is only the
     rounding **direction** for *inexact* arguments (nearer neighbour, ties-to-
-    even), and even that is now reduced to its two arithmetic kernels, both proved:
-    `Round.msb_index_bound` (the `BitVec`→`Nat` normalization bridge, `2^p ≤ sig <
-    2^(p+1)`) and `RoundCore.rne_matches` (guard/round/sticky = round-to-nearest-
-    even integer division). What is left is the bit-level plumbing that threads
-    arch_round48's concrete shifts/exponent into those two kernels — mechanical,
-    not conceptual. Being op-independent, discharging it also unlocks `add`/`fma`
-    once they are reduced like `mul`. -/
+    even), and that residual is now reduced to a stack of **proved** kernels and
+    bridges (all core-only, no Mathlib):
+      • `Round.msb_index_bound` / `msb_index_eq_log2` — normalization: arch's clz
+        finds the true MSB and equals `Nat.log2`.
+      • `RoundCore.rne_matches` — rounding: guard/round/sticky = round-to-nearest-
+        even integer division, with `guard_bit_eq` / `div_eq_one_of_lt_two_mul`.
+      • `RoundBridge.roundupBit_toNat` / `round_step` — arch's *actual* BitVec
+        rounding datapath `(v >>> sh) + roundup` equals `rneQuot v.toNat sh`.
+      • `RoundBridge.toInt_add_of_bounds` / `toInt_sub_of_bounds` — the 16-bit
+        signed exponent arithmetic (`ev`, `biased`, `k`, `sh`) matches `Int`.
+    What remains is the **final assembly**: unfold `arch_round48`'s ~80 `let`s and
+    thread these bridges through the sig=0 / subnormal / normal+carry / overflow
+    packing cases (output `_t92`), plus the `sh ≤ 0` exact left-shift branch. That
+    is large but mechanical wiring; the conceptual work is done. Op-independent, so
+    it also unlocks `add`/`fma` once they are reduced like `mul`. -/
 theorem arch_round48_correct (s : BitVec 1) (sig : BitVec 48) (e0 : BitVec 16) :
     arch_round48 s sig e0 = roundNE_f32 (s == 1#1) sig.toNat e0.toInt := by
   sorry
