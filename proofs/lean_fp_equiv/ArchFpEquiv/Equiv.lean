@@ -136,11 +136,20 @@ backend; `fma` reduces the same way once its wide aligned product is named. -/
 opaque roundNE_f32 : (neg : Bool) → (sig : Nat) → (e0 : Int) → BitVec 32
 
 /-- **The rounder crux.** The shared round-and-pack at the multiply width rounds
-    its dyadic argument `(-1)^s · sig · 2^e0` to nearest-even. This is the single
-    `sorry` gating Tier-2 multiply: `mul`'s special values and its reduction to
-    this function are both proven (`Spec`). Discharging it is the algebraic-lifting
-    work (it is *not* bit-blastable: a 56-bit rounder against a value-level spec).
-    Being op-independent, it also unlocks `add`/`fma` once they are reduced. -/
+    its dyadic argument `(-1)^s · sig · 2^e0` to nearest-even.
+
+    This is the single `sorry` gating Tier-2 multiply — but it is now heavily
+    fenced in. `Round.lean` machine-checks, exhaustively, that `arch_round48`:
+    preserves sign (`round48_sign`), sends a zero significand to signed zero
+    (`round48_zero`), and is the **identity on every representable value**
+    (`round48_exact_normal` / `round48_exact_subnormal`) — i.e. this equation
+    already holds on the entire *exact* sub-domain (no rounding error), with the
+    optimized clz / appended-sticky datapath bit-blasted. The residual is only the
+    rounding **direction** for *inexact* arguments (nearer neighbour, ties-to-
+    even): that genuinely compares `sig · 2^e0` to two representable neighbours
+    across an exponent scaling, so it is value-level (a dyadic/`Rat` argument),
+    not bit-blastable. Being op-independent, discharging it also unlocks
+    `add`/`fma` once they are reduced like `mul`. -/
 theorem arch_round48_correct (s : BitVec 1) (sig : BitVec 48) (e0 : BitVec 16) :
     arch_round48 s sig e0 = roundNE_f32 (s == 1#1) sig.toNat e0.toInt := by
   sorry

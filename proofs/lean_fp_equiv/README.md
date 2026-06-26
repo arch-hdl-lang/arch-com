@@ -37,6 +37,7 @@ lean-toolchain           leanprover/lean4:v4.30.0  (matches proofs/lean_thread_l
 ArchFpEquiv.lean         root: imports Model + Spec + Equiv
 ArchFpEquiv/Model.lean   GENERATED snapshot of every operator (regen below)
 ArchFpEquiv/Spec.lean    Tier-2 multiply: special-value lattice + finite reduction (proved)
+ArchFpEquiv/Round.lean   Tier-2 rounder: sign/zero/exact-round-trip + 1·x=x (proved)
 ArchFpEquiv/Equiv.lean   Tier-1 structural lemmas (proved) + the rounder crux + derived mul
 scripts/regen_model.sh   re-render Model.lean from the IR
 ```
@@ -83,7 +84,10 @@ carried most of the way:
 | multiply special-value lattice (NaN prop, `∞·0=NaN`, `∞·x=∞`, `0·x=0`) — 8 laws | **proved** (`bv_decide`; the rounder/multiplier branch is pruned, so each is sub-second) |
 | `mul_finite_reduces`: `mul a b = round48(sy, mant_a·mant_b, e0)` for finite nonzero | **proved** (`bv_decide`, structural — the 24×24 multiplier is identical on both sides, *not* a multiplier-equivalence) |
 | `arch_f32_mul_finite_correct`: finite `mul` is RNE of the exact product | **derived** from the reduction + the rounder crux below |
-| `arch_round48_correct`: the shared rounder rounds correctly | **open** (the one `sorry`) |
+| rounder shape: `round48_sign` (sign preserved), `round48_zero` (0 → ±0) | **proved** (`bv_decide`, `Round.lean`) |
+| `round48_exact_normal` / `round48_exact_subnormal`: rounding any representable value is the identity | **proved** — `arch_round48_correct` on the entire *exact* sub-domain |
+| `mul_one_left` / `mul_one_right`: `1·x = x` for every non-NaN `x` | **proved** end-to-end (constant operand → no variable multiplier) |
+| `arch_round48_correct`: the shared rounder rounds correctly | **open** (the one `sorry`) — only the *inexact* rounding direction remains |
 
 This is the whole point of the algebraic-lifting approach landing concretely: the
 multiplier theorem no longer faces a SAT wall. `mul`'s special values are proved,
