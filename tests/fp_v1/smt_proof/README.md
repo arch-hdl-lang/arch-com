@@ -71,12 +71,15 @@ mul cross-checked with cvc5 `--fp-exp`). They are the plan's §8.1 primary targe
   reference over corner + randomized + cancellation-prone vectors. A structured
   theorem prover is the natural route for the multiplier ops — see the Lean
   backend in `proofs/lean_fp_equiv/`, which renders the *same* IR to Lean
-  `BitVec` defs (`fp_ir::render_lean`). It builds under Lean v4.30.0 and
-  `bv_decide` machine-checks five structural facts about the emitted operators —
-  comparator symmetry, the `sub = add∘negate` construction, and full f32-adder
-  **commutativity** (the whole ~56-bit datapath bit-blasted) — while stating the
-  `mul`/`fma` correct-rounding goal for discharge by algebraic lifting rather
-  than bit-blasting.
+  `BitVec` defs (`fp_ir::render_lean`). It builds under Lean v4.30.0 with **zero
+  `sorry`**: `bv_decide` machine-checks five structural facts about the emitted
+  operators (comparator symmetry, the `sub = add∘negate` construction, and full
+  f32-adder **commutativity** over the whole ~56-bit datapath), and the shared
+  rounder `arch_round48` is **proved correctly-rounded** against a value-level
+  IEEE-754 round-to-nearest-even spec (`arch_round48_correct`) by algebraic
+  lifting rather than bit-blasting — so finite `f32_mul` is correctly rounded
+  (`arch_f32_mul_finite_correct`), and the same op-independent lemma carries to
+  `fma`.
 - **`bf16_fma`** is *correct* — via f32 the double rounding is innocuous (f32
   keeps a 16-bit precision lead over bf16 at every magnitude, ≥ the `2p+2`
   margin since `p ≤ 8`; confirmed by an exhaustive deep-subnormal check) — but
