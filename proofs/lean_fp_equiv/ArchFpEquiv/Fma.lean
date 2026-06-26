@@ -120,4 +120,38 @@ theorem fma_inf_c (a b c : BitVec 32)
   unfold isNaN isInf expField fracField sgn arch_fma_f32 at *
   bv_decide (config := { timeout := 300 })
 
+/-- **Zero addend: fma is the correctly-rounded product.** With `c = 0` and finite
+    nonzero `a, b`, `arch_fma_f32` rounds the exact product `mant_a·mant_b·2^ep` —
+    the same statement as `arch_f32_mul_finite_correct`. -/
+theorem fma_c_zero_correct (a b c : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true)
+    (hcz : isZero c = true) (hnc : isNaN c = false) (hci : isInf c = false) :
+    arch_fma_f32 a b c
+      = roundNE_f32 ((sgn a ^^^ sgn b) == 1#1)
+          (BitVec.setWidth 470 (BitVec.setWidth 48 (arch_decode_mant a)
+              * BitVec.setWidth 48 (arch_decode_mant b))).toNat
+          (arch_decode_eunb a + arch_decode_eunb b).toInt := by
+  have hred : arch_fma_f32 a b c
+      = arch_round470 (sgn a ^^^ sgn b)
+          (BitVec.setWidth 470 (BitVec.setWidth 48 (arch_decode_mant a)
+              * BitVec.setWidth 48 (arch_decode_mant b)))
+          (arch_decode_eunb a + arch_decode_eunb b) := by
+    unfold finiteNonzero isNaN isInf isZero expField fracField sgn
+      arch_fma_f32 arch_round470 arch_decode_mant arch_decode_eunb at *
+    bv_decide (config := { timeout := 540 })
+  rw [hred]
+  obtain ⟨hlo, hhi⟩ := e0_bounds a b ha hb
+  exact arch_round470_correct _ _ _ hlo hhi
+
+/-- **Zero product: fma reduces to the (proved) adder.** With `a` or `b` zero and
+    `c` finite, `arch_fma_f32 a b c = arch_f32_add (±0) c`. -/
+theorem fma_prod_zero (a b c : BitVec 32)
+    (hna : isNaN a = false) (hnb : isNaN b = false)
+    (hpa : isInf a = false) (hpb : isInf b = false)
+    (hnc : isNaN c = false) (hci : isInf c = false)
+    (hpz : isZero a = true ∨ isZero b = true) :
+    arch_fma_f32 a b c = arch_f32_add ((sgn a ^^^ sgn b) ++ 0#31) c := by
+  unfold isNaN isInf isZero expField fracField sgn arch_fma_f32 at *
+  bv_decide (config := { timeout := 300 })
+
 end ArchFp
