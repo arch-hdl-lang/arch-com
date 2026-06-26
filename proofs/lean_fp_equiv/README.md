@@ -58,10 +58,24 @@ is generated — never edit it by hand; change `src/fp_ops.rs` and regenerate.
 Built clean under **Lean v4.30.0** (`lake build`), **zero `sorry`**. The model
 elaborates, five structural theorems are **machine-checked by `bv_decide`**
 (driving the bundled `cadical`), and the Tier-2 multiply rounder crux
-`arch_round48_correct` is now **fully proved** against the value-level IEEE-754 RNE
+`arch_round48_correct` is **fully proved** against the value-level IEEE-754 RNE
 spec `roundNE_f32` — no Mathlib, no external floating-point library. `#print axioms`
 shows no `sorryAx`: only `propext` / `Classical.choice` / `Quot.sound` and the
 LRAT-checked `bv_decide` certificates.
+
+**`f32 fma` is now fully proved too** (`ArchFpEquiv/Fma.lean`). The shared rounder
+is re-instantiated at fma's exact-wide width (`arch_round470_correct`, width 470 —
+the rounding-bridge lemmas `RoundBridge.roundupBit`/`round_step` were generalized
+to `BitVec N` so mul (50) and fma (472) share them). Because the alignment is
+exact-wide, fma's `mag` is the *exact* product±addend (no bounded-alignment crux),
+so `arch_fma_f32_finite_correct` follows from a structural `bv_decide` reduction
+(`fma_reduce`, multiplier identical on both sides) plus that rounder. Every
+`arch_fma_f32` branch is covered: finite non-cancel / cancel / `c=0` (rounded
+product) / product`=0` (the proved adder) / NaN / `0·∞` / `∞−∞` / `∞`-product /
+`∞`-addend. `f32 mul`, `add`, `sub`, and `fma` are now all proved (mul/fma here,
+add/sub by the exhaustive SMT backend). **`bf16_fma` remains** — it routes through
+the f32 datapath, so it needs a `roundNE_bf16` spec plus the
+double-rounding-innocuous lemma (f32's 24 bits ≥ `2·8+2`) on top of the f32 result.
 
 **Proven (`bv_decide`, no IEEE spec needed — pure `BitVec` facts about the real
 emitted operators):**
