@@ -7,4 +7,5 @@ import ArchFpEquiv.RoundBridge
 import ArchFpEquiv.RoundProof
 import ArchFpEquiv.Equiv
 import ArchFpEquiv.RoundFma
+import ArchFpEquiv.Fma
 import ArchFpEquiv.SpecCheck

@@ -551,7 +551,7 @@ pub fn lean_extra_functions() -> Vec<FpFn> {
         let sig = var("sig", 48);
         FpFn::new("arch_msb_index48", &[("sig", 48)], 16, msb_index(&sig))
     };
-    // FMA-width instances (feasibility probe for the fma correctness proof).
+    // FMA-width instances (the fma correctness proof rounds at FMA_W = 470).
     let round470 = {
         let s = var("s", 1);
         let sig = var("sig", 470);
@@ -562,5 +562,35 @@ pub fn lean_extra_functions() -> Vec<FpFn> {
         let sig = var("sig", 470);
         FpFn::new("arch_msb_index470", &[("sig", 470)], 16, msb_index(&sig))
     };
-    vec![decode_mant, decode_eunb, round48, msb48, round470, msb470]
+    // fma's pre-rounding pieces (the aligned product±addend magnitude, its LSB
+    // exponent, and the result sign) exposed for the Lean fma reduction proof.
+    let fma_part = |which: &str| -> Bv {
+        let a = var("a", 32);
+        let b = var("b", 32);
+        let c = var("c", 32);
+        let da = decode(&a);
+        let db = decode(&b);
+        let dc = decode(&c);
+        let sp = bxor(&da.sign, &db.sign);
+        let mp = mul(&zext(&da.mant, 48), &zext(&db.mant, 48));
+        let ep = add(&da.eunb, &db.eunb);
+        let p_ge_c = sge(&ep, &dc.eunb);
+        let e_lo = ite(&p_ge_c, &dc.eunb, &ep);
+        let pt = ite(&p_ge_c, &shl(&zext(&mp, FMA_W), &sub(&ep, &dc.eunb)), &zext(&mp, FMA_W));
+        let ct = ite(&p_ge_c, &zext(&dc.mant, FMA_W), &shl(&zext(&dc.mant, FMA_W), &sub(&dc.eunb, &ep)));
+        let same = eq(&sp, &dc.sign);
+        let pt_gt = ugt(&pt, &ct);
+        let mag = ite(&same, &add(&pt, &ct), &ite(&pt_gt, &sub(&pt, &ct), &sub(&ct, &pt)));
+        let res_sign = ite(&same, &sp, &ite(&pt_gt, &sp, &dc.sign));
+        match which {
+            "mag" => mag,
+            "elo" => e_lo,
+            "sign" => res_sign,
+            _ => unreachable!(),
+        }
+    };
+    let fma_mag = FpFn::new("arch_fma_mag", &[("a", 32), ("b", 32), ("c", 32)], FMA_W, fma_part("mag"));
+    let fma_elo = FpFn::new("arch_fma_elo", &[("a", 32), ("b", 32), ("c", 32)], 16, fma_part("elo"));
+    let fma_sign = FpFn::new("arch_fma_sign", &[("a", 32), ("b", 32), ("c", 32)], 1, fma_part("sign"));
+    vec![decode_mant, decode_eunb, round48, msb48, round470, msb470, fma_mag, fma_elo, fma_sign]
 }
