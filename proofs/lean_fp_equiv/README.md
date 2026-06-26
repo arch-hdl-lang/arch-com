@@ -50,23 +50,48 @@ proofs/lean_fp_equiv/scripts/regen_model.sh
 `Model.lean` is checked in as a snapshot so the project reads standalone, but it
 is generated — never edit it by hand; change `src/fp_ops.rs` and regenerate.
 
-## Status — honest
+## Status
 
-- **Verified here (`cargo test`):** the `render_lean` renderer and its output
-  (`src/fp_ir.rs` unit tests `renders_both_dialects`, `lean_renders_every_op_kind`).
-- **Pending a Lean toolchain run:** no `lake`/`lean` is available in the
-  environment that authored this, so `Model.lean` has not been elaborated and the
-  `Equiv.lean` proofs are `sorry`-stubbed (each carries its intended tactic).
-  Two tiers of goal:
-  - *Structural model lemmas* (comparator symmetry, `lt`/`gt` mirror) — decidable,
-    should fall to `bv_decide` directly; they validate the model is usable.
-  - *IEEE correctness* (`mul`/`fma`/`add`) — need a floating-point semantics for
-    the spec side (`opaque f32_spec_*`), supplied by a future Mathlib/Flocq
-    development. `mul`/`fma` are the multiplier frontier; `add` is the cross-check
-    (already machine-proved in SMT) and the simplest worked example of lifting.
+Built clean under **Lean v4.30.0** (`lake build`). The model elaborates and five
+real theorems are **machine-checked by `bv_decide`** (driving the bundled
+`cadical`); the only remaining `sorry`s are the three Tier-2 IEEE theorems, which
+need a floating-point semantics for the spec side.
 
-To build once a toolchain is present:
+**Proven (`bv_decide`, no IEEE spec needed — pure `BitVec` facts about the real
+emitted operators):**
+
+| theorem | what it establishes | solver |
+|---|---|---|
+| `arch_f32_eq_comm` | equality comparator is symmetric (incl. NaN) | instant |
+| `arch_f32_lt_gt_mirror` | `lt a b = gt b a` (the swapped-operand construction) | instant |
+| `arch_bf16_eq_comm` | bf16 compare symmetry through the widen path | instant |
+| `arch_f32_sub_is_add_neg` | `sub a b = add a (b ⊕ sign)` — the shared adder core was wired right | ~34 s |
+| `arch_f32_add_comm` | **full f32-adder datapath is commutative** (align + rounder) | ~45 s |
+
+`add_comm` is the load-bearing one: it bit-blasts the *entire* ~56-bit adder, and
+because commutativity is non-symmetric in the operands, no abstraction shortcut
+could fake it — so it also proves the bit-blast is genuine. Getting it to go
+through is what forced the comparison encoding to be `BitVec.ofBool` rather than a
+`Prop`-conditioned `if` (which `bv_decide` abstracts as an opaque variable).
+
+**Open (`sorry`, Tier 2 — the multiplier frontier):** `arch_f32_mul_correct`,
+`arch_fma_f32_correct`, `arch_f32_add_correct`. These compare against `opaque
+f32_spec_*`, placeholders for an IEEE-754 semantics Lean core does not provide. A
+real development supplies it from Mathlib/Flocq (or by porting the SMT
+`FloatingPoint` theory), then discharges `mul`/`fma` by algebraic lifting rather
+than bit-blasting. `add` is the cross-check (already machine-proved over 2^64 by
+the SMT backend) and the simplest worked example of that lifting.
+
+**Also verified (`cargo test`):** the `render_lean` renderer and its output
+(`src/fp_ir.rs` unit tests `renders_both_dialects`, `lean_renders_every_op_kind`).
+
+## Build
 
 ```
 cd proofs/lean_fp_equiv && lake build
 ```
+
+Requires the `leanprover/lean4:v4.30.0` toolchain (elan reads `./lean-toolchain`).
+No external packages — Lean core `BitVec` + the bundled `bv_decide`/`cadical`.
+`add_comm` (~45 s) and `sub_is_add_neg` (~34 s) carry raised `bv_decide`
+`timeout`s; the rest are instant.

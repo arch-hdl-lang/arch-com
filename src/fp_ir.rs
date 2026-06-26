@@ -482,6 +482,11 @@ fn lean_rhs(b: &Bv, lin: &Lin) -> String {
             Bin::Lshr => format!("({} >>> {}.toNat)", r(a), r(c)),
         },
         Kind::Cmp { op, a, b: c } => {
+            // `BitVec.ofBool` of a Bool predicate, NOT `if p then 1#1 else 0#1`:
+            // the latter is a `Prop`-conditioned `ite` that `bv_decide` cannot
+            // bit-blast (it abstracts it as an opaque variable, which produces
+            // spurious counterexamples on non-symmetric goals). `ofBool` and the
+            // Bool comparators below are all in `bv_decide`'s supported fragment.
             let pred = match op {
                 Cmp::Eq => format!("({} == {})", r(a), r(c)),
                 Cmp::Ne => format!("({} != {})", r(a), r(c)),
@@ -494,8 +499,9 @@ fn lean_rhs(b: &Bv, lin: &Lin) -> String {
                 Cmp::Sgt => format!("(BitVec.slt {} {})", r(c), r(a)),
                 Cmp::Sge => format!("(BitVec.sle {} {})", r(c), r(a)),
             };
-            format!("(if {pred} then (BitVec.ofNat 1 1) else (BitVec.ofNat 1 0))")
+            format!("(BitVec.ofBool {pred})")
         }
+        // Selector is a 1-bit BV; `c == 1#1` is a Bool the `if` bit-blasts.
         Kind::Ite { c, t, e } => {
             format!("(if {} == (BitVec.ofNat 1 1) then {} else {})", r(c), r(t), r(e))
         }
@@ -572,6 +578,11 @@ mod tests {
         assert!(lean.contains("(BitVec.extractLsb 0 0 "));
         assert!(lean.contains("if "));
         assert!(lean.contains("(BitVec.ofNat 8 255)"));
+        // Comparisons must render via `BitVec.ofBool`, NOT a Prop-conditioned
+        // `if p then 1#1 else 0#1` — the latter is abstracted (not bit-blasted)
+        // by Lean's `bv_decide`, which breaks the FP proofs in proofs/lean_fp_equiv.
+        assert!(lean.contains("(BitVec.ofBool ("));
+        assert!(!lean.contains("then (BitVec.ofNat 1 1) else (BitVec.ofNat 1 0)"));
     }
 
     #[test]
