@@ -551,5 +551,16 @@ pub fn lean_extra_functions() -> Vec<FpFn> {
         let sig = var("sig", 48);
         FpFn::new("arch_msb_index48", &[("sig", 48)], 16, msb_index(&sig))
     };
-    vec![decode_mant, decode_eunb, round48, msb48]
+    // FMA-width instances (feasibility probe for the fma correctness proof).
+    let round470 = {
+        let s = var("s", 1);
+        let sig = var("sig", 470);
+        let e0 = var("e0", 16);
+        FpFn::new("arch_round470", &[("s", 1), ("sig", 470), ("e0", 16)], 32, normround(&s, &sig, &e0))
+    };
+    let msb470 = {
+        let sig = var("sig", 470);
+        FpFn::new("arch_msb_index470", &[("sig", 470)], 16, msb_index(&sig))
+    };
+    vec![decode_mant, decode_eunb, round48, msb48, round470, msb470]
 }
