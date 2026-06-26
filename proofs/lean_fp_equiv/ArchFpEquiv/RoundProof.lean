@@ -49,4 +49,41 @@ theorem round48_correct_zero (s : BitVec 1) (e0 : BitVec 16) :
   rw [show (0#48).toNat = 0 from rfl, roundNE_zero, round48_zero, apply_ite (BitVec.ofNat 32)]
   bv_decide
 
+def round48_struct (s : BitVec 1) (sig : BitVec 48) (e0 : BitVec 16) : BitVec 32 :=
+  if sig == 0#48 then s ++ 0#31
+  else
+    let p := arch_msb_index48 sig
+    let ev := p + e0
+    let biased := ev + 127#16
+    let isSub := BitVec.sle biased 0#16
+    let k := if isSub then 65387#16 else ev - 23#16
+    let sh := k - e0
+    let shLe0 := BitVec.sle sh 0#16
+    let zsig := BitVec.setWidth 50 sig
+    let kept0 := if shLe0 then zsig <<< (BitVec.setWidth 50 (0#16 - sh)).toNat
+                 else zsig >>> (BitVec.setWidth 50 sh).toNat
+    let shm1 := BitVec.setWidth 50 (sh - 1#16)
+    let guardRaw := BitVec.extractLsb 0 0 (zsig >>> shm1.toNat)
+    let guard := if shLe0 then 0#1 else guardRaw
+    let mask := ((1#50) <<< shm1.toNat) - 1#50
+    let stickyRaw := BitVec.ofBool (zsig &&& mask != 0#50)
+    let sticky := if shLe0 then 0#1 else stickyRaw
+    let lsb := BitVec.extractLsb 0 0 kept0
+    let roundup := guard &&& (sticky ||| lsb)
+    let kept := kept0 + BitVec.setWidth 50 roundup
+    let subRes := (s ++ 0#31) ||| (s ++ BitVec.extractLsb 30 0 kept)
+    let carry := BitVec.ofBool (BitVec.extractLsb 24 24 kept == 1#1)
+    let biasedN := if carry == 1#1 then biased + 1#16 else biased
+    let overflow := BitVec.sle 255#16 biasedN
+    let infRes := s ++ ((0xFF#8) ++ (0#23))
+    let keptN := if carry == 1#1 then kept >>> (BitVec.setWidth 50 (1#16)).toNat else kept
+    let normRes := s ++ (BitVec.extractLsb 7 0 biasedN ++ BitVec.extractLsb 22 0 keptN)
+    let nonSub := if overflow then infRes else normRes
+    if isSub then subRes else nonSub
+
+theorem arch_eq_struct (s : BitVec 1) (sig : BitVec 48) (e0 : BitVec 16) :
+    arch_round48 s sig e0 = round48_struct s sig e0 := by
+  unfold arch_round48 round48_struct arch_msb_index48
+  bv_decide (config := { timeout := 600 })
+
 end ArchFp
