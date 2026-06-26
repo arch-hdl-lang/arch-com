@@ -74,4 +74,18 @@ theorem round_step (v : BitVec 50) (sh : Nat) (h1 : 1 ≤ sh) (h2 : sh - 1 < 50)
   rw [hif, Nat.mod_eq_of_lt hno]
   exact rne_matches v.toNat sh h1
 
+/-- No-overflow exponent add: when the true sum stays in signed 16-bit range, the
+    `BitVec 16` add matches `Int` add. (arch's `ev = p + e0`, `biased = ev + 127`.) -/
+theorem toInt_add_of_bounds (a b : BitVec 16)
+    (h1 : -(2 ^ 15) ≤ a.toInt + b.toInt) (h2 : a.toInt + b.toInt < 2 ^ 15) :
+    (a + b).toInt = a.toInt + b.toInt := by
+  rw [BitVec.toInt_add, Int.bmod_eq_emod]; split <;> omega
+
+/-- No-overflow exponent sub: the `BitVec 16` sub matches `Int` sub in range.
+    (arch's `sh = k - e0`, `ev - 23`.) -/
+theorem toInt_sub_of_bounds (a b : BitVec 16)
+    (h1 : -(2 ^ 15) ≤ a.toInt - b.toInt) (h2 : a.toInt - b.toInt < 2 ^ 15) :
+    (a - b).toInt = a.toInt - b.toInt := by
+  rw [BitVec.toInt_sub, Int.bmod_eq_emod]; split <;> omega
+
 end ArchFp
