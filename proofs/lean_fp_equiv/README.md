@@ -55,10 +55,13 @@ is generated — never edit it by hand; change `src/fp_ops.rs` and regenerate.
 
 ## Status
 
-Built clean under **Lean v4.30.0** (`lake build`). The model elaborates and five
-real theorems are **machine-checked by `bv_decide`** (driving the bundled
-`cadical`); the only remaining `sorry`s are the three Tier-2 IEEE theorems, which
-need a floating-point semantics for the spec side.
+Built clean under **Lean v4.30.0** (`lake build`), **zero `sorry`**. The model
+elaborates, five structural theorems are **machine-checked by `bv_decide`**
+(driving the bundled `cadical`), and the Tier-2 multiply rounder crux
+`arch_round48_correct` is now **fully proved** against the value-level IEEE-754 RNE
+spec `roundNE_f32` — no Mathlib, no external floating-point library. `#print axioms`
+shows no `sorryAx`: only `propext` / `Classical.choice` / `Quot.sound` and the
+LRAT-checked `bv_decide` certificates.
 
 **Proven (`bv_decide`, no IEEE spec needed — pure `BitVec` facts about the real
 emitted operators):**
@@ -91,13 +94,14 @@ carried most of the way:
 | `msb_index_finds_msb`: the binary-search clz finds the true MSB (`sig >>> p = 1`) | **proved** (`bv_decide`, exhaustive over 2^48) |
 | `msb_index_bound`: value-level `2^p ≤ sig < 2^(p+1)` | **proved** (bit→`Nat` bridge, Lean-core lemmas only — no Mathlib) |
 | `RoundCore.rne_matches`: guard/round/sticky = round-to-nearest-even integer division | **proved** (pure `Nat`, the rounding kernel) |
-| `arch_round48_correct`: the shared rounder rounds correctly | **open** (the one `sorry`) — only bit-level plumbing into the two kernels remains |
+| `RoundProof.struct_eq_spec`: `round48_struct = roundNE_f32` (all cases) | **proved** (subnormal / normal / overflow, via `kept_unified` + `kept_clean_range` + `carry_bit` + the exponent bridges) |
+| `arch_round48_correct`: the shared rounder rounds correctly | **proved** (`rw [arch_eq_struct]; exact struct_eq_spec`, on the `-298 ≤ e0 ≤ 208` window discharged by `Spec.e0_bounds`) |
 
-### The residual, and why it is now small
+### How the rounder crux was closed (Lean core only)
 
-The inexact rounding direction — all that is left of `arch_round48_correct` — has
-been reduced to two arithmetic kernels, **both proved with Lean core alone** (the
-Mathlib olean cache is egress-blocked here, so this was done without it):
+The inexact rounding direction — the heart of `arch_round48_correct` — reduces to
+two arithmetic kernels, **both proved with Lean core alone** (the Mathlib olean
+cache is egress-blocked here, so this was done without it):
 
 * `Round.msb_index_bound` — normalization: arch's binary-search clz finds the true
   MSB, giving `2^p ≤ sig < 2^(p+1)` (`bv_decide` for the bit fact, `Nat` lemmas +
@@ -107,23 +111,34 @@ Mathlib olean cache is egress-blocked here, so this was done without it):
   `rneQuot` (round-to-nearest-even of `n / 2^sh`), where `guard ⟺ half ≤ r`,
   `sticky ⟺ r % half ≠ 0`, ties-to-even — proved in pure `Nat`.
 
-What remains is the bit-level *plumbing* that threads `arch_round48`'s concrete
-shifts and exponent computation into these two kernels (e.g. `(zsig >>> sh).toNat
-= zsig.toNat / 2^sh` via `BitVec.toNat_ushiftRight`, already used in
-`msb_index_bound`). That is mechanical bridge work, not new mathematics.
+The **final assembly** (`RoundProof.lean`) threads these through the real datapath:
+`arch_eq_struct` transcribes `arch_round48` bit-exact (`bv_decide`) to a named-stage
+`round48_struct`, then `struct_eq_spec` proves `round48_struct = roundNE_f32` by
+case analysis over the sig=0 / subnormal / normal / overflow output cases. The
+load-bearing bridges are `kept_unified` (arch's kept significand = the value-level
+`kept` across the left-shift / rounding / deep-underflow shift regimes),
+`kept_clean_range` (a normalized kept lands in `[2^23, 2^24]`, so the carry bit
+decides exactly `2^24 ≤ kept`), `carry_bit`, the packing identities
+`combine'`/`combine_sub`, and the 16-bit→`Int` exponent bridges
+(`exp_facts`/`sh_normal`/`sh_sub`/`toInt_add_of_bounds`). No dyadic/`Rat` model and
+no SMT `FloatingPoint` theory were needed — the value-level RNE spec `roundNE_f32`
+is a concrete `Nat`/`Int` definition, and the whole equivalence is core `BitVec` +
+`omega` + the two kernels.
 
-This is the whole point of the algebraic-lifting approach landing concretely: the
-multiplier theorem no longer faces a SAT wall. `mul`'s special values are proved,
-and its finite case is *reduced* — `bv_decide` handles the reduction because the
-multiplier occurs identically on both sides (like `sub_is_add_neg`), so it never
-solves multiplier-equivalence. Everything collapses onto a single op-independent
-lemma, `arch_round48_correct`: the shared `normround` (exposed to Lean as
-`arch_round48`) rounds its dyadic argument `(-1)^s · sig · 2^e0` to nearest-even.
-That lemma is value-level (not bit-blastable) and is where a dyadic/`Rat`
-semantics (Mathlib/Flocq, or a port of the SMT `FloatingPoint` theory) is needed.
-Being shared, discharging it also unlocks `add`/`fma` once their pre-rounding
-values are named the same way. (`add`/`sub` are independently already machine-
-proved over all 2^64 inputs by the SMT backend.)
+The only precondition is the multiply-relevant exponent window `-298 ≤ e0 ≤ 208`
+(outside it arch's 16-bit exponent arithmetic genuinely wraps and the equation
+fails). It is discharged at the use site by `Spec.e0_bounds` (each `eunb ∈
+[-149,104]` for a finite nonzero input, summed), so `arch_f32_mul_finite_correct`
+needs no extra hypotheses beyond `finiteNonzero a/b`.
+
+This is the algebraic-lifting approach landing concretely: the multiplier theorem
+never faced a SAT wall. `mul`'s special values are proved, its finite case is
+*reduced* (`bv_decide` handles it because the multiplier occurs identically on both
+sides, like `sub_is_add_neg` — never a multiplier-equivalence), and everything
+collapses onto the now-proved op-independent rounder lemma. Being shared, it also
+unlocks `add`/`fma` once their pre-rounding values are named the same way.
+(`add`/`sub` are independently already machine-proved over all 2^64 inputs by the
+SMT backend.)
 
 `arch_round48`/`arch_decode_mant`/`arch_decode_eunb` are emitted into the Lean
 `Model` only (via `fp_ops::lean_extra_functions`); the `arch build` SV and `arch
