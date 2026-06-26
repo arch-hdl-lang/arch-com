@@ -113,4 +113,26 @@ theorem combine (a b c : Nat) (ha : a < 2) (hb : b < 256) (hc : c < 2 ^ 23) :
       ← Nat.two_pow_add_eq_or_of_lt (show 2 ^ 23 * b + c < 2 ^ (8 + 23) by omega)]
   omega
 
+/-- Exponent chain: arch's `ev = p+e0` and `biased = ev+127` (BitVec 16) match the
+    value-level `Int` exponents, given the multiply-relevant `e0` bounds (so the
+    16-bit arithmetic does not wrap). -/
+theorem exp_facts (sig : BitVec 48) (e0 : BitVec 16) (h : sig ≠ 0#48)
+    (hlo : -298 ≤ e0.toInt) (hhi : e0.toInt ≤ 208) :
+    (arch_msb_index48 sig + e0).toInt = (Nat.log2 sig.toNat : Int) + e0.toInt
+    ∧ (arch_msb_index48 sig + e0 + 127#16).toInt
+        = (Nat.log2 sig.toNat : Int) + e0.toInt + 127 := by
+  obtain ⟨hp47, hpInt⟩ := p_facts sig h
+  have hl47 : Nat.log2 sig.toNat ≤ 47 := by rw [← msb_index_eq_log2 sig h]; exact hp47
+  have hpge : (0 : Int) ≤ (arch_msb_index48 sig).toInt := by rw [hpInt]; exact Int.natCast_nonneg _
+  have hple : (arch_msb_index48 sig).toInt ≤ 47 := by rw [hpInt]; exact_mod_cast hl47
+  have hev : (arch_msb_index48 sig + e0).toInt = (arch_msb_index48 sig).toInt + e0.toInt :=
+    toInt_add_of_bounds _ _ (by omega) (by omega)
+  have h127 : (127#16).toInt = 127 := rfl
+  have hbiased : (arch_msb_index48 sig + e0 + 127#16).toInt
+      = (arch_msb_index48 sig + e0).toInt + 127 := by
+    have := toInt_add_of_bounds (arch_msb_index48 sig + e0) (127#16)
+      (by rw [hev, h127]; omega) (by rw [hev, h127]; omega)
+    rwa [h127] at this
+  exact ⟨by rw [hev, hpInt], by rw [hbiased, hev, hpInt]⟩
+
 end ArchFp
