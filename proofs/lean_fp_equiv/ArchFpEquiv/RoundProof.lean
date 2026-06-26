@@ -86,4 +86,31 @@ theorem arch_eq_struct (s : BitVec 1) (sig : BitVec 48) (e0 : BitVec 16) :
   unfold arch_round48 round48_struct arch_msb_index48
   bv_decide (config := { timeout := 600 })
 
+-- ── assembly helpers (sig ≠ 0) ───────────────────────────────────────────────
+
+/-- The clz index, value-bridged: `p ≤ 47` and `p.toInt = log₂ sig` (sig ≠ 0). -/
+theorem p_facts (sig : BitVec 48) (h : sig ≠ 0#48) :
+    (arch_msb_index48 sig).toNat ≤ 47
+    ∧ (arch_msb_index48 sig).toInt = (Nat.log2 sig.toNat : Int) := by
+  obtain ⟨hlo, _hhi⟩ := msb_index_bound sig h
+  have hsig : sig.toNat < 2 ^ 48 := sig.isLt
+  have h1 : 2 ^ (arch_msb_index48 sig).toNat < 2 ^ 48 := by omega
+  have hple : (arch_msb_index48 sig).toNat < 48 :=
+    (Nat.pow_lt_pow_iff_right (by decide : 1 < 2)).mp h1
+  have hpv : (arch_msb_index48 sig).toInt = ((arch_msb_index48 sig).toNat : Int) := by
+    rw [BitVec.toInt_eq_toNat_bmod, Int.bmod_eq_emod]; split <;> omega
+  exact ⟨by omega, by rw [hpv, msb_index_eq_log2 sig h]⟩
+
+/-- Normal-field packing: `sign ++ exp8 ++ mant23` equals the `ofNat` encoding. -/
+theorem combine (a b c : Nat) (ha : a < 2) (hb : b < 256) (hc : c < 2 ^ 23) :
+    (BitVec.ofNat 1 a) ++ ((BitVec.ofNat 8 b) ++ (BitVec.ofNat 23 c))
+    = BitVec.ofNat 32 (a * 2 ^ 31 + b * 2 ^ 23 + c) := by
+  apply BitVec.eq_of_toNat_eq
+  simp only [BitVec.toNat_append, BitVec.toNat_ofNat, Nat.shiftLeft_eq]
+  rw [Nat.mod_eq_of_lt ha, Nat.mod_eq_of_lt hb, Nat.mod_eq_of_lt hc,
+      Nat.mul_comm b (2 ^ 23), ← Nat.two_pow_add_eq_or_of_lt hc,
+      Nat.mul_comm a (2 ^ (8 + 23)),
+      ← Nat.two_pow_add_eq_or_of_lt (show 2 ^ 23 * b + c < 2 ^ (8 + 23) by omega)]
+  omega
+
 end ArchFp
