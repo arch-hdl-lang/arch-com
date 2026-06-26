@@ -135,4 +135,30 @@ theorem exp_facts (sig : BitVec 48) (e0 : BitVec 16) (h : sig ≠ 0#48)
     rwa [h127] at this
   exact ⟨by rw [hev, hpInt], by rw [hbiased, hev, hpInt]⟩
 
+/-- `isSub` (the `sle biased 0` test) corresponds to the value condition. -/
+theorem isSub_iff (sig : BitVec 48) (e0 : BitVec 16) (h : sig ≠ 0#48)
+    (hlo : -298 ≤ e0.toInt) (hhi : e0.toInt ≤ 208) :
+    (BitVec.sle (arch_msb_index48 sig + e0 + 127#16) 0#16 = true)
+      ↔ ((Nat.log2 sig.toNat : Int) + e0.toInt + 127 ≤ 0) := by
+  rw [BitVec.sle_iff_toInt_le, (exp_facts sig e0 h hlo hhi).2]; exact ⟨fun x => x, fun x => x⟩
+
+/-- A 16-bit value widened to 50 bits keeps its `toNat`. -/
+theorem sw50_toNat (sh : BitVec 16) : (BitVec.setWidth 50 sh).toNat = sh.toNat := by
+  rw [BitVec.toNat_setWidth]; exact Nat.mod_eq_of_lt (by have := sh.isLt; omega)
+
+/-- `(setWidth 50 (sh - 1)).toNat = sh.toNat - 1` for `sh ≥ 1` (no underflow). -/
+theorem sw50_sub1 (sh : BitVec 16) (h : 1 ≤ sh.toNat) :
+    (BitVec.setWidth 50 (sh - 1#16)).toNat = sh.toNat - 1 := by
+  rw [sw50_toNat, BitVec.toNat_sub]; have := sh.isLt
+  simp only [show (1#16).toNat = 1 from rfl]; omega
+
+/-- arch's inlined roundup (with `setWidth 50`-converted shift amounts) equals the
+    generic `roundupBit` at the matching Nat shift — so `round_step` applies. -/
+theorem struct_roundup_eq (zsig : BitVec 50) (sh : BitVec 16) (h1 : 1 ≤ sh.toNat) :
+    (BitVec.extractLsb 0 0 (zsig >>> (BitVec.setWidth 50 (sh - 1#16)).toNat))
+      &&& ((BitVec.ofBool (zsig &&& ((1#50 <<< (BitVec.setWidth 50 (sh - 1#16)).toNat) - 1#50) != 0#50))
+            ||| (BitVec.extractLsb 0 0 (zsig >>> (BitVec.setWidth 50 sh).toNat)))
+    = roundupBit zsig sh.toNat := by
+  rw [sw50_sub1 sh h1, sw50_toNat]; unfold roundupBit; bv_decide
+
 end ArchFp
