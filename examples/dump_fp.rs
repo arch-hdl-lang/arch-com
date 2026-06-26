@@ -12,8 +12,12 @@ fn main() {
     match mode.as_str() {
         "smt" => print!("{}", arch::fp_ir::render_smt(&arch::fp_ops::fp_functions(p))),
         "lean" => {
+            let mut funcs = arch::fp_ops::fp_functions(p);
+            // Lean-only helpers (decode fields + shared rounder at the mul width)
+            // that let the Tier-2 proof state the finite-product reduction.
+            funcs.extend(arch::fp_ops::lean_extra_functions());
             print!("namespace ArchFp\n\n");
-            print!("{}", arch::fp_ir::render_lean(&arch::fp_ops::fp_functions(p)));
+            print!("{}", arch::fp_ir::render_lean(&funcs));
             print!("\nend ArchFp\n");
         }
         "proof" => {

@@ -34,9 +34,10 @@ That reasoning has no natural home in QF_BV; it does in Lean.
 ```
 lakefile.toml            dependency-free (Lean core BitVec + bv_decide; no Mathlib)
 lean-toolchain           leanprover/lean4:v4.30.0  (matches proofs/lean_thread_lowering)
-ArchFpEquiv.lean         root: imports Model + Equiv
+ArchFpEquiv.lean         root: imports Model + Spec + Equiv
 ArchFpEquiv/Model.lean   GENERATED snapshot of every operator (regen below)
-ArchFpEquiv/Equiv.lean   the correctness statements (sorry-stubbed scaffold)
+ArchFpEquiv/Spec.lean    Tier-2 multiply: special-value lattice + finite reduction (proved)
+ArchFpEquiv/Equiv.lean   Tier-1 structural lemmas (proved) + the rounder crux + derived mul
 scripts/regen_model.sh   re-render Model.lean from the IR
 ```
 
@@ -74,13 +75,32 @@ could fake it — so it also proves the bit-blast is genuine. Getting it to go
 through is what forced the comparison encoding to be `BitVec.ofBool` rather than a
 `Prop`-conditioned `if` (which `bv_decide` abstracts as an opaque variable).
 
-**Open (`sorry`, Tier 2 — the multiplier frontier):** `arch_f32_mul_correct`,
-`arch_fma_f32_correct`, `arch_f32_add_correct`. These compare against `opaque
-f32_spec_*`, placeholders for an IEEE-754 semantics Lean core does not provide. A
-real development supplies it from Mathlib/Flocq (or by porting the SMT
-`FloatingPoint` theory), then discharges `mul`/`fma` by algebraic lifting rather
-than bit-blasting. `add` is the cross-check (already machine-proved over 2^64 by
-the SMT backend) and the simplest worked example of that lifting.
+**Tier 2 — IEEE arithmetic (`Spec.lean` + `Equiv.lean`).** The multiply case is
+carried most of the way:
+
+| result | status |
+|---|---|
+| multiply special-value lattice (NaN prop, `∞·0=NaN`, `∞·x=∞`, `0·x=0`) — 8 laws | **proved** (`bv_decide`; the rounder/multiplier branch is pruned, so each is sub-second) |
+| `mul_finite_reduces`: `mul a b = round48(sy, mant_a·mant_b, e0)` for finite nonzero | **proved** (`bv_decide`, structural — the 24×24 multiplier is identical on both sides, *not* a multiplier-equivalence) |
+| `arch_f32_mul_finite_correct`: finite `mul` is RNE of the exact product | **derived** from the reduction + the rounder crux below |
+| `arch_round48_correct`: the shared rounder rounds correctly | **open** (the one `sorry`) |
+
+This is the whole point of the algebraic-lifting approach landing concretely: the
+multiplier theorem no longer faces a SAT wall. `mul`'s special values are proved,
+and its finite case is *reduced* — `bv_decide` handles the reduction because the
+multiplier occurs identically on both sides (like `sub_is_add_neg`), so it never
+solves multiplier-equivalence. Everything collapses onto a single op-independent
+lemma, `arch_round48_correct`: the shared `normround` (exposed to Lean as
+`arch_round48`) rounds its dyadic argument `(-1)^s · sig · 2^e0` to nearest-even.
+That lemma is value-level (not bit-blastable) and is where a dyadic/`Rat`
+semantics (Mathlib/Flocq, or a port of the SMT `FloatingPoint` theory) is needed.
+Being shared, discharging it also unlocks `add`/`fma` once their pre-rounding
+values are named the same way. (`add`/`sub` are independently already machine-
+proved over all 2^64 inputs by the SMT backend.)
+
+`arch_round48`/`arch_decode_mant`/`arch_decode_eunb` are emitted into the Lean
+`Model` only (via `fp_ops::lean_extra_functions`); the `arch build` SV and `arch
+formal` SMT are byte-for-byte unchanged.
 
 **Also verified (`cargo test`):** the `render_lean` renderer and its output
 (`src/fp_ir.rs` unit tests `renders_both_dialects`, `lean_renders_every_op_kind`).

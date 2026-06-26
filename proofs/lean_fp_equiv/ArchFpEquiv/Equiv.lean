@@ -1,4 +1,5 @@
 import ArchFpEquiv.Model
+import ArchFpEquiv.Spec
 import Std.Tactic.BVDecide
 
 /-!
@@ -36,12 +37,15 @@ are the three Tier-2 `sorry`s below). Two tiers:
   `cadical`). These prove `bv_decide` reasons about the *real* emitted operators,
   and that the bit-blast is genuine (commutativity is non-symmetric, so an
   abstraction shortcut could not have faked it).
-* **IEEE correctness theorems** (`sorry`) — need a floating-point *semantics* for
-  the spec side. Lean core has none, so `f32_spec_*` below is `opaque`, standing
-  in for the value a real development imports from Mathlib (or ports from the SMT
-  `FloatingPoint` theory / Flocq). `mul`/`fma` are the multiplier frontier; `add`
-  is the cross-check (already machine-proved over 2^64 by the SMT backend) and
-  the simplest worked example of the lifting argument.
+* **IEEE arithmetic correctness** — for `mul`, the special-value lattice and the
+  finite-product reduction are **proved** in `Spec.lean`; what remains is a single
+  shared rounder lemma `arch_round48_correct` (the one `sorry`), stated against the
+  value-level `roundNE_f32`. `arch_f32_mul_finite_correct` is then *derived* from
+  the reduction and that lemma — not bit-blasted. The crux needs a floating-point
+  *semantics* Lean core lacks (a dyadic/`Rat` model from Mathlib/Flocq, or a port
+  of the SMT `FloatingPoint` theory); it is op-independent, so it also unlocks
+  `add`/`fma`. `add`/`sub` are moreover already machine-proved over all 2^64 inputs
+  by the SMT backend.
 
 The Rust renderer (`fp_ir::render_lean`) and its emitted output are additionally
 covered by `cargo test`.
@@ -100,47 +104,61 @@ theorem arch_f32_sub_is_add_neg (a b : BitVec 32) :
   unfold arch_f32_sub arch_f32_add
   bv_decide (config := { timeout := 180 })
 
-/-! ## Tier 2 — IEEE-754 correctness (the multiplier frontier)
+/-! ## Tier 2 — IEEE-754 arithmetic correctness
 
-The spec side requires a floating-point semantics that Lean core does not
-provide. `f32_spec_mul`/`_add`/`_fma` are `opaque` placeholders for
-"the IEEE-754 round-to-nearest-even result, as a bit pattern (canonical NaN per
-the active `--fp-compat` profile)". A real development replaces each with a
-definition over a `Float32` algebraic model (Mathlib's `Rat`/`Real` rounding, or
-a port of the SMT `FloatingPoint` theory / Flocq), at which point the theorems
-below become provable — `mul`/`fma` by the algebraic-lifting argument above,
-`add`/`sub`/compares by the same route (and already machine-checked in SMT). -/
+The arithmetic-correctness goal splits into a *special-value lattice* and a
+*finite case*, and `Spec.lean` discharges everything in that split for `mul`
+except a single shared rounder lemma:
 
-/-- IEEE-754 binary32 RNE multiply, as a 32-bit pattern. Placeholder for a
-    Mathlib/Flocq-backed semantics; see the module note. -/
-opaque f32_spec_mul : BitVec 32 → BitVec 32 → BitVec 32
+* **Special values** (`Spec.mul_nan_left … mul_zero_right`) — the full IEEE
+  multiply lattice (NaN propagation, `∞·0 = NaN`, `∞·x = ∞`, `0·x = 0`), each
+  **machine-checked by `bv_decide`**. (These are exactly the corners the SMT
+  backend left on the §8.2 differential backstop — `mul` is unproved there.)
+* **Finite reduction** (`Spec.mul_finite_reduces`) — for two finite nonzero
+  operands, **proved** `arch_f32_mul a b = arch_round48 sy (mant_a·mant_b) e0`:
+  the model's multiply *is* the shared rounder applied to the exact 48-bit
+  integer significand product. `bv_decide` closes it structurally (the 24×24
+  multiplier sits identically on both sides — no SAT-hard multiplier-equivalence).
 
-/-- IEEE-754 binary32 RNE add, as a 32-bit pattern. Placeholder. -/
-opaque f32_spec_add : BitVec 32 → BitVec 32 → BitVec 32
+So all of Tier-2 multiply collapses onto one question: does `arch_round48` round
+correctly? That is the lone remaining crux — op-independent (`mul`/`add`/`fma`
+share the rounder), value-level, and the one place a bit-blaster cannot help.
+It is stated below against `roundNE_f32` and needs the algebraic-lifting argument
+(decode → real value → round). `add`/`sub` are additionally already
+machine-proved against IEEE `fp.add`/`fp.sub` over all 2^64 inputs by the SMT
+backend; `fma` reduces the same way once its wide aligned product is named. -/
 
-/-- IEEE-754 binary32 RNE fused multiply-add `a*b + c`, as a 32-bit pattern.
-    Placeholder. -/
-opaque f32_spec_fma : BitVec 32 → BitVec 32 → BitVec 32 → BitVec 32
+/-- IEEE-754 round-to-nearest-even, value level: the correctly-rounded binary32
+    bit pattern of the real number `(-1)^neg · sig · 2^e0`. Left `opaque` — a full
+    development defines it via a dyadic/`Rat` model (Mathlib/Flocq, or a port of
+    the SMT `FloatingPoint` theory). It is the *only* abstract object remaining in
+    Tier-2 multiply; everything else is proved. -/
+opaque roundNE_f32 : (neg : Bool) → (sig : Nat) → (e0 : Int) → BitVec 32
 
-/-- **The multiplier frontier.** The emitted f32 multiplier equals IEEE-754 RNE
-    over the entire input space. SAT-hard to bit-blast (z3/cvc5/`bv_decide` all
-    time out); the route is to lift `arch_f32_mul` to `(sig, exp)` and reduce the
-    24×24 array to one `Nat.mul`, then invoke a correct-rounding lemma. -/
-theorem arch_f32_mul_correct (a b : BitVec 32) :
-    arch_f32_mul a b = f32_spec_mul a b := by
+/-- **The rounder crux.** The shared round-and-pack at the multiply width rounds
+    its dyadic argument `(-1)^s · sig · 2^e0` to nearest-even. This is the single
+    `sorry` gating Tier-2 multiply: `mul`'s special values and its reduction to
+    this function are both proven (`Spec`). Discharging it is the algebraic-lifting
+    work (it is *not* bit-blastable: a 56-bit rounder against a value-level spec).
+    Being op-independent, it also unlocks `add`/`fma` once they are reduced. -/
+theorem arch_round48_correct (s : BitVec 1) (sig : BitVec 48) (e0 : BitVec 16) :
+    arch_round48 s sig e0 = roundNE_f32 (s == 1#1) sig.toNat e0.toInt := by
   sorry
 
-/-- The emitted FMA equals IEEE-754 RNE `a*b + c` (single rounding). Harder than
-    `mul`: the exact product feeds a wide aligned add before the one rounding. -/
-theorem arch_fma_f32_correct (a b c : BitVec 32) :
-    arch_fma_f32 a b c = f32_spec_fma a b c := by
-  sorry
-
-/-- The bounded f32 adder equals IEEE-754 RNE add. Already machine-checked over
-    2^64 inputs by the SMT backend (`F32_ADD`); kept here as the Lean cross-check
-    and as the simplest worked example of the lifting argument. -/
-theorem arch_f32_add_correct (a b : BitVec 32) :
-    arch_f32_add a b = f32_spec_add a b := by
-  sorry
+/-- **Finite multiply is correctly rounded** — derived, not bit-blasted. Combines
+    the proved finite reduction (`Spec.mul_finite_reduces`) with the rounder crux:
+    for finite nonzero `a b`, `arch_f32_mul a b` equals the RNE rounding of the
+    exact real product `(mant_a · mant_b) · 2^(eunb_a + eunb_b)`. The only
+    unproved input is `arch_round48_correct`; the multiplier itself is never
+    re-examined here. -/
+theorem arch_f32_mul_finite_correct (a b : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true) :
+    arch_f32_mul a b
+      = roundNE_f32 ((mulSign a b) == 1#1)
+          ((BitVec.setWidth 48 (arch_decode_mant a)
+              * BitVec.setWidth 48 (arch_decode_mant b)).toNat)
+          ((arch_decode_eunb a + arch_decode_eunb b).toInt) := by
+  rw [mul_finite_reduces a b ha hb, archMulFinite]
+  exact arch_round48_correct _ _ _
 
 end ArchFp
