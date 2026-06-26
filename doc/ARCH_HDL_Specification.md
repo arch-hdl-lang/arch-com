@@ -299,6 +299,10 @@ The Arch type system enforces four independent safety dimensions simultaneously.
 
   **Bool**             1 bit                Logical boolean. Not implicitly castable to/from UInt or Bit.
 
+  **FP32**             32 bits              IEEE-754 binary32. Combinational `+ - *` / `fma` / ordered compares; no implicit conversion. See §3.8.
+
+  **BF16**             16 bits              bfloat16 (8-bit exponent, 7-bit mantissa). Same op surface as FP32. See §3.8.
+
   **Clock\<D\>**       1 bit                Carries clock-domain tag D. Cannot appear in arithmetic.
 
   **Reset\<Sync, High\|Low\>**    1 bit                Synchronous reset --- deasserted on the clock edge. Polarity defaults High.
@@ -660,6 +664,33 @@ Restrictions:
 - For ARCH-to-ARCH connections across `ascending` ports, the connecting wire must also be `ascending` — otherwise the position-based mapping reverses inside our codebase too.
 
 **Rule of thumb:** if you're connecting to upstream SV and its port is declared `logic [W-1:0] x [N]` (no explicit range), use `unpacked ascending`. If the upstream port is `logic [W-1:0] x [N-1:0]` (explicit descending), use plain `unpacked`. If both arch-side endpoints are ARCH-generated and you have no SV-interop constraint, plain `unpacked` is fine.
+
+**3.8 Floating-Point Types (FP32 / BF16)**
+
+First-class IEEE-754 floating-point types for LLM-inference datapaths. `FP32` is binary32 (emits `logic[31:0]`); `BF16` is bfloat16 — an 8-bit exponent with a 7-bit stored mantissa (emits `logic[15:0]`). Both are combinational with no hidden pipeline latency.
+
+**Semantics.** Round-to-nearest-even, full subnormals, canonical quiet-NaN, saturating toward-zero float→int — matching the RISC-V special-value profile by default (see the `--fp-compat` flag). The `arch sim` backend computes with the host FPU (bit-identical to IEEE-754 RNE for `+ - * fma`); `arch build` emits self-contained synthesizable `function automatic` helpers (decode → integer-mantissa arithmetic → normalize → RNE → pack) generated from a single bit-vector IR that is also rendered to SMT-LIB2 for machine-checked equivalence proofs.
+
+**Operators.** `+ - *` produce the same float type (no auto-widening), ordered comparisons (`== != < > <= >=`) produce `Bool`, and the built-ins `fma(a, b, c)` (fused multiply-add, single rounding) and `is_nan(x) → Bool` are provided. `/`, `%`, and bitwise/shift operators are **not** defined on floats (compile error).
+
+```
+let s: FP32 = a + b;          // + - * → same float type
+let f: FP32 = fma(a, b, c);   // fused multiply-add
+let gt: Bool = a > b;         // ordered compare → Bool
+let nan: Bool = is_nan(a);
+```
+
+**No implicit conversion.** Mixing `FP32` and `BF16`, or float and integer, in an operator is a compile error; convert explicitly:
+
+  - `x.to_fp32()` — `BF16`→`FP32` (exact widen) or `SInt<N>`/`UInt<N>`→`FP32` (RNE).
+  - `x.to_bf16()` — `FP32`→`BF16` (round-to-nearest-even).
+  - `x.to_sint<N>()` / `x.to_uint<N>()` — float→integer, toward-zero, per-N saturating, NaN→type-max (RISC-V profile).
+
+**Literals.** Float literals (`1.5`, `3.0e-2`, `0.0`) are typed `FP32`. A `BF16` constant requires an explicit cast — `let h: BF16 = (1.5).to_bf16();` — because a bare `let h: BF16 = 1.5;` is rejected by the no-implicit-conversion rule. A float `reg` reset value must be a float literal (`reset rst => 0.0`), not an integer literal.
+
+**v1 scope.** Floats are supported only as scalar signals plus the operators above. Floats inside `Vec`, in `struct` fields, and in module-local `function` signatures are rejected at type-check (never silently miscompiled); these are deferred follow-ups.
+
+**Compatibility profile.** `arch build|sim --fp-compat=riscv|cuda` (default `riscv`) selects the special-value corners. Both profiles share an identical RNE arithmetic core and differ only in the canonical NaN bit pattern (`0x7FC00000`/`0x7FC0` vs `0x7FFFFFFF`/`0x7FFF`) and the NaN→int result (type-max vs `0`).
 
 **4. Modules**
 
