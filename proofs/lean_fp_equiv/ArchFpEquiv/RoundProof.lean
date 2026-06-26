@@ -317,4 +317,296 @@ theorem kept_unified (sig : BitVec 50) (sh : BitVec 16)
       rw [hk0, hg0, rneQuot_big_zero sig.toNat sh.toNat hsig50 (by omega)]
       bv_decide
 
+-- ── normal / overflow packing helpers ────────────────────────────────────────
+
+/-- Append packing with raw BitVec pieces: `s ++ exp8 ++ mant23` as `ofNat`. -/
+theorem combine' (x : BitVec 1) (y : BitVec 8) (z : BitVec 23) :
+    x ++ (y ++ z) = BitVec.ofNat 32 (x.toNat * 2 ^ 31 + y.toNat * 2 ^ 23 + z.toNat) := by
+  have hx : x.toNat < 2 := x.isLt
+  have hy : y.toNat < 256 := y.isLt
+  have hz : z.toNat < 2 ^ 23 := z.isLt
+  apply BitVec.eq_of_toNat_eq
+  simp only [BitVec.toNat_append, BitVec.toNat_ofNat, Nat.shiftLeft_eq]
+  rw [Nat.mul_comm y.toNat (2 ^ 23), ← Nat.two_pow_add_eq_or_of_lt hz,
+      Nat.mul_comm x.toNat (2 ^ 31), ← Nat.two_pow_add_eq_or_of_lt
+        (show 2 ^ 23 * y.toNat + z.toNat < 2 ^ 31 by omega),
+      show (1 + (8 + 23)) = 32 from rfl,
+      Nat.mod_eq_of_lt (show 2 ^ 31 * x.toNat + 2 ^ 23 * y.toNat + z.toNat < 2 ^ 32 by omega)]
+  omega
+
+/-- The low-8 exponent field as a `Nat` mod. -/
+theorem extract8_toNat (b : BitVec 16) : (BitVec.extractLsb 7 0 b).toNat = b.toNat % 256 := by
+  rw [BitVec.extractLsb_toNat, Nat.shiftRight_zero]
+
+/-- The low-23 mantissa field as a `Nat` mod. -/
+theorem extract23_toNat (k : BitVec 50) : (BitVec.extractLsb 22 0 k).toNat = k.toNat % 2 ^ 23 := by
+  rw [BitVec.extractLsb_toNat, Nat.shiftRight_zero]
+
+/-- The carry bit `kept[24]` decides `2^24 ≤ kept` (given `kept ≤ 2^24`). -/
+theorem carry_bit (K : BitVec 50) (h : K.toNat ≤ 2 ^ 24) :
+    (BitVec.extractLsb 24 24 K == 1#1) = decide (2 ^ 24 ≤ K.toNat) := by
+  have hpos : 0 < 2 ^ 24 := Nat.two_pow_pos _
+  have hval : (BitVec.extractLsb 24 24 K).toNat = K.toNat / 2 ^ 24 % 2 := by
+    rw [BitVec.extractLsb_toNat, Nat.shiftRight_eq_div_pow]
+  have hq2 : K.toNat / 2 ^ 24 < 2 := (Nat.div_lt_iff_lt_mul hpos).mpr (by omega)
+  have hiff : (BitVec.extractLsb 24 24 K == 1#1) = true ↔ 2 ^ 24 ≤ K.toNat := by
+    rw [beq_iff_eq, ← BitVec.toNat_inj, hval, show (1#1 : BitVec 1).toNat = 1 from rfl]
+    constructor
+    · intro hh; exact (div_eq_one_of_lt_two_mul K.toNat (2 ^ 24) hpos (by omega)).mp (by omega)
+    · intro hh
+      have : K.toNat / 2 ^ 24 = 1 := (div_eq_one_of_lt_two_mul K.toNat (2 ^ 24) hpos (by omega)).mpr hh
+      omega
+  cases hb : (BitVec.extractLsb 24 24 K == 1#1)
+  · have hnp : ¬ 2 ^ 24 ≤ K.toNat := by
+      intro hp; rw [hiff.mpr hp] at hb; exact absurd hb (by decide)
+    rw [decide_eq_false hnp]
+  · rw [decide_eq_true (hiff.mp hb)]
+
+/-- `BitVec.ofBool b == 1#1` is `b`. -/
+theorem ofBool_beq_one (b : Bool) : (BitVec.ofBool b == 1#1) = b := by cases b <;> decide
+
+/-- `rneQuot` of a normalized 24-bit-window dividend lands in `[2^23, 2^24]`. -/
+theorem rneQuot_bounds (n sh : Nat) (h1 : 1 ≤ sh)
+    (hlo : 2 ^ (sh + 23) ≤ n) (hhi : n < 2 ^ (sh + 24)) :
+    2 ^ 23 ≤ rneQuot n sh ∧ rneQuot n sh ≤ 2 ^ 24 := by
+  have hpos : 0 < 2 ^ sh := Nat.two_pow_pos _
+  have hqlo : 2 ^ 23 ≤ n / 2 ^ sh := by
+    rw [Nat.le_div_iff_mul_le hpos, ← Nat.pow_add]
+    have : 23 + sh = sh + 23 := by omega
+    rw [this]; exact hlo
+  have hqhi : n / 2 ^ sh < 2 ^ 24 := by
+    rw [Nat.div_lt_iff_lt_mul hpos, ← Nat.pow_add]
+    have : 24 + sh = sh + 24 := by omega
+    rw [this]; exact hhi
+  unfold rneQuot
+  split <;> constructor <;> omega
+
+/-- The normalized kept significand lies in `[2^23, 2^24]` (sign of carry depends
+    only on whether it reaches `2^24`). -/
+theorem kept_range (sig L : Nat) (hlo : 2 ^ L ≤ sig) (hhi : sig < 2 ^ (L + 1))
+    (SH : BitVec 16) (hSH : SH.toInt = (L : Int) - 23) :
+    2 ^ 23 ≤ (if SH.toInt ≤ 0 then sig * 2 ^ (-SH.toInt).toNat else rneQuot sig SH.toNat)
+    ∧ (if SH.toInt ≤ 0 then sig * 2 ^ (-SH.toInt).toNat else rneQuot sig SH.toNat) ≤ 2 ^ 24 := by
+  by_cases hc : SH.toInt ≤ 0
+  · rw [if_pos hc]
+    have hsh : (-SH.toInt).toNat = 23 - L := by rw [hSH]; omega
+    rw [hsh]
+    constructor
+    · calc 2 ^ 23 = 2 ^ L * 2 ^ (23 - L) := by
+            rw [← Nat.pow_add]; congr 1; rw [hSH] at hc; omega
+        _ ≤ sig * 2 ^ (23 - L) := Nat.mul_le_mul_right _ hlo
+    · apply Nat.le_of_lt
+      calc sig * 2 ^ (23 - L) < 2 ^ (L + 1) * 2 ^ (23 - L) :=
+            (Nat.mul_lt_mul_right (Nat.two_pow_pos _)).mpr hhi
+        _ = 2 ^ 24 := by rw [← Nat.pow_add]; congr 1; rw [hSH] at hc; omega
+  · rw [if_neg hc]
+    have hshn : SH.toNat = L - 23 := by
+      rw [toNat_of_toInt_nonneg SH (by rw [hSH] at hc ⊢; omega), hSH]; omega
+    rw [hshn]
+    rw [hSH] at hc
+    exact rneQuot_bounds sig (L - 23) (by omega)
+      (by rw [show L - 23 + 23 = L by omega]; exact hlo)
+      (by rw [show L - 23 + 24 = L + 1 by omega]; exact hhi)
+
+/-- Clean-Nat form of the normalized kept range, keyed on `L ≤ 23` (left-shift)
+    vs `L > 23` (rounding right-shift). -/
+theorem kept_clean_range (sig L : Nat) (hlo : 2 ^ L ≤ sig) (hhi : sig < 2 ^ (L + 1)) :
+    2 ^ 23 ≤ (if L ≤ 23 then sig * 2 ^ (23 - L) else rneQuot sig (L - 23))
+    ∧ (if L ≤ 23 then sig * 2 ^ (23 - L) else rneQuot sig (L - 23)) ≤ 2 ^ 24 := by
+  by_cases hc : L ≤ 23
+  · rw [if_pos hc]
+    constructor
+    · calc 2 ^ 23 = 2 ^ L * 2 ^ (23 - L) := by rw [← Nat.pow_add]; congr 1; omega
+        _ ≤ sig * 2 ^ (23 - L) := Nat.mul_le_mul_right _ hlo
+    · apply Nat.le_of_lt
+      calc sig * 2 ^ (23 - L) < 2 ^ (L + 1) * 2 ^ (23 - L) :=
+            (Nat.mul_lt_mul_right (Nat.two_pow_pos _)).mpr hhi
+        _ = 2 ^ 24 := by rw [← Nat.pow_add]; congr 1; omega
+  · rw [if_neg hc]
+    exact rneQuot_bounds sig (L - 23) (by omega)
+      (by rw [show L - 23 + 23 = L by omega]; exact hlo)
+      (by rw [show L - 23 + 24 = L + 1 by omega]; exact hhi)
+
+/-- The sign field: `s.toNat · 2^31` equals the spec's `if s==1 then 2^31 else 0`. -/
+theorem sgn_eq (s : BitVec 1) :
+    s.toNat * 2 ^ 31 = (if (s == 1#1) = true then 2 ^ 31 else 0) := by
+  by_cases h : s = 1#1
+  · subst h; rfl
+  · have hf : (s == 1#1) = false := beq_eq_false_iff_ne.mpr h
+    have h0 : s.toNat = 0 := by
+      have hb : s.toNat < 2 := s.isLt
+      have h1 : s.toNat ≠ 1 := fun hc => h (BitVec.eq_of_toNat_eq (by rw [hc]; rfl))
+      omega
+    rw [hf, h0]; simp
+
+theorem struct_eq_spec (s : BitVec 1) (sig : BitVec 48) (e0 : BitVec 16)
+    (hlo : -298 ≤ e0.toInt) (hhi : e0.toInt ≤ 208) :
+    round48_struct s sig e0 = roundNE_f32 (s == 1#1) sig.toNat e0.toInt := by
+  by_cases hsig : sig = 0#48
+  · subst hsig; exact struct_zero s e0
+  · have hne : (sig == 0#48) = false := by simp only [beq_eq_false_iff_ne]; exact hsig
+    have hsn : sig.toNat ≠ 0 := by
+      intro h; exact hsig (BitVec.eq_of_toNat_eq (by simpa using h))
+    obtain ⟨hp47, hpInt⟩ := p_facts sig hsig
+    have hl47 : Nat.log2 sig.toNat ≤ 47 := by rw [← msb_index_eq_log2 sig hsig]; exact hp47
+    have hlog_nn : (0:Int) ≤ (Nat.log2 sig.toNat : Int) := Int.natCast_nonneg _
+    have hsig_hi : sig.toNat < 2 ^ (Nat.log2 sig.toNat + 1) := Nat.lt_log2_self
+    unfold round48_struct roundNE_f32
+    rw [if_neg hsn, hne]
+    simp only [Bool.false_eq_true, if_false]
+    by_cases hsub : BitVec.sle (arch_msb_index48 sig + e0 + 127#16) 0#16 = true
+    · -- subnormal branch: biased ≤ 0
+      have hb0 : (Nat.log2 sig.toNat : Int) + e0.toInt + 127 ≤ 0 :=
+        (isSub_iff sig e0 hsig hlo hhi).mp hsub
+      have he0hi : e0.toInt ≤ -127 := by omega
+      simp only [hsub, if_true, if_pos hb0]
+      have hsh : (65387#16 - e0).toInt = -149 - e0.toInt := sh_sub e0 hlo hhi
+      have hbnd : (-200:Int) ≤ (65387#16 - e0).toInt := by rw [hsh]; omega
+      have hbnd2 : (65387#16 - e0).toInt ≤ 200 := by rw [hsh]; omega
+      have hno : (65387#16 - e0).toInt ≤ 0 →
+          (BitVec.setWidth 50 sig).toNat * 2 ^ (-(65387#16 - e0).toInt).toNat < 2 ^ 50 := by
+        intro hle
+        rw [zsig_toNat, hsh] at *
+        -- hle : -149 - e0.toInt ≤ 0  ⟹ e0 ≥ -149 ; with hb0 ⟹ log2 ≤ 22
+        have hmle : (-(-149 - e0.toInt)).toNat ≤ 22 := by
+          have : (-(-149 - e0.toInt)) ≤ 22 := by omega
+          omega
+        have hlog22 : Nat.log2 sig.toNat ≤ 22 := by
+          have : (Nat.log2 sig.toNat : Int) ≤ 22 := by omega
+          omega
+        calc sig.toNat * 2 ^ (-(-149 - e0.toInt)).toNat
+            < 2 ^ (Nat.log2 sig.toNat + 1) * 2 ^ (-(-149 - e0.toInt)).toNat :=
+              (Nat.mul_lt_mul_right (Nat.two_pow_pos _)).mpr hsig_hi
+          _ = 2 ^ (Nat.log2 sig.toNat + 1 + (-(-149 - e0.toInt)).toNat) :=
+              (Nat.pow_add 2 _ _).symm
+          _ ≤ 2 ^ 50 := Nat.pow_le_pow_right (by decide) (by omega)
+      rw [combine_sub, kept_unified (BitVec.setWidth 50 sig) (65387#16 - e0) hbnd hbnd2 hno,
+          zsig_toNat, hsh, sgn_eq]
+      -- now match the kept if-expressions
+      by_cases hc : -149 - e0.toInt ≤ 0
+      · rw [if_pos hc, if_pos hc]
+      · rw [if_neg hc, if_neg hc]
+        have hpos : (0:Int) ≤ (65387#16 - e0).toInt := by rw [hsh]; omega
+        rw [show (65387#16 - e0).toNat = (-149 - e0.toInt).toNat by
+              rw [toNat_of_toInt_nonneg (65387#16 - e0) hpos, hsh]]
+    · -- normal / overflow branch: biased > 0
+      rw [Bool.not_eq_true] at hsub
+      have hbpos : ¬ ((Nat.log2 sig.toNat : Int) + e0.toInt + 127 ≤ 0) := by
+        intro hcon
+        have : BitVec.sle (arch_msb_index48 sig + e0 + 127#16) 0#16 = true :=
+          (isSub_iff sig e0 hsig hlo hhi).mpr hcon
+        rw [hsub] at this; exact absurd this (by decide)
+      simp only [hsub, Bool.false_eq_true, if_false, if_neg hbpos, ofBool_beq_one]
+      have hSH : (arch_msb_index48 sig + e0 - 23#16 - e0).toInt = (Nat.log2 sig.toNat : Int) - 23 :=
+        sh_normal sig e0 hsig hlo hhi
+      have hsig_lo : 2 ^ Nat.log2 sig.toNat ≤ sig.toNat :=
+        Nat.log2_self_le (by omega)
+      have hbndSH : (-200:Int) ≤ (arch_msb_index48 sig + e0 - 23#16 - e0).toInt := by rw [hSH]; omega
+      have hbndSH2 : (arch_msb_index48 sig + e0 - 23#16 - e0).toInt ≤ 200 := by rw [hSH]; omega
+      have hno : (arch_msb_index48 sig + e0 - 23#16 - e0).toInt ≤ 0 →
+          (BitVec.setWidth 50 sig).toNat *
+            2 ^ (-(arch_msb_index48 sig + e0 - 23#16 - e0).toInt).toNat < 2 ^ 50 := by
+        intro hle
+        rw [zsig_toNat, hSH] at *
+        have : sig.toNat * 2 ^ (-((Nat.log2 sig.toNat : Int) - 23)).toNat
+              < 2 ^ (Nat.log2 sig.toNat + 1) * 2 ^ (-((Nat.log2 sig.toNat : Int) - 23)).toNat :=
+          (Nat.mul_lt_mul_right (Nat.two_pow_pos _)).mpr hsig_hi
+        have heq : 2 ^ (Nat.log2 sig.toNat + 1) * 2 ^ (-((Nat.log2 sig.toNat : Int) - 23)).toNat
+              = 2 ^ (Nat.log2 sig.toNat + 1 + (-((Nat.log2 sig.toNat : Int) - 23)).toNat) :=
+          (Nat.pow_add 2 _ _).symm
+        have hbound : Nat.log2 sig.toNat + 1 + (-((Nat.log2 sig.toNat : Int) - 23)).toNat ≤ 24 := by
+          omega
+        calc sig.toNat * 2 ^ (-((Nat.log2 sig.toNat : Int) - 23)).toNat
+            < 2 ^ (Nat.log2 sig.toNat + 1 + (-((Nat.log2 sig.toNat : Int) - 23)).toNat) := by
+              rw [← heq]; exact this
+          _ ≤ 2 ^ 50 := Nat.pow_le_pow_right (by decide) (by omega)
+      -- biased (BitVec) value and +1
+      have hB : (arch_msb_index48 sig + e0 + 127#16).toInt
+          = (Nat.log2 sig.toNat : Int) + e0.toInt + 127 := (exp_facts sig e0 hsig hlo hhi).2
+      have h1i : (1#16 : BitVec 16).toInt = 1 := rfl
+      have h255i : (255#16 : BitVec 16).toInt = 255 := rfl
+      have hBp1 : (arch_msb_index48 sig + e0 + 127#16 + 1#16).toInt
+          = (Nat.log2 sig.toNat : Int) + e0.toInt + 127 + 1 := by
+        rw [toInt_add_of_bounds _ _ (by rw [hB, h1i]; omega) (by rw [hB, h1i]; omega), hB, h1i]
+      -- kept value in clean Nat form
+      have hKclean : ((if BitVec.sle (arch_msb_index48 sig + e0 - 23#16 - e0) 0#16 then
+              BitVec.setWidth 50 sig <<< (BitVec.setWidth 50 (0#16 - (arch_msb_index48 sig + e0 - 23#16 - e0))).toNat
+            else BitVec.setWidth 50 sig >>> (BitVec.setWidth 50 (arch_msb_index48 sig + e0 - 23#16 - e0)).toNat)
+           + BitVec.setWidth 50
+              ((if BitVec.sle (arch_msb_index48 sig + e0 - 23#16 - e0) 0#16 then 0#1
+                else BitVec.extractLsb 0 0 (BitVec.setWidth 50 sig >>> (BitVec.setWidth 50 (arch_msb_index48 sig + e0 - 23#16 - e0 - 1#16)).toNat))
+                &&& ((if BitVec.sle (arch_msb_index48 sig + e0 - 23#16 - e0) 0#16 then 0#1
+                      else BitVec.ofBool (BitVec.setWidth 50 sig &&& ((1#50 <<< (BitVec.setWidth 50 (arch_msb_index48 sig + e0 - 23#16 - e0 - 1#16)).toNat) - 1#50) != 0#50))
+                      ||| BitVec.extractLsb 0 0
+                            (if BitVec.sle (arch_msb_index48 sig + e0 - 23#16 - e0) 0#16 then
+                              BitVec.setWidth 50 sig <<< (BitVec.setWidth 50 (0#16 - (arch_msb_index48 sig + e0 - 23#16 - e0))).toNat
+                             else BitVec.setWidth 50 sig >>> (BitVec.setWidth 50 (arch_msb_index48 sig + e0 - 23#16 - e0)).toNat)))).toNat
+          = (if Nat.log2 sig.toNat ≤ 23 then sig.toNat * 2 ^ (23 - Nat.log2 sig.toNat)
+             else rneQuot sig.toNat (Nat.log2 sig.toNat - 23)) := by
+        rw [kept_unified (BitVec.setWidth 50 sig) (arch_msb_index48 sig + e0 - 23#16 - e0) hbndSH hbndSH2 hno, zsig_toNat]
+        by_cases hc : (arch_msb_index48 sig + e0 - 23#16 - e0).toInt ≤ 0
+        · rw [if_pos hc, if_pos (show Nat.log2 sig.toNat ≤ 23 by rw [hSH] at hc; omega),
+              show (-(arch_msb_index48 sig + e0 - 23#16 - e0).toInt).toNat = 23 - Nat.log2 sig.toNat from by rw [hSH]; omega]
+        · rw [if_neg hc, if_neg (show ¬ Nat.log2 sig.toNat ≤ 23 by rw [hSH] at hc; omega),
+              show (arch_msb_index48 sig + e0 - 23#16 - e0).toNat = Nat.log2 sig.toNat - 23 from by
+                rw [toNat_of_toInt_nonneg _ (by omega), hSH]; omega]
+      -- spec kept value to the same clean Nat form
+      have hspec_clean : (if (Nat.log2 sig.toNat : Int) + e0.toInt - 23 - e0.toInt ≤ 0 then
+              sig.toNat * 2 ^ (-((Nat.log2 sig.toNat : Int) + e0.toInt - 23 - e0.toInt)).toNat
+            else rneQuot sig.toNat ((Nat.log2 sig.toNat : Int) + e0.toInt - 23 - e0.toInt).toNat)
+          = (if Nat.log2 sig.toNat ≤ 23 then sig.toNat * 2 ^ (23 - Nat.log2 sig.toNat)
+             else rneQuot sig.toNat (Nat.log2 sig.toNat - 23)) := by
+        by_cases hc : Nat.log2 sig.toNat ≤ 23
+        · rw [if_pos (show (Nat.log2 sig.toNat : Int) + e0.toInt - 23 - e0.toInt ≤ 0 by omega), if_pos hc,
+              show (-((Nat.log2 sig.toNat : Int) + e0.toInt - 23 - e0.toInt)).toNat = 23 - Nat.log2 sig.toNat from by omega]
+        · rw [if_neg (show ¬ (Nat.log2 sig.toNat : Int) + e0.toInt - 23 - e0.toInt ≤ 0 by omega), if_neg hc,
+              show ((Nat.log2 sig.toNat : Int) + e0.toInt - 23 - e0.toInt).toNat = Nat.log2 sig.toNat - 23 from by omega]
+      have hKrange := kept_clean_range sig.toNat (Nat.log2 sig.toNat) hsig_lo hsig_hi
+      have hKle : ((if BitVec.sle (arch_msb_index48 sig + e0 - 23#16 - e0) 0#16 then
+              BitVec.setWidth 50 sig <<< (BitVec.setWidth 50 (0#16 - (arch_msb_index48 sig + e0 - 23#16 - e0))).toNat
+            else BitVec.setWidth 50 sig >>> (BitVec.setWidth 50 (arch_msb_index48 sig + e0 - 23#16 - e0)).toNat)
+           + BitVec.setWidth 50
+              ((if BitVec.sle (arch_msb_index48 sig + e0 - 23#16 - e0) 0#16 then 0#1
+                else BitVec.extractLsb 0 0 (BitVec.setWidth 50 sig >>> (BitVec.setWidth 50 (arch_msb_index48 sig + e0 - 23#16 - e0 - 1#16)).toNat))
+                &&& ((if BitVec.sle (arch_msb_index48 sig + e0 - 23#16 - e0) 0#16 then 0#1
+                      else BitVec.ofBool (BitVec.setWidth 50 sig &&& ((1#50 <<< (BitVec.setWidth 50 (arch_msb_index48 sig + e0 - 23#16 - e0 - 1#16)).toNat) - 1#50) != 0#50))
+                      ||| BitVec.extractLsb 0 0
+                            (if BitVec.sle (arch_msb_index48 sig + e0 - 23#16 - e0) 0#16 then
+                              BitVec.setWidth 50 sig <<< (BitVec.setWidth 50 (0#16 - (arch_msb_index48 sig + e0 - 23#16 - e0))).toNat
+                             else BitVec.setWidth 50 sig >>> (BitVec.setWidth 50 (arch_msb_index48 sig + e0 - 23#16 - e0)).toNat)))).toNat ≤ 2 ^ 24 := by
+        rw [hKclean]; exact hKrange.2
+      rw [hspec_clean, carry_bit _ hKle, hKclean]
+      simp only [decide_eq_true_eq]
+      have hBnn : (0:Int) ≤ (arch_msb_index48 sig + e0 + 127#16).toInt := by rw [hB]; omega
+      by_cases hcarry : 2 ^ 24 ≤ (if Nat.log2 sig.toNat ≤ 23 then sig.toNat * 2 ^ (23 - Nat.log2 sig.toNat)
+                                  else rneQuot sig.toNat (Nat.log2 sig.toNat - 23))
+      · -- carry: exponent +1, kept >> 1
+        simp only [if_pos hcarry]
+        rw [BitVec.sle_eq_decide, h255i, hBp1]
+        simp only [decide_eq_true_eq]
+        by_cases hov : (255:Int) ≤ (Nat.log2 sig.toNat : Int) + e0.toInt + 127 + 1
+        · rw [if_pos hov, if_pos hov, combine']
+          simp only [show (255#8 : BitVec 8).toNat = 255 from rfl, show (0#23 : BitVec 23).toNat = 0 from rfl]
+          rw [sgn_eq]
+        · rw [if_neg hov, if_neg hov, combine', extract8_toNat, extract23_toNat,
+              BitVec.toNat_ushiftRight, Nat.shiftRight_eq_div_pow,
+              show (BitVec.setWidth 50 1#16).toNat = 1 from by simp,
+              Nat.pow_one, hKclean, sgn_eq,
+              show (arch_msb_index48 sig + e0 + 127#16 + 1#16).toNat
+                  = ((Nat.log2 sig.toNat : Int) + e0.toInt + 127 + 1).toNat from by
+                rw [toNat_of_toInt_nonneg _ (by rw [hBp1]; omega), hBp1]]
+      · -- no carry
+        simp only [if_neg hcarry]
+        rw [BitVec.sle_eq_decide, h255i, hB]
+        simp only [decide_eq_true_eq]
+        by_cases hov : (255:Int) ≤ (Nat.log2 sig.toNat : Int) + e0.toInt + 127
+        · rw [if_pos hov, if_pos hov, combine']
+          simp only [show (255#8 : BitVec 8).toNat = 255 from rfl, show (0#23 : BitVec 23).toNat = 0 from rfl]
+          rw [sgn_eq]
+        · rw [if_neg hov, if_neg hov, combine', extract8_toNat, extract23_toNat, hKclean, sgn_eq,
+              show (arch_msb_index48 sig + e0 + 127#16).toNat
+                  = ((Nat.log2 sig.toNat : Int) + e0.toInt + 127).toNat from by
+                rw [toNat_of_toInt_nonneg _ hBnn, hB]]
+
+
 end ArchFp
