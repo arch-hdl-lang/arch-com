@@ -366,7 +366,7 @@ theorem carry_bit (K : BitVec 50) (h : K.toNat ≤ 2 ^ 24) :
 theorem ofBool_beq_one (b : Bool) : (BitVec.ofBool b == 1#1) = b := by cases b <;> decide
 
 /-- `rneQuot` of a normalized 24-bit-window dividend lands in `[2^23, 2^24]`. -/
-theorem rneQuot_bounds (n sh : Nat) (h1 : 1 ≤ sh)
+theorem rneQuot_bounds (n sh : Nat) (_h1 : 1 ≤ sh)
     (hlo : 2 ^ (sh + 23) ≤ n) (hhi : n < 2 ^ (sh + 24)) :
     2 ^ 23 ≤ rneQuot n sh ∧ rneQuot n sh ≤ 2 ^ 24 := by
   have hpos : 0 < 2 ^ sh := Nat.two_pow_pos _

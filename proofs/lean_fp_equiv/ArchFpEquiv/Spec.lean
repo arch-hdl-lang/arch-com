@@ -154,4 +154,25 @@ theorem mul_finite_reduces (a b : BitVec 32)
   unfold archMulFinite arch_round48 arch_decode_mant arch_decode_eunb mulSign sgn arch_f32_mul
   bv_decide (config := { timeout := 120 })
 
+/-- **Exponent-sum bounds.** For two finite nonzero operands, the summed unbiased
+    exponent `e0 = eunb_a + eunb_b` lies in `[-298, 208]` — exactly the window in
+    which `arch_round48`'s 16-bit exponent arithmetic does not wrap, so the rounder
+    crux applies. Each `eunb` is in `[-149, 104]` for a finite nonzero input (the
+    `isInf`/`isNaN` exclusion caps `exp ≤ 254`, hence `eunb = exp-150 ≤ 104`; the
+    subnormal/`exp=1` floor gives `-149`). Proved with `bv_decide` on the signed
+    `BitVec.sle` form (the `toInt` literal phrasing trips its `toInt` model). -/
+theorem e0_bounds (a b : BitVec 32) (ha : finiteNonzero a = true) (hb : finiteNonzero b = true) :
+    -298 ≤ (arch_decode_eunb a + arch_decode_eunb b).toInt
+    ∧ (arch_decode_eunb a + arch_decode_eunb b).toInt ≤ 208 := by
+  have h1 : BitVec.sle (BitVec.ofNat 16 65238) (arch_decode_eunb a + arch_decode_eunb b) = true := by
+    unfold finiteNonzero isNaN isInf isZero expField fracField arch_decode_eunb at *
+    bv_decide
+  have h2 : BitVec.sle (arch_decode_eunb a + arch_decode_eunb b) (BitVec.ofNat 16 208) = true := by
+    unfold finiteNonzero isNaN isInf isZero expField fracField arch_decode_eunb at *
+    bv_decide
+  rw [BitVec.sle_iff_toInt_le] at h1 h2
+  rw [show (BitVec.ofNat 16 65238).toInt = -298 from by decide] at h1
+  rw [show (BitVec.ofNat 16 208).toInt = 208 from by decide] at h2
+  exact ⟨h1, h2⟩
+
 end ArchFp

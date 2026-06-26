@@ -29,8 +29,8 @@ Lean, not in a QF_BV solver.
 
 ## Status
 
-Elaborated and built under Lean v4.30.0 (`lake build` clean; the only warnings
-are the three Tier-2 `sorry`s below). Two tiers:
+Elaborated and built under Lean v4.30.0 (`lake build` clean, **zero `sorry`**).
+Two tiers:
 
 * **Structural model lemmas** (no IEEE spec needed) — **machine-checked by
   `bv_decide`**: comparator symmetry/mirror, the `sub = add∘negate` construction
@@ -39,14 +39,17 @@ are the three Tier-2 `sorry`s below). Two tiers:
   and that the bit-blast is genuine (commutativity is non-symmetric, so an
   abstraction shortcut could not have faked it).
 * **IEEE arithmetic correctness** — for `mul`, the special-value lattice and the
-  finite-product reduction are **proved** in `Spec.lean`; what remains is a single
-  shared rounder lemma `arch_round48_correct` (the one `sorry`), stated against the
-  value-level `roundNE_f32`. `arch_f32_mul_finite_correct` is then *derived* from
-  the reduction and that lemma — not bit-blasted. The crux needs a floating-point
-  *semantics* Lean core lacks (a dyadic/`Rat` model from Mathlib/Flocq, or a port
-  of the SMT `FloatingPoint` theory); it is op-independent, so it also unlocks
-  `add`/`fma`. `add`/`sub` are moreover already machine-proved over all 2^64 inputs
-  by the SMT backend.
+  finite-product reduction are **proved** in `Spec.lean`, and the shared rounder
+  lemma `arch_round48_correct` is now **fully proved** (`RoundProof.struct_eq_spec`):
+  `arch_round48` is transcribed bit-exact (`bv_decide`) to a named-stage struct,
+  which is then proved equal to the value-level RNE spec `roundNE_f32` via a stack
+  of core-only kernels and bridges — no Mathlib, no floating-point library. The one
+  precondition is the multiply-relevant exponent window `-298 ≤ e0 ≤ 208` (outside
+  it arch's 16-bit exponent arithmetic genuinely wraps), discharged at the use site
+  from `finiteNonzero` by `Spec.e0_bounds`. `arch_f32_mul_finite_correct` is then
+  *derived* — not bit-blasted. Being op-independent, the rounder lemma also unlocks
+  `add`/`fma` once they are reduced like `mul`; `add`/`sub` are moreover already
+  machine-proved over all 2^64 inputs by the SMT backend.
 
 The Rust renderer (`fp_ir::render_lean`) and its emitted output are additionally
 covered by `cargo test`.
@@ -132,11 +135,12 @@ backend; `fma` reduces the same way once its wide aligned product is named. -/
 -- `roundNE_f32` is now a concrete value-level RNE spec (`RoundProof.lean`), no
 -- longer opaque; the `sig=0` case is discharged there (`round48_correct_zero`).
 
-/-- **The rounder crux.** The shared round-and-pack at the multiply width rounds
-    its dyadic argument `(-1)^s · sig · 2^e0` to nearest-even.
+/-- **The rounder crux — now proved.** The shared round-and-pack at the multiply
+    width rounds its dyadic argument `(-1)^s · sig · 2^e0` to nearest-even.
 
-    This is the single `sorry` gating Tier-2 multiply — but it is now heavily
-    fenced in. `Round.lean` machine-checks, exhaustively, that `arch_round48`:
+    This was the single `sorry` gating Tier-2 multiply; it is now discharged
+    (`rw [arch_eq_struct]; exact struct_eq_spec`). `Round.lean` machine-checks,
+    exhaustively, that `arch_round48`:
     preserves sign (`round48_sign`), sends a zero significand to signed zero
     (`round48_zero`), and is the **identity on every representable value**
     (`round48_exact_normal` / `round48_exact_subnormal`) — i.e. this equation
@@ -153,14 +157,20 @@ backend; `fma` reduces the same way once its wide aligned product is named. -/
         rounding datapath `(v >>> sh) + roundup` equals `rneQuot v.toNat sh`.
       • `RoundBridge.toInt_add_of_bounds` / `toInt_sub_of_bounds` — the 16-bit
         signed exponent arithmetic (`ev`, `biased`, `k`, `sh`) matches `Int`.
-    What remains is the **final assembly**: unfold `arch_round48`'s ~80 `let`s and
-    thread these bridges through the sig=0 / subnormal / normal+carry / overflow
-    packing cases (output `_t92`), plus the `sh ≤ 0` exact left-shift branch. That
-    is large but mechanical wiring; the conceptual work is done. Op-independent, so
-    it also unlocks `add`/`fma` once they are reduced like `mul`. -/
-theorem arch_round48_correct (s : BitVec 1) (sig : BitVec 48) (e0 : BitVec 16) :
+    The **final assembly** is now complete (`RoundProof.struct_eq_spec`): the proof
+    transcribes `arch_round48` to a named-stage `round48_struct` (validated bit-exact
+    by `bv_decide`, `arch_eq_struct`), then threads the bridges through every
+    sig=0 / subnormal / normal / overflow packing case to match `roundNE_f32`. The
+    one genuine precondition is the multiply-relevant exponent window
+    `-298 ≤ e0 ≤ 208`: outside it arch's 16-bit exponent arithmetic wraps and the
+    equation genuinely fails, so the bound is a hypothesis here and is discharged at
+    the use site (`Spec.e0_bounds`) from `finiteNonzero`. Op-independent, so it also
+    unlocks `add`/`fma` once they are reduced like `mul`. -/
+theorem arch_round48_correct (s : BitVec 1) (sig : BitVec 48) (e0 : BitVec 16)
+    (hlo : -298 ≤ e0.toInt) (hhi : e0.toInt ≤ 208) :
     arch_round48 s sig e0 = roundNE_f32 (s == 1#1) sig.toNat e0.toInt := by
-  sorry
+  rw [arch_eq_struct]
+  exact struct_eq_spec s sig e0 hlo hhi
 
 /-- **Finite multiply is correctly rounded** — derived, not bit-blasted. Combines
     the proved finite reduction (`Spec.mul_finite_reduces`) with the rounder crux:
@@ -176,6 +186,7 @@ theorem arch_f32_mul_finite_correct (a b : BitVec 32)
               * BitVec.setWidth 48 (arch_decode_mant b)).toNat)
           ((arch_decode_eunb a + arch_decode_eunb b).toInt) := by
   rw [mul_finite_reduces a b ha hb, archMulFinite]
-  exact arch_round48_correct _ _ _
+  obtain ⟨hlo, hhi⟩ := e0_bounds a b ha hb
+  exact arch_round48_correct _ _ _ hlo hhi
 
 end ArchFp
