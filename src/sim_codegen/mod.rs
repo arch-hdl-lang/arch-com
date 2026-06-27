@@ -3549,6 +3549,43 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 }
             }
             if matches!(op, BinOp::Mul | BinOp::MulWrap) {
+                // Native sim computes the product in a 128-bit intermediate
+                // (`_arch_u128` / `__int128_t`). When the operation's own
+                // result cannot fit in 128 bits the product is silently
+                // truncated, so reject loudly instead.
+                //   - plain `*`  : ARCH widens losslessly to W(lhs)+W(rhs);
+                //                  the full product must fit in 128 bits.
+                //   - `*%`       : result width = max(W(lhs), W(rhs)); only
+                //                  unsupported when an operand itself exceeds
+                //                  128 bits (a ≤128-bit modular result is
+                //                  computed correctly — u128 holds its low
+                //                  bits exactly).
+                // `arch build` (SV) and `arch formal` (SMT) handle
+                // arbitrary-width multiply correctly — only `arch sim` is
+                // limited.
+                let lw = infer_expr_width(lhs, ctx);
+                let rw = infer_expr_width(rhs, ctx);
+                let result_w = if *op == BinOp::MulWrap {
+                    lw.max(rw)
+                } else {
+                    lw + rw
+                };
+                if result_w > 128 {
+                    let opname = if *op == BinOp::MulWrap { "*%" } else { "*" };
+                    eprintln!(
+                        "error: native sim does not support `{opname}` whose result needs more than \
+                         128 bits (this multiply needs {result_w} bits). The native C++ simulator \
+                         computes products in a 128-bit integer; wider results are unsupported and \
+                         would be silently truncated.\n  \
+                         note: `arch build` (SystemVerilog) and `arch formal` (SMT-LIB2) handle \
+                         this multiply correctly — only `arch sim` is affected.\n  \
+                         help: keep the multiply's result within 128 bits (for a modular result \
+                         use `*%`, e.g. `(a *% b).trunc<N>()`), or file an enhancement request for \
+                         native-sim wide-multiply support: \
+                         https://github.com/arch-hdl-lang/arch-com/issues"
+                    );
+                    std::process::exit(1);
+                }
                 let cast_ty = if infer_expr_signed(lhs, ctx) || infer_expr_signed(rhs, ctx) {
                     "__int128_t"
                 } else {

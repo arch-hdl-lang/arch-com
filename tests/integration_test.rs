@@ -28477,3 +28477,59 @@ C '\u{1}file\u{2}Foo.arch\u{1}line\u{2}12\u{1}page\u{2}v_toggle\u{1}comment\u{2}
         "seed2-only records should be preserved:\n{merged_text}"
     );
 }
+
+#[test]
+fn test_native_sim_rejects_multiply_wider_than_128_bits() {
+    // Native sim computes products in a 128-bit intermediate (`_arch_u128`).
+    // A `*` whose ARCH-widened result (W(lhs)+W(rhs)) exceeds 128 bits cannot
+    // be represented and would be silently truncated — reject it loudly with
+    // an actionable message instead. `arch build`/`arch formal` are unaffected.
+    let td = tempfile::tempdir().expect("tempdir");
+    let src_path = td.path().join("WideMul140.arch");
+    std::fs::write(
+        &src_path,
+        r#"
+module WideMul140
+  port a: in UInt<70>;
+  port b: in UInt<70>;
+  port p: out UInt<140>;
+  comb
+    p = a * b;
+  end comb
+end module WideMul140
+"#,
+    )
+    .expect("write fixture");
+
+    let tb_path = td.path().join("tb.cpp");
+    std::fs::write(
+        &tb_path,
+        "#include \"VWideMul140.h\"\nint main(){ VWideMul140 d; d.eval(); return 0; }\n",
+    )
+    .expect("write tb");
+
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg(&src_path)
+        .arg("--tb")
+        .arg(&tb_path)
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim");
+
+    assert!(
+        !out.status.success(),
+        "native sim must reject a >128-bit multiply result, but it succeeded"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("result needs more than 128 bits") && stderr.contains("140 bits"),
+        "expected a loud >128-bit multiply diagnostic naming the width; got stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("github.com/arch-hdl-lang/arch-com/issues"),
+        "diagnostic should point users at filing an enhancement request; got stderr:\n{stderr}"
+    );
+}
