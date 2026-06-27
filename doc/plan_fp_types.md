@@ -170,6 +170,23 @@ saturate per the RISC-V spec (§6).
 
 ### 5.3 BF16 operations — provably single-rounded via f64
 
+> **⚠ Correction (PR #627) — this section is superseded and its `fma` claim is
+> unsound.** Two things diverge from what shipped:
+> 1. **Intermediate precision.** The implementation does **not** use an f64
+>    intermediate (`p₁ = 53`); it uses an **f32** intermediate (`p₁ = 24`,
+>    `widen → arch_*_f32 → narrow`, see §appendix and `src/fp_ops.rs`).
+> 2. **`fma` is not innocuous.** The `p₁ ≥ 2·p₂ + 2` sufficiency argument below
+>    is a **known fallacy** for round-to-nearest (it fails already at
+>    `p₁ = 4, p₂ = 1`: `RNE₁(RNE₄(1.4375)) = 2` but `RNE₁(1.4375) = 1`). It does
+>    hold operationally for bf16 `mul`/`add`/`sub` — those are *exhaustively*
+>    SMT-proved correctly-rounded vs `fp.{mul,add,sub}` on `(8,8)` — but **not**
+>    for `fma`. The shipped `arch_fma_bf16` is fused f32-accumulate (one f32 fma,
+>    then a second rounding to bf16) and differs from a correctly-rounded
+>    `a*b+c` on ~0.37% of finite inputs, always by 1 ULP. See §8 below,
+>    `tests/fp_v1/smt_proof/README.md`, and `proofs/lean_fp_equiv`.
+>
+> The rest of this section is retained as historical design rationale.
+
 SoftFloat has no native bfloat16. Naively doing a BF16 op by promoting to
 `float32`, operating, and narrowing **double-rounds** and can be wrong. We avoid
 this with a clean, provable construction:
@@ -364,15 +381,28 @@ input space:
   comparisons. The small input space makes the miters tractable even though they
   route through the f32 datapath; `bf16_mul` cross-checked with cvc5 `--fp-exp`.
 
-Not yet machine-discharged — **only the multiplier-bearing ops**: f32 `mul` /
-`fma` (a 24×24-multiplier equivalence is SAT-hard at 2^64 regardless of
-bit-blaster; z3 times out → §8.2 backstop). And **`bf16_fma`** — which *is*
-correct (innocuous double rounding: f32 keeps a 16-bit precision lead over bf16
-at every magnitude, ≥ the `2p+2` margin since `p ≤ 8`; confirmed by an exhaustive
-deep-subnormal check) — but its `fp.fma` miter trips a z3 4.8.12 soundness gap
-(spurious `sat`); a solver with sound `fp.fma` at `(8,8)` closes it. The
-remaining multiplier proofs are the natural fit for a structured theorem prover
-(Lean/Coq) rather than a bit-blaster. See `tests/fp_v1/smt_proof/README.md`.
+The multiplier-bearing ops — f32 `mul` / `fma` — are SAT-hard for any
+bit-blaster (a 24×24-multiplier equivalence at 2^64; z3 times out), so they are
+**not** discharged by SMT. They are instead **machine-proved in Lean 4**
+(`proofs/lean_fp_equiv`, PRs #625/#626): both are proved correctly-rounded
+against a value-level RNE spec, zero `sorry`, by lifting the multiplier to a
+structural `Nat` multiply instead of bit-blasting. The remaining multiplier
+proofs were always the natural fit for a structured theorem prover (Lean/Coq)
+rather than a bit-blaster.
+
+**`bf16_fma` is NOT correctly-rounded** — a claim earlier in this plan asserted
+it was (via "innocuous double rounding," f32's 16-bit precision lead ≥ the
+`2p+2` margin). That reasoning is a **known fallacy** for round-to-nearest:
+`bf16_fma` is fused f32-accumulate (one correctly-rounded f32 fma, then a second
+rounding f32→bf16), and that second rounding is not innocuous. It differs from a
+correctly-rounded `a*b+c` on ~0.37% of finite inputs, always by 1 ULP. Its
+`fp.fma` miter on `(8,8)` therefore returns a **genuine `sat`** (a real
+counterexample), **not** a z3 4.8.12 soundness gap — the earlier "spurious sat /
+needs a sound `fp.fma` solver" framing was wrong. The behavior is intentional
+(the NVIDIA Tensor Core / TPU convention, strictly more accurate than non-fused
+bf16 fma) and is machine-characterized as `archBf16Fma_eq_narrow_roundNE` in
+`proofs/lean_fp_equiv` (PR #627). See `tests/fp_v1/smt_proof/README.md` and
+`proofs/lean_fp_equiv/README.md`.
 
 ARCH already has a formal backend (`src/formal.rs`, SMT-LIB2, EBMC) and a
 proof-certificate culture (`construct_proof_cert.rs`, `thread_proof_cert.rs`).
@@ -525,10 +555,12 @@ Landed and tested (`cargo test --test fp_test`, plus the full suite green):
 1. **Sim uses the host FPU, not a linked Berkeley SoftFloat** (§5). Native
    `float`/`double` arithmetic is IEEE-754 RNE and therefore bit-identical to
    SoftFloat for `+ - * fma` and the conversions; this avoids vendoring/building
-   the C library for v1. BF16 goes through an f32 intermediate (innocuous double
-   rounding, 24 ≥ 2·8+2 — a tighter but equally valid form of §5.3's f64 route).
-   Swapping in the RISC-V-spec SoftFloat build behind the same helper names is a
-   drop-in hardening step.
+   the C library for v1. BF16 goes through an f32 intermediate; `mul`/`add`/`sub`
+   are correctly-rounded bf16 (exhaustively SMT-proved), but `fma` is fused
+   f32-accumulate — the f32→bf16 narrow is a second, *non*-innocuous rounding, so
+   bf16 `fma` is **not** correctly-rounded (see the §5.3 correction note and
+   PR #627). Swapping in the RISC-V-spec SoftFloat build behind the same helper
+   names is a drop-in hardening step.
 2. ~~**SV helpers are behavioral, not synthesizable**~~ **Resolved (P2).** The SV
    helpers are now synthesizable RTL (`src/codegen/fp.rs`), CVFPU-referenced in
    datapath structure but written as deterministic, commented ARCH-owned SV. The

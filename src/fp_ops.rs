@@ -505,16 +505,25 @@ fn f32_to_uint(p: FpCompat) -> FpFn {
 
 // ── bf16 arithmetic = widen -> f32 op -> narrow (calls into the f32 fns) ─────
 //
-// Correctness of the f32 intermediate (innocuous double rounding): f32's
-// subnormal range extends exactly 16 binades below bf16's (f32 to 2^-149, bf16
-// to 2^-133), so at every bf16-representable magnitude the f32 precision is
-// `p_bf16 + 16` bits. The double rounding is exact when `p_f32 >= 2*p_bf16 + 2`,
-// i.e. `p_bf16 + 16 >= 2*p_bf16 + 2`, i.e. `p_bf16 <= 14` — always true since
-// `p_bf16 <= 8`. So mul/add/sub/fma via f32 are correctly-rounded bf16.
-// `arch_bf16_{mul,add,sub}` are machine-proved `unsat` vs `fp.{mul,add,sub}` on
-// `(_ FloatingPoint 8 8)` (z3); `arch_fma_bf16` is correct by the same argument
-// (and an exhaustive deep-subnormal check) but its `fp.fma`-based miter is not
-// dischargeable by z3 4.8.12 (incomplete `fp.fma` -> spurious `sat`).
+// `arch_bf16_{mul,add,sub}` are correctly-rounded bf16: each is machine-proved
+// `unsat` vs `fp.{mul,add,sub}` on `(_ FloatingPoint 8 8)` (z3), exhaustively
+// over all 2^32 inputs. (For `mul` the f32 intermediate is *exact* — two 8-bit
+// significands multiply to <=16 bits, which fit f32's 24-bit field with no
+// rounding — so the narrow is the only rounding. For add/sub the f32 step does
+// round, but the exhaustive miter still closes.)
+//
+// `arch_fma_bf16` is NOT correctly-rounded bf16 — it is fused f32-accumulate:
+// widen -> one correctly-rounded f32 fma (the exact `a*b+c`) -> round f32->bf16.
+// That final narrow is a SECOND rounding and double rounding here is NOT
+// innocuous (the "`p_f32 >= 2*p_bf16 + 2` margin" reasoning is a known fallacy
+// for round-to-nearest). `arch_fma_bf16` differs from the correctly-rounded
+// `a*b+c` on ~0.37% of finite inputs, always by 1 ULP (witness a=0x2a20,
+// b=0x51a6, c=0x9359 -> arch 0x3c50 vs correctly-rounded 0x3c4f). Its `fp.fma`
+// miter on (8,8) therefore returns a GENUINE `sat` (a real counterexample), not
+// a z3 4.8.12 soundness gap as previously assumed. This f32-accumulate behavior
+// is intentional (the NVIDIA Tensor Core / TPU convention, strictly more
+// accurate than a non-fused bf16 fma) and machine-characterized as
+// `archBf16Fma_eq_narrow_roundNE` in proofs/lean_fp_equiv (PR #627).
 
 fn bf16_bin(name: &str, f32fn: &str) -> FpFn {
     let a = var("a", 16);

@@ -1013,9 +1013,13 @@ static inline uint64_t _arch_repeat(uint64_t val, uint32_t n, uint32_t val_width
 // Floats are carried as raw bit patterns (FP32→uint32_t, BF16→uint16_t).
 // Arithmetic uses the host FPU, which is IEEE-754 round-to-nearest-even and
 // therefore bit-identical to Berkeley SoftFloat for + - * and fma. BF16 ops go
-// through an f32 intermediate then round once to bf16 — innocuous double
-// rounding (24 >= 2*8+2), so the result equals direct correctly-rounded bf16
-// (doc/plan_fp_types.md §5.3). NaN results are canonicalized to the RISC-V
+// through an f32 intermediate then round once to bf16. For mul/add/sub the bf16
+// result is correctly rounded (exhaustively SMT-proved vs fp.{mul,add,sub} on
+// (8,8)). BF16 fma is fused f32-accumulate (one f32 fma via fmaf, then narrow),
+// NOT correctly-rounded bf16 — the narrow is a second, non-innocuous rounding;
+// it matches the RTL and the NVIDIA/TPU convention but differs from a
+// correctly-rounded bf16 fma by 1 ULP on ~0.37% of inputs (see fp_ops.rs and
+// proofs/lean_fp_equiv, PR #627). NaN results are canonicalized to the RISC-V
 // default pattern (0x7FC00000 / 0x7FC0); float→int is toward-zero, saturating,
 // NaN→type-max (RISC-V profile, §6).
 static inline float    _arch_f32b(uint32_t b){ float f; memcpy(&f,&b,4); return f; }
