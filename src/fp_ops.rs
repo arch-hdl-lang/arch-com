@@ -47,7 +47,11 @@ fn decode(x: &Bv) -> Dec {
     Dec {
         sign,
         mant: ite(&e_is_0, &concat(&cst(0, 1), &f), &concat(&cst(1, 1), &f)),
-        eunb: ite(&e_is_0, &cst(NEG149_16, 16), &sub(&zext(&e, 16), &cst(150, 16))),
+        eunb: ite(
+            &e_is_0,
+            &cst(NEG149_16, 16),
+            &sub(&zext(&e, 16), &cst(150, 16)),
+        ),
         is_zero: and(&e_is_0, &f_z),
         is_inf: and(&e_is_ff, &f_z),
         is_nan: and(&e_is_ff, &f_nz),
@@ -119,7 +123,10 @@ fn normround(sign: &Bv, sig: &Bv, e0: &Bv) -> Bv {
     let kept = add(&kept0, &zext(&roundup, w2));
 
     // subnormal: {exp,frac} encoding carries up to the smallest normal for free.
-    let sub_res = bor(&concat(sign, &cst(0, 31)), &concat(sign, &extract(&kept, 30, 0)));
+    let sub_res = bor(
+        &concat(sign, &cst(0, 31)),
+        &concat(sign, &extract(&kept, 30, 0)),
+    );
 
     // normal: a carry into bit 24 bumps the exponent; >=255 overflows to inf.
     let carry = is1(&extract(&kept, 24, 24));
@@ -127,7 +134,10 @@ fn normround(sign: &Bv, sig: &Bv, e0: &Bv) -> Bv {
     let kept_n = ite(&carry, &lshr(&kept, &cst(1, 16)), &kept);
     let overflow = sge(&biased_n, &cst(255, 16));
     let inf = concat(sign, &concat(&cst(0xFF, 8), &cst(0, 23)));
-    let packed = concat(sign, &concat(&extract(&biased_n, 7, 0), &extract(&kept_n, 22, 0)));
+    let packed = concat(
+        sign,
+        &concat(&extract(&biased_n, 7, 0), &extract(&kept_n, 22, 0)),
+    );
     let norm_res = ite(&overflow, &inf, &packed);
 
     let zero = concat(sign, &cst(0, 31));
@@ -141,13 +151,20 @@ fn normround(sign: &Bv, sig: &Bv, e0: &Bv) -> Bv {
 // ── predicates / simple ops (as expressions for reuse) ──────────────────────
 
 fn isnan(x: &Bv) -> Bv {
-    and(&eq(&extract(x, 30, 23), &cst(0xFF, 8)), &ne(&extract(x, 22, 0), &cst(0, 23)))
+    and(
+        &eq(&extract(x, 30, 23), &cst(0xFF, 8)),
+        &ne(&extract(x, 22, 0), &cst(0, 23)),
+    )
 }
 fn iszero(x: &Bv) -> Bv {
     eq(&extract(x, 30, 0), &cst(0, 31))
 }
 fn eq_expr(a: &Bv, b: &Bv) -> Bv {
-    ite(&or(&isnan(a), &isnan(b)), &cst(0, 1), &or(&eq(a, b), &and(&iszero(a), &iszero(b))))
+    ite(
+        &or(&isnan(a), &isnan(b)),
+        &cst(0, 1),
+        &or(&eq(a, b), &and(&iszero(a), &iszero(b))),
+    )
 }
 fn lt_expr(a: &Bv, b: &Bv) -> Bv {
     let sa = extract(a, 31, 31);
@@ -156,7 +173,11 @@ fn lt_expr(a: &Bv, b: &Bv) -> Bv {
     let mb = extract(b, 30, 0);
     let same_sign_cmp = ite(&eq(&sa, &cst(0, 1)), &ult(&ma, &mb), &ugt(&ma, &mb));
     let diff_sign = ite(&ne(&sa, &sb), &is1(&sa), &same_sign_cmp);
-    ite(&or(&isnan(a), &isnan(b)), &cst(0, 1), &ite(&and(&iszero(a), &iszero(b)), &cst(0, 1), &diff_sign))
+    ite(
+        &or(&isnan(a), &isnan(b)),
+        &cst(0, 1),
+        &ite(&and(&iszero(a), &iszero(b)), &cst(0, 1), &diff_sign),
+    )
 }
 
 // ── f32 operators ───────────────────────────────────────────────────────────
@@ -179,7 +200,11 @@ fn f32_mul(p: FpCompat) -> FpFn {
         &ite(
             &or(&and(&da.is_inf, &db.is_zero), &and(&db.is_inf, &da.is_zero)),
             &n,
-            &ite(&or(&da.is_inf, &db.is_inf), &inf, &ite(&or(&da.is_zero, &db.is_zero), &zero, &rounded)),
+            &ite(
+                &or(&da.is_inf, &db.is_inf),
+                &inf,
+                &ite(&or(&da.is_zero, &db.is_zero), &zero, &rounded),
+            ),
         ),
     );
     FpFn::new("arch_f32_mul", &[("a", 32), ("b", 32)], 32, body)
@@ -202,8 +227,14 @@ fn f32_compares() -> Vec<FpFn> {
         cmp_fn("arch_f32_ne", bnot(&eq_expr(&a(), &b()))),
         cmp_fn("arch_f32_lt", lt_expr(&a(), &b())),
         cmp_fn("arch_f32_gt", lt_expr(&b(), &a())),
-        cmp_fn("arch_f32_le", or(&lt_expr(&a(), &b()), &eq_expr(&a(), &b()))),
-        cmp_fn("arch_f32_ge", or(&lt_expr(&b(), &a()), &eq_expr(&a(), &b()))),
+        cmp_fn(
+            "arch_f32_le",
+            or(&lt_expr(&a(), &b()), &eq_expr(&a(), &b())),
+        ),
+        cmp_fn(
+            "arch_f32_ge",
+            or(&lt_expr(&b(), &a()), &eq_expr(&a(), &b())),
+        ),
     ]
 }
 
@@ -277,7 +308,11 @@ fn f32_add_core(name: &str, flip_b_sign: bool, p: FpCompat) -> FpFn {
     let ge = uge(&hi_e, &lo_e);
     let raw = ite(&ge, &sub(&hi_e, &lo_e), &sub(&lo_e, &hi_e)); // fw+1
     let mw = fw + 2; // add-carry headroom
-    let mag = ite(&same_sign, &add(&zext(&hi_e, mw), &zext(&lo_e, mw)), &zext(&raw, mw));
+    let mag = ite(
+        &same_sign,
+        &add(&zext(&hi_e, mw), &zext(&lo_e, mw)),
+        &zext(&raw, mw),
+    );
     let res_sign = ite(&same_sign, &sign_hi, &ite(&ge, &sign_hi, &sign_lo));
     let e0 = sub(&eunb_hi, &cst((ADD_G + 1) as u128, 16)); // LSB exponent of mag
     let rounded = normround(&res_sign, &mag, &e0);
@@ -332,7 +367,11 @@ fn fma_f32(p: FpCompat) -> FpFn {
     );
     let same = eq(&sp, &dc.sign);
     let pt_gt = ugt(&pt, &ct);
-    let mag = ite(&same, &add(&pt, &ct), &ite(&pt_gt, &sub(&pt, &ct), &sub(&ct, &pt)));
+    let mag = ite(
+        &same,
+        &add(&pt, &ct),
+        &ite(&pt_gt, &sub(&pt, &ct), &sub(&ct, &pt)),
+    );
     let res_sign = ite(&same, &sp, &ite(&pt_gt, &sp, &dc.sign));
     let cancel = and(&bnot(&same), &eq(&pt, &ct));
     let general = ite(&cancel, &cst(0, 32), &normround(&res_sign, &mag, &e_lo));
@@ -376,12 +415,20 @@ fn i64_to_f32() -> FpFn {
     let v = var("v", 64);
     let sign = extract(&v, 63, 63);
     let mag = ite(&is1(&sign), &neg(&v), &v);
-    let body = ite(&eq(&v, &cst(0, 64)), &cst(0, 32), &normround(&sign, &mag, &cst(0, 16)));
+    let body = ite(
+        &eq(&v, &cst(0, 64)),
+        &cst(0, 32),
+        &normround(&sign, &mag, &cst(0, 16)),
+    );
     FpFn::new("arch_i64_to_f32", &[("v", 64)], 32, body)
 }
 fn u64_to_f32() -> FpFn {
     let v = var("v", 64);
-    let body = ite(&eq(&v, &cst(0, 64)), &cst(0, 32), &normround(&cst(0, 1), &v, &cst(0, 16)));
+    let body = ite(
+        &eq(&v, &cst(0, 64)),
+        &cst(0, 32),
+        &normround(&cst(0, 1), &v, &cst(0, 16)),
+    );
     FpFn::new("arch_u64_to_f32", &[("v", 64)], 32, body)
 }
 
@@ -446,7 +493,11 @@ fn f32_to_uint(p: FpCompat) -> FpFn {
         &ite(
             &d.is_zero,
             &cst(0, 64),
-            &ite(&is1(&d.sign), &cst(0, 64), &ite(&d.is_inf, &lo64(&lim), &sat)),
+            &ite(
+                &is1(&d.sign),
+                &cst(0, 64),
+                &ite(&d.is_inf, &lo64(&lim), &sat),
+            ),
         ),
     );
     FpFn::new("arch_f32_to_uint", &[("x", 32), ("n", 32)], 64, body)
@@ -483,7 +534,12 @@ fn bf16_fma() -> FpFn {
     let wc = call("arch_bf16_to_f32", &[c.clone()], 32);
     let r = call("arch_fma_f32", &[wa, wb, wc], 32);
     let body = call("arch_f32_to_bf16", &[r], 16);
-    FpFn::new("arch_fma_bf16", &[("a", 16), ("b", 16), ("c", 16)], 16, body)
+    FpFn::new(
+        "arch_fma_bf16",
+        &[("a", 16), ("b", 16), ("c", 16)],
+        16,
+        body,
+    )
 }
 fn bf16_cmp(name: &str, f32fn: &str) -> FpFn {
     let a = var("a", 16);
@@ -545,7 +601,12 @@ pub fn lean_extra_functions() -> Vec<FpFn> {
         let s = var("s", 1);
         let sig = var("sig", 48);
         let e0 = var("e0", 16);
-        FpFn::new("arch_round48", &[("s", 1), ("sig", 48), ("e0", 16)], 32, normround(&s, &sig, &e0))
+        FpFn::new(
+            "arch_round48",
+            &[("s", 1), ("sig", 48), ("e0", 16)],
+            32,
+            normround(&s, &sig, &e0),
+        )
     };
     let msb48 = {
         let sig = var("sig", 48);
@@ -556,7 +617,12 @@ pub fn lean_extra_functions() -> Vec<FpFn> {
         let s = var("s", 1);
         let sig = var("sig", 470);
         let e0 = var("e0", 16);
-        FpFn::new("arch_round470", &[("s", 1), ("sig", 470), ("e0", 16)], 32, normround(&s, &sig, &e0))
+        FpFn::new(
+            "arch_round470",
+            &[("s", 1), ("sig", 470), ("e0", 16)],
+            32,
+            normround(&s, &sig, &e0),
+        )
     };
     let msb470 = {
         let sig = var("sig", 470);
@@ -576,11 +642,23 @@ pub fn lean_extra_functions() -> Vec<FpFn> {
         let ep = add(&da.eunb, &db.eunb);
         let p_ge_c = sge(&ep, &dc.eunb);
         let e_lo = ite(&p_ge_c, &dc.eunb, &ep);
-        let pt = ite(&p_ge_c, &shl(&zext(&mp, FMA_W), &sub(&ep, &dc.eunb)), &zext(&mp, FMA_W));
-        let ct = ite(&p_ge_c, &zext(&dc.mant, FMA_W), &shl(&zext(&dc.mant, FMA_W), &sub(&dc.eunb, &ep)));
+        let pt = ite(
+            &p_ge_c,
+            &shl(&zext(&mp, FMA_W), &sub(&ep, &dc.eunb)),
+            &zext(&mp, FMA_W),
+        );
+        let ct = ite(
+            &p_ge_c,
+            &zext(&dc.mant, FMA_W),
+            &shl(&zext(&dc.mant, FMA_W), &sub(&dc.eunb, &ep)),
+        );
         let same = eq(&sp, &dc.sign);
         let pt_gt = ugt(&pt, &ct);
-        let mag = ite(&same, &add(&pt, &ct), &ite(&pt_gt, &sub(&pt, &ct), &sub(&ct, &pt)));
+        let mag = ite(
+            &same,
+            &add(&pt, &ct),
+            &ite(&pt_gt, &sub(&pt, &ct), &sub(&ct, &pt)),
+        );
         let res_sign = ite(&same, &sp, &ite(&pt_gt, &sp, &dc.sign));
         match which {
             "mag" => mag,
@@ -589,8 +667,33 @@ pub fn lean_extra_functions() -> Vec<FpFn> {
             _ => unreachable!(),
         }
     };
-    let fma_mag = FpFn::new("arch_fma_mag", &[("a", 32), ("b", 32), ("c", 32)], FMA_W, fma_part("mag"));
-    let fma_elo = FpFn::new("arch_fma_elo", &[("a", 32), ("b", 32), ("c", 32)], 16, fma_part("elo"));
-    let fma_sign = FpFn::new("arch_fma_sign", &[("a", 32), ("b", 32), ("c", 32)], 1, fma_part("sign"));
-    vec![decode_mant, decode_eunb, round48, msb48, round470, msb470, fma_mag, fma_elo, fma_sign]
+    let fma_mag = FpFn::new(
+        "arch_fma_mag",
+        &[("a", 32), ("b", 32), ("c", 32)],
+        FMA_W,
+        fma_part("mag"),
+    );
+    let fma_elo = FpFn::new(
+        "arch_fma_elo",
+        &[("a", 32), ("b", 32), ("c", 32)],
+        16,
+        fma_part("elo"),
+    );
+    let fma_sign = FpFn::new(
+        "arch_fma_sign",
+        &[("a", 32), ("b", 32), ("c", 32)],
+        1,
+        fma_part("sign"),
+    );
+    vec![
+        decode_mant,
+        decode_eunb,
+        round48,
+        msb48,
+        round470,
+        msb470,
+        fma_mag,
+        fma_elo,
+        fma_sign,
+    ]
 }

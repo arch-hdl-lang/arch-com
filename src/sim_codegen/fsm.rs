@@ -6,9 +6,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::*;
-use super::{SimCodegen, SimModel};
 use super::*;
+use super::{SimCodegen, SimModel};
+use crate::ast::*;
 
 impl<'a> SimCodegen<'a> {
     pub(crate) fn gen_fsm(&self, f: &FsmDecl) -> SimModel {
@@ -20,7 +20,8 @@ impl<'a> SimCodegen<'a> {
         // registry. Same pattern as gen_module: emit `_arch_cov[N]++;`
         // at each state's case body (state-entry coverage) and at each
         // transition's `if (cond) ...` (transition-arc coverage).
-        let cov_reg: std::cell::RefCell<CoverageRegistry> = std::cell::RefCell::new(CoverageRegistry::default());
+        let cov_reg: std::cell::RefCell<CoverageRegistry> =
+            std::cell::RefCell::new(CoverageRegistry::default());
         let cov_handle: Option<&std::cell::RefCell<CoverageRegistry>> =
             if self.coverage { Some(&cov_reg) } else { None };
 
@@ -30,11 +31,18 @@ impl<'a> SimCodegen<'a> {
         for p in &f.ports {
             if let Some(ref bi) = p.bus_info {
                 bus_port_names.insert(p.name.name.clone());
-                bus_flat.extend(flatten_bus_port(&p.name.name, bi, self.symbols, &f.common.params));
+                bus_flat.extend(flatten_bus_port(
+                    &p.name.name,
+                    bi,
+                    self.symbols,
+                    &f.common.params,
+                ));
             }
         }
 
-        let mut port_names: HashSet<String> = f.ports.iter()
+        let mut port_names: HashSet<String> = f
+            .ports
+            .iter()
             .filter(|p| p.bus_info.is_none())
             .map(|p| p.name.name.clone())
             .collect();
@@ -42,35 +50,50 @@ impl<'a> SimCodegen<'a> {
             port_names.insert(flat_name.clone());
         }
 
-        let empty_regs  = HashSet::new();
-        let empty_lets  = HashSet::new();
+        let empty_regs = HashSet::new();
+        let empty_lets = HashSet::new();
         let empty_insts = HashSet::new();
-        let empty_wide  = HashSet::new();
-        let empty_w     = HashMap::new();
+        let empty_wide = HashSet::new();
+        let empty_w = HashMap::new();
 
-        let n_states   = f.state_names.len();
+        let n_states = f.state_names.len();
         let state_bits = enum_width(n_states);
-        let state_ty   = cpp_uint(state_bits as u32);
+        let state_ty = cpp_uint(state_bits as u32);
 
-        let state_idx: HashMap<String, usize> = f.state_names.iter()
-            .enumerate().map(|(i, s)| (s.name.clone(), i)).collect();
+        let state_idx: HashMap<String, usize> = f
+            .state_names
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.name.clone(), i))
+            .collect();
         // sim_codegen only runs for non-interface fsms; `default_state`
         // is `Some(_)` here. Interface stubs are filtered out earlier.
-        let default_idx = f.default_state.as_ref()
+        let default_idx = f
+            .default_state
+            .as_ref()
             .and_then(|ds| state_idx.get(&ds.name).copied())
             .unwrap_or(0);
 
         let (rst_name, _is_async, is_low) = extract_reset_info(&f.ports);
-        let rst_cond = if is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
+        let rst_cond = if is_low {
+            format!("(!{})", rst_name)
+        } else {
+            rst_name.clone()
+        };
 
         let mut h = String::new();
-        h.push_str("#pragma once\n#include <cstdint>\n#include <cstdio>\n#include \"verilated.h\"\n\n");
+        h.push_str(
+            "#pragma once\n#include <cstdint>\n#include <cstdio>\n#include \"verilated.h\"\n\n",
+        );
         // Emit param constants as #define
         for p in &f.params {
             if matches!(p.kind, ParamKind::Const | ParamKind::WidthConst(..)) {
                 if let Some(ref def) = p.default {
                     let val = eval_const_expr_with_params(def, &f.common.params);
-                    h.push_str(&format!("#ifndef {}\n#define {} {val}ULL\n#endif\n", p.name.name, p.name.name));
+                    h.push_str(&format!(
+                        "#ifndef {}\n#define {} {val}ULL\n#endif\n",
+                        p.name.name, p.name.name
+                    ));
                 }
             }
         }
@@ -82,9 +105,13 @@ impl<'a> SimCodegen<'a> {
             is_input: bool,
             is_port_reg: bool,
         }
-        let fsm_vec_port_infos: Vec<FsmVecPortInfo> = f.ports.iter()
+        let fsm_vec_port_infos: Vec<FsmVecPortInfo> = f
+            .ports
+            .iter()
             .filter_map(|p| {
-                if let Some((elem_ty, count_str)) = vec_array_info_with_params(&p.ty, &f.common.params) {
+                if let Some((elem_ty, count_str)) =
+                    vec_array_info_with_params(&p.ty, &f.common.params)
+                {
                     let count: u64 = count_str.parse().unwrap_or(0);
                     Some(FsmVecPortInfo {
                         name: p.name.name.clone(),
@@ -98,12 +125,15 @@ impl<'a> SimCodegen<'a> {
                 }
             })
             .collect();
-        let fsm_vec_port_names: HashSet<String> = fsm_vec_port_infos.iter().map(|v| v.name.clone()).collect();
+        let fsm_vec_port_names: HashSet<String> =
+            fsm_vec_port_infos.iter().map(|v| v.name.clone()).collect();
         // All FSM Vec ports have internal C arrays `_name[N]` and always resolve to `_name` in ctx.
         // (Both input and output Vec ports, whether port-reg or not.)
         let fsm_vec_port_reg_names: HashSet<String> = fsm_vec_port_names.clone();
         // Vec-typed regs in f.regs also need array subscript in Index expressions.
-        let fsm_vec_reg_names: HashSet<String> = f.regs.iter()
+        let fsm_vec_reg_names: HashSet<String> = f
+            .regs
+            .iter()
             .filter(|r| matches!(r.ty, TypeExpr::Vec(..)))
             .map(|r| r.name.name.clone())
             .collect();
@@ -112,9 +142,14 @@ impl<'a> SimCodegen<'a> {
         fsm_vec_names.extend(fsm_vec_reg_names.iter().cloned());
 
         h.push('\n');
-        h.push_str(&format!("class {class} {{\npublic:\n  // State constants\n"));
+        h.push_str(&format!(
+            "class {class} {{\npublic:\n  // State constants\n"
+        ));
         for (i, sn) in f.state_names.iter().enumerate() {
-            h.push_str(&format!("  static const {state_ty} STATE_{} = {i};\n", sn.name.to_uppercase()));
+            h.push_str(&format!(
+                "  static const {state_ty} STATE_{} = {i};\n",
+                sn.name.to_uppercase()
+            ));
         }
         h.push('\n');
         // Port fields: Vec ports → N flat fields; bus ports → flattened signals; others → single field
@@ -126,7 +161,11 @@ impl<'a> SimCodegen<'a> {
                     h.push_str(&format!("  {} {}_{i};\n", vi.elem_ty, vi.name));
                 }
             } else {
-                h.push_str(&format!("  {} {};\n", cpp_port_type_with_params(&p.ty, &f.common.params), p.name.name));
+                h.push_str(&format!(
+                    "  {} {};\n",
+                    cpp_port_type_with_params(&p.ty, &f.common.params),
+                    p.name.name
+                ));
             }
         }
         // Flattened bus port fields
@@ -148,8 +187,14 @@ impl<'a> SimCodegen<'a> {
         // output port (no separate storage — `eval_comb` writes the port
         // directly via the let's RHS).
         for lb in &f.lets {
-            if port_names.contains(&lb.name.name) { continue; }
-            let ty = lb.ty.as_ref().map(|t| cpp_internal_type_with_params(t, &f.common.params)).unwrap_or_else(|| "uint32_t".to_string());
+            if port_names.contains(&lb.name.name) {
+                continue;
+            }
+            let ty = lb
+                .ty
+                .as_ref()
+                .map(|t| cpp_internal_type_with_params(t, &f.common.params))
+                .unwrap_or_else(|| "uint32_t".to_string());
             h.push_str(&format!("  {} {};\n", ty, lb.name.name));
         }
         // Wire declarations as public members
@@ -160,41 +205,60 @@ impl<'a> SimCodegen<'a> {
         h.push('\n');
 
         // Constructor inits: skip Vec/bus port names (they use flat fields), add flat field inits
-        let port_inits: Vec<String> = f.ports.iter()
-            .filter(|p| !fsm_vec_port_names.contains(&p.name.name) && !bus_port_names.contains(&p.name.name))
+        let port_inits: Vec<String> = f
+            .ports
+            .iter()
+            .filter(|p| {
+                !fsm_vec_port_names.contains(&p.name.name) && !bus_port_names.contains(&p.name.name)
+            })
             .map(|p| format!("{}(0)", p.name.name))
             .collect();
-        let vec_port_flat_inits: Vec<String> = fsm_vec_port_infos.iter()
+        let vec_port_flat_inits: Vec<String> = fsm_vec_port_infos
+            .iter()
             .flat_map(|vi| (0..vi.count).map(move |i| format!("{}_{i}(0)", vi.name)))
             .collect();
-        let bus_flat_inits: Vec<String> = bus_flat.iter()
-            .map(|(n, _)| format!("{n}(0)"))
-            .collect();
-        let reg_inits: Vec<String> = f.regs.iter()
-            .filter(|r| !matches!(r.ty, TypeExpr::Vec(..)))  // Vec regs use memset in ctor body
+        let bus_flat_inits: Vec<String> = bus_flat.iter().map(|(n, _)| format!("{n}(0)")).collect();
+        let reg_inits: Vec<String> = f
+            .regs
+            .iter()
+            .filter(|r| !matches!(r.ty, TypeExpr::Vec(..))) // Vec regs use memset in ctor body
             .map(|r| {
-                let init_expr = reset_value_from_reg_reset(&r.reset)
-                    .or(r.init.as_ref());
+                let init_expr = reset_value_from_reg_reset(&r.reset).or(r.init.as_ref());
                 if let Some(expr) = init_expr {
-                    let init_val = cpp_expr(expr, &Ctx::new(&empty_regs, &port_names, &empty_lets, &empty_insts, &empty_wide, &empty_w, &enum_map, &bus_port_names));
+                    let init_val = cpp_expr(
+                        expr,
+                        &Ctx::new(
+                            &empty_regs,
+                            &port_names,
+                            &empty_lets,
+                            &empty_insts,
+                            &empty_wide,
+                            &empty_w,
+                            &enum_map,
+                            &bus_port_names,
+                        ),
+                    );
                     format!("{}({})", r.name.name, init_val)
                 } else {
                     format!("{}(0)", r.name.name)
                 }
-            }).collect();
+            })
+            .collect();
         let state_inits = vec![
             "_clk_prev(0)".to_string(),
             format!("state_r({default_idx})"),
             format!("_state_r({default_idx})"),
         ];
-        let all_inits: Vec<String> = port_inits.into_iter()
+        let all_inits: Vec<String> = port_inits
+            .into_iter()
             .chain(vec_port_flat_inits)
             .chain(bus_flat_inits)
             .chain(reg_inits)
             .chain(state_inits)
             .collect();
         // Constructor body: memset internal arrays for Vec ports + Vec regs
-        let mut fsm_vec_memsets: Vec<String> = fsm_vec_port_infos.iter()
+        let mut fsm_vec_memsets: Vec<String> = fsm_vec_port_infos
+            .iter()
             .map(|vi| format!("    memset(_{}, 0, sizeof(_{}));", vi.name, vi.name))
             .collect();
         // Vec regs in FSM: public array members, initialized via memset
@@ -208,10 +272,14 @@ impl<'a> SimCodegen<'a> {
             h.push_str(&format!("  {class}() : {} {{}}\n", all_inits.join(", ")));
         } else {
             h.push_str(&format!("  {class}() : {} {{\n", all_inits.join(", ")));
-            for ms in &fsm_vec_memsets { h.push_str(&format!("{ms}\n")); }
+            for ms in &fsm_vec_memsets {
+                h.push_str(&format!("{ms}\n"));
+            }
             h.push_str("  }\n");
         }
-        h.push_str(&format!("  explicit {class}(VerilatedContext*) : {class}() {{}}\n"));
+        h.push_str(&format!(
+            "  explicit {class}(VerilatedContext*) : {class}() {{}}\n"
+        ));
         h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() { trace_close(); }\nprivate:\n");
         // Private internal arrays for Vec ports
         for vi in &fsm_vec_port_infos {
@@ -224,8 +292,12 @@ impl<'a> SimCodegen<'a> {
         let mut cpp = String::new();
         cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
 
-        let clk_port = f.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
-            .map(|p| p.name.name.as_str()).unwrap_or("clk");
+        let clk_port = f
+            .ports
+            .iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.as_str())
+            .unwrap_or("clk");
 
         cpp.push_str(&format!("void {class}::eval() {{\n"));
         cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
@@ -235,27 +307,58 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("}\n\n");
 
         let fsm_reg_names: HashSet<String> = f.regs.iter().map(|r| r.name.name.clone()).collect();
-        let fsm_let_names: HashSet<String> = f.lets.iter().map(|l| l.name.name.clone())
-            .chain(f.wires.iter().map(|w| w.name.name.clone())).collect();
+        let fsm_let_names: HashSet<String> = f
+            .lets
+            .iter()
+            .map(|l| l.name.name.clone())
+            .chain(f.wires.iter().map(|w| w.name.name.clone()))
+            .collect();
         let mut fsm_widths: HashMap<String, u32> = HashMap::new();
-        for p in &f.ports { fsm_widths.insert(p.name.name.clone(), type_bits_te_with_params(&p.ty, &f.common.params)); }
-        for r in &f.regs { fsm_widths.insert(r.name.name.clone(), type_bits_te_with_params(&r.ty, &f.common.params)); }
-        for l in &f.lets {
-            if let Some(ty) = &l.ty { fsm_widths.insert(l.name.name.clone(), type_bits_te_with_params(ty, &f.common.params)); }
+        for p in &f.ports {
+            fsm_widths.insert(
+                p.name.name.clone(),
+                type_bits_te_with_params(&p.ty, &f.common.params),
+            );
         }
-        for w in &f.wires { fsm_widths.insert(w.name.name.clone(), type_bits_te_with_params(&w.ty, &f.common.params)); }
+        for r in &f.regs {
+            fsm_widths.insert(
+                r.name.name.clone(),
+                type_bits_te_with_params(&r.ty, &f.common.params),
+            );
+        }
+        for l in &f.lets {
+            if let Some(ty) = &l.ty {
+                fsm_widths.insert(
+                    l.name.name.clone(),
+                    type_bits_te_with_params(ty, &f.common.params),
+                );
+            }
+        }
+        for w in &f.wires {
+            fsm_widths.insert(
+                w.name.name.clone(),
+                type_bits_te_with_params(&w.ty, &f.common.params),
+            );
+        }
         // Built-in `state` identifier inside fsm scope: read of the current
         // encoded state. Lowers to `_state_r` in sim, with width = clog2(N).
         fsm_widths.insert("state".to_string(), state_bits as u32);
-        let fsm_ident_subst: HashMap<String, String> = std::iter::once(
-            ("state".to_string(), "_state_r".to_string())
-        ).collect();
+        let fsm_ident_subst: HashMap<String, String> =
+            std::iter::once(("state".to_string(), "_state_r".to_string())).collect();
         let ctx_fsm = {
-            let mut c = Ctx::new(&fsm_reg_names, &port_names, &fsm_let_names, &empty_insts,
-                                 &empty_wide, &fsm_widths, &enum_map, &bus_port_names)
-                .with_vec_names(&fsm_vec_names)
-                .with_fsm_vec_port_regs(&fsm_vec_port_reg_names)
-                .with_ident_subst(&fsm_ident_subst);
+            let mut c = Ctx::new(
+                &fsm_reg_names,
+                &port_names,
+                &fsm_let_names,
+                &empty_insts,
+                &empty_wide,
+                &fsm_widths,
+                &enum_map,
+                &bus_port_names,
+            )
+            .with_vec_names(&fsm_vec_names)
+            .with_fsm_vec_port_regs(&fsm_vec_port_reg_names)
+            .with_ident_subst(&fsm_ident_subst);
             c.fsm_mode = true;
             c
         };
@@ -269,23 +372,32 @@ impl<'a> SimCodegen<'a> {
         for reg in &f.regs {
             let n = &reg.name.name;
             if let Some((elem_ty, count)) = vec_array_info_with_params(&reg.ty, &f.common.params) {
-                cpp.push_str(&format!("  {elem_ty} _n_{n}[{count}]; memcpy(_n_{n}, {n}, sizeof({n}));\n"));
+                cpp.push_str(&format!(
+                    "  {elem_ty} _n_{n}[{count}]; memcpy(_n_{n}, {n}, sizeof({n}));\n"
+                ));
             } else {
                 let ty = cpp_internal_type_with_params(&reg.ty, &f.common.params);
                 cpp.push_str(&format!("  {ty} _n_{n} = {n};\n"));
             }
         }
-        cpp.push_str(&format!("  if ({rst_cond}) {{\n    _n_state = {default_idx};\n"));
+        cpp.push_str(&format!(
+            "  if ({rst_cond}) {{\n    _n_state = {default_idx};\n"
+        ));
         // Reset datapath regs
         for reg in &f.regs {
-            let reset_expr = reset_value_from_reg_reset(&reg.reset)
-                .or(reg.init.as_ref());
+            let reset_expr = reset_value_from_reg_reset(&reg.reset).or(reg.init.as_ref());
             if let Some(expr) = reset_expr {
                 let n = &reg.name.name;
                 if vec_array_info_with_params(&reg.ty, &f.common.params).is_some() {
                     let init_val = cpp_expr(expr, &ctx_fsm);
-                    let count = if let TypeExpr::Vec(_, c) = &reg.ty { eval_const_expr_with_params(c, &f.common.params) } else { 0 };
-                    cpp.push_str(&format!("    for (int _i = 0; _i < {count}; _i++) _n_{n}[_i] = {init_val};\n"));
+                    let count = if let TypeExpr::Vec(_, c) = &reg.ty {
+                        eval_const_expr_with_params(c, &f.common.params)
+                    } else {
+                        0
+                    };
+                    cpp.push_str(&format!(
+                        "    for (int _i = 0; _i < {count}; _i++) _n_{n}[_i] = {init_val};\n"
+                    ));
                 } else {
                     let init_val = cpp_expr(expr, &ctx_fsm);
                     cpp.push_str(&format!("    _n_{n} = {init_val};\n"));
@@ -296,23 +408,36 @@ impl<'a> SimCodegen<'a> {
         for vi in &fsm_vec_port_infos {
             if vi.is_port_reg {
                 let p = f.ports.iter().find(|p| p.name.name == vi.name).unwrap();
-                let reset_expr = p.reg_info.as_ref().and_then(|ri| reset_value_from_reg_reset(&ri.reset).or(ri.init.as_ref()));
+                let reset_expr = p
+                    .reg_info
+                    .as_ref()
+                    .and_then(|ri| reset_value_from_reg_reset(&ri.reset).or(ri.init.as_ref()));
                 let reset_val = if let Some(expr) = reset_expr {
                     cpp_expr(expr, &ctx_fsm)
                 } else {
                     "0".to_string()
                 };
-                cpp.push_str(&format!("    for (int _i = 0; _i < {}; _i++) _{}[_i] = {};\n",
-                    vi.count, vi.name, reset_val));
+                cpp.push_str(&format!(
+                    "    for (int _i = 0; _i < {}; _i++) _{}[_i] = {};\n",
+                    vi.count, vi.name, reset_val
+                ));
             }
         }
         cpp.push_str("  } else {\n");
         let ctx_posedge = {
-            let mut c = Ctx::new(&fsm_reg_names, &port_names, &fsm_let_names, &empty_insts,
-                                 &empty_wide, &fsm_widths, &enum_map, &bus_port_names)
-                .with_vec_names(&fsm_vec_names)
-                .with_fsm_vec_port_regs(&fsm_vec_port_reg_names)
-                .with_ident_subst(&fsm_ident_subst);
+            let mut c = Ctx::new(
+                &fsm_reg_names,
+                &port_names,
+                &fsm_let_names,
+                &empty_insts,
+                &empty_wide,
+                &fsm_widths,
+                &enum_map,
+                &bus_port_names,
+            )
+            .with_vec_names(&fsm_vec_names)
+            .with_fsm_vec_port_regs(&fsm_vec_port_reg_names)
+            .with_ident_subst(&fsm_ident_subst);
             c.posedge_lhs = true;
             c.fsm_mode = true;
             c
@@ -332,7 +457,11 @@ impl<'a> SimCodegen<'a> {
             // state was never entered — useful for unreachable-state
             // diagnostics.
             if let Some(reg) = cov_handle {
-                let cidx = reg.borrow_mut().alloc("state", sb.name.span.start, format!("state {}", sb.name.name));
+                let cidx = reg.borrow_mut().alloc(
+                    "state",
+                    sb.name.span.start,
+                    format!("state {}", sb.name.name),
+                );
                 cpp.push_str(&format!("        _arch_cov[{cidx}]++;\n"));
             }
             // Emit seq_stmts for this state
@@ -355,10 +484,15 @@ impl<'a> SimCodegen<'a> {
                         format!("trans {} -> {}", sb.name.name, tr.target.name),
                     );
                     format!("_arch_cov[{cidx}]++; ")
-                } else { String::new() };
+                } else {
+                    String::new()
+                };
                 if self.debug_fsm {
                     // Escape the condition for printf literal
-                    let cond_escaped = cond.replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%");
+                    let cond_escaped = cond
+                        .replace('\\', "\\\\")
+                        .replace('"', "\\\"")
+                        .replace('%', "%%");
                     cpp.push_str(&format!(
                         "        if ({cond}) {{ {cov_bump}_n_state = {target_idx}; \
                          printf(\"[FSM][{name}] {src} -> {tgt} ({cond_lit})\\n\"); break; }}\n",
@@ -367,7 +501,9 @@ impl<'a> SimCodegen<'a> {
                         cond_lit = cond_escaped,
                     ));
                 } else {
-                    cpp.push_str(&format!("        if ({cond}) {{ {cov_bump}_n_state = {target_idx}; break; }}\n"));
+                    cpp.push_str(&format!(
+                        "        if ({cond}) {{ {cov_bump}_n_state = {target_idx}; break; }}\n"
+                    ));
                 }
             }
             cpp.push_str("        break;\n");
@@ -411,9 +547,13 @@ impl<'a> SimCodegen<'a> {
         // explicitly assign the port still produces the declared default
         // instead of holding the previous cycle's value.
         for p in &f.ports {
-            if p.direction != Direction::Out { continue; }
+            if p.direction != Direction::Out {
+                continue;
+            }
             // Skip port reg (registered output, driven in seq, not comb).
-            if p.reg_info.is_some() { continue; }
+            if p.reg_info.is_some() {
+                continue;
+            }
             if let Some(def) = &p.default {
                 let val = cpp_expr(def, &ctx_fsm);
                 cpp.push_str(&format!("  {} = {};\n", p.name.name, val));
@@ -449,18 +589,27 @@ impl<'a> SimCodegen<'a> {
         // Build flat Vec port trace signals (name_i → field name_i, width = elem_width)
         let mut fsm_flat_vec_traces: Vec<(String, String, u32)> = Vec::new();
         for vi in &fsm_vec_port_infos {
-            let elem_bits = if let TypeExpr::Vec(elem, _) = f.ports.iter()
-                .find(|p| p.name.name == vi.name).map(|p| &p.ty).unwrap() {
+            let elem_bits = if let TypeExpr::Vec(elem, _) = f
+                .ports
+                .iter()
+                .find(|p| p.name.name == vi.name)
+                .map(|p| &p.ty)
+                .unwrap()
+            {
                 type_width_with_params(elem, &f.common.params)
-            } else { 32 };
+            } else {
+                32
+            };
             for i in 0..vi.count {
                 let fname = format!("{}_{i}", vi.name);
                 fsm_flat_vec_traces.push((fname.clone(), fname, elem_bits));
             }
         }
-        let mut extra_sigs_owned: Vec<(String, String, u32)> = vec![
-            ("state_r".to_string(), "_state_r".to_string(), state_bits as u32),
-        ];
+        let mut extra_sigs_owned: Vec<(String, String, u32)> = vec![(
+            "state_r".to_string(),
+            "_state_r".to_string(),
+            state_bits as u32,
+        )];
         extra_sigs_owned.extend(fsm_flat_vec_traces);
         // Add flattened bus port signals to trace. Use the param-aware
         // width evaluator (issue #427 sibling site): if a bus's per-signal
@@ -473,16 +622,27 @@ impl<'a> SimCodegen<'a> {
             let bits = type_bits_te_with_params(flat_ty, &f.common.params);
             extra_sigs_owned.push((flat_name.clone(), flat_name.clone(), bits));
         }
-        let extra_sigs_ref: Vec<(&str, &str, u32)> = extra_sigs_owned.iter()
+        let extra_sigs_ref: Vec<(&str, &str, u32)> = extra_sigs_owned
+            .iter()
             .map(|(n, e, w)| (n.as_str(), e.as_str(), *w))
             .collect();
-        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &f.ports, &extra_sigs_ref, &f.common.params);
+        add_trace_to_simple_construct(
+            &mut h,
+            &mut cpp,
+            &class,
+            name,
+            &f.ports,
+            &extra_sigs_ref,
+            &f.common.params,
+        );
 
         // --coverage: per-FSM counter storage + atexit dumper. Same
         // shape as gen_module's coverage emission (#132/#134).
         let n_cov = cov_reg.borrow().points.len();
         if self.coverage && n_cov > 0 {
-            h.push_str(&format!("public:\n  static uint64_t _arch_cov[{n_cov}];\n  static bool _arch_cov_dumped;\n"));
+            h.push_str(&format!(
+                "public:\n  static uint64_t _arch_cov[{n_cov}];\n  static bool _arch_cov_dumped;\n"
+            ));
             cpp.push_str(&format!("uint64_t {class}::_arch_cov[{n_cov}] = {{}};\nbool {class}::_arch_cov_dumped = false;\n\n"));
             cpp.push_str("namespace {\n");
             cpp.push_str("static void _arch_cov_dump() {\n");
@@ -495,7 +655,9 @@ impl<'a> SimCodegen<'a> {
             // lines for the FSM coverage points.
             if let Some(path) = &self.coverage_dat {
                 let path_lit = path.replace('\\', "\\\\").replace('"', "\\\"");
-                cpp.push_str(&format!("  FILE* _dat = _arch_cov_dat_open(\"{path_lit}\");\n"));
+                cpp.push_str(&format!(
+                    "  FILE* _dat = _arch_cov_dat_open(\"{path_lit}\");\n"
+                ));
             }
             for (i, p) in cov_reg.borrow().points.iter().enumerate() {
                 let (file_disp, line_no) = if let Some(sm) = &self.source_map {
@@ -519,7 +681,7 @@ impl<'a> SimCodegen<'a> {
                     let file_esc = file_disp.replace('\\', "\\\\").replace('"', "\\\"");
                     let page = match p.kind {
                         "state" | "trans" => "v_user/fsm",
-                        _                 => "v_user",
+                        _ => "v_user",
                     };
                     cpp.push_str(&format!(
                         "  if (_dat) fprintf(_dat, \"C '\" \"\\x01\" \"file\" \"\\x02\" \"{file_esc}\" \"\\x01\" \"line\" \"\\x02\" \"{line_no}\" \"\\x01\" \"page\" \"\\x02\" \"{page}\" \"\\x01\" \"comment\" \"\\x02\" \"{kind} {comment}\" \"' %llu\\n\", (unsigned long long){class}::_arch_cov[{i}]);\n",
@@ -538,6 +700,10 @@ impl<'a> SimCodegen<'a> {
 
         h.push_str("};\n");
 
-        SimModel { class_name: class, header: h, impl_: cpp }
+        SimModel {
+            class_name: class,
+            header: h,
+            impl_: cpp,
+        }
     }
 }
