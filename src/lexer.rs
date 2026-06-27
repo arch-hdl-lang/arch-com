@@ -369,7 +369,7 @@ pub enum TokenKind {
     #[regex(r"0b[01][01_]*", |lex| lex.slice().to_string())]
     BinLiteral(String),
 
-    #[regex(r"[0-9]+'[bhd][0-9a-fA-F_]+", |lex| lex.slice().to_string())]
+    #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*'[bhd][0-9a-fA-F_]+|[0-9]+[a-zA-Z_][a-zA-Z0-9_]*'[bhd][0-9a-fA-F_]+|[0-9]+'[bhd][0-9a-fA-F_]+", |lex| lex.slice().to_string())]
     SizedLiteral(String),
 
     // Float literal: must contain a decimal point (and may have an exponent),
@@ -731,6 +731,13 @@ mod tests {
         assert_eq!(tokens[1].kind, TokenKind::HexLiteral("0xFF".into()));
         assert_eq!(tokens[2].kind, TokenKind::BinLiteral("0b1010".into()));
         assert_eq!(tokens[3].kind, TokenKind::SizedLiteral("8'hAB".into()));
+    }
+
+    #[test]
+    fn test_param_sized_literals() {
+        let tokens = tokenize("W'd0 SCORE_WIDTH'd42").unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::SizedLiteral("W'd0".into()));
+        assert_eq!(tokens[1].kind, TokenKind::SizedLiteral("SCORE_WIDTH'd42".into()));
     }
 
     #[test]

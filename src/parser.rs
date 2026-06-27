@@ -4779,10 +4779,8 @@ impl Parser {
             }
             TokenKind::SizedLiteral(s) => {
                 // format: WIDTH'BASE_CHAR VALUE
+                // WIDTH may be a numeric literal or a param identifier
                 let parts: Vec<&str> = s.splitn(2, '\'').collect();
-                let width: u32 = parts[0]
-                    .parse()
-                    .map_err(|_| CompileError::general("invalid sized literal width", tok.span))?;
                 let base_char = parts[1].chars().next().unwrap();
                 let digits = &parts[1][1..].replace('_', "");
                 let value = match base_char {
@@ -4797,7 +4795,24 @@ impl Parser {
                     }
                 }
                 .map_err(|_| CompileError::general("invalid sized literal value", tok.span))?;
-                ExprKind::Literal(LitKind::Sized(width, value))
+
+                // Try numeric width first; if that fails, treat as param identifier
+                match parts[0].parse::<u32>() {
+                    Ok(width) => ExprKind::Literal(LitKind::Sized(width, value)),
+                    Err(_) => {
+                        let width_str = parts[0];
+                        if !width_str.is_empty()
+                            && width_str.chars().all(|c| c.is_alphanumeric() || c == '_')
+                        {
+                            ExprKind::Literal(LitKind::ParamSized(width_str.to_string(), value))
+                        } else {
+                            return Err(CompileError::general(
+                                "invalid sized literal width",
+                                tok.span,
+                            ));
+                        }
+                    }
+                }
             }
             _ => unreachable!(),
         };
@@ -5678,8 +5693,8 @@ impl Parser {
             }
         }
 
-        // Phase 2: params
-        while !self.check_end_ram() && self.check(TokenKind::Param) {
+        // Phase 2: params (including `local param`)
+        while !self.check_end_ram() && self.check_param() {
             params.push(self.parse_param_decl()?);
         }
 
@@ -6078,8 +6093,8 @@ impl Parser {
             }
         }
 
-        // Phase 2: params
-        while !self.check_end_of(TokenKind::Counter) && self.check(TokenKind::Param) {
+        // Phase 2: params (including `local param`)
+        while !self.check_end_of(TokenKind::Counter) && self.check_param() {
             params.push(self.parse_param_decl()?);
         }
 
@@ -6214,8 +6229,8 @@ impl Parser {
             }
         }
 
-        // Phase 2: params
-        while !self.check_end_of(TokenKind::Arbiter) && self.check(TokenKind::Param) {
+        // Phase 2: params (including `local param`)
+        while !self.check_end_of(TokenKind::Arbiter) && self.check_param() {
             params.push(self.parse_param_decl()?);
         }
 

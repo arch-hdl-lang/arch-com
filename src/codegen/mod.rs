@@ -2147,7 +2147,7 @@ impl<'a> Codegen<'a> {
                 ExprKind::Literal(lit) => {
                     let val = match lit {
                         LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v) => *v as i64,
-                        LitKind::Sized(_, v) => *v as i64,
+                        LitKind::Sized(_, v) | LitKind::ParamSized(_, v) => *v as i64,
                         LitKind::Float(_) => return None, // not an integer constant
                     };
                     Some(val)
@@ -2180,6 +2180,7 @@ impl<'a> Codegen<'a> {
                 ExprKind::Literal(lit) => match lit {
                     LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v) => format!("{v}"),
                     LitKind::Sized(w, v) => format!("{w}'{v}"),
+                    LitKind::ParamSized(name, v) => format!("{name}'{v}"),
                     LitKind::Float(bits) => format!("f{bits}"),
                 },
                 ExprKind::Binary(op, lhs, rhs) => {
@@ -2197,7 +2198,7 @@ impl<'a> Codegen<'a> {
                 ExprKind::Literal(lit) => {
                     let val = match lit {
                         LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v) => *v as i64,
-                        LitKind::Sized(_, v) => *v as i64,
+                        LitKind::Sized(_, v) | LitKind::ParamSized(_, v) => *v as i64,
                         LitKind::Float(_) => {
                             terms.push((sign, None, expr_key(expr)));
                             return;
@@ -5736,6 +5737,7 @@ impl<'a> Codegen<'a> {
                 LitKind::Hex(v) => format!("'h{v:X}"),
                 LitKind::Bin(v) => format!("'b{v:b}"),
                 LitKind::Sized(w, v) => format!("{w}'d{v}"),
+                LitKind::ParamSized(name, v) => format!("{name}'d{v}"),
                 // Float literal (FP32 by default) → 32-bit binary32 bit pattern.
                 LitKind::Float(bits) => {
                     format!("32'h{:08X}", (f64::from_bits(*bits) as f32).to_bits())

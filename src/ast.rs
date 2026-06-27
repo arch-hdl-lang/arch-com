@@ -1189,6 +1189,10 @@ pub enum LitKind {
     Hex(u64),
     Bin(u64),
     Sized(u32, u64), // width, value
+    /// Sized literal whose width is a param/local-param identifier, e.g.
+    /// `SCORE_WIDTH'd0`. The first element is the param name; the second
+    /// is the literal value. The width is resolved during elaboration.
+    ParamSized(String, u64),
     /// Floating-point literal, e.g. `1.5`, `3.0e-2`. The decimal value is
     /// parsed to an f64 (exact enough for source literals); the concrete
     /// FP32/BF16 bit pattern is produced by rounding to the context type at

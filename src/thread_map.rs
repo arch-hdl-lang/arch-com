@@ -964,6 +964,7 @@ fn lit_label(lit: &LitKind) -> String {
         LitKind::Hex(v) => format!("0x{v:x}"),
         LitKind::Bin(v) => format!("0b{v:b}"),
         LitKind::Sized(w, v) => format!("{w}'d{v}"),
+        LitKind::ParamSized(name, v) => format!("{name}'d{v}"),
         LitKind::Float(bits) => f64::from_bits(*bits).to_string(),
     }
 }

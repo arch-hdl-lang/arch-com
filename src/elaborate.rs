@@ -11085,6 +11085,26 @@ fn subst_expr_params(expr: &Expr, param_map: &HashMap<String, &Expr>) -> Expr {
                 .map(|part| subst_expr_params(part, param_map))
                 .collect(),
         ),
+        ExprKind::Literal(LitKind::ParamSized(name, value)) => {
+            // Resolve the param-width identifier to a concrete width.
+            if let Some(width) = eval_const_expr_from_param_map_for_lower(
+                &Expr {
+                    kind: ExprKind::Ident(name.clone()),
+                    span: expr.span,
+                    parenthesized: false,
+                },
+                param_map,
+            ) {
+                return Expr {
+                    kind: ExprKind::Literal(LitKind::Sized(width as u32, *value)),
+                    span: expr.span,
+                    parenthesized: expr.parenthesized,
+                };
+            }
+            // If the param can't be resolved yet, keep it as ParamSized.
+            // The typechecker will catch the unresolved reference.
+            ExprKind::Literal(LitKind::ParamSized(name.clone(), *value))
+        }
         _ => return expr.clone(),
     };
     Expr {

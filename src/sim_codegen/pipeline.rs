@@ -1437,7 +1437,7 @@ impl<'a> SimCodegen<'a> {
             ExprKind::Literal(lit) => match lit {
                 LitKind::Dec(v) => format!("{v}"),
                 LitKind::Hex(v) | LitKind::Bin(v) => format!("0x{v:X}"),
-                LitKind::Sized(_, v) => format!("{v}"),
+                LitKind::Sized(_, v) | LitKind::ParamSized(_, v) => format!("{v}"),
                 LitKind::Float(bits) => {
                     format!("0x{:X}u", (f64::from_bits(*bits) as f32).to_bits())
                 }

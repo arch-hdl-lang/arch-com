@@ -3498,7 +3498,7 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             LitKind::Dec(v) => format!("{v}"),
             LitKind::Hex(v) => format!("0x{v:X}"),
             LitKind::Bin(v) => format!("{v}"),
-            LitKind::Sized(_, v) => format!("{v}"),
+            LitKind::Sized(_, v) | LitKind::ParamSized(_, v) => format!("{v}"),
             // Float literals are FP32 by default — emit the binary32 bit pattern
             // as an unsigned hex constant (matches the uint32_t carrier).
             LitKind::Float(bits) => format!("0x{:X}u", (f64::from_bits(*bits) as f32).to_bits()),

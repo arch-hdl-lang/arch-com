@@ -3641,6 +3641,7 @@ impl<'a> TypeChecker<'a> {
                     Ty::UInt(bits)
                 }
                 LitKind::Sized(w, _) => Ty::UInt(*w),
+                LitKind::ParamSized(_, _) => Ty::UInt(32),
                 // Float literals default to FP32; BF16 values are written via an
                 // explicit `.to_bf16()` conversion (no implicit float narrowing).
                 LitKind::Float(_) => Ty::FP32,
