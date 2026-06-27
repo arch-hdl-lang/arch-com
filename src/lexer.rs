@@ -521,7 +521,7 @@ impl fmt::Display for TokenKind {
             TokenKind::GtEq => write!(f, ">="),
             TokenKind::LArrow => write!(f, "<-"),
             TokenKind::RArrow => write!(f, "->"),
-            TokenKind::PlusColon  => write!(f, "+:"),
+            TokenKind::PlusColon => write!(f, "+:"),
             TokenKind::MinusColon => write!(f, "-:"),
             TokenKind::FatArrow => write!(f, "=>"),
             TokenKind::Lt => write!(f, "<"),

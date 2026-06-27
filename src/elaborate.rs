@@ -266,7 +266,10 @@ fn wrap_float_lit_as_bf16(e: &mut Expr) {
         let inner = e.clone();
         e.kind = ExprKind::MethodCall(
             Box::new(inner),
-            Ident { name: "to_bf16".to_string(), span },
+            Ident {
+                name: "to_bf16".to_string(),
+                span,
+            },
             Vec::new(),
         );
     }

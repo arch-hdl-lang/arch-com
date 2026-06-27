@@ -70,16 +70,37 @@ fn fp_build_emits_helpers_and_dispatch() {
         String::from_utf8_lossy(&out.stderr),
     );
     let sv = std::fs::read_to_string(td.path().join("FpArith.sv")).expect("read FpArith.sv");
-    assert!(sv.contains("function automatic logic [31:0] arch_f32_add"), "f32 add helper missing:\n{sv}");
-    assert!(sv.contains("function automatic logic [15:0] arch_bf16_add"), "bf16 add helper missing");
-    assert!(sv.contains("assign sum = arch_f32_add(a, b);"), "f32 add not dispatched:\n{sv}");
-    assert!(sv.contains("assign prod = arch_f32_mul(a, b);"), "f32 mul not dispatched");
-    assert!(sv.contains("assign hsum = arch_bf16_add(ha, hb);"), "bf16 add not dispatched");
+    assert!(
+        sv.contains("function automatic logic [31:0] arch_f32_add"),
+        "f32 add helper missing:\n{sv}"
+    );
+    assert!(
+        sv.contains("function automatic logic [15:0] arch_bf16_add"),
+        "bf16 add helper missing"
+    );
+    assert!(
+        sv.contains("assign sum = arch_f32_add(a, b);"),
+        "f32 add not dispatched:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign prod = arch_f32_mul(a, b);"),
+        "f32 mul not dispatched"
+    );
+    assert!(
+        sv.contains("assign hsum = arch_bf16_add(ha, hb);"),
+        "bf16 add not dispatched"
+    );
     assert!(sv.contains("arch_fma_f32(a, b, c)"), "fma not dispatched");
-    assert!(sv.contains("arch_bf16_to_f32(ha)"), "bf16->f32 conversion not dispatched");
+    assert!(
+        sv.contains("arch_bf16_to_f32(ha)"),
+        "bf16->f32 conversion not dispatched"
+    );
     // FP32 and BF16 ports are packed bit vectors.
     assert!(sv.contains("input logic [31:0] a"), "FP32 port width wrong");
-    assert!(sv.contains("input logic [15:0] ha"), "BF16 port width wrong");
+    assert!(
+        sv.contains("input logic [15:0] ha"),
+        "BF16 port width wrong"
+    );
 }
 
 /// The no-implicit-conversion rule: mixing FP32 and BF16 in an operator,
@@ -96,8 +117,15 @@ end module Bad
     let td = tempfile::tempdir().expect("tempdir");
     let path = td.path().join("Bad.arch");
     std::fs::write(&path, src).unwrap();
-    let out = arch().arg("check").arg(&path).output().expect("run arch check");
-    assert!(!out.status.success(), "mixing FP32 and BF16 must be a type error");
+    let out = arch()
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run arch check");
+    assert!(
+        !out.status.success(),
+        "mixing FP32 and BF16 must be a type error"
+    );
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -121,8 +149,15 @@ end module Bad2
     let td = tempfile::tempdir().expect("tempdir");
     let path = td.path().join("Bad2.arch");
     std::fs::write(&path, src).unwrap();
-    let out = arch().arg("check").arg(&path).output().expect("run arch check");
-    assert!(!out.status.success(), "FP32 -> BF16 assignment without cast must error");
+    let out = arch()
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run arch check");
+    assert!(
+        !out.status.success(),
+        "FP32 -> BF16 assignment without cast must error"
+    );
 }
 
 /// Registered FP32 accumulator simulates correctly, including a float-literal
@@ -182,7 +217,11 @@ fn fp_unsupported_positions_rejected() {
         let td = tempfile::tempdir().expect("tempdir");
         let path = td.path().join("M.arch");
         std::fs::write(&path, src).unwrap();
-        let out = arch().arg("check").arg(&path).output().expect("run arch check");
+        let out = arch()
+            .arg("check")
+            .arg(&path)
+            .output()
+            .expect("run arch check");
         assert!(
             !out.status.success(),
             "float in {label} position must be rejected in v1\nsrc:\n{src}"
@@ -198,8 +237,15 @@ fn fp_reg_integer_reset_rejected() {
     let td = tempfile::tempdir().expect("tempdir");
     let path = td.path().join("M.arch");
     std::fs::write(&path, src).unwrap();
-    let out = arch().arg("check").arg(&path).output().expect("run arch check");
-    assert!(!out.status.success(), "integer reset for a float reg must be rejected");
+    let out = arch()
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run arch check");
+    assert!(
+        !out.status.success(),
+        "integer reset for a float reg must be rejected"
+    );
 }
 
 /// A bare float literal in a BF16 reset value or a typed-BF16 `let` is rounded
@@ -224,7 +270,11 @@ fn fp_bf16_literal_coerced_in_reset_and_let() {
     std::fs::write(&path, src).unwrap();
 
     // `arch check` accepts the bare BF16 literals.
-    let chk = arch().arg("check").arg(&path).output().expect("run arch check");
+    let chk = arch()
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run arch check");
     assert!(
         chk.status.success(),
         "BF16 reset/let with a bare float literal should type-check\nstderr:\n{}",
@@ -233,7 +283,11 @@ fn fp_bf16_literal_coerced_in_reset_and_let() {
 
     // The emitted SV rounds via the bf16 helper and never assigns a 32-bit
     // constant into the 16-bit reg/wire.
-    let out = arch().arg("build").arg(&path).output().expect("run arch build");
+    let out = arch()
+        .arg("build")
+        .arg(&path)
+        .output()
+        .expect("run arch build");
     assert!(out.status.success(), "arch build should succeed");
     let sv = std::fs::read_to_string(td.path().join("Bf16Lit.sv")).expect("read sv");
     assert!(
@@ -295,10 +349,22 @@ fn fp_rtl_differential_equiv_verilator() {
     let tb = format!("{manifest}/tests/fp_v1/rtl_diff/tb_fp_diff.sv");
     let dpi = format!("{manifest}/tests/fp_v1/rtl_diff/dpi_ref.cpp");
     let vout = std::process::Command::new("verilator")
-        .args(["--binary", "--timing", "-Wno-WIDTH", "-Wno-UNOPTFLAT",
-               "-Wno-WIDTHTRUNC", "-Wno-WIDTHEXPAND", "-Wno-SHORTREAL",
-               "-Wno-BLKANDNBLK", "-Wno-UNUSEDSIGNAL", "-Wno-MULTITOP",
-               "--top-module", "tb", "-o", "sim_diff"])
+        .args([
+            "--binary",
+            "--timing",
+            "-Wno-WIDTH",
+            "-Wno-UNOPTFLAT",
+            "-Wno-WIDTHTRUNC",
+            "-Wno-WIDTHEXPAND",
+            "-Wno-SHORTREAL",
+            "-Wno-BLKANDNBLK",
+            "-Wno-UNUSEDSIGNAL",
+            "-Wno-MULTITOP",
+            "--top-module",
+            "tb",
+            "-o",
+            "sim_diff",
+        ])
         .arg("-Mdir")
         .arg(&obj)
         .arg(&sv)
@@ -349,7 +415,10 @@ fn fp_smt_equivalence_proofs() {
         return;
     }
     let z3ver = {
-        let o = std::process::Command::new("z3").arg("--version").output().unwrap();
+        let o = std::process::Command::new("z3")
+            .arg("--version")
+            .output()
+            .unwrap();
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     };
 
@@ -380,7 +449,8 @@ fn fp_smt_equivalence_proofs() {
         let first = res.lines().next().unwrap_or("").trim();
         cert.push_str(&format!("{op}: {first}\n"));
         assert_eq!(
-            first, "unsat",
+            first,
+            "unsat",
             "generated SMT proof {op} did not discharge as unsat (got {first:?})\nstderr:\n{}",
             String::from_utf8_lossy(&out.stderr)
         );
@@ -405,7 +475,11 @@ fn fp_smt_equivalence_proofs() {
 #[test]
 fn fp_smt_arith_proofs() {
     fn z3_available() -> bool {
-        std::process::Command::new("z3").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+        std::process::Command::new("z3")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
     if !z3_available() {
         eprintln!("skipping fp_smt_arith_proofs: z3 not in PATH");
@@ -421,10 +495,22 @@ fn fp_smt_arith_proofs() {
         let smt = arch::fp_smt_proof::equiv_proof(op, arch::FpCompat::Riscv);
         let path = td.path().join(format!("{op}.smt2"));
         std::fs::write(&path, smt).unwrap();
-        let out = std::process::Command::new("z3").arg("-T:600").arg(&path).output().unwrap();
-        let first = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").trim().to_string();
+        let out = std::process::Command::new("z3")
+            .arg("-T:600")
+            .arg(&path)
+            .output()
+            .unwrap();
+        let first = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
         eprintln!("arith proof {op}: {first}");
-        assert_eq!(first, "unsat", "arith proof {op} did not discharge as unsat (got {first:?})");
+        assert_eq!(
+            first, "unsat",
+            "arith proof {op} did not discharge as unsat (got {first:?})"
+        );
     }
 }
 
@@ -440,24 +526,67 @@ fn fp_compat_build_profiles() {
     // default = riscv
     let td = tempfile::tempdir().unwrap();
     let sv = td.path().join("d.sv");
-    let out = arch().arg("build").arg(&arch_src).arg("-o").arg(&sv).output().unwrap();
-    assert!(out.status.success(), "default build failed: {}", String::from_utf8_lossy(&out.stderr));
+    let out = arch()
+        .arg("build")
+        .arg(&arch_src)
+        .arg("-o")
+        .arg(&sv)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "default build failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let d = std::fs::read_to_string(&sv).unwrap();
-    assert!(d.contains("32'h7FC00000") && d.contains("16'h7FC0"), "riscv NaN constants missing");
-    assert!(!d.contains("32'h7FFFFFFF"), "default must not use the cuda NaN pattern");
+    assert!(
+        d.contains("32'h7FC00000") && d.contains("16'h7FC0"),
+        "riscv NaN constants missing"
+    );
+    assert!(
+        !d.contains("32'h7FFFFFFF"),
+        "default must not use the cuda NaN pattern"
+    );
 
     // cuda
     let sv2 = td.path().join("c.sv");
-    let out2 = arch().arg("build").arg(&arch_src).arg("--fp-compat=cuda").arg("-o").arg(&sv2).output().unwrap();
-    assert!(out2.status.success(), "cuda build failed: {}", String::from_utf8_lossy(&out2.stderr));
+    let out2 = arch()
+        .arg("build")
+        .arg(&arch_src)
+        .arg("--fp-compat=cuda")
+        .arg("-o")
+        .arg(&sv2)
+        .output()
+        .unwrap();
+    assert!(
+        out2.status.success(),
+        "cuda build failed: {}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
     let c = std::fs::read_to_string(&sv2).unwrap();
-    assert!(c.contains("32'h7FFFFFFF") && c.contains("16'h7FFF"), "cuda NaN constants missing");
-    assert!(!c.contains("32'h7FC00000"), "cuda must not use the riscv NaN pattern");
+    assert!(
+        c.contains("32'h7FFFFFFF") && c.contains("16'h7FFF"),
+        "cuda NaN constants missing"
+    );
+    assert!(
+        !c.contains("32'h7FC00000"),
+        "cuda must not use the riscv NaN pattern"
+    );
     // (NaN->int = 0 under cuda is checked behaviorally by fp_compat_sim_profiles)
 
     // invalid profile rejected
-    let bad = arch().arg("build").arg(&arch_src).arg("--fp-compat=nvidia").arg("-o").arg(td.path().join("x.sv")).output().unwrap();
-    assert!(!bad.status.success(), "invalid --fp-compat must be rejected");
+    let bad = arch()
+        .arg("build")
+        .arg(&arch_src)
+        .arg("--fp-compat=nvidia")
+        .arg("-o")
+        .arg(td.path().join("x.sv"))
+        .output()
+        .unwrap();
+    assert!(
+        !bad.status.success(),
+        "invalid --fp-compat must be rejected"
+    );
     assert!(String::from_utf8_lossy(&bad.stderr).contains("expected `riscv` or `cuda`"));
 }
 
@@ -472,18 +601,33 @@ fn fp_compat_sim_profiles() {
     let run = |extra: &[&str], dir: &str| -> String {
         let td = tempfile::tempdir().unwrap();
         let mut c = arch();
-        c.arg("sim").arg(&arch_src).arg("--tb").arg(&tb).arg("--outdir").arg(td.path().join(dir));
-        for a in extra { c.arg(a); }
+        c.arg("sim")
+            .arg(&arch_src)
+            .arg("--tb")
+            .arg(&tb)
+            .arg("--outdir")
+            .arg(td.path().join(dir));
+        for a in extra {
+            c.arg(a);
+        }
         let o = c.output().unwrap();
-        assert!(o.status.success(), "sim failed: {}", String::from_utf8_lossy(&o.stderr));
+        assert!(
+            o.status.success(),
+            "sim failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
         String::from_utf8_lossy(&o.stdout).to_string()
     };
 
     let riscv = run(&[], "r");
-    assert!(riscv.contains("nan_out=0x7FC00000 nan_to_int=2147483647"),
-        "riscv profile wrong:\n{riscv}");
+    assert!(
+        riscv.contains("nan_out=0x7FC00000 nan_to_int=2147483647"),
+        "riscv profile wrong:\n{riscv}"
+    );
 
     let cuda = run(&["--fp-compat=cuda"], "c");
-    assert!(cuda.contains("nan_out=0x7FFFFFFF nan_to_int=0"),
-        "cuda profile wrong:\n{cuda}");
+    assert!(
+        cuda.contains("nan_out=0x7FFFFFFF nan_to_int=0"),
+        "cuda profile wrong:\n{cuda}"
+    );
 }

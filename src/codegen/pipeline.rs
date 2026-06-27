@@ -37,8 +37,12 @@ impl<'a> Codegen<'a> {
             .iter()
             .map(|c| {
                 let sig = self.emit_pipeline_stage_expr_str(
-                    &c.signal, current_prefix, current_stage_idx,
-                    stage_names, stage_regs, port_names,
+                    &c.signal,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
                 );
                 format!(".{}({})", c.port_name.name, sig)
             })
@@ -94,9 +98,8 @@ impl<'a> Codegen<'a> {
         self.indent += 1;
 
         // Collect port names for name resolution
-        let port_names: std::collections::HashSet<String> = p.ports.iter()
-            .map(|pt| pt.name.name.clone())
-            .collect();
+        let port_names: std::collections::HashSet<String> =
+            p.ports.iter().map(|pt| pt.name.name.clone()).collect();
 
         // Collect stage names (in order) and signal names per stage
         let stage_names: Vec<&str> = p.stages.iter().map(|s| s.name.name.as_str()).collect();
@@ -158,8 +161,13 @@ impl<'a> Codegen<'a> {
                             continue;
                         }
                         let ty = Self::resolve_comb_wire_type(
-                            &target, &cb.stmts, si, &stage_regs, &stage_names,
-                        ).unwrap_or_else(|| "logic".to_string());
+                            &target,
+                            &cb.stmts,
+                            si,
+                            &stage_regs,
+                            &stage_names,
+                        )
+                        .unwrap_or_else(|| "logic".to_string());
                         if !wires.iter().any(|(n, _)| n == &target) {
                             wires.push((target, ty));
                         }
@@ -181,28 +189,37 @@ impl<'a> Codegen<'a> {
             // resolvable or has unresolved param references.
             for item in &stage.body {
                 if let ModuleBodyItem::Inst(inst) = item {
-                    let inst_ports: Vec<crate::ast::PortDecl> = match self.symbols.globals.get(&inst.module_name.name) {
-                        Some((crate::resolve::Symbol::Module(info), _))   => info.ports.clone(),
-                        Some((crate::resolve::Symbol::Pipeline(info), _)) => info.ports.clone(),
-                        Some((crate::resolve::Symbol::Fsm(info), _))      => info.ports.clone(),
-                        _ => Vec::new(),
-                    };
+                    let inst_ports: Vec<crate::ast::PortDecl> =
+                        match self.symbols.globals.get(&inst.module_name.name) {
+                            Some((crate::resolve::Symbol::Module(info), _)) => info.ports.clone(),
+                            Some((crate::resolve::Symbol::Pipeline(info), _)) => info.ports.clone(),
+                            Some((crate::resolve::Symbol::Fsm(info), _)) => info.ports.clone(),
+                            _ => Vec::new(),
+                        };
                     // Build param substitution map: source-module param name →
                     // RHS expression in parent scope. Inst-supplied first;
                     // anything missing falls back to the source's default.
                     let inst_params: std::collections::HashMap<String, Expr> = {
-                        let mut m: std::collections::HashMap<String, Expr> = inst.param_assigns.iter()
+                        let mut m: std::collections::HashMap<String, Expr> = inst
+                            .param_assigns
+                            .iter()
                             .map(|pa| (pa.name.name.clone(), pa.value.clone()))
                             .collect();
                         for src_item in &self.source.items {
                             let pname = match src_item {
-                                Item::Module(d)   if d.name.name == inst.module_name.name => &d.params,
-                                Item::Pipeline(d) if d.name.name == inst.module_name.name => &d.params,
-                                Item::Fsm(d)      if d.name.name == inst.module_name.name => &d.params,
+                                Item::Module(d) if d.name.name == inst.module_name.name => {
+                                    &d.params
+                                }
+                                Item::Pipeline(d) if d.name.name == inst.module_name.name => {
+                                    &d.params
+                                }
+                                Item::Fsm(d) if d.name.name == inst.module_name.name => &d.params,
                                 _ => continue,
                             };
                             for p in pname {
-                                if m.contains_key(&p.name.name) { continue; }
+                                if m.contains_key(&p.name.name) {
+                                    continue;
+                                }
                                 if let Some(def) = &p.default {
                                     m.insert(p.name.name.clone(), def.clone());
                                 }
@@ -222,16 +239,21 @@ impl<'a> Codegen<'a> {
                             if stage_regs[si].iter().any(|(rn, _, _)| rn == target) {
                                 continue;
                             }
-                            let port_ty = inst_ports.iter()
+                            let port_ty = inst_ports
+                                .iter()
                                 .find(|p| p.name.name == conn.port_name.name)
                                 .map(|p| {
-                                    let substituted = Self::substitute_params_in_type(&p.ty, &inst_params);
+                                    let substituted =
+                                        Self::substitute_params_in_type(&p.ty, &inst_params);
                                     self.emit_logic_type_str(&substituted)
                                 });
                             let ty = port_ty.unwrap_or_else(|| {
                                 Self::resolve_inst_wire_type_from_consumers(
-                                    target, &stage.body, &stage_regs[si],
-                                ).unwrap_or_else(|| "logic".to_string())
+                                    target,
+                                    &stage.body,
+                                    &stage_regs[si],
+                                )
+                                .unwrap_or_else(|| "logic".to_string())
                             });
                             stage_regs[si].push((target.clone(), ty, String::new()));
                         }
@@ -247,7 +269,10 @@ impl<'a> Codegen<'a> {
             for (sig_name, ty_str, init_str) in &stage_regs[si] {
                 if !init_str.is_empty() {
                     // Real register with initial value
-                    self.line(&format!("{} {}_{} = {};", ty_str, prefix, sig_name, init_str));
+                    self.line(&format!(
+                        "{} {}_{} = {};",
+                        ty_str, prefix, sig_name, init_str
+                    ));
                 } else {
                     // Comb wire (forwarding mux, etc.)
                     self.line(&format!("{} {}_{};", ty_str, prefix, sig_name));
@@ -257,14 +282,17 @@ impl<'a> Codegen<'a> {
         self.line("");
 
         // ── Detect wait-stages (variable-latency with wait until / do..until) ─
-        let wait_stage_flags: Vec<bool> = p.stages.iter().map(|s| Self::stage_has_wait(s)).collect();
+        let wait_stage_flags: Vec<bool> =
+            p.stages.iter().map(|s| Self::stage_has_wait(s)).collect();
         let has_any_wait_stage = wait_stage_flags.iter().any(|f| *f);
 
         // Declare FSM state registers for wait-stages
         if has_any_wait_stage {
             self.line("// ── Wait-stage FSM registers ──");
             for (si, stage) in p.stages.iter().enumerate() {
-                if !wait_stage_flags[si] { continue; }
+                if !wait_stage_flags[si] {
+                    continue;
+                }
                 let prefix = stage.name.name.to_lowercase();
                 let n_states = Self::count_wait_fsm_states(stage);
                 let bits = crate::width::index_width(n_states as u64) as usize;
@@ -285,11 +313,23 @@ impl<'a> Codegen<'a> {
 
             // Global stall (top-level `stall when`)
             if has_global_stall {
-                let stall_parts: Vec<String> = p.stall_conds.iter()
-                    .map(|s| self.emit_pipeline_expr_str(&s.condition, &stage_names, &stage_regs, &port_names))
+                let stall_parts: Vec<String> = p
+                    .stall_conds
+                    .iter()
+                    .map(|s| {
+                        self.emit_pipeline_expr_str(
+                            &s.condition,
+                            &stage_names,
+                            &stage_regs,
+                            &port_names,
+                        )
+                    })
                     .collect();
                 self.line("logic pipeline_stall;");
-                self.line(&format!("assign pipeline_stall = {};", stall_parts.join(" | ")));
+                self.line(&format!(
+                    "assign pipeline_stall = {};",
+                    stall_parts.join(" | ")
+                ));
             }
 
             // Per-stage stall wires: stall_N = local_stall_N || stall_{N+1}
@@ -308,7 +348,12 @@ impl<'a> Codegen<'a> {
 
                 // Local stall condition from `stage X stall when <expr>`
                 if let Some(ref cond) = p.stages[si].stall_cond {
-                    parts.push(self.emit_pipeline_expr_str(cond, &stage_names, &stage_regs, &port_names));
+                    parts.push(self.emit_pipeline_expr_str(
+                        cond,
+                        &stage_names,
+                        &stage_regs,
+                        &port_names,
+                    ));
                 }
 
                 // Wait-stage FSM busy signal
@@ -340,27 +385,39 @@ impl<'a> Codegen<'a> {
         // ── Wait-stage FSM busy assignments ─────────────────────────────────
         if has_any_wait_stage {
             for (si, stage) in p.stages.iter().enumerate() {
-                if !wait_stage_flags[si] { continue; }
+                if !wait_stage_flags[si] {
+                    continue;
+                }
                 let prefix = stage.name.name.to_lowercase();
                 // FSM is busy when not in idle state (state 0)
-                self.line(&format!("assign {prefix}_fsm_busy = ({prefix}_fsm_state != '0);"));
+                self.line(&format!(
+                    "assign {prefix}_fsm_busy = ({prefix}_fsm_state != '0);"
+                ));
             }
             self.line("");
         }
 
         // ── Forward mux wires ────────────────────────────────────────────────
         for fwd in &p.forward_directives {
-            let dest_str = self.emit_pipeline_expr_str(&fwd.dest, &stage_names, &stage_regs, &port_names);
-            let src_str = self.emit_pipeline_expr_str(&fwd.source, &stage_names, &stage_regs, &port_names);
-            let cond_str = self.emit_pipeline_expr_str(&fwd.condition, &stage_names, &stage_regs, &port_names);
-            self.line(&format!("// Forward: {} from {} when {}", dest_str, src_str, cond_str));
+            let dest_str =
+                self.emit_pipeline_expr_str(&fwd.dest, &stage_names, &stage_regs, &port_names);
+            let src_str =
+                self.emit_pipeline_expr_str(&fwd.source, &stage_names, &stage_regs, &port_names);
+            let cond_str =
+                self.emit_pipeline_expr_str(&fwd.condition, &stage_names, &stage_regs, &port_names);
+            self.line(&format!(
+                "// Forward: {} from {} when {}",
+                dest_str, src_str, cond_str
+            ));
         }
         if !p.forward_directives.is_empty() {
             self.line("");
         }
 
         // ── Identify clock and reset ─────────────────────────────────────────
-        let clk_name = p.ports.iter()
+        let clk_name = p
+            .ports
+            .iter()
             .find(|pt| matches!(&pt.ty, TypeExpr::Clock(_)))
             .map(|pt| pt.name.name.as_str())
             .unwrap_or("clk");
@@ -399,7 +456,12 @@ impl<'a> Codegen<'a> {
             if wait_stage_flags[si] {
                 // ── Wait-stage: generate FSM transition logic ────────────
                 self.emit_pipeline_wait_stage_ff(
-                    stage, &prefix, si, &stage_names, &stage_regs, &port_names,
+                    stage,
+                    &prefix,
+                    si,
+                    &stage_names,
+                    &stage_regs,
+                    &port_names,
                 );
             } else if has_any_stall {
                 // When this stage is not stalled, it accepts new data
@@ -413,14 +475,23 @@ impl<'a> Codegen<'a> {
                     self.line(&format!("{prefix}_valid_r <= 1'b1;"));
                 } else {
                     let prev_prefix = p.stages[si - 1].name.name.to_lowercase();
-                    self.line(&format!("{prefix}_valid_r <= {prev_prefix}_stall ? 1'b0 : {prev_prefix}_valid_r;"));
+                    self.line(&format!(
+                        "{prefix}_valid_r <= {prev_prefix}_stall ? 1'b0 : {prev_prefix}_valid_r;"
+                    ));
                 }
 
                 // Register assignments from seq blocks
                 for item in &stage.body {
                     if let ModuleBodyItem::RegBlock(rb) = item {
                         for stmt in &rb.stmts {
-                            self.emit_pipeline_reg_stmt(stmt, &prefix, si, &stage_names, &stage_regs, &port_names);
+                            self.emit_pipeline_reg_stmt(
+                                stmt,
+                                &prefix,
+                                si,
+                                &stage_names,
+                                &stage_regs,
+                                &port_names,
+                            );
                         }
                     }
                 }
@@ -439,7 +510,14 @@ impl<'a> Codegen<'a> {
                 for item in &stage.body {
                     if let ModuleBodyItem::RegBlock(rb) = item {
                         for stmt in &rb.stmts {
-                            self.emit_pipeline_reg_stmt(stmt, &prefix, si, &stage_names, &stage_regs, &port_names);
+                            self.emit_pipeline_reg_stmt(
+                                stmt,
+                                &prefix,
+                                si,
+                                &stage_names,
+                                &stage_regs,
+                                &port_names,
+                            );
                         }
                     }
                 }
@@ -449,12 +527,19 @@ impl<'a> Codegen<'a> {
         // Flush overrides
         for flush in &p.flush_directives {
             let target_prefix = flush.target_stage.name.to_lowercase();
-            let cond_str = self.emit_pipeline_expr_str(&flush.condition, &stage_names, &stage_regs, &port_names);
+            let cond_str = self.emit_pipeline_expr_str(
+                &flush.condition,
+                &stage_names,
+                &stage_regs,
+                &port_names,
+            );
             self.line(&format!("if ({}) begin", cond_str));
             self.indent += 1;
             self.line(&format!("{}_valid_r <= 1'b0;", target_prefix));
             // Reset FSM state on flush for wait-stages
-            let flush_si = stage_names.iter().position(|n| n.to_lowercase() == target_prefix);
+            let flush_si = stage_names
+                .iter()
+                .position(|n| n.to_lowercase() == target_prefix);
             if let Some(si) = flush_si {
                 if wait_stage_flags[si] {
                     self.line(&format!("{target_prefix}_fsm_state <= '0;"));
@@ -464,7 +549,9 @@ impl<'a> Codegen<'a> {
                 // (init_str empty) are skipped — they're not registers.
                 if flush.clear {
                     for (sig_name, _ty, init_str) in &stage_regs[si] {
-                        if init_str.is_empty() { continue; }
+                        if init_str.is_empty() {
+                            continue;
+                        }
                         self.line(&format!("{target_prefix}_{sig_name} <= {init_str};"));
                     }
                 }
@@ -490,7 +577,14 @@ impl<'a> Codegen<'a> {
                     if all_simple {
                         for stmt in &cb.stmts {
                             if let Stmt::Assign(a) = stmt {
-                                let val = self.emit_pipeline_stage_expr_str(&a.value, &prefix, si, &stage_names, &stage_regs, &port_names);
+                                let val = self.emit_pipeline_stage_expr_str(
+                                    &a.value,
+                                    &prefix,
+                                    si,
+                                    &stage_names,
+                                    &stage_regs,
+                                    &port_names,
+                                );
                                 let target = if let ExprKind::Ident(name) = &a.target.kind {
                                     if port_names.contains(name) {
                                         name.clone()
@@ -508,26 +602,51 @@ impl<'a> Codegen<'a> {
                         self.line("always_comb begin");
                         self.indent += 1;
                         for stmt in &cb.stmts {
-                            self.emit_pipeline_comb_stmt(stmt, &prefix, si, &stage_names, &stage_regs, &port_names);
+                            self.emit_pipeline_comb_stmt(
+                                stmt,
+                                &prefix,
+                                si,
+                                &stage_names,
+                                &stage_regs,
+                                &port_names,
+                            );
                         }
                         self.indent -= 1;
                         self.line("end");
                     }
                 }
                 if let ModuleBodyItem::LetBinding(l) = item {
-                    let val = self.emit_pipeline_stage_expr_str(&l.value, &prefix, si, &stage_names, &stage_regs, &port_names);
+                    let val = self.emit_pipeline_stage_expr_str(
+                        &l.value,
+                        &prefix,
+                        si,
+                        &stage_names,
+                        &stage_regs,
+                        &port_names,
+                    );
                     self.line(&format!("assign {}_{} = {};", prefix, l.name.name, val));
                 }
                 if let ModuleBodyItem::Inst(inst) = item {
-                    self.emit_pipeline_inst(inst, &prefix, si, &stage_names, &stage_regs, &port_names);
+                    self.emit_pipeline_inst(
+                        inst,
+                        &prefix,
+                        si,
+                        &stage_names,
+                        &stage_regs,
+                        &port_names,
+                    );
                 }
             }
         }
 
         // ── Assert / cover SVA ───────────────────────────────────────────────
         if !p.asserts.is_empty() {
-            let clk = p.ports.iter().find(|pt| matches!(&pt.ty, TypeExpr::Clock(_)))
-                .map(|pt| pt.name.name.clone()).unwrap_or_else(|| "clk".to_string());
+            let clk = p
+                .ports
+                .iter()
+                .find(|pt| matches!(&pt.ty, TypeExpr::Clock(_)))
+                .map(|pt| pt.name.name.clone())
+                .unwrap_or_else(|| "clk".to_string());
             self.line("");
             let asserts = p.asserts.clone();
             let pname = p.name.name.clone();
@@ -564,7 +683,9 @@ impl<'a> Codegen<'a> {
     fn stmts_contain_wait(stmts: &[Stmt]) -> bool {
         stmts.iter().any(|s| match s {
             Stmt::WaitUntil(_, _) | Stmt::DoUntil { .. } => true,
-            Stmt::IfElse(ie) => Self::stmts_contain_wait(&ie.then_stmts) || Self::stmts_contain_wait(&ie.else_stmts),
+            Stmt::IfElse(ie) => {
+                Self::stmts_contain_wait(&ie.then_stmts) || Self::stmts_contain_wait(&ie.else_stmts)
+            }
             Stmt::For(f) => Self::stmts_contain_wait(&f.body),
             _ => false,
         })
@@ -579,7 +700,9 @@ impl<'a> Codegen<'a> {
             if let ModuleBodyItem::RegBlock(rb) = item {
                 for s in &rb.stmts {
                     match s {
-                        Stmt::WaitUntil(_, _) | Stmt::DoUntil { .. } => { wait_count += 1; }
+                        Stmt::WaitUntil(_, _) | Stmt::DoUntil { .. } => {
+                            wait_count += 1;
+                        }
                         _ => {}
                     }
                 }
@@ -615,9 +738,9 @@ impl<'a> Codegen<'a> {
         // Each wait creates a wait-state. Pre-wait assigns execute on entry.
         // Trailing assigns execute when the last wait completes.
         struct WaitGroup<'a> {
-            pre_assigns: Vec<&'a Stmt>,   // assigns before the wait
-            cond: &'a Expr,               // wait condition
-            hold_assigns: Vec<&'a Stmt>,  // do..until body (empty for wait until)
+            pre_assigns: Vec<&'a Stmt>,  // assigns before the wait
+            cond: &'a Expr,              // wait condition
+            hold_assigns: Vec<&'a Stmt>, // do..until body (empty for wait until)
         }
 
         let mut groups: Vec<WaitGroup> = Vec::new();
@@ -669,7 +792,14 @@ impl<'a> Codegen<'a> {
         self.line(&format!("{bits}'d0: begin"));
         self.indent += 1;
         if let Some(g) = groups.first() {
-            let cond = self.emit_pipeline_stage_expr_str(g.cond, prefix, si, stage_names, stage_regs, port_names);
+            let cond = self.emit_pipeline_stage_expr_str(
+                g.cond,
+                prefix,
+                si,
+                stage_names,
+                stage_regs,
+                port_names,
+            );
 
             // Run pre-assigns (fire once on entry to the wait)
             // For state 0 these only fire when upstream has valid data
@@ -714,7 +844,14 @@ impl<'a> Codegen<'a> {
             self.line(&format!("{bits}'d{state_num}: begin"));
             self.indent += 1;
 
-            let cond = self.emit_pipeline_stage_expr_str(g.cond, prefix, si, stage_names, stage_regs, port_names);
+            let cond = self.emit_pipeline_stage_expr_str(
+                g.cond,
+                prefix,
+                si,
+                stage_names,
+                stage_regs,
+                port_names,
+            );
 
             // Emit hold assigns (for do..until, every cycle)
             for a in &g.hold_assigns {
@@ -772,41 +909,82 @@ impl<'a> Codegen<'a> {
         match stmt {
             Stmt::Assign(a) => {
                 let target = self.emit_pipeline_lhs_str(&a.target, current_prefix, port_names);
-                let val = self.emit_pipeline_stage_expr_str(&a.value, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                let val = self.emit_pipeline_stage_expr_str(
+                    &a.value,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
                 self.line(&format!("{} <= {};", target, val));
             }
             Stmt::IfElse(ie) => {
-                self.emit_pipeline_reg_if_else(ie, current_prefix, current_stage_idx, stage_names, stage_regs, port_names, false);
+                self.emit_pipeline_reg_if_else(
+                    ie,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                    false,
+                );
             }
             Stmt::Match(_) => {
                 // MVP: basic pipeline doesn't need match in seq blocks
             }
-            Stmt::Log(l) => { self.emit_log_stmt(l); }
+            Stmt::Log(l) => {
+                self.emit_log_stmt(l);
+            }
             Stmt::For(f) => {
                 let var = &f.var.name;
                 match &f.range {
                     ForRange::Range(rs, re) => {
                         let start = self.emit_expr_str(rs);
                         let end = self.emit_expr_str(re);
-                        self.line(&format!("for (int {var} = {start}; {var} <= {end}; {var}++) begin"));
+                        self.line(&format!(
+                            "for (int {var} = {start}; {var} <= {end}; {var}++) begin"
+                        ));
                         self.indent += 1;
-                        for s in &f.body { self.emit_pipeline_reg_stmt(s, current_prefix, current_stage_idx, stage_names, stage_regs, port_names); }
+                        for s in &f.body {
+                            self.emit_pipeline_reg_stmt(
+                                s,
+                                current_prefix,
+                                current_stage_idx,
+                                stage_names,
+                                stage_regs,
+                                port_names,
+                            );
+                        }
                         self.indent -= 1;
                         self.line("end");
                     }
                     ForRange::ValueList(vals) => {
                         for v in vals {
                             let val = self.emit_expr_str(v);
-                            self.line(&format!("for (int {var} = {val}; {var} == {val}; {var}++) begin"));
+                            self.line(&format!(
+                                "for (int {var} = {val}; {var} == {val}; {var}++) begin"
+                            ));
                             self.indent += 1;
-                            for s in &f.body { self.emit_pipeline_reg_stmt(s, current_prefix, current_stage_idx, stage_names, stage_regs, port_names); }
+                            for s in &f.body {
+                                self.emit_pipeline_reg_stmt(
+                                    s,
+                                    current_prefix,
+                                    current_stage_idx,
+                                    stage_names,
+                                    stage_regs,
+                                    port_names,
+                                );
+                            }
                             self.indent -= 1;
                             self.line("end");
                         }
                     }
                 }
             }
-            Stmt::Init(_) => unreachable!("Stmt::Init should not appear in pipeline reg stmt context"),
+            Stmt::Init(_) => {
+                unreachable!("Stmt::Init should not appear in pipeline reg stmt context")
+            }
             Stmt::WaitUntil(_, _) | Stmt::DoUntil { .. } => {
                 // Pipeline wait-stages handled separately by pipeline codegen
                 unreachable!("WaitUntil/DoUntil handled by pipeline stage codegen, not emit_pipeline_reg_stmt")
@@ -893,10 +1071,17 @@ impl<'a> Codegen<'a> {
     /// port type onto a parent-scope wire so that param refs scoped to
     /// the inst's source module are rewritten to the parent-scope
     /// expressions supplied at inst time (or the source's defaults).
-    fn substitute_params_in_type(ty: &TypeExpr, params: &std::collections::HashMap<String, Expr>) -> TypeExpr {
+    fn substitute_params_in_type(
+        ty: &TypeExpr,
+        params: &std::collections::HashMap<String, Expr>,
+    ) -> TypeExpr {
         match ty {
-            TypeExpr::UInt(w) => TypeExpr::UInt(Box::new(Self::substitute_params_in_expr(w, params))),
-            TypeExpr::SInt(w) => TypeExpr::SInt(Box::new(Self::substitute_params_in_expr(w, params))),
+            TypeExpr::UInt(w) => {
+                TypeExpr::UInt(Box::new(Self::substitute_params_in_expr(w, params)))
+            }
+            TypeExpr::SInt(w) => {
+                TypeExpr::SInt(Box::new(Self::substitute_params_in_expr(w, params)))
+            }
             TypeExpr::Vec(inner, n) => TypeExpr::Vec(
                 Box::new(Self::substitute_params_in_type(inner, params)),
                 Box::new(Self::substitute_params_in_expr(n, params)),
@@ -905,7 +1090,10 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn substitute_params_in_expr(e: &Expr, params: &std::collections::HashMap<String, Expr>) -> Expr {
+    fn substitute_params_in_expr(
+        e: &Expr,
+        params: &std::collections::HashMap<String, Expr>,
+    ) -> Expr {
         let kind = match &e.kind {
             ExprKind::Ident(name) => {
                 if let Some(replacement) = params.get(name) {
@@ -924,7 +1112,11 @@ impl<'a> Codegen<'a> {
             ),
             other => other.clone(),
         };
-        Expr { kind, span: e.span, parenthesized: e.parenthesized }
+        Expr {
+            kind,
+            span: e.span,
+            parenthesized: e.parenthesized,
+        }
     }
 
     fn resolve_inst_wire_type_from_consumers(
@@ -968,7 +1160,8 @@ impl<'a> Codegen<'a> {
                 Stmt::Assign(a) if matches!(&a.target.kind, ExprKind::Ident(n) if n == target) => {
                     // Check if RHS is a bare identifier (local register)
                     if let ExprKind::Ident(name) = &a.value.kind {
-                        if let Some(r) = stage_regs[current_stage_idx].iter()
+                        if let Some(r) = stage_regs[current_stage_idx]
+                            .iter()
                             .find(|(rn, _, _)| rn == name)
                         {
                             return Some(r.1.clone());
@@ -978,8 +1171,8 @@ impl<'a> Codegen<'a> {
                     if let ExprKind::FieldAccess(base, field) = &a.value.kind {
                         if let ExprKind::Ident(base_name) = &base.kind {
                             if let Some(si) = stage_names.iter().position(|&sn| sn == base_name) {
-                                if let Some(r) = stage_regs[si].iter()
-                                    .find(|(rn, _, _)| rn == &field.name)
+                                if let Some(r) =
+                                    stage_regs[si].iter().find(|(rn, _, _)| rn == &field.name)
                                 {
                                     return Some(r.1.clone());
                                 }
@@ -988,10 +1181,22 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 Stmt::IfElse(ie) => {
-                    if let Some(ty) = Self::resolve_comb_wire_type(target, &ie.then_stmts, current_stage_idx, stage_regs, stage_names) {
+                    if let Some(ty) = Self::resolve_comb_wire_type(
+                        target,
+                        &ie.then_stmts,
+                        current_stage_idx,
+                        stage_regs,
+                        stage_names,
+                    ) {
                         return Some(ty);
                     }
-                    if let Some(ty) = Self::resolve_comb_wire_type(target, &ie.else_stmts, current_stage_idx, stage_regs, stage_names) {
+                    if let Some(ty) = Self::resolve_comb_wire_type(
+                        target,
+                        &ie.else_stmts,
+                        current_stage_idx,
+                        stage_regs,
+                        stage_names,
+                    ) {
                         return Some(ty);
                     }
                 }
@@ -1027,7 +1232,14 @@ impl<'a> Codegen<'a> {
     ) {
         match stmt {
             Stmt::Assign(a) => {
-                let val = self.emit_pipeline_stage_expr_str(&a.value, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                let val = self.emit_pipeline_stage_expr_str(
+                    &a.value,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
                 let target = if let ExprKind::Ident(name) = &a.target.kind {
                     if port_names.contains(name) {
                         name.clone()
@@ -1060,10 +1272,19 @@ impl<'a> Codegen<'a> {
                     port_names,
                 );
             }
-            Stmt::Log(l) => { self.emit_log_stmt(l); }
+            Stmt::Log(l) => {
+                self.emit_log_stmt(l);
+            }
             Stmt::For(f) => {
                 self.emit_for_loop_sv(f, |s, stmt| {
-                    s.emit_pipeline_comb_stmt(stmt, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                    s.emit_pipeline_comb_stmt(
+                        stmt,
+                        current_prefix,
+                        current_stage_idx,
+                        stage_names,
+                        stage_regs,
+                        port_names,
+                    );
                 });
             }
             Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {
@@ -1123,7 +1344,14 @@ impl<'a> Codegen<'a> {
         port_names: &std::collections::HashSet<String>,
         is_chain: bool,
     ) {
-        let cond = self.emit_pipeline_stage_expr_str(&ie.cond, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+        let cond = self.emit_pipeline_stage_expr_str(
+            &ie.cond,
+            current_prefix,
+            current_stage_idx,
+            stage_names,
+            stage_regs,
+            port_names,
+        );
         if is_chain {
             self.line(&format!("end else if ({}) begin", cond));
         } else {
@@ -1131,12 +1359,27 @@ impl<'a> Codegen<'a> {
         }
         self.indent += 1;
         for s in &ie.then_stmts {
-            self.emit_pipeline_reg_stmt(s, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+            self.emit_pipeline_reg_stmt(
+                s,
+                current_prefix,
+                current_stage_idx,
+                stage_names,
+                stage_regs,
+                port_names,
+            );
         }
         self.indent -= 1;
         if ie.else_stmts.len() == 1 {
             if let Stmt::IfElse(nested) = &ie.else_stmts[0] {
-                self.emit_pipeline_reg_if_else(nested, current_prefix, current_stage_idx, stage_names, stage_regs, port_names, true);
+                self.emit_pipeline_reg_if_else(
+                    nested,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                    true,
+                );
                 return;
             }
         }
@@ -1144,7 +1387,14 @@ impl<'a> Codegen<'a> {
             self.line("end else begin");
             self.indent += 1;
             for s in &ie.else_stmts {
-                self.emit_pipeline_reg_stmt(s, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                self.emit_pipeline_reg_stmt(
+                    s,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
             }
             self.indent -= 1;
         }
@@ -1161,7 +1411,14 @@ impl<'a> Codegen<'a> {
         port_names: &std::collections::HashSet<String>,
         is_chain: bool,
     ) {
-        let cond = self.emit_pipeline_stage_expr_str(&ie.cond, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+        let cond = self.emit_pipeline_stage_expr_str(
+            &ie.cond,
+            current_prefix,
+            current_stage_idx,
+            stage_names,
+            stage_regs,
+            port_names,
+        );
         if is_chain {
             self.line(&format!("end else if ({}) begin", cond));
         } else {
@@ -1169,12 +1426,27 @@ impl<'a> Codegen<'a> {
         }
         self.indent += 1;
         for s in &ie.then_stmts {
-            self.emit_pipeline_comb_stmt(s, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+            self.emit_pipeline_comb_stmt(
+                s,
+                current_prefix,
+                current_stage_idx,
+                stage_names,
+                stage_regs,
+                port_names,
+            );
         }
         self.indent -= 1;
         if ie.else_stmts.len() == 1 {
             if let Stmt::IfElse(nested) = &ie.else_stmts[0] {
-                self.emit_pipeline_comb_if_else(nested, current_prefix, current_stage_idx, stage_names, stage_regs, port_names, true);
+                self.emit_pipeline_comb_if_else(
+                    nested,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                    true,
+                );
                 return;
             }
         }
@@ -1182,7 +1454,14 @@ impl<'a> Codegen<'a> {
             self.line("end else begin");
             self.indent += 1;
             for s in &ie.else_stmts {
-                self.emit_pipeline_comb_stmt(s, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                self.emit_pipeline_comb_stmt(
+                    s,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
             }
             self.indent -= 1;
         }
@@ -1208,7 +1487,14 @@ impl<'a> Codegen<'a> {
                         return format!("{}_{}", prefix, field.name);
                     }
                 }
-                let b = self.emit_pipeline_stage_expr_str(base, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                let b = self.emit_pipeline_stage_expr_str(
+                    base,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
                 format!("{}.{}", b, field.name)
             }
             ExprKind::Ident(name) => {
@@ -1228,8 +1514,22 @@ impl<'a> Codegen<'a> {
                 name.clone()
             }
             ExprKind::Binary(op, lhs, rhs) => {
-                let l = self.emit_pipeline_stage_expr_str(lhs, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
-                let r = self.emit_pipeline_stage_expr_str(rhs, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                let l = self.emit_pipeline_stage_expr_str(
+                    lhs,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
+                let r = self.emit_pipeline_stage_expr_str(
+                    rhs,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
                 if *op == BinOp::Implies {
                     return format!("({l} |-> {r})");
                 }
@@ -1237,19 +1537,34 @@ impl<'a> Codegen<'a> {
                     return format!("({l} |=> {r})");
                 }
                 let op_str = match op {
-                    BinOp::Add | BinOp::AddWrap => "+", BinOp::Sub | BinOp::SubWrap => "-",
+                    BinOp::Add | BinOp::AddWrap => "+",
+                    BinOp::Sub | BinOp::SubWrap => "-",
                     BinOp::Mul | BinOp::MulWrap => "*",
-                    BinOp::Div => "/", BinOp::Mod => "%", BinOp::Eq => "==",
-                    BinOp::Neq => "!=", BinOp::Lt => "<", BinOp::Gt => ">",
-                    BinOp::Lte => "<=", BinOp::Gte => ">=", BinOp::And => "&&",
-                    BinOp::Or => "||", BinOp::BitAnd => "&", BinOp::BitOr => "|",
-                    BinOp::BitXor => "^", BinOp::Shl => "<<", BinOp::Shr => ">>",
+                    BinOp::Div => "/",
+                    BinOp::Mod => "%",
+                    BinOp::Eq => "==",
+                    BinOp::Neq => "!=",
+                    BinOp::Lt => "<",
+                    BinOp::Gt => ">",
+                    BinOp::Lte => "<=",
+                    BinOp::Gte => ">=",
+                    BinOp::And => "&&",
+                    BinOp::Or => "||",
+                    BinOp::BitAnd => "&",
+                    BinOp::BitOr => "|",
+                    BinOp::BitXor => "^",
+                    BinOp::Shl => "<<",
+                    BinOp::Shr => ">>",
                     BinOp::Implies | BinOp::ImpliesNext => unreachable!(),
                 };
                 if matches!(op, BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap) {
                     let lw = self.infer_sv_width_str(lhs);
                     let rw = self.infer_sv_width_str(rhs);
-                    let w = if lw == rw { lw } else { format!("({lw} > {rw} ? {lw} : {rw})") };
+                    let w = if lw == rw {
+                        lw
+                    } else {
+                        format!("({lw} > {rw} ? {lw} : {rw})")
+                    };
                     let wp = Self::paren_width(&w);
                     format!("{wp}'({l} {op_str} {r})")
                 } else {
@@ -1257,7 +1572,14 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::Unary(op, operand) => {
-                let o = self.emit_pipeline_stage_expr_str(operand, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                let o = self.emit_pipeline_stage_expr_str(
+                    operand,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
                 match op {
                     UnaryOp::Not => format!("(!{o})"),
                     UnaryOp::BitNot => format!("(~{o})"),
@@ -1268,7 +1590,14 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::MethodCall(base, method, args) => {
-                let b = self.emit_pipeline_stage_expr_str(base, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                let b = self.emit_pipeline_stage_expr_str(
+                    base,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
                 match method.name.as_str() {
                     "trunc" | "zext" => {
                         if let Some(width) = args.first() {
@@ -1308,21 +1637,39 @@ impl<'a> Codegen<'a> {
                             b
                         }
                     }
-                    "any" | "all" | "count" | "contains"
-                    | "reduce_or" | "reduce_and" | "reduce_xor"
-                    | "find_first" => {
-                        self.emit_vec_method(&b, base, method, args)
-                    }
+                    "any" | "all" | "count" | "contains" | "reduce_or" | "reduce_and"
+                    | "reduce_xor" | "find_first" => self.emit_vec_method(&b, base, method, args),
                     _ => format!("{b}.{}()", method.name),
                 }
             }
             ExprKind::Index(base, idx) => {
-                let b = self.emit_pipeline_stage_expr_str(base, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
-                let i = self.emit_pipeline_stage_expr_str(idx, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                let b = self.emit_pipeline_stage_expr_str(
+                    base,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
+                let i = self.emit_pipeline_stage_expr_str(
+                    idx,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
                 format!("{b}[{i}]")
             }
             ExprKind::BitSlice(base, hi, lo) => {
-                let b = self.emit_pipeline_stage_expr_str(base, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                let b = self.emit_pipeline_stage_expr_str(
+                    base,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
                 if let Some(width) = Self::try_indexed_part_select(hi, lo) {
                     let l = self.emit_expr_str(lo);
                     format!("{b}[{l} +: {width}]")
@@ -1333,20 +1680,44 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::PartSelect(base, start, width, up) => {
-                let b = self.emit_pipeline_stage_expr_str(base, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                let b = self.emit_pipeline_stage_expr_str(
+                    base,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
                 let s = self.emit_expr_str(start);
                 let w = self.emit_expr_str(width);
                 let op = if *up { "+:" } else { "-:" };
                 format!("{b}[{s} {op} {w}]")
             }
             ExprKind::Concat(parts) => {
-                let parts_str: Vec<String> = parts.iter()
-                    .map(|p| self.emit_pipeline_stage_expr_str(p, current_prefix, current_stage_idx, stage_names, stage_regs, port_names))
+                let parts_str: Vec<String> = parts
+                    .iter()
+                    .map(|p| {
+                        self.emit_pipeline_stage_expr_str(
+                            p,
+                            current_prefix,
+                            current_stage_idx,
+                            stage_names,
+                            stage_regs,
+                            port_names,
+                        )
+                    })
                     .collect();
                 format!("{{{}}}", parts_str.join(", "))
             }
             ExprKind::Cast(inner, ty) => {
-                let e = self.emit_pipeline_stage_expr_str(inner, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                let e = self.emit_pipeline_stage_expr_str(
+                    inner,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
                 match &**ty {
                     TypeExpr::SInt(_) => format!("$signed({e})"),
                     TypeExpr::UInt(w) => {
@@ -1360,22 +1731,70 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::Signed(inner) => {
-                let e = self.emit_pipeline_stage_expr_str(inner, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                let e = self.emit_pipeline_stage_expr_str(
+                    inner,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
                 format!("$signed({e})")
             }
             ExprKind::Unsigned(inner) => {
-                let e = self.emit_pipeline_stage_expr_str(inner, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                let e = self.emit_pipeline_stage_expr_str(
+                    inner,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
                 format!("$unsigned({e})")
             }
             ExprKind::Ternary(cond, then_expr, else_expr) => {
-                let c = self.emit_pipeline_stage_expr_str(cond, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
-                let t = self.emit_pipeline_stage_expr_str(then_expr, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
-                let e = self.emit_pipeline_stage_expr_str(else_expr, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                let c = self.emit_pipeline_stage_expr_str(
+                    cond,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
+                let t = self.emit_pipeline_stage_expr_str(
+                    then_expr,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
+                let e = self.emit_pipeline_stage_expr_str(
+                    else_expr,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
                 format!("({c}) ? ({t}) : ({e})")
             }
-            ExprKind::Bool(b) => if *b { "1'b1".to_string() } else { "1'b0".to_string() },
+            ExprKind::Bool(b) => {
+                if *b {
+                    "1'b1".to_string()
+                } else {
+                    "1'b0".to_string()
+                }
+            }
             ExprKind::Clog2(arg) => {
-                let a = self.emit_pipeline_stage_expr_str(arg, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                let a = self.emit_pipeline_stage_expr_str(
+                    arg,
+                    current_prefix,
+                    current_stage_idx,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
                 format!("$clog2({a})")
             }
             _ => self.emit_expr_str(expr),
@@ -1425,19 +1844,34 @@ impl<'a> Codegen<'a> {
                     return format!("({l} |=> {r})");
                 }
                 let op_str = match op {
-                    BinOp::Add | BinOp::AddWrap => "+", BinOp::Sub | BinOp::SubWrap => "-",
+                    BinOp::Add | BinOp::AddWrap => "+",
+                    BinOp::Sub | BinOp::SubWrap => "-",
                     BinOp::Mul | BinOp::MulWrap => "*",
-                    BinOp::Div => "/", BinOp::Mod => "%", BinOp::Eq => "==",
-                    BinOp::Neq => "!=", BinOp::Lt => "<", BinOp::Gt => ">",
-                    BinOp::Lte => "<=", BinOp::Gte => ">=", BinOp::And => "&&",
-                    BinOp::Or => "||", BinOp::BitAnd => "&", BinOp::BitOr => "|",
-                    BinOp::BitXor => "^", BinOp::Shl => "<<", BinOp::Shr => ">>",
+                    BinOp::Div => "/",
+                    BinOp::Mod => "%",
+                    BinOp::Eq => "==",
+                    BinOp::Neq => "!=",
+                    BinOp::Lt => "<",
+                    BinOp::Gt => ">",
+                    BinOp::Lte => "<=",
+                    BinOp::Gte => ">=",
+                    BinOp::And => "&&",
+                    BinOp::Or => "||",
+                    BinOp::BitAnd => "&",
+                    BinOp::BitOr => "|",
+                    BinOp::BitXor => "^",
+                    BinOp::Shl => "<<",
+                    BinOp::Shr => ">>",
                     BinOp::Implies | BinOp::ImpliesNext => unreachable!(),
                 };
                 if matches!(op, BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap) {
                     let lw = self.infer_sv_width_str(lhs);
                     let rw = self.infer_sv_width_str(rhs);
-                    let w = if lw == rw { lw } else { format!("({lw} > {rw} ? {lw} : {rw})") };
+                    let w = if lw == rw {
+                        lw
+                    } else {
+                        format!("({lw} > {rw} ? {lw} : {rw})")
+                    };
                     let wp = Self::paren_width(&w);
                     format!("{wp}'({l} {op_str} {r})")
                 } else {
@@ -1496,11 +1930,8 @@ impl<'a> Codegen<'a> {
                             b
                         }
                     }
-                    "any" | "all" | "count" | "contains"
-                    | "reduce_or" | "reduce_and" | "reduce_xor"
-                    | "find_first" => {
-                        self.emit_vec_method(&b, base, method, args)
-                    }
+                    "any" | "all" | "count" | "contains" | "reduce_or" | "reduce_and"
+                    | "reduce_xor" | "find_first" => self.emit_vec_method(&b, base, method, args),
                     _ => format!("{b}.{}()", method.name),
                 }
             }
@@ -1533,5 +1964,4 @@ impl<'a> Codegen<'a> {
     }
 
     // ── FIFO ──────────────────────────────────────────────────────────────────
-
 }
