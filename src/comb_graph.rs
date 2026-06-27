@@ -4,12 +4,11 @@
 /// performs topological sorting, detects combinational feedback cycles
 /// (which are compile errors), and computes the minimum settle depth needed
 /// for the eval() settle loop.
-
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::ast::{
-    ConnectDir, Stmt, ExprKind, FsmDecl, InsideMember, InstDecl, Item,
-    ModuleBodyItem, ModuleDecl, PortDecl, RamDecl, SourceFile, TypeExpr,
+    ConnectDir, ExprKind, FsmDecl, InsideMember, InstDecl, Item, ModuleBodyItem, ModuleDecl,
+    PortDecl, RamDecl, SourceFile, Stmt, TypeExpr,
 };
 use crate::diagnostics::CompileError;
 use crate::resolve::{Symbol, SymbolTable};
@@ -73,7 +72,9 @@ fn collect_idents_impl(
     use ExprKind::*;
     let rec = |e: &crate::ast::Expr, out: &mut HashSet<String>| collect_idents_impl(e, bus, out);
     match &expr.kind {
-        Ident(name) => { out.insert(name.clone()); }
+        Ident(name) => {
+            out.insert(name.clone());
+        }
         Binary(_, a, b) => {
             rec(a, out);
             rec(b, out);
@@ -91,7 +92,9 @@ fn collect_idents_impl(
         }
         MethodCall(recv, _, args) => {
             rec(recv, out);
-            for a in args { rec(a, out); }
+            for a in args {
+                rec(a, out);
+            }
         }
         Cast(e, _) => rec(e, out),
         Index(base, idx) => {
@@ -109,13 +112,19 @@ fn collect_idents_impl(
             rec(width, out);
         }
         StructLiteral(_, fields) => {
-            for f in fields { rec(&f.value, out); }
+            for f in fields {
+                rec(&f.value, out);
+            }
         }
         Concat(exprs) => {
-            for e in exprs { rec(e, out); }
+            for e in exprs {
+                rec(e, out);
+            }
         }
         FunctionCall(_, args) => {
-            for a in args { rec(a, out); }
+            for a in args {
+                rec(a, out);
+            }
         }
         Repeat(e, n) => {
             rec(e, out);
@@ -130,8 +139,8 @@ fn collect_idents_impl(
             rec(e, out);
             for m in members {
                 match m {
-                    InsideMember::Single(x)    => rec(x, out),
-                    InsideMember::Range(a, b)  => {
+                    InsideMember::Single(x) => rec(x, out),
+                    InsideMember::Range(a, b) => {
                         rec(a, out);
                         rec(b, out);
                     }
@@ -141,7 +150,9 @@ fn collect_idents_impl(
         // Expression-level match: scrutinee + arm values
         ExprMatch(scrut, arms) => {
             rec(scrut, out);
-            for arm in arms { rec(&arm.value, out); }
+            for arm in arms {
+                rec(&arm.value, out);
+            }
         }
         // Statement-level match used as expression (rare): just the scrutinee
         Match(scrut, _) => rec(scrut, out),
@@ -162,14 +173,17 @@ fn lhs_base_name(expr: &crate::ast::Expr) -> Option<String> {
 /// `collect_expr_idents_bus` on the read side so the two never conflate into a
 /// single `s` node. See `collect_expr_idents_bus` for why per-member
 /// granularity is sound.
-fn lhs_base_name_bus(expr: &crate::ast::Expr, bus_ports: Option<&HashSet<String>>) -> Option<String> {
+fn lhs_base_name_bus(
+    expr: &crate::ast::Expr,
+    bus_ports: Option<&HashSet<String>>,
+) -> Option<String> {
     use ExprKind::*;
     match &expr.kind {
-        Ident(name)               => Some(name.clone()),
-        BitSlice(base, _, _)      => lhs_base_name_bus(base, bus_ports),
+        Ident(name) => Some(name.clone()),
+        BitSlice(base, _, _) => lhs_base_name_bus(base, bus_ports),
         PartSelect(base, _, _, _) => lhs_base_name_bus(base, bus_ports),
-        Index(base, _)            => lhs_base_name_bus(base, bus_ports),
-        FieldAccess(base, field)  => {
+        Index(base, _) => lhs_base_name_bus(base, bus_ports),
+        FieldAccess(base, field) => {
             if let (Some(bp), Ident(b)) = (bus_ports, &base.kind) {
                 if bp.contains(b) {
                     return Some(format!("{b}.{}", field.name));
@@ -177,7 +191,7 @@ fn lhs_base_name_bus(expr: &crate::ast::Expr, bus_ports: Option<&HashSet<String>
             }
             lhs_base_name_bus(base, bus_ports)
         }
-        _                         => None,
+        _ => None,
     }
 }
 
@@ -202,7 +216,9 @@ fn scan_comb_stmt(
             let mut rhs = HashSet::new();
             collect_expr_idents(&a.value, &mut rhs);
             for id in &rhs {
-                if input_names.contains(id) { read.insert(id.clone()); }
+                if input_names.contains(id) {
+                    read.insert(id.clone());
+                }
             }
         }
         Stmt::IfElse(ife) => {
@@ -210,17 +226,25 @@ fn scan_comb_stmt(
             let mut cond = HashSet::new();
             collect_expr_idents(&ife.cond, &mut cond);
             for id in &cond {
-                if input_names.contains(id) { read.insert(id.clone()); }
+                if input_names.contains(id) {
+                    read.insert(id.clone());
+                }
             }
-            for s in &ife.then_stmts { scan_comb_stmt(s, input_names, output_names, driven, read); }
-            for s in &ife.else_stmts { scan_comb_stmt(s, input_names, output_names, driven, read); }
+            for s in &ife.then_stmts {
+                scan_comb_stmt(s, input_names, output_names, driven, read);
+            }
+            for s in &ife.else_stmts {
+                scan_comb_stmt(s, input_names, output_names, driven, read);
+            }
         }
         Stmt::Match(m) => {
             // Scrutinee
             let mut scrut = HashSet::new();
             collect_expr_idents(&m.scrutinee, &mut scrut);
             for id in &scrut {
-                if input_names.contains(id) { read.insert(id.clone()); }
+                if input_names.contains(id) {
+                    read.insert(id.clone());
+                }
             }
             for arm in &m.arms {
                 for s in &arm.body {
@@ -233,7 +257,9 @@ fn scan_comb_stmt(
                 scan_comb_stmt(s, input_names, output_names, driven, read);
             }
         }
-            Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
+        Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {
+            unreachable!("seq-only Stmt variant inside comb-context walker")
+        }
         Stmt::Log(_) => {}
     }
 }
@@ -273,11 +299,13 @@ fn is_named_bus_type(ty: &TypeExpr, bus_names: &HashSet<String>) -> bool {
 
 fn port_sets(ports: &[PortDecl]) -> (HashSet<String>, HashSet<String>) {
     use crate::ast::Direction;
-    let inputs = ports.iter()
+    let inputs = ports
+        .iter()
         .filter(|p| p.direction == Direction::In && !is_clk_or_rst(&p.ty))
         .map(|p| p.name.name.clone())
         .collect();
-    let outputs = ports.iter()
+    let outputs = ports
+        .iter()
         .filter(|p| p.direction == Direction::Out)
         .map(|p| p.name.name.clone())
         .collect();
@@ -289,7 +317,7 @@ fn comb_info_for_fsm(fsm: &FsmDecl) -> CombInfo {
     use crate::ast::Direction;
     let (inputs, outputs) = port_sets(&fsm.ports);
     let mut driven = HashSet::new();
-    let mut read   = HashSet::new();
+    let mut read = HashSet::new();
 
     // FSM-scope let bindings: collect any input refs they use
     // (let bindings are comb intermediates; their idents propagate to outputs
@@ -298,7 +326,9 @@ fn comb_info_for_fsm(fsm: &FsmDecl) -> CombInfo {
         let mut ids = HashSet::new();
         collect_expr_idents(&lb.value, &mut ids);
         for id in &ids {
-            if inputs.contains(id) { read.insert(id.clone()); }
+            if inputs.contains(id) {
+                read.insert(id.clone());
+            }
         }
     }
 
@@ -308,8 +338,12 @@ fn comb_info_for_fsm(fsm: &FsmDecl) -> CombInfo {
     // and identifier reads in the default expression are real comb
     // deps. Issue #246 Phase 4.
     for p in &fsm.ports {
-        if p.direction != Direction::Out { continue; }
-        if p.reg_info.is_some() { continue; }
+        if p.direction != Direction::Out {
+            continue;
+        }
+        if p.reg_info.is_some() {
+            continue;
+        }
         if let Some(def_expr) = &p.default {
             if outputs.contains(&p.name.name) {
                 driven.insert(p.name.name.clone());
@@ -317,7 +351,9 @@ fn comb_info_for_fsm(fsm: &FsmDecl) -> CombInfo {
             let mut ids = HashSet::new();
             collect_expr_idents(def_expr, &mut ids);
             for id in &ids {
-                if inputs.contains(id) { read.insert(id.clone()); }
+                if inputs.contains(id) {
+                    read.insert(id.clone());
+                }
             }
         }
     }
@@ -333,19 +369,24 @@ fn comb_info_for_fsm(fsm: &FsmDecl) -> CombInfo {
             let mut ids = HashSet::new();
             collect_expr_idents(&tr.condition, &mut ids);
             for id in &ids {
-                if inputs.contains(id) { read.insert(id.clone()); }
+                if inputs.contains(id) {
+                    read.insert(id.clone());
+                }
             }
         }
     }
 
-    CombInfo { comb_outputs: driven, comb_dep_inputs: read }
+    CombInfo {
+        comb_outputs: driven,
+        comb_dep_inputs: read,
+    }
 }
 
 /// Compute CombInfo for a module declaration.
 fn comb_info_for_module(m: &ModuleDecl) -> CombInfo {
     let (inputs, outputs) = port_sets(&m.ports);
     let mut driven = HashSet::new();
-    let mut read   = HashSet::new();
+    let mut read = HashSet::new();
 
     for item in &m.body {
         match item {
@@ -357,7 +398,9 @@ fn comb_info_for_module(m: &ModuleDecl) -> CombInfo {
                 let mut ids = HashSet::new();
                 collect_expr_idents(&lb.value, &mut ids);
                 for id in &ids {
-                    if inputs.contains(id) { read.insert(id.clone()); }
+                    if inputs.contains(id) {
+                        read.insert(id.clone());
+                    }
                 }
                 // If the let name is an output port (unusual but possible), mark driven
                 if outputs.contains(&lb.name.name) {
@@ -368,7 +411,10 @@ fn comb_info_for_module(m: &ModuleDecl) -> CombInfo {
         }
     }
 
-    CombInfo { comb_outputs: driven, comb_dep_inputs: read }
+    CombInfo {
+        comb_outputs: driven,
+        comb_dep_inputs: read,
+    }
 }
 
 /// Per-output combinational dependencies for a module.
@@ -398,9 +444,13 @@ pub fn per_output_comb_deps(m: &ModuleDecl) -> HashMap<String, HashSet<String>> 
     let mut input_names: HashSet<String> = HashSet::new();
     let mut output_names: HashSet<String> = HashSet::new();
     for p in &m.ports {
-        if is_clk_or_rst(&p.ty) { continue; }
+        if is_clk_or_rst(&p.ty) {
+            continue;
+        }
         match p.direction {
-            Direction::In  => { input_names.insert(p.name.name.clone()); }
+            Direction::In => {
+                input_names.insert(p.name.name.clone());
+            }
             Direction::Out => {
                 // Skip registered outputs — they're flopped, not comb.
                 if p.reg_info.is_none() {
@@ -422,9 +472,7 @@ pub fn per_output_comb_deps(m: &ModuleDecl) -> HashMap<String, HashSet<String>> 
             ModuleBodyItem::LetBinding(lb) => {
                 let mut ids = HashSet::new();
                 collect_expr_idents(&lb.value, &mut ids);
-                direct.entry(lb.name.name.clone())
-                    .or_default()
-                    .extend(ids);
+                direct.entry(lb.name.name.clone()).or_default().extend(ids);
             }
             _ => {}
         }
@@ -450,7 +498,9 @@ pub fn per_output_comb_deps(m: &ModuleDecl) -> HashMap<String, HashSet<String>> 
         let mut visited: HashSet<String> = HashSet::new();
         let mut stack: Vec<String> = vec![out_name.clone()];
         while let Some(cur) = stack.pop() {
-            if !visited.insert(cur.clone()) { continue; }
+            if !visited.insert(cur.clone()) {
+                continue;
+            }
             if let Some(rhs_ids) = direct.get(&cur) {
                 for id in rhs_ids {
                     if input_names.contains(id) {
@@ -497,9 +547,13 @@ pub fn per_output_comb_deps_fsm(fsm: &FsmDecl) -> HashMap<String, HashSet<String
     let mut input_names: HashSet<String> = HashSet::new();
     let mut output_names: HashSet<String> = HashSet::new();
     for p in &fsm.ports {
-        if is_clk_or_rst(&p.ty) { continue; }
+        if is_clk_or_rst(&p.ty) {
+            continue;
+        }
         match p.direction {
-            Direction::In  => { input_names.insert(p.name.name.clone()); }
+            Direction::In => {
+                input_names.insert(p.name.name.clone());
+            }
             Direction::Out => {
                 if p.reg_info.is_none() {
                     output_names.insert(p.name.name.clone());
@@ -517,23 +571,23 @@ pub fn per_output_comb_deps_fsm(fsm: &FsmDecl) -> HashMap<String, HashSet<String
     for lb in &fsm.lets {
         let mut ids = HashSet::new();
         collect_expr_idents(&lb.value, &mut ids);
-        direct.entry(lb.name.name.clone())
-            .or_default()
-            .extend(ids);
+        direct.entry(lb.name.name.clone()).or_default().extend(ids);
     }
 
     // 2b. Output port defaults — emitted by `codegen::fsm` as the
     //     comb-block default before the state case, so their identifier
     //     reads ARE real comb deps for the output.
     for p in &fsm.ports {
-        if p.direction != Direction::Out { continue; }
-        if p.reg_info.is_some() { continue; }
+        if p.direction != Direction::Out {
+            continue;
+        }
+        if p.reg_info.is_some() {
+            continue;
+        }
         if let Some(def_expr) = &p.default {
             let mut ids = HashSet::new();
             collect_expr_idents(def_expr, &mut ids);
-            direct.entry(p.name.name.clone())
-                .or_default()
-                .extend(ids);
+            direct.entry(p.name.name.clone()).or_default().extend(ids);
         }
     }
 
@@ -559,7 +613,9 @@ pub fn per_output_comb_deps_fsm(fsm: &FsmDecl) -> HashMap<String, HashSet<String
         let mut visited: HashSet<String> = HashSet::new();
         let mut stack: Vec<String> = vec![out_name.clone()];
         while let Some(cur) = stack.pop() {
-            if !visited.insert(cur.clone()) { continue; }
+            if !visited.insert(cur.clone()) {
+                continue;
+            }
             if let Some(rhs_ids) = direct.get(&cur) {
                 for id in rhs_ids {
                     if input_names.contains(id) {
@@ -638,7 +694,9 @@ pub fn collect_comb_deps(
                 // LHS index/slice expressions also read identifiers.
                 collect_lhs_index_reads(&a.target, &mut rhs);
                 for conds in cond_stack.iter() {
-                    for id in conds { rhs.insert(id.clone()); }
+                    for id in conds {
+                        rhs.insert(id.clone());
+                    }
                 }
                 direct.entry(lhs).or_default().extend(rhs);
             }
@@ -679,7 +737,10 @@ fn comb_info_for_ram(ram: &RamDecl) -> CombInfo {
         // In practice async RAMs rarely appear in cycles, and the cycle
         // detection will catch it if they do.
         let (inputs, outputs) = port_sets(&ram.ports);
-        CombInfo { comb_outputs: outputs, comb_dep_inputs: inputs }
+        CombInfo {
+            comb_outputs: outputs,
+            comb_dep_inputs: inputs,
+        }
     } else {
         CombInfo::default()
     }
@@ -749,7 +810,11 @@ fn construct_comb_info_is_sound(sym: &Symbol) -> bool {
 }
 
 /// Look up the `CombInfo` for an instance whose construct is named `sym_name`.
-pub fn comb_info_for_symbol(sym_name: &str, symbols: &SymbolTable, source: &SourceFile) -> CombInfo {
+pub fn comb_info_for_symbol(
+    sym_name: &str,
+    symbols: &SymbolTable,
+    source: &SourceFile,
+) -> CombInfo {
     let sym = match symbols.globals.get(sym_name) {
         Some((s, _)) => s,
         None => return CombInfo::default(),
@@ -803,10 +868,9 @@ pub fn comb_info_for_symbol(sym_name: &str, symbols: &SymbolTable, source: &Sour
         // Every output is a pure function of internal flopped state, so there
         // is no combinational input→output edge. These are the constructs for
         // which `construct_comb_info_is_sound` returns `true`.
-        Symbol::Fifo(_)
-        | Symbol::Counter(_)
-        | Symbol::Synchronizer(_)
-        | Symbol::Pipeline(_) => CombInfo::default(),
+        Symbol::Fifo(_) | Symbol::Counter(_) | Symbol::Synchronizer(_) | Symbol::Pipeline(_) => {
+            CombInfo::default()
+        }
 
         // ── Real (or possible) comb in→out path we do NOT precisely model ──
         // The empty `CombInfo` returned here is OPTIMISTIC, not sound. Any
@@ -853,9 +917,10 @@ pub fn comb_info_for_symbol(sym_name: &str, symbols: &SymbolTable, source: &Sour
 /// intermediate signals (those may feed instance inputs and require 2 settle
 /// passes if the parent eval_comb() runs AFTER the instance loop).
 fn parent_has_comb_intermediates(m: &ModuleDecl) -> bool {
-    m.body.iter().any(|item| matches!(
-        item,
-        ModuleBodyItem::CombBlock(_) | ModuleBodyItem::LetBinding(_)
+    m.body.iter().any(|item| {
+        matches!(
+            item,
+            ModuleBodyItem::CombBlock(_) | ModuleBodyItem::LetBinding(_)
         // Bus wires (scalar `wire w: B;` or `wire w: Vec<B, N>;`) act as
         // comb intermediates carrying instance outputs to instance
         // inputs across the parent body. The instance-edge graph above
@@ -865,15 +930,23 @@ fn parent_has_comb_intermediates(m: &ModuleDecl) -> bool {
         // through such wires. Bumping settle_depth = 2 covers the case
         // conservatively until the dep tracker handles indexed signals.
         | ModuleBodyItem::WireDecl(_)
-    ))
+        )
+    })
 }
 
 /// Collect all direct `inst` declarations from a module body (not generate
 /// blocks — those are already expanded by the elaborate pass before sim
 /// codegen runs).
 pub fn collect_insts(m: &ModuleDecl) -> Vec<&InstDecl> {
-    m.body.iter()
-        .filter_map(|i| if let ModuleBodyItem::Inst(inst) = i { Some(inst) } else { None })
+    m.body
+        .iter()
+        .filter_map(|i| {
+            if let ModuleBodyItem::Inst(inst) = i {
+                Some(inst)
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
@@ -901,7 +974,8 @@ pub fn analyze_module(
     }
 
     // ── Step 1: collect CombInfo for each instance ────────────────────────
-    let infos: Vec<CombInfo> = insts.iter()
+    let infos: Vec<CombInfo> = insts
+        .iter()
         .map(|inst| comb_info_for_symbol(&inst.module_name.name, symbols, source))
         .collect();
 
@@ -927,11 +1001,15 @@ pub fn analyze_module(
 
     for (i, inst) in insts.iter().enumerate() {
         for conn in &inst.connections {
-            if conn.direction != ConnectDir::Input { continue; }
+            if conn.direction != ConnectDir::Input {
+                continue;
+            }
 
             let port_name = &conn.port_name.name;
             // Only create an edge if instance i has a comb dep on this input port.
-            if !infos[i].comb_dep_inputs.contains(port_name) { continue; }
+            if !infos[i].comb_dep_inputs.contains(port_name) {
+                continue;
+            }
 
             // Identify the signal driving this input.
             let wire_name = match &conn.signal.kind {
@@ -945,10 +1023,14 @@ pub fn analyze_module(
                 None => continue, // driven by parent reg/port, not an instance
             };
 
-            if j == i { continue; } // self-loop — not meaningful
+            if j == i {
+                continue;
+            } // self-loop — not meaningful
 
             // Only add edge if j's port is a comb output (not registered).
-            if !infos[j].comb_outputs.contains(out_port) { continue; }
+            if !infos[j].comb_outputs.contains(out_port) {
+                continue;
+            }
 
             // Avoid duplicate edges
             if !adj[j].contains(&i) {
@@ -1005,9 +1087,16 @@ pub fn analyze_module(
     // that produce intermediate signals used as instance inputs, those
     // intermediates are only updated at the end of the loop (parent eval_comb).
     // In that case we need 2 passes so the second pass sees fresh values.
-    let settle_depth = if parent_has_comb_intermediates(m) { 2 } else { 1 };
+    let settle_depth = if parent_has_comb_intermediates(m) {
+        2
+    } else {
+        1
+    };
 
-    Ok(ModuleAnalysis { sorted_inst_indices: sorted, settle_depth })
+    Ok(ModuleAnalysis {
+        sorted_inst_indices: sorted,
+        settle_depth,
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1091,10 +1180,7 @@ pub struct WholeDesignAnalysis {
 /// 3. Run Tarjan's SCC.
 /// 4. Tag each non-trivial SCC with the set of owning-parent paths;
 ///    classify as suppressed if any owning module has the pragma.
-pub fn analyze_whole_design(
-    source: &SourceFile,
-    symbols: &SymbolTable,
-) -> WholeDesignAnalysis {
+pub fn analyze_whole_design(source: &SourceFile, symbols: &SymbolTable) -> WholeDesignAnalysis {
     // ── Step 1: collect inst counts to find top-level modules ─────────────
     let mut inst_count: HashMap<String, usize> = HashMap::new();
     let mut module_by_name: HashMap<&str, &ModuleDecl> = HashMap::new();
@@ -1134,8 +1220,7 @@ pub fn analyze_whole_design(
     let mut total = 0usize;
     for scc in sccs_raw {
         // Filter: size > 1 OR (size == 1 with self-loop)
-        let is_cycle = scc.len() > 1
-            || (scc.len() == 1 && builder.adj[scc[0]].contains(&scc[0]));
+        let is_cycle = scc.len() > 1 || (scc.len() == 1 && builder.adj[scc[0]].contains(&scc[0]));
         if !is_cycle {
             continue;
         }
@@ -1153,16 +1238,21 @@ pub fn analyze_whole_design(
             nodes.push(key);
         }
         // Suppression: any owning module has `pragma comb_loops_allowed;`.
-        let blessed = owning_modules
-            .iter()
-            .any(|mn| module_by_name.get(mn.as_str())
+        let blessed = owning_modules.iter().any(|mn| {
+            module_by_name
+                .get(mn.as_str())
                 .map(|m| m.comb_loops_allowed)
-                .unwrap_or(false));
+                .unwrap_or(false)
+        });
         if blessed {
             suppressed += 1;
             continue;
         }
-        out_sccs.push(CombScc { nodes, owning_paths, owning_modules });
+        out_sccs.push(CombScc {
+            nodes,
+            owning_paths,
+            owning_modules,
+        });
     }
 
     WholeDesignAnalysis {
@@ -1251,7 +1341,10 @@ impl GraphBuilder {
 
         // Helper to make a node at the current path.
         let mk = |gb: &mut GraphBuilder, name: &str| -> usize {
-            gb.intern(NodeKey { path: path.clone(), signal: name.to_string() })
+            gb.intern(NodeKey {
+                path: path.clone(),
+                signal: name.to_string(),
+            })
         };
 
         // Ensure all port/wire/let/reg/inst-output names exist as nodes.
@@ -1260,7 +1353,9 @@ impl GraphBuilder {
         // node — harmless for SCC).
         for p in &m.ports {
             // Skip clock/reset — they participate only in seq logic.
-            if is_clk_or_rst(&p.ty) { continue; }
+            if is_clk_or_rst(&p.ty) {
+                continue;
+            }
             mk(self, &p.name.name);
         }
 
@@ -1277,7 +1372,9 @@ impl GraphBuilder {
         // individual fields in generated comb logic; treating the whole wire as
         // one node fabricates a cycle between request and response fields.
         let bus_type_names = bus_type_names(source);
-        let mut bus_values: HashSet<String> = m.ports.iter()
+        let mut bus_values: HashSet<String> = m
+            .ports
+            .iter()
             .filter(|p| p.bus_info.is_some() || is_named_bus_type(&p.ty, &bus_type_names))
             .map(|p| p.name.name.clone())
             .collect();
@@ -1290,7 +1387,9 @@ impl GraphBuilder {
         }
         for item in &m.body {
             match item {
-                ModuleBodyItem::WireDecl(w) => { mk(self, &w.name.name); }
+                ModuleBodyItem::WireDecl(w) => {
+                    mk(self, &w.name.name);
+                }
                 ModuleBodyItem::RegDecl(_) => {
                     // Regs are seq-driven; skip — they break comb cycles.
                 }
@@ -1371,7 +1470,7 @@ impl GraphBuilder {
 
         // Map each connection's port-name → parent signal name (if a bare ident).
         // Direction is "from the parent's perspective" via ConnectDir.
-        let mut input_conn: HashMap<String, String> = HashMap::new();  // port → parent signal (signal feeds INTO inst)
+        let mut input_conn: HashMap<String, String> = HashMap::new(); // port → parent signal (signal feeds INTO inst)
         let mut output_conn: HashMap<String, String> = HashMap::new(); // port → parent signal (inst drives this signal)
         for conn in &inst.connections {
             let parent_sig = match &conn.signal.kind {
@@ -1379,8 +1478,12 @@ impl GraphBuilder {
                 _ => continue, // complex connection expression — skip
             };
             match conn.direction {
-                ConnectDir::Input  => { input_conn.insert(conn.port_name.name.clone(), parent_sig); }
-                ConnectDir::Output => { output_conn.insert(conn.port_name.name.clone(), parent_sig); }
+                ConnectDir::Input => {
+                    input_conn.insert(conn.port_name.name.clone(), parent_sig);
+                }
+                ConnectDir::Output => {
+                    output_conn.insert(conn.port_name.name.clone(), parent_sig);
+                }
             }
         }
 
@@ -1429,7 +1532,9 @@ impl GraphBuilder {
         // over-approximation and matches the pre-#545 behavior for them.
         let symbol_is_known_construct = child_mod.is_none()
             && child_fsm.is_none()
-            && symbols.globals.get(&inst.module_name.name)
+            && symbols
+                .globals
+                .get(&inst.module_name.name)
                 .map(|(sym, _)| construct_comb_info_is_sound(sym))
                 .unwrap_or(false);
 
@@ -1508,10 +1613,13 @@ impl GraphBuilder {
         // (defensive: comb_info_for_module already excludes them, but make
         // the rule explicit so future regressions don't leak in).
         let registered_outs: HashSet<&str> = child_ports
-            .map(|ports| ports.iter()
-                .filter(|p| p.reg_info.is_some())
-                .map(|p| p.name.name.as_str())
-                .collect())
+            .map(|ports| {
+                ports
+                    .iter()
+                    .filter(|p| p.reg_info.is_some())
+                    .map(|p| p.name.name.as_str())
+                    .collect()
+            })
             .unwrap_or_default();
 
         // Per-output comb-dep map. Two precision sources, both produce the
@@ -1541,56 +1649,61 @@ impl GraphBuilder {
         //   every non-registered output port so this fallback rarely
         //   triggers, but we keep it explicit so a future walker change
         //   degrades gracefully rather than silently dropping edges.
-        let per_output_deps: HashMap<String, Option<HashSet<String>>> =
-            if treat_as_opaque {
-                // Opaque branch (extern stub or `is_interface` declaration):
-                // precision comes from port-level `comb_dep_on(...)`
-                // annotations. Works uniformly for module + fsm shapes.
-                child_ports
-                    .map(|ports| ports.iter()
-                        .filter(|p| p.direction == crate::ast::Direction::Out
-                                    && p.reg_info.is_none())
+        let per_output_deps: HashMap<String, Option<HashSet<String>>> = if treat_as_opaque {
+            // Opaque branch (extern stub or `is_interface` declaration):
+            // precision comes from port-level `comb_dep_on(...)`
+            // annotations. Works uniformly for module + fsm shapes.
+            child_ports
+                .map(|ports| {
+                    ports
+                        .iter()
+                        .filter(|p| {
+                            p.direction == crate::ast::Direction::Out && p.reg_info.is_none()
+                        })
                         .map(|p| {
-                            let set = p.comb_deps.as_ref().map(|v|
-                                v.iter().map(|i| i.name.clone())
-                                    .collect::<HashSet<String>>());
+                            let set = p.comb_deps.as_ref().map(|v| {
+                                v.iter()
+                                    .map(|i| i.name.clone())
+                                    .collect::<HashSet<String>>()
+                            });
                             (p.name.name.clone(), set)
                         })
-                        .collect())
-                    .unwrap_or_default()
-            } else if let Some(cm) = child_mod {
-                // Bodied module — Phase 3.
-                let map = self.per_output_for(cm);
-                let mut out: HashMap<String, Option<HashSet<String>>> =
-                    HashMap::with_capacity(map.len());
-                for (k, v) in map {
-                    out.insert(k.clone(), Some(v.clone()));
-                }
-                // Option C: any aggregate-driven output missing from the
-                // per-output map falls back to opaque (every input). Will
-                // virtually never trigger given `per_output_comb_deps`'s
-                // current "always emit an entry per non-registered output"
-                // contract, but cheap to encode defensively.
-                for o in &info.comb_outputs {
-                    out.entry(o.clone()).or_insert(None);
-                }
-                out
-            } else if let Some(cf) = child_fsm {
-                // Bodied FSM — Phase 4. Same Option C fallback policy
-                // as the bodied-module branch.
-                let map = self.per_output_for_fsm(cf);
-                let mut out: HashMap<String, Option<HashSet<String>>> =
-                    HashMap::with_capacity(map.len());
-                for (k, v) in map {
-                    out.insert(k.clone(), Some(v.clone()));
-                }
-                for o in &info.comb_outputs {
-                    out.entry(o.clone()).or_insert(None);
-                }
-                out
-            } else {
-                HashMap::new()
-            };
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else if let Some(cm) = child_mod {
+            // Bodied module — Phase 3.
+            let map = self.per_output_for(cm);
+            let mut out: HashMap<String, Option<HashSet<String>>> =
+                HashMap::with_capacity(map.len());
+            for (k, v) in map {
+                out.insert(k.clone(), Some(v.clone()));
+            }
+            // Option C: any aggregate-driven output missing from the
+            // per-output map falls back to opaque (every input). Will
+            // virtually never trigger given `per_output_comb_deps`'s
+            // current "always emit an entry per non-registered output"
+            // contract, but cheap to encode defensively.
+            for o in &info.comb_outputs {
+                out.entry(o.clone()).or_insert(None);
+            }
+            out
+        } else if let Some(cf) = child_fsm {
+            // Bodied FSM — Phase 4. Same Option C fallback policy
+            // as the bodied-module branch.
+            let map = self.per_output_for_fsm(cf);
+            let mut out: HashMap<String, Option<HashSet<String>>> =
+                HashMap::with_capacity(map.len());
+            for (k, v) in map {
+                out.insert(k.clone(), Some(v.clone()));
+            }
+            for o in &info.comb_outputs {
+                out.entry(o.clone()).or_insert(None);
+            }
+            out
+        } else {
+            HashMap::new()
+        };
 
         let comb_outs: Vec<&String> = if treat_as_opaque {
             // Opaque: every declared output port that's connected AND not
@@ -1599,11 +1712,13 @@ impl GraphBuilder {
             // edge becomes a phantom comb-dep that closes false cycles
             // through any module that exposes registered outputs (e.g.
             // arch-ibex's IbexCore decoded fields, IbexIdStage outputs).
-            output_conn.keys()
+            output_conn
+                .keys()
                 .filter(|k| !registered_outs.contains(k.as_str()))
                 .collect()
         } else {
-            info.comb_outputs.iter()
+            info.comb_outputs
+                .iter()
                 .filter(|k| !registered_outs.contains(k.as_str()))
                 .collect()
         };
@@ -1619,13 +1734,19 @@ impl GraphBuilder {
                 None => continue,
             };
             // Parent-side node receiving the inst's output.
-            let to = self.intern(NodeKey { path: parent_path.clone(), signal: out_sig });
+            let to = self.intern(NodeKey {
+                path: parent_path.clone(),
+                signal: out_sig,
+            });
 
             // Also: if we DID recurse, link the deeper inst-internal output port
             // node to the parent-side wire so cycles that close via the
             // hierarchy show the full path. We add edge child.q → parent.out_sig.
             if recursed_into_body {
-                let child_q = self.intern(NodeKey { path: child_path.clone(), signal: (*out_port).clone() });
+                let child_q = self.intern(NodeKey {
+                    path: child_path.clone(),
+                    signal: (*out_port).clone(),
+                });
                 self.add_edge(child_q, to);
             }
 
@@ -1642,13 +1763,18 @@ impl GraphBuilder {
 
             for in_port in &comb_ins {
                 if let Some(allow) = precise_deps {
-                    if !allow.contains(in_port.as_str()) { continue; }
+                    if !allow.contains(in_port.as_str()) {
+                        continue;
+                    }
                 }
                 let in_sig = match input_conn.get(in_port.as_str()) {
                     Some(s) => s.clone(),
                     None => continue,
                 };
-                let from = self.intern(NodeKey { path: parent_path.clone(), signal: in_sig });
+                let from = self.intern(NodeKey {
+                    path: parent_path.clone(),
+                    signal: in_sig,
+                });
 
                 // Direct over-approximation edge in_sig → out_sig at parent level.
                 // (Captures the loop even when we don't recurse into the child.)
@@ -1657,7 +1783,10 @@ impl GraphBuilder {
                 // And, if we recursed, also link parent.in_sig → child.in_port
                 // so the cycle path display shows the descent.
                 if recursed_into_body {
-                    let child_p = self.intern(NodeKey { path: child_path.clone(), signal: (*in_port).clone() });
+                    let child_p = self.intern(NodeKey {
+                        path: child_path.clone(),
+                        signal: (*in_port).clone(),
+                    });
                     self.add_edge(from, child_p);
                 }
             }
@@ -1666,12 +1795,7 @@ impl GraphBuilder {
 
     /// Walk a comb-block's statements and add edges from RHS identifiers to
     /// LHS base names. Conditions count as reads of every then/else target.
-    fn scan_assignments(
-        &mut self,
-        stmts: &[Stmt],
-        path: &InstPath,
-        bus_ports: &HashSet<String>,
-    ) {
+    fn scan_assignments(&mut self, stmts: &[Stmt], path: &InstPath, bus_ports: &HashSet<String>) {
         let mut cond_stack: Vec<HashSet<String>> = Vec::new();
         self.scan_assignments_inner(stmts, path, bus_ports, &mut cond_stack);
     }
@@ -1788,9 +1912,14 @@ fn tarjan_scc(adj: &[Vec<usize>], n: usize) -> Vec<Vec<usize>> {
     let mut call_stack: Vec<Frame> = Vec::new();
 
     for v_start in 0..n {
-        if index_of[v_start] != -1 { continue; }
+        if index_of[v_start] != -1 {
+            continue;
+        }
         // Push initial frame
-        call_stack.push(Frame { v: v_start, iter_pos: 0 });
+        call_stack.push(Frame {
+            v: v_start,
+            iter_pos: 0,
+        });
         index_of[v_start] = index;
         lowlink[v_start] = index;
         index += 1;
@@ -1824,7 +1953,9 @@ fn tarjan_scc(adj: &[Vec<usize>], n: usize) -> Vec<Vec<usize>> {
                         let w = stack.pop().expect("tarjan stack underflow");
                         on_stack[w] = false;
                         comp.push(w);
-                        if w == v { break; }
+                        if w == v {
+                            break;
+                        }
                     }
                     sccs.push(comp);
                 }
@@ -1841,7 +1972,6 @@ fn tarjan_scc(adj: &[Vec<usize>], n: usize) -> Vec<Vec<usize>> {
 
     sccs
 }
-
 
 #[cfg(test)]
 mod soundness_classification_tests {
@@ -1870,27 +2000,34 @@ mod soundness_classification_tests {
             is_async: true,
         })));
         assert!(construct_comb_info_is_sound(&Symbol::Synchronizer(
-            SynchronizerInfo { name: "S".into(), stages: 2 }
+            SynchronizerInfo {
+                name: "S".into(),
+                stages: 2
+            }
         )));
-        assert!(construct_comb_info_is_sound(&Symbol::Pipeline(PipelineInfo {
-            name: "P".into(),
-            params: vec![],
-            ports: vec![],
-            stage_names: vec![],
-        })));
+        assert!(construct_comb_info_is_sound(&Symbol::Pipeline(
+            PipelineInfo {
+                name: "P".into(),
+                params: vec![],
+                ports: vec![],
+                stage_names: vec![],
+            }
+        )));
 
         // UNSOUND — a real comb input→output path reported as empty CombInfo;
         // must be over-approximated opaque. Do NOT move these to the sound set.
-        assert!(!construct_comb_info_is_sound(&Symbol::Arbiter(ArbiterInfo {
-            name: "A".into(),
-            num_req: 2,
-        })));
+        assert!(!construct_comb_info_is_sound(&Symbol::Arbiter(
+            ArbiterInfo {
+                name: "A".into(),
+                num_req: 2,
+            }
+        )));
         assert!(!construct_comb_info_is_sound(&Symbol::Cam(CamInfo {
             name: "C".into()
         })));
-        assert!(!construct_comb_info_is_sound(&Symbol::Regfile(RegfileInfo {
-            name: "R".into()
-        })));
+        assert!(!construct_comb_info_is_sound(&Symbol::Regfile(
+            RegfileInfo { name: "R".into() }
+        )));
 
         // Not instantiable as a construct → opaque (never reaches the gate).
         assert!(!construct_comb_info_is_sound(&Symbol::Param("x".into())));

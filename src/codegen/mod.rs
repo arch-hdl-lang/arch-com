@@ -13,6 +13,7 @@ mod cam;
 mod clkgate;
 mod counter;
 mod fifo;
+mod fp;
 mod fsm;
 mod linklist;
 mod module;
@@ -51,7 +52,6 @@ fn stmt_span_start(stmt: &Stmt) -> usize {
     }
 }
 
-
 /// One `shared function` harness: one MAC (or whatever the function
 /// computes), driven by per-state operand muxes. `sv_name` is the
 /// emitted SV function name (post overload-mangling); `src_name` is
@@ -73,7 +73,13 @@ struct SharedHarness {
 
 impl SharedHarness {
     fn new(src_name: String, sv_name: String, state_reg: String, fn_decl: FunctionDecl) -> Self {
-        Self { src_name, sv_name, state_reg, fn_decl, entries: Vec::new() }
+        Self {
+            src_name,
+            sv_name,
+            state_reg,
+            fn_decl,
+            entries: Vec::new(),
+        }
     }
 }
 
@@ -158,6 +164,12 @@ pub struct Codegen<'a> {
     bus_wires: std::collections::HashMap<String, String>,
     /// Reset port names in the current module → (kind, level), for `.asserted` emission.
     reset_ports: std::collections::HashMap<String, (ResetKind, ResetLevel)>,
+    /// Set when any FP32/BF16 operation was emitted, so the `arch_f32_*` /
+    /// `arch_bf16_*` SystemVerilog helper package is prepended to the output.
+    fp_helpers_used: std::cell::Cell<bool>,
+    /// Floating-point special-value profile (doc/plan_fp_types.md §6.2).
+    /// Selects the emitted NaN-canonicalization / NaN→int constants.
+    fp_compat: crate::FpCompat,
     /// Name of the construct currently being emitted (for symbol lookups).
     current_construct: String,
     /// Context-sensitive identifier substitutions.
@@ -240,6 +252,8 @@ impl<'a> Codegen<'a> {
             current_module_params: Vec::new(),
             bus_wires: std::collections::HashMap::new(),
             reset_ports: std::collections::HashMap::new(),
+            fp_helpers_used: std::cell::Cell::new(false),
+            fp_compat: crate::FpCompat::default(),
             current_construct: String::new(),
             ident_subst: std::collections::HashMap::new(),
             loop_var_subst: std::collections::HashMap::new(),
@@ -309,7 +323,8 @@ impl<'a> Codegen<'a> {
             ));
             s.push_str(&format!(
                 "set_multicycle_path {} -hold -to [get_cells -hierarchical {{*{}_reg*}}]\n",
-                mc.latency.saturating_sub(1), mc.reg_name
+                mc.latency.saturating_sub(1),
+                mc.reg_name
             ));
             s.push('\n');
         }
@@ -370,6 +385,12 @@ impl<'a> Codegen<'a> {
         self
     }
 
+    /// Select the floating-point special-value profile (§6.2). Default `Riscv`.
+    pub fn with_fp_compat(mut self, profile: crate::FpCompat) -> Self {
+        self.fp_compat = profile;
+        self
+    }
+
     pub fn generate(&mut self) -> String {
         // `source.items` is borrowed for the whole call but `generate_items`
         // only needs an `&[Item]` slice — clone the Vec into a local so we
@@ -385,7 +406,8 @@ impl<'a> Codegen<'a> {
         self.comment_idx = 0;
         self.collect_multicycle_regs(items);
         // Pre-collect all functions so they can be emitted inside each module.
-        self.pending_functions = items.iter()
+        self.pending_functions = items
+            .iter()
             .flat_map(|i| match i {
                 Item::Function(f) => vec![f.clone()],
                 Item::Package(p) => p.functions.clone(),
@@ -427,6 +449,13 @@ impl<'a> Codegen<'a> {
                 ));
             }
             prefix.push('\n');
+            prefix.push_str(&self.out);
+            self.out = prefix;
+        }
+
+        // Prepend the floating-point helper functions if any FP op was emitted.
+        if self.fp_helpers_used.get() {
+            let mut prefix = fp::fp_sv_helpers(self.fp_compat);
             prefix.push_str(&self.out);
             self.out = prefix;
         }
@@ -474,19 +503,21 @@ impl<'a> Codegen<'a> {
         let Some(te) = &pa.ty else {
             return format!(".{}({})", pa.name.name, self.emit_expr_str(&pa.value));
         };
-        let width = self.type_expr_data_width(te).unwrap_or_else(|| "0".to_string());
+        let width = self
+            .type_expr_data_width(te)
+            .unwrap_or_else(|| "0".to_string());
         // Map T → DATA_WIDTH for constructs that erase type params into a
         // synthesized packed payload width.
         let is_fifo_type_param = self.source.items.iter().any(|it| match it {
-            Item::Fifo(f) if f.name.name == child => f.params.iter().any(|p|
-                p.name.name == pa.name.name
-                && matches!(p.kind, crate::ast::ParamKind::Type(_))),
+            Item::Fifo(f) if f.name.name == child => f.params.iter().any(|p| {
+                p.name.name == pa.name.name && matches!(p.kind, crate::ast::ParamKind::Type(_))
+            }),
             _ => false,
         });
         let is_ram_type_param = self.source.items.iter().any(|it| match it {
-            Item::Ram(r) if r.name.name == child => r.params.iter().any(|p|
-                p.name.name == pa.name.name
-                && matches!(p.kind, crate::ast::ParamKind::Type(_))),
+            Item::Ram(r) if r.name.name == child => r.params.iter().any(|p| {
+                p.name.name == pa.name.name && matches!(p.kind, crate::ast::ParamKind::Type(_))
+            }),
             _ => false,
         });
         if is_fifo_type_param || is_ram_type_param {
@@ -502,7 +533,11 @@ impl<'a> Codegen<'a> {
         } else {
             String::new()
         };
-        let kw = if p.is_local { "localparam" } else { "parameter" };
+        let kw = if p.is_local {
+            "localparam"
+        } else {
+            "parameter"
+        };
         // Optional post-name unpacked dim: `param NAME: T [N]` →
         // SV `parameter T NAME [N]`. Goes after the param name and
         // before the `=` default. Used to forward upstream-SV
@@ -516,10 +551,16 @@ impl<'a> Codegen<'a> {
             ParamKind::WidthConst(hi, lo) => {
                 let hi_s = self.emit_expr_str(hi);
                 let lo_s = self.emit_expr_str(lo);
-                self.line(&format!("{kw} [{}:{}] {}{}{}{}", hi_s, lo_s, p.name.name, unpacked_str, default_str, comma));
+                self.line(&format!(
+                    "{kw} [{}:{}] {}{}{}{}",
+                    hi_s, lo_s, p.name.name, unpacked_str, default_str, comma
+                ));
             }
             ParamKind::EnumConst(enum_name) => {
-                self.line(&format!("{kw} {} {}{}{}{}", enum_name, p.name.name, unpacked_str, default_str, comma));
+                self.line(&format!(
+                    "{kw} {} {}{}{}{}",
+                    enum_name, p.name.name, unpacked_str, default_str, comma
+                ));
             }
             ParamKind::Logic(ty) => {
                 // Emit as `parameter <packed-bits> NAME [unpacked]? = ...`.
@@ -529,11 +570,20 @@ impl<'a> Codegen<'a> {
                 // doesn't take `logic` as the type qualifier in the
                 // same way `input/output` does).
                 let ty_str = self.emit_port_type_str(ty);
-                let ty_qual = ty_str.strip_prefix("logic").map(|r| r.trim_start()).unwrap_or(&ty_str);
+                let ty_qual = ty_str
+                    .strip_prefix("logic")
+                    .map(|r| r.trim_start())
+                    .unwrap_or(&ty_str);
                 if ty_qual.is_empty() {
-                    self.line(&format!("{kw} {}{}{}{}", p.name.name, unpacked_str, default_str, comma));
+                    self.line(&format!(
+                        "{kw} {}{}{}{}",
+                        p.name.name, unpacked_str, default_str, comma
+                    ));
                 } else {
-                    self.line(&format!("{kw} {} {}{}{}{}", ty_qual, p.name.name, unpacked_str, default_str, comma));
+                    self.line(&format!(
+                        "{kw} {} {}{}{}{}",
+                        ty_qual, p.name.name, unpacked_str, default_str, comma
+                    ));
                 }
             }
             ParamKind::ConstVec(ty) => {
@@ -565,21 +615,27 @@ impl<'a> Codegen<'a> {
                         // Reverse so parts[0] is the LSB chunk → NAME[0] reads parts[0].
                         let mut rev: Vec<&Expr> = parts.iter().collect();
                         rev.reverse();
-                        let chunks: Vec<String> = rev.iter()
+                        let chunks: Vec<String> = rev
+                            .iter()
                             .map(|e| format!("({})'({})", elem_w_s, self.emit_expr_str(e)))
                             .collect();
                         format!(" = {{{}}}", chunks.join(", "))
                     } else {
                         format!(" = {}", self.emit_expr_str(d))
                     }
-                } else { String::new() };
+                } else {
+                    String::new()
+                };
                 self.line(&format!(
                     "{kw} logic {signed_kw}[({size_s})*({elem_w_s})-1:0] {}{default_packed}{comma}",
                     p.name.name
                 ));
             }
             _ => {
-                self.line(&format!("{kw} int {}{}{}{}", p.name.name, unpacked_str, default_str, comma));
+                self.line(&format!(
+                    "{kw} int {}{}{}{}",
+                    p.name.name, unpacked_str, default_str, comma
+                ));
             }
         }
     }
@@ -587,7 +643,11 @@ impl<'a> Codegen<'a> {
     pub(crate) fn emit_domain(&mut self, d: &DomainDecl) {
         self.line(&format!("// domain {}", d.name.name));
         for field in &d.fields {
-            self.line(&format!("//   {}: {}", field.name.name, self.emit_expr_str(&field.value)));
+            self.line(&format!(
+                "//   {}: {}",
+                field.name.name,
+                self.emit_expr_str(&field.value)
+            ));
         }
         self.line("");
     }
@@ -599,7 +659,7 @@ impl<'a> Codegen<'a> {
             TypeExpr::UInt(e) => Self::expr_simple_str(e),
             TypeExpr::SInt(e) => format!("s{}", Self::expr_simple_str(e)),
             TypeExpr::Bool => "b".to_string(),
-            TypeExpr::Bit  => "1".to_string(),
+            TypeExpr::Bit => "1".to_string(),
             TypeExpr::Named(n) => n.name.clone(),
             _ => "x".to_string(),
         }
@@ -618,7 +678,9 @@ impl<'a> Codegen<'a> {
     fn sv_function_name(&self, f: &FunctionDecl) -> String {
         if let Some((Symbol::Function(overloads), _)) = self.symbols.globals.get(&f.name.name) {
             if overloads.len() > 1 {
-                let suffix: String = f.args.iter()
+                let suffix: String = f
+                    .args
+                    .iter()
                     .map(|a| Self::type_mangle_tag(&a.ty))
                     .collect::<Vec<_>>()
                     .join("_");
@@ -631,7 +693,9 @@ impl<'a> Codegen<'a> {
     fn emit_function(&mut self, f: &FunctionDecl) {
         let sv_name = self.sv_function_name(f);
         let ret_str = self.emit_type_str(&f.ret_ty);
-        let args_str: Vec<String> = f.args.iter()
+        let args_str: Vec<String> = f
+            .args
+            .iter()
             .map(|a| format!("input {} {}", self.emit_type_str(&a.ty), a.name.name))
             .collect();
         self.line(&format!(
@@ -862,7 +926,9 @@ impl<'a> Codegen<'a> {
                     self.symbols.globals.get(name),
                     Some((Symbol::Function(ovs), _)) if ovs.iter().any(|o| o.shared)
                 );
-                if !is_shared { return; }
+                if !is_shared {
+                    return;
+                }
                 let Some((reg, lit)) = state_pred else {
                     // Outside a state predicate: fall back to inline.
                     return;
@@ -871,7 +937,9 @@ impl<'a> Codegen<'a> {
                 // harness emission). If the decl isn't visible in this
                 // module, we can't synthesize the harness — fall back
                 // to inline.
-                let Some(fd) = fn_decls.get(name).cloned() else { return; };
+                let Some(fd) = fn_decls.get(name).cloned() else {
+                    return;
+                };
                 // Resolve mangled SV name (mirrors emit_expr_str's
                 // FunctionCall arm).
                 let sv_name = self.fn_call_sv_name(name, expr);
@@ -903,7 +971,8 @@ impl<'a> Codegen<'a> {
                     }
                     // Identical args — merge by recording this call
                     // site for rewrite without adding another mux entry.
-                    self.shared_call_sites.insert(expr.span.start, format!("__shared_{sv_name}_out"));
+                    self.shared_call_sites
+                        .insert(expr.span.start, format!("__shared_{sv_name}_out"));
                     return;
                 }
                 // New entry: record args + rewrite this call site.
@@ -912,19 +981,28 @@ impl<'a> Codegen<'a> {
                     arg_strs,
                     args: args.clone(),
                 });
-                self.shared_call_sites.insert(expr.span.start, format!("__shared_{sv_name}_out"));
+                self.shared_call_sites
+                    .insert(expr.span.start, format!("__shared_{sv_name}_out"));
             }
             ExprKind::Binary(_, a, b) => {
                 self.walk_expr_for_shared(a, state_pred, harnesses, errors, fn_decls);
                 self.walk_expr_for_shared(b, state_pred, harnesses, errors, fn_decls);
             }
-            ExprKind::Unary(_, a) => self.walk_expr_for_shared(a, state_pred, harnesses, errors, fn_decls),
-            ExprKind::FieldAccess(e, _) => self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls),
+            ExprKind::Unary(_, a) => {
+                self.walk_expr_for_shared(a, state_pred, harnesses, errors, fn_decls)
+            }
+            ExprKind::FieldAccess(e, _) => {
+                self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls)
+            }
             ExprKind::MethodCall(recv, _, margs) => {
                 self.walk_expr_for_shared(recv, state_pred, harnesses, errors, fn_decls);
-                for a in margs { self.walk_expr_for_shared(a, state_pred, harnesses, errors, fn_decls); }
+                for a in margs {
+                    self.walk_expr_for_shared(a, state_pred, harnesses, errors, fn_decls);
+                }
             }
-            ExprKind::Cast(e, _) => self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls),
+            ExprKind::Cast(e, _) => {
+                self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls)
+            }
             ExprKind::Index(b, i) => {
                 self.walk_expr_for_shared(b, state_pred, harnesses, errors, fn_decls);
                 self.walk_expr_for_shared(i, state_pred, harnesses, errors, fn_decls);
@@ -940,13 +1018,18 @@ impl<'a> Codegen<'a> {
                 self.walk_expr_for_shared(w, state_pred, harnesses, errors, fn_decls);
             }
             ExprKind::Concat(es) => {
-                for e in es { self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls); }
+                for e in es {
+                    self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls);
+                }
             }
             ExprKind::Repeat(n, e) => {
                 self.walk_expr_for_shared(n, state_pred, harnesses, errors, fn_decls);
                 self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls);
             }
-            ExprKind::Clog2(e) | ExprKind::Onehot(e) | ExprKind::Signed(e) | ExprKind::Unsigned(e) => {
+            ExprKind::Clog2(e)
+            | ExprKind::Onehot(e)
+            | ExprKind::Signed(e)
+            | ExprKind::Unsigned(e) => {
                 self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls);
             }
             ExprKind::Ternary(c, t, f) => {
@@ -958,7 +1041,9 @@ impl<'a> Codegen<'a> {
                 self.walk_expr_for_shared(s, state_pred, harnesses, errors, fn_decls);
                 for m in members {
                     match m {
-                        InsideMember::Single(e) => self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls),
+                        InsideMember::Single(e) => {
+                            self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls)
+                        }
                         InsideMember::Range(a, b) => {
                             self.walk_expr_for_shared(a, state_pred, harnesses, errors, fn_decls);
                             self.walk_expr_for_shared(b, state_pred, harnesses, errors, fn_decls);
@@ -972,10 +1057,16 @@ impl<'a> Codegen<'a> {
                     self.walk_expr_for_shared(&arm.value, state_pred, harnesses, errors, fn_decls);
                 }
             }
-            ExprKind::SvaNext(_, e) => self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls),
-            ExprKind::LatencyAt(e, _) => self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls),
+            ExprKind::SvaNext(_, e) => {
+                self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls)
+            }
+            ExprKind::LatencyAt(e, _) => {
+                self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls)
+            }
             ExprKind::StructLiteral(_, fields) => {
-                for fi in fields { self.walk_expr_for_shared(&fi.value, state_pred, harnesses, errors, fn_decls); }
+                for fi in fields {
+                    self.walk_expr_for_shared(&fi.value, state_pred, harnesses, errors, fn_decls);
+                }
             }
             // Leaf nodes: literals, idents, enum variants, todo, bool.
             _ => {}
@@ -1005,9 +1096,15 @@ impl<'a> Codegen<'a> {
     fn fn_call_sv_name(&self, name: &str, expr: &Expr) -> String {
         if let Some((Symbol::Function(overloads), _)) = self.symbols.globals.get(name) {
             if overloads.len() > 1 {
-                let idx = self.overload_map.get(&expr.span.start).copied().unwrap_or(0);
+                let idx = self
+                    .overload_map
+                    .get(&expr.span.start)
+                    .copied()
+                    .unwrap_or(0);
                 let ov = &overloads[idx];
-                let suffix: String = ov.arg_types.iter()
+                let suffix: String = ov
+                    .arg_types
+                    .iter()
                     .map(|t| Self::type_mangle_tag(t))
                     .collect::<Vec<_>>()
                     .join("_");
@@ -1053,7 +1150,10 @@ impl<'a> Codegen<'a> {
             self.line("always_comb begin");
             self.indent += 1;
             for arg in &fd.args {
-                self.line(&format!("__shared_{}_in_{} = '0;", h.sv_name, arg.name.name));
+                self.line(&format!(
+                    "__shared_{}_in_{} = '0;",
+                    h.sv_name, arg.name.name
+                ));
             }
             self.line(&format!("unique case ({})", h.state_reg));
             self.indent += 1;
@@ -1078,12 +1178,16 @@ impl<'a> Codegen<'a> {
             // 3. Single function call. The args are fed by the wires
             //    above, so yosys synthesizes ONE evaluation of the
             //    function body.
-            let arg_wires: Vec<String> = fd.args.iter()
+            let arg_wires: Vec<String> = fd
+                .args
+                .iter()
                 .map(|a| format!("__shared_{}_in_{}", h.sv_name, a.name.name))
                 .collect();
             self.line(&format!(
                 "assign __shared_{}_out = {}({});",
-                h.sv_name, h.sv_name, arg_wires.join(", ")
+                h.sv_name,
+                h.sv_name,
+                arg_wires.join(", ")
             ));
             self.line("");
         }
@@ -1155,12 +1259,16 @@ impl<'a> Codegen<'a> {
             ForRange::Range(lo, hi) => {
                 let lo_s = self.emit_expr_str(lo);
                 let hi_s = self.emit_expr_str(hi);
-                self.line(&format!("for (int {var} = {lo_s}; {var} <= {hi_s}; {var}++) begin"));
+                self.line(&format!(
+                    "for (int {var} = {lo_s}; {var} <= {hi_s}; {var}++) begin"
+                ));
             }
             ForRange::ValueList(_vals) => {
                 if let ForRange::ValueList(vals) = &fl.range {
                     for val in vals {
-                        if let Some(v) = self.eval_const_u32(val, &self.current_module_params.clone()) {
+                        if let Some(v) =
+                            self.eval_const_u32(val, &self.current_module_params.clone())
+                        {
                             let old = self.loop_var_subst.insert(var.clone(), v);
                             self.emit_function_body_items(&fl.body);
                             if let Some(prev) = old {
@@ -1170,7 +1278,9 @@ impl<'a> Codegen<'a> {
                             }
                         } else {
                             let v = self.emit_expr_str(val);
-                            self.line(&format!("for (int {var} = {v}; {var} == {v}; {var}++) begin"));
+                            self.line(&format!(
+                                "for (int {var} = {v}; {var} == {v}; {var}++) begin"
+                            ));
                             self.indent += 1;
                             self.emit_function_body_items(&fl.body);
                             self.indent -= 1;
@@ -1209,18 +1319,30 @@ impl<'a> Codegen<'a> {
                     ParamKind::WidthConst(hi, lo) => {
                         let hi_s = self.emit_expr_str(hi);
                         let lo_s = self.emit_expr_str(lo);
-                        self.line(&format!("localparam [{}:{}] {} = {};", hi_s, lo_s, p.name.name, val));
+                        self.line(&format!(
+                            "localparam [{}:{}] {} = {};",
+                            hi_s, lo_s, p.name.name, val
+                        ));
                     }
                     ParamKind::EnumConst(enum_name) => {
-                        self.line(&format!("localparam {} {} = {};", enum_name, p.name.name, val));
+                        self.line(&format!(
+                            "localparam {} {} = {};",
+                            enum_name, p.name.name, val
+                        ));
                     }
                     ParamKind::Logic(ty) => {
                         let ty_str = self.emit_port_type_str(ty);
-                        let ty_qual = ty_str.strip_prefix("logic").map(|r| r.trim_start()).unwrap_or(&ty_str);
+                        let ty_qual = ty_str
+                            .strip_prefix("logic")
+                            .map(|r| r.trim_start())
+                            .unwrap_or(&ty_str);
                         if ty_qual.is_empty() {
                             self.line(&format!("localparam {} = {};", p.name.name, val));
                         } else {
-                            self.line(&format!("localparam {} {} = {};", ty_qual, p.name.name, val));
+                            self.line(&format!(
+                                "localparam {} {} = {};",
+                                ty_qual, p.name.name, val
+                            ));
                         }
                     }
                     ParamKind::Const | ParamKind::Type(_) | ParamKind::ConstVec(_) => {
@@ -1258,20 +1380,34 @@ impl<'a> Codegen<'a> {
 
     pub(crate) fn emit_enum(&mut self, e: &EnumDecl) {
         // Compute effective values: explicit where provided, auto-sequential otherwise
-        let effective_values: Vec<u64> = e.values.iter().enumerate().map(|(i, v)| {
-            v.as_ref().and_then(|expr| match &expr.kind {
-                ExprKind::Literal(LitKind::Dec(n)) => Some(*n),
-                ExprKind::Literal(LitKind::Hex(n)) => Some(*n),
-                ExprKind::Literal(LitKind::Bin(n)) => Some(*n),
-                ExprKind::Literal(LitKind::Sized(_, n)) => Some(*n),
-                _ => None,
-            }).unwrap_or(i as u64)
-        }).collect();
+        let effective_values: Vec<u64> = e
+            .values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                v.as_ref()
+                    .and_then(|expr| match &expr.kind {
+                        ExprKind::Literal(LitKind::Dec(n)) => Some(*n),
+                        ExprKind::Literal(LitKind::Hex(n)) => Some(*n),
+                        ExprKind::Literal(LitKind::Bin(n)) => Some(*n),
+                        ExprKind::Literal(LitKind::Sized(_, n)) => Some(*n),
+                        _ => None,
+                    })
+                    .unwrap_or(i as u64)
+            })
+            .collect();
         // Width: from max value (covers explicit encodings like one-hot)
         let max_val = effective_values.iter().copied().max().unwrap_or(0);
-        let width = if max_val == 0 { 1 } else { 64 - max_val.leading_zeros() };
+        let width = if max_val == 0 {
+            1
+        } else {
+            64 - max_val.leading_zeros()
+        };
         let width = std::cmp::max(width, enum_width(e.variants.len()));
-        let variants: Vec<String> = e.variants.iter().zip(effective_values.iter())
+        let variants: Vec<String> = e
+            .variants
+            .iter()
+            .zip(effective_values.iter())
             .map(|(v, val)| format!("{} = {}'d{}", v.name.to_uppercase(), width, val))
             .collect();
         self.line(&format!(
@@ -1291,7 +1427,11 @@ impl<'a> Codegen<'a> {
         self.line("");
     }
 
-    fn emit_for_loop_sv(&mut self, f: &ForLoop<Stmt>, mut emit_body_stmt: impl FnMut(&mut Self, &Stmt)) {
+    fn emit_for_loop_sv(
+        &mut self,
+        f: &ForLoop<Stmt>,
+        mut emit_body_stmt: impl FnMut(&mut Self, &Stmt),
+    ) {
         let var = &f.var.name;
         // Static unrolling for Vec-of-bus indexed access: the SV signature
         // exposes only the flattened `<port>_<i>_<sig>` names, with no
@@ -1307,13 +1447,20 @@ impl<'a> Codegen<'a> {
             let start_lit = self.eval_const_u32(rs, &self.current_module_params.clone());
             let end_lit = self.eval_const_u32(re, &self.current_module_params.clone());
             if let (Some(start_lit), Some(end_lit)) = (start_lit, end_lit) {
-                let body_touches_vob = f.body.iter().any(|s| Self::stmt_indexes_vob_with_var(
-                    s, var, &self.vec_of_bus_port_count, &self.vec_of_bus_wire_count,
-                ));
+                let body_touches_vob = f.body.iter().any(|s| {
+                    Self::stmt_indexes_vob_with_var(
+                        s,
+                        var,
+                        &self.vec_of_bus_port_count,
+                        &self.vec_of_bus_wire_count,
+                    )
+                });
                 if body_touches_vob {
                     for i in start_lit..=end_lit {
                         self.loop_var_subst.insert(var.clone(), i);
-                        for s in &f.body { emit_body_stmt(self, s); }
+                        for s in &f.body {
+                            emit_body_stmt(self, s);
+                        }
                     }
                     self.loop_var_subst.remove(var);
                     return;
@@ -1324,9 +1471,13 @@ impl<'a> Codegen<'a> {
             ForRange::Range(rs, re) => {
                 let start = self.emit_expr_str(rs);
                 let end = self.emit_expr_str(re);
-                self.line(&format!("for (int {var} = {start}; {var} <= {end}; {var}++) begin"));
+                self.line(&format!(
+                    "for (int {var} = {start}; {var} <= {end}; {var}++) begin"
+                ));
                 self.indent += 1;
-                for s in &f.body { emit_body_stmt(self, s); }
+                for s in &f.body {
+                    emit_body_stmt(self, s);
+                }
                 self.indent -= 1;
                 self.line("end");
             }
@@ -1335,9 +1486,13 @@ impl<'a> Codegen<'a> {
                     let val = self.emit_expr_str(v);
                     // Emit as a for-loop with a single iteration for Icarus compatibility
                     // (Icarus doesn't support variable declarations inside always_* blocks)
-                    self.line(&format!("for (int {var} = {val}; {var} == {val}; {var}++) begin"));
+                    self.line(&format!(
+                        "for (int {var} = {val}; {var} == {val}; {var}++) begin"
+                    ));
                     self.indent += 1;
-                    for s in &f.body { emit_body_stmt(self, s); }
+                    for s in &f.body {
+                        emit_body_stmt(self, s);
+                    }
                     self.indent -= 1;
                     self.line("end");
                 }
@@ -1363,46 +1518,85 @@ impl<'a> Codegen<'a> {
             wires: &std::collections::HashMap<String, u32>,
         ) -> bool {
             if let ExprKind::Index(arr, idx) = &e.kind {
-                if let (ExprKind::Ident(arr_name), ExprKind::Ident(idx_name)) = (&arr.kind, &idx.kind) {
-                    if idx_name == var && (ports.contains_key(arr_name) || wires.contains_key(arr_name)) {
+                if let (ExprKind::Ident(arr_name), ExprKind::Ident(idx_name)) =
+                    (&arr.kind, &idx.kind)
+                {
+                    if idx_name == var
+                        && (ports.contains_key(arr_name) || wires.contains_key(arr_name))
+                    {
                         return true;
                     }
                 }
             }
             match &e.kind {
-                ExprKind::Binary(_, l, r) => walk_expr(l, var, ports, wires) || walk_expr(r, var, ports, wires),
-                ExprKind::Unary(_, x) | ExprKind::Cast(x, _) | ExprKind::LatencyAt(x, _) | ExprKind::SvaNext(_, x) =>
-                    walk_expr(x, var, ports, wires),
+                ExprKind::Binary(_, l, r) => {
+                    walk_expr(l, var, ports, wires) || walk_expr(r, var, ports, wires)
+                }
+                ExprKind::Unary(_, x)
+                | ExprKind::Cast(x, _)
+                | ExprKind::LatencyAt(x, _)
+                | ExprKind::SvaNext(_, x) => walk_expr(x, var, ports, wires),
                 ExprKind::FieldAccess(b, _) => walk_expr(b, var, ports, wires),
-                ExprKind::Index(b, i) | ExprKind::BitSlice(b, i, _) =>
-                    walk_expr(b, var, ports, wires) || walk_expr(i, var, ports, wires),
-                ExprKind::PartSelect(b, lo, hi, _) =>
-                    walk_expr(b, var, ports, wires) || walk_expr(lo, var, ports, wires) || walk_expr(hi, var, ports, wires),
-                ExprKind::Ternary(c, t, e2) =>
-                    walk_expr(c, var, ports, wires) || walk_expr(t, var, ports, wires) || walk_expr(e2, var, ports, wires),
-                ExprKind::Concat(parts) | ExprKind::FunctionCall(_, parts) =>
-                    parts.iter().any(|p| walk_expr(p, var, ports, wires)),
-                ExprKind::MethodCall(b, _, args) =>
-                    walk_expr(b, var, ports, wires) || args.iter().any(|a| walk_expr(a, var, ports, wires)),
+                ExprKind::Index(b, i) | ExprKind::BitSlice(b, i, _) => {
+                    walk_expr(b, var, ports, wires) || walk_expr(i, var, ports, wires)
+                }
+                ExprKind::PartSelect(b, lo, hi, _) => {
+                    walk_expr(b, var, ports, wires)
+                        || walk_expr(lo, var, ports, wires)
+                        || walk_expr(hi, var, ports, wires)
+                }
+                ExprKind::Ternary(c, t, e2) => {
+                    walk_expr(c, var, ports, wires)
+                        || walk_expr(t, var, ports, wires)
+                        || walk_expr(e2, var, ports, wires)
+                }
+                ExprKind::Concat(parts) | ExprKind::FunctionCall(_, parts) => {
+                    parts.iter().any(|p| walk_expr(p, var, ports, wires))
+                }
+                ExprKind::MethodCall(b, _, args) => {
+                    walk_expr(b, var, ports, wires)
+                        || args.iter().any(|a| walk_expr(a, var, ports, wires))
+                }
                 _ => false,
             }
         }
         match stmt {
-            Stmt::Assign(a) => walk_expr(&a.target, var, ports, wires) || walk_expr(&a.value, var, ports, wires),
+            Stmt::Assign(a) => {
+                walk_expr(&a.target, var, ports, wires) || walk_expr(&a.value, var, ports, wires)
+            }
             Stmt::IfElse(ie) => {
                 walk_expr(&ie.cond, var, ports, wires)
-                    || ie.then_stmts.iter().any(|s| Self::stmt_indexes_vob_with_var(s, var, ports, wires))
-                    || ie.else_stmts.iter().any(|s| Self::stmt_indexes_vob_with_var(s, var, ports, wires))
+                    || ie
+                        .then_stmts
+                        .iter()
+                        .any(|s| Self::stmt_indexes_vob_with_var(s, var, ports, wires))
+                    || ie
+                        .else_stmts
+                        .iter()
+                        .any(|s| Self::stmt_indexes_vob_with_var(s, var, ports, wires))
             }
             Stmt::Match(m) => {
                 walk_expr(&m.scrutinee, var, ports, wires)
-                    || m.arms.iter().any(|arm| arm.body.iter().any(|s| Self::stmt_indexes_vob_with_var(s, var, ports, wires)))
+                    || m.arms.iter().any(|arm| {
+                        arm.body
+                            .iter()
+                            .any(|s| Self::stmt_indexes_vob_with_var(s, var, ports, wires))
+                    })
             }
-            Stmt::For(f) => f.body.iter().any(|s| Self::stmt_indexes_vob_with_var(s, var, ports, wires)),
-            Stmt::Init(ib) => ib.body.iter().any(|s| Self::stmt_indexes_vob_with_var(s, var, ports, wires)),
-            Stmt::DoUntil { body, cond, .. } =>
+            Stmt::For(f) => f
+                .body
+                .iter()
+                .any(|s| Self::stmt_indexes_vob_with_var(s, var, ports, wires)),
+            Stmt::Init(ib) => ib
+                .body
+                .iter()
+                .any(|s| Self::stmt_indexes_vob_with_var(s, var, ports, wires)),
+            Stmt::DoUntil { body, cond, .. } => {
                 walk_expr(cond, var, ports, wires)
-                    || body.iter().any(|s| Self::stmt_indexes_vob_with_var(s, var, ports, wires)),
+                    || body
+                        .iter()
+                        .any(|s| Self::stmt_indexes_vob_with_var(s, var, ports, wires))
+            }
             Stmt::WaitUntil(e, _) => walk_expr(e, var, ports, wires),
             Stmt::Log(l) => l.args.iter().any(|a| walk_expr(a, var, ports, wires)),
         }
@@ -1411,34 +1605,54 @@ impl<'a> Codegen<'a> {
     /// Emit a `log(...)` statement as an `if`-guarded `$display` or `$fwrite`.
     /// Wrapped in translate_off/on so synthesis tools ignore it.
     fn emit_log_stmt(&mut self, l: &LogStmt) {
-        let args_str: String = l.args.iter()
+        let args_str: String = l
+            .args
+            .iter()
             .map(|a| format!(", {}", self.emit_expr_str(a)))
             .collect();
         let stmt = if let Some(ref path) = l.file {
             let fd_name = Self::log_fd_name(path);
             format!(
                 "$fwrite({}, \"[%0t][{}][{}] {}\\n\", $time{});",
-                fd_name, l.level.name(), l.tag, l.fmt, args_str
+                fd_name,
+                l.level.name(),
+                l.tag,
+                l.fmt,
+                args_str
             )
         } else {
             format!(
                 "$display(\"[%0t][{}][{}] {}\", $time{});",
-                l.level.name(), l.tag, l.fmt, args_str
+                l.level.name(),
+                l.tag,
+                l.fmt,
+                args_str
             )
         };
         self.line("// synopsys translate_off");
         if l.level == LogLevel::Always {
             self.line(&stmt);
         } else {
-            self.line(&format!("if (_arch_verbosity >= {}) {}", l.level.value(), stmt));
+            self.line(&format!(
+                "if (_arch_verbosity >= {}) {}",
+                l.level.value(),
+                stmt
+            ));
         }
         self.line("// synopsys translate_on");
     }
 
     /// Generate a deterministic SV file descriptor name from a log file path.
     fn log_fd_name(path: &str) -> String {
-        let clean: String = path.chars()
-            .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        let clean: String = path
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         format!("_log_fd_{clean}")
     }
@@ -1472,7 +1686,11 @@ impl<'a> Codegen<'a> {
                                 Pattern::Literal(e) => self.emit_expr_str(e),
                                 Pattern::Ident(id) => id.name.clone(),
                                 Pattern::EnumVariant(en, vr) => {
-                                    format!("{}__{}", en.name.to_uppercase(), vr.name.to_uppercase())
+                                    format!(
+                                        "{}__{}",
+                                        en.name.to_uppercase(),
+                                        vr.name.to_uppercase()
+                                    )
                                 }
                             };
                             let val = self.emit_expr_str(&arm.value);
@@ -1525,7 +1743,11 @@ impl<'a> Codegen<'a> {
 
     fn emit_if_else(&mut self, ie: &IfElse, ctx: AssignCtx, is_chain: bool) {
         let cond = self.emit_expr_str(&ie.cond);
-        let u = if ie.unique && !is_chain { "unique " } else { "" };
+        let u = if ie.unique && !is_chain {
+            "unique "
+        } else {
+            ""
+        };
         if is_chain {
             self.line(&format!("end else if ({}) begin", cond));
         } else {
@@ -1557,7 +1779,6 @@ impl<'a> Codegen<'a> {
         self.emit_stmt(stmt, AssignCtx::Blocking);
     }
 
-
     fn reset_value_expr(reset: &RegReset) -> Option<&Expr> {
         match reset {
             RegReset::None => None,
@@ -1568,13 +1789,11 @@ impl<'a> Codegen<'a> {
     fn resolve_reg_reset(&self, reset: &RegReset, m: &ModuleDecl) -> Option<(String, bool, bool)> {
         match reset {
             RegReset::None => Option::None,
-            RegReset::Explicit(signal, kind, level, _) => {
-                Some((
-                    signal.name.clone(),
-                    *kind == ResetKind::Async,
-                    *level == ResetLevel::Low,
-                ))
-            }
+            RegReset::Explicit(signal, kind, level, _) => Some((
+                signal.name.clone(),
+                *kind == ResetKind::Async,
+                *level == ResetLevel::Low,
+            )),
             RegReset::Inherit(signal, _) => {
                 // Look up the port declaration to get sync/async and polarity
                 let port = m.ports.iter().find(|p| p.name.name == signal.name);
@@ -1659,10 +1878,14 @@ impl<'a> Codegen<'a> {
                 }
             }
             Stmt::IfElse(ie) => {
-                let then_filt: Vec<Stmt> = ie.then_stmts.iter()
+                let then_filt: Vec<Stmt> = ie
+                    .then_stmts
+                    .iter()
                     .filter_map(|s| Self::filter_stmt_by_assigned_set(s, target_set, keep_in_set))
                     .collect();
-                let else_filt: Vec<Stmt> = ie.else_stmts.iter()
+                let else_filt: Vec<Stmt> = ie
+                    .else_stmts
+                    .iter()
                     .filter_map(|s| Self::filter_stmt_by_assigned_set(s, target_set, keep_in_set))
                     .collect();
                 if then_filt.is_empty() && else_filt.is_empty() {
@@ -1678,15 +1901,27 @@ impl<'a> Codegen<'a> {
                 let mut clone = m.clone();
                 let mut any = false;
                 for arm in &mut clone.arms {
-                    arm.body = arm.body.iter()
-                        .filter_map(|s| Self::filter_stmt_by_assigned_set(s, target_set, keep_in_set))
+                    arm.body = arm
+                        .body
+                        .iter()
+                        .filter_map(|s| {
+                            Self::filter_stmt_by_assigned_set(s, target_set, keep_in_set)
+                        })
                         .collect();
-                    if !arm.body.is_empty() { any = true; }
+                    if !arm.body.is_empty() {
+                        any = true;
+                    }
                 }
-                if any { Some(Stmt::Match(clone)) } else { None }
+                if any {
+                    Some(Stmt::Match(clone))
+                } else {
+                    None
+                }
             }
             Stmt::For(f) => {
-                let body_filt: Vec<Stmt> = f.body.iter()
+                let body_filt: Vec<Stmt> = f
+                    .body
+                    .iter()
                     .filter_map(|s| Self::filter_stmt_by_assigned_set(s, target_set, keep_in_set))
                     .collect();
                 if body_filt.is_empty() {
@@ -1698,7 +1933,9 @@ impl<'a> Codegen<'a> {
                 }
             }
             Stmt::Init(ib) => {
-                let body_filt: Vec<Stmt> = ib.body.iter()
+                let body_filt: Vec<Stmt> = ib
+                    .body
+                    .iter()
                     .filter_map(|s| Self::filter_stmt_by_assigned_set(s, target_set, keep_in_set))
                     .collect();
                 if body_filt.is_empty() {
@@ -1710,13 +1947,18 @@ impl<'a> Codegen<'a> {
                 }
             }
             Stmt::DoUntil { body, cond, span } => {
-                let body_filt: Vec<Stmt> = body.iter()
+                let body_filt: Vec<Stmt> = body
+                    .iter()
                     .filter_map(|s| Self::filter_stmt_by_assigned_set(s, target_set, keep_in_set))
                     .collect();
                 if body_filt.is_empty() {
                     None
                 } else {
-                    Some(Stmt::DoUntil { body: body_filt, cond: cond.clone(), span: *span })
+                    Some(Stmt::DoUntil {
+                        body: body_filt,
+                        cond: cond.clone(),
+                        span: *span,
+                    })
                 }
             }
             // Log + WaitUntil don't have assignments themselves; if they
@@ -1751,6 +1993,92 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Floating-point format of an expression in the current scope, if any.
+    /// Drives dispatch of `+ - *` / comparisons / conversions to the emitted
+    /// `arch_f32_*` / `arch_bf16_*` SystemVerilog helper functions.
+    fn expr_float_fmt(&self, expr: &Expr) -> Option<&'static str> {
+        match &expr.kind {
+            ExprKind::Cast(_, ty) => match &**ty {
+                TypeExpr::FP32 => Some("f32"),
+                TypeExpr::BF16 => Some("bf16"),
+                _ => None,
+            },
+            ExprKind::Ident(name) => self.ident_float_fmt(name),
+            ExprKind::Literal(LitKind::Float(_)) => Some("f32"),
+            ExprKind::MethodCall(_, method, _) => match method.name.as_str() {
+                "to_fp32" => Some("f32"),
+                "to_bf16" => Some("bf16"),
+                _ => None,
+            },
+            ExprKind::FunctionCall(name, args) if name == "fma" => {
+                args.first().and_then(|a| self.expr_float_fmt(a))
+            }
+            ExprKind::Binary(op, lhs, rhs) => match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul => self
+                    .expr_float_fmt(lhs)
+                    .or_else(|| self.expr_float_fmt(rhs)),
+                _ => None,
+            },
+            ExprKind::Ternary(_, t, e) => self.expr_float_fmt(t).or_else(|| self.expr_float_fmt(e)),
+            _ => None,
+        }
+    }
+
+    /// Float format of an identifier declared in the current construct's scope.
+    fn ident_float_fmt(&self, name: &str) -> Option<&'static str> {
+        if let Some(scope) = self.symbols.module_scopes.get(&self.current_construct) {
+            if let Some((sym, _)) = scope.get(name) {
+                let ty = match sym {
+                    Symbol::Port(p) => Some(&p.ty),
+                    Symbol::Reg(r) => Some(&r.ty),
+                    _ => None,
+                };
+                if let Some(ty) = ty {
+                    return match ty {
+                        TypeExpr::FP32 => Some("f32"),
+                        TypeExpr::BF16 => Some("bf16"),
+                        _ => None,
+                    };
+                }
+                if matches!(sym, Symbol::Let(_)) {
+                    return self.let_binding_float_fmt(name);
+                }
+            }
+        }
+        None
+    }
+
+    /// Float format of a `let` binding by AST lookup (modules + fsms).
+    fn let_binding_float_fmt(&self, name: &str) -> Option<&'static str> {
+        let fmt_of = |t: &TypeExpr| match t {
+            TypeExpr::FP32 => Some("f32"),
+            TypeExpr::BF16 => Some("bf16"),
+            _ => None,
+        };
+        for item in &self.source.items {
+            match item {
+                Item::Module(m) if m.name.name == self.current_construct => {
+                    for bi in &m.body {
+                        if let ModuleBodyItem::LetBinding(l) = bi {
+                            if l.name.name == name {
+                                return l.ty.as_ref().and_then(|t| fmt_of(t));
+                            }
+                        }
+                    }
+                }
+                Item::Fsm(f) if f.name.name == self.current_construct => {
+                    for l in &f.lets {
+                        if l.name.name == name {
+                            return l.ty.as_ref().and_then(|t| fmt_of(t));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// Check if an identifier is declared as SInt in the current construct's scope.
     fn ident_is_sint(&self, name: &str) -> bool {
         if let Some(scope) = self.symbols.module_scopes.get(&self.current_construct) {
@@ -1775,7 +2103,10 @@ impl<'a> Codegen<'a> {
                     for bi in &m.body {
                         if let ModuleBodyItem::LetBinding(l) = bi {
                             if l.name.name == name {
-                                return l.ty.as_ref().map_or(false, |t| matches!(t, TypeExpr::SInt(_)));
+                                return l
+                                    .ty
+                                    .as_ref()
+                                    .map_or(false, |t| matches!(t, TypeExpr::SInt(_)));
                             }
                         }
                     }
@@ -1783,7 +2114,10 @@ impl<'a> Codegen<'a> {
                 Item::Fsm(f) if f.name.name == self.current_construct => {
                     for l in &f.lets {
                         if l.name.name == name {
-                            return l.ty.as_ref().map_or(false, |t| matches!(t, TypeExpr::SInt(_)));
+                            return l
+                                .ty
+                                .as_ref()
+                                .map_or(false, |t| matches!(t, TypeExpr::SInt(_)));
                         }
                     }
                 }
@@ -1814,6 +2148,7 @@ impl<'a> Codegen<'a> {
                     let val = match lit {
                         LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v) => *v as i64,
                         LitKind::Sized(_, v) => *v as i64,
+                        LitKind::Float(_) => return None, // not an integer constant
                     };
                     Some(val)
                 }
@@ -1845,6 +2180,7 @@ impl<'a> Codegen<'a> {
                 ExprKind::Literal(lit) => match lit {
                     LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v) => format!("{v}"),
                     LitKind::Sized(w, v) => format!("{w}'{v}"),
+                    LitKind::Float(bits) => format!("f{bits}"),
                 },
                 ExprKind::Binary(op, lhs, rhs) => {
                     format!("({} {:?} {})", expr_key(lhs), op, expr_key(rhs))
@@ -1862,6 +2198,10 @@ impl<'a> Codegen<'a> {
                     let val = match lit {
                         LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v) => *v as i64,
                         LitKind::Sized(_, v) => *v as i64,
+                        LitKind::Float(_) => {
+                            terms.push((sign, None, expr_key(expr)));
+                            return;
+                        }
                     };
                     terms.push((sign, Some(val), String::new()));
                 }
@@ -1908,7 +2248,8 @@ impl<'a> Codegen<'a> {
         }
 
         // Collect remaining (non-cancelled) variable terms
-        let remaining_vars: Vec<(&String, &i64)> = var_map.iter().filter(|(_, &v)| v != 0).collect();
+        let remaining_vars: Vec<(&String, &i64)> =
+            var_map.iter().filter(|(_, &v)| v != 0).collect();
 
         if remaining_vars.is_empty() && const_sum > 0 {
             // Pure constant width
@@ -1938,8 +2279,12 @@ impl<'a> Codegen<'a> {
         match &expr.kind {
             ExprKind::Ident(n) => n.clone(),
             ExprKind::FieldAccess(base, _) => Self::expr_root_name(base),
-            ExprKind::Index(base, _) | ExprKind::BitSlice(base, _, _) | ExprKind::PartSelect(base, _, _, _) => Self::expr_root_name(base),
-            ExprKind::LatencyAt(inner, _) | ExprKind::SvaNext(_, inner) => Self::expr_root_name(inner),
+            ExprKind::Index(base, _)
+            | ExprKind::BitSlice(base, _, _)
+            | ExprKind::PartSelect(base, _, _, _) => Self::expr_root_name(base),
+            ExprKind::LatencyAt(inner, _) | ExprKind::SvaNext(_, inner) => {
+                Self::expr_root_name(inner)
+            }
             _ => String::new(),
         }
     }
@@ -1957,19 +2302,21 @@ impl<'a> Codegen<'a> {
     /// nothing about it is fifo-specific.
     fn type_expr_data_width(&self, ty: &TypeExpr) -> Option<String> {
         match ty {
-            TypeExpr::UInt(w) | TypeExpr::SInt(w) => {
-                Some(self.emit_expr_str(w))
-            }
+            TypeExpr::UInt(w) | TypeExpr::SInt(w) => Some(self.emit_expr_str(w)),
             TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => {
                 Some("1".to_string())
             }
+            TypeExpr::FP32 => Some("32".to_string()),
+            TypeExpr::BF16 => Some("16".to_string()),
             TypeExpr::Vec(inner, size) => {
                 let iw = self.type_expr_data_width(inner)?;
                 let n = self.emit_expr_str(size);
                 Some(format!("({iw}) * ({n})"))
             }
             TypeExpr::Named(ident) => {
-                if let Some((crate::resolve::Symbol::Struct(info), _)) = self.symbols.globals.get(&ident.name) {
+                if let Some((crate::resolve::Symbol::Struct(info), _)) =
+                    self.symbols.globals.get(&ident.name)
+                {
                     let mut parts = Vec::new();
                     for (_, field_ty) in &info.fields {
                         parts.push(self.type_expr_data_width(field_ty)?);
@@ -1979,7 +2326,9 @@ impl<'a> Codegen<'a> {
                     } else {
                         Some(parts.join(" + "))
                     }
-                } else if let Some((crate::resolve::Symbol::Enum(info), _)) = self.symbols.globals.get(&ident.name) {
+                } else if let Some((crate::resolve::Symbol::Enum(info), _)) =
+                    self.symbols.globals.get(&ident.name)
+                {
                     let n = info.variants.len();
                     let bits = crate::width::index_width(n as u64);
                     Some(bits.to_string())
@@ -2013,7 +2362,6 @@ impl<'a> Codegen<'a> {
         self.emit_stmt(stmt, AssignCtx::NonBlocking);
     }
 
-
     /// Auto-declare `logic` wires for inst output connections that reference
     /// names not already declared as ports, regs, or lets in the current module.
     /// The wire type is resolved from the source module's port definition.
@@ -2035,9 +2383,7 @@ impl<'a> Codegen<'a> {
             self.symbols.globals.get(&inst.module_name.name)
         {
             info.ports.clone()
-        } else if let Some((Symbol::Ram(_), _)) =
-            self.symbols.globals.get(&inst.module_name.name)
-        {
+        } else if let Some((Symbol::Ram(_), _)) = self.symbols.globals.get(&inst.module_name.name) {
             // RAM uses port groups — handle separately below
             Vec::new()
         } else if let Some((Symbol::Regfile(_), _)) =
@@ -2051,43 +2397,47 @@ impl<'a> Codegen<'a> {
 
         // For RAM instances, build a flattened port map from port groups
         // Resolve type params (e.g. WIDTH → UInt<32>) from the RAM's param list.
-        let ram_flat_ports: Vec<(String, TypeExpr)> = if let Some((Symbol::Ram(_), _)) =
-            self.symbols.globals.get(&inst.module_name.name)
-        {
-            let mut flat = Vec::new();
-            for item in &self.source.items {
-                if let Item::Ram(r) = item {
-                    if r.name.name == inst.module_name.name {
-                        // Build type param map: param name → resolved TypeExpr
-                        let type_params: std::collections::HashMap<String, TypeExpr> = r.params.iter()
-                            .filter_map(|p| match &p.kind {
-                                crate::ast::ParamKind::Type(ty) => Some((p.name.name.clone(), ty.clone())),
-                                _ => None,
-                            })
-                            .collect();
-                        for pg in &r.port_groups {
-                            for s in &pg.signals {
-                                // Resolve Named type params to their actual types
-                                let resolved_ty = match &s.ty {
-                                    TypeExpr::Named(ident) => {
-                                        type_params.get(&ident.name).cloned().unwrap_or_else(|| s.ty.clone())
+        let ram_flat_ports: Vec<(String, TypeExpr)> =
+            if let Some((Symbol::Ram(_), _)) = self.symbols.globals.get(&inst.module_name.name) {
+                let mut flat = Vec::new();
+                for item in &self.source.items {
+                    if let Item::Ram(r) = item {
+                        if r.name.name == inst.module_name.name {
+                            // Build type param map: param name → resolved TypeExpr
+                            let type_params: std::collections::HashMap<String, TypeExpr> = r
+                                .params
+                                .iter()
+                                .filter_map(|p| match &p.kind {
+                                    crate::ast::ParamKind::Type(ty) => {
+                                        Some((p.name.name.clone(), ty.clone()))
                                     }
-                                    other => other.clone(),
-                                };
-                                flat.push((
-                                    format!("{}_{}", pg.name.name, s.name.name),
-                                    resolved_ty,
-                                ));
+                                    _ => None,
+                                })
+                                .collect();
+                            for pg in &r.port_groups {
+                                for s in &pg.signals {
+                                    // Resolve Named type params to their actual types
+                                    let resolved_ty = match &s.ty {
+                                        TypeExpr::Named(ident) => type_params
+                                            .get(&ident.name)
+                                            .cloned()
+                                            .unwrap_or_else(|| s.ty.clone()),
+                                        other => other.clone(),
+                                    };
+                                    flat.push((
+                                        format!("{}_{}", pg.name.name, s.name.name),
+                                        resolved_ty,
+                                    ));
+                                }
                             }
+                            break;
                         }
-                        break;
                     }
                 }
-            }
-            flat
-        } else {
-            Vec::new()
-        };
+                flat
+            } else {
+                Vec::new()
+            };
 
         // For Regfile instances, build a flattened port map from port arrays
         let regfile_flat_ports: Vec<(String, TypeExpr)> = if let Some((Symbol::Regfile(_), _)) =
@@ -2106,7 +2456,10 @@ impl<'a> Codegen<'a> {
                             let count = self.resolve_regfile_count(&rp.count_expr, r);
                             for i in 0..count {
                                 for s in &rp.signals {
-                                    flat.push((format!("{}{i}_{}", rp.name.name, s.name.name), s.ty.clone()));
+                                    flat.push((
+                                        format!("{}{i}_{}", rp.name.name, s.name.name),
+                                        s.ty.clone(),
+                                    ));
                                 }
                             }
                         }
@@ -2115,7 +2468,10 @@ impl<'a> Codegen<'a> {
                             let count = self.resolve_regfile_count(&wp.count_expr, r);
                             for i in 0..count {
                                 for s in &wp.signals {
-                                    flat.push((format!("{}{i}_{}", wp.name.name, s.name.name), s.ty.clone()));
+                                    flat.push((
+                                        format!("{}{i}_{}", wp.name.name, s.name.name),
+                                        s.ty.clone(),
+                                    ));
                                 }
                             }
                         }
@@ -2136,16 +2492,31 @@ impl<'a> Codegen<'a> {
         // signals like `_flits_send_data` and the design appears dead.
         let mut bus_emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
         for conn in &inst.connections {
-            let Some(port) = module_ports.iter().find(|p| p.name.name == conn.port_name.name) else { continue; };
-            let Some(bi) = &port.bus_info else { continue; };
-            let ExprKind::Ident(parent_name) = &conn.signal.kind else { continue; };
-            let Some((Symbol::Bus(bus_info), _)) =
-                self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+            let Some(port) = module_ports
+                .iter()
+                .find(|p| p.name.name == conn.port_name.name)
+            else {
+                continue;
+            };
+            let Some(bi) = &port.bus_info else {
+                continue;
+            };
+            let ExprKind::Ident(parent_name) = &conn.signal.kind else {
+                continue;
+            };
+            let Some((Symbol::Bus(bus_info), _)) = self.symbols.globals.get(&bi.bus_name.name)
+            else {
+                continue;
+            };
             let mut pm = bus_info.default_param_map();
-            for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
+            for pa in &bi.params {
+                pm.insert(pa.name.name.clone(), &pa.value);
+            }
             for (sname, _sdir, ty) in bus_info.effective_signals(&pm) {
                 let flat = format!("{parent_name}_{sname}");
-                if declared.contains(&flat) || !bus_emitted.insert(flat.clone()) { continue; }
+                if declared.contains(&flat) || !bus_emitted.insert(flat.clone()) {
+                    continue;
+                }
                 let subst_ty = Self::subst_type_expr(&ty, &pm);
                 let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(&subst_ty);
                 self.line(&format!("{} {}{};", ty_str, flat, arr_suffix));
@@ -2161,14 +2532,25 @@ impl<'a> Codegen<'a> {
                     continue;
                 }
                 // Bus ports are handled above as a separate pass; skip.
-                if let Some(port) = module_ports.iter().find(|p| p.name.name == conn.port_name.name) {
-                    if port.bus_info.is_some() { continue; }
+                if let Some(port) = module_ports
+                    .iter()
+                    .find(|p| p.name.name == conn.port_name.name)
+                {
+                    if port.bus_info.is_some() {
+                        continue;
+                    }
                     let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(&port.ty);
                     self.line(&format!("{} {}{};", ty_str, target, arr_suffix));
-                } else if let Some((_, ty)) = ram_flat_ports.iter().find(|(n, _)| *n == conn.port_name.name) {
+                } else if let Some((_, ty)) = ram_flat_ports
+                    .iter()
+                    .find(|(n, _)| *n == conn.port_name.name)
+                {
                     let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(ty);
                     self.line(&format!("{} {}{};", ty_str, target, arr_suffix));
-                } else if let Some((_, ty)) = regfile_flat_ports.iter().find(|(n, _)| *n == conn.port_name.name) {
+                } else if let Some((_, ty)) = regfile_flat_ports
+                    .iter()
+                    .find(|(n, _)| *n == conn.port_name.name)
+                {
                     let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(ty);
                     self.line(&format!("{} {}{};", ty_str, target, arr_suffix));
                 } else {
@@ -2182,16 +2564,22 @@ impl<'a> Codegen<'a> {
         use crate::ast::{ExprKind, LitKind, ParamKind};
         match &expr.kind {
             ExprKind::Literal(LitKind::Dec(v)) => *v,
-            ExprKind::Ident(name) => {
-                r.params.iter()
-                    .find(|p| p.name.name == *name)
-                    .and_then(|p| match &p.kind {
-                        ParamKind::Const | ParamKind::WidthConst(..) => p.default.as_ref(),
-                        _ => None,
-                    })
-                    .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v) } else { None })
-                    .unwrap_or(1)
-            }
+            ExprKind::Ident(name) => r
+                .params
+                .iter()
+                .find(|p| p.name.name == *name)
+                .and_then(|p| match &p.kind {
+                    ParamKind::Const | ParamKind::WidthConst(..) => p.default.as_ref(),
+                    _ => None,
+                })
+                .and_then(|e| {
+                    if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind {
+                        Some(*v)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(1),
             _ => 1,
         }
     }
@@ -2219,8 +2607,8 @@ impl<'a> Codegen<'a> {
         // Expand bus port connections: one bus connect → N signal connects
         let mut connections: Vec<String> = Vec::new();
         // Find the target construct's ports to detect bus ports (modules and FSMs)
-        let target_ports_ref: Option<&[PortDecl]> = self.source.items.iter()
-            .find_map(|item| match item {
+        let target_ports_ref: Option<&[PortDecl]> =
+            self.source.items.iter().find_map(|item| match item {
                 Item::Module(m) if m.name.name == inst.module_name.name => Some(m.ports.as_slice()),
                 Item::Fsm(f) if f.name.name == inst.module_name.name => Some(f.ports.as_slice()),
                 _ => None,
@@ -2231,14 +2619,28 @@ impl<'a> Codegen<'a> {
         // element of the child. Vec count is resolved against the child
         // module's params (with the inst-site `param NAME = ...` overrides
         // applied on top).
-        let child_params: Vec<ParamDecl> = self.source.items.iter()
-            .find_map(|item| if let Item::Module(m) = item {
-                if m.name.name == inst.module_name.name { Some(m.params.clone()) } else { None }
-            } else { None })
+        let child_params: Vec<ParamDecl> = self
+            .source
+            .items
+            .iter()
+            .find_map(|item| {
+                if let Item::Module(m) = item {
+                    if m.name.name == inst.module_name.name {
+                        Some(m.params.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
             .unwrap_or_default();
         let mut child_params_overridden = child_params.clone();
         for pa in &inst.param_assigns {
-            if let Some(p) = child_params_overridden.iter_mut().find(|p| p.name.name == pa.name.name) {
+            if let Some(p) = child_params_overridden
+                .iter_mut()
+                .find(|p| p.name.name == pa.name.name)
+            {
                 // The override RHS is written in the *parent* param scope, so
                 // resolve it there before substituting into the child param
                 // list. Without this, `param NUM = NUM` (parent NUM forwarded
@@ -2266,12 +2668,22 @@ impl<'a> Codegen<'a> {
                     if let Some(bi) = p.bus_info.as_ref() {
                         match bi.count.as_ref() {
                             None => {
-                                v.push((p.name.name.clone(), bi.bus_name.name.clone(), bi.params.clone()));
+                                v.push((
+                                    p.name.name.clone(),
+                                    bi.bus_name.name.clone(),
+                                    bi.params.clone(),
+                                ));
                             }
                             Some(count_expr) => {
-                                if let Some(n) = self.eval_const_u32(count_expr, &child_params_overridden) {
+                                if let Some(n) =
+                                    self.eval_const_u32(count_expr, &child_params_overridden)
+                                {
                                     for i in 0..n {
-                                        v.push((format!("{}_{}", p.name.name, i), bi.bus_name.name.clone(), bi.params.clone()));
+                                        v.push((
+                                            format!("{}_{}", p.name.name, i),
+                                            bi.bus_name.name.clone(),
+                                            bi.params.clone(),
+                                        ));
                                     }
                                 }
                             }
@@ -2286,21 +2698,29 @@ impl<'a> Codegen<'a> {
         // and parent signal are `Vec<Bus, N>`) expand to N per-element
         // per-signal named-port connections without requiring the user
         // to enumerate `chans[0] -> w[0]; chans[1] -> w[1]; ...`.
-        let target_vec_of_bus_ports: Vec<(String, u32, String, Vec<ParamAssign>)> = target_ports_ref
-            .map(|ports| {
-                let mut v = Vec::new();
-                for p in ports {
-                    if let Some(bi) = p.bus_info.as_ref() {
-                        if let Some(count_expr) = bi.count.as_ref() {
-                            if let Some(n) = self.eval_const_u32(count_expr, &child_params_overridden) {
-                                v.push((p.name.name.clone(), n, bi.bus_name.name.clone(), bi.params.clone()));
+        let target_vec_of_bus_ports: Vec<(String, u32, String, Vec<ParamAssign>)> =
+            target_ports_ref
+                .map(|ports| {
+                    let mut v = Vec::new();
+                    for p in ports {
+                        if let Some(bi) = p.bus_info.as_ref() {
+                            if let Some(count_expr) = bi.count.as_ref() {
+                                if let Some(n) =
+                                    self.eval_const_u32(count_expr, &child_params_overridden)
+                                {
+                                    v.push((
+                                        p.name.name.clone(),
+                                        n,
+                                        bi.bus_name.name.clone(),
+                                        bi.params.clone(),
+                                    ));
+                                }
                             }
                         }
                     }
-                }
-                v
-            })
-            .unwrap_or_default();
+                    v
+                })
+                .unwrap_or_default();
 
         // Per-port enum-cast lookup. For each input port whose type is
         // an extern-package enum (declared via `extern package Pkg ...
@@ -2318,16 +2738,25 @@ impl<'a> Codegen<'a> {
             if let Some(ports) = target_ports_ref {
                 for p in ports {
                     if let TypeExpr::Named(id) = &p.ty {
-                        if let Some((Symbol::ExternEnum(_), _)) = self.symbols.globals.get(&id.name) {
+                        if let Some((Symbol::ExternEnum(_), _)) = self.symbols.globals.get(&id.name)
+                        {
                             // Find the owning extern-package by scanning
                             // Item::ExternPackage entries — the resolve
                             // table records only the type name, not its
                             // owning package.
-                            let pkg_name = self.source.items.iter().find_map(|it| match it {
-                                Item::ExternPackage(ep) if ep.types.iter().any(|t| t.name == id.name) =>
-                                    Some(ep.name.name.clone()),
-                                _ => None,
-                            }).unwrap_or_else(|| id.name.clone());
+                            let pkg_name = self
+                                .source
+                                .items
+                                .iter()
+                                .find_map(|it| match it {
+                                    Item::ExternPackage(ep)
+                                        if ep.types.iter().any(|t| t.name == id.name) =>
+                                    {
+                                        Some(ep.name.name.clone())
+                                    }
+                                    _ => None,
+                                })
+                                .unwrap_or_else(|| id.name.clone());
                             m.insert(p.name.name.clone(), (pkg_name, id.name.clone()));
                         }
                     }
@@ -2358,19 +2787,28 @@ impl<'a> Codegen<'a> {
         // `read1_addr`, ...) so the existing flattened-port-name behavior
         // is correct there. Regfile is intentionally excluded from the
         // synthesis here.
-        let target_port_arrays: Vec<(String, u64, Vec<(String, Direction, TypeExpr)>)> =
-            self.source.items.iter().find_map(|item| match item {
+        let target_port_arrays: Vec<(String, u64, Vec<(String, Direction, TypeExpr)>)> = self
+            .source
+            .items
+            .iter()
+            .find_map(|item| match item {
                 Item::Arbiter(a) if a.name.name == inst.module_name.name => Some(
-                    a.port_arrays.iter().map(|pa| {
-                        let n = self.eval_count_with_inst_params(&pa.count_expr, inst);
-                        let signals = pa.signals.iter()
-                            .map(|s| (s.name.name.clone(), s.direction, s.ty.clone()))
-                            .collect();
-                        (pa.name.name.clone(), n, signals)
-                    }).collect()
+                    a.port_arrays
+                        .iter()
+                        .map(|pa| {
+                            let n = self.eval_count_with_inst_params(&pa.count_expr, inst);
+                            let signals = pa
+                                .signals
+                                .iter()
+                                .map(|s| (s.name.name.clone(), s.direction, s.ty.clone()))
+                                .collect();
+                            (pa.name.name.clone(), n, signals)
+                        })
+                        .collect(),
                 ),
                 _ => None,
-            }).unwrap_or_default();
+            })
+            .unwrap_or_default();
 
         // Unified per-element "indexed-port-group" gather state. Both the
         // arbiter `port_arrays` flattening (`.req0_valid` → packed wire +
@@ -2383,8 +2821,11 @@ impl<'a> Codegen<'a> {
             std::collections::HashMap::new();
         // (base_port_name, N) → bus_name, bus_params for VOB packed emit.
         let vob_port_meta: std::collections::HashMap<String, (u32, String, Vec<ParamAssign>)> =
-            target_vec_of_bus_ports.iter()
-                .map(|(name, n, bus_name, bus_params)| (name.clone(), (*n, bus_name.clone(), bus_params.clone())))
+            target_vec_of_bus_ports
+                .iter()
+                .map(|(name, n, bus_name, bus_params)| {
+                    (name.clone(), (*n, bus_name.clone(), bus_params.clone()))
+                })
                 .collect();
 
         for c in &inst.connections {
@@ -2398,8 +2839,7 @@ impl<'a> Codegen<'a> {
                 let idx_str = &rest[..und];
                 let sig = &rest[und + 1..];
                 let idx: u32 = idx_str.parse().ok()?;
-                let (sname, dir, ty) = sigs.iter()
-                    .find(|(sn, _, _)| sn == sig)?;
+                let (sname, dir, ty) = sigs.iter().find(|(sn, _, _)| sn == sig)?;
                 Some((group.clone(), idx, sname.clone(), *dir, ty.clone()))
             });
             if let Some((group, idx, sig, dir, ty)) = matched {
@@ -2408,7 +2848,8 @@ impl<'a> Codegen<'a> {
                 // separate temp wire per (group, sig) pair, so use the
                 // concatenated key as the map slot.
                 let key = format!("{group}.{sig}");
-                let n = target_port_arrays.iter()
+                let n = target_port_arrays
+                    .iter()
                     .find(|(g, _, _)| *g == group)
                     .map(|(_, n, _)| *n)
                     .unwrap_or(0);
@@ -2417,12 +2858,16 @@ impl<'a> Codegen<'a> {
                     .or_insert_with(|| IndexedGroup {
                         base_port: group.clone(),
                         kind: GroupKind::ArbiterPortArray {
-                            sig: sig.clone(), dir, ty: ty.clone(), n,
+                            sig: sig.clone(),
+                            dir,
+                            ty: ty.clone(),
+                            n,
                         },
                         arb_entries: Vec::new(),
                         vob_entries: std::collections::HashMap::new(),
                     })
-                    .arb_entries.push((idx, sig_str));
+                    .arb_entries
+                    .push((idx, sig_str));
                 continue;
             }
             // Whole-vec bus connection on a Vec-of-bus child port.
@@ -2431,7 +2876,8 @@ impl<'a> Codegen<'a> {
             //   `chans -> w`       (1D Vec-of-bus wire `w` → packed `w_<sig>`)
             //   `chans -> edges[i]` (row of 2D wire → packed slice `edges_<sig>[i]`)
             //   `chans -> p`       (parent Vec-of-bus port `p` → packed `p_<sig>`)
-            if let Some((_, _n, bus_name, bus_params)) = target_vec_of_bus_ports.iter()
+            if let Some((_, _n, bus_name, bus_params)) = target_vec_of_bus_ports
+                .iter()
                 .find(|(pn, _, _, _)| *pn == c.port_name.name)
             {
                 let parent_expr_str = self.emit_expr_str(&c.signal);
@@ -2445,10 +2891,11 @@ impl<'a> Codegen<'a> {
                         ExprKind::Ident(name) => format!("{}_{}", name, sname),
                         ExprKind::Index(arr, idx) => {
                             let idx_str = match &idx.kind {
-                                ExprKind::Ident(loopvar) =>
-                                    self_.loop_var_subst.get(loopvar)
-                                        .map(|v| v.to_string())
-                                        .unwrap_or_else(|| loopvar.clone()),
+                                ExprKind::Ident(loopvar) => self_
+                                    .loop_var_subst
+                                    .get(loopvar)
+                                    .map(|v| v.to_string())
+                                    .unwrap_or_else(|| loopvar.clone()),
                                 _ => self_.emit_expr_str(idx),
                             };
                             if let ExprKind::Ident(arr_name) = &arr.kind {
@@ -2462,15 +2909,21 @@ impl<'a> Codegen<'a> {
                     }
                 };
                 if let Some((Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
-                    let mut param_map: std::collections::HashMap<String, &Expr> = info.params.iter()
+                    let mut param_map: std::collections::HashMap<String, &Expr> = info
+                        .params
+                        .iter()
                         .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
                         .collect();
-                    for pa in bus_params { param_map.insert(pa.name.name.clone(), &pa.value); }
+                    for pa in bus_params {
+                        param_map.insert(pa.name.name.clone(), &pa.value);
+                    }
                     let eff = info.effective_signals(&param_map);
                     for (sname, _, _) in &eff {
                         connections.push(format!(
                             ".{}_{}({})",
-                            c.port_name.name, sname, per_sig_emit(sname, self),
+                            c.port_name.name,
+                            sname,
+                            per_sig_emit(sname, self),
                         ));
                     }
                     continue;
@@ -2486,7 +2939,11 @@ impl<'a> Codegen<'a> {
                     let prefix = format!("{base}_");
                     let rest = pname.strip_prefix(&prefix)?;
                     let idx: u32 = rest.parse().ok()?;
-                    if idx < *n { Some((base.clone(), idx)) } else { None }
+                    if idx < *n {
+                        Some((base.clone(), idx))
+                    } else {
+                        None
+                    }
                 });
                 if let Some((base, idx)) = matched_vob {
                     let Some((n, bus_name, bus_params)) = vob_port_meta.get(&base) else {
@@ -2504,11 +2961,15 @@ impl<'a> Codegen<'a> {
                             arb_entries: Vec::new(),
                             vob_entries: std::collections::HashMap::new(),
                         })
-                        .vob_entries.insert(idx, c.signal.clone());
+                        .vob_entries
+                        .insert(idx, c.signal.clone());
                     continue;
                 }
             }
-            if let Some((_, bus_name, bus_params)) = target_bus_ports.iter().find(|(pn, _, _)| *pn == c.port_name.name) {
+            if let Some((_, bus_name, bus_params)) = target_bus_ports
+                .iter()
+                .find(|(pn, _, _)| *pn == c.port_name.name)
+            {
                 // Bus connection — expand to individual signals. The parent-side
                 // signal can be one of:
                 //   * `Ident("w")`               — scalar bus port or bus wire        → `w_<sig>`
@@ -2517,8 +2978,12 @@ impl<'a> Codegen<'a> {
                 //                                  where <e> is a literal, a loop var
                 //                                  (left as-is for SV genvar), or
                 //                                  a static-unrolled loop var.
-                if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
-                    let mut param_map: std::collections::HashMap<String, &Expr> = info.params.iter()
+                if let Some((crate::resolve::Symbol::Bus(info), _)) =
+                    self.symbols.globals.get(bus_name)
+                {
+                    let mut param_map: std::collections::HashMap<String, &Expr> = info
+                        .params
+                        .iter()
                         .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
                         .collect();
                     for pa in bus_params {
@@ -2551,8 +3016,12 @@ impl<'a> Codegen<'a> {
                                         _ => self.emit_expr_str(idx),
                                     };
                                     Some((arr_name.clone(), idx_str))
-                                } else { None }
-                            } else { None }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
                         }
                         _ => None,
                     };
@@ -2572,18 +3041,27 @@ impl<'a> Codegen<'a> {
                                 let resolve = |e: &Expr| -> Option<u64> {
                                     match &e.kind {
                                         ExprKind::Literal(LitKind::Dec(i)) => Some(*i),
-                                        ExprKind::Ident(loopvar) =>
-                                            self.loop_var_subst.get(loopvar).map(|v| *v as u64),
+                                        ExprKind::Ident(loopvar) => {
+                                            self.loop_var_subst.get(loopvar).map(|v| *v as u64)
+                                        }
                                         _ => None,
                                     }
                                 };
                                 if let ExprKind::Index(inner_arr, inner_idx) = &arr.kind {
                                     if let ExprKind::Ident(arr_name) = &inner_arr.kind {
-                                        if let (Some(m_v), Some(n_v)) = (resolve(inner_idx), resolve(idx)) {
+                                        if let (Some(m_v), Some(n_v)) =
+                                            (resolve(inner_idx), resolve(idx))
+                                        {
                                             format!("{}_{}_{}", arr_name, m_v, n_v)
-                                        } else { self.emit_expr_str(&c.signal) }
-                                    } else { self.emit_expr_str(&c.signal) }
-                                } else if let (ExprKind::Ident(arr_name), Some(i)) = (&arr.kind, resolve(idx)) {
+                                        } else {
+                                            self.emit_expr_str(&c.signal)
+                                        }
+                                    } else {
+                                        self.emit_expr_str(&c.signal)
+                                    }
+                                } else if let (ExprKind::Ident(arr_name), Some(i)) =
+                                    (&arr.kind, resolve(idx))
+                                {
                                     format!("{}_{}", arr_name, i)
                                 } else {
                                     self.emit_expr_str(&c.signal)
@@ -2592,13 +3070,17 @@ impl<'a> Codegen<'a> {
                             _ => self.emit_expr_str(&c.signal),
                         };
                         for (sname, _, _) in &eff_signals {
-                            connections.push(format!(".{}_{}({}_{})", c.port_name.name, sname, sig_prefix, sname));
+                            connections.push(format!(
+                                ".{}_{}({}_{})",
+                                c.port_name.name, sname, sig_prefix, sname
+                            ));
                         }
                     }
                 }
             } else {
                 let sig_str = self.emit_expr_str(&c.signal);
-                let conn_str = if let Some((pkg, ty_name)) = port_enum_casts.get(&c.port_name.name) {
+                let conn_str = if let Some((pkg, ty_name)) = port_enum_casts.get(&c.port_name.name)
+                {
                     // Wrap in explicit cast to the destination port's
                     // extern-enum type so yosys-slang accepts the
                     // boundary. No-op for verilator / iverilog.
@@ -2651,12 +3133,25 @@ impl<'a> Codegen<'a> {
     /// time; here we attach `.<sig>` and re-emit via `emit_expr_str`
     /// (which handles 2D-wire packed-slice lowering).
     fn emit_indexed_group(&self, g: &IndexedGroup, connections: &mut Vec<String>) {
-        let GroupKind::VecOfBusPacked { n, bus_name, bus_params } = &g.kind else { return };
-        let Some((Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) else { return };
-        let mut param_map: std::collections::HashMap<String, &Expr> = info.params.iter()
+        let GroupKind::VecOfBusPacked {
+            n,
+            bus_name,
+            bus_params,
+        } = &g.kind
+        else {
+            return;
+        };
+        let Some((Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) else {
+            return;
+        };
+        let mut param_map: std::collections::HashMap<String, &Expr> = info
+            .params
+            .iter()
             .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
             .collect();
-        for pa in bus_params { param_map.insert(pa.name.name.clone(), &pa.value); }
+        for pa in bus_params {
+            param_map.insert(pa.name.name.clone(), &pa.value);
+        }
         let eff = info.effective_signals(&param_map);
         for (sname, _, _) in &eff {
             // Build {expr_{N-1}_<sig>, expr_{N-2}_<sig>, …, expr_0_<sig>}.
@@ -2679,7 +3174,8 @@ impl<'a> Codegen<'a> {
             }
             connections.push(format!(
                 ".{}_{}({{{}}})",
-                g.base_port, sname,
+                g.base_port,
+                sname,
                 parts.join(", "),
             ));
         }
@@ -2695,11 +3191,17 @@ impl<'a> Codegen<'a> {
         inst: &InstDecl,
         connections: &mut Vec<String>,
     ) {
-        let GroupKind::ArbiterPortArray { sig, dir, ty, n } = &g.kind else { return };
+        let GroupKind::ArbiterPortArray { sig, dir, ty, n } = &g.kind else {
+            return;
+        };
         let group = &g.base_port;
         // If `n` is 0 (no port-array metadata found), fall back to the
         // entry count — preserves prior behavior.
-        let n = if *n == 0 { g.arb_entries.len() as u64 } else { *n };
+        let n = if *n == 0 {
+            g.arb_entries.len() as u64
+        } else {
+            *n
+        };
         let wire_name = format!("__{}_{}_{}", inst.name.name, group, sig);
         // Synthesize the vector wire as `logic [<elem>][N-1:0]`.
         // Per-bit (`elem` == Bool) flattens to `logic [N-1:0]`.
@@ -2735,11 +3237,16 @@ impl<'a> Codegen<'a> {
         // Build a param map for the inst.
         let mut params: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
         // Source defaults first.
-        let target_params: Option<&[ParamDecl]> = self.source.items.iter().find_map(|item| match item {
-            Item::Arbiter(a) if a.name.name == inst.module_name.name => Some(a.params.as_slice()),
-            Item::Regfile(r) if r.name.name == inst.module_name.name => Some(r.params.as_slice()),
-            _ => None,
-        });
+        let target_params: Option<&[ParamDecl]> =
+            self.source.items.iter().find_map(|item| match item {
+                Item::Arbiter(a) if a.name.name == inst.module_name.name => {
+                    Some(a.params.as_slice())
+                }
+                Item::Regfile(r) if r.name.name == inst.module_name.name => {
+                    Some(r.params.as_slice())
+                }
+                _ => None,
+            });
         if let Some(ps) = target_params {
             for p in ps {
                 if let Some(d) = &p.default {
@@ -2755,7 +3262,9 @@ impl<'a> Codegen<'a> {
                 params.insert(pa.name.name.clone(), v);
             }
         }
-        crate::elaborate::try_eval_i64(expr, &params).unwrap_or(0).max(0) as u64
+        crate::elaborate::try_eval_i64(expr, &params)
+            .unwrap_or(0)
+            .max(0) as u64
     }
 
     fn emit_generate(&mut self, gen: &GenerateDecl) {
@@ -2772,13 +3281,21 @@ impl<'a> Codegen<'a> {
                 for item in &gf.items {
                     match item {
                         GenItem::Inst(inst) => self.emit_inst(inst),
-                        GenItem::Port(_) => unreachable!("port GenItems should have been lifted by elaboration"),
-                        GenItem::TlmConnect(_) => unreachable!("TLM connect GenItems should have been lowered by elaboration"),
-                        GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
+                        GenItem::Port(_) => {
+                            unreachable!("port GenItems should have been lifted by elaboration")
+                        }
+                        GenItem::TlmConnect(_) => unreachable!(
+                            "TLM connect GenItems should have been lowered by elaboration"
+                        ),
+                        GenItem::Thread(_) => {
+                            unreachable!("thread GenItems should have been lowered by elaboration")
+                        }
                         GenItem::Seq(_) | GenItem::Comb(_) => unreachable!(
-                            "seq/comb GenItems should have been unrolled by elaboration"),
-                        GenItem::Wire(_) => unreachable!(
-                            "wire GenItems should have been unrolled by elaboration"),
+                            "seq/comb GenItems should have been unrolled by elaboration"
+                        ),
+                        GenItem::Wire(_) => {
+                            unreachable!("wire GenItems should have been unrolled by elaboration")
+                        }
                         GenItem::Assert(_) => {
                             // SVA inside generate for: not yet supported in SV codegen (SVA needs static clock ref)
                         }
@@ -2794,13 +3311,21 @@ impl<'a> Codegen<'a> {
                 for item in &gi.then_items {
                     match item {
                         GenItem::Inst(inst) => self.emit_inst(inst),
-                        GenItem::Port(_) => unreachable!("port GenItems should have been lifted by elaboration"),
-                        GenItem::TlmConnect(_) => unreachable!("TLM connect GenItems should have been lowered by elaboration"),
-                        GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
-                        GenItem::Seq(_) | GenItem::Comb(_) => unreachable!(
-                            "seq/comb GenItems should have been lifted by elaboration"),
-                        GenItem::Wire(_) => unreachable!(
-                            "wire GenItems should have been unrolled by elaboration"),
+                        GenItem::Port(_) => {
+                            unreachable!("port GenItems should have been lifted by elaboration")
+                        }
+                        GenItem::TlmConnect(_) => unreachable!(
+                            "TLM connect GenItems should have been lowered by elaboration"
+                        ),
+                        GenItem::Thread(_) => {
+                            unreachable!("thread GenItems should have been lowered by elaboration")
+                        }
+                        GenItem::Seq(_) | GenItem::Comb(_) => {
+                            unreachable!("seq/comb GenItems should have been lifted by elaboration")
+                        }
+                        GenItem::Wire(_) => {
+                            unreachable!("wire GenItems should have been unrolled by elaboration")
+                        }
                         GenItem::Assert(_) => {}
                     }
                 }
@@ -2811,13 +3336,21 @@ impl<'a> Codegen<'a> {
                     for item in &gi.else_items {
                         match item {
                             GenItem::Inst(inst) => self.emit_inst(inst),
-                            GenItem::Port(_) => unreachable!("port GenItems should have been lifted by elaboration"),
-                            GenItem::TlmConnect(_) => unreachable!("TLM connect GenItems should have been lowered by elaboration"),
-                            GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
+                            GenItem::Port(_) => {
+                                unreachable!("port GenItems should have been lifted by elaboration")
+                            }
+                            GenItem::TlmConnect(_) => unreachable!(
+                                "TLM connect GenItems should have been lowered by elaboration"
+                            ),
+                            GenItem::Thread(_) => unreachable!(
+                                "thread GenItems should have been lowered by elaboration"
+                            ),
                             GenItem::Seq(_) | GenItem::Comb(_) => unreachable!(
-                                "seq/comb GenItems should have been lifted by elaboration"),
+                                "seq/comb GenItems should have been lifted by elaboration"
+                            ),
                             GenItem::Wire(_) => unreachable!(
-                                "wire GenItems should have been unrolled by elaboration"),
+                                "wire GenItems should have been unrolled by elaboration"
+                            ),
                             GenItem::Assert(_) => {}
                         }
                     }
@@ -2835,7 +3368,8 @@ impl<'a> Codegen<'a> {
     /// Mirrors the inline pattern used by `_auto_bound_*` / `_auto_div0_*`
     /// emitters in this file.
     pub(crate) fn rst_active_from_ports(ports: &[PortDecl]) -> Option<String> {
-        ports.iter()
+        ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)))
             .map(|p| match &p.ty {
                 TypeExpr::Reset(_, ResetLevel::Low) => format!("!{}", p.name.name),
@@ -2851,10 +3385,13 @@ impl<'a> Codegen<'a> {
         rst_active: Option<&str>,
     ) {
         let expr_str = self.emit_expr_str(&a.expr);
-        let label = a.name.as_ref().map(|n| n.name.as_str().to_string())
+        let label = a
+            .name
+            .as_ref()
+            .map(|n| n.name.as_str().to_string())
             .unwrap_or_else(|| match a.kind {
                 AssertKind::Assert => "_assert_anon".to_string(),
-                AssertKind::Cover  => "_cover_anon".to_string(),
+                AssertKind::Cover => "_cover_anon".to_string(),
             });
         let disable = rst_active
             .map(|r| format!(" disable iff ({r})"))
@@ -2888,7 +3425,9 @@ impl<'a> Codegen<'a> {
         clk: &str,
         rst_active: Option<&str>,
     ) {
-        if asserts.is_empty() { return; }
+        if asserts.is_empty() {
+            return;
+        }
         self.line("// synopsys translate_off");
         for a in asserts {
             self.emit_assert_sva(a, name, clk, rst_active);
@@ -2923,14 +3462,22 @@ impl<'a> Codegen<'a> {
                 }
             }
         }
-        if guarded.is_empty() { return; }
+        if guarded.is_empty() {
+            return;
+        }
 
-        let clk = m.ports.iter()
+        let clk = m
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone())
             .unwrap_or_else(|| "clk".to_string());
         let (rst_name, _, is_low) = Self::extract_reset_info(&m.ports);
-        let rst_active = if is_low { format!("!{rst_name}") } else { rst_name.clone() };
+        let rst_active = if is_low {
+            format!("!{rst_name}")
+        } else {
+            rst_name.clone()
+        };
 
         self.line("");
         self.line("// synopsys translate_off");
@@ -2943,7 +3490,11 @@ impl<'a> Codegen<'a> {
                 "1'b0".to_string()
             } else {
                 // OR-reduce
-                write_conds.iter().map(|s| format!("({s})")).collect::<Vec<_>>().join(" || ")
+                write_conds
+                    .iter()
+                    .map(|s| format!("({s})"))
+                    .collect::<Vec<_>>()
+                    .join(" || ")
             };
 
             // Shadow "written at least once" flag; goes high only when reg is actually assigned
@@ -2951,7 +3502,9 @@ impl<'a> Codegen<'a> {
             self.line(&format!("always_ff @(posedge {clk}) begin"));
             self.indent += 1;
             self.line(&format!("if ({rst_active}) _{reg_name}_written <= 1'b0;"));
-            self.line(&format!("else if ({write_cond_expr}) _{reg_name}_written <= 1'b1;"));
+            self.line(&format!(
+                "else if ({write_cond_expr}) _{reg_name}_written <= 1'b1;"
+            ));
             self.indent -= 1;
             self.line("end");
             // SVA contract (disable iff rst to exclude reset states from evaluation)
@@ -2985,40 +3538,57 @@ impl<'a> Codegen<'a> {
         // Collect const-param names — identifiers bound to compile-time constants.
         // `is_const_reducible_with` treats these as foldable so divisors named by
         // them do not produce spurious assertions.
-        let const_params: std::collections::HashSet<String> = m.params.iter()
-            .filter(|p| matches!(&p.kind, ParamKind::Const | ParamKind::WidthConst(..) | ParamKind::EnumConst(_)))
+        let const_params: std::collections::HashSet<String> = m
+            .params
+            .iter()
+            .filter(|p| {
+                matches!(
+                    &p.kind,
+                    ParamKind::Const | ParamKind::WidthConst(..) | ParamKind::EnumConst(_)
+                )
+            })
             .map(|p| p.name.name.clone())
             .collect();
 
         // Build Vec<T,N> size and scalar-width lookups for accesses in this module.
-        let mut vec_sizes: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-        let mut scalar_widths: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-        let record = |name: &str, ty: &TypeExpr,
-                      vec_sizes: &mut std::collections::HashMap<String, String>,
-                      scalar_widths: &mut std::collections::HashMap<String, String>| {
-            match ty {
-                TypeExpr::Vec(_, count) => {
-                    let s = Self::expr_to_sv_const(count);
-                    vec_sizes.insert(name.to_string(), s);
+        let mut vec_sizes: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut scalar_widths: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let record =
+            |name: &str,
+             ty: &TypeExpr,
+             vec_sizes: &mut std::collections::HashMap<String, String>,
+             scalar_widths: &mut std::collections::HashMap<String, String>| {
+                match ty {
+                    TypeExpr::Vec(_, count) => {
+                        let s = Self::expr_to_sv_const(count);
+                        vec_sizes.insert(name.to_string(), s);
+                    }
+                    TypeExpr::UInt(w) | TypeExpr::SInt(w) => {
+                        let s = Self::expr_to_sv_const(w);
+                        scalar_widths.insert(name.to_string(), s);
+                    }
+                    TypeExpr::Bool | TypeExpr::Bit => {
+                        scalar_widths.insert(name.to_string(), "1".to_string());
+                    }
+                    _ => {}
                 }
-                TypeExpr::UInt(w) | TypeExpr::SInt(w) => {
-                    let s = Self::expr_to_sv_const(w);
-                    scalar_widths.insert(name.to_string(), s);
-                }
-                TypeExpr::Bool | TypeExpr::Bit => {
-                    scalar_widths.insert(name.to_string(), "1".to_string());
-                }
-                _ => {}
-            }
-        };
+            };
         for p in &m.ports {
-            if p.bus_info.is_some() { continue; }
+            if p.bus_info.is_some() {
+                continue;
+            }
             record(&p.name.name, &p.ty, &mut vec_sizes, &mut scalar_widths);
         }
         for item in &m.body {
             match item {
-                ModuleBodyItem::RegDecl(r) => record(&r.name.name, &r.ty, &mut vec_sizes, &mut scalar_widths),
-                ModuleBodyItem::WireDecl(w) => record(&w.name.name, &w.ty, &mut vec_sizes, &mut scalar_widths),
+                ModuleBodyItem::RegDecl(r) => {
+                    record(&r.name.name, &r.ty, &mut vec_sizes, &mut scalar_widths)
+                }
+                ModuleBodyItem::WireDecl(w) => {
+                    record(&w.name.name, &w.ty, &mut vec_sizes, &mut scalar_widths)
+                }
                 ModuleBodyItem::LetBinding(l) => {
                     if let Some(ty) = &l.ty {
                         record(&l.name.name, ty, &mut vec_sizes, &mut scalar_widths);
@@ -3034,27 +3604,53 @@ impl<'a> Codegen<'a> {
         for item in &m.body {
             match item {
                 ModuleBodyItem::RegBlock(rb) => {
-                    let empty_iters: std::collections::HashSet<String> = std::collections::HashSet::new();
+                    let empty_iters: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
                     for s in &rb.stmts {
-                        self.collect_bound_stmt(s, &vec_sizes, &scalar_widths, &const_params, &empty_iters, None, &mut sites, &mut seen);
+                        self.collect_bound_stmt(
+                            s,
+                            &vec_sizes,
+                            &scalar_widths,
+                            &const_params,
+                            &empty_iters,
+                            None,
+                            &mut sites,
+                            &mut seen,
+                        );
                     }
                 }
                 ModuleBodyItem::LatchBlock(lb) => {
-                    let empty_iters: std::collections::HashSet<String> = std::collections::HashSet::new();
+                    let empty_iters: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
                     for s in &lb.stmts {
-                        self.collect_bound_stmt(s, &vec_sizes, &scalar_widths, &const_params, &empty_iters, None, &mut sites, &mut seen);
+                        self.collect_bound_stmt(
+                            s,
+                            &vec_sizes,
+                            &scalar_widths,
+                            &const_params,
+                            &empty_iters,
+                            None,
+                            &mut sites,
+                            &mut seen,
+                        );
                     }
                 }
                 _ => {}
             }
         }
-        if sites.is_empty() { return; }
+        if sites.is_empty() {
+            return;
+        }
 
         // Pick the module's clock and reset (best-effort; use first of each).
-        let clk = m.ports.iter()
+        let clk = m
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone());
-        let rst_active = m.ports.iter()
+        let rst_active = m
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)))
             .map(|p| match &p.ty {
                 TypeExpr::Reset(_, ResetLevel::Low) => format!("!{}", p.name.name),
@@ -3062,7 +3658,9 @@ impl<'a> Codegen<'a> {
             });
 
         // A module with no clock has no meaningful concurrent assertion — skip.
-        let Some(clk) = clk else { return; };
+        let Some(clk) = clk else {
+            return;
+        };
 
         self.line("// synopsys translate_off");
         self.line("// Auto-generated safety assertions (bounds / divide-by-zero)");
@@ -3071,7 +3669,8 @@ impl<'a> Codegen<'a> {
             let label_prefix = if is_div0 { "_auto_div0" } else { "_auto_bound" };
             let label = format!("{label_prefix}_{}_{}", tag, i);
             let violation_kind = if is_div0 { "DIV-BY-ZERO" } else { "BOUNDS" };
-            let disable = rst_active.as_ref()
+            let disable = rst_active
+                .as_ref()
                 .map(|r| format!(" disable iff ({r})"))
                 .unwrap_or_default();
             self.line(&format!(
@@ -3108,31 +3707,48 @@ impl<'a> Codegen<'a> {
         // bus declares one or more handshake channels.
         let mut emissions: Vec<(String, crate::ast::HandshakeMeta)> = Vec::new();
         for p in &m.ports {
-            let Some(ref bi) = p.bus_info else { continue; };
+            let Some(ref bi) = p.bus_info else {
+                continue;
+            };
             let Some((crate::resolve::Symbol::Bus(info), _)) =
-                self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+                self.symbols.globals.get(&bi.bus_name.name)
+            else {
+                continue;
+            };
             for hs in &info.handshakes {
                 emissions.push((p.name.name.clone(), hs.clone()));
             }
         }
-        if emissions.is_empty() { return; }
+        if emissions.is_empty() {
+            return;
+        }
 
         // Reuse the same clock/reset picking convention as emit_bound_asserts.
-        let clk = m.ports.iter()
+        let clk = m
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone());
-        let Some(clk) = clk else { return; };
-        let rst_active = m.ports.iter()
+        let Some(clk) = clk else {
+            return;
+        };
+        let rst_active = m
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)))
             .map(|p| match &p.ty {
                 TypeExpr::Reset(_, ResetLevel::Low) => format!("!{}", p.name.name),
                 _ => p.name.name.clone(),
             });
-        let any_emits = emissions.iter().any(|(_, hs)| matches!(
-            hs.variant.name.as_str(),
-            "valid_ready" | "valid_stall" | "req_ack_4phase" | "req_ack_2phase"
-        ));
-        if !any_emits { return; }
+        let any_emits = emissions.iter().any(|(_, hs)| {
+            matches!(
+                hs.variant.name.as_str(),
+                "valid_ready" | "valid_stall" | "req_ack_4phase" | "req_ack_2phase"
+            )
+        });
+        if !any_emits {
+            return;
+        }
 
         self.line("// synopsys translate_off");
         self.line("// Auto-generated handshake protocol assertions (Tier 2)");
@@ -3216,9 +3832,8 @@ impl<'a> Codegen<'a> {
         let _ = (open_gen, close_gen); // generate-for header already emitted
 
         let sig = |s: &str| format!("{}_{}{}", sig_prefix, s, idx);
-        let mk_label = |rule: &str| {
-            format!("_auto_hs_{}{}_{}", label_stem, lane_label_suffix, rule)
-        };
+        let mk_label =
+            |rule: &str| format!("_auto_hs_{}{}_{}", label_stem, lane_label_suffix, rule);
         let emit_property = |cg: &mut Codegen, rule: &str, predicate: String, message: &str| {
             let label = mk_label(rule);
             cg.line(&format!(
@@ -3230,31 +3845,50 @@ impl<'a> Codegen<'a> {
         };
         match variant {
             "valid_ready" => {
-                let v = sig("valid"); let r = sig("ready");
-                emit_property(self, "valid_stable",
+                let v = sig("valid");
+                let r = sig("ready");
+                emit_property(
+                    self,
+                    "valid_stable",
                     format!("({v} && !{r}) |=> {v}"),
-                    "valid must stay asserted until ready");
+                    "valid must stay asserted until ready",
+                );
             }
             "valid_stall" => {
-                let v = sig("valid"); let s = sig("stall");
-                emit_property(self, "valid_stable_while_stall",
+                let v = sig("valid");
+                let s = sig("stall");
+                emit_property(
+                    self,
+                    "valid_stable_while_stall",
                     format!("({v} && {s}) |=> {v}"),
-                    "valid must not change while stalled");
+                    "valid must not change while stalled",
+                );
             }
             "req_ack_4phase" => {
-                let rq = sig("req"); let ak = sig("ack");
-                emit_property(self, "req_holds_until_ack",
+                let rq = sig("req");
+                let ak = sig("ack");
+                emit_property(
+                    self,
+                    "req_holds_until_ack",
                     format!("({rq} && !{ak}) |=> {rq}"),
-                    "req must stay asserted until ack");
+                    "req must stay asserted until ack",
+                );
             }
             "req_ack_2phase" => {
-                let rq = sig("req"); let ak = sig("ack");
-                emit_property(self, "req_toggles_only_when_idle",
+                let rq = sig("req");
+                let ak = sig("ack");
+                emit_property(
+                    self,
+                    "req_toggles_only_when_idle",
                     format!("({rq} != $past({rq})) |-> ($past({rq}) == $past({ak}))"),
-                    "req may toggle only when no transfer is pending");
-                emit_property(self, "ack_toggles_only_when_pending",
+                    "req may toggle only when no transfer is pending",
+                );
+                emit_property(
+                    self,
+                    "ack_toggles_only_when_pending",
                     format!("({ak} != $past({ak})) |-> ($past({rq}) != $past({ak}))"),
-                    "ack may toggle only after a req toggle");
+                    "ack may toggle only after a req toggle",
+                );
             }
             _ => unreachable!("unsupported handshake variant pre-filtered"),
         }
@@ -3278,14 +3912,22 @@ impl<'a> Codegen<'a> {
     /// `<port>_<chname>_<sig>`. Labels follow `_auto_hs_<chname>_<rule>`
     /// (with `__lane` appended inside generate blocks).
     pub(crate) fn emit_arbiter_handshake_asserts(&mut self, a: &crate::ast::ArbiterDecl) {
-        if a.handshakes.is_empty() { return; }
+        if a.handshakes.is_empty() {
+            return;
+        }
 
         // Pick clock/reset the same way emit_arbiter does.
-        let clk = a.ports.iter()
+        let clk = a
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone());
-        let Some(clk) = clk else { return; };
-        let rst_active = a.ports.iter()
+        let Some(clk) = clk else {
+            return;
+        };
+        let rst_active = a
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)))
             .map(|p| match &p.ty {
                 TypeExpr::Reset(_, ResetLevel::Low) => format!("!{}", p.name.name),
@@ -3296,11 +3938,15 @@ impl<'a> Codegen<'a> {
         // text for, so we don't emit a translate-off block whose body is
         // empty (matches the bus side, which skips the wrapper when no
         // emission would land).
-        let any_emits = a.handshakes.iter().any(|hs| matches!(
-            hs.variant.name.as_str(),
-            "valid_ready" | "valid_stall" | "req_ack_4phase" | "req_ack_2phase"
-        ));
-        if !any_emits { return; }
+        let any_emits = a.handshakes.iter().any(|hs| {
+            matches!(
+                hs.variant.name.as_str(),
+                "valid_ready" | "valid_stall" | "req_ack_4phase" | "req_ack_2phase"
+            )
+        });
+        if !any_emits {
+            return;
+        }
 
         self.line("");
         self.line("// synopsys translate_off");
@@ -3349,16 +3995,21 @@ impl<'a> Codegen<'a> {
     fn emit_credit_channel_state(&mut self, m: &ModuleDecl) {
         let mut emissions: Vec<(String, crate::ast::CreditChannelMeta)> = Vec::new();
         for p in &m.ports {
-            let Some(ref bi) = p.bus_info else { continue; };
+            let Some(ref bi) = p.bus_info else {
+                continue;
+            };
             let Some((crate::resolve::Symbol::Bus(info), _)) =
-                self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+                self.symbols.globals.get(&bi.bus_name.name)
+            else {
+                continue;
+            };
             for cc in &info.credit_channels {
                 // Initiator perspective drives send; on the target perspective
                 // the same bus flip inverts the data direction, but the sender
                 // state belongs on whichever side actually issues sends.
                 let is_sender = match (cc.role_dir, bi.perspective) {
                     (Direction::Out, crate::ast::BusPerspective::Initiator) => true,
-                    (Direction::In,  crate::ast::BusPerspective::Target)    => true,
+                    (Direction::In, crate::ast::BusPerspective::Target) => true,
                     _ => false,
                 };
                 if is_sender {
@@ -3366,13 +4017,21 @@ impl<'a> Codegen<'a> {
                 }
             }
         }
-        if emissions.is_empty() { return; }
+        if emissions.is_empty() {
+            return;
+        }
 
-        let clk = m.ports.iter()
+        let clk = m
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone());
-        let Some(clk) = clk else { return; };
-        let rst_port = m.ports.iter()
+        let Some(clk) = clk else {
+            return;
+        };
+        let rst_port = m
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)));
         let (rst_edge, rst_active) = match rst_port {
             Some(p) => {
@@ -3381,8 +4040,12 @@ impl<'a> Codegen<'a> {
                     _ => p.name.name.clone(),
                 };
                 let edge = match &p.ty {
-                    TypeExpr::Reset(ResetKind::Async, ResetLevel::Low) => format!(" or negedge {}", p.name.name),
-                    TypeExpr::Reset(ResetKind::Async, ResetLevel::High) => format!(" or posedge {}", p.name.name),
+                    TypeExpr::Reset(ResetKind::Async, ResetLevel::Low) => {
+                        format!(" or negedge {}", p.name.name)
+                    }
+                    TypeExpr::Reset(ResetKind::Async, ResetLevel::High) => {
+                        format!(" or posedge {}", p.name.name)
+                    }
                     _ => String::new(),
                 };
                 (edge, Some(active))
@@ -3394,13 +4057,17 @@ impl<'a> Codegen<'a> {
         self.line("// Auto-generated credit_channel state (PR #3b-ii, sender side)");
         for (port_name, cc) in &emissions {
             let ch = &cc.name.name;
-            let depth_expr = cc.params.iter()
+            let depth_expr = cc
+                .params
+                .iter()
                 .find(|p| p.name.name == "DEPTH")
                 .and_then(|p| p.default.as_ref());
-            let Some(depth_expr) = depth_expr else { continue; };
+            let Some(depth_expr) = depth_expr else {
+                continue;
+            };
             let depth_str = self.emit_expr_str(depth_expr);
             let credit_reg = format!("__{port_name}_{ch}_credit");
-            let cs_name    = format!("__{port_name}_{ch}_can_send");
+            let cs_name = format!("__{port_name}_{ch}_can_send");
             let send_valid = format!("{port_name}_{ch}_send_valid");
             let credit_ret = format!("{port_name}_{ch}_credit_return");
             // Look up CAN_SEND_REGISTERED (option b — next-state flop, agreed
@@ -3409,7 +4076,9 @@ impl<'a> Codegen<'a> {
             // ends at the flop input. Full throughput is preserved because the
             // flopped signal reflects counter_next (current counter ± same-
             // cycle send/return), so send_valid |-> counter > 0 still holds.
-            let registered = cc.params.iter()
+            let registered = cc
+                .params
+                .iter()
                 .find(|p| p.name.name == "CAN_SEND_REGISTERED")
                 .and_then(|p| p.default.as_ref())
                 .map(|e| self.emit_expr_str(e))
@@ -3449,13 +4118,21 @@ impl<'a> Codegen<'a> {
                     self.line(&format!("if ({r}) begin"));
                     self.indent += 1;
                     self.line(&format!("{credit_reg} <= {depth_str};"));
-                    if registered { self.line(&format!("{cs_name} <= ({depth_str}) != 0;")); }
+                    if registered {
+                        self.line(&format!("{cs_name} <= ({depth_str}) != 0;"));
+                    }
                     self.indent -= 1;
                     self.line("end else begin");
                     self.indent += 1;
-                    self.line(&format!("if ({send_valid} && !{credit_ret}) {credit_reg} <= {credit_reg} - 1;"));
-                    self.line(&format!("else if ({credit_ret} && !{send_valid}) {credit_reg} <= {credit_reg} + 1;"));
-                    if registered { self.line(&format!("{cs_name} <= {cs_next};")); }
+                    self.line(&format!(
+                        "if ({send_valid} && !{credit_ret}) {credit_reg} <= {credit_reg} - 1;"
+                    ));
+                    self.line(&format!(
+                        "else if ({credit_ret} && !{send_valid}) {credit_reg} <= {credit_reg} + 1;"
+                    ));
+                    if registered {
+                        self.line(&format!("{cs_name} <= {cs_next};"));
+                    }
                     self.indent -= 1;
                     self.line("end");
                     self.indent -= 1;
@@ -3464,9 +4141,15 @@ impl<'a> Codegen<'a> {
                 None => {
                     self.line(&format!("always_ff @(posedge {clk}) begin"));
                     self.indent += 1;
-                    self.line(&format!("if ({send_valid} && !{credit_ret}) {credit_reg} <= {credit_reg} - 1;"));
-                    self.line(&format!("else if ({credit_ret} && !{send_valid}) {credit_reg} <= {credit_reg} + 1;"));
-                    if registered { self.line(&format!("{cs_name} <= {cs_next};")); }
+                    self.line(&format!(
+                        "if ({send_valid} && !{credit_ret}) {credit_reg} <= {credit_reg} - 1;"
+                    ));
+                    self.line(&format!(
+                        "else if ({credit_ret} && !{send_valid}) {credit_reg} <= {credit_reg} + 1;"
+                    ));
+                    if registered {
+                        self.line(&format!("{cs_name} <= {cs_next};"));
+                    }
                     self.indent -= 1;
                     self.line("end");
                 }
@@ -3500,16 +4183,21 @@ impl<'a> Codegen<'a> {
     fn emit_credit_channel_receiver_state(&mut self, m: &ModuleDecl) {
         let mut emissions: Vec<(String, crate::ast::CreditChannelMeta)> = Vec::new();
         for p in &m.ports {
-            let Some(ref bi) = p.bus_info else { continue; };
+            let Some(ref bi) = p.bus_info else {
+                continue;
+            };
             let Some((crate::resolve::Symbol::Bus(info), _)) =
-                self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+                self.symbols.globals.get(&bi.bus_name.name)
+            else {
+                continue;
+            };
             for cc in &info.credit_channels {
                 // Receiver side mirrors the sender-state selector:
                 //   send role + target perspective → this module is the receiver
                 //   receive role + initiator perspective → this module is the receiver
                 let is_receiver = match (cc.role_dir, bi.perspective) {
-                    (Direction::Out, crate::ast::BusPerspective::Target)    => true,
-                    (Direction::In,  crate::ast::BusPerspective::Initiator) => true,
+                    (Direction::Out, crate::ast::BusPerspective::Target) => true,
+                    (Direction::In, crate::ast::BusPerspective::Initiator) => true,
                     _ => false,
                 };
                 if is_receiver {
@@ -3517,13 +4205,21 @@ impl<'a> Codegen<'a> {
                 }
             }
         }
-        if emissions.is_empty() { return; }
+        if emissions.is_empty() {
+            return;
+        }
 
-        let clk = m.ports.iter()
+        let clk = m
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone());
-        let Some(clk) = clk else { return; };
-        let rst_port = m.ports.iter()
+        let Some(clk) = clk else {
+            return;
+        };
+        let rst_port = m
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)));
         let (rst_edge, rst_active) = match rst_port {
             Some(p) => {
@@ -3532,8 +4228,12 @@ impl<'a> Codegen<'a> {
                     _ => p.name.name.clone(),
                 };
                 let edge = match &p.ty {
-                    TypeExpr::Reset(ResetKind::Async, ResetLevel::Low) => format!(" or negedge {}", p.name.name),
-                    TypeExpr::Reset(ResetKind::Async, ResetLevel::High) => format!(" or posedge {}", p.name.name),
+                    TypeExpr::Reset(ResetKind::Async, ResetLevel::Low) => {
+                        format!(" or negedge {}", p.name.name)
+                    }
+                    TypeExpr::Reset(ResetKind::Async, ResetLevel::High) => {
+                        format!(" or posedge {}", p.name.name)
+                    }
                     _ => String::new(),
                 };
                 (edge, Some(active))
@@ -3545,36 +4245,54 @@ impl<'a> Codegen<'a> {
         self.line("// Auto-generated credit_channel target-side FIFO (PR #3b-iii)");
         for (port_name, cc) in &emissions {
             let ch = &cc.name.name;
-            let depth_expr = cc.params.iter()
+            let depth_expr = cc
+                .params
+                .iter()
                 .find(|p| p.name.name == "DEPTH")
                 .and_then(|p| p.default.as_ref());
-            let Some(depth_expr) = depth_expr else { continue; };
+            let Some(depth_expr) = depth_expr else {
+                continue;
+            };
             let depth_str = self.emit_expr_str(depth_expr);
             // Payload type width — resolve via the ParamKind::Type default.
-            let payload_ty_opt = cc.params.iter()
-                .find(|p| p.name.name == "T")
-                .and_then(|p| match &p.kind {
-                    crate::ast::ParamKind::Type(te) => Some(te.clone()),
-                    _ => None,
-                });
-            let Some(payload_ty) = payload_ty_opt else { continue; };
-            let Some(width_str) = self.type_expr_data_width(&payload_ty) else { continue; };
+            let payload_ty_opt =
+                cc.params
+                    .iter()
+                    .find(|p| p.name.name == "T")
+                    .and_then(|p| match &p.kind {
+                        crate::ast::ParamKind::Type(te) => Some(te.clone()),
+                        _ => None,
+                    });
+            let Some(payload_ty) = payload_ty_opt else {
+                continue;
+            };
+            let Some(width_str) = self.type_expr_data_width(&payload_ty) else {
+                continue;
+            };
             let buf = format!("__{port_name}_{ch}_buf");
             let head = format!("__{port_name}_{ch}_head");
             let tail = format!("__{port_name}_{ch}_tail");
-            let occ  = format!("__{port_name}_{ch}_occ");
+            let occ = format!("__{port_name}_{ch}_occ");
             let valid_w = format!("__{port_name}_{ch}_valid");
-            let data_w  = format!("__{port_name}_{ch}_data");
+            let data_w = format!("__{port_name}_{ch}_data");
             let push = format!("{port_name}_{ch}_send_valid");
-            let pushd= format!("{port_name}_{ch}_send_data");
+            let pushd = format!("{port_name}_{ch}_send_data");
             let pop_drv = format!("{port_name}_{ch}_credit_return");
 
-            self.line(&format!("logic [({width_str}) - 1:0] {buf} [({depth_str})];"));
-            self.line(&format!("logic [$clog2({depth_str}) == 0 ? 0 : $clog2({depth_str}) - 1:0] {head};"));
-            self.line(&format!("logic [$clog2({depth_str}) == 0 ? 0 : $clog2({depth_str}) - 1:0] {tail};"));
+            self.line(&format!(
+                "logic [({width_str}) - 1:0] {buf} [({depth_str})];"
+            ));
+            self.line(&format!(
+                "logic [$clog2({depth_str}) == 0 ? 0 : $clog2({depth_str}) - 1:0] {head};"
+            ));
+            self.line(&format!(
+                "logic [$clog2({depth_str}) == 0 ? 0 : $clog2({depth_str}) - 1:0] {tail};"
+            ));
             self.line(&format!("logic [$clog2(({depth_str}) + 1) - 1:0] {occ};"));
             self.line(&format!("wire  {valid_w} = {occ} != 0;"));
-            self.line(&format!("wire [({width_str}) - 1:0] {data_w} = {buf}[{head}];"));
+            self.line(&format!(
+                "wire [({width_str}) - 1:0] {data_w} = {buf}[{head}];"
+            ));
 
             // Update block: push on send_valid, pop on user-driven credit_return.
             let pop_fire = format!("({pop_drv} && {valid_w})");
@@ -3596,9 +4314,13 @@ impl<'a> Codegen<'a> {
                     self.line(&format!("{tail} <= ({tail} + 1) % ({depth_str});"));
                     self.indent -= 1;
                     self.line("end");
-                    self.line(&format!("if ({pop_fire}) {head} <= ({head} + 1) % ({depth_str});"));
+                    self.line(&format!(
+                        "if ({pop_fire}) {head} <= ({head} + 1) % ({depth_str});"
+                    ));
                     self.line(&format!("if ({push} && !{pop_fire}) {occ} <= {occ} + 1;"));
-                    self.line(&format!("else if (!{push} &&  {pop_fire}) {occ} <= {occ} - 1;"));
+                    self.line(&format!(
+                        "else if (!{push} &&  {pop_fire}) {occ} <= {occ} - 1;"
+                    ));
                     self.indent -= 1;
                     self.line("end");
                     self.indent -= 1;
@@ -3613,9 +4335,13 @@ impl<'a> Codegen<'a> {
                     self.line(&format!("{tail} <= ({tail} + 1) % ({depth_str});"));
                     self.indent -= 1;
                     self.line("end");
-                    self.line(&format!("if ({pop_fire}) {head} <= ({head} + 1) % ({depth_str});"));
+                    self.line(&format!(
+                        "if ({pop_fire}) {head} <= ({head} + 1) % ({depth_str});"
+                    ));
                     self.line(&format!("if ({push} && !{pop_fire}) {occ} <= {occ} + 1;"));
-                    self.line(&format!("else if (!{push} &&  {pop_fire}) {occ} <= {occ} - 1;"));
+                    self.line(&format!(
+                        "else if (!{push} &&  {pop_fire}) {occ} <= {occ} - 1;"
+                    ));
                     self.indent -= 1;
                     self.line("end");
                 }
@@ -3643,10 +4369,7 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn is_const_reducible_with(
-        e: &Expr,
-        const_params: &std::collections::HashSet<String>,
-    ) -> bool {
+    fn is_const_reducible_with(e: &Expr, const_params: &std::collections::HashSet<String>) -> bool {
         match &e.kind {
             ExprKind::Literal(_) => true,
             ExprKind::Ident(n) => const_params.contains(n),
@@ -3681,35 +4404,52 @@ impl<'a> Codegen<'a> {
     /// Deferred: occupancy = DEPTH - credit (cross-module property; lands
     /// with a hierarchical-formal story).
     fn emit_credit_channel_asserts(&mut self, m: &ModuleDecl) {
-        let mut sender_emissions:   Vec<(String, crate::ast::CreditChannelMeta)> = Vec::new();
+        let mut sender_emissions: Vec<(String, crate::ast::CreditChannelMeta)> = Vec::new();
         let mut receiver_emissions: Vec<(String, crate::ast::CreditChannelMeta)> = Vec::new();
         for p in &m.ports {
-            let Some(ref bi) = p.bus_info else { continue; };
+            let Some(ref bi) = p.bus_info else {
+                continue;
+            };
             let Some((crate::resolve::Symbol::Bus(info), _)) =
-                self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+                self.symbols.globals.get(&bi.bus_name.name)
+            else {
+                continue;
+            };
             for cc in &info.credit_channels {
                 let is_sender = matches!(
                     (cc.role_dir, bi.perspective),
                     (Direction::Out, crate::ast::BusPerspective::Initiator)
-                  | (Direction::In,  crate::ast::BusPerspective::Target)
+                        | (Direction::In, crate::ast::BusPerspective::Target)
                 );
-                if is_sender { sender_emissions.push((p.name.name.clone(), cc.clone())); }
-                else         { receiver_emissions.push((p.name.name.clone(), cc.clone())); }
+                if is_sender {
+                    sender_emissions.push((p.name.name.clone(), cc.clone()));
+                } else {
+                    receiver_emissions.push((p.name.name.clone(), cc.clone()));
+                }
             }
         }
-        if sender_emissions.is_empty() && receiver_emissions.is_empty() { return; }
+        if sender_emissions.is_empty() && receiver_emissions.is_empty() {
+            return;
+        }
 
-        let clk = m.ports.iter()
+        let clk = m
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone());
-        let Some(clk) = clk else { return; };
-        let rst_active = m.ports.iter()
+        let Some(clk) = clk else {
+            return;
+        };
+        let rst_active = m
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)))
             .map(|p| match &p.ty {
                 TypeExpr::Reset(_, ResetLevel::Low) => format!("!{}", p.name.name),
                 _ => p.name.name.clone(),
             });
-        let disable = rst_active.as_ref()
+        let disable = rst_active
+            .as_ref()
             .map(|r| format!(" disable iff ({r})"))
             .unwrap_or_default();
         let mod_name = m.name.name.clone();
@@ -3720,10 +4460,15 @@ impl<'a> Codegen<'a> {
 
         for (port_name, cc) in &sender_emissions {
             let ch = &cc.name.name;
-            let Some(depth_expr) = cc.params.iter()
+            let Some(depth_expr) = cc
+                .params
+                .iter()
                 .find(|p| p.name.name == "DEPTH")
-                .and_then(|p| p.default.as_ref()) else { continue; };
-            let depth_str  = self.emit_expr_str(depth_expr);
+                .and_then(|p| p.default.as_ref())
+            else {
+                continue;
+            };
+            let depth_str = self.emit_expr_str(depth_expr);
             let credit_reg = format!("__{port_name}_{ch}_credit");
             let send_valid = format!("{port_name}_{ch}_send_valid");
 
@@ -3747,7 +4492,7 @@ impl<'a> Codegen<'a> {
         for (port_name, cc) in &receiver_emissions {
             let ch = &cc.name.name;
             let credit_ret = format!("{port_name}_{ch}_credit_return");
-            let buf_valid  = format!("__{port_name}_{ch}_valid");
+            let buf_valid = format!("__{port_name}_{ch}_valid");
             let label = format!("_auto_cc_{port_name}_{ch}_credit_return_requires_buffered");
             self.line(&format!(
                 "{label}: assert property (@(posedge {clk}){disable} {credit_ret} |-> {buf_valid})"
@@ -3771,26 +4516,40 @@ impl<'a> Codegen<'a> {
     fn emit_tlm_method_asserts(&mut self, m: &ModuleDecl) {
         let mut emissions: Vec<(String, crate::ast::TlmMethodMeta)> = Vec::new();
         for p in &m.ports {
-            let Some(ref bi) = p.bus_info else { continue; };
+            let Some(ref bi) = p.bus_info else {
+                continue;
+            };
             let Some((crate::resolve::Symbol::Bus(info), _)) =
-                self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+                self.symbols.globals.get(&bi.bus_name.name)
+            else {
+                continue;
+            };
             for tm in &info.tlm_methods {
                 emissions.push((p.name.name.clone(), tm.clone()));
             }
         }
-        if emissions.is_empty() { return; }
+        if emissions.is_empty() {
+            return;
+        }
 
-        let clk = m.ports.iter()
+        let clk = m
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone());
-        let Some(clk) = clk else { return; };
-        let rst_active = m.ports.iter()
+        let Some(clk) = clk else {
+            return;
+        };
+        let rst_active = m
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)))
             .map(|p| match &p.ty {
                 TypeExpr::Reset(_, ResetLevel::Low) => format!("!{}", p.name.name),
                 _ => p.name.name.clone(),
             });
-        let disable = rst_active.as_ref()
+        let disable = rst_active
+            .as_ref()
             .map(|r| format!(" disable iff ({r})"))
             .unwrap_or_default();
         let mod_name = m.name.name.clone();
@@ -3871,27 +4630,114 @@ impl<'a> Codegen<'a> {
     ) {
         match s {
             Stmt::Assign(a) => {
-                self.collect_bound_expr(&a.target, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen);
-                self.collect_bound_expr(&a.value, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen);
+                self.collect_bound_expr(
+                    &a.target,
+                    vec_sizes,
+                    scalar_widths,
+                    const_params,
+                    loop_iters,
+                    guard,
+                    sites,
+                    seen,
+                );
+                self.collect_bound_expr(
+                    &a.value,
+                    vec_sizes,
+                    scalar_widths,
+                    const_params,
+                    loop_iters,
+                    guard,
+                    sites,
+                    seen,
+                );
             }
             Stmt::IfElse(ie) => {
-                self.collect_bound_expr(&ie.cond, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen);
+                self.collect_bound_expr(
+                    &ie.cond,
+                    vec_sizes,
+                    scalar_widths,
+                    const_params,
+                    loop_iters,
+                    guard,
+                    sites,
+                    seen,
+                );
                 let cond = self.emit_expr_str(&ie.cond);
                 let then_guard = Self::and_bound_guard(guard, &cond);
                 let else_guard = Self::and_bound_guard(guard, &format!("!({cond})"));
-                for s in &ie.then_stmts { self.collect_bound_stmt(s, vec_sizes, scalar_widths, const_params, loop_iters, Some(&then_guard), sites, seen); }
-                for s in &ie.else_stmts { self.collect_bound_stmt(s, vec_sizes, scalar_widths, const_params, loop_iters, Some(&else_guard), sites, seen); }
+                for s in &ie.then_stmts {
+                    self.collect_bound_stmt(
+                        s,
+                        vec_sizes,
+                        scalar_widths,
+                        const_params,
+                        loop_iters,
+                        Some(&then_guard),
+                        sites,
+                        seen,
+                    );
+                }
+                for s in &ie.else_stmts {
+                    self.collect_bound_stmt(
+                        s,
+                        vec_sizes,
+                        scalar_widths,
+                        const_params,
+                        loop_iters,
+                        Some(&else_guard),
+                        sites,
+                        seen,
+                    );
+                }
             }
             Stmt::Match(m) => {
-                self.collect_bound_expr(&m.scrutinee, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen);
+                self.collect_bound_expr(
+                    &m.scrutinee,
+                    vec_sizes,
+                    scalar_widths,
+                    const_params,
+                    loop_iters,
+                    guard,
+                    sites,
+                    seen,
+                );
                 for arm in &m.arms {
-                    for s in &arm.body { self.collect_bound_stmt(s, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen); }
+                    for s in &arm.body {
+                        self.collect_bound_stmt(
+                            s,
+                            vec_sizes,
+                            scalar_widths,
+                            const_params,
+                            loop_iters,
+                            guard,
+                            sites,
+                            seen,
+                        );
+                    }
                 }
             }
             Stmt::For(f) => {
                 if let ForRange::Range(lo, hi) = &f.range {
-                    self.collect_bound_expr(lo, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen);
-                    self.collect_bound_expr(hi, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen);
+                    self.collect_bound_expr(
+                        lo,
+                        vec_sizes,
+                        scalar_widths,
+                        const_params,
+                        loop_iters,
+                        guard,
+                        sites,
+                        seen,
+                    );
+                    self.collect_bound_expr(
+                        hi,
+                        vec_sizes,
+                        scalar_widths,
+                        const_params,
+                        loop_iters,
+                        guard,
+                        sites,
+                        seen,
+                    );
                 }
                 // Add the loop iterator name to the in-scope set so any
                 // `Vec[iter]` index inside the body elides the bound assertion:
@@ -3901,15 +4747,66 @@ impl<'a> Codegen<'a> {
                 // (`Can't find definition of variable: 'fb'`).
                 let mut nested = loop_iters.clone();
                 nested.insert(f.var.name.clone());
-                for s in &f.body { self.collect_bound_stmt(s, vec_sizes, scalar_widths, const_params, &nested, guard, sites, seen); }
+                for s in &f.body {
+                    self.collect_bound_stmt(
+                        s,
+                        vec_sizes,
+                        scalar_widths,
+                        const_params,
+                        &nested,
+                        guard,
+                        sites,
+                        seen,
+                    );
+                }
             }
             Stmt::Init(ib) => {
-                for s in &ib.body { self.collect_bound_stmt(s, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen); }
+                for s in &ib.body {
+                    self.collect_bound_stmt(
+                        s,
+                        vec_sizes,
+                        scalar_widths,
+                        const_params,
+                        loop_iters,
+                        guard,
+                        sites,
+                        seen,
+                    );
+                }
             }
-            Stmt::WaitUntil(e, _) => self.collect_bound_expr(e, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen),
+            Stmt::WaitUntil(e, _) => self.collect_bound_expr(
+                e,
+                vec_sizes,
+                scalar_widths,
+                const_params,
+                loop_iters,
+                guard,
+                sites,
+                seen,
+            ),
             Stmt::DoUntil { body, cond, .. } => {
-                for s in body { self.collect_bound_stmt(s, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen); }
-                self.collect_bound_expr(cond, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen);
+                for s in body {
+                    self.collect_bound_stmt(
+                        s,
+                        vec_sizes,
+                        scalar_widths,
+                        const_params,
+                        loop_iters,
+                        guard,
+                        sites,
+                        seen,
+                    );
+                }
+                self.collect_bound_expr(
+                    cond,
+                    vec_sizes,
+                    scalar_widths,
+                    const_params,
+                    loop_iters,
+                    guard,
+                    sites,
+                    seen,
+                );
             }
             Stmt::Log(_) => {}
         }
@@ -3952,13 +4849,23 @@ impl<'a> Codegen<'a> {
         // that doesn't exist outside the for-loop body and (b) duplicate a
         // check the loop range already enforces.
         let idx_is_loop_iter = |ex: &Expr| -> bool {
-            if let ExprKind::Ident(n) = &ex.kind { loop_iters.contains(n) } else { false }
+            if let ExprKind::Ident(n) = &ex.kind {
+                loop_iters.contains(n)
+            } else {
+                false
+            }
         };
         let base_ident = |ex: &Expr| -> Option<String> {
-            if let ExprKind::Ident(n) = &ex.kind { Some(n.clone()) } else { None }
+            if let ExprKind::Ident(n) = &ex.kind {
+                Some(n.clone())
+            } else {
+                None
+            }
         };
-        let push = |predicate: String, tag: &str, sites: &mut Vec<(String, String)>,
-                        seen: &mut std::collections::HashSet<String>| {
+        let push = |predicate: String,
+                    tag: &str,
+                    sites: &mut Vec<(String, String)>,
+                    seen: &mut std::collections::HashSet<String>| {
             let predicate = Self::guard_bound_predicate(predicate, guard);
             if seen.insert(predicate.clone()) {
                 sites.push((predicate, tag.to_string()));
@@ -3976,8 +4883,26 @@ impl<'a> Codegen<'a> {
                         }
                     }
                 }
-                self.collect_bound_expr(base, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen);
-                self.collect_bound_expr(idx, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen);
+                self.collect_bound_expr(
+                    base,
+                    vec_sizes,
+                    scalar_widths,
+                    const_params,
+                    loop_iters,
+                    guard,
+                    sites,
+                    seen,
+                );
+                self.collect_bound_expr(
+                    idx,
+                    vec_sizes,
+                    scalar_widths,
+                    const_params,
+                    loop_iters,
+                    guard,
+                    sites,
+                    seen,
+                );
             }
             ExprKind::PartSelect(base, start, width, up) => {
                 if !idx_is_const(start) && !idx_is_loop_iter(start) {
@@ -3999,8 +4924,26 @@ impl<'a> Codegen<'a> {
                         }
                     }
                 }
-                self.collect_bound_expr(base, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen);
-                self.collect_bound_expr(start, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen);
+                self.collect_bound_expr(
+                    base,
+                    vec_sizes,
+                    scalar_widths,
+                    const_params,
+                    loop_iters,
+                    guard,
+                    sites,
+                    seen,
+                );
+                self.collect_bound_expr(
+                    start,
+                    vec_sizes,
+                    scalar_widths,
+                    const_params,
+                    loop_iters,
+                    guard,
+                    sites,
+                    seen,
+                );
             }
             ExprKind::Binary(op, a, b) => {
                 // Divide-by-zero assertion: divisor must be non-zero at every
@@ -4017,27 +4960,141 @@ impl<'a> Codegen<'a> {
                         sites.push((pred, tag.to_string()));
                     }
                 }
-                self.collect_bound_expr(a, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen);
-                self.collect_bound_expr(b, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen);
+                self.collect_bound_expr(
+                    a,
+                    vec_sizes,
+                    scalar_widths,
+                    const_params,
+                    loop_iters,
+                    guard,
+                    sites,
+                    seen,
+                );
+                self.collect_bound_expr(
+                    b,
+                    vec_sizes,
+                    scalar_widths,
+                    const_params,
+                    loop_iters,
+                    guard,
+                    sites,
+                    seen,
+                );
             }
-            ExprKind::Unary(_, a) => self.collect_bound_expr(a, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen),
+            ExprKind::Unary(_, a) => self.collect_bound_expr(
+                a,
+                vec_sizes,
+                scalar_widths,
+                const_params,
+                loop_iters,
+                guard,
+                sites,
+                seen,
+            ),
             ExprKind::Ternary(c, t, f) => {
-                self.collect_bound_expr(c, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen);
-                self.collect_bound_expr(t, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen);
-                self.collect_bound_expr(f, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen);
+                self.collect_bound_expr(
+                    c,
+                    vec_sizes,
+                    scalar_widths,
+                    const_params,
+                    loop_iters,
+                    guard,
+                    sites,
+                    seen,
+                );
+                self.collect_bound_expr(
+                    t,
+                    vec_sizes,
+                    scalar_widths,
+                    const_params,
+                    loop_iters,
+                    guard,
+                    sites,
+                    seen,
+                );
+                self.collect_bound_expr(
+                    f,
+                    vec_sizes,
+                    scalar_widths,
+                    const_params,
+                    loop_iters,
+                    guard,
+                    sites,
+                    seen,
+                );
             }
             ExprKind::MethodCall(base, _, args) => {
-                self.collect_bound_expr(base, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen);
-                for a in args { self.collect_bound_expr(a, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen); }
+                self.collect_bound_expr(
+                    base,
+                    vec_sizes,
+                    scalar_widths,
+                    const_params,
+                    loop_iters,
+                    guard,
+                    sites,
+                    seen,
+                );
+                for a in args {
+                    self.collect_bound_expr(
+                        a,
+                        vec_sizes,
+                        scalar_widths,
+                        const_params,
+                        loop_iters,
+                        guard,
+                        sites,
+                        seen,
+                    );
+                }
             }
             ExprKind::FunctionCall(_, args) => {
-                for a in args { self.collect_bound_expr(a, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen); }
+                for a in args {
+                    self.collect_bound_expr(
+                        a,
+                        vec_sizes,
+                        scalar_widths,
+                        const_params,
+                        loop_iters,
+                        guard,
+                        sites,
+                        seen,
+                    );
+                }
             }
             ExprKind::Concat(parts) => {
-                for p in parts { self.collect_bound_expr(p, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen); }
+                for p in parts {
+                    self.collect_bound_expr(
+                        p,
+                        vec_sizes,
+                        scalar_widths,
+                        const_params,
+                        loop_iters,
+                        guard,
+                        sites,
+                        seen,
+                    );
+                }
             }
-            ExprKind::FieldAccess(base, _) => self.collect_bound_expr(base, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen),
-            ExprKind::BitSlice(base, _, _) => self.collect_bound_expr(base, vec_sizes, scalar_widths, const_params, loop_iters, guard, sites, seen),
+            ExprKind::FieldAccess(base, _) => self.collect_bound_expr(
+                base,
+                vec_sizes,
+                scalar_widths,
+                const_params,
+                loop_iters,
+                guard,
+                sites,
+                seen,
+            ),
+            ExprKind::BitSlice(base, _, _) => self.collect_bound_expr(
+                base,
+                vec_sizes,
+                scalar_widths,
+                const_params,
+                loop_iters,
+                guard,
+                sites,
+                seen,
+            ),
             _ => {}
         }
     }
@@ -4077,8 +5134,10 @@ impl<'a> Codegen<'a> {
                 // Check if target root is reg_name
                 let targets_reg = match &a.target.kind {
                     ExprKind::Ident(n) => n == reg_name,
-                    ExprKind::Index(base, _) | ExprKind::FieldAccess(base, _)
-                    | ExprKind::BitSlice(base, _, _) | ExprKind::PartSelect(base, _, _, _) => {
+                    ExprKind::Index(base, _)
+                    | ExprKind::FieldAccess(base, _)
+                    | ExprKind::BitSlice(base, _, _)
+                    | ExprKind::PartSelect(base, _, _, _) => {
                         matches!(&base.kind, ExprKind::Ident(n) if n == reg_name)
                     }
                     _ => false,
@@ -4181,12 +5240,16 @@ impl<'a> Codegen<'a> {
     /// codegen for now — promote to a shared util if a third caller appears.
     fn type_expr_width(&self, ty: &TypeExpr) -> Option<u32> {
         let eval = |e: &Expr| match &e.kind {
-            ExprKind::Literal(LitKind::Dec(n)) | ExprKind::Literal(LitKind::Hex(n)) => Some(*n as u32),
+            ExprKind::Literal(LitKind::Dec(n)) | ExprKind::Literal(LitKind::Hex(n)) => {
+                Some(*n as u32)
+            }
             _ => None,
         };
         match ty {
             TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval(w),
             TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => Some(1),
+            TypeExpr::FP32 => Some(32),
+            TypeExpr::BF16 => Some(16),
             TypeExpr::Vec(inner, size) => {
                 let iw = self.type_expr_width(inner)?;
                 let n = eval(size)?;
@@ -4244,7 +5307,7 @@ impl<'a> Codegen<'a> {
             let (sym, _) = scope.get(n.as_str())?;
             let te_opt: Option<&TypeExpr> = match sym {
                 Symbol::Port(p) => Some(&p.ty),
-                Symbol::Reg(r)  => Some(&r.ty),
+                Symbol::Reg(r) => Some(&r.ty),
                 _ => None,
             };
             if let Some(TypeExpr::Named(struct_name)) = te_opt {
@@ -4310,13 +5373,7 @@ impl<'a> Codegen<'a> {
     /// alternative (threading a mutable binding map through every
     /// `emit_expr_str` caller) would touch ~30 sites; this is localized.
     #[allow(clippy::ptr_arg)]
-    fn emit_vec_method(
-        &self,
-        recv_b: &str,
-        recv: &Expr,
-        method: &Ident,
-        args: &[Expr],
-    ) -> String {
+    fn emit_vec_method(&self, recv_b: &str, recv: &Expr, method: &Ident, args: &[Expr]) -> String {
         // Resolve N. The receiver is an Ident in v1; more complex
         // expressions are not lowered (falls through to placeholder).
         let n = match &recv.kind {
@@ -4340,8 +5397,12 @@ impl<'a> Codegen<'a> {
             let this = self as *const Codegen as *mut Codegen;
             // SAFETY: single-threaded emission; no aliasing.
             unsafe {
-                (*this).ident_subst.insert("item".to_string(), format!("{recv_b}[{i}]"));
-                (*this).ident_subst.insert("index".to_string(), format!("{idx_w}'d{i}"));
+                (*this)
+                    .ident_subst
+                    .insert("item".to_string(), format!("{recv_b}[{i}]"));
+                (*this)
+                    .ident_subst
+                    .insert("index".to_string(), format!("{idx_w}'d{i}"));
             }
             let result = if let Some(pred) = args.first() {
                 self.emit_expr_str(pred)
@@ -4359,15 +5420,21 @@ impl<'a> Codegen<'a> {
 
         match method.name.as_str() {
             "any" => {
-                if n_usize == 0 { return "1'b0".to_string(); }
+                if n_usize == 0 {
+                    return "1'b0".to_string();
+                }
                 (0..n).map(emit_at).collect::<Vec<_>>().join(" || ")
             }
             "all" => {
-                if n_usize == 0 { return "1'b1".to_string(); }
+                if n_usize == 0 {
+                    return "1'b1".to_string();
+                }
                 (0..n).map(emit_at).collect::<Vec<_>>().join(" && ")
             }
             "count" => {
-                if n_usize == 0 { return "0".to_string(); }
+                if n_usize == 0 {
+                    return "0".to_string();
+                }
                 let w = crate::width::index_width((n + 1) as u64);
                 // Sum of bool conversions. SV auto-widens `+` per 1800-2012 §11.6.
                 let terms: Vec<String> = (0..n)
@@ -4383,28 +5450,40 @@ impl<'a> Codegen<'a> {
                     return "1'b0".to_string();
                 };
                 let x = self.emit_expr_str(x_expr);
-                if n_usize == 0 { return "1'b0".to_string(); }
-                (0..n).map(|i| format!("({recv_b}[{i}] == {x})"))
-                      .collect::<Vec<_>>()
-                      .join(" || ")
+                if n_usize == 0 {
+                    return "1'b0".to_string();
+                }
+                (0..n)
+                    .map(|i| format!("({recv_b}[{i}] == {x})"))
+                    .collect::<Vec<_>>()
+                    .join(" || ")
             }
             "reduce_or" => {
-                if n_usize == 0 { return "0".to_string(); }
-                (0..n).map(|i| format!("{recv_b}[{i}]"))
-                      .collect::<Vec<_>>()
-                      .join(" | ")
+                if n_usize == 0 {
+                    return "0".to_string();
+                }
+                (0..n)
+                    .map(|i| format!("{recv_b}[{i}]"))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
             }
             "reduce_and" => {
-                if n_usize == 0 { return "0".to_string(); }
-                (0..n).map(|i| format!("{recv_b}[{i}]"))
-                      .collect::<Vec<_>>()
-                      .join(" & ")
+                if n_usize == 0 {
+                    return "0".to_string();
+                }
+                (0..n)
+                    .map(|i| format!("{recv_b}[{i}]"))
+                    .collect::<Vec<_>>()
+                    .join(" & ")
             }
             "reduce_xor" => {
-                if n_usize == 0 { return "0".to_string(); }
-                (0..n).map(|i| format!("{recv_b}[{i}]"))
-                      .collect::<Vec<_>>()
-                      .join(" ^ ")
+                if n_usize == 0 {
+                    return "0".to_string();
+                }
+                (0..n)
+                    .map(|i| format!("{recv_b}[{i}]"))
+                    .collect::<Vec<_>>()
+                    .join(" ^ ")
             }
             "find_first" => {
                 // Record the index width so a matching typedef is emitted
@@ -4491,7 +5570,9 @@ impl<'a> Codegen<'a> {
                         };
                         if let Some(te) = te_opt {
                             match te {
-                                TypeExpr::UInt(w) | TypeExpr::SInt(w) => return self.emit_expr_str(w),
+                                TypeExpr::UInt(w) | TypeExpr::SInt(w) => {
+                                    return self.emit_expr_str(w)
+                                }
                                 TypeExpr::Bool | TypeExpr::Bit => return "1".to_string(),
                                 _ => {}
                             }
@@ -4506,8 +5587,13 @@ impl<'a> Codegen<'a> {
                                                 if lb.name.name == *name {
                                                     if let Some(ty) = &lb.ty {
                                                         match ty {
-                                                            TypeExpr::UInt(w) | TypeExpr::SInt(w) => return self.emit_expr_str(w),
-                                                            TypeExpr::Bool | TypeExpr::Bit => return "1".to_string(),
+                                                            TypeExpr::UInt(w)
+                                                            | TypeExpr::SInt(w) => {
+                                                                return self.emit_expr_str(w)
+                                                            }
+                                                            TypeExpr::Bool | TypeExpr::Bit => {
+                                                                return "1".to_string()
+                                                            }
                                                             _ => {}
                                                         }
                                                     }
@@ -4524,7 +5610,11 @@ impl<'a> Codegen<'a> {
             }
             // Unsized literals: compute minimum bit width from value (never 0 bits)
             ExprKind::Literal(LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v)) => {
-                let bits = if *v == 0 { 1 } else { (64 - v.leading_zeros()) as u32 };
+                let bits = if *v == 0 {
+                    1
+                } else {
+                    (64 - v.leading_zeros()) as u32
+                };
                 bits.to_string()
             }
             ExprKind::Literal(LitKind::Sized(w, _)) => w.to_string(),
@@ -4555,7 +5645,9 @@ impl<'a> Codegen<'a> {
                                 };
                                 if let Some(TypeExpr::Vec(inner, _)) = te_opt {
                                     match inner.as_ref() {
-                                        TypeExpr::UInt(w) | TypeExpr::SInt(w) => return self.emit_expr_str(w),
+                                        TypeExpr::UInt(w) | TypeExpr::SInt(w) => {
+                                            return self.emit_expr_str(w)
+                                        }
                                         TypeExpr::Bool | TypeExpr::Bit => return "1".to_string(),
                                         _ => {}
                                     }
@@ -4571,7 +5663,11 @@ impl<'a> Codegen<'a> {
             ExprKind::Binary(BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap, lhs, rhs) => {
                 let lw = self.infer_sv_width_str(lhs);
                 let rw = self.infer_sv_width_str(rhs);
-                if lw == rw { lw } else { format!("({lw} > {rw} ? {lw} : {rw})") }
+                if lw == rw {
+                    lw
+                } else {
+                    format!("({lw} > {rw} ? {lw} : {rw})")
+                }
             }
             _ => format!("$bits({})", self.emit_expr_str(expr)),
         }
@@ -4640,6 +5736,10 @@ impl<'a> Codegen<'a> {
                 LitKind::Hex(v) => format!("'h{v:X}"),
                 LitKind::Bin(v) => format!("'b{v:b}"),
                 LitKind::Sized(w, v) => format!("{w}'d{v}"),
+                // Float literal (FP32 by default) → 32-bit binary32 bit pattern.
+                LitKind::Float(bits) => {
+                    format!("32'h{:08X}", (f64::from_bits(*bits) as f32).to_bits())
+                }
             },
             ExprKind::Bool(true) => "1'b1".to_string(),
             ExprKind::Bool(false) => "1'b0".to_string(),
@@ -4659,10 +5759,35 @@ impl<'a> Codegen<'a> {
                 name.clone()
             }
             ExprKind::Binary(op, lhs, rhs) => {
+                // Floating-point operands dispatch to the emitted `arch_f32_*` /
+                // `arch_bf16_*` SystemVerilog helper functions.
+                if let Some(fmt) = self
+                    .expr_float_fmt(lhs)
+                    .or_else(|| self.expr_float_fmt(rhs))
+                {
+                    let fop = match op {
+                        BinOp::Add => Some("add"),
+                        BinOp::Sub => Some("sub"),
+                        BinOp::Mul => Some("mul"),
+                        BinOp::Eq => Some("eq"),
+                        BinOp::Neq => Some("ne"),
+                        BinOp::Lt => Some("lt"),
+                        BinOp::Gt => Some("gt"),
+                        BinOp::Lte => Some("le"),
+                        BinOp::Gte => Some("ge"),
+                        _ => None,
+                    };
+                    if let Some(fop) = fop {
+                        self.fp_helpers_used.set(true);
+                        let l = self.emit_expr_prec(lhs, 0);
+                        let r = self.emit_expr_prec(rhs, 0);
+                        return format!("arch_{fmt}_{fop}({l}, {r})");
+                    }
+                }
                 // `implies` lowers to (!lhs || rhs)
                 if *op == BinOp::Implies {
                     let l = self.emit_expr_prec(lhs, 14); // unary prec for !
-                    let r = self.emit_expr_prec(rhs, 4);  // || prec
+                    let r = self.emit_expr_prec(rhs, 4); // || prec
                     return format!("{l} |-> {r}");
                 }
                 if *op == BinOp::ImpliesNext {
@@ -4723,7 +5848,11 @@ impl<'a> Codegen<'a> {
                 if matches!(op, BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap) {
                     let lw = self.infer_sv_width_str(lhs);
                     let rw = self.infer_sv_width_str(rhs);
-                    let w = if lw == rw { lw } else { format!("({lw} > {rw} ? {lw} : {rw})") };
+                    let w = if lw == rw {
+                        lw
+                    } else {
+                        format!("({lw} > {rw} ? {lw} : {rw})")
+                    };
                     let wp = Self::paren_width(&w);
                     format!("{wp}'({l} {op_str} {r})")
                 } else {
@@ -4805,7 +5934,10 @@ impl<'a> Codegen<'a> {
                             if self.bus_wires.contains_key(&cell0) {
                                 let m_str = resolve_str(inner_idx);
                                 let n_str = resolve_str(idx);
-                                return format!("{}_{}[{}][{}]", arr_name, field.name, m_str, n_str);
+                                return format!(
+                                    "{}_{}[{}][{}]",
+                                    arr_name, field.name, m_str, n_str
+                                );
                             }
                         }
                     }
@@ -4910,10 +6042,60 @@ impl<'a> Codegen<'a> {
                             b
                         }
                     }
-                    "any" | "all" | "count" | "contains"
-                    | "reduce_or" | "reduce_and" | "reduce_xor"
-                    | "find_first" => {
-                        self.emit_vec_method(&b, base, method, args)
+                    "any" | "all" | "count" | "contains" | "reduce_or" | "reduce_and"
+                    | "reduce_xor" | "find_first" => self.emit_vec_method(&b, base, method, args),
+                    // Float conversions → emitted helper functions.
+                    "to_fp32" => {
+                        self.fp_helpers_used.set(true);
+                        match self.expr_float_fmt(base) {
+                            Some("bf16") => format!("arch_bf16_to_f32({b})"),
+                            Some("f32") => b,
+                            _ => {
+                                // int -> f32 (RNE) via the synthesizable helper.
+                                if self.expr_is_signed(base) {
+                                    format!("arch_i64_to_f32(64'($signed({b})))")
+                                } else {
+                                    format!("arch_u64_to_f32(64'($unsigned({b})))")
+                                }
+                            }
+                        }
+                    }
+                    "to_bf16" => {
+                        self.fp_helpers_used.set(true);
+                        match self.expr_float_fmt(base) {
+                            Some("f32") => format!("arch_f32_to_bf16({b})"),
+                            Some("bf16") => b,
+                            _ => {
+                                // int -> f32 (RNE) -> bf16 (RNE) — innocuous double rounding.
+                                if self.expr_is_signed(base) {
+                                    format!("arch_f32_to_bf16(arch_i64_to_f32(64'($signed({b}))))")
+                                } else {
+                                    format!(
+                                        "arch_f32_to_bf16(arch_u64_to_f32(64'($unsigned({b}))))"
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    "to_uint" | "to_sint" => {
+                        self.fp_helpers_used.set(true);
+                        let width = args
+                            .first()
+                            .map(|w| self.emit_expr_str(w))
+                            .unwrap_or_else(|| "32".to_string());
+                        let wp = Self::paren_width(&width);
+                        let f32bits = match self.expr_float_fmt(base) {
+                            Some("bf16") => format!("arch_bf16_to_f32({b})"),
+                            _ => b.clone(),
+                        };
+                        // Toward-zero, saturating to the N-bit target, NaN -> type max
+                        // (synthesizable helper; returns a 64-bit value truncated to N).
+                        let conv = if method.name == "to_sint" {
+                            "arch_f32_to_sint"
+                        } else {
+                            "arch_f32_to_uint"
+                        };
+                        format!("{wp}'({conv}({f32bits}, {width}))")
                     }
                     _ => format!("{b}.{}()", method.name),
                 }
@@ -4964,9 +6146,11 @@ impl<'a> Codegen<'a> {
                 format!("{b}[{i}]")
             }
             ExprKind::BitSlice(base, hi, lo) => {
-                if let (Some(v), Some(hi_v), Some(lo_v)) =
-                    (literal_expr_u64(base), literal_expr_u64(hi), literal_expr_u64(lo))
-                {
+                if let (Some(v), Some(hi_v), Some(lo_v)) = (
+                    literal_expr_u64(base),
+                    literal_expr_u64(hi),
+                    literal_expr_u64(lo),
+                ) {
                     if hi_v >= lo_v && hi_v < 64 {
                         let width = (hi_v - lo_v + 1) as u32;
                         let mask = if width >= 64 {
@@ -4989,12 +6173,21 @@ impl<'a> Codegen<'a> {
                 // because bit-select doesn't compose with the parenthesized
                 // expression — but `func()[hi:lo]` is valid (function-call
                 // result is an "lvalue-like" form per the SV grammar).
-                let b = if matches!(base.kind, ExprKind::Ident(_) | ExprKind::SynthIdent(_, _)
-                    | ExprKind::Literal(_)
-                    | ExprKind::Index(_, _) | ExprKind::FieldAccess(_, _)
-                    | ExprKind::Concat(_)
-                    | ExprKind::FunctionCall(_, _) | ExprKind::MethodCall(_, _, _)) { b }
-                    else { format!("({})", b) };
+                let b = if matches!(
+                    base.kind,
+                    ExprKind::Ident(_)
+                        | ExprKind::SynthIdent(_, _)
+                        | ExprKind::Literal(_)
+                        | ExprKind::Index(_, _)
+                        | ExprKind::FieldAccess(_, _)
+                        | ExprKind::Concat(_)
+                        | ExprKind::FunctionCall(_, _)
+                        | ExprKind::MethodCall(_, _, _)
+                ) {
+                    b
+                } else {
+                    format!("({})", b)
+                };
                 // Try to emit indexed part-select: base[lo +: width]
                 if let Some(width) = Self::try_indexed_part_select(hi, lo) {
                     let l = self.emit_expr_str(lo);
@@ -5048,10 +6241,16 @@ impl<'a> Codegen<'a> {
             ExprKind::EnumVariant(enum_name, variant) => {
                 // Extern types from `extern package` — emit bare variant name
                 // (preserving case), relying on `import Pkg::*;` for resolution.
-                if matches!(self.symbols.globals.get(&enum_name.name), Some((Symbol::ExternEnum(_), _))) {
+                if matches!(
+                    self.symbols.globals.get(&enum_name.name),
+                    Some((Symbol::ExternEnum(_), _))
+                ) {
                     variant.name.clone()
                 // Known ARCH-side enum → emit just the variant name in uppercase.
-                } else if matches!(self.symbols.globals.get(&enum_name.name), Some((Symbol::Enum(_), _))) {
+                } else if matches!(
+                    self.symbols.globals.get(&enum_name.name),
+                    Some((Symbol::Enum(_), _))
+                ) {
                     variant.name.to_uppercase()
                 // Cross-package qualified refs (e.g. `ibex_pkg::RV32MFast`) —
                 // preserve the package prefix and original case.
@@ -5059,9 +6258,7 @@ impl<'a> Codegen<'a> {
                     format!("{}::{}", enum_name.name, variant.name)
                 }
             }
-            ExprKind::Todo => {
-                "'0 /* TODO: todo! placeholder */".to_string()
-            }
+            ExprKind::Todo => "'0 /* TODO: todo! placeholder */".to_string(),
             ExprKind::Concat(parts) => {
                 let strs: Vec<String> = parts.iter().map(|p| self.emit_expr_str(p)).collect();
                 format!("{{{}}}", strs.join(", "))
@@ -5112,7 +6309,11 @@ impl<'a> Codegen<'a> {
                         }
                         Pattern::Ident(id) => format!("({s} == {id})", id = id.name),
                         Pattern::EnumVariant(en, vr) => {
-                            format!("({s} == {en}__{vr})", en = en.name.to_uppercase(), vr = vr.name.to_uppercase())
+                            format!(
+                                "({s} == {en}__{vr})",
+                                en = en.name.to_uppercase(),
+                                vr = vr.name.to_uppercase()
+                            )
                         }
                     };
                     result = format!("({cond} ? {val} : {result})");
@@ -5128,14 +6329,17 @@ impl<'a> Codegen<'a> {
             }
             ExprKind::Inside(scrutinee, members) => {
                 let s = self.emit_expr_str(scrutinee);
-                let member_strs: Vec<String> = members.iter().map(|m| match m {
-                    InsideMember::Single(e) => self.emit_expr_str(e),
-                    InsideMember::Range(lo, hi) => {
-                        let l = self.emit_expr_str(lo);
-                        let h = self.emit_expr_str(hi);
-                        format!("[{l}:{h}]")
-                    }
-                }).collect();
+                let member_strs: Vec<String> = members
+                    .iter()
+                    .map(|m| match m {
+                        InsideMember::Single(e) => self.emit_expr_str(e),
+                        InsideMember::Range(lo, hi) => {
+                            let l = self.emit_expr_str(lo);
+                            let h = self.emit_expr_str(hi);
+                            format!("[{l}:{h}]")
+                        }
+                    })
+                    .collect();
                 format!("{s} inside {{{}}}", member_strs.join(", "))
             }
             ExprKind::FunctionCall(name, args) => {
@@ -5153,12 +6357,38 @@ impl<'a> Codegen<'a> {
                 if name == "past" || name == "rose" || name == "fell" {
                     return format!("${name}({})", arg_strs.join(", "));
                 }
+                // Float intrinsics → emitted helper functions.
+                if name == "fma" && args.len() == 3 {
+                    self.fp_helpers_used.set(true);
+                    let fmt = self
+                        .expr_float_fmt(&args[0])
+                        .or_else(|| self.expr_float_fmt(&args[1]))
+                        .or_else(|| self.expr_float_fmt(&args[2]))
+                        .unwrap_or("f32");
+                    return format!("arch_fma_{fmt}({})", arg_strs.join(", "));
+                }
+                if name == "is_nan" && args.len() == 1 {
+                    // exponent all-ones and mantissa nonzero.
+                    let a = &arg_strs[0];
+                    return match self.expr_float_fmt(&args[0]) {
+                        Some("bf16") => format!("(({a}[14:7] == 8'hFF) && ({a}[6:0] != 7'b0))"),
+                        _ => format!("(({a}[30:23] == 8'hFF) && ({a}[22:0] != 23'b0))"),
+                    };
+                }
                 // Resolve mangled name if this is an overloaded function.
-                let sv_name = if let Some((Symbol::Function(overloads), _)) = self.symbols.globals.get(name) {
+                let sv_name = if let Some((Symbol::Function(overloads), _)) =
+                    self.symbols.globals.get(name)
+                {
                     if overloads.len() > 1 {
-                        let idx = self.overload_map.get(&expr.span.start).copied().unwrap_or(0);
+                        let idx = self
+                            .overload_map
+                            .get(&expr.span.start)
+                            .copied()
+                            .unwrap_or(0);
                         let ov = &overloads[idx];
-                        let suffix: String = ov.arg_types.iter()
+                        let suffix: String = ov
+                            .arg_types
+                            .iter()
                             .map(|t| Self::type_mangle_tag(t))
                             .collect::<Vec<_>>()
                             .join("_");
@@ -5212,6 +6442,10 @@ impl<'a> Codegen<'a> {
             }
             TypeExpr::Bool => "logic".to_string(),
             TypeExpr::Bit => "logic".to_string(),
+            // Floats are carried as packed bit vectors (the FP unit modules
+            // operate on the raw [W-1:0] bit pattern).
+            TypeExpr::FP32 => "logic [31:0]".to_string(),
+            TypeExpr::BF16 => "logic [15:0]".to_string(),
             TypeExpr::Clock(_) => "logic".to_string(),
             TypeExpr::Reset(_, _) => "logic".to_string(),
             TypeExpr::Vec(_, _) => {
@@ -5229,7 +6463,10 @@ impl<'a> Codegen<'a> {
     }
 
     /// Substitute bus parameter names in a TypeExpr with actual value expressions.
-    fn subst_type_expr(ty: &TypeExpr, params: &std::collections::HashMap<String, &Expr>) -> TypeExpr {
+    fn subst_type_expr(
+        ty: &TypeExpr,
+        params: &std::collections::HashMap<String, &Expr>,
+    ) -> TypeExpr {
         match ty {
             TypeExpr::UInt(w) => TypeExpr::UInt(Box::new(Self::subst_expr(w, params))),
             TypeExpr::SInt(w) => TypeExpr::SInt(Box::new(Self::subst_expr(w, params))),
@@ -5258,10 +6495,7 @@ impl<'a> Codegen<'a> {
                 Box::new(Self::subst_expr(l, params)),
                 Box::new(Self::subst_expr(r, params)),
             ),
-            ExprKind::Unary(op, e) => ExprKind::Unary(
-                *op,
-                Box::new(Self::subst_expr(e, params)),
-            ),
+            ExprKind::Unary(op, e) => ExprKind::Unary(*op, Box::new(Self::subst_expr(e, params))),
             ExprKind::Ternary(c, t, e) => ExprKind::Ternary(
                 Box::new(Self::subst_expr(c, params)),
                 Box::new(Self::subst_expr(t, params)),
@@ -5352,7 +6586,11 @@ impl<'a> Codegen<'a> {
     /// array as `logic [W-1:0] x [N]` shorthand (= `[0:N-1]`); without
     /// this, IEEE 1800-2017 §10.10 element-by-position port mapping
     /// silently reverses the indices. See arch-com#307.
-    fn emit_type_and_unpacked_suffix_dir(&self, ty: &TypeExpr, ascending: bool) -> (String, String) {
+    fn emit_type_and_unpacked_suffix_dir(
+        &self,
+        ty: &TypeExpr,
+        ascending: bool,
+    ) -> (String, String) {
         let mut dims = Vec::new();
         let mut cur = ty;
         while let TypeExpr::Vec(inner, size) = cur {
@@ -5390,7 +6628,6 @@ impl<'a> Codegen<'a> {
 
     // ── Synchronizer ─────────────────────────────────────────────────────────
     // ── RAM ───────────────────────────────────────────────────────────────────
-
 }
 
 fn literal_expr_u64(expr: &Expr) -> Option<u64> {

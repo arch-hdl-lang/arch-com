@@ -289,6 +289,8 @@ fn type_width_u64(ty: &TypeExpr) -> Result<u64, String> {
     match ty {
         TypeExpr::UInt(width) | TypeExpr::SInt(width) => const_expr_u64(width),
         TypeExpr::Bool | TypeExpr::Bit => Ok(1),
+        TypeExpr::FP32 => Ok(32),
+        TypeExpr::BF16 => Ok(16),
         TypeExpr::Vec(elem, len) => {
             let elem_width = type_width_u64(elem)?;
             let len = const_expr_u64(len)?;

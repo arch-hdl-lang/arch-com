@@ -34,14 +34,17 @@ pub fn resolve_type_aliases(mut ast: SourceFile) -> Result<SourceFile, Vec<Compi
             }
         }
     }
-    if errors.is_empty() { Ok(ast) } else { Err(errors) }
+    if errors.is_empty() {
+        Ok(ast)
+    } else {
+        Err(errors)
+    }
 }
 
 /// Resolved alias table: `name -> (TypeExpr, bus_params)`.
 type AliasMap = HashMap<String, (TypeExpr, Vec<ParamAssign>)>;
 
-const PRIMITIVE_TYPE_NAMES: &[&str] =
-    &["UInt", "SInt", "Bool", "Bit", "Clock", "Reset", "Vec"];
+const PRIMITIVE_TYPE_NAMES: &[&str] = &["UInt", "SInt", "Bool", "Bit", "Clock", "Reset", "Vec"];
 
 fn resolve_module(m: &mut ModuleDecl) -> Result<(), Vec<CompileError>> {
     let mut errors: Vec<CompileError> = Vec::new();
@@ -130,7 +133,11 @@ fn resolve_module(m: &mut ModuleDecl) -> Result<(), Vec<CompileError>> {
         // single bogus alias that was already errored on above).
     }
 
-    if errors.is_empty() { Ok(()) } else { Err(errors) }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 /// Walk a TypeExpr; replace every `Named(name)` that matches an alias
@@ -196,7 +203,9 @@ fn alias_bus_params(ty: &TypeExpr, aliases: &AliasMap) -> Vec<ParamAssign> {
     let mut cur = ty;
     loop {
         match cur {
-            TypeExpr::Vec(inner, _) => { cur = inner; }
+            TypeExpr::Vec(inner, _) => {
+                cur = inner;
+            }
             TypeExpr::Named(ident) => {
                 if let Some((_, bus_params)) = aliases.get(&ident.name) {
                     return bus_params.clone();
@@ -496,8 +505,10 @@ fn substitute_in_expr(e: &mut Expr, aliases: &AliasMap, errors: &mut Vec<Compile
             substitute_in_expr(n, aliases, errors);
             substitute_in_expr(v, aliases, errors);
         }
-        ExprKind::Clog2(inner) | ExprKind::Onehot(inner)
-        | ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => {
+        ExprKind::Clog2(inner)
+        | ExprKind::Onehot(inner)
+        | ExprKind::Signed(inner)
+        | ExprKind::Unsigned(inner) => {
             substitute_in_expr(inner, aliases, errors);
         }
         ExprKind::LatencyAt(inner, _) => substitute_in_expr(inner, aliases, errors),

@@ -466,7 +466,10 @@ end fsm BadFsm
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = TypeChecker::new(&symbols, &ast);
     let result = checker.check();
-    assert!(result.is_err(), "fsm with port named 'state_r' should error");
+    assert!(
+        result.is_err(),
+        "fsm with port named 'state_r' should error"
+    );
 }
 
 // ── FIFO ──────────────────────────────────────────────────────────────────────
@@ -996,7 +999,8 @@ end ram BadLatRam
     assert!(result.is_err(), "latency 3 RAM should be rejected");
     let errs = result.err().unwrap();
     assert!(
-        errs.iter().any(|e| format!("{e:?}").contains("latency 3 is out of range")),
+        errs.iter()
+            .any(|e| format!("{e:?}").contains("latency 3 is out of range")),
         "error should name the out-of-range latency: {errs:?}"
     );
 }
@@ -27863,8 +27867,8 @@ fn test_graph_tlm_method_callers_resolve_through_bus_port_type() {
     let td = tempfile::tempdir().expect("tempdir");
     let graph = td.path().join("graph");
     let arch_bin = env!("CARGO_BIN_EXE_arch");
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/axi_dma_tlm/TlmOneToOne.arch");
+    let src =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/axi_dma_tlm/TlmOneToOne.arch");
 
     let index = std::process::Command::new(arch_bin)
         .args(["graph", "index"])
@@ -28155,7 +28159,6 @@ end pipeline GuardRegPipe
         "a register used as a combinational mux select on an output must be accepted"
     );
 }
-
 
 // ────────────────────────────────────────────────────────────────────
 // NIC-400 GPV (PR #551) + C-channel clock-gate (PR #555) — coverage

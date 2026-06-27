@@ -11,25 +11,33 @@ impl<'a> Codegen<'a> {
         let n = c.name.name.clone();
 
         // Required params (validated by typecheck): DEPTH, KEY_W
-        let depth_default = c.params.iter()
+        let depth_default = c
+            .params
+            .iter()
             .find(|p| p.name.name == "DEPTH")
             .and_then(|p| p.default.as_ref())
             .map(|e| self.emit_expr_str(e))
             .unwrap_or_else(|| "0".to_string());
-        let key_w_default = c.params.iter()
+        let key_w_default = c
+            .params
+            .iter()
             .find(|p| p.name.name == "KEY_W")
             .and_then(|p| p.default.as_ref())
             .map(|e| self.emit_expr_str(e))
             .unwrap_or_else(|| "0".to_string());
         // v3: optional VAL_W param activates the value-payload bundle.
         let has_value = c.params.iter().any(|p| p.name.name == "VAL_W");
-        let val_w_default = c.params.iter()
+        let val_w_default = c
+            .params
+            .iter()
             .find(|p| p.name.name == "VAL_W")
             .and_then(|p| p.default.as_ref())
             .map(|e| self.emit_expr_str(e))
             .unwrap_or_else(|| "0".to_string());
 
-        let clk = c.ports.iter()
+        let clk = c
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone())
             .unwrap_or_else(|| "clk".to_string());
@@ -52,7 +60,10 @@ impl<'a> Codegen<'a> {
 
         let mut all_ports: Vec<String> = Vec::new();
         for p in &c.ports {
-            let dir = match p.direction { Direction::In => "input", Direction::Out => "output" };
+            let dir = match p.direction {
+                Direction::In => "input",
+                Direction::Out => "output",
+            };
             let ty_str = self.emit_port_type_str(&p.ty);
             all_ports.push(format!("{dir} {ty_str} {}", p.name.name));
         }
@@ -180,5 +191,4 @@ impl<'a> Codegen<'a> {
         self.line("endmodule");
         self.line("");
     }
-
 }
