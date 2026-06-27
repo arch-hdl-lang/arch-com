@@ -1,0 +1,39 @@
+name: rustfmt
+
+# Fails if any Rust source is not formatted by the pinned rustfmt (see
+# rust-toolchain.toml). Non-mutating: it only checks. Run `cargo fmt` locally
+# to fix. Keep the toolchain version below in sync with rust-toolchain.toml.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/*.rs'
+      - 'rustfmt.toml'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/rustfmt.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/*.rs'
+      - 'rustfmt.toml'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/rustfmt.yml'
+
+concurrency:
+  group: rustfmt-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt-check:
+    name: cargo fmt --check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain + rustfmt
+        uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          components: rustfmt
+
+      - name: cargo fmt --all --check
+        run: cargo fmt --all --check
