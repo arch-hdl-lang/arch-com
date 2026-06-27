@@ -2913,12 +2913,45 @@ impl<'a> TypeChecker<'a> {
         module_name: &str,
         local_types: &HashMap<String, Ty>,
     ) {
+        // `_` (wildcard) must be the final arm, and may appear at most once.
+        // Match arms resolve by priority (source order; `unique match` only
+        // asserts mutual exclusivity), so `_` matches every remaining value and
+        // any arm written after it is unreachable. A bare identifier arm
+        // (`FOO =>`) is a constant comparison (lowered to `s == FOO`), not a
+        // catch-all, so it is unrestricted. This applies to every match — enum
+        // or integer/literal — so it runs before the enum-only logic below.
+        // Both spellings of the wildcard (`Pattern::Wildcard` and the bare
+        // identifier `_`) count, mirroring codegen's `default` lowering.
+        let is_wildcard = |p: &Pattern| {
+            matches!(p, Pattern::Wildcard) || matches!(p, Pattern::Ident(id) if id.name == "_")
+        };
+        let wildcard_idxs: Vec<usize> = patterns
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| is_wildcard(p))
+            .map(|(i, _)| i)
+            .collect();
+        if wildcard_idxs.len() > 1 {
+            self.errors.push(CompileError::general(
+                "duplicate wildcard arm: a `match` may contain at most one `_`",
+                span,
+            ));
+        } else if let Some(&first) = wildcard_idxs.first() {
+            if first != patterns.len() - 1 {
+                self.errors.push(CompileError::general(
+                    "unreachable match arm: the wildcard `_` already matches every \
+                     value — make `_` the last arm, or remove the arm(s) after it",
+                    span,
+                ));
+            }
+        }
+
         let scrutinee_ty = self.resolve_expr_type(scrutinee, module_name, local_types);
         let enum_name = match &scrutinee_ty {
             Ty::Enum(name, _) => name.clone(),
             _ => return, // only check enum matches
         };
-        if patterns.iter().any(|p| matches!(p, Pattern::Wildcard)) {
+        if patterns.iter().any(is_wildcard) {
             return; // wildcard covers everything
         }
         let covered: HashSet<String> = patterns

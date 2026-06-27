@@ -28988,3 +28988,108 @@ int main() {\n\
         "both ternary arms should be hit by the smoke bench:\n{coverage_text}"
     );
 }
+
+#[test]
+fn test_match_wildcard_not_last_is_unreachable_error() {
+    // `_` before a later arm: that arm is unreachable (priority semantics).
+    let source = r#"
+enum Color
+  Red,
+  Green,
+  Blue,
+end enum Color
+
+module BadOrder
+  port c: in Color;
+  port o: out UInt<8>;
+  comb
+    match c
+      Color::Red  => o = 1;
+      _           => o = 0;
+      Color::Blue => o = 3;
+    end match
+  end comb
+end module BadOrder
+"#;
+    let errs = typecheck_source(source).expect_err("expected an unreachable-arm error");
+    let msg = format!("{errs:?}");
+    assert!(
+        msg.contains("unreachable match arm"),
+        "expected unreachable-wildcard-arm diagnostic, got: {msg}"
+    );
+}
+
+#[test]
+fn test_match_wildcard_last_is_accepted() {
+    let source = r#"
+enum Color
+  Red,
+  Green,
+  Blue,
+end enum Color
+
+module GoodOrder
+  port c: in Color;
+  port o: out UInt<8>;
+  comb
+    match c
+      Color::Red  => o = 1;
+      Color::Blue => o = 3;
+      _           => o = 0;
+    end match
+  end comb
+end module GoodOrder
+"#;
+    assert!(
+        typecheck_source(source).is_ok(),
+        "a match with `_` as the final arm must type-check"
+    );
+}
+
+#[test]
+fn test_match_duplicate_wildcard_is_error() {
+    let source = r#"
+module DupWild
+  port c: in UInt<2>;
+  port o: out UInt<8>;
+  comb
+    match c
+      0 => o = 1;
+      _ => o = 2;
+      _ => o = 3;
+    end match
+  end comb
+end module DupWild
+"#;
+    let errs = typecheck_source(source).expect_err("expected a duplicate-wildcard error");
+    assert!(
+        format!("{errs:?}").contains("duplicate wildcard arm"),
+        "expected duplicate-wildcard diagnostic, got: {:?}",
+        typecheck_source(source)
+    );
+}
+
+#[test]
+fn test_match_wildcard_not_last_errors_for_non_enum_too() {
+    // The rule applies to every match, not only enum matches: this integer
+    // match places `_` before a literal arm.
+    let source = r#"
+module IntBadOrder
+  port c: in UInt<2>;
+  port o: out UInt<8>;
+  comb
+    match c
+      0 => o = 1;
+      _ => o = 0;
+      1 => o = 2;
+    end match
+  end comb
+end module IntBadOrder
+"#;
+    let errs =
+        typecheck_source(source).expect_err("expected unreachable-arm error for non-enum match");
+    assert!(
+        format!("{errs:?}").contains("unreachable match arm"),
+        "non-enum match must also enforce wildcard-last"
+    );
+}
