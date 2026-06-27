@@ -1,19 +1,19 @@
 //! `gen_linklist` emitter — extracted from `sim_codegen/mod.rs`. Follows
 //! the same submodule pattern as fsm.rs / pipeline.rs / ram.rs / fifo.rs.
 
-use super::{SimCodegen, SimModel};
 use super::*;
+use super::{SimCodegen, SimModel};
 
 impl<'a> SimCodegen<'a> {
     pub(crate) fn gen_linklist(&self, l: &crate::ast::LinklistDecl) -> SimModel {
-        use crate::ast::{LinklistKind, Direction};
+        use crate::ast::{Direction, LinklistKind};
 
-        let name  = &l.name.name;
+        let name = &l.name.name;
         let class = format!("V{name}");
 
         let depth = l.param_int("DEPTH", 8) as usize;
         let handle_mask = (1u64 << crate::width::clog2(depth as u64)) - 1;
-        let cnt_mask    = (1u64 << crate::width::clog2((depth + 1) as u64)) - 1;
+        let cnt_mask = (1u64 << crate::width::clog2((depth + 1) as u64)) - 1;
 
         // Multi-head linklist support — mirror of the SV codegen in
         // src/codegen.rs::emit_linklist. When NUM_HEADS > 1, head/tail
@@ -24,26 +24,39 @@ impl<'a> SimCodegen<'a> {
         let num_heads = crate::typecheck::linklist_num_heads(l) as usize;
         let multi_head = num_heads > 1;
         // Head-addressed ops need per-head indexing + latch.
-        let is_head_addr = |on: &str| matches!(
-            on,
-            "insert_head" | "insert_tail" | "insert_after" | "delete_head" | "delete"
-        );
+        let is_head_addr = |on: &str| {
+            matches!(
+                on,
+                "insert_head" | "insert_tail" | "insert_after" | "delete_head" | "delete"
+            )
+        };
         // C++ expressions for head_r / tail_r access given either the
         // live port (`<op>_req_head_idx`) or the latched reg.
         let head_r_at = |idx_expr: &str| -> String {
-            if multi_head { format!("_head_r[{idx_expr}]") } else { "_head_r".to_string() }
+            if multi_head {
+                format!("_head_r[{idx_expr}]")
+            } else {
+                "_head_r".to_string()
+            }
         };
         let tail_r_at = |idx_expr: &str| -> String {
-            if multi_head { format!("_tail_r[{idx_expr}]") } else { "_tail_r".to_string() }
+            if multi_head {
+                format!("_tail_r[{idx_expr}]")
+            } else {
+                "_tail_r".to_string()
+            }
         };
 
-        let data_te: Option<TypeExpr> = l.params.iter()
-            .find(|p| p.name.name == "DATA")
-            .and_then(|p| match &p.kind {
-                crate::ast::ParamKind::Type(te) => Some(te.clone()),
-                _ => None,
-            });
-        let data_cpp: String = data_te.as_ref()
+        let data_te: Option<TypeExpr> =
+            l.params
+                .iter()
+                .find(|p| p.name.name == "DATA")
+                .and_then(|p| match &p.kind {
+                    crate::ast::ParamKind::Type(te) => Some(te.clone()),
+                    _ => None,
+                });
+        let data_cpp: String = data_te
+            .as_ref()
             .map(|te| cpp_port_type_with_params(te, &l.params))
             .unwrap_or_else(|| "uint32_t".to_string());
 
@@ -70,18 +83,27 @@ impl<'a> SimCodegen<'a> {
 
         // ── Header ────────────────────────────────────────────────────────────
         let mut h = String::new();
-        h.push_str("#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\n");
+        h.push_str(
+            "#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\n",
+        );
         h.push_str(&format!("class {class} {{\npublic:\n"));
         h.push_str("  uint8_t clk;\n  uint8_t rst;\n");
         for op in &l.ops {
             for p in &op.ports {
-                h.push_str(&format!("  {} {}_{};\n", port_cpp_ty(&p.ty), op.name.name, p.name.name));
+                h.push_str(&format!(
+                    "  {} {}_{};\n",
+                    port_cpp_ty(&p.ty),
+                    op.name.name,
+                    p.name.name
+                ));
             }
         }
         for p in &l.ports {
             match p.name.name.as_str() {
                 "clk" | "rst" => {}
-                _ => { h.push_str(&format!("  {} {};\n", port_cpp_ty(&p.ty), p.name.name)); }
+                _ => {
+                    h.push_str(&format!("  {} {};\n", port_cpp_ty(&p.ty), p.name.name));
+                }
             }
         }
         h.push('\n');
@@ -95,11 +117,15 @@ impl<'a> SimCodegen<'a> {
         for p in &l.ports {
             match p.name.name.as_str() {
                 "clk" | "rst" => {}
-                _ => { ctor_inits.push(format!("{}(0)", p.name.name)); }
+                _ => {
+                    ctor_inits.push(format!("{}(0)", p.name.name));
+                }
             }
         }
         ctor_inits.extend([
-            "_clk_prev(0)".into(), "_fl_rdp(0)".into(), "_fl_wrp(0)".into(),
+            "_clk_prev(0)".into(),
+            "_fl_rdp(0)".into(),
+            "_fl_wrp(0)".into(),
             format!("_fl_cnt({depth})"),
         ]);
         // Scalar head/tail in single-head mode; arrays are zeroed in the
@@ -110,7 +136,9 @@ impl<'a> SimCodegen<'a> {
         }
         for op in &l.ops {
             let on = &op.name.name;
-            if op.latency > 1 { ctor_inits.push(format!("_ctrl_{on}_busy(0)")); }
+            if op.latency > 1 {
+                ctor_inits.push(format!("_ctrl_{on}_busy(0)"));
+            }
             if op.ports.iter().any(|p| p.name.name == "resp_valid") {
                 ctor_inits.push(format!("_ctrl_{on}_resp_v(0)"));
             }
@@ -131,10 +159,14 @@ impl<'a> SimCodegen<'a> {
             }
         }
         h.push_str(&format!("  {class}() : {} {{\n", ctor_inits.join(", ")));
-        h.push_str(&format!("    for (int _i = 0; _i < {depth}; _i++) _fl_mem[_i] = (uint8_t)_i;\n"));
+        h.push_str(&format!(
+            "    for (int _i = 0; _i < {depth}; _i++) _fl_mem[_i] = (uint8_t)_i;\n"
+        ));
         h.push_str("    memset(_data_mem, 0, sizeof(_data_mem));\n");
         h.push_str("    memset(_next_mem, 0, sizeof(_next_mem));\n");
-        if has_doubly { h.push_str("    memset(_prev_mem, 0, sizeof(_prev_mem));\n"); }
+        if has_doubly {
+            h.push_str("    memset(_prev_mem, 0, sizeof(_prev_mem));\n");
+        }
         if multi_head {
             h.push_str("    memset(_head_r, 0, sizeof(_head_r));\n");
             h.push_str("    memset(_tail_r, 0, sizeof(_tail_r));\n");
@@ -146,7 +178,9 @@ impl<'a> SimCodegen<'a> {
         h.push_str(&format!("  uint8_t _fl_mem[{depth}];\n"));
         h.push_str(&format!("  {data_cpp} _data_mem[{depth}];\n"));
         h.push_str(&format!("  uint8_t _next_mem[{depth}];\n"));
-        if has_doubly { h.push_str(&format!("  uint8_t _prev_mem[{depth}];\n")); }
+        if has_doubly {
+            h.push_str(&format!("  uint8_t _prev_mem[{depth}];\n"));
+        }
         h.push_str("  uint8_t _fl_rdp, _fl_wrp;\n  uint8_t _fl_cnt;\n");
         if multi_head {
             h.push_str(&format!("  uint8_t _head_r[{num_heads}];\n"));
@@ -159,12 +193,18 @@ impl<'a> SimCodegen<'a> {
         }
         for op in &l.ops {
             let on = &op.name.name;
-            if op.latency > 1 { h.push_str(&format!("  uint8_t _ctrl_{on}_busy;\n")); }
+            if op.latency > 1 {
+                h.push_str(&format!("  uint8_t _ctrl_{on}_busy;\n"));
+            }
             if op.ports.iter().any(|p| p.name.name == "resp_valid") {
                 h.push_str(&format!("  uint8_t _ctrl_{on}_resp_v;\n"));
             }
             for p in op.ports.iter().filter(|p| is_out_data(p)) {
-                h.push_str(&format!("  {} _ctrl_{on}_{};\n", port_cpp_ty(&p.ty), p.name.name));
+                h.push_str(&format!(
+                    "  {} _ctrl_{on}_{};\n",
+                    port_cpp_ty(&p.ty),
+                    p.name.name
+                ));
             }
             if on == "delete_head" || on == "delete" {
                 h.push_str(&format!("  uint8_t _ctrl_{on}_slot;\n"));
@@ -208,21 +248,24 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str("  full   = (_fl_cnt == 0);\n");
         }
         if has_status("length") {
-            cpp.push_str(&format!("  length = (uint8_t)(({depth} - _fl_cnt) & {cnt_mask:#x});\n"));
+            cpp.push_str(&format!(
+                "  length = (uint8_t)(({depth} - _fl_cnt) & {cnt_mask:#x});\n"
+            ));
         }
         for op in &l.ops {
             let on = &op.name.name;
             // req_ready — only if the op declares it
             if op.ports.iter().any(|p| p.name.name == "req_ready") {
                 let rdy: String = match on.as_str() {
-                    "alloc"  => "(_fl_cnt != 0)".into(),
-                    "free"   => format!("(_fl_cnt != {depth})"),
-                    "insert_tail" | "insert_head" | "insert_after" =>
-                        format!("(!_ctrl_{on}_busy && _fl_cnt != 0)"),
-                    "delete_head" | "delete" if multi_head =>
-                        format!("(!_ctrl_{on}_busy && _length_r[{on}_req_head_idx] != 0)"),
-                    "delete_head" | "delete" =>
-                        format!("(!_ctrl_{on}_busy && _fl_cnt != {depth})"),
+                    "alloc" => "(_fl_cnt != 0)".into(),
+                    "free" => format!("(_fl_cnt != {depth})"),
+                    "insert_tail" | "insert_head" | "insert_after" => {
+                        format!("(!_ctrl_{on}_busy && _fl_cnt != 0)")
+                    }
+                    "delete_head" | "delete" if multi_head => {
+                        format!("(!_ctrl_{on}_busy && _length_r[{on}_req_head_idx] != 0)")
+                    }
+                    "delete_head" | "delete" => format!("(!_ctrl_{on}_busy && _fl_cnt != {depth})"),
                     _ => "1".into(),
                 };
                 cpp.push_str(&format!("  {on}_req_ready = {rdy};\n"));
@@ -232,7 +275,10 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str(&format!("  {on}_resp_valid = _ctrl_{on}_resp_v;\n"));
             }
             for p in op.ports.iter().filter(|p| is_out_data(p)) {
-                cpp.push_str(&format!("  {on}_{} = _ctrl_{on}_{};\n", p.name.name, p.name.name));
+                cpp.push_str(&format!(
+                    "  {on}_{} = _ctrl_{on}_{};\n",
+                    p.name.name, p.name.name
+                ));
             }
         }
         cpp.push_str("}\n\n");
@@ -245,7 +291,9 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("  _clk_prev = clk;\n");
         cpp.push_str("  if (!_rising) return;\n");
         cpp.push_str("  if (rst) {\n");
-        cpp.push_str(&format!("    for (int _i = 0; _i < {depth}; _i++) _fl_mem[_i] = (uint8_t)_i;\n"));
+        cpp.push_str(&format!(
+            "    for (int _i = 0; _i < {depth}; _i++) _fl_mem[_i] = (uint8_t)_i;\n"
+        ));
         cpp.push_str("    _fl_rdp = 0; _fl_wrp = 0;\n");
         cpp.push_str(&format!("    _fl_cnt = {depth};\n"));
         if multi_head {
@@ -255,7 +303,9 @@ impl<'a> SimCodegen<'a> {
         }
         for op in &l.ops {
             let on = &op.name.name;
-            if op.latency > 1 { cpp.push_str(&format!("    _ctrl_{on}_busy = 0;\n")); }
+            if op.latency > 1 {
+                cpp.push_str(&format!("    _ctrl_{on}_busy = 0;\n"));
+            }
             if op.ports.iter().any(|p| p.name.name == "resp_valid") {
                 cpp.push_str(&format!("    _ctrl_{on}_resp_v = 0;\n"));
             }
@@ -434,9 +484,21 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("  }\n}\n");
 
         let extra_sigs: Vec<(&str, &str, u32)> = vec![];
-        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &l.ports, &extra_sigs, &l.params);
+        add_trace_to_simple_construct(
+            &mut h,
+            &mut cpp,
+            &class,
+            name,
+            &l.ports,
+            &extra_sigs,
+            &l.params,
+        );
         h.push_str("};\n");
 
-        SimModel { class_name: class, header: h, impl_: cpp }
+        SimModel {
+            class_name: class,
+            header: h,
+            impl_: cpp,
+        }
     }
 }

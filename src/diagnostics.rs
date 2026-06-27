@@ -186,30 +186,74 @@ impl CompileError {
             SourceSpan::new(new_offset.into(), span.len().into())
         }
         match self {
-            CompileError::UnexpectedToken { expected, found, span } =>
-                CompileError::UnexpectedToken { expected, found, span: respan(span, new_offset) },
-            CompileError::MismatchedClosingName { expected, found, span } =>
-                CompileError::MismatchedClosingName { expected, found, span: respan(span, new_offset) },
-            CompileError::UndefinedName { name, span } =>
-                CompileError::UndefinedName { name, span: respan(span, new_offset) },
-            CompileError::UndefinedModule { name, hint, span } =>
-                CompileError::UndefinedModule { name, hint, span: respan(span, new_offset) },
-            CompileError::DuplicateDefinition { name, span } =>
-                CompileError::DuplicateDefinition { name, span: respan(span, new_offset) },
-            CompileError::TypeMismatch { expected, found, span } =>
-                CompileError::TypeMismatch { expected, found, span: respan(span, new_offset) },
-            CompileError::WidthMismatch { target_width, value_width, span } =>
-                CompileError::WidthMismatch { target_width, value_width, span: respan(span, new_offset) },
-            CompileError::MultipleDrivers { name, span } =>
-                CompileError::MultipleDrivers { name, span: respan(span, new_offset) },
-            CompileError::UndriveOutput { name, span } =>
-                CompileError::UndriveOutput { name, span: respan(span, new_offset) },
-            CompileError::NamingViolation { message, span } =>
-                CompileError::NamingViolation { message, span: respan(span, new_offset) },
-            CompileError::LexerError { span } =>
-                CompileError::LexerError { span: respan(span, new_offset) },
-            CompileError::General { message, span } =>
-                CompileError::General { message, span: respan(span, new_offset) },
+            CompileError::UnexpectedToken {
+                expected,
+                found,
+                span,
+            } => CompileError::UnexpectedToken {
+                expected,
+                found,
+                span: respan(span, new_offset),
+            },
+            CompileError::MismatchedClosingName {
+                expected,
+                found,
+                span,
+            } => CompileError::MismatchedClosingName {
+                expected,
+                found,
+                span: respan(span, new_offset),
+            },
+            CompileError::UndefinedName { name, span } => CompileError::UndefinedName {
+                name,
+                span: respan(span, new_offset),
+            },
+            CompileError::UndefinedModule { name, hint, span } => CompileError::UndefinedModule {
+                name,
+                hint,
+                span: respan(span, new_offset),
+            },
+            CompileError::DuplicateDefinition { name, span } => CompileError::DuplicateDefinition {
+                name,
+                span: respan(span, new_offset),
+            },
+            CompileError::TypeMismatch {
+                expected,
+                found,
+                span,
+            } => CompileError::TypeMismatch {
+                expected,
+                found,
+                span: respan(span, new_offset),
+            },
+            CompileError::WidthMismatch {
+                target_width,
+                value_width,
+                span,
+            } => CompileError::WidthMismatch {
+                target_width,
+                value_width,
+                span: respan(span, new_offset),
+            },
+            CompileError::MultipleDrivers { name, span } => CompileError::MultipleDrivers {
+                name,
+                span: respan(span, new_offset),
+            },
+            CompileError::UndriveOutput { name, span } => CompileError::UndriveOutput {
+                name,
+                span: respan(span, new_offset),
+            },
+            CompileError::NamingViolation { message, span } => CompileError::NamingViolation {
+                message,
+                span: respan(span, new_offset),
+            },
+            CompileError::LexerError { span } => CompileError::LexerError {
+                span: respan(span, new_offset),
+            },
+            CompileError::General { message, span } => CompileError::General {
+                message,
+                span: respan(span, new_offset),
+            },
             CompileError::UnexpectedEof => CompileError::UnexpectedEof,
         }
     }

@@ -902,7 +902,9 @@ fn main() -> miette::Result<()> {
                 json,
                 limit,
             } => run_graph_context(&task, &index, json, limit),
-            GraphCommand::Html { index, out, title } => run_graph_html(&index, &out, title.as_deref()),
+            GraphCommand::Html { index, out, title } => {
+                run_graph_html(&index, &out, title.as_deref())
+            }
         },
         Command::Coverage { command } => match command {
             CoverageCommand::Merge { inputs, out } => run_coverage_merge(&inputs, &out),
@@ -1162,16 +1164,18 @@ fn main() -> miette::Result<()> {
                             })
                             .cloned()
                             .collect();
-                        let mut codegen =
-                            Codegen::new(&symbols, &ast, overload_map).with_comments(comments).with_fp_compat(fp_compat);
+                        let mut codegen = Codegen::new(&symbols, &ast, overload_map)
+                            .with_comments(comments)
+                            .with_fp_compat(fp_compat);
                         let sv = codegen.generate_items(&file_items);
                         let out_path_hint =
                             o.clone().unwrap_or_else(|| files[0].with_extension("sv"));
                         let sdc = codegen.emit_sdc(&out_path_hint.to_string_lossy());
                         (sv, sdc)
                     } else {
-                        let mut codegen =
-                            Codegen::new(&symbols, &ast, overload_map).with_comments(comments).with_fp_compat(fp_compat);
+                        let mut codegen = Codegen::new(&symbols, &ast, overload_map)
+                            .with_comments(comments)
+                            .with_fp_compat(fp_compat);
                         let sv = codegen.generate();
                         let out_path_hint =
                             o.clone().unwrap_or_else(|| files[0].with_extension("sv"));
@@ -1647,9 +1651,13 @@ fn run_thread_sim_cross_check(
     ));
 
     eprintln!("=== arch sim --thread-sim both: building fsm path ===");
-    let fsm_trace = build_and_capture(arch_files, tb_files, &fsm_dir, /*parallel=*/ false, fp_compat)?;
+    let fsm_trace = build_and_capture(
+        arch_files, tb_files, &fsm_dir, /*parallel=*/ false, fp_compat,
+    )?;
     eprintln!("=== arch sim --thread-sim both: building parallel path ===");
-    let par_trace = build_and_capture(arch_files, tb_files, &par_dir, /*parallel=*/ true, fp_compat)?;
+    let par_trace = build_and_capture(
+        arch_files, tb_files, &par_dir, /*parallel=*/ true, fp_compat,
+    )?;
 
     // Filter to just the [cycle][Mod.port](in/out) debug lines, ignore
     // TB stdout. The fsm path uses --debug --depth N to optionally

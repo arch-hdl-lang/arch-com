@@ -8,7 +8,7 @@ use super::*;
 
 impl<'a> Codegen<'a> {
     pub(crate) fn emit_counter(&mut self, c: &crate::ast::CounterDecl) {
-        use crate::ast::{CounterMode, CounterDirection};
+        use crate::ast::{CounterDirection, CounterMode};
 
         let n = &c.name.name.clone();
 
@@ -17,22 +17,26 @@ impl<'a> Codegen<'a> {
         // comparator. Callers tie it off to a constant for fixed-max counters
         // (synthesis folds it). When absent, the counter wraps at the natural
         // width bound (all-ones).
-        let max_port = c.ports.iter()
+        let max_port = c
+            .ports
+            .iter()
             .find(|p| p.name.name == "max" && matches!(p.direction, Direction::In))
             .map(|_| "max".to_string());
 
         // Determine counter width
         // Use MAX param if present, else look for WIDTH
-        let width_param = c.params.iter()
+        let width_param = c
+            .params
+            .iter()
             .find(|p| p.name.name == "WIDTH")
             .and_then(|p| p.default.as_ref())
             .map(|e| self.emit_expr_str(e));
 
         // Find ports to determine direction
-        let has_inc  = c.ports.iter().any(|p| p.name.name == "inc");
-        let has_dec  = c.ports.iter().any(|p| p.name.name == "dec");
+        let has_inc = c.ports.iter().any(|p| p.name.name == "inc");
+        let has_dec = c.ports.iter().any(|p| p.name.name == "dec");
         let has_load = c.ports.iter().any(|p| p.name.name == "load");
-        let has_clear= c.ports.iter().any(|p| p.name.name == "clear");
+        let has_clear = c.ports.iter().any(|p| p.name.name == "clear");
         let value_port = c.ports.iter().find(|p| p.name.name == "value");
 
         // Compute width from value port type or fallback
@@ -45,7 +49,9 @@ impl<'a> Codegen<'a> {
             width_param.clone().unwrap_or_else(|| "8".to_string())
         };
 
-        let clk = c.ports.iter()
+        let clk = c
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone())
             .unwrap_or_else(|| "clk".to_string());
@@ -59,10 +65,15 @@ impl<'a> Codegen<'a> {
             self.indent += 1;
             for (i, p) in c.params.iter().enumerate() {
                 let comma = if i < c.params.len() - 1 { "," } else { "" };
-                let default_str = p.default.as_ref()
+                let default_str = p
+                    .default
+                    .as_ref()
                     .map(|e| format!(" = {}", self.emit_expr_str(e)))
                     .unwrap_or_default();
-                self.line(&format!("parameter int {}{default_str}{comma}", p.name.name));
+                self.line(&format!(
+                    "parameter int {}{default_str}{comma}",
+                    p.name.name
+                ));
             }
             self.indent -= 1;
             self.line(") (");
@@ -71,7 +82,10 @@ impl<'a> Codegen<'a> {
 
         let mut all_ports: Vec<String> = Vec::new();
         for p in &c.ports {
-            let dir = match p.direction { Direction::In => "input", Direction::Out => "output" };
+            let dir = match p.direction {
+                Direction::In => "input",
+                Direction::Out => "output",
+            };
             let ty_str = self.emit_port_type_str(&p.ty);
             all_ports.push(format!("{dir} {ty_str} {}", p.name.name));
         }
@@ -85,12 +99,17 @@ impl<'a> Codegen<'a> {
         self.line("");
         self.indent += 1;
 
-        let init_val = c.init.as_ref()
+        let init_val = c
+            .init
+            .as_ref()
             .map(|e| self.emit_expr_str(e))
             .unwrap_or_else(|| "'0".to_string());
 
         // ── Internal register ─────────────────────────────────────────────────
-        self.line(&format!("logic [{}] count_r;", Self::fold_width_str(&count_width)));
+        self.line(&format!(
+            "logic [{}] count_r;",
+            Self::fold_width_str(&count_width)
+        ));
 
         // ── Determine FF sensitivity list ─────────────────────────────────────
         let ff_sens = Self::ff_sensitivity(&clk, &rst, is_async, is_low);
@@ -115,9 +134,13 @@ impl<'a> Codegen<'a> {
                 let max_cond = if let Some(mp) = &max_port {
                     format!("count_r == {mp}")
                 } else {
-                    format!("&count_r")  // all bits set
+                    format!("&count_r") // all bits set
                 };
-                let inc_cond = if has_inc { "else if (inc) begin" } else { "else begin" };
+                let inc_cond = if has_inc {
+                    "else if (inc) begin"
+                } else {
+                    "else begin"
+                };
                 self.line(inc_cond);
                 self.indent += 1;
                 self.line(&format!("if ({max_cond}) count_r <= {init_val};"));
@@ -132,7 +155,11 @@ impl<'a> Codegen<'a> {
                 } else {
                     format!("'1")
                 };
-                let dec_cond = if has_dec { "else if (dec) begin" } else { "else begin" };
+                let dec_cond = if has_dec {
+                    "else if (dec) begin"
+                } else {
+                    "else begin"
+                };
                 self.line(dec_cond);
                 self.indent += 1;
                 self.line(&format!("if ({min_cond}) count_r <= {max_val};"));
@@ -150,7 +177,11 @@ impl<'a> Codegen<'a> {
                 } else {
                     format!("!(&count_r)")
                 };
-                let inc_cond = if has_inc { "else if (inc) begin" } else { "else begin" };
+                let inc_cond = if has_inc {
+                    "else if (inc) begin"
+                } else {
+                    "else begin"
+                };
                 self.line(inc_cond);
                 self.indent += 1;
                 self.line(&format!("if ({max_cond}) count_r <= count_r + 1;"));
@@ -158,7 +189,11 @@ impl<'a> Codegen<'a> {
                 self.line("end");
             }
             (CounterDirection::Down, CounterMode::Saturate) => {
-                let dec_cond = if has_dec { "else if (dec) begin" } else { "else begin" };
+                let dec_cond = if has_dec {
+                    "else if (dec) begin"
+                } else {
+                    "else begin"
+                };
                 self.line(dec_cond);
                 self.indent += 1;
                 self.line("if (count_r > '0) count_r <= count_r - 1;");
@@ -174,18 +209,30 @@ impl<'a> Codegen<'a> {
                 self.line("end");
             }
             (CounterDirection::Up, CounterMode::OneHot) => {
-                let inc_cond = if has_inc { "else if (inc) begin" } else { "else begin" };
+                let inc_cond = if has_inc {
+                    "else if (inc) begin"
+                } else {
+                    "else begin"
+                };
                 self.line(inc_cond);
                 self.indent += 1;
-                self.line(&format!("count_r <= {{count_r[{count_width}-2:0], count_r[{count_width}-1]}};"));
+                self.line(&format!(
+                    "count_r <= {{count_r[{count_width}-2:0], count_r[{count_width}-1]}};"
+                ));
                 self.indent -= 1;
                 self.line("end");
             }
             (CounterDirection::Up, CounterMode::Johnson) => {
-                let inc_cond = if has_inc { "else if (inc) begin" } else { "else begin" };
+                let inc_cond = if has_inc {
+                    "else if (inc) begin"
+                } else {
+                    "else begin"
+                };
                 self.line(inc_cond);
                 self.indent += 1;
-                self.line(&format!("count_r <= {{~count_r[0], count_r[{count_width}-1:1]}};"));
+                self.line(&format!(
+                    "count_r <= {{~count_r[0], count_r[{count_width}-1:1]}};"
+                ));
                 self.indent -= 1;
                 self.line("end");
             }
@@ -233,8 +280,12 @@ impl<'a> Codegen<'a> {
         }
 
         if !c.asserts.is_empty() {
-            let clk = c.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
-                .map(|p| p.name.name.clone()).unwrap_or_else(|| "clk".to_string());
+            let clk = c
+                .ports
+                .iter()
+                .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                .map(|p| p.name.name.clone())
+                .unwrap_or_else(|| "clk".to_string());
             self.line("");
             let asserts = c.asserts.clone();
             let cname = c.name.name.clone();
@@ -249,5 +300,4 @@ impl<'a> Codegen<'a> {
     }
 
     // ── Arbiter ───────────────────────────────────────────────────────────────
-
 }

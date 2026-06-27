@@ -26,9 +26,9 @@ use std::path::PathBuf;
 /// One recorded learning event. v1 only emits `kind: "error_fix"`.
 #[derive(Debug, Clone)]
 pub struct Event {
-    pub ts: String,          // ISO-8601 UTC
-    pub kind: String,        // "error_fix"
-    pub error_code: String,  // e.g. "width_mismatch"
+    pub ts: String,         // ISO-8601 UTC
+    pub kind: String,       // "error_fix"
+    pub error_code: String, // e.g. "width_mismatch"
     pub error_message: String,
     pub file_path: String,
     pub src_before: String,
@@ -183,7 +183,9 @@ pub fn record_failure(
         return Ok(());
     }
     let dir = learn_dir()?;
-    let pending_file = dir.join("pending").join(format!("{}.json", path_hash(file_path)));
+    let pending_file = dir
+        .join("pending")
+        .join(format!("{}.json", path_hash(file_path)));
     let ts = iso8601_now();
     let pending = PendingFailure {
         ts,
@@ -203,7 +205,9 @@ pub fn record_success_if_pending(
     src_after: &str,
 ) -> std::io::Result<Option<Event>> {
     let dir = learn_dir()?;
-    let pending_file = dir.join("pending").join(format!("{}.json", path_hash(file_path)));
+    let pending_file = dir
+        .join("pending")
+        .join(format!("{}.json", path_hash(file_path)));
     if !pending_file.exists() {
         return Ok(None);
     }
@@ -240,7 +244,10 @@ pub fn record_success_if_pending(
 fn append_event(e: &Event) -> std::io::Result<()> {
     let dir = learn_dir()?;
     let path = dir.join("events.jsonl");
-    let mut f = fs::OpenOptions::new().create(true).append(true).open(&path)?;
+    let mut f = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
     writeln!(f, "{}", event_to_json(e))?;
     Ok(())
 }
@@ -273,10 +280,7 @@ fn append_event(e: &Event) -> std::io::Result<()> {
 ///
 /// Returns the number of feature events emitted across all files. Honors
 /// `ARCH_NO_LEARN` and the store-size cap, same as error-fix events.
-pub fn harvest_features<F>(
-    ast: &crate::ast::SourceFile,
-    file_path_for: F,
-) -> std::io::Result<usize>
+pub fn harvest_features<F>(ast: &crate::ast::SourceFile, file_path_for: F) -> std::io::Result<usize>
 where
     F: Fn(&crate::ast::Item) -> String,
 {
@@ -294,7 +298,8 @@ where
             None => continue,
         };
         // Skip when there's nothing useful to retrieve.
-        if doc.is_empty() && inner_doc.is_empty() && frontmatter.is_empty() && file_inner.is_empty() {
+        if doc.is_empty() && inner_doc.is_empty() && frontmatter.is_empty() && file_inner.is_empty()
+        {
             continue;
         }
         let file = file_path_for(item);
@@ -302,12 +307,17 @@ where
         // BM25 tokenises this in `build_index` / `advise_impl`; per-class
         // separation lives in `src_before` (frontmatter) and `src_after`
         // (inner_doc) for downstream tooling that wants the structure.
-        let combined = [doc.as_str(), inner_doc.as_str(), file_inner.as_str(), frontmatter.as_str()]
-            .iter()
-            .filter(|s| !s.is_empty())
-            .copied()
-            .collect::<Vec<_>>()
-            .join("\n");
+        let combined = [
+            doc.as_str(),
+            inner_doc.as_str(),
+            file_inner.as_str(),
+            frontmatter.as_str(),
+        ]
+        .iter()
+        .filter(|s| !s.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n");
         new_events.push(Event {
             ts: iso8601_now(),
             kind: "feature".to_string(),
@@ -352,9 +362,7 @@ fn extract_doc(item: &crate::ast::Item) -> Option<(&'static str, String, String,
 
 /// Remove all feature events whose `file_path` matches any of `files`.
 /// Rewrites `events.jsonl` by line-filtering. O(N) per call.
-fn purge_features_for_files(
-    files: &std::collections::HashSet<String>,
-) -> std::io::Result<()> {
+fn purge_features_for_files(files: &std::collections::HashSet<String>) -> std::io::Result<()> {
     let dir = learn_dir()?;
     let path = dir.join("events.jsonl");
     if !path.exists() {
@@ -368,9 +376,9 @@ fn purge_features_for_files(
         }
         // Cheap filter: only re-parse lines that actually carry kind=feature.
         let drop = line.contains("\"kind\":\"feature\"")
-            && files.iter().any(|f| {
-                line.contains(&format!("\"file_path\":\"{}\"", escape_json_string(f)))
-            });
+            && files
+                .iter()
+                .any(|f| line.contains(&format!("\"file_path\":\"{}\"", escape_json_string(f))));
         if !drop {
             kept.push(line.to_string());
         }
@@ -387,7 +395,10 @@ pub fn build_index() -> std::io::Result<usize> {
     let dir = learn_dir()?;
     let events_path = dir.join("events.jsonl");
     if !events_path.exists() {
-        eprintln!("No events to index ({} does not exist).", events_path.display());
+        eprintln!(
+            "No events to index ({} does not exist).",
+            events_path.display()
+        );
         return Ok(0);
     }
     let raw = fs::read_to_string(&events_path)?;
@@ -402,10 +413,7 @@ pub fn build_index() -> std::io::Result<usize> {
     let mut df: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut doc_terms: Vec<Vec<String>> = Vec::with_capacity(n_docs);
     for e in &events {
-        let text = format!(
-            "{} {} {}",
-            e.error_code, e.error_message, e.diff_summary
-        );
+        let text = format!("{} {} {}", e.error_code, e.error_message, e.diff_summary);
         let terms = tokenize(&text);
         let uniq: std::collections::HashSet<_> = terms.iter().cloned().collect();
         for t in uniq {
@@ -427,7 +435,9 @@ pub fn build_index() -> std::io::Result<usize> {
     out.push_str("\"df\":{");
     let mut first = true;
     for (term, count) in &df {
-        if !first { out.push(','); }
+        if !first {
+            out.push(',');
+        }
         first = false;
         out.push_str(&format!("\"{}\":{}", escape_json_string(term), count));
     }
@@ -448,7 +458,11 @@ pub struct Match {
 /// survives any future field additions without breaking existing counts.
 pub fn event_id(e: &Event) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
-    for chunk in [e.ts.as_bytes(), e.error_code.as_bytes(), e.diff_summary.as_bytes()] {
+    for chunk in [
+        e.ts.as_bytes(),
+        e.error_code.as_bytes(),
+        e.diff_summary.as_bytes(),
+    ] {
         for b in chunk {
             h ^= *b as u64;
             h = h.wrapping_mul(0x100000001b3);
@@ -474,7 +488,9 @@ fn load_counts() -> std::io::Result<std::collections::HashMap<String, u32>> {
     let trimmed = raw.trim().trim_start_matches('{').trim_end_matches('}');
     for entry in trimmed.split(',') {
         let entry = entry.trim();
-        if entry.is_empty() { continue; }
+        if entry.is_empty() {
+            continue;
+        }
         if let Some((k, v)) = entry.split_once(':') {
             let k = k.trim().trim_matches('"').to_string();
             if let Ok(n) = v.trim().parse::<u32>() {
@@ -490,7 +506,9 @@ fn save_counts(counts: &std::collections::HashMap<String, u32>) -> std::io::Resu
     let mut s = String::from("{");
     let mut first = true;
     for (k, v) in counts {
-        if !first { s.push(','); }
+        if !first {
+            s.push(',');
+        }
         first = false;
         s.push_str(&format!("\"{}\":{}", k, v));
     }
@@ -499,7 +517,9 @@ fn save_counts(counts: &std::collections::HashMap<String, u32>) -> std::io::Resu
 }
 
 fn bump_counts(ids: &[String]) -> std::io::Result<()> {
-    if ids.is_empty() { return Ok(()); }
+    if ids.is_empty() {
+        return Ok(());
+    }
     let mut counts = load_counts()?;
     for id in ids {
         *counts.entry(id.clone()).or_insert(0) += 1;
@@ -546,10 +566,7 @@ fn advise_impl(query: &str, k: usize, bump: bool) -> std::io::Result<Vec<Match>>
     let b = 0.75_f64;
     let mut scored: Vec<(f64, Event)> = Vec::with_capacity(events.len());
     for e in events {
-        let text = format!(
-            "{} {} {}",
-            e.error_code, e.error_message, e.diff_summary
-        );
+        let text = format!("{} {} {}", e.error_code, e.error_message, e.diff_summary);
         let d_terms = tokenize(&text);
         let dl = d_terms.len() as f64;
         let mut score = 0.0_f64;
@@ -571,11 +588,18 @@ fn advise_impl(query: &str, k: usize, bump: bool) -> std::io::Result<Vec<Match>>
     scored.truncate(k);
 
     let counts = load_counts().unwrap_or_default();
-    let top: Vec<Match> = scored.into_iter().map(|(s, e)| {
-        let id = event_id(&e);
-        let c = *counts.get(&id).unwrap_or(&0);
-        Match { score: s, event: e, retrieved_count: c }
-    }).collect();
+    let top: Vec<Match> = scored
+        .into_iter()
+        .map(|(s, e)| {
+            let id = event_id(&e);
+            let c = *counts.get(&id).unwrap_or(&0);
+            Match {
+                score: s,
+                event: e,
+                retrieved_count: c,
+            }
+        })
+        .collect();
 
     if bump {
         let ids: Vec<String> = top.iter().map(|m| event_id(&m.event)).collect();
@@ -723,12 +747,27 @@ fn epoch_to_utc(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     loop {
         let ly = is_leap(year);
         let year_days = if ly { 366 } else { 365 };
-        if rem < year_days { break; }
+        if rem < year_days {
+            break;
+        }
         rem -= year_days;
         year += 1;
     }
     let ly = is_leap(year);
-    let months = [31u32, if ly { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let months = [
+        31u32,
+        if ly { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut month = 0u32;
     for (i, &ml) in months.iter().enumerate() {
         if rem < ml {
@@ -818,15 +857,22 @@ fn pending_to_json(p: &PendingFailure) -> String {
 
 fn parse_json_string(input: &[u8], pos: &mut usize) -> Option<String> {
     skip_ws(input, pos);
-    if *pos >= input.len() || input[*pos] != b'"' { return None; }
+    if *pos >= input.len() || input[*pos] != b'"' {
+        return None;
+    }
     *pos += 1;
     let mut out = String::new();
     while *pos < input.len() {
         let c = input[*pos];
-        if c == b'"' { *pos += 1; return Some(out); }
+        if c == b'"' {
+            *pos += 1;
+            return Some(out);
+        }
         if c == b'\\' {
             *pos += 1;
-            if *pos >= input.len() { return None; }
+            if *pos >= input.len() {
+                return None;
+            }
             match input[*pos] {
                 b'"' => out.push('"'),
                 b'\\' => out.push('\\'),
@@ -835,8 +881,10 @@ fn parse_json_string(input: &[u8], pos: &mut usize) -> Option<String> {
                 b'r' => out.push('\r'),
                 b't' => out.push('\t'),
                 b'u' => {
-                    if *pos + 4 >= input.len() { return None; }
-                    let hex = std::str::from_utf8(&input[*pos+1..*pos+5]).ok()?;
+                    if *pos + 4 >= input.len() {
+                        return None;
+                    }
+                    let hex = std::str::from_utf8(&input[*pos + 1..*pos + 5]).ok()?;
                     let code = u32::from_str_radix(hex, 16).ok()?;
                     out.push(char::from_u32(code)?);
                     *pos += 4;
@@ -857,11 +905,17 @@ fn parse_json_string(input: &[u8], pos: &mut usize) -> Option<String> {
 
 fn next_utf8(b: &[u8], pos: usize) -> usize {
     let c = b[pos];
-    let len = if c < 0x80 { 1 }
-        else if c < 0xc0 { 1 }
-        else if c < 0xe0 { 2 }
-        else if c < 0xf0 { 3 }
-        else { 4 };
+    let len = if c < 0x80 {
+        1
+    } else if c < 0xc0 {
+        1
+    } else if c < 0xe0 {
+        2
+    } else if c < 0xf0 {
+        3
+    } else {
+        4
+    };
     (pos + len).min(b.len())
 }
 
@@ -873,26 +927,41 @@ fn skip_ws(input: &[u8], pos: &mut usize) {
 
 fn expect_char(input: &[u8], pos: &mut usize, c: u8) -> Option<()> {
     skip_ws(input, pos);
-    if *pos >= input.len() || input[*pos] != c { return None; }
+    if *pos >= input.len() || input[*pos] != c {
+        return None;
+    }
     *pos += 1;
     Some(())
 }
 
-fn parse_object_strings(input: &[u8], pos: &mut usize) -> Option<std::collections::HashMap<String, String>> {
+fn parse_object_strings(
+    input: &[u8],
+    pos: &mut usize,
+) -> Option<std::collections::HashMap<String, String>> {
     expect_char(input, pos, b'{')?;
     let mut map = std::collections::HashMap::new();
     skip_ws(input, pos);
-    if *pos < input.len() && input[*pos] == b'}' { *pos += 1; return Some(map); }
+    if *pos < input.len() && input[*pos] == b'}' {
+        *pos += 1;
+        return Some(map);
+    }
     loop {
         let key = parse_json_string(input, pos)?;
         expect_char(input, pos, b':')?;
         let value = parse_json_string(input, pos)?;
         map.insert(key, value);
         skip_ws(input, pos);
-        if *pos >= input.len() { return None; }
+        if *pos >= input.len() {
+            return None;
+        }
         match input[*pos] {
-            b',' => { *pos += 1; }
-            b'}' => { *pos += 1; return Some(map); }
+            b',' => {
+                *pos += 1;
+            }
+            b'}' => {
+                *pos += 1;
+                return Some(map);
+            }
             _ => return None,
         }
     }
@@ -939,18 +1008,33 @@ fn parse_index(raw: &str) -> (usize, f64, std::collections::HashMap<String, usiz
         let mut p = 0usize;
         loop {
             skip_ws(b, &mut p);
-            if p >= b.len() || b[p] == b'}' { break; }
-            let key = match parse_json_string(b, &mut p) { Some(k) => k, None => break };
-            if expect_char(b, &mut p, b':').is_none() { break; }
+            if p >= b.len() || b[p] == b'}' {
+                break;
+            }
+            let key = match parse_json_string(b, &mut p) {
+                Some(k) => k,
+                None => break,
+            };
+            if expect_char(b, &mut p, b':').is_none() {
+                break;
+            }
             skip_ws(b, &mut p);
             let start = p;
-            while p < b.len() && (b[p].is_ascii_digit()) { p += 1; }
-            let n: usize = match std::str::from_utf8(&b[start..p]).ok().and_then(|s| s.parse().ok()) {
-                Some(n) => n, None => break
+            while p < b.len() && (b[p].is_ascii_digit()) {
+                p += 1;
+            }
+            let n: usize = match std::str::from_utf8(&b[start..p])
+                .ok()
+                .and_then(|s| s.parse().ok())
+            {
+                Some(n) => n,
+                None => break,
             };
             df.insert(key, n);
             skip_ws(b, &mut p);
-            if p < b.len() && b[p] == b',' { p += 1; }
+            if p < b.len() && b[p] == b',' {
+                p += 1;
+            }
         }
     }
     (n_docs, avg_dl, df)
@@ -959,14 +1043,18 @@ fn parse_index(raw: &str) -> (usize, f64, std::collections::HashMap<String, usiz
 fn scrape_usize(raw: &str, key: &str) -> Option<usize> {
     let pos = raw.find(key)? + key.len();
     let rest = &raw[pos..];
-    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
     rest[..end].parse().ok()
 }
 
 fn scrape_f64(raw: &str, key: &str) -> Option<f64> {
     let pos = raw.find(key)? + key.len();
     let rest = &raw[pos..];
-    let end = rest.find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-').unwrap_or(rest.len());
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-')
+        .unwrap_or(rest.len());
     rest[..end].parse().ok()
 }
 
@@ -976,7 +1064,12 @@ pub fn classify_error(msg: &str) -> String {
     let lower = msg.to_ascii_lowercase();
     if lower.contains("width mismatch") || lower.contains("arithmetic widening") {
         "width_mismatch".to_string()
-    } else if lower.contains("undefined") && (lower.contains("signal") || lower.contains("module") || lower.contains("port") || lower.contains("name")) {
+    } else if lower.contains("undefined")
+        && (lower.contains("signal")
+            || lower.contains("module")
+            || lower.contains("port")
+            || lower.contains("name"))
+    {
         "undefined_name".to_string()
     } else if lower.contains("ambiguous precedence") {
         "precedence".to_string()
@@ -1032,7 +1125,10 @@ mod tests {
 
     #[test]
     fn classify_examples() {
-        assert_eq!(classify_error("width mismatch: UInt<8> vs UInt<9>"), "width_mismatch");
+        assert_eq!(
+            classify_error("width mismatch: UInt<8> vs UInt<9>"),
+            "width_mismatch"
+        );
         assert_eq!(classify_error("undefined signal `foo`"), "undefined_name");
         assert_eq!(classify_error("ambiguous precedence: ..."), "precedence");
         assert_eq!(classify_error("something else"), "other");
@@ -1062,8 +1158,13 @@ mod tests {
             }
         }
         assert_eq!(kept.len(), 2);
-        assert!(kept[0].contains("\"kind\":\"error_fix\""), "error_fix retained");
-        assert!(kept[1].contains("\"file_path\":\"other.arch\""),
-            "untouched feature event retained");
+        assert!(
+            kept[0].contains("\"kind\":\"error_fix\""),
+            "error_fix retained"
+        );
+        assert!(
+            kept[1].contains("\"file_path\":\"other.arch\""),
+            "untouched feature event retained"
+        );
     }
 }
