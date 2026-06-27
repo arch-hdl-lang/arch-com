@@ -248,60 +248,37 @@ fn fp_reg_integer_reset_rejected() {
     );
 }
 
-/// A bare float literal in a BF16 reset value or a typed-BF16 `let` is rounded
-/// to bf16 (via `arch_f32_to_bf16`) at lowering, not emitted as a 32-bit FP32
-/// constant truncated into the 16-bit storage (arch#620). The pre-typecheck
-/// pass rewrites it to `(lit).to_bf16()`.
+/// Operators outside the v1 float surface (`/ % << & ...`) are rejected, and
+/// the diagnostic names the *actual* operator — never a `<op>` placeholder.
 #[test]
-fn fp_bf16_literal_coerced_in_reset_and_let() {
-    let src = "module Bf16Lit\n\
-        \x20 port clk: in Clock<Sys>;\n\
-        \x20 port rst: in Reset<Sync>;\n\
-        \x20 port o_rst: out BF16;\n\
-        \x20 port o_let: out BF16;\n\
-        \x20 reg r: BF16 reset rst => 1.5;\n\
-        \x20 let k: BF16 = 1.5;\n\
-        \x20 seq on clk rising r <= r; end seq\n\
-        \x20 comb o_rst = r; end comb\n\
-        \x20 comb o_let = k; end comb\n\
-        end module Bf16Lit\n";
-    let td = tempfile::tempdir().expect("tempdir");
-    let path = td.path().join("Bf16Lit.arch");
-    std::fs::write(&path, src).unwrap();
-
-    // `arch check` accepts the bare BF16 literals.
-    let chk = arch()
-        .arg("check")
-        .arg(&path)
-        .output()
-        .expect("run arch check");
-    assert!(
-        chk.status.success(),
-        "BF16 reset/let with a bare float literal should type-check\nstderr:\n{}",
-        String::from_utf8_lossy(&chk.stderr),
-    );
-
-    // The emitted SV rounds via the bf16 helper and never assigns a 32-bit
-    // constant into the 16-bit reg/wire.
-    let out = arch()
-        .arg("build")
-        .arg(&path)
-        .output()
-        .expect("run arch build");
-    assert!(out.status.success(), "arch build should succeed");
-    let sv = std::fs::read_to_string(td.path().join("Bf16Lit.sv")).expect("read sv");
-    assert!(
-        sv.contains("r <= arch_f32_to_bf16("),
-        "BF16 reset must round via arch_f32_to_bf16, got:\n{sv}"
-    );
-    assert!(
-        sv.contains("arch_f32_to_bf16(32'h3FC00000)"),
-        "expected the f32 pattern of 1.5 fed to the bf16 rounder, got:\n{sv}"
-    );
-    assert!(
-        !sv.contains("r <= 32'h3FC00000;"),
-        "BF16 reg must NOT receive a raw 32-bit constant (the #620 truncation bug):\n{sv}"
-    );
+fn fp_unsupported_operator_named_in_error() {
+    for op in ["/", "%", "<<", "&"] {
+        let src = format!(
+            "module M\n  port a: in FP32;\n  port b: in FP32;\n  port o: out FP32;\n  comb o = a {op} b; end comb\nend module M\n"
+        );
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = td.path().join("M.arch");
+        std::fs::write(&path, &src).unwrap();
+        let out = arch()
+            .arg("check")
+            .arg(&path)
+            .output()
+            .expect("run arch check");
+        assert!(!out.status.success(), "float `{op}` must be rejected in v1");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            combined.contains(&format!("operator `{op}`")),
+            "error for float `{op}` should name the operator, not a placeholder; got:\n{combined}"
+        );
+        assert!(
+            !combined.contains("<op>"),
+            "error must never contain the `<op>` placeholder; got:\n{combined}"
+        );
+    }
 }
 
 /// Differential equivalence (doc/plan_fp_types.md §8.2): the emitted
@@ -629,5 +606,61 @@ fn fp_compat_sim_profiles() {
     assert!(
         cuda.contains("nan_out=0x7FFFFFFF nan_to_int=0"),
         "cuda profile wrong:\n{cuda}"
+    );
+}
+
+/// A bare float literal in a BF16 reset value or a typed-BF16 `let` is rounded
+/// to bf16 (via `arch_f32_to_bf16`) at lowering, not emitted as a 32-bit FP32
+/// constant truncated into the 16-bit storage (arch#620). The pre-typecheck
+/// pass rewrites it to `(lit).to_bf16()`.
+#[test]
+fn fp_bf16_literal_coerced_in_reset_and_let() {
+    let src = "module Bf16Lit\n\
+        \x20 port clk: in Clock<Sys>;\n\
+        \x20 port rst: in Reset<Sync>;\n\
+        \x20 port o_rst: out BF16;\n\
+        \x20 port o_let: out BF16;\n\
+        \x20 reg r: BF16 reset rst => 1.5;\n\
+        \x20 let k: BF16 = 1.5;\n\
+        \x20 seq on clk rising r <= r; end seq\n\
+        \x20 comb o_rst = r; end comb\n\
+        \x20 comb o_let = k; end comb\n\
+        end module Bf16Lit\n";
+    let td = tempfile::tempdir().expect("tempdir");
+    let path = td.path().join("Bf16Lit.arch");
+    std::fs::write(&path, src).unwrap();
+
+    // `arch check` accepts the bare BF16 literals.
+    let chk = arch()
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run arch check");
+    assert!(
+        chk.status.success(),
+        "BF16 reset/let with a bare float literal should type-check\nstderr:\n{}",
+        String::from_utf8_lossy(&chk.stderr),
+    );
+
+    // The emitted SV rounds via the bf16 helper and never assigns a 32-bit
+    // constant into the 16-bit reg/wire.
+    let out = arch()
+        .arg("build")
+        .arg(&path)
+        .output()
+        .expect("run arch build");
+    assert!(out.status.success(), "arch build should succeed");
+    let sv = std::fs::read_to_string(td.path().join("Bf16Lit.sv")).expect("read sv");
+    assert!(
+        sv.contains("r <= arch_f32_to_bf16("),
+        "BF16 reset must round via arch_f32_to_bf16, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("arch_f32_to_bf16(32'h3FC00000)"),
+        "expected the f32 pattern of 1.5 fed to the bf16 rounder, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("r <= 32'h3FC00000;"),
+        "BF16 reg must NOT receive a raw 32-bit constant (the #620 truncation bug):\n{sv}"
     );
 }

@@ -151,6 +151,7 @@ Range `for` = runtime SV loop; value-list `for` = compile-time unroll; `generate
 
 ```
 UInt<N>  SInt<N>  Bool  Bit
+FP32  BF16                                    // IEEE-754 binary32 / bfloat16 (v1; see §2a)
 Clock<Domain>  Reset<Sync|Async, High|Low>   // polarity defaults High
 Vec<T,N>
 struct S  { f: T; }
@@ -218,6 +219,38 @@ Prefer wrapping ops over `.trunc<N>()` when the intent is deliberate modular ari
 `let x: UInt<8> = a +% b;`  is equivalent to  `let x: UInt<8> = (a + b).trunc<8>();`
 
 `$clog2(expr)` supported in type args: `UInt<$clog2(DEPTH)>`
+
+## 2a. Floating-point (FP32 / BF16)
+
+First-class IEEE-754 types for LLM-inference datapaths. **FP32** = binary32 (`logic[31:0]`), **BF16** = bfloat16 (`logic[15:0]`). Combinational; no hidden pipeline latency. Semantics: round-to-nearest-even, full subnormals, canonical qNaN (RISC-V profile by default — see `--fp-compat` below).
+
+```
+let s: FP32 = a + b;        // + - *  → same float type (no auto-widen)
+let p: FP32 = a * b;
+let f: FP32 = fma(a, b, c); // fused multiply-add (single rounding)
+let gt: Bool = a > b;       // == != < > <= >=  → Bool
+let nan: Bool = is_nan(a);  // qNaN/sNaN test → Bool
+```
+
+**No implicit conversion** — mixing `FP32`/`BF16`, or float↔int, is a compile error. Convert explicitly:
+
+```
+x.to_fp32()      // BF16→FP32 (exact widen) or SInt/UInt→FP32 (RNE)
+x.to_bf16()      // FP32→BF16 (round-to-nearest-even)
+x.to_sint<N>()   // float→SInt<N>: toward-zero, per-N saturating, NaN→type-max (riscv)
+x.to_uint<N>()   // float→UInt<N>: toward-zero, per-N saturating, negatives/NaN handling per profile
+```
+
+**Float literals** (`1.5`, `3.0e-2`, `0.0`) are typed **FP32**, but in a **BF16 reset value** or a **typed-BF16 `let`** a bare float literal is rounded to bf16 automatically: `reg acc: BF16 reset rst => 1.5;` and `let h: BF16 = 1.5;` both work. Elsewhere (BF16 comb/seq assignment targets, mixed-type operands like `a_bf16 + 1.5`) a BF16 constant still needs an explicit cast — `(1.5).to_bf16()` — and is otherwise a type error. A float `reg` reset value must be a float literal (`reset rst => 0.0`), not an integer literal. *(BF16 reg `init` values still require `(V).to_bf16()` until [#624](https://github.com/arch-hdl-lang/arch-com/issues/624) lands.)*
+
+**v1 scope:** floats are scalar signals + the ops above only. **Not** supported (rejected at type-check, never silently miscompiled): floats inside `Vec`, in `struct` fields, in module-local `function` signatures; `/` `%` and bitwise/shift operators on floats.
+
+**Special-value profile:** `arch build|sim --fp-compat=riscv|cuda` (default `riscv`). Identical RNE arithmetic core; differs only in canonical NaN pattern and NaN→int result.
+
+| profile | canonical NaN (f32 / bf16) | NaN → int |
+|---|---|---|
+| `riscv` (default) | `0x7FC00000` / `0x7FC0` | type max |
+| `cuda` | `0x7FFFFFFF` / `0x7FFF` | `0` |
 
 **Vec methods** (parallel-reduction; fully unrolled; no runtime iteration):
 
@@ -705,6 +738,11 @@ ram Name
   init: zero;                         // zero | none | file 'x.hex'
 end ram Name
 ```
+
+`en` (chip/read enable) is **optional** on any RAM port. When omitted the
+port is always enabled: it reads every cycle and writes whenever `wen` (or,
+for `simple_dual`, on every write-port access). Applies uniformly to
+`single`, `simple_dual`, and `true_dual` kinds at every `latency`.
 
 ---
 
