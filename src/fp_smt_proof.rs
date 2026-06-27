@@ -119,6 +119,34 @@ pub fn equiv_proof(op: &str, profile: FpCompat) -> String {
              (define-fun fr () F (fp.fma RNE fa fb fc))\n(define-fun rr () (_ BitVec 32) (arch_fma_f32 a b c))\n\
              (assert (not (ite (fp.isNaN fr) (= rr {n32}) (= ((_ to_fp 8 24) rr) fr))))\n(check-sat)\n"
         )),
+        // Bounded sticky-fold FMA == exact-wide (470-bit) reference FMA, all
+        // inputs. Pure bit-vector: the shared 24x24 `mul` and the identical
+        // special-case wrapper appear on both sides, so a CSE-ing bit-blaster
+        // cancels them and never solves a multiplier equivalence. `unsat` ⇒ the
+        // sticky-fold is bit-identical to the machine-proved exact-wide FMA over
+        // the whole 2^96 input space, transferring its correctness.
+        "fma_equiv" => {
+            s.push_str(&crate::fp_ir::render_smt(&[crate::fp_ops::fma_f32_ref(profile)]));
+            s.push_str(
+                "(declare-fun a () (_ BitVec 32))\n(declare-fun b () (_ BitVec 32))\n(declare-fun c () (_ BitVec 32))\n\
+                 (assert (not (= (arch_fma_f32 a b c) (arch_fma_f32_ref a b c))))\n(check-sat)\n",
+            );
+        }
+        // Multiply-abstracted variant: the product `mp` is a free 48-bit input
+        // (not `mul(mant_a, mant_b)`), so the query has no multiplier at all.
+        // Proving new == ref for all (a,b,c,mp) is a pure shift/add/round miter
+        // (solver-tractable like f32 add) and is strictly stronger than the
+        // real-product case. `unsat` ⇒ sticky-fold FMA ≡ exact-wide FMA.
+        "fma_equiv_abs" => {
+            s.push_str(&crate::fp_ir::render_smt(&[
+                crate::fp_ops::fma_param(true, profile),
+                crate::fp_ops::fma_param(false, profile),
+            ]));
+            s.push_str(
+                "(declare-fun a () (_ BitVec 32))\n(declare-fun b () (_ BitVec 32))\n(declare-fun c () (_ BitVec 32))\n(declare-fun mp () (_ BitVec 48))\n\
+                 (assert (not (= (arch_fma_param_new a b c mp) (arch_fma_param_ref a b c mp))))\n(check-sat)\n",
+            );
+        }
         // ── bf16: spec on (_ FloatingPoint 8 8); RTL routes widen->f32->narrow ──
         _ if op.starts_with("bf16_") => {
             let bpre = "(declare-fun a () (_ BitVec 16))\n(declare-fun b () (_ BitVec 16))\n\
