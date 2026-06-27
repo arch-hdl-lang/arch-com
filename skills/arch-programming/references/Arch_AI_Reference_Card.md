@@ -119,6 +119,8 @@ unique match opcode
 end match
 ```
 
+`match` arms are **priority-ordered**: the `_` wildcard must be the **last** arm (an arm after `_` is an unreachable-pattern compile error, and at most one `_` is allowed). A bare name (`FOO =>`) is a constant comparison, not a catch-all, so it may go anywhere.
+
 `match` in `comb` uses `=`; in `seq` uses `<=`. Exhaustive enum match (all variants listed) satisfies the latch check without needing `_` wildcard:
 
 ```

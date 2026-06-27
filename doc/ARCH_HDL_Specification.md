@@ -523,6 +523,8 @@ Every signal in Arch has exactly one driver --- the block (comb or reg) that ass
 > ◈ **No implicit latches.** The compiler verifies that every signal assigned in a `comb` block is assigned on ALL control paths. A missing `else` branch or incomplete `match` is a compile error: *"signal \`x\` is not assigned on all control paths in comb block (infers a latch)."* The common default-then-override pattern is safe: `x = 0; if sel / x = a; end if` --- the unconditional default covers the missing else. An exhaustive enum `match` (all variants listed without `_` wildcard) also satisfies this check.
 >
 > ◈ **Comb match uses `=` syntax.** In `comb` blocks, `match` arms use `=` (combinational assign). In `seq` blocks, arms use `<=` (register assign). Enum exhaustiveness is checked in both contexts.
+>
+> ◈ **A `_` wildcard must be the last arm.** `match` arms are tested in source order (priority semantics — see §4.2.1d). The wildcard `_` matches every remaining value, so any arm written after it is unreachable, and a `match` may contain at most one `_`. Both are compile errors: *"unreachable match arm: the wildcard `_` already matches every value — make `_` the last arm, or remove the arm(s) after it."* A bare identifier arm such as `FOO =>` is **not** a wildcard — it compares the scrutinee against the named constant `FOO`, so it is refutable and may appear in any position. Requiring `_` last makes a `match` mean the same thing regardless of arm order, and stops an AI from silently burying live arms beneath an early default.
 
 **3.5 Vec Methods**
 
@@ -987,6 +989,8 @@ end match
 ```
 
 The emitted SystemVerilog uses `unique if (...)` and `unique case (...)` respectively. Use `unique` when you know the conditions cannot overlap and want the synthesis tool to optimize accordingly. Omit it when conditions may overlap and priority resolution is required.
+
+Because `match` arms resolve by priority, a `_` wildcard must be the final arm (§3.4). This holds for `unique match` as well: a non-final `_` would overlap every following arm, contradicting the mutual exclusivity that `unique` asserts.
 
 **4.2.2 Bit Concatenation and Replication**
 
