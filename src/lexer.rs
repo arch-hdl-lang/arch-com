@@ -737,7 +737,10 @@ mod tests {
     fn test_param_sized_literals() {
         let tokens = tokenize("W'd0 SCORE_WIDTH'd42").unwrap();
         assert_eq!(tokens[0].kind, TokenKind::SizedLiteral("W'd0".into()));
-        assert_eq!(tokens[1].kind, TokenKind::SizedLiteral("SCORE_WIDTH'd42".into()));
+        assert_eq!(
+            tokens[1].kind,
+            TokenKind::SizedLiteral("SCORE_WIDTH'd42".into())
+        );
     }
 
     #[test]
