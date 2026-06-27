@@ -1,0 +1,18 @@
+# Pin the Rust toolchain — and therefore rustfmt — so formatting is byte-for-byte
+# identical across every contributor, autonomous agent, and CI run.
+#
+# Why this exists: rustfmt's output changes between toolchain versions. When the
+# repo had no pin, different rustfmt versions formatted the same code differently,
+# which produced large *spurious* formatting diffs and merge conflicts that buried
+# the real changes. Pinning makes `cargo fmt` deterministic everywhere, so the CI
+# `cargo fmt --check` (.github/workflows/rustfmt.yml) can be trusted.
+#
+# To upgrade: bump `channel` here, run `cargo fmt` over the tree, and commit the
+# (re)formatting together with the bump in one dedicated PR — never mixed with a
+# feature change. Keep this version in sync with the toolchain in
+# .github/workflows/rustfmt.yml.
+#
+# 1.94.0 ships rustfmt 1.8.0.
+[toolchain]
+channel = "1.94.0"
+components = ["rustfmt"]
