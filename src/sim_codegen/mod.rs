@@ -7403,8 +7403,17 @@ impl<'a> SimCodegen<'a> {
         // field-decl section, the eval_posedge update, and eval_comb — so
         // collect once up front.
         let cc_sites = crate::sim_credit_channel::collect_credit_channels(m, self.symbols);
-        // Constructor always has a body (for auto-trace open)
-        h.push_str(&format!("  {class}() : {} {{\n", all_inits.join(", ")));
+        // Constructor always has a body (for auto-trace open). Omit the
+        // member-init `:` entirely when there are no scalar inits — e.g. a
+        // pure-comb module whose only members are wide (VlWide) ports, which
+        // self-init via VlWide's default ctor. Emitting a bare `() : {` is a
+        // C++ syntax error (dangling colon with no initializers).
+        let ctor_init = if all_inits.is_empty() {
+            String::new()
+        } else {
+            format!(" : {}", all_inits.join(", "))
+        };
+        h.push_str(&format!("  {class}(){} {{\n", ctor_init));
         for line in &vec_reg_inits {
             h.push_str(&format!("{line}\n"));
         }
