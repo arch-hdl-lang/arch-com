@@ -1,0 +1,14 @@
+# yosys combinational-synthesis flow for one FP operator module.
+# `TOP` is substituted with the module name by run_synth.sh.
+#
+# Maps to a 2-input generic gate library and reports the longest topological
+# path (logic depth in gate levels) as a technology-independent timing proxy,
+# plus a cell count as an area proxy. No PDK/Liberty is assumed, so results are
+# levels/cells, not ns/um^2 — see README.md.
+read_verilog -sv TOP.v
+hierarchy -top TOP
+synth -top TOP -flatten
+abc -fast -g AND,OR,XOR,NAND,NOR,XNOR,ANDNOT,ORNOT,MUX
+opt_clean
+stat
+ltp
