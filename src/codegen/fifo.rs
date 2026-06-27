@@ -12,17 +12,23 @@ impl<'a> Codegen<'a> {
         let is_async = detect_async_fifo(&f.ports);
 
         // Resolve DEPTH and TYPE from params
-        let depth_expr = f.params.iter()
+        let depth_expr = f
+            .params
+            .iter()
             .find(|p| p.name.name == "DEPTH")
             .and_then(|p| p.default.as_ref())
             .map(|e| self.emit_expr_str(e))
             .unwrap_or_else(|| "16".to_string());
 
         // Find the type parameter (any name) and compute its bit-width for DATA_WIDTH
-        let type_param_name = f.params.iter()
+        let type_param_name = f
+            .params
+            .iter()
             .find(|p| matches!(p.kind, crate::ast::ParamKind::Type(_)))
             .map(|p| p.name.name.clone());
-        let data_width_str = f.params.iter()
+        let data_width_str = f
+            .params
+            .iter()
             .find(|p| matches!(p.kind, crate::ast::ParamKind::Type(_)))
             .and_then(|p| match &p.kind {
                 crate::ast::ParamKind::Type(ty) => self.type_expr_data_width(ty),
@@ -31,7 +37,9 @@ impl<'a> Codegen<'a> {
             .unwrap_or_else(|| "8".to_string());
 
         // Check for OVERFLOW param (0 = block when full, 1 = overwrite oldest)
-        let overflow_expr = f.params.iter()
+        let overflow_expr = f
+            .params
+            .iter()
             .find(|p| p.name.name == "OVERFLOW")
             .and_then(|p| p.default.as_ref())
             .map(|e| self.emit_expr_str(e))
@@ -57,7 +65,10 @@ impl<'a> Codegen<'a> {
 
         // Emit declared ports
         for (i, p) in f.ports.iter().enumerate() {
-            let dir = match p.direction { Direction::In => "input", Direction::Out => "output" };
+            let dir = match p.direction {
+                Direction::In => "input",
+                Direction::Out => "output",
+            };
             // Type param references → use DATA_WIDTH
             let ty_str = self.emit_fifo_port_type(&p.ty, &type_param_name);
             let comma = if i < f.ports.len() - 1 { "," } else { "" };
@@ -78,11 +89,16 @@ impl<'a> Codegen<'a> {
 
         // Auto-generated safety assertions for FIFO invariants
         {
-            let clk_names: Vec<String> = f.ports.iter()
+            let clk_names: Vec<String> = f
+                .ports
+                .iter()
                 .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
                 .map(|p| p.name.name.clone())
                 .collect();
-            let clk = clk_names.first().cloned().unwrap_or_else(|| "clk".to_string());
+            let clk = clk_names
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "clk".to_string());
             let n = &f.name.name;
 
             self.line("");
@@ -143,8 +159,12 @@ impl<'a> Codegen<'a> {
         }
 
         if !f.asserts.is_empty() {
-            let clk = f.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
-                .map(|p| p.name.name.clone()).unwrap_or_else(|| "clk".to_string());
+            let clk = f
+                .ports
+                .iter()
+                .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                .map(|p| p.name.name.clone())
+                .unwrap_or_else(|| "clk".to_string());
             self.line("");
             let asserts = f.asserts.clone();
             let fname = f.name.name.clone();
@@ -198,7 +218,9 @@ impl<'a> Codegen<'a> {
 
         // Determine reset port info
         let (rst, is_async, is_low) = Self::extract_reset_info(&f.ports);
-        let clk = f.ports.iter()
+        let clk = f
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.as_str())
             .unwrap_or("clk");
@@ -262,7 +284,9 @@ impl<'a> Codegen<'a> {
         self.line("");
 
         let (rst, is_async, is_low) = Self::extract_reset_info(&f.ports);
-        let clk = f.ports.iter()
+        let clk = f
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.as_str())
             .unwrap_or("clk");
@@ -298,13 +322,26 @@ impl<'a> Codegen<'a> {
         self.line("end");
     }
 
-    fn emit_fifo_async_body(&mut self, f: &FifoDecl, port_names: &[&str], has_overflow_param: bool) {
+    fn emit_fifo_async_body(
+        &mut self,
+        f: &FifoDecl,
+        port_names: &[&str],
+        has_overflow_param: bool,
+    ) {
         // Find wr_clk, rd_clk, rst port names
-        let clock_ports: Vec<&PortDecl> = f.ports.iter()
+        let clock_ports: Vec<&PortDecl> = f
+            .ports
+            .iter()
             .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .collect();
-        let wr_clk = clock_ports.get(0).map(|p| p.name.name.as_str()).unwrap_or("wr_clk");
-        let rd_clk = clock_ports.get(1).map(|p| p.name.name.as_str()).unwrap_or("rd_clk");
+        let wr_clk = clock_ports
+            .get(0)
+            .map(|p| p.name.name.as_str())
+            .unwrap_or("wr_clk");
+        let rd_clk = clock_ports
+            .get(1)
+            .map(|p| p.name.name.as_str())
+            .unwrap_or("rd_clk");
         let (rst, _is_async_rst, is_low) = Self::extract_reset_info(&f.ports);
         // Async FIFOs always use async reset (reset in sensitivity list for all FF blocks)
         let rst_cond = Self::rst_condition(&rst, is_low);
@@ -338,17 +375,29 @@ impl<'a> Codegen<'a> {
         self.line("assign rd_ptr_gray = bin2gray(rd_ptr_bin);");
         self.line("");
         self.line(&format!("// Sync wr_ptr into rd domain ({rd_clk})"));
-        self.line(&format!("always_ff @(posedge {rd_clk} or {rst_edge} {rst}) begin"));
+        self.line(&format!(
+            "always_ff @(posedge {rd_clk} or {rst_edge} {rst}) begin"
+        ));
         self.indent += 1;
-        self.line(&format!("if ({rst_cond}) begin wr_ptr_gray_s1 <= '0; wr_ptr_gray_sync <= '0; end"));
-        self.line("else begin wr_ptr_gray_s1 <= wr_ptr_gray; wr_ptr_gray_sync <= wr_ptr_gray_s1; end");
+        self.line(&format!(
+            "if ({rst_cond}) begin wr_ptr_gray_s1 <= '0; wr_ptr_gray_sync <= '0; end"
+        ));
+        self.line(
+            "else begin wr_ptr_gray_s1 <= wr_ptr_gray; wr_ptr_gray_sync <= wr_ptr_gray_s1; end",
+        );
         self.indent -= 1;
         self.line("end");
         self.line(&format!("// Sync rd_ptr into wr domain ({wr_clk})"));
-        self.line(&format!("always_ff @(posedge {wr_clk} or {rst_edge} {rst}) begin"));
+        self.line(&format!(
+            "always_ff @(posedge {wr_clk} or {rst_edge} {rst}) begin"
+        ));
         self.indent += 1;
-        self.line(&format!("if ({rst_cond}) begin rd_ptr_gray_s1 <= '0; rd_ptr_gray_sync <= '0; end"));
-        self.line("else begin rd_ptr_gray_s1 <= rd_ptr_gray; rd_ptr_gray_sync <= rd_ptr_gray_s1; end");
+        self.line(&format!(
+            "if ({rst_cond}) begin rd_ptr_gray_s1 <= '0; rd_ptr_gray_sync <= '0; end"
+        ));
+        self.line(
+            "else begin rd_ptr_gray_s1 <= rd_ptr_gray; rd_ptr_gray_sync <= rd_ptr_gray_s1; end",
+        );
         self.indent -= 1;
         self.line("end");
         self.line("");
@@ -363,7 +412,9 @@ impl<'a> Codegen<'a> {
         } else {
             self.line("assign push_ready = !full_r;");
         }
-        self.line(&format!("always_ff @(posedge {wr_clk} or {rst_edge} {rst}) begin"));
+        self.line(&format!(
+            "always_ff @(posedge {wr_clk} or {rst_edge} {rst}) begin"
+        ));
         self.indent += 1;
         self.line(&format!("if ({rst_cond}) wr_ptr_bin <= '0;"));
         self.line("else if (push_valid && push_ready) begin");
@@ -388,12 +439,13 @@ impl<'a> Codegen<'a> {
         if port_names.contains(&"empty") {
             self.line("assign empty = empty_r;");
         }
-        self.line(&format!("always_ff @(posedge {rd_clk} or {rst_edge} {rst}) begin"));
+        self.line(&format!(
+            "always_ff @(posedge {rd_clk} or {rst_edge} {rst}) begin"
+        ));
         self.indent += 1;
         self.line(&format!("if ({rst_cond}) rd_ptr_bin <= '0;"));
         self.line("else if (pop_valid && pop_ready) rd_ptr_bin <= rd_ptr_bin + 1;");
         self.indent -= 1;
         self.line("end");
     }
-
 }

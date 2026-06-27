@@ -22,12 +22,12 @@ use crate::typecheck::enum_width;
 // Per-construct emitters split out to keep this file from growing further.
 // Each submodule extends `impl SimCodegen` with a single `gen_*` entry
 // point and calls back into the shared helpers in this file via `super::`.
+mod cam;
 mod fifo;
 mod fsm;
 mod linklist;
 mod pipeline;
 mod ram;
-mod cam;
 pub mod thread_sim;
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -88,7 +88,9 @@ impl SourceMap {
             let next_start = self.segments.get(i + 1).map(|s| s.0).unwrap_or(usize::MAX);
             if offset >= *start && offset < next_start {
                 let local = offset.saturating_sub(*start);
-                if local > src.len() { return None; }
+                if local > src.len() {
+                    return None;
+                }
                 let line = 1 + src[..local].matches('\n').count() as u32;
                 return Some((file.as_str(), line));
             }
@@ -122,7 +124,11 @@ pub(crate) struct CoverageRegistry {
 impl CoverageRegistry {
     pub fn alloc(&mut self, kind: &'static str, span_start: usize, label: String) -> usize {
         let idx = self.points.len();
-        self.points.push(CovPoint { kind, span_start, label });
+        self.points.push(CovPoint {
+            kind,
+            span_start,
+            label,
+        });
         idx
     }
 }
@@ -133,7 +139,21 @@ impl<'a> SimCodegen<'a> {
         source: &'a SourceFile,
         overload_map: HashMap<usize, usize>,
     ) -> Self {
-        Self { symbols, source, overload_map, check_uninit: false, inputs_start_uninit: false, check_uninit_ram: false, cdc_random: false, debug: false, debug_depth: 1, debug_fsm: false, coverage: false, coverage_dat: None, source_map: None }
+        Self {
+            symbols,
+            source,
+            overload_map,
+            check_uninit: false,
+            inputs_start_uninit: false,
+            check_uninit_ram: false,
+            cdc_random: false,
+            debug: false,
+            debug_depth: 1,
+            debug_fsm: false,
+            coverage: false,
+            coverage_dat: None,
+            source_map: None,
+        }
     }
 
     pub fn coverage(mut self, enabled: bool) -> Self {
@@ -143,7 +163,9 @@ impl<'a> SimCodegen<'a> {
 
     pub fn coverage_dat(mut self, path: Option<String>) -> Self {
         self.coverage_dat = path;
-        if self.coverage_dat.is_some() { self.coverage = true; }
+        if self.coverage_dat.is_some() {
+            self.coverage = true;
+        }
         self
     }
 
@@ -208,8 +230,16 @@ impl<'a> SimCodegen<'a> {
             let candidates: Vec<&FunctionDecl> = match i {
                 Item::Function(f) => vec![f],
                 Item::Package(p) => p.functions.iter().collect(),
-                Item::Module(m) => m.body.iter()
-                    .filter_map(|b| if let ModuleBodyItem::Function(f) = b { Some(f) } else { None })
+                Item::Module(m) => m
+                    .body
+                    .iter()
+                    .filter_map(|b| {
+                        if let ModuleBodyItem::Function(f) = b {
+                            Some(f)
+                        } else {
+                            None
+                        }
+                    })
                     .collect(),
                 _ => vec![],
             };
@@ -235,28 +265,37 @@ impl<'a> SimCodegen<'a> {
             for item in &self.source.items {
                 if let Item::Module(m) = item {
                     all_module_names.push(m.name.name.clone());
-                    let children: Vec<String> = m.body.iter()
-                        .filter_map(|b| if let ModuleBodyItem::Inst(inst) = b {
-                            Some(inst.module_name.name.clone())
-                        } else { None })
+                    let children: Vec<String> = m
+                        .body
+                        .iter()
+                        .filter_map(|b| {
+                            if let ModuleBodyItem::Inst(inst) = b {
+                                Some(inst.module_name.name.clone())
+                            } else {
+                                None
+                            }
+                        })
                         .collect();
                     children_map.insert(m.name.name.clone(), children);
                 }
             }
             // Root = modules not instantiated by any other module
-            let instantiated: std::collections::HashSet<String> = children_map.values()
+            let instantiated: std::collections::HashSet<String> = children_map
+                .values()
                 .flat_map(|v| v.iter().cloned())
                 .collect();
-            let roots: Vec<String> = all_module_names.into_iter()
+            let roots: Vec<String> = all_module_names
+                .into_iter()
                 .filter(|n| !instantiated.contains(n))
                 .collect();
             // BFS up to debug_depth levels
             let mut result: std::collections::HashSet<String> = std::collections::HashSet::new();
-            let mut queue: std::collections::VecDeque<(String, u32)> = roots.into_iter()
-                .map(|n| (n, 1u32))
-                .collect();
+            let mut queue: std::collections::VecDeque<(String, u32)> =
+                roots.into_iter().map(|n| (n, 1u32)).collect();
             while let Some((mod_name, depth)) = queue.pop_front() {
-                if depth > self.debug_depth { continue; }
+                if depth > self.debug_depth {
+                    continue;
+                }
                 result.insert(mod_name.clone());
                 if depth < self.debug_depth {
                     if let Some(children) = children_map.get(&mod_name) {
@@ -281,7 +320,9 @@ impl<'a> SimCodegen<'a> {
             if let Item::Module(m) = item {
                 // Interface stubs from `.archi`: real sim model lives
                 // alongside the .archi as a separately-built artifact.
-                if m.is_interface { continue; }
+                if m.is_interface {
+                    continue;
+                }
                 models.push(self.gen_module(
                     m,
                     debug_module_set.contains(m.name.name.as_str()),
@@ -292,7 +333,9 @@ impl<'a> SimCodegen<'a> {
                 // ConstructCommon-bearing variant (Fsm, Fifo, Ram, …).
                 // Same reason as Module: real sim model is built
                 // separately alongside the `.archi`.
-                if item.is_interface() { continue; }
+                if item.is_interface() {
+                    continue;
+                }
                 if let Some(model) = item.as_construct().emit_sim(self) {
                     models.push(model);
                 }
@@ -311,7 +354,9 @@ impl<'a> SimCodegen<'a> {
                 Item::Module(m) => {
                     // Skip interface stubs from `.archi`: the pybind wrapper
                     // for the real implementation is built separately.
-                    if m.is_interface { continue; }
+                    if m.is_interface {
+                        continue;
+                    }
                     if let Some(w) = self.emit_pybind_module(m) {
                         wrappers.push(w);
                     }
@@ -319,13 +364,17 @@ impl<'a> SimCodegen<'a> {
                 Item::Fsm(f) => {
                     // Skip interface stubs from `.archi`: pybind wrapper
                     // for the real implementation is built separately.
-                    if f.common.is_interface { continue; }
+                    if f.common.is_interface {
+                        continue;
+                    }
                     if let Some(w) = self.emit_pybind_fsm(f) {
                         wrappers.push(w);
                     }
                 }
                 Item::Counter(c) => {
-                    if c.common.is_interface { continue; }
+                    if c.common.is_interface {
+                        continue;
+                    }
                     if let Some(w) = self.emit_pybind_counter(c) {
                         wrappers.push(w);
                     }
@@ -352,7 +401,9 @@ impl<'a> SimCodegen<'a> {
             }
         }
         let mut stack: Vec<String> = Vec::new();
-        for p in &m.ports { push_named(&p.ty, &mut stack); }
+        for p in &m.ports {
+            push_named(&p.ty, &mut stack);
+        }
         for item in &m.body {
             if let ModuleBodyItem::RegDecl(r) = item {
                 push_named(&r.ty, &mut stack);
@@ -362,7 +413,9 @@ impl<'a> SimCodegen<'a> {
         while let Some(name) = stack.pop() {
             if used.insert(name.clone()) {
                 if let Some(sd) = all_structs.get(&name) {
-                    for f in &sd.fields { push_named(&f.ty, &mut stack); }
+                    for f in &sd.fields {
+                        push_named(&f.ty, &mut stack);
+                    }
                 }
             }
         }
@@ -387,7 +440,9 @@ impl<'a> SimCodegen<'a> {
         for p in &m.ports {
             if let Some(ref bi) = p.bus_info {
                 match bi.count.as_ref() {
-                    None => { bus_port_names.insert(p.name.name.clone()); }
+                    None => {
+                        bus_port_names.insert(p.name.name.clone());
+                    }
                     Some(count_expr) => {
                         let n = eval_const_expr_with_params(count_expr, &m.params) as u32;
                         for i in 0..n {
@@ -400,12 +455,19 @@ impl<'a> SimCodegen<'a> {
         }
 
         // Vec port info
-        let vec_port_infos: Vec<(String, String, u64, bool)> = m.ports.iter()
+        let vec_port_infos: Vec<(String, String, u64, bool)> = m
+            .ports
+            .iter()
             .filter(|p| p.bus_info.is_none())
             .filter_map(|p| {
                 if let Some((elem_ty, count_str)) = vec_array_info_with_params(&p.ty, &m.params) {
                     let count: u64 = count_str.parse().unwrap_or(0);
-                    Some((p.name.name.clone(), elem_ty, count, p.direction == Direction::In))
+                    Some((
+                        p.name.name.clone(),
+                        elem_ty,
+                        count,
+                        p.direction == Direction::In,
+                    ))
                 } else {
                     None
                 }
@@ -418,8 +480,12 @@ impl<'a> SimCodegen<'a> {
 
         // Regular scalar ports
         for p in &m.ports {
-            if p.bus_info.is_some() { continue; }
-            if vec_port_names.contains(&p.name.name) { continue; }
+            if p.bus_info.is_some() {
+                continue;
+            }
+            if vec_port_names.contains(&p.name.name) {
+                continue;
+            }
             let field = &p.name.name;
             let width = self.port_width(&p.ty);
             let is_signed = matches!(p.ty, TypeExpr::SInt(_));
@@ -429,7 +495,9 @@ impl<'a> SimCodegen<'a> {
                 // VlWide — generate lambda-based get/set
                 bindings.push(self.emit_wide_binding(&class, field, width));
             } else {
-                bindings.push(format!("        .def_readwrite(\"{field}\", &{class}::{field})"));
+                bindings.push(format!(
+                    "        .def_readwrite(\"{field}\", &{class}::{field})"
+                ));
             }
             port_info.push((field.clone(), width, is_signed, is_input, false, false));
         }
@@ -439,7 +507,9 @@ impl<'a> SimCodegen<'a> {
             let width = self.vec_elem_width(&m.ports, base_name);
             for i in 0..*count {
                 let field = format!("{base_name}_{i}");
-                bindings.push(format!("        .def_readwrite(\"{field}\", &{class}::{field})"));
+                bindings.push(format!(
+                    "        .def_readwrite(\"{field}\", &{class}::{field})"
+                ));
                 port_info.push((field, width, false, *is_input, false, false));
             }
         }
@@ -459,7 +529,9 @@ impl<'a> SimCodegen<'a> {
             if wide_names.contains(flat_name) {
                 bindings.push(self.emit_wide_binding(&class, flat_name, width));
             } else {
-                bindings.push(format!("        .def_readwrite(\"{flat_name}\", &{class}::{flat_name})"));
+                bindings.push(format!(
+                    "        .def_readwrite(\"{flat_name}\", &{class}::{flat_name})"
+                ));
             }
             port_info.push((flat_name.clone(), width, is_signed, true, false, false));
         }
@@ -470,7 +542,9 @@ impl<'a> SimCodegen<'a> {
             if let ModuleBodyItem::RegDecl(r) = item {
                 let rname = &r.name.name;
                 // Skip if it's also a port name (port regs already handled)
-                if m.ports.iter().any(|p| p.name.name == *rname) { continue; }
+                if m.ports.iter().any(|p| p.name.name == *rname) {
+                    continue;
+                }
                 let width = self.reg_width(&r.ty);
                 let is_signed = matches!(r.ty, TypeExpr::SInt(_));
                 let cpp_field = format!("_{rname}");
@@ -528,7 +602,9 @@ auto {helper_name}(const T& self) {{
                 ParamKind::EnumConst(enum_name) => {
                     if let Some(ref def) = p.default {
                         if let ExprKind::EnumVariant(_, variant) = &def.kind {
-                            if let Some(val) = resolve_enum_variant(&enum_map, enum_name, &variant.name) {
+                            if let Some(val) =
+                                resolve_enum_variant(&enum_map, enum_name, &variant.name)
+                            {
                                 let pname = &p.name.name;
                                 bindings.push(format!(
                                     "        .def_property_readonly_static(\"{pname}\", [](py::object) {{ return {val}ULL; }})"
@@ -547,12 +623,19 @@ auto {helper_name}(const T& self) {{
         // expose edge-sensitive eval() only. Bind compatibility shims so the
         // same pybind wrapper generator can target both model APIs.
         bindings.push(format!("        .def(\"eval\", &{class}::eval)"));
-        bindings.push(format!("        .def(\"eval_comb\", &arch_pybind_detail::eval_comb<{class}>)"));
-        bindings.push(format!("        .def(\"eval_posedge\", &arch_pybind_detail::eval_posedge<{class}>)"));
-        bindings.push(format!("        .def(\"run_cycles\", &arch_pybind_detail::run_cycles<{class}>)"));
+        bindings.push(format!(
+            "        .def(\"eval_comb\", &arch_pybind_detail::eval_comb<{class}>)"
+        ));
+        bindings.push(format!(
+            "        .def(\"eval_posedge\", &arch_pybind_detail::eval_posedge<{class}>)"
+        ));
+        bindings.push(format!(
+            "        .def(\"run_cycles\", &arch_pybind_detail::run_cycles<{class}>)"
+        ));
 
         // _port_info static method
-        let port_info_entries: Vec<String> = port_info.iter()
+        let port_info_entries: Vec<String> = port_info
+            .iter()
             .map(|(n, w, s, inp, par, int)| {
                 format!(
                     "            py::make_tuple(\"{n}\", {w}, {}, {}, {}, {})",
@@ -575,9 +658,13 @@ auto {helper_name}(const T& self) {{
         let mut all_structs: HashMap<String, &StructDecl> = HashMap::new();
         for item in &self.source.items {
             match item {
-                Item::Struct(s) => { all_structs.insert(s.name.name.clone(), s); }
+                Item::Struct(s) => {
+                    all_structs.insert(s.name.name.clone(), s);
+                }
                 Item::Package(p) => {
-                    for s in &p.structs { all_structs.insert(s.name.name.clone(), s); }
+                    for s in &p.structs {
+                        all_structs.insert(s.name.name.clone(), s);
+                    }
                 }
                 _ => {}
             }
@@ -585,16 +672,23 @@ auto {helper_name}(const T& self) {{
         let used_structs = Self::collect_used_structs(m, &all_structs);
         let mut struct_bindings = String::new();
         // Iterate in source order (not HashMap order) for stable output.
-        let ordered: Vec<&StructDecl> = self.source.items.iter().flat_map(|item| -> Vec<&StructDecl> {
-            match item {
-                Item::Struct(s) => vec![s],
-                Item::Package(p) => p.structs.iter().collect(),
-                _ => vec![],
-            }
-        }).collect();
+        let ordered: Vec<&StructDecl> = self
+            .source
+            .items
+            .iter()
+            .flat_map(|item| -> Vec<&StructDecl> {
+                match item {
+                    Item::Struct(s) => vec![s],
+                    Item::Package(p) => p.structs.iter().collect(),
+                    _ => vec![],
+                }
+            })
+            .collect();
         for s in ordered {
             let sname = &s.name.name;
-            if !used_structs.contains(sname) { continue; }
+            if !used_structs.contains(sname) {
+                continue;
+            }
             // `py::module_local()` scopes the struct type to this extension
             // module so multiple pybind builds sharing struct names (e.g. two
             // cpuif variants of the same design) can coexist in one process.
@@ -611,7 +705,7 @@ auto {helper_name}(const T& self) {{
         }
 
         let cpp = format!(
-r#"// Auto-generated pybind11 wrapper for {class}
+            r#"// Auto-generated pybind11 wrapper for {class}
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <cstdint>
@@ -686,6 +780,8 @@ PYBIND11_MODULE({pybind_module}, m) {{
         match ty {
             TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width(w),
             TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(..) => 1,
+            TypeExpr::FP32 => 32,
+            TypeExpr::BF16 => 16,
             TypeExpr::Named(_) => 32,
             TypeExpr::Vec(_, _) => 32,
         }
@@ -712,7 +808,7 @@ PYBIND11_MODULE({pybind_module}, m) {{
     fn emit_wide_binding(&self, class: &str, field: &str, width: u32) -> String {
         let words = (width + 31) / 32;
         format!(
-r#"        .def_property("{field}",
+            r#"        .def_property("{field}",
             []({class}& self) -> uint64_t {{
                 uint64_t v = 0;
                 for (int i = std::min({words}u, 2u) - 1; i >= 0; i--)
@@ -726,12 +822,13 @@ r#"        .def_property("{field}",
     }
 
     /// Return the contents of the `verilated.h` stub.
-    pub fn verilated_h() -> String {
-        r#"#pragma once
+    pub fn verilated_h(fp_compat: crate::FpCompat) -> String {
+        let prelude = r#"#pragma once
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 
 // --coverage-dat: forward declaration for the helper defined in
 // verilated.cpp. Each class's atexit dumper calls this to get a
@@ -911,7 +1008,114 @@ static inline uint64_t _arch_repeat(uint64_t val, uint32_t n, uint32_t val_width
 #define _ARCH_DCHK(divisor, loc) \
     ((unsigned long long)(divisor) != 0 \
         ? (void)0 : _arch_div0_abort((loc)))
-"#.to_string()
+
+// ── Floating-point (FP32 / BF16) runtime ─────────────────────────────────────
+// Floats are carried as raw bit patterns (FP32→uint32_t, BF16→uint16_t).
+// Arithmetic uses the host FPU, which is IEEE-754 round-to-nearest-even and
+// therefore bit-identical to Berkeley SoftFloat for + - * and fma. BF16 ops go
+// through an f32 intermediate then round once to bf16 — innocuous double
+// rounding (24 >= 2*8+2), so the result equals direct correctly-rounded bf16
+// (doc/plan_fp_types.md §5.3). NaN results are canonicalized to the RISC-V
+// default pattern (0x7FC00000 / 0x7FC0); float→int is toward-zero, saturating,
+// NaN→type-max (RISC-V profile, §6).
+static inline float    _arch_f32b(uint32_t b){ float f; memcpy(&f,&b,4); return f; }
+static inline uint32_t _arch_b32f(float f){ uint32_t b; memcpy(&b,&f,4); return b; }
+static inline uint32_t _arch_f32_canon(uint32_t b){
+    if (((b>>23)&0xFFu)==0xFFu && (b&0x7FFFFFu)!=0u) return 0x7FC00000u;
+    return b;
+}
+static inline uint32_t _arch_f32_add(uint32_t a,uint32_t b){ return _arch_f32_canon(_arch_b32f(_arch_f32b(a)+_arch_f32b(b))); }
+static inline uint32_t _arch_f32_sub(uint32_t a,uint32_t b){ return _arch_f32_canon(_arch_b32f(_arch_f32b(a)-_arch_f32b(b))); }
+static inline uint32_t _arch_f32_mul(uint32_t a,uint32_t b){ return _arch_f32_canon(_arch_b32f(_arch_f32b(a)*_arch_f32b(b))); }
+static inline uint32_t _arch_fma_f32(uint32_t a,uint32_t b,uint32_t c){ return _arch_f32_canon(_arch_b32f(fmaf(_arch_f32b(a),_arch_f32b(b),_arch_f32b(c)))); }
+static inline uint8_t _arch_f32_eq(uint32_t a,uint32_t b){ return _arch_f32b(a)==_arch_f32b(b); }
+static inline uint8_t _arch_f32_ne(uint32_t a,uint32_t b){ return _arch_f32b(a)!=_arch_f32b(b); }
+static inline uint8_t _arch_f32_lt(uint32_t a,uint32_t b){ return _arch_f32b(a)< _arch_f32b(b); }
+static inline uint8_t _arch_f32_gt(uint32_t a,uint32_t b){ return _arch_f32b(a)> _arch_f32b(b); }
+static inline uint8_t _arch_f32_le(uint32_t a,uint32_t b){ return _arch_f32b(a)<=_arch_f32b(b); }
+static inline uint8_t _arch_f32_ge(uint32_t a,uint32_t b){ return _arch_f32b(a)>=_arch_f32b(b); }
+static inline uint8_t _arch_f32_isnan(uint32_t a){ return std::isnan(_arch_f32b(a))?1:0; }
+
+// BF16 <-> f32: bf16 is the top 16 bits of binary32.
+static inline float    _arch_bf16f(uint16_t h){ return _arch_f32b(((uint32_t)h)<<16); }
+static inline uint16_t _arch_f2bf16(float f){
+    uint32_t x=_arch_b32f(f);
+    if (((x>>23)&0xFFu)==0xFFu && (x&0x7FFFFFu)!=0u) return 0x7FC0u; // canonical NaN
+    uint32_t lsb=(x>>16)&1u; x += 0x7FFFu+lsb; // round-to-nearest-even
+    return (uint16_t)(x>>16);
+}
+static inline uint32_t _arch_bf16_to_f32(uint16_t h){ return _arch_f32_canon(((uint32_t)h)<<16); }
+static inline uint16_t _arch_f32_to_bf16(uint32_t b){ return _arch_f2bf16(_arch_f32b(b)); }
+static inline uint16_t _arch_bf16_add(uint16_t a,uint16_t b){ return _arch_f2bf16(_arch_bf16f(a)+_arch_bf16f(b)); }
+static inline uint16_t _arch_bf16_sub(uint16_t a,uint16_t b){ return _arch_f2bf16(_arch_bf16f(a)-_arch_bf16f(b)); }
+static inline uint16_t _arch_bf16_mul(uint16_t a,uint16_t b){ return _arch_f2bf16(_arch_bf16f(a)*_arch_bf16f(b)); }
+static inline uint16_t _arch_fma_bf16(uint16_t a,uint16_t b,uint16_t c){ return _arch_f2bf16(fmaf(_arch_bf16f(a),_arch_bf16f(b),_arch_bf16f(c))); }
+static inline uint8_t _arch_bf16_eq(uint16_t a,uint16_t b){ return _arch_bf16f(a)==_arch_bf16f(b); }
+static inline uint8_t _arch_bf16_ne(uint16_t a,uint16_t b){ return _arch_bf16f(a)!=_arch_bf16f(b); }
+static inline uint8_t _arch_bf16_lt(uint16_t a,uint16_t b){ return _arch_bf16f(a)< _arch_bf16f(b); }
+static inline uint8_t _arch_bf16_gt(uint16_t a,uint16_t b){ return _arch_bf16f(a)> _arch_bf16f(b); }
+static inline uint8_t _arch_bf16_le(uint16_t a,uint16_t b){ return _arch_bf16f(a)<=_arch_bf16f(b); }
+static inline uint8_t _arch_bf16_ge(uint16_t a,uint16_t b){ return _arch_bf16f(a)>=_arch_bf16f(b); }
+static inline uint8_t _arch_bf16_isnan(uint16_t a){ return std::isnan(_arch_bf16f(a))?1:0; }
+
+// int <-> float conversions.
+static inline uint32_t _arch_i_to_f32(int64_t v){ return _arch_b32f((float)v); }
+static inline uint32_t _arch_u_to_f32(uint64_t v){ return _arch_b32f((float)v); }
+static inline uint16_t _arch_i_to_bf16(int64_t v){ return _arch_f2bf16((float)v); }
+static inline uint16_t _arch_u_to_bf16(uint64_t v){ return _arch_f2bf16((float)v); }
+static inline int64_t  _arch_f32_to_i(uint32_t b){
+    float f=_arch_f32b(b);
+    if (std::isnan(f)) return INT64_MAX;
+    if (f >= 9223372036854775808.0f) return INT64_MAX;
+    if (f <  -9223372036854775808.0f) return INT64_MIN;
+    return (int64_t)f; // truncates toward zero
+}
+static inline uint64_t _arch_f32_to_u(uint32_t b){
+    float f=_arch_f32b(b);
+    if (std::isnan(f)) return UINT64_MAX;
+    if (f <= 0.0f) return 0;
+    if (f >= 18446744073709551616.0f) return UINT64_MAX;
+    return (uint64_t)f;
+}
+static inline int64_t  _arch_bf16_to_i(uint16_t h){ return _arch_f32_to_i(_arch_bf16_to_f32(h)); }
+static inline uint64_t _arch_bf16_to_u(uint16_t h){ return _arch_f32_to_u(_arch_bf16_to_f32(h)); }
+// Width-aware float→int: toward-zero, saturating to the N-bit target range,
+// NaN→type-max (RISC-V profile). Builds on the 64-bit-safe conversions above
+// (which already map NaN→max and saturate to the 64-bit range) then clamps to
+// the requested width — so the int64 cast never sees an out-of-range float.
+static inline int64_t _arch_f32_to_sint(uint32_t b, int bits){
+    int64_t v = _arch_f32_to_i(b);
+    if (bits >= 64) return v;
+    int64_t maxv = ((int64_t)1 << (bits - 1)) - 1;
+    int64_t minv = -((int64_t)1 << (bits - 1));
+    if (v > maxv) return maxv;
+    if (v < minv) return minv;
+    return v;
+}
+static inline uint64_t _arch_f32_to_uint(uint32_t b, int bits){
+    uint64_t v = _arch_f32_to_u(b);
+    if (bits >= 64) return v;
+    uint64_t maxv = ((uint64_t)1 << bits) - 1;
+    return (v > maxv) ? maxv : v;
+}
+"#.to_string();
+        // Profile shim (doc/plan_fp_types.md §6.2): the `cuda` profile differs
+        // from the default `riscv` only in the canonical NaN pattern and the
+        // NaN→int result; the arithmetic core is untouched.
+        match fp_compat {
+            crate::FpCompat::Riscv => prelude,
+            crate::FpCompat::Cuda => prelude
+                .replace("return 0x7FC00000u;", "return 0x7FFFFFFFu;")
+                .replace("return 0x7FC0u;", "return 0x7FFFu;")
+                .replace(
+                    "if (std::isnan(f)) return INT64_MAX;",
+                    "if (std::isnan(f)) return 0;",
+                )
+                .replace(
+                    "if (std::isnan(f)) return UINT64_MAX;",
+                    "if (std::isnan(f)) return 0;",
+                ),
+        }
     }
 
     pub fn verilated_cpp() -> String {
@@ -937,7 +1141,8 @@ extern "C" FILE* _arch_cov_dat_open(const char* path) {
     }
     return f;
 }
-"##.to_string()
+"##
+        .to_string()
     }
 }
 
@@ -945,10 +1150,10 @@ extern "C" FILE* _arch_cov_dat_open(const char* path) {
 
 /// A signal to be traced in VCD output.
 pub(crate) struct TraceSignal {
-    pub(crate) vcd_name: String,    // display name in VCD scope
-    pub(crate) cpp_expr: String,    // C++ expression to read the value
-    pub(crate) width: u32,          // bit width
-    pub(crate) is_wide: bool,       // true if VlWide<N> type
+    pub(crate) vcd_name: String, // display name in VCD scope
+    pub(crate) cpp_expr: String, // C++ expression to read the value
+    pub(crate) width: u32,       // bit width
+    pub(crate) is_wide: bool,    // true if VlWide<N> type
 }
 
 /// Generate a short VCD identifier from a signal index.
@@ -960,7 +1165,11 @@ fn vcd_id(index: usize) -> String {
 
 /// Emit trace_open / trace_dump / trace_close C++ method implementations.
 /// Returns (header_declarations, cpp_implementations).
-pub(crate) fn emit_trace_methods(class: &str, module_name: &str, signals: &[TraceSignal]) -> (String, String) {
+pub(crate) fn emit_trace_methods(
+    class: &str,
+    module_name: &str,
+    signals: &[TraceSignal],
+) -> (String, String) {
     let mut h = String::new();
     let mut cpp = String::new();
 
@@ -969,14 +1178,23 @@ pub(crate) fn emit_trace_methods(class: &str, module_name: &str, signals: &[Trac
     h.push_str("  void trace_close();\n");
 
     // ── trace_open ──
-    cpp.push_str(&format!("void {class}::trace_open(const char* filename) {{\n"));
+    cpp.push_str(&format!(
+        "void {class}::trace_open(const char* filename) {{\n"
+    ));
     cpp.push_str("  _trace_fp = fopen(filename, \"w\");\n");
     cpp.push_str("  if (!_trace_fp) return;\n");
     cpp.push_str("  fprintf(_trace_fp, \"$timescale 1ns $end\\n\");\n");
-    cpp.push_str(&format!("  fprintf(_trace_fp, \"$scope module {} $end\\n\");\n", module_name));
+    cpp.push_str(&format!(
+        "  fprintf(_trace_fp, \"$scope module {} $end\\n\");\n",
+        module_name
+    ));
     for (i, sig) in signals.iter().enumerate() {
         let id = vcd_id(i);
-        let kind = if sig.vcd_name.starts_with('_') { "reg" } else { "wire" };
+        let kind = if sig.vcd_name.starts_with('_') {
+            "reg"
+        } else {
+            "wire"
+        };
         cpp.push_str(&format!(
             "  fprintf(_trace_fp, \"$var {} {} {} {} $end\\n\");\n",
             kind, sig.width, id, sig.vcd_name
@@ -1046,8 +1264,12 @@ fn collect_trace_signals(
     // Ports (skip bus ports and Vec ports — flattened signals added separately;
     // also skip struct/enum-typed ports, which can't be bit-shifted scalar-style)
     for p in ports {
-        if p.bus_info.is_some() { continue; }
-        if matches!(p.ty, TypeExpr::Vec(..) | TypeExpr::Named(_)) { continue; }
+        if p.bus_info.is_some() {
+            continue;
+        }
+        if matches!(p.ty, TypeExpr::Vec(..) | TypeExpr::Named(_)) {
+            continue;
+        }
         let name = &p.name.name;
         let width = type_width_with_params(&p.ty, params);
         let is_wide = wide_names.contains(name.as_str());
@@ -1060,7 +1282,9 @@ fn collect_trace_signals(
     }
     // Flattened bus signals
     for (flat_name, flat_ty) in bus_flat {
-        if matches!(flat_ty, TypeExpr::Vec(..) | TypeExpr::Named(_)) { continue; }
+        if matches!(flat_ty, TypeExpr::Vec(..) | TypeExpr::Named(_)) {
+            continue;
+        }
         let width = type_width_with_params(flat_ty, params);
         let is_wide = wide_names.contains(flat_name.as_str());
         sigs.push(TraceSignal {
@@ -1077,19 +1301,27 @@ fn collect_trace_signals(
     // Regs >64 bits use _arch_u128, not VlWide, so is_wide = false.
     for item in body {
         if let ModuleBodyItem::RegDecl(r) = item {
-            if matches!(r.ty, TypeExpr::Named(_)) { continue; }
+            if matches!(r.ty, TypeExpr::Named(_)) {
+                continue;
+            }
             let name = &r.name.name;
             if let TypeExpr::Vec(elem, count_expr) = &r.ty {
                 // Skip Vec-of-named (struct/enum element); per-element
                 // bit-shift only works for scalar elements.
-                if matches!(elem.as_ref(), TypeExpr::Named(_)) { continue; }
+                if matches!(elem.as_ref(), TypeExpr::Named(_)) {
+                    continue;
+                }
                 let elem_width = type_width_with_params(elem, params);
-                if elem_width == 0 || elem_width > 64 { continue; }
+                if elem_width == 0 || elem_width > 64 {
+                    continue;
+                }
                 // Use params-aware count (matches the field-decl path
                 // at line 4091); bare eval_const_expr returns 0 for
                 // param-based sizes, which would skip the trace silently.
                 let count = eval_const_expr_with_params(count_expr, params);
-                if count == 0 { continue; }
+                if count == 0 {
+                    continue;
+                }
                 for i in 0..count {
                     sigs.push(TraceSignal {
                         vcd_name: format!("{name}[{i}]"),
@@ -1117,13 +1349,19 @@ fn collect_trace_signals(
         match item {
             ModuleBodyItem::LetBinding(l) => {
                 // ty=None means assignment to existing port/wire — already traced, skip
-                if l.ty.is_none() { continue; }
+                if l.ty.is_none() {
+                    continue;
+                }
                 let name = &l.name.name;
-                if l.ty.as_ref().map_or(false,
-                    |t| matches!(t, TypeExpr::Vec(..) | TypeExpr::Named(_))) { continue; }
-                let width = l.ty.as_ref().map(|t| type_width_with_params(t, params)).unwrap_or(
-                    widths.get(name.as_str()).copied().unwrap_or(32)
-                );
+                if l.ty.as_ref().map_or(false, |t| {
+                    matches!(t, TypeExpr::Vec(..) | TypeExpr::Named(_))
+                }) {
+                    continue;
+                }
+                let width =
+                    l.ty.as_ref()
+                        .map(|t| type_width_with_params(t, params))
+                        .unwrap_or(widths.get(name.as_str()).copied().unwrap_or(32));
                 sigs.push(TraceSignal {
                     vcd_name: name.clone(),
                     cpp_expr: format!("_let_{name}"),
@@ -1132,7 +1370,9 @@ fn collect_trace_signals(
                 });
             }
             ModuleBodyItem::WireDecl(w) => {
-                if matches!(w.ty, TypeExpr::Vec(..) | TypeExpr::Named(_)) { continue; }
+                if matches!(w.ty, TypeExpr::Vec(..) | TypeExpr::Named(_)) {
+                    continue;
+                }
                 let name = &w.name.name;
                 let width = type_width_with_params(&w.ty, params);
                 sigs.push(TraceSignal {
@@ -1186,7 +1426,7 @@ fn collect_trace_signals(
             (UInt<PARAM>, Vec<_, PARAM>). See arch-com#447 §1 and PR #463 \
             extending #458 to the sibling helper cluster."
 )]
-#[allow(dead_code)]  // intentional landmine: present so new callers
+#[allow(dead_code)] // intentional landmine: present so new callers
                     // surface a deprecation warning at PR review time.
 fn type_width(ty: &TypeExpr) -> u32 {
     type_width_with_params(ty, &[])
@@ -1203,7 +1443,9 @@ fn type_width_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> u32 {
         TypeExpr::Bit => 1,
         TypeExpr::Clock(_) => 1,
         TypeExpr::Reset { .. } => 1,
-        TypeExpr::Vec(elem, count) => type_width_with_params(elem, params) * eval_width_with_params(count, params),
+        TypeExpr::Vec(elem, count) => {
+            type_width_with_params(elem, params) * eval_width_with_params(count, params)
+        }
         _ => 32,
     }
 }
@@ -1231,8 +1473,12 @@ fn add_trace_to_simple_construct(
     // this footgun.
     let mut signals = Vec::new();
     for p in ports {
-        if matches!(p.ty, TypeExpr::Vec(..)) { continue; }  // handled as flat via extra_signals
-        if p.bus_info.is_some() { continue; }                // bus ports flattened via extra_signals
+        if matches!(p.ty, TypeExpr::Vec(..)) {
+            continue;
+        } // handled as flat via extra_signals
+        if p.bus_info.is_some() {
+            continue;
+        } // bus ports flattened via extra_signals
         let width = type_width_with_params(&p.ty, params);
         signals.push(TraceSignal {
             vcd_name: p.name.name.clone(),
@@ -1271,7 +1517,11 @@ fn eval_width(expr: &Expr) -> u32 {
         ExprKind::Literal(LitKind::Hex(n)) => *n as u32,
         ExprKind::Clog2(inner) => {
             let v = eval_width(inner);
-            if v <= 1 { 1 } else { 32 - (v - 1).leading_zeros() }
+            if v <= 1 {
+                1
+            } else {
+                32 - (v - 1).leading_zeros()
+            }
         }
         _ => 32,
     }
@@ -1285,8 +1535,11 @@ fn eval_width(expr: &Expr) -> u32 {
 /// preserves prior conservative-32 behavior).
 fn eval_width_in(expr: &Expr, ctx: &Ctx) -> u32 {
     let folded = eval_const_expr_with_params(expr, ctx.params);
-    if folded != 0 || matches!(&expr.kind,
-        ExprKind::Literal(LitKind::Dec(0)) | ExprKind::Literal(LitKind::Hex(0)))
+    if folded != 0
+        || matches!(
+            &expr.kind,
+            ExprKind::Literal(LitKind::Dec(0)) | ExprKind::Literal(LitKind::Hex(0))
+        )
     {
         folded as u32
     } else {
@@ -1295,19 +1548,21 @@ fn eval_width_in(expr: &Expr, ctx: &Ctx) -> u32 {
 }
 
 /// Number of 32-bit words needed for `bits` bits.
-fn wide_words(bits: u32) -> u32 { (bits + 31) / 32 }
+fn wide_words(bits: u32) -> u32 {
+    (bits + 31) / 32
+}
 
 /// True if a signal width requires a wide (VlWide) type.
-fn is_wide_bits(bits: u32) -> bool { bits > 64 }
+fn is_wide_bits(bits: u32) -> bool {
+    bits > 64
+}
 
 /// C++ type for a public port field.
-#[deprecated(
-    note = "use `cpp_port_type_with_params(.., &params)` — the bare form \
+#[deprecated(note = "use `cpp_port_type_with_params(.., &params)` — the bare form \
             silently buckets `UInt<PARAM>` into uint32_t even when the param \
             resolves to a wider value. See arch-com#447 §1 and PR #463 \
-            extending #458 to the sibling helper cluster."
-)]
-#[allow(dead_code)]  // intentional landmine: present so new callers
+            extending #458 to the sibling helper cluster.")]
+#[allow(dead_code)] // intentional landmine: present so new callers
                     // surface a deprecation warning at PR review time.
 fn cpp_port_type(ty: &TypeExpr) -> String {
     cpp_port_type_with_params(ty, &[])
@@ -1324,15 +1579,28 @@ fn cpp_port_type_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> String {
     match ty {
         TypeExpr::UInt(w) => {
             let b = eval_width_with_params(w, params);
-            if is_wide_bits(b) { format!("VlWide<{}>", wide_words(b)) }
-            else { cpp_uint(b).to_string() }
+            if is_wide_bits(b) {
+                format!("VlWide<{}>", wide_words(b))
+            } else {
+                cpp_uint(b).to_string()
+            }
         }
         TypeExpr::SInt(w) => {
             let b = eval_width_with_params(w, params);
-            if is_wide_bits(b) { format!("VlWide<{}>", wide_words(b)) }
-            else { cpp_sint(b).to_string() }
+            if is_wide_bits(b) {
+                format!("VlWide<{}>", wide_words(b))
+            } else {
+                cpp_sint(b).to_string()
+            }
         }
-        TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(..) => "uint8_t".to_string(),
+        TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(..) => {
+            "uint8_t".to_string()
+        }
+        // Floats are carried as their raw bit pattern in an unsigned integer
+        // (FP32 → uint32_t, BF16 → uint16_t); arithmetic goes through the
+        // `_arch_fp.h` helpers, never C++ float operators on the storage.
+        TypeExpr::FP32 => "uint32_t".to_string(),
+        TypeExpr::BF16 => "uint16_t".to_string(),
         TypeExpr::Named(n) => n.name.clone(),
         TypeExpr::Vec(_, _) => "uint32_t".to_string(),
     }
@@ -1344,8 +1612,11 @@ fn cpp_port_type_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> String {
 /// fold (preserving prior conservative-32 behavior). arch-com#330.
 fn eval_width_with_params(expr: &Expr, params: &[ParamDecl]) -> u32 {
     let folded = eval_const_expr_with_params(expr, params);
-    if folded != 0 || matches!(&expr.kind,
-        ExprKind::Literal(LitKind::Dec(0)) | ExprKind::Literal(LitKind::Hex(0)))
+    if folded != 0
+        || matches!(
+            &expr.kind,
+            ExprKind::Literal(LitKind::Dec(0)) | ExprKind::Literal(LitKind::Hex(0))
+        )
     {
         folded as u32
     } else {
@@ -1380,10 +1651,7 @@ fn subst_expr_sim(expr: &Expr, params: &HashMap<String, &Expr>) -> Expr {
             Box::new(subst_expr_sim(l, params)),
             Box::new(subst_expr_sim(r, params)),
         ),
-        ExprKind::Unary(op, e) => ExprKind::Unary(
-            *op,
-            Box::new(subst_expr_sim(e, params)),
-        ),
+        ExprKind::Unary(op, e) => ExprKind::Unary(*op, Box::new(subst_expr_sim(e, params))),
         ExprKind::Ternary(c, t, e) => ExprKind::Ternary(
             Box::new(subst_expr_sim(c, params)),
             Box::new(subst_expr_sim(t, params)),
@@ -1396,7 +1664,11 @@ fn subst_expr_sim(expr: &Expr, params: &HashMap<String, &Expr>) -> Expr {
         ),
         _ => return expr.clone(),
     };
-    Expr { kind, span: expr.span, parenthesized: expr.parenthesized }
+    Expr {
+        kind,
+        span: expr.span,
+        parenthesized: expr.parenthesized,
+    }
 }
 
 /// Return flattened bus port signals with direction: Vec<(flat_name, Direction, TypeExpr)>.
@@ -1409,7 +1681,9 @@ fn flatten_bus_port_with_dir(
 ) -> Vec<(String, Direction, TypeExpr)> {
     let bus_name = &bi.bus_name.name;
     if let Some((crate::resolve::Symbol::Bus(info), _)) = symbols.globals.get(bus_name) {
-        let mut param_map: HashMap<String, &Expr> = info.params.iter()
+        let mut param_map: HashMap<String, &Expr> = info
+            .params
+            .iter()
             .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
             .collect();
         for pa in &bi.params {
@@ -1433,7 +1707,10 @@ fn flatten_bus_port_with_dir(
                 let subst_ty = subst_type_expr_sim(sty, &param_map);
                 // Target perspective flips all signal directions
                 let dir = if is_target {
-                    match sdir { Direction::In => Direction::Out, Direction::Out => Direction::In }
+                    match sdir {
+                        Direction::In => Direction::Out,
+                        Direction::Out => Direction::In,
+                    }
                 } else {
                     *sdir
                 };
@@ -1479,18 +1756,25 @@ fn expand_bus_connections(
     // `param NAME = ...` overrides applied) so that
     // `port chans: initiator Vec<B, N>;` with a param-driven N folds to a
     // concrete element count at the call site.
-    let (target_ports, target_params): (Option<&[PortDecl]>, Vec<ParamDecl>) = source.items.iter()
+    let (target_ports, target_params): (Option<&[PortDecl]>, Vec<ParamDecl>) = source
+        .items
+        .iter()
         .find_map(|item| match item {
-            Item::Module(m) if m.name.name == inst.module_name.name =>
-                Some((Some(m.ports.as_slice()), m.params.clone())),
-            Item::Fsm(f) if f.name.name == inst.module_name.name =>
-                Some((Some(f.ports.as_slice()), f.common.params.clone())),
+            Item::Module(m) if m.name.name == inst.module_name.name => {
+                Some((Some(m.ports.as_slice()), m.params.clone()))
+            }
+            Item::Fsm(f) if f.name.name == inst.module_name.name => {
+                Some((Some(f.ports.as_slice()), f.common.params.clone()))
+            }
             _ => None,
         })
         .unwrap_or((None, Vec::new()));
     let mut child_params_overridden = target_params.clone();
     for pa in &inst.param_assigns {
-        if let Some(p) = child_params_overridden.iter_mut().find(|p| p.name.name == pa.name.name) {
+        if let Some(p) = child_params_overridden
+            .iter_mut()
+            .find(|p| p.name.name == pa.name.name)
+        {
             p.default = Some(pa.value.clone());
         }
     }
@@ -1502,12 +1786,24 @@ fn expand_bus_connections(
                     let bus = bi.bus_name.name.as_str();
                     match bi.count.as_ref() {
                         None => {
-                            v.push((p.name.name.clone(), bus, bi.perspective, bi.params.as_slice()));
+                            v.push((
+                                p.name.name.clone(),
+                                bus,
+                                bi.perspective,
+                                bi.params.as_slice(),
+                            ));
                         }
                         Some(count_expr) => {
-                            let n = eval_const_expr_with_params(count_expr, &child_params_overridden) as u32;
+                            let n =
+                                eval_const_expr_with_params(count_expr, &child_params_overridden)
+                                    as u32;
                             for i in 0..n {
-                                v.push((format!("{}_{}", p.name.name, i), bus, bi.perspective, bi.params.as_slice()));
+                                v.push((
+                                    format!("{}_{}", p.name.name, i),
+                                    bus,
+                                    bi.perspective,
+                                    bi.params.as_slice(),
+                                ));
                             }
                         }
                     }
@@ -1526,8 +1822,11 @@ fn expand_bus_connections(
             for p in ports {
                 if let Some(bi) = p.bus_info.as_ref() {
                     if let Some(count_expr) = bi.count.as_ref() {
-                        let n = eval_const_expr_with_params(count_expr, &child_params_overridden) as u32;
-                        if n > 0 { v.push((p.name.name.clone(), n)); }
+                        let n = eval_const_expr_with_params(count_expr, &child_params_overridden)
+                            as u32;
+                        if n > 0 {
+                            v.push((p.name.name.clone(), n));
+                        }
                     }
                 }
             }
@@ -1537,87 +1836,138 @@ fn expand_bus_connections(
     // Parent-side Vec<Bus,N> port and wire names → counts. Used together
     // with `target_vec_of_bus_ports` to detect a whole-vec connection
     // `chans -> w` where both sides are arrays.
-    let parent_vec_of_bus_wires: HashMap<String, u32> = m.body.iter()
-        .filter_map(|i| if let ModuleBodyItem::WireDecl(w) = i {
-            if let TypeExpr::Vec(elem, size_expr) = &w.ty {
-                if let TypeExpr::Named(id) = elem.as_ref() {
-                    if matches!(symbols.globals.get(&id.name), Some((crate::resolve::Symbol::Bus(_), _))) {
-                        let n = eval_const_expr_with_params(size_expr, &m.params) as u32;
-                        if n > 0 { return Some((w.name.name.clone(), n)); }
-                    }
-                }
-            }
-            None
-        } else { None })
-        .collect();
-    // 2D bus wires: `wire edges: Vec<Vec<B, N>, M>;` → (M, N).
-    // Used by the whole-row inst connection expansion `outs -> edges[i]`,
-    // where `edges[i]` is a row (Vec<B,N>) inside a 2D wire.
-    let parent_vec_of_bus_wires_2d: HashMap<String, (u32, u32)> = m.body.iter()
-        .filter_map(|i| if let ModuleBodyItem::WireDecl(w) = i {
-            if let TypeExpr::Vec(outer_elem, outer_size) = &w.ty {
-                if let TypeExpr::Vec(inner_elem, inner_size) = outer_elem.as_ref() {
-                    if let TypeExpr::Named(id) = inner_elem.as_ref() {
-                        if matches!(symbols.globals.get(&id.name), Some((crate::resolve::Symbol::Bus(_), _))) {
-                            let m_n = eval_const_expr_with_params(outer_size, &m.params) as u32;
-                            let n_n = eval_const_expr_with_params(inner_size, &m.params) as u32;
-                            if m_n > 0 && n_n > 0 {
-                                return Some((w.name.name.clone(), (m_n, n_n)));
+    let parent_vec_of_bus_wires: HashMap<String, u32> = m
+        .body
+        .iter()
+        .filter_map(|i| {
+            if let ModuleBodyItem::WireDecl(w) = i {
+                if let TypeExpr::Vec(elem, size_expr) = &w.ty {
+                    if let TypeExpr::Named(id) = elem.as_ref() {
+                        if matches!(
+                            symbols.globals.get(&id.name),
+                            Some((crate::resolve::Symbol::Bus(_), _))
+                        ) {
+                            let n = eval_const_expr_with_params(size_expr, &m.params) as u32;
+                            if n > 0 {
+                                return Some((w.name.name.clone(), n));
                             }
                         }
                     }
                 }
+                None
+            } else {
+                None
             }
-            None
-        } else { None })
+        })
         .collect();
-    let parent_vec_of_bus_ports: HashMap<String, u32> = m.ports.iter()
+    // 2D bus wires: `wire edges: Vec<Vec<B, N>, M>;` → (M, N).
+    // Used by the whole-row inst connection expansion `outs -> edges[i]`,
+    // where `edges[i]` is a row (Vec<B,N>) inside a 2D wire.
+    let parent_vec_of_bus_wires_2d: HashMap<String, (u32, u32)> = m
+        .body
+        .iter()
+        .filter_map(|i| {
+            if let ModuleBodyItem::WireDecl(w) = i {
+                if let TypeExpr::Vec(outer_elem, outer_size) = &w.ty {
+                    if let TypeExpr::Vec(inner_elem, inner_size) = outer_elem.as_ref() {
+                        if let TypeExpr::Named(id) = inner_elem.as_ref() {
+                            if matches!(
+                                symbols.globals.get(&id.name),
+                                Some((crate::resolve::Symbol::Bus(_), _))
+                            ) {
+                                let m_n = eval_const_expr_with_params(outer_size, &m.params) as u32;
+                                let n_n = eval_const_expr_with_params(inner_size, &m.params) as u32;
+                                if m_n > 0 && n_n > 0 {
+                                    return Some((w.name.name.clone(), (m_n, n_n)));
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            } else {
+                None
+            }
+        })
+        .collect();
+    let parent_vec_of_bus_ports: HashMap<String, u32> = m
+        .ports
+        .iter()
         .filter_map(|p| {
             let bi = p.bus_info.as_ref()?;
             let count_expr = bi.count.as_ref()?;
             let n = eval_const_expr_with_params(count_expr, &m.params) as u32;
-            if n > 0 { Some((p.name.name.clone(), n)) } else { None }
+            if n > 0 {
+                Some((p.name.name.clone(), n))
+            } else {
+                None
+            }
         })
         .collect();
     // Pre-expand whole-vec inst connections (`chans -> w`) into N per-element
     // bus connections (`chans_0 -> w[0]; chans_1 -> w[1]; ...`). The body
     // loop below then expands each of those into per-signal connections via
     // the existing scalar+indexed paths.
-    let inst_connections: Vec<crate::ast::Connection> = inst.connections.iter()
+    let inst_connections: Vec<crate::ast::Connection> = inst
+        .connections
+        .iter()
         .flat_map(|c| {
-            if let Some((_, n)) = target_vec_of_bus_ports.iter().find(|(pn, _)| pn == &c.port_name.name) {
+            if let Some((_, n)) = target_vec_of_bus_ports
+                .iter()
+                .find(|(pn, _)| pn == &c.port_name.name)
+            {
                 // Whole-row connection into a 2D bus wire: `outs -> edges[m]`,
                 // where outs is Vec<B,N>, edges is Vec<Vec<B,N>,M>, m is a
                 // literal (or static-unrolled loop var). Expand to N per-element
                 // connections `outs[j] -> edges[m][j]`.
                 if let ExprKind::Index(arr, idx) = &c.signal.kind {
                     if let ExprKind::Ident(parent_name) = &arr.kind {
-                        if let Some((_m_n, n_n)) = parent_vec_of_bus_wires_2d.get(parent_name).copied() {
+                        if let Some((_m_n, n_n)) =
+                            parent_vec_of_bus_wires_2d.get(parent_name).copied()
+                        {
                             if let ExprKind::Literal(LitKind::Dec(m_idx)) = &idx.kind {
                                 if (n_n as u32) == *n {
-                                    return (0..*n).map(|j| {
-                                        let port_j = Ident::new(format!("{}_{}", c.port_name.name, j), c.port_name.span);
-                                        let parent_expr = Expr::new(
-                                            ExprKind::Index(
-                                                Box::new(Expr::new(
-                                                    ExprKind::Index(
-                                                        Box::new(Expr::new(ExprKind::Ident(parent_name.clone()), c.signal.span)),
-                                                        Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(*m_idx)), c.signal.span)),
-                                                    ),
-                                                    c.signal.span,
-                                                )),
-                                                Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(j as u64)), c.signal.span)),
-                                            ),
-                                            c.signal.span,
-                                        );
-                                        crate::ast::Connection {
-                                            port_name: port_j,
-                                            direction: c.direction,
-                                            signal: parent_expr,
-                                            reset_override: None,
-                                            span: c.span,
-                                        }
-                                    }).collect::<Vec<_>>();
+                                    return (0..*n)
+                                        .map(|j| {
+                                            let port_j = Ident::new(
+                                                format!("{}_{}", c.port_name.name, j),
+                                                c.port_name.span,
+                                            );
+                                            let parent_expr = Expr::new(
+                                                ExprKind::Index(
+                                                    Box::new(Expr::new(
+                                                        ExprKind::Index(
+                                                            Box::new(Expr::new(
+                                                                ExprKind::Ident(
+                                                                    parent_name.clone(),
+                                                                ),
+                                                                c.signal.span,
+                                                            )),
+                                                            Box::new(Expr::new(
+                                                                ExprKind::Literal(LitKind::Dec(
+                                                                    *m_idx,
+                                                                )),
+                                                                c.signal.span,
+                                                            )),
+                                                        ),
+                                                        c.signal.span,
+                                                    )),
+                                                    Box::new(Expr::new(
+                                                        ExprKind::Literal(LitKind::Dec(j as u64)),
+                                                        c.signal.span,
+                                                    )),
+                                                ),
+                                                c.signal.span,
+                                            );
+                                            crate::ast::Connection {
+                                                port_name: port_j,
+                                                direction: c.direction,
+                                                signal: parent_expr,
+                                                reset_override: None,
+                                                span: c.span,
+                                            }
+                                        })
+                                        .collect::<Vec<_>>();
                                 }
                             }
                         }
@@ -1627,30 +1977,44 @@ fn expand_bus_connections(
                     let parent_is_vob_wire = parent_vec_of_bus_wires.contains_key(parent_name);
                     let parent_is_vob_port = parent_vec_of_bus_ports.contains_key(parent_name);
                     if parent_is_vob_wire || parent_is_vob_port {
-                        return (0..*n).map(|i| {
-                            let port_i = Ident::new(format!("{}_{}", c.port_name.name, i), c.port_name.span);
-                            // Wire: emit Index(Ident(w), i) so downstream sees a
-                            // bus-wire-array element. Port: emit Ident("w_<i>") so
-                            // it lands at the flat per-element port name on the parent.
-                            let parent_expr = if parent_is_vob_wire {
-                                Expr::new(
-                                    ExprKind::Index(
-                                        Box::new(Expr::new(ExprKind::Ident(parent_name.clone()), c.signal.span)),
-                                        Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(i as u64)), c.signal.span)),
-                                    ),
-                                    c.signal.span,
-                                )
-                            } else {
-                                Expr::new(ExprKind::Ident(format!("{}_{}", parent_name, i)), c.signal.span)
-                            };
-                            crate::ast::Connection {
-                                port_name: port_i,
-                                direction: c.direction,
-                                signal: parent_expr,
-                                reset_override: None,
-                                span: c.span,
-                            }
-                        }).collect::<Vec<_>>();
+                        return (0..*n)
+                            .map(|i| {
+                                let port_i = Ident::new(
+                                    format!("{}_{}", c.port_name.name, i),
+                                    c.port_name.span,
+                                );
+                                // Wire: emit Index(Ident(w), i) so downstream sees a
+                                // bus-wire-array element. Port: emit Ident("w_<i>") so
+                                // it lands at the flat per-element port name on the parent.
+                                let parent_expr = if parent_is_vob_wire {
+                                    Expr::new(
+                                        ExprKind::Index(
+                                            Box::new(Expr::new(
+                                                ExprKind::Ident(parent_name.clone()),
+                                                c.signal.span,
+                                            )),
+                                            Box::new(Expr::new(
+                                                ExprKind::Literal(LitKind::Dec(i as u64)),
+                                                c.signal.span,
+                                            )),
+                                        ),
+                                        c.signal.span,
+                                    )
+                                } else {
+                                    Expr::new(
+                                        ExprKind::Ident(format!("{}_{}", parent_name, i)),
+                                        c.signal.span,
+                                    )
+                                };
+                                crate::ast::Connection {
+                                    port_name: port_i,
+                                    direction: c.direction,
+                                    signal: parent_expr,
+                                    reset_override: None,
+                                    span: c.span,
+                                }
+                            })
+                            .collect::<Vec<_>>();
                     }
                 }
             }
@@ -1660,7 +2024,10 @@ fn expand_bus_connections(
 
     let mut expanded = Vec::new();
     for c in &inst_connections {
-        if let Some((_, bus_name, perspective, bus_params)) = target_bus_ports.iter().find(|(pn, _, _, _)| pn == &c.port_name.name) {
+        if let Some((_, bus_name, perspective, bus_params)) = target_bus_ports
+            .iter()
+            .find(|(pn, _, _, _)| pn == &c.port_name.name)
+        {
             // Bus connection — expand to individual signal connections
             if let Some((crate::resolve::Symbol::Bus(info), _)) = symbols.globals.get(*bus_name) {
                 // Three shapes for the parent-side signal on a whole-bus binding:
@@ -1707,10 +2074,17 @@ fn expand_bus_connections(
                                 ExprKind::Ident(arr_name),
                                 ExprKind::Literal(LitKind::Dec(m)),
                                 ExprKind::Literal(LitKind::Dec(n)),
-                            ) = (&inner_arr.kind, &inner_idx.kind, &idx.kind) {
+                            ) = (&inner_arr.kind, &inner_idx.kind, &idx.kind)
+                            {
                                 BindKind::Wire2DIndex(arr_name.clone(), *m as u32, *n as u32)
-                            } else { continue; }
-                        } else if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) = (&arr.kind, &idx.kind) {
+                            } else {
+                                continue;
+                            }
+                        } else if let (
+                            ExprKind::Ident(arr_name),
+                            ExprKind::Literal(LitKind::Dec(i)),
+                        ) = (&arr.kind, &idx.kind)
+                        {
                             if bus_wire_names.contains(arr_name.as_str())
                                 || parent_vec_of_bus_wires.contains_key(arr_name.as_str())
                             {
@@ -1731,14 +2105,21 @@ fn expand_bus_connections(
                                 // flat name is `<port>_<i>`, mirroring
                                 // the port flattening.
                                 BindKind::FlatPort(format!("{}_{}", arr_name, i))
-                            } else { continue; }
-                        } else { continue; }
+                            } else {
+                                continue;
+                            }
+                        } else {
+                            continue;
+                        }
                     }
                     _ => continue,
                 };
                 let mut _pm = info.default_param_map();
-                for pa in *bus_params { _pm.insert(pa.name.name.clone(), &pa.value); }
-                let _eff = info.effective_signals(&_pm); for (sname, sdir, _) in &_eff {
+                for pa in *bus_params {
+                    _pm.insert(pa.name.name.clone(), &pa.value);
+                }
+                let _eff = info.effective_signals(&_pm);
+                for (sname, sdir, _) in &_eff {
                     let inst_flat = format!("{}_{}", c.port_name.name, sname);
                     // Determine actual direction from the inst's bus perspective.
                     // For initiator: bus out → inst Output, bus in → inst Input.
@@ -1767,8 +2148,14 @@ fn expand_bus_connections(
                             ExprKind::FieldAccess(
                                 Box::new(Expr::new(
                                     ExprKind::Index(
-                                        Box::new(Expr::new(ExprKind::Ident(name.clone()), c.signal.span)),
-                                        Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(*i as u64)), c.signal.span)),
+                                        Box::new(Expr::new(
+                                            ExprKind::Ident(name.clone()),
+                                            c.signal.span,
+                                        )),
+                                        Box::new(Expr::new(
+                                            ExprKind::Literal(LitKind::Dec(*i as u64)),
+                                            c.signal.span,
+                                        )),
                                     ),
                                     c.signal.span,
                                 )),
@@ -1782,12 +2169,21 @@ fn expand_bus_connections(
                                     ExprKind::Index(
                                         Box::new(Expr::new(
                                             ExprKind::Index(
-                                                Box::new(Expr::new(ExprKind::Ident(name.clone()), c.signal.span)),
-                                                Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(*m_idx as u64)), c.signal.span)),
+                                                Box::new(Expr::new(
+                                                    ExprKind::Ident(name.clone()),
+                                                    c.signal.span,
+                                                )),
+                                                Box::new(Expr::new(
+                                                    ExprKind::Literal(LitKind::Dec(*m_idx as u64)),
+                                                    c.signal.span,
+                                                )),
                                             ),
                                             c.signal.span,
                                         )),
-                                        Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(*n_idx as u64)), c.signal.span)),
+                                        Box::new(Expr::new(
+                                            ExprKind::Literal(LitKind::Dec(*n_idx as u64)),
+                                            c.signal.span,
+                                        )),
                                     ),
                                     c.signal.span,
                                 )),
@@ -1822,7 +2218,7 @@ fn expand_bus_connections(
             type. See arch-com#447 §1 and PR #463 extending #458 to the \
             sibling helper cluster."
 )]
-#[allow(dead_code)]  // intentional landmine: present so new callers
+#[allow(dead_code)] // intentional landmine: present so new callers
                     // surface a deprecation warning at PR review time.
 fn cpp_internal_type(ty: &TypeExpr) -> String {
     cpp_internal_type_with_params(ty, &[])
@@ -1835,17 +2231,29 @@ fn cpp_internal_type_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> String 
     match ty {
         TypeExpr::UInt(w) => {
             let b = eval_width_with_params(w, params);
-            if b > 128 { format!("VlWide<{}>", wide_words(b)) }
-            else if b > 64 { "_arch_u128".to_string() }
-            else { cpp_uint(b).to_string() }
+            if b > 128 {
+                format!("VlWide<{}>", wide_words(b))
+            } else if b > 64 {
+                "_arch_u128".to_string()
+            } else {
+                cpp_uint(b).to_string()
+            }
         }
         TypeExpr::SInt(w) => {
             let b = eval_width_with_params(w, params);
-            if b > 128 { format!("VlWide<{}>", wide_words(b)) }
-            else if b > 64 { "_arch_u128".to_string() }
-            else { cpp_sint(b).to_string() }
+            if b > 128 {
+                format!("VlWide<{}>", wide_words(b))
+            } else if b > 64 {
+                "_arch_u128".to_string()
+            } else {
+                cpp_sint(b).to_string()
+            }
         }
-        TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(..) => "uint8_t".to_string(),
+        TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(..) => {
+            "uint8_t".to_string()
+        }
+        TypeExpr::FP32 => "uint32_t".to_string(),
+        TypeExpr::BF16 => "uint16_t".to_string(),
         TypeExpr::Named(n) => n.name.clone(),
         TypeExpr::Vec(_, _) => "uint32_t".to_string(),
     }
@@ -1873,7 +2281,7 @@ fn cpp_field_decl(name: &str, ty: &TypeExpr, params: &[ParamDecl]) -> String {
             helper cluster (twin of the PR #442 sites for the Vec-reg \
             storage path)."
 )]
-#[allow(dead_code)]  // intentional landmine: present so new callers
+#[allow(dead_code)] // intentional landmine: present so new callers
                     // surface a deprecation warning at PR review time.
 fn vec_array_info(ty: &TypeExpr) -> Option<(String, String)> {
     // Backward-compatible wrapper: delegate to the param-aware version
@@ -1891,14 +2299,12 @@ fn vec_array_info(ty: &TypeExpr) -> Option<(String, String)> {
 /// across `param N: const = …;` references (otherwise the result is 0
 /// and downstream code emits zero-sized C++ arrays — see the regression
 /// fixed in PR #cam-zero-array).
-#[deprecated(
-    note = "use `eval_const_expr_with_params(.., &params)` — the bare \
+#[deprecated(note = "use `eval_const_expr_with_params(.., &params)` — the bare \
             form silently miscompiles when the expression depends on \
             enclosing-construct params (Vec<_, PARAM>, UInt<PARAM>, \
             etc.). See arch-com#447 §1 and PRs #427, #439, #442 for \
-            the bug class this guards against."
-)]
-#[allow(dead_code)]  // intentional landmine: present so new callers
+            the bug class this guards against.")]
+#[allow(dead_code)] // intentional landmine: present so new callers
                     // surface a deprecation warning at PR review time.
 fn eval_const_expr(expr: &Expr) -> u64 {
     eval_const_expr_with_params(expr, &[])
@@ -1915,48 +2321,89 @@ fn stmt_indexes_vob_with_var(
     ports: &HashMap<String, u32>,
     wires: &HashMap<String, u32>,
 ) -> bool {
-    fn walk_expr(e: &Expr, var: &str, ports: &HashMap<String, u32>, wires: &HashMap<String, u32>) -> bool {
+    fn walk_expr(
+        e: &Expr,
+        var: &str,
+        ports: &HashMap<String, u32>,
+        wires: &HashMap<String, u32>,
+    ) -> bool {
         if let ExprKind::Index(arr, idx) = &e.kind {
             if let (ExprKind::Ident(arr_name), ExprKind::Ident(idx_name)) = (&arr.kind, &idx.kind) {
-                if idx_name == var && (ports.contains_key(arr_name) || wires.contains_key(arr_name)) {
+                if idx_name == var && (ports.contains_key(arr_name) || wires.contains_key(arr_name))
+                {
                     return true;
                 }
             }
         }
         match &e.kind {
-            ExprKind::Binary(_, l, r) => walk_expr(l, var, ports, wires) || walk_expr(r, var, ports, wires),
-            ExprKind::Unary(_, x) | ExprKind::Cast(x, _) | ExprKind::LatencyAt(x, _) | ExprKind::SvaNext(_, x) =>
-                walk_expr(x, var, ports, wires),
+            ExprKind::Binary(_, l, r) => {
+                walk_expr(l, var, ports, wires) || walk_expr(r, var, ports, wires)
+            }
+            ExprKind::Unary(_, x)
+            | ExprKind::Cast(x, _)
+            | ExprKind::LatencyAt(x, _)
+            | ExprKind::SvaNext(_, x) => walk_expr(x, var, ports, wires),
             ExprKind::FieldAccess(b, _) => walk_expr(b, var, ports, wires),
-            ExprKind::Index(b, i) | ExprKind::BitSlice(b, i, _) =>
-                walk_expr(b, var, ports, wires) || walk_expr(i, var, ports, wires),
-            ExprKind::PartSelect(b, lo, hi, _) =>
-                walk_expr(b, var, ports, wires) || walk_expr(lo, var, ports, wires) || walk_expr(hi, var, ports, wires),
-            ExprKind::Ternary(c, t, e2) =>
-                walk_expr(c, var, ports, wires) || walk_expr(t, var, ports, wires) || walk_expr(e2, var, ports, wires),
-            ExprKind::Concat(parts) | ExprKind::FunctionCall(_, parts) =>
-                parts.iter().any(|p| walk_expr(p, var, ports, wires)),
-            ExprKind::MethodCall(b, _, args) =>
-                walk_expr(b, var, ports, wires) || args.iter().any(|a| walk_expr(a, var, ports, wires)),
+            ExprKind::Index(b, i) | ExprKind::BitSlice(b, i, _) => {
+                walk_expr(b, var, ports, wires) || walk_expr(i, var, ports, wires)
+            }
+            ExprKind::PartSelect(b, lo, hi, _) => {
+                walk_expr(b, var, ports, wires)
+                    || walk_expr(lo, var, ports, wires)
+                    || walk_expr(hi, var, ports, wires)
+            }
+            ExprKind::Ternary(c, t, e2) => {
+                walk_expr(c, var, ports, wires)
+                    || walk_expr(t, var, ports, wires)
+                    || walk_expr(e2, var, ports, wires)
+            }
+            ExprKind::Concat(parts) | ExprKind::FunctionCall(_, parts) => {
+                parts.iter().any(|p| walk_expr(p, var, ports, wires))
+            }
+            ExprKind::MethodCall(b, _, args) => {
+                walk_expr(b, var, ports, wires)
+                    || args.iter().any(|a| walk_expr(a, var, ports, wires))
+            }
             _ => false,
         }
     }
     match stmt {
-        Stmt::Assign(a) => walk_expr(&a.target, var, ports, wires) || walk_expr(&a.value, var, ports, wires),
+        Stmt::Assign(a) => {
+            walk_expr(&a.target, var, ports, wires) || walk_expr(&a.value, var, ports, wires)
+        }
         Stmt::IfElse(ie) => {
             walk_expr(&ie.cond, var, ports, wires)
-                || ie.then_stmts.iter().any(|s| stmt_indexes_vob_with_var(s, var, ports, wires))
-                || ie.else_stmts.iter().any(|s| stmt_indexes_vob_with_var(s, var, ports, wires))
+                || ie
+                    .then_stmts
+                    .iter()
+                    .any(|s| stmt_indexes_vob_with_var(s, var, ports, wires))
+                || ie
+                    .else_stmts
+                    .iter()
+                    .any(|s| stmt_indexes_vob_with_var(s, var, ports, wires))
         }
         Stmt::Match(m) => {
             walk_expr(&m.scrutinee, var, ports, wires)
-                || m.arms.iter().any(|arm| arm.body.iter().any(|s| stmt_indexes_vob_with_var(s, var, ports, wires)))
+                || m.arms.iter().any(|arm| {
+                    arm.body
+                        .iter()
+                        .any(|s| stmt_indexes_vob_with_var(s, var, ports, wires))
+                })
         }
-        Stmt::For(f) => f.body.iter().any(|s| stmt_indexes_vob_with_var(s, var, ports, wires)),
-        Stmt::Init(ib) => ib.body.iter().any(|s| stmt_indexes_vob_with_var(s, var, ports, wires)),
-        Stmt::DoUntil { body, cond, .. } =>
+        Stmt::For(f) => f
+            .body
+            .iter()
+            .any(|s| stmt_indexes_vob_with_var(s, var, ports, wires)),
+        Stmt::Init(ib) => ib
+            .body
+            .iter()
+            .any(|s| stmt_indexes_vob_with_var(s, var, ports, wires)),
+        Stmt::DoUntil { body, cond, .. } => {
             walk_expr(cond, var, ports, wires)
-                || body.iter().any(|s| stmt_indexes_vob_with_var(s, var, ports, wires)),
+                || body
+                    .iter()
+                    .any(|s| stmt_indexes_vob_with_var(s, var, ports, wires))
+        }
         Stmt::WaitUntil(e, _) => walk_expr(e, var, ports, wires),
         Stmt::Log(l) => l.args.iter().any(|a| walk_expr(a, var, ports, wires)),
     }
@@ -1978,7 +2425,8 @@ fn eval_const_expr_with_params(expr: &Expr, params: &[ParamDecl]) -> u64 {
 /// has no SV-genvar concept, so we run a local unroll pass before
 /// walking the body.
 fn module_body_has_preserved_generate(body: &[ModuleBodyItem]) -> bool {
-    body.iter().any(|it| matches!(it, ModuleBodyItem::Generate(GenerateDecl::For(_))))
+    body.iter()
+        .any(|it| matches!(it, ModuleBodyItem::Generate(GenerateDecl::For(_))))
 }
 
 /// Sim-local unroll for preserved `Generate(For)` blocks. Walks the
@@ -2013,7 +2461,9 @@ fn flatten_preserved_generates_for_sim(
                     for git in &gf.items {
                         match git {
                             GenItem::Inst(inst) => {
-                                out.push(ModuleBodyItem::Inst(crate::elaborate::subst_inst(inst, var, i)));
+                                out.push(ModuleBodyItem::Inst(crate::elaborate::subst_inst(
+                                    inst, var, i,
+                                )));
                             }
                             // The elaborator's preservation gate today
                             // restricts preserved generate_for bodies
@@ -2061,7 +2511,11 @@ fn eval_const_expr_with_params_seen(
         }
         ExprKind::Clog2(a) => {
             let v = eval_const_expr_with_params_seen(a, params, seen_params);
-            if v <= 1 { 0 } else { 64 - (v - 1).leading_zeros() as u64 }
+            if v <= 1 {
+                0
+            } else {
+                64 - (v - 1).leading_zeros() as u64
+            }
         }
         ExprKind::Unary(op, a) => {
             let v = eval_const_expr_with_params_seen(a, params, seen_params);
@@ -2078,8 +2532,20 @@ fn eval_const_expr_with_params_seen(
                 BinOp::Add => lv.wrapping_add(rv),
                 BinOp::Sub => lv.wrapping_sub(rv),
                 BinOp::Mul => lv.wrapping_mul(rv),
-                BinOp::Div => if rv == 0 { 0 } else { lv / rv },
-                BinOp::Mod => if rv == 0 { 0 } else { lv % rv },
+                BinOp::Div => {
+                    if rv == 0 {
+                        0
+                    } else {
+                        lv / rv
+                    }
+                }
+                BinOp::Mod => {
+                    if rv == 0 {
+                        0
+                    } else {
+                        lv % rv
+                    }
+                }
                 BinOp::Shl => lv.wrapping_shl(rv as u32),
                 BinOp::Shr => lv.wrapping_shr(rv as u32),
                 BinOp::BitAnd => lv & rv,
@@ -2116,7 +2582,11 @@ fn vec_array_info_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> Option<(St
 /// If `expr` is a bare identifier, return its name — used for diagnostic
 /// location strings in runtime bounds-check codegen.
 fn base_ident_name(expr: &Expr) -> Option<&str> {
-    if let ExprKind::Ident(n) = &expr.kind { Some(n.as_str()) } else { None }
+    if let ExprKind::Ident(n) = &expr.kind {
+        Some(n.as_str())
+    } else {
+        None
+    }
 }
 
 /// Local "is this expression a compile-time constant we can fold?" test.
@@ -2144,18 +2614,27 @@ fn is_const_reducible(e: &Expr) -> bool {
 fn is_thread_fsm_state_reg(name: &str) -> bool {
     // Strip leading underscores (the shadow field is _t0_state, public is t0_state)
     let trimmed = name.trim_start_matches('_');
-    if !trimmed.starts_with('t') { return false; }
-    if !trimmed.ends_with("_state") { return false; }
+    if !trimmed.starts_with('t') {
+        return false;
+    }
+    if !trimmed.ends_with("_state") {
+        return false;
+    }
     // Middle must be digits
     let mid = &trimmed[1..trimmed.len() - "_state".len()];
     !mid.is_empty() && mid.chars().all(|c| c.is_ascii_digit())
 }
 
 fn cpp_uint(bits: u32) -> &'static str {
-    if bits <= 8  { "uint8_t" }
-    else if bits <= 16 { "uint16_t" }
-    else if bits <= 32 { "uint32_t" }
-    else               { "uint64_t" }
+    if bits <= 8 {
+        "uint8_t"
+    } else if bits <= 16 {
+        "uint16_t"
+    } else if bits <= 32 {
+        "uint32_t"
+    } else {
+        "uint64_t"
+    }
 }
 
 /// Return the bit-width of a TypeExpr, or 0 if indeterminate (e.g. Vec with param size).
@@ -2163,16 +2642,23 @@ fn type_width_of(ty: &TypeExpr) -> u32 {
     match ty {
         TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width(w),
         TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(..) => 1,
+        TypeExpr::FP32 => 32,
+        TypeExpr::BF16 => 16,
         TypeExpr::Vec(..) | TypeExpr::Named(_) => 0,
     }
 }
 
 /// Smallest C++ signed integer type that fits `bits` (up to 64).
 fn cpp_sint(bits: u32) -> &'static str {
-    if bits <= 8  { "int8_t" }
-    else if bits <= 16 { "int16_t" }
-    else if bits <= 32 { "int32_t" }
-    else               { "int64_t" }
+    if bits <= 8 {
+        "int8_t"
+    } else if bits <= 16 {
+        "int16_t"
+    } else if bits <= 32 {
+        "int32_t"
+    } else {
+        "int64_t"
+    }
 }
 
 /// Cast expression to `bits`-wide C++ type.
@@ -2197,10 +2683,15 @@ fn cast_to_signed_bits(expr: &str, bits: u32) -> String {
         format!("({})({})", cpp_sint(bits), expr)
     } else {
         let mask = (1u64 << bits) - 1;
-        let cpp_bits = if bits <= 8 { 8 }
-            else if bits <= 16 { 16 }
-            else if bits <= 32 { 32 }
-            else { 64 };
+        let cpp_bits = if bits <= 8 {
+            8
+        } else if bits <= 16 {
+            16
+        } else if bits <= 32 {
+            32
+        } else {
+            64
+        };
         let shift = cpp_bits - bits;
         let ty = cpp_sint(bits);
         format!("(({ty})(((uint64_t)({expr}) & 0x{mask:X}ULL) << {shift}) >> {shift})")
@@ -2210,7 +2701,11 @@ fn cast_to_signed_bits(expr: &str, bits: u32) -> String {
 /// Bit-range extraction from a narrow value: `(expr >> lo) & mask`.
 fn bit_range(expr: &str, hi: u32, lo: u32) -> String {
     let width = hi - lo + 1;
-    let mask = if width >= 64 { u64::MAX } else { (1u64 << width) - 1 };
+    let mask = if width >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << width) - 1
+    };
     format!("(({} >> {}) & 0x{:X}ULL)", expr, lo, mask)
 }
 
@@ -2221,54 +2716,72 @@ fn bit_range_u128(expr: &str, hi: u32, lo: u32) -> String {
     if lo == 0 && width >= 128 {
         format!("({result_type})({})", expr)
     } else if lo == 0 {
-        let mask = if width >= 64 { u64::MAX } else { (1u64 << width) - 1 };
-        format!("({result_type})(((_arch_u128)({}) & (_arch_u128)0x{:X}ULL))", expr, mask)
+        let mask = if width >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << width) - 1
+        };
+        format!(
+            "({result_type})(((_arch_u128)({}) & (_arch_u128)0x{:X}ULL))",
+            expr, mask
+        )
     } else {
-        let mask = if width >= 64 { u64::MAX } else { (1u64 << width) - 1 };
-        format!("({result_type})(((_arch_u128)({}) >> {}) & (_arch_u128)0x{:X}ULL)", expr, lo, mask)
+        let mask = if width >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << width) - 1
+        };
+        format!(
+            "({result_type})(((_arch_u128)({}) >> {}) & (_arch_u128)0x{:X}ULL)",
+            expr, lo, mask
+        )
     }
 }
 
 /// Convert SV/ARCH format string tokens to printf equivalents.
 fn sv_fmt_to_printf(s: &str) -> String {
     s.replace("%0t", "%lu")
-     .replace("%0d", "%lld")
-     .replace("%0h", "%llx")
-     .replace("%0b", "%llu")
-     .replace("%t",  "%lu")
-     .replace("%h",  "%llx")
-     .replace("%d",  "%lld")
-     .replace("%b",  "%llu")
+        .replace("%0d", "%lld")
+        .replace("%0h", "%llx")
+        .replace("%0b", "%llu")
+        .replace("%t", "%lu")
+        .replace("%h", "%llx")
+        .replace("%d", "%lld")
+        .replace("%b", "%llu")
 }
 
 // ── Expression context ────────────────────────────────────────────────────────
 
 struct Ctx<'a> {
-    reg_names:   &'a HashSet<String>,
-    port_names:  &'a HashSet<String>,
-    let_names:   &'a HashSet<String>,
+    reg_names: &'a HashSet<String>,
+    port_names: &'a HashSet<String>,
+    let_names: &'a HashSet<String>,
     /// Map of module-scope let-binding names → their RHS expressions.
     /// Populated via `Ctx::with_let_values`. Used by `Stmt::Match` to
     /// fold `Pattern::Ident` arms into literal case labels.
-    let_values:  Option<&'a HashMap<String, Expr>>,
-    inst_names:  &'a HashSet<String>,
+    let_values: Option<&'a HashMap<String, Expr>>,
+    inst_names: &'a HashSet<String>,
     /// Signals whose type is >64 bits wide (require special handling).
-    wide_names:  &'a HashSet<String>,
+    wide_names: &'a HashSet<String>,
     /// Signal name → bit width for known signals (used for concat width inference).
-    widths:      &'a HashMap<String, u32>,
+    widths: &'a HashMap<String, u32>,
     /// Signal names whose HDL scalar type is signed.
     signed_names: &'a HashSet<String>,
+    /// Signal name → floating-point format (FP32/BF16). Used to dispatch
+    /// `+ - *` and comparisons to the `_arch_fp.h` helpers instead of integer
+    /// operators on the bit-pattern carrier.
+    float_names: &'a HashMap<String, FpFmt>,
     posedge_lhs: bool,
     /// FSM mode: regs are public members, no `_` prefix on reads
-    fsm_mode:    bool,
-    enum_map:    &'a HashMap<String, Vec<(String, u64)>>,
+    fsm_mode: bool,
+    enum_map: &'a HashMap<String, Vec<(String, u64)>>,
     /// Bus port names (for FieldAccess rewriting: itcm.cmd_valid → itcm_cmd_valid).
-    bus_ports:   &'a HashSet<String>,
+    bus_ports: &'a HashSet<String>,
     /// Reset port name → level, for `.asserted` polarity abstraction.
     reset_levels: &'a HashMap<String, ResetLevel>,
     /// Reg/wire names whose type is Vec<T,N> — these use C array subscript `[i]`.
     /// All other subscripts on scalar UInt/SInt use bit extraction `(x >> i) & 1`.
-    vec_names:   Option<&'a HashSet<String>>,
+    vec_names: Option<&'a HashSet<String>>,
     /// Names of *2D* Vec<Vec<_,_>,_> wires/regs (today: Vec-of-Vec-of-bus
     /// `wire edges: Vec<Vec<B, N>, M>`). When the outer Index returns
     /// `_let_edges[m]`, the result is still a Vec — the inner subscript
@@ -2276,7 +2789,7 @@ struct Ctx<'a> {
     /// path for scalar types.
     vec_2d_names: Option<&'a HashSet<String>>,
     /// Vec<T,N> sizes by name (element count). Used for runtime bounds-check codegen.
-    vec_sizes:   Option<&'a HashMap<String, u64>>,
+    vec_sizes: Option<&'a HashMap<String, u64>>,
     /// FSM Vec port-regs: always resolve to `_name` (internal C array), regardless of fsm_mode.
     /// These ports have flat public fields (name_0..name_N-1) but internal storage `_name[N]`.
     fsm_vec_port_regs: Option<&'a HashSet<String>>,
@@ -2308,27 +2821,51 @@ struct Ctx<'a> {
 impl<'a> Ctx<'a> {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        reg_names:  &'a HashSet<String>,
+        reg_names: &'a HashSet<String>,
         port_names: &'a HashSet<String>,
-        let_names:  &'a HashSet<String>,
+        let_names: &'a HashSet<String>,
         inst_names: &'a HashSet<String>,
         wide_names: &'a HashSet<String>,
-        widths:     &'a HashMap<String, u32>,
-        enum_map:   &'a HashMap<String, Vec<(String, u64)>>,
-        bus_ports:  &'a HashSet<String>,
+        widths: &'a HashMap<String, u32>,
+        enum_map: &'a HashMap<String, Vec<(String, u64)>>,
+        bus_ports: &'a HashSet<String>,
     ) -> Self {
-        static EMPTY_RESET_LEVELS: std::sync::OnceLock<HashMap<String, ResetLevel>> = std::sync::OnceLock::new();
-        static EMPTY_SIGNED_NAMES: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+        static EMPTY_RESET_LEVELS: std::sync::OnceLock<HashMap<String, ResetLevel>> =
+            std::sync::OnceLock::new();
+        static EMPTY_SIGNED_NAMES: std::sync::OnceLock<HashSet<String>> =
+            std::sync::OnceLock::new();
+        static EMPTY_FLOAT_NAMES: std::sync::OnceLock<HashMap<String, FpFmt>> =
+            std::sync::OnceLock::new();
         let reset_levels = EMPTY_RESET_LEVELS.get_or_init(HashMap::new);
         let signed_names = EMPTY_SIGNED_NAMES.get_or_init(HashSet::new);
+        let float_names = EMPTY_FLOAT_NAMES.get_or_init(HashMap::new);
         static EMPTY_PARAMS: &[ParamDecl] = &[];
-        Ctx { reg_names, port_names, let_names, let_values: None, inst_names, wide_names,
-              widths, signed_names, posedge_lhs: false, fsm_mode: false, enum_map, bus_ports,
-              reset_levels, vec_names: None, vec_2d_names: None, vec_sizes: None,
-              fsm_vec_port_regs: None,
-              ident_subst: None, loop_var_subst: None,
-              vec_of_bus_port_count: None, vec_of_bus_wire_count: None,
-              coverage: None, params: EMPTY_PARAMS }
+        Ctx {
+            reg_names,
+            port_names,
+            let_names,
+            let_values: None,
+            inst_names,
+            wide_names,
+            widths,
+            signed_names,
+            float_names,
+            posedge_lhs: false,
+            fsm_mode: false,
+            enum_map,
+            bus_ports,
+            reset_levels,
+            vec_names: None,
+            vec_2d_names: None,
+            vec_sizes: None,
+            fsm_vec_port_regs: None,
+            ident_subst: None,
+            loop_var_subst: None,
+            vec_of_bus_port_count: None,
+            vec_of_bus_wire_count: None,
+            coverage: None,
+            params: EMPTY_PARAMS,
+        }
     }
 
     fn with_vec_of_bus(
@@ -2345,6 +2882,11 @@ impl<'a> Ctx<'a> {
 
     fn with_signed_names(mut self, signed_names: &'a HashSet<String>) -> Self {
         self.signed_names = signed_names;
+        self
+    }
+
+    fn with_float_names(mut self, float_names: &'a HashMap<String, FpFmt>) -> Self {
+        self.float_names = float_names;
         self
     }
 
@@ -2393,7 +2935,10 @@ impl<'a> Ctx<'a> {
         self
     }
 
-    fn posedge(mut self) -> Self { self.posedge_lhs = true; self }
+    fn posedge(mut self) -> Self {
+        self.posedge_lhs = true;
+        self
+    }
 
     /// Resolve a name to its C++ field/variable name.
     fn resolve_name(&self, name: &str, is_lhs: bool) -> String {
@@ -2423,7 +2968,8 @@ impl<'a> Ctx<'a> {
         } else if self.inst_names.contains(name) {
             format!("_inst_{name}")
         } else if self.port_names.contains(name)
-                  && self.vec_names.map_or(false, |s| s.contains(name)) {
+            && self.vec_names.map_or(false, |s| s.contains(name))
+        {
             // Vec-typed port: header exposes flattened `name_0..name_N-1`
             // scalars for external access, but the body indexes into the
             // internal `_name[N]` array. Without this branch, a body that
@@ -2479,7 +3025,10 @@ impl<'a> Ctx<'a> {
             // indexing instead of falling into bit-shift extraction.
             ExprKind::Index(base, _) => {
                 if let ExprKind::Ident(name) = &base.kind {
-                    if self.vec_2d_names.map_or(false, |s| s.contains(name.as_str())) {
+                    if self
+                        .vec_2d_names
+                        .map_or(false, |s| s.contains(name.as_str()))
+                    {
                         return Some(name.clone());
                     }
                 }
@@ -2525,7 +3074,12 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
         ExprKind::MethodCall(base, method, _) if method.name == "reverse" => {
             infer_expr_width(base, ctx)
         }
-        ExprKind::MethodCall(_, method, args) if method.name == "trunc" || method.name == "zext" || method.name == "sext" || method.name == "resize" => {
+        ExprKind::MethodCall(_, method, args)
+            if method.name == "trunc"
+                || method.name == "zext"
+                || method.name == "sext"
+                || method.name == "resize" =>
+        {
             if let Some(w) = args.first() {
                 eval_width_in(w, ctx)
             } else {
@@ -2538,16 +3092,12 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
             h - l + 1
         }
         ExprKind::PartSelect(_, _, width, _) => eval_width_in(width, ctx),
-        ExprKind::Cast(_, ty) => {
-            match ty.as_ref() {
-                TypeExpr::UInt(w) => eval_width_in(w, ctx),
-                TypeExpr::SInt(w) => eval_width_in(w, ctx),
-                _ => 8,
-            }
-        }
-        ExprKind::Concat(parts) => {
-            parts.iter().map(|p| infer_expr_width(p, ctx)).sum()
-        }
+        ExprKind::Cast(_, ty) => match ty.as_ref() {
+            TypeExpr::UInt(w) => eval_width_in(w, ctx),
+            TypeExpr::SInt(w) => eval_width_in(w, ctx),
+            _ => 8,
+        },
+        ExprKind::Concat(parts) => parts.iter().map(|p| infer_expr_width(p, ctx)).sum(),
         ExprKind::Index(base, _) => {
             // For Vec<T, N>[i] the result width is element T's width.
             // For scalar UInt/SInt[i] (bit indexing), the result is 1 bit.
@@ -2556,11 +3106,20 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
             // 160 bits instead of 20, blowing past the 32-bit port type
             // and emitting a VlWide<6> RHS for a uint32_t port).
             if let Some(base_name) = ctx.vec_path_of_expr(base) {
-                if ctx.vec_names.map_or(false, |s| s.contains(base_name.as_str())) {
+                if ctx
+                    .vec_names
+                    .map_or(false, |s| s.contains(base_name.as_str()))
+                {
                     // Vec element width: total port/reg/field width / element count.
                     let total = ctx.widths.get(base_name.as_str()).copied().unwrap_or(0);
-                    let count = ctx.vec_sizes.and_then(|m| m.get(base_name.as_str())).copied().unwrap_or(0);
-                    if count > 0 && total > 0 { return (total as u64 / count) as u32; }
+                    let count = ctx
+                        .vec_sizes
+                        .and_then(|m| m.get(base_name.as_str()))
+                        .copied()
+                        .unwrap_or(0);
+                    if count > 0 && total > 0 {
+                        return (total as u64 / count) as u32;
+                    }
                 }
             }
             // Scalar bit index → 1 bit.
@@ -2574,8 +3133,14 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
         ExprKind::Binary(op, lhs, rhs) => {
             match op {
                 // Comparison and logical ops always produce 1-bit Bool
-                BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt |
-                BinOp::Lte | BinOp::Gte | BinOp::And | BinOp::Or => 1,
+                BinOp::Eq
+                | BinOp::Neq
+                | BinOp::Lt
+                | BinOp::Gt
+                | BinOp::Lte
+                | BinOp::Gte
+                | BinOp::And
+                | BinOp::Or => 1,
                 // Bitwise ops: result width = max of operand widths
                 BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
                     let lw = infer_expr_width(lhs, ctx);
@@ -2597,9 +3162,7 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
         | ExprKind::Unary(UnaryOp::RedOr, _)
         | ExprKind::Unary(UnaryOp::RedXor, _) => 1,
         ExprKind::Ternary(_, then_expr, _) => infer_expr_width(then_expr, ctx),
-        ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => {
-            infer_expr_width(inner, ctx)
-        }
+        ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => infer_expr_width(inner, ctx),
         ExprKind::FieldAccess(base, field) => {
             // Struct field access: look up by "<base>.<field>" key the caller
             // populated from the struct decl. Covers two shapes:
@@ -2658,21 +3221,82 @@ fn infer_expr_signed(expr: &Expr, ctx: &Ctx) -> bool {
         ExprKind::Signed(_) => true,
         ExprKind::Unsigned(_) => false,
         ExprKind::MethodCall(base, method, _)
-            if matches!(method.name.as_str(), "trunc" | "sext" | "resize" | "reverse") =>
+            if matches!(
+                method.name.as_str(),
+                "trunc" | "sext" | "resize" | "reverse"
+            ) =>
         {
             infer_expr_signed(base, ctx)
         }
         ExprKind::Unary(UnaryOp::Neg, _) => true,
         ExprKind::Unary(_, inner) => infer_expr_signed(inner, ctx),
         ExprKind::Binary(op, lhs, rhs) => match op {
-            BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt |
-            BinOp::Lte | BinOp::Gte | BinOp::And | BinOp::Or => false,
+            BinOp::Eq
+            | BinOp::Neq
+            | BinOp::Lt
+            | BinOp::Gt
+            | BinOp::Lte
+            | BinOp::Gte
+            | BinOp::And
+            | BinOp::Or => false,
             _ => infer_expr_signed(lhs, ctx) || infer_expr_signed(rhs, ctx),
         },
         ExprKind::Ternary(_, then_expr, else_expr) => {
             infer_expr_signed(then_expr, ctx) || infer_expr_signed(else_expr, ctx)
         }
         _ => false,
+    }
+}
+
+/// Floating-point format of a sim signal/expression. Mirrors `Ty::FP32`/`BF16`
+/// but local to the sim backend so it can live in `Ctx`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FpFmt {
+    Fp32,
+    Bf16,
+}
+
+impl FpFmt {
+    /// Suffix used in the `_arch_fp.h` helper names: `_arch_f32_add` / `_arch_bf16_add`.
+    fn helper_tag(self) -> &'static str {
+        match self {
+            FpFmt::Fp32 => "f32",
+            FpFmt::Bf16 => "bf16",
+        }
+    }
+}
+
+/// Infer the floating-point format of an expression, or `None` if it is not a
+/// float. Drives dispatch of `+ - *` / comparisons to the `_arch_fp.h` helpers.
+fn infer_expr_float(expr: &Expr, ctx: &Ctx) -> Option<FpFmt> {
+    match &expr.kind {
+        ExprKind::Ident(name) => ctx.float_names.get(name.as_str()).copied(),
+        // Float literals default to FP32.
+        ExprKind::Literal(LitKind::Float(_)) => Some(FpFmt::Fp32),
+        ExprKind::Cast(_, ty) => match ty.as_ref() {
+            TypeExpr::FP32 => Some(FpFmt::Fp32),
+            TypeExpr::BF16 => Some(FpFmt::Bf16),
+            _ => None,
+        },
+        ExprKind::MethodCall(_, method, _) => match method.name.as_str() {
+            "to_fp32" => Some(FpFmt::Fp32),
+            "to_bf16" => Some(FpFmt::Bf16),
+            _ => None, // to_uint/to_sint produce integers
+        },
+        // Arithmetic preserves the float format; comparisons are not float.
+        ExprKind::Binary(op, lhs, rhs) => match op {
+            BinOp::Add | BinOp::Sub | BinOp::Mul => {
+                infer_expr_float(lhs, ctx).or_else(|| infer_expr_float(rhs, ctx))
+            }
+            _ => None,
+        },
+        ExprKind::Ternary(_, then_expr, else_expr) => {
+            infer_expr_float(then_expr, ctx).or_else(|| infer_expr_float(else_expr, ctx))
+        }
+        ExprKind::FunctionCall(name, args) if name == "fma" => {
+            args.first().and_then(|a| infer_expr_float(a, ctx))
+        }
+        _ => None,
     }
 }
 
@@ -2703,14 +3327,24 @@ fn lower_vec_method_cpp(
         sub.insert("item".to_string(), format!("{recv_b}[{i}]"));
         sub.insert("index".to_string(), format!("{i}"));
         let sub_ctx = Ctx {
-            reg_names: ctx.reg_names, port_names: ctx.port_names,
-            let_names: ctx.let_names, let_values: ctx.let_values, inst_names: ctx.inst_names,
-            wide_names: ctx.wide_names, widths: ctx.widths, signed_names: ctx.signed_names,
-            posedge_lhs: ctx.posedge_lhs, fsm_mode: ctx.fsm_mode,
-            enum_map: ctx.enum_map, bus_ports: ctx.bus_ports,
-            reset_levels: ctx.reset_levels, vec_names: ctx.vec_names,
+            reg_names: ctx.reg_names,
+            port_names: ctx.port_names,
+            let_names: ctx.let_names,
+            let_values: ctx.let_values,
+            inst_names: ctx.inst_names,
+            wide_names: ctx.wide_names,
+            widths: ctx.widths,
+            signed_names: ctx.signed_names,
+            float_names: ctx.float_names,
+            posedge_lhs: ctx.posedge_lhs,
+            fsm_mode: ctx.fsm_mode,
+            enum_map: ctx.enum_map,
+            bus_ports: ctx.bus_ports,
+            reset_levels: ctx.reset_levels,
+            vec_names: ctx.vec_names,
             vec_2d_names: ctx.vec_2d_names,
-            vec_sizes: ctx.vec_sizes, fsm_vec_port_regs: ctx.fsm_vec_port_regs,
+            vec_sizes: ctx.vec_sizes,
+            fsm_vec_port_regs: ctx.fsm_vec_port_regs,
             ident_subst: None, // replaced below via a temporary binding
             loop_var_subst: ctx.loop_var_subst,
             vec_of_bus_port_count: ctx.vec_of_bus_port_count,
@@ -2720,7 +3354,10 @@ fn lower_vec_method_cpp(
         };
         // The sub map must outlive the cpp_expr call. We keep `sub` as a
         // stack-local binding whose lifetime covers the call.
-        let ctx_with_sub = Ctx { ident_subst: Some(&sub), ..sub_ctx };
+        let ctx_with_sub = Ctx {
+            ident_subst: Some(&sub),
+            ..sub_ctx
+        };
         if let Some(pred) = args.first() {
             cpp_expr(pred, &ctx_with_sub)
         } else {
@@ -2730,42 +3367,59 @@ fn lower_vec_method_cpp(
 
     match method.name.as_str() {
         "any" => {
-            if n_usize == 0 { return "false".to_string(); }
+            if n_usize == 0 {
+                return "false".to_string();
+            }
             let terms: Vec<String> = (0..n as u64).map(emit_at).collect();
             format!("({})", terms.join(" || "))
         }
         "all" => {
-            if n_usize == 0 { return "true".to_string(); }
+            if n_usize == 0 {
+                return "true".to_string();
+            }
             let terms: Vec<String> = (0..n as u64).map(emit_at).collect();
             format!("({})", terms.join(" && "))
         }
         "count" => {
-            if n_usize == 0 { return "0".to_string(); }
+            if n_usize == 0 {
+                return "0".to_string();
+            }
             let terms: Vec<String> = (0..n as u64)
                 .map(|i| format!("({} ? 1u : 0u)", emit_at(i)))
                 .collect();
             format!("({})", terms.join(" + "))
         }
         "contains" => {
-            let Some(x_expr) = args.first() else { return "false".to_string(); };
+            let Some(x_expr) = args.first() else {
+                return "false".to_string();
+            };
             let x = cpp_expr(x_expr, ctx);
-            if n_usize == 0 { return "false".to_string(); }
+            if n_usize == 0 {
+                return "false".to_string();
+            }
             let terms: Vec<String> = (0..n as u64)
-                .map(|i| format!("({recv_b}[{i}] == {x})")).collect();
+                .map(|i| format!("({recv_b}[{i}] == {x})"))
+                .collect();
             format!("({})", terms.join(" || "))
         }
         "reduce_or" => {
-            if n_usize == 0 { return "0".to_string(); }
+            if n_usize == 0 {
+                return "0".to_string();
+            }
             let terms: Vec<String> = (0..n as u64).map(|i| format!("{recv_b}[{i}]")).collect();
             format!("({})", terms.join(" | "))
         }
         "reduce_and" => {
-            if n_usize == 0 { return "0".to_string(); }
+            if n_usize == 0 {
+                return "0".to_string();
+            }
             let terms: Vec<String> = (0..n as u64).map(|i| format!("{recv_b}[{i}]")).collect();
             format!("({})", terms.join(" & "))
         }
         "reduce_xor" => {
-            if n_usize == 0 { return "0".to_string(); }
+            if n_usize == 0 {
+                return "0".to_string();
+            }
             let terms: Vec<String> = (0..n as u64).map(|i| format!("{recv_b}[{i}]")).collect();
             format!("({})", terms.join(" ^ "))
         }
@@ -2796,8 +3450,9 @@ fn is_fully_wrapped_in_parens(s: &str) -> bool {
     }
     let mut depth = 0u32;
     for (i, c) in s.char_indices() {
-        if c == '(' { depth += 1; }
-        else if c == ')' {
+        if c == '(' {
+            depth += 1;
+        } else if c == ')' {
             depth -= 1;
             if depth == 0 && i < s.len() - 1 {
                 return false; // closed before the end — not fully wrapped
@@ -2833,8 +3488,11 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             LitKind::Hex(v) => format!("0x{v:X}"),
             LitKind::Bin(v) => format!("{v}"),
             LitKind::Sized(_, v) => format!("{v}"),
+            // Float literals are FP32 by default — emit the binary32 bit pattern
+            // as an unsigned hex constant (matches the uint32_t carrier).
+            LitKind::Float(bits) => format!("0x{:X}u", (f64::from_bits(*bits) as f32).to_bits()),
         },
-        ExprKind::Bool(true)  => "1".to_string(),
+        ExprKind::Bool(true) => "1".to_string(),
         ExprKind::Bool(false) => "0".to_string(),
 
         ExprKind::Ident(name) => {
@@ -2845,7 +3503,10 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             }
             // Static for-loop unroll binds the loop variable to a literal
             // integer (e.g. `chans[i].v` inside `for i in 0..N-1`).
-            if let Some(v) = ctx.loop_var_subst.and_then(|c| c.borrow().get(name).copied()) {
+            if let Some(v) = ctx
+                .loop_var_subst
+                .and_then(|c| c.borrow().get(name).copied())
+            {
                 return v.to_string();
             }
             if is_lhs {
@@ -2867,6 +3528,26 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 // into past-state. Treat as Implies for fallback paths.
                 return format!("(!{l} || {r})");
             }
+            // Floating-point operands: dispatch to the `_arch_fp.h` helpers
+            // (IEEE-754 RNE) instead of integer operators on the bit pattern.
+            if let Some(fmt) = infer_expr_float(lhs, ctx).or_else(|| infer_expr_float(rhs, ctx)) {
+                let tag = fmt.helper_tag();
+                let fop = match op {
+                    BinOp::Add => Some("add"),
+                    BinOp::Sub => Some("sub"),
+                    BinOp::Mul => Some("mul"),
+                    BinOp::Eq => Some("eq"),
+                    BinOp::Neq => Some("ne"),
+                    BinOp::Lt => Some("lt"),
+                    BinOp::Gt => Some("gt"),
+                    BinOp::Lte => Some("le"),
+                    BinOp::Gte => Some("ge"),
+                    _ => None,
+                };
+                if let Some(fop) = fop {
+                    return format!("_arch_{tag}_{fop}({l}, {r})");
+                }
+            }
             if matches!(op, BinOp::Mul | BinOp::MulWrap) {
                 let cast_ty = if infer_expr_signed(lhs, ctx) || infer_expr_signed(rhs, ctx) {
                     "__int128_t"
@@ -2886,16 +3567,24 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 };
             }
             let op_str = match op {
-                BinOp::Add | BinOp::AddWrap => "+",  BinOp::Sub | BinOp::SubWrap => "-",
-                BinOp::Mul | BinOp::MulWrap => "*",  BinOp::Div   => "/",
-                BinOp::Mod    => "%",
-                BinOp::Eq     => "==", BinOp::Neq  => "!=",
-                BinOp::Lt     => "<",  BinOp::Gt   => ">",
-                BinOp::Lte    => "<=", BinOp::Gte  => ">=",
-                BinOp::And    => "&&", BinOp::Or   => "||",
-                BinOp::BitAnd => "&",  BinOp::BitOr => "|",
+                BinOp::Add | BinOp::AddWrap => "+",
+                BinOp::Sub | BinOp::SubWrap => "-",
+                BinOp::Mul | BinOp::MulWrap => "*",
+                BinOp::Div => "/",
+                BinOp::Mod => "%",
+                BinOp::Eq => "==",
+                BinOp::Neq => "!=",
+                BinOp::Lt => "<",
+                BinOp::Gt => ">",
+                BinOp::Lte => "<=",
+                BinOp::Gte => ">=",
+                BinOp::And => "&&",
+                BinOp::Or => "||",
+                BinOp::BitAnd => "&",
+                BinOp::BitOr => "|",
                 BinOp::BitXor => "^",
-                BinOp::Shl    => "<<", BinOp::Shr  => ">>",
+                BinOp::Shl => "<<",
+                BinOp::Shr => ">>",
                 BinOp::Implies | BinOp::ImpliesNext => unreachable!(),
             };
             // Runtime divide-by-zero check for / and % when the divisor is
@@ -2944,8 +3633,10 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                         | ExprKind::Literal(LitKind::Hex(i))
                         | ExprKind::Literal(LitKind::Bin(i))
                         | ExprKind::Literal(LitKind::Sized(_, i)) => Some(*i),
-                        ExprKind::Ident(loopvar) =>
-                            ctx.loop_var_subst.and_then(|c| c.borrow().get(loopvar).copied()).map(|v| v as u64),
+                        ExprKind::Ident(loopvar) => ctx
+                            .loop_var_subst
+                            .and_then(|c| c.borrow().get(loopvar).copied())
+                            .map(|v| v as u64),
                         _ => None,
                     };
                     if let Some(i) = idx_val {
@@ -2968,7 +3659,8 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                     // Bounds-checked like every other runtime index.
                     if idx_val.is_none() {
                         let fld = &field.name;
-                        if let Some(n) = ctx.vec_of_bus_port_count
+                        if let Some(n) = ctx
+                            .vec_of_bus_port_count
                             .and_then(|m| m.get(arr_name).copied())
                         {
                             let i = cpp_expr(idx, ctx);
@@ -2976,7 +3668,8 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                                 "(_ARCH_BCHK(({i}), {n}, \"{arr_name}[i].{fld}\"), {arr_name}_{fld}[{i}])"
                             );
                         }
-                        if let Some(n) = ctx.vec_of_bus_wire_count
+                        if let Some(n) = ctx
+                            .vec_of_bus_wire_count
                             .and_then(|m| m.get(arr_name).copied())
                         {
                             let i = cpp_expr(idx, ctx);
@@ -3012,11 +3705,17 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             // is correct and we keep the original simple form.
             if let TypeExpr::SInt(w) = &**ty {
                 let w_hdl = eval_width_in(w, ctx);
-                let w_cpp: u32 = if w_hdl <= 8 { 8 }
-                                 else if w_hdl <= 16 { 16 }
-                                 else if w_hdl <= 32 { 32 }
-                                 else if w_hdl <= 64 { 64 }
-                                 else { 0 };  // >64: VlWide / _arch_u128 paths
+                let w_cpp: u32 = if w_hdl <= 8 {
+                    8
+                } else if w_hdl <= 16 {
+                    16
+                } else if w_hdl <= 32 {
+                    32
+                } else if w_hdl <= 64 {
+                    64
+                } else {
+                    0
+                }; // >64: VlWide / _arch_u128 paths
                 let inner_w = infer_expr_width(inner, ctx);
                 if w_cpp > 0 && inner_w > 0 && inner_w < w_cpp {
                     let shift = w_cpp - inner_w;
@@ -3037,7 +3736,9 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             if is_vec {
                 let limit = ctx.expr_vec_size(base).unwrap_or(0);
                 if limit > 0 && !idx_is_const {
-                    let loc = ctx.vec_path_of_expr(base).unwrap_or_else(|| "<vec>".to_string());
+                    let loc = ctx
+                        .vec_path_of_expr(base)
+                        .unwrap_or_else(|| "<vec>".to_string());
                     format!("(_ARCH_BCHK(({i}), {limit}, \"{loc}\"), {b}[{i}])")
                 } else {
                     format!("{b}[{i}]")
@@ -3062,7 +3763,11 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             if base_w > 128 {
                 // VlWide<N>: use word-array bit extractor
                 let result_w = h - l + 1;
-                let result_ty = if result_w <= 64 { cpp_uint(result_w) } else { "uint64_t" };
+                let result_ty = if result_w <= 64 {
+                    cpp_uint(result_w)
+                } else {
+                    "uint64_t"
+                };
                 format!("({result_ty})_arch_vw_bits({b}.data(), {h}, {l})")
             } else if base_w > 64 {
                 bit_range_u128(&b, h, l)
@@ -3071,11 +3776,17 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             }
         }
 
-        ExprKind::PartSelect(base, start, width, up) => cpp_part_select(base, start, width, *up, ctx),
+        ExprKind::PartSelect(base, start, width, up) => {
+            cpp_part_select(base, start, width, *up, ctx)
+        }
 
         ExprKind::EnumVariant(enum_name, variant) => {
             if let Some(variants) = ctx.enum_map.get(&enum_name.name) {
-                let idx = variants.iter().find(|(n, _)| *n == variant.name).map(|(_, v)| *v).unwrap_or(0);
+                let idx = variants
+                    .iter()
+                    .find(|(n, _)| *n == variant.name)
+                    .map(|(_, v)| *v)
+                    .unwrap_or(0);
                 format!("{idx}")
             } else {
                 // Previously this silently emitted `0` with a C++ comment,
@@ -3088,8 +3799,10 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                      emitting compile-error token",
                     enum_name.name, variant.name
                 );
-                format!("_ARCH_CODEGEN_ERROR_unknown_enum_{}_{}",
-                        enum_name.name, variant.name)
+                format!(
+                    "_ARCH_CODEGEN_ERROR_unknown_enum_{}_{}",
+                    enum_name.name, variant.name
+                )
             }
         }
 
@@ -3160,10 +3873,15 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             if w == 0 || w > 64 {
                 inner_c
             } else {
-                let w_cpp: u32 = if w <= 8 { 8 }
-                                 else if w <= 16 { 16 }
-                                 else if w <= 32 { 32 }
-                                 else { 64 };
+                let w_cpp: u32 = if w <= 8 {
+                    8
+                } else if w <= 16 {
+                    16
+                } else if w <= 32 {
+                    32
+                } else {
+                    64
+                };
                 if w < w_cpp {
                     let pad = w_cpp - w;
                     format!("((({})({}) << {pad}) >> {pad})", cpp_sint(w), inner_c)
@@ -3194,6 +3912,21 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             format!("(({c}) ? ({t}) : ({e}))")
         }
 
+        ExprKind::FunctionCall(name, args) if name == "fma" && args.len() == 3 => {
+            let fmt = infer_expr_float(&args[0], ctx)
+                .or_else(|| infer_expr_float(&args[1], ctx))
+                .or_else(|| infer_expr_float(&args[2], ctx))
+                .unwrap_or(FpFmt::Fp32);
+            let a = cpp_expr(&args[0], ctx);
+            let b = cpp_expr(&args[1], ctx);
+            let c = cpp_expr(&args[2], ctx);
+            format!("_arch_fma_{}({a}, {b}, {c})", fmt.helper_tag())
+        }
+        ExprKind::FunctionCall(name, args) if name == "is_nan" && args.len() == 1 => {
+            let fmt = infer_expr_float(&args[0], ctx).unwrap_or(FpFmt::Fp32);
+            let a = cpp_expr(&args[0], ctx);
+            format!("_arch_{}_isnan({a})", fmt.helper_tag())
+        }
         ExprKind::FunctionCall(name, args) => {
             let arg_strs: Vec<String> = args.iter().map(|a| cpp_expr(a, ctx)).collect();
             format!("{name}({})", arg_strs.join(", "))
@@ -3205,12 +3938,16 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             for arm in arms.iter().rev() {
                 let val = cpp_expr(&arm.value, ctx);
                 let cond = match &arm.pattern {
-                    Pattern::Wildcard => { result = val; continue; }
+                    Pattern::Wildcard => {
+                        result = val;
+                        continue;
+                    }
                     Pattern::Ident(id) => {
                         // Mirror Stmt::Match: if the ident names a let
                         // with a literal RHS, treat as `== <literal>`;
                         // else fall through as the ternary tail (default).
-                        let folded = ctx.let_values
+                        let folded = ctx
+                            .let_values
                             .and_then(|m| m.get(&id.name))
                             .filter(|e| matches!(&e.kind, ExprKind::Literal(_)));
                         match folded {
@@ -3218,7 +3955,10 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                                 let lit = cpp_expr(e, ctx);
                                 format!("({s} == {lit})")
                             }
-                            None => { result = val; continue; }
+                            None => {
+                                result = val;
+                                continue;
+                            }
                         }
                     }
                     Pattern::Literal(e) => {
@@ -3227,7 +3967,11 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                     }
                     Pattern::EnumVariant(en, vr) => {
                         if let Some(variants) = ctx.enum_map.get(&en.name) {
-                            let idx = variants.iter().find(|(n, _)| *n == vr.name).map(|(_, v)| *v).unwrap_or(0);
+                            let idx = variants
+                                .iter()
+                                .find(|(n, _)| *n == vr.name)
+                                .map(|(_, v)| *v)
+                                .unwrap_or(0);
                             format!("({s} == {idx})")
                         } else {
                             format!("({s} == 0)")
@@ -3245,18 +3989,25 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
 
         ExprKind::Inside(scrutinee, members) => {
             let s = cpp_expr(scrutinee, ctx);
-            let parts: Vec<String> = members.iter().map(|m| match m {
-                InsideMember::Single(e) => {
-                    let v = cpp_expr(e, ctx);
-                    format!("({s} == {v})")
-                }
-                InsideMember::Range(lo, hi) => {
-                    let l = cpp_expr(lo, ctx);
-                    let h = cpp_expr(hi, ctx);
-                    format!("({s} >= {l} && {s} <= {h})")
-                }
-            }).collect();
-            if parts.is_empty() { "0".to_string() } else { format!("({})", parts.join(" || ")) }
+            let parts: Vec<String> = members
+                .iter()
+                .map(|m| match m {
+                    InsideMember::Single(e) => {
+                        let v = cpp_expr(e, ctx);
+                        format!("({s} == {v})")
+                    }
+                    InsideMember::Range(lo, hi) => {
+                        let l = cpp_expr(lo, ctx);
+                        let h = cpp_expr(hi, ctx);
+                        format!("({s} >= {l} && {s} <= {h})")
+                    }
+                })
+                .collect();
+            if parts.is_empty() {
+                "0".to_string()
+            } else {
+                format!("({})", parts.join(" || "))
+            }
         }
     }
 }
@@ -3268,14 +4019,12 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
 fn cpp_unary(op: &UnaryOp, operand: &Expr, ctx: &Ctx) -> String {
     let o = cpp_expr(operand, ctx);
     match op {
-        UnaryOp::Not    => format!("(!{o})"),
+        UnaryOp::Not => format!("(!{o})"),
         UnaryOp::BitNot => {
             // Use logical ! (clamped to 0/1) only for 1-bit/Bool signals.
             // For wider types use bitwise ~.
             let is_one_bit = match &operand.kind {
-                ExprKind::Ident(name) => {
-                    ctx.widths.get(name.as_str()).copied().unwrap_or(32) == 1
-                }
+                ExprKind::Ident(name) => ctx.widths.get(name.as_str()).copied().unwrap_or(32) == 1,
                 _ => false,
             };
             if is_one_bit {
@@ -3284,15 +4033,18 @@ fn cpp_unary(op: &UnaryOp, operand: &Expr, ctx: &Ctx) -> String {
                 format!("(~({o}))")
             }
         }
-        UnaryOp::Neg    => format!("(-{o})"),
+        UnaryOp::Neg => format!("(-{o})"),
         UnaryOp::RedAnd => {
             // Reduction AND: all bits set → 1
             let w = infer_expr_width(operand, ctx);
             if w > 128 {
                 let words = wide_words(w);
                 let last_bits = w % 32;
-                let last_mask = if last_bits == 0 { "0xFFFFFFFFU".to_string() }
-                                else { format!("0x{:X}U", (1u32 << last_bits) - 1) };
+                let last_mask = if last_bits == 0 {
+                    "0xFFFFFFFFU".to_string()
+                } else {
+                    format!("0x{:X}U", (1u32 << last_bits) - 1)
+                };
                 format!("[&](){{auto& _v={o};for(int _i=0;_i<{}-1;_i++)if(_v._data[_i]!=0xFFFFFFFFU)return(uint8_t)0;return(uint8_t)(_v._data[{}]=={last_mask}?1:0);}}()", words, words-1)
             } else if w <= 1 {
                 format!("({o} & 1)")
@@ -3333,7 +4085,11 @@ fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &Ctx) -> Str
                 let base_w = infer_expr_width(base, ctx);
                 if base_w > 128 && bits <= 64 {
                     // VlWide → narrow: extract low bits via word array
-                    format!("({})_arch_vw_bits({b}.data(), {}, 0)", cpp_uint(bits), bits - 1)
+                    format!(
+                        "({})_arch_vw_bits({b}.data(), {}, 0)",
+                        cpp_uint(bits),
+                        bits - 1
+                    )
                 } else if infer_expr_signed(base, ctx) {
                     cast_to_signed_bits(&b, bits)
                 } else {
@@ -3352,7 +4108,11 @@ fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &Ctx) -> Str
                     let words = wide_words(bits);
                     format!("VlWide<{words}>(static_cast<uint64_t>({b}))")
                 } else if base_w > 128 && bits <= 64 {
-                    format!("({})_arch_vw_bits({b}.data(), {}, 0)", cpp_uint(bits), bits - 1)
+                    format!(
+                        "({})_arch_vw_bits({b}.data(), {}, 0)",
+                        cpp_uint(bits),
+                        bits - 1
+                    )
                 } else {
                     format!("({})({})", cpp_uint(bits), b)
                 }
@@ -3395,7 +4155,11 @@ fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &Ctx) -> Str
         }
         "reverse" => {
             let base_w = infer_expr_width(base, ctx);
-            let chunk = if let Some(c) = args.first() { eval_width_in(c, ctx) } else { 1 };
+            let chunk = if let Some(c) = args.first() {
+                eval_width_in(c, ctx)
+            } else {
+                1
+            };
             if chunk == 1 {
                 // Bit-reverse: build at compile time
                 if base_w <= 64 {
@@ -3419,9 +4183,52 @@ fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &Ctx) -> Str
                 }
             }
         }
-        "any" | "all" | "count" | "contains"
-        | "reduce_or" | "reduce_and" | "reduce_xor" => {
+        "any" | "all" | "count" | "contains" | "reduce_or" | "reduce_and" | "reduce_xor" => {
             lower_vec_method_cpp(&b, base, method, args, ctx)
+        }
+        // Float conversions → `_arch_fp.h` helpers.
+        "to_fp32" => match infer_expr_float(base, ctx) {
+            Some(FpFmt::Bf16) => format!("_arch_bf16_to_f32({b})"),
+            Some(FpFmt::Fp32) => b, // no-op (typecheck rejects, but stay total)
+            None => {
+                if infer_expr_signed(base, ctx) {
+                    format!("_arch_i_to_f32((int64_t)({b}))")
+                } else {
+                    format!("_arch_u_to_f32((uint64_t)({b}))")
+                }
+            }
+        },
+        "to_bf16" => match infer_expr_float(base, ctx) {
+            Some(FpFmt::Fp32) => format!("_arch_f32_to_bf16({b})"),
+            Some(FpFmt::Bf16) => b,
+            None => {
+                if infer_expr_signed(base, ctx) {
+                    format!("_arch_i_to_bf16((int64_t)({b}))")
+                } else {
+                    format!("_arch_u_to_bf16((uint64_t)({b}))")
+                }
+            }
+        },
+        "to_uint" | "to_sint" => {
+            let bits = args.first().map(|w| eval_width_in(w, ctx)).unwrap_or(32);
+            let signed = method.name == "to_sint";
+            // Decode bf16 to f32 bits first; then a width-aware, saturating,
+            // toward-zero, NaN→type-max conversion to the N-bit integer.
+            let f32bits = match infer_expr_float(base, ctx) {
+                Some(FpFmt::Bf16) => format!("_arch_bf16_to_f32({b})"),
+                _ => b,
+            };
+            let conv = if signed {
+                format!("_arch_f32_to_sint({f32bits}, {bits})")
+            } else {
+                format!("_arch_f32_to_uint({f32bits}, {bits})")
+            };
+            let cast = if signed {
+                cpp_sint(bits)
+            } else {
+                cpp_uint(bits)
+            };
+            format!("(({cast})({conv}))")
         }
         _ => format!("{b}.{}()", method.name),
     }
@@ -3477,14 +4284,23 @@ fn cpp_part_select(base: &Expr, start: &Expr, width: &Expr, up: bool, ctx: &Ctx)
         if up {
             format!("({result_ty})((uint64_t)({b}) >> ({s}) & {mask_str})")
         } else {
-            format!("({result_ty})((uint64_t)({b}) >> (({s}) - {} + 1) & {mask_str})", w)
+            format!(
+                "({result_ty})((uint64_t)({b}) >> (({s}) - {} + 1) & {mask_str})",
+                w
+            )
         }
     };
-    if bchk.is_empty() { core } else { format!("({bchk}{core})") }
+    if bchk.is_empty() {
+        core
+    } else {
+        format!("({bchk}{core})")
+    }
 }
 
 fn cpp_concat(parts: &[Expr], ctx: &Ctx) -> String {
-    if parts.is_empty() { return "0".to_string(); }
+    if parts.is_empty() {
+        return "0".to_string();
+    }
     // Compute widths for each part (MSB first)
     let part_widths: Vec<u32> = parts.iter().map(|p| infer_expr_width(p, ctx)).collect();
     let total: u32 = part_widths.iter().sum();
@@ -3499,11 +4315,14 @@ fn cpp_concat(parts: &[Expr], ctx: &Ctx) -> String {
             let val = cpp_expr(part, ctx);
             // Each part is cast to uint64_t (narrow) then placed into VlWide
             stmts.push(format!(
-                "_r = _r | (VlWide<{words}>(static_cast<uint64_t>({val})) << {bit_offset});"));
+                "_r = _r | (VlWide<{words}>(static_cast<uint64_t>({val})) << {bit_offset});"
+            ));
             bit_offset += w;
         }
-        format!("[&]() -> VlWide<{words}> {{ VlWide<{words}> _r{{}}; {} return _r; }}()",
-                stmts.join(" "))
+        format!(
+            "[&]() -> VlWide<{words}> {{ VlWide<{words}> _r{{}}; {} return _r; }}()",
+            stmts.join(" ")
+        )
     } else {
         // Build expression: accumulate shifts from LSB (last part offset=0)
         let mut terms = Vec::new();
@@ -3524,7 +4343,9 @@ fn cpp_concat(parts: &[Expr], ctx: &Ctx) -> String {
 
 // ── Statement emitters ────────────────────────────────────────────────────────
 
-fn ind(n: usize) -> String { "  ".repeat(n) }
+fn ind(n: usize) -> String {
+    "  ".repeat(n)
+}
 
 /// Sim-codegen analog of `codegen::AssignCtx`. Phase 5b part 4 — drives
 /// the unified `emit_stmt` walker so seq vs comb stmt emission shares
@@ -3575,18 +4396,28 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
                 }
             };
             if let Some(dst_name) = vec_name_of_expr(&a.target) {
-                if ctx.vec_names.map_or(false, |s| s.contains(dst_name.as_str())) {
+                if ctx
+                    .vec_names
+                    .map_or(false, |s| s.contains(dst_name.as_str()))
+                {
                     let lhs = cpp_expr_lhs(&a.target, ctx);
                     let rhs = cpp_expr(&a.value, ctx);
-                    let count = ctx.vec_sizes
+                    let count = ctx
+                        .vec_sizes
                         .and_then(|m| m.get(dst_name.as_str()).copied())
                         .unwrap_or(0);
                     if rhs == "0" {
-                        out.push_str(&format!("{}memset({lhs}, 0, sizeof({lhs}));\n", ind(indent)));
+                        out.push_str(&format!(
+                            "{}memset({lhs}, 0, sizeof({lhs}));\n",
+                            ind(indent)
+                        ));
                         return;
                     }
                     if let Some(rhs_name) = vec_name_of_expr(&a.value) {
-                        if ctx.vec_names.map_or(false, |s| s.contains(rhs_name.as_str())) {
+                        if ctx
+                            .vec_names
+                            .map_or(false, |s| s.contains(rhs_name.as_str()))
+                        {
                             if count > 0 {
                                 out.push_str(&format!(
                                     "{}for (size_t _i = 0; _i < {count}; ++_i) {{ {lhs}[_i] = {rhs}[_i]; }}\n",
@@ -3603,7 +4434,10 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
             // resolve_name's is_lhs flag = is_seq → seq writes hit the shadow.
             if let ExprKind::Index(base, idx_expr) = &a.target.kind {
                 if let ExprKind::Ident(base_name) = &base.kind {
-                    if !ctx.vec_names.map_or(false, |s| s.contains(base_name.as_str())) {
+                    if !ctx
+                        .vec_names
+                        .map_or(false, |s| s.contains(base_name.as_str()))
+                    {
                         let resolved_base = ctx.resolve_name(base_name, is_seq);
                         let idx_cpp = cpp_expr(idx_expr, ctx);
                         let rhs = cpp_expr(&a.value, ctx);
@@ -3629,7 +4463,11 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
                         let hi = eval_width_in(hi_e, ctx);
                         let lo = eval_width_in(lo_e, ctx);
                         let width = hi - lo + 1;
-                        let val_mask: u64 = if width >= 64 { u64::MAX } else { (1u64 << width) - 1 };
+                        let val_mask: u64 = if width >= 64 {
+                            u64::MAX
+                        } else {
+                            (1u64 << width) - 1
+                        };
                         let rhs = cpp_expr(&a.value, ctx);
                         out.push_str(&format!(
                             "{}{resolved_base} = ({resolved_base} & ~(uint64_t(0x{val_mask:X}ULL) << {lo})) | ((uint64_t(({rhs}) & 0x{val_mask:X}ULL)) << {lo});\n",
@@ -3661,8 +4499,13 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
                         // VlWide<ceil(W/32)>. Pass the real word count so a
                         // VlWide<3> (66–96 bit) port is not written out of
                         // bounds (which clobbers the adjacent struct member).
-                        out.push_str(&format!("{}  _arch_u128_to_vl({}, {}._data, {});\n",
-                            ind(indent), rhs, target_name, wide_words(bits)));
+                        out.push_str(&format!(
+                            "{}  _arch_u128_to_vl({}, {}._data, {});\n",
+                            ind(indent),
+                            rhs,
+                            target_name,
+                            wide_words(bits)
+                        ));
                     }
                 } else {
                     out.push_str(&format!("{}{}  = {};\n", ind(indent), resolved_target, rhs));
@@ -3684,22 +4527,39 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
                         // back to `default` when the let is missing or its
                         // RHS isn't a constant — preserves wildcard-binding
                         // semantics for non-let idents.
-                        let folded = ctx.let_values
+                        let folded = ctx
+                            .let_values
                             .and_then(|m| m.get(&id.name))
                             .filter(|e| matches!(&e.kind, ExprKind::Literal(_)));
                         match folded {
-                            Some(e) => (format!("case {}", cpp_expr(e, ctx)),
-                                        format!("match {}", id.name)),
-                            None    => ("default".to_string(),
-                                        format!("match {}", id.name)),
+                            Some(e) => (
+                                format!("case {}", cpp_expr(e, ctx)),
+                                format!("match {}", id.name),
+                            ),
+                            None => ("default".to_string(), format!("match {}", id.name)),
                         }
                     }
-                    Pattern::Literal(e) => (format!("case {}", cpp_expr(e, ctx)), "match lit".to_string()),
+                    Pattern::Literal(e) => (
+                        format!("case {}", cpp_expr(e, ctx)),
+                        "match lit".to_string(),
+                    ),
                     Pattern::EnumVariant(en, vr) => {
                         if let Some(variants) = ctx.enum_map.get(&en.name) {
-                            let idx = variants.iter().find(|(n, _)| *n == vr.name).map(|(_, v)| *v).unwrap_or(0);
-                            (format!("case {idx}"), format!("match {}::{}", en.name, vr.name))
-                        } else { ("default".to_string(), format!("match {}::{}", en.name, vr.name)) }
+                            let idx = variants
+                                .iter()
+                                .find(|(n, _)| *n == vr.name)
+                                .map(|(_, v)| *v)
+                                .unwrap_or(0);
+                            (
+                                format!("case {idx}"),
+                                format!("match {}::{}", en.name, vr.name),
+                            )
+                        } else {
+                            (
+                                "default".to_string(),
+                                format!("match {}::{}", en.name, vr.name),
+                            )
+                        }
                     }
                 };
                 out.push_str(&format!("{}{}: {{\n", ind(indent + 1), case_str));
@@ -3708,7 +4568,11 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
                 // (per-arm spans aren't tracked on MatchArm); the label
                 // disambiguates which arm.
                 if let Some(reg) = ctx.coverage {
-                    let kind = if matches!(arm.pattern, Pattern::Wildcard | Pattern::Ident(_)) { "match-default" } else { "match-arm" };
+                    let kind = if matches!(arm.pattern, Pattern::Wildcard | Pattern::Ident(_)) {
+                        "match-default"
+                    } else {
+                        "match-arm"
+                    };
                     let cidx = reg.borrow_mut().alloc(kind, m.span.start, label);
                     out.push_str(&format!("{}  _arch_cov[{cidx}]++;\n", ind(indent + 1)));
                 }
@@ -3756,13 +4620,16 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
                     Some(v)
                 };
                 if let (Some(start_lit), Some(end_lit)) = (folds_to(rs), folds_to(re)) {
-                    let touches = f.body.iter().any(|s| stmt_indexes_vob_with_var(
-                        s, var, vob_ports, vob_wires,
-                    ));
+                    let touches = f
+                        .body
+                        .iter()
+                        .any(|s| stmt_indexes_vob_with_var(s, var, vob_ports, vob_wires));
                     if touches {
                         for i in start_lit..=end_lit {
                             subst.borrow_mut().insert(var.clone(), i);
-                            for s in &f.body { emit_stmt(s, ctx, out, indent, k); }
+                            for s in &f.body {
+                                emit_stmt(s, ctx, out, indent, k);
+                            }
                         }
                         subst.borrow_mut().remove(var);
                         return;
@@ -3773,8 +4640,13 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
                 ForRange::Range(rs, re) => {
                     let start = cpp_expr(rs, ctx);
                     let end = cpp_expr(re, ctx);
-                    out.push_str(&format!("{}for (int {var} = {start}; {var} <= {end}; {var}++) {{\n", ind(indent)));
-                    for s in &f.body { emit_stmt(s, ctx, out, indent + 1, k); }
+                    out.push_str(&format!(
+                        "{}for (int {var} = {start}; {var} <= {end}; {var}++) {{\n",
+                        ind(indent)
+                    ));
+                    for s in &f.body {
+                        emit_stmt(s, ctx, out, indent + 1, k);
+                    }
                     out.push_str(&format!("{}}}\n", ind(indent)));
                 }
                 ForRange::ValueList(vals) => {
@@ -3782,7 +4654,9 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
                         let val = cpp_expr(v, ctx);
                         out.push_str(&format!("{}{{\n", ind(indent)));
                         out.push_str(&format!("{}int {var} = {val};\n", ind(indent + 1)));
-                        for s in &f.body { emit_stmt(s, ctx, out, indent + 1, k); }
+                        for s in &f.body {
+                            emit_stmt(s, ctx, out, indent + 1, k);
+                        }
                         out.push_str(&format!("{}}}\n", ind(indent)));
                     }
                 }
@@ -3793,9 +4667,15 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
                 unreachable!("Stmt::Init reached emit_stmt(Comb) — typecheck bug");
             }
             let rst_name = &ib.reset_signal.name;
-            let is_low = ctx.reset_levels.get(rst_name.as_str())
+            let is_low = ctx
+                .reset_levels
+                .get(rst_name.as_str())
                 .map_or(false, |level| *level == ResetLevel::Low);
-            let cond = if is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
+            let cond = if is_low {
+                format!("(!{})", rst_name)
+            } else {
+                rst_name.clone()
+            };
             out.push_str(&format!("{}if ({}) {{\n", ind(indent), cond));
             emit_stmts(&ib.body, ctx, out, indent + 1, k);
             out.push_str(&format!("{}}}\n", ind(indent)));
@@ -3811,7 +4691,14 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
     }
 }
 
-fn emit_if_else(ie: &IfElse, ctx: &Ctx, out: &mut String, indent: usize, is_chain: bool, k: SimAssignKind) {
+fn emit_if_else(
+    ie: &IfElse,
+    ctx: &Ctx,
+    out: &mut String,
+    indent: usize,
+    is_chain: bool,
+    k: SimAssignKind,
+) {
     let cond = cpp_condition(&ie.cond, ctx);
     if is_chain {
         out.push_str(&format!("{}}} else if {} {{\n", ind(indent), cond));
@@ -3828,7 +4715,9 @@ fn emit_if_else(ie: &IfElse, ctx: &Ctx, out: &mut String, indent: usize, is_chai
     // loop converges in 1–2 iterations so this is close to cycle count.
     if let Some(reg) = ctx.coverage {
         let kind = if is_chain { "elsif" } else { "if" };
-        let idx = reg.borrow_mut().alloc(kind, ie.cond.span.start, String::new());
+        let idx = reg
+            .borrow_mut()
+            .alloc(kind, ie.cond.span.start, String::new());
         out.push_str(&format!("{}  _arch_cov[{idx}]++;\n", ind(indent)));
     }
     emit_stmts(&ie.then_stmts, ctx, out, indent + 1, k);
@@ -3881,7 +4770,9 @@ fn emit_comb_if_else(ie: &IfElse, ctx: &Ctx, out: &mut String, indent: usize, is
 }
 
 fn emit_log_stmt(l: &LogStmt, ctx: &Ctx, out: &mut String, indent: usize) {
-    let args_str: String = l.args.iter()
+    let args_str: String = l
+        .args
+        .iter()
         .map(|a| format!(", (long long)({})", cpp_expr(a, ctx)))
         .collect();
     let fmt = sv_fmt_to_printf(&l.fmt);
@@ -3889,12 +4780,20 @@ fn emit_log_stmt(l: &LogStmt, ctx: &Ctx, out: &mut String, indent: usize) {
         let fd_name = log_fd_name(path);
         format!(
             "{}if ({fd_name}) fprintf({fd_name}, \"[{}][{}] {}\\n\"{});",
-            ind(indent), l.level.name(), l.tag, fmt, args_str
+            ind(indent),
+            l.level.name(),
+            l.tag,
+            fmt,
+            args_str
         )
     } else {
         format!(
             "{}printf(\"[{}][{}] {}\\n\"{});",
-            ind(indent), l.level.name(), l.tag, fmt, args_str
+            ind(indent),
+            l.level.name(),
+            l.tag,
+            fmt,
+            args_str
         )
     };
     if l.level == LogLevel::Always {
@@ -3903,15 +4802,24 @@ fn emit_log_stmt(l: &LogStmt, ctx: &Ctx, out: &mut String, indent: usize) {
     } else {
         out.push_str(&format!(
             "{}if (Verilated::verbosity() >= {}) {{ {} }}\n",
-            ind(indent), l.level.value(), print_line
+            ind(indent),
+            l.level.value(),
+            print_line
         ));
     }
 }
 
 /// Generate a C++ file pointer name from a log file path.
 fn log_fd_name(path: &str) -> String {
-    let clean: String = path.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+    let clean: String = path
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     format!("_log_fd_{clean}")
 }
@@ -3923,9 +4831,22 @@ fn collect_log_files(body: &[ModuleBodyItem]) -> Vec<String> {
     fn from_comb(stmts: &[Stmt], files: &mut Vec<String>, seen: &mut HashSet<String>) {
         for s in stmts {
             match s {
-                Stmt::Log(l) => { if let Some(ref p) = l.file { if seen.insert(p.clone()) { files.push(p.clone()); } } }
-                Stmt::IfElse(ie) => { from_comb(&ie.then_stmts, files, seen); from_comb(&ie.else_stmts, files, seen); }
-                Stmt::Match(m) => { for arm in &m.arms { from_comb(&arm.body, files, seen); } }
+                Stmt::Log(l) => {
+                    if let Some(ref p) = l.file {
+                        if seen.insert(p.clone()) {
+                            files.push(p.clone());
+                        }
+                    }
+                }
+                Stmt::IfElse(ie) => {
+                    from_comb(&ie.then_stmts, files, seen);
+                    from_comb(&ie.else_stmts, files, seen);
+                }
+                Stmt::Match(m) => {
+                    for arm in &m.arms {
+                        from_comb(&arm.body, files, seen);
+                    }
+                }
                 Stmt::For(f) => from_comb(&f.body, files, seen),
                 _ => {}
             }
@@ -3934,9 +4855,22 @@ fn collect_log_files(body: &[ModuleBodyItem]) -> Vec<String> {
     fn from_seq(stmts: &[Stmt], files: &mut Vec<String>, seen: &mut HashSet<String>) {
         for s in stmts {
             match s {
-                Stmt::Log(l) => { if let Some(ref p) = l.file { if seen.insert(p.clone()) { files.push(p.clone()); } } }
-                Stmt::IfElse(ie) => { from_seq(&ie.then_stmts, files, seen); from_seq(&ie.else_stmts, files, seen); }
-                Stmt::Match(m) => { for arm in &m.arms { from_seq(&arm.body, files, seen); } }
+                Stmt::Log(l) => {
+                    if let Some(ref p) = l.file {
+                        if seen.insert(p.clone()) {
+                            files.push(p.clone());
+                        }
+                    }
+                }
+                Stmt::IfElse(ie) => {
+                    from_seq(&ie.then_stmts, files, seen);
+                    from_seq(&ie.else_stmts, files, seen);
+                }
+                Stmt::Match(m) => {
+                    for arm in &m.arms {
+                        from_seq(&arm.body, files, seen);
+                    }
+                }
                 _ => {}
             }
         }
@@ -3955,16 +4889,33 @@ fn collect_log_files(body: &[ModuleBodyItem]) -> Vec<String> {
 
 fn collect_reg_names(body: &[ModuleBodyItem], ports: &[PortDecl]) -> HashSet<String> {
     body.iter()
-        .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i { Some(r.name.name.clone()) } else { None })
+        .filter_map(|i| {
+            if let ModuleBodyItem::RegDecl(r) = i {
+                Some(r.name.name.clone())
+            } else {
+                None
+            }
+        })
         .chain(ports.iter().filter_map(|p| {
-            if p.reg_info.is_some() { Some(p.name.name.clone()) } else { None }
+            if p.reg_info.is_some() {
+                Some(p.name.name.clone())
+            } else {
+                None
+            }
         }))
         .collect()
 }
 
 fn collect_port_reg_names(ports: &[PortDecl]) -> HashSet<String> {
-    ports.iter()
-        .filter_map(|p| if p.reg_info.is_some() { Some(p.name.name.clone()) } else { None })
+    ports
+        .iter()
+        .filter_map(|p| {
+            if p.reg_info.is_some() {
+                Some(p.name.name.clone())
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
@@ -3984,8 +4935,10 @@ fn emit_port_reg_public_copy(
 
     let bits = widths.get(name).copied().unwrap_or(0);
     if bits > 64 && bits <= 128 {
-        cpp.push_str(&format!("{indent}_arch_u128_to_vl(_{name}, {name}._data, {});\n",
-            wide_words(bits)));
+        cpp.push_str(&format!(
+            "{indent}_arch_u128_to_vl(_{name}, {name}._data, {});\n",
+            wide_words(bits)
+        ));
     } else {
         cpp.push_str(&format!("{indent}{name} = _{name};\n"));
     }
@@ -4005,7 +4958,9 @@ fn collect_let_names(body: &[ModuleBodyItem]) -> HashSet<String> {
                     out.insert(l.name.name.clone());
                 }
             }
-            ModuleBodyItem::WireDecl(w) => { out.insert(w.name.name.clone()); }
+            ModuleBodyItem::WireDecl(w) => {
+                out.insert(w.name.name.clone());
+            }
             _ => {}
         }
     }
@@ -4064,18 +5019,30 @@ fn collect_comb_reads(stmt: &Stmt, out: &mut std::collections::BTreeSet<String>)
         Stmt::Assign(a) => collect_expr_idents(&a.value, out),
         Stmt::IfElse(ie) => {
             collect_expr_idents(&ie.cond, out);
-            for s in &ie.then_stmts { collect_comb_reads(s, out); }
-            for s in &ie.else_stmts { collect_comb_reads(s, out); }
+            for s in &ie.then_stmts {
+                collect_comb_reads(s, out);
+            }
+            for s in &ie.else_stmts {
+                collect_comb_reads(s, out);
+            }
         }
         Stmt::Log(_) => {}
         Stmt::Match(m) => {
             collect_expr_idents(&m.scrutinee, out);
-            for arm in &m.arms { for s in &arm.body { collect_comb_reads(s, out); } }
+            for arm in &m.arms {
+                for s in &arm.body {
+                    collect_comb_reads(s, out);
+                }
+            }
         }
         Stmt::For(f) => {
-            for s in &f.body { collect_comb_reads(s, out); }
+            for s in &f.body {
+                collect_comb_reads(s, out);
+            }
         }
-            Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
+        Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {
+            unreachable!("seq-only Stmt variant inside comb-context walker")
+        }
     }
 }
 
@@ -4086,13 +5053,19 @@ fn collect_stmt_idents(stmt: &Stmt, out: &mut std::collections::BTreeSet<String>
         Stmt::Assign(a) => collect_expr_idents(&a.value, out),
         Stmt::IfElse(ie) => {
             collect_expr_idents(&ie.cond, out);
-            for s in &ie.then_stmts { collect_stmt_idents(s, out); }
-            for s in &ie.else_stmts { collect_stmt_idents(s, out); }
+            for s in &ie.then_stmts {
+                collect_stmt_idents(s, out);
+            }
+            for s in &ie.else_stmts {
+                collect_stmt_idents(s, out);
+            }
         }
         Stmt::Match(m) => {
             collect_expr_idents(&m.scrutinee, out);
             for arm in &m.arms {
-                for s in &arm.body { collect_stmt_idents(s, out); }
+                for s in &arm.body {
+                    collect_stmt_idents(s, out);
+                }
             }
         }
         Stmt::For(f) => {
@@ -4100,16 +5073,24 @@ fn collect_stmt_idents(stmt: &Stmt, out: &mut std::collections::BTreeSet<String>
                 collect_expr_idents(lo, out);
                 collect_expr_idents(hi, out);
             } else if let ForRange::ValueList(vs) = &f.range {
-                for v in vs { collect_expr_idents(v, out); }
+                for v in vs {
+                    collect_expr_idents(v, out);
+                }
             }
-            for s in &f.body { collect_stmt_idents(s, out); }
+            for s in &f.body {
+                collect_stmt_idents(s, out);
+            }
         }
         Stmt::Init(ib) => {
-            for s in &ib.body { collect_stmt_idents(s, out); }
+            for s in &ib.body {
+                collect_stmt_idents(s, out);
+            }
         }
         Stmt::WaitUntil(e, _) => collect_expr_idents(e, out),
         Stmt::DoUntil { body, cond, .. } => {
-            for s in body { collect_stmt_idents(s, out); }
+            for s in body {
+                collect_stmt_idents(s, out);
+            }
             collect_expr_idents(cond, out);
         }
         Stmt::Log(_) => {}
@@ -4118,7 +5099,9 @@ fn collect_stmt_idents(stmt: &Stmt, out: &mut std::collections::BTreeSet<String>
 
 fn collect_expr_idents(expr: &Expr, out: &mut std::collections::BTreeSet<String>) {
     match &expr.kind {
-        ExprKind::Ident(name) => { out.insert(name.clone()); }
+        ExprKind::Ident(name) => {
+            out.insert(name.clone());
+        }
         ExprKind::Binary(_, lhs, rhs) => {
             collect_expr_idents(lhs, out);
             collect_expr_idents(rhs, out);
@@ -4153,10 +5136,14 @@ fn collect_expr_idents(expr: &Expr, out: &mut std::collections::BTreeSet<String>
         }
         ExprKind::MethodCall(base, _, args) => {
             collect_expr_idents(base, out);
-            for a in args { collect_expr_idents(a, out); }
+            for a in args {
+                collect_expr_idents(a, out);
+            }
         }
         ExprKind::FunctionCall(_, args) => {
-            for a in args { collect_expr_idents(a, out); }
+            for a in args {
+                collect_expr_idents(a, out);
+            }
         }
         ExprKind::Ternary(cond, then_e, else_e) => {
             collect_expr_idents(cond, out);
@@ -4165,7 +5152,9 @@ fn collect_expr_idents(expr: &Expr, out: &mut std::collections::BTreeSet<String>
         }
         ExprKind::ExprMatch(scrut, arms) => {
             collect_expr_idents(scrut, out);
-            for arm in arms { collect_expr_idents(&arm.value, out); }
+            for arm in arms {
+                collect_expr_idents(&arm.value, out);
+            }
         }
         _ => {}
     }
@@ -4173,7 +5162,13 @@ fn collect_expr_idents(expr: &Expr, out: &mut std::collections::BTreeSet<String>
 
 fn collect_inst_names(body: &[ModuleBodyItem]) -> HashSet<String> {
     body.iter()
-        .filter_map(|i| if let ModuleBodyItem::Inst(inst) = i { Some(inst.name.name.clone()) } else { None })
+        .filter_map(|i| {
+            if let ModuleBodyItem::Inst(inst) = i {
+                Some(inst.name.name.clone())
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
@@ -4201,10 +5196,15 @@ fn vec_storage_prefix<'a>(
     let_names: &HashSet<String>,
     inst_out: &HashSet<String>,
 ) -> &'a str {
-    if reg_names.contains(name) { "_" }
-    else if let_names.contains(name) { "_let_" }
-    else if inst_out.contains(name) { "" }
-    else { "_let_" }
+    if reg_names.contains(name) {
+        "_"
+    } else if let_names.contains(name) {
+        "_let_"
+    } else if inst_out.contains(name) {
+        ""
+    } else {
+        "_let_"
+    }
 }
 
 fn collect_inst_output_signals(body: &[ModuleBodyItem]) -> HashSet<String> {
@@ -4227,21 +5227,35 @@ fn collect_inst_output_signals(body: &[ModuleBodyItem]) -> HashSet<String> {
 fn collect_comb_targets(body: &[ModuleBodyItem]) -> HashSet<String> {
     fn collect_stmt_targets(stmt: &Stmt, out: &mut HashSet<String>) {
         match stmt {
-            Stmt::Assign(a) => { if let ExprKind::Ident(name) = &a.target.kind { out.insert(name.clone()); } }
+            Stmt::Assign(a) => {
+                if let ExprKind::Ident(name) = &a.target.kind {
+                    out.insert(name.clone());
+                }
+            }
             Stmt::IfElse(ie) => {
-                for s in &ie.then_stmts { collect_stmt_targets(s, out); }
-                for s in &ie.else_stmts { collect_stmt_targets(s, out); }
+                for s in &ie.then_stmts {
+                    collect_stmt_targets(s, out);
+                }
+                for s in &ie.else_stmts {
+                    collect_stmt_targets(s, out);
+                }
             }
             Stmt::Match(m) => {
                 for arm in &m.arms {
-                    for s in &arm.body { collect_stmt_targets(s, out); }
+                    for s in &arm.body {
+                        collect_stmt_targets(s, out);
+                    }
                 }
             }
             Stmt::Log(_) => {}
             Stmt::For(f) => {
-                for s in &f.body { collect_stmt_targets(s, out); }
+                for s in &f.body {
+                    collect_stmt_targets(s, out);
+                }
             }
-                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
+            Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {
+                unreachable!("seq-only Stmt variant inside comb-context walker")
+            }
         }
     }
     let mut targets = HashSet::new();
@@ -4268,9 +5282,17 @@ fn resolve_reg_reset_info(reset: &RegReset, ports: &[PortDecl]) -> Option<(Strin
         RegReset::Inherit(sig, _) => {
             if let Some(p) = ports.iter().find(|p| p.name.name == sig.name) {
                 if let TypeExpr::Reset(kind, level) = &p.ty {
-                    Some((sig.name.clone(), *kind == ResetKind::Async, *level == ResetLevel::Low))
-                } else { None }
-            } else { None }
+                    Some((
+                        sig.name.clone(),
+                        *kind == ResetKind::Async,
+                        *level == ResetLevel::Low,
+                    ))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         }
     }
 }
@@ -4288,7 +5310,10 @@ fn build_enum_map(symbols: &SymbolTable) -> HashMap<String, Vec<(String, u64)>> 
     let mut m = HashMap::new();
     for (name, (sym, _)) in &symbols.globals {
         if let Symbol::Enum(info) = sym {
-            let entries: Vec<(String, u64)> = info.variants.iter().enumerate()
+            let entries: Vec<(String, u64)> = info
+                .variants
+                .iter()
+                .enumerate()
                 .map(|(i, v)| {
                     let val = info.values.get(i).and_then(|v| *v).unwrap_or(i as u64);
                     (v.clone(), val)
@@ -4306,15 +5331,20 @@ fn resolve_enum_variant(
     enum_name: &str,
     variant_name: &str,
 ) -> Option<u64> {
-    enum_map
-        .get(enum_name)
-        .and_then(|variants| {
-            variants.iter().find(|(n, _)| n == variant_name).map(|(_, v)| *v)
-        })
+    enum_map.get(enum_name).and_then(|variants| {
+        variants
+            .iter()
+            .find(|(n, _)| n == variant_name)
+            .map(|(_, v)| *v)
+    })
 }
 
 /// Build a name→width map from module ports, regs, and lets.
-fn build_widths(ports: &[PortDecl], body: &[ModuleBodyItem], params: &[ParamDecl]) -> HashMap<String, u32> {
+fn build_widths(
+    ports: &[PortDecl],
+    body: &[ModuleBodyItem],
+    params: &[ParamDecl],
+) -> HashMap<String, u32> {
     let mut m = HashMap::new();
     for p in ports {
         m.insert(p.name.name.clone(), type_bits_te_with_params(&p.ty, params));
@@ -4343,7 +5373,9 @@ fn build_widths(ports: &[PortDecl], body: &[ModuleBodyItem], params: &[ParamDecl
     }
     for item in body {
         match item {
-            ModuleBodyItem::RegDecl(r) => { m.insert(r.name.name.clone(), type_bits_te_with_params(&r.ty, params)); }
+            ModuleBodyItem::RegDecl(r) => {
+                m.insert(r.name.name.clone(), type_bits_te_with_params(&r.ty, params));
+            }
             ModuleBodyItem::WireDecl(w) => {
                 // Wires need width registration too — without this, downstream
                 // sites that consult ctx.widths (the Bool `~` masking check
@@ -4383,14 +5415,12 @@ fn build_widths(ports: &[PortDecl], body: &[ModuleBodyItem], params: &[ParamDecl
     m
 }
 
-#[deprecated(
-    note = "use `type_bits_te_with_params(.., &params)` — the bare \
+#[deprecated(note = "use `type_bits_te_with_params(.., &params)` — the bare \
             form silently miscompiles when a `UInt<W>` / `SInt<W>` \
             width is a param identifier (returns the fallback width \
             of 32 rather than the param's resolved value). See \
-            arch-com#447 §1 and PRs #427, #439, #442."
-)]
-#[allow(dead_code)]  // intentional landmine: present so new callers
+            arch-com#447 §1 and PRs #427, #439, #442.")]
+#[allow(dead_code)] // intentional landmine: present so new callers
                     // surface a deprecation warning at PR review time.
 fn type_bits_te(ty: &TypeExpr) -> u32 {
     type_bits_te_with_params(ty, &[])
@@ -4460,20 +5490,72 @@ fn build_signed_names(ports: &[PortDecl], body: &[ModuleBodyItem]) -> HashSet<St
     s
 }
 
-/// Collect names whose bit width exceeds 64 (require wide handling).
-fn collect_wide_names(ports: &[PortDecl], body: &[ModuleBodyItem], params: &[ParamDecl]) -> HashSet<String> {
-    let mut s = HashSet::new();
+/// Floating-point format of a scalar TypeExpr, if any.
+fn type_float_fmt(ty: &TypeExpr) -> Option<FpFmt> {
+    match ty {
+        TypeExpr::FP32 => Some(FpFmt::Fp32),
+        TypeExpr::BF16 => Some(FpFmt::Bf16),
+        _ => None,
+    }
+}
+
+/// Collect scalar signal names whose HDL type is a float (FP32/BF16), mapping
+/// each to its format. Parallels [`build_signed_names`]; drives float-op
+/// dispatch in the expression emitter.
+fn build_float_names(ports: &[PortDecl], body: &[ModuleBodyItem]) -> HashMap<String, FpFmt> {
+    let mut m = HashMap::new();
     for p in ports {
-        if type_bits_te_with_params(&p.ty, params) > 64 { s.insert(p.name.name.clone()); }
+        if let Some(f) = type_float_fmt(&p.ty) {
+            m.insert(p.name.name.clone(), f);
+        }
     }
     for item in body {
         match item {
             ModuleBodyItem::RegDecl(r) => {
-                if type_bits_te_with_params(&r.ty, params) > 64 { s.insert(r.name.name.clone()); }
+                if let Some(f) = type_float_fmt(&r.ty) {
+                    m.insert(r.name.name.clone(), f);
+                }
+            }
+            ModuleBodyItem::WireDecl(w) => {
+                if let Some(f) = type_float_fmt(&w.ty) {
+                    m.insert(w.name.name.clone(), f);
+                }
+            }
+            ModuleBodyItem::LetBinding(l) => {
+                if let Some(f) = l.ty.as_ref().and_then(type_float_fmt) {
+                    m.insert(l.name.name.clone(), f);
+                }
+            }
+            _ => {}
+        }
+    }
+    m
+}
+
+/// Collect names whose bit width exceeds 64 (require wide handling).
+fn collect_wide_names(
+    ports: &[PortDecl],
+    body: &[ModuleBodyItem],
+    params: &[ParamDecl],
+) -> HashSet<String> {
+    let mut s = HashSet::new();
+    for p in ports {
+        if type_bits_te_with_params(&p.ty, params) > 64 {
+            s.insert(p.name.name.clone());
+        }
+    }
+    for item in body {
+        match item {
+            ModuleBodyItem::RegDecl(r) => {
+                if type_bits_te_with_params(&r.ty, params) > 64 {
+                    s.insert(r.name.name.clone());
+                }
             }
             ModuleBodyItem::LetBinding(l) => {
                 if let Some(ty) = &l.ty {
-                    if type_bits_te_with_params(ty, params) > 64 { s.insert(l.name.name.clone()); }
+                    if type_bits_te_with_params(ty, params) > 64 {
+                        s.insert(l.name.name.clone());
+                    }
                 }
             }
             _ => {}
@@ -4550,16 +5632,28 @@ impl<'a> SimCodegen<'a> {
             // since user-written `function ... -> T` signatures typically use
             // concrete-width types; tracked as a follow-up to arch-com#463.
             let ret_ty = cpp_internal_type_with_params(&f.ret_ty, &[]);
-            let args_str: Vec<String> = f.args.iter()
-                .map(|a| format!("{} {}", cpp_internal_type_with_params(&a.ty, &[]), a.name.name))
+            let args_str: Vec<String> = f
+                .args
+                .iter()
+                .map(|a| {
+                    format!(
+                        "{} {}",
+                        cpp_internal_type_with_params(&a.ty, &[]),
+                        a.name.name
+                    )
+                })
                 .collect();
-            h.push_str(&format!("inline {ret_ty} {}({}) {{\n", f.name.name, args_str.join(", ")));
+            h.push_str(&format!(
+                "inline {ret_ty} {}({}) {{\n",
+                f.name.name,
+                args_str.join(", ")
+            ));
 
-            let empty_regs:  HashSet<String> = HashSet::new();
-            let empty_lets:  HashSet<String> = HashSet::new();
+            let empty_regs: HashSet<String> = HashSet::new();
+            let empty_lets: HashSet<String> = HashSet::new();
             let empty_insts: HashSet<String> = HashSet::new();
-            let empty_wide:  HashSet<String> = HashSet::new();
-            let enum_map    = build_enum_map(self.symbols);
+            let empty_wide: HashSet<String> = HashSet::new();
+            let enum_map = build_enum_map(self.symbols);
 
             // Build arg + local-let names as bare ports (resolve_name hits
             // them via port_names → no `_let_` prefix, matching the
@@ -4605,23 +5699,40 @@ impl<'a> SimCodegen<'a> {
             let empty_bus: HashSet<String> = HashSet::new();
             let mut local_widths: HashMap<String, u32> = HashMap::new();
             let mut local_signed_names: HashSet<String> = HashSet::new();
-            let mut arg_ports: HashSet<String> = f.args.iter().map(|a| a.name.name.clone()).collect();
+            let mut arg_ports: HashSet<String> =
+                f.args.iter().map(|a| a.name.name.clone()).collect();
             for a in &f.args {
-                local_widths.insert(a.name.name.clone(), match &a.ty {
-                    TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width(w),
-                    TypeExpr::Bool | TypeExpr::Bit => 1,
-                    _ => 32,
-                });
+                local_widths.insert(
+                    a.name.name.clone(),
+                    match &a.ty {
+                        TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width(w),
+                        TypeExpr::Bool | TypeExpr::Bit => 1,
+                        _ => 32,
+                    },
+                );
                 if type_is_signed_scalar(&a.ty) {
                     local_signed_names.insert(a.name.name.clone());
                 }
             }
-            collect_function_locals(&f.body, &mut arg_ports, &mut local_widths, &mut local_signed_names);
+            collect_function_locals(
+                &f.body,
+                &mut arg_ports,
+                &mut local_widths,
+                &mut local_signed_names,
+            );
             let function_loop_var_subst: std::cell::RefCell<HashMap<String, u32>> =
                 std::cell::RefCell::new(HashMap::new());
-            let ctx_base = Ctx::new(&empty_regs, &arg_ports, &empty_lets, &empty_insts,
-                                    &empty_wide, &local_widths, &enum_map, &empty_bus)
-                .with_signed_names(&local_signed_names);
+            let ctx_base = Ctx::new(
+                &empty_regs,
+                &arg_ports,
+                &empty_lets,
+                &empty_insts,
+                &empty_wide,
+                &local_widths,
+                &enum_map,
+                &empty_bus,
+            )
+            .with_signed_names(&local_signed_names);
             let ctx = Ctx {
                 loop_var_subst: Some(&function_loop_var_subst),
                 ..ctx_base
@@ -4642,8 +5753,10 @@ impl<'a> SimCodegen<'a> {
                 for item in items {
                     match item {
                         FunctionBodyItem::Let(l) => {
-                            let ty = l.ty.as_ref().map(|t| cpp_internal_type_with_params(t, &[]))
-                                .unwrap_or_else(|| "uint32_t".to_string());
+                            let ty =
+                                l.ty.as_ref()
+                                    .map(|t| cpp_internal_type_with_params(t, &[]))
+                                    .unwrap_or_else(|| "uint32_t".to_string());
                             let val = cpp_expr(&l.value, ctx);
                             out.push_str(&format!("{indent}{ty} {} = {};\n", l.name.name, val));
                         }
@@ -4658,7 +5771,13 @@ impl<'a> SimCodegen<'a> {
                             out.push_str(&format!("{indent}}}"));
                             if !ie.else_body.is_empty() {
                                 out.push_str(" else {\n");
-                                emit_fn_items(&ie.else_body, ctx, ret_ty, &format!("{indent}  "), out);
+                                emit_fn_items(
+                                    &ie.else_body,
+                                    ctx,
+                                    ret_ty,
+                                    &format!("{indent}  "),
+                                    out,
+                                );
                                 out.push_str(&format!("{indent}}}\n"));
                             } else {
                                 out.push_str("\n");
@@ -4671,7 +5790,13 @@ impl<'a> SimCodegen<'a> {
                                     let lo_s = cpp_expr(lo, ctx);
                                     let hi_s = cpp_expr(hi, ctx);
                                     out.push_str(&format!("{indent}for (int {var} = {lo_s}; {var} <= {hi_s}; {var}++) {{\n"));
-                                    emit_fn_items(&fl.body, ctx, ret_ty, &format!("{indent}  "), out);
+                                    emit_fn_items(
+                                        &fl.body,
+                                        ctx,
+                                        ret_ty,
+                                        &format!("{indent}  "),
+                                        out,
+                                    );
                                     out.push_str(&format!("{indent}}}\n"));
                                 }
                                 ForRange::ValueList(vals) => {
@@ -4679,7 +5804,13 @@ impl<'a> SimCodegen<'a> {
                                         let v = cpp_expr(val, ctx);
                                         out.push_str(&format!("{indent}{{\n"));
                                         out.push_str(&format!("{indent}  int {var} = {v};\n"));
-                                        emit_fn_items(&fl.body, ctx, ret_ty, &format!("{indent}  "), out);
+                                        emit_fn_items(
+                                            &fl.body,
+                                            ctx,
+                                            ret_ty,
+                                            &format!("{indent}  "),
+                                            out,
+                                        );
                                         out.push_str(&format!("{indent}}}\n"));
                                     }
                                 }
@@ -4698,8 +5829,10 @@ impl<'a> SimCodegen<'a> {
             for item in &f.body {
                 match item {
                     FunctionBodyItem::Let(l) => {
-                        let ty = l.ty.as_ref().map(|t| cpp_internal_type_with_params(t, &[]))
-                            .unwrap_or_else(|| "uint32_t".to_string());
+                        let ty =
+                            l.ty.as_ref()
+                                .map(|t| cpp_internal_type_with_params(t, &[]))
+                                .unwrap_or_else(|| "uint32_t".to_string());
                         let val = cpp_expr(&l.value, &ctx);
                         h.push_str(&format!("  {ty} {} = {};\n", l.name.name, val));
                     }
@@ -4736,7 +5869,11 @@ impl<'a> SimCodegen<'a> {
                                     }
                                     Pattern::EnumVariant(en, vr) => {
                                         if let Some(variants) = enum_map.get(&en.name) {
-                                            let idx = variants.iter().find(|(n, _)| *n == vr.name).map(|(_, v)| *v).unwrap_or(0);
+                                            let idx = variants
+                                                .iter()
+                                                .find(|(n, _)| *n == vr.name)
+                                                .map(|(_, v)| *v)
+                                                .unwrap_or(0);
                                             h.push_str(&format!("    case {idx}: return {val};\n"));
                                         }
                                     }
@@ -4757,7 +5894,7 @@ impl<'a> SimCodegen<'a> {
         SimModel {
             class_name: "VFunctions".to_string(),
             header: h,
-            impl_: String::new(),  // header-only
+            impl_: String::new(), // header-only
         }
     }
 }
@@ -4776,11 +5913,16 @@ fn collect_stmt_assigns(stmts: &[Stmt], out: &mut std::collections::BTreeSet<Str
                 let mut cursor: &Expr = &a.target;
                 loop {
                     match &cursor.kind {
-                        ExprKind::Ident(n) => { out.insert(n.clone()); break; }
+                        ExprKind::Ident(n) => {
+                            out.insert(n.clone());
+                            break;
+                        }
                         ExprKind::Index(base, _)
                         | ExprKind::BitSlice(base, _, _)
                         | ExprKind::PartSelect(base, _, _, _)
-                        | ExprKind::FieldAccess(base, _) => { cursor = base; }
+                        | ExprKind::FieldAccess(base, _) => {
+                            cursor = base;
+                        }
                         _ => break,
                     }
                 }
@@ -4790,7 +5932,9 @@ fn collect_stmt_assigns(stmts: &[Stmt], out: &mut std::collections::BTreeSet<Str
                 collect_stmt_assigns(&ie.else_stmts, out);
             }
             Stmt::Match(m) => {
-                for arm in &m.arms { collect_stmt_assigns(&arm.body, out); }
+                for arm in &m.arms {
+                    collect_stmt_assigns(&arm.body, out);
+                }
             }
             Stmt::Log(_) => {}
             Stmt::For(f) => {
@@ -4888,18 +6032,18 @@ impl<'a> SimCodegen<'a> {
     fn lookup_inst_ports(&self, module_name: &str) -> Vec<PortDecl> {
         for item in &self.source.items {
             let ports = match item {
-                Item::Module(m)       if m.name.name == module_name => Some(&m.ports),
-                Item::Fsm(f)          if f.name.name == module_name => Some(&f.ports),
-                Item::Fifo(f)         if f.name.name == module_name => Some(&f.ports),
-                Item::Ram(r)          if r.name.name == module_name => Some(&r.ports),
-                Item::Cam(c)          if c.name.name == module_name => Some(&c.ports),
-                Item::Counter(c)      if c.name.name == module_name => Some(&c.ports),
-                Item::Arbiter(a)      if a.name.name == module_name => Some(&a.ports),
-                Item::Regfile(r)      if r.name.name == module_name => Some(&r.ports),
-                Item::Pipeline(p)     if p.name.name == module_name => Some(&p.ports),
-                Item::Linklist(l)     if l.name.name == module_name => Some(&l.ports),
+                Item::Module(m) if m.name.name == module_name => Some(&m.ports),
+                Item::Fsm(f) if f.name.name == module_name => Some(&f.ports),
+                Item::Fifo(f) if f.name.name == module_name => Some(&f.ports),
+                Item::Ram(r) if r.name.name == module_name => Some(&r.ports),
+                Item::Cam(c) if c.name.name == module_name => Some(&c.ports),
+                Item::Counter(c) if c.name.name == module_name => Some(&c.ports),
+                Item::Arbiter(a) if a.name.name == module_name => Some(&a.ports),
+                Item::Regfile(r) if r.name.name == module_name => Some(&r.ports),
+                Item::Pipeline(p) if p.name.name == module_name => Some(&p.ports),
+                Item::Linklist(l) if l.name.name == module_name => Some(&l.ports),
                 Item::Synchronizer(s) if s.name.name == module_name => Some(&s.ports),
-                Item::Clkgate(c)      if c.name.name == module_name => Some(&c.ports),
+                Item::Clkgate(c) if c.name.name == module_name => Some(&c.ports),
                 _ => None,
             };
             if let Some(p) = ports {
@@ -4916,18 +6060,18 @@ impl<'a> SimCodegen<'a> {
     fn lookup_inst_params(&self, module_name: &str) -> Vec<ParamDecl> {
         for item in &self.source.items {
             let params = match item {
-                Item::Module(m)       if m.name.name == module_name => Some(&m.params),
-                Item::Fsm(f)          if f.name.name == module_name => Some(&f.params),
-                Item::Fifo(f)         if f.name.name == module_name => Some(&f.params),
-                Item::Ram(r)          if r.name.name == module_name => Some(&r.params),
-                Item::Cam(c)          if c.name.name == module_name => Some(&c.params),
-                Item::Counter(c)      if c.name.name == module_name => Some(&c.params),
-                Item::Arbiter(a)      if a.name.name == module_name => Some(&a.params),
-                Item::Regfile(r)      if r.name.name == module_name => Some(&r.params),
-                Item::Pipeline(p)     if p.name.name == module_name => Some(&p.params),
-                Item::Linklist(l)     if l.name.name == module_name => Some(&l.params),
+                Item::Module(m) if m.name.name == module_name => Some(&m.params),
+                Item::Fsm(f) if f.name.name == module_name => Some(&f.params),
+                Item::Fifo(f) if f.name.name == module_name => Some(&f.params),
+                Item::Ram(r) if r.name.name == module_name => Some(&r.params),
+                Item::Cam(c) if c.name.name == module_name => Some(&c.params),
+                Item::Counter(c) if c.name.name == module_name => Some(&c.params),
+                Item::Arbiter(a) if a.name.name == module_name => Some(&a.params),
+                Item::Regfile(r) if r.name.name == module_name => Some(&r.params),
+                Item::Pipeline(p) if p.name.name == module_name => Some(&p.params),
+                Item::Linklist(l) if l.name.name == module_name => Some(&l.params),
                 Item::Synchronizer(s) if s.name.name == module_name => Some(&s.params),
-                Item::Clkgate(c)      if c.name.name == module_name => Some(&c.params),
+                Item::Clkgate(c) if c.name.name == module_name => Some(&c.params),
                 _ => None,
             };
             if let Some(p) = params {
@@ -4937,7 +6081,12 @@ impl<'a> SimCodegen<'a> {
         Vec::new()
     }
 
-    pub(crate) fn gen_module(&self, m: &ModuleDecl, emit_debug: bool, debug_module_set: &std::collections::HashSet<String>) -> SimModel {
+    pub(crate) fn gen_module(
+        &self,
+        m: &ModuleDecl,
+        emit_debug: bool,
+        debug_module_set: &std::collections::HashSet<String>,
+    ) -> SimModel {
         // Sim-local flatten: SV genvar `generate_for` blocks (which the
         // elaborator preserves when an inst-bearing body's connections
         // are shape-stable) have no sim equivalent. Unroll any preserved
@@ -4962,7 +6111,8 @@ impl<'a> SimCodegen<'a> {
         // --coverage: per-module branch-coverage registry. emit_reg_if_else
         // and (later phase 1b) emit_comb_if_else allocate counter ids here.
         // Threaded into Ctx via .with_coverage(Some(&cov_reg)).
-        let cov_reg: std::cell::RefCell<CoverageRegistry> = std::cell::RefCell::new(CoverageRegistry::default());
+        let cov_reg: std::cell::RefCell<CoverageRegistry> =
+            std::cell::RefCell::new(CoverageRegistry::default());
         let cov_handle: Option<&std::cell::RefCell<CoverageRegistry>> =
             if self.coverage { Some(&cov_reg) } else { None };
 
@@ -4984,7 +6134,9 @@ impl<'a> SimCodegen<'a> {
                 // expression lookup hits a known bus prefix. N is resolved
                 // against the module's params for the param-driven case.
                 match bi.count.as_ref() {
-                    None => { bus_port_names.insert(p.name.name.clone()); }
+                    None => {
+                        bus_port_names.insert(p.name.name.clone());
+                    }
                     Some(count_expr) => {
                         let n = eval_const_expr_with_params(count_expr, &m.params) as u32;
                         for i in 0..n {
@@ -5003,7 +6155,9 @@ impl<'a> SimCodegen<'a> {
             }
         }
 
-        let mut port_names: HashSet<String> = m.ports.iter()
+        let mut port_names: HashSet<String> = m
+            .ports
+            .iter()
             .filter(|p| p.bus_info.is_none())
             .map(|p| p.name.name.clone())
             .collect();
@@ -5013,22 +6167,29 @@ impl<'a> SimCodegen<'a> {
         }
 
         // Collect reset port levels for `.asserted` polarity abstraction
-        let reset_levels: HashMap<String, ResetLevel> = m.ports.iter()
-            .filter_map(|p| if let TypeExpr::Reset(_, level) = &p.ty {
-                Some((p.name.name.clone(), *level))
-            } else { None })
+        let reset_levels: HashMap<String, ResetLevel> = m
+            .ports
+            .iter()
+            .filter_map(|p| {
+                if let TypeExpr::Reset(_, level) = &p.ty {
+                    Some((p.name.name.clone(), *level))
+                } else {
+                    None
+                }
+            })
             .collect();
 
         let mut reg_names = collect_reg_names(&m.body, &m.ports);
         reg_names.extend(collect_pipe_reg_names(&m.body));
         let port_reg_names = collect_port_reg_names(&m.ports);
-        let let_names   = collect_let_names(&m.body);
-        let let_values  = collect_let_values(&m.body, &m.params);
-        let inst_names  = collect_inst_names(&m.body);
-        let inst_out    = collect_inst_output_signals(&m.body);
-        let mut wide_names  = collect_wide_names(&m.ports, &m.body, &m.params);
-        let mut widths      = build_widths(&m.ports, &m.body, &m.params);
+        let let_names = collect_let_names(&m.body);
+        let let_values = collect_let_values(&m.body, &m.params);
+        let inst_names = collect_inst_names(&m.body);
+        let inst_out = collect_inst_output_signals(&m.body);
+        let mut wide_names = collect_wide_names(&m.ports, &m.body, &m.params);
+        let mut widths = build_widths(&m.ports, &m.body, &m.params);
         let mut signed_names = build_signed_names(&m.ports, &m.body);
+        let float_names = build_float_names(&m.ports, &m.body);
 
         // Add bus flattened signals to wide_names and widths.
         // Use the param-aware width evaluator (issue #427): when a bus's
@@ -5042,8 +6203,12 @@ impl<'a> SimCodegen<'a> {
         for (flat_name, flat_ty) in &bus_flat {
             let bits = type_bits_te_with_params(flat_ty, &m.params);
             widths.insert(flat_name.clone(), bits);
-            if type_is_signed_scalar(flat_ty) { signed_names.insert(flat_name.clone()); }
-            if bits > 64 { wide_names.insert(flat_name.clone()); }
+            if type_is_signed_scalar(flat_ty) {
+                signed_names.insert(flat_name.clone());
+            }
+            if bits > 64 {
+                wide_names.insert(flat_name.clone());
+            }
         }
 
         // Populate widths with per-struct-field keys: "ctrl_r.mode" → 4, etc.
@@ -5054,9 +6219,13 @@ impl<'a> SimCodegen<'a> {
             let mut map: HashMap<&str, &StructDecl> = HashMap::new();
             for item in &self.source.items {
                 match item {
-                    Item::Struct(s) => { map.insert(s.name.name.as_str(), s); }
+                    Item::Struct(s) => {
+                        map.insert(s.name.name.as_str(), s);
+                    }
                     Item::Package(p) => {
-                        for s in &p.structs { map.insert(s.name.name.as_str(), s); }
+                        for s in &p.structs {
+                            map.insert(s.name.name.as_str(), s);
+                        }
                     }
                     _ => {}
                 }
@@ -5110,17 +6279,37 @@ impl<'a> SimCodegen<'a> {
         }
 
         // Vec-typed reg names (use C array subscript `[i]` instead of bit extraction)
-        let mut vec_reg_names: HashSet<String> = m.body.iter()
-            .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i {
-                if matches!(r.ty, TypeExpr::Vec(..)) { Some(r.name.name.clone()) } else { None }
-            } else { None })
+        let mut vec_reg_names: HashSet<String> = m
+            .body
+            .iter()
+            .filter_map(|i| {
+                if let ModuleBodyItem::RegDecl(r) = i {
+                    if matches!(r.ty, TypeExpr::Vec(..)) {
+                        Some(r.name.name.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
             .collect();
 
         // Vec-typed wires also use C-array indexing internally
-        let vec_wire_names: HashSet<String> = m.body.iter()
-            .filter_map(|i| if let ModuleBodyItem::WireDecl(w) = i {
-                if matches!(w.ty, TypeExpr::Vec(..)) { Some(w.name.name.clone()) } else { None }
-            } else { None })
+        let vec_wire_names: HashSet<String> = m
+            .body
+            .iter()
+            .filter_map(|i| {
+                if let ModuleBodyItem::WireDecl(w) = i {
+                    if matches!(w.ty, TypeExpr::Vec(..)) {
+                        Some(w.name.name.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
             .collect();
         vec_reg_names.extend(vec_wire_names.iter().cloned());
 
@@ -5134,11 +6323,13 @@ impl<'a> SimCodegen<'a> {
         //     than truncating the inner dim to a scalar)
         //   - same shape for wires whose elem is a non-bus Vec (e.g.
         //     `Vec<Vec<UInt<W>, N>, M>`)
-        let vec_2d_names: HashSet<String> = m.body.iter()
+        let vec_2d_names: HashSet<String> = m
+            .body
+            .iter()
             .filter_map(|i| {
                 let (name, ty) = match i {
                     ModuleBodyItem::WireDecl(w) => (&w.name.name, &w.ty),
-                    ModuleBodyItem::RegDecl(r)  => (&r.name.name, &r.ty),
+                    ModuleBodyItem::RegDecl(r) => (&r.name.name, &r.ty),
                     _ => return None,
                 };
                 if let TypeExpr::Vec(elem, _) = ty {
@@ -5157,12 +6348,21 @@ impl<'a> SimCodegen<'a> {
         // Register these names in vec_reg_names so expr_is_vec recognises
         // them in the Index emitter.
         for p in &m.ports {
-            let Some(bi) = p.bus_info.as_ref() else { continue; };
-            if bi.count.is_none() { continue; }
+            let Some(bi) = p.bus_info.as_ref() else {
+                continue;
+            };
+            if bi.count.is_none() {
+                continue;
+            }
             let bus_name = &bi.bus_name.name;
-            let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) else { continue; };
+            let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name)
+            else {
+                continue;
+            };
             let mut pm = info.default_param_map();
-            for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
+            for pa in &bi.params {
+                pm.insert(pa.name.name.clone(), &pa.value);
+            }
             for (sname, _, _) in info.effective_signals(&pm) {
                 vec_reg_names.insert(format!("{}_{}", p.name.name, sname));
             }
@@ -5174,17 +6374,31 @@ impl<'a> SimCodegen<'a> {
         // wire connected to a sub-inst Vec input port silently emits zero
         // fan-out lines (loop `for i in 0..0`), leaving the sub-inst's inputs
         // permanently default-constructed.
-        let mut vec_wire_counts: HashMap<String, u64> = m.body.iter()
-            .filter_map(|i| if let ModuleBodyItem::WireDecl(w) = i {
-                if let TypeExpr::Vec(_, count_expr) = &w.ty {
-                    Some((w.name.name.clone(), eval_const_expr_with_params(count_expr, &m.params)))
-                } else { None }
-            } else { None })
+        let mut vec_wire_counts: HashMap<String, u64> = m
+            .body
+            .iter()
+            .filter_map(|i| {
+                if let ModuleBodyItem::WireDecl(w) = i {
+                    if let TypeExpr::Vec(_, count_expr) = &w.ty {
+                        Some((
+                            w.name.name.clone(),
+                            eval_const_expr_with_params(count_expr, &m.params),
+                        ))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
             .collect();
         for item in &m.body {
             if let ModuleBodyItem::RegDecl(r) = item {
                 if let TypeExpr::Vec(_, count_expr) = &r.ty {
-                    vec_wire_counts.insert(r.name.name.clone(), eval_const_expr_with_params(count_expr, &m.params));
+                    vec_wire_counts.insert(
+                        r.name.name.clone(),
+                        eval_const_expr_with_params(count_expr, &m.params),
+                    );
                 }
             }
         }
@@ -5197,7 +6411,9 @@ impl<'a> SimCodegen<'a> {
             is_input: bool,
             is_port_reg: bool,
         }
-        let mut vec_port_infos: Vec<VecPortInfo> = m.ports.iter()
+        let mut vec_port_infos: Vec<VecPortInfo> = m
+            .ports
+            .iter()
             .filter(|p| p.bus_info.is_none())
             .filter_map(|p| {
                 if let Some((elem_ty, count_str)) = vec_array_info_with_params(&p.ty, &m.params) {
@@ -5214,7 +6430,8 @@ impl<'a> SimCodegen<'a> {
                 }
             })
             .collect();
-        let bus_flat_vec_names: HashSet<String> = bus_flat.iter()
+        let bus_flat_vec_names: HashSet<String> = bus_flat
+            .iter()
             .filter_map(|(flat_name, flat_ty)| {
                 if let Some((elem_ty, count_str)) = vec_array_info_with_params(flat_ty, &m.params) {
                     let count: u64 = count_str.parse().unwrap_or(0);
@@ -5222,7 +6439,11 @@ impl<'a> SimCodegen<'a> {
                         name: flat_name.clone(),
                         elem_ty,
                         count,
-                        is_input: bus_flat_dirs.get(flat_name).copied().unwrap_or(Direction::In) == Direction::In,
+                        is_input: bus_flat_dirs
+                            .get(flat_name)
+                            .copied()
+                            .unwrap_or(Direction::In)
+                            == Direction::In,
                         is_port_reg: false,
                     });
                     Some(flat_name.clone())
@@ -5231,7 +6452,8 @@ impl<'a> SimCodegen<'a> {
                 }
             })
             .collect();
-        let vec_port_names: HashSet<String> = vec_port_infos.iter().map(|v| v.name.clone()).collect();
+        let vec_port_names: HashSet<String> =
+            vec_port_infos.iter().map(|v| v.name.clone()).collect();
         // Vec ports also use C array subscript `[i]` internally
         vec_reg_names.extend(vec_port_names.iter().cloned());
         // Unified Vec<T,N> size map: wires + regs + ports. Used by bounds-check codegen.
@@ -5243,9 +6465,13 @@ impl<'a> SimCodegen<'a> {
         // Needed by the async-reset emitter to lower `reset r => 0` for
         // Vec regs into a per-element loop instead of an invalid scalar
         // `_rf_reg = 0` (a C array isn't assignable from a scalar).
-        for r in m.body.iter().filter_map(|i|
-            if let ModuleBodyItem::RegDecl(r) = i { Some(r) } else { None })
-        {
+        for r in m.body.iter().filter_map(|i| {
+            if let ModuleBodyItem::RegDecl(r) = i {
+                Some(r)
+            } else {
+                None
+            }
+        }) {
             if let TypeExpr::Vec(_, count_expr) = &r.ty {
                 let count = eval_const_expr_with_params(count_expr, &m.params);
                 if count > 0 {
@@ -5275,11 +6501,16 @@ impl<'a> SimCodegen<'a> {
         // typed (notably TLM response payloads), record the `<wire>.<field>`
         // path so instance wiring copies the array element-by-element.
         for item in &m.body {
-            let ModuleBodyItem::WireDecl(w) = item else { continue; };
-            let TypeExpr::Named(id) = &w.ty else { continue; };
-            let Some((crate::resolve::Symbol::Bus(info), _)) =
-                self.symbols.globals.get(&id.name)
-            else { continue; };
+            let ModuleBodyItem::WireDecl(w) = item else {
+                continue;
+            };
+            let TypeExpr::Named(id) = &w.ty else {
+                continue;
+            };
+            let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(&id.name)
+            else {
+                continue;
+            };
             let pm = info.default_param_map();
             for (sname, _sdir, sty) in info.effective_signals(&pm) {
                 if let TypeExpr::Vec(_, count_expr) = &sty {
@@ -5296,18 +6527,29 @@ impl<'a> SimCodegen<'a> {
         // Collect reset-none reg names for --check-uninit + any guarded reg (regardless
         // of reset) so Check A can use _<name>_vinit to detect producer bugs.
         let mut uninit_regs: HashSet<String> = if self.check_uninit {
-            m.body.iter()
-                .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i {
-                    if matches!(r.reset, RegReset::None) || r.guard.is_some() {
-                        Some(r.name.name.clone())
-                    } else { None }
-                } else { None })
+            m.body
+                .iter()
+                .filter_map(|i| {
+                    if let ModuleBodyItem::RegDecl(r) = i {
+                        if matches!(r.reset, RegReset::None) || r.guard.is_some() {
+                            Some(r.name.name.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
                 .chain(m.ports.iter().filter_map(|p| {
                     if let Some(ri) = &p.reg_info {
                         if matches!(ri.reset, RegReset::None) || ri.guard.is_some() {
                             Some(p.name.name.clone())
-                        } else { None }
-                    } else { None }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
                 }))
                 .collect()
         } else {
@@ -5334,15 +6576,20 @@ impl<'a> SimCodegen<'a> {
                 // Bus-typed port: expand flattened signals via the symbol table,
                 // apply per-signal perspective flip, track the ones that are
                 // inputs from THIS module's side.
-                let Some(ref bi) = p.bus_info else { continue; };
+                let Some(ref bi) = p.bus_info else {
+                    continue;
+                };
                 let Some(crate::resolve::Symbol::Bus(info)) =
                     self.symbols.globals.get(&bi.bus_name.name).map(|(s, _)| s)
-                    else { continue; };
+                else {
+                    continue;
+                };
                 // Build param map: bus defaults, overridden by port-site params.
-                let mut param_map: std::collections::HashMap<String, &Expr> =
-                    info.params.iter()
-                        .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
-                        .collect();
+                let mut param_map: std::collections::HashMap<String, &Expr> = info
+                    .params
+                    .iter()
+                    .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
+                    .collect();
                 for pa in &bi.params {
                     param_map.insert(pa.name.name.clone(), &pa.value);
                 }
@@ -5352,7 +6599,9 @@ impl<'a> SimCodegen<'a> {
                         crate::ast::BusPerspective::Initiator => sdir,
                         crate::ast::BusPerspective::Target => sdir.flip(),
                     };
-                    if !matches!(actual_dir, Direction::In) { continue; }
+                    if !matches!(actual_dir, Direction::In) {
+                        continue;
+                    }
                     // Clock/Reset sub-signals follow the scalar-path exclusion.
                     if matches!(&sty, TypeExpr::Clock(_) | TypeExpr::Reset(_, _)) {
                         continue;
@@ -5380,10 +6629,14 @@ impl<'a> SimCodegen<'a> {
         let mut payload_guards: HashMap<String, String> = HashMap::new();
         if self.inputs_start_uninit {
             for p in m.ports.iter() {
-                let Some(ref bi) = p.bus_info else { continue; };
+                let Some(ref bi) = p.bus_info else {
+                    continue;
+                };
                 let Some(crate::resolve::Symbol::Bus(info)) =
                     self.symbols.globals.get(&bi.bus_name.name).map(|(s, _)| s)
-                    else { continue; };
+                else {
+                    continue;
+                };
                 for hs in &info.handshakes {
                     let guard_expr = match hs.variant.name.as_str() {
                         "valid_ready" | "valid_only" | "valid_stall" => {
@@ -5401,7 +6654,8 @@ impl<'a> SimCodegen<'a> {
                         _ => continue, // ready_only: no producer-valid guard
                     };
                     for payload in &hs.payload_names {
-                        let payload_flat = format!("{}_{}_{}", p.name.name, hs.name.name, payload.name);
+                        let payload_flat =
+                            format!("{}_{}_{}", p.name.name, hs.name.name, payload.name);
                         payload_guards.insert(payload_flat, guard_expr.clone());
                     }
                 }
@@ -5410,13 +6664,23 @@ impl<'a> SimCodegen<'a> {
 
         // Collect guard-annotated regs: reg_name → guard_signal_name.
         // Used for Check A (producer bug: "guard asserts but reg never written").
-        let guarded_regs: HashMap<String, String> = m.body.iter()
-            .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i {
-                r.guard.as_ref().map(|g| (r.name.name.clone(), g.name.clone()))
-            } else { None })
+        let guarded_regs: HashMap<String, String> = m
+            .body
+            .iter()
+            .filter_map(|i| {
+                if let ModuleBodyItem::RegDecl(r) = i {
+                    r.guard
+                        .as_ref()
+                        .map(|g| (r.name.name.clone(), g.name.clone()))
+                } else {
+                    None
+                }
+            })
             .chain(m.ports.iter().filter_map(|p| {
                 p.reg_info.as_ref().and_then(|ri| {
-                    ri.guard.as_ref().map(|g| (p.name.name.clone(), g.name.clone()))
+                    ri.guard
+                        .as_ref()
+                        .map(|g| (p.name.name.clone(), g.name.clone()))
                 })
             }))
             .collect();
@@ -5424,8 +6688,16 @@ impl<'a> SimCodegen<'a> {
         // Also include inst_out in "known" names for the wide set and widths
         // (they come from sub-inst ports — we'll default them to uint32_t for now)
 
-        let insts: Vec<&InstDecl> = m.body.iter()
-            .filter_map(|i| if let ModuleBodyItem::Inst(inst) = i { Some(inst) } else { None })
+        let insts: Vec<&InstDecl> = m
+            .body
+            .iter()
+            .filter_map(|i| {
+                if let ModuleBodyItem::Inst(inst) = i {
+                    Some(inst)
+                } else {
+                    None
+                }
+            })
             .collect();
 
         // Bus-typed wires in this module — needed by expand_bus_connections so
@@ -5436,36 +6708,49 @@ impl<'a> SimCodegen<'a> {
         // `wire w: Vec<BusName, N>;`. expand_bus_connections needs to see
         // BOTH cases so that `child_port -> w` and `child_port -> w[i]`
         // both lower correctly.
-        let bus_wire_names: HashSet<String> = m.body.iter()
-            .filter_map(|i| if let ModuleBodyItem::WireDecl(w) = i {
-                let bus_named = match &w.ty {
-                    TypeExpr::Named(id) => Some(&id.name),
-                    TypeExpr::Vec(elem, _) => {
-                        if let TypeExpr::Named(id) = elem.as_ref() { Some(&id.name) } else { None }
-                    }
-                    _ => None,
-                };
-                if let Some(bn) = bus_named {
-                    if matches!(self.symbols.globals.get(bn),
-                                Some((crate::resolve::Symbol::Bus(_), _))) {
-                        // Record Vec-of-bus wire counts for the for-loop
-                        // static-unroll path.
-                        if let TypeExpr::Vec(_, size_expr) = &w.ty {
-                            let n = eval_const_expr_with_params(size_expr, &m.params) as u32;
-                            if n > 0 {
-                                vec_of_bus_wire_count_map.insert(w.name.name.clone(), n);
+        let bus_wire_names: HashSet<String> = m
+            .body
+            .iter()
+            .filter_map(|i| {
+                if let ModuleBodyItem::WireDecl(w) = i {
+                    let bus_named = match &w.ty {
+                        TypeExpr::Named(id) => Some(&id.name),
+                        TypeExpr::Vec(elem, _) => {
+                            if let TypeExpr::Named(id) = elem.as_ref() {
+                                Some(&id.name)
+                            } else {
+                                None
                             }
                         }
-                        return Some(w.name.name.clone());
+                        _ => None,
+                    };
+                    if let Some(bn) = bus_named {
+                        if matches!(
+                            self.symbols.globals.get(bn),
+                            Some((crate::resolve::Symbol::Bus(_), _))
+                        ) {
+                            // Record Vec-of-bus wire counts for the for-loop
+                            // static-unroll path.
+                            if let TypeExpr::Vec(_, size_expr) = &w.ty {
+                                let n = eval_const_expr_with_params(size_expr, &m.params) as u32;
+                                if n > 0 {
+                                    vec_of_bus_wire_count_map.insert(w.name.name.clone(), n);
+                                }
+                            }
+                            return Some(w.name.name.clone());
+                        }
                     }
+                    None
+                } else {
+                    None
                 }
-                None
-            } else { None })
+            })
             .collect();
 
         // Pre-expand bus connections: whole-bus connections like `axi_rd -> m_axi_mm2s`
         // are expanded to per-signal connections using the bus definition.
-        let expanded_conns: Vec<Vec<Connection>> = insts.iter()
+        let expanded_conns: Vec<Vec<Connection>> = insts
+            .iter()
             .map(|inst| expand_bus_connections(inst, m, self.source, self.symbols, &bus_wire_names))
             .collect();
 
@@ -5495,18 +6780,27 @@ impl<'a> SimCodegen<'a> {
                 }
             }
             for port in self.lookup_inst_ports(&inst.module_name.name) {
-                let Some(bi) = port.bus_info.as_ref() else { continue; };
+                let Some(bi) = port.bus_info.as_ref() else {
+                    continue;
+                };
                 let Some((crate::resolve::Symbol::Bus(info), _)) =
-                    self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+                    self.symbols.globals.get(&bi.bus_name.name)
+                else {
+                    continue;
+                };
                 let prefixes: Vec<String> = match bi.count.as_ref() {
                     None => vec![port.name.name.clone()],
                     Some(count_expr) => {
                         let n = eval_const_expr_with_params(count_expr, &sub_params);
-                        (0..n).map(|i| format!("{}_{}", port.name.name, i)).collect()
+                        (0..n)
+                            .map(|i| format!("{}_{}", port.name.name, i))
+                            .collect()
                     }
                 };
                 let mut pm = info.default_param_map();
-                for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
+                for pa in &bi.params {
+                    pm.insert(pa.name.name.clone(), &pa.value);
+                }
                 for (sname, _, _) in info.effective_signals(&pm) {
                     for prefix in &prefixes {
                         bus_flat_port_names.insert(format!("{}_{}", prefix, sname));
@@ -5526,24 +6820,43 @@ impl<'a> SimCodegen<'a> {
         // private member emission picks the right C++ type (e.g. uint64_t
         // for a 64-bit `send_data` instead of the uint32_t fallback).
         for inst in insts.iter() {
-            for p in &m.ports { let _ = p; }  // placate borrow-check noise
+            for p in &m.ports {
+                let _ = p;
+            } // placate borrow-check noise
             for sub_port in self.lookup_inst_ports(&inst.module_name.name) {
-                let Some(bi) = &sub_port.bus_info else { continue; };
+                let Some(bi) = &sub_port.bus_info else {
+                    continue;
+                };
                 let Some((crate::resolve::Symbol::Bus(info), _)) =
-                    self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+                    self.symbols.globals.get(&bi.bus_name.name)
+                else {
+                    continue;
+                };
                 // Find the parent-side connection name for this bus port.
-                let parent_name = inst.connections.iter()
+                let parent_name = inst
+                    .connections
+                    .iter()
                     .find(|c| c.port_name.name == sub_port.name.name)
-                    .and_then(|c| if let ExprKind::Ident(n) = &c.signal.kind {
-                        Some(n.clone())
-                    } else { None });
-                let Some(parent_name) = parent_name else { continue; };
+                    .and_then(|c| {
+                        if let ExprKind::Ident(n) = &c.signal.kind {
+                            Some(n.clone())
+                        } else {
+                            None
+                        }
+                    });
+                let Some(parent_name) = parent_name else {
+                    continue;
+                };
                 let mut pm = info.default_param_map();
-                for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
+                for pa in &bi.params {
+                    pm.insert(pa.name.name.clone(), &pa.value);
+                }
                 for (sname, _sdir, ty) in info.effective_signals(&pm) {
                     let subst_ty = subst_type_expr_sim(&ty, &pm);
                     let bits = type_bits_te_with_params(&subst_ty, &m.params);
-                    widths.entry(format!("{parent_name}_{sname}")).or_insert(bits);
+                    widths
+                        .entry(format!("{parent_name}_{sname}"))
+                        .or_insert(bits);
                     if type_is_signed_scalar(&subst_ty) {
                         signed_names.insert(format!("{parent_name}_{sname}"));
                     }
@@ -5564,13 +6877,24 @@ impl<'a> SimCodegen<'a> {
             }
             let sub_ports = self.lookup_inst_ports(&inst.module_name.name);
             for conn in &expanded_conns[inst_idx] {
-                if conn.direction != ConnectDir::Output { continue; }
-                let ExprKind::Ident(sig_name) = &conn.signal.kind else { continue; };
-                let Some(port) = sub_ports.iter().find(|p| p.name.name == conn.port_name.name) else { continue; };
+                if conn.direction != ConnectDir::Output {
+                    continue;
+                }
+                let ExprKind::Ident(sig_name) = &conn.signal.kind else {
+                    continue;
+                };
+                let Some(port) = sub_ports
+                    .iter()
+                    .find(|p| p.name.name == conn.port_name.name)
+                else {
+                    continue;
+                };
                 if type_is_signed_scalar(&port.ty) {
                     signed_names.insert(sig_name.clone());
                 }
-                widths.entry(sig_name.clone()).or_insert(type_bits_te_with_params(&port.ty, &sub_params));
+                widths
+                    .entry(sig_name.clone())
+                    .or_insert(type_bits_te_with_params(&port.ty, &sub_params));
             }
         }
 
@@ -5578,7 +6902,7 @@ impl<'a> SimCodegen<'a> {
         // When a sub-instance has a Vec output port and the parent connects it to a scalar
         // wire (e.g. thread lowering creates `thread_complete -> thread_complete`), we need
         // to emit flat fields and element-by-element copies instead of scalar assignments.
-        let mut inst_vec_out: HashMap<String, (String, u64)> = HashMap::new();  // sig → (elem_ty, count)
+        let mut inst_vec_out: HashMap<String, (String, u64)> = HashMap::new(); // sig → (elem_ty, count)
         for (inst_idx, inst) in insts.iter().enumerate() {
             let sub_ports = self.lookup_inst_ports(&inst.module_name.name);
             // Build the effective param map for this instance: start with
@@ -5597,8 +6921,13 @@ impl<'a> SimCodegen<'a> {
                 if conn.direction == ConnectDir::Output {
                     if let ExprKind::Ident(sig_name) = &conn.signal.kind {
                         // Check if the port on the sub-instance is a Vec type
-                        if let Some(port) = sub_ports.iter().find(|p| p.name.name == conn.port_name.name) {
-                            if let Some((elem_ty, count_str)) = vec_array_info_with_params(&port.ty, &sub_params) {
+                        if let Some(port) = sub_ports
+                            .iter()
+                            .find(|p| p.name.name == conn.port_name.name)
+                        {
+                            if let Some((elem_ty, count_str)) =
+                                vec_array_info_with_params(&port.ty, &sub_params)
+                            {
                                 let count: u64 = count_str.parse().unwrap_or(0);
                                 if count > 0 {
                                     inst_vec_out.insert(sig_name.clone(), (elem_ty, count));
@@ -5617,8 +6946,14 @@ impl<'a> SimCodegen<'a> {
             vec_reg_names.insert(name.clone());
             // Infer element width from C++ type
             let elem_bits = match elem_ty.as_str() {
-                "uint8_t" => 8, "uint16_t" => 16, "uint32_t" => 32, "uint64_t" => 64,
-                "int8_t" => 8, "int16_t" => 16, "int32_t" => 32, "int64_t" => 64,
+                "uint8_t" => 8,
+                "uint16_t" => 16,
+                "uint32_t" => 32,
+                "uint64_t" => 64,
+                "int8_t" => 8,
+                "int16_t" => 16,
+                "int32_t" => 32,
+                "int64_t" => 64,
                 _ => 32,
             };
             widths.insert(name.clone(), elem_bits * (*count as u32));
@@ -5651,7 +6986,10 @@ impl<'a> SimCodegen<'a> {
         let has_functions = self.source.items.iter().any(|i| match i {
             Item::Function(_) => true,
             Item::Package(p) => !p.functions.is_empty(),
-            Item::Module(mm) => mm.body.iter().any(|b| matches!(b, ModuleBodyItem::Function(_))),
+            Item::Module(mm) => mm
+                .body
+                .iter()
+                .any(|b| matches!(b, ModuleBodyItem::Function(_))),
             _ => false,
         });
 
@@ -5669,11 +7007,18 @@ impl<'a> SimCodegen<'a> {
                 _ => false,
             }
         }
-        let has_structs = m.body.iter().any(|i| matches!(i, ModuleBodyItem::RegDecl(r) if ty_references_named(&r.ty)))
-            || m.body.iter().any(|i| matches!(i, ModuleBodyItem::WireDecl(w) if ty_references_named(&w.ty)))
+        let has_structs = m
+            .body
+            .iter()
+            .any(|i| matches!(i, ModuleBodyItem::RegDecl(r) if ty_references_named(&r.ty)))
+            || m.body
+                .iter()
+                .any(|i| matches!(i, ModuleBodyItem::WireDecl(w) if ty_references_named(&w.ty)))
             || m.ports.iter().any(|p| ty_references_named(&p.ty));
         let mut h = String::new();
-        h.push_str(&format!("#pragma once\n#include <cstdint>\n#include <cstdio>\n#include \"verilated.h\"\n"));
+        h.push_str(&format!(
+            "#pragma once\n#include <cstdint>\n#include <cstdio>\n#include \"verilated.h\"\n"
+        ));
         if has_structs {
             h.push_str("#include \"VStructs.h\"\n");
         }
@@ -5690,14 +7035,22 @@ impl<'a> SimCodegen<'a> {
                 ParamKind::Const | ParamKind::WidthConst(..) | ParamKind::Logic(_) => {
                     if let Some(ref def) = p.default {
                         let val = eval_const_expr_with_params(def, &m.params);
-                        h.push_str(&format!("#ifndef {}\n#define {} {val}ULL\n#endif\n", p.name.name, p.name.name));
+                        h.push_str(&format!(
+                            "#ifndef {}\n#define {} {val}ULL\n#endif\n",
+                            p.name.name, p.name.name
+                        ));
                     }
                 }
                 ParamKind::EnumConst(enum_name) => {
                     if let Some(ref def) = p.default {
                         if let ExprKind::EnumVariant(_, variant) = &def.kind {
-                            if let Some(val) = resolve_enum_variant(&enum_map, enum_name, &variant.name) {
-                                h.push_str(&format!("#ifndef {}\n#define {} {val}ULL\n#endif\n", p.name.name, p.name.name));
+                            if let Some(val) =
+                                resolve_enum_variant(&enum_map, enum_name, &variant.name)
+                            {
+                                h.push_str(&format!(
+                                    "#ifndef {}\n#define {} {val}ULL\n#endif\n",
+                                    p.name.name, p.name.name
+                                ));
                             }
                         }
                     }
@@ -5718,13 +7071,25 @@ impl<'a> SimCodegen<'a> {
         let d2_arrays: Vec<(String, String, String, u64)> = {
             let mut out: Vec<(String, String, String, u64)> = Vec::new();
             for p in &m.ports {
-                let Some(bi) = p.bus_info.as_ref() else { continue; };
-                let Some(count_expr) = bi.count.as_ref() else { continue; };
+                let Some(bi) = p.bus_info.as_ref() else {
+                    continue;
+                };
+                let Some(count_expr) = bi.count.as_ref() else {
+                    continue;
+                };
                 let n = eval_const_expr_with_params(count_expr, &m.params) as u64;
-                if n == 0 { continue; }
+                if n == 0 {
+                    continue;
+                }
                 let bus_name = &bi.bus_name.name;
-                let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) else { continue; };
-                let mut param_map: HashMap<String, &Expr> = info.params.iter()
+                let Some((crate::resolve::Symbol::Bus(info), _)) =
+                    self.symbols.globals.get(bus_name)
+                else {
+                    continue;
+                };
+                let mut param_map: HashMap<String, &Expr> = info
+                    .params
+                    .iter()
                     .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
                     .collect();
                 for pa in &bi.params {
@@ -5739,15 +7104,20 @@ impl<'a> SimCodegen<'a> {
             }
             out
         };
-        let d2_alias_names: HashSet<String> = d2_arrays.iter().flat_map(|(port, sname, _, n)| {
-            (0..*n).map(move |i| format!("{}_{}_{}", port, i, sname))
-        }).collect();
+        let d2_alias_names: HashSet<String> = d2_arrays
+            .iter()
+            .flat_map(|(port, sname, _, n)| {
+                (0..*n).map(move |i| format!("{}_{}_{}", port, i, sname))
+            })
+            .collect();
 
         // Public port fields. Vec ports preserve the source-level array as
         // `name[N]` and keep the historical flat lane names (`name_0`, ...)
         // as references into that array for backwards-compatible C++/HARC TBs.
         for p in &m.ports {
-            if p.bus_info.is_some() { continue; }
+            if p.bus_info.is_some() {
+                continue;
+            }
             if let Some(vi) = vec_port_infos.iter().find(|v| v.name == p.name.name) {
                 h.push_str(&format!("  {} {}[{}];\n", vi.elem_ty, vi.name, vi.count));
                 for i in 0..vi.count {
@@ -5766,9 +7136,13 @@ impl<'a> SimCodegen<'a> {
             }
         }
         for (flat_name, flat_ty) in &bus_flat {
-            if bus_flat_vec_names.contains(flat_name) { continue; }
+            if bus_flat_vec_names.contains(flat_name) {
+                continue;
+            }
             // Skip flat names already emitted as D2 aliases.
-            if d2_alias_names.contains(flat_name) { continue; }
+            if d2_alias_names.contains(flat_name) {
+                continue;
+            }
             let ty = cpp_port_type_with_params(flat_ty, &m.params);
             h.push_str(&format!("  {ty} {flat_name};\n"));
         }
@@ -5784,9 +7158,14 @@ impl<'a> SimCodegen<'a> {
 
         // Constructor — build init list. Struct-typed ports get the default
         // ctor (`name()`); scalar ports get `name(0)`.
-        let mut port_inits: Vec<String> = m.ports.iter()
-            .filter(|p| p.bus_info.is_none() && !wide_names.contains(&p.name.name)
-                        && !vec_port_names.contains(&p.name.name))
+        let mut port_inits: Vec<String> = m
+            .ports
+            .iter()
+            .filter(|p| {
+                p.bus_info.is_none()
+                    && !wide_names.contains(&p.name.name)
+                    && !vec_port_names.contains(&p.name.name)
+            })
             .map(|p| {
                 if matches!(p.ty, TypeExpr::Named(_)) {
                     format!("{}()", p.name.name)
@@ -5809,21 +7188,31 @@ impl<'a> SimCodegen<'a> {
         }
         // Add flattened bus signal inits — skip names that are now D2 aliases.
         for (flat_name, _) in &bus_flat {
-            if bus_flat_vec_names.contains(flat_name) { continue; }
-            if d2_alias_names.contains(flat_name) { continue; }
+            if bus_flat_vec_names.contains(flat_name) {
+                continue;
+            }
+            if d2_alias_names.contains(flat_name) {
+                continue;
+            }
             if !wide_names.contains(flat_name) {
                 port_inits.push(format!("{flat_name}(0)"));
             }
         }
         // Collect Vec-array regs that need memset in constructor body
-        let mut vec_reg_inits: Vec<String> = m.body.iter()
+        let mut vec_reg_inits: Vec<String> = m
+            .body
+            .iter()
             .filter_map(|i| {
                 if let ModuleBodyItem::RegDecl(r) = i {
                     if vec_array_info_with_params(&r.ty, &m.params).is_some() {
                         let n = &r.name.name;
                         Some(format!("    memset(_{n}, 0, sizeof(_{n}));"))
-                    } else { None }
-                } else { None }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
             })
             .collect();
         // Add memset for Vec port internal arrays
@@ -5836,47 +7225,71 @@ impl<'a> SimCodegen<'a> {
         // references alias into the array, so zeroing the array also
         // zeros the aliases (no separate init needed).
         for (port, sname, _cpp_ty, _n) in &d2_arrays {
-            vec_reg_inits.push(format!("    memset({port}_{sname}, 0, sizeof({port}_{sname}));"));
+            vec_reg_inits.push(format!(
+                "    memset({port}_{sname}, 0, sizeof({port}_{sname}));"
+            ));
         }
 
-        let reg_inits: Vec<String> = m.body.iter()
-            .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i {
-                if vec_array_info_with_params(&r.ty, &m.params).is_some() {
-                    None  // handled via memset in constructor body
-                } else if matches!(r.ty, TypeExpr::Named(_)) {
-                    Some(format!("_{}()", r.name.name))  // struct default constructor
-                } else if wide_names.contains(&r.name.name) {
-                    Some(format!("_{}()", r.name.name))  // VlWide or _arch_u128 zero-inits
-                } else {
-                    let init_val = if let Some(ref init_expr) = r.init {
-                        match &init_expr.kind {
-                            ExprKind::Literal(LitKind::Dec(v)) => v.to_string(),
-                            ExprKind::Literal(LitKind::Hex(v)) => format!("0x{:X}", v),
-                            ExprKind::Literal(LitKind::Bin(v)) => v.to_string(),
-                            ExprKind::Literal(LitKind::Sized(_, v)) => v.to_string(),
-                            ExprKind::Bool(b) => if *b { "1".to_string() } else { "0".to_string() },
-                            _ => "0".to_string(),
-                        }
+        let reg_inits: Vec<String> = m
+            .body
+            .iter()
+            .filter_map(|i| {
+                if let ModuleBodyItem::RegDecl(r) = i {
+                    if vec_array_info_with_params(&r.ty, &m.params).is_some() {
+                        None // handled via memset in constructor body
+                    } else if matches!(r.ty, TypeExpr::Named(_)) {
+                        Some(format!("_{}()", r.name.name)) // struct default constructor
+                    } else if wide_names.contains(&r.name.name) {
+                        Some(format!("_{}()", r.name.name)) // VlWide or _arch_u128 zero-inits
                     } else {
-                        "0".to_string()
-                    };
-                    Some(format!("_{}({})", r.name.name, init_val))
+                        let init_val = if let Some(ref init_expr) = r.init {
+                            match &init_expr.kind {
+                                ExprKind::Literal(LitKind::Dec(v)) => v.to_string(),
+                                ExprKind::Literal(LitKind::Hex(v)) => format!("0x{:X}", v),
+                                ExprKind::Literal(LitKind::Bin(v)) => v.to_string(),
+                                ExprKind::Literal(LitKind::Sized(_, v)) => v.to_string(),
+                                ExprKind::Bool(b) => {
+                                    if *b {
+                                        "1".to_string()
+                                    } else {
+                                        "0".to_string()
+                                    }
+                                }
+                                _ => "0".to_string(),
+                            }
+                        } else {
+                            "0".to_string()
+                        };
+                        Some(format!("_{}({})", r.name.name, init_val))
+                    }
+                } else {
+                    None
                 }
-            } else { None })
+            })
             .collect();
         // port reg shadow inits (skip Vec port-regs — they use memset in ctor body)
-        let port_reg_inits: Vec<String> = m.ports.iter()
+        let port_reg_inits: Vec<String> = m
+            .ports
+            .iter()
             .filter_map(|p| {
                 let ri = p.reg_info.as_ref()?;
                 // Vec port-regs are C arrays — can't use (0) in init list
-                if vec_array_info_with_params(&p.ty, &m.params).is_some() { return None; }
+                if vec_array_info_with_params(&p.ty, &m.params).is_some() {
+                    return None;
+                }
                 let init_val = if let Some(ref init_expr) = ri.init {
                     match &init_expr.kind {
                         ExprKind::Literal(LitKind::Dec(v)) => v.to_string(),
                         ExprKind::Literal(LitKind::Hex(v)) => format!("0x{:X}", v),
                         ExprKind::Literal(LitKind::Bin(v)) => v.to_string(),
                         ExprKind::Literal(LitKind::Sized(_, v)) => v.to_string(),
-                        ExprKind::Bool(b) => if *b { "1".to_string() } else { "0".to_string() },
+                        ExprKind::Bool(b) => {
+                            if *b {
+                                "1".to_string()
+                            } else {
+                                "0".to_string()
+                            }
+                        }
                         _ => "0".to_string(),
                     }
                 } else {
@@ -5886,55 +7299,97 @@ impl<'a> SimCodegen<'a> {
             })
             .collect();
         // pipe_reg inits
-        let pipe_reg_inits: Vec<String> = m.body.iter()
-            .filter_map(|i| if let ModuleBodyItem::PipeRegDecl(p) = i {
-                let mut inits = Vec::new();
-                for i in 0..p.stages {
-                    let name = if i == p.stages - 1 {
-                        p.name.name.clone()
-                    } else {
-                        format!("{}_stg{}", p.name.name, i + 1)
-                    };
-                    inits.push(format!("_{}(0)", name));
+        let pipe_reg_inits: Vec<String> = m
+            .body
+            .iter()
+            .filter_map(|i| {
+                if let ModuleBodyItem::PipeRegDecl(p) = i {
+                    let mut inits = Vec::new();
+                    for i in 0..p.stages {
+                        let name = if i == p.stages - 1 {
+                            p.name.name.clone()
+                        } else {
+                            format!("{}_stg{}", p.name.name, i + 1)
+                        };
+                        inits.push(format!("_{}(0)", name));
+                    }
+                    Some(inits)
+                } else {
+                    None
                 }
-                Some(inits)
-            } else { None })
+            })
             .flatten()
             .collect();
         // Collect all clock ports with domain frequency info (multi-domain support)
-        let clk_ports: Vec<String> = m.ports.iter()
+        let clk_ports: Vec<String> = m
+            .ports
+            .iter()
             .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone())
             .collect();
         // Map clock port name → freq_mhz (if domain has it)
-        let clk_freqs: Vec<(String, Option<u64>)> = m.ports.iter()
-            .filter_map(|p| if let TypeExpr::Clock(domain) = &p.ty {
-                let freq = self.symbols.globals.get(&domain.name)
-                    .and_then(|(_sym, _span)| if let crate::resolve::Symbol::Domain(info) = _sym { info.freq_mhz } else { None });
-                Some((p.name.name.clone(), freq))
-            } else { None })
+        let clk_freqs: Vec<(String, Option<u64>)> = m
+            .ports
+            .iter()
+            .filter_map(|p| {
+                if let TypeExpr::Clock(domain) = &p.ty {
+                    let freq = self
+                        .symbols
+                        .globals
+                        .get(&domain.name)
+                        .and_then(|(_sym, _span)| {
+                            if let crate::resolve::Symbol::Domain(info) = _sym {
+                                info.freq_mhz
+                            } else {
+                                None
+                            }
+                        });
+                    Some((p.name.name.clone(), freq))
+                } else {
+                    None
+                }
+            })
             .collect();
         // Collect internal clock wires: clocks referenced in `seq on X rising` that are
         // not port-level clocks (i.e. derived from inst outputs, like a clock divider).
         let internal_clks: Vec<String> = {
-            let clk_set: std::collections::HashSet<&str> = clk_ports.iter().map(|s| s.as_str()).collect();
+            let clk_set: std::collections::HashSet<&str> =
+                clk_ports.iter().map(|s| s.as_str()).collect();
             let mut seen = std::collections::HashSet::new();
-            m.body.iter()
-                .filter_map(|i| if let ModuleBodyItem::RegBlock(rb) = i { Some(rb) } else { None })
+            m.body
+                .iter()
+                .filter_map(|i| {
+                    if let ModuleBodyItem::RegBlock(rb) = i {
+                        Some(rb)
+                    } else {
+                        None
+                    }
+                })
                 .filter(|rb| !clk_set.contains(rb.clock.name.as_str()))
                 .filter(|rb| seen.insert(rb.clock.name.clone()))
                 .map(|rb| rb.clock.name.clone())
                 .collect()
         };
         // all_clks = port clocks + internal derived clocks
-        let all_clks: Vec<String> = clk_ports.iter().chain(internal_clks.iter()).cloned().collect();
+        let all_clks: Vec<String> = clk_ports
+            .iter()
+            .chain(internal_clks.iter())
+            .cloned()
+            .collect();
         let has_clk = !all_clks.is_empty();
-        let clk_prev_inits: Vec<String> = all_clks.iter()
+        let clk_prev_inits: Vec<String> = all_clks
+            .iter()
             .map(|c| format!("_clk_prev_{}(0)", c))
             .collect();
-        let all_freqs_known_early = clk_freqs.len() >= 2 && clk_freqs.iter().all(|(_, f)| f.is_some());
-        let time_init = if all_freqs_known_early { vec!["time_ps(0)".to_string()] } else { vec![] };
-        let all_inits: Vec<String> = port_inits.into_iter()
+        let all_freqs_known_early =
+            clk_freqs.len() >= 2 && clk_freqs.iter().all(|(_, f)| f.is_some());
+        let time_init = if all_freqs_known_early {
+            vec!["time_ps(0)".to_string()]
+        } else {
+            vec![]
+        };
+        let all_inits: Vec<String> = port_inits
+            .into_iter()
             .chain(reg_inits)
             .chain(port_reg_inits)
             .chain(pipe_reg_inits)
@@ -5950,18 +7405,33 @@ impl<'a> SimCodegen<'a> {
         let cc_sites = crate::sim_credit_channel::collect_credit_channels(m, self.symbols);
         // Constructor always has a body (for auto-trace open)
         h.push_str(&format!("  {class}() : {} {{\n", all_inits.join(", ")));
-        for line in &vec_reg_inits { h.push_str(&format!("{line}\n")); }
+        for line in &vec_reg_inits {
+            h.push_str(&format!("{line}\n"));
+        }
         // Zero-init credit_channel synthesized fields (DEPTH for the counter).
         crate::sim_credit_channel::emit_constructor_inits(&cc_sites, &mut h);
         for path in &log_files_for_ctor {
-            h.push_str(&format!("    {} = fopen(\"{}\", \"w\");\n", log_fd_name(path), path));
+            h.push_str(&format!(
+                "    {} = fopen(\"{}\", \"w\");\n",
+                log_fd_name(path),
+                path
+            ));
         }
         // Note: VCD auto-open is deferred to first eval() call via Verilated::claimTrace()
         h.push_str("  }\n");
         // Verilator-compatible constructor: accepts VerilatedContext* but ignores it
-        h.push_str(&format!("  explicit {class}(VerilatedContext*) : {class}() {{}}\n"));
+        h.push_str(&format!(
+            "  explicit {class}(VerilatedContext*) : {class}() {{}}\n"
+        ));
         // Collect trace signals for VCD waveform support
-        let trace_signals = collect_trace_signals(&m.ports, &m.body, &wide_names, &widths, &bus_flat, &m.params);
+        let trace_signals = collect_trace_signals(
+            &m.ports,
+            &m.body,
+            &wide_names,
+            &widths,
+            &bus_flat,
+            &m.params,
+        );
         let (trace_h_decls, trace_cpp_impl) = emit_trace_methods(&class, name, &trace_signals);
 
         h.push_str("  void eval();\n");
@@ -5974,14 +7444,19 @@ impl<'a> SimCodegen<'a> {
         // Generate tick() for multi-clock modules with known frequencies
         let all_freqs_known = clk_freqs.len() >= 2 && clk_freqs.iter().all(|(_, f)| f.is_some());
         if all_freqs_known {
-            h.push_str("  void tick();  // advance one time step, auto-toggle clocks at correct ratio\n");
+            h.push_str(
+                "  void tick();  // advance one time step, auto-toggle clocks at correct ratio\n",
+            );
             h.push_str("  uint64_t time_ps;  // current simulation time in picoseconds\n");
         }
         // final(): close trace + log file handles
         h.push_str("  void final() {\n");
         h.push_str("    trace_close();\n");
         for path in &log_files_for_ctor {
-            h.push_str(&format!("    if ({fd}) fclose({fd});\n", fd = log_fd_name(path)));
+            h.push_str(&format!(
+                "    if ({fd}) fclose({fd});\n",
+                fd = log_fd_name(path)
+            ));
         }
         h.push_str("  }\n\n");
         // All members public for pybind11/testbench signal inspection
@@ -6000,16 +7475,30 @@ impl<'a> SimCodegen<'a> {
             for (inst_idx, inst) in insts.iter().enumerate() {
                 let conns = &expanded_conns[inst_idx];
                 for conn in conns {
-                    if conn.direction != ConnectDir::Output { continue; }
-                    let sig_name = if let crate::ast::ExprKind::Ident(n) = &conn.signal.kind { n.as_str() } else { continue; };
+                    if conn.direction != ConnectDir::Output {
+                        continue;
+                    }
+                    let sig_name = if let crate::ast::ExprKind::Ident(n) = &conn.signal.kind {
+                        n.as_str()
+                    } else {
+                        continue;
+                    };
                     let w = widths.get(sig_name).copied().unwrap_or(0);
-                    if w == 0 || w > 64 { continue; }
-                    if wide_names.contains(sig_name) { continue; }
-                    if vec_port_names.contains(sig_name) { continue; }
+                    if w == 0 || w > 64 {
+                        continue;
+                    }
+                    if wide_names.contains(sig_name) {
+                        continue;
+                    }
+                    if vec_port_names.contains(sig_name) {
+                        continue;
+                    }
                     // Skip Vec regs/wires (they connect to flattened
                     // sub-instance port names like `name_0..name_{n-1}`,
                     // not the bare `name`). Phase 6 v1 = scalars only.
-                    if vec_wire_counts.contains_key(sig_name) { continue; }
+                    if vec_wire_counts.contains_key(sig_name) {
+                        continue;
+                    }
                     h.push_str(&format!(
                         "  uint64_t _prev_{}_{} = 0;\n",
                         inst.name.name, conn.port_name.name
@@ -6044,7 +7533,10 @@ impl<'a> SimCodegen<'a> {
                 }
             } else if vec_port_names.contains(&p.name.name) {
                 // Vec non-reg port: also needs internal array for indexed access
-                let vi = vec_port_infos.iter().find(|v| v.name == p.name.name).unwrap();
+                let vi = vec_port_infos
+                    .iter()
+                    .find(|v| v.name == p.name.name)
+                    .unwrap();
                 h.push_str(&format!("  {} _{}[{}];\n", vi.elem_ty, vi.name, vi.count));
             }
         }
@@ -6078,11 +7570,15 @@ impl<'a> SimCodegen<'a> {
 
         // --inputs-start-uninit: inline setters mark an input as initialized when TB drives it.
         if !uninit_inputs.is_empty() {
-            h.push_str("  // --inputs-start-uninit setters (mark TB-driven inputs as initialized)\n");
+            h.push_str(
+                "  // --inputs-start-uninit setters (mark TB-driven inputs as initialized)\n",
+            );
             for p in &m.ports {
                 // Scalar non-bus input.
                 if p.bus_info.is_none() {
-                    if !uninit_inputs.contains(&p.name.name) { continue; }
+                    if !uninit_inputs.contains(&p.name.name) {
+                        continue;
+                    }
                     let pname = &p.name.name;
                     let ty = cpp_port_type_with_params(&p.ty, &m.params);
                     h.push_str(&format!(
@@ -6091,14 +7587,19 @@ impl<'a> SimCodegen<'a> {
                     continue;
                 }
                 // Bus port: emit one setter per flattened In signal.
-                let Some(ref bi) = p.bus_info else { continue; };
+                let Some(ref bi) = p.bus_info else {
+                    continue;
+                };
                 let Some(crate::resolve::Symbol::Bus(info)) =
                     self.symbols.globals.get(&bi.bus_name.name).map(|(s, _)| s)
-                    else { continue; };
-                let mut param_map: std::collections::HashMap<String, &Expr> =
-                    info.params.iter()
-                        .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
-                        .collect();
+                else {
+                    continue;
+                };
+                let mut param_map: std::collections::HashMap<String, &Expr> = info
+                    .params
+                    .iter()
+                    .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
+                    .collect();
                 for pa in &bi.params {
                     param_map.insert(pa.name.name.clone(), &pa.value);
                 }
@@ -6107,12 +7608,16 @@ impl<'a> SimCodegen<'a> {
                         crate::ast::BusPerspective::Initiator => sdir,
                         crate::ast::BusPerspective::Target => sdir.flip(),
                     };
-                    if !matches!(actual_dir, Direction::In) { continue; }
+                    if !matches!(actual_dir, Direction::In) {
+                        continue;
+                    }
                     if matches!(&sty, TypeExpr::Clock(_) | TypeExpr::Reset(_, _)) {
                         continue;
                     }
                     let flat = format!("{}_{}", p.name.name, sname);
-                    if !uninit_inputs.contains(&flat) { continue; }
+                    if !uninit_inputs.contains(&flat) {
+                        continue;
+                    }
                     let subst_ty = subst_type_expr_sim(&sty, &param_map);
                     let ty = cpp_port_type_with_params(&subst_ty, &m.params);
                     h.push_str(&format!(
@@ -6131,7 +7636,8 @@ impl<'a> SimCodegen<'a> {
                     if !l.destructure_fields.is_empty() {
                         let sname = self.infer_rhs_struct_name(&l.value, &m.ports, &m.body);
                         for bind in &l.destructure_fields {
-                            let ty = sname.as_ref()
+                            let ty = sname
+                                .as_ref()
                                 .and_then(|n| self.lookup_struct_field_ty(n, &bind.name))
                                 .map(|t| cpp_internal_type_with_params(&t, &m.params))
                                 .unwrap_or_else(|| "uint32_t".to_string());
@@ -6140,9 +7646,13 @@ impl<'a> SimCodegen<'a> {
                         continue;
                     }
                     // ty=None: assignment to existing port/wire — no new field needed
-                    if l.ty.is_none() { continue; }
-                    let ty = l.ty.as_ref().map(|t| cpp_internal_type_with_params(t, &m.params))
-                        .unwrap_or_else(|| "uint32_t".to_string());
+                    if l.ty.is_none() {
+                        continue;
+                    }
+                    let ty =
+                        l.ty.as_ref()
+                            .map(|t| cpp_internal_type_with_params(t, &m.params))
+                            .unwrap_or_else(|| "uint32_t".to_string());
                     h.push_str(&format!("  {ty} _let_{};\n", l.name.name));
                 }
                 ModuleBodyItem::WireDecl(w) => {
@@ -6180,7 +7690,11 @@ impl<'a> SimCodegen<'a> {
         for item in &m.body {
             if let ModuleBodyItem::PipeRegDecl(p) = item {
                 let w = widths.get(&p.source.name).copied().unwrap_or(32);
-                let ty = if signed_names.contains(p.source.name.as_str()) { cpp_sint(w) } else { cpp_uint(w) };
+                let ty = if signed_names.contains(p.source.name.as_str()) {
+                    cpp_sint(w)
+                } else {
+                    cpp_uint(w)
+                };
                 for i in 0..p.stages {
                     let name = if i == p.stages - 1 {
                         p.name.name.clone()
@@ -6208,8 +7722,16 @@ impl<'a> SimCodegen<'a> {
                     // (implicit bus wires + flat bus signals propagate through
                     // `widths`). Default to uint32_t when the width isn't
                     // tracked — preserves prior behaviour for plain scalars.
-                    let ty = widths.get(sig_name).copied()
-                        .map(|w| if signed_names.contains(sig_name.as_str()) { cpp_sint(w) } else { cpp_uint(w) })
+                    let ty = widths
+                        .get(sig_name)
+                        .copied()
+                        .map(|w| {
+                            if signed_names.contains(sig_name.as_str()) {
+                                cpp_sint(w)
+                            } else {
+                                cpp_uint(w)
+                            }
+                        })
                         .unwrap_or("uint32_t");
                     h.push_str(&format!("  {ty} {sig_name};\n"));
                 }
@@ -6223,8 +7745,10 @@ impl<'a> SimCodegen<'a> {
         // Private fields for comb-block intermediate signals (not ports/regs/inst_out)
         let comb_targets = collect_comb_targets(&m.body);
         for sig_name in &comb_targets {
-            if !port_names.contains(sig_name) && !reg_names.contains(sig_name)
-                && !inst_out.contains(sig_name) && !let_names.contains(sig_name)
+            if !port_names.contains(sig_name)
+                && !reg_names.contains(sig_name)
+                && !inst_out.contains(sig_name)
+                && !let_names.contains(sig_name)
             {
                 h.push_str(&format!("  uint32_t {sig_name};\n"));
             }
@@ -6232,7 +7756,10 @@ impl<'a> SimCodegen<'a> {
 
         // Sub-instance private fields
         for inst in &insts {
-            h.push_str(&format!("  V{} _inst_{};\n", inst.module_name.name, inst.name.name));
+            h.push_str(&format!(
+                "  V{} _inst_{};\n",
+                inst.module_name.name, inst.name.name
+            ));
         }
 
         // Log file handles
@@ -6248,8 +7775,12 @@ impl<'a> SimCodegen<'a> {
         if emit_debug {
             h.push_str("  // --debug port shadow copies\n");
             for p in &m.ports {
-                if p.bus_info.is_some() { continue; }  // bus flat signals handled below
-                if matches!(&p.ty, TypeExpr::Clock(_)) { continue; }
+                if p.bus_info.is_some() {
+                    continue;
+                } // bus flat signals handled below
+                if matches!(&p.ty, TypeExpr::Clock(_)) {
+                    continue;
+                }
                 let pname = &p.name.name;
                 if let Some(vi) = vec_port_infos.iter().find(|v| v.name == *pname) {
                     // Vec port: one shadow per flat element
@@ -6269,7 +7800,9 @@ impl<'a> SimCodegen<'a> {
             }
             // Bus flat signal shadows
             for (flat_name, flat_ty) in &bus_flat {
-                if matches!(flat_ty, TypeExpr::Vec(..)) { continue; }
+                if matches!(flat_ty, TypeExpr::Vec(..)) {
+                    continue;
+                }
                 let bits = type_width_of(flat_ty);
                 if bits > 64 {
                     let words = wide_words(bits);
@@ -6315,13 +7848,24 @@ impl<'a> SimCodegen<'a> {
 
         // Helper closure: emit sub-instance input assignments + eval_comb + output reads
         // Returns (input_code, comb_call, output_read_code) per inst
-        let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
-                           &wide_names, &widths, &enum_map, &bus_port_names)
-                      .with_signed_names(&signed_names)
-                      .with_reset_levels(&reset_levels)
-                      .with_vec_names(&vec_reg_names).with_vec_2d_names(&vec_2d_names).with_vec_sizes(&vec_sizes)
-                      .with_let_values(&let_values)
-                      .with_params(&m.params);
+        let ctx = Ctx::new(
+            &reg_names,
+            &port_names,
+            &let_names,
+            &inst_names,
+            &wide_names,
+            &widths,
+            &enum_map,
+            &bus_port_names,
+        )
+        .with_signed_names(&signed_names)
+        .with_float_names(&float_names)
+        .with_reset_levels(&reset_levels)
+        .with_vec_names(&vec_reg_names)
+        .with_vec_2d_names(&vec_2d_names)
+        .with_vec_sizes(&vec_sizes)
+        .with_let_values(&let_values)
+        .with_params(&m.params);
 
         if insts.is_empty() {
             // No sub-instances: simple path
@@ -6374,11 +7918,17 @@ impl<'a> SimCodegen<'a> {
             let is_invariant = |conn: &crate::ast::Connection| -> bool {
                 if let crate::ast::ExprKind::Ident(name) = &conn.signal.kind {
                     // Parent ports: invariant within a cycle.
-                    if port_names.contains(name.as_str()) { return true; }
+                    if port_names.contains(name.as_str()) {
+                        return true;
+                    }
                     // Parent regs: stored value, only changes at posedge.
-                    if reg_names.contains(name.as_str()) { return true; }
+                    if reg_names.contains(name.as_str()) {
+                        return true;
+                    }
                     // Vec port elements: also invariant.
-                    if vec_port_names.contains(name.as_str()) { return true; }
+                    if vec_port_names.contains(name.as_str()) {
+                        return true;
+                    }
                 }
                 // Conservative: anything else (let, wire, expr) is variant.
                 false
@@ -6394,49 +7944,68 @@ impl<'a> SimCodegen<'a> {
                             if let Some(n) = ctx.expr_vec_size(&conn.signal) {
                                 let sig = cpp_expr(&conn.signal, &ctx);
                                 for i in 0..n {
-                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = {sig}[{i}];\n",
-                                        inst.name.name, conn.port_name.name));
+                                    cpp.push_str(&format!(
+                                        "  _inst_{}.{}_{i} = {sig}[{i}];\n",
+                                        inst.name.name, conn.port_name.name
+                                    ));
                                 }
                                 continue;
                             }
                         }
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
-                                let _vec_pfx = vec_storage_prefix(src_name.as_str(), &reg_names, &let_names, &inst_out);
+                                let _vec_pfx = vec_storage_prefix(
+                                    src_name.as_str(),
+                                    &reg_names,
+                                    &let_names,
+                                    &inst_out,
+                                );
                                 for i in 0..n {
-                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = {_vec_pfx}{src_name}[{i}];\n",
-                                        inst.name.name, conn.port_name.name));
+                                    cpp.push_str(&format!(
+                                        "  _inst_{}.{}_{i} = {_vec_pfx}{src_name}[{i}];\n",
+                                        inst.name.name, conn.port_name.name
+                                    ));
                                 }
                                 continue;
                             }
                             if vec_port_names.contains(src_name.as_str()) {
-                                let n = vec_port_infos.iter()
+                                let n = vec_port_infos
+                                    .iter()
                                     .find(|v| v.name == *src_name)
-                                    .map(|v| v.count).unwrap_or(0);
+                                    .map(|v| v.count)
+                                    .unwrap_or(0);
                                 for i in 0..n {
-                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = {src_name}_{i};\n",
-                                        inst.name.name, conn.port_name.name));
+                                    cpp.push_str(&format!(
+                                        "  _inst_{}.{}_{i} = {src_name}_{i};\n",
+                                        inst.name.name, conn.port_name.name
+                                    ));
                                 }
                                 continue;
                             }
                             if wide_names.contains(src_name.as_str()) {
                                 let resolved = ctx.resolve_name(src_name, false);
-                                cpp.push_str(&format!("  _inst_{}.{} = {};\n",
-                                    inst.name.name, conn.port_name.name, resolved));
+                                cpp.push_str(&format!(
+                                    "  _inst_{}.{} = {};\n",
+                                    inst.name.name, conn.port_name.name, resolved
+                                ));
                                 continue;
                             }
                         }
                         let sig = cpp_expr(&conn.signal, &ctx);
-                        cpp.push_str(&format!("  _inst_{}.{} = {};\n",
-                            inst.name.name, conn.port_name.name, sig));
+                        cpp.push_str(&format!(
+                            "  _inst_{}.{} = {};\n",
+                            inst.name.name, conn.port_name.name, sig
+                        ));
                     }
                 }
             }
 
-            cpp.push_str(&format!("  for (int _settle = 0; _settle < {settle_depth}; _settle++) {{\n"));
+            cpp.push_str(&format!(
+                "  for (int _settle = 0; _settle < {settle_depth}; _settle++) {{\n"
+            ));
             for &inst_idx in &inst_eval_order {
-            let inst = insts[inst_idx];
-            let conns = &expanded_conns[inst_idx];
+                let inst = insts[inst_idx];
+                let conns = &expanded_conns[inst_idx];
                 cpp.push('\n');
                 for conn in conns {
                     if conn.direction == ConnectDir::Input && !is_invariant(conn) {
@@ -6444,8 +8013,10 @@ impl<'a> SimCodegen<'a> {
                             if let Some(n) = ctx.expr_vec_size(&conn.signal) {
                                 let sig = cpp_expr(&conn.signal, &ctx);
                                 for i in 0..n {
-                                    cpp.push_str(&format!("    _inst_{}.{}_{i} = {sig}[{i}];\n",
-                                        inst.name.name, conn.port_name.name));
+                                    cpp.push_str(&format!(
+                                        "    _inst_{}.{}_{i} = {sig}[{i}];\n",
+                                        inst.name.name, conn.port_name.name
+                                    ));
                                 }
                                 continue;
                             }
@@ -6453,10 +8024,17 @@ impl<'a> SimCodegen<'a> {
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             // Vec wire/reg → inst Vec port: expand element-by-element
                             if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
-                                let _vec_pfx = vec_storage_prefix(src_name.as_str(), &reg_names, &let_names, &inst_out);
+                                let _vec_pfx = vec_storage_prefix(
+                                    src_name.as_str(),
+                                    &reg_names,
+                                    &let_names,
+                                    &inst_out,
+                                );
                                 for i in 0..n {
-                                    cpp.push_str(&format!("    _inst_{}.{}_{i} = {_vec_pfx}{src_name}[{i}];\n",
-                                        inst.name.name, conn.port_name.name));
+                                    cpp.push_str(&format!(
+                                        "    _inst_{}.{}_{i} = {_vec_pfx}{src_name}[{i}];\n",
+                                        inst.name.name, conn.port_name.name
+                                    ));
                                 }
                                 continue;
                             }
@@ -6464,25 +8042,33 @@ impl<'a> SimCodegen<'a> {
                             // parent's src is stored as flat fields
                             // `src_0..src_{n-1}`.
                             if vec_port_names.contains(src_name.as_str()) {
-                                let n = vec_port_infos.iter()
+                                let n = vec_port_infos
+                                    .iter()
                                     .find(|v| v.name == *src_name)
-                                    .map(|v| v.count).unwrap_or(0);
+                                    .map(|v| v.count)
+                                    .unwrap_or(0);
                                 for i in 0..n {
-                                    cpp.push_str(&format!("    _inst_{}.{}_{i} = {src_name}_{i};\n",
-                                        inst.name.name, conn.port_name.name));
+                                    cpp.push_str(&format!(
+                                        "    _inst_{}.{}_{i} = {src_name}_{i};\n",
+                                        inst.name.name, conn.port_name.name
+                                    ));
                                 }
                                 continue;
                             }
                             if wide_names.contains(src_name.as_str()) {
                                 let resolved = ctx.resolve_name(src_name, false);
-                                cpp.push_str(&format!("    _inst_{}.{} = {};\n",
-                                    inst.name.name, conn.port_name.name, resolved));
+                                cpp.push_str(&format!(
+                                    "    _inst_{}.{} = {};\n",
+                                    inst.name.name, conn.port_name.name, resolved
+                                ));
                                 continue;
                             }
                         }
                         let sig = cpp_expr(&conn.signal, &ctx);
-                        cpp.push_str(&format!("    _inst_{}.{} = {};\n",
-                            inst.name.name, conn.port_name.name, sig));
+                        cpp.push_str(&format!(
+                            "    _inst_{}.{} = {};\n",
+                            inst.name.name, conn.port_name.name, sig
+                        ));
                     }
                 }
                 cpp.push_str(&format!("    _inst_{}.eval_comb();\n", inst.name.name));
@@ -6492,8 +8078,10 @@ impl<'a> SimCodegen<'a> {
                             if let Some(n) = ctx.expr_vec_size(&conn.signal) {
                                 let sig = cpp_expr(&conn.signal, &ctx);
                                 for i in 0..n {
-                                    cpp.push_str(&format!("    {sig}[{i}] = _inst_{}.{}_{i};\n",
-                                        inst.name.name, conn.port_name.name));
+                                    cpp.push_str(&format!(
+                                        "    {sig}[{i}] = _inst_{}.{}_{i};\n",
+                                        inst.name.name, conn.port_name.name
+                                    ));
                                 }
                                 continue;
                             }
@@ -6514,17 +8102,32 @@ impl<'a> SimCodegen<'a> {
                                     // field directly here would be clobbered
                                     // by that sync.
                                     for i in 0..n {
-                                        cpp.push_str(&format!("    _{sig_name}[{i}] = _inst_{}.{}_{i};\n",
-                                            inst.name.name, conn.port_name.name));
+                                        cpp.push_str(&format!(
+                                            "    _{sig_name}[{i}] = _inst_{}.{}_{i};\n",
+                                            inst.name.name, conn.port_name.name
+                                        ));
                                     }
                                     if port_reg_names.contains(sig_name.as_str()) {
-                                        emit_port_reg_public_copy(&mut cpp, sig_name, &widths, Some(n), "    ");
+                                        emit_port_reg_public_copy(
+                                            &mut cpp,
+                                            sig_name,
+                                            &widths,
+                                            Some(n),
+                                            "    ",
+                                        );
                                     }
                                 } else {
-                                    let prefix = vec_storage_prefix(sig_name.as_str(), &reg_names, &let_names, &inst_out);
+                                    let prefix = vec_storage_prefix(
+                                        sig_name.as_str(),
+                                        &reg_names,
+                                        &let_names,
+                                        &inst_out,
+                                    );
                                     for i in 0..n {
-                                        cpp.push_str(&format!("    {prefix}{sig_name}[{i}] = _inst_{}.{}_{i};\n",
-                                            inst.name.name, conn.port_name.name));
+                                        cpp.push_str(&format!(
+                                            "    {prefix}{sig_name}[{i}] = _inst_{}.{}_{i};\n",
+                                            inst.name.name, conn.port_name.name
+                                        ));
                                     }
                                 }
                                 continue;
@@ -6534,13 +8137,22 @@ impl<'a> SimCodegen<'a> {
                         // Wide type (>64 bits): inst port is VlWide, parent reg is _arch_u128
                         let _out_w = if let ExprKind::Ident(n) = &conn.signal.kind {
                             widths.get(n.as_str()).copied().unwrap_or(0)
-                        } else { 0 };
-                        if _out_w > 64 {
-                            cpp.push_str(&format!("    {} = _arch_vl_to_u128(_inst_{}.{}.data(), {});\n",
-                                sig, inst.name.name, conn.port_name.name, wide_words(_out_w)));
                         } else {
-                            cpp.push_str(&format!("    {} = _inst_{}.{};\n",
-                                sig, inst.name.name, conn.port_name.name));
+                            0
+                        };
+                        if _out_w > 64 {
+                            cpp.push_str(&format!(
+                                "    {} = _arch_vl_to_u128(_inst_{}.{}.data(), {});\n",
+                                sig,
+                                inst.name.name,
+                                conn.port_name.name,
+                                wide_words(_out_w)
+                            ));
+                        } else {
+                            cpp.push_str(&format!(
+                                "    {} = _inst_{}.{};\n",
+                                sig, inst.name.name, conn.port_name.name
+                            ));
                         }
                         if let ExprKind::Ident(name) = &conn.signal.kind {
                             if port_reg_names.contains(name.as_str()) {
@@ -6562,179 +8174,243 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str("  } // settle\n");
 
             if has_clk {
-            // Step 2: eval_posedge detects edges internally (after settle, so derived clocks are valid)
-            cpp.push_str("  eval_posedge();\n");
+                // Step 2: eval_posedge detects edges internally (after settle, so derived clocks are valid)
+                cpp.push_str("  eval_posedge();\n");
 
-            // Step 3: refresh sub-inst comb outputs, then parent comb (with settle loop)
-            // Hoist invariant inputs (post-posedge values for ports/regs)
-            // out of the settle loop, mirroring the optimization above.
-            for &inst_idx in &inst_eval_order {
-                let inst = insts[inst_idx];
-                let conns = &expanded_conns[inst_idx];
-                for conn in conns {
-                    if conn.direction == ConnectDir::Input && is_invariant(conn) {
-                        if !matches!(conn.signal.kind, ExprKind::Ident(_)) {
-                            if let Some(n) = ctx.expr_vec_size(&conn.signal) {
-                                let sig = cpp_expr(&conn.signal, &ctx);
-                                for i in 0..n {
-                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = {sig}[{i}];\n",
-                                        inst.name.name, conn.port_name.name));
-                                }
-                                continue;
-                            }
-                        }
-                        if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
-                            if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
-                                let _vec_pfx = vec_storage_prefix(src_name.as_str(), &reg_names, &let_names, &inst_out);
-                                for i in 0..n {
-                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = {_vec_pfx}{src_name}[{i}];\n",
-                                        inst.name.name, conn.port_name.name));
-                                }
-                                continue;
-                            }
-                            if vec_port_names.contains(src_name.as_str()) {
-                                let n = vec_port_infos.iter()
-                                    .find(|v| v.name == *src_name)
-                                    .map(|v| v.count).unwrap_or(0);
-                                for i in 0..n {
-                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = {src_name}_{i};\n",
-                                        inst.name.name, conn.port_name.name));
-                                }
-                                continue;
-                            }
-                            if wide_names.contains(src_name.as_str()) {
-                                let resolved = ctx.resolve_name(src_name, false);
-                                cpp.push_str(&format!("  _inst_{}.{} = {};\n",
-                                    inst.name.name, conn.port_name.name, resolved));
-                                continue;
-                            }
-                        }
-                        let sig = cpp_expr(&conn.signal, &ctx);
-                        cpp.push_str(&format!("  _inst_{}.{} = {};\n",
-                            inst.name.name, conn.port_name.name, sig));
-                    }
-                }
-            }
-            cpp.push_str(&format!("  for (int _settle = 0; _settle < {settle_depth}; _settle++) {{\n"));
-            for &inst_idx in &inst_eval_order {
-            let inst = insts[inst_idx];
-            let conns = &expanded_conns[inst_idx];
-                // Re-set sub-inst inputs (may have changed after posedge)
-                for conn in conns {
-                    if conn.direction == ConnectDir::Input && !is_invariant(conn) {
-                        if !matches!(conn.signal.kind, ExprKind::Ident(_)) {
-                            if let Some(n) = ctx.expr_vec_size(&conn.signal) {
-                                let sig = cpp_expr(&conn.signal, &ctx);
-                                for i in 0..n {
-                                    cpp.push_str(&format!("    _inst_{}.{}_{i} = {sig}[{i}];\n",
-                                        inst.name.name, conn.port_name.name));
-                                }
-                                continue;
-                            }
-                        }
-                        if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
-                            // Vec wire/reg → inst Vec port: expand element-by-element
-                            if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
-                                let _vec_pfx = vec_storage_prefix(src_name.as_str(), &reg_names, &let_names, &inst_out);
-                                for i in 0..n {
-                                    cpp.push_str(&format!("    _inst_{}.{}_{i} = {_vec_pfx}{src_name}[{i}];\n",
-                                        inst.name.name, conn.port_name.name));
-                                }
-                                continue;
-                            }
-                            // Parent Vec PORT (input) → inst Vec port:
-                            // parent's src is stored as flat fields
-                            // `src_0..src_{n-1}`.
-                            if vec_port_names.contains(src_name.as_str()) {
-                                let n = vec_port_infos.iter()
-                                    .find(|v| v.name == *src_name)
-                                    .map(|v| v.count).unwrap_or(0);
-                                for i in 0..n {
-                                    cpp.push_str(&format!("    _inst_{}.{}_{i} = {src_name}_{i};\n",
-                                        inst.name.name, conn.port_name.name));
-                                }
-                                continue;
-                            }
-                            if wide_names.contains(src_name.as_str()) {
-                                let resolved = ctx.resolve_name(src_name, false);
-                                cpp.push_str(&format!("    _inst_{}.{} = {};\n",
-                                    inst.name.name, conn.port_name.name, resolved));
-                                continue;
-                            }
-                        }
-                        let sig = cpp_expr(&conn.signal, &ctx);
-                        cpp.push_str(&format!("    _inst_{}.{} = {};\n",
-                            inst.name.name, conn.port_name.name, sig));
-                    }
-                }
-                cpp.push_str(&format!("    _inst_{}.eval_comb();\n", inst.name.name));
-                for conn in conns {
-                    if conn.direction == ConnectDir::Output {
-                        if !matches!(conn.signal.kind, ExprKind::Ident(_)) {
-                            if let Some(n) = ctx.expr_vec_size(&conn.signal) {
-                                let sig = cpp_expr(&conn.signal, &ctx);
-                                for i in 0..n {
-                                    cpp.push_str(&format!("    {sig}[{i}] = _inst_{}.{}_{i};\n",
-                                        inst.name.name, conn.port_name.name));
-                                }
-                                continue;
-                            }
-                        }
-                        // inst Vec port → Vec wire/reg: expand element-by-element
-                        if let ExprKind::Ident(sig_name) = &conn.signal.kind {
-                            if let Some(&n) = vec_wire_counts.get(sig_name.as_str()) {
-                                if vec_port_names.contains(sig_name.as_str()) {
-                                    // Vec OUTPUT port: write to the internal
-                                    // _{name}[i] storage; the flat-field sync
-                                    // emitted at the end of eval_comb copies
-                                    // _{name}[i] → {name}_i. Writing the flat
-                                    // field directly here would be clobbered
-                                    // by that sync.
+                // Step 3: refresh sub-inst comb outputs, then parent comb (with settle loop)
+                // Hoist invariant inputs (post-posedge values for ports/regs)
+                // out of the settle loop, mirroring the optimization above.
+                for &inst_idx in &inst_eval_order {
+                    let inst = insts[inst_idx];
+                    let conns = &expanded_conns[inst_idx];
+                    for conn in conns {
+                        if conn.direction == ConnectDir::Input && is_invariant(conn) {
+                            if !matches!(conn.signal.kind, ExprKind::Ident(_)) {
+                                if let Some(n) = ctx.expr_vec_size(&conn.signal) {
+                                    let sig = cpp_expr(&conn.signal, &ctx);
                                     for i in 0..n {
-                                        cpp.push_str(&format!("    _{sig_name}[{i}] = _inst_{}.{}_{i};\n",
-                                            inst.name.name, conn.port_name.name));
+                                        cpp.push_str(&format!(
+                                            "  _inst_{}.{}_{i} = {sig}[{i}];\n",
+                                            inst.name.name, conn.port_name.name
+                                        ));
                                     }
-                                    if port_reg_names.contains(sig_name.as_str()) {
-                                        emit_port_reg_public_copy(&mut cpp, sig_name, &widths, Some(n), "    ");
-                                    }
-                                } else {
-                                    let prefix = vec_storage_prefix(sig_name.as_str(), &reg_names, &let_names, &inst_out);
-                                    for i in 0..n {
-                                        cpp.push_str(&format!("    {prefix}{sig_name}[{i}] = _inst_{}.{}_{i};\n",
-                                            inst.name.name, conn.port_name.name));
-                                    }
+                                    continue;
                                 }
-                                continue;
                             }
-                        }
-                        let sig = cpp_expr(&conn.signal, &ctx);
-                        // Wide type (>64 bits): inst port is VlWide, parent reg is _arch_u128
-                        let _out_w = if let ExprKind::Ident(n) = &conn.signal.kind {
-                            widths.get(n.as_str()).copied().unwrap_or(0)
-                        } else { 0 };
-                        if _out_w > 64 {
-                            cpp.push_str(&format!("    {} = _arch_vl_to_u128(_inst_{}.{}.data(), {});\n",
-                                sig, inst.name.name, conn.port_name.name, wide_words(_out_w)));
-                        } else {
-                            cpp.push_str(&format!("    {} = _inst_{}.{};\n",
-                                sig, inst.name.name, conn.port_name.name));
-                        }
-                        if let ExprKind::Ident(name) = &conn.signal.kind {
-                            if port_reg_names.contains(name.as_str()) {
-                                emit_port_reg_public_copy(&mut cpp, name, &widths, None, "    ");
+                            if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
+                                if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
+                                    let _vec_pfx = vec_storage_prefix(
+                                        src_name.as_str(),
+                                        &reg_names,
+                                        &let_names,
+                                        &inst_out,
+                                    );
+                                    for i in 0..n {
+                                        cpp.push_str(&format!(
+                                            "  _inst_{}.{}_{i} = {_vec_pfx}{src_name}[{i}];\n",
+                                            inst.name.name, conn.port_name.name
+                                        ));
+                                    }
+                                    continue;
+                                }
+                                if vec_port_names.contains(src_name.as_str()) {
+                                    let n = vec_port_infos
+                                        .iter()
+                                        .find(|v| v.name == *src_name)
+                                        .map(|v| v.count)
+                                        .unwrap_or(0);
+                                    for i in 0..n {
+                                        cpp.push_str(&format!(
+                                            "  _inst_{}.{}_{i} = {src_name}_{i};\n",
+                                            inst.name.name, conn.port_name.name
+                                        ));
+                                    }
+                                    continue;
+                                }
+                                if wide_names.contains(src_name.as_str()) {
+                                    let resolved = ctx.resolve_name(src_name, false);
+                                    cpp.push_str(&format!(
+                                        "  _inst_{}.{} = {};\n",
+                                        inst.name.name, conn.port_name.name, resolved
+                                    ));
+                                    continue;
+                                }
                             }
+                            let sig = cpp_expr(&conn.signal, &ctx);
+                            cpp.push_str(&format!(
+                                "  _inst_{}.{} = {};\n",
+                                inst.name.name, conn.port_name.name, sig
+                            ));
                         }
-                        // --check-uninit: mark inst output as initialized
-                        if let ExprKind::Ident(name) = &conn.signal.kind {
-                            if uninit_regs.contains(name.as_str()) {
-                                cpp.push_str(&format!("    _{name}_vinit = true;\n"));
+                    }
+                }
+                cpp.push_str(&format!(
+                    "  for (int _settle = 0; _settle < {settle_depth}; _settle++) {{\n"
+                ));
+                for &inst_idx in &inst_eval_order {
+                    let inst = insts[inst_idx];
+                    let conns = &expanded_conns[inst_idx];
+                    // Re-set sub-inst inputs (may have changed after posedge)
+                    for conn in conns {
+                        if conn.direction == ConnectDir::Input && !is_invariant(conn) {
+                            if !matches!(conn.signal.kind, ExprKind::Ident(_)) {
+                                if let Some(n) = ctx.expr_vec_size(&conn.signal) {
+                                    let sig = cpp_expr(&conn.signal, &ctx);
+                                    for i in 0..n {
+                                        cpp.push_str(&format!(
+                                            "    _inst_{}.{}_{i} = {sig}[{i}];\n",
+                                            inst.name.name, conn.port_name.name
+                                        ));
+                                    }
+                                    continue;
+                                }
+                            }
+                            if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
+                                // Vec wire/reg → inst Vec port: expand element-by-element
+                                if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
+                                    let _vec_pfx = vec_storage_prefix(
+                                        src_name.as_str(),
+                                        &reg_names,
+                                        &let_names,
+                                        &inst_out,
+                                    );
+                                    for i in 0..n {
+                                        cpp.push_str(&format!(
+                                            "    _inst_{}.{}_{i} = {_vec_pfx}{src_name}[{i}];\n",
+                                            inst.name.name, conn.port_name.name
+                                        ));
+                                    }
+                                    continue;
+                                }
+                                // Parent Vec PORT (input) → inst Vec port:
+                                // parent's src is stored as flat fields
+                                // `src_0..src_{n-1}`.
+                                if vec_port_names.contains(src_name.as_str()) {
+                                    let n = vec_port_infos
+                                        .iter()
+                                        .find(|v| v.name == *src_name)
+                                        .map(|v| v.count)
+                                        .unwrap_or(0);
+                                    for i in 0..n {
+                                        cpp.push_str(&format!(
+                                            "    _inst_{}.{}_{i} = {src_name}_{i};\n",
+                                            inst.name.name, conn.port_name.name
+                                        ));
+                                    }
+                                    continue;
+                                }
+                                if wide_names.contains(src_name.as_str()) {
+                                    let resolved = ctx.resolve_name(src_name, false);
+                                    cpp.push_str(&format!(
+                                        "    _inst_{}.{} = {};\n",
+                                        inst.name.name, conn.port_name.name, resolved
+                                    ));
+                                    continue;
+                                }
+                            }
+                            let sig = cpp_expr(&conn.signal, &ctx);
+                            cpp.push_str(&format!(
+                                "    _inst_{}.{} = {};\n",
+                                inst.name.name, conn.port_name.name, sig
+                            ));
+                        }
+                    }
+                    cpp.push_str(&format!("    _inst_{}.eval_comb();\n", inst.name.name));
+                    for conn in conns {
+                        if conn.direction == ConnectDir::Output {
+                            if !matches!(conn.signal.kind, ExprKind::Ident(_)) {
+                                if let Some(n) = ctx.expr_vec_size(&conn.signal) {
+                                    let sig = cpp_expr(&conn.signal, &ctx);
+                                    for i in 0..n {
+                                        cpp.push_str(&format!(
+                                            "    {sig}[{i}] = _inst_{}.{}_{i};\n",
+                                            inst.name.name, conn.port_name.name
+                                        ));
+                                    }
+                                    continue;
+                                }
+                            }
+                            // inst Vec port → Vec wire/reg: expand element-by-element
+                            if let ExprKind::Ident(sig_name) = &conn.signal.kind {
+                                if let Some(&n) = vec_wire_counts.get(sig_name.as_str()) {
+                                    if vec_port_names.contains(sig_name.as_str()) {
+                                        // Vec OUTPUT port: write to the internal
+                                        // _{name}[i] storage; the flat-field sync
+                                        // emitted at the end of eval_comb copies
+                                        // _{name}[i] → {name}_i. Writing the flat
+                                        // field directly here would be clobbered
+                                        // by that sync.
+                                        for i in 0..n {
+                                            cpp.push_str(&format!(
+                                                "    _{sig_name}[{i}] = _inst_{}.{}_{i};\n",
+                                                inst.name.name, conn.port_name.name
+                                            ));
+                                        }
+                                        if port_reg_names.contains(sig_name.as_str()) {
+                                            emit_port_reg_public_copy(
+                                                &mut cpp,
+                                                sig_name,
+                                                &widths,
+                                                Some(n),
+                                                "    ",
+                                            );
+                                        }
+                                    } else {
+                                        let prefix = vec_storage_prefix(
+                                            sig_name.as_str(),
+                                            &reg_names,
+                                            &let_names,
+                                            &inst_out,
+                                        );
+                                        for i in 0..n {
+                                            cpp.push_str(&format!(
+                                                "    {prefix}{sig_name}[{i}] = _inst_{}.{}_{i};\n",
+                                                inst.name.name, conn.port_name.name
+                                            ));
+                                        }
+                                    }
+                                    continue;
+                                }
+                            }
+                            let sig = cpp_expr(&conn.signal, &ctx);
+                            // Wide type (>64 bits): inst port is VlWide, parent reg is _arch_u128
+                            let _out_w = if let ExprKind::Ident(n) = &conn.signal.kind {
+                                widths.get(n.as_str()).copied().unwrap_or(0)
+                            } else {
+                                0
+                            };
+                            if _out_w > 64 {
+                                cpp.push_str(&format!(
+                                    "    {} = _arch_vl_to_u128(_inst_{}.{}.data(), {});\n",
+                                    sig,
+                                    inst.name.name,
+                                    conn.port_name.name,
+                                    wide_words(_out_w)
+                                ));
+                            } else {
+                                cpp.push_str(&format!(
+                                    "    {} = _inst_{}.{};\n",
+                                    sig, inst.name.name, conn.port_name.name
+                                ));
+                            }
+                            if let ExprKind::Ident(name) = &conn.signal.kind {
+                                if port_reg_names.contains(name.as_str()) {
+                                    emit_port_reg_public_copy(
+                                        &mut cpp, name, &widths, None, "    ",
+                                    );
+                                }
+                            }
+                            // --check-uninit: mark inst output as initialized
+                            if let ExprKind::Ident(name) = &conn.signal.kind {
+                                if uninit_regs.contains(name.as_str()) {
+                                    cpp.push_str(&format!("    _{name}_vinit = true;\n"));
+                                }
                             }
                         }
                     }
                 }
-            }
-            cpp.push_str("    eval_comb();\n");
-            cpp.push_str("  } // settle\n");
+                cpp.push_str("    eval_comb();\n");
+                cpp.push_str("  } // settle\n");
             } // end if has_clk
         } // end else (has insts)
 
@@ -6761,17 +8437,31 @@ impl<'a> SimCodegen<'a> {
             for (inst_idx, inst) in insts.iter().enumerate() {
                 let conns = &expanded_conns[inst_idx];
                 for conn in conns {
-                    if conn.direction != ConnectDir::Output { continue; }
+                    if conn.direction != ConnectDir::Output {
+                        continue;
+                    }
                     // Resolve parent-side storage name + width.
-                    let sig_name = if let crate::ast::ExprKind::Ident(n) = &conn.signal.kind { n.as_str() } else { continue; };
+                    let sig_name = if let crate::ast::ExprKind::Ident(n) = &conn.signal.kind {
+                        n.as_str()
+                    } else {
+                        continue;
+                    };
                     let w = widths.get(sig_name).copied().unwrap_or(0);
-                    if w == 0 || w > 64 { continue; }
-                    if wide_names.contains(sig_name) { continue; }
-                    if vec_port_names.contains(sig_name) { continue; }
+                    if w == 0 || w > 64 {
+                        continue;
+                    }
+                    if wide_names.contains(sig_name) {
+                        continue;
+                    }
+                    if vec_port_names.contains(sig_name) {
+                        continue;
+                    }
                     // Skip Vec regs/wires (they connect to flattened
                     // sub-instance port names like `name_0..name_{n-1}`,
                     // not the bare `name`). Phase 6 v1 = scalars only.
-                    if vec_wire_counts.contains_key(sig_name) { continue; }
+                    if vec_wire_counts.contains_key(sig_name) {
+                        continue;
+                    }
                     let cidx = reg.borrow_mut().alloc(
                         "toggle",
                         inst.span.start,
@@ -6804,16 +8494,40 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str(&format!("  _clk_prev_{c} = {c};\n"));
         }
 
-        let reg_blocks: Vec<&RegBlock> = m.body.iter()
-            .filter_map(|i| if let ModuleBodyItem::RegBlock(rb) = i { Some(rb) } else { None })
+        let reg_blocks: Vec<&RegBlock> = m
+            .body
+            .iter()
+            .filter_map(|i| {
+                if let ModuleBodyItem::RegBlock(rb) = i {
+                    Some(rb)
+                } else {
+                    None
+                }
+            })
             .collect();
-        let reg_decls: Vec<&RegDecl> = m.body.iter()
-            .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i { Some(r) } else { None })
+        let reg_decls: Vec<&RegDecl> = m
+            .body
+            .iter()
+            .filter_map(|i| {
+                if let ModuleBodyItem::RegDecl(r) = i {
+                    Some(r)
+                } else {
+                    None
+                }
+            })
             .collect();
 
         // Collect pipe_reg declarations for _n_ temporary handling
-        let pipe_regs: Vec<&PipeRegDecl> = m.body.iter()
-            .filter_map(|i| if let ModuleBodyItem::PipeRegDecl(p) = i { Some(p) } else { None })
+        let pipe_regs: Vec<&PipeRegDecl> = m
+            .body
+            .iter()
+            .filter_map(|i| {
+                if let ModuleBodyItem::PipeRegDecl(p) = i {
+                    Some(p)
+                } else {
+                    None
+                }
+            })
             .collect();
 
         if !reg_blocks.is_empty() || !pipe_regs.is_empty() {
@@ -6823,7 +8537,9 @@ impl<'a> SimCodegen<'a> {
             for rd in &reg_decls {
                 let n = &rd.name.name;
                 if let Some((elem_ty, count)) = vec_array_info_with_params(&rd.ty, &m.params) {
-                    cpp.push_str(&format!("  {elem_ty} _n_{n}[{count}]; memcpy(_n_{n}, _{n}, sizeof(_{n}));\n"));
+                    cpp.push_str(&format!(
+                        "  {elem_ty} _n_{n}[{count}]; memcpy(_n_{n}, _{n}, sizeof(_{n}));\n"
+                    ));
                 } else {
                     let ty = cpp_internal_type_with_params(&rd.ty, &m.params);
                     cpp.push_str(&format!("  {ty} _n_{n} = _{n};\n"));
@@ -6835,7 +8551,10 @@ impl<'a> SimCodegen<'a> {
                     let n = &p.name.name;
                     if let Some(vi) = vec_port_infos.iter().find(|v| v.name == *n) {
                         // Vec port-reg: _n_ is an array, initialized by memcpy
-                        cpp.push_str(&format!("  {} _n_{n}[{}]; memcpy(_n_{n}, _{n}, sizeof(_{n}));\n", vi.elem_ty, vi.count));
+                        cpp.push_str(&format!(
+                            "  {} _n_{n}[{}]; memcpy(_n_{n}, _{n}, sizeof(_{n}));\n",
+                            vi.elem_ty, vi.count
+                        ));
                     } else {
                         let ty = cpp_internal_type_with_params(&p.ty, &m.params);
                         cpp.push_str(&format!("  {ty} _n_{n} = _{n};\n"));
@@ -6845,7 +8564,11 @@ impl<'a> SimCodegen<'a> {
             // Declare _n_ temporaries for pipe_reg stages
             for p in &pipe_regs {
                 let w = widths.get(&p.source.name).copied().unwrap_or(32);
-                let ty = if signed_names.contains(p.source.name.as_str()) { cpp_sint(w) } else { cpp_uint(w) };
+                let ty = if signed_names.contains(p.source.name.as_str()) {
+                    cpp_sint(w)
+                } else {
+                    cpp_uint(w)
+                };
                 for i in 0..p.stages {
                     let name = if i == p.stages - 1 {
                         p.name.name.clone()
@@ -6857,13 +8580,25 @@ impl<'a> SimCodegen<'a> {
             }
             cpp.push('\n');
 
-            let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
-                               &wide_names, &widths, &enum_map, &bus_port_names)
-                          .with_signed_names(&signed_names)
-                          .with_vec_names(&vec_reg_names).with_vec_2d_names(&vec_2d_names).with_vec_sizes(&vec_sizes).posedge()
-                          .with_coverage(cov_handle)
-                          .with_let_values(&let_values)
-                          .with_params(&m.params);
+            let ctx = Ctx::new(
+                &reg_names,
+                &port_names,
+                &let_names,
+                &inst_names,
+                &wide_names,
+                &widths,
+                &enum_map,
+                &bus_port_names,
+            )
+            .with_signed_names(&signed_names)
+            .with_float_names(&float_names)
+            .with_vec_names(&vec_reg_names)
+            .with_vec_2d_names(&vec_2d_names)
+            .with_vec_sizes(&vec_sizes)
+            .posedge()
+            .with_coverage(cov_handle)
+            .with_let_values(&let_values)
+            .with_params(&m.params);
 
             for rb in &reg_blocks {
                 let mut assigned = std::collections::BTreeSet::new();
@@ -6874,15 +8609,21 @@ impl<'a> SimCodegen<'a> {
 
                 for name in &assigned {
                     // Look up reset from RegDecl or port reg
-                    let reset_ref: Option<&RegReset> = reg_decls.iter()
+                    let reset_ref: Option<&RegReset> = reg_decls
+                        .iter()
                         .find(|r| r.name.name == *name)
                         .map(|r| &r.reset)
-                        .or_else(|| m.ports.iter()
-                            .find(|p| p.name.name == *name && p.reg_info.is_some())
-                            .and_then(|p| p.reg_info.as_ref().map(|ri| &ri.reset)));
+                        .or_else(|| {
+                            m.ports
+                                .iter()
+                                .find(|p| p.name.name == *name && p.reg_info.is_some())
+                                .and_then(|p| p.reg_info.as_ref().map(|ri| &ri.reset))
+                        });
                     if let Some(reg_reset) = reset_ref {
                         if let Some(info) = resolve_reg_reset_info(reg_reset, &m.ports) {
-                            if reset_sig.is_none() { reset_sig = Some(info.clone()); }
+                            if reset_sig.is_none() {
+                                reset_sig = Some(info.clone());
+                            }
                             let reset_expr = reset_value_from_reg_reset(reg_reset);
                             let init_val = if let Some(expr) = reset_expr {
                                 match &expr.kind {
@@ -6893,7 +8634,13 @@ impl<'a> SimCodegen<'a> {
                                     ExprKind::Literal(LitKind::Hex(v)) => format!("0x{:X}", v),
                                     ExprKind::Literal(LitKind::Bin(v)) => v.to_string(),
                                     ExprKind::Literal(LitKind::Sized(_, v)) => v.to_string(),
-                                    ExprKind::Bool(b) => if *b { "1".to_string() } else { "0".to_string() },
+                                    ExprKind::Bool(b) => {
+                                        if *b {
+                                            "1".to_string()
+                                        } else {
+                                            "0".to_string()
+                                        }
+                                    }
                                     // Everything else — struct literals, enum
                                     // variants, idents, calls, casts — lowers
                                     // via the normal expression path. Previously
@@ -6901,10 +8648,18 @@ impl<'a> SimCodegen<'a> {
                                     // could corrupt non-literal reset values
                                     // (see #6 struct-literal reset bug).
                                     _ => {
-                                        let tmp_ctx = Ctx::new(&reg_names, &port_names,
-                                            &let_names, &inst_names, &wide_names, &widths,
-                                            &enum_map, &bus_port_names)
-                                            .with_signed_names(&signed_names);
+                                        let tmp_ctx = Ctx::new(
+                                            &reg_names,
+                                            &port_names,
+                                            &let_names,
+                                            &inst_names,
+                                            &wide_names,
+                                            &widths,
+                                            &enum_map,
+                                            &bus_port_names,
+                                        )
+                                        .with_signed_names(&signed_names)
+                                        .with_float_names(&float_names);
                                         cpp_expr(expr, &tmp_ctx)
                                     }
                                 }
@@ -6928,52 +8683,66 @@ impl<'a> SimCodegen<'a> {
                         // sync-reset path is handled below; skip the async pre-gate emit
                         false
                     } else {
-                    let cond = if *is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
-                    cpp.push_str(&format!("  if ({cond}) {{\n"));
-                    for (reg_name, init) in &reset_regs {
-                        // Vec-typed regs are C arrays — write each element
-                        // via a loop. `init` is a scalar broadcast value
-                        // per the ARCH spec (`reset r => 0` distributes
-                        // the scalar across every element).
-                        if vec_reg_names.contains(*reg_name) {
-                            let count = vec_sizes.get(*reg_name).copied().unwrap_or(0);
-                            if count > 0 {
-                                // For nested-Vec regs the inner dim is a C array,
-                                // not a scalar — a per-element scalar assign
-                                // `_rf[_i] = 0` fails to compile. memset zeroes
-                                // the whole storage in one shot regardless of
-                                // dimensionality; the spec's reset broadcast
-                                // semantics (scalar distributed across every
-                                // element) collapse to the zero case in
-                                // practice. For non-zero broadcasts, fall back
-                                // to the per-element-loop form (correct for
-                                // 1D, generates a compile error for nested-
-                                // Vec the user must resolve by writing the
-                                // reset by hand).
-                                if init == "0" {
-                                    cpp.push_str(&format!("    memset(_{reg_name}, 0, sizeof(_{reg_name}));\n"));
-                                    cpp.push_str(&format!("    memset(_n_{reg_name}, 0, sizeof(_n_{reg_name}));\n"));
-                                } else {
-                                    cpp.push_str(&format!("    for (size_t _i = 0; _i < {count}; ++_i) {{ _{reg_name}[_i] = {init}; _n_{reg_name}[_i] = {init}; }}\n"));
-                                }
-                            }
-                        } else if wide_names.contains(*reg_name) {
-                            let bits = widths.get(*reg_name).copied().unwrap_or(0);
-                            if bits > 128 {
-                                let words = wide_words(bits);
-                                cpp.push_str(&format!("    _{reg_name} = VlWide<{words}>({init});\n"));
-                                cpp.push_str(&format!("    _n_{reg_name} = VlWide<{words}>({init});\n"));
-                            } else {
-                                cpp.push_str(&format!("    _{reg_name} = (_arch_u128){init};\n"));
-                                cpp.push_str(&format!("    _n_{reg_name} = (_arch_u128){init};\n"));
-                            }
+                        let cond = if *is_low {
+                            format!("(!{})", rst_name)
                         } else {
-                            cpp.push_str(&format!("    _{reg_name} = {init};\n"));
-                            cpp.push_str(&format!("    _n_{reg_name} = {init};\n"));
+                            rst_name.clone()
+                        };
+                        cpp.push_str(&format!("  if ({cond}) {{\n"));
+                        for (reg_name, init) in &reset_regs {
+                            // Vec-typed regs are C arrays — write each element
+                            // via a loop. `init` is a scalar broadcast value
+                            // per the ARCH spec (`reset r => 0` distributes
+                            // the scalar across every element).
+                            if vec_reg_names.contains(*reg_name) {
+                                let count = vec_sizes.get(*reg_name).copied().unwrap_or(0);
+                                if count > 0 {
+                                    // For nested-Vec regs the inner dim is a C array,
+                                    // not a scalar — a per-element scalar assign
+                                    // `_rf[_i] = 0` fails to compile. memset zeroes
+                                    // the whole storage in one shot regardless of
+                                    // dimensionality; the spec's reset broadcast
+                                    // semantics (scalar distributed across every
+                                    // element) collapse to the zero case in
+                                    // practice. For non-zero broadcasts, fall back
+                                    // to the per-element-loop form (correct for
+                                    // 1D, generates a compile error for nested-
+                                    // Vec the user must resolve by writing the
+                                    // reset by hand).
+                                    if init == "0" {
+                                        cpp.push_str(&format!(
+                                            "    memset(_{reg_name}, 0, sizeof(_{reg_name}));\n"
+                                        ));
+                                        cpp.push_str(&format!("    memset(_n_{reg_name}, 0, sizeof(_n_{reg_name}));\n"));
+                                    } else {
+                                        cpp.push_str(&format!("    for (size_t _i = 0; _i < {count}; ++_i) {{ _{reg_name}[_i] = {init}; _n_{reg_name}[_i] = {init}; }}\n"));
+                                    }
+                                }
+                            } else if wide_names.contains(*reg_name) {
+                                let bits = widths.get(*reg_name).copied().unwrap_or(0);
+                                if bits > 128 {
+                                    let words = wide_words(bits);
+                                    cpp.push_str(&format!(
+                                        "    _{reg_name} = VlWide<{words}>({init});\n"
+                                    ));
+                                    cpp.push_str(&format!(
+                                        "    _n_{reg_name} = VlWide<{words}>({init});\n"
+                                    ));
+                                } else {
+                                    cpp.push_str(&format!(
+                                        "    _{reg_name} = (_arch_u128){init};\n"
+                                    ));
+                                    cpp.push_str(&format!(
+                                        "    _n_{reg_name} = (_arch_u128){init};\n"
+                                    ));
+                                }
+                            } else {
+                                cpp.push_str(&format!("    _{reg_name} = {init};\n"));
+                                cpp.push_str(&format!("    _n_{reg_name} = {init};\n"));
+                            }
                         }
-                    }
-                    cpp.push_str("  }\n");
-                    true
+                        cpp.push_str("  }\n");
+                        true
                     }
                 } else {
                     false
@@ -6995,8 +8764,15 @@ impl<'a> SimCodegen<'a> {
                 // catches dead clock domains where branch coverage
                 // shows 0/0 trivially.
                 if let Some(reg) = cov_handle {
-                    let idx = reg.borrow_mut().alloc("seq", rb.span.start, format!("seq @{}", rb.clock.name));
-                    cpp.push_str(&format!("{}_arch_cov[{idx}]++;\n", "  ".repeat(base_indent)));
+                    let idx = reg.borrow_mut().alloc(
+                        "seq",
+                        rb.span.start,
+                        format!("seq @{}", rb.clock.name),
+                    );
+                    cpp.push_str(&format!(
+                        "{}_arch_cov[{idx}]++;\n",
+                        "  ".repeat(base_indent)
+                    ));
                 }
 
                 if async_reset_emitted {
@@ -7008,7 +8784,11 @@ impl<'a> SimCodegen<'a> {
                     cpp.push_str(&body);
                 } else if let Some((rst_name, _is_async, is_low)) = &reset_sig {
                     // Sync reset — original gated form.
-                    let cond = if *is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
+                    let cond = if *is_low {
+                        format!("(!{})", rst_name)
+                    } else {
+                        rst_name.clone()
+                    };
                     cpp.push_str(&format!("{}if ({cond}) {{\n", "  ".repeat(base_indent)));
                     for (reg_name, init) in &reset_regs {
                         if vec_reg_names.contains(*reg_name) {
@@ -7017,7 +8797,10 @@ impl<'a> SimCodegen<'a> {
                                 // memset for zero (covers nested-Vec); per-element
                                 // loop for non-zero broadcasts (works for 1D).
                                 if init == "0" {
-                                    cpp.push_str(&format!("{}memset(_n_{reg_name}, 0, sizeof(_n_{reg_name}));\n", "  ".repeat(base_indent + 1)));
+                                    cpp.push_str(&format!(
+                                        "{}memset(_n_{reg_name}, 0, sizeof(_n_{reg_name}));\n",
+                                        "  ".repeat(base_indent + 1)
+                                    ));
                                 } else {
                                     cpp.push_str(&format!("{}for (size_t _i = 0; _i < {count}; ++_i) {{ _n_{reg_name}[_i] = {init}; }}\n", "  ".repeat(base_indent + 1)));
                                 }
@@ -7026,12 +8809,21 @@ impl<'a> SimCodegen<'a> {
                             let bits = widths.get(*reg_name).copied().unwrap_or(0);
                             if bits > 128 {
                                 let words = wide_words(bits);
-                                cpp.push_str(&format!("{}_n_{reg_name} = VlWide<{words}>({init});\n", "  ".repeat(base_indent + 1)));
+                                cpp.push_str(&format!(
+                                    "{}_n_{reg_name} = VlWide<{words}>({init});\n",
+                                    "  ".repeat(base_indent + 1)
+                                ));
                             } else {
-                                cpp.push_str(&format!("{}_n_{reg_name} = (_arch_u128){init};\n", "  ".repeat(base_indent + 1)));
+                                cpp.push_str(&format!(
+                                    "{}_n_{reg_name} = (_arch_u128){init};\n",
+                                    "  ".repeat(base_indent + 1)
+                                ));
                             }
                         } else {
-                            cpp.push_str(&format!("{}_n_{reg_name} = {init};\n", "  ".repeat(base_indent + 1)));
+                            cpp.push_str(&format!(
+                                "{}_n_{reg_name} = {init};\n",
+                                "  ".repeat(base_indent + 1)
+                            ));
                         }
                     }
                     cpp.push_str(&format!("{}}} else {{\n", "  ".repeat(base_indent)));
@@ -7058,10 +8850,13 @@ impl<'a> SimCodegen<'a> {
                 }
             }
             {
-                let rst_info = m.ports.iter()
+                let rst_info = m
+                    .ports
+                    .iter()
                     .find(|p| matches!(&p.ty, TypeExpr::Reset(..)))
                     .map(|p| {
-                        let is_low = matches!(&p.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low);
+                        let is_low =
+                            matches!(&p.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low);
                         (p.name.name.clone(), is_low)
                     });
                 for p in &pipe_regs {
@@ -7073,22 +8868,39 @@ impl<'a> SimCodegen<'a> {
                             chain.push(format!("{}_stg{}", p.name.name, i + 1));
                         }
                     }
-                    let ctx_pe = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
-                                           &wide_names, &widths, &enum_map, &bus_port_names)
-                                       .with_signed_names(&signed_names)
-                                       .with_vec_names(&vec_reg_names).with_vec_2d_names(&vec_2d_names).with_vec_sizes(&vec_sizes)
-                                       .with_let_values(&let_values)
-                                       .with_params(&m.params);
+                    let ctx_pe = Ctx::new(
+                        &reg_names,
+                        &port_names,
+                        &let_names,
+                        &inst_names,
+                        &wide_names,
+                        &widths,
+                        &enum_map,
+                        &bus_port_names,
+                    )
+                    .with_signed_names(&signed_names)
+                    .with_float_names(&float_names)
+                    .with_vec_names(&vec_reg_names)
+                    .with_vec_2d_names(&vec_2d_names)
+                    .with_vec_sizes(&vec_sizes)
+                    .with_let_values(&let_values)
+                    .with_params(&m.params);
                     let src = ctx_pe.resolve_name(&p.source.name, false);
                     if let Some((ref rst_name, is_low)) = rst_info {
-                        let cond = if is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
+                        let cond = if is_low {
+                            format!("(!{})", rst_name)
+                        } else {
+                            rst_name.clone()
+                        };
                         cpp.push_str(&format!("  if ({cond}) {{\n"));
                         for name in &chain {
                             cpp.push_str(&format!("    _n_{name} = 0;\n"));
                         }
                         cpp.push_str("  } else {\n");
                         for name in &chain {
-                            let prev = if *name == chain[0] { src.clone() } else {
+                            let prev = if *name == chain[0] {
+                                src.clone()
+                            } else {
                                 let idx = chain.iter().position(|n| n == name).unwrap();
                                 format!("_{}", chain[idx - 1])
                             };
@@ -7097,7 +8909,9 @@ impl<'a> SimCodegen<'a> {
                         cpp.push_str("  }\n");
                     } else {
                         for name in &chain {
-                            let prev = if *name == chain[0] { src.clone() } else {
+                            let prev = if *name == chain[0] {
+                                src.clone()
+                            } else {
                                 let idx = chain.iter().position(|n| n == name).unwrap();
                                 format!("_{}", chain[idx - 1])
                             };
@@ -7208,7 +9022,9 @@ impl<'a> SimCodegen<'a> {
                             "  if (_{n} != _dbg_old_{n}) \
                              printf(\"[FSM][{module_name}.{label}] S%u -> S%u\\n\", \
                              (unsigned)_dbg_old_{n}, (unsigned)_{n});\n",
-                            module_name = name, label = label, n = n,
+                            module_name = name,
+                            label = label,
+                            n = n,
                         ));
                     }
                 }
@@ -7254,7 +9070,9 @@ impl<'a> SimCodegen<'a> {
                      \x20             \"{guard_sig}=1 but {reg_name} was never written\\n\");\n\
                      \x20   }}\n\
                      \x20 }}\n",
-                    guard_sig = guard_sig, reg_name = reg_name, name = name,
+                    guard_sig = guard_sig,
+                    reg_name = reg_name,
+                    name = name,
                 ));
             }
         }
@@ -7275,7 +9093,9 @@ impl<'a> SimCodegen<'a> {
         // (active-high / active-low derived from the port's polarity).
         if !cc_sites.is_empty() {
             let primary_clk = all_clks.first().cloned();
-            let rst_expr = m.ports.iter()
+            let rst_expr = m
+                .ports
+                .iter()
                 .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)))
                 .map(|p| match &p.ty {
                     TypeExpr::Reset(_, ResetLevel::Low) => format!("!{}", p.name.name),
@@ -7298,18 +9118,29 @@ impl<'a> SimCodegen<'a> {
         // For modules with sub-instances, eval_comb includes re-evaluation of the
         // inst chain so that combinational feedback settles when called from parent.
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
-        let ctx_comb = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
-                                &wide_names, &widths, &enum_map, &bus_port_names)
-                           .with_signed_names(&signed_names)
-                           .with_vec_names(&vec_reg_names).with_vec_2d_names(&vec_2d_names).with_vec_sizes(&vec_sizes)
-                           .with_coverage(cov_handle)
-                           .with_let_values(&let_values)
-                           .with_params(&m.params)
-                           .with_vec_of_bus(
-                               &vec_of_bus_port_count_map,
-                               &vec_of_bus_wire_count_map,
-                               &loop_var_subst_cell,
-                           );
+        let ctx_comb = Ctx::new(
+            &reg_names,
+            &port_names,
+            &let_names,
+            &inst_names,
+            &wide_names,
+            &widths,
+            &enum_map,
+            &bus_port_names,
+        )
+        .with_signed_names(&signed_names)
+        .with_float_names(&float_names)
+        .with_vec_names(&vec_reg_names)
+        .with_vec_2d_names(&vec_2d_names)
+        .with_vec_sizes(&vec_sizes)
+        .with_coverage(cov_handle)
+        .with_let_values(&let_values)
+        .with_params(&m.params)
+        .with_vec_of_bus(
+            &vec_of_bus_port_count_map,
+            &vec_of_bus_wire_count_map,
+            &loop_var_subst_cell,
+        );
 
         // Credit-channel combinational wires (sender can_send; receiver
         // valid/data once PR-sim-2 lands). Emit early so user comb code
@@ -7339,8 +9170,9 @@ impl<'a> SimCodegen<'a> {
                         if mname.name == "find_first" {
                             let recv_cpp = cpp_expr(recv, &ctx_comb);
                             let n = match &recv.kind {
-                                ExprKind::Ident(nm) => ctx_comb.vec_sizes
-                                    .and_then(|s| s.get(nm)).copied(),
+                                ExprKind::Ident(nm) => {
+                                    ctx_comb.vec_sizes.and_then(|s| s.get(nm)).copied()
+                                }
                                 _ => None,
                             };
                             if let Some(n) = n {
@@ -7351,14 +9183,24 @@ impl<'a> SimCodegen<'a> {
                                     sub.insert("item".to_string(), format!("{recv_cpp}[{i}]"));
                                     sub.insert("index".to_string(), format!("{i}"));
                                     let sub_ctx = Ctx {
-                                        reg_names: ctx_comb.reg_names, port_names: ctx_comb.port_names,
-                                        let_names: ctx_comb.let_names, let_values: ctx_comb.let_values, inst_names: ctx_comb.inst_names,
-                                        wide_names: ctx_comb.wide_names, widths: ctx_comb.widths, signed_names: ctx_comb.signed_names,
-                                        posedge_lhs: ctx_comb.posedge_lhs, fsm_mode: ctx_comb.fsm_mode,
-                                        enum_map: ctx_comb.enum_map, bus_ports: ctx_comb.bus_ports,
-                                        reset_levels: ctx_comb.reset_levels, vec_names: ctx_comb.vec_names,
+                                        reg_names: ctx_comb.reg_names,
+                                        port_names: ctx_comb.port_names,
+                                        let_names: ctx_comb.let_names,
+                                        let_values: ctx_comb.let_values,
+                                        inst_names: ctx_comb.inst_names,
+                                        wide_names: ctx_comb.wide_names,
+                                        widths: ctx_comb.widths,
+                                        signed_names: ctx_comb.signed_names,
+                                        float_names: ctx_comb.float_names,
+                                        posedge_lhs: ctx_comb.posedge_lhs,
+                                        fsm_mode: ctx_comb.fsm_mode,
+                                        enum_map: ctx_comb.enum_map,
+                                        bus_ports: ctx_comb.bus_ports,
+                                        reset_levels: ctx_comb.reset_levels,
+                                        vec_names: ctx_comb.vec_names,
                                         vec_2d_names: ctx_comb.vec_2d_names,
-                                        vec_sizes: ctx_comb.vec_sizes, fsm_vec_port_regs: ctx_comb.fsm_vec_port_regs,
+                                        vec_sizes: ctx_comb.vec_sizes,
+                                        fsm_vec_port_regs: ctx_comb.fsm_vec_port_regs,
                                         ident_subst: Some(&sub),
                                         loop_var_subst: ctx_comb.loop_var_subst,
                                         vec_of_bus_port_count: ctx_comb.vec_of_bus_port_count,
@@ -7368,9 +9210,11 @@ impl<'a> SimCodegen<'a> {
                                     };
                                     hits.push(cpp_expr(&margs[0], &sub_ctx));
                                 }
-                                let found_expr: String = hits.iter()
+                                let found_expr: String = hits
+                                    .iter()
                                     .map(|h| format!("({h})"))
-                                    .collect::<Vec<_>>().join(" || ");
+                                    .collect::<Vec<_>>()
+                                    .join(" || ");
                                 let mut idx_expr = "0u".to_string();
                                 for i in (0..n as u64).rev() {
                                     let hit = &hits[i as usize];
@@ -7426,8 +9270,10 @@ impl<'a> SimCodegen<'a> {
                             if let Some(n) = ctx_comb.expr_vec_size(&conn.signal) {
                                 let sig = cpp_expr(&conn.signal, &ctx_comb);
                                 for i in 0..n {
-                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = {sig}[{i}];\n",
-                                        inst.name.name, conn.port_name.name));
+                                    cpp.push_str(&format!(
+                                        "  _inst_{}.{}_{i} = {sig}[{i}];\n",
+                                        inst.name.name, conn.port_name.name
+                                    ));
                                 }
                                 continue;
                             }
@@ -7435,28 +9281,41 @@ impl<'a> SimCodegen<'a> {
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             // Vec wire/reg → inst Vec port: expand element-by-element
                             if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
-                                let _vec_pfx = vec_storage_prefix(src_name.as_str(), &reg_names, &let_names, &inst_out);
+                                let _vec_pfx = vec_storage_prefix(
+                                    src_name.as_str(),
+                                    &reg_names,
+                                    &let_names,
+                                    &inst_out,
+                                );
                                 for i in 0..n {
-                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = {_vec_pfx}{src_name}[{i}];\n",
-                                        inst.name.name, conn.port_name.name));
+                                    cpp.push_str(&format!(
+                                        "  _inst_{}.{}_{i} = {_vec_pfx}{src_name}[{i}];\n",
+                                        inst.name.name, conn.port_name.name
+                                    ));
                                 }
                                 continue;
                             }
                             // Parent Vec PORT (input) → inst Vec port: flat field syntax
                             if vec_port_names.contains(src_name.as_str()) {
-                                let n = vec_port_infos.iter()
+                                let n = vec_port_infos
+                                    .iter()
                                     .find(|v| v.name == *src_name)
-                                    .map(|v| v.count).unwrap_or(0);
+                                    .map(|v| v.count)
+                                    .unwrap_or(0);
                                 for i in 0..n {
-                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = {src_name}_{i};\n",
-                                        inst.name.name, conn.port_name.name));
+                                    cpp.push_str(&format!(
+                                        "  _inst_{}.{}_{i} = {src_name}_{i};\n",
+                                        inst.name.name, conn.port_name.name
+                                    ));
                                 }
                                 continue;
                             }
                             if wide_names.contains(src_name.as_str()) {
                                 let resolved = ctx_comb.resolve_name(src_name, false);
-                                cpp.push_str(&format!("  _inst_{}.{} = {};\n",
-                                    inst.name.name, conn.port_name.name, resolved));
+                                cpp.push_str(&format!(
+                                    "  _inst_{}.{} = {};\n",
+                                    inst.name.name, conn.port_name.name, resolved
+                                ));
                                 continue;
                             }
                         }
@@ -7464,13 +9323,22 @@ impl<'a> SimCodegen<'a> {
                         // Wide type (>64 bits): parent _arch_u128 → inst VlWide
                         let _in_w = if let ExprKind::Ident(n) = &conn.signal.kind {
                             widths.get(n.as_str()).copied().unwrap_or(0)
-                        } else { 0 };
-                        if _in_w > 64 {
-                            cpp.push_str(&format!("  _arch_u128_to_vl({}, _inst_{}.{}.data(), {});\n",
-                                sig, inst.name.name, conn.port_name.name, wide_words(_in_w)));
                         } else {
-                            cpp.push_str(&format!("  _inst_{}.{} = {};\n",
-                                inst.name.name, conn.port_name.name, sig));
+                            0
+                        };
+                        if _in_w > 64 {
+                            cpp.push_str(&format!(
+                                "  _arch_u128_to_vl({}, _inst_{}.{}.data(), {});\n",
+                                sig,
+                                inst.name.name,
+                                conn.port_name.name,
+                                wide_words(_in_w)
+                            ));
+                        } else {
+                            cpp.push_str(&format!(
+                                "  _inst_{}.{} = {};\n",
+                                inst.name.name, conn.port_name.name, sig
+                            ));
                         }
                     }
                 }
@@ -7481,8 +9349,10 @@ impl<'a> SimCodegen<'a> {
                             if let Some(n) = ctx_comb.expr_vec_size(&conn.signal) {
                                 let sig = cpp_expr(&conn.signal, &ctx_comb);
                                 for i in 0..n {
-                                    cpp.push_str(&format!("  {sig}[{i}] = _inst_{}.{}_{i};\n",
-                                        inst.name.name, conn.port_name.name));
+                                    cpp.push_str(&format!(
+                                        "  {sig}[{i}] = _inst_{}.{}_{i};\n",
+                                        inst.name.name, conn.port_name.name
+                                    ));
                                 }
                                 continue;
                             }
@@ -7496,17 +9366,32 @@ impl<'a> SimCodegen<'a> {
                                     // field, so the eval_comb-tail sync isn't
                                     // overwritten.
                                     for i in 0..n {
-                                        cpp.push_str(&format!("  _{sig_name}[{i}] = _inst_{}.{}_{i};\n",
-                                            inst.name.name, conn.port_name.name));
+                                        cpp.push_str(&format!(
+                                            "  _{sig_name}[{i}] = _inst_{}.{}_{i};\n",
+                                            inst.name.name, conn.port_name.name
+                                        ));
                                     }
                                     if port_reg_names.contains(sig_name.as_str()) {
-                                        emit_port_reg_public_copy(&mut cpp, sig_name, &widths, Some(n), "  ");
+                                        emit_port_reg_public_copy(
+                                            &mut cpp,
+                                            sig_name,
+                                            &widths,
+                                            Some(n),
+                                            "  ",
+                                        );
                                     }
                                 } else {
-                                    let prefix = vec_storage_prefix(sig_name.as_str(), &reg_names, &let_names, &inst_out);
+                                    let prefix = vec_storage_prefix(
+                                        sig_name.as_str(),
+                                        &reg_names,
+                                        &let_names,
+                                        &inst_out,
+                                    );
                                     for i in 0..n {
-                                        cpp.push_str(&format!("  {prefix}{sig_name}[{i}] = _inst_{}.{}_{i};\n",
-                                            inst.name.name, conn.port_name.name));
+                                        cpp.push_str(&format!(
+                                            "  {prefix}{sig_name}[{i}] = _inst_{}.{}_{i};\n",
+                                            inst.name.name, conn.port_name.name
+                                        ));
                                     }
                                 }
                                 continue;
@@ -7515,13 +9400,22 @@ impl<'a> SimCodegen<'a> {
                         let sig = cpp_expr(&conn.signal, &ctx_comb);
                         let _out_w = if let ExprKind::Ident(n) = &conn.signal.kind {
                             widths.get(n.as_str()).copied().unwrap_or(0)
-                        } else { 0 };
-                        if _out_w > 64 {
-                            cpp.push_str(&format!("  {} = _arch_vl_to_u128(_inst_{}.{}.data(), {});\n",
-                                sig, inst.name.name, conn.port_name.name, wide_words(_out_w)));
                         } else {
-                            cpp.push_str(&format!("  {} = _inst_{}.{};\n",
-                                sig, inst.name.name, conn.port_name.name));
+                            0
+                        };
+                        if _out_w > 64 {
+                            cpp.push_str(&format!(
+                                "  {} = _arch_vl_to_u128(_inst_{}.{}.data(), {});\n",
+                                sig,
+                                inst.name.name,
+                                conn.port_name.name,
+                                wide_words(_out_w)
+                            ));
+                        } else {
+                            cpp.push_str(&format!(
+                                "  {} = _inst_{}.{};\n",
+                                sig, inst.name.name, conn.port_name.name
+                            ));
                         }
                         if let ExprKind::Ident(name) = &conn.signal.kind {
                             if port_reg_names.contains(name.as_str()) {
@@ -7537,7 +9431,8 @@ impl<'a> SimCodegen<'a> {
         if !uninit_regs.is_empty() {
             // Collect all signal names read in comb blocks AND in let bindings
             // (let values are lowered into eval_comb too).
-            let mut comb_reads: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            let mut comb_reads: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
             for item in &m.body {
                 match item {
                     ModuleBodyItem::CombBlock(cb) => {
@@ -7584,7 +9479,8 @@ impl<'a> SimCodegen<'a> {
                         // signal — only the producer bug (valid asserted but
                         // payload never set) should fire. Non-payload inputs
                         // fall through to the unconditional check.
-                        let gate = payload_guards.get(name)
+                        let gate = payload_guards
+                            .get(name)
                             .map(|g| format!(" && {g}"))
                             .unwrap_or_default();
                         cpp.push_str(&format!(
@@ -7618,7 +9514,9 @@ impl<'a> SimCodegen<'a> {
                 // counters reflect "block evaluations" rather than
                 // "cycles where block was active".
                 if let Some(reg) = cov_handle {
-                    let idx = reg.borrow_mut().alloc("comb", cb.span.start, "comb".to_string());
+                    let idx = reg
+                        .borrow_mut()
+                        .alloc("comb", cb.span.start, "comb".to_string());
                     body.push_str(&format!("  _arch_cov[{idx}]++;\n"));
                 }
                 emit_comb_stmts(&cb.stmts, &ctx_comb, &mut body, 1);
@@ -7648,27 +9546,42 @@ impl<'a> SimCodegen<'a> {
 
         // Generate tick() for multi-clock modules with known frequencies
         if all_freqs_known {
-            let freqs: Vec<(String, u64)> = clk_freqs.iter()
+            let freqs: Vec<(String, u64)> = clk_freqs
+                .iter()
                 .map(|(name, f)| (name.clone(), f.unwrap()))
                 .collect();
 
             // Compute half-periods in picoseconds: half_period = 1e6 / (2 * freq_mhz)
             // To avoid floating point, use: half_period_ps = 500_000 / freq_mhz
-            let half_periods: Vec<(String, u64)> = freqs.iter()
+            let half_periods: Vec<(String, u64)> = freqs
+                .iter()
                 .map(|(name, f)| (name.clone(), 500_000 / f))
                 .collect();
 
             // Find GCD of all half-periods for the time step
             fn gcd(a: u64, b: u64) -> u64 {
-                if b == 0 { a } else { gcd(b, a % b) }
+                if b == 0 {
+                    a
+                } else {
+                    gcd(b, a % b)
+                }
             }
-            let step_ps = half_periods.iter().map(|(_, hp)| *hp).reduce(|a, b| gcd(a, b)).unwrap();
+            let step_ps = half_periods
+                .iter()
+                .map(|(_, hp)| *hp)
+                .reduce(|a, b| gcd(a, b))
+                .unwrap();
 
             cpp.push_str(&format!("\nvoid {class}::tick() {{\n"));
-            cpp.push_str(&format!("  // Auto-generated clock driver (step = {} ps)\n", step_ps));
+            cpp.push_str(&format!(
+                "  // Auto-generated clock driver (step = {} ps)\n",
+                step_ps
+            ));
             for (name, hp) in &half_periods {
-                cpp.push_str(&format!("  // {name}: half-period = {hp} ps ({} MHz)\n",
-                    500_000 / hp));
+                cpp.push_str(&format!(
+                    "  // {name}: half-period = {hp} ps ({} MHz)\n",
+                    500_000 / hp
+                ));
             }
             // Toggle each clock: flip when time_ps is at a half-period boundary
             for (name, hp) in &half_periods {
@@ -7686,7 +9599,11 @@ impl<'a> SimCodegen<'a> {
         let multi_clk = clk_ports.len() > 1;
         // Printf format for cycle prefix: single-clock uses "[%llu]", multi-clock uses "%s" with _dbg_hdr
         let cyc_fmt = if multi_clk { "%s" } else { "[%llu]" };
-        let cyc_arg = if multi_clk { "_dbg_hdr" } else { "(unsigned long long)_dbg_cycle" };
+        let cyc_arg = if multi_clk {
+            "_dbg_hdr"
+        } else {
+            "(unsigned long long)_dbg_cycle"
+        };
         if emit_debug {
             cpp.push_str(&format!("void {class}::_debug_log_ports() {{\n"));
             if multi_clk {
@@ -7695,9 +9612,14 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str("  snprintf(_dbg_hdr, sizeof(_dbg_hdr), \"[%llu@%s]\", (unsigned long long)_dbg_cycle, _dbg_last_clk);\n");
             }
             for p in &m.ports {
-                if p.bus_info.is_some() { continue; }
+                if p.bus_info.is_some() {
+                    continue;
+                }
                 let pname = &p.name.name;
-                let dir_str = match p.direction { Direction::In => "in", Direction::Out => "out" };
+                let dir_str = match p.direction {
+                    Direction::In => "in",
+                    Direction::Out => "out",
+                };
                 match &p.ty {
                     TypeExpr::Clock(_) => {
                         cpp.push_str(&format!("  // {pname}: clock — skipped\n"));
@@ -7709,22 +9631,16 @@ impl<'a> SimCodegen<'a> {
                 if let Some(vi) = vec_port_infos.iter().find(|v| v.name == *pname) {
                     // Vec port: compare each flat element
                     for i in 0..vi.count {
-                        cpp.push_str(&format!(
-                            "  if ({pname}_{i} != _dbg_prev_{pname}_{i}) {{\n"
-                        ));
+                        cpp.push_str(&format!("  if ({pname}_{i} != _dbg_prev_{pname}_{i}) {{\n"));
                         cpp.push_str(&format!(
                             "    printf(\"{cyc_fmt}[{name}.{pname}[{i}]]({dir}) 0x%llx -> 0x%llx\\n\",\n",
                             dir = dir_str
                         ));
-                        cpp.push_str(&format!(
-                            "           {cyc_arg},\n"
-                        ));
+                        cpp.push_str(&format!("           {cyc_arg},\n"));
                         cpp.push_str(&format!(
                             "           (unsigned long long)_dbg_prev_{pname}_{i},\n"
                         ));
-                        cpp.push_str(&format!(
-                            "           (unsigned long long){pname}_{i});\n"
-                        ));
+                        cpp.push_str(&format!("           (unsigned long long){pname}_{i});\n"));
                         cpp.push_str(&format!("    _dbg_prev_{pname}_{i} = {pname}_{i};\n"));
                         cpp.push_str("  }\n");
                     }
@@ -7754,22 +9670,16 @@ impl<'a> SimCodegen<'a> {
                         cpp.push_str("  }\n");
                     } else {
                         // Scalar port (≤64 bits)
-                        cpp.push_str(&format!(
-                            "  if ({pname} != _dbg_prev_{pname}) {{\n"
-                        ));
+                        cpp.push_str(&format!("  if ({pname} != _dbg_prev_{pname}) {{\n"));
                         cpp.push_str(&format!(
                             "    printf(\"{cyc_fmt}[{name}.{pname}]({dir}) 0x%llx -> 0x%llx\\n\",\n",
                             dir = dir_str
                         ));
-                        cpp.push_str(&format!(
-                            "           {cyc_arg},\n"
-                        ));
+                        cpp.push_str(&format!("           {cyc_arg},\n"));
                         cpp.push_str(&format!(
                             "           (unsigned long long)_dbg_prev_{pname},\n"
                         ));
-                        cpp.push_str(&format!(
-                            "           (unsigned long long){pname});\n"
-                        ));
+                        cpp.push_str(&format!("           (unsigned long long){pname});\n"));
                         cpp.push_str(&format!("    _dbg_prev_{pname} = {pname};\n"));
                         cpp.push_str("  }\n");
                     }
@@ -7802,21 +9712,15 @@ impl<'a> SimCodegen<'a> {
                     cpp.push_str(&format!("    _dbg_prev_{flat_name} = {flat_name};\n"));
                     cpp.push_str("  }\n");
                 } else {
-                    cpp.push_str(&format!(
-                        "  if ({flat_name} != _dbg_prev_{flat_name}) {{\n"
-                    ));
+                    cpp.push_str(&format!("  if ({flat_name} != _dbg_prev_{flat_name}) {{\n"));
                     cpp.push_str(&format!(
                         "    printf(\"{cyc_fmt}[{name}.{flat_name}]({dir_str}) 0x%llx -> 0x%llx\\n\",\n"
                     ));
-                    cpp.push_str(&format!(
-                        "           {cyc_arg},\n"
-                    ));
+                    cpp.push_str(&format!("           {cyc_arg},\n"));
                     cpp.push_str(&format!(
                         "           (unsigned long long)_dbg_prev_{flat_name},\n"
                     ));
-                    cpp.push_str(&format!(
-                        "           (unsigned long long){flat_name});\n"
-                    ));
+                    cpp.push_str(&format!("           (unsigned long long){flat_name});\n"));
                     cpp.push_str(&format!("    _dbg_prev_{flat_name} = {flat_name};\n"));
                     cpp.push_str("  }\n");
                 }
@@ -7832,8 +9736,12 @@ impl<'a> SimCodegen<'a> {
                 // Multi-clock: increment on any posedge, record which clock
                 cpp.push_str("  ");
                 for (i, c) in clk_ports.iter().enumerate() {
-                    if i > 0 { cpp.push_str(" else "); }
-                    cpp.push_str(&format!("if (_rising_{c}) {{ _dbg_cycle++; _dbg_last_clk = \"{c}\"; }}"));
+                    if i > 0 {
+                        cpp.push_str(" else ");
+                    }
+                    cpp.push_str(&format!(
+                        "if (_rising_{c}) {{ _dbg_cycle++; _dbg_last_clk = \"{c}\"; }}"
+                    ));
                 }
                 cpp.push_str("\n");
             }
@@ -7844,11 +9752,17 @@ impl<'a> SimCodegen<'a> {
         // its final point count. Patch the header / impl placeholders.
         let n_cov = cov_reg.borrow().points.len();
         let header_decl = if self.coverage && n_cov > 0 {
-            format!("public:\n  static uint64_t _arch_cov[{n_cov}];\n  static bool _arch_cov_dumped;\n")
-        } else { String::new() };
+            format!(
+                "public:\n  static uint64_t _arch_cov[{n_cov}];\n  static bool _arch_cov_dumped;\n"
+            )
+        } else {
+            String::new()
+        };
         let impl_defn = if self.coverage && n_cov > 0 {
             format!("uint64_t {class}::_arch_cov[{n_cov}] = {{}};\nbool {class}::_arch_cov_dumped = false;\n\n")
-        } else { String::new() };
+        } else {
+            String::new()
+        };
         h = h.replace("__ARCH_COV_HEADER_DECL__", &header_decl);
         cpp = cpp.replace("__ARCH_COV_IMPL_DEFN__", &impl_defn);
 
@@ -7872,7 +9786,9 @@ impl<'a> SimCodegen<'a> {
             // lines to the coverage.dat file.
             if let Some(path) = &self.coverage_dat {
                 let path_lit = path.replace('\\', "\\\\").replace('"', "\\\"");
-                cpp.push_str(&format!("  FILE* _dat = _arch_cov_dat_open(\"{path_lit}\");\n"));
+                cpp.push_str(&format!(
+                    "  FILE* _dat = _arch_cov_dat_open(\"{path_lit}\");\n"
+                ));
             }
             for (i, p) in cov_reg.borrow().points.iter().enumerate() {
                 let (file_disp, line_no) = if let Some(sm) = &self.source_map {
@@ -7895,10 +9811,10 @@ impl<'a> SimCodegen<'a> {
                     let file_esc = file_disp.replace('\\', "\\\\").replace('"', "\\\"");
                     let page = match p.kind {
                         "if" | "elsif" | "else" => "v_branch",
-                        "seq" | "comb"          => "v_line",
-                        "state" | "trans"       => "v_user/fsm",
-                        "toggle"                => "v_toggle",
-                        _                       => "v_user",
+                        "seq" | "comb" => "v_line",
+                        "state" | "trans" => "v_user/fsm",
+                        "toggle" => "v_toggle",
+                        _ => "v_user",
                     };
                     let comment = p.label.replace('\\', "\\\\").replace('"', "\\\"");
                     // Verilator coverage.dat field separators are \x01 (key)
@@ -7920,7 +9836,11 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str("} // namespace\n\n");
         }
 
-        SimModel { class_name: class.clone(), header: h, impl_: cpp }
+        SimModel {
+            class_name: class.clone(),
+            header: h,
+            impl_: cpp,
+        }
     }
 }
 
@@ -7931,7 +9851,9 @@ impl<'a> SimCodegen<'a> {
         let name = &c.name.name;
         let class = format!("V{name}");
 
-        let max_param = c.params.iter()
+        let max_param = c
+            .params
+            .iter()
             .find(|p| p.name.name == "MAX")
             .and_then(|p| p.default.as_ref())
             .map(|e| match &e.kind {
@@ -7941,13 +9863,19 @@ impl<'a> SimCodegen<'a> {
 
         let value_port = c.ports.iter().find(|p| p.name.name == "value");
         let count_bits = value_port
-            .and_then(|vp| if let TypeExpr::UInt(w) = &vp.ty { Some(eval_width(w)) } else { None })
+            .and_then(|vp| {
+                if let TypeExpr::UInt(w) = &vp.ty {
+                    Some(eval_width(w))
+                } else {
+                    None
+                }
+            })
             .unwrap_or(8);
         let count_ty = cpp_uint(count_bits);
 
-        let has_inc    = c.ports.iter().any(|p| p.name.name == "inc");
-        let has_dec    = c.ports.iter().any(|p| p.name.name == "dec");
-        let has_clear  = c.ports.iter().any(|p| p.name.name == "clear");
+        let has_inc = c.ports.iter().any(|p| p.name.name == "inc");
+        let has_dec = c.ports.iter().any(|p| p.name.name == "dec");
+        let has_clear = c.ports.iter().any(|p| p.name.name == "clear");
         let has_at_max = c.ports.iter().any(|p| p.name.name == "at_max");
         let has_at_min = c.ports.iter().any(|p| p.name.name == "at_min");
         let has_max_port = c.ports.iter().any(|p| p.name.name == "max");
@@ -7964,23 +9892,52 @@ impl<'a> SimCodegen<'a> {
         };
 
         let (rst_name, _is_async, is_low) = extract_reset_info(&c.ports);
-        let rst_cond = if is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
+        let rst_cond = if is_low {
+            format!("(!{})", rst_name)
+        } else {
+            rst_name.clone()
+        };
 
-        let init_val: u64 = c.init.as_ref()
-            .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v) } else { None })
+        let init_val: u64 = c
+            .init
+            .as_ref()
+            .and_then(|e| {
+                if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind {
+                    Some(*v)
+                } else {
+                    None
+                }
+            })
             .unwrap_or(0);
 
         let mut h = String::new();
-        h.push_str("#pragma once\n#include <cstdint>\n#include <cstdio>\n#include \"verilated.h\"\n\n");
+        h.push_str(
+            "#pragma once\n#include <cstdint>\n#include <cstdio>\n#include \"verilated.h\"\n\n",
+        );
         h.push_str(&format!("class {class} {{\npublic:\n"));
-        for p in &c.ports { h.push_str(&format!("  {} {};\n", cpp_port_type_with_params(&p.ty, &c.params), p.name.name)); }
+        for p in &c.ports {
+            h.push_str(&format!(
+                "  {} {};\n",
+                cpp_port_type_with_params(&p.ty, &c.params),
+                p.name.name
+            ));
+        }
         h.push('\n');
 
-        let port_inits: Vec<String> = c.ports.iter().map(|p| format!("{}(0)", p.name.name)).collect();
-        let state_inits = vec!["_clk_prev(0)".to_string(), format!("_count_r({})", init_val)];
+        let port_inits: Vec<String> = c
+            .ports
+            .iter()
+            .map(|p| format!("{}(0)", p.name.name))
+            .collect();
+        let state_inits = vec![
+            "_clk_prev(0)".to_string(),
+            format!("_count_r({})", init_val),
+        ];
         let all_inits: Vec<String> = port_inits.into_iter().chain(state_inits).collect();
         h.push_str(&format!("  {class}() : {} {{}}\n", all_inits.join(", ")));
-        h.push_str(&format!("  explicit {class}(VerilatedContext*) : {class}() {{}}\n"));
+        h.push_str(&format!(
+            "  explicit {class}(VerilatedContext*) : {class}() {{}}\n"
+        ));
         h.push_str("  void eval();\n  void final() { trace_close(); }\n");
         h.push_str("  void eval_posedge();\n  void eval_comb();\n");
         h.push_str("private:\n");
@@ -7990,8 +9947,12 @@ impl<'a> SimCodegen<'a> {
         let mut cpp = String::new();
         cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
 
-        let clk_port = c.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
-            .map(|p| p.name.name.as_str()).unwrap_or("clk");
+        let clk_port = c
+            .ports
+            .iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.as_str())
+            .unwrap_or("clk");
 
         cpp.push_str(&format!("void {class}::eval() {{\n"));
         cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
@@ -8005,28 +9966,37 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
         cpp.push_str("  if (!_rising) return;\n");
         cpp.push_str(&format!("  {count_ty} _n = _count_r;\n"));
-        cpp.push_str(&format!("  if ({rst_cond}) {{\n    _n = {init_val};\n  }} else {{\n"));
+        cpp.push_str(&format!(
+            "  if ({rst_cond}) {{\n    _n = {init_val};\n  }} else {{\n"
+        ));
 
-        use CounterDirection::*; use CounterMode::*;
+        use CounterDirection::*;
+        use CounterMode::*;
         match (c.direction, c.mode) {
             (Up, Wrap) => {
                 let inc_cond = if has_inc { "    if (inc) {" } else { "    {" };
                 cpp.push_str(&format!("{inc_cond}\n"));
-                cpp.push_str(&format!("      if (_count_r == {bound_expr}) _n = {init_val};\n"));
+                cpp.push_str(&format!(
+                    "      if (_count_r == {bound_expr}) _n = {init_val};\n"
+                ));
                 cpp.push_str("      else _n = _count_r + 1;\n");
                 cpp.push_str("    }\n");
             }
             (Down, Wrap) => {
                 let dec_cond = if has_dec { "    if (dec) {" } else { "    {" };
                 cpp.push_str(&format!("{dec_cond}\n"));
-                cpp.push_str(&format!("      if (_count_r == {init_val}) _n = {bound_expr};\n"));
+                cpp.push_str(&format!(
+                    "      if (_count_r == {init_val}) _n = {bound_expr};\n"
+                ));
                 cpp.push_str("      else _n = _count_r - 1;\n");
                 cpp.push_str("    }\n");
             }
             (Up, Saturate) => {
                 let inc_cond = if has_inc { "    if (inc) {" } else { "    {" };
                 cpp.push_str(&format!("{inc_cond}\n"));
-                cpp.push_str(&format!("      if (_count_r < {bound_expr}) _n = _count_r + 1;\n"));
+                cpp.push_str(&format!(
+                    "      if (_count_r < {bound_expr}) _n = _count_r + 1;\n"
+                ));
                 cpp.push_str("    }\n");
             }
             (Down, Saturate) => {
@@ -8036,7 +10006,9 @@ impl<'a> SimCodegen<'a> {
             }
             (Up, Gray) => {
                 cpp.push_str("    if (inc) {\n      uint32_t _bin = _count_r + 1;\n");
-                cpp.push_str(&format!("      _n = ({count_ty})(_bin ^ (_bin >> 1));\n    }}\n"));
+                cpp.push_str(&format!(
+                    "      _n = ({count_ty})(_bin ^ (_bin >> 1));\n    }}\n"
+                ));
             }
             (Up, OneHot) => {
                 let inc_cond = if has_inc { "    if (inc) {" } else { "    {" };
@@ -8054,16 +10026,22 @@ impl<'a> SimCodegen<'a> {
             }
             _ => {
                 let inc_cond = if has_inc { "    if (inc)" } else { "" };
-                cpp.push_str(&format!("    {inc_cond} _n = ({count_ty})(_count_r + 1);\n"));
+                cpp.push_str(&format!(
+                    "    {inc_cond} _n = ({count_ty})(_count_r + 1);\n"
+                ));
             }
         }
         if has_clear {
-            cpp.push_str(&format!("    if (clear) _n = {init_val}; // clear overrides inc\n"));
+            cpp.push_str(&format!(
+                "    if (clear) _n = {init_val}; // clear overrides inc\n"
+            ));
         }
         cpp.push_str("  }\n  _count_r = _n;\n}\n\n");
 
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
-        if value_port.is_some() { cpp.push_str("  value = _count_r;\n"); }
+        if value_port.is_some() {
+            cpp.push_str("  value = _count_r;\n");
+        }
         if has_at_max {
             cpp.push_str(&format!("  at_max = (_count_r == {bound_expr}) ? 1 : 0;\n"));
         }
@@ -8074,98 +10052,163 @@ impl<'a> SimCodegen<'a> {
 
         // Add trace support
         let extra_sigs: Vec<(&str, &str, u32)> = vec![("count_r", "_count_r", count_bits)];
-        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &c.ports, &extra_sigs, &c.params);
+        add_trace_to_simple_construct(
+            &mut h,
+            &mut cpp,
+            &class,
+            name,
+            &c.ports,
+            &extra_sigs,
+            &c.params,
+        );
         h.push_str("};\n");
 
-        SimModel { class_name: class, header: h, impl_: cpp }
+        SimModel {
+            class_name: class,
+            header: h,
+            impl_: cpp,
+        }
     }
 }
 
 // ── FSM codegen ───────────────────────────────────────────────────────────────
 
-
 // ── Regfile codegen ───────────────────────────────────────────────────────────
 
 impl<'a> SimCodegen<'a> {
     pub(crate) fn gen_regfile(&self, r: &RegfileDecl) -> SimModel {
-        let name  = &r.name.name;
+        let name = &r.name.name;
         let class = format!("V{name}");
 
-        let nregs  = r.param_int("NREGS", 32) as usize;
-        let nread  = r.read_ports.as_ref().map(|rp| r.resolve_count_expr(&rp.count_expr)).unwrap_or(1) as usize;
-        let nwrite = r.write_ports.as_ref().map(|wp| r.resolve_count_expr(&wp.count_expr)).unwrap_or(1) as usize;
+        let nregs = r.param_int("NREGS", 32) as usize;
+        let nread = r
+            .read_ports
+            .as_ref()
+            .map(|rp| r.resolve_count_expr(&rp.count_expr))
+            .unwrap_or(1) as usize;
+        let nwrite = r
+            .write_ports
+            .as_ref()
+            .map(|wp| r.resolve_count_expr(&wp.count_expr))
+            .unwrap_or(1) as usize;
 
         // C++ type for one register element (from the write data signal type)
-        let elem_cpp = r.write_ports.as_ref()
+        let elem_cpp = r
+            .write_ports
+            .as_ref()
             .and_then(|wp| wp.signals.iter().find(|s| s.name.name == "data"))
             .map(|s| cpp_internal_type_with_params(&s.ty, &r.params))
             .unwrap_or_else(|| "uint32_t".to_string());
 
         // Flat port name: "{pfx}_{sig}" when count==1, "{pfx}{i}_{sig}" otherwise
         let flat = |pfx: &str, i: usize, count: usize, sig: &str| -> String {
-            if count == 1 { format!("{pfx}_{sig}") } else { format!("{pfx}{i}_{sig}") }
+            if count == 1 {
+                format!("{pfx}_{sig}")
+            } else {
+                format!("{pfx}{i}_{sig}")
+            }
         };
 
-        let clk_port  = r.ports.iter()
+        let clk_port = r
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone())
             .unwrap_or_else(|| "clk".to_string());
-        let read_pfx  = r.read_ports.as_ref().map(|rp| rp.name.name.clone()).unwrap_or_else(|| "read".to_string());
-        let write_pfx = r.write_ports.as_ref().map(|wp| wp.name.name.clone()).unwrap_or_else(|| "write".to_string());
+        let read_pfx = r
+            .read_ports
+            .as_ref()
+            .map(|rp| rp.name.name.clone())
+            .unwrap_or_else(|| "read".to_string());
+        let write_pfx = r
+            .write_ports
+            .as_ref()
+            .map(|wp| wp.name.name.clone())
+            .unwrap_or_else(|| "write".to_string());
 
         // ── Header ────────────────────────────────────────────────────────────
         let mut h = String::new();
         h.push_str(&format!("#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\nclass {class} {{\npublic:\n"));
 
         for p in &r.ports {
-            h.push_str(&format!("  {} {};\n", cpp_port_type_with_params(&p.ty, &r.params), p.name.name));
+            h.push_str(&format!(
+                "  {} {};\n",
+                cpp_port_type_with_params(&p.ty, &r.params),
+                p.name.name
+            ));
         }
         if let Some(rp) = &r.read_ports {
             for i in 0..nread {
                 for s in &rp.signals {
-                    h.push_str(&format!("  {} {};\n", cpp_port_type_with_params(&s.ty, &r.params), flat(&read_pfx, i, nread, &s.name.name)));
+                    h.push_str(&format!(
+                        "  {} {};\n",
+                        cpp_port_type_with_params(&s.ty, &r.params),
+                        flat(&read_pfx, i, nread, &s.name.name)
+                    ));
                 }
             }
         }
         if let Some(wp) = &r.write_ports {
             for i in 0..nwrite {
                 for s in &wp.signals {
-                    h.push_str(&format!("  {} {};\n", cpp_port_type_with_params(&s.ty, &r.params), flat(&write_pfx, i, nwrite, &s.name.name)));
+                    h.push_str(&format!(
+                        "  {} {};\n",
+                        cpp_port_type_with_params(&s.ty, &r.params),
+                        flat(&write_pfx, i, nwrite, &s.name.name)
+                    ));
                 }
             }
         }
         h.push('\n');
 
         // Constructor init list (all scalars = 0) + memset for rf array
-        let mut inits: Vec<String> = r.ports.iter().map(|p| format!("{}(0)", p.name.name)).collect();
+        let mut inits: Vec<String> = r
+            .ports
+            .iter()
+            .map(|p| format!("{}(0)", p.name.name))
+            .collect();
         if let Some(rp) = &r.read_ports {
-            for i in 0..nread { for s in &rp.signals { inits.push(format!("{}(0)", flat(&read_pfx, i, nread, &s.name.name))); } }
+            for i in 0..nread {
+                for s in &rp.signals {
+                    inits.push(format!("{}(0)", flat(&read_pfx, i, nread, &s.name.name)));
+                }
+            }
         }
         if let Some(wp) = &r.write_ports {
-            for i in 0..nwrite { for s in &wp.signals { inits.push(format!("{}(0)", flat(&write_pfx, i, nwrite, &s.name.name))); } }
+            for i in 0..nwrite {
+                for s in &wp.signals {
+                    inits.push(format!("{}(0)", flat(&write_pfx, i, nwrite, &s.name.name)));
+                }
+            }
         }
         inits.push("_clk_prev(0)".to_string());
-        let is_latch_init    = r.kind == crate::ast::RegfileKind::Latch;
-        let is_internal_init = is_latch_init && matches!(r.flops, crate::ast::RegfileFlops::Internal);
+        let is_latch_init = r.kind == crate::ast::RegfileKind::Latch;
+        let is_internal_init =
+            is_latch_init && matches!(r.flops, crate::ast::RegfileFlops::Internal);
         if is_internal_init {
             inits.push("_we_q(0)".to_string());
             inits.push("_waddr_q(0)".to_string());
             inits.push("_wdata_q(0)".to_string());
         }
 
-        h.push_str(&format!("  {class}() : {} {{\n    memset(_rf, 0, sizeof(_rf));\n  }}\n", inits.join(", ")));
+        h.push_str(&format!(
+            "  {class}() : {} {{\n    memset(_rf, 0, sizeof(_rf));\n  }}\n",
+            inits.join(", ")
+        ));
         h.push_str("  void eval();\n  void eval_comb();\n  void eval_posedge();\n  void final() { trace_close(); }\n\nprivate:\n");
         h.push_str("  uint8_t _clk_prev;\n");
         // Internal sample flops for kind:latch flops:internal (Ibex-style).
         // `_we_q` / `_waddr_q` / `_wdata_q` are taken on the rising edge; the
         // latch then captures during the clk-low half-cycle window (mirrors
         // the SV `always_latch if (!clk && we_q && waddr_q == k)` shape).
-        let is_latch    = r.kind == crate::ast::RegfileKind::Latch;
+        let is_latch = r.kind == crate::ast::RegfileKind::Latch;
         let is_internal = is_latch && matches!(r.flops, crate::ast::RegfileFlops::Internal);
         if is_internal {
             // Single write port assumed (matches SV codegen — same restriction).
             // For a wider data type we still match what cpp_internal_type picks.
-            let waddr_t = r.write_ports.as_ref()
+            let waddr_t = r
+                .write_ports
+                .as_ref()
                 .and_then(|wp| wp.signals.iter().find(|s| s.name.name == "addr"))
                 .map(|s| cpp_internal_type_with_params(&s.ty, &r.params))
                 .unwrap_or_else(|| "uint32_t".to_string());
@@ -8200,20 +10243,23 @@ impl<'a> SimCodegen<'a> {
         if !is_latch {
             // Init-protected addresses are immutable (mirrors SV emitter:
             // `init [k] = v;` lowers to a `waddr != k` write guard).
-            let guarded_addrs: Vec<u64> = r.inits.iter()
+            let guarded_addrs: Vec<u64> = r
+                .inits
+                .iter()
                 .filter_map(|init| match &init.index.kind {
                     ExprKind::Literal(LitKind::Dec(v)) => Some(*v),
                     _ => None,
                 })
                 .collect();
             for wi in 0..nwrite {
-                let wen   = flat(&write_pfx, wi, nwrite, "en");
+                let wen = flat(&write_pfx, wi, nwrite, "en");
                 let waddr = flat(&write_pfx, wi, nwrite, "addr");
                 let wdata = flat(&write_pfx, wi, nwrite, "data");
                 let guard = if guarded_addrs.is_empty() {
                     wen.clone()
                 } else {
-                    let parts: Vec<String> = guarded_addrs.iter()
+                    let parts: Vec<String> = guarded_addrs
+                        .iter()
                         .map(|k| format!("{waddr} != {k}"))
                         .collect();
                     format!("{wen} && {}", parts.join(" && "))
@@ -8222,7 +10268,7 @@ impl<'a> SimCodegen<'a> {
             }
         } else if is_internal {
             // Single-port sample (write port 0).
-            let wen   = flat(&write_pfx, 0, nwrite, "en");
+            let wen = flat(&write_pfx, 0, nwrite, "en");
             let waddr = flat(&write_pfx, 0, nwrite, "addr");
             let wdata = flat(&write_pfx, 0, nwrite, "data");
             cpp.push_str(&format!("  _we_q = {wen};\n"));
@@ -8249,7 +10295,7 @@ impl<'a> SimCodegen<'a> {
             } else {
                 // External flops: latch transparent whenever we is high (the
                 // SV `always_latch if (we && waddr == k)` collapses to this).
-                let wen   = flat(&write_pfx, 0, nwrite, "en");
+                let wen = flat(&write_pfx, 0, nwrite, "en");
                 let waddr = flat(&write_pfx, 0, nwrite, "addr");
                 let wdata = flat(&write_pfx, 0, nwrite, "data");
                 cpp.push_str(&format!("  if ({wen})\n"));
@@ -8260,10 +10306,12 @@ impl<'a> SimCodegen<'a> {
             let raddr = flat(&read_pfx, ri, nread, "addr");
             let rdata = flat(&read_pfx, ri, nread, "data");
             if r.forward_write_before_read && nwrite > 0 {
-                let wen   = flat(&write_pfx, 0, nwrite, "en");
+                let wen = flat(&write_pfx, 0, nwrite, "en");
                 let waddr = flat(&write_pfx, 0, nwrite, "addr");
                 let wdata = flat(&write_pfx, 0, nwrite, "data");
-                cpp.push_str(&format!("  {rdata} = ({wen} && {waddr} == {raddr}) ? {wdata} : _rf[{raddr}];\n"));
+                cpp.push_str(&format!(
+                    "  {rdata} = ({wen} && {waddr} == {raddr}) ? {wdata} : _rf[{raddr}];\n"
+                ));
             } else {
                 cpp.push_str(&format!("  {rdata} = _rf[{raddr}];\n"));
             }
@@ -8271,25 +10319,46 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("}\n");
 
         let extra_sigs: Vec<(&str, &str, u32)> = vec![];
-        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &r.ports, &extra_sigs, &r.params);
+        add_trace_to_simple_construct(
+            &mut h,
+            &mut cpp,
+            &class,
+            name,
+            &r.ports,
+            &extra_sigs,
+            &r.params,
+        );
         h.push_str("};\n");
 
-        SimModel { class_name: class, header: h, impl_: cpp }
+        SimModel {
+            class_name: class,
+            header: h,
+            impl_: cpp,
+        }
     }
-
 
     pub(crate) fn gen_synchronizer(&self, s: &crate::ast::SynchronizerDecl) -> SimModel {
         use crate::ast::SyncKind;
 
         let class = s.name.name.clone();
 
-        let stages: usize = s.params.iter()
+        let stages: usize = s
+            .params
+            .iter()
             .find(|p| p.name.name == "STAGES")
             .and_then(|p| p.default.as_ref())
-            .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v as usize) } else { None })
+            .and_then(|e| {
+                if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind {
+                    Some(*v as usize)
+                } else {
+                    None
+                }
+            })
             .unwrap_or(2);
 
-        let clk_ports: Vec<&crate::ast::PortDecl> = s.ports.iter()
+        let clk_ports: Vec<&crate::ast::PortDecl> = s
+            .ports
+            .iter()
             .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .collect();
         let src_clk = &clk_ports[0].name.name;
@@ -8303,10 +10372,20 @@ impl<'a> SimCodegen<'a> {
             _ => 32,
         };
 
-        let rst_port = s.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Reset(..)));
-        let rst_is_low = rst_port.map_or(false, |rp| matches!(&rp.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low));
+        let rst_port = s
+            .ports
+            .iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Reset(..)));
+        let rst_is_low = rst_port.map_or(
+            false,
+            |rp| matches!(&rp.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low),
+        );
         let rst_guard = rst_port.map(|rp| {
-            if rst_is_low { format!("!{}", rp.name.name) } else { rp.name.name.clone() }
+            if rst_is_low {
+                format!("!{}", rp.name.name)
+            } else {
+                rp.name.name.clone()
+            }
         });
 
         let cdc_random = self.cdc_random;
@@ -8321,36 +10400,53 @@ impl<'a> SimCodegen<'a> {
         }
         h.push_str(&format!("class {class} {{\npublic:\n"));
         for p in &s.ports {
-            h.push_str(&format!("  {} {};\n", cpp_port_type_with_params(&p.ty, &s.params), p.name.name));
+            h.push_str(&format!(
+                "  {} {};\n",
+                cpp_port_type_with_params(&p.ty, &s.params),
+                p.name.name
+            ));
         }
         h.push_str("\n  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() { trace_close(); }\n");
         if cdc_random {
-            h.push_str("  uint8_t cdc_skip_pct = 25; // 0-100: probability of +1 cycle latency per edge\n");
+            h.push_str(
+                "  uint8_t cdc_skip_pct = 25; // 0-100: probability of +1 cycle latency per edge\n",
+            );
         }
         h.push_str("private:\n");
         h.push_str("  uint8_t _clk_prev_src;\n  uint8_t _clk_prev_dst;\n");
         h.push_str("  bool _rising_src;\n  bool _rising_dst;\n");
         match s.kind {
             SyncKind::Ff => {
-                for i in 0..stages { h.push_str(&format!("  {} _stage{};\n", data_ctype, i)); }
+                for i in 0..stages {
+                    h.push_str(&format!("  {} _stage{};\n", data_ctype, i));
+                }
             }
             SyncKind::Gray => {
-                for i in 0..stages { h.push_str(&format!("  {} _gray_stage{};\n", data_ctype, i)); }
+                for i in 0..stages {
+                    h.push_str(&format!("  {} _gray_stage{};\n", data_ctype, i));
+                }
             }
             SyncKind::Handshake => {
                 h.push_str(&format!("  {} _data_reg;\n", data_ctype));
                 h.push_str("  uint8_t _req_src;\n  uint8_t _ack_src;\n  uint8_t _ack_dst;\n");
                 for i in 0..stages {
-                    h.push_str(&format!("  uint8_t _req_sync{};\n  uint8_t _ack_sync{};\n", i, i));
+                    h.push_str(&format!(
+                        "  uint8_t _req_sync{};\n  uint8_t _ack_sync{};\n",
+                        i, i
+                    ));
                 }
             }
             SyncKind::Reset => {
-                for i in 0..stages { h.push_str(&format!("  uint8_t _stage{};\n", i)); }
+                for i in 0..stages {
+                    h.push_str(&format!("  uint8_t _stage{};\n", i));
+                }
             }
             SyncKind::Pulse => {
                 h.push_str("  uint8_t _toggle_src;\n");
                 // sync_chain needs STAGES entries + previous value for edge detect
-                for i in 0..stages { h.push_str(&format!("  uint8_t _sync{};\n", i)); }
+                for i in 0..stages {
+                    h.push_str(&format!("  uint8_t _sync{};\n", i));
+                }
                 h.push_str("  uint8_t _sync_prev;\n");
             }
         }
@@ -8368,7 +10464,9 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("    trace_open(Verilated::traceFile());\n");
         cpp.push_str(&format!("  _rising_src = ({src_clk} && !_clk_prev_src);\n"));
         cpp.push_str(&format!("  _rising_dst = ({dst_clk} && !_clk_prev_dst);\n"));
-        cpp.push_str(&format!("  _clk_prev_src = {src_clk};\n  _clk_prev_dst = {dst_clk};\n"));
+        cpp.push_str(&format!(
+            "  _clk_prev_src = {src_clk};\n  _clk_prev_dst = {dst_clk};\n"
+        ));
         if s.kind == SyncKind::Reset {
             cpp.push_str("  eval_posedge();\n  eval_comb();\n");
         } else {
@@ -8383,21 +10481,31 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str(&format!("  if ({cond}) {{\n"));
             match s.kind {
                 SyncKind::Ff => {
-                    for i in 0..stages { cpp.push_str(&format!("    _stage{i} = 0;\n")); }
+                    for i in 0..stages {
+                        cpp.push_str(&format!("    _stage{i} = 0;\n"));
+                    }
                 }
                 SyncKind::Gray => {
-                    for i in 0..stages { cpp.push_str(&format!("    _gray_stage{i} = 0;\n")); }
+                    for i in 0..stages {
+                        cpp.push_str(&format!("    _gray_stage{i} = 0;\n"));
+                    }
                 }
                 SyncKind::Handshake => {
                     cpp.push_str("    _data_reg = 0; _req_src = 0; _ack_src = 0; _ack_dst = 0;\n");
-                    for i in 0..stages { cpp.push_str(&format!("    _req_sync{i} = 0; _ack_sync{i} = 0;\n")); }
+                    for i in 0..stages {
+                        cpp.push_str(&format!("    _req_sync{i} = 0; _ack_sync{i} = 0;\n"));
+                    }
                 }
                 SyncKind::Reset => {
-                    for i in 0..stages { cpp.push_str(&format!("    _stage{i} = 1;\n")); }
+                    for i in 0..stages {
+                        cpp.push_str(&format!("    _stage{i} = 1;\n"));
+                    }
                 }
                 SyncKind::Pulse => {
                     cpp.push_str("    _toggle_src = 0; _sync_prev = 0;\n");
-                    for i in 0..stages { cpp.push_str(&format!("    _sync{i} = 0;\n")); }
+                    for i in 0..stages {
+                        cpp.push_str(&format!("    _sync{i} = 0;\n"));
+                    }
                 }
             }
             if cdc_random {
@@ -8408,7 +10516,9 @@ impl<'a> SimCodegen<'a> {
         // CDC randomization: LFSR step + skip flag
         if cdc_random {
             cpp.push_str("  // LFSR-based CDC randomization (models metastability settling)\n");
-            cpp.push_str("  _cdc_lfsr = (_cdc_lfsr >> 1) ^ ((_cdc_lfsr & 1) ? 0xB4BCD35Cu : 0u);\n");
+            cpp.push_str(
+                "  _cdc_lfsr = (_cdc_lfsr >> 1) ^ ((_cdc_lfsr & 1) ? 0xB4BCD35Cu : 0u);\n",
+            );
             cpp.push_str("  bool _cdc_skip = (_cdc_lfsr % 100) < cdc_skip_pct;\n");
         }
 
@@ -8422,36 +10532,48 @@ impl<'a> SimCodegen<'a> {
         match s.kind {
             SyncKind::Ff => {
                 cpp.push_str(dst_guard);
-                for i in (1..stages).rev() { cpp.push_str(&format!("    _stage{i} = _stage{};\n", i - 1)); }
+                for i in (1..stages).rev() {
+                    cpp.push_str(&format!("    _stage{i} = _stage{};\n", i - 1));
+                }
                 cpp.push_str("    _stage0 = data_in;\n  }\n");
             }
             SyncKind::Gray => {
                 cpp.push_str(dst_guard);
-                for i in (1..stages).rev() { cpp.push_str(&format!("    _gray_stage{i} = _gray_stage{};\n", i - 1)); }
+                for i in (1..stages).rev() {
+                    cpp.push_str(&format!("    _gray_stage{i} = _gray_stage{};\n", i - 1));
+                }
                 cpp.push_str("    _gray_stage0 = data_in ^ (data_in >> 1);\n  }\n");
             }
             SyncKind::Handshake => {
                 cpp.push_str("  if (_rising_src) {\n");
                 cpp.push_str("    if (data_in != _data_reg && _req_src == _ack_src) {\n");
                 cpp.push_str("      _data_reg = data_in;\n      _req_src ^= 1;\n    }\n");
-                for i in (1..stages).rev() { cpp.push_str(&format!("    _ack_sync{i} = _ack_sync{};\n", i - 1)); }
+                for i in (1..stages).rev() {
+                    cpp.push_str(&format!("    _ack_sync{i} = _ack_sync{};\n", i - 1));
+                }
                 cpp.push_str("    _ack_sync0 = _ack_dst;\n");
                 cpp.push_str(&format!("    _ack_src = _ack_sync{};\n  }}\n", stages - 1));
                 cpp.push_str(dst_guard);
-                for i in (1..stages).rev() { cpp.push_str(&format!("    _req_sync{i} = _req_sync{};\n", i - 1)); }
+                for i in (1..stages).rev() {
+                    cpp.push_str(&format!("    _req_sync{i} = _req_sync{};\n", i - 1));
+                }
                 cpp.push_str("    _req_sync0 = _req_src;\n");
                 cpp.push_str(&format!("    _ack_dst = _req_sync{};\n  }}\n", stages - 1));
             }
             SyncKind::Reset => {
                 // Async assert is always immediate (no randomization)
                 cpp.push_str("  if (data_in) {\n");
-                for i in 0..stages { cpp.push_str(&format!("    _stage{i} = 1;\n")); }
+                for i in 0..stages {
+                    cpp.push_str(&format!("    _stage{i} = 1;\n"));
+                }
                 if cdc_random {
                     cpp.push_str("  } else if (_rising_dst && !_cdc_skip) {\n");
                 } else {
                     cpp.push_str("  } else if (_rising_dst) {\n");
                 }
-                for i in (1..stages).rev() { cpp.push_str(&format!("    _stage{i} = _stage{};\n", i - 1)); }
+                for i in (1..stages).rev() {
+                    cpp.push_str(&format!("    _stage{i} = _stage{};\n", i - 1));
+                }
                 cpp.push_str("    _stage0 = 0;\n  }\n");
             }
             SyncKind::Pulse => {
@@ -8461,7 +10583,9 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str("  }\n");
                 cpp.push_str(dst_guard);
                 cpp.push_str(&format!("    _sync_prev = _sync{};\n", stages - 1));
-                for i in (1..stages).rev() { cpp.push_str(&format!("    _sync{i} = _sync{};\n", i - 1)); }
+                for i in (1..stages).rev() {
+                    cpp.push_str(&format!("    _sync{i} = _sync{};\n", i - 1));
+                }
                 cpp.push_str("    _sync0 = _toggle_src;\n");
                 cpp.push_str("  }\n");
             }
@@ -8500,24 +10624,51 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("}\n");
 
         let extra_sigs: Vec<(&str, &str, u32)> = vec![];
-        add_trace_to_simple_construct(&mut h, &mut cpp, &class, &class, &s.ports, &extra_sigs, &s.params);
+        add_trace_to_simple_construct(
+            &mut h,
+            &mut cpp,
+            &class,
+            &class,
+            &s.ports,
+            &extra_sigs,
+            &s.params,
+        );
         h.push_str("};\n");
 
-        SimModel { class_name: class, header: h, impl_: cpp }
+        SimModel {
+            class_name: class,
+            header: h,
+            impl_: cpp,
+        }
     }
 
     pub(crate) fn gen_clkgate(&self, c: &crate::ast::ClkGateDecl) -> SimModel {
         let class = format!("V{}", c.name.name);
 
-        let clk_in = c.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)) && p.direction == Direction::In)
-            .map(|p| p.name.name.as_str()).unwrap_or("clk_in");
-        let clk_out = c.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)) && p.direction == Direction::Out)
-            .map(|p| p.name.name.as_str()).unwrap_or("clk_out");
+        let clk_in = c
+            .ports
+            .iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)) && p.direction == Direction::In)
+            .map(|p| p.name.name.as_str())
+            .unwrap_or("clk_in");
+        let clk_out = c
+            .ports
+            .iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)) && p.direction == Direction::Out)
+            .map(|p| p.name.name.as_str())
+            .unwrap_or("clk_out");
         let enable = "enable";
-        let test_en = c.ports.iter().find(|p| p.name.name == "test_en").map(|p| p.name.name.as_str());
+        let test_en = c
+            .ports
+            .iter()
+            .find(|p| p.name.name == "test_en")
+            .map(|p| p.name.name.as_str());
 
         let mut h = String::new();
-        h.push_str(&format!("#pragma once\n#include <cstdint>\nclass {} {{\npublic:\n", class));
+        h.push_str(&format!(
+            "#pragma once\n#include <cstdint>\nclass {} {{\npublic:\n",
+            class
+        ));
 
         for p in &c.ports {
             h.push_str(&format!("  uint8_t {} = 0;\n", p.name.name));
@@ -8545,11 +10696,15 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("void {}::eval_comb() {{\n", class));
         match c.kind {
             crate::ast::ClkGateKind::Latch => {
-                cpp.push_str(&format!("  if (!{clk_in}) _en_latched = ({en_expr}) ? 1 : 0;\n"));
+                cpp.push_str(&format!(
+                    "  if (!{clk_in}) _en_latched = ({en_expr}) ? 1 : 0;\n"
+                ));
                 cpp.push_str(&format!("  {clk_out} = {clk_in} & _en_latched;\n"));
             }
             crate::ast::ClkGateKind::And => {
-                cpp.push_str(&format!("  {clk_out} = {clk_in} & (({en_expr}) ? 1 : 0);\n"));
+                cpp.push_str(&format!(
+                    "  {clk_out} = {clk_in} & (({en_expr}) ? 1 : 0);\n"
+                ));
             }
         }
         cpp.push_str("}\n");
@@ -8560,7 +10715,11 @@ impl<'a> SimCodegen<'a> {
         // eval — calls both
         cpp.push_str(&format!("void {}::eval() {{ eval_comb(); }}\n", class));
 
-        SimModel { class_name: class, header: h, impl_: cpp }
+        SimModel {
+            class_name: class,
+            header: h,
+            impl_: cpp,
+        }
     }
 
     // ── Structs + Enums file ─────────────────────────────────────────────────
@@ -8579,8 +10738,12 @@ impl<'a> SimCodegen<'a> {
                 Item::Enum(e) => enums.push(e),
                 Item::Struct(s) => structs.push(s),
                 Item::Package(p) => {
-                    for e in &p.enums { enums.push(e); }
-                    for s in &p.structs { structs.push(s); }
+                    for e in &p.enums {
+                        enums.push(e);
+                    }
+                    for s in &p.structs {
+                        structs.push(s);
+                    }
                 }
                 _ => {}
             }
@@ -8590,7 +10753,10 @@ impl<'a> SimCodegen<'a> {
             // Enums are uint32_t aliases — variants are used as integer indices
             h.push_str(&format!("typedef uint32_t {};\n", e.name.name));
             for (i, v) in e.variants.iter().enumerate() {
-                h.push_str(&format!("static const uint32_t {}_{} = {}u;\n", e.name.name, v.name, i));
+                h.push_str(&format!(
+                    "static const uint32_t {}_{} = {}u;\n",
+                    e.name.name, v.name, i
+                ));
             }
             h.push('\n');
         }
@@ -8616,10 +10782,19 @@ impl<'a> SimCodegen<'a> {
         for s in &structs {
             h.push_str(&format!("struct {} {{\n", s.name.name));
             for f in &s.fields {
-                h.push_str(&format!("  {};\n", cpp_field_decl(&f.name.name, &f.ty, &[])));
+                h.push_str(&format!(
+                    "  {};\n",
+                    cpp_field_decl(&f.name.name, &f.ty, &[])
+                ));
             }
-            h.push_str(&format!("  {}() {{ std::memset(this, 0, sizeof(*this)); }}\n", s.name.name));
-            h.push_str(&format!("  explicit {}(uint64_t v) {{ (void)v; std::memset(this, 0, sizeof(*this)); }}\n", s.name.name));
+            h.push_str(&format!(
+                "  {}() {{ std::memset(this, 0, sizeof(*this)); }}\n",
+                s.name.name
+            ));
+            h.push_str(&format!(
+                "  explicit {}(uint64_t v) {{ (void)v; std::memset(this, 0, sizeof(*this)); }}\n",
+                s.name.name
+            ));
             h.push_str(&format!("  {}& operator=(uint64_t v) {{ (void)v; std::memset(this, 0, sizeof(*this)); return *this; }}\n", s.name.name));
             h.push_str("};\n\n");
         }
@@ -8638,7 +10813,11 @@ impl<'a> SimCodegen<'a> {
         for item in &self.source.items {
             match item {
                 Item::Bus(b) => buses.push(b),
-                Item::Package(p) => { for b in &p.buses { buses.push(b); } }
+                Item::Package(p) => {
+                    for b in &p.buses {
+                        buses.push(b);
+                    }
+                }
                 _ => {}
             }
         }
@@ -8649,20 +10828,25 @@ impl<'a> SimCodegen<'a> {
             // this, the param_map is empty and every conditional branch
             // folds to false, producing an empty struct that breaks any
             // sim consumer that touches a bus field.
-            let param_map: HashMap<String, &Expr> = b.params.iter()
+            let param_map: HashMap<String, &Expr> = b
+                .params
+                .iter()
                 .filter_map(|p| p.default.as_ref().map(|d| (p.name.name.clone(), d)))
                 .collect();
             let effective = crate::resolve::BusInfo {
                 name: b.name.name.clone(),
                 params: b.params.clone(),
-                signals: b.signals.iter()
+                signals: b
+                    .signals
+                    .iter()
                     .map(|p| (p.name.name.clone(), p.direction, p.ty.clone()))
                     .collect(),
                 generates: b.generates.clone(),
                 handshakes: b.handshakes.clone(),
                 credit_channels: b.credit_channels.clone(),
                 tlm_methods: b.tlm_methods.clone(),
-            }.effective_signals(&param_map);
+            }
+            .effective_signals(&param_map);
             h.push_str(&format!("struct {} {{\n", b.name.name));
             let mut field_inits = Vec::new();
             let mut ctor_body = Vec::new();
@@ -8683,11 +10867,24 @@ impl<'a> SimCodegen<'a> {
             if field_inits.is_empty() && ctor_body.is_empty() {
                 h.push_str(&format!("  {}() {{}}\n", b.name.name));
             } else if field_inits.is_empty() {
-                h.push_str(&format!("  {}() {{ {} }}\n", b.name.name, ctor_body.join(" ")));
+                h.push_str(&format!(
+                    "  {}() {{ {} }}\n",
+                    b.name.name,
+                    ctor_body.join(" ")
+                ));
             } else if ctor_body.is_empty() {
-                h.push_str(&format!("  {}() : {} {{}}\n", b.name.name, field_inits.join(", ")));
+                h.push_str(&format!(
+                    "  {}() : {} {{}}\n",
+                    b.name.name,
+                    field_inits.join(", ")
+                ));
             } else {
-                h.push_str(&format!("  {}() : {} {{ {} }}\n", b.name.name, field_inits.join(", "), ctor_body.join(" ")));
+                h.push_str(&format!(
+                    "  {}() : {} {{ {} }}\n",
+                    b.name.name,
+                    field_inits.join(", "),
+                    ctor_body.join(" ")
+                ));
             }
             h.push_str("};\n\n");
         }
@@ -8699,22 +10896,35 @@ impl<'a> SimCodegen<'a> {
         }
     }
 
-
     pub(crate) fn gen_arbiter(&self, a: &ArbiterDecl) -> SimModel {
         let name = &a.name.name;
         let class = format!("V{name}");
 
-        let num_req: u64 = a.params.iter()
+        let num_req: u64 = a
+            .params
+            .iter()
             .find(|p| p.name.name == "NUM_REQ")
             .and_then(|p| p.default.as_ref())
-            .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v) } else { None })
+            .and_then(|e| {
+                if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind {
+                    Some(*v)
+                } else {
+                    None
+                }
+            })
             .unwrap_or(2);
 
         let (rst_name, _is_async, is_low) = extract_reset_info(&a.ports);
-        let rst_cond = if is_low { format!("(!{rst_name})") } else { rst_name.clone() };
+        let rst_cond = if is_low {
+            format!("(!{rst_name})")
+        } else {
+            rst_name.clone()
+        };
 
         let mut h = String::new();
-        h.push_str("#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\n");
+        h.push_str(
+            "#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\n",
+        );
         h.push_str(&format!("class {class} {{\npublic:\n"));
         for p in &a.ports {
             let ty = cpp_port_type_with_params(&p.ty, &a.params);
@@ -8730,7 +10940,9 @@ impl<'a> SimCodegen<'a> {
         // scans from index 0 (highest priority) so no state is needed.
         let needs_rr_state = matches!(a.policy, ArbiterPolicy::RoundRobin | ArbiterPolicy::Lru);
 
-        let mut all_port_inits: Vec<String> = a.ports.iter()
+        let mut all_port_inits: Vec<String> = a
+            .ports
+            .iter()
             .map(|p| format!("{}(0)", p.name.name))
             .collect();
         for pa in &a.port_arrays {
@@ -8750,7 +10962,10 @@ impl<'a> SimCodegen<'a> {
             all_port_inits.push(format!("_last_grant({})", num_req.saturating_sub(1)));
         }
 
-        h.push_str(&format!("  {class}() : {} {{}}\n", all_port_inits.join(", ")));
+        h.push_str(&format!(
+            "  {class}() : {} {{}}\n",
+            all_port_inits.join(", ")
+        ));
         h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n");
         h.push_str("  void final() { trace_close(); }\n");
         h.push_str("private:\n");
@@ -8767,11 +10982,18 @@ impl<'a> SimCodegen<'a> {
         let mut cpp = String::new();
         cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
 
-        let clk_port = a.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
-            .map(|p| p.name.name.as_str()).unwrap_or("clk");
+        let clk_port = a
+            .ports
+            .iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.as_str())
+            .unwrap_or("clk");
 
-        let req_pa_name = a.port_arrays.first()
-            .map(|pa| pa.name.name.as_str()).unwrap_or("request");
+        let req_pa_name = a
+            .port_arrays
+            .first()
+            .map(|pa| pa.name.name.as_str())
+            .unwrap_or("request");
 
         // eval(): edge detection lives inside eval_posedge() so a parent
         // module's unconditional `_inst_arb.eval_posedge()` call only
@@ -8798,7 +11020,9 @@ impl<'a> SimCodegen<'a> {
             // as the first index to test, so `_last_grant = N-1`
             // makes the first post-reset cycle scan from index 0.
             let rst_val = num_req.saturating_sub(1);
-            cpp.push_str(&format!("  if ({rst_cond}) {{\n    _last_grant = {rst_val};\n  }} else {{\n"));
+            cpp.push_str(&format!(
+                "  if ({rst_cond}) {{\n    _last_grant = {rst_val};\n  }} else {{\n"
+            ));
             cpp.push_str("    if (grant_valid) _last_grant = grant_requester;\n");
             cpp.push_str("  }\n");
         }
@@ -8808,28 +11032,47 @@ impl<'a> SimCodegen<'a> {
         //               round_robin / lru rotate starting after the last grant.
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
         cpp.push_str("  grant_valid = 0;\n  grant_requester = 0;\n");
-        cpp.push_str(&format!("  for (int _i = 0; _i < (int){num_req}; _i++) {{\n"));
+        cpp.push_str(&format!(
+            "  for (int _i = 0; _i < (int){num_req}; _i++) {{\n"
+        ));
         if needs_rr_state {
-            cpp.push_str(&format!("    int _idx = (_last_grant + 1 + _i) % {num_req};\n"));
+            cpp.push_str(&format!(
+                "    int _idx = (_last_grant + 1 + _i) % {num_req};\n"
+            ));
         } else {
             cpp.push_str("    int _idx = _i;\n");
         }
         cpp.push_str(&format!("    if (({req_pa_name}_valid >> _idx) & 1) {{\n"));
-        cpp.push_str("      grant_valid = 1;\n      grant_requester = _idx;\n      break;\n    }\n  }\n");
-        cpp.push_str(&format!("  {req_pa_name}_ready = grant_valid ? (1ULL << grant_requester) : 0;\n"));
+        cpp.push_str(
+            "      grant_valid = 1;\n      grant_requester = _idx;\n      break;\n    }\n  }\n",
+        );
+        cpp.push_str(&format!(
+            "  {req_pa_name}_ready = grant_valid ? (1ULL << grant_requester) : 0;\n"
+        ));
         cpp.push_str("}\n\n");
 
         // Trace methods
-        cpp.push_str(&format!("void {class}::trace_open(const char* filename) {{\n"));
+        cpp.push_str(&format!(
+            "void {class}::trace_open(const char* filename) {{\n"
+        ));
         cpp.push_str("  _trace_fp = fopen(filename, \"w\");\n");
         cpp.push_str("  if (!_trace_fp) return;\n");
         cpp.push_str("  fprintf(_trace_fp, \"$timescale 1ns $end\\n\");\n");
-        cpp.push_str(&format!("  fprintf(_trace_fp, \"$scope module {} $end\\n\");\n", name));
+        cpp.push_str(&format!(
+            "  fprintf(_trace_fp, \"$scope module {} $end\\n\");\n",
+            name
+        ));
         let mut sig_idx = 0usize;
         for p in &a.ports {
-            if matches!(p.ty, TypeExpr::Clock(_) | TypeExpr::Reset(..)) { continue; }
-            let id = vcd_id(sig_idx); sig_idx += 1;
-            cpp.push_str(&format!("  fprintf(_trace_fp, \"$var wire 1 {} {} $end\\n\");\n", id, p.name.name));
+            if matches!(p.ty, TypeExpr::Clock(_) | TypeExpr::Reset(..)) {
+                continue;
+            }
+            let id = vcd_id(sig_idx);
+            sig_idx += 1;
+            cpp.push_str(&format!(
+                "  fprintf(_trace_fp, \"$var wire 1 {} {} $end\\n\");\n",
+                id, p.name.name
+            ));
         }
         cpp.push_str("  fprintf(_trace_fp, \"$upscope $end\\n$enddefinitions $end\\n\");\n");
         cpp.push_str("}\n\n");
@@ -8839,10 +11082,16 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("  fprintf(_trace_fp, \"#%lu\\n\", (unsigned long)time);\n");
         sig_idx = 0;
         for p in &a.ports {
-            if matches!(p.ty, TypeExpr::Clock(_) | TypeExpr::Reset(..)) { continue; }
-            let id = vcd_id(sig_idx); sig_idx += 1;
+            if matches!(p.ty, TypeExpr::Clock(_) | TypeExpr::Reset(..)) {
+                continue;
+            }
+            let id = vcd_id(sig_idx);
+            sig_idx += 1;
             let pname = &p.name.name;
-            cpp.push_str(&format!("  fprintf(_trace_fp, \"%c{}\\n\", {pname} ? '1' : '0');\n", id));
+            cpp.push_str(&format!(
+                "  fprintf(_trace_fp, \"%c{}\\n\", {pname} ? '1' : '0');\n",
+                id
+            ));
         }
         cpp.push_str("}\n\n");
 
@@ -8850,7 +11099,10 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("  if (_trace_fp) {{ fclose(_trace_fp); _trace_fp = nullptr; }}\n");
         cpp.push_str("}\n");
 
-        SimModel { class_name: class, header: h, impl_: cpp }
+        SimModel {
+            class_name: class,
+            header: h,
+            impl_: cpp,
+        }
     }
-
 }

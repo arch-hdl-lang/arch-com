@@ -64,7 +64,13 @@ impl FormalReport {
                 PropertyStatus::Inconclusive(_) => any_incon = true,
             }
         }
-        if any_bad { 1 } else if any_incon { 2 } else { 0 }
+        if any_bad {
+            1
+        } else if any_incon {
+            2
+        } else {
+            0
+        }
     }
 }
 
@@ -81,7 +87,11 @@ pub fn run(
     //    doc/plan_hierarchical_formal.md for the design.
     let flat_module: ModuleDecl;
     let mut carried_credit_sites: Vec<CarriedCreditSite> = Vec::new();
-    let encode_module: &ModuleDecl = if module.body.iter().any(|b| matches!(b, ModuleBodyItem::Inst(_))) {
+    let encode_module: &ModuleDecl = if module
+        .body
+        .iter()
+        .any(|b| matches!(b, ModuleBodyItem::Inst(_)))
+    {
         let out = flatten_for_formal(ast, module, symbols)?;
         flat_module = out.module;
         carried_credit_sites = out.carried_sites;
@@ -100,10 +110,12 @@ pub fn run(
 
     // 4. Optionally dump
     if let Some(path) = &args.emit_smt {
-        std::fs::write(path, &base).map_err(|e| CompileError::general(
-            &format!("failed to write --emit-smt output: {e}"),
-            module.span,
-        ))?;
+        std::fs::write(path, &base).map_err(|e| {
+            CompileError::general(
+                &format!("failed to write --emit-smt output: {e}"),
+                module.span,
+            )
+        })?;
     }
 
     // 5. For each assert/cover, run one (push)/(check-sat)/(pop) scope
@@ -206,8 +218,12 @@ fn flatten_for_formal(
                 // names need a single string prefix.
                 let mut bus_remap: HashMap<String, String> = HashMap::new();
                 for sp in &sub.ports {
-                    let Some(bi) = &sp.bus_info else { continue; };
-                    let Some(parent_expr) = port_map.get(&sp.name.name) else { continue; };
+                    let Some(bi) = &sp.bus_info else {
+                        continue;
+                    };
+                    let Some(parent_expr) = port_map.get(&sp.name.name) else {
+                        continue;
+                    };
                     let parent_name = match &parent_expr.kind {
                         ExprKind::Ident(n) => n.clone(),
                         _ => {
@@ -264,7 +280,8 @@ fn flatten_for_formal(
                 // whose name isn't also a port.
                 let port_names: std::collections::HashSet<String> =
                     sub.ports.iter().map(|p| p.name.name.clone()).collect();
-                let mut locals: std::collections::HashSet<String> = std::collections::HashSet::new();
+                let mut locals: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
                 for bi in &sub.body {
                     match bi {
                         ModuleBodyItem::LetBinding(lb) => {
@@ -291,9 +308,8 @@ fn flatten_for_formal(
                             // IS the driver for that port — its rewritten
                             // target is whatever the parent side connects
                             // to that port.
-                            let rewritten_value = subst_expr_for_formal(
-                                &lb.value, &port_map, &locals, &prefix,
-                            );
+                            let rewritten_value =
+                                subst_expr_for_formal(&lb.value, &port_map, &locals, &prefix);
                             if port_names.contains(&lb.name.name) {
                                 // Port-driving let. Emit
                                 //   `let <parent_side_name> = <value>;`
@@ -325,7 +341,10 @@ fn flatten_for_formal(
                             } else {
                                 // Internal let — prefix its name.
                                 new_body.push(ModuleBodyItem::LetBinding(LetBinding {
-                                    name: Ident::new(format!("{prefix}{}", lb.name.name), lb.name.span),
+                                    name: Ident::new(
+                                        format!("{prefix}{}", lb.name.name),
+                                        lb.name.span,
+                                    ),
                                     ty: lb.ty.clone(),
                                     value: rewritten_value,
                                     span: lb.span,
@@ -334,10 +353,10 @@ fn flatten_for_formal(
                             }
                         }
                         ModuleBodyItem::CombBlock(cb) => {
-                            let new_stmts: Vec<Stmt> = cb.stmts.iter()
-                                .map(|s| subst_comb_stmt_for_formal(
-                                    s, &port_map, &locals, &prefix,
-                                ))
+                            let new_stmts: Vec<Stmt> = cb
+                                .stmts
+                                .iter()
+                                .map(|s| subst_comb_stmt_for_formal(s, &port_map, &locals, &prefix))
                                 .collect::<Result<_, _>>()?;
                             new_body.push(ModuleBodyItem::CombBlock(CombBlock {
                                 stmts: new_stmts,
@@ -348,11 +367,12 @@ fn flatten_for_formal(
                             // Prefix the reg name (regs don't share names
                             // with ports — that'd be a driver conflict in
                             // the sub-module itself).
-                            let new_init = rd.init.as_ref()
+                            let new_init = rd
+                                .init
+                                .as_ref()
                                 .map(|e| subst_expr_for_formal(e, &port_map, &locals, &prefix));
-                            let new_reset = subst_reg_reset_for_formal(
-                                &rd.reset, &port_map, &locals, &prefix,
-                            );
+                            let new_reset =
+                                subst_reg_reset_for_formal(&rd.reset, &port_map, &locals, &prefix);
                             new_body.push(ModuleBodyItem::RegDecl(RegDecl {
                                 name: Ident::new(format!("{prefix}{}", rd.name.name), rd.name.span),
                                 ty: rd.ty.clone(),
@@ -368,12 +388,14 @@ fn flatten_for_formal(
                             // `clk` port binds to parent's clock via the
                             // inst connection).
                             let clock = resolve_port_ident_for_formal(
-                                &rb.clock, &port_map, &inst.name.name,
+                                &rb.clock,
+                                &port_map,
+                                &inst.name.name,
                             )?;
-                            let new_stmts: Vec<Stmt> = rb.stmts.iter()
-                                .map(|s| subst_stmt_for_formal(
-                                    s, &port_map, &locals, &prefix,
-                                ))
+                            let new_stmts: Vec<Stmt> = rb
+                                .stmts
+                                .iter()
+                                .map(|s| subst_stmt_for_formal(s, &port_map, &locals, &prefix))
                                 .collect::<Result<_, _>>()?;
                             new_body.push(ModuleBodyItem::RegBlock(RegBlock {
                                 clock,
@@ -404,7 +426,10 @@ fn flatten_for_formal(
     }
 
     flat.body = new_body;
-    Ok(FlattenOutput { module: flat, carried_sites })
+    Ok(FlattenOutput {
+        module: flat,
+        carried_sites,
+    })
 }
 
 /// Walk a ModuleBodyItem and rewrite SynthIdent prefixes per `remap`
@@ -419,10 +444,14 @@ fn rewrite_synth_idents_in_body_item(
     match item {
         ModuleBodyItem::LetBinding(lb) => rewrite_synth_idents_in_expr(&mut lb.value, remap),
         ModuleBodyItem::CombBlock(cb) => {
-            for s in &mut cb.stmts { rewrite_synth_idents_in_comb_stmt(s, remap); }
+            for s in &mut cb.stmts {
+                rewrite_synth_idents_in_comb_stmt(s, remap);
+            }
         }
         ModuleBodyItem::RegDecl(rd) => {
-            if let Some(init) = &mut rd.init { rewrite_synth_idents_in_expr(init, remap); }
+            if let Some(init) = &mut rd.init {
+                rewrite_synth_idents_in_expr(init, remap);
+            }
             match &mut rd.reset {
                 RegReset::Inherit(_, val) | RegReset::Explicit(_, _, _, val) => {
                     rewrite_synth_idents_in_expr(val, remap);
@@ -431,7 +460,9 @@ fn rewrite_synth_idents_in_body_item(
             }
         }
         ModuleBodyItem::RegBlock(rb) => {
-            for s in &mut rb.stmts { rewrite_synth_idents_in_stmt(s, remap); }
+            for s in &mut rb.stmts {
+                rewrite_synth_idents_in_stmt(s, remap);
+            }
         }
         _ => {}
     }
@@ -448,17 +479,18 @@ fn rewrite_synth_idents_in_comb_stmt(
         }
         Stmt::IfElse(ie) => {
             rewrite_synth_idents_in_expr(&mut ie.cond, remap);
-            for st in &mut ie.then_stmts { rewrite_synth_idents_in_comb_stmt(st, remap); }
-            for st in &mut ie.else_stmts { rewrite_synth_idents_in_comb_stmt(st, remap); }
+            for st in &mut ie.then_stmts {
+                rewrite_synth_idents_in_comb_stmt(st, remap);
+            }
+            for st in &mut ie.else_stmts {
+                rewrite_synth_idents_in_comb_stmt(st, remap);
+            }
         }
         _ => {}
     }
 }
 
-fn rewrite_synth_idents_in_stmt(
-    s: &mut Stmt,
-    remap: &std::collections::HashMap<String, String>,
-) {
+fn rewrite_synth_idents_in_stmt(s: &mut Stmt, remap: &std::collections::HashMap<String, String>) {
     match s {
         Stmt::Assign(a) => {
             rewrite_synth_idents_in_expr(&mut a.target, remap);
@@ -466,8 +498,12 @@ fn rewrite_synth_idents_in_stmt(
         }
         Stmt::IfElse(ie) => {
             rewrite_synth_idents_in_expr(&mut ie.cond, remap);
-            for st in &mut ie.then_stmts { rewrite_synth_idents_in_stmt(st, remap); }
-            for st in &mut ie.else_stmts { rewrite_synth_idents_in_stmt(st, remap); }
+            for st in &mut ie.then_stmts {
+                rewrite_synth_idents_in_stmt(st, remap);
+            }
+            for st in &mut ie.else_stmts {
+                rewrite_synth_idents_in_stmt(st, remap);
+            }
         }
         _ => {}
     }
@@ -532,7 +568,9 @@ fn rewrite_synth_idents_in_expr(
             rewrite_synth_idents_in_expr(f, remap);
         }
         Concat(xs) => {
-            for x in xs { rewrite_synth_idents_in_expr(x, remap); }
+            for x in xs {
+                rewrite_synth_idents_in_expr(x, remap);
+            }
         }
         Repeat(n, x) => {
             rewrite_synth_idents_in_expr(n, remap);
@@ -541,10 +579,14 @@ fn rewrite_synth_idents_in_expr(
         FieldAccess(b, _) => rewrite_synth_idents_in_expr(b, remap),
         MethodCall(recv, _, args) => {
             rewrite_synth_idents_in_expr(recv, remap);
-            for a in args { rewrite_synth_idents_in_expr(a, remap); }
+            for a in args {
+                rewrite_synth_idents_in_expr(a, remap);
+            }
         }
         FunctionCall(_, xs) => {
-            for x in xs { rewrite_synth_idents_in_expr(x, remap); }
+            for x in xs {
+                rewrite_synth_idents_in_expr(x, remap);
+            }
         }
         _ => {}
     }
@@ -560,14 +602,22 @@ fn subst_comb_stmt_for_formal(
         Stmt::Assign(a) => {
             let target = subst_expr_for_formal(&a.target, port_map, locals, prefix);
             let value = subst_expr_for_formal(&a.value, port_map, locals, prefix);
-            Ok(Stmt::Assign(Assign { target, value, span: a.span }))
+            Ok(Stmt::Assign(Assign {
+                target,
+                value,
+                span: a.span,
+            }))
         }
         Stmt::IfElse(ie) => {
             let cond = subst_expr_for_formal(&ie.cond, port_map, locals, prefix);
-            let then_stmts: Vec<Stmt> = ie.then_stmts.iter()
+            let then_stmts: Vec<Stmt> = ie
+                .then_stmts
+                .iter()
                 .map(|s| subst_comb_stmt_for_formal(s, port_map, locals, prefix))
                 .collect::<Result<_, _>>()?;
-            let else_stmts: Vec<Stmt> = ie.else_stmts.iter()
+            let else_stmts: Vec<Stmt> = ie
+                .else_stmts
+                .iter()
                 .map(|s| subst_comb_stmt_for_formal(s, port_map, locals, prefix))
                 .collect::<Result<_, _>>()?;
             Ok(Stmt::IfElse(IfElseOf {
@@ -610,11 +660,17 @@ fn validate_sub_for_formal(sub: &ModuleDecl) -> Result<(), CompileError> {
         // signals) still need their own modelling and aren't supported
         // in this slice — `flatten_for_formal` checks the bus's content
         // when it processes the inst.
-        if p.bus_info.is_some() { continue; }
+        if p.bus_info.is_some() {
+            continue;
+        }
         // Scalar ports only.
         match &p.ty {
-            TypeExpr::UInt(_) | TypeExpr::SInt(_) | TypeExpr::Bool
-                | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => {}
+            TypeExpr::UInt(_)
+            | TypeExpr::SInt(_)
+            | TypeExpr::Bool
+            | TypeExpr::Bit
+            | TypeExpr::Clock(_)
+            | TypeExpr::Reset(_, _) => {}
             _ => {
                 return Err(CompileError::general(
                     &format!(
@@ -736,14 +792,22 @@ fn subst_stmt_for_formal(
         Stmt::Assign(a) => {
             let target = subst_expr_for_formal(&a.target, port_map, locals, prefix);
             let value = subst_expr_for_formal(&a.value, port_map, locals, prefix);
-            Ok(Stmt::Assign(Assign { target, value, span: a.span }))
+            Ok(Stmt::Assign(Assign {
+                target,
+                value,
+                span: a.span,
+            }))
         }
         Stmt::IfElse(ie) => {
             let cond = subst_expr_for_formal(&ie.cond, port_map, locals, prefix);
-            let then_stmts: Vec<Stmt> = ie.then_stmts.iter()
+            let then_stmts: Vec<Stmt> = ie
+                .then_stmts
+                .iter()
                 .map(|s| subst_stmt_for_formal(s, port_map, locals, prefix))
                 .collect::<Result<_, _>>()?;
-            let else_stmts: Vec<Stmt> = ie.else_stmts.iter()
+            let else_stmts: Vec<Stmt> = ie
+                .else_stmts
+                .iter()
                 .map(|s| subst_stmt_for_formal(s, port_map, locals, prefix))
                 .collect::<Result<_, _>>()?;
             Ok(Stmt::IfElse(IfElseOf {
@@ -788,7 +852,9 @@ fn subst_expr_for_formal(
     use ExprKind::*;
     let new_kind = match &expr.kind {
         Ident(name) => {
-            if let Some(p) = port_map.get(name) { return p.clone(); }
+            if let Some(p) = port_map.get(name) {
+                return p.clone();
+            }
             if locals.contains(name) {
                 Ident(format!("{prefix}{name}"))
             } else {
@@ -800,8 +866,14 @@ fn subst_expr_for_formal(
             Box::new(subst_expr_for_formal(l, port_map, locals, prefix)),
             Box::new(subst_expr_for_formal(r, port_map, locals, prefix)),
         ),
-        Unary(op, e) => Unary(*op, Box::new(subst_expr_for_formal(e, port_map, locals, prefix))),
-        Cast(e, ty) => Cast(Box::new(subst_expr_for_formal(e, port_map, locals, prefix)), ty.clone()),
+        Unary(op, e) => Unary(
+            *op,
+            Box::new(subst_expr_for_formal(e, port_map, locals, prefix)),
+        ),
+        Cast(e, ty) => Cast(
+            Box::new(subst_expr_for_formal(e, port_map, locals, prefix)),
+            ty.clone(),
+        ),
         Index(b, i) => Index(
             Box::new(subst_expr_for_formal(b, port_map, locals, prefix)),
             Box::new(subst_expr_for_formal(i, port_map, locals, prefix)),
@@ -829,9 +901,15 @@ fn subst_expr_for_formal(
         MethodCall(recv, m, args) => MethodCall(
             Box::new(subst_expr_for_formal(recv, port_map, locals, prefix)),
             m.clone(),
-            args.iter().map(|a| subst_expr_for_formal(a, port_map, locals, prefix)).collect(),
+            args.iter()
+                .map(|a| subst_expr_for_formal(a, port_map, locals, prefix))
+                .collect(),
         ),
-        Concat(xs) => Concat(xs.iter().map(|x| subst_expr_for_formal(x, port_map, locals, prefix)).collect()),
+        Concat(xs) => Concat(
+            xs.iter()
+                .map(|x| subst_expr_for_formal(x, port_map, locals, prefix))
+                .collect(),
+        ),
         Repeat(n, x) => Repeat(
             Box::new(subst_expr_for_formal(n, port_map, locals, prefix)),
             Box::new(subst_expr_for_formal(x, port_map, locals, prefix)),
@@ -842,11 +920,17 @@ fn subst_expr_for_formal(
         ),
         FunctionCall(n, xs) => FunctionCall(
             n.clone(),
-            xs.iter().map(|x| subst_expr_for_formal(x, port_map, locals, prefix)).collect(),
+            xs.iter()
+                .map(|x| subst_expr_for_formal(x, port_map, locals, prefix))
+                .collect(),
         ),
         _ => return expr.clone(),
     };
-    Expr { kind: new_kind, span: expr.span, parenthesized: expr.parenthesized }
+    Expr {
+        kind: new_kind,
+        span: expr.span,
+        parenthesized: expr.parenthesized,
+    }
 }
 
 // ── Top-module selection ─────────────────────────────────────────────────────
@@ -856,17 +940,23 @@ fn select_top<'a>(
     requested: Option<&str>,
 ) -> Result<&'a ModuleDecl, CompileError> {
     // Visible modules = non-underscore-prefixed (hides `_<Name>_threads` helpers).
-    let visible: Vec<&ModuleDecl> = ast.items.iter().filter_map(|it| match it {
-        Item::Module(m) if !m.name.name.starts_with('_') => Some(m),
-        _ => None,
-    }).collect();
+    let visible: Vec<&ModuleDecl> = ast
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Module(m) if !m.name.name.starts_with('_') => Some(m),
+            _ => None,
+        })
+        .collect();
 
     if let Some(name) = requested {
         for m in ast.items.iter().filter_map(|it| match it {
             Item::Module(m) => Some(m),
             _ => None,
         }) {
-            if m.name.name == name { return Ok(m); }
+            if m.name.name == name {
+                return Ok(m);
+            }
         }
         return Err(CompileError::general(
             &format!("module `{name}` not found in input"),
@@ -883,7 +973,10 @@ fn select_top<'a>(
         _ => {
             let names: Vec<&str> = visible.iter().map(|m| m.name.name.as_str()).collect();
             Err(CompileError::general(
-                &format!("multiple modules in input ({}); specify --top <Name>", names.join(", ")),
+                &format!(
+                    "multiple modules in input ({}); specify --top <Name>",
+                    names.join(", ")
+                ),
                 Span { start: 0, end: 0 },
             ))
         }
@@ -973,8 +1066,8 @@ struct FormalCtx<'a> {
 
 #[derive(Debug, Clone)]
 struct CombAssignFlat {
-    target: String,          // flat name (e.g. "y" or "out[2]"); v1 supports ident targets only
-    guard: Vec<Expr>,        // stack of conditions (ANDed)
+    target: String,   // flat name (e.g. "y" or "out[2]"); v1 supports ident targets only
+    guard: Vec<Expr>, // stack of conditions (ANDed)
     value: Expr,
 }
 
@@ -1015,7 +1108,11 @@ impl<'a> FormalCtx<'a> {
             reg_writes: HashMap::new(),
             comb_assigns: Vec::new(),
             let_bindings: HashMap::new(),
-            reset: ResetInfo { name: "rst".to_string(), is_async: false, is_low: false },
+            reset: ResetInfo {
+                name: "rst".to_string(),
+                is_async: false,
+                is_low: false,
+            },
             params: HashMap::new(),
             enum_variants: HashMap::new(),
             properties: Vec::new(),
@@ -1041,7 +1138,10 @@ impl<'a> FormalCtx<'a> {
         // state should use as the prefix.
         let carried = std::mem::take(&mut self.carried_credit_sites);
         for cs in carried {
-            let depth = cs.meta.params.iter()
+            let depth = cs
+                .meta
+                .params
+                .iter()
                 .find(|pp| pp.name.name == "DEPTH")
                 .and_then(|pp| pp.default.as_ref())
                 .and_then(|e| fold_const_expr(e, &self.params));
@@ -1053,9 +1153,14 @@ impl<'a> FormalCtx<'a> {
             });
         }
         for p in &self.module.ports {
-            let Some(bi) = &p.bus_info else { continue; };
+            let Some(bi) = &p.bus_info else {
+                continue;
+            };
             let Some((crate::resolve::Symbol::Bus(info), _)) =
-                self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+                self.symbols.globals.get(&bi.bus_name.name)
+            else {
+                continue;
+            };
             for cc in &info.credit_channels {
                 // Role flipping: on the target perspective the bus
                 // reverses directions, so an `Out` channel role on the
@@ -1065,7 +1170,9 @@ impl<'a> FormalCtx<'a> {
                     (Direction::Out, crate::ast::BusPerspective::Initiator)
                         | (Direction::In, crate::ast::BusPerspective::Target)
                 );
-                let depth = cc.params.iter()
+                let depth = cc
+                    .params
+                    .iter()
                     .find(|pp| pp.name.name == "DEPTH")
                     .and_then(|pp| pp.default.as_ref())
                     .and_then(|e| fold_const_expr(e, &self.params));
@@ -1100,13 +1207,19 @@ impl<'a> FormalCtx<'a> {
         // handshake signals (send_valid, credit_return) become internal
         // wires shared between the two sides instead of separate
         // input/output ports on the flat module.
-        let mut both_sides: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
-        let mut have_sender: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
-        let mut have_receiver: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        let mut both_sides: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+        let mut have_sender: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+        let mut have_receiver: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
         for s in &sites {
             let key = (s.port_name.clone(), s.meta.name.name.clone());
-            if s.is_sender { have_sender.insert(key); }
-            else { have_receiver.insert(key); }
+            if s.is_sender {
+                have_sender.insert(key);
+            } else {
+                have_receiver.insert(key);
+            }
         }
         for k in have_sender.intersection(&have_receiver) {
             both_sides.insert(k.clone());
@@ -1162,11 +1275,14 @@ impl<'a> FormalCtx<'a> {
             if self.sigs.contains_key(&sig.name) {
                 continue;
             }
-            self.sigs.insert(sig.name.clone(), SignalInfo {
-                width: sig.width,
-                signed: sig.signed,
-                kind: kind.clone(),
-            });
+            self.sigs.insert(
+                sig.name.clone(),
+                SignalInfo {
+                    width: sig.width,
+                    signed: sig.signed,
+                    kind: kind.clone(),
+                },
+            );
             match kind {
                 SignalKind::Input => self.inputs.push(sig.name),
                 SignalKind::Output => self.outputs.push(sig.name),
@@ -1185,7 +1301,10 @@ impl<'a> FormalCtx<'a> {
             });
         }
         for eq in model.next_equations {
-            self.reg_writes.entry(eq.target).or_default().push((eq.cond, eq.value));
+            self.reg_writes
+                .entry(eq.target)
+                .or_default()
+                .push((eq.cond, eq.value));
         }
         for derived in model.derived_nonzero {
             self.derived_nonzero.insert(derived.name, derived.source);
@@ -1210,7 +1329,11 @@ impl<'a> FormalCtx<'a> {
 
         // Reset info
         let (rn, is_async, is_low) = crate::ast::extract_reset_info(&self.module.ports);
-        self.reset = ResetInfo { name: rn, is_async, is_low };
+        self.reset = ResetInfo {
+            name: rn,
+            is_async,
+            is_low,
+        };
 
         // PR-hf4 item 1: collect credit_channel sites for later state
         // registration and SynthIdent resolution.
@@ -1260,7 +1383,14 @@ impl<'a> FormalCtx<'a> {
                 Direction::In => SignalKind::Input,
                 Direction::Out => SignalKind::Output,
             };
-            self.sigs.insert(port.name.name.clone(), SignalInfo { width: w, signed, kind: kind.clone() });
+            self.sigs.insert(
+                port.name.name.clone(),
+                SignalInfo {
+                    width: w,
+                    signed,
+                    kind: kind.clone(),
+                },
+            );
             match kind {
                 SignalKind::Input => self.inputs.push(port.name.name.clone()),
                 SignalKind::Output => self.outputs.push(port.name.name.clone()),
@@ -1270,7 +1400,9 @@ impl<'a> FormalCtx<'a> {
             if let Some(reg_info) = &port.reg_info {
                 self.regs.push(port.name.name.clone());
                 self.sigs.get_mut(&port.name.name).unwrap().kind = SignalKind::Reg;
-                if let RegReset::Inherit(_, val) | RegReset::Explicit(_, _, _, val) = &reg_info.reset {
+                if let RegReset::Inherit(_, val) | RegReset::Explicit(_, _, _, val) =
+                    &reg_info.reset
+                {
                     self.reg_reset.insert(port.name.name.clone(), val.clone());
                 } else if let Some(init) = &reg_info.init {
                     self.reg_reset.insert(port.name.name.clone(), init.clone());
@@ -1285,7 +1417,14 @@ impl<'a> FormalCtx<'a> {
                 ModuleBodyItem::RegDecl(r) => {
                     self.check_scalar_type(&r.ty, r.span)?;
                     let (w, signed) = self.type_width_signed(&r.ty, r.span)?;
-                    self.sigs.insert(r.name.name.clone(), SignalInfo { width: w, signed, kind: SignalKind::Reg });
+                    self.sigs.insert(
+                        r.name.name.clone(),
+                        SignalInfo {
+                            width: w,
+                            signed,
+                            kind: SignalKind::Reg,
+                        },
+                    );
                     self.regs.push(r.name.name.clone());
                     match &r.reset {
                         RegReset::Inherit(_, val) | RegReset::Explicit(_, _, _, val) => {
@@ -1301,14 +1440,25 @@ impl<'a> FormalCtx<'a> {
                 ModuleBodyItem::WireDecl(w) => {
                     self.check_scalar_type(&w.ty, w.span)?;
                     let (width, signed) = self.type_width_signed(&w.ty, w.span)?;
-                    self.sigs.insert(w.name.name.clone(), SignalInfo { width, signed, kind: SignalKind::Wire });
+                    self.sigs.insert(
+                        w.name.name.clone(),
+                        SignalInfo {
+                            width,
+                            signed,
+                            kind: SignalKind::Wire,
+                        },
+                    );
                     self.wires.push(w.name.name.clone());
                 }
                 ModuleBodyItem::LetBinding(lb) => {
-                    self.let_bindings.insert(lb.name.name.clone(), lb.value.clone());
+                    self.let_bindings
+                        .insert(lb.name.name.clone(), lb.value.clone());
                 }
                 ModuleBodyItem::Assert(a) => {
-                    let name = a.name.as_ref().map(|i| i.name.clone())
+                    let name = a
+                        .name
+                        .as_ref()
+                        .map(|i| i.name.clone())
                         .unwrap_or_else(|| format!("prop_{}", a.span.start));
                     self.properties.push(PropertyDecl {
                         name,
@@ -1360,7 +1510,9 @@ impl<'a> FormalCtx<'a> {
                         self.module.span,
                     ));
                 }
-                ModuleBodyItem::Function(_) | ModuleBodyItem::Resource(_) | ModuleBodyItem::TlmConnect(_) => {
+                ModuleBodyItem::Function(_)
+                | ModuleBodyItem::Resource(_)
+                | ModuleBodyItem::TlmConnect(_) => {
                     // Ignore; v1 doesn't encode module-local functions
                 }
                 ModuleBodyItem::Inst(_) | ModuleBodyItem::Thread(_) => {
@@ -1446,11 +1598,17 @@ impl<'a> FormalCtx<'a> {
                 }
             }
             Stmt::IfElse(ie) => {
-                for c in &ie.then_stmts { self.collect_init_writes(c)?; }
-                for c in &ie.else_stmts { self.collect_init_writes(c)?; }
+                for c in &ie.then_stmts {
+                    self.collect_init_writes(c)?;
+                }
+                for c in &ie.else_stmts {
+                    self.collect_init_writes(c)?;
+                }
             }
             Stmt::Init(ib) => {
-                for c in &ib.body { self.collect_init_writes(c)?; }
+                for c in &ib.body {
+                    self.collect_init_writes(c)?;
+                }
             }
             _ => {}
         }
@@ -1462,10 +1620,12 @@ impl<'a> FormalCtx<'a> {
             Stmt::Assign(a) => {
                 let name = match target_root_ident(&a.target) {
                     Some(n) => n,
-                    None => return Err(CompileError::general(
-                        "arch formal v1 only supports comb assignments to bare identifiers",
-                        a.span,
-                    )),
+                    None => {
+                        return Err(CompileError::general(
+                            "arch formal v1 only supports comb assignments to bare identifiers",
+                            a.span,
+                        ))
+                    }
                 };
                 self.comb_assigns.push(CombAssignFlat {
                     target: name,
@@ -1476,10 +1636,14 @@ impl<'a> FormalCtx<'a> {
             Stmt::IfElse(ie) => {
                 let mut then_path = path.to_vec();
                 then_path.push(ie.cond.clone());
-                for c in &ie.then_stmts { self.walk_comb_stmt(c, &then_path)?; }
+                for c in &ie.then_stmts {
+                    self.walk_comb_stmt(c, &then_path)?;
+                }
                 let mut else_path = path.to_vec();
                 else_path.push(not_expr(ie.cond.clone()));
-                for c in &ie.else_stmts { self.walk_comb_stmt(c, &else_path)?; }
+                for c in &ie.else_stmts {
+                    self.walk_comb_stmt(c, &else_path)?;
+                }
             }
             Stmt::Match(m) => {
                 return Err(CompileError::general(
@@ -1493,7 +1657,9 @@ impl<'a> FormalCtx<'a> {
                     fl.span,
                 ));
             }
-                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
+            Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {
+                unreachable!("seq-only Stmt variant inside comb-context walker")
+            }
             Stmt::Log(_) => { /* ignore */ }
         }
         Ok(())
@@ -1506,7 +1672,9 @@ impl<'a> FormalCtx<'a> {
         for ca in &self.comb_assigns {
             targets.insert(ca.target.clone());
             let set = deps.entry(ca.target.clone()).or_default();
-            for g in &ca.guard { collect_idents(g, set); }
+            for g in &ca.guard {
+                collect_idents(g, set);
+            }
             collect_idents(&ca.value, set);
         }
         // Add let bindings as targets too (so they participate in ordering if referenced).
@@ -1535,7 +1703,9 @@ impl<'a> FormalCtx<'a> {
         visited: &mut HashSet<String>,
         visiting: &mut HashSet<String>,
     ) -> Result<(), CompileError> {
-        if visited.contains(name) { return Ok(()); }
+        if visited.contains(name) {
+            return Ok(());
+        }
         if visiting.contains(name) {
             return Err(CompileError::general(
                 &format!("combinational feedback loop through `{name}` — arch formal cannot handle cyclic comb"),
@@ -1591,6 +1761,10 @@ impl<'a> FormalCtx<'a> {
         match ty {
             TypeExpr::UInt(_) | TypeExpr::SInt(_) | TypeExpr::Bool | TypeExpr::Bit
                 | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => Ok(()),
+            TypeExpr::FP32 | TypeExpr::BF16 => Err(CompileError::general(
+                "floating-point types (FP32/BF16) are not supported by `arch formal` v1",
+                span,
+            )),
             TypeExpr::Vec(_, _) => Err(CompileError::general(
                 "Vec types are not supported by `arch formal` v1 — use scalars",
                 span,
@@ -1605,31 +1779,35 @@ impl<'a> FormalCtx<'a> {
     fn type_width_signed(&self, ty: &TypeExpr, span: Span) -> Result<(u32, bool), CompileError> {
         match ty {
             TypeExpr::UInt(w) => {
-                let width = fold_const_expr(w, &self.params).ok_or_else(|| CompileError::general(
-                    "could not fold UInt<W> width to a compile-time constant",
-                    span,
-                ))? as u32;
+                let width = fold_const_expr(w, &self.params).ok_or_else(|| {
+                    CompileError::general(
+                        "could not fold UInt<W> width to a compile-time constant",
+                        span,
+                    )
+                })? as u32;
                 if width == 0 {
                     return Err(CompileError::general("width of 0 is not supported", span));
                 }
                 Ok((width, false))
             }
             TypeExpr::SInt(w) => {
-                let width = fold_const_expr(w, &self.params).ok_or_else(|| CompileError::general(
-                    "could not fold SInt<W> width to a compile-time constant",
-                    span,
-                ))? as u32;
+                let width = fold_const_expr(w, &self.params).ok_or_else(|| {
+                    CompileError::general(
+                        "could not fold SInt<W> width to a compile-time constant",
+                        span,
+                    )
+                })? as u32;
                 if width == 0 {
                     return Err(CompileError::general("width of 0 is not supported", span));
                 }
                 Ok((width, true))
             }
-            TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) =>
-                Ok((1, false)),
-            TypeExpr::Vec(_, _) | TypeExpr::Named(_) => Err(CompileError::general(
-                "type not supported by arch formal v1",
-                span,
-            )),
+            TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => {
+                Ok((1, false))
+            }
+            TypeExpr::FP32 | TypeExpr::BF16 | TypeExpr::Vec(_, _) | TypeExpr::Named(_) => Err(
+                CompileError::general("type not supported by arch formal v1", span),
+            ),
         }
     }
 
@@ -1650,7 +1828,9 @@ impl<'a> FormalCtx<'a> {
                 out.push_str(&format!("(declare-fun {name}_{t} () (_ BitVec {w}))\n"));
             }
             for name in &self.outputs {
-                if self.sigs[name].kind == SignalKind::Reg { continue; }
+                if self.sigs[name].kind == SignalKind::Reg {
+                    continue;
+                }
                 let w = self.sigs[name].width;
                 out.push_str(&format!("(declare-fun {name}_{t} () (_ BitVec {w}))\n"));
             }
@@ -1691,9 +1871,14 @@ impl<'a> FormalCtx<'a> {
                     }
                     continue;
                 }
-                let assigns: Vec<&CombAssignFlat> = self.comb_assigns.iter()
-                    .filter(|c| &c.target == tgt).collect();
-                if assigns.is_empty() { continue; }
+                let assigns: Vec<&CombAssignFlat> = self
+                    .comb_assigns
+                    .iter()
+                    .filter(|c| &c.target == tgt)
+                    .collect();
+                if assigns.is_empty() {
+                    continue;
+                }
                 let info = &self.sigs[tgt];
                 // Build nested ite from the guard chain. Last unguarded write wins as default.
                 let rhs = self.build_comb_ite(&assigns, t, info.width, info.signed)?;
@@ -1704,7 +1889,10 @@ impl<'a> FormalCtx<'a> {
 
         // Register transition: r_{t+1} = ite(reset, reset_val, next_value)
         for t in 0..bound {
-            out.push_str(&format!("; ── register transition cycle {t}→{} ──\n", t + 1));
+            out.push_str(&format!(
+                "; ── register transition cycle {t}→{} ──\n",
+                t + 1
+            ));
             for reg in &self.regs {
                 let info = &self.sigs[reg];
                 let next = self.reg_next(reg, t, info.width, info.signed)?;
@@ -1731,7 +1919,13 @@ impl<'a> FormalCtx<'a> {
     }
 
     /// Build nested ite for a reg's next value at cycle t.
-    fn reg_next(&self, reg: &str, t: u32, width: u32, signed: bool) -> Result<String, CompileError> {
+    fn reg_next(
+        &self,
+        reg: &str,
+        t: u32,
+        width: u32,
+        signed: bool,
+    ) -> Result<String, CompileError> {
         let writes = match self.reg_writes.get(reg) {
             Some(w) if !w.is_empty() => w,
             _ => return Ok(format!("{reg}_{t}")), // hold
@@ -2062,7 +2256,11 @@ impl<'a> FormalCtx<'a> {
         // 1. Const param?
         if let Some(val) = self.params.get(name) {
             // Default to 32-bit; coerce() resizes as needed.
-            return Ok(SmtTerm { s: bv_lit(*val, 32), width: 32, signed: false });
+            return Ok(SmtTerm {
+                s: bv_lit(*val, 32),
+                width: 32,
+                signed: false,
+            });
         }
         // 2. Let binding? Inline expand.
         if let Some(val) = self.let_bindings.get(name) {
@@ -2090,10 +2288,15 @@ impl<'a> FormalCtx<'a> {
                 });
             }
         }
-        if let Some(stem) = name.strip_suffix("_can_send")
+        if let Some(stem) = name
+            .strip_suffix("_can_send")
             .or_else(|| name.strip_suffix("_valid"))
         {
-            let suffix = if name.ends_with("_can_send") { "_credit" } else { "_occ" };
+            let suffix = if name.ends_with("_can_send") {
+                "_credit"
+            } else {
+                "_occ"
+            };
             let reg = format!("{stem}{suffix}");
             if let Some(info) = self.sigs.get(&reg) {
                 let zero = bv_zero(info.width);
@@ -2129,7 +2332,11 @@ impl<'a> FormalCtx<'a> {
                 let la = coerce(ta, out_w, signed);
                 let lb = coerce(tb, out_w, signed);
                 let opname = if op == BinOp::Add { "bvadd" } else { "bvsub" };
-                Ok(SmtTerm { s: format!("({opname} {} {})", la.s, lb.s), width: out_w, signed })
+                Ok(SmtTerm {
+                    s: format!("({opname} {} {})", la.s, lb.s),
+                    width: out_w,
+                    signed,
+                })
             }
             BinOp::Mul => {
                 // Non-wrapping: result width = W(a) + W(b)
@@ -2137,7 +2344,11 @@ impl<'a> FormalCtx<'a> {
                 let signed = ta.signed || tb.signed;
                 let la = coerce(ta, out_w, signed);
                 let lb = coerce(tb, out_w, signed);
-                Ok(SmtTerm { s: format!("(bvmul {} {})", la.s, lb.s), width: out_w, signed })
+                Ok(SmtTerm {
+                    s: format!("(bvmul {} {})", la.s, lb.s),
+                    width: out_w,
+                    signed,
+                })
             }
             BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap => {
                 // Wrapping: result width = max(W(a), W(b))
@@ -2151,7 +2362,11 @@ impl<'a> FormalCtx<'a> {
                     BinOp::MulWrap => "bvmul",
                     _ => unreachable!(),
                 };
-                Ok(SmtTerm { s: format!("({opname} {} {})", la.s, lb.s), width: common, signed })
+                Ok(SmtTerm {
+                    s: format!("({opname} {} {})", la.s, lb.s),
+                    width: common,
+                    signed,
+                })
             }
             BinOp::Div | BinOp::Mod => {
                 let common = ta.width.max(tb.width);
@@ -2165,7 +2380,11 @@ impl<'a> FormalCtx<'a> {
                     (BinOp::Mod, false) => "bvurem",
                     _ => unreachable!(),
                 };
-                Ok(SmtTerm { s: format!("({opname} {} {})", la.s, lb.s), width: common, signed })
+                Ok(SmtTerm {
+                    s: format!("({opname} {} {})", la.s, lb.s),
+                    width: common,
+                    signed,
+                })
             }
             BinOp::Eq | BinOp::Neq => {
                 let common = ta.width.max(tb.width);
@@ -2178,7 +2397,11 @@ impl<'a> FormalCtx<'a> {
                 } else {
                     format!("(ite {eq} #b0 #b1)")
                 };
-                Ok(SmtTerm { s, width: 1, signed: false })
+                Ok(SmtTerm {
+                    s,
+                    width: 1,
+                    signed: false,
+                })
             }
             BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => {
                 let common = ta.width.max(tb.width);
@@ -2197,7 +2420,11 @@ impl<'a> FormalCtx<'a> {
                     _ => unreachable!(),
                 };
                 let cmp = format!("({opname} {} {})", la.s, lb.s);
-                Ok(SmtTerm { s: format!("(ite {cmp} #b1 #b0)"), width: 1, signed: false })
+                Ok(SmtTerm {
+                    s: format!("(ite {cmp} #b1 #b0)"),
+                    width: 1,
+                    signed: false,
+                })
             }
             BinOp::And | BinOp::Or => {
                 // Logical — both must be 1-bit BV. Reduce wider operands with `!= 0`.
@@ -2221,21 +2448,33 @@ impl<'a> FormalCtx<'a> {
                     BinOp::BitXor => "bvxor",
                     _ => unreachable!(),
                 };
-                Ok(SmtTerm { s: format!("({opname} {} {})", la.s, lb.s), width: common, signed })
+                Ok(SmtTerm {
+                    s: format!("({opname} {} {})", la.s, lb.s),
+                    width: common,
+                    signed,
+                })
             }
             BinOp::Shl => {
                 // Result width = W(a). Amount zero-extended to W(a).
                 let w = ta.width;
                 let signed = ta.signed;
                 let lb = coerce(tb, w, false);
-                Ok(SmtTerm { s: format!("(bvshl {} {})", ta.s, lb.s), width: w, signed })
+                Ok(SmtTerm {
+                    s: format!("(bvshl {} {})", ta.s, lb.s),
+                    width: w,
+                    signed,
+                })
             }
             BinOp::Shr => {
                 let w = ta.width;
                 let signed = ta.signed;
                 let lb = coerce(tb, w, false);
                 let opname = if signed { "bvashr" } else { "bvlshr" };
-                Ok(SmtTerm { s: format!("({opname} {} {})", ta.s, lb.s), width: w, signed })
+                Ok(SmtTerm {
+                    s: format!("({opname} {} {})", ta.s, lb.s),
+                    width: w,
+                    signed,
+                })
             }
             BinOp::Implies => {
                 // a implies b  ≡  !a | b
@@ -2261,10 +2500,7 @@ impl<'a> FormalCtx<'a> {
                 ))
             }
         }
-        .map_err(|e: CompileError| CompileError::general(
-            &format!("{}", e_display(&e, span)),
-            span,
-        ))
+        .map_err(|e: CompileError| CompileError::general(&format!("{}", e_display(&e, span)), span))
     }
 
     fn encode_unary(
@@ -2278,14 +2514,22 @@ impl<'a> FormalCtx<'a> {
         match op {
             UnaryOp::Not => {
                 let b = as_bv1_bool(&ta);
-                Ok(SmtTerm { s: format!("(bvxor {b} #b1)"), width: 1, signed: false })
+                Ok(SmtTerm {
+                    s: format!("(bvxor {b} #b1)"),
+                    width: 1,
+                    signed: false,
+                })
             }
-            UnaryOp::BitNot => {
-                Ok(SmtTerm { s: format!("(bvnot {})", ta.s), width: ta.width, signed: ta.signed })
-            }
-            UnaryOp::Neg => {
-                Ok(SmtTerm { s: format!("(bvneg {})", ta.s), width: ta.width, signed: true })
-            }
+            UnaryOp::BitNot => Ok(SmtTerm {
+                s: format!("(bvnot {})", ta.s),
+                width: ta.width,
+                signed: ta.signed,
+            }),
+            UnaryOp::Neg => Ok(SmtTerm {
+                s: format!("(bvneg {})", ta.s),
+                width: ta.width,
+                signed: true,
+            }),
             UnaryOp::RedAnd => {
                 // (= x ~0)
                 let all_ones = bv_all_ones(ta.width);
@@ -2305,12 +2549,18 @@ impl<'a> FormalCtx<'a> {
             }
             UnaryOp::RedXor => {
                 // Fold bit-by-bit via bvxor on extracted bits
-                if ta.width == 1 { return Ok(ta); }
+                if ta.width == 1 {
+                    return Ok(ta);
+                }
                 let mut s = format!("((_ extract 0 0) {})", ta.s);
                 for i in 1..ta.width {
                     s = format!("(bvxor {s} ((_ extract {i} {i}) {}))", ta.s);
                 }
-                Ok(SmtTerm { s, width: 1, signed: false })
+                Ok(SmtTerm {
+                    s,
+                    width: 1,
+                    signed: false,
+                })
             }
         }
     }
@@ -2334,12 +2584,13 @@ impl<'a> FormalCtx<'a> {
         };
         match n {
             "trunc" => {
-                let w = target_w.ok_or_else(|| CompileError::general(
-                    ".trunc<N>() requires a constant width argument", span,
-                ))?;
+                let w = target_w.ok_or_else(|| {
+                    CompileError::general(".trunc<N>() requires a constant width argument", span)
+                })?;
                 if w > r.width {
                     return Err(CompileError::general(
-                        ".trunc<N>() target must be ≤ current width", span,
+                        ".trunc<N>() target must be ≤ current width",
+                        span,
                     ));
                 }
                 Ok(SmtTerm {
@@ -2349,43 +2600,51 @@ impl<'a> FormalCtx<'a> {
                 })
             }
             "zext" => {
-                let w = target_w.ok_or_else(|| CompileError::general(
-                    ".zext<N>() requires a constant width argument", span,
-                ))?;
+                let w = target_w.ok_or_else(|| {
+                    CompileError::general(".zext<N>() requires a constant width argument", span)
+                })?;
                 if w < r.width {
                     return Err(CompileError::general(
-                        ".zext<N>() target must be ≥ current width", span,
+                        ".zext<N>() target must be ≥ current width",
+                        span,
                     ));
                 }
                 let pad = w - r.width;
                 Ok(SmtTerm {
-                    s: if pad == 0 { r.s.clone() }
-                       else { format!("((_ zero_extend {pad}) {})", r.s) },
+                    s: if pad == 0 {
+                        r.s.clone()
+                    } else {
+                        format!("((_ zero_extend {pad}) {})", r.s)
+                    },
                     width: w,
                     signed: false,
                 })
             }
             "sext" => {
-                let w = target_w.ok_or_else(|| CompileError::general(
-                    ".sext<N>() requires a constant width argument", span,
-                ))?;
+                let w = target_w.ok_or_else(|| {
+                    CompileError::general(".sext<N>() requires a constant width argument", span)
+                })?;
                 if w < r.width {
                     return Err(CompileError::general(
-                        ".sext<N>() target must be ≥ current width", span,
+                        ".sext<N>() target must be ≥ current width",
+                        span,
                     ));
                 }
                 let pad = w - r.width;
                 Ok(SmtTerm {
-                    s: if pad == 0 { r.s.clone() }
-                       else { format!("((_ sign_extend {pad}) {})", r.s) },
+                    s: if pad == 0 {
+                        r.s.clone()
+                    } else {
+                        format!("((_ sign_extend {pad}) {})", r.s)
+                    },
                     width: w,
                     signed: true,
                 })
             }
             "resize" => {
-                let w = target_w.ok_or_else(|| CompileError::general(
-                    ".resize<N>() requires a constant width argument", span,
-                ))?;
+                let w = target_w.ok_or_else(|| {
+                    CompileError::general(".resize<N>() requires a constant width argument", span)
+                })?;
                 let signed = r.signed;
                 Ok(coerce(r, w, signed))
             }
@@ -2405,10 +2664,8 @@ impl<'a> FormalCtx<'a> {
         args: &FormalArgs,
     ) -> Result<PropertyResult, CompileError> {
         // Detect top-level `a |=> b` — encode `a@t → b@(t+1)` directly.
-        let toplevel_implies_next = matches!(
-            &prop.expr.kind,
-            ExprKind::Binary(BinOp::ImpliesNext, _, _)
-        );
+        let toplevel_implies_next =
+            matches!(&prop.expr.kind, ExprKind::Binary(BinOp::ImpliesNext, _, _));
 
         // Determine the cycle range over which the property is well-defined:
         // - past(_, N), rose, fell need t ≥ past_depth (past values undefined).
@@ -2440,12 +2697,15 @@ impl<'a> FormalCtx<'a> {
         // the lhs sequence ends at t+N, so rhs samples at t+N+1.
         let lhs_future = if let ExprKind::Binary(BinOp::ImpliesNext, lhs, _) = &prop.expr.kind {
             max_cycle_offsets(lhs).1
-        } else { 0 };
+        } else {
+            0
+        };
 
         // Encode the property at each cycle min_t..=max_t.
         let mut per_cycle: Vec<String> = Vec::with_capacity((max_t - min_t + 1) as usize);
         for t in min_t..=max_t {
-            let bool_term = if let ExprKind::Binary(BinOp::ImpliesNext, lhs, rhs) = &prop.expr.kind {
+            let bool_term = if let ExprKind::Binary(BinOp::ImpliesNext, lhs, rhs) = &prop.expr.kind
+            {
                 // a@t → b@(t+1+lhs_future) ≡ ¬a@t ∨ b@(t+1+lhs_future)
                 let la = self.encode_expr(lhs, t, Some((1, false)))?;
                 let lb = self.encode_expr(rhs, t + 1 + lhs_future, Some((1, false)))?;
@@ -2467,7 +2727,9 @@ impl<'a> FormalCtx<'a> {
             AssertKind::Assert => "#b0",
             AssertKind::Cover => "#b1",
         };
-        let disjuncts: Vec<String> = per_cycle.iter().enumerate()
+        let disjuncts: Vec<String> = per_cycle
+            .iter()
+            .enumerate()
             .map(|(_i, p)| format!("(= {p} {matcher})"))
             .collect();
         let assertion = if disjuncts.len() == 1 {
@@ -2479,7 +2741,10 @@ impl<'a> FormalCtx<'a> {
         // Compose final SMT text
         let mut smt = String::with_capacity(base.len() + 256);
         smt.push_str(base);
-        smt.push_str(&format!("\n; ── property `{}` ({:?}) ──\n", prop.name, prop.kind));
+        smt.push_str(&format!(
+            "\n; ── property `{}` ({:?}) ──\n",
+            prop.name, prop.kind
+        ));
         smt.push_str(&format!("(assert {assertion})\n"));
         smt.push_str("(check-sat)\n");
         // We always emit get-model; the solver will ignore it on unsat/unknown for most tools.
@@ -2488,9 +2753,8 @@ impl<'a> FormalCtx<'a> {
         smt.push_str("(get-model)\n");
 
         // Shell out
-        let sr = invoke_solver(&args.solver, &smt, args.timeout).map_err(|e| {
-            CompileError::general(&format!("solver error: {e}"), prop.span)
-        })?;
+        let sr = invoke_solver(&args.solver, &smt, args.timeout)
+            .map_err(|e| CompileError::general(&format!("solver error: {e}"), prop.span))?;
 
         // Parse result
         let first_word = sr.stdout.split_ascii_whitespace().next().unwrap_or("");
@@ -2500,25 +2764,40 @@ impl<'a> FormalCtx<'a> {
                 let model = sr.stdout.splitn(2, '\n').nth(1).unwrap_or("").to_string();
                 let assignments = parse_model(&model);
                 // Determine failing cycle by evaluating per_cycle against the model.
-                let failing_cycle = find_first_failing_cycle(&prop.kind, &prop.expr, self, &assignments, args.bound);
-                let cex = render_counterexample(&prop.name, failing_cycle, self, &assignments, args.bound);
+                let failing_cycle = find_first_failing_cycle(
+                    &prop.kind,
+                    &prop.expr,
+                    self,
+                    &assignments,
+                    args.bound,
+                );
+                let cex = render_counterexample(
+                    &prop.name,
+                    failing_cycle,
+                    self,
+                    &assignments,
+                    args.bound,
+                );
                 match prop.kind {
                     AssertKind::Assert => PropertyStatus::Refuted(failing_cycle),
-                    AssertKind::Cover  => PropertyStatus::Hit(failing_cycle),
+                    AssertKind::Cover => PropertyStatus::Hit(failing_cycle),
                 }
                 .with_cex(cex)
             }
             "unsat" => match prop.kind {
                 AssertKind::Assert => PropertyStatus::Proved(args.bound).with_cex(None),
-                AssertKind::Cover  => PropertyStatus::NotReached(args.bound).with_cex(None),
+                AssertKind::Cover => PropertyStatus::NotReached(args.bound).with_cex(None),
             },
             _ => PropertyStatus::Inconclusive(
                 if sr.stdout.contains("timeout") || !sr.stderr.is_empty() {
-                    format!("solver returned `{first_word}`: {}{}", sr.stdout, sr.stderr).trim().to_string()
+                    format!("solver returned `{first_word}`: {}{}", sr.stdout, sr.stderr)
+                        .trim()
+                        .to_string()
                 } else {
                     format!("solver returned `{first_word}`")
                 },
-            ).with_cex(None),
+            )
+            .with_cex(None),
         };
 
         Ok(PropertyResult {
@@ -2531,10 +2810,15 @@ impl<'a> FormalCtx<'a> {
 }
 
 // Helper: associate a counter-example with a status without double-wrapping.
-struct StatusWithCex { status: PropertyStatus, cex: Option<String> }
+struct StatusWithCex {
+    status: PropertyStatus,
+    cex: Option<String>,
+}
 
 impl PropertyStatus {
-    fn with_cex(self, cex: Option<String>) -> StatusWithCex { StatusWithCex { status: self, cex } }
+    fn with_cex(self, cex: Option<String>) -> StatusWithCex {
+        StatusWithCex { status: self, cex }
+    }
 }
 
 // ── SMT value helpers ────────────────────────────────────────────────────────
@@ -2550,21 +2834,35 @@ fn bv_lit(value: u64, width: u32) -> String {
     // Prefer hex for widths divisible by 4, else decimal form.
     if width % 4 == 0 && width <= 64 {
         let digits = (width / 4) as usize;
-        let mask = if width >= 64 { u64::MAX } else { (1u64 << width) - 1 };
+        let mask = if width >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << width) - 1
+        };
         format!("#x{:0width$x}", value & mask, width = digits)
     } else if width <= 64 {
-        let mask = if width >= 64 { u64::MAX } else { (1u64 << width) - 1 };
+        let mask = if width >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << width) - 1
+        };
         format!("(_ bv{} {})", value & mask, width)
     } else {
         format!("(_ bv{value} {width})")
     }
 }
 
-fn bv_zero(width: u32) -> String { bv_lit(0, width) }
+fn bv_zero(width: u32) -> String {
+    bv_lit(0, width)
+}
 
 fn bv_all_ones(width: u32) -> String {
     if width <= 64 {
-        let v = if width == 64 { u64::MAX } else { (1u64 << width) - 1 };
+        let v = if width == 64 {
+            u64::MAX
+        } else {
+            (1u64 << width) - 1
+        };
         bv_lit(v, width)
     } else {
         format!("(bvnot {})", bv_zero(width))
@@ -2575,7 +2873,9 @@ fn bv_all_ones(width: u32) -> String {
 /// a scalar UInt/SInt/Bool/Bit. Returns None for non-scalar payloads
 /// (Vec / struct / named) — those can't be modelled in formal v1.
 fn cc_payload_width(meta: &CreditChannelMeta) -> Option<u32> {
-    let t = meta.params.iter()
+    let t = meta
+        .params
+        .iter()
         .find(|p| p.name.name == "T")
         .and_then(|p| match &p.kind {
             ParamKind::Type(te) => Some(te.clone()),
@@ -2599,9 +2899,28 @@ fn lit_to_term(l: &LitKind) -> SmtTerm {
         LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v) => {
             // Intrinsic width = bit-length, or 1 for value 0.
             let w = if *v == 0 { 1 } else { 64 - v.leading_zeros() };
-            SmtTerm { s: bv_lit(*v, w), width: w, signed: false }
+            SmtTerm {
+                s: bv_lit(*v, w),
+                width: w,
+                signed: false,
+            }
         }
-        LitKind::Sized(w, v) => SmtTerm { s: bv_lit(*v, *w), width: *w, signed: false },
+        LitKind::Sized(w, v) => SmtTerm {
+            s: bv_lit(*v, *w),
+            width: *w,
+            signed: false,
+        },
+        // Float literals are unreachable here in practice — FP types are rejected
+        // by `check_scalar_type` before emission. Fall back to the FP32 bit
+        // pattern as a 32-bit vector so this stays total.
+        LitKind::Float(bits) => {
+            let f = (f64::from_bits(*bits)) as f32;
+            SmtTerm {
+                s: bv_lit(f.to_bits() as u64, 32),
+                width: 32,
+                signed: false,
+            }
+        }
     }
 }
 
@@ -2612,7 +2931,11 @@ fn coerce(t: SmtTerm, width: u32, signed: bool) -> SmtTerm {
     }
     if t.width < width {
         let pad = width - t.width;
-        let op = if t.signed { "sign_extend" } else { "zero_extend" };
+        let op = if t.signed {
+            "sign_extend"
+        } else {
+            "zero_extend"
+        };
         SmtTerm {
             s: format!("((_ {op} {pad}) {})", t.s),
             width,
@@ -2666,18 +2989,44 @@ fn target_root_ident(expr: &Expr) -> Option<String> {
 fn collect_idents(expr: &Expr, out: &mut HashSet<String>) {
     use ExprKind::*;
     match &expr.kind {
-        Ident(n) => { out.insert(n.clone()); }
-        Binary(_, a, b) => { collect_idents(a, out); collect_idents(b, out); }
+        Ident(n) => {
+            out.insert(n.clone());
+        }
+        Binary(_, a, b) => {
+            collect_idents(a, out);
+            collect_idents(b, out);
+        }
         Unary(_, a) => collect_idents(a, out),
-        Ternary(c, t, e) => { collect_idents(c, out); collect_idents(t, out); collect_idents(e, out); }
+        Ternary(c, t, e) => {
+            collect_idents(c, out);
+            collect_idents(t, out);
+            collect_idents(e, out);
+        }
         MethodCall(recv, _, args) => {
             collect_idents(recv, out);
-            for a in args { collect_idents(a, out); }
+            for a in args {
+                collect_idents(a, out);
+            }
         }
-        BitSlice(b, hi, lo) => { collect_idents(b, out); collect_idents(hi, out); collect_idents(lo, out); }
-        PartSelect(b, s, w, _) => { collect_idents(b, out); collect_idents(s, out); collect_idents(w, out); }
-        Concat(es) => for e in es { collect_idents(e, out); }
-        Repeat(n, x) => { collect_idents(n, out); collect_idents(x, out); }
+        BitSlice(b, hi, lo) => {
+            collect_idents(b, out);
+            collect_idents(hi, out);
+            collect_idents(lo, out);
+        }
+        PartSelect(b, s, w, _) => {
+            collect_idents(b, out);
+            collect_idents(s, out);
+            collect_idents(w, out);
+        }
+        Concat(es) => {
+            for e in es {
+                collect_idents(e, out);
+            }
+        }
+        Repeat(n, x) => {
+            collect_idents(n, out);
+            collect_idents(x, out);
+        }
         Signed(e) | Unsigned(e) | Clog2(e) | Onehot(e) => collect_idents(e, out),
         Cast(e, _) | FieldAccess(e, _) | Index(e, _) => collect_idents(e, out),
         _ => {}
@@ -2690,8 +3039,14 @@ fn and_all(conds: &[Expr]) -> Expr {
     }
     let mut acc = conds[0].clone();
     for c in conds.iter().skip(1) {
-        let span = Span { start: acc.span.start.min(c.span.start), end: acc.span.end.max(c.span.end) };
-        acc = Expr::new(ExprKind::Binary(BinOp::And, Box::new(acc), Box::new(c.clone())), span);
+        let span = Span {
+            start: acc.span.start.min(c.span.start),
+            end: acc.span.end.max(c.span.end),
+        };
+        acc = Expr::new(
+            ExprKind::Binary(BinOp::And, Box::new(acc), Box::new(c.clone())),
+            span,
+        );
     }
     acc
 }
@@ -2714,7 +3069,9 @@ fn s_span(s: &Stmt) -> Span {
     }
 }
 
-fn e_display(e: &CompileError, _sp: Span) -> String { format!("{e}") }
+fn e_display(e: &CompileError, _sp: Span) -> String {
+    format!("{e}")
+}
 
 /// Minimal constant folder for compile-time expressions.
 /// Handles literals, param refs, and common arithmetic.
@@ -2732,13 +3089,25 @@ fn fold_const_expr(expr: &Expr, params: &HashMap<String, u64>) -> Option<u64> {
                 BinOp::Add | BinOp::AddWrap => va.wrapping_add(vb),
                 BinOp::Sub | BinOp::SubWrap => va.wrapping_sub(vb),
                 BinOp::Mul | BinOp::MulWrap => va.wrapping_mul(vb),
-                BinOp::Div => if vb == 0 { return None; } else { va / vb },
-                BinOp::Mod => if vb == 0 { return None; } else { va % vb },
+                BinOp::Div => {
+                    if vb == 0 {
+                        return None;
+                    } else {
+                        va / vb
+                    }
+                }
+                BinOp::Mod => {
+                    if vb == 0 {
+                        return None;
+                    } else {
+                        va % vb
+                    }
+                }
                 BinOp::BitAnd => va & vb,
-                BinOp::BitOr  => va | vb,
+                BinOp::BitOr => va | vb,
                 BinOp::BitXor => va ^ vb,
-                BinOp::Shl    => va << (vb & 63),
-                BinOp::Shr    => va >> (vb & 63),
+                BinOp::Shl => va << (vb & 63),
+                BinOp::Shr => va >> (vb & 63),
                 _ => return None,
             })
         }
@@ -2748,7 +3117,11 @@ fn fold_const_expr(expr: &Expr, params: &HashMap<String, u64>) -> Option<u64> {
         }
         ExprKind::Clog2(inner) => {
             let v = fold_const_expr(inner, params)?;
-            Some(if v <= 1 { 1 } else { 64 - (v - 1).leading_zeros() as u64 })
+            Some(if v <= 1 {
+                1
+            } else {
+                64 - (v - 1).leading_zeros() as u64
+            })
         }
         _ => None,
     }
@@ -2763,22 +3136,39 @@ struct SolverResult {
 
 fn invoke_solver(solver: &str, smt: &str, timeout_s: u32) -> std::io::Result<SolverResult> {
     let (prog, args): (&str, Vec<String>) = match solver {
-        "z3" => ("z3", vec![
-            "-in".to_string(),
-            format!("-T:{timeout_s}"),
-            "-smt2".to_string(),
-        ]),
-        "boolector" => ("boolector", vec![
-            "--smt2".to_string(),
-            "-m".to_string(),
-            format!("--time={timeout_s}"),
-        ]),
-        "bitwuzla" => ("bitwuzla", vec![
-            "--produce-models=true".to_string(),
-            // bitwuzla -t takes milliseconds.
-            format!("-t"), format!("{}", timeout_s * 1000),
-        ]),
-        other => ("z3", vec!["-in".to_string(), format!("-T:{timeout_s}"), format!("--solver={other}")]),
+        "z3" => (
+            "z3",
+            vec![
+                "-in".to_string(),
+                format!("-T:{timeout_s}"),
+                "-smt2".to_string(),
+            ],
+        ),
+        "boolector" => (
+            "boolector",
+            vec![
+                "--smt2".to_string(),
+                "-m".to_string(),
+                format!("--time={timeout_s}"),
+            ],
+        ),
+        "bitwuzla" => (
+            "bitwuzla",
+            vec![
+                "--produce-models=true".to_string(),
+                // bitwuzla -t takes milliseconds.
+                format!("-t"),
+                format!("{}", timeout_s * 1000),
+            ],
+        ),
+        other => (
+            "z3",
+            vec![
+                "-in".to_string(),
+                format!("-T:{timeout_s}"),
+                format!("--solver={other}"),
+            ],
+        ),
     };
 
     let mut child = Command::new(prog)
@@ -2833,20 +3223,27 @@ fn parse_model(text: &str) -> HashMap<String, u64> {
                     b'(' => depth += 1,
                     b')' => {
                         depth -= 1;
-                        if depth == 0 { break; }
+                        if depth == 0 {
+                            break;
+                        }
                     }
                     _ => {}
                 }
                 j += 1;
             }
-            if j >= bytes.len() { break; }
+            if j >= bytes.len() {
+                break;
+            }
             // group spans i..=j, inclusive of both parens.
             let inner = &flat[i + needle.len()..j];
             // inner: `NAME () (_ BitVec W) VAL`
             // Extract name (first whitespace-separated token).
             let mut name_end = 0;
             for (k, c) in inner.char_indices() {
-                if c.is_whitespace() { name_end = k; break; }
+                if c.is_whitespace() {
+                    name_end = k;
+                    break;
+                }
             }
             if name_end == 0 {
                 i = j + 1;
@@ -2925,7 +3322,9 @@ fn parse_bv_literal(s: &str) -> Option<u64> {
 /// the skipped cycles.
 fn max_cycle_offsets(e: &Expr) -> (u32, u32) {
     use ExprKind::*;
-    fn cmb(a: (u32, u32), b: (u32, u32)) -> (u32, u32) { (a.0.max(b.0), a.1.max(b.1)) }
+    fn cmb(a: (u32, u32), b: (u32, u32)) -> (u32, u32) {
+        (a.0.max(b.0), a.1.max(b.1))
+    }
     match &e.kind {
         FunctionCall(name, args) if name == "past" && args.len() == 2 => {
             let n = match &args[1].kind {
@@ -2944,22 +3343,39 @@ fn max_cycle_offsets(e: &Expr) -> (u32, u32) {
             (p, n + f)
         }
         Binary(_, l, r) => cmb(max_cycle_offsets(l), max_cycle_offsets(r)),
-        Unary(_, x) | Cast(x, _) | Clog2(x) | Onehot(x) | Signed(x) | Unsigned(x)
+        Unary(_, x)
+        | Cast(x, _)
+        | Clog2(x)
+        | Onehot(x)
+        | Signed(x)
+        | Unsigned(x)
         | LatencyAt(x, _) => max_cycle_offsets(x),
-        Ternary(c, t, el) => cmb(cmb(max_cycle_offsets(c), max_cycle_offsets(t)), max_cycle_offsets(el)),
+        Ternary(c, t, el) => cmb(
+            cmb(max_cycle_offsets(c), max_cycle_offsets(t)),
+            max_cycle_offsets(el),
+        ),
         Index(b, i) => cmb(max_cycle_offsets(b), max_cycle_offsets(i)),
         BitSlice(b, _, _) => max_cycle_offsets(b),
-        PartSelect(b, s, w, _) => cmb(cmb(max_cycle_offsets(b), max_cycle_offsets(s)), max_cycle_offsets(w)),
-        Concat(xs) | FunctionCall(_, xs) => xs.iter().fold((0, 0), |a, x| cmb(a, max_cycle_offsets(x))),
+        PartSelect(b, s, w, _) => cmb(
+            cmb(max_cycle_offsets(b), max_cycle_offsets(s)),
+            max_cycle_offsets(w),
+        ),
+        Concat(xs) | FunctionCall(_, xs) => {
+            xs.iter().fold((0, 0), |a, x| cmb(a, max_cycle_offsets(x)))
+        }
         Repeat(n, x) => cmb(max_cycle_offsets(n), max_cycle_offsets(x)),
-        MethodCall(r, _, args) => cmb(max_cycle_offsets(r),
-            args.iter().fold((0, 0), |a, x| cmb(a, max_cycle_offsets(x)))),
+        MethodCall(r, _, args) => cmb(
+            max_cycle_offsets(r),
+            args.iter()
+                .fold((0, 0), |a, x| cmb(a, max_cycle_offsets(x))),
+        ),
         FieldAccess(b, _) => max_cycle_offsets(b),
-        StructLiteral(_, fs) => fs.iter().fold((0, 0), |a, fi| cmb(a, max_cycle_offsets(&fi.value))),
+        StructLiteral(_, fs) => fs
+            .iter()
+            .fold((0, 0), |a, fi| cmb(a, max_cycle_offsets(&fi.value))),
         _ => (0, 0),
     }
 }
-
 
 // ── Counterexample rendering ────────────────────────────────────────────────
 
@@ -2972,7 +3388,11 @@ fn find_first_failing_cycle(
 ) -> u32 {
     let target_bit = matches!(kind, AssertKind::Cover) as u64; // cover: want 1; assert: want 0 (failing)
     let (min_t, future_depth) = max_cycle_offsets(expr);
-    let extra = if matches!(&expr.kind, ExprKind::Binary(BinOp::ImpliesNext, _, _)) { 1 } else { 0 };
+    let extra = if matches!(&expr.kind, ExprKind::Binary(BinOp::ImpliesNext, _, _)) {
+        1
+    } else {
+        0
+    };
     let max_t = bound.saturating_sub(future_depth + extra);
     if min_t > max_t {
         return min_t.min(bound);
@@ -2995,7 +3415,9 @@ fn render_counterexample(
     _bound: u32,
 ) -> Option<String> {
     let mut lines = Vec::new();
-    lines.push(format!("Counterexample for `{prop_name}` at cycle {cycle}:"));
+    lines.push(format!(
+        "Counterexample for `{prop_name}` at cycle {cycle}:"
+    ));
     lines.push(String::new());
     // Header
     let mut names: Vec<String> = Vec::new();
@@ -3003,7 +3425,8 @@ fn render_counterexample(
     names.extend(ctx.inputs.iter().filter(|n| *n != &ctx.reset.name).cloned());
     names.extend(ctx.regs.iter().cloned());
     let header: Vec<String> = std::iter::once("cycle".to_string())
-        .chain(names.iter().cloned()).collect();
+        .chain(names.iter().cloned())
+        .collect();
     lines.push(header.join("  "));
 
     let start = cycle.saturating_sub(2);
@@ -3027,11 +3450,15 @@ fn eval_expr_numeric(
 ) -> Option<u64> {
     use ExprKind::*;
     match &expr.kind {
-        Literal(LitKind::Dec(v)) | Literal(LitKind::Hex(v)) | Literal(LitKind::Bin(v))
+        Literal(LitKind::Dec(v))
+        | Literal(LitKind::Hex(v))
+        | Literal(LitKind::Bin(v))
         | Literal(LitKind::Sized(_, v)) => Some(*v),
         Bool(b) => Some(if *b { 1 } else { 0 }),
         Ident(n) => {
-            if let Some(v) = ctx.params.get(n) { return Some(*v); }
+            if let Some(v) = ctx.params.get(n) {
+                return Some(*v);
+            }
             if let Some(val) = ctx.let_bindings.get(n) {
                 return eval_expr_numeric(val, t, ctx, assignments);
             }
@@ -3050,8 +3477,20 @@ fn eval_expr_numeric(
                 BinOp::Add | BinOp::AddWrap => va.wrapping_add(vb),
                 BinOp::Sub | BinOp::SubWrap => va.wrapping_sub(vb),
                 BinOp::Mul | BinOp::MulWrap => va.wrapping_mul(vb),
-                BinOp::Div => if vb == 0 { 0 } else { va / vb },
-                BinOp::Mod => if vb == 0 { 0 } else { va % vb },
+                BinOp::Div => {
+                    if vb == 0 {
+                        0
+                    } else {
+                        va / vb
+                    }
+                }
+                BinOp::Mod => {
+                    if vb == 0 {
+                        0
+                    } else {
+                        va % vb
+                    }
+                }
                 BinOp::Eq => (va == vb) as u64,
                 BinOp::Neq => (va != vb) as u64,
                 BinOp::Lt => (va < vb) as u64,
@@ -3059,9 +3498,9 @@ fn eval_expr_numeric(
                 BinOp::Lte => (va <= vb) as u64,
                 BinOp::Gte => (va >= vb) as u64,
                 BinOp::And => ((va != 0) && (vb != 0)) as u64,
-                BinOp::Or  => ((va != 0) || (vb != 0)) as u64,
+                BinOp::Or => ((va != 0) || (vb != 0)) as u64,
                 BinOp::BitAnd => va & vb,
-                BinOp::BitOr  => va | vb,
+                BinOp::BitOr => va | vb,
                 BinOp::BitXor => va ^ vb,
                 BinOp::Shl => va << (vb & 63),
                 BinOp::Shr => va >> (vb & 63),
@@ -3082,23 +3521,33 @@ fn eval_expr_numeric(
         }
         Ternary(c, tt, ee) => {
             let cv = eval_expr_numeric(c, t, ctx, assignments)?;
-            if cv != 0 { eval_expr_numeric(tt, t, ctx, assignments) }
-            else       { eval_expr_numeric(ee, t, ctx, assignments) }
+            if cv != 0 {
+                eval_expr_numeric(tt, t, ctx, assignments)
+            } else {
+                eval_expr_numeric(ee, t, ctx, assignments)
+            }
         }
         FunctionCall(name, args) if name == "past" && args.len() == 2 => {
             let n = match &args[1].kind {
                 Literal(LitKind::Dec(n)) | Literal(LitKind::Sized(_, n)) => *n as u32,
                 _ => return None,
             };
-            if t < n { return None; }
+            if t < n {
+                return None;
+            }
             eval_expr_numeric(&args[0], t - n, ctx, assignments)
         }
         FunctionCall(name, args) if (name == "rose" || name == "fell") && args.len() == 1 => {
-            if t < 1 { return None; }
+            if t < 1 {
+                return None;
+            }
             let now = eval_expr_numeric(&args[0], t, ctx, assignments)? & 1;
             let prev = eval_expr_numeric(&args[0], t - 1, ctx, assignments)? & 1;
-            Some(if name == "rose" { (now == 1 && prev == 0) as u64 }
-                 else                { (now == 0 && prev == 1) as u64 })
+            Some(if name == "rose" {
+                (now == 1 && prev == 0) as u64
+            } else {
+                (now == 0 && prev == 1) as u64
+            })
         }
         SvaNext(n, inner) => eval_expr_numeric(inner, t + n, ctx, assignments),
         _ => None,

@@ -1,0 +1,10 @@
+// float->int conversions: toward-zero, per-N saturating, NaN->type-max.
+module FpSat
+  port f: in FP32;
+  port s8:  out SInt<8>;
+  port u8:  out UInt<8>;
+  port s32: out SInt<32>;
+  comb s8  = f.to_sint<8>(); end comb
+  comb u8  = f.to_uint<8>(); end comb
+  comb s32 = f.to_sint<32>(); end comb
+end module FpSat
