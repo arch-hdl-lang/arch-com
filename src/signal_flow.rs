@@ -10,19 +10,18 @@ use crate::lexer::Span;
 /// output connections from the multi-driver check — both sides (initiator
 /// and target) of a bus wire have `ConnectDir::Output` connections but
 /// drive *disjoint* sets of flat signals, so no real conflict exists.
-fn is_bus_port_in_child(
-    module_name: &str,
-    port_name: &str,
-    source: &SourceFile,
-) -> bool {
-    source.items.iter().find_map(|item| match item {
-        Item::Module(m) if m.name.name == module_name => Some(m.ports.as_slice()),
-        Item::Fsm(f) if f.name.name == module_name => Some(f.ports.as_slice()),
-        _ => None,
-    })
-    .and_then(|ports| ports.iter().find(|p| p.name.name == port_name))
-    .map(|p| p.bus_info.is_some())
-    .unwrap_or(false)
+fn is_bus_port_in_child(module_name: &str, port_name: &str, source: &SourceFile) -> bool {
+    source
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Module(m) if m.name.name == module_name => Some(m.ports.as_slice()),
+            Item::Fsm(f) if f.name.name == module_name => Some(f.ports.as_slice()),
+            _ => None,
+        })
+        .and_then(|ports| ports.iter().find(|p| p.name.name == port_name))
+        .map(|p| p.bus_info.is_some())
+        .unwrap_or(false)
 }
 
 /// One block-level drive record for a signal.
@@ -166,9 +165,7 @@ fn collect_thread_stmts(stmts: &[ThreadStmt], out: &mut HashMap<String, Span>) {
 
 fn collect_one_thread_stmt(stmt: &ThreadStmt, out: &mut HashMap<String, Span>) {
     match stmt {
-        ThreadStmt::CombAssign(a)
-        | ThreadStmt::SeqAssign(a)
-        | ThreadStmt::ForkTlmAssign(a) => {
+        ThreadStmt::CombAssign(a) | ThreadStmt::SeqAssign(a) | ThreadStmt::ForkTlmAssign(a) => {
             if let Some(name) = lhs_base_name(&a.target) {
                 out.entry(name).or_insert(a.span);
             }
@@ -204,7 +201,10 @@ fn collect_one_thread_stmt(stmt: &ThreadStmt, out: &mut HashMap<String, Span>) {
 /// `source` is used to look up child module port declarations so that
 /// bus-port connections (which are legitimately present on both the
 /// initiator and target sides of a bus wire) can be excluded.
-pub fn collect_module_drivers(m: &ModuleDecl, source: &SourceFile) -> HashMap<String, Vec<DriveEntry>> {
+pub fn collect_module_drivers(
+    m: &ModuleDecl,
+    source: &SourceFile,
+) -> HashMap<String, Vec<DriveEntry>> {
     let mut drivers: HashMap<String, Vec<DriveEntry>> = HashMap::new();
 
     // Bus and struct wires (TypeExpr::Named) are legitimately connected from
@@ -554,9 +554,7 @@ fn collect_one_stmt_read(stmt: &Stmt, out: &mut HashMap<String, Span>) {
 
 fn collect_one_thread_read(stmt: &ThreadStmt, out: &mut HashMap<String, Span>) {
     match stmt {
-        ThreadStmt::CombAssign(a)
-        | ThreadStmt::SeqAssign(a)
-        | ThreadStmt::ForkTlmAssign(a) => {
+        ThreadStmt::CombAssign(a) | ThreadStmt::SeqAssign(a) | ThreadStmt::ForkTlmAssign(a) => {
             add_expr_reads(&a.value, a.span, out);
             collect_lhs_index_reads(&a.target, a.span, out);
         }
@@ -572,7 +570,13 @@ fn collect_one_thread_read(stmt: &ThreadStmt, out: &mut HashMap<String, Span>) {
                 collect_thread_reads(b, out);
             }
         }
-        ThreadStmt::For { start, end, body, span, .. } => {
+        ThreadStmt::For {
+            start,
+            end,
+            body,
+            span,
+            ..
+        } => {
             add_expr_reads(start, *span, out);
             add_expr_reads(end, *span, out);
             collect_thread_reads(body, out);
@@ -625,7 +629,9 @@ pub fn module_comb_fwd_edges(
     let mut fwd: HashMap<String, HashSet<String>> = HashMap::new();
     let add = |from: &str, to: &str, fwd: &mut HashMap<String, HashSet<String>>| {
         if from != to {
-            fwd.entry(from.to_string()).or_default().insert(to.to_string());
+            fwd.entry(from.to_string())
+                .or_default()
+                .insert(to.to_string());
         }
     };
 

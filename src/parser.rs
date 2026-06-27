@@ -26,7 +26,16 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(tokens: Vec<Token>, source: &str) -> Self {
-        Self { tokens, pos: 0, source: source.to_string(), no_angle: false, no_lteq: false, reg_defaults: None, seq_default: None, deprecated_implies_spans: Vec::new() }
+        Self {
+            tokens,
+            pos: 0,
+            source: source.to_string(),
+            no_angle: false,
+            no_lteq: false,
+            reg_defaults: None,
+            seq_default: None,
+            deprecated_implies_spans: Vec::new(),
+        }
     }
 
     /// Check if there's a newline in the source between two byte offsets.
@@ -68,7 +77,11 @@ impl Parser {
         while !self.at_end() {
             items.push(self.parse_item()?);
         }
-        Ok(SourceFile { items, inner_doc, frontmatter })
+        Ok(SourceFile {
+            items,
+            inner_doc,
+            frontmatter,
+        })
     }
 
     /// Consume all consecutive `DocOuter` tokens at the current position
@@ -76,7 +89,11 @@ impl Parser {
     /// `\n`). Returns `None` when no `DocOuter` token is at `self.pos`.
     fn consume_outer_doc(&mut self) -> Option<String> {
         let lines = self.consume_outer_doc_lines();
-        if lines.is_empty() { None } else { Some(lines.join("\n")) }
+        if lines.is_empty() {
+            None
+        } else {
+            Some(lines.join("\n"))
+        }
     }
 
     fn consume_outer_doc_lines(&mut self) -> Vec<String> {
@@ -97,7 +114,11 @@ impl Parser {
     /// Same as `consume_outer_doc` but for `DocInner` tokens.
     fn consume_inner_doc(&mut self) -> Option<String> {
         let lines = self.consume_inner_doc_lines();
-        if lines.is_empty() { None } else { Some(lines.join("\n")) }
+        if lines.is_empty() {
+            None
+        } else {
+            Some(lines.join("\n"))
+        }
     }
 
     fn consume_inner_doc_lines(&mut self) -> Vec<String> {
@@ -320,7 +341,11 @@ impl Parser {
                 self.expect(TokenKind::Colon)?;
                 let at = self.parse_type_expr()?;
                 args.push((an, at));
-                if self.check(TokenKind::Comma) { self.advance(); } else { break; }
+                if self.check(TokenKind::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
             }
         }
         self.expect(TokenKind::RParen)?;
@@ -375,7 +400,10 @@ impl Parser {
     ///   'credit_channel' Ident ':' ('send'|'receive') NEWLINE
     ///     ParamDecl*
     ///   'end' 'credit_channel' Ident
-    fn parse_credit_channel_block(&mut self, _parent_span: Span) -> Result<CreditChannelMeta, CompileError> {
+    fn parse_credit_channel_block(
+        &mut self,
+        _parent_span: Span,
+    ) -> Result<CreditChannelMeta, CompileError> {
         let start = self.expect(TokenKind::CreditChannel)?.span;
         let ch_name = self.expect_ident()?;
         self.expect(TokenKind::Colon)?;
@@ -386,7 +414,10 @@ impl Parser {
         } else {
             return Err(CompileError::unexpected_token(
                 "send or receive",
-                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                &self
+                    .peek_kind()
+                    .map(|k| k.to_string())
+                    .unwrap_or("EOF".into()),
                 self.peek_span(),
             ));
         };
@@ -422,13 +453,20 @@ impl Parser {
         } else {
             return Err(CompileError::unexpected_token(
                 "in or out",
-                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                &self
+                    .peek_kind()
+                    .map(|k| k.to_string())
+                    .unwrap_or("EOF".into()),
                 self.peek_span(),
             ));
         };
         let ty = self.parse_type_expr()?;
         self.expect(TokenKind::Semi)?;
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(parent_span);
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(parent_span);
         Ok(PortDecl {
             name: sig_name,
             direction,
@@ -436,7 +474,9 @@ impl Parser {
             default: None,
             reg_info: None,
             bus_info: None,
-            shared: None, unpacked: false, unpacked_ascending: false,
+            shared: None,
+            unpacked: false,
+            unpacked_ascending: false,
             comb_deps: None,
             span: parent_span.merge(end_span),
         })
@@ -506,7 +546,9 @@ impl Parser {
 
     fn check_bus_gen_end(&self) -> bool {
         // Stop at `end generate_if` or `generate_else`
-        if self.check(TokenKind::GenerateElse) { return true; }
+        if self.check(TokenKind::GenerateElse) {
+            return true;
+        }
         self.pos + 1 < self.tokens.len()
             && self.tokens[self.pos].kind == TokenKind::End
             && self.tokens[self.pos + 1].kind == TokenKind::GenerateIf
@@ -526,11 +568,18 @@ impl Parser {
     /// `send`/`receive` name the payload-flow role (NOT wire direction):
     /// `send` = this side produces the payload (drives valid/req/payload,
     /// receives ready/ack); `receive` = consumer side.
-    fn parse_handshake_block(&mut self, parent_span: Span) -> Result<(Vec<PortDecl>, Vec<BusGenerateIf>, HandshakeMeta), CompileError> {
+    fn parse_handshake_block(
+        &mut self,
+        parent_span: Span,
+    ) -> Result<(Vec<PortDecl>, Vec<BusGenerateIf>, HandshakeMeta), CompileError> {
         // Accept both `handshake` (legacy) and `handshake_channel` (new).
         // See plan_bus_unification.md for the rename rationale.
         let is_legacy = self.check(TokenKind::Handshake);
-        let opening_tok = if is_legacy { TokenKind::Handshake } else { TokenKind::HandshakeChannel };
+        let opening_tok = if is_legacy {
+            TokenKind::Handshake
+        } else {
+            TokenKind::HandshakeChannel
+        };
         let start = self.expect(opening_tok)?.span;
         let ch_name = self.expect_ident()?;
         self.expect(TokenKind::Colon)?;
@@ -541,7 +590,10 @@ impl Parser {
         } else {
             return Err(CompileError::unexpected_token(
                 "send or receive",
-                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                &self
+                    .peek_kind()
+                    .map(|k| k.to_string())
+                    .unwrap_or("EOF".into()),
                 self.peek_span(),
             ));
         };
@@ -551,8 +603,12 @@ impl Parser {
         let variant = variant_ident.name.as_str();
         let known = matches!(
             variant,
-            "valid_ready" | "valid_only" | "ready_only" | "valid_stall"
-              | "req_ack_4phase" | "req_ack_2phase"
+            "valid_ready"
+                | "valid_only"
+                | "ready_only"
+                | "valid_stall"
+                | "req_ack_4phase"
+                | "req_ack_2phase"
         );
         if !known {
             return Err(CompileError::unexpected_token(
@@ -596,7 +652,11 @@ impl Parser {
                     self.expect(TokenKind::Colon)?;
                     let ty = self.parse_type_expr()?;
                     self.expect(TokenKind::Semi)?;
-                    let f_span_end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(parent_span);
+                    let f_span_end = self
+                        .tokens
+                        .get(self.pos.saturating_sub(1))
+                        .map(|t| t.span)
+                        .unwrap_or(parent_span);
                     let f_span = f_name.span.merge(f_span_end);
                     payload_names.push(f_name.clone());
                     branch_fields.push((f_name, ty, f_span));
@@ -610,7 +670,11 @@ impl Parser {
             self.expect(TokenKind::Colon)?;
             let ty = self.parse_type_expr()?;
             self.expect(TokenKind::Semi)?;
-            let f_span_end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(parent_span);
+            let f_span_end = self
+                .tokens
+                .get(self.pos.saturating_sub(1))
+                .map(|t| t.span)
+                .unwrap_or(parent_span);
             let f_span = f_name.span.merge(f_span_end);
             payload_names.push(f_name.clone());
             payload.push((f_name, ty, f_span));
@@ -637,7 +701,10 @@ impl Parser {
         // Synthesize flat PortDecls based on the variant. Directions are
         // relative to the channel's declared direction: `out` = producer
         // (this side drives valid/req and payload, receives ready/ack).
-        let opposite = match dir { Direction::In => Direction::Out, Direction::Out => Direction::In };
+        let opposite = match dir {
+            Direction::In => Direction::Out,
+            Direction::Out => Direction::In,
+        };
         let mut out: Vec<PortDecl> = Vec::new();
         let mk_port = |n: String, d: Direction, ty: TypeExpr, sp: Span| PortDecl {
             name: Ident { name: n, span: sp },
@@ -646,29 +713,71 @@ impl Parser {
             default: None,
             reg_info: None,
             bus_info: None,
-            shared: None, unpacked: false, unpacked_ascending: false,
+            shared: None,
+            unpacked: false,
+            unpacked_ascending: false,
             comb_deps: None,
             span: sp,
         };
         // Control signals (payload-direction = `dir`, back-signal = `opposite`).
         match variant {
             "valid_ready" => {
-                out.push(mk_port(format!("{}_valid", ch_name.name), dir, TypeExpr::Bool, block_span));
-                out.push(mk_port(format!("{}_ready", ch_name.name), opposite, TypeExpr::Bool, block_span));
+                out.push(mk_port(
+                    format!("{}_valid", ch_name.name),
+                    dir,
+                    TypeExpr::Bool,
+                    block_span,
+                ));
+                out.push(mk_port(
+                    format!("{}_ready", ch_name.name),
+                    opposite,
+                    TypeExpr::Bool,
+                    block_span,
+                ));
             }
             "valid_only" => {
-                out.push(mk_port(format!("{}_valid", ch_name.name), dir, TypeExpr::Bool, block_span));
+                out.push(mk_port(
+                    format!("{}_valid", ch_name.name),
+                    dir,
+                    TypeExpr::Bool,
+                    block_span,
+                ));
             }
             "ready_only" => {
-                out.push(mk_port(format!("{}_ready", ch_name.name), opposite, TypeExpr::Bool, block_span));
+                out.push(mk_port(
+                    format!("{}_ready", ch_name.name),
+                    opposite,
+                    TypeExpr::Bool,
+                    block_span,
+                ));
             }
             "valid_stall" => {
-                out.push(mk_port(format!("{}_valid", ch_name.name), dir, TypeExpr::Bool, block_span));
-                out.push(mk_port(format!("{}_stall", ch_name.name), opposite, TypeExpr::Bool, block_span));
+                out.push(mk_port(
+                    format!("{}_valid", ch_name.name),
+                    dir,
+                    TypeExpr::Bool,
+                    block_span,
+                ));
+                out.push(mk_port(
+                    format!("{}_stall", ch_name.name),
+                    opposite,
+                    TypeExpr::Bool,
+                    block_span,
+                ));
             }
             "req_ack_4phase" | "req_ack_2phase" => {
-                out.push(mk_port(format!("{}_req", ch_name.name), dir, TypeExpr::Bool, block_span));
-                out.push(mk_port(format!("{}_ack", ch_name.name), opposite, TypeExpr::Bool, block_span));
+                out.push(mk_port(
+                    format!("{}_req", ch_name.name),
+                    dir,
+                    TypeExpr::Bool,
+                    block_span,
+                ));
+                out.push(mk_port(
+                    format!("{}_ack", ch_name.name),
+                    opposite,
+                    TypeExpr::Bool,
+                    block_span,
+                ));
             }
             _ => unreachable!(),
         }
@@ -737,9 +846,15 @@ impl Parser {
     /// machinery exists; today arbiter ports have no such concept).
     ///
     /// See doc/plan_handshake_construct.md for the variant catalog.
-    fn parse_handshake_channel_construct_port(&mut self) -> Result<(Vec<PortDecl>, Option<PortArrayDecl>, HandshakeMeta), CompileError> {
+    fn parse_handshake_channel_construct_port(
+        &mut self,
+    ) -> Result<(Vec<PortDecl>, Option<PortArrayDecl>, HandshakeMeta), CompileError> {
         let is_legacy = self.check(TokenKind::Handshake);
-        let opening_tok = if is_legacy { TokenKind::Handshake } else { TokenKind::HandshakeChannel };
+        let opening_tok = if is_legacy {
+            TokenKind::Handshake
+        } else {
+            TokenKind::HandshakeChannel
+        };
         let start = self.expect(opening_tok)?.span;
         let ch_name = self.expect_ident()?;
         // Optional `[N]` array-count.
@@ -759,7 +874,10 @@ impl Parser {
         } else {
             return Err(CompileError::unexpected_token(
                 "send or receive",
-                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                &self
+                    .peek_kind()
+                    .map(|k| k.to_string())
+                    .unwrap_or("EOF".into()),
                 self.peek_span(),
             ));
         };
@@ -769,8 +887,12 @@ impl Parser {
         let variant = variant_ident.name.as_str();
         let known = matches!(
             variant,
-            "valid_ready" | "valid_only" | "ready_only" | "valid_stall"
-              | "req_ack_4phase" | "req_ack_2phase"
+            "valid_ready"
+                | "valid_only"
+                | "ready_only"
+                | "valid_stall"
+                | "req_ack_4phase"
+                | "req_ack_2phase"
         );
         if !known {
             return Err(CompileError::unexpected_token(
@@ -784,7 +906,9 @@ impl Parser {
         // have no per-instance conditional shape today.
         let mut payload: Vec<(Ident, TypeExpr, Span)> = Vec::new();
         loop {
-            if self.check(TokenKind::End) { break; }
+            if self.check(TokenKind::End) {
+                break;
+            }
             if self.check(TokenKind::GenerateIf) {
                 return Err(CompileError::general(
                     "`generate_if` is not supported inside a handshake_channel in an arbiter port list",
@@ -795,7 +919,11 @@ impl Parser {
             self.expect(TokenKind::Colon)?;
             let ty = self.parse_type_expr()?;
             self.expect(TokenKind::Semi)?;
-            let f_span_end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+            let f_span_end = self
+                .tokens
+                .get(self.pos.saturating_sub(1))
+                .map(|t| t.span)
+                .unwrap_or(start);
             let f_span = f_name.span.merge(f_span_end);
             payload.push((f_name, ty, f_span));
         }
@@ -815,7 +943,10 @@ impl Parser {
         }
         let block_span = start.merge(closing.span);
 
-        let opposite = match dir { Direction::In => Direction::Out, Direction::Out => Direction::In };
+        let opposite = match dir {
+            Direction::In => Direction::Out,
+            Direction::Out => Direction::In,
+        };
         // When inside a port array `request[N]`, the signals carry the
         // *relative* short names (`valid`, `ready`, `<payload>`) — the
         // surrounding array prepends `request_` at SV emission, matching
@@ -824,7 +955,11 @@ impl Parser {
         // name so they land as top-level ports identical to today's
         // hand-rolled `port grant_valid: out Bool;` form.
         let in_array = array_count.is_some();
-        let prefix = if in_array { String::new() } else { format!("{}_", ch_name.name) };
+        let prefix = if in_array {
+            String::new()
+        } else {
+            format!("{}_", ch_name.name)
+        };
 
         let mk_port = |n: String, d: Direction, ty: TypeExpr, sp: Span| PortDecl {
             name: Ident { name: n, span: sp },
@@ -833,7 +968,9 @@ impl Parser {
             default: None,
             reg_info: None,
             bus_info: None,
-            shared: None, unpacked: false, unpacked_ascending: false,
+            shared: None,
+            unpacked: false,
+            unpacked_ascending: false,
             comb_deps: None,
             span: sp,
         };
@@ -842,22 +979,62 @@ impl Parser {
         let mut signals: Vec<PortDecl> = Vec::new();
         match variant {
             "valid_ready" => {
-                signals.push(mk_port(format!("{prefix}valid"), dir, TypeExpr::Bool, block_span));
-                signals.push(mk_port(format!("{prefix}ready"), opposite, TypeExpr::Bool, block_span));
+                signals.push(mk_port(
+                    format!("{prefix}valid"),
+                    dir,
+                    TypeExpr::Bool,
+                    block_span,
+                ));
+                signals.push(mk_port(
+                    format!("{prefix}ready"),
+                    opposite,
+                    TypeExpr::Bool,
+                    block_span,
+                ));
             }
             "valid_only" => {
-                signals.push(mk_port(format!("{prefix}valid"), dir, TypeExpr::Bool, block_span));
+                signals.push(mk_port(
+                    format!("{prefix}valid"),
+                    dir,
+                    TypeExpr::Bool,
+                    block_span,
+                ));
             }
             "ready_only" => {
-                signals.push(mk_port(format!("{prefix}ready"), opposite, TypeExpr::Bool, block_span));
+                signals.push(mk_port(
+                    format!("{prefix}ready"),
+                    opposite,
+                    TypeExpr::Bool,
+                    block_span,
+                ));
             }
             "valid_stall" => {
-                signals.push(mk_port(format!("{prefix}valid"), dir, TypeExpr::Bool, block_span));
-                signals.push(mk_port(format!("{prefix}stall"), opposite, TypeExpr::Bool, block_span));
+                signals.push(mk_port(
+                    format!("{prefix}valid"),
+                    dir,
+                    TypeExpr::Bool,
+                    block_span,
+                ));
+                signals.push(mk_port(
+                    format!("{prefix}stall"),
+                    opposite,
+                    TypeExpr::Bool,
+                    block_span,
+                ));
             }
             "req_ack_4phase" | "req_ack_2phase" => {
-                signals.push(mk_port(format!("{prefix}req"), dir, TypeExpr::Bool, block_span));
-                signals.push(mk_port(format!("{prefix}ack"), opposite, TypeExpr::Bool, block_span));
+                signals.push(mk_port(
+                    format!("{prefix}req"),
+                    dir,
+                    TypeExpr::Bool,
+                    block_span,
+                ));
+                signals.push(mk_port(
+                    format!("{prefix}ack"),
+                    opposite,
+                    TypeExpr::Bool,
+                    block_span,
+                ));
             }
             _ => unreachable!(),
         }
@@ -870,21 +1047,36 @@ impl Parser {
         // Tier-2 protocol-SVA emission. Mirrors the bus-body path's
         // HandshakeMeta exactly, with `array_count` set for the `[N]`
         // shape so codegen can wrap the assertion in `generate for`.
-        let payload_names: Vec<Ident> = signals.iter()
+        let payload_names: Vec<Ident> = signals
+            .iter()
             // Skip the control signals (valid/ready/stall/req/ack) — those
             // are unconditionally added by the variant arms above. Anything
             // beyond that is a user-declared payload field.
             .filter(|p| {
-                let bare = if prefix.is_empty() { p.name.name.as_str() } else {
-                    p.name.name.strip_prefix(&prefix).unwrap_or(p.name.name.as_str())
+                let bare = if prefix.is_empty() {
+                    p.name.name.as_str()
+                } else {
+                    p.name
+                        .name
+                        .strip_prefix(&prefix)
+                        .unwrap_or(p.name.name.as_str())
                 };
                 !matches!(bare, "valid" | "ready" | "stall" | "req" | "ack")
             })
             .map(|p| {
-                let bare = if prefix.is_empty() { p.name.name.clone() } else {
-                    p.name.name.strip_prefix(&prefix).unwrap_or(&p.name.name).to_string()
+                let bare = if prefix.is_empty() {
+                    p.name.name.clone()
+                } else {
+                    p.name
+                        .name
+                        .strip_prefix(&prefix)
+                        .unwrap_or(&p.name.name)
+                        .to_string()
                 };
-                Ident { name: bare, span: p.span }
+                Ident {
+                    name: bare,
+                    span: p.span,
+                }
             })
             .collect();
         let meta = HandshakeMeta {
@@ -1065,8 +1257,10 @@ impl Parser {
                 Some(TokenKind::Function) => {
                     body.push(ModuleBodyItem::Function(self.parse_function()?));
                 }
-                Some(TokenKind::Ident(_)) if self.peek_str() == "shared"
-                                              && self.peek_real_kind_at(1) == Some(TokenKind::Function) => {
+                Some(TokenKind::Ident(_))
+                    if self.peek_str() == "shared"
+                        && self.peek_real_kind_at(1) == Some(TokenKind::Function) =>
+                {
                     body.push(ModuleBodyItem::Function(self.parse_function()?));
                 }
                 Some(other) => {
@@ -1115,7 +1309,9 @@ impl Parser {
     fn parse_param_decl(&mut self) -> Result<ParamDecl, CompileError> {
         // Check for `local param` prefix (local is a contextual keyword)
         let is_local = self.check_contextual("local");
-        if is_local { self.advance(); }
+        if is_local {
+            self.advance();
+        }
         let start = self.expect(TokenKind::Param)?.span;
         let name = self.expect_ident()?;
         // Optional width qualifier: param NAME[hi:lo]: const
@@ -1192,7 +1388,11 @@ impl Parser {
             None
         };
         self.expect(TokenKind::Semi)?;
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
         Ok(ParamDecl {
             name,
             kind,
@@ -1238,8 +1438,14 @@ impl Parser {
                         let pname = self.expect_ident()?;
                         self.expect(TokenKind::Eq)?;
                         let pval = self.parse_expr()?;
-                        assigns.push(ParamAssign { name: pname, value: pval, ty: None });
-                        if !self.eat(TokenKind::Comma) { break; }
+                        assigns.push(ParamAssign {
+                            name: pname,
+                            value: pval,
+                            ty: None,
+                        });
+                        if !self.eat(TokenKind::Comma) {
+                            break;
+                        }
                     }
                     self.expect(TokenKind::Gt)?;
                     assigns
@@ -1256,7 +1462,8 @@ impl Parser {
                 if let ExprKind::Literal(LitKind::Dec(0))
                 | ExprKind::Literal(LitKind::Hex(0))
                 | ExprKind::Literal(LitKind::Bin(0))
-                | ExprKind::Literal(LitKind::Sized(_, 0)) = &count_expr.kind {
+                | ExprKind::Literal(LitKind::Sized(_, 0)) = &count_expr.kind
+                {
                     return Err(CompileError::general(
                         "Vec<BusName, N> port: N must be >= 1",
                         vec_span,
@@ -1280,8 +1487,14 @@ impl Parser {
                     let pname = self.expect_ident()?;
                     self.expect(TokenKind::Eq)?;
                     let pval = self.parse_expr()?;
-                    assigns.push(ParamAssign { name: pname, value: pval, ty: None });
-                    if !self.eat(TokenKind::Comma) { break; }
+                    assigns.push(ParamAssign {
+                        name: pname,
+                        value: pval,
+                        ty: None,
+                    });
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
                 }
                 self.no_angle = old_no_angle;
                 self.expect(TokenKind::Gt)?;
@@ -1291,15 +1504,26 @@ impl Parser {
             };
             params.extend(inner_params);
             self.expect(TokenKind::Semi)?;
-            let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+            let end_span = self
+                .tokens
+                .get(self.pos.saturating_sub(1))
+                .map(|t| t.span)
+                .unwrap_or(start);
             return Ok(PortDecl {
                 name,
                 direction: Direction::Out, // placeholder; actual directions from bus decl
                 ty: TypeExpr::Named(bus_name.clone()),
                 default: None,
                 reg_info: None,
-                bus_info: Some(BusPortInfo { bus_name, perspective, params, count }),
-                shared: None, unpacked: false, unpacked_ascending: false,
+                bus_info: Some(BusPortInfo {
+                    bus_name,
+                    perspective,
+                    params,
+                    count,
+                }),
+                shared: None,
+                unpacked: false,
+                unpacked_ascending: false,
                 comb_deps: None,
                 span: start.merge(end_span),
             });
@@ -1312,7 +1536,10 @@ impl Parser {
         } else {
             return Err(CompileError::unexpected_token(
                 "in, out, initiator, or target",
-                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                &self
+                    .peek_kind()
+                    .map(|k| k.to_string())
+                    .unwrap_or("EOF".into()),
                 self.peek_span(),
             ));
         };
@@ -1331,7 +1558,11 @@ impl Parser {
         // Only meaningful (and only legal) with `unpacked`. Flips the SV
         // unpacked dim to `[0:N-1]` for interop with upstream SV declared as
         // `logic [W-1:0] x [N]`. See arch-com#307.
-        let unpacked_ascending = if unpacked { self.eat_contextual("ascending") } else { false };
+        let unpacked_ascending = if unpacked {
+            self.eat_contextual("ascending")
+        } else {
+            false
+        };
         if unpacked && is_reg {
             return Err(CompileError::general(
                 "`unpacked` is not allowed on `port reg` / pipe_reg<T,N> ports",
@@ -1411,7 +1642,9 @@ impl Parser {
                 RegReset::None
             };
             Some(PortRegInfo {
-                init, reset, guard,
+                init,
+                reset,
+                guard,
                 latency: pipe_reg_latency.unwrap_or(1),
                 // Only the legacy `port reg` keyword sets is_reg without
                 // going through the pipe_reg<T,N> branch.
@@ -1439,7 +1672,10 @@ impl Parser {
             } else {
                 return Err(CompileError::unexpected_token(
                     "or or and",
-                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                    &self
+                        .peek_kind()
+                        .map(|k| k.to_string())
+                        .unwrap_or("EOF".into()),
                     self.peek_span(),
                 ));
             };
@@ -1483,7 +1719,9 @@ impl Parser {
                 loop {
                     let dep_id = self.expect_ident()?;
                     deps.push(dep_id);
-                    if !self.eat(TokenKind::Comma) { break; }
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
                 }
             }
             self.expect(TokenKind::RParen)?;
@@ -1492,7 +1730,11 @@ impl Parser {
             None
         };
         self.expect(TokenKind::Semi)?;
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
         if unpacked && !matches!(ty, TypeExpr::Vec(..)) {
             return Err(CompileError::general(
                 "`unpacked` is only valid on `Vec<T,N>` ports",
@@ -1513,7 +1755,6 @@ impl Parser {
             span: start.merge(end_span),
         })
     }
-
 
     fn parse_tlm_connect_endpoint(&mut self) -> Result<(Ident, Ident), CompileError> {
         let inst = self.expect_ident()?;
@@ -1548,10 +1789,10 @@ impl Parser {
         })
     }
 
-
     /// Return true if the token `offset` positions ahead is `TokenKind::Default`.
     fn peek_default_at(&self, offset: usize) -> bool {
-        self.tokens.get(self.pos + offset)
+        self.tokens
+            .get(self.pos + offset)
             .map(|t| matches!(t.kind, TokenKind::Default))
             .unwrap_or(false)
     }
@@ -1590,14 +1831,29 @@ impl Parser {
             // Accept token (high/low) or PascalCase ident (High/Low), matching
             // the type-expression convention Reset<Sync, High> / Reset<Async, Low>.
             let level = match self.peek_kind() {
-                Some(TokenKind::High) => { self.advance(); ResetLevel::High }
-                Some(TokenKind::Low)  => { self.advance(); ResetLevel::Low }
-                Some(TokenKind::Ident(ref s)) if s == "High" => { self.advance(); ResetLevel::High }
-                Some(TokenKind::Ident(ref s)) if s == "Low"  => { self.advance(); ResetLevel::Low }
+                Some(TokenKind::High) => {
+                    self.advance();
+                    ResetLevel::High
+                }
+                Some(TokenKind::Low) => {
+                    self.advance();
+                    ResetLevel::Low
+                }
+                Some(TokenKind::Ident(ref s)) if s == "High" => {
+                    self.advance();
+                    ResetLevel::High
+                }
+                Some(TokenKind::Ident(ref s)) if s == "Low" => {
+                    self.advance();
+                    ResetLevel::Low
+                }
                 _ => {
                     return Err(CompileError::unexpected_token(
                         "high, low, High, or Low",
-                        &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                        &self
+                            .peek_kind()
+                            .map(|k| k.to_string())
+                            .unwrap_or("EOF".into()),
                         self.peek_span(),
                     ));
                 }
@@ -1639,7 +1895,11 @@ impl Parser {
         let unpacked = self.eat_contextual("unpacked");
         // Optional `ascending` follows `unpacked` (mirror of port modifier).
         // See arch-com#307.
-        let unpacked_ascending = if unpacked { self.eat_contextual("ascending") } else { false };
+        let unpacked_ascending = if unpacked {
+            self.eat_contextual("ascending")
+        } else {
+            false
+        };
         // Special case for bus-typed wires (scalar or Vec): consume any
         // inline `<PARAM=val, ...>` param overrides. The bus param list
         // is stashed in `WireDecl.bus_params` so codegen can apply it to
@@ -1649,7 +1909,11 @@ impl Parser {
         // mismatch any port that overrode the same params.
         let (ty, bus_params) = self.parse_wire_type_with_bus_params()?;
         self.expect(TokenKind::Semi)?;
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
         if unpacked && !matches!(ty, TypeExpr::Vec(..)) {
             return Err(CompileError::general(
                 "`unpacked` is only valid on `Vec<T,N>` wires",
@@ -1675,7 +1939,9 @@ impl Parser {
     /// Returns the standard TypeExpr (params stripped) plus the parsed
     /// param assignments. Empty Vec when none are present or when the
     /// type is non-bus.
-    fn parse_wire_type_with_bus_params(&mut self) -> Result<(TypeExpr, Vec<ParamAssign>), CompileError> {
+    fn parse_wire_type_with_bus_params(
+        &mut self,
+    ) -> Result<(TypeExpr, Vec<ParamAssign>), CompileError> {
         // Vec<BusName<...>, N> path: detect Vec keyword and parse manually.
         if self.check(TokenKind::KwVec) {
             self.advance();
@@ -1693,8 +1959,14 @@ impl Parser {
                         let pname = self.expect_ident()?;
                         self.expect(TokenKind::Eq)?;
                         let pval = self.parse_expr()?;
-                        assigns.push(ParamAssign { name: pname, value: pval, ty: None });
-                        if !self.eat(TokenKind::Comma) { break; }
+                        assigns.push(ParamAssign {
+                            name: pname,
+                            value: pval,
+                            ty: None,
+                        });
+                        if !self.eat(TokenKind::Comma) {
+                            break;
+                        }
                     }
                     self.expect(TokenKind::Gt)?;
                     assigns
@@ -1711,7 +1983,10 @@ impl Parser {
             let count = self.parse_expr()?;
             self.no_angle = old_no_angle;
             self.expect(TokenKind::Gt)?;
-            return Ok((TypeExpr::Vec(Box::new(elem_ty), Box::new(count)), bus_params));
+            return Ok((
+                TypeExpr::Vec(Box::new(elem_ty), Box::new(count)),
+                bus_params,
+            ));
         }
         // Scalar bus wire: `wire w: BusName<...>;`. Parse a bare ident
         // then check for inline params; if not present, fall through to
@@ -1734,8 +2009,14 @@ impl Parser {
                     let pname = self.expect_ident()?;
                     self.expect(TokenKind::Eq)?;
                     let pval = self.parse_expr()?;
-                    assigns.push(ParamAssign { name: pname, value: pval, ty: None });
-                    if !self.eat(TokenKind::Comma) { break; }
+                    assigns.push(ParamAssign {
+                        name: pname,
+                        value: pval,
+                        ty: None,
+                    });
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
                 }
                 self.no_angle = old_no_angle;
                 self.expect(TokenKind::Gt)?;
@@ -1767,7 +2048,11 @@ impl Parser {
         self.expect(TokenKind::Eq)?;
         let (ty, bus_params) = self.parse_wire_type_with_bus_params()?;
         self.expect(TokenKind::Semi)?;
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
         Ok(TypeAliasDecl {
             name,
             ty,
@@ -1800,10 +2085,7 @@ impl Parser {
         let multicycle = if self.check(TokenKind::Multicycle) {
             let mc_span = self.advance().span;
             let lit_tok = self.tokens.get(self.pos).cloned().ok_or_else(|| {
-                CompileError::general(
-                    "expected positive integer after `multicycle`",
-                    mc_span,
-                )
+                CompileError::general("expected positive integer after `multicycle`", mc_span)
             })?;
             let n_parsed: Option<u128> = match &lit_tok.kind {
                 TokenKind::DecLiteral(s) => s.replace('_', "").parse().ok(),
@@ -1861,7 +2143,11 @@ impl Parser {
         };
 
         self.expect(TokenKind::Semi)?;
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
         Ok(RegDecl {
             name,
             ty,
@@ -1886,7 +2172,10 @@ impl Parser {
         } else {
             return Err(CompileError::unexpected_token(
                 "rising or falling",
-                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                &self
+                    .peek_kind()
+                    .map(|k| k.to_string())
+                    .unwrap_or("EOF".into()),
                 self.peek_span(),
             ));
         };
@@ -1909,7 +2198,10 @@ impl Parser {
             } else {
                 return Err(CompileError::unexpected_token(
                     "rising or falling",
-                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                    &self
+                        .peek_kind()
+                        .map(|k| k.to_string())
+                        .unwrap_or("EOF".into()),
                     self.peek_span(),
                 ));
             };
@@ -1920,8 +2212,17 @@ impl Parser {
             }
             self.expect(TokenKind::End)?;
             self.expect(TokenKind::Seq)?;
-            let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
-            return Ok(RegBlock { clock, clock_edge, stmts, span: start.merge(end_span) });
+            let end_span = self
+                .tokens
+                .get(self.pos.saturating_sub(1))
+                .map(|t| t.span)
+                .unwrap_or(start);
+            return Ok(RegBlock {
+                clock,
+                clock_edge,
+                stmts,
+                span: start.merge(end_span),
+            });
         }
 
         // No `on` — use default clock.
@@ -1938,8 +2239,17 @@ impl Parser {
         }
         self.expect(TokenKind::End)?;
         self.expect(TokenKind::Seq)?;
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
-        Ok(RegBlock { clock, clock_edge, stmts, span: start.merge(end_span) })
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
+        Ok(RegBlock {
+            clock,
+            clock_edge,
+            stmts,
+            span: start.merge(end_span),
+        })
     }
 
     fn check_end_always(&self) -> bool {
@@ -1956,7 +2266,9 @@ impl Parser {
 
         // Optional `once`
         let once = self.check_ident("once");
-        if once { self.advance(); }
+        if once {
+            self.advance();
+        }
 
         // Optional name — peek: if we see Ident followed by `on`, it's a name.
         // If we see `on` directly, no name. If we see `Ident . Ident (`, this
@@ -1980,16 +2292,26 @@ impl Parser {
                 if !self.check(TokenKind::RParen) {
                     loop {
                         args.push(self.expect_ident()?);
-                        if self.check(TokenKind::Comma) { self.advance(); } else { break; }
+                        if self.check(TokenKind::Comma) {
+                            self.advance();
+                        } else {
+                            break;
+                        }
                     }
                 }
                 self.expect(TokenKind::RParen)?;
                 // The thread's display name for `end thread X.Y` matching
                 // stays as the `port` ident; closing match accepts either
                 // form (`end thread port` or `end thread port.method`).
-                (Some(first.clone()), Some(TlmTargetBinding {
-                    port: first, method, tag_lane, args,
-                }))
+                (
+                    Some(first.clone()),
+                    Some(TlmTargetBinding {
+                        port: first,
+                        method,
+                        tag_lane,
+                        args,
+                    }),
+                )
             } else {
                 (Some(first), None)
             }
@@ -2016,7 +2338,11 @@ impl Parser {
             if !self.check(TokenKind::RParen) {
                 loop {
                     args.push(self.expect_ident()?);
-                    if self.check(TokenKind::Comma) { self.advance(); } else { break; }
+                    if self.check(TokenKind::Comma) {
+                        self.advance();
+                    } else {
+                        break;
+                    }
                 }
             }
             self.expect(TokenKind::RParen)?;
@@ -2026,7 +2352,12 @@ impl Parser {
                     port_i.span,
                 ));
             }
-            Some(TlmImplementBinding { kind, port: port_i, method: method_i, args })
+            Some(TlmImplementBinding {
+                kind,
+                port: port_i,
+                method: method_i,
+                args,
+            })
         } else {
             None
         };
@@ -2041,7 +2372,10 @@ impl Parser {
         } else {
             return Err(CompileError::unexpected_token(
                 "rising or falling",
-                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                &self
+                    .peek_kind()
+                    .map(|k| k.to_string())
+                    .unwrap_or("EOF".into()),
                 self.peek_span(),
             ));
         };
@@ -2056,7 +2390,10 @@ impl Parser {
         } else {
             return Err(CompileError::unexpected_token(
                 "high or low",
-                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                &self
+                    .peek_kind()
+                    .map(|k| k.to_string())
+                    .unwrap_or("EOF".into()),
                 self.peek_span(),
             ));
         };
@@ -2106,7 +2443,10 @@ impl Parser {
             } else {
                 return Err(CompileError::unexpected_token(
                     "`when` or `comb` after thread `default`",
-                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                    &self
+                        .peek_kind()
+                        .map(|k| k.to_string())
+                        .unwrap_or("EOF".into()),
                     self.peek_span(),
                 ));
             }
@@ -2128,7 +2468,9 @@ impl Parser {
             let closing_name = self.expect_ident()?;
             if closing_name.name != n.name {
                 return Err(CompileError::mismatched_closing(
-                    &n.name, &closing_name.name, closing_name.span,
+                    &n.name,
+                    &closing_name.name,
+                    closing_name.span,
                 ));
             }
             // TLM target: `end thread port.method` is allowed (and
@@ -2140,7 +2482,9 @@ impl Parser {
                 let declared = tlm_target.as_ref().unwrap().method.name.clone();
                 if method_close.name != declared {
                     return Err(CompileError::mismatched_closing(
-                        &declared, &method_close.name, method_close.span,
+                        &declared,
+                        &method_close.name,
+                        method_close.span,
                     ));
                 }
             }
@@ -2148,7 +2492,11 @@ impl Parser {
         } else if once {
             // `end thread once`
             self.expect_contextual("once")?;
-            end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(end_kw_span);
+            end_span = self
+                .tokens
+                .get(self.pos.saturating_sub(1))
+                .map(|t| t.span)
+                .unwrap_or(end_kw_span);
         } else {
             end_span = end_kw_span;
         }
@@ -2251,8 +2599,8 @@ impl Parser {
             if matches!(self.peek_kind(), Some(TokenKind::DecLiteral(s)) if s == "0") {
                 let zero_end = self.tokens[self.pos].span.end;
                 self.advance(); // consume 0
-                let plus_adjacent = self.check(TokenKind::Plus)
-                    && self.tokens[self.pos].span.start == zero_end;
+                let plus_adjacent =
+                    self.check(TokenKind::Plus) && self.tokens[self.pos].span.start == zero_end;
                 if plus_adjacent {
                     let plus_span = self.advance().span; // consume +
                     return Err(CompileError::general(
@@ -2282,7 +2630,11 @@ impl Parser {
             let value = self.parse_expr()?;
             let semi_span = self.expect(TokenKind::Semi)?.span;
             let span = target.span.merge(semi_span);
-            Ok(ThreadStmt::CombAssign(CombAssign { target, value, span }))
+            Ok(ThreadStmt::CombAssign(CombAssign {
+                target,
+                value,
+                span,
+            }))
         } else if self.eat(TokenKind::LtEq) {
             let fork_start = if self.check_ident("fork") {
                 Some(self.advance().span)
@@ -2292,7 +2644,11 @@ impl Parser {
             let value = self.parse_expr()?;
             let semi_span = self.expect(TokenKind::Semi)?.span;
             let span = target.span.merge(semi_span);
-            let assign = RegAssign { target, value, span };
+            let assign = RegAssign {
+                target,
+                value,
+                span,
+            };
             if let Some(fork_start) = fork_start {
                 Ok(ThreadStmt::ForkTlmAssign(RegAssign {
                     span: fork_start.merge(semi_span),
@@ -2304,7 +2660,10 @@ impl Parser {
         } else {
             Err(CompileError::unexpected_token(
                 "= or <=",
-                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                &self
+                    .peek_kind()
+                    .map(|k| k.to_string())
+                    .unwrap_or("EOF".into()),
                 self.peek_span(),
             ))
         }
@@ -2316,7 +2675,8 @@ impl Parser {
         let cond = self.parse_expr()?;
 
         let mut then_stmts = Vec::new();
-        while !self.check_end_if() && !self.check(TokenKind::Else) && !self.check(TokenKind::ElsIf) {
+        while !self.check_end_if() && !self.check(TokenKind::Else) && !self.check(TokenKind::ElsIf)
+        {
             then_stmts.push(self.parse_thread_stmt()?);
         }
 
@@ -2337,7 +2697,11 @@ impl Parser {
             self.expect(TokenKind::If)?;
         }
 
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
         Ok(ThreadStmt::IfElse(ThreadIfElse {
             cond,
             then_stmts,
@@ -2422,7 +2786,9 @@ impl Parser {
         let closing = self.expect_ident()?;
         if closing.name != resource.name {
             return Err(CompileError::mismatched_closing(
-                &resource.name, &closing.name, closing.span,
+                &resource.name,
+                &closing.name,
+                closing.span,
             ));
         }
 
@@ -2471,9 +2837,9 @@ impl Parser {
         let policy_ident = self.expect_ident()?;
         let policy = match policy_ident.name.as_str() {
             "round_robin" => ArbiterPolicy::RoundRobin,
-            "priority"    => ArbiterPolicy::Priority,
-            "lru"         => ArbiterPolicy::Lru,
-            "weighted"    => {
+            "priority" => ArbiterPolicy::Priority,
+            "lru" => ArbiterPolicy::Lru,
+            "weighted" => {
                 // `mutex<weighted<W>>` — inner `<W>` (param expr).
                 self.expect(TokenKind::Lt)?;
                 let w = self.parse_type_arg_expr()?;
@@ -2498,7 +2864,11 @@ impl Parser {
             self.expect_contextual("resource")?;
             let closing = self.expect_ident()?;
             if closing.name != name.name {
-                return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+                return Err(CompileError::mismatched_closing(
+                    &name.name,
+                    &closing.name,
+                    closing.span,
+                ));
             }
             closing.span
         };
@@ -2522,7 +2892,11 @@ impl Parser {
         }
         self.expect(TokenKind::End)?;
         self.expect(TokenKind::Latch)?;
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
         Ok(LatchBlock {
             enable,
             stmts,
@@ -2546,12 +2920,21 @@ impl Parser {
             self.advance();
             self.expect(TokenKind::LParen)?;
             let path = match self.peek_kind() {
-                Some(TokenKind::StringLit(s)) => { let p = s.clone(); self.advance(); p }
-                _ => return Err(CompileError::unexpected_token(
-                    "file path string literal",
-                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
-                    self.peek_span(),
-                )),
+                Some(TokenKind::StringLit(s)) => {
+                    let p = s.clone();
+                    self.advance();
+                    p
+                }
+                _ => {
+                    return Err(CompileError::unexpected_token(
+                        "file path string literal",
+                        &self
+                            .peek_kind()
+                            .map(|k| k.to_string())
+                            .unwrap_or("EOF".into()),
+                        self.peek_span(),
+                    ))
+                }
             };
             self.expect(TokenKind::RParen)?;
             Some(path)
@@ -2579,33 +2962,56 @@ impl Parser {
                 self.advance();
                 level
             }
-            _ => return Err(CompileError::unexpected_token(
-                "log level (Always/Low/Medium/High/Full/Debug)",
-                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
-                self.peek_span(),
-            )),
+            _ => {
+                return Err(CompileError::unexpected_token(
+                    "log level (Always/Low/Medium/High/Full/Debug)",
+                    &self
+                        .peek_kind()
+                        .map(|k| k.to_string())
+                        .unwrap_or("EOF".into()),
+                    self.peek_span(),
+                ))
+            }
         };
         self.expect(TokenKind::Comma)?;
 
         // Tag string
         let tag = match self.peek_kind() {
-            Some(TokenKind::StringLit(s)) => { let t = s.clone(); self.advance(); t }
-            _ => return Err(CompileError::unexpected_token(
-                "tag string literal",
-                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
-                self.peek_span(),
-            )),
+            Some(TokenKind::StringLit(s)) => {
+                let t = s.clone();
+                self.advance();
+                t
+            }
+            _ => {
+                return Err(CompileError::unexpected_token(
+                    "tag string literal",
+                    &self
+                        .peek_kind()
+                        .map(|k| k.to_string())
+                        .unwrap_or("EOF".into()),
+                    self.peek_span(),
+                ))
+            }
         };
         self.expect(TokenKind::Comma)?;
 
         // Format string
         let fmt = match self.peek_kind() {
-            Some(TokenKind::StringLit(s)) => { let f = s.clone(); self.advance(); f }
-            _ => return Err(CompileError::unexpected_token(
-                "format string literal",
-                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
-                self.peek_span(),
-            )),
+            Some(TokenKind::StringLit(s)) => {
+                let f = s.clone();
+                self.advance();
+                f
+            }
+            _ => {
+                return Err(CompileError::unexpected_token(
+                    "format string literal",
+                    &self
+                        .peek_kind()
+                        .map(|k| k.to_string())
+                        .unwrap_or("EOF".into()),
+                    self.peek_span(),
+                ))
+            }
         };
 
         // Optional args
@@ -2616,7 +3022,14 @@ impl Parser {
 
         let end = self.expect(TokenKind::RParen)?.span;
         self.expect(TokenKind::Semi)?;
-        Ok(LogStmt { level, tag, fmt, args, file, span: start.merge(end) })
+        Ok(LogStmt {
+            level,
+            tag,
+            fmt,
+            args,
+            file,
+            span: start.merge(end),
+        })
     }
 
     fn parse_reg_stmt(&mut self) -> Result<Stmt, CompileError> {
@@ -2666,7 +3079,11 @@ impl Parser {
             self.advance(); // consume 'until'
             let cond = self.parse_expr()?;
             let semi_span = self.expect(TokenKind::Semi)?.span;
-            return Ok(Stmt::DoUntil { body, cond, span: do_start.merge(semi_span) });
+            return Ok(Stmt::DoUntil {
+                body,
+                cond,
+                span: do_start.merge(semi_span),
+            });
         }
         // Assignment: target <= value;
         // Suppress `<=` as an infix op while parsing the target so it stays
@@ -2685,14 +3102,19 @@ impl Parser {
         let value = self.parse_expr()?;
         self.expect(TokenKind::Semi)?;
         let span = target.span.merge(value.span);
-        Ok(Stmt::Assign(RegAssign { target, value, span }))
+        Ok(Stmt::Assign(RegAssign {
+            target,
+            value,
+            span,
+        }))
     }
 
     fn parse_reg_if(&mut self, unique: bool) -> Result<Stmt, CompileError> {
         let start = self.expect(TokenKind::If)?.span;
         let cond = self.parse_expr()?;
         let mut then_stmts = Vec::new();
-        while !self.check_end_if() && !self.check(TokenKind::Else) && !self.check(TokenKind::ElsIf) {
+        while !self.check_end_if() && !self.check(TokenKind::Else) && !self.check(TokenKind::ElsIf)
+        {
             then_stmts.push(self.parse_reg_stmt()?);
         }
 
@@ -2705,7 +3127,7 @@ impl Parser {
             else_stmts.push(nested);
         } else if self.check(TokenKind::Else) {
             self.advance(); // consume `else`
-            // `else` body — parse until `end if`
+                            // `else` body — parse until `end if`
             while !self.check_end_if() {
                 else_stmts.push(self.parse_reg_stmt()?);
             }
@@ -2717,7 +3139,11 @@ impl Parser {
             self.expect(TokenKind::If)?;
         }
 
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
         Ok(Stmt::IfElse(IfElse {
             cond,
             then_stmts,
@@ -2733,7 +3159,6 @@ impl Parser {
             && self.tokens[self.pos + 1].kind == TokenKind::If
     }
 
-
     fn parse_reg_match(&mut self, unique: bool) -> Result<Stmt, CompileError> {
         let start = self.expect(TokenKind::Match)?.span;
         let scrutinee = self.parse_expr()?;
@@ -2748,7 +3173,11 @@ impl Parser {
         }
         self.expect(TokenKind::End)?;
         self.expect(TokenKind::Match)?;
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
         Ok(Stmt::Match(MatchStmt {
             scrutinee,
             arms,
@@ -2800,13 +3229,16 @@ impl Parser {
         }
         self.expect(TokenKind::End)?;
         self.expect(TokenKind::Comb)?;
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
         Ok(CombBlock {
             stmts,
             span: start.merge(end_span),
         })
     }
-
 
     fn check_end_comb(&self) -> bool {
         self.pos + 1 < self.tokens.len()
@@ -2831,7 +3263,9 @@ impl Parser {
             let mut values = Vec::new();
             loop {
                 values.push(self.parse_expr()?);
-                if !self.eat(TokenKind::Comma) { break; }
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
             }
             self.expect(TokenKind::RBrace)?;
             ForRange::ValueList(values)
@@ -2845,12 +3279,18 @@ impl Parser {
         let mut body = Vec::new();
         while !(self.check(TokenKind::End)
             && self.pos + 1 < self.tokens.len()
-            && self.tokens[self.pos + 1].kind == TokenKind::For) {
+            && self.tokens[self.pos + 1].kind == TokenKind::For)
+        {
             body.push(parse_body(self)?);
         }
         self.expect(TokenKind::End)?;
         let end_span = self.expect(TokenKind::For)?.span;
-        Ok(ForLoop { var, range, body, span: start.merge(end_span) })
+        Ok(ForLoop {
+            var,
+            range,
+            body,
+            span: start.merge(end_span),
+        })
     }
 
     fn parse_seq_for_loop(&mut self) -> Result<Stmt, CompileError> {
@@ -2878,7 +3318,9 @@ impl Parser {
             ));
         }
         let mut body = Vec::new();
-        while !(self.check(TokenKind::End) && self.peek_kind_at(self.pos + 1) == Some(TokenKind::Init)) {
+        while !(self.check(TokenKind::End)
+            && self.peek_kind_at(self.pos + 1) == Some(TokenKind::Init))
+        {
             body.push(self.parse_reg_stmt()?);
         }
         self.expect(TokenKind::End)?;
@@ -2934,7 +3376,8 @@ impl Parser {
         let start = self.expect(TokenKind::If)?.span;
         let cond = self.parse_expr()?;
         let mut then_stmts = Vec::new();
-        while !self.check_end_if() && !self.check(TokenKind::Else) && !self.check(TokenKind::ElsIf) {
+        while !self.check_end_if() && !self.check(TokenKind::Else) && !self.check(TokenKind::ElsIf)
+        {
             then_stmts.push(self.parse_comb_stmt()?);
         }
 
@@ -2955,7 +3398,11 @@ impl Parser {
             self.expect(TokenKind::If)?;
         }
 
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
         Ok(Stmt::IfElse(IfElse {
             cond,
             then_stmts,
@@ -2976,11 +3423,18 @@ impl Parser {
             // Stmt — previously cast to Stmt for `Vec<MatchArm<Stmt>>`,
             // which forced the typecheck to recheck under seq semantics).
             let comb_stmt = self.parse_comb_stmt()?;
-            arms.push(MatchArm { pattern, body: vec![comb_stmt] });
+            arms.push(MatchArm {
+                pattern,
+                body: vec![comb_stmt],
+            });
         }
         self.expect(TokenKind::End)?;
         self.expect(TokenKind::Match)?;
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
         Ok(Stmt::Match(MatchStmt {
             scrutinee,
             arms,
@@ -3001,7 +3455,9 @@ impl Parser {
             if !self.check(TokenKind::RBrace) {
                 fields.push(self.expect_ident()?);
                 while self.eat(TokenKind::Comma) {
-                    if self.check(TokenKind::RBrace) { break; }
+                    if self.check(TokenKind::RBrace) {
+                        break;
+                    }
                     fields.push(self.expect_ident()?);
                 }
             }
@@ -3009,10 +3465,17 @@ impl Parser {
             self.expect(TokenKind::Eq)?;
             let value = self.parse_expr()?;
             self.expect(TokenKind::Semi)?;
-            let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+            let end_span = self
+                .tokens
+                .get(self.pos.saturating_sub(1))
+                .map(|t| t.span)
+                .unwrap_or(start);
             // Placeholder name — unused in destructuring mode. Carry the
             // span so diagnostics still have a location.
-            let placeholder = Ident { name: String::from("_destructure"), span: start };
+            let placeholder = Ident {
+                name: String::from("_destructure"),
+                span: start,
+            };
             return Ok(LetBinding {
                 name: placeholder,
                 ty: None,
@@ -3030,7 +3493,11 @@ impl Parser {
         self.expect(TokenKind::Eq)?;
         let value = self.parse_expr()?;
         self.expect(TokenKind::Semi)?;
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
         Ok(LetBinding {
             name,
             ty,
@@ -3049,19 +3516,36 @@ impl Parser {
         let stages_ident = self.expect_ident()?;
         if stages_ident.name != "stages" {
             return Err(CompileError::unexpected_token(
-                "stages", &stages_ident.name, stages_ident.span,
+                "stages",
+                &stages_ident.name,
+                stages_ident.span,
             ));
         }
         let stages_tok = self.advance();
         let stages = match &stages_tok.kind {
-            TokenKind::DecLiteral(s) => s.parse::<u32>().map_err(|_|
-                CompileError::general("invalid stage count", stages_tok.span))?,
-            _ => return Err(CompileError::unexpected_token(
-                "integer literal", &stages_tok.kind.to_string(), stages_tok.span)),
+            TokenKind::DecLiteral(s) => s
+                .parse::<u32>()
+                .map_err(|_| CompileError::general("invalid stage count", stages_tok.span))?,
+            _ => {
+                return Err(CompileError::unexpected_token(
+                    "integer literal",
+                    &stages_tok.kind.to_string(),
+                    stages_tok.span,
+                ))
+            }
         };
         self.expect(TokenKind::Semi)?;
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
-        Ok(PipeRegDecl { name, source, stages, span: start.merge(end_span) })
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
+        Ok(PipeRegDecl {
+            name,
+            source,
+            stages,
+            span: start.merge(end_span),
+        })
     }
 
     // ── Assert / Cover ────────────────────────────────────────────────────────
@@ -3074,9 +3558,20 @@ impl Parser {
     fn parse_assert_decl(&mut self) -> Result<AssertDecl, CompileError> {
         let start = self.peek_span();
         let kind = match self.peek_kind() {
-            Some(TokenKind::Assert) => { self.advance(); AssertKind::Assert }
-            Some(TokenKind::Cover)  => { self.advance(); AssertKind::Cover  }
-            _ => return Err(CompileError::general("expected assert or cover", self.peek_span())),
+            Some(TokenKind::Assert) => {
+                self.advance();
+                AssertKind::Assert
+            }
+            Some(TokenKind::Cover) => {
+                self.advance();
+                AssertKind::Cover
+            }
+            _ => {
+                return Err(CompileError::general(
+                    "expected assert or cover",
+                    self.peek_span(),
+                ))
+            }
         };
 
         // Optional label: `name :` where `:` is not followed by another `:`
@@ -3093,7 +3588,12 @@ impl Parser {
 
         let expr = self.parse_expr()?;
         let end = self.expect(TokenKind::Semi)?.span;
-        Ok(AssertDecl { kind, name, expr, span: start.merge(end) })
+        Ok(AssertDecl {
+            kind,
+            name,
+            expr,
+            span: start.merge(end),
+        })
     }
 
     fn parse_inst(&mut self) -> Result<InstDecl, CompileError> {
@@ -3127,7 +3627,11 @@ impl Parser {
                     (self.parse_expr()?, None)
                 };
                 self.expect(TokenKind::Semi)?;
-                param_assigns.push(ParamAssign { name: pname, value, ty });
+                param_assigns.push(ParamAssign {
+                    name: pname,
+                    value,
+                    ty,
+                });
             } else if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) {
                 let cstart = self.peek_span();
                 let mut port_name = self.expect_ident()?;
@@ -3136,10 +3640,16 @@ impl Parser {
                 if self.eat(TokenKind::LBracket) {
                     let idx_tok = self.advance();
                     let idx = match &idx_tok.kind {
-                        TokenKind::DecLiteral(s) => s.parse::<u32>().map_err(|_|
-                            CompileError::general("invalid port index", idx_tok.span))?,
-                        _ => return Err(CompileError::unexpected_token(
-                            "integer index", &idx_tok.kind.to_string(), idx_tok.span)),
+                        TokenKind::DecLiteral(s) => s.parse::<u32>().map_err(|_| {
+                            CompileError::general("invalid port index", idx_tok.span)
+                        })?,
+                        _ => {
+                            return Err(CompileError::unexpected_token(
+                                "integer index",
+                                &idx_tok.kind.to_string(),
+                                idx_tok.span,
+                            ))
+                        }
                     };
                     self.expect(TokenKind::RBracket)?;
                     if self.eat(TokenKind::Dot) {
@@ -3175,7 +3685,10 @@ impl Parser {
                 } else {
                     return Err(CompileError::unexpected_token(
                         "<- or ->",
-                        &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                        &self
+                            .peek_kind()
+                            .map(|k| k.to_string())
+                            .unwrap_or("EOF".into()),
                         self.peek_span(),
                     ));
                 };
@@ -3193,19 +3706,33 @@ impl Parser {
                         } else {
                             return Err(CompileError::unexpected_token(
                                 "Sync or Async",
-                                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                                &self
+                                    .peek_kind()
+                                    .map(|k| k.to_string())
+                                    .unwrap_or("EOF".into()),
                                 self.peek_span(),
                             ));
                         };
                         let level = if self.eat(TokenKind::Comma) {
                             match self.peek_kind() {
-                                Some(TokenKind::Ident(s)) if s == "High" => { self.advance(); ResetLevel::High }
-                                Some(TokenKind::Ident(s)) if s == "Low"  => { self.advance(); ResetLevel::Low  }
-                                _ => return Err(CompileError::unexpected_token(
-                                    "High or Low",
-                                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
-                                    self.peek_span(),
-                                )),
+                                Some(TokenKind::Ident(s)) if s == "High" => {
+                                    self.advance();
+                                    ResetLevel::High
+                                }
+                                Some(TokenKind::Ident(s)) if s == "Low" => {
+                                    self.advance();
+                                    ResetLevel::Low
+                                }
+                                _ => {
+                                    return Err(CompileError::unexpected_token(
+                                        "High or Low",
+                                        &self
+                                            .peek_kind()
+                                            .map(|k| k.to_string())
+                                            .unwrap_or("EOF".into()),
+                                        self.peek_span(),
+                                    ))
+                                }
                             }
                         } else {
                             ResetLevel::High
@@ -3219,7 +3746,11 @@ impl Parser {
                     None
                 };
                 self.expect(TokenKind::Semi)?;
-                let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(cstart);
+                let end_span = self
+                    .tokens
+                    .get(self.pos.saturating_sub(1))
+                    .map(|t| t.span)
+                    .unwrap_or(cstart);
                 connections.push(Connection {
                     port_name,
                     direction,
@@ -3230,7 +3761,10 @@ impl Parser {
             } else {
                 return Err(CompileError::unexpected_token(
                     "param or port connection",
-                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                    &self
+                        .peek_kind()
+                        .map(|k| k.to_string())
+                        .unwrap_or("EOF".into()),
                     self.peek_span(),
                 ));
             }
@@ -3271,11 +3805,13 @@ impl Parser {
             let idx_str = match &idx_tok.kind {
                 TokenKind::DecLiteral(s) => s.clone(),
                 TokenKind::Ident(s) => s.clone(),
-                _ => return Err(CompileError::unexpected_token(
-                    "integer index or loop variable",
-                    &idx_tok.kind.to_string(),
-                    idx_tok.span,
-                )),
+                _ => {
+                    return Err(CompileError::unexpected_token(
+                        "integer index or loop variable",
+                        &idx_tok.kind.to_string(),
+                        idx_tok.span,
+                    ))
+                }
             };
             self.expect(TokenKind::RBracket)?;
             if self.eat(TokenKind::Dot) {
@@ -3305,13 +3841,20 @@ impl Parser {
         } else {
             return Err(CompileError::unexpected_token(
                 "<- or ->",
-                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                &self
+                    .peek_kind()
+                    .map(|k| k.to_string())
+                    .unwrap_or("EOF".into()),
                 self.peek_span(),
             ));
         };
         let signal = self.parse_expr()?;
         self.expect(TokenKind::Semi)?;
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(cstart);
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(cstart);
         Ok(Connection {
             port_name,
             direction,
@@ -3344,7 +3887,10 @@ impl Parser {
             } else {
                 return Err(CompileError::unexpected_token(
                     "port connection or nested `for`",
-                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                    &self
+                        .peek_kind()
+                        .map(|k| k.to_string())
+                        .unwrap_or("EOF".into()),
                     self.peek_span(),
                 ));
             }
@@ -3379,9 +3925,13 @@ impl Parser {
         if self.pos + 1 < self.tokens.len()
             && self.tokens[self.pos].kind == TokenKind::End
             && self.tokens[self.pos + 1].kind == TokenKind::GenerateIf
-        { return true; }
+        {
+            return true;
+        }
         // Also stop at `generate_else` so the caller can consume it
-        if self.check(TokenKind::GenerateElse) { return true; }
+        if self.check(TokenKind::GenerateElse) {
+            return true;
+        }
         false
     }
 
@@ -3422,22 +3972,26 @@ impl Parser {
                 // indexed signal.
                 Some(tok @ (TokenKind::Port | TokenKind::Reg | TokenKind::Let)) => {
                     let (kw, hint) = match tok {
-                        TokenKind::Port => ("port",
+                        TokenKind::Port => (
+                            "port",
                             "Declare ports at module scope using Vec types for \
                              per-iteration elements, e.g. `port done: out Vec<Bool, N>;` \
-                             outside, then `done -> done[i];` inside an inst here."),
-                        TokenKind::Reg => ("reg",
+                             outside, then `done -> done[i];` inside an inst here.",
+                        ),
+                        TokenKind::Reg => (
+                            "reg",
                             "Declare Vec-typed regs at module scope and index them in a \
                              seq / comb block here, e.g. `reg store: Vec<UInt<8>, N> ...;` \
-                             outside, then `store[i] <= ...;` inside generate_for."),
-                        _ => ("let",
+                             outside, then `store[i] <= ...;` inside generate_for.",
+                        ),
+                        _ => (
+                            "let",
                             "Move the let binding to module scope; reference it freely \
-                             from seq / comb inside generate_for."),
+                             from seq / comb inside generate_for.",
+                        ),
                     };
                     return Err(CompileError::general(
-                        &format!(
-                            "'{kw}' declarations are not allowed inside generate_for. {hint}"
-                        ),
+                        &format!("'{kw}' declarations are not allowed inside generate_for. {hint}"),
                         self.peek_span(),
                     ));
                 }
@@ -3523,7 +4077,6 @@ impl Parser {
         }))
     }
 
-
     /// Parse an expression inside angle brackets (no `>` or `>=` as binop)
     fn parse_type_arg_expr(&mut self) -> Result<Expr, CompileError> {
         let old = self.no_angle;
@@ -3554,6 +4107,14 @@ impl Parser {
                 self.advance();
                 Ok(TypeExpr::Bool)
             }
+            Some(TokenKind::FP32) => {
+                self.advance();
+                Ok(TypeExpr::FP32)
+            }
+            Some(TokenKind::BF16) => {
+                self.advance();
+                Ok(TypeExpr::BF16)
+            }
             Some(TokenKind::Bit) => {
                 self.advance();
                 Ok(TypeExpr::Bit)
@@ -3576,7 +4137,10 @@ impl Parser {
                 } else {
                     return Err(CompileError::unexpected_token(
                         "Sync or Async",
-                        &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                        &self
+                            .peek_kind()
+                            .map(|k| k.to_string())
+                            .unwrap_or("EOF".into()),
                         self.peek_span(),
                     ));
                 };
@@ -3594,7 +4158,10 @@ impl Parser {
                         _ => {
                             return Err(CompileError::unexpected_token(
                                 "High or Low",
-                                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                                &self
+                                    .peek_kind()
+                                    .map(|k| k.to_string())
+                                    .unwrap_or("EOF".into()),
                                 self.peek_span(),
                             ));
                         }
@@ -3644,7 +4211,9 @@ impl Parser {
             let span = cond.span.merge(else_expr.span);
             Ok(Expr {
                 kind: ExprKind::Ternary(Box::new(cond), Box::new(then_expr), Box::new(else_expr)),
-                span, parenthesized: false })
+                span,
+                parenthesized: false,
+            })
         } else {
             Ok(cond)
         }
@@ -3667,10 +4236,12 @@ impl Parser {
                     | ExprKind::Literal(LitKind::Hex(v))
                     | ExprKind::Literal(LitKind::Bin(v))
                     | ExprKind::Literal(LitKind::Sized(_, v)) => *v as u32,
-                    _ => return Err(CompileError::general(
-                        "`@N` latency must be an integer literal",
-                        n_expr.span,
-                    )),
+                    _ => {
+                        return Err(CompileError::general(
+                            "`@N` latency must be an integer literal",
+                            n_expr.span,
+                        ))
+                    }
                 };
                 let span = lhs.span.merge(n_expr.span);
                 lhs = Expr {
@@ -3708,7 +4279,9 @@ impl Parser {
                     let span = lhs.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
                     lhs = Expr {
                         kind: ExprKind::MethodCall(Box::new(lhs), field, args),
-                        span, parenthesized: false };
+                        span,
+                        parenthesized: false,
+                    };
                 } else if self.check(TokenKind::Lt) && is_method_name(&field.name) {
                     self.advance(); // <
                     let old_no_angle = self.no_angle;
@@ -3725,12 +4298,16 @@ impl Parser {
                     let span = lhs.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
                     lhs = Expr {
                         kind: ExprKind::MethodCall(Box::new(lhs), field, type_args),
-                        span, parenthesized: false };
+                        span,
+                        parenthesized: false,
+                    };
                 } else {
                     let span = lhs.span.merge(field.span);
                     lhs = Expr {
                         kind: ExprKind::FieldAccess(Box::new(lhs), field),
-                        span, parenthesized: false };
+                        span,
+                        parenthesized: false,
+                    };
                 }
                 continue;
             }
@@ -3741,21 +4318,32 @@ impl Parser {
                 // Part-select: expr[start +: width] or expr[start -: width]
                 // `+:` / `-:` may arrive as a single PlusColon/MinusColon token (no space)
                 // OR as a separate Plus/Minus + Colon token pair (with space); handle both.
-                let is_plus_colon  = self.check(TokenKind::PlusColon)
-                    || (self.check(TokenKind::Plus)  && self.peek_kind_at(self.pos + 1) == Some(TokenKind::Colon));
+                let is_plus_colon = self.check(TokenKind::PlusColon)
+                    || (self.check(TokenKind::Plus)
+                        && self.peek_kind_at(self.pos + 1) == Some(TokenKind::Colon));
                 let is_minus_colon = self.check(TokenKind::MinusColon)
-                    || (self.check(TokenKind::Minus) && self.peek_kind_at(self.pos + 1) == Some(TokenKind::Colon));
+                    || (self.check(TokenKind::Minus)
+                        && self.peek_kind_at(self.pos + 1) == Some(TokenKind::Colon));
                 if is_plus_colon || is_minus_colon {
                     let up = is_plus_colon;
                     self.advance(); // consume + or - (or +: as one token)
-                    // If spaced form, also consume the separate `:` token
-                    if self.check(TokenKind::Colon) { self.advance(); }
+                                    // If spaced form, also consume the separate `:` token
+                    if self.check(TokenKind::Colon) {
+                        self.advance();
+                    }
                     let width = self.parse_expr()?;
                     self.expect(TokenKind::RBracket)?;
                     let span = lhs.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
                     lhs = Expr {
-                        kind: ExprKind::PartSelect(Box::new(lhs), Box::new(first), Box::new(width), up),
-                        span, parenthesized: false };
+                        kind: ExprKind::PartSelect(
+                            Box::new(lhs),
+                            Box::new(first),
+                            Box::new(width),
+                            up,
+                        ),
+                        span,
+                        parenthesized: false,
+                    };
                 } else if self.check(TokenKind::Colon) {
                     // bit-slice: expr[hi:lo]
                     self.advance();
@@ -3764,14 +4352,18 @@ impl Parser {
                     let span = lhs.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
                     lhs = Expr {
                         kind: ExprKind::BitSlice(Box::new(lhs), Box::new(first), Box::new(lo)),
-                        span, parenthesized: false };
+                        span,
+                        parenthesized: false,
+                    };
                 } else {
                     // index: expr[i]
                     self.expect(TokenKind::RBracket)?;
                     let span = lhs.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
                     lhs = Expr {
                         kind: ExprKind::Index(Box::new(lhs), Box::new(first)),
-                        span, parenthesized: false };
+                        span,
+                        parenthesized: false,
+                    };
                 }
                 continue;
             }
@@ -3782,7 +4374,9 @@ impl Parser {
                 let span = lhs.span; // approximate
                 lhs = Expr {
                     kind: ExprKind::Cast(Box::new(lhs), Box::new(ty)),
-                    span, parenthesized: false };
+                    span,
+                    parenthesized: false,
+                };
                 continue;
             }
 
@@ -3800,10 +4394,16 @@ impl Parser {
                     } else {
                         members.push(InsideMember::Single(e));
                     }
-                    if !self.eat(TokenKind::Comma) { break; }
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
                 }
                 let end_span = self.expect(TokenKind::RBrace)?.span;
-                lhs = Expr { kind: ExprKind::Inside(Box::new(lhs), members), span: lhs_span.merge(end_span), parenthesized: false };
+                lhs = Expr {
+                    kind: ExprKind::Inside(Box::new(lhs), members),
+                    span: lhs_span.merge(end_span),
+                    parenthesized: false,
+                };
                 continue;
             }
 
@@ -3820,7 +4420,7 @@ impl Parser {
                 self.deprecated_implies_spans.push(self.peek_span());
             }
             self.advance(); // consume operator (first token)
-            // Wrapping operators are two tokens (+%, -%, *%); consume the trailing %
+                            // Wrapping operators are two tokens (+%, -%, *%); consume the trailing %
             if matches!(op, BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap) {
                 self.advance(); // consume %
             }
@@ -3828,7 +4428,9 @@ impl Parser {
             let span = lhs.span.merge(rhs.span);
             lhs = Expr {
                 kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)),
-                span, parenthesized: false };
+                span,
+                parenthesized: false,
+            };
         }
 
         Ok(lhs)
@@ -3842,13 +4444,15 @@ impl Parser {
                 let tok = self.advance();
                 let n_tok = self.advance();
                 let n_val: u32 = match &n_tok.kind {
-                    TokenKind::DecLiteral(s) => s.parse().map_err(|_| CompileError::general(
-                        "`##N` cycle count out of range", n_tok.span,
-                    ))?,
-                    _ => return Err(CompileError::general(
-                        "`##N` requires an integer literal cycle count",
-                        n_tok.span,
-                    )),
+                    TokenKind::DecLiteral(s) => s.parse().map_err(|_| {
+                        CompileError::general("`##N` cycle count out of range", n_tok.span)
+                    })?,
+                    _ => {
+                        return Err(CompileError::general(
+                            "`##N` requires an integer literal cycle count",
+                            n_tok.span,
+                        ))
+                    }
                 };
                 if n_val == 0 {
                     return Err(CompileError::general(
@@ -3860,7 +4464,9 @@ impl Parser {
                 let span = tok.span.merge(operand.span);
                 Ok(Expr {
                     kind: ExprKind::SvaNext(n_val, Box::new(operand)),
-                    span, parenthesized: false })
+                    span,
+                    parenthesized: false,
+                })
             }
             // `not` keyword and `!` symbol are exact aliases for logical-not
             // (same token semantics, same precedence) — mirrors `&&`==`and` /
@@ -3872,7 +4478,9 @@ impl Parser {
                 let span = tok.span.merge(operand.span);
                 Ok(Expr {
                     kind: ExprKind::Unary(UnaryOp::Not, Box::new(operand)),
-                    span, parenthesized: false })
+                    span,
+                    parenthesized: false,
+                })
             }
             Some(TokenKind::Tilde) => {
                 let tok = self.advance();
@@ -3880,7 +4488,9 @@ impl Parser {
                 let span = tok.span.merge(operand.span);
                 Ok(Expr {
                     kind: ExprKind::Unary(UnaryOp::BitNot, Box::new(operand)),
-                    span, parenthesized: false })
+                    span,
+                    parenthesized: false,
+                })
             }
             Some(TokenKind::Minus) => {
                 let tok = self.advance();
@@ -3888,7 +4498,9 @@ impl Parser {
                 let span = tok.span.merge(operand.span);
                 Ok(Expr {
                     kind: ExprKind::Unary(UnaryOp::Neg, Box::new(operand)),
-                    span, parenthesized: false })
+                    span,
+                    parenthesized: false,
+                })
             }
             Some(TokenKind::Amp) => {
                 let tok = self.advance();
@@ -3896,7 +4508,9 @@ impl Parser {
                 let span = tok.span.merge(operand.span);
                 Ok(Expr {
                     kind: ExprKind::Unary(UnaryOp::RedAnd, Box::new(operand)),
-                    span, parenthesized: false })
+                    span,
+                    parenthesized: false,
+                })
             }
             Some(TokenKind::Pipe) => {
                 let tok = self.advance();
@@ -3904,7 +4518,9 @@ impl Parser {
                 let span = tok.span.merge(operand.span);
                 Ok(Expr {
                     kind: ExprKind::Unary(UnaryOp::RedOr, Box::new(operand)),
-                    span, parenthesized: false })
+                    span,
+                    parenthesized: false,
+                })
             }
             Some(TokenKind::Caret) => {
                 let tok = self.advance();
@@ -3912,7 +4528,9 @@ impl Parser {
                 let span = tok.span.merge(operand.span);
                 Ok(Expr {
                     kind: ExprKind::Unary(UnaryOp::RedXor, Box::new(operand)),
-                    span, parenthesized: false })
+                    span,
+                    parenthesized: false,
+                })
             }
             Some(TokenKind::LParen) => {
                 self.advance();
@@ -3929,7 +4547,9 @@ impl Parser {
                 let end = self.expect(TokenKind::RParen)?;
                 Ok(Expr {
                     kind: ExprKind::Clog2(Box::new(arg)),
-                    span: start.merge(end.span), parenthesized: false })
+                    span: start.merge(end.span),
+                    parenthesized: false,
+                })
             }
             // signed(expr) — same-width reinterpret to SInt
             Some(TokenKind::Signed) => {
@@ -3939,7 +4559,9 @@ impl Parser {
                 let end = self.expect(TokenKind::RParen)?;
                 Ok(Expr {
                     kind: ExprKind::Signed(Box::new(arg)),
-                    span: start.merge(end.span), parenthesized: false })
+                    span: start.merge(end.span),
+                    parenthesized: false,
+                })
             }
             // onehot(index) — one-hot decode: 1 << index
             Some(TokenKind::Onehot) => {
@@ -3949,7 +4571,9 @@ impl Parser {
                 let end = self.expect(TokenKind::RParen)?;
                 Ok(Expr {
                     kind: ExprKind::Onehot(Box::new(arg)),
-                    span: start.merge(end.span), parenthesized: false })
+                    span: start.merge(end.span),
+                    parenthesized: false,
+                })
             }
             // unsigned(expr) — same-width reinterpret to UInt
             Some(TokenKind::KwUnsigned) => {
@@ -3959,15 +4583,21 @@ impl Parser {
                 let end = self.expect(TokenKind::RParen)?;
                 Ok(Expr {
                     kind: ExprKind::Unsigned(Box::new(arg)),
-                    span: start.merge(end.span), parenthesized: false })
+                    span: start.merge(end.span),
+                    parenthesized: false,
+                })
             }
             // Bit concatenation {a, b, c} or bit replication {N{expr}}
             Some(TokenKind::LBrace) => {
                 let start = self.advance().span;
                 // Check for replication: {N{expr}} — count/ident followed by LBrace
-                let is_repeat = if let Some(TokenKind::DecLiteral(_) | TokenKind::HexLiteral(_) | TokenKind::Ident(_)) = self.peek_kind() {
+                let is_repeat = if let Some(
+                    TokenKind::DecLiteral(_) | TokenKind::HexLiteral(_) | TokenKind::Ident(_),
+                ) = self.peek_kind()
+                {
                     // Look ahead: if token after the number/ident is '{', it's replication
-                    self.pos + 1 < self.tokens.len() && self.tokens[self.pos + 1].kind == TokenKind::LBrace
+                    self.pos + 1 < self.tokens.len()
+                        && self.tokens[self.pos + 1].kind == TokenKind::LBrace
                 } else {
                     false
                 };
@@ -3979,7 +4609,9 @@ impl Parser {
                     let end = self.expect(TokenKind::RBrace)?;
                     Ok(Expr {
                         kind: ExprKind::Repeat(Box::new(count), Box::new(value)),
-                        span: start.merge(end.span), parenthesized: false })
+                        span: start.merge(end.span),
+                        parenthesized: false,
+                    })
                 } else {
                     let mut parts = Vec::new();
                     while !self.check(TokenKind::RBrace) {
@@ -3991,31 +4623,40 @@ impl Parser {
                     let end = self.expect(TokenKind::RBrace)?;
                     Ok(Expr {
                         kind: ExprKind::Concat(parts),
-                        span: start.merge(end.span), parenthesized: false })
+                        span: start.merge(end.span),
+                        parenthesized: false,
+                    })
                 }
             }
             Some(TokenKind::Todo) => {
                 let tok = self.advance();
                 Ok(Expr {
                     kind: ExprKind::Todo,
-                    span: tok.span, parenthesized: false })
+                    span: tok.span,
+                    parenthesized: false,
+                })
             }
             Some(TokenKind::True) => {
                 let tok = self.advance();
                 Ok(Expr {
                     kind: ExprKind::Bool(true),
-                    span: tok.span, parenthesized: false })
+                    span: tok.span,
+                    parenthesized: false,
+                })
             }
             Some(TokenKind::False) => {
                 let tok = self.advance();
                 Ok(Expr {
                     kind: ExprKind::Bool(false),
-                    span: tok.span, parenthesized: false })
+                    span: tok.span,
+                    parenthesized: false,
+                })
             }
-            Some(TokenKind::DecLiteral(_)) | Some(TokenKind::HexLiteral(_))
-            | Some(TokenKind::BinLiteral(_)) | Some(TokenKind::SizedLiteral(_)) => {
-                self.parse_literal()
-            }
+            Some(TokenKind::DecLiteral(_))
+            | Some(TokenKind::HexLiteral(_))
+            | Some(TokenKind::BinLiteral(_))
+            | Some(TokenKind::SizedLiteral(_))
+            | Some(TokenKind::FloatLiteral(_)) => self.parse_literal(),
             Some(TokenKind::Ident(_)) | Some(TokenKind::Counter) => {
                 let ident = self.expect_ident()?;
                 // Check for enum variant: Ident::Ident
@@ -4025,7 +4666,9 @@ impl Parser {
                     let span = ident.span.merge(variant.span);
                     Ok(Expr {
                         kind: ExprKind::EnumVariant(ident, variant),
-                        span, parenthesized: false })
+                        span,
+                        parenthesized: false,
+                    })
                 }
                 // Check for struct literal: Ident { ... }
                 else if self.check(TokenKind::LBrace) {
@@ -4044,7 +4687,9 @@ impl Parser {
                     let span = ident.span.merge(end.span);
                     Ok(Expr {
                         kind: ExprKind::StructLiteral(ident, fields),
-                        span, parenthesized: false })
+                        span,
+                        parenthesized: false,
+                    })
                 } else if self.check(TokenKind::LParen) {
                     // Function call: Name(arg, ...)
                     self.advance(); // consume `(`
@@ -4059,12 +4704,16 @@ impl Parser {
                     let span = ident.span.merge(end.span);
                     Ok(Expr {
                         kind: ExprKind::FunctionCall(ident.name, call_args),
-                        span, parenthesized: false })
+                        span,
+                        parenthesized: false,
+                    })
                 } else {
                     let span = ident.span;
                     Ok(Expr {
                         kind: ExprKind::Ident(ident.name),
-                        span, parenthesized: false })
+                        span,
+                        parenthesized: false,
+                    })
                 }
             }
             // match expression: match scrutinee  pat => expr, ... end match
@@ -4081,10 +4730,16 @@ impl Parser {
                 }
                 self.expect(TokenKind::End)?;
                 self.expect(TokenKind::Match)?;
-                let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+                let end_span = self
+                    .tokens
+                    .get(self.pos.saturating_sub(1))
+                    .map(|t| t.span)
+                    .unwrap_or(start);
                 Ok(Expr {
                     kind: ExprKind::ExprMatch(Box::new(scrutinee), arms),
-                    span: start.merge(end_span), parenthesized: false })
+                    span: start.merge(end_span),
+                    parenthesized: false,
+                })
             }
             Some(other) => Err(CompileError::unexpected_token(
                 "expression",
@@ -4099,36 +4754,47 @@ impl Parser {
         let tok = self.advance();
         let kind = match &tok.kind {
             TokenKind::DecLiteral(s) => {
-                let v = s.replace('_', "").parse::<u64>().map_err(|_| {
-                    CompileError::general("invalid decimal literal", tok.span)
-                })?;
+                let v = s
+                    .replace('_', "")
+                    .parse::<u64>()
+                    .map_err(|_| CompileError::general("invalid decimal literal", tok.span))?;
                 ExprKind::Literal(LitKind::Dec(v))
             }
+            TokenKind::FloatLiteral(s) => {
+                let v = s
+                    .replace('_', "")
+                    .parse::<f64>()
+                    .map_err(|_| CompileError::general("invalid float literal", tok.span))?;
+                ExprKind::Literal(LitKind::Float(v.to_bits()))
+            }
             TokenKind::HexLiteral(s) => {
-                let v = u64::from_str_radix(&s[2..].replace('_', ""), 16).map_err(|_| {
-                    CompileError::general("invalid hex literal", tok.span)
-                })?;
+                let v = u64::from_str_radix(&s[2..].replace('_', ""), 16)
+                    .map_err(|_| CompileError::general("invalid hex literal", tok.span))?;
                 ExprKind::Literal(LitKind::Hex(v))
             }
             TokenKind::BinLiteral(s) => {
-                let v = u64::from_str_radix(&s[2..].replace('_', ""), 2).map_err(|_| {
-                    CompileError::general("invalid binary literal", tok.span)
-                })?;
+                let v = u64::from_str_radix(&s[2..].replace('_', ""), 2)
+                    .map_err(|_| CompileError::general("invalid binary literal", tok.span))?;
                 ExprKind::Literal(LitKind::Bin(v))
             }
             TokenKind::SizedLiteral(s) => {
                 // format: WIDTH'BASE_CHAR VALUE
                 let parts: Vec<&str> = s.splitn(2, '\'').collect();
-                let width: u32 = parts[0].parse().map_err(|_| {
-                    CompileError::general("invalid sized literal width", tok.span)
-                })?;
+                let width: u32 = parts[0]
+                    .parse()
+                    .map_err(|_| CompileError::general("invalid sized literal width", tok.span))?;
                 let base_char = parts[1].chars().next().unwrap();
                 let digits = &parts[1][1..].replace('_', "");
                 let value = match base_char {
                     'h' | 'H' => u64::from_str_radix(digits, 16),
                     'b' | 'B' => u64::from_str_radix(digits, 2),
                     'd' | 'D' => digits.parse::<u64>(),
-                    _ => return Err(CompileError::general("invalid sized literal base", tok.span)),
+                    _ => {
+                        return Err(CompileError::general(
+                            "invalid sized literal base",
+                            tok.span,
+                        ))
+                    }
                 }
                 .map_err(|_| CompileError::general("invalid sized literal value", tok.span))?;
                 ExprKind::Literal(LitKind::Sized(width, value))
@@ -4137,7 +4803,9 @@ impl Parser {
         };
         Ok(Expr {
             kind,
-            span: tok.span, parenthesized: false })
+            span: tok.span,
+            parenthesized: false,
+        })
     }
 
     fn peek_binop(&self) -> Option<BinOp> {
@@ -4145,9 +4813,15 @@ impl Parser {
             // Don't treat `+ :` or `- :` as binary ops — they are part-select separators
             TokenKind::Plus if self.peek_kind_at(self.pos + 1) == Some(TokenKind::Colon) => None,
             TokenKind::Minus if self.peek_kind_at(self.pos + 1) == Some(TokenKind::Colon) => None,
-            TokenKind::Plus if self.peek_kind_at(self.pos + 1) == Some(TokenKind::Percent) => Some(BinOp::AddWrap),
-            TokenKind::Minus if self.peek_kind_at(self.pos + 1) == Some(TokenKind::Percent) => Some(BinOp::SubWrap),
-            TokenKind::Star if self.peek_kind_at(self.pos + 1) == Some(TokenKind::Percent) => Some(BinOp::MulWrap),
+            TokenKind::Plus if self.peek_kind_at(self.pos + 1) == Some(TokenKind::Percent) => {
+                Some(BinOp::AddWrap)
+            }
+            TokenKind::Minus if self.peek_kind_at(self.pos + 1) == Some(TokenKind::Percent) => {
+                Some(BinOp::SubWrap)
+            }
+            TokenKind::Star if self.peek_kind_at(self.pos + 1) == Some(TokenKind::Percent) => {
+                Some(BinOp::MulWrap)
+            }
             TokenKind::Plus => Some(BinOp::Add),
             TokenKind::Minus => Some(BinOp::Sub),
             TokenKind::Star => Some(BinOp::Mul),
@@ -4201,8 +4875,10 @@ impl Parser {
                 Some(TokenKind::Wire) => wires.push(self.parse_wire_decl()?),
                 Some(TokenKind::Let) => lets.push(self.parse_let_binding()?),
                 // `state [A, B, C]` — flat declaration list
-                _ if self.check_contextual("state") && self.pos + 1 < self.tokens.len()
-                    && self.tokens[self.pos + 1].kind == TokenKind::LBracket => {
+                _ if self.check_contextual("state")
+                    && self.pos + 1 < self.tokens.len()
+                    && self.tokens[self.pos + 1].kind == TokenKind::LBracket =>
+                {
                     self.advance(); // consume `state`
                     self.expect(TokenKind::LBracket)?;
                     loop {
@@ -4225,7 +4901,10 @@ impl Parser {
                     let default_span = self.tokens[self.pos].span;
                     let next_is_seq_same_line = self.pos + 1 < self.tokens.len()
                         && self.tokens[self.pos + 1].kind == TokenKind::Seq
-                        && !self.has_newline_between(default_span.end, self.tokens[self.pos + 1].span.start);
+                        && !self.has_newline_between(
+                            default_span.end,
+                            self.tokens[self.pos + 1].span.start,
+                        );
                     if next_is_seq_same_line {
                         self.parse_seq_default_decl()?;
                         continue;
@@ -4288,7 +4967,11 @@ impl Parser {
         self.expect(TokenKind::Fsm)?;
         let closing = self.expect_ident()?;
         if closing.name != name.name {
-            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing.name,
+                closing.span,
+            ));
         }
 
         // `default state Name;` is required for real `fsm` declarations
@@ -4300,7 +4983,16 @@ impl Parser {
         // when `!common.is_interface && default_state.is_none()`).
 
         Ok(FsmDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc, is_interface: false },
+            common: ConstructCommon {
+                name,
+                params,
+                ports,
+                asserts,
+                span: start.merge(closing.span),
+                doc: None,
+                inner_doc,
+                is_interface: false,
+            },
             regs,
             lets,
             wires,
@@ -4343,7 +5035,11 @@ impl Parser {
                     // `let x = expr;` inside state — shorthand for comb assignment
                     let l = self.parse_let_binding()?;
                     comb_stmts.push(Stmt::Assign(crate::ast::CombAssign {
-                        target: Expr { kind: ExprKind::Ident(l.name.name.clone()), span: l.name.span, parenthesized: false },
+                        target: Expr {
+                            kind: ExprKind::Ident(l.name.name.clone()),
+                            span: l.name.span,
+                            parenthesized: false,
+                        },
                         value: l.value,
                         span: l.span,
                     }));
@@ -4363,7 +5059,11 @@ impl Parser {
         self.expect_contextual("state")?;
         let closing = self.expect_ident()?;
         if closing.name != name.name {
-            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing.name,
+                closing.span,
+            ));
         }
 
         Ok(StateBody {
@@ -4381,7 +5081,6 @@ impl Parser {
             && matches!(&self.tokens[self.pos + 1].kind, TokenKind::Ident(s) if s == "state")
     }
 
-
     fn parse_transition(&mut self) -> Result<Transition, CompileError> {
         let start = self.expect(TokenKind::RArrow)?.span;
         let target = self.expect_ident()?;
@@ -4389,10 +5088,18 @@ impl Parser {
         let condition = if self.eat(TokenKind::When) {
             self.parse_expr()?
         } else {
-            Expr { kind: ExprKind::Bool(true), span: target.span, parenthesized: false }
+            Expr {
+                kind: ExprKind::Bool(true),
+                span: target.span,
+                parenthesized: false,
+            }
         };
         self.expect(TokenKind::Semi)?;
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
         Ok(Transition {
             target,
             condition,
@@ -4441,11 +5148,24 @@ impl Parser {
         self.expect(TokenKind::Pipeline)?;
         let closing = self.expect_ident()?;
         if closing.name != name.name {
-            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing.name,
+                closing.span,
+            ));
         }
 
         Ok(PipelineDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc, is_interface: false },
+            common: ConstructCommon {
+                name,
+                params,
+                ports,
+                asserts,
+                span: start.merge(closing.span),
+                doc: None,
+                inner_doc,
+                is_interface: false,
+            },
             stages,
             stall_conds,
             flush_directives,
@@ -4471,7 +5191,7 @@ impl Parser {
         // Handle todo! stage body
         if self.check(TokenKind::Todo) {
             self.advance(); // consume todo!
-            // fall through to end stage
+                            // fall through to end stage
         } else {
             while !self.check_end_stage() {
                 match self.peek_kind() {
@@ -4513,7 +5233,11 @@ impl Parser {
         self.expect(TokenKind::Stage)?;
         let closing = self.expect_ident()?;
         if closing.name != name.name {
-            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing.name,
+                closing.span,
+            ));
         }
 
         Ok(StageDecl {
@@ -4529,7 +5253,11 @@ impl Parser {
         self.expect(TokenKind::When)?;
         let condition = self.parse_expr()?;
         self.expect(TokenKind::Semi)?;
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
         Ok(StallDecl {
             condition,
             span: start.merge(end_span),
@@ -4546,7 +5274,11 @@ impl Parser {
         // scenarios where stale data in flushed regs is a hazard.
         let clear = self.eat_contextual("clear");
         self.expect(TokenKind::Semi)?;
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
         Ok(FlushDecl {
             target_stage,
             condition,
@@ -4563,7 +5295,11 @@ impl Parser {
         self.expect(TokenKind::When)?;
         let condition = self.parse_expr()?;
         self.expect(TokenKind::Semi)?;
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
         Ok(ForwardDecl {
             dest,
             source,
@@ -4605,10 +5341,12 @@ impl Parser {
                     kind = Some(match val.name.as_str() {
                         "fifo" => FifoKind::Fifo,
                         "lifo" => FifoKind::Lifo,
-                        other => return Err(CompileError::general(
-                            &format!("unknown fifo kind `{other}`; expected fifo or lifo"),
-                            val.span,
-                        )),
+                        other => {
+                            return Err(CompileError::general(
+                                &format!("unknown fifo kind `{other}`; expected fifo or lifo"),
+                                val.span,
+                            ))
+                        }
                     });
                 }
                 _ if self.check_param() => params.push(self.parse_param_decl()?),
@@ -4631,11 +5369,24 @@ impl Parser {
         self.expect(TokenKind::Fifo)?;
         let closing = self.expect_ident()?;
         if closing.name != name.name {
-            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing.name,
+                closing.span,
+            ));
         }
 
         Ok(FifoDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc, is_interface: false },
+            common: ConstructCommon {
+                name,
+                params,
+                ports,
+                asserts,
+                span: start.merge(closing.span),
+                doc: None,
+                inner_doc,
+                is_interface: false,
+            },
             kind: kind.unwrap_or(FifoKind::Fifo),
         })
     }
@@ -4701,7 +5452,11 @@ impl Parser {
         self.expect(TokenKind::Synchronizer)?;
         let closing = self.expect_ident()?;
         if closing.name != name.name {
-            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing.name,
+                closing.span,
+            ));
         }
 
         Ok(SynchronizerDecl {
@@ -4741,19 +5496,35 @@ impl Parser {
                     // 'and' and 'latch' are both keyword tokens, handle both specially
                     let span = self.peek_span();
                     let kind_val = match self.peek_kind() {
-                        Some(TokenKind::And) => { self.advance(); "and" }
-                        Some(TokenKind::Latch) => { self.advance(); "latch" }
+                        Some(TokenKind::And) => {
+                            self.advance();
+                            "and"
+                        }
+                        Some(TokenKind::Latch) => {
+                            self.advance();
+                            "latch"
+                        }
                         Some(TokenKind::Ident(_)) => {
                             let val = self.expect_ident()?;
                             match val.name.as_str() {
                                 "latch" => "latch",
-                                other => return Err(CompileError::general(
-                                    &format!("unknown clkgate kind `{other}`; expected latch or and"),
-                                    val.span,
-                                )),
+                                other => {
+                                    return Err(CompileError::general(
+                                        &format!(
+                                            "unknown clkgate kind `{other}`; expected latch or and"
+                                        ),
+                                        val.span,
+                                    ))
+                                }
                             }
                         }
-                        _ => return Err(CompileError::unexpected_token("latch or and", &format!("{:?}", self.peek_kind()), span)),
+                        _ => {
+                            return Err(CompileError::unexpected_token(
+                                "latch or and",
+                                &format!("{:?}", self.peek_kind()),
+                                span,
+                            ))
+                        }
                     };
                     self.expect(TokenKind::Semi)?;
                     kind = Some(match kind_val {
@@ -4777,7 +5548,11 @@ impl Parser {
         self.expect(TokenKind::Clkgate)?;
         let closing = self.expect_ident()?;
         if closing.name != name.name {
-            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing.name,
+                closing.span,
+            ));
         }
 
         Ok(ClkGateDecl {
@@ -4817,9 +5592,12 @@ impl Parser {
 
         // Phase 1: attributes (kind, read, write, collision, init)
         while !self.check_end_ram() {
-            if self.check(TokenKind::Param) || self.check(TokenKind::Port)
+            if self.check(TokenKind::Param)
+                || self.check(TokenKind::Port)
                 || self.check(TokenKind::Store)
-                || self.check(TokenKind::Assert) || self.check(TokenKind::Cover) {
+                || self.check(TokenKind::Assert)
+                || self.check(TokenKind::Cover)
+            {
                 break;
             }
             if self.check(TokenKind::Init) {
@@ -4843,14 +5621,18 @@ impl Parser {
                 let lit_span = self.peek_span();
                 let val = match self.peek_kind() {
                     Some(TokenKind::DecLiteral(s)) => {
-                        let v = s.parse::<u32>().map_err(|_| CompileError::general(
-                            "expected integer after `latency`", lit_span))?;
-                        self.advance(); v
+                        let v = s.parse::<u32>().map_err(|_| {
+                            CompileError::general("expected integer after `latency`", lit_span)
+                        })?;
+                        self.advance();
+                        v
                     }
-                    _ => return Err(CompileError::general(
-                        "expected integer after `latency`",
-                        lit_span,
-                    )),
+                    _ => {
+                        return Err(CompileError::general(
+                            "expected integer after `latency`",
+                            lit_span,
+                        ))
+                    }
                 };
                 self.expect(TokenKind::Semi)?;
                 latency = Some(val);
@@ -4877,15 +5659,20 @@ impl Parser {
                     "port_a_wins" => RamCollision::PortAWins,
                     "port_b_wins" => RamCollision::PortBWins,
                     "undefined" => RamCollision::Undefined,
-                    other => return Err(CompileError::general(
-                        &format!("unknown collision policy `{other}`"),
-                        val.span,
-                    )),
+                    other => {
+                        return Err(CompileError::general(
+                            &format!("unknown collision policy `{other}`"),
+                            val.span,
+                        ))
+                    }
                 });
             } else {
                 return Err(CompileError::unexpected_token(
                     "kind, latency, write, collision, or init",
-                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                    &self
+                        .peek_kind()
+                        .map(|k| k.to_string())
+                        .unwrap_or("EOF".into()),
                     self.peek_span(),
                 ));
             }
@@ -4914,33 +5701,46 @@ impl Parser {
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
-                Some(other) => return Err(CompileError::unexpected_token(
-                    "port, store, init, assert, or cover",
-                    &other.to_string(),
-                    self.peek_span(),
-                )),
+                Some(other) => {
+                    return Err(CompileError::unexpected_token(
+                        "port, store, init, assert, or cover",
+                        &other.to_string(),
+                        self.peek_span(),
+                    ))
+                }
                 None => return Err(CompileError::UnexpectedEof),
             }
         }
 
-        let k = kind.ok_or_else(|| CompileError::general(
-            "ram is missing required `kind` directive",
-            name.span,
-        ))?;
-        let lat = latency.ok_or_else(|| CompileError::general(
-            "ram is missing required `latency` directive",
-            name.span,
-        ))?;
+        let k = kind.ok_or_else(|| {
+            CompileError::general("ram is missing required `kind` directive", name.span)
+        })?;
+        let lat = latency.ok_or_else(|| {
+            CompileError::general("ram is missing required `latency` directive", name.span)
+        })?;
 
         self.expect(TokenKind::End)?;
         self.expect(TokenKind::Ram)?;
         let closing = self.expect_ident()?;
         if closing.name != name.name {
-            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing.name,
+                closing.span,
+            ));
         }
 
         Ok(RamDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc, is_interface: false },
+            common: ConstructCommon {
+                name,
+                params,
+                ports,
+                asserts,
+                span: start.merge(closing.span),
+                doc: None,
+                inner_doc,
+                is_interface: false,
+            },
             kind: k,
             latency: lat,
             write_mode,
@@ -4960,8 +5760,16 @@ impl Parser {
             self.expect(TokenKind::Colon)?;
             let ty = self.parse_type_expr()?;
             self.expect(TokenKind::Semi)?;
-            let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
-            vars.push(RamStoreVar { name, ty, span: start.merge(end_span) });
+            let end_span = self
+                .tokens
+                .get(self.pos.saturating_sub(1))
+                .map(|t| t.span)
+                .unwrap_or(start);
+            vars.push(RamStoreVar {
+                name,
+                ty,
+                span: start.merge(end_span),
+            });
         }
         self.expect(TokenKind::End)?;
         self.expect(TokenKind::Store)?;
@@ -4985,7 +5793,11 @@ impl Parser {
         self.expect(TokenKind::Ports)?;
         let closing = self.expect_ident()?;
         if closing.name != name.name {
-            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing.name,
+                closing.span,
+            ));
         }
         Ok(RamPortGroup {
             span: start.merge(closing.span),
@@ -5012,14 +5824,33 @@ impl Parser {
         } else {
             return Err(CompileError::unexpected_token(
                 "in or out",
-                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                &self
+                    .peek_kind()
+                    .map(|k| k.to_string())
+                    .unwrap_or("EOF".into()),
                 self.peek_span(),
             ));
         };
         let ty = self.parse_type_expr()?;
         self.expect(TokenKind::Semi)?;
-        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
-        Ok(PortDecl { name, direction, ty, default: None, reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, comb_deps: None, span: start.merge(end_span) })
+        let end_span = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
+            .map(|t| t.span)
+            .unwrap_or(start);
+        Ok(PortDecl {
+            name,
+            direction,
+            ty,
+            default: None,
+            reg_info: None,
+            bus_info: None,
+            shared: None,
+            unpacked: false,
+            unpacked_ascending: false,
+            comb_deps: None,
+            span: start.merge(end_span),
+        })
     }
 
     fn parse_ram_init(&mut self) -> Result<RamInit, CompileError> {
@@ -5086,13 +5917,17 @@ impl Parser {
                         ExprKind::Literal(LitKind::Hex(v)) => *v,
                         ExprKind::Literal(LitKind::Bin(v)) => *v,
                         ExprKind::Literal(LitKind::Sized(_, v)) => *v,
-                        _ => return Err(CompileError::general(
-                            "init array elements must be integer literals",
-                            expr.span,
-                        )),
+                        _ => {
+                            return Err(CompileError::general(
+                                "init array elements must be integer literals",
+                                expr.span,
+                            ))
+                        }
                     };
                     values.push(val);
-                    if self.check(TokenKind::Comma) { self.advance(); }
+                    if self.check(TokenKind::Comma) {
+                        self.advance();
+                    }
                 }
                 self.expect(TokenKind::RBracket)?;
                 self.expect(TokenKind::Semi)?;
@@ -5135,11 +5970,13 @@ impl Parser {
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
-                Some(other) => return Err(CompileError::unexpected_token(
-                    "port, assert, or cover",
-                    &other.to_string(),
-                    self.peek_span(),
-                )),
+                Some(other) => {
+                    return Err(CompileError::unexpected_token(
+                        "port, assert, or cover",
+                        &other.to_string(),
+                        self.peek_span(),
+                    ))
+                }
                 None => return Err(CompileError::UnexpectedEof),
             }
         }
@@ -5148,7 +5985,11 @@ impl Parser {
         self.expect(TokenKind::Cam)?;
         let closing = self.expect_ident()?;
         if closing.name != name.name {
-            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing.name,
+                closing.span,
+            ));
         }
         let end = closing.span;
 
@@ -5158,8 +5999,12 @@ impl Parser {
                 params,
                 ports,
                 asserts,
-                span: Span { start: start.start, end: end.end },
-                doc: None, inner_doc,
+                span: Span {
+                    start: start.start,
+                    end: end.end,
+                },
+                doc: None,
+                inner_doc,
                 is_interface: false,
             },
         })
@@ -5178,8 +6023,11 @@ impl Parser {
 
         // Phase 1: attributes (kind, direction, init) — must come first
         while !self.check_end_of(TokenKind::Counter) {
-            if self.check(TokenKind::Param) || self.check(TokenKind::Port)
-                || self.check(TokenKind::Assert) || self.check(TokenKind::Cover) {
+            if self.check(TokenKind::Param)
+                || self.check(TokenKind::Port)
+                || self.check(TokenKind::Assert)
+                || self.check(TokenKind::Cover)
+            {
                 break;
             }
             if self.check(TokenKind::Init) {
@@ -5208,18 +6056,23 @@ impl Parser {
                 let val = self.expect_ident()?;
                 self.expect(TokenKind::Semi)?;
                 direction = Some(match val.name.as_str() {
-                    "up"      => CounterDirection::Up,
-                    "down"    => CounterDirection::Down,
+                    "up" => CounterDirection::Up,
+                    "down" => CounterDirection::Down,
                     "up_down" => CounterDirection::UpDown,
-                    other => return Err(CompileError::general(
-                        &format!("unknown counter direction `{other}`"),
-                        val.span,
-                    )),
+                    other => {
+                        return Err(CompileError::general(
+                            &format!("unknown counter direction `{other}`"),
+                            val.span,
+                        ))
+                    }
                 });
             } else {
                 return Err(CompileError::unexpected_token(
                     "kind, direction, or init",
-                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                    &self
+                        .peek_kind()
+                        .map(|k| k.to_string())
+                        .unwrap_or("EOF".into()),
                     self.peek_span(),
                 ));
             }
@@ -5238,11 +6091,13 @@ impl Parser {
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
-                Some(other) => return Err(CompileError::unexpected_token(
-                    "port, assert, or cover",
-                    &other.to_string(),
-                    self.peek_span(),
-                )),
+                Some(other) => {
+                    return Err(CompileError::unexpected_token(
+                        "port, assert, or cover",
+                        &other.to_string(),
+                        self.peek_span(),
+                    ))
+                }
                 None => return Err(CompileError::UnexpectedEof),
             }
         }
@@ -5251,14 +6106,29 @@ impl Parser {
         self.expect(TokenKind::Counter)?;
         let closing = self.expect_ident()?;
         if closing.name != name.name {
-            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing.name,
+                closing.span,
+            ));
         }
 
         let mode = mode.unwrap_or(CounterMode::Wrap);
         let direction = direction.unwrap_or(CounterDirection::Up);
         Ok(CounterDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc, is_interface: false },
-            mode, direction, init,
+            common: ConstructCommon {
+                name,
+                params,
+                ports,
+                asserts,
+                span: start.merge(closing.span),
+                doc: None,
+                inner_doc,
+                is_interface: false,
+            },
+            mode,
+            direction,
+            init,
         })
     }
 
@@ -5285,9 +6155,13 @@ impl Parser {
 
         // Phase 1: attributes (policy, latency)
         while !self.check_end_of(TokenKind::Arbiter) {
-            if self.check(TokenKind::Param) || self.check(TokenKind::Port)
-                || self.check(TokenKind::Ports) || self.check(TokenKind::Hook)
-                || self.check(TokenKind::Assert) || self.check(TokenKind::Cover) {
+            if self.check(TokenKind::Param)
+                || self.check(TokenKind::Port)
+                || self.check(TokenKind::Ports)
+                || self.check(TokenKind::Hook)
+                || self.check(TokenKind::Assert)
+                || self.check(TokenKind::Cover)
+            {
                 break;
             }
             if self.check(TokenKind::Latency) {
@@ -5295,14 +6169,18 @@ impl Parser {
                 let lit_span = self.peek_span();
                 let val = match self.peek_kind() {
                     Some(TokenKind::DecLiteral(s)) => {
-                        let v = s.parse::<u32>().map_err(|_| CompileError::general(
-                            "expected integer after `latency`", lit_span))?;
-                        self.advance(); v
+                        let v = s.parse::<u32>().map_err(|_| {
+                            CompileError::general("expected integer after `latency`", lit_span)
+                        })?;
+                        self.advance();
+                        v
                     }
-                    _ => return Err(CompileError::general(
-                        "expected integer after `latency`",
-                        lit_span,
-                    )),
+                    _ => {
+                        return Err(CompileError::general(
+                            "expected integer after `latency`",
+                            lit_span,
+                        ))
+                    }
                 };
                 self.expect(TokenKind::Semi)?;
                 latency = val;
@@ -5312,12 +6190,14 @@ impl Parser {
                 self.expect(TokenKind::Semi)?;
                 policy = Some(match val.name.as_str() {
                     "round_robin" => ArbiterPolicy::RoundRobin,
-                    "priority"    => ArbiterPolicy::Priority,
-                    "lru"         => ArbiterPolicy::Lru,
+                    "priority" => ArbiterPolicy::Priority,
+                    "lru" => ArbiterPolicy::Lru,
                     "weighted" => {
                         let w = Expr {
                             kind: ExprKind::Literal(LitKind::Dec(1)),
-                            span: val.span, parenthesized: false };
+                            span: val.span,
+                            parenthesized: false,
+                        };
                         ArbiterPolicy::Weighted(w)
                     }
                     _ => ArbiterPolicy::Custom(val),
@@ -5325,7 +6205,10 @@ impl Parser {
             } else {
                 return Err(CompileError::unexpected_token(
                     "policy",
-                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                    &self
+                        .peek_kind()
+                        .map(|k| k.to_string())
+                        .unwrap_or("EOF".into()),
                     self.peek_span(),
                 ));
             }
@@ -5360,11 +6243,13 @@ impl Parser {
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
-                Some(other) => return Err(CompileError::unexpected_token(
-                    "port, ports, handshake_channel, hook, assert, or cover",
-                    &other.to_string(),
-                    self.peek_span(),
-                )),
+                Some(other) => {
+                    return Err(CompileError::unexpected_token(
+                        "port, ports, handshake_channel, hook, assert, or cover",
+                        &other.to_string(),
+                        self.peek_span(),
+                    ))
+                }
                 None => return Err(CompileError::UnexpectedEof),
             }
         }
@@ -5373,11 +6258,24 @@ impl Parser {
         self.expect(TokenKind::Arbiter)?;
         let closing = self.expect_ident()?;
         if closing.name != name.name {
-            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing.name,
+                closing.span,
+            ));
         }
 
         Ok(ArbiterDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc, is_interface: false },
+            common: ConstructCommon {
+                name,
+                params,
+                ports,
+                asserts,
+                span: start.merge(closing.span),
+                doc: None,
+                inner_doc,
+                is_interface: false,
+            },
             port_arrays,
             policy: policy.unwrap_or(ArbiterPolicy::RoundRobin),
             hook,
@@ -5401,7 +6299,10 @@ impl Parser {
             let pname = self.expect_ident()?;
             self.expect(TokenKind::Colon)?;
             let pty = self.parse_type_expr()?;
-            params.push(crate::ast::FunctionArg { name: pname, ty: pty });
+            params.push(crate::ast::FunctionArg {
+                name: pname,
+                ty: pty,
+            });
         }
         self.expect(TokenKind::RParen)?;
 
@@ -5441,11 +6342,16 @@ impl Parser {
         self.expect(TokenKind::LParen)?;
         let mut params = Vec::new();
         while !self.check(TokenKind::RParen) {
-            if !params.is_empty() { self.expect(TokenKind::Comma)?; }
+            if !params.is_empty() {
+                self.expect(TokenKind::Comma)?;
+            }
             let pname = self.expect_ident()?;
             self.expect(TokenKind::Colon)?;
             let pty = self.parse_type_expr()?;
-            params.push(crate::ast::FunctionArg { name: pname, ty: pty });
+            params.push(crate::ast::FunctionArg {
+                name: pname,
+                ty: pty,
+            });
         }
         self.expect(TokenKind::RParen)?;
 
@@ -5457,7 +6363,9 @@ impl Parser {
         self.expect(TokenKind::LParen)?;
         let mut fn_args = Vec::new();
         while !self.check(TokenKind::RParen) {
-            if !fn_args.is_empty() { self.expect(TokenKind::Comma)?; }
+            if !fn_args.is_empty() {
+                self.expect(TokenKind::Comma)?;
+            }
             fn_args.push(self.expect_ident()?);
         }
         self.expect(TokenKind::RParen)?;
@@ -5491,11 +6399,13 @@ impl Parser {
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Ports) => port_arrays.push(self.parse_port_array()?),
                 Some(TokenKind::Hook) => hooks.push(self.parse_template_hook_decl()?),
-                Some(other) => return Err(CompileError::unexpected_token(
-                    "param, port, ports, or hook",
-                    &other.to_string(),
-                    self.peek_span(),
-                )),
+                Some(other) => {
+                    return Err(CompileError::unexpected_token(
+                        "param, port, ports, or hook",
+                        &other.to_string(),
+                        self.peek_span(),
+                    ))
+                }
                 None => return Err(CompileError::UnexpectedEof),
             }
         }
@@ -5504,11 +6414,24 @@ impl Parser {
         self.expect(TokenKind::Template)?;
         let closing = self.expect_ident()?;
         if closing.name != name.name {
-            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing.name,
+                closing.span,
+            ));
         }
 
         let span = start.merge(closing.span);
-        Ok(crate::ast::TemplateDecl { name, params, ports, port_arrays, hooks, span, doc: None, inner_doc })
+        Ok(crate::ast::TemplateDecl {
+            name,
+            params,
+            ports,
+            port_arrays,
+            hooks,
+            span,
+            doc: None,
+            inner_doc,
+        })
     }
 
     /// Parse `hook name(args) -> RetType;` (no binding — template signature only)
@@ -5519,11 +6442,16 @@ impl Parser {
         self.expect(TokenKind::LParen)?;
         let mut params = Vec::new();
         while !self.check(TokenKind::RParen) {
-            if !params.is_empty() { self.expect(TokenKind::Comma)?; }
+            if !params.is_empty() {
+                self.expect(TokenKind::Comma)?;
+            }
             let pname = self.expect_ident()?;
             self.expect(TokenKind::Colon)?;
             let pty = self.parse_type_expr()?;
-            params.push(crate::ast::FunctionArg { name: pname, ty: pty });
+            params.push(crate::ast::FunctionArg {
+                name: pname,
+                ty: pty,
+            });
         }
         self.expect(TokenKind::RParen)?;
 
@@ -5554,7 +6482,11 @@ impl Parser {
         self.expect(TokenKind::Ports)?;
         let closing = self.expect_ident()?;
         if closing.name != name.name {
-            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing.name,
+                closing.span,
+            ));
         }
         Ok(PortArrayDecl {
             span: start.merge(closing.span),
@@ -5611,33 +6543,42 @@ impl Parser {
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Kind) => {
                     self.advance(); // consume `kind`
-                    // `latch` is a reserved keyword, so handle it directly
-                    // alongside the ident path.
+                                    // `latch` is a reserved keyword, so handle it directly
+                                    // alongside the ident path.
                     let span = self.peek_span();
                     let kind_str = match self.peek_kind() {
-                        Some(TokenKind::Latch) => { self.advance(); "latch".to_string() }
+                        Some(TokenKind::Latch) => {
+                            self.advance();
+                            "latch".to_string()
+                        }
                         Some(TokenKind::Ident(_)) => self.expect_ident()?.name,
-                        Some(other) => return Err(CompileError::unexpected_token(
-                            "regfile kind (`flop` or `latch`)",
-                            &other.to_string(),
-                            span,
-                        )),
+                        Some(other) => {
+                            return Err(CompileError::unexpected_token(
+                                "regfile kind (`flop` or `latch`)",
+                                &other.to_string(),
+                                span,
+                            ))
+                        }
                         None => return Err(CompileError::UnexpectedEof),
                     };
                     self.expect(TokenKind::Semi)?;
                     kind = match kind_str.as_str() {
-                        "flop"  => crate::ast::RegfileKind::Flop,
+                        "flop" => crate::ast::RegfileKind::Flop,
                         "latch" => crate::ast::RegfileKind::Latch,
-                        other => return Err(CompileError::general(
-                            &format!("unknown regfile kind `{other}`; expected `flop` or `latch`"),
-                            span,
-                        )),
+                        other => {
+                            return Err(CompileError::general(
+                                &format!(
+                                    "unknown regfile kind `{other}`; expected `flop` or `latch`"
+                                ),
+                                span,
+                            ))
+                        }
                     };
                 }
                 Some(TokenKind::Ports) => {
                     let arr = self.parse_port_array()?;
                     match arr.name.name.as_str() {
-                        "read"  => read_ports  = Some(arr),
+                        "read" => read_ports = Some(arr),
                         "write" => write_ports = Some(arr),
                         other => {
                             // accept any name; use name to detect
@@ -5658,11 +6599,15 @@ impl Parser {
                     self.expect(TokenKind::Eq)?;
                     let value = self.parse_expr()?;
                     self.expect(TokenKind::Semi)?;
-                    inits.push(RegfileInit { index, value, span: init_span });
+                    inits.push(RegfileInit {
+                        index,
+                        value,
+                        span: init_span,
+                    });
                 }
                 Some(TokenKind::Forward) => {
                     self.advance(); // consume "forward"
-                    // `write_before_read: true;` or similar
+                                    // `write_before_read: true;` or similar
                     while !self.check(TokenKind::Semi) && !self.at_end() {
                         if let Some(TokenKind::True) = self.peek_kind() {
                             forward_write_before_read = true;
@@ -5674,11 +6619,13 @@ impl Parser {
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
-                Some(other) => return Err(CompileError::unexpected_token(
-                    "param, port, ports, init, forward, assert, or cover",
-                    &other.to_string(),
-                    self.peek_span(),
-                )),
+                Some(other) => {
+                    return Err(CompileError::unexpected_token(
+                        "param, port, ports, init, forward, assert, or cover",
+                        &other.to_string(),
+                        self.peek_span(),
+                    ))
+                }
                 None => return Err(CompileError::UnexpectedEof),
             }
         }
@@ -5687,11 +6634,24 @@ impl Parser {
         self.expect(TokenKind::Regfile)?;
         let closing = self.expect_ident()?;
         if closing.name != name.name {
-            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing.name,
+                closing.span,
+            ));
         }
 
         Ok(RegfileDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc, is_interface: false },
+            common: ConstructCommon {
+                name,
+                params,
+                ports,
+                asserts,
+                span: start.merge(closing.span),
+                doc: None,
+                inner_doc,
+                is_interface: false,
+            },
             read_ports,
             write_ports,
             inits,
@@ -5715,7 +6675,9 @@ impl Parser {
         let mut i = self.pos;
         while let Some(t) = self.tokens.get(i) {
             match &t.kind {
-                TokenKind::DocOuter(_) | TokenKind::DocInner(_) => { i += 1; }
+                TokenKind::DocOuter(_) | TokenKind::DocInner(_) => {
+                    i += 1;
+                }
                 other => return Some(other.clone()),
             }
         }
@@ -5795,11 +6757,12 @@ impl Parser {
         if self.check_ident(name) {
             Ok(self.advance())
         } else {
-            let span = self.tokens.get(self.pos).map(|t| t.span).unwrap_or(Span { start: 0, end: 0 });
-            Err(CompileError::general(
-                &format!("expected `{}`", name),
-                span,
-            ))
+            let span = self
+                .tokens
+                .get(self.pos)
+                .map(|t| t.span)
+                .unwrap_or(Span { start: 0, end: 0 });
+            Err(CompileError::general(&format!("expected `{}`", name), span))
         }
     }
 
@@ -5811,13 +6774,22 @@ impl Parser {
     fn is_type_start(&self) -> bool {
         matches!(
             self.peek_kind(),
-            Some(TokenKind::UInt | TokenKind::SInt | TokenKind::Bool | TokenKind::Bit
-                | TokenKind::KwVec | TokenKind::Clock | TokenKind::Reset)
+            Some(
+                TokenKind::UInt
+                    | TokenKind::SInt
+                    | TokenKind::Bool
+                    | TokenKind::Bit
+                    | TokenKind::KwVec
+                    | TokenKind::Clock
+                    | TokenKind::Reset
+            )
         )
     }
 
     fn check_param(&self) -> bool {
-        if self.check(TokenKind::Param) { return true; }
+        if self.check(TokenKind::Param) {
+            return true;
+        }
         if self.check_ident("local") {
             // Find the position of `local` after skipping any leading
             // doc comments (matching `peek_kind`'s skip semantics), then
@@ -5828,7 +6800,9 @@ impl Parser {
             while let Some(t) = self.tokens.get(i) {
                 if matches!(&t.kind, TokenKind::DocOuter(_) | TokenKind::DocInner(_)) {
                     i += 1;
-                } else { break; }
+                } else {
+                    break;
+                }
             }
             // i now points at `local`; look at the next non-doc token.
             let mut j = i + 1;
@@ -5872,7 +6846,10 @@ impl Parser {
         } else {
             Err(CompileError::unexpected_token(
                 &kind.to_string(),
-                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                &self
+                    .peek_kind()
+                    .map(|k| k.to_string())
+                    .unwrap_or("EOF".into()),
                 self.peek_span(),
             ))
         }
@@ -5881,11 +6858,11 @@ impl Parser {
     fn expect_ident(&mut self) -> Result<Ident, CompileError> {
         // Contextual keywords that are valid identifiers in non-keyword positions.
         let contextual_name = match self.peek_kind() {
-            Some(TokenKind::Op)        => Some("op"),
-            Some(TokenKind::Track)     => Some("track"),
-            Some(TokenKind::Latency)   => Some("latency"),
+            Some(TokenKind::Op) => Some("op"),
+            Some(TokenKind::Track) => Some("track"),
+            Some(TokenKind::Latency) => Some("latency"),
             Some(TokenKind::Pipelined) => Some("pipelined"),
-            Some(TokenKind::Kind)      => Some("kind"),
+            Some(TokenKind::Kind) => Some("kind"),
             _ => None,
         };
         if let Some(name) = contextual_name {
@@ -5960,14 +6937,17 @@ impl Parser {
                     self.advance(); // consume 'kind'
                     let kw = self.expect_ident()?;
                     kind = Some(match kw.name.as_str() {
-                        "singly"           => LinklistKind::Singly,
-                        "doubly"           => LinklistKind::Doubly,
-                        "circular_singly"  => LinklistKind::CircularSingly,
-                        "circular_doubly"  => LinklistKind::CircularDoubly,
-                        other => return Err(CompileError::unexpected_token(
-                            "singly, doubly, circular_singly, or circular_doubly",
-                            other, kw.span,
-                        )),
+                        "singly" => LinklistKind::Singly,
+                        "doubly" => LinklistKind::Doubly,
+                        "circular_singly" => LinklistKind::CircularSingly,
+                        "circular_doubly" => LinklistKind::CircularDoubly,
+                        other => {
+                            return Err(CompileError::unexpected_token(
+                                "singly, doubly, circular_singly, or circular_doubly",
+                                other,
+                                kw.span,
+                            ))
+                        }
                     });
                     self.eat(TokenKind::Semi);
                 }
@@ -5976,32 +6956,54 @@ impl Parser {
                     let field = self.expect_ident()?;
                     self.expect(TokenKind::Colon)?;
                     let val = match self.peek_kind() {
-                        Some(TokenKind::True)  => { self.advance(); true }
-                        Some(TokenKind::False) => { self.advance(); false }
-                        Some(TokenKind::Ident(ref s)) if s == "true"  => { self.advance(); true }
-                        Some(TokenKind::Ident(ref s)) if s == "false" => { self.advance(); false }
-                        other => return Err(CompileError::unexpected_token(
-                            "true or false",
-                            &other.map(|k| k.to_string()).unwrap_or("EOF".into()),
-                            self.peek_span(),
-                        )),
+                        Some(TokenKind::True) => {
+                            self.advance();
+                            true
+                        }
+                        Some(TokenKind::False) => {
+                            self.advance();
+                            false
+                        }
+                        Some(TokenKind::Ident(ref s)) if s == "true" => {
+                            self.advance();
+                            true
+                        }
+                        Some(TokenKind::Ident(ref s)) if s == "false" => {
+                            self.advance();
+                            false
+                        }
+                        other => {
+                            return Err(CompileError::unexpected_token(
+                                "true or false",
+                                &other.map(|k| k.to_string()).unwrap_or("EOF".into()),
+                                self.peek_span(),
+                            ))
+                        }
                     };
                     self.eat(TokenKind::Semi);
                     match field.name.as_str() {
-                        "tail"   => track_tail   = val,
+                        "tail" => track_tail = val,
                         "length" => track_length = val,
-                        other => return Err(CompileError::unexpected_token(
-                            "tail or length", other, field.span,
-                        )),
+                        other => {
+                            return Err(CompileError::unexpected_token(
+                                "tail or length",
+                                other,
+                                field.span,
+                            ))
+                        }
                     }
                 }
                 Some(TokenKind::Op) => ops.push(self.parse_op_decl()?),
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
-                Some(other) => return Err(CompileError::unexpected_token(
-                    "param, port, kind, track, op, assert, or cover", &other.to_string(), self.peek_span(),
-                )),
+                Some(other) => {
+                    return Err(CompileError::unexpected_token(
+                        "param, port, kind, track, op, assert, or cover",
+                        &other.to_string(),
+                        self.peek_span(),
+                    ))
+                }
                 None => return Err(CompileError::UnexpectedEof),
             }
         }
@@ -6010,11 +7012,24 @@ impl Parser {
         self.expect(TokenKind::Linklist)?;
         let closing = self.expect_ident()?;
         if closing.name != name.name {
-            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing.name,
+                closing.span,
+            ));
         }
 
         Ok(LinklistDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc, is_interface: false },
+            common: ConstructCommon {
+                name,
+                params,
+                ports,
+                asserts,
+                span: start.merge(closing.span),
+                doc: None,
+                inner_doc,
+                is_interface: false,
+            },
             kind: kind.unwrap_or(LinklistKind::Singly),
             track_tail,
             track_length,
@@ -6042,9 +7057,13 @@ impl Parser {
                             latency = s.parse::<u32>().unwrap_or(1);
                             self.advance();
                         }
-                        other => return Err(CompileError::unexpected_token(
-                            "integer literal", &other.map(|k| k.to_string()).unwrap_or("EOF".into()), self.peek_span(),
-                        )),
+                        other => {
+                            return Err(CompileError::unexpected_token(
+                                "integer literal",
+                                &other.map(|k| k.to_string()).unwrap_or("EOF".into()),
+                                self.peek_span(),
+                            ))
+                        }
                     }
                     self.eat(TokenKind::Semi);
                 }
@@ -6052,15 +7071,29 @@ impl Parser {
                     self.advance(); // consume 'pipelined'
                     self.expect(TokenKind::Colon)?;
                     pipelined = match self.peek_kind() {
-                        Some(TokenKind::True)  => { self.advance(); true }
-                        Some(TokenKind::False) => { self.advance(); false }
-                        Some(TokenKind::Ident(ref s)) if s == "true"  => { self.advance(); true }
-                        Some(TokenKind::Ident(ref s)) if s == "false" => { self.advance(); false }
-                        other => return Err(CompileError::unexpected_token(
-                            "true or false",
-                            &other.map(|k| k.to_string()).unwrap_or("EOF".into()),
-                            self.peek_span(),
-                        )),
+                        Some(TokenKind::True) => {
+                            self.advance();
+                            true
+                        }
+                        Some(TokenKind::False) => {
+                            self.advance();
+                            false
+                        }
+                        Some(TokenKind::Ident(ref s)) if s == "true" => {
+                            self.advance();
+                            true
+                        }
+                        Some(TokenKind::Ident(ref s)) if s == "false" => {
+                            self.advance();
+                            false
+                        }
+                        other => {
+                            return Err(CompileError::unexpected_token(
+                                "true or false",
+                                &other.map(|k| k.to_string()).unwrap_or("EOF".into()),
+                                self.peek_span(),
+                            ))
+                        }
                     };
                     self.eat(TokenKind::Semi);
                 }
@@ -6068,9 +7101,13 @@ impl Parser {
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
-                Some(other) => return Err(CompileError::unexpected_token(
-                    "latency, pipelined, port, assert, or cover", &other.to_string(), self.peek_span(),
-                )),
+                Some(other) => {
+                    return Err(CompileError::unexpected_token(
+                        "latency, pipelined, port, assert, or cover",
+                        &other.to_string(),
+                        self.peek_span(),
+                    ))
+                }
                 None => return Err(CompileError::UnexpectedEof),
             }
         }
@@ -6079,11 +7116,24 @@ impl Parser {
         self.expect(TokenKind::Op)?;
         let closing = self.expect_ident()?;
         if closing.name != name.name {
-            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing.name,
+                closing.span,
+            ));
         }
 
         Ok(OpDecl {
-            common: ConstructCommon { name, params: Vec::new(), ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None, is_interface: false },
+            common: ConstructCommon {
+                name,
+                params: Vec::new(),
+                ports,
+                asserts,
+                span: start.merge(closing.span),
+                doc: None,
+                inner_doc: None,
+                is_interface: false,
+            },
             latency,
             pipelined,
         })
@@ -6106,6 +7156,8 @@ fn is_method_name(name: &str) -> bool {
     matches!(
         name,
         "trunc" | "zext" | "sext" | "resize" | "reverse"
+        // float→int conversions carry a width type-arg: `.to_uint<N>()`
+        | "to_uint" | "to_sint"
         // credit_channel write-side sugar (PR #3b-vi). These are only
         // meaningful as bare statements; the parser's `parse_comb_stmt`
         // and `parse_reg_stmt` desugar `port.ch.send(x);` / `.pop();` to
@@ -6125,9 +7177,15 @@ fn is_method_name(name: &str) -> bool {
 /// `send` and `pop`. Any mismatch (unknown channel, wrong port, etc.) is
 /// caught later at typecheck as a normal unknown-field error.
 fn desugar_cc_method_call_assigns(expr: &Expr) -> Option<Vec<CombAssign>> {
-    let ExprKind::MethodCall(recv, method, args) = &expr.kind else { return None; };
-    let ExprKind::FieldAccess(port_expr, ch_ident) = &recv.kind else { return None; };
-    if !matches!(&port_expr.kind, ExprKind::Ident(_)) { return None; }
+    let ExprKind::MethodCall(recv, method, args) = &expr.kind else {
+        return None;
+    };
+    let ExprKind::FieldAccess(port_expr, ch_ident) = &recv.kind else {
+        return None;
+    };
+    if !matches!(&port_expr.kind, ExprKind::Ident(_)) {
+        return None;
+    }
     let ch = &ch_ident.name;
     let span = expr.span;
     // Emit `port.<ch>.<wire>` (dotted). The elaborate pass
@@ -6139,7 +7197,10 @@ fn desugar_cc_method_call_assigns(expr: &Expr) -> Option<Vec<CombAssign>> {
     );
     let mk_dot = |wire: &str| -> Expr {
         Expr::new(
-            ExprKind::FieldAccess(Box::new(ch_expr.clone()), Ident::new(wire.to_string(), span)),
+            ExprKind::FieldAccess(
+                Box::new(ch_expr.clone()),
+                Ident::new(wire.to_string(), span),
+            ),
             span,
         )
     };
@@ -6148,19 +7209,39 @@ fn desugar_cc_method_call_assigns(expr: &Expr) -> Option<Vec<CombAssign>> {
     let zero_data = Expr::new(ExprKind::Literal(LitKind::Dec(0)), span);
     match method.name.as_str() {
         "send" if args.len() == 1 => Some(vec![
-            CombAssign { target: mk_dot("send_valid"), value: one.clone(), span },
-            CombAssign { target: mk_dot("send_data"),  value: args[0].clone(), span },
+            CombAssign {
+                target: mk_dot("send_valid"),
+                value: one.clone(),
+                span,
+            },
+            CombAssign {
+                target: mk_dot("send_data"),
+                value: args[0].clone(),
+                span,
+            },
         ]),
-        "pop" if args.is_empty() => Some(vec![
-            CombAssign { target: mk_dot("credit_return"), value: one, span },
-        ]),
+        "pop" if args.is_empty() => Some(vec![CombAssign {
+            target: mk_dot("credit_return"),
+            value: one,
+            span,
+        }]),
         "no_send" if args.is_empty() => Some(vec![
-            CombAssign { target: mk_dot("send_valid"), value: zero, span },
-            CombAssign { target: mk_dot("send_data"),  value: zero_data, span },
+            CombAssign {
+                target: mk_dot("send_valid"),
+                value: zero,
+                span,
+            },
+            CombAssign {
+                target: mk_dot("send_data"),
+                value: zero_data,
+                span,
+            },
         ]),
-        "no_pop" if args.is_empty() => Some(vec![
-            CombAssign { target: mk_dot("credit_return"), value: zero, span },
-        ]),
+        "no_pop" if args.is_empty() => Some(vec![CombAssign {
+            target: mk_dot("credit_return"),
+            value: zero,
+            span,
+        }]),
         _ => None,
     }
 }
@@ -6188,8 +7269,15 @@ fn desugar_cc_method_call_comb_stmt(expr: &Expr) -> Option<Stmt> {
 /// Same idea, seq-block (non-blocking) variant.
 fn desugar_cc_method_call_reg_stmt(expr: &Expr) -> Option<Stmt> {
     let assigns = desugar_cc_method_call_assigns(expr)?;
-    let reg_assigns: Vec<Stmt> = assigns.into_iter()
-        .map(|a| Stmt::Assign(RegAssign { target: a.target, value: a.value, span: a.span }))
+    let reg_assigns: Vec<Stmt> = assigns
+        .into_iter()
+        .map(|a| {
+            Stmt::Assign(RegAssign {
+                target: a.target,
+                value: a.value,
+                span: a.span,
+            })
+        })
         .collect();
     if reg_assigns.len() == 1 {
         return Some(reg_assigns.into_iter().next().unwrap());
@@ -6204,7 +7292,6 @@ fn desugar_cc_method_call_reg_stmt(expr: &Expr) -> Option<Stmt> {
     }))
 }
 
-
 fn prefix_bp() -> u8 {
     21 // unary prefix is highest
 }
@@ -6214,11 +7301,11 @@ fn infix_binding_power(op: BinOp) -> (u8, u8) {
         // `implies` has the lowest precedence; right-associative so (0,0) makes
         // `a implies b implies c` parse as `a implies (b implies c)`.
         BinOp::Implies | BinOp::ImpliesNext => (0, 0),
-        BinOp::Or  => (1, 2),
+        BinOp::Or => (1, 2),
         BinOp::And => (3, 4),
         BinOp::Eq | BinOp::Neq => (5, 6),
         BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => (7, 8),
-        BinOp::BitOr  => (9, 10),
+        BinOp::BitOr => (9, 10),
         BinOp::BitXor => (11, 12),
         BinOp::BitAnd => (13, 14),
         BinOp::Shl | BinOp::Shr => (15, 16),
@@ -6235,10 +7322,10 @@ impl Parser {
         // Contextual keyword — checked as an ident with name "shared"
         // immediately followed by `function`.
         let shared = matches!(self.peek_kind(), Some(TokenKind::Ident(_)))
-                     && self.peek_str() == "shared"
-                     && self.peek_real_kind_at(1) == Some(TokenKind::Function);
+            && self.peek_str() == "shared"
+            && self.peek_real_kind_at(1) == Some(TokenKind::Function);
         if shared {
-            self.advance();  // consume the `shared` ident
+            self.advance(); // consume the `shared` ident
         }
         let start = self.expect(TokenKind::Function)?.span;
         let name = self.expect_ident()?;
@@ -6303,7 +7390,10 @@ impl Parser {
     /// Parse a function body: a sequence of let, return, if/elsif/else, for, or assignment statements.
     fn parse_function_body(&mut self) -> Result<Vec<FunctionBodyItem>, CompileError> {
         let mut body = Vec::new();
-        while !self.check_end_keyword() && !self.check(TokenKind::Else) && !self.check(TokenKind::ElsIf) {
+        while !self.check_end_keyword()
+            && !self.check(TokenKind::Else)
+            && !self.check(TokenKind::ElsIf)
+        {
             if self.check(TokenKind::Let) {
                 body.push(FunctionBodyItem::Let(self.parse_let_binding()?));
             } else if self.check(TokenKind::Return) {
@@ -6394,7 +7484,9 @@ impl Parser {
             let mut values = Vec::new();
             loop {
                 values.push(self.parse_expr()?);
-                if !self.eat(TokenKind::Comma) { break; }
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
             }
             self.expect(TokenKind::RBrace)?;
             ForRange::ValueList(values)
@@ -6528,28 +7620,30 @@ impl Parser {
 /// All top-level constructs now carry a `doc` field (member-level decls
 /// — port/reg/wire/let/inst/resource — are deferred to PR-doc-1.6).
 fn attach_outer_doc(item: &mut Item, doc: Option<String>) {
-    if doc.is_none() { return; }
+    if doc.is_none() {
+        return;
+    }
     match item {
-        Item::Module(m)       => m.doc = doc,
-        Item::Fsm(f)          => f.common.doc = doc,
-        Item::Fifo(f)         => f.common.doc = doc,
-        Item::Ram(r)          => r.common.doc = doc,
-        Item::Counter(c)      => c.common.doc = doc,
-        Item::Arbiter(a)      => a.common.doc = doc,
-        Item::Pipeline(p)     => p.common.doc = doc,
-        Item::Cam(c)          => c.common.doc = doc,
-        Item::Linklist(l)     => l.common.doc = doc,
-        Item::Regfile(r)      => r.common.doc = doc,
+        Item::Module(m) => m.doc = doc,
+        Item::Fsm(f) => f.common.doc = doc,
+        Item::Fifo(f) => f.common.doc = doc,
+        Item::Ram(r) => r.common.doc = doc,
+        Item::Counter(c) => c.common.doc = doc,
+        Item::Arbiter(a) => a.common.doc = doc,
+        Item::Pipeline(p) => p.common.doc = doc,
+        Item::Cam(c) => c.common.doc = doc,
+        Item::Linklist(l) => l.common.doc = doc,
+        Item::Regfile(r) => r.common.doc = doc,
         Item::Synchronizer(s) => s.doc = doc,
-        Item::Clkgate(c)      => c.doc = doc,
-        Item::Domain(d)       => d.doc = doc,
-        Item::Struct(s)       => s.doc = doc,
-        Item::Enum(e)         => e.doc = doc,
-        Item::Function(f)     => f.doc = doc,
-        Item::Package(p)      => p.doc = doc,
-        Item::Use(u)          => u.doc = doc,
-        Item::Bus(b)          => b.doc = doc,
-        Item::Template(t)     => t.doc = doc,
+        Item::Clkgate(c) => c.doc = doc,
+        Item::Domain(d) => d.doc = doc,
+        Item::Struct(s) => s.doc = doc,
+        Item::Enum(e) => e.doc = doc,
+        Item::Function(f) => f.doc = doc,
+        Item::Package(p) => p.doc = doc,
+        Item::Use(u) => u.doc = doc,
+        Item::Bus(b) => b.doc = doc,
+        Item::Template(t) => t.doc = doc,
         Item::ExternPackage(ep) => ep.doc = doc,
     }
 }
@@ -6561,12 +7655,17 @@ fn attach_outer_doc(item: &mut Item, doc: Option<String>) {
 /// delimiter is missing or no `//!` lines are present. Per spec, the
 /// compiler stores the block verbatim — it does not parse the YAML.
 fn extract_frontmatter(lines: &[String]) -> Option<String> {
-    if lines.is_empty() { return None; }
+    if lines.is_empty() {
+        return None;
+    }
     let first_idx = lines.iter().position(|l| l.trim() == "---")?;
-    let close_idx = lines.iter().enumerate().skip(first_idx + 1)
+    let close_idx = lines
+        .iter()
+        .enumerate()
+        .skip(first_idx + 1)
         .find(|(_, l)| l.trim() == "---")
         .map(|(i, _)| i)?;
-    Some(lines[first_idx ..= close_idx].join("\n"))
+    Some(lines[first_idx..=close_idx].join("\n"))
 }
 
 #[cfg(test)]

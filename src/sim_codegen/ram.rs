@@ -5,8 +5,8 @@
 
 use std::collections::HashMap;
 
-use super::{SimCodegen, SimModel};
 use super::*;
+use super::{SimCodegen, SimModel};
 
 impl<'a> SimCodegen<'a> {
     pub(crate) fn gen_ram(&self, r: &RamDecl) -> SimModel {
@@ -14,7 +14,9 @@ impl<'a> SimCodegen<'a> {
         let class = format!("V{name}");
 
         // Extract DEPTH param
-        let depth: u64 = r.params.iter()
+        let depth: u64 = r
+            .params
+            .iter()
             .find(|p| p.name.name == "DEPTH")
             .and_then(|p| p.default.as_ref())
             .map(|e| match &e.kind {
@@ -25,7 +27,9 @@ impl<'a> SimCodegen<'a> {
 
         // Build type-param map: param name → resolved TypeExpr
         // e.g. `param T: type = UInt<54>` → "T" → UInt<54>
-        let type_params: HashMap<String, &TypeExpr> = r.params.iter()
+        let type_params: HashMap<String, &TypeExpr> = r
+            .params
+            .iter()
             .filter_map(|p| {
                 if let ParamKind::Type(ty) = &p.kind {
                     Some((p.name.name.clone(), ty))
@@ -45,20 +49,33 @@ impl<'a> SimCodegen<'a> {
         };
 
         // Extract data width from output port signal type
-        let data_bits: u32 = r.port_groups.iter()
+        let data_bits: u32 = r
+            .port_groups
+            .iter()
             .flat_map(|pg| pg.signals.iter())
             .find(|s| s.direction == Direction::Out)
             .map(|s| resolve_sig_bits(&s.ty))
             .unwrap_or(32);
 
-        let elem_ty = if data_bits > 128 { format!("VlWide<{}>", wide_words(data_bits)) }
-                      else if data_bits > 64 { "_arch_u128".to_string() }
-                      else { cpp_uint(data_bits).to_string() };
-        let port_elem_ty = if data_bits > 64 { format!("VlWide<{}>", wide_words(data_bits)) } else { cpp_uint(data_bits).to_string() };
+        let elem_ty = if data_bits > 128 {
+            format!("VlWide<{}>", wide_words(data_bits))
+        } else if data_bits > 64 {
+            "_arch_u128".to_string()
+        } else {
+            cpp_uint(data_bits).to_string()
+        };
+        let port_elem_ty = if data_bits > 64 {
+            format!("VlWide<{}>", wide_words(data_bits))
+        } else {
+            cpp_uint(data_bits).to_string()
+        };
         let is_wide = data_bits > 64;
 
         // Flatten port groups into (full_name, direction)
-        struct FlatSig { full_name: String, dir: Direction }
+        struct FlatSig {
+            full_name: String,
+            dir: Direction,
+        }
         let mut flat_sigs: Vec<FlatSig> = Vec::new();
         for pg in &r.port_groups {
             for sig in &pg.signals {
@@ -68,7 +85,10 @@ impl<'a> SimCodegen<'a> {
                 });
             }
         }
-        let out_sigs: Vec<&FlatSig> = flat_sigs.iter().filter(|s| s.dir == Direction::Out).collect();
+        let out_sigs: Vec<&FlatSig> = flat_sigs
+            .iter()
+            .filter(|s| s.dir == Direction::Out)
+            .collect();
 
         // ── Header ──
         let mut h = String::new();
@@ -80,15 +100,25 @@ impl<'a> SimCodegen<'a> {
             let ty_str: String = if fs.dir == Direction::Out {
                 port_elem_ty.clone()
             } else {
-                let orig_ty = r.port_groups.iter()
-                    .flat_map(|pg| pg.signals.iter().map(move |s| (format!("{}_{}", pg.name.name, s.name.name), &s.ty)))
+                let orig_ty = r
+                    .port_groups
+                    .iter()
+                    .flat_map(|pg| {
+                        pg.signals
+                            .iter()
+                            .map(move |s| (format!("{}_{}", pg.name.name, s.name.name), &s.ty))
+                    })
                     .find(|(n, _)| *n == fs.full_name)
                     .map(|(_, ty)| ty);
                 match orig_ty {
                     Some(TypeExpr::Bool) => "uint8_t".to_string(),
                     Some(ty) => {
                         let b = resolve_sig_bits(ty);
-                        if b > 64 { port_elem_ty.clone() } else { cpp_uint(b).to_string() }
+                        if b > 64 {
+                            port_elem_ty.clone()
+                        } else {
+                            cpp_uint(b).to_string()
+                        }
                     }
                     None => "uint32_t".to_string(),
                 }
@@ -99,7 +129,8 @@ impl<'a> SimCodegen<'a> {
         h.push('\n');
         h.push_str(&format!("  {class}() : clk(0)"));
         for fs in &flat_sigs {
-            if is_wide && fs.dir == Direction::Out { /* VlWide memset below */ } else {
+            if is_wide && fs.dir == Direction::Out { /* VlWide memset below */
+            } else {
                 h.push_str(&format!(", {}(0)", fs.full_name));
             }
         }
@@ -135,8 +166,12 @@ impl<'a> SimCodegen<'a> {
                 h.push_str(&format!("{depth}"));
                 h.push_str(") {\n");
                 match format {
-                    FileFormat::Hex => h.push_str("          _mem[_i] = strtoull(_line, NULL, 16);\n"),
-                    FileFormat::Bin => h.push_str("          _mem[_i] = strtoull(_line, NULL, 2);\n"),
+                    FileFormat::Hex => {
+                        h.push_str("          _mem[_i] = strtoull(_line, NULL, 16);\n")
+                    }
+                    FileFormat::Bin => {
+                        h.push_str("          _mem[_i] = strtoull(_line, NULL, 2);\n")
+                    }
                 }
                 if uninit_ram_check {
                     h.push_str("          _mem_valid[_i] = true;\n");
@@ -156,14 +191,23 @@ impl<'a> SimCodegen<'a> {
         }
         for fs in &out_sigs {
             if is_wide {
-                h.push_str(&format!("    memset(&{}, 0, sizeof({}));\n", fs.full_name, fs.full_name));
+                h.push_str(&format!(
+                    "    memset(&{}, 0, sizeof({}));\n",
+                    fs.full_name, fs.full_name
+                ));
             }
         }
         for fs in &out_sigs {
             if is_wide {
-                h.push_str(&format!("    memset(&_r_{}, 0, sizeof(_r_{}));\n", fs.full_name, fs.full_name));
+                h.push_str(&format!(
+                    "    memset(&_r_{}, 0, sizeof(_r_{}));\n",
+                    fs.full_name, fs.full_name
+                ));
                 if r.latency == 2 {
-                    h.push_str(&format!("    memset(&_r2_{}, 0, sizeof(_r2_{}));\n", fs.full_name, fs.full_name));
+                    h.push_str(&format!(
+                        "    memset(&_r2_{}, 0, sizeof(_r2_{}));\n",
+                        fs.full_name, fs.full_name
+                    ));
                 }
             } else {
                 h.push_str(&format!("    _r_{} = 0;\n", fs.full_name));
@@ -173,7 +217,9 @@ impl<'a> SimCodegen<'a> {
             }
         }
         h.push_str("  }\n");
-        h.push_str(&format!("  explicit {class}(VerilatedContext*) : {class}() {{}}\n"));
+        h.push_str(&format!(
+            "  explicit {class}(VerilatedContext*) : {class}() {{}}\n"
+        ));
         h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() { trace_close(); }\n");
         h.push_str("private:\n");
         h.push_str("  uint8_t _clk_prev;\n");
@@ -195,13 +241,23 @@ impl<'a> SimCodegen<'a> {
         // --check-uninit-ram: helpers to mark writes valid and warn on uninit reads.
         // Read check uses a static guard so each RAM warns at most once per run.
         let write_mark = |addr: &str| -> String {
-            if uninit_ram_check { format!("    _mem_valid[{addr}] = true;\n") } else { String::new() }
+            if uninit_ram_check {
+                format!("    _mem_valid[{addr}] = true;\n")
+            } else {
+                String::new()
+            }
         };
         let write_mark_indented = |addr: &str, indent: &str| -> String {
-            if uninit_ram_check { format!("{indent}_mem_valid[{addr}] = true;\n") } else { String::new() }
+            if uninit_ram_check {
+                format!("{indent}_mem_valid[{addr}] = true;\n")
+            } else {
+                String::new()
+            }
         };
         let read_check = |addr: &str, indent: &str| -> String {
-            if !uninit_ram_check { return String::new(); }
+            if !uninit_ram_check {
+                return String::new();
+            }
             format!(
                 "{indent}if (!_mem_valid[{addr}]) {{ static bool _w = false; if (!_w) {{ fprintf(stderr, \"WARNING: read of uninitialized RAM cell '{name}[%d]' (no prior write, no init)\\n\", (int)({addr})); _w = true; }} }}\n"
             )
@@ -224,17 +280,31 @@ impl<'a> SimCodegen<'a> {
                 let pg = &r.port_groups[0];
                 let pfx = &pg.name.name;
                 let has_wen = pg.signals.iter().any(|s| s.name.name == "wen");
-                let wdata_name = pg.signals.iter()
-                    .find(|s| s.direction == Direction::In && (s.name.name == "wdata" || s.name.name == "data"))
+                let wdata_name = pg
+                    .signals
+                    .iter()
+                    .find(|s| {
+                        s.direction == Direction::In
+                            && (s.name.name == "wdata" || s.name.name == "data")
+                    })
                     .map(|s| format!("{pfx}_{}", s.name.name))
                     .unwrap_or_else(|| format!("{pfx}_wdata"));
-                let out_name = out_sigs.first().map(|s| s.full_name.as_str()).unwrap_or("rdata");
+                let out_name = out_sigs
+                    .first()
+                    .map(|s| s.full_name.as_str())
+                    .unwrap_or("rdata");
                 let addr_expr = format!("{pfx}_addr");
 
                 cpp.push_str(&format!("  if ({pfx}_en) {{\n"));
                 if has_wen {
-                    cpp.push_str(&format!("    if ({pfx}_wen) {{ _mem[{pfx}_addr] = {wdata_name};{mark} }}\n",
-                        mark = if uninit_ram_check { format!(" _mem_valid[{pfx}_addr] = true;") } else { String::new() }));
+                    cpp.push_str(&format!(
+                        "    if ({pfx}_wen) {{ _mem[{pfx}_addr] = {wdata_name};{mark} }}\n",
+                        mark = if uninit_ram_check {
+                            format!(" _mem_valid[{pfx}_addr] = true;")
+                        } else {
+                            String::new()
+                        }
+                    ));
                     match r.latency {
                         1 | 2 => {
                             cpp.push_str(&format!("    if (!{pfx}_wen) {{\n"));
@@ -254,27 +324,46 @@ impl<'a> SimCodegen<'a> {
                 }
             }
             RamKind::SimpleDual => {
-                let wr_pg = r.port_groups.iter().find(|pg|
-                    pg.signals.iter().any(|s| s.direction == Direction::In && (s.name.name == "data" || s.name.name == "wdata"))
-                ).unwrap_or(&r.port_groups[1]);
-                let rd_pg = r.port_groups.iter().find(|pg|
-                    pg.signals.iter().any(|s| s.direction == Direction::Out)
-                ).unwrap_or(&r.port_groups[0]);
+                let wr_pg = r
+                    .port_groups
+                    .iter()
+                    .find(|pg| {
+                        pg.signals.iter().any(|s| {
+                            s.direction == Direction::In
+                                && (s.name.name == "data" || s.name.name == "wdata")
+                        })
+                    })
+                    .unwrap_or(&r.port_groups[1]);
+                let rd_pg = r
+                    .port_groups
+                    .iter()
+                    .find(|pg| pg.signals.iter().any(|s| s.direction == Direction::Out))
+                    .unwrap_or(&r.port_groups[0]);
 
                 let wpfx = &wr_pg.name.name;
                 let rpfx = &rd_pg.name.name;
-                let w_data_name = wr_pg.signals.iter()
-                    .find(|s| s.direction == Direction::In && (s.name.name == "data" || s.name.name == "wdata"))
+                let w_data_name = wr_pg
+                    .signals
+                    .iter()
+                    .find(|s| {
+                        s.direction == Direction::In
+                            && (s.name.name == "data" || s.name.name == "wdata")
+                    })
                     .map(|s| format!("{wpfx}_{}", s.name.name))
                     .unwrap_or_else(|| format!("{wpfx}_data"));
-                let out_name = out_sigs.first().map(|s| s.full_name.as_str()).unwrap_or("rd_port_data");
+                let out_name = out_sigs
+                    .first()
+                    .map(|s| s.full_name.as_str())
+                    .unwrap_or("rd_port_data");
                 let wr_addr = format!("{wpfx}_addr");
                 let rd_addr = format!("{rpfx}_addr");
 
                 // Write path
                 cpp.push_str(&format!("  if ({wpfx}_en) {{\n"));
                 if is_wide {
-                    cpp.push_str(&format!("    memcpy(&_mem[{wpfx}_addr], &{w_data_name}, sizeof({elem_ty}));\n"));
+                    cpp.push_str(&format!(
+                        "    memcpy(&_mem[{wpfx}_addr], &{w_data_name}, sizeof({elem_ty}));\n"
+                    ));
                 } else {
                     cpp.push_str(&format!("    _mem[{wpfx}_addr] = {w_data_name};\n"));
                 }
@@ -296,7 +385,9 @@ impl<'a> SimCodegen<'a> {
                 }
                 if r.latency == 2 {
                     if is_wide {
-                        cpp.push_str(&format!("  memcpy(&_r2_{out_name}, &_r_{out_name}, sizeof({elem_ty}));\n"));
+                        cpp.push_str(&format!(
+                            "  memcpy(&_r2_{out_name}, &_r_{out_name}, sizeof({elem_ty}));\n"
+                        ));
                     } else {
                         cpp.push_str(&format!("  _r2_{out_name} = _r_{out_name};\n"));
                     }
@@ -306,11 +397,18 @@ impl<'a> SimCodegen<'a> {
                 for pg in &r.port_groups {
                     let pfx = &pg.name.name;
                     let has_wen = pg.signals.iter().any(|s| s.name.name == "wen");
-                    let wdata_name = pg.signals.iter()
-                        .find(|s| s.direction == Direction::In && (s.name.name == "wdata" || s.name.name == "data"))
+                    let wdata_name = pg
+                        .signals
+                        .iter()
+                        .find(|s| {
+                            s.direction == Direction::In
+                                && (s.name.name == "wdata" || s.name.name == "data")
+                        })
                         .map(|s| format!("{pfx}_{}", s.name.name))
                         .unwrap_or_else(|| format!("{pfx}_wdata"));
-                    let out_name = pg.signals.iter()
+                    let out_name = pg
+                        .signals
+                        .iter()
                         .find(|s| s.direction == Direction::Out)
                         .map(|s| format!("{pfx}_{}", s.name.name));
                     let addr = format!("{pfx}_addr");
@@ -332,7 +430,9 @@ impl<'a> SimCodegen<'a> {
                                 if is_wide {
                                     cpp.push_str(&format!("      memcpy(&_r_{out_name}, &_mem[{pfx}_addr], sizeof({elem_ty}));\n"));
                                 } else {
-                                    cpp.push_str(&format!("      _r_{out_name} = _mem[{pfx}_addr];\n"));
+                                    cpp.push_str(&format!(
+                                        "      _r_{out_name} = _mem[{pfx}_addr];\n"
+                                    ));
                                 }
                                 cpp.push_str("    }\n");
                             } else {
@@ -356,9 +456,15 @@ impl<'a> SimCodegen<'a> {
                 if r.latency == 2 {
                     for fs in &out_sigs {
                         if is_wide {
-                            cpp.push_str(&format!("  memcpy(&_r2_{}, &_r_{}, sizeof({elem_ty}));\n", fs.full_name, fs.full_name));
+                            cpp.push_str(&format!(
+                                "  memcpy(&_r2_{}, &_r_{}, sizeof({elem_ty}));\n",
+                                fs.full_name, fs.full_name
+                            ));
                         } else {
-                            cpp.push_str(&format!("  _r2_{} = _r_{};\n", fs.full_name, fs.full_name));
+                            cpp.push_str(&format!(
+                                "  _r2_{} = _r_{};\n",
+                                fs.full_name, fs.full_name
+                            ));
                         }
                     }
                 }
@@ -369,10 +475,15 @@ impl<'a> SimCodegen<'a> {
                 if r.latency >= 1 {
                     let pg = &r.port_groups[0];
                     let rpfx = &pg.name.name;
-                    let out_name = out_sigs.first().map(|s| s.full_name.as_str()).unwrap_or("data");
+                    let out_name = out_sigs
+                        .first()
+                        .map(|s| s.full_name.as_str())
+                        .unwrap_or("data");
                     let has_en = pg.signals.iter().any(|s| s.name.name == "en");
                     if has_en {
-                        cpp.push_str(&format!("  if ({rpfx}_en) _r_{out_name} = _mem[{rpfx}_addr];\n"));
+                        cpp.push_str(&format!(
+                            "  if ({rpfx}_en) _r_{out_name} = _mem[{rpfx}_addr];\n"
+                        ));
                     } else {
                         cpp.push_str(&format!("  _r_{out_name} = _mem[{rpfx}_addr];\n"));
                     }
@@ -388,31 +499,44 @@ impl<'a> SimCodegen<'a> {
         for fs in &out_sigs {
             match r.latency {
                 0 => {
-                    let rpfx = r.port_groups.iter()
-                        .find(|pg| pg.signals.iter().any(|s| {
-                            s.direction == Direction::Out
-                                && format!("{}_{}", pg.name.name, s.name.name) == fs.full_name
-                        }))
+                    let rpfx = r
+                        .port_groups
+                        .iter()
+                        .find(|pg| {
+                            pg.signals.iter().any(|s| {
+                                s.direction == Direction::Out
+                                    && format!("{}_{}", pg.name.name, s.name.name) == fs.full_name
+                            })
+                        })
                         .map(|pg| pg.name.name.as_str())
                         .unwrap_or("access");
                     let rd_addr = format!("{rpfx}_addr");
                     cpp.push_str(&read_check(&rd_addr, "  "));
                     if is_wide {
-                        cpp.push_str(&format!("  memcpy(&{}, &_mem[{rpfx}_addr], sizeof({}));\n", fs.full_name, fs.full_name));
+                        cpp.push_str(&format!(
+                            "  memcpy(&{}, &_mem[{rpfx}_addr], sizeof({}));\n",
+                            fs.full_name, fs.full_name
+                        ));
                     } else {
                         cpp.push_str(&format!("  {} = _mem[{rpfx}_addr];\n", fs.full_name));
                     }
                 }
                 1 => {
                     if is_wide {
-                        cpp.push_str(&format!("  memcpy(&{}, &_r_{}, sizeof({}));\n", fs.full_name, fs.full_name, fs.full_name));
+                        cpp.push_str(&format!(
+                            "  memcpy(&{}, &_r_{}, sizeof({}));\n",
+                            fs.full_name, fs.full_name, fs.full_name
+                        ));
                     } else {
                         cpp.push_str(&format!("  {} = _r_{};\n", fs.full_name, fs.full_name));
                     }
                 }
                 2 => {
                     if is_wide {
-                        cpp.push_str(&format!("  memcpy(&{}, &_r2_{}, sizeof({}));\n", fs.full_name, fs.full_name, fs.full_name));
+                        cpp.push_str(&format!(
+                            "  memcpy(&{}, &_r2_{}, sizeof({}));\n",
+                            fs.full_name, fs.full_name, fs.full_name
+                        ));
                     } else {
                         cpp.push_str(&format!("  {} = _r2_{};\n", fs.full_name, fs.full_name));
                     }
@@ -423,9 +547,21 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("}\n");
 
         let extra_sigs: Vec<(&str, &str, u32)> = vec![];
-        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &r.ports, &extra_sigs, &r.params);
+        add_trace_to_simple_construct(
+            &mut h,
+            &mut cpp,
+            &class,
+            name,
+            &r.ports,
+            &extra_sigs,
+            &r.params,
+        );
         h.push_str("};\n");
 
-        SimModel { class_name: class, header: h, impl_: cpp }
+        SimModel {
+            class_name: class,
+            header: h,
+            impl_: cpp,
+        }
     }
 }

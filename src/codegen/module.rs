@@ -43,12 +43,16 @@ impl<'a> Codegen<'a> {
         // types like `parameter rv32m_e RV32M` resolve.
         for item in &self.source.items {
             if let Item::Use(u) = item {
-                let arch_pkg = self.source.items.iter().any(|i| {
-                    matches!(i, Item::Package(p) if p.name.name == u.name.name)
-                });
+                let arch_pkg = self
+                    .source
+                    .items
+                    .iter()
+                    .any(|i| matches!(i, Item::Package(p) if p.name.name == u.name.name));
                 let extern_pkg = self.source.items.iter().find_map(|i| {
                     if let Item::ExternPackage(ep) = i {
-                        if ep.name.name == u.name.name { return Some(ep); }
+                        if ep.name.name == u.name.name {
+                            return Some(ep);
+                        }
                     }
                     None
                 });
@@ -56,7 +60,8 @@ impl<'a> Codegen<'a> {
                     self.out.push_str(&format!("import {}::*;\n", u.name.name));
                 } else if let Some(ep) = extern_pkg {
                     for ty in &ep.types {
-                        self.out.push_str(&format!("import {}::{};\n", u.name.name, ty.name));
+                        self.out
+                            .push_str(&format!("import {}::{};\n", u.name.name, ty.name));
                     }
                 }
             }
@@ -94,8 +99,10 @@ impl<'a> Codegen<'a> {
             if let ModuleBodyItem::WireDecl(w) = item {
                 if let TypeExpr::Vec(elem, size_expr) = &w.ty {
                     if let TypeExpr::Named(id) = elem.as_ref() {
-                        if matches!(self.symbols.globals.get(&id.name),
-                                    Some((crate::resolve::Symbol::Bus(_), _))) {
+                        if matches!(
+                            self.symbols.globals.get(&id.name),
+                            Some((crate::resolve::Symbol::Bus(_), _))
+                        ) {
                             if let Some(n) = self.eval_const_u32(size_expr, &m.params) {
                                 self.vec_of_bus_wire_count.insert(w.name.name.clone(), n);
                             }
@@ -110,19 +117,22 @@ impl<'a> Codegen<'a> {
         self.vec_params.clear();
         for bi in &m.body {
             if let ModuleBodyItem::PipeRegDecl(p) = bi {
-                self.pipe_regs.insert(p.name.name.clone(), (p.source.name.clone(), p.stages));
+                self.pipe_regs
+                    .insert(p.name.name.clone(), (p.source.name.clone(), p.stages));
             }
         }
         for p in m.params.iter() {
             if let ParamKind::ConstVec(ty) = &p.kind {
                 if let TypeExpr::Vec(elem, _) = ty {
-                    self.vec_params.insert(p.name.name.clone(), (**elem).clone());
+                    self.vec_params
+                        .insert(p.name.name.clone(), (**elem).clone());
                 }
             }
         }
         for p in m.ports.iter() {
             if let TypeExpr::Reset(kind, level) = &p.ty {
-                self.reset_ports.insert(p.name.name.clone(), (*kind, *level));
+                self.reset_ports
+                    .insert(p.name.name.clone(), (*kind, *level));
             }
             if let TypeExpr::Vec(_, size_expr) = &p.ty {
                 if let Some(n) = self.eval_const_u32(size_expr, &m.params) {
@@ -174,8 +184,13 @@ impl<'a> Codegen<'a> {
                 // Yosys to lower the unpacked dim into a packed slice.
                 let is_vec_of_bus = bi.count.is_some();
                 let vec_n: u32 = if is_vec_of_bus {
-                    self.vec_of_bus_port_count.get(&p.name.name).copied().unwrap_or(0)
-                } else { 0 };
+                    self.vec_of_bus_port_count
+                        .get(&p.name.name)
+                        .copied()
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
                 // Register the bus_name under the parent port name so downstream
                 // refs (`port.sig`, `port[i].sig`) can resolve back to the bus def.
                 if is_vec_of_bus {
@@ -183,7 +198,8 @@ impl<'a> Codegen<'a> {
                     // bookkeeping (driver tracking, comb/seq ref substitution) keeps working.
                     // SV emission is the only surface that uses the D2 shape.
                     for i in 0..vec_n {
-                        self.bus_ports.insert(format!("{}_{}", p.name.name, i), bus_name.clone());
+                        self.bus_ports
+                            .insert(format!("{}_{}", p.name.name, i), bus_name.clone());
                     }
                     // Also register the base port name so resolvers that look up by the
                     // declared port name (without index) find the bus.
@@ -191,9 +207,13 @@ impl<'a> Codegen<'a> {
                 } else {
                     self.bus_ports.insert(p.name.name.clone(), bus_name.clone());
                 }
-                if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
+                if let Some((crate::resolve::Symbol::Bus(info), _)) =
+                    self.symbols.globals.get(bus_name)
+                {
                     // Build param substitution map: start with bus defaults, override with port params
-                    let mut param_map: std::collections::HashMap<String, &Expr> = info.params.iter()
+                    let mut param_map: std::collections::HashMap<String, &Expr> = info
+                        .params
+                        .iter()
                         .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
                         .collect();
                     for pa in &bi.params {
@@ -242,10 +262,8 @@ impl<'a> Codegen<'a> {
                             ));
                         } else {
                             // Scalar bus: `<dir> <ty> <port>_<sig>`
-                            port_lines.push(format!(
-                                "{} {} {}_{}",
-                                dir_str, ty_str, p.name.name, sname
-                            ));
+                            port_lines
+                                .push(format!("{} {} {}_{}", dir_str, ty_str, p.name.name, sname));
                         }
                     }
                 }
@@ -260,20 +278,31 @@ impl<'a> Codegen<'a> {
                 // (`logic [W-1:0] name [N-1:0]`) for interop with external SV
                 // modules whose port shape is fixed unpacked.
                 if let TypeExpr::Vec(_, _) = &p.ty {
-                    let init_str = p.reg_info.as_ref()
+                    let init_str = p
+                        .reg_info
+                        .as_ref()
                         .and_then(|ri| ri.init.as_ref())
                         .map(|e| format!(" = {}", self.emit_expr_str(e)))
                         .unwrap_or_default();
                     if p.unpacked {
-                        let (base_ty, suffix) = self.emit_type_and_unpacked_suffix_dir(&p.ty, p.unpacked_ascending);
-                        port_lines.push(format!("{} {} {}{}{}", dir, base_ty, p.name.name, suffix, init_str));
+                        let (base_ty, suffix) =
+                            self.emit_type_and_unpacked_suffix_dir(&p.ty, p.unpacked_ascending);
+                        port_lines.push(format!(
+                            "{} {} {}{}{}",
+                            dir, base_ty, p.name.name, suffix, init_str
+                        ));
                     } else {
                         let (base_ty, suffix) = self.emit_type_and_array_suffix(&p.ty);
-                        port_lines.push(format!("{} {} {}{}{}", dir, base_ty, p.name.name, suffix, init_str));
+                        port_lines.push(format!(
+                            "{} {} {}{}{}",
+                            dir, base_ty, p.name.name, suffix, init_str
+                        ));
                     }
                 } else {
                     let ty_str = self.emit_port_type_str(&p.ty);
-                    let init_str = p.reg_info.as_ref()
+                    let init_str = p
+                        .reg_info
+                        .as_ref()
                         .and_then(|ri| ri.init.as_ref())
                         .map(|e| format!(" = {}", self.emit_expr_str(e)))
                         .unwrap_or_default();
@@ -303,7 +332,9 @@ impl<'a> Codegen<'a> {
         // Override at simulation: +arch_verbosity=N on the simulator command line.
         if Self::module_has_log(&m.body) {
             self.line("// synopsys translate_off");
-            self.line("integer _arch_verbosity = 1; // 0=Always 1=Low 2=Medium 3=High 4=Full 5=Debug");
+            self.line(
+                "integer _arch_verbosity = 1; // 0=Always 1=Low 2=Medium 3=High 4=Full 5=Debug",
+            );
             self.line("initial void'($value$plusargs(\"arch_verbosity=%0d\", _arch_verbosity));");
             self.line("// synopsys translate_on");
             self.line("");
@@ -311,7 +342,8 @@ impl<'a> Codegen<'a> {
 
         // Collect names already declared as ports, regs, or lets so we can
         // auto-declare inst output wires that aren't otherwise declared.
-        let mut declared_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut declared_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for p in &m.ports {
             declared_names.insert(p.name.name.clone());
             // Bus ports flatten to `<port>_<sig>` (or `<port>_<i>_<sig>` for
@@ -324,15 +356,15 @@ impl<'a> Codegen<'a> {
             if let Some(bi) = p.bus_info.as_ref() {
                 if let Some((Symbol::Bus(info), _)) = self.symbols.globals.get(&bi.bus_name.name) {
                     let mut pm = info.default_param_map();
-                    for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
+                    for pa in &bi.params {
+                        pm.insert(pa.name.name.clone(), &pa.value);
+                    }
                     let prefixes: Vec<String> = match bi.count.as_ref() {
                         None => vec![p.name.name.clone()],
-                        Some(count_expr) => {
-                            match self.eval_const_u32(count_expr, &m.params) {
-                                Some(n) => (0..n).map(|i| format!("{}_{}", p.name.name, i)).collect(),
-                                None => vec![p.name.name.clone()],
-                            }
-                        }
+                        Some(count_expr) => match self.eval_const_u32(count_expr, &m.params) {
+                            Some(n) => (0..n).map(|i| format!("{}_{}", p.name.name, i)).collect(),
+                            None => vec![p.name.name.clone()],
+                        },
                     };
                     for prefix in &prefixes {
                         for (sname, _, _) in info.effective_signals(&pm) {
@@ -355,8 +387,12 @@ impl<'a> Codegen<'a> {
         }
         for item in &m.body {
             match item {
-                ModuleBodyItem::RegDecl(r) => { declared_names.insert(r.name.name.clone()); }
-                ModuleBodyItem::LetBinding(l) => { declared_names.insert(l.name.name.clone()); }
+                ModuleBodyItem::RegDecl(r) => {
+                    declared_names.insert(r.name.name.clone());
+                }
+                ModuleBodyItem::LetBinding(l) => {
+                    declared_names.insert(l.name.name.clone());
+                }
                 ModuleBodyItem::PipeRegDecl(p) => {
                     declared_names.insert(p.name.name.clone());
                     for i in 0..p.stages.saturating_sub(1) {
@@ -368,9 +404,7 @@ impl<'a> Codegen<'a> {
                     // For bus-typed wires, also pre-populate flattened signal
                     // names so that inst auto-wire-decl doesn't duplicate them.
                     if let TypeExpr::Named(id) = &w.ty {
-                        if let Some((Symbol::Bus(info), _)) =
-                            self.symbols.globals.get(&id.name)
-                        {
+                        if let Some((Symbol::Bus(info), _)) = self.symbols.globals.get(&id.name) {
                             let param_map = info.default_param_map();
                             for (sname, _sdir, _sty) in info.effective_signals(&param_map) {
                                 declared_names.insert(format!("{}_{}", w.name.name, sname));
@@ -428,7 +462,7 @@ impl<'a> Codegen<'a> {
         // references `__shared_FN_out`.
         let (body_items, decls_count): (Vec<ModuleBodyItem>, usize) = {
             let mut decls: Vec<ModuleBodyItem> = Vec::new();
-            let mut rest:  Vec<ModuleBodyItem> = Vec::new();
+            let mut rest: Vec<ModuleBodyItem> = Vec::new();
             for it in m.body.iter() {
                 match it {
                     ModuleBodyItem::Function(_) => {} // already emitted in stage 1
@@ -461,10 +495,16 @@ impl<'a> Codegen<'a> {
             std::collections::HashSet::new();
         for item in &body_items {
             if let ModuleBodyItem::LetBinding(l) = item {
-                if l.ty.is_none() { continue; }
-                if !l.destructure_fields.is_empty() { continue; }
+                if l.ty.is_none() {
+                    continue;
+                }
+                if !l.destructure_fields.is_empty() {
+                    continue;
+                }
                 if let ExprKind::ExprMatch(_, arms) = &l.value.kind {
-                    if arms.len() >= 3 { continue; }
+                    if arms.len() >= 3 {
+                        continue;
+                    }
                 }
                 if let Some(ty) = &l.ty {
                     let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(ty);
@@ -532,7 +572,9 @@ impl<'a> Codegen<'a> {
                                             ExprKind::Literal(LitKind::Dec(n))
                                             | ExprKind::Literal(LitKind::Hex(n))
                                             | ExprKind::Literal(LitKind::Bin(n))
-                                            | ExprKind::Literal(LitKind::Sized(_, n)) => Some(*n as u32),
+                                            | ExprKind::Literal(LitKind::Sized(_, n)) => {
+                                                Some(*n as u32)
+                                            }
                                             ExprKind::Ident(name) => {
                                                 self.symbols.globals.get(name)
                                                     .and_then(|(s, _)| match s {
@@ -575,8 +617,14 @@ impl<'a> Codegen<'a> {
                                     let emit_at_i = |cg: &Codegen, i: u32| -> String {
                                         let this = cg as *const Codegen as *mut Codegen;
                                         unsafe {
-                                            (*this).ident_subst.insert("item".to_string(), format!("{recv_str}[{i}]"));
-                                            (*this).ident_subst.insert("index".to_string(), format!("{idx_w}'d{i}"));
+                                            (*this).ident_subst.insert(
+                                                "item".to_string(),
+                                                format!("{recv_str}[{i}]"),
+                                            );
+                                            (*this).ident_subst.insert(
+                                                "index".to_string(),
+                                                format!("{idx_w}'d{i}"),
+                                            );
                                         }
                                         let s = cg.emit_expr_str(&margs[0]);
                                         unsafe {
@@ -585,7 +633,8 @@ impl<'a> Codegen<'a> {
                                         }
                                         s
                                     };
-                                    let hits: Vec<String> = (0..n).map(|i| emit_at_i(self, i)).collect();
+                                    let hits: Vec<String> =
+                                        (0..n).map(|i| emit_at_i(self, i)).collect();
                                     let found_expr = hits.join(" || ");
                                     let mut idx_expr = format!("{idx_w}'d0");
                                     for i in (0..n).rev() {
@@ -599,7 +648,10 @@ impl<'a> Codegen<'a> {
                                                 self.line(&format!("assign found = {found_expr};"));
                                             }
                                             "index" => {
-                                                self.line(&format!("logic [{}:0] index;", idx_w.saturating_sub(1)));
+                                                self.line(&format!(
+                                                    "logic [{}:0] index;",
+                                                    idx_w.saturating_sub(1)
+                                                ));
                                                 self.line(&format!("assign index = {idx_expr};"));
                                             }
                                             _ => {}
@@ -612,16 +664,24 @@ impl<'a> Codegen<'a> {
                         let rhs_ty = self.infer_expr_struct_name(&l.value);
                         let val_str = self.emit_expr_str(&l.value);
                         for bind in &l.destructure_fields {
-                            if let Some(field_ty) = rhs_ty.as_ref()
+                            if let Some(field_ty) = rhs_ty
+                                .as_ref()
                                 .and_then(|sname| self.struct_field_type(sname, &bind.name))
                             {
-                                let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(&field_ty);
+                                let (ty_str, arr_suffix) =
+                                    self.emit_type_and_array_suffix(&field_ty);
                                 self.line(&format!("{} {}{};", ty_str, bind.name, arr_suffix));
-                                self.line(&format!("assign {} = {}.{};", bind.name, val_str, bind.name));
+                                self.line(&format!(
+                                    "assign {} = {}.{};",
+                                    bind.name, val_str, bind.name
+                                ));
                             } else {
                                 // Fallback: struct type unknown at codegen — emit as logic.
                                 self.line(&format!("logic {};", bind.name));
-                                self.line(&format!("assign {} = {}.{};", bind.name, val_str, bind.name));
+                                self.line(&format!(
+                                    "assign {} = {}.{};",
+                                    bind.name, val_str, bind.name
+                                ));
                             }
                         }
                         continue;
@@ -685,13 +745,27 @@ impl<'a> Codegen<'a> {
                     {
                         let module_ports = info.ports.clone();
                         for conn in &inst.connections {
-                            let Some(port) = module_ports.iter().find(|p| p.name.name == conn.port_name.name) else { continue; };
-                            let Some(bi) = &port.bus_info else { continue; };
-                            let ExprKind::Ident(parent_name) = &conn.signal.kind else { continue; };
+                            let Some(port) = module_ports
+                                .iter()
+                                .find(|p| p.name.name == conn.port_name.name)
+                            else {
+                                continue;
+                            };
+                            let Some(bi) = &port.bus_info else {
+                                continue;
+                            };
+                            let ExprKind::Ident(parent_name) = &conn.signal.kind else {
+                                continue;
+                            };
                             let Some((Symbol::Bus(bus_info), _)) =
-                                self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+                                self.symbols.globals.get(&bi.bus_name.name)
+                            else {
+                                continue;
+                            };
                             let mut pm = bus_info.default_param_map();
-                            for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
+                            for pa in &bi.params {
+                                pm.insert(pa.name.name.clone(), &pa.value);
+                            }
                             for (sname, _sdir, _ty) in bus_info.effective_signals(&pm) {
                                 just_added.push(format!("{parent_name}_{sname}"));
                             }
@@ -700,7 +774,9 @@ impl<'a> Codegen<'a> {
                             just_added.push(parent_name.clone());
                         }
                     }
-                    for n in just_added { declared_names.insert(n); }
+                    for n in just_added {
+                        declared_names.insert(n);
+                    }
                     self.emit_inst(inst);
                 }
                 ModuleBodyItem::PipeRegDecl(p) => {
@@ -718,18 +794,28 @@ impl<'a> Codegen<'a> {
                     // indexed names `w_0`, ..., `w_{N-1}`, accessed via
                     // `w[i].sig`. Each copy contributes its full signal set.
                     let bus_wire_info = match &w.ty {
-                        TypeExpr::Named(id) => self.symbols.globals.get(&id.name)
-                            .and_then(|(s, _)| if let crate::resolve::Symbol::Bus(info) = s {
-                                Some((info, id.name.clone(), None))
-                            } else { None }),
+                        TypeExpr::Named(id) => {
+                            self.symbols.globals.get(&id.name).and_then(|(s, _)| {
+                                if let crate::resolve::Symbol::Bus(info) = s {
+                                    Some((info, id.name.clone(), None))
+                                } else {
+                                    None
+                                }
+                            })
+                        }
                         TypeExpr::Vec(elem, size_expr) => match elem.as_ref() {
                             TypeExpr::Named(id) => {
                                 if let Some(n) = self.eval_const_u32(size_expr, &m_clone.params) {
-                                    self.symbols.globals.get(&id.name)
-                                        .and_then(|(s, _)| if let crate::resolve::Symbol::Bus(info) = s {
+                                    self.symbols.globals.get(&id.name).and_then(|(s, _)| {
+                                        if let crate::resolve::Symbol::Bus(info) = s {
                                             Some((info, id.name.clone(), Some((n, None))))
-                                        } else { None })
-                                } else { None }
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                } else {
+                                    None
+                                }
                             }
                             // 2D bus wire: `wire edges: Vec<Vec<B, N>, M>;` →
                             // emit M*N*per_signal flat wires named
@@ -740,12 +826,23 @@ impl<'a> Codegen<'a> {
                                         self.eval_const_u32(size_expr, &m_clone.params),
                                         self.eval_const_u32(inner_size, &m_clone.params),
                                     ) {
-                                        self.symbols.globals.get(&id.name)
-                                            .and_then(|(s, _)| if let crate::resolve::Symbol::Bus(info) = s {
-                                                Some((info, id.name.clone(), Some((m_n, Some(n_n)))))
-                                            } else { None })
-                                    } else { None }
-                                } else { None }
+                                        self.symbols.globals.get(&id.name).and_then(|(s, _)| {
+                                            if let crate::resolve::Symbol::Bus(info) = s {
+                                                Some((
+                                                    info,
+                                                    id.name.clone(),
+                                                    Some((m_n, Some(n_n))),
+                                                ))
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
                             }
                             _ => None,
                         },
@@ -758,7 +855,9 @@ impl<'a> Codegen<'a> {
                         // per-cell even though the emitted SV is packed-array.
                         let cell_names: Vec<String> = match count {
                             None => vec![w.name.name.clone()],
-                            Some((m_n, None)) => (0..m_n).map(|i| format!("{}_{}", w.name.name, i)).collect(),
+                            Some((m_n, None)) => {
+                                (0..m_n).map(|i| format!("{}_{}", w.name.name, i)).collect()
+                            }
                             Some((m_n, Some(n_n))) => {
                                 let mut v = Vec::with_capacity((m_n * n_n) as usize);
                                 for i in 0..m_n {
@@ -774,11 +873,11 @@ impl<'a> Codegen<'a> {
                         }
                         // Start with the bus's declared defaults then layer
                         // any per-wire overrides from `wire w: Vec<B<PARAM=val>, N>;`.
-                        let mut param_map: std::collections::HashMap<String, &Expr> =
-                            info.params.iter()
-                                .filter_map(|pd| pd.default.as_ref()
-                                    .map(|d| (pd.name.name.clone(), d)))
-                                .collect();
+                        let mut param_map: std::collections::HashMap<String, &Expr> = info
+                            .params
+                            .iter()
+                            .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
+                            .collect();
                         for pa in &w.bus_params {
                             param_map.insert(pa.name.name.clone(), &pa.value);
                         }
@@ -797,8 +896,7 @@ impl<'a> Codegen<'a> {
                         };
                         for (sname, _sdir, sty) in info.effective_signals(&param_map) {
                             let subst_ty = Self::subst_type_expr(&sty, &param_map);
-                            let (ty_str, arr_suffix) =
-                                self.emit_type_and_array_suffix(&subst_ty);
+                            let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(&subst_ty);
                             // Insert the outer packed dim between `logic` and
                             // any inner packed dim (same pattern as port emit).
                             let with_outer = if outer_dim.is_empty() {
@@ -831,7 +929,8 @@ impl<'a> Codegen<'a> {
                         // Lets this wire mate with an `unpacked Vec<T,N>` port across
                         // an `inst` connection without Verilator rejecting the
                         // packed/unpacked shape mismatch.
-                        let (base_ty, suffix) = self.emit_type_and_unpacked_suffix_dir(&w.ty, w.unpacked_ascending);
+                        let (base_ty, suffix) =
+                            self.emit_type_and_unpacked_suffix_dir(&w.ty, w.unpacked_ascending);
                         self.line(&format!("{} {}{};", base_ty, w.name.name, suffix));
                     } else {
                         let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(&w.ty);
@@ -842,7 +941,9 @@ impl<'a> Codegen<'a> {
                 ModuleBodyItem::Generate(ref gen) => {
                     self.emit_generate(gen);
                 }
-                ModuleBodyItem::Thread(_) | ModuleBodyItem::Resource(_) | ModuleBodyItem::TlmConnect(_) => {
+                ModuleBodyItem::Thread(_)
+                | ModuleBodyItem::Resource(_)
+                | ModuleBodyItem::TlmConnect(_) => {
                     // Threads and resources are lowered before codegen
                     unreachable!("thread/resource should have been lowered before codegen");
                 }
@@ -862,17 +963,31 @@ impl<'a> Codegen<'a> {
 
         // Emit module-level assert/cover declarations (grouped with translate_off/on)
         {
-            let module_asserts: Vec<&AssertDecl> = body_items.iter()
-                .filter_map(|i| if let ModuleBodyItem::Assert(a) = i { Some(a) } else { None })
+            let module_asserts: Vec<&AssertDecl> = body_items
+                .iter()
+                .filter_map(|i| {
+                    if let ModuleBodyItem::Assert(a) = i {
+                        Some(a)
+                    } else {
+                        None
+                    }
+                })
                 .collect();
             if !module_asserts.is_empty() {
-                let clk_name = m_clone.ports.iter()
+                let clk_name = m_clone
+                    .ports
+                    .iter()
                     .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
                     .map(|p| p.name.name.clone())
                     .unwrap_or_else(|| "clk".to_string());
                 let owned: Vec<AssertDecl> = module_asserts.into_iter().cloned().collect();
                 let rst_active = Codegen::rst_active_from_ports(&m_clone.ports);
-                self.emit_asserts_for_construct(&owned, &m_clone.name.name, &clk_name, rst_active.as_deref());
+                self.emit_asserts_for_construct(
+                    &owned,
+                    &m_clone.name.name,
+                    &clk_name,
+                    rst_active.as_deref(),
+                );
             }
         }
 
@@ -951,12 +1066,18 @@ impl<'a> Codegen<'a> {
     fn collect_log_files(body: &[ModuleBodyItem]) -> Vec<String> {
         let mut files = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        fn collect_from_comb(stmts: &[Stmt], files: &mut Vec<String>, seen: &mut std::collections::HashSet<String>) {
+        fn collect_from_comb(
+            stmts: &[Stmt],
+            files: &mut Vec<String>,
+            seen: &mut std::collections::HashSet<String>,
+        ) {
             for stmt in stmts {
                 match stmt {
                     Stmt::Log(l) => {
                         if let Some(ref path) = l.file {
-                            if seen.insert(path.clone()) { files.push(path.clone()); }
+                            if seen.insert(path.clone()) {
+                                files.push(path.clone());
+                            }
                         }
                     }
                     Stmt::IfElse(ie) => {
@@ -964,7 +1085,9 @@ impl<'a> Codegen<'a> {
                         collect_from_comb(&ie.else_stmts, files, seen);
                     }
                     Stmt::Match(m) => {
-                        for arm in &m.arms { collect_from_comb(&arm.body, files, seen); }
+                        for arm in &m.arms {
+                            collect_from_comb(&arm.body, files, seen);
+                        }
                     }
                     Stmt::For(f) => {
                         collect_from_comb(&f.body, files, seen);
@@ -973,12 +1096,18 @@ impl<'a> Codegen<'a> {
                 }
             }
         }
-        fn collect_from_seq(stmts: &[Stmt], files: &mut Vec<String>, seen: &mut std::collections::HashSet<String>) {
+        fn collect_from_seq(
+            stmts: &[Stmt],
+            files: &mut Vec<String>,
+            seen: &mut std::collections::HashSet<String>,
+        ) {
             for stmt in stmts {
                 match stmt {
                     Stmt::Log(l) => {
                         if let Some(ref path) = l.file {
-                            if seen.insert(path.clone()) { files.push(path.clone()); }
+                            if seen.insert(path.clone()) {
+                                files.push(path.clone());
+                            }
                         }
                     }
                     Stmt::IfElse(ie) => {
@@ -986,7 +1115,9 @@ impl<'a> Codegen<'a> {
                         collect_from_seq(&ie.else_stmts, files, seen);
                     }
                     Stmt::Match(m) => {
-                        for arm in &m.arms { collect_from_seq(&arm.body, files, seen); }
+                        for arm in &m.arms {
+                            collect_from_seq(&arm.body, files, seen);
+                        }
                     }
                     _ => {}
                 }
@@ -994,7 +1125,9 @@ impl<'a> Codegen<'a> {
         }
         for item in body {
             match item {
-                ModuleBodyItem::CombBlock(cb) => collect_from_comb(&cb.stmts, &mut files, &mut seen),
+                ModuleBodyItem::CombBlock(cb) => {
+                    collect_from_comb(&cb.stmts, &mut files, &mut seen)
+                }
                 ModuleBodyItem::RegBlock(rb) => collect_from_seq(&rb.stmts, &mut files, &mut seen),
                 _ => {}
             }
@@ -1053,12 +1186,16 @@ impl<'a> Codegen<'a> {
         }
 
         // Find clock and reset from module ports
-        let clk_name = m.ports.iter()
+        let clk_name = m
+            .ports
+            .iter()
             .find(|port| matches!(&port.ty, TypeExpr::Clock(_)))
             .map(|port| port.name.name.clone())
             .unwrap_or_else(|| "clk".to_string());
 
-        let rst_name = m.ports.iter()
+        let rst_name = m
+            .ports
+            .iter()
             .find(|port| matches!(&port.ty, TypeExpr::Reset(..)))
             .map(|port| port.name.name.clone());
 
@@ -1130,8 +1267,10 @@ impl<'a> Codegen<'a> {
     fn stmt_has_log(s: &Stmt) -> bool {
         match s {
             Stmt::Log(_) => true,
-            Stmt::IfElse(ie) => ie.then_stmts.iter().any(Self::stmt_has_log)
-                || ie.else_stmts.iter().any(Self::stmt_has_log),
+            Stmt::IfElse(ie) => {
+                ie.then_stmts.iter().any(Self::stmt_has_log)
+                    || ie.else_stmts.iter().any(Self::stmt_has_log)
+            }
             Stmt::Match(m) => m.arms.iter().any(|a| a.body.iter().any(Self::stmt_has_log)),
             Stmt::Assign(_) => false,
             Stmt::For(f) => f.body.iter().any(Self::stmt_has_log),
@@ -1153,8 +1292,16 @@ impl<'a> Codegen<'a> {
         Self::collect_assigned_roots(&rb.stmts, &mut assigned);
 
         // Look up reset info for each assigned register from its RegDecl
-        let reg_decls: Vec<&RegDecl> = m.body.iter()
-            .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i { Some(r) } else { None })
+        let reg_decls: Vec<&RegDecl> = m
+            .body
+            .iter()
+            .filter_map(|i| {
+                if let ModuleBodyItem::RegDecl(r) = i {
+                    Some(r)
+                } else {
+                    None
+                }
+            })
             .collect();
 
         // Resolve reset info: (rst_name, is_async, is_low) for registers that have reset
@@ -1166,14 +1313,20 @@ impl<'a> Codegen<'a> {
         let mut reset_info: Option<ResolvedReset> = Option::None;
         let mut resets: Vec<(String, String)> = Vec::new(); // (reg_name, init_str)
         for name in &assigned {
-            if name.is_empty() { continue; }
+            if name.is_empty() {
+                continue;
+            }
             // Look up reset info from RegDecl or port reg
-            let reset_ref: Option<&RegReset> = reg_decls.iter()
+            let reset_ref: Option<&RegReset> = reg_decls
+                .iter()
                 .find(|r| r.name.name == *name)
                 .map(|r| &r.reset)
-                .or_else(|| m.ports.iter()
-                    .find(|p| p.name.name == *name && p.reg_info.is_some())
-                    .and_then(|p| p.reg_info.as_ref().map(|ri| &ri.reset)));
+                .or_else(|| {
+                    m.ports
+                        .iter()
+                        .find(|p| p.name.name == *name && p.reg_info.is_some())
+                        .and_then(|p| p.reg_info.as_ref().map(|ri| &ri.reset))
+                });
             if let Some(reg_reset) = reset_ref {
                 let resolved = self.resolve_reg_reset(reg_reset, m);
                 if let Some((rst_sig, is_async, is_low)) = resolved {
@@ -1219,12 +1372,16 @@ impl<'a> Codegen<'a> {
                 let touches_reset = stmt_roots.iter().any(|n| reset_reg_names.contains(n));
                 let touches_nonreset = stmt_roots.iter().any(|n| !reset_reg_names.contains(n));
                 if touches_reset {
-                    if let Some(filtered) = Self::filter_stmt_by_assigned_set(stmt, &reset_reg_names, true) {
+                    if let Some(filtered) =
+                        Self::filter_stmt_by_assigned_set(stmt, &reset_reg_names, true)
+                    {
                         guarded_stmts.push(filtered);
                     }
                 }
                 if touches_nonreset {
-                    if let Some(filtered) = Self::filter_stmt_by_assigned_set(stmt, &reset_reg_names, false) {
+                    if let Some(filtered) =
+                        Self::filter_stmt_by_assigned_set(stmt, &reset_reg_names, false)
+                    {
                         unguarded_stmts.push(filtered);
                     }
                 }
@@ -1251,21 +1408,27 @@ impl<'a> Codegen<'a> {
             self.indent += 1;
             for (name, init) in &resets {
                 // Look up Vec depth from reg decls OR port-reg declarations
-                let reg_ty = reg_decls.iter()
+                let reg_ty = reg_decls
+                    .iter()
                     .find(|r| r.name.name == *name)
                     .map(|r| &r.ty)
-                    .or_else(|| m.ports.iter()
-                        .find(|p| p.name.name == *name && p.reg_info.is_some())
-                        .map(|p| &p.ty));
-                let vec_depth = reg_ty.map(|ty| {
-                    let mut depth = 0u32;
-                    let mut t = ty;
-                    while let TypeExpr::Vec(inner, _) = t {
-                        depth += 1;
-                        t = inner;
-                    }
-                    depth
-                }).unwrap_or(0);
+                    .or_else(|| {
+                        m.ports
+                            .iter()
+                            .find(|p| p.name.name == *name && p.reg_info.is_some())
+                            .map(|p| &p.ty)
+                    });
+                let vec_depth = reg_ty
+                    .map(|ty| {
+                        let mut depth = 0u32;
+                        let mut t = ty;
+                        while let TypeExpr::Vec(inner, _) = t {
+                            depth += 1;
+                            t = inner;
+                        }
+                        depth
+                    })
+                    .unwrap_or(0);
                 if vec_depth > 0 {
                     // Emit for-loop reset for unpacked arrays (icarus-compatible)
                     if let Some(ty) = reg_ty {
@@ -1277,10 +1440,13 @@ impl<'a> Codegen<'a> {
                             t = inner;
                         }
                         // Generate nested for-loops
-                        let idx_vars: Vec<String> = (0..dims.len()).map(|d| format!("__ri{d}")).collect();
+                        let idx_vars: Vec<String> =
+                            (0..dims.len()).map(|d| format!("__ri{d}")).collect();
                         for (d, dim_size) in dims.iter().enumerate() {
-                            self.line(&format!("for (int {} = 0; {} < {}; {}++) begin",
-                                idx_vars[d], idx_vars[d], dim_size, idx_vars[d]));
+                            self.line(&format!(
+                                "for (int {} = 0; {} < {}; {}++) begin",
+                                idx_vars[d], idx_vars[d], dim_size, idx_vars[d]
+                            ));
                             self.indent += 1;
                         }
                         let idx_str: String = idx_vars.iter().map(|v| format!("[{v}]")).collect();
@@ -1300,11 +1466,19 @@ impl<'a> Codegen<'a> {
             for stmt in &guarded_stmts {
                 if let Stmt::Init(ib) = stmt {
                     let port = m.ports.iter().find(|p| p.name.name == ib.reset_signal.name);
-                    let is_low = port.map_or(false, |p| matches!(&p.ty, TypeExpr::Reset(_, ResetLevel::Low)));
-                    let cond = if is_low { format!("(!{})", ib.reset_signal.name) } else { ib.reset_signal.name.clone() };
+                    let is_low = port.map_or(false, |p| {
+                        matches!(&p.ty, TypeExpr::Reset(_, ResetLevel::Low))
+                    });
+                    let cond = if is_low {
+                        format!("(!{})", ib.reset_signal.name)
+                    } else {
+                        ib.reset_signal.name.clone()
+                    };
                     self.line(&format!("if ({cond}) begin"));
                     self.indent += 1;
-                    for s in &ib.body { self.emit_reg_stmt(s); }
+                    for s in &ib.body {
+                        self.emit_reg_stmt(s);
+                    }
                     self.indent -= 1;
                     self.line("end");
                 } else {
@@ -1327,11 +1501,19 @@ impl<'a> Codegen<'a> {
                 for stmt in &unguarded_stmts {
                     if let Stmt::Init(ib) = stmt {
                         let port = m.ports.iter().find(|p| p.name.name == ib.reset_signal.name);
-                        let is_low = port.map_or(false, |p| matches!(&p.ty, TypeExpr::Reset(_, ResetLevel::Low)));
-                        let cond = if is_low { format!("(!{})", ib.reset_signal.name) } else { ib.reset_signal.name.clone() };
+                        let is_low = port.map_or(false, |p| {
+                            matches!(&p.ty, TypeExpr::Reset(_, ResetLevel::Low))
+                        });
+                        let cond = if is_low {
+                            format!("(!{})", ib.reset_signal.name)
+                        } else {
+                            ib.reset_signal.name.clone()
+                        };
                         self.line(&format!("if ({cond}) begin"));
                         self.indent += 1;
-                        for s in &ib.body { self.emit_reg_stmt(s); }
+                        for s in &ib.body {
+                            self.emit_reg_stmt(s);
+                        }
                         self.indent -= 1;
                         self.line("end");
                     } else {
@@ -1346,14 +1528,24 @@ impl<'a> Codegen<'a> {
             // No registers with declared reset.
             // Check for explicit `init on rst.asserted` blocks — these drive async sensitivity.
             let init_block = rb.stmts.iter().find_map(|s| {
-                if let Stmt::Init(ib) = s { Some(ib) } else { None }
+                if let Stmt::Init(ib) = s {
+                    Some(ib)
+                } else {
+                    None
+                }
             });
             let async_asserted = if let Some(ib) = init_block {
                 // Determine async/sync and polarity from the referenced reset port
-                m.ports.iter().find(|p| p.name.name == ib.reset_signal.name)
-                    .and_then(|p| if let TypeExpr::Reset(ResetKind::Async, level) = &p.ty {
-                        Some((ib.reset_signal.name.clone(), *level == ResetLevel::Low))
-                    } else { None })
+                m.ports
+                    .iter()
+                    .find(|p| p.name.name == ib.reset_signal.name)
+                    .and_then(|p| {
+                        if let TypeExpr::Reset(ResetKind::Async, level) = &p.ty {
+                            Some((ib.reset_signal.name.clone(), *level == ResetLevel::Low))
+                        } else {
+                            None
+                        }
+                    })
             } else {
                 // Still check for `rst.asserted` expressions in the body — if any reference an
                 // async reset port, we must add the async edge to the sensitivity list.
@@ -1361,7 +1553,10 @@ impl<'a> Codegen<'a> {
             };
             let sens = if let Some((ref rst_sig, is_low)) = async_asserted {
                 let rst_edge = if is_low { "negedge" } else { "posedge" };
-                format!("always_ff @({clk_edge} {} or {rst_edge} {rst_sig}) begin", rb.clock.name)
+                format!(
+                    "always_ff @({clk_edge} {} or {rst_edge} {rst_sig}) begin",
+                    rb.clock.name
+                )
             } else {
                 format!("always_ff @({clk_edge} {}) begin", rb.clock.name)
             };
@@ -1371,7 +1566,9 @@ impl<'a> Codegen<'a> {
                 if let Stmt::Init(ib) = stmt {
                     // Emit as an explicit `if (rst_cond) begin ... end` block
                     let port = m.ports.iter().find(|p| p.name.name == ib.reset_signal.name);
-                    let is_low = port.map_or(false, |p| matches!(&p.ty, TypeExpr::Reset(_, ResetLevel::Low)));
+                    let is_low = port.map_or(false, |p| {
+                        matches!(&p.ty, TypeExpr::Reset(_, ResetLevel::Low))
+                    });
                     let cond = if is_low {
                         format!("(!{})", ib.reset_signal.name)
                     } else {
@@ -1412,10 +1609,18 @@ impl<'a> Codegen<'a> {
             // Recurse into sub-expressions
             match &expr.kind {
                 ExprKind::Binary(_, l, r) => scan_expr(l, ports).or_else(|| scan_expr(r, ports)),
-                ExprKind::Unary(_, inner) | ExprKind::FieldAccess(inner, _) => scan_expr(inner, ports),
-                ExprKind::Ternary(c, t, e) => scan_expr(c, ports).or_else(|| scan_expr(t, ports)).or_else(|| scan_expr(e, ports)),
-                ExprKind::MethodCall(base, _, args) => scan_expr(base, ports).or_else(|| args.iter().find_map(|a| scan_expr(a, ports))),
-                ExprKind::Index(base, idx) => scan_expr(base, ports).or_else(|| scan_expr(idx, ports)),
+                ExprKind::Unary(_, inner) | ExprKind::FieldAccess(inner, _) => {
+                    scan_expr(inner, ports)
+                }
+                ExprKind::Ternary(c, t, e) => scan_expr(c, ports)
+                    .or_else(|| scan_expr(t, ports))
+                    .or_else(|| scan_expr(e, ports)),
+                ExprKind::MethodCall(base, _, args) => {
+                    scan_expr(base, ports).or_else(|| args.iter().find_map(|a| scan_expr(a, ports)))
+                }
+                ExprKind::Index(base, idx) => {
+                    scan_expr(base, ports).or_else(|| scan_expr(idx, ports))
+                }
                 ExprKind::Cast(inner, _) => scan_expr(inner, ports),
                 _ => None,
             }
@@ -1427,7 +1632,10 @@ impl<'a> Codegen<'a> {
                     .or_else(|| ie.then_stmts.iter().find_map(|s| scan_stmt(s, ports)))
                     .or_else(|| ie.else_stmts.iter().find_map(|s| scan_stmt(s, ports))),
                 Stmt::For(f) => f.body.iter().find_map(|s| scan_stmt(s, ports)),
-                Stmt::Match(m) => m.arms.iter().find_map(|arm| arm.body.iter().find_map(|s| scan_stmt(s, ports))),
+                Stmt::Match(m) => m
+                    .arms
+                    .iter()
+                    .find_map(|arm| arm.body.iter().find_map(|s| scan_stmt(s, ports))),
                 _ => None,
             }
         }
@@ -1487,7 +1695,9 @@ impl<'a> Codegen<'a> {
 
         let mut orphans: Vec<Orphan> = Vec::new();
         for item in &m.body {
-            let ModuleBodyItem::RegDecl(r) = item else { continue };
+            let ModuleBodyItem::RegDecl(r) = item else {
+                continue;
+            };
             if matches!(r.reset, RegReset::None) {
                 continue;
             }
@@ -1519,9 +1729,15 @@ impl<'a> Codegen<'a> {
         // the orphans land in the same clock domain as the other
         // flops. Fall back to the first Clock-typed input port.
         let rb_clock: Option<&Ident> = m.body.iter().find_map(|i| {
-            if let ModuleBodyItem::RegBlock(rb) = i { Some(&rb.clock) } else { None }
+            if let ModuleBodyItem::RegBlock(rb) = i {
+                Some(&rb.clock)
+            } else {
+                None
+            }
         });
-        let port_clock = m.ports.iter()
+        let port_clock = m
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| &p.name);
         let Some(clock_ident) = rb_clock.or(port_clock) else {
@@ -1537,7 +1753,8 @@ impl<'a> Codegen<'a> {
         let mut groups: std::collections::BTreeMap<(String, bool, bool), Vec<&Orphan>> =
             std::collections::BTreeMap::new();
         for o in &orphans {
-            groups.entry((o.reset_signal.clone(), o.is_async, o.is_low))
+            groups
+                .entry((o.reset_signal.clone(), o.is_async, o.is_low))
                 .or_default()
                 .push(o);
         }
@@ -1602,5 +1819,4 @@ impl<'a> Codegen<'a> {
             self.line("end");
         }
     }
-
 }

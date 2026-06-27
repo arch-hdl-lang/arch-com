@@ -435,6 +435,43 @@ end fsm BadFsm
     assert!(result.is_err(), "fsm with port named 'state' should error");
 }
 
+#[test]
+fn test_fsm_port_named_state_r_errors() {
+    // `state_r` is compiler-owned FSM state storage in both SV and native sim.
+    // User declarations with that name would collide with generated state.
+    let source = r#"
+fsm BadFsm
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port state_r: out UInt<2>;
+  state [A, B]
+  default state A;
+  state A
+    comb
+      state_r = 2'd0;
+    end comb
+    -> B when true;
+  end state A
+  state B
+    comb
+      state_r = 2'd1;
+    end comb
+    -> A when true;
+  end state B
+end fsm BadFsm
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(
+        result.is_err(),
+        "fsm with port named 'state_r' should error"
+    );
+}
+
 // ── FIFO ──────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -1037,7 +1074,8 @@ end ram BadLatRam
     assert!(result.is_err(), "latency 3 RAM should be rejected");
     let errs = result.err().unwrap();
     assert!(
-        errs.iter().any(|e| format!("{e:?}").contains("latency 3 is out of range")),
+        errs.iter()
+            .any(|e| format!("{e:?}").contains("latency 3 is out of range")),
         "error should name the out-of-range latency: {errs:?}"
     );
 }
@@ -21719,6 +21757,48 @@ fn test_sint_40_param_width_emits_int64_storage_and_signed_trunc() {
 }
 
 #[test]
+fn test_native_sim_signed_multiply_widens_before_cpp_promotion() {
+    let source = r#"
+        module SignedMulNative
+          port a: in UInt<16>;
+          port b: in UInt<16>;
+          port out: out UInt<34>;
+          port wrap_a: in UInt<32>;
+          port wrap_b: in UInt<32>;
+          port wrap_out: out UInt<32>;
+
+          function Mul17(sign_a: Bool, op_a: UInt<16>,
+                         sign_b: Bool, op_b: UInt<16>) -> UInt<34>
+            let a17: SInt<17> = signed({sign_a, op_a});
+            let b17: SInt<17> = signed({sign_b, op_b});
+            let prod: SInt<34> = a17 * b17;
+            return unsigned(prod);
+          end function Mul17
+
+          comb
+            out = Mul17(false, a, false, b);
+            wrap_out = wrap_a *% wrap_b;
+          end comb
+        end module SignedMulNative
+    "#;
+
+    let out = compile_to_sim_h(source, false);
+    assert!(
+        out.contains("(((__int128_t)(a17)) * ((__int128_t)(b17)))"),
+        "native sim must widen signed multiply operands before C++ promotion; got:\n{out}"
+    );
+    assert!(
+        !out.contains("int64_t prod = (a17 * b17);"),
+        "native sim must not multiply SInt<17> operands in 32-bit C++ int; got:\n{out}"
+    );
+    assert!(
+        out.contains("0xFFFFFFFFULL")
+            && out.contains("(((_arch_u128)(wrap_a)) * ((_arch_u128)(wrap_b)))"),
+        "native sim *% must widen operands and wrap back to the result width; got:\n{out}"
+    );
+}
+
+#[test]
 fn test_thread_driven_sint_reg_keeps_parent_wire_type() {
     let source = r#"
         domain SysDomain
@@ -24955,6 +25035,35 @@ fn test_native_sim_bool_not_pipe_reg_outputs_and_ampamp() {
 }
 
 #[test]
+fn test_native_sim_fsm_state_r_is_public_and_synced() {
+    // HARC and SV-style white-box probes read `dut.state_r` for FSMs. Native
+    // sim already traced this name, but only generated a private `_state_r`,
+    // so generated C++ testbenches failed to compile when probing state.
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/native_fsm_state_r/Probe.arch")
+        .arg("--tb")
+        .arg("tests/native_fsm_state_r/tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for native FSM state_r probe");
+    assert!(
+        out.status.success(),
+        "native FSM state_r probe should compile + run\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS native FSM state_r probe"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
 fn test_native_sim_thread_driven_top_pipe_reg_output_is_public() {
     // Regression for arch-com#472: lower_threads rewrites a thread-driven
     // top-level `port q: out pipe_reg<T,1>` into a registered output on the
@@ -27805,8 +27914,8 @@ fn test_graph_tlm_method_callers_resolve_through_bus_port_type() {
     let td = tempfile::tempdir().expect("tempdir");
     let graph = td.path().join("graph");
     let arch_bin = env!("CARGO_BIN_EXE_arch");
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/axi_dma_tlm/TlmOneToOne.arch");
+    let src =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/axi_dma_tlm/TlmOneToOne.arch");
 
     let index = std::process::Command::new(arch_bin)
         .args(["graph", "index"])
@@ -28098,7 +28207,6 @@ end pipeline GuardRegPipe
     );
 }
 
-
 // ────────────────────────────────────────────────────────────────────
 // NIC-400 GPV (PR #551) + C-channel clock-gate (PR #555) — coverage
 // ────────────────────────────────────────────────────────────────────
@@ -28280,5 +28388,64 @@ fn test_nic400_gpv_builds_and_verilator_lint_clean() {
         "Nic400Gpv must lint clean under Verilator\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&lint.stdout),
         String::from_utf8_lossy(&lint.stderr)
+    );
+}
+
+#[test]
+fn test_coverage_merge_sums_verilator_dat_records() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let seed1 = td.path().join("seed1.dat");
+    let seed2 = td.path().join("seed2.dat");
+    let merged = td.path().join("merged.dat");
+
+    std::fs::write(
+        &seed1,
+        "# SystemC::Coverage-3\n\
+C '\u{1}file\u{2}Foo.arch\u{1}line\u{2}10\u{1}page\u{2}v_branch\u{1}comment\u{2}if ' 2\n\
+C '\u{1}file\u{2}Foo.arch\u{1}line\u{2}11\u{1}page\u{2}v_line\u{1}comment\u{2}comb comb' 0\n",
+    )
+    .expect("write seed1 coverage");
+    std::fs::write(
+        &seed2,
+        "# SystemC::Coverage-3\n\
+C '\u{1}file\u{2}Foo.arch\u{1}line\u{2}10\u{1}page\u{2}v_branch\u{1}comment\u{2}if ' 5\n\
+C '\u{1}file\u{2}Foo.arch\u{1}line\u{2}12\u{1}page\u{2}v_toggle\u{1}comment\u{2}toggle r' 7\n",
+    )
+    .expect("write seed2 coverage");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("coverage")
+        .arg("merge")
+        .arg("--out")
+        .arg(&merged)
+        .arg(&seed1)
+        .arg(&seed2)
+        .output()
+        .expect("run arch coverage merge");
+    assert!(
+        out.status.success(),
+        "coverage merge should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let merged_text = std::fs::read_to_string(&merged).expect("read merged coverage");
+    assert!(
+        merged_text.contains(
+            "C '\u{1}file\u{2}Foo.arch\u{1}line\u{2}10\u{1}page\u{2}v_branch\u{1}comment\u{2}if ' 7\n"
+        ),
+        "matching records should be summed:\n{merged_text}"
+    );
+    assert!(
+        merged_text.contains(
+            "C '\u{1}file\u{2}Foo.arch\u{1}line\u{2}11\u{1}page\u{2}v_line\u{1}comment\u{2}comb comb' 0\n"
+        ),
+        "seed1-only records should be preserved:\n{merged_text}"
+    );
+    assert!(
+        merged_text.contains(
+            "C '\u{1}file\u{2}Foo.arch\u{1}line\u{2}12\u{1}page\u{2}v_toggle\u{1}comment\u{2}toggle r' 7\n"
+        ),
+        "seed2-only records should be preserved:\n{merged_text}"
     );
 }

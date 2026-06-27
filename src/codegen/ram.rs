@@ -8,10 +8,12 @@ use super::*;
 
 impl<'a> Codegen<'a> {
     pub(crate) fn emit_ram(&mut self, r: &RamDecl) {
-        use crate::ast::{RamKind, RamInit};
+        use crate::ast::{RamInit, RamKind};
         use std::collections::HashMap;
 
-        let type_params: HashMap<String, TypeExpr> = r.params.iter()
+        let type_params: HashMap<String, TypeExpr> = r
+            .params
+            .iter()
             .filter_map(|p| match &p.kind {
                 crate::ast::ParamKind::Type(ty) => Some((p.name.name.clone(), ty.clone())),
                 _ => None,
@@ -39,7 +41,9 @@ impl<'a> Codegen<'a> {
             TypeExpr::Vec(elem, _) => Some(resolve_type_param((**elem).clone())),
             _ => None,
         });
-        let data_width_ty = r.params.iter()
+        let data_width_ty = r
+            .params
+            .iter()
             .find(|p| p.name.name == "WIDTH")
             .and_then(|p| match &p.kind {
                 crate::ast::ParamKind::Type(ty) => {
@@ -51,7 +55,9 @@ impl<'a> Codegen<'a> {
             .unwrap_or_else(|| "logic [7:0]".to_string());
         // Compute the bit-width number directly from the TypeExpr to avoid
         // fragile string parsing of the emitted type (e.g. "logic [7:0]").
-        let data_width_num = r.params.iter()
+        let data_width_num = r
+            .params
+            .iter()
             .find(|p| p.name.name == "WIDTH")
             .and_then(|p| match &p.kind {
                 crate::ast::ParamKind::Type(ty) => {
@@ -59,11 +65,17 @@ impl<'a> Codegen<'a> {
                 }
                 _ => None,
             })
-            .or_else(|| store_elem_ty.as_ref().and_then(|ty| self.type_expr_data_width(ty)))
+            .or_else(|| {
+                store_elem_ty
+                    .as_ref()
+                    .and_then(|ty| self.type_expr_data_width(ty))
+            })
             .unwrap_or_else(|| "8".to_string());
 
         // Resolve DEPTH from param default
-        let depth_expr = r.params.iter()
+        let depth_expr = r
+            .params
+            .iter()
             .find(|p| p.name.name == "DEPTH")
             .and_then(|p| p.default.as_ref())
             .map(|e| self.emit_expr_str(e))
@@ -89,7 +101,9 @@ impl<'a> Codegen<'a> {
             }
             match &p.kind {
                 crate::ast::ParamKind::Const => {
-                    let default_str = p.default.as_ref()
+                    let default_str = p
+                        .default
+                        .as_ref()
                         .map(|d| format!(" = {}", self.emit_expr_str(d)))
                         .unwrap_or_default();
                     header_params.push(format!("parameter int {}{default_str}", p.name.name));
@@ -97,10 +111,15 @@ impl<'a> Codegen<'a> {
                 crate::ast::ParamKind::WidthConst(hi, lo) => {
                     let hi_s = self.emit_expr_str(hi);
                     let lo_s = self.emit_expr_str(lo);
-                    let default_str = p.default.as_ref()
+                    let default_str = p
+                        .default
+                        .as_ref()
                         .map(|d| format!(" = {}", self.emit_expr_str(d)))
                         .unwrap_or_default();
-                    header_params.push(format!("parameter [{hi_s}:{lo_s}] {}{default_str}", p.name.name));
+                    header_params.push(format!(
+                        "parameter [{hi_s}:{lo_s}] {}{default_str}",
+                        p.name.name
+                    ));
                 }
                 // Logic / EnumConst / ConstVec / Type are uncommon for ram
                 // params; punt for now (would emit nothing → port refs
@@ -123,14 +142,20 @@ impl<'a> Codegen<'a> {
         // Top-level ports (clk, rst)
         let mut all_ports: Vec<String> = Vec::new();
         for p in &r.ports {
-            let dir = match p.direction { Direction::In => "input", Direction::Out => "output" };
+            let dir = match p.direction {
+                Direction::In => "input",
+                Direction::Out => "output",
+            };
             let ty_str = self.emit_port_type_str(&p.ty);
             all_ports.push(format!("{dir} {ty_str} {}", p.name.name));
         }
         // Port group signals flattened: {group}_{signal}
         for pg in &r.port_groups {
             for s in &pg.signals {
-                let dir = match s.direction { Direction::In => "input", Direction::Out => "output" };
+                let dir = match s.direction {
+                    Direction::In => "input",
+                    Direction::Out => "output",
+                };
                 let ty_str = self.emit_ram_signal_type(&s.ty, &type_params);
                 all_ports.push(format!("{dir} {ty_str} {}_{}", pg.name.name, s.name.name));
             }
@@ -149,7 +174,9 @@ impl<'a> Codegen<'a> {
         self.line("logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];");
 
         // Find the clock signal name
-        let clk_name = r.ports.iter()
+        let clk_name = r
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone())
             .unwrap_or_else(|| "clk".to_string());
@@ -201,8 +228,12 @@ impl<'a> Codegen<'a> {
         }
 
         if !r.asserts.is_empty() {
-            let clk = r.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
-                .map(|p| p.name.name.clone()).unwrap_or_else(|| "clk".to_string());
+            let clk = r
+                .ports
+                .iter()
+                .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                .map(|p| p.name.name.clone())
+                .unwrap_or_else(|| "clk".to_string());
             self.line("");
             let asserts = r.asserts.clone();
             let rname = r.name.name.clone();
@@ -218,11 +249,13 @@ impl<'a> Codegen<'a> {
 
     // ── Counter ───────────────────────────────────────────────────────────────
 
-    fn emit_ram_signal_type(&self, ty: &TypeExpr, type_params: &std::collections::HashMap<String, TypeExpr>) -> String {
+    fn emit_ram_signal_type(
+        &self,
+        ty: &TypeExpr,
+        type_params: &std::collections::HashMap<String, TypeExpr>,
+    ) -> String {
         match ty {
-            TypeExpr::Named(ident) if ident.name == "WIDTH" => {
-                "logic [DATA_WIDTH-1:0]".to_string()
-            }
+            TypeExpr::Named(ident) if ident.name == "WIDTH" => "logic [DATA_WIDTH-1:0]".to_string(),
             TypeExpr::Named(ident) if type_params.contains_key(&ident.name) => {
                 "logic [DATA_WIDTH-1:0]".to_string()
             }
@@ -244,7 +277,11 @@ impl<'a> Codegen<'a> {
         // an undeclared signal. Mirrors the optional-`en` handling in
         // `emit_ram_rom` / `emit_ram_simple_dual`.
         let has_en = pg.signals.iter().any(|s| s.name.name == "en");
-        let out_sig = pg.signals.iter().find(|s| s.direction == Direction::Out).cloned();
+        let out_sig = pg
+            .signals
+            .iter()
+            .find(|s| s.direction == Direction::Out)
+            .cloned();
 
         match r.latency {
             0 => {
@@ -260,14 +297,20 @@ impl<'a> Codegen<'a> {
                 // the two enables the port omits. Both omitted ⇒ write every
                 // cycle (unconditional).
                 let mut wr_conds: Vec<String> = Vec::new();
-                if has_en { wr_conds.push(format!("{pfx}_en")); }
-                if has_wen { wr_conds.push(format!("{pfx}_wen")); }
+                if has_en {
+                    wr_conds.push(format!("{pfx}_en"));
+                }
+                if has_wen {
+                    wr_conds.push(format!("{pfx}_wen"));
+                }
                 if !wr_conds.is_empty() {
                     self.line(&format!("if ({})", wr_conds.join(" && ")));
                     self.indent += 1;
                 }
                 self.line(&format!("mem[{pfx}_addr] <= {pfx}_wdata;"));
-                if !wr_conds.is_empty() { self.indent -= 1; }
+                if !wr_conds.is_empty() {
+                    self.indent -= 1;
+                }
                 self.indent -= 1;
                 self.line("end");
             }
@@ -325,7 +368,9 @@ impl<'a> Codegen<'a> {
                     if r.latency == 2 {
                         let rdata_r2 = format!("{pfx}_{}_r2", os.name.name);
                         self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_r2};"));
-                        self.line(&format!("always_ff @(posedge {clk}) {rdata_r2} <= {rdata_r};"));
+                        self.line(&format!(
+                            "always_ff @(posedge {clk}) {rdata_r2} <= {rdata_r};"
+                        ));
                         self.line(&format!("assign {pfx}_{} = {rdata_r2};", os.name.name));
                     }
                 }
@@ -336,16 +381,23 @@ impl<'a> Codegen<'a> {
 
     fn emit_ram_simple_dual(&mut self, r: &RamDecl, clk: &str, _data_width_ty: &str) {
         // Identify read port (has output signal) and write port (all inputs)
-        let read_pg = r.port_groups.iter()
+        let read_pg = r
+            .port_groups
+            .iter()
             .find(|pg| pg.signals.iter().any(|s| s.direction == Direction::Out));
-        let write_pg = r.port_groups.iter()
+        let write_pg = r
+            .port_groups
+            .iter()
             .find(|pg| pg.signals.iter().all(|s| s.direction == Direction::In));
 
         let (rpfx, wpfx) = match (read_pg, write_pg) {
             (Some(rp), Some(wp)) => (rp.name.name.clone(), wp.name.name.clone()),
             _ => return, // malformed
         };
-        let out_sig = read_pg.unwrap().signals.iter()
+        let out_sig = read_pg
+            .unwrap()
+            .signals
+            .iter()
             .find(|s| s.direction == Direction::Out)
             .map(|s| s.name.name.clone())
             .unwrap_or_else(|| "data".to_string());
@@ -357,9 +409,14 @@ impl<'a> Codegen<'a> {
         let has_rd_en = read_pg.unwrap().signals.iter().any(|s| s.name.name == "en");
 
         // Find write data signal (input data in write port)
-        let wdata_sig = write_pg.unwrap().signals.iter()
-            .find(|s| s.direction == Direction::In
-                && !["en", "addr", "mask", "wen"].contains(&s.name.name.as_str()))
+        let wdata_sig = write_pg
+            .unwrap()
+            .signals
+            .iter()
+            .find(|s| {
+                s.direction == Direction::In
+                    && !["en", "addr", "mask", "wen"].contains(&s.name.name.as_str())
+            })
             .map(|s| s.name.name.clone())
             .unwrap_or_else(|| "data".to_string());
 
@@ -392,13 +449,17 @@ impl<'a> Codegen<'a> {
                     self.indent += 1;
                 }
                 self.line(&format!("{rdata_r} <= mem[{rpfx}_addr];"));
-                if has_rd_en { self.indent -= 1; }
+                if has_rd_en {
+                    self.indent -= 1;
+                }
                 self.indent -= 1;
                 self.line("end");
                 if r.latency == 2 {
                     let rdata_r2 = format!("{rpfx}_{out_sig}_r2");
                     self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_r2};"));
-                    self.line(&format!("always_ff @(posedge {clk}) {rdata_r2} <= {rdata_r};"));
+                    self.line(&format!(
+                        "always_ff @(posedge {clk}) {rdata_r2} <= {rdata_r};"
+                    ));
                     self.line(&format!("assign {rpfx}_{out_sig} = {rdata_r2};"));
                 } else {
                     self.line(&format!("assign {rpfx}_{out_sig} = {rdata_r};"));
@@ -422,10 +483,18 @@ impl<'a> Codegen<'a> {
         let has_en_a = pa.signals.iter().any(|s| s.name.name == "en");
         let has_en_b = pb.signals.iter().any(|s| s.name.name == "en");
 
-        let rdata_a = pa.signals.iter().find(|s| s.direction == Direction::Out)
-            .map(|s| s.name.name.clone()).unwrap_or_else(|| "rdata".to_string());
-        let rdata_b = pb.signals.iter().find(|s| s.direction == Direction::Out)
-            .map(|s| s.name.name.clone()).unwrap_or_else(|| "rdata".to_string());
+        let rdata_a = pa
+            .signals
+            .iter()
+            .find(|s| s.direction == Direction::Out)
+            .map(|s| s.name.name.clone())
+            .unwrap_or_else(|| "rdata".to_string());
+        let rdata_b = pb
+            .signals
+            .iter()
+            .find(|s| s.direction == Direction::Out)
+            .map(|s| s.name.name.clone())
+            .unwrap_or_else(|| "rdata".to_string());
 
         let rdata_a_r = format!("{pfx_a}_{rdata_a}_r");
         let rdata_b_r = format!("{pfx_b}_{rdata_b}_r");
@@ -544,7 +613,9 @@ impl<'a> Codegen<'a> {
                         self.indent += 1;
                     }
                     self.line(&format!("{rdata_r} <= mem[{pfx}_addr];"));
-                    if has_en { self.indent -= 1; }
+                    if has_en {
+                        self.indent -= 1;
+                    }
                     self.indent -= 1;
                     self.line("end");
                     self.line(&format!("assign {pfx}_{} = {rdata_r};", os.name.name));
@@ -571,5 +642,4 @@ impl<'a> Codegen<'a> {
     }
 
     // ── Linklist ─────────────────────────────────────────────────────────────
-
 }

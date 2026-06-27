@@ -1,0 +1,12 @@
+// Exercises the --fp-compat profile: NaN canonicalization and NaN->int.
+// a - b with a = b = +inf produces a NaN; the profile selects its bit
+// pattern (0x7FC00000 riscv / 0x7FFFFFFF cuda) and the NaN->int result
+// (INT_MAX riscv / 0 cuda).
+module NanProf
+  port a: in FP32;
+  port b: in FP32;
+  port nan_out: out FP32;
+  port nan_to_int: out SInt<32>;
+  comb nan_out = a - b; end comb
+  comb nan_to_int = (a - b).to_sint<32>(); end comb
+end module NanProf

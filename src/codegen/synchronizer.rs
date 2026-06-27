@@ -8,14 +8,24 @@ impl<'a> Codegen<'a> {
         let n = &s.name.name;
 
         // Resolve STAGES (default 2)
-        let stages = s.params.iter()
+        let stages = s
+            .params
+            .iter()
             .find(|p| p.name.name == "STAGES")
             .and_then(|p| p.default.as_ref())
-            .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v as usize) } else { None })
+            .and_then(|e| {
+                if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind {
+                    Some(*v as usize)
+                } else {
+                    None
+                }
+            })
             .unwrap_or(2);
 
         // Find clock ports (first = source clock, second = destination clock)
-        let clk_ports: Vec<&PortDecl> = s.ports.iter()
+        let clk_ports: Vec<&PortDecl> = s
+            .ports
+            .iter()
             .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .collect();
         let src_clk = &clk_ports[0].name.name;
@@ -26,17 +36,32 @@ impl<'a> Codegen<'a> {
         let data_ty = self.emit_port_type_str(&data_in_port.ty);
 
         // Check for reset port
-        let rst_port = s.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Reset(..)));
+        let rst_port = s
+            .ports
+            .iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Reset(..)));
 
         // Module header — emit all declared params as SV parameters
         self.line(&format!("module {n} #("));
         self.indent += 1;
-        let param_strs: Vec<String> = s.params.iter().map(|p| {
-            let val = p.default.as_ref()
-                .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(v.to_string()) } else { None })
-                .unwrap_or_else(|| "0".to_string());
-            format!("parameter int {} = {}", p.name.name, val)
-        }).collect();
+        let param_strs: Vec<String> = s
+            .params
+            .iter()
+            .map(|p| {
+                let val = p
+                    .default
+                    .as_ref()
+                    .and_then(|e| {
+                        if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind {
+                            Some(v.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| "0".to_string());
+                format!("parameter int {} = {}", p.name.name, val)
+            })
+            .collect();
         // Always include STAGES if not already declared
         let has_stages = s.params.iter().any(|p| p.name.name == "STAGES");
         let mut all_param_strs = param_strs;
@@ -44,18 +69,29 @@ impl<'a> Codegen<'a> {
             all_param_strs.push(format!("parameter int STAGES = {stages}"));
         }
         for (i, ps) in all_param_strs.iter().enumerate() {
-            let comma = if i < all_param_strs.len() - 1 { "," } else { "" };
+            let comma = if i < all_param_strs.len() - 1 {
+                ","
+            } else {
+                ""
+            };
             self.line(&format!("{ps}{comma}"));
         }
         self.indent -= 1;
         self.line(") (");
         self.indent += 1;
         // Emit ports
-        let port_strs: Vec<String> = s.ports.iter().map(|p| {
-            let dir = match p.direction { Direction::In => "input", Direction::Out => "output" };
-            let ty = self.emit_port_type_str(&p.ty);
-            format!("{dir} {ty} {}", p.name.name)
-        }).collect();
+        let port_strs: Vec<String> = s
+            .ports
+            .iter()
+            .map(|p| {
+                let dir = match p.direction {
+                    Direction::In => "input",
+                    Direction::Out => "output",
+                };
+                let ty = self.emit_port_type_str(&p.ty);
+                format!("{dir} {ty} {}", p.name.name)
+            })
+            .collect();
         for (i, ps) in port_strs.iter().enumerate() {
             let comma = if i < port_strs.len() - 1 { "," } else { "" };
             self.line(&format!("{ps}{comma}"));
@@ -68,7 +104,9 @@ impl<'a> Codegen<'a> {
         match s.kind {
             SyncKind::Ff => self.emit_sync_ff(dst_clk, &data_ty, rst_port, stages),
             SyncKind::Gray => self.emit_sync_gray(src_clk, dst_clk, &data_ty, rst_port, stages),
-            SyncKind::Handshake => self.emit_sync_handshake(src_clk, dst_clk, &data_ty, rst_port, stages),
+            SyncKind::Handshake => {
+                self.emit_sync_handshake(src_clk, dst_clk, &data_ty, rst_port, stages)
+            }
             SyncKind::Reset => self.emit_sync_reset(dst_clk, rst_port, stages),
             SyncKind::Pulse => self.emit_sync_pulse(src_clk, dst_clk, rst_port, stages),
         }
@@ -81,18 +119,29 @@ impl<'a> Codegen<'a> {
 
     // ── Synchronizer kind helpers ────────────────────────────────────────────
 
-    fn emit_sync_reset_begin(&mut self, dst_clk: &str, rst_port: Option<&PortDecl>) -> Option<String> {
+    fn emit_sync_reset_begin(
+        &mut self,
+        dst_clk: &str,
+        rst_port: Option<&PortDecl>,
+    ) -> Option<String> {
         if let Some(rp) = rst_port {
             let is_low = matches!(&rp.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low);
-            let is_async = matches!(&rp.ty, TypeExpr::Reset(sync_type, _) if *sync_type == ResetKind::Async);
+            let is_async =
+                matches!(&rp.ty, TypeExpr::Reset(sync_type, _) if *sync_type == ResetKind::Async);
             let sensitivity = if is_async {
                 let edge = if is_low { "negedge" } else { "posedge" };
                 format!(" or {edge} {}", rp.name.name)
             } else {
                 String::new()
             };
-            self.line(&format!("always_ff @(posedge {dst_clk}{sensitivity}) begin"));
-            let cond = if is_low { format!("!{}", rp.name.name) } else { rp.name.name.clone() };
+            self.line(&format!(
+                "always_ff @(posedge {dst_clk}{sensitivity}) begin"
+            ));
+            let cond = if is_low {
+                format!("!{}", rp.name.name)
+            } else {
+                rp.name.name.clone()
+            };
             Some(cond)
         } else {
             self.line(&format!("always_ff @(posedge {dst_clk}) begin"));
@@ -100,8 +149,16 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn emit_sync_ff(&mut self, dst_clk: &str, data_ty: &str, rst_port: Option<&PortDecl>, stages: usize) {
-        self.line(&format!("// {stages}-stage FF synchronizer chain (destination clock: {dst_clk})"));
+    fn emit_sync_ff(
+        &mut self,
+        dst_clk: &str,
+        data_ty: &str,
+        rst_port: Option<&PortDecl>,
+        stages: usize,
+    ) {
+        self.line(&format!(
+            "// {stages}-stage FF synchronizer chain (destination clock: {dst_clk})"
+        ));
         self.line(&format!("{data_ty} sync_chain [0:STAGES-1];"));
         self.line("");
 
@@ -127,8 +184,17 @@ impl<'a> Codegen<'a> {
         self.line("assign data_out = sync_chain[STAGES-1];");
     }
 
-    fn emit_sync_gray(&mut self, src_clk: &str, dst_clk: &str, data_ty: &str, rst_port: Option<&PortDecl>, stages: usize) {
-        self.line(&format!("// Gray-code synchronizer ({stages} stages, {src_clk} → {dst_clk})"));
+    fn emit_sync_gray(
+        &mut self,
+        src_clk: &str,
+        dst_clk: &str,
+        data_ty: &str,
+        rst_port: Option<&PortDecl>,
+        stages: usize,
+    ) {
+        self.line(&format!(
+            "// Gray-code synchronizer ({stages} stages, {src_clk} → {dst_clk})"
+        ));
         self.line(&format!("{data_ty} bin_to_gray;"));
         self.line(&format!("{data_ty} gray_chain [0:STAGES-1];"));
         self.line(&format!("{data_ty} gray_to_bin;"));
@@ -175,21 +241,43 @@ impl<'a> Codegen<'a> {
         self.line("assign data_out = gray_to_bin;");
     }
 
-    fn emit_sync_handshake(&mut self, src_clk: &str, dst_clk: &str, data_ty: &str, rst_port: Option<&PortDecl>, stages: usize) {
-        self.line(&format!("// Handshake synchronizer ({stages} stages, {src_clk} → {dst_clk})"));
+    fn emit_sync_handshake(
+        &mut self,
+        src_clk: &str,
+        dst_clk: &str,
+        data_ty: &str,
+        rst_port: Option<&PortDecl>,
+        stages: usize,
+    ) {
+        self.line(&format!(
+            "// Handshake synchronizer ({stages} stages, {src_clk} → {dst_clk})"
+        ));
         self.line(&format!("{data_ty} data_reg;"));
         self.line("logic req_src, ack_src;");
-        self.line(&format!("logic req_sync [0:STAGES-1];  // req synchronized to {dst_clk}"));
-        self.line(&format!("logic ack_sync [0:STAGES-1];  // ack synchronized to {src_clk}"));
+        self.line(&format!(
+            "logic req_sync [0:STAGES-1];  // req synchronized to {dst_clk}"
+        ));
+        self.line(&format!(
+            "logic ack_sync [0:STAGES-1];  // ack synchronized to {src_clk}"
+        ));
         self.line("logic ack_dst;");
         self.line("");
 
         let rst_name = rst_port.map(|rp| rp.name.name.as_str()).unwrap_or("1'b0");
-        let is_low = rst_port.map_or(false, |rp| matches!(&rp.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low));
-        let rst_active = if is_low { format!("!{rst_name}") } else { rst_name.to_string() };
+        let is_low = rst_port.map_or(
+            false,
+            |rp| matches!(&rp.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low),
+        );
+        let rst_active = if is_low {
+            format!("!{rst_name}")
+        } else {
+            rst_name.to_string()
+        };
 
         // Source domain: latch data and toggle req
-        self.line(&format!("// Source domain ({src_clk}): latch data, manage req/ack"));
+        self.line(&format!(
+            "// Source domain ({src_clk}): latch data, manage req/ack"
+        ));
         self.line(&format!("always_ff @(posedge {src_clk}) begin"));
         self.indent += 1;
         self.line(&format!("if ({rst_active}) begin"));
@@ -252,11 +340,15 @@ impl<'a> Codegen<'a> {
     fn emit_sync_reset(&mut self, dst_clk: &str, _rst_port: Option<&PortDecl>, _stages: usize) {
         // Reset synchronizer: data_in is the async reset input (active high).
         // Assert immediately (async), deassert through N-stage FF chain (sync to dst_clk).
-        self.line(&format!("// Reset synchronizer: async assert, sync deassert on {dst_clk}"));
+        self.line(&format!(
+            "// Reset synchronizer: async assert, sync deassert on {dst_clk}"
+        ));
         self.line("logic sync_chain [0:STAGES-1];");
         self.line("");
 
-        self.line(&format!("always_ff @(posedge {dst_clk} or posedge data_in) begin"));
+        self.line(&format!(
+            "always_ff @(posedge {dst_clk} or posedge data_in) begin"
+        ));
         self.indent += 1;
         self.line("if (data_in) begin");
         self.indent += 1;
@@ -274,10 +366,25 @@ impl<'a> Codegen<'a> {
         self.line("assign data_out = sync_chain[STAGES-1];");
     }
 
-    fn emit_sync_pulse(&mut self, src_clk: &str, dst_clk: &str, rst_port: Option<&PortDecl>, _stages: usize) {
+    fn emit_sync_pulse(
+        &mut self,
+        src_clk: &str,
+        dst_clk: &str,
+        rst_port: Option<&PortDecl>,
+        _stages: usize,
+    ) {
         let rst_name = rst_port.map(|rp| rp.name.name.as_str());
-        let is_low = rst_port.map_or(false, |rp| matches!(&rp.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low));
-        let rst_cond = rst_name.map(|n| if is_low { format!("!{n}") } else { n.to_string() });
+        let is_low = rst_port.map_or(
+            false,
+            |rp| matches!(&rp.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low),
+        );
+        let rst_cond = rst_name.map(|n| {
+            if is_low {
+                format!("!{n}")
+            } else {
+                n.to_string()
+            }
+        });
 
         self.line(&format!("// Pulse synchronizer: {src_clk} → {dst_clk}"));
         self.line("// Source: pulse → toggle; Destination: sync toggle → edge detect → pulse");
