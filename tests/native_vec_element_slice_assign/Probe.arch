@@ -1,0 +1,35 @@
+//! ---
+//! tags: [native-sim, vec, bit-slice, assignment, regression]
+//! refs:
+//!   - "arch-ibex IbexIcache fill_data_q beat writes"
+//! ---
+//!
+//! Regression for native C++ simulation of assignments to a bit slice of a Vec element.
+//! The generated C++ must update the selected bits in the array element instead of assigning
+//! to the read-side slice expression.
+
+/// Probe that writes two 32-bit slices of a 64-bit Vec element.
+///
+/// Native simulation must lower the slice writes to mask-and-OR updates on lanes[0].
+module NativeVecElementSliceAssignProbe
+  port clk_i: in Clock<SysDomain>;
+  port rst_i: in Reset<Sync, High>;
+  port lo_i: in UInt<32>;
+  port hi_i: in UInt<32>;
+  port word_o: out UInt<64>;
+
+  reg lanes: Vec<UInt<64>, 1>;
+
+  default seq on clk_i rising;
+
+  seq
+    if rst_i
+      lanes[0] <= 64'd0;
+    else
+      lanes[0][31:0] <= lo_i;
+      lanes[0][63:32] <= hi_i;
+    end if
+  end seq
+
+  let word_o = lanes[0];
+end module NativeVecElementSliceAssignProbe

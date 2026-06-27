@@ -1,0 +1,79 @@
+//! ---
+//! tags: [native-sim, package-struct, fsm, coverage]
+//! refs:
+//!   - "arch-ibex ibex_id_stage package struct native-sim bring-up"
+//! ---
+//!
+//! Regression fixture for native C++ simulation of package struct signals crossing
+//! a parent module and FSM child while coverage is enabled.
+
+/// Shared package struct type used by the parent and FSM child.
+package NativePkgStructFsmPkg
+  struct NativeIrqs
+    irq_fast: UInt<15>;
+    irq_timer: Bool;
+  end struct NativeIrqs
+end package NativePkgStructFsmPkg
+
+/// FSM child with package struct input and output ports.
+use NativePkgStructFsmPkg;
+fsm NativePkgStructFsmChild
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port irq_in: in NativeIrqs;
+  port irq_out: out NativeIrqs;
+  port timer_seen: out Bool;
+
+  state [Idle, Seen]
+  default state Idle;
+
+  default
+    comb
+      irq_out.irq_fast = irq_in.irq_fast;
+      irq_out.irq_timer = irq_in.irq_timer;
+      timer_seen = false;
+    end comb
+  end default
+
+  state Idle
+    comb
+      timer_seen = irq_in.irq_timer;
+    end comb
+    -> Seen when irq_in.irq_timer;
+  end state Idle
+
+  state Seen
+    comb
+      timer_seen = true;
+    end comb
+    -> Idle when not irq_in.irq_timer;
+  end state Seen
+end fsm NativePkgStructFsmChild
+
+/// Parent probe connects struct wires through the FSM child and exposes scalar fields.
+use NativePkgStructFsmPkg;
+module NativePkgStructFsmProbe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port fast_in: in UInt<15>;
+  port timer_in: in Bool;
+  port fast_seen: out UInt<15>;
+  port timer_seen: out Bool;
+
+  wire irq_req: NativeIrqs;
+  wire irq_resp: NativeIrqs;
+
+  inst child: NativePkgStructFsmChild
+    clk <- clk;
+    rst <- rst;
+    irq_in <- irq_req;
+    irq_out -> irq_resp;
+    timer_seen -> timer_seen;
+  end inst child
+
+  comb
+    irq_req.irq_fast = fast_in;
+    irq_req.irq_timer = timer_in;
+    fast_seen = irq_resp.irq_fast;
+  end comb
+end module NativePkgStructFsmProbe

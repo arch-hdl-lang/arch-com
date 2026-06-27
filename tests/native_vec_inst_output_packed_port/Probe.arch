@@ -1,0 +1,27 @@
+//! ---
+//! tags: [native-sim, vec, packed-port, inst-output, regression]
+//! refs:
+//!   - "arch-ibex IbexIfStage icache request ports"
+//! ---
+//!
+//! Regression for native C++ simulation of a sub-instance Vec output connected
+//! to a packed scalar parent output port.
+
+/// Constant single-bit Vec producer used to expose packed parent port wiring.
+module NativeVecPackedProducer
+  port values: out Vec<UInt<1>, 2>;
+
+  comb
+    values[0] = 1'd0;
+    values[1] = 1'd1;
+  end comb
+end module NativeVecPackedProducer
+
+/// Parent probe that packs a child Vec output into a scalar UInt output.
+module NativeVecInstOutputPackedPortProbe
+  port packed_out: out UInt<2>;
+
+  inst producer: NativeVecPackedProducer
+    values -> packed_out;
+  end inst producer
+end module NativeVecInstOutputPackedPortProbe

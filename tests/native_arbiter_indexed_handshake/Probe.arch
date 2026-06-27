@@ -1,0 +1,59 @@
+//! ---
+//! tags: [native-sim, arbiter, handshake, indexed-port, regression]
+//! refs:
+//!   - "arch-ibex IbexIcache FbAgeArb request indexed handshake"
+//! ---
+//!
+//! Regression for native C++ simulation of indexed arbiter handshake-array connections.
+//! Parent modules connect per-requester signals with request[i].valid/ready syntax while
+//! the first-class arbiter sim model stores the array as packed request_valid/request_ready bits.
+
+/// Priority arbiter fixture with a request handshake array.
+///
+/// The first-class arbiter model exposes the request array as packed native-sim fields.
+arbiter NativeIndexedHandshakeArb
+  //! Priority is used so the C++ regression has a deterministic winner when multiple requests are asserted.
+  policy priority;
+  param NUM_REQ: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  ports[NUM_REQ] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+end arbiter NativeIndexedHandshakeArb
+
+/// Parent probe that connects each indexed request handshake signal explicitly.
+///
+/// Native simulation must pack input valid bits and unpack output ready bits when wiring the child arbiter.
+module NativeArbiterIndexedHandshakeProbe
+  port clk_i: in Clock<SysDomain>;
+  port rst_i: in Reset<Sync, High>;
+  port req0_i: in Bool;
+  port req1_i: in Bool;
+  port req2_i: in Bool;
+  port req3_i: in Bool;
+  port ready0_o: out Bool;
+  port ready1_o: out Bool;
+  port ready2_o: out Bool;
+  port ready3_o: out Bool;
+  port grant_valid_o: out Bool;
+  port grant_idx_o: out UInt<2>;
+
+  inst arb: NativeIndexedHandshakeArb
+    clk <- clk_i;
+    rst <- rst_i;
+    request[0].valid <- req0_i;
+    request[1].valid <- req1_i;
+    request[2].valid <- req2_i;
+    request[3].valid <- req3_i;
+    request[0].ready -> ready0_o;
+    request[1].ready -> ready1_o;
+    request[2].ready -> ready2_o;
+    request[3].ready -> ready3_o;
+    grant_valid -> grant_valid_o;
+    grant_requester -> grant_idx_o;
+  end inst arb
+end module NativeArbiterIndexedHandshakeProbe
