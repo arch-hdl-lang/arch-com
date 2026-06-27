@@ -5,8 +5,8 @@
 //! `entry_key_r[DEPTH]` (per-entry key). Comb match recomputes
 //! `search_mask` / `search_any` / `search_first` every cycle.
 
-use super::{SimCodegen, SimModel};
 use super::*;
+use super::{SimCodegen, SimModel};
 
 impl<'a> SimCodegen<'a> {
     pub(crate) fn gen_cam(&self, c: &CamDecl) -> SimModel {
@@ -14,33 +14,68 @@ impl<'a> SimCodegen<'a> {
         let class = format!("V{name}");
 
         // DEPTH and KEY_W are required const params (typecheck enforces).
-        let depth: u32 = c.params.iter()
+        let depth: u32 = c
+            .params
+            .iter()
             .find(|p| p.name.name == "DEPTH")
             .and_then(|p| p.default.as_ref())
-            .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v as u32) } else { None })
+            .and_then(|e| {
+                if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind {
+                    Some(*v as u32)
+                } else {
+                    None
+                }
+            })
             .unwrap_or(32);
-        let key_w: u32 = c.params.iter()
+        let key_w: u32 = c
+            .params
+            .iter()
             .find(|p| p.name.name == "KEY_W")
             .and_then(|p| p.default.as_ref())
-            .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v as u32) } else { None })
+            .and_then(|e| {
+                if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind {
+                    Some(*v as u32)
+                } else {
+                    None
+                }
+            })
             .unwrap_or(8);
         // v3: optional value payload.
         let has_value = c.params.iter().any(|p| p.name.name == "VAL_W");
-        let val_w: u32 = c.params.iter()
+        let val_w: u32 = c
+            .params
+            .iter()
             .find(|p| p.name.name == "VAL_W")
             .and_then(|p| p.default.as_ref())
-            .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v as u32) } else { None })
+            .and_then(|e| {
+                if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind {
+                    Some(*v as u32)
+                } else {
+                    None
+                }
+            })
             .unwrap_or(8);
 
         let key_ty = cpp_uint(key_w);
         let val_ty = cpp_uint(val_w);
         let mask_ty = cpp_uint(depth);
-        let idx_w = if depth <= 1 { 1 } else { 32 - (depth - 1).leading_zeros() };
+        let idx_w = if depth <= 1 {
+            1
+        } else {
+            32 - (depth - 1).leading_zeros()
+        };
         let idx_ty = cpp_uint(idx_w);
 
         let (rst_name, _is_async, is_low) = extract_reset_info(&c.ports);
-        let rst_cond = if is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
-        let clk_port = c.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+        let rst_cond = if is_low {
+            format!("(!{})", rst_name)
+        } else {
+            rst_name.clone()
+        };
+        let clk_port = c
+            .ports
+            .iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone())
             .unwrap_or_else(|| "clk".to_string());
 
@@ -49,12 +84,20 @@ impl<'a> SimCodegen<'a> {
         h.push_str("#pragma once\n#include <cstdint>\n#include <cstdio>\n#include <cstring>\n#include \"verilated.h\"\n\n");
         h.push_str(&format!("class {class} {{\npublic:\n"));
         for p in &c.ports {
-            h.push_str(&format!("  {} {};\n", cpp_port_type_with_params(&p.ty, &c.params), p.name.name));
+            h.push_str(&format!(
+                "  {} {};\n",
+                cpp_port_type_with_params(&p.ty, &c.params),
+                p.name.name
+            ));
         }
         h.push('\n');
 
         // Ctor: zero ports + state.
-        let port_inits: Vec<String> = c.ports.iter().map(|p| format!("{}(0)", p.name.name)).collect();
+        let port_inits: Vec<String> = c
+            .ports
+            .iter()
+            .map(|p| format!("{}(0)", p.name.name))
+            .collect();
         let state_inits = vec!["_clk_prev(0)".to_string(), "_entry_valid_r(0)".to_string()];
         let all_inits: Vec<String> = port_inits.into_iter().chain(state_inits).collect();
         h.push_str(&format!("  {class}() : {} {{\n", all_inits.join(", ")));
@@ -63,7 +106,9 @@ impl<'a> SimCodegen<'a> {
             h.push_str("    memset(_entry_value_r, 0, sizeof(_entry_value_r));\n");
         }
         h.push_str("  }\n");
-        h.push_str(&format!("  explicit {class}(VerilatedContext*) : {class}() {{}}\n"));
+        h.push_str(&format!(
+            "  explicit {class}(VerilatedContext*) : {class}() {{}}\n"
+        ));
         h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() { trace_close(); }\n");
         h.push_str("private:\n");
         h.push_str("  uint8_t _clk_prev;\n");
@@ -98,7 +143,9 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("  }\n");
         // Port 1
         cpp.push_str("  if (write_valid) {\n");
-        cpp.push_str(&format!("    {mask_ty} _bit = ({mask_ty})1 << write_idx;\n"));
+        cpp.push_str(&format!(
+            "    {mask_ty} _bit = ({mask_ty})1 << write_idx;\n"
+        ));
         cpp.push_str("    if (write_set) {\n");
         cpp.push_str("      _entry_valid_r |= _bit;\n");
         cpp.push_str("      _entry_key_r[write_idx] = write_key;\n");
@@ -112,7 +159,9 @@ impl<'a> SimCodegen<'a> {
         // Port 2 (v2)
         if has_w2 {
             cpp.push_str("  if (write2_valid) {\n");
-            cpp.push_str(&format!("    {mask_ty} _bit2 = ({mask_ty})1 << write2_idx;\n"));
+            cpp.push_str(&format!(
+                "    {mask_ty} _bit2 = ({mask_ty})1 << write2_idx;\n"
+            ));
             cpp.push_str("    if (write2_set) {\n");
             cpp.push_str("      _entry_valid_r |= _bit2;\n");
             cpp.push_str("      _entry_key_r[write2_idx] = write2_key;\n");
@@ -156,12 +205,22 @@ impl<'a> SimCodegen<'a> {
         let _ = val_ty;
 
         // Trace support — track entry_valid_r and search outputs.
-        let extra_sigs: Vec<(&str, &str, u32)> = vec![
-            ("entry_valid_r", "_entry_valid_r", depth),
-        ];
-        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &c.ports, &extra_sigs, &c.params);
+        let extra_sigs: Vec<(&str, &str, u32)> = vec![("entry_valid_r", "_entry_valid_r", depth)];
+        add_trace_to_simple_construct(
+            &mut h,
+            &mut cpp,
+            &class,
+            name,
+            &c.ports,
+            &extra_sigs,
+            &c.params,
+        );
         h.push_str("};\n");
 
-        SimModel { class_name: class, header: h, impl_: cpp }
+        SimModel {
+            class_name: class,
+            header: h,
+            impl_: cpp,
+        }
     }
 }

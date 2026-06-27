@@ -16,8 +16,9 @@
 use crate::FpCompat;
 
 /// Operators whose generated miter z3 discharges exhaustively.
-pub const TRACTABLE: &[&str] =
-    &["eq", "ne", "lt", "le", "gt", "ge", "narrow", "widen", "to_sint", "to_uint"];
+pub const TRACTABLE: &[&str] = &[
+    "eq", "ne", "lt", "le", "gt", "ge", "narrow", "widen", "to_sint", "to_uint",
+];
 
 /// f32 add/sub — machine-proved `unsat` vs `fp.add`/`fp.sub` over all 2^64
 /// inputs (~80 s each in z3). Tractable because the bounded adder keeps the
@@ -30,8 +31,9 @@ pub const F32_ADD: &[&str] = &["add", "sub"];
 pub const ARITHMETIC: &[&str] = &["mul", "fma"];
 
 /// BF16 comparisons — route through the cheap f32 compare path; prove instantly.
-pub const BF16_CMP: &[&str] =
-    &["bf16_eq", "bf16_ne", "bf16_lt", "bf16_le", "bf16_gt", "bf16_ge"];
+pub const BF16_CMP: &[&str] = &[
+    "bf16_eq", "bf16_ne", "bf16_lt", "bf16_le", "bf16_gt", "bf16_ge",
+];
 
 /// BF16 RNE arithmetic — the §8.1 primary target. Routed through the f32
 /// datapath, but the small input space (2^32) makes the miter solver-tractable:
@@ -58,7 +60,9 @@ pub fn equiv_proof(op: &str, profile: FpCompat) -> String {
     let n16 = nan16_hex(profile);
     let mut s = String::new();
     s.push_str("(set-logic QF_FPBV)\n(define-sort F () (_ FloatingPoint 8 24))\n");
-    s.push_str(&crate::fp_ir::render_smt(&crate::fp_ops::fp_functions(profile)));
+    s.push_str(&crate::fp_ir::render_smt(&crate::fp_ops::fp_functions(
+        profile,
+    )));
 
     let pre = "(declare-fun a () (_ BitVec 32))\n(declare-fun b () (_ BitVec 32))\n\
                (define-fun fa () F ((_ to_fp 8 24) a))\n(define-fun fb () F ((_ to_fp 8 24) b))\n";

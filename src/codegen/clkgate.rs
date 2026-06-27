@@ -8,23 +8,45 @@ impl<'a> Codegen<'a> {
         let n = &c.name.name;
 
         // Find port names
-        let clk_in = c.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)) && p.direction == Direction::In)
-            .map(|p| p.name.name.as_str()).unwrap_or("clk_in");
-        let clk_out = c.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)) && p.direction == Direction::Out)
-            .map(|p| p.name.name.as_str()).unwrap_or("clk_out");
-        let enable = c.ports.iter().find(|p| p.name.name == "enable")
-            .map(|p| p.name.name.as_str()).unwrap_or("enable");
-        let test_en = c.ports.iter().find(|p| p.name.name == "test_en")
+        let clk_in = c
+            .ports
+            .iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)) && p.direction == Direction::In)
+            .map(|p| p.name.name.as_str())
+            .unwrap_or("clk_in");
+        let clk_out = c
+            .ports
+            .iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)) && p.direction == Direction::Out)
+            .map(|p| p.name.name.as_str())
+            .unwrap_or("clk_out");
+        let enable = c
+            .ports
+            .iter()
+            .find(|p| p.name.name == "enable")
+            .map(|p| p.name.name.as_str())
+            .unwrap_or("enable");
+        let test_en = c
+            .ports
+            .iter()
+            .find(|p| p.name.name == "test_en")
             .map(|p| p.name.name.as_str());
 
         // Module header
         self.line(&format!("module {n} ("));
         self.indent += 1;
-        let port_strs: Vec<String> = c.ports.iter().map(|p| {
-            let dir = match p.direction { Direction::In => "input", Direction::Out => "output" };
-            let ty = self.emit_port_type_str(&p.ty);
-            format!("{dir} {ty} {}", p.name.name)
-        }).collect();
+        let port_strs: Vec<String> = c
+            .ports
+            .iter()
+            .map(|p| {
+                let dir = match p.direction {
+                    Direction::In => "input",
+                    Direction::Out => "output",
+                };
+                let ty = self.emit_port_type_str(&p.ty);
+                format!("{dir} {ty} {}", p.name.name)
+            })
+            .collect();
         for (i, ps) in port_strs.iter().enumerate() {
             let comma = if i < port_strs.len() - 1 { "," } else { "" };
             self.line(&format!("{ps}{comma}"));
@@ -43,7 +65,9 @@ impl<'a> Codegen<'a> {
         match c.kind {
             crate::ast::ClkGateKind::Latch => {
                 self.line("logic en_latched;");
-                self.line(&format!("always_latch if (!{clk_in}) en_latched = {en_expr};"));
+                self.line(&format!(
+                    "always_latch if (!{clk_in}) en_latched = {en_expr};"
+                ));
                 self.line(&format!("assign {clk_out} = {clk_in} & en_latched;"));
             }
             crate::ast::ClkGateKind::And => {

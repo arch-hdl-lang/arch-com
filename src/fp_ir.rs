@@ -86,7 +86,14 @@ pub fn var(name: &str, width: u32) -> Bv {
 /// `x[hi:lo]` — result width `hi-lo+1`.
 pub fn extract(x: &Bv, hi: u32, lo: u32) -> Bv {
     assert!(hi >= lo && hi < x.width(), "extract out of range");
-    Bv::mk(hi - lo + 1, Kind::Extract { x: x.clone(), hi, lo })
+    Bv::mk(
+        hi - lo + 1,
+        Kind::Extract {
+            x: x.clone(),
+            hi,
+            lo,
+        },
+    )
 }
 /// `{a, b}` — concatenation, `a` is the high part.
 pub fn concat(a: &Bv, b: &Bv) -> Bv {
@@ -102,7 +109,14 @@ pub fn zext(x: &Bv, to: u32) -> Bv {
 }
 fn bin(op: Bin, a: &Bv, b: &Bv) -> Bv {
     assert_eq!(a.width(), b.width(), "binop width mismatch");
-    Bv::mk(a.width(), Kind::Bin { op, a: a.clone(), b: b.clone() })
+    Bv::mk(
+        a.width(),
+        Kind::Bin {
+            op,
+            a: a.clone(),
+            b: b.clone(),
+        },
+    )
 }
 pub fn add(a: &Bv, b: &Bv) -> Bv {
     bin(Bin::Add, a, b)
@@ -137,11 +151,25 @@ pub fn bnot(x: &Bv) -> Bv {
 pub fn ite(c: &Bv, t: &Bv, e: &Bv) -> Bv {
     assert_eq!(c.width(), 1, "ite condition must be 1-bit");
     assert_eq!(t.width(), e.width(), "ite arms width mismatch");
-    Bv::mk(t.width(), Kind::Ite { c: c.clone(), t: t.clone(), e: e.clone() })
+    Bv::mk(
+        t.width(),
+        Kind::Ite {
+            c: c.clone(),
+            t: t.clone(),
+            e: e.clone(),
+        },
+    )
 }
 fn cmp(op: Cmp, a: &Bv, b: &Bv) -> Bv {
     assert_eq!(a.width(), b.width(), "compare width mismatch");
-    Bv::mk(1, Kind::Cmp { op, a: a.clone(), b: b.clone() })
+    Bv::mk(
+        1,
+        Kind::Cmp {
+            op,
+            a: a.clone(),
+            b: b.clone(),
+        },
+    )
 }
 pub fn eq(a: &Bv, b: &Bv) -> Bv {
     cmp(Cmp::Eq, a, b)
@@ -189,7 +217,13 @@ pub fn not(a: &Bv) -> Bv {
 }
 /// Call another `FpFn` by name; `width` is the callee's return width.
 pub fn call(name: &str, args: &[Bv], width: u32) -> Bv {
-    Bv::mk(width, Kind::Call { name: name.to_string(), args: args.to_vec() })
+    Bv::mk(
+        width,
+        Kind::Call {
+            name: name.to_string(),
+            args: args.to_vec(),
+        },
+    )
 }
 
 /// A single FP helper: name, typed parameters, and a return expression.
@@ -224,7 +258,10 @@ fn is_leaf(b: &Bv) -> bool {
 }
 
 fn linearize(body: &Bv) -> Lin {
-    let mut lin = Lin { ids: HashMap::new(), order: Vec::new() };
+    let mut lin = Lin {
+        ids: HashMap::new(),
+        order: Vec::new(),
+    };
     fn go(b: &Bv, lin: &mut Lin) {
         if is_leaf(b) {
             return;
@@ -345,7 +382,13 @@ fn render_sv_fn(f: &FpFn) -> String {
     );
     for b in &lin.order {
         let id = lin.ids[&(Rc::as_ptr(&b.0) as usize)];
-        let _ = writeln!(s, "  logic {}_t{} = {};", sv_decl_width(b.width()), id, sv_rhs(b, &lin));
+        let _ = writeln!(
+            s,
+            "  logic {}_t{} = {};",
+            sv_decl_width(b.width()),
+            id,
+            sv_rhs(b, &lin)
+        );
     }
     let _ = writeln!(s, "  {} = {};", f.name, sv_ref(&f.body, &lin));
     let _ = writeln!(s, "endfunction");
@@ -417,8 +460,11 @@ fn smt_rhs(b: &Bv, lin: &Lin) -> String {
 
 fn render_smt_fn(f: &FpFn) -> String {
     let lin = linearize(&f.body);
-    let params: Vec<String> =
-        f.params.iter().map(|(n, w)| format!("({n} {})", smt_sort(*w))).collect();
+    let params: Vec<String> = f
+        .params
+        .iter()
+        .map(|(n, w)| format!("({n} {})", smt_sort(*w)))
+        .collect();
     let mut body = smt_ref(&f.body, &lin);
     // Wrap the temporaries as nested `let`s, innermost last.
     for b in lin.order.iter().rev() {
@@ -438,6 +484,124 @@ pub fn render_smt(funcs: &[FpFn]) -> String {
     funcs.iter().map(render_smt_fn).collect::<Vec<_>>().join("")
 }
 
+// ── Lean 4 renderer ─────────────────────────────────────────────────────────
+//
+// Emits each helper as a Lean `def` over `BitVec` (Lean core `Init.Data.BitVec`
+// — no Mathlib, no extra package, matching the dependency-free lake project).
+// This is the third renderer of the *same* IR: the model a structured prover
+// reasons about is bit-for-bit the model that `render_sv`/`render_smt` produce,
+// so a Lean proof transfers to the emitted RTL with no re-transcription.
+//
+// The point of a Lean backend (over z3/cvc5) is the multiplier-bearing ops
+// (`mul`/`fma`): a 24×24 multiplier equivalence is SAT-hard for any bit-blaster
+// (`bv_decide` included), but Lean lets the proof *lift* the bit model to the
+// algebraic (significand, exponent)/real layer and discharge correct-rounding
+// structurally — the FLoPS / Flocq methodology — never bit-blasting the array.
+
+fn lean_ref(b: &Bv, lin: &Lin) -> String {
+    match &b.0.kind {
+        Kind::Var(n) => n.clone(),
+        Kind::Const { val } => format!("(BitVec.ofNat {} {})", b.width(), val),
+        _ => format!("_t{}", lin.ids[&(Rc::as_ptr(&b.0) as usize)]),
+    }
+}
+
+fn lean_rhs(b: &Bv, lin: &Lin) -> String {
+    let r = |x: &Bv| lean_ref(x, lin);
+    match &b.0.kind {
+        Kind::Var(_) | Kind::Const { .. } => lean_ref(b, lin),
+        Kind::Extract { x, hi, lo } => format!("(BitVec.extractLsb {hi} {lo} {})", r(x)),
+        // `++` is high ++ low for BitVec, matching `concat(a /*high*/, b)`.
+        Kind::Concat(a, c) => format!("({} ++ {})", r(a), r(c)),
+        Kind::ZeroExt { x, to } => format!("(BitVec.setWidth {to} {})", r(x)),
+        Kind::Not(x) => format!("(~~~ {})", r(x)),
+        Kind::Bin { op, a, b: c } => match op {
+            Bin::Add => format!("({} + {})", r(a), r(c)),
+            Bin::Sub => format!("({} - {})", r(a), r(c)),
+            Bin::Mul => format!("({} * {})", r(a), r(c)),
+            Bin::And => format!("({} &&& {})", r(a), r(c)),
+            Bin::Or => format!("({} ||| {})", r(a), r(c)),
+            Bin::Xor => format!("({} ^^^ {})", r(a), r(c)),
+            // Shift amount is a same-width BV (already zero-extended by `shl`/
+            // `lshr`); Lean's `<<<`/`>>>` on BitVec take a `Nat`.
+            Bin::Shl => format!("({} <<< {}.toNat)", r(a), r(c)),
+            Bin::Lshr => format!("({} >>> {}.toNat)", r(a), r(c)),
+        },
+        Kind::Cmp { op, a, b: c } => {
+            // `BitVec.ofBool` of a Bool predicate, NOT `if p then 1#1 else 0#1`:
+            // the latter is a `Prop`-conditioned `ite` that `bv_decide` cannot
+            // bit-blast (it abstracts it as an opaque variable, which produces
+            // spurious counterexamples on non-symmetric goals). `ofBool` and the
+            // Bool comparators below are all in `bv_decide`'s supported fragment.
+            let pred = match op {
+                Cmp::Eq => format!("({} == {})", r(a), r(c)),
+                Cmp::Ne => format!("({} != {})", r(a), r(c)),
+                Cmp::Ult => format!("(BitVec.ult {} {})", r(a), r(c)),
+                Cmp::Ule => format!("(BitVec.ule {} {})", r(a), r(c)),
+                Cmp::Ugt => format!("(BitVec.ult {} {})", r(c), r(a)),
+                Cmp::Uge => format!("(BitVec.ule {} {})", r(c), r(a)),
+                Cmp::Slt => format!("(BitVec.slt {} {})", r(a), r(c)),
+                Cmp::Sle => format!("(BitVec.sle {} {})", r(a), r(c)),
+                Cmp::Sgt => format!("(BitVec.slt {} {})", r(c), r(a)),
+                Cmp::Sge => format!("(BitVec.sle {} {})", r(c), r(a)),
+            };
+            format!("(BitVec.ofBool {pred})")
+        }
+        // Selector is a 1-bit BV; `c == 1#1` is a Bool the `if` bit-blasts.
+        Kind::Ite { c, t, e } => {
+            format!(
+                "(if {} == (BitVec.ofNat 1 1) then {} else {})",
+                r(c),
+                r(t),
+                r(e)
+            )
+        }
+        Kind::Call { name, args } => {
+            let a: Vec<String> = args.iter().map(|x| r(x)).collect();
+            format!("({} {})", name, a.join(" "))
+        }
+    }
+}
+
+fn render_lean_fn(f: &FpFn) -> String {
+    let lin = linearize(&f.body);
+    let mut s = String::new();
+    let params: Vec<String> = f
+        .params
+        .iter()
+        .map(|(n, w)| format!("({n} : BitVec {w})"))
+        .collect();
+    let _ = writeln!(
+        s,
+        "def {} {} : BitVec {} :=",
+        f.name,
+        params.join(" "),
+        f.ret_w
+    );
+    for b in &lin.order {
+        let id = lin.ids[&(Rc::as_ptr(&b.0) as usize)];
+        let _ = writeln!(
+            s,
+            "  let _t{id} : BitVec {} := {}",
+            b.width(),
+            lean_rhs(b, &lin)
+        );
+    }
+    let _ = writeln!(s, "  {}", lean_ref(&f.body, &lin));
+    s
+}
+
+/// Render a set of helper functions to one Lean 4 source block (`def`s over
+/// `BitVec`, dependency-free — Lean core only). Wrap in a `namespace` and proofs
+/// at the call site (see `proofs/lean_fp_equiv/`).
+pub fn render_lean(funcs: &[FpFn]) -> String {
+    funcs
+        .iter()
+        .map(render_lean_fn)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,7 +617,9 @@ mod tests {
         let f = FpFn::new("t", &[("a", 8), ("b", 8)], 8, body);
 
         let sv = render_sv(&[f]);
-        assert!(sv.contains("function automatic logic [7:0] t(input logic [7:0] a, input logic [7:0] b);"));
+        assert!(sv.contains(
+            "function automatic logic [7:0] t(input logic [7:0] a, input logic [7:0] b);"
+        ));
         assert!(sv.contains(" + "));
         assert!(sv.contains("[0]"));
         assert!(sv.contains("? "));
@@ -469,5 +635,54 @@ mod tests {
         assert!(smt.contains("(define-fun t ((a (_ BitVec 8)) (b (_ BitVec 8))) (_ BitVec 8)"));
         assert!(smt.contains("(bvadd a b)"));
         assert!(smt.contains("(let ("));
+
+        // Lean: same DAG, third dialect.
+        let a = var("a", 8);
+        let b = var("b", 8);
+        let s = add(&a, &b);
+        let lo = extract(&s, 0, 0);
+        let body = ite(&eq(&lo, &cst(0, 1)), &s, &cst(0xFF, 8));
+        let f = FpFn::new("t", &[("a", 8), ("b", 8)], 8, body);
+        let lean = render_lean(&[f]);
+        assert!(lean.contains("def t (a : BitVec 8) (b : BitVec 8) : BitVec 8 :="));
+        assert!(lean.contains("(a + b)"));
+        assert!(lean.contains("(BitVec.extractLsb 0 0 "));
+        assert!(lean.contains("if "));
+        assert!(lean.contains("(BitVec.ofNat 8 255)"));
+        // Comparisons must render via `BitVec.ofBool`, NOT a Prop-conditioned
+        // `if p then 1#1 else 0#1` — the latter is abstracted (not bit-blasted)
+        // by Lean's `bv_decide`, which breaks the FP proofs in proofs/lean_fp_equiv.
+        assert!(lean.contains("(BitVec.ofBool ("));
+        assert!(!lean.contains("then (BitVec.ofNat 1 1) else (BitVec.ofNat 1 0)"));
+    }
+
+    #[test]
+    fn lean_renders_every_op_kind() {
+        // Exercise every Kind so the renderer can't silently lose a case.
+        let a = var("a", 8);
+        let b = var("b", 8);
+        let body = ite(
+            &slt(&a, &b),
+            &concat(&extract(&band(&a, &b), 7, 4), &zext(&extract(&b, 1, 0), 4)),
+            &shl(&lshr(&bnot(&bxor(&a, &b)), &cst(1, 8)), &cst(2, 8)),
+        );
+        let f = FpFn::new("k", &[("a", 8), ("b", 8)], 8, body);
+        let lean = render_lean(&[f]);
+        for needle in [
+            "BitVec.slt",
+            "++",
+            "BitVec.setWidth",
+            "~~~",
+            "&&&",
+            "^^^",
+            ">>>",
+            "<<<",
+            ".toNat",
+        ] {
+            assert!(
+                lean.contains(needle),
+                "Lean output missing {needle}:\n{lean}"
+            );
+        }
     }
 }

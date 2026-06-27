@@ -1,0 +1,11 @@
+name = "arch_fp_equiv_proof"
+version = "0.1.0"
+defaultTargets = ["ArchFpEquiv"]
+
+# Dependency-free: the model uses only Lean core `BitVec` (Init.Data.BitVec) and
+# the `bv_decide` tactic, both shipped with the toolchain above. No Mathlib —
+# a future algebraic correct-rounding development (FLoPS/Flocq style) for the
+# multiplier ops would add a `require mathlib` here.
+
+[[lean_lib]]
+name = "ArchFpEquiv"

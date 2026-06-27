@@ -28,12 +28,15 @@ impl<'a> Codegen<'a> {
         // that `use IbexPkg;` for shared `ExcCause` / `Irqs` types.)
         for item in &self.source.items {
             if let Item::Use(u) = item {
-                let is_package = self.source.items.iter().any(|i| {
-                    matches!(i, Item::Package(p) if p.name.name == u.name.name)
-                });
-                let is_extern = self.source.items.iter().any(|i| {
-                    matches!(i, Item::ExternPackage(ep) if ep.name.name == u.name.name)
-                });
+                let is_package = self
+                    .source
+                    .items
+                    .iter()
+                    .any(|i| matches!(i, Item::Package(p) if p.name.name == u.name.name));
+                let is_extern =
+                    self.source.items.iter().any(
+                        |i| matches!(i, Item::ExternPackage(ep) if ep.name.name == u.name.name),
+                    );
                 if is_package || is_extern {
                     self.out.push_str(&format!("import {}::*;\n", u.name.name));
                 }
@@ -43,7 +46,8 @@ impl<'a> Codegen<'a> {
         // encoded state register. SV emission lowers to `state_r` (the enum
         // register), which implicitly casts to the user-declared output port
         // width. Cleared at the end of emit_fsm.
-        self.ident_subst.insert("state".to_string(), "state_r".to_string());
+        self.ident_subst
+            .insert("state".to_string(), "state_r".to_string());
         let n = f.name.name.clone();
         let n_states = f.state_names.len();
         let state_bits = enum_width(n_states);
@@ -68,8 +72,12 @@ impl<'a> Codegen<'a> {
             if let Some(ref bi) = p.bus_info {
                 let bus_name = &bi.bus_name.name;
                 self.bus_ports.insert(p.name.name.clone(), bus_name.clone());
-                if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
-                    let mut param_map: std::collections::HashMap<String, &Expr> = info.params.iter()
+                if let Some((crate::resolve::Symbol::Bus(info), _)) =
+                    self.symbols.globals.get(bus_name)
+                {
+                    let mut param_map: std::collections::HashMap<String, &Expr> = info
+                        .params
+                        .iter()
                         .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
                         .collect();
                     for pa in &bi.params {
@@ -87,11 +95,15 @@ impl<'a> Codegen<'a> {
                         };
                         let subst_ty = Self::subst_type_expr(sty, &param_map);
                         let ty_str = self.emit_port_type_str(&subst_ty);
-                        port_lines.push(format!("{} {} {}_{}", dir_str, ty_str, p.name.name, sname));
+                        port_lines
+                            .push(format!("{} {} {}_{}", dir_str, ty_str, p.name.name, sname));
                     }
                 }
             } else {
-                let dir = match p.direction { Direction::In => "input", Direction::Out => "output" };
+                let dir = match p.direction {
+                    Direction::In => "input",
+                    Direction::Out => "output",
+                };
                 if let TypeExpr::Vec(_, _) = &p.ty {
                     let (base_ty, suffix) = self.emit_type_and_array_suffix(&p.ty);
                     port_lines.push(format!("{dir} {base_ty} {}{suffix}", p.name.name));
@@ -112,11 +124,17 @@ impl<'a> Codegen<'a> {
         self.indent += 1;
 
         // ── State type ───────────────────────────────────────────────────────
-        self.line(&format!("typedef enum logic [{}:0] {{", state_bits.saturating_sub(1)));
+        self.line(&format!(
+            "typedef enum logic [{}:0] {{",
+            state_bits.saturating_sub(1)
+        ));
         self.indent += 1;
         for (i, sn) in f.state_names.iter().enumerate() {
             let comma = if i < f.state_names.len() - 1 { "," } else { "" };
-            self.line(&format!("{} = {state_bits}'d{i}{comma}", sn.name.to_uppercase()));
+            self.line(&format!(
+                "{} = {state_bits}'d{i}{comma}",
+                sn.name.to_uppercase()
+            ));
         }
         self.indent -= 1;
         self.line(&format!("}} {n}_state_t;"));
@@ -180,15 +198,19 @@ impl<'a> Codegen<'a> {
         // `default_state` is `Some(_)` here because codegen only runs for
         // non-interface fsms (interface stubs are filtered out earlier);
         // resolve.rs already errored on the `None` case for real fsms.
-        let default_state_name = f.default_state.as_ref()
+        let default_state_name = f
+            .default_state
+            .as_ref()
             .expect("codegen: fsm without default_state — should have been rejected by resolve")
             .name
             .clone();
-        self.line(&format!("state_r <= {};", default_state_name.to_uppercase()));
+        self.line(&format!(
+            "state_r <= {};",
+            default_state_name.to_uppercase()
+        ));
         // Reset datapath registers
         for reg in &f.regs {
-            let reset_expr = Self::reset_value_expr(&reg.reset)
-                .or(reg.init.as_ref());
+            let reset_expr = Self::reset_value_expr(&reg.reset).or(reg.init.as_ref());
             if let Some(val_expr) = reset_expr {
                 let init_str = self.emit_expr_str(val_expr);
                 if let TypeExpr::Vec(_, size_expr) = &reg.ty {
@@ -207,8 +229,7 @@ impl<'a> Codegen<'a> {
         // Reset port-reg outputs (ports with reg_info)
         for p in &f.ports {
             if let Some(ri) = &p.reg_info {
-                let reset_expr = Self::reset_value_expr(&ri.reset)
-                    .or(ri.init.as_ref());
+                let reset_expr = Self::reset_value_expr(&ri.reset).or(ri.init.as_ref());
                 if let Some(val_expr) = reset_expr {
                     let init_str = self.emit_expr_str(val_expr);
                     self.line(&format!("{} <= {init_str};", p.name.name));
@@ -226,10 +247,10 @@ impl<'a> Codegen<'a> {
         // Per-state sequential logic
         if has_seq || !f.default_seq.is_empty() {
             // `unique case`: state_r is one-hot by construction (single FSM
-// state register), so all arms are mutually exclusive. Tells
-// yosys-slang to synthesize a parallel mux instead of a priority
-// encoder.
-self.line("unique case (state_r)");
+            // state register), so all arms are mutually exclusive. Tells
+            // yosys-slang to synthesize a parallel mux instead of a priority
+            // encoder.
+            self.line("unique case (state_r)");
             self.indent += 1;
             for sb in &f.states {
                 if sb.seq_stmts.is_empty() {
@@ -258,36 +279,44 @@ self.line("unique case (state_r)");
         self.indent += 1;
         self.line("state_next = state_r; // hold by default");
         // `unique case`: state_r is one-hot by construction (single FSM
-// state register), so all arms are mutually exclusive. Tells
-// yosys-slang to synthesize a parallel mux instead of a priority
-// encoder.
-self.line("unique case (state_r)");
+        // state register), so all arms are mutually exclusive. Tells
+        // yosys-slang to synthesize a parallel mux instead of a priority
+        // encoder.
+        self.line("unique case (state_r)");
         self.indent += 1;
         for sb in &f.states {
             self.line(&format!("{}: begin", sb.name.name.to_uppercase()));
             self.indent += 1;
-            let cond_strs: Vec<String> = sb.transitions.iter()
+            let cond_strs: Vec<String> = sb
+                .transitions
+                .iter()
                 .map(|tr| self.emit_expr_str(&tr.condition))
                 .collect();
             // Single unconditional transition — emit plain assignment.
             if cond_strs.len() == 1 && (cond_strs[0] == "1'b1" || cond_strs[0] == "1") {
-                self.line(&format!("state_next = {};",
-                    sb.transitions[0].target.name.to_uppercase()));
+                self.line(&format!(
+                    "state_next = {};",
+                    sb.transitions[0].target.name.to_uppercase()
+                ));
             } else {
                 for (i, tr) in sb.transitions.iter().enumerate() {
                     let is_true = cond_strs[i] == "1'b1" || cond_strs[i] == "1";
                     if i == 0 && is_true {
                         // First and unconditional — plain assignment
-                        self.line(&format!("state_next = {};",
-                            tr.target.name.to_uppercase()));
+                        self.line(&format!("state_next = {};", tr.target.name.to_uppercase()));
                     } else if i > 0 && is_true {
                         // Last catch-all — emit as else
-                        self.line(&format!("else state_next = {};",
-                            tr.target.name.to_uppercase()));
+                        self.line(&format!(
+                            "else state_next = {};",
+                            tr.target.name.to_uppercase()
+                        ));
                     } else {
                         let kw = if i == 0 { "if" } else { "else if" };
-                        self.line(&format!("{kw} ({}) state_next = {};",
-                            cond_strs[i], tr.target.name.to_uppercase()));
+                        self.line(&format!(
+                            "{kw} ({}) state_next = {};",
+                            cond_strs[i],
+                            tr.target.name.to_uppercase()
+                        ));
                     }
                 }
             }
@@ -303,10 +332,13 @@ self.line("unique case (state_r)");
 
         // ── Output logic ─────────────────────────────────────────────────────
         // Emit default zeros for all outputs
-        let out_ports: Vec<&PortDecl> = f.ports.iter()
+        let out_ports: Vec<&PortDecl> = f
+            .ports
+            .iter()
             .filter(|p| p.direction == Direction::Out)
             .collect();
-        let has_comb = !out_ports.is_empty() || !f.default_comb.is_empty()
+        let has_comb = !out_ports.is_empty()
+            || !f.default_comb.is_empty()
             || f.states.iter().any(|s| !s.comb_stmts.is_empty());
         if has_comb {
             self.line("always_comb begin");
@@ -315,8 +347,12 @@ self.line("unique case (state_r)");
             // before the case so any state that doesn't assign the port
             // still produces the declared default instead of latching.
             for p in &f.ports {
-                if p.direction != Direction::Out { continue; }
-                if p.reg_info.is_some() { continue; }
+                if p.direction != Direction::Out {
+                    continue;
+                }
+                if p.reg_info.is_some() {
+                    continue;
+                }
                 if let Some(def) = &p.default {
                     let val = self.emit_expr_str(def);
                     self.line(&format!("{} = {};", p.name.name, val));
@@ -327,10 +363,10 @@ self.line("unique case (state_r)");
                 self.emit_comb_stmt(stmt);
             }
             // `unique case`: state_r is one-hot by construction (single FSM
-// state register), so all arms are mutually exclusive. Tells
-// yosys-slang to synthesize a parallel mux instead of a priority
-// encoder.
-self.line("unique case (state_r)");
+            // state register), so all arms are mutually exclusive. Tells
+            // yosys-slang to synthesize a parallel mux instead of a priority
+            // encoder.
+            self.line("unique case (state_r)");
             self.indent += 1;
             for sb in &f.states {
                 self.line(&format!("{}: begin", sb.name.name.to_uppercase()));
@@ -351,9 +387,15 @@ self.line("unique case (state_r)");
         // Auto-generated FSM safety assertions and coverage
         {
             let clk_port = f.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)));
-            let clk = clk_port.map(|p| p.name.name.clone()).unwrap_or_else(|| "clk".to_string());
+            let clk = clk_port
+                .map(|p| p.name.name.clone())
+                .unwrap_or_else(|| "clk".to_string());
             let (rst_name, _, is_low) = Self::extract_reset_info(&f.ports);
-            let rst_inactive = if is_low { rst_name.clone() } else { format!("!{rst_name}") };
+            let rst_inactive = if is_low {
+                rst_name.clone()
+            } else {
+                format!("!{rst_name}")
+            };
             let n = &f.name.name;
             let n_states = f.state_names.len();
             self.line("");
@@ -390,14 +432,19 @@ self.line("unique case (state_r)");
             // Cover: each declared transition can fire
             // Use a counter to disambiguate duplicate src→tgt transitions
             {
-                let mut tr_counts: std::collections::HashMap<(String, String), usize> = std::collections::HashMap::new();
+                let mut tr_counts: std::collections::HashMap<(String, String), usize> =
+                    std::collections::HashMap::new();
                 for sb in &f.states {
                     let src = sb.name.name.to_uppercase();
                     for tr in &sb.transitions {
                         let tgt = tr.target.name.to_uppercase();
                         let key = (src.clone(), tgt.clone());
                         let count = tr_counts.entry(key).or_insert(0);
-                        let suffix = if *count > 0 { format!("_{count}") } else { String::new() };
+                        let suffix = if *count > 0 {
+                            format!("_{count}")
+                        } else {
+                            String::new()
+                        };
                         *count += 1;
                         self.line(&format!(
                             "_auto_tr_{src}_to_{tgt}{suffix}: cover property (@(posedge {clk}) state_r == {src} && state_next == {tgt});",
@@ -412,7 +459,9 @@ self.line("unique case (state_r)");
         // ── Assert / cover SVA ───────────────────────────────────────────────
         if !f.asserts.is_empty() {
             let clk_port = f.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)));
-            let clk = clk_port.map(|p| p.name.name.clone()).unwrap_or_else(|| "clk".to_string());
+            let clk = clk_port
+                .map(|p| p.name.name.clone())
+                .unwrap_or_else(|| "clk".to_string());
             self.line("");
             let asserts = f.asserts.clone();
             let fname = f.name.name.clone();
@@ -428,5 +477,4 @@ self.line("unique case (state_r)");
     }
 
     // ── Pipeline ──────────────────────────────────────────────────────────────
-
 }

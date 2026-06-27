@@ -15,7 +15,7 @@ pub enum Ty {
     FP32,
     /// bfloat16 (1+8+7 = 16 bits). Stored/carried as 16 bits.
     BF16,
-    Clock(String), // domain name
+    Clock(String),                // domain name
     Reset(ResetKind, ResetLevel), // always concrete (Param resolved during elaboration)
     Vec(Box<Ty>, u32),
     Struct(String),
@@ -35,14 +35,20 @@ impl Ty {
 #[derive(Clone)]
 pub(crate) enum HandshakePayloadGuard {
     Field(String),
-    ReqAck2PhasePending { req_field: String, ack_field: String },
+    ReqAck2PhasePending {
+        req_field: String,
+        ack_field: String,
+    },
 }
 
 impl HandshakePayloadGuard {
     fn display(&self, port: &str) -> String {
         match self {
             HandshakePayloadGuard::Field(field) => format!("{port}.{field}"),
-            HandshakePayloadGuard::ReqAck2PhasePending { req_field, ack_field } => {
+            HandshakePayloadGuard::ReqAck2PhasePending {
+                req_field,
+                ack_field,
+            } => {
                 format!("({port}.{req_field} != {port}.{ack_field})")
             }
         }
@@ -72,9 +78,16 @@ impl Ty {
             Ty::FP32 => "FP32".to_string(),
             Ty::BF16 => "BF16".to_string(),
             Ty::Clock(d) => format!("Clock<{d}>"),
-            Ty::Reset(k, l) => format!("Reset<{}, {}>",
-                match k { ResetKind::Sync => "Sync", ResetKind::Async => "Async" },
-                match l { ResetLevel::High => "High", ResetLevel::Low => "Low" },
+            Ty::Reset(k, l) => format!(
+                "Reset<{}, {}>",
+                match k {
+                    ResetKind::Sync => "Sync",
+                    ResetKind::Async => "Async",
+                },
+                match l {
+                    ResetLevel::High => "High",
+                    ResetLevel::Low => "Low",
+                },
             ),
             Ty::Vec(inner, n) => format!("Vec<{}, {n}>", inner.display()),
             Ty::Struct(name) => name.clone(),
@@ -126,7 +139,9 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub fn check(mut self) -> Result<(Vec<CompileWarning>, HashMap<usize, usize>), Vec<CompileError>> {
+    pub fn check(
+        mut self,
+    ) -> Result<(Vec<CompileWarning>, HashMap<usize, usize>), Vec<CompileError>> {
         // Global pre-pass: scan every compile-time expression for divide-by-zero
         // whose divisor is a reducible constant. Catches bad param defaults, etc.
         // Runs before per-item checks so reported errors sort naturally.
@@ -164,19 +179,19 @@ impl<'a> TypeChecker<'a> {
 
     fn item_params(item: &Item) -> Vec<ParamDecl> {
         match item {
-            Item::Module(m)       => m.params.clone(),
-            Item::Fsm(f)          => f.params.clone(),
-            Item::Fifo(f)         => f.params.clone(),
-            Item::Ram(r)          => r.params.clone(),
-            Item::Cam(c)          => c.params.clone(),
-            Item::Counter(c)      => c.params.clone(),
-            Item::Arbiter(a)      => a.params.clone(),
-            Item::Regfile(r)      => r.params.clone(),
-            Item::Pipeline(p)     => p.params.clone(),
-            Item::Linklist(l)     => l.params.clone(),
+            Item::Module(m) => m.params.clone(),
+            Item::Fsm(f) => f.params.clone(),
+            Item::Fifo(f) => f.params.clone(),
+            Item::Ram(r) => r.params.clone(),
+            Item::Cam(c) => c.params.clone(),
+            Item::Counter(c) => c.params.clone(),
+            Item::Arbiter(a) => a.params.clone(),
+            Item::Regfile(r) => r.params.clone(),
+            Item::Pipeline(p) => p.params.clone(),
+            Item::Linklist(l) => l.params.clone(),
             Item::Synchronizer(s) => s.params.clone(),
-            Item::Clkgate(c)      => c.params.clone(),
-            Item::Package(p)      => p.params.clone(),
+            Item::Clkgate(c) => c.params.clone(),
+            Item::Package(p) => p.params.clone(),
             _ => Vec::new(),
         }
     }
@@ -193,18 +208,24 @@ impl<'a> TypeChecker<'a> {
             // Pick a span for the warning: the span of the first owning
             // module in the SCC (top-level module if vec![]). Fall back
             // to the first item's span.
-            let span: Span = scc.owning_modules.iter()
+            let span: Span = scc
+                .owning_modules
+                .iter()
                 .filter_map(|mn| {
                     self.source.items.iter().find_map(|it| {
                         if let Item::Module(m) = it {
-                            if &m.name.name == mn { return Some(m.span); }
+                            if &m.name.name == mn {
+                                return Some(m.span);
+                            }
                         }
                         None
                     })
                 })
                 .next()
                 .unwrap_or_else(|| {
-                    self.source.items.first()
+                    self.source
+                        .items
+                        .first()
                         .map(|it| it.span())
                         .unwrap_or(Span { start: 0, end: 0 })
                 });
@@ -222,15 +243,15 @@ impl<'a> TypeChecker<'a> {
                 path_str.join(" -> "),
                 if path_str.is_empty() { String::new() } else { format!(" -> {}", path_str[0]) },
             );
-            self.warnings.push(CompileWarning {
-                message: msg,
-                span,
-            });
+            self.warnings.push(CompileWarning { message: msg, span });
         }
         // Summary line emitted as a single warning so it shows up in the
         // standard warning stream.
         if analysis.total_sccs > 0 {
-            let span = self.source.items.first()
+            let span = self
+                .source
+                .items
+                .first()
                 .map(|it| it.span())
                 .unwrap_or(Span { start: 0, end: 0 });
             let summary = format!(
@@ -260,36 +281,59 @@ impl<'a> TypeChecker<'a> {
         let mut kind_of: std::collections::HashMap<String, &'static str> =
             std::collections::HashMap::new();
         for p in &m.ports {
-            let k = if p.reg_info.is_some() { "port_reg" }
-                    else if p.direction == Direction::In { "input_port" }
-                    else { "comb_port" };
+            let k = if p.reg_info.is_some() {
+                "port_reg"
+            } else if p.direction == Direction::In {
+                "input_port"
+            } else {
+                "comb_port"
+            };
             kind_of.insert(p.name.name.clone(), k);
         }
         for item in &m.body {
             match item {
-                ModuleBodyItem::RegDecl(r)     => { kind_of.insert(r.name.name.clone(), "reg"); }
-                ModuleBodyItem::PipeRegDecl(p) => { kind_of.insert(p.name.name.clone(), "pipe_reg"); }
-                ModuleBodyItem::WireDecl(w)    => { kind_of.insert(w.name.name.clone(), "wire"); }
-                ModuleBodyItem::LetBinding(l)  => { kind_of.insert(l.name.name.clone(), "let"); }
-                ModuleBodyItem::Inst(i)        => { kind_of.insert(i.name.name.clone(), "inst_name"); }
+                ModuleBodyItem::RegDecl(r) => {
+                    kind_of.insert(r.name.name.clone(), "reg");
+                }
+                ModuleBodyItem::PipeRegDecl(p) => {
+                    kind_of.insert(p.name.name.clone(), "pipe_reg");
+                }
+                ModuleBodyItem::WireDecl(w) => {
+                    kind_of.insert(w.name.name.clone(), "wire");
+                }
+                ModuleBodyItem::LetBinding(l) => {
+                    kind_of.insert(l.name.name.clone(), "let");
+                }
+                ModuleBodyItem::Inst(i) => {
+                    kind_of.insert(i.name.name.clone(), "inst_name");
+                }
                 _ => {}
             }
         }
 
         for item in &m.body {
-            let inst = match item { ModuleBodyItem::Inst(i) => i, _ => continue };
+            let inst = match item {
+                ModuleBodyItem::Inst(i) => i,
+                _ => continue,
+            };
             // Resolve the target — only regfile constructs matter.
             let target = self.source.items.iter().find_map(|it| match it {
-                Item::Regfile(rf) if rf.name.name == inst.module_name.name => Some((rf.kind, rf.flops)),
+                Item::Regfile(rf) if rf.name.name == inst.module_name.name => {
+                    Some((rf.kind, rf.flops))
+                }
                 _ => None,
             });
-            let Some((crate::ast::RegfileKind::Latch, flops)) = target else { continue };
+            let Some((crate::ast::RegfileKind::Latch, flops)) = target else {
+                continue;
+            };
             // `flops: internal` means the regfile auto-emits its own wdata_q /
             // waddr_q sample flops + per-row ICG, so the caller is allowed to
             // drive write pins combinationally — skip the static flop-source
             // check entirely. (`flops: external` is the default; caller must
             // pre-flop, which is the property this check enforces.)
-            if matches!(flops, crate::ast::RegfileFlops::Internal) { continue; }
+            if matches!(flops, crate::ast::RegfileFlops::Internal) {
+                continue;
+            }
 
             for c in &inst.connections {
                 // Latch-RF write-port pins follow the "<pfx>_addr" / "<pfx>_addr"
@@ -299,8 +343,12 @@ impl<'a> TypeChecker<'a> {
                 let pname = &c.port_name.name;
                 let is_addr = pname.ends_with("_addr") || pname.ends_with("_waddr");
                 let is_data = pname.ends_with("_data") || pname.ends_with("_wdata");
-                if !(is_addr || is_data) { continue; }
-                if c.direction != ConnectDir::Input { continue; }
+                if !(is_addr || is_data) {
+                    continue;
+                }
+                if c.direction != ConnectDir::Input {
+                    continue;
+                }
 
                 // Walk the signal expression: accept Ident, Member, Index by
                 // const ident; reject anything else (Binary / Unary / arbitrary
@@ -312,8 +360,8 @@ impl<'a> TypeChecker<'a> {
                 };
                 let pin_label = if is_addr { "addr" } else { "data" };
                 match what {
-                    Some("reg") | Some("port_reg") | Some("pipe_reg")
-                    | Some("input_port") | Some("inst_name") | Some("inst_output") => {
+                    Some("reg") | Some("port_reg") | Some("pipe_reg") | Some("input_port")
+                    | Some("inst_name") | Some("inst_output") => {
                         // OK — register-typed source (or boundary trust).
                     }
                     Some("wire") | Some("let") => {
@@ -357,15 +405,15 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn check_const_div_zero(&mut self) {
         fn params_of(item: &Item) -> &[ParamDecl] {
             match item {
-                Item::Module(m)       => &m.params,
-                Item::Fsm(f)          => &f.params,
-                Item::Fifo(f)         => &f.params,
-                Item::Ram(r)          => &r.params,
-                Item::Cam(c)          => &c.params,
-                Item::Counter(c)      => &c.params,
-                Item::Arbiter(a)      => &a.params,
-                Item::Regfile(r)      => &r.params,
-                Item::Pipeline(p)     => &p.params,
+                Item::Module(m) => &m.params,
+                Item::Fsm(f) => &f.params,
+                Item::Fifo(f) => &f.params,
+                Item::Ram(r) => &r.params,
+                Item::Cam(c) => &c.params,
+                Item::Counter(c) => &c.params,
+                Item::Arbiter(a) => &a.params,
+                Item::Regfile(r) => &r.params,
+                Item::Pipeline(p) => &p.params,
                 Item::Synchronizer(s) => &s.params,
                 _ => &[],
             }
@@ -394,13 +442,19 @@ impl<'a> TypeChecker<'a> {
         }
         for sp in report_sites {
             self.errors.push(CompileError::General {
-                message: "divide by zero in constant expression: divisor evaluates to 0".to_string(),
+                message: "divide by zero in constant expression: divisor evaluates to 0"
+                    .to_string(),
                 span: span_to_source_span(sp),
             });
         }
     }
 
-    fn scan_expr_for_div_zero(&self, e: &Expr, local_types: &HashMap<String, Ty>, out: &mut Vec<Span>) {
+    fn scan_expr_for_div_zero(
+        &self,
+        e: &Expr,
+        local_types: &HashMap<String, Ty>,
+        out: &mut Vec<Span>,
+    ) {
         match &e.kind {
             ExprKind::Binary(op, lhs, rhs) => {
                 self.scan_expr_for_div_zero(lhs, local_types, out);
@@ -431,14 +485,20 @@ impl<'a> TypeChecker<'a> {
             }
             ExprKind::MethodCall(base, _, args) => {
                 self.scan_expr_for_div_zero(base, local_types, out);
-                for a in args { self.scan_expr_for_div_zero(a, local_types, out); }
+                for a in args {
+                    self.scan_expr_for_div_zero(a, local_types, out);
+                }
             }
             ExprKind::FunctionCall(_, args) => {
-                for a in args { self.scan_expr_for_div_zero(a, local_types, out); }
+                for a in args {
+                    self.scan_expr_for_div_zero(a, local_types, out);
+                }
             }
             ExprKind::Clog2(a) => self.scan_expr_for_div_zero(a, local_types, out),
             ExprKind::Concat(parts) => {
-                for p in parts { self.scan_expr_for_div_zero(p, local_types, out); }
+                for p in parts {
+                    self.scan_expr_for_div_zero(p, local_types, out);
+                }
             }
             ExprKind::FieldAccess(base, _) => self.scan_expr_for_div_zero(base, local_types, out),
             _ => {}
@@ -517,10 +577,16 @@ impl<'a> TypeChecker<'a> {
         }
         for item in &m.body {
             match item {
-                ModuleBodyItem::RegDecl(r)    => float_decls.push((&r.ty, r.name.span, r.name.name.clone())),
-                ModuleBodyItem::WireDecl(w)   => float_decls.push((&w.ty, w.name.span, w.name.name.clone())),
+                ModuleBodyItem::RegDecl(r) => {
+                    float_decls.push((&r.ty, r.name.span, r.name.name.clone()))
+                }
+                ModuleBodyItem::WireDecl(w) => {
+                    float_decls.push((&w.ty, w.name.span, w.name.name.clone()))
+                }
                 ModuleBodyItem::LetBinding(l) => {
-                    if let Some(t) = l.ty.as_ref() { float_decls.push((t, l.name.span, l.name.name.clone())); }
+                    if let Some(t) = l.ty.as_ref() {
+                        float_decls.push((t, l.name.span, l.name.name.clone()));
+                    }
                 }
                 _ => {}
             }
@@ -546,8 +612,20 @@ impl<'a> TypeChecker<'a> {
                         RegReset::None => None,
                     };
                     if let Some(v) = val {
-                        if matches!(&v.kind, ExprKind::Literal(LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_) | LitKind::Sized(_, _))) {
-                            let tn = if matches!(r.ty, TypeExpr::FP32) { "FP32" } else { "BF16" };
+                        if matches!(
+                            &v.kind,
+                            ExprKind::Literal(
+                                LitKind::Dec(_)
+                                    | LitKind::Hex(_)
+                                    | LitKind::Bin(_)
+                                    | LitKind::Sized(_, _)
+                            )
+                        ) {
+                            let tn = if matches!(r.ty, TypeExpr::FP32) {
+                                "FP32"
+                            } else {
+                                "BF16"
+                            };
                             self.errors.push(CompileError::general(
                                 &format!("float `reg {}: {tn}` reset value must be a float literal (e.g. `=> 0.0`), not an integer literal", r.name.name),
                                 v.span,
@@ -562,11 +640,24 @@ impl<'a> TypeChecker<'a> {
         let mut driven: HashSet<String> = HashSet::new();
 
         // Collect reg names for comb target validation (includes port reg ports)
-        let reg_names: HashSet<String> = m.body.iter().filter_map(|item| {
-            if let ModuleBodyItem::RegDecl(r) = item { Some(r.name.name.clone()) } else { None }
-        }).chain(m.ports.iter().filter_map(|p| {
-            if p.reg_info.is_some() { Some(p.name.name.clone()) } else { None }
-        })).collect();
+        let reg_names: HashSet<String> = m
+            .body
+            .iter()
+            .filter_map(|item| {
+                if let ModuleBodyItem::RegDecl(r) = item {
+                    Some(r.name.name.clone())
+                } else {
+                    None
+                }
+            })
+            .chain(m.ports.iter().filter_map(|p| {
+                if p.reg_info.is_some() {
+                    Some(p.name.name.clone())
+                } else {
+                    None
+                }
+            }))
+            .collect();
 
         // Validate `guard <sig>` annotations: signal must exist in scope and be Bool.
         self.check_guards(m);
@@ -592,7 +683,9 @@ impl<'a> TypeChecker<'a> {
             if p.bus_info.is_some() {
                 // Bus ports: validate bus exists, register as a special type
                 if let Some(ref bi) = p.bus_info {
-                    if let Some((crate::resolve::Symbol::Bus(_), _)) = self.symbols.globals.get(&bi.bus_name.name) {
+                    if let Some((crate::resolve::Symbol::Bus(_), _)) =
+                        self.symbols.globals.get(&bi.bus_name.name)
+                    {
                         local_types.insert(p.name.name.clone(), Ty::Bus(bi.bus_name.name.clone()));
                     } else {
                         self.errors.push(CompileError::general(
@@ -642,10 +735,11 @@ impl<'a> TypeChecker<'a> {
                                 self.symbols.globals.get(sname)
                             {
                                 for bind in &l.destructure_fields {
-                                    if let Some((_, fty)) = info.fields.iter()
-                                        .find(|(fname, _)| fname == &bind.name)
+                                    if let Some((_, fty)) =
+                                        info.fields.iter().find(|(fname, _)| fname == &bind.name)
                                     {
-                                        let bty = self.resolve_type_expr(fty, &m.name.name, &local_types);
+                                        let bty =
+                                            self.resolve_type_expr(fty, &m.name.name, &local_types);
                                         local_types.insert(bind.name.clone(), bty);
                                     }
                                 }
@@ -730,7 +824,13 @@ impl<'a> TypeChecker<'a> {
                 }
                 ModuleBodyItem::CombBlock(cb) => {
                     for stmt in &cb.stmts {
-                        self.check_comb_stmt(stmt, &m.name.name, &local_types, &mut driven, &reg_names);
+                        self.check_comb_stmt(
+                            stmt,
+                            &m.name.name,
+                            &local_types,
+                            &mut driven,
+                            &reg_names,
+                        );
                     }
                     self.check_comb_latch(&cb.stmts, cb.span);
                 }
@@ -747,7 +847,10 @@ impl<'a> TypeChecker<'a> {
                         let Ty::Struct(sname) = &rhs_ty else {
                             if rhs_ty != Ty::Error {
                                 self.errors.push(CompileError::general(
-                                    &format!("destructuring `let` requires a struct-typed RHS, got `{}`", rhs_ty.display()),
+                                    &format!(
+                                        "destructuring `let` requires a struct-typed RHS, got `{}`",
+                                        rhs_ty.display()
+                                    ),
                                     l.value.span,
                                 ));
                             }
@@ -787,7 +890,10 @@ impl<'a> TypeChecker<'a> {
                             let field = info.fields.iter().find(|(fname, _)| fname == &bind.name);
                             if field.is_none() {
                                 self.errors.push(CompileError::general(
-                                    &format!("struct `{}` has no field named `{}`", sname, bind.name),
+                                    &format!(
+                                        "struct `{}` has no field named `{}`",
+                                        sname, bind.name
+                                    ),
                                     bind.span,
                                 ));
                                 continue;
@@ -811,9 +917,16 @@ impl<'a> TypeChecker<'a> {
                         // `let x = expr;` without type annotation — assign to existing port/wire
                         let name = &l.name.name;
                         // Check if it's an input port
-                        let is_input_port = m.ports.iter().any(|p| &p.name.name == name && p.direction == Direction::In);
+                        let is_input_port = m
+                            .ports
+                            .iter()
+                            .any(|p| &p.name.name == name && p.direction == Direction::In);
                         // Check if it's an output port (non-reg)
-                        let is_output_port = m.ports.iter().any(|p| &p.name.name == name && p.direction == Direction::Out && p.reg_info.is_none());
+                        let is_output_port = m.ports.iter().any(|p| {
+                            &p.name.name == name
+                                && p.direction == Direction::Out
+                                && p.reg_info.is_none()
+                        });
                         // Check if it's a reg (declared reg or port-reg)
                         let is_reg = reg_names.contains(name);
 
@@ -829,9 +942,12 @@ impl<'a> TypeChecker<'a> {
                             ));
                         } else if is_output_port {
                             // Comb assignment to output port
-                            let rhs_ty = self.resolve_expr_type(&l.value, &m.name.name, &local_types);
+                            let rhs_ty =
+                                self.resolve_expr_type(&l.value, &m.name.name, &local_types);
                             if let Some(port_ty) = local_types.get(name).cloned() {
-                                if rhs_ty != Ty::Error && rhs_ty != Ty::Todo && port_ty != rhs_ty
+                                if rhs_ty != Ty::Error
+                                    && rhs_ty != Ty::Todo
+                                    && port_ty != rhs_ty
                                     && !types_compatible(&port_ty, &rhs_ty)
                                 {
                                     self.errors.push(CompileError::type_mismatch(
@@ -851,9 +967,12 @@ impl<'a> TypeChecker<'a> {
                             }
                         } else if local_types.contains_key(name) {
                             // Wire or previously declared let
-                            let rhs_ty = self.resolve_expr_type(&l.value, &m.name.name, &local_types);
+                            let rhs_ty =
+                                self.resolve_expr_type(&l.value, &m.name.name, &local_types);
                             if let Some(wire_ty) = local_types.get(name).cloned() {
-                                if rhs_ty != Ty::Error && rhs_ty != Ty::Todo && wire_ty != rhs_ty
+                                if rhs_ty != Ty::Error
+                                    && rhs_ty != Ty::Todo
+                                    && wire_ty != rhs_ty
                                     && !types_compatible(&wire_ty, &rhs_ty)
                                 {
                                     self.errors.push(CompileError::type_mismatch(
@@ -881,8 +1000,12 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         let ty = self.resolve_expr_type(&l.value, &m.name.name, &local_types);
                         if let Some(declared_ty) = &l.ty {
-                            let expected = self.resolve_type_expr(declared_ty, &m.name.name, &local_types);
-                            if expected != Ty::Error && ty != Ty::Error && ty != Ty::Todo && expected != ty
+                            let expected =
+                                self.resolve_type_expr(declared_ty, &m.name.name, &local_types);
+                            if expected != Ty::Error
+                                && ty != Ty::Error
+                                && ty != Ty::Todo
+                                && expected != ty
                                 && !types_compatible(&expected, &ty)
                             {
                                 self.errors.push(CompileError::type_mismatch(
@@ -926,12 +1049,18 @@ impl<'a> TypeChecker<'a> {
                     }
                     if !local_types.contains_key(&p.source.name) {
                         self.errors.push(CompileError::general(
-                            &format!("pipe_reg '{}': source signal '{}' not found", p.name.name, p.source.name),
+                            &format!(
+                                "pipe_reg '{}': source signal '{}' not found",
+                                p.name.name, p.source.name
+                            ),
                             p.source.span,
                         ));
                     }
                     // Update type from pre-pass placeholder (Ty::Error) to actual source type
-                    let ty = local_types.get(&p.source.name).cloned().unwrap_or(Ty::Error);
+                    let ty = local_types
+                        .get(&p.source.name)
+                        .cloned()
+                        .unwrap_or(Ty::Error);
                     local_types.insert(p.name.name.clone(), ty);
                     driven.insert(p.name.name.clone());
                 }
@@ -957,10 +1086,12 @@ impl<'a> TypeChecker<'a> {
                             // check_inst_decl's static-inst handling.
                             let inst_module_ports: Option<&[crate::ast::PortDecl]> =
                                 self.source.items.iter().find_map(|item| match item {
-                                    Item::Module(m2) if m2.name.name == inst.module_name.name
-                                        => Some(m2.ports.as_slice()),
-                                    Item::Fsm(f2) if f2.name.name == inst.module_name.name
-                                        => Some(f2.ports.as_slice()),
+                                    Item::Module(m2) if m2.name.name == inst.module_name.name => {
+                                        Some(m2.ports.as_slice())
+                                    }
+                                    Item::Fsm(f2) if f2.name.name == inst.module_name.name => {
+                                        Some(f2.ports.as_slice())
+                                    }
                                     _ => None,
                                 });
                             for conn in &inst.connections {
@@ -986,7 +1117,8 @@ impl<'a> TypeChecker<'a> {
                                     // a loop variable, conservatively mark ALL N
                                     // (each sibling unroll iteration fills one).
                                     let inst_bus_info = inst_module_ports.and_then(|ports| {
-                                        ports.iter()
+                                        ports
+                                            .iter()
                                             .find(|p| p.name.name == conn.port_name.name)
                                             .and_then(|p| p.bus_info.as_ref())
                                     });
@@ -1003,10 +1135,18 @@ impl<'a> TypeChecker<'a> {
                                                 ExprKind::Ident(n) => vec![n.clone()],
                                                 ExprKind::Index(arr, idx) => {
                                                     if let ExprKind::Ident(arr_name) = &arr.kind {
-                                                        if let ExprKind::Literal(LitKind::Dec(i)) = &idx.kind {
+                                                        if let ExprKind::Literal(LitKind::Dec(i)) =
+                                                            &idx.kind
+                                                        {
                                                             vec![format!("{}_{}", arr_name, i)]
-                                                        } else if let Some(&n) = self.vec_of_bus_ports.get(arr_name) {
-                                                            (0..n).map(|i| format!("{}_{}", arr_name, i)).collect()
+                                                        } else if let Some(&n) =
+                                                            self.vec_of_bus_ports.get(arr_name)
+                                                        {
+                                                            (0..n)
+                                                                .map(|i| {
+                                                                    format!("{}_{}", arr_name, i)
+                                                                })
+                                                                .collect()
                                                         } else {
                                                             Vec::new()
                                                         }
@@ -1023,7 +1163,10 @@ impl<'a> TypeChecker<'a> {
                                                         BusPerspective::Target => (*sdir).flip(),
                                                     };
                                                     if inst_dir == Direction::Out {
-                                                        driven.insert(format!("{}_{}", prefix, sname));
+                                                        driven.insert(format!(
+                                                            "{}_{}",
+                                                            prefix, sname
+                                                        ));
                                                     }
                                                 }
                                             }
@@ -1042,28 +1185,38 @@ impl<'a> TypeChecker<'a> {
                     // bodies is light in Phase 1 (the spike emitter rejects
                     // unsupported shapes itself).
                     let vob_ports = self.vec_of_bus_ports.clone();
-                    fn mark_target(target: &crate::ast::Expr, driven: &mut HashSet<String>,
-                                   vob_ports: &HashMap<String, u32>) {
+                    fn mark_target(
+                        target: &crate::ast::Expr,
+                        driven: &mut HashSet<String>,
+                        vob_ports: &HashMap<String, u32>,
+                    ) {
                         // Bare Ident, `bus.sig`, `arr[i].sig`, `arr[i]` all flow
                         // through expr_flat_name_tc / expr_root_name_tc the same
                         // way they do for comb-block targets — ensures bus-port
                         // outputs assigned inside thread bodies satisfy the
                         // driver-completeness check.
                         let root = TypeChecker::expr_root_name_tc(target);
-                        if !root.is_empty() { driven.insert(root.clone()); }
+                        if !root.is_empty() {
+                            driven.insert(root.clone());
+                        }
                         let flat = TypeChecker::expr_flat_name_tc(target);
-                        if !flat.is_empty() && flat != root { driven.insert(flat.clone()); }
+                        if !flat.is_empty() && flat != root {
+                            driven.insert(flat.clone());
+                        }
                         // Indexed Vec-of-bus target with a non-literal idx —
                         // mirror the comb-block handling: mark every flat copy.
                         if let crate::ast::ExprKind::FieldAccess(base, field) = &target.kind {
                             if let crate::ast::ExprKind::Index(arr, idx) = &base.kind {
                                 if let crate::ast::ExprKind::Ident(arr_name) = &arr.kind {
-                                    let is_lit = matches!(&idx.kind,
-                                        crate::ast::ExprKind::Literal(_));
+                                    let is_lit =
+                                        matches!(&idx.kind, crate::ast::ExprKind::Literal(_));
                                     if !is_lit {
                                         if let Some(&n) = vob_ports.get(arr_name) {
                                             for i in 0..n {
-                                                driven.insert(format!("{}_{}_{}", arr_name, i, field.name));
+                                                driven.insert(format!(
+                                                    "{}_{}_{}",
+                                                    arr_name, i, field.name
+                                                ));
                                             }
                                         }
                                     }
@@ -1071,23 +1224,36 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     }
-                    fn walk_thread(stmts: &[crate::ast::ThreadStmt], driven: &mut HashSet<String>,
-                                   vob_ports: &HashMap<String, u32>) {
+                    fn walk_thread(
+                        stmts: &[crate::ast::ThreadStmt],
+                        driven: &mut HashSet<String>,
+                        vob_ports: &HashMap<String, u32>,
+                    ) {
                         use crate::ast::ThreadStmt;
                         for s in stmts {
                             match s {
-                                ThreadStmt::CombAssign(a) => mark_target(&a.target, driven, vob_ports),
-                                ThreadStmt::SeqAssign(a)  => mark_target(&a.target, driven, vob_ports),
-                                ThreadStmt::ForkTlmAssign(a) => mark_target(&a.target, driven, vob_ports),
+                                ThreadStmt::CombAssign(a) => {
+                                    mark_target(&a.target, driven, vob_ports)
+                                }
+                                ThreadStmt::SeqAssign(a) => {
+                                    mark_target(&a.target, driven, vob_ports)
+                                }
+                                ThreadStmt::ForkTlmAssign(a) => {
+                                    mark_target(&a.target, driven, vob_ports)
+                                }
                                 ThreadStmt::IfElse(ie) => {
                                     walk_thread(&ie.then_stmts, driven, vob_ports);
                                     walk_thread(&ie.else_stmts, driven, vob_ports);
                                 }
                                 ThreadStmt::For { body, .. }
                                 | ThreadStmt::Lock { body, .. }
-                                | ThreadStmt::DoUntil { body, .. } => walk_thread(body, driven, vob_ports),
+                                | ThreadStmt::DoUntil { body, .. } => {
+                                    walk_thread(body, driven, vob_ports)
+                                }
                                 ThreadStmt::ForkJoin(branches, _) => {
-                                    for b in branches { walk_thread(b, driven, vob_ports); }
+                                    for b in branches {
+                                        walk_thread(b, driven, vob_ports);
+                                    }
                                 }
                                 _ => {}
                             }
@@ -1148,7 +1314,8 @@ impl<'a> TypeChecker<'a> {
 
         // Multi-driver check (SFG Check 1, closes #375)
         let sfg_drivers = crate::signal_flow::collect_module_drivers(m, self.source);
-        self.errors.extend(crate::signal_flow::check_multi_driver(m, &sfg_drivers));
+        self.errors
+            .extend(crate::signal_flow::check_multi_driver(m, &sfg_drivers));
 
         // Check all output ports are driven
         for p in &m.ports {
@@ -1156,14 +1323,22 @@ impl<'a> TypeChecker<'a> {
                 // Bus port: check each output signal is driven (flattened name: port_signal).
                 // For Vec<Bus,N> ports, check each of the N copies independently.
                 let bus_name = &bi.bus_name.name;
-                if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
+                if let Some((crate::resolve::Symbol::Bus(info), _)) =
+                    self.symbols.globals.get(bus_name)
+                {
                     let mut pm = info.default_param_map();
-                    for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
+                    for pa in &bi.params {
+                        pm.insert(pa.name.name.clone(), &pa.value);
+                    }
                     let eff = info.effective_signals(&pm);
                     let prefixes: Vec<String> = match bi.count.as_ref() {
                         None => vec![p.name.name.clone()],
                         Some(_) => {
-                            let n = self.vec_of_bus_ports.get(&p.name.name).copied().unwrap_or(0);
+                            let n = self
+                                .vec_of_bus_ports
+                                .get(&p.name.name)
+                                .copied()
+                                .unwrap_or(0);
                             (0..n).map(|i| format!("{}_{}", p.name.name, i)).collect()
                         }
                     };
@@ -1195,10 +1370,16 @@ impl<'a> TypeChecker<'a> {
 
         // ── CDC check: detect cross-domain register reads ─────────────────────
         // Build clock port → domain name map
-        let clk_domain: HashMap<String, String> = m.ports.iter()
-            .filter_map(|p| if let TypeExpr::Clock(domain) = &p.ty {
-                Some((p.name.name.clone(), domain.name.clone()))
-            } else { None })
+        let clk_domain: HashMap<String, String> = m
+            .ports
+            .iter()
+            .filter_map(|p| {
+                if let TypeExpr::Clock(domain) = &p.ty {
+                    Some((p.name.name.clone(), domain.name.clone()))
+                } else {
+                    None
+                }
+            })
             .collect();
 
         // Phase 1 RDC + the surrounding CDC pass share this gate.
@@ -1260,7 +1441,9 @@ impl<'a> TypeChecker<'a> {
                                 // Check if any seq block in a different domain reads this target
                                 for item2 in &m.body {
                                     if let ModuleBodyItem::RegBlock(rb) = item2 {
-                                        if let Some(consumer_domain) = clk_domain.get(&rb.clock.name) {
+                                        if let Some(consumer_domain) =
+                                            clk_domain.get(&rb.clock.name)
+                                        {
                                             let mut seq_reads = HashSet::new();
                                             Self::collect_stmt_reads(&rb.stmts, &mut seq_reads);
                                             if seq_reads.contains(target) {
@@ -1306,18 +1489,30 @@ impl<'a> TypeChecker<'a> {
             // makes async cross-domain reset dangerous doesn't apply. If
             // false-negatives become an issue, broaden by removing the
             // is-async filter below.
-            let async_reset_ports: HashSet<String> = m.ports.iter()
-                .filter_map(|p| if let TypeExpr::Reset(ResetKind::Async, _) = &p.ty {
-                    Some(p.name.name.clone())
-                } else { None })
+            let async_reset_ports: HashSet<String> = m
+                .ports
+                .iter()
+                .filter_map(|p| {
+                    if let TypeExpr::Reset(ResetKind::Async, _) = &p.ty {
+                        Some(p.name.name.clone())
+                    } else {
+                        None
+                    }
+                })
                 .collect();
             // Tracks (reset_signal_name → set of (clock_domain, conflict span)).
             // Span carries the first reg-decl that introduced each domain so
             // the diagnostic can point at the offending site. Both inline
             // `reg` decls and `port reg` decls participate.
-            let mut reset_users: HashMap<String, Vec<(String, crate::lexer::Span)>> = HashMap::new();
-            let record_reset = |sig: &str, reg_name: &str, span: crate::lexer::Span,
-                                    reset_users: &mut HashMap<String, Vec<(String, crate::lexer::Span)>>| {
+            let mut reset_users: HashMap<String, Vec<(String, crate::lexer::Span)>> =
+                HashMap::new();
+            let record_reset = |sig: &str,
+                                reg_name: &str,
+                                span: crate::lexer::Span,
+                                reset_users: &mut HashMap<
+                String,
+                Vec<(String, crate::lexer::Span)>,
+            >| {
                 if let Some(domain) = reg_domain.get(reg_name) {
                     let entry = reset_users.entry(sig.to_string()).or_default();
                     if !entry.iter().any(|(d, _)| d == domain) {
@@ -1332,7 +1527,9 @@ impl<'a> TypeChecker<'a> {
                         RegReset::Explicit(s, _, _, _) => s.name.clone(),
                         RegReset::Inherit(s, _) => s.name.clone(),
                     };
-                    if !async_reset_ports.contains(&sig_name) { continue; }
+                    if !async_reset_ports.contains(&sig_name) {
+                        continue;
+                    }
                     record_reset(&sig_name, &rd.name.name, rd.name.span, &mut reset_users);
                 }
             }
@@ -1343,7 +1540,9 @@ impl<'a> TypeChecker<'a> {
                         RegReset::Explicit(s, _, _, _) => s.name.clone(),
                         RegReset::Inherit(s, _) => s.name.clone(),
                     };
-                    if !async_reset_ports.contains(&sig_name) { continue; }
+                    if !async_reset_ports.contains(&sig_name) {
+                        continue;
+                    }
                     record_reset(&sig_name, &p.name.name, p.name.span, &mut reset_users);
                 }
             }
@@ -1449,225 +1648,282 @@ impl<'a> TypeChecker<'a> {
     /// Extracted from `check_module`'s main pass for readability — the
     /// original arm was 122 lines.
     pub(crate) fn check_inst_decl(&mut self, inst: &InstDecl, driven: &mut HashSet<String>) {
-            self.check_snake_case(&inst.name);
-            // Find the target construct's bus port info for whole-bus expansion
-            let target_bus_ports: Vec<(String, String)> = self.source.items.iter()
-                .find_map(|item| match item {
-                    Item::Module(m2) if m2.name.name == inst.module_name.name => Some(m2.ports.as_slice()),
-                    Item::Fsm(f2) if f2.name.name == inst.module_name.name => Some(f2.ports.as_slice()),
-                    _ => None,
-                })
-                .map(|ports| ports.iter()
-                    .filter_map(|p| p.bus_info.as_ref().map(|bi| (p.name.name.clone(), bi.bus_name.name.clone())))
-                    .collect())
-                .unwrap_or_default();
+        self.check_snake_case(&inst.name);
+        // Find the target construct's bus port info for whole-bus expansion
+        let target_bus_ports: Vec<(String, String)> = self
+            .source
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Module(m2) if m2.name.name == inst.module_name.name => {
+                    Some(m2.ports.as_slice())
+                }
+                Item::Fsm(f2) if f2.name.name == inst.module_name.name => Some(f2.ports.as_slice()),
+                _ => None,
+            })
+            .map(|ports| {
+                ports
+                    .iter()
+                    .filter_map(|p| {
+                        p.bus_info
+                            .as_ref()
+                            .map(|bi| (p.name.name.clone(), bi.bus_name.name.clone()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
-            // Check for unconnected ports on the instantiated construct.
-            //
-            // Bus ports can be connected in one of two shapes:
-            //   (a) whole-bus: `p -> tb;` — connection.port_name == "p"
-            //   (b) per-field: `p.cmd_valid <- x; p.cmd_addr <- y;` —
-            //       the parser concatenates base.field, producing
-            //       port_name == "p_cmd_valid", "p_cmd_addr", ...
-            // For the per-field shape we consider the bus port connected
-            // if any connection's port_name starts with `<bus_port>_`.
-            {
-                let child_ports: Option<&[PortDecl]> = self.source.items.iter()
-                    .find_map(|item| match item {
-                        Item::Module(m2) if m2.name.name == inst.module_name.name => Some(m2.ports.as_slice()),
-                        Item::Fsm(f2)    if f2.name.name == inst.module_name.name => Some(f2.ports.as_slice()),
-                        Item::Pipeline(p2) if p2.name.name == inst.module_name.name => Some(p2.ports.as_slice()),
-                        _ => None,
-                    });
-                if let Some(ports) = child_ports {
-                    let connected: std::collections::HashSet<&str> = inst.connections.iter()
-                        .map(|c| c.port_name.name.as_str())
-                        .collect();
-                    for port in ports {
-                        // Skip Clock and Reset ports — they may be handled via domain defaults
-                        let is_infra = matches!(&port.ty, TypeExpr::Clock(_) | TypeExpr::Reset(_, _));
-                        if is_infra { continue; }
-                        let name = port.name.name.as_str();
-                        let is_connected = if port.bus_info.is_some() {
-                            // Accept whole-bus OR per-field bindings.
-                            let prefix = format!("{}_", name);
-                            connected.contains(name)
-                                || connected.iter().any(|c| c.starts_with(&prefix))
+        // Check for unconnected ports on the instantiated construct.
+        //
+        // Bus ports can be connected in one of two shapes:
+        //   (a) whole-bus: `p -> tb;` — connection.port_name == "p"
+        //   (b) per-field: `p.cmd_valid <- x; p.cmd_addr <- y;` —
+        //       the parser concatenates base.field, producing
+        //       port_name == "p_cmd_valid", "p_cmd_addr", ...
+        // For the per-field shape we consider the bus port connected
+        // if any connection's port_name starts with `<bus_port>_`.
+        {
+            let child_ports: Option<&[PortDecl]> =
+                self.source.items.iter().find_map(|item| match item {
+                    Item::Module(m2) if m2.name.name == inst.module_name.name => {
+                        Some(m2.ports.as_slice())
+                    }
+                    Item::Fsm(f2) if f2.name.name == inst.module_name.name => {
+                        Some(f2.ports.as_slice())
+                    }
+                    Item::Pipeline(p2) if p2.name.name == inst.module_name.name => {
+                        Some(p2.ports.as_slice())
+                    }
+                    _ => None,
+                });
+            if let Some(ports) = child_ports {
+                let connected: std::collections::HashSet<&str> = inst
+                    .connections
+                    .iter()
+                    .map(|c| c.port_name.name.as_str())
+                    .collect();
+                for port in ports {
+                    // Skip Clock and Reset ports — they may be handled via domain defaults
+                    let is_infra = matches!(&port.ty, TypeExpr::Clock(_) | TypeExpr::Reset(_, _));
+                    if is_infra {
+                        continue;
+                    }
+                    let name = port.name.name.as_str();
+                    let is_connected = if port.bus_info.is_some() {
+                        // Accept whole-bus OR per-field bindings.
+                        let prefix = format!("{}_", name);
+                        connected.contains(name) || connected.iter().any(|c| c.starts_with(&prefix))
+                    } else {
+                        connected.contains(name)
+                    };
+                    if !is_connected {
+                        if port.direction == Direction::In {
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "input port `{}` of `{}` is not connected in inst `{}`",
+                                    name, inst.module_name.name, inst.name.name
+                                ),
+                                inst.span,
+                            ));
                         } else {
-                            connected.contains(name)
-                        };
-                        if !is_connected {
-                            if port.direction == Direction::In {
-                                self.errors.push(CompileError::general(
-                                    &format!(
-                                        "input port `{}` of `{}` is not connected in inst `{}`",
-                                        name, inst.module_name.name, inst.name.name
-                                    ),
-                                    inst.span,
-                                ));
-                            } else {
-                                self.warnings.push(CompileWarning {
-                                    message: format!(
-                                        "output port `{}` of `{}` is not connected in inst `{}`",
-                                        name, inst.module_name.name, inst.name.name
-                                    ),
-                                    span: inst.span,
-                                });
+                            self.warnings.push(CompileWarning {
+                                message: format!(
+                                    "output port `{}` of `{}` is not connected in inst `{}`",
+                                    name, inst.module_name.name, inst.name.name
+                                ),
+                                span: inst.span,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Base names of the child's Vec-of-bus ports (`port mm: ...
+        // Vec<Bus, N>`). The parser flattens a per-element connection
+        // `mm[k] <- ...` into port_name `mm_<k>`, so to credit the right
+        // parent driver below we must recognise `mm_<k>` as element k of
+        // the child's `mm` port. We only need to know which child ports are
+        // Vec-of-bus (count present) — not the concrete N — so this avoids
+        // resolving a possibly param-dependent count here.
+        let child_vob_bases: Vec<String> = self
+            .source
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Module(m2) if m2.name.name == inst.module_name.name => {
+                    Some(m2.ports.as_slice())
+                }
+                Item::Fsm(f2) if f2.name.name == inst.module_name.name => Some(f2.ports.as_slice()),
+                Item::Pipeline(p2) if p2.name.name == inst.module_name.name => {
+                    Some(p2.ports.as_slice())
+                }
+                _ => None,
+            })
+            .map(|ports| {
+                ports
+                    .iter()
+                    .filter(|p| p.bus_info.as_ref().map_or(false, |bi| bi.count.is_some()))
+                    .map(|p| p.name.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Mark connected output ports as driven
+        for conn in &inst.connections {
+            // Resolve the child bus port this connection targets. Whole-bus
+            // (`mm <- ...`) keeps the port name verbatim; per-element
+            // (`mm[k] <- ...`, flattened to `mm_<k>`) strips the trailing
+            // `_<idx>` back to the Vec-of-bus base `mm`.
+            let conn_port_base: String = child_vob_bases
+                .iter()
+                .find_map(|base| {
+                    let rest = conn.port_name.name.strip_prefix(&format!("{base}_"))?;
+                    rest.parse::<u32>().ok().map(|_| base.clone())
+                })
+                .unwrap_or_else(|| conn.port_name.name.clone());
+            if conn.direction == ConnectDir::Output {
+                if let ExprKind::Ident(name) = &conn.signal.kind {
+                    driven.insert(name.clone());
+                }
+                // Bus port FieldAccess: itcm.cmd_valid → driven itcm_cmd_valid
+                let flat = Self::expr_flat_name_tc(&conn.signal);
+                if !flat.is_empty() {
+                    driven.insert(flat);
+                }
+                // Packed Vec-of-bus port-element drive:
+                // `Index(Ident("<base>_<sig>"), <i>)` from the thread-wrapper
+                // emission credits the per-element flat name `<base>_<i>_<sig>`
+                // that the undriven-port check looks for. Detect when the
+                // base ident matches a `<vobport>_<sig>` pair.
+                if let ExprKind::Index(arr, idx) = &conn.signal.kind {
+                    if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) =
+                        (&arr.kind, &idx.kind)
+                    {
+                        // Try every Vec-of-bus port name as a prefix.
+                        for (vobport, _n) in self.vec_of_bus_ports.iter() {
+                            let prefix = format!("{vobport}_");
+                            if let Some(sig) = arr_name.strip_prefix(&prefix) {
+                                driven.insert(format!("{vobport}_{i}_{sig}"));
                             }
                         }
                     }
                 }
             }
-
-            // Base names of the child's Vec-of-bus ports (`port mm: ...
-            // Vec<Bus, N>`). The parser flattens a per-element connection
-            // `mm[k] <- ...` into port_name `mm_<k>`, so to credit the right
-            // parent driver below we must recognise `mm_<k>` as element k of
-            // the child's `mm` port. We only need to know which child ports are
-            // Vec-of-bus (count present) — not the concrete N — so this avoids
-            // resolving a possibly param-dependent count here.
-            let child_vob_bases: Vec<String> = self.source.items.iter()
-                .find_map(|item| match item {
-                    Item::Module(m2) if m2.name.name == inst.module_name.name => Some(m2.ports.as_slice()),
-                    Item::Fsm(f2)    if f2.name.name == inst.module_name.name => Some(f2.ports.as_slice()),
-                    Item::Pipeline(p2) if p2.name.name == inst.module_name.name => Some(p2.ports.as_slice()),
-                    _ => None,
-                })
-                .map(|ports| ports.iter()
-                    .filter(|p| p.bus_info.as_ref().map_or(false, |bi| bi.count.is_some()))
-                    .map(|p| p.name.name.clone())
-                    .collect())
-                .unwrap_or_default();
-
-            // Mark connected output ports as driven
-            for conn in &inst.connections {
-                // Resolve the child bus port this connection targets. Whole-bus
-                // (`mm <- ...`) keeps the port name verbatim; per-element
-                // (`mm[k] <- ...`, flattened to `mm_<k>`) strips the trailing
-                // `_<idx>` back to the Vec-of-bus base `mm`.
-                let conn_port_base: String = child_vob_bases.iter()
-                    .find_map(|base| {
-                        let rest = conn.port_name.name.strip_prefix(&format!("{base}_"))?;
-                        rest.parse::<u32>().ok().map(|_| base.clone())
-                    })
-                    .unwrap_or_else(|| conn.port_name.name.clone());
-                if conn.direction == ConnectDir::Output {
-                    if let ExprKind::Ident(name) = &conn.signal.kind {
-                        driven.insert(name.clone());
-                    }
-                    // Bus port FieldAccess: itcm.cmd_valid → driven itcm_cmd_valid
-                    let flat = Self::expr_flat_name_tc(&conn.signal);
-                    if !flat.is_empty() {
-                        driven.insert(flat);
-                    }
-                    // Packed Vec-of-bus port-element drive:
-                    // `Index(Ident("<base>_<sig>"), <i>)` from the thread-wrapper
-                    // emission credits the per-element flat name `<base>_<i>_<sig>`
-                    // that the undriven-port check looks for. Detect when the
-                    // base ident matches a `<vobport>_<sig>` pair.
-                    if let ExprKind::Index(arr, idx) = &conn.signal.kind {
-                        if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i)))
-                            = (&arr.kind, &idx.kind)
-                        {
-                            // Try every Vec-of-bus port name as a prefix.
-                            for (vobport, _n) in self.vec_of_bus_ports.iter() {
-                                let prefix = format!("{vobport}_");
-                                if let Some(sig) = arr_name.strip_prefix(&prefix) {
-                                    driven.insert(format!("{vobport}_{i}_{sig}"));
-                                }
+            // Whole-bus connection: axi_rd -> m_axi_mm2s expands to N signals.
+            // The inst's bus port drives/receives signals based on its perspective.
+            // We need to mark parent signals as "driven" when the inst OUTPUTS them.
+            if let Some((_, bus_name)) = target_bus_ports
+                .iter()
+                .find(|(pn, _)| *pn == conn_port_base)
+            {
+                if let Some((crate::resolve::Symbol::Bus(info), _)) =
+                    self.symbols.globals.get(bus_name)
+                {
+                    // Find the inst's bus port perspective, params, and Vec count.
+                    let inst_bus_info = self
+                        .source
+                        .items
+                        .iter()
+                        .find_map(|item| match item {
+                            Item::Module(m2) if m2.name.name == inst.module_name.name => {
+                                Some(m2.ports.as_slice())
                             }
-                        }
-                    }
-                }
-                // Whole-bus connection: axi_rd -> m_axi_mm2s expands to N signals.
-                // The inst's bus port drives/receives signals based on its perspective.
-                // We need to mark parent signals as "driven" when the inst OUTPUTS them.
-                if let Some((_, bus_name)) = target_bus_ports.iter().find(|(pn, _)| *pn == conn_port_base) {
-                    if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
-                        // Find the inst's bus port perspective, params, and Vec count.
-                        let inst_bus_info = self.source.items.iter()
-                            .find_map(|item| match item {
-                                Item::Module(m2) if m2.name.name == inst.module_name.name => Some(m2.ports.as_slice()),
-                                Item::Fsm(f2) if f2.name.name == inst.module_name.name => Some(f2.ports.as_slice()),
-                                _ => None,
-                            })
-                            .and_then(|ports| ports.iter()
+                            Item::Fsm(f2) if f2.name.name == inst.module_name.name => {
+                                Some(f2.ports.as_slice())
+                            }
+                            _ => None,
+                        })
+                        .and_then(|ports| {
+                            ports
+                                .iter()
                                 .find(|p| p.name.name == conn_port_base)
-                                .and_then(|p| p.bus_info.as_ref()));
-                        let inst_perspective = inst_bus_info.map(|bi| bi.perspective);
-                        // Inst port's Vec count (Some(N) means `port: ... Vec<Bus, N>`).
-                        let inst_vec_count: Option<u32> = inst_bus_info
-                            .and_then(|bi| bi.count.as_ref())
-                            .and_then(|ce| {
-                                let empty: HashMap<String, Ty> = HashMap::new();
-                                self.eval_const_expr(ce, &empty).map(|v| v as u32)
-                            });
+                                .and_then(|p| p.bus_info.as_ref())
+                        });
+                    let inst_perspective = inst_bus_info.map(|bi| bi.perspective);
+                    // Inst port's Vec count (Some(N) means `port: ... Vec<Bus, N>`).
+                    let inst_vec_count: Option<u32> = inst_bus_info
+                        .and_then(|bi| bi.count.as_ref())
+                        .and_then(|ce| {
+                            let empty: HashMap<String, Ty> = HashMap::new();
+                            self.eval_const_expr(ce, &empty).map(|v| v as u32)
+                        });
 
-                        // Resolve the parent-side base prefix(es):
-                        //   * `Ident("w")`           → `w`            (scalar bus wire/port)
-                        //                              or when inst port is Vec<Bus,N> and
-                        //                              `w` is also Vec<Bus,N>: expand to
-                        //                              `w_0`, `w_1`, ..., `w_{N-1}`.
-                        //   * `Index(Ident("v"), i)` → `v_<i>`        (Vec-of-bus element)
-                        let sig_bases: Vec<String> = match &conn.signal.kind {
-                            ExprKind::Ident(n) => {
-                                // Whole-Vec forwarding: child port `m: ... Vec<Bus,N>`
-                                // wired to parent ident `n` that is itself a Vec-of-Bus
-                                // port. Expand to N per-element prefixes so the
-                                // undriven-port check sees `n_0_<sig>`, `n_1_<sig>`, ...
-                                // (which is what the prefixes loop at the module-level
-                                // undriven check produces for a Vec<Bus,N> parent port).
-                                if let Some(n_count) = inst_vec_count {
-                                    if self.vec_of_bus_ports.get(n).copied() == Some(n_count) {
-                                        (0..n_count).map(|i| format!("{}_{}", n, i)).collect()
-                                    } else {
-                                        vec![n.clone()]
-                                    }
+                    // Resolve the parent-side base prefix(es):
+                    //   * `Ident("w")`           → `w`            (scalar bus wire/port)
+                    //                              or when inst port is Vec<Bus,N> and
+                    //                              `w` is also Vec<Bus,N>: expand to
+                    //                              `w_0`, `w_1`, ..., `w_{N-1}`.
+                    //   * `Index(Ident("v"), i)` → `v_<i>`        (Vec-of-bus element)
+                    let sig_bases: Vec<String> = match &conn.signal.kind {
+                        ExprKind::Ident(n) => {
+                            // Whole-Vec forwarding: child port `m: ... Vec<Bus,N>`
+                            // wired to parent ident `n` that is itself a Vec-of-Bus
+                            // port. Expand to N per-element prefixes so the
+                            // undriven-port check sees `n_0_<sig>`, `n_1_<sig>`, ...
+                            // (which is what the prefixes loop at the module-level
+                            // undriven check produces for a Vec<Bus,N> parent port).
+                            if let Some(n_count) = inst_vec_count {
+                                if self.vec_of_bus_ports.get(n).copied() == Some(n_count) {
+                                    (0..n_count).map(|i| format!("{}_{}", n, i)).collect()
                                 } else {
                                     vec![n.clone()]
                                 }
+                            } else {
+                                vec![n.clone()]
                             }
-                            ExprKind::Index(arr, idx) => {
-                                if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) = (&arr.kind, &idx.kind) {
-                                    vec![format!("{}_{}", arr_name, i)]
-                                } else { Vec::new() }
+                        }
+                        ExprKind::Index(arr, idx) => {
+                            if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) =
+                                (&arr.kind, &idx.kind)
+                            {
+                                vec![format!("{}_{}", arr_name, i)]
+                            } else {
+                                Vec::new()
                             }
-                            _ => Vec::new(),
-                        };
-                        if !sig_bases.is_empty() {
-                            let mut pm = info.default_param_map();
-                            if let Some(bi) = inst_bus_info {
-                                for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
+                        }
+                        _ => Vec::new(),
+                    };
+                    if !sig_bases.is_empty() {
+                        let mut pm = info.default_param_map();
+                        if let Some(bi) = inst_bus_info {
+                            for pa in &bi.params {
+                                pm.insert(pa.name.name.clone(), &pa.value);
                             }
-                            let eff = info.effective_signals(&pm);
-                            for sig_base in &sig_bases {
-                                for (sname, sdir, _) in &eff {
-                                    // Determine actual direction from inst's perspective
-                                    let inst_dir = match inst_perspective {
-                                        Some(BusPerspective::Initiator) => *sdir,
-                                        Some(BusPerspective::Target) => (*sdir).flip(),
-                                        None => *sdir,
-                                    };
-                                    // If signal is an output FROM the inst, it drives the parent wire/port
-                                    if inst_dir == Direction::Out {
-                                        driven.insert(format!("{}_{}", sig_base, sname));
-                                    }
+                        }
+                        let eff = info.effective_signals(&pm);
+                        for sig_base in &sig_bases {
+                            for (sname, sdir, _) in &eff {
+                                // Determine actual direction from inst's perspective
+                                let inst_dir = match inst_perspective {
+                                    Some(BusPerspective::Initiator) => *sdir,
+                                    Some(BusPerspective::Target) => (*sdir).flip(),
+                                    None => *sdir,
+                                };
+                                // If signal is an output FROM the inst, it drives the parent wire/port
+                                if inst_dir == Direction::Out {
+                                    driven.insert(format!("{}_{}", sig_base, sname));
                                 }
                             }
                         }
                     }
                 }
             }
+        }
     }
     pub(crate) fn check_handshake_reads(&mut self, m: &ModuleDecl) {
         use std::collections::HashMap as Map;
         // port_name -> Vec<(channel_name, guard, payload_field_names)>
         let mut info: Map<String, Vec<(String, HandshakePayloadGuard, Vec<String>)>> = Map::new();
         for p in &m.ports {
-            let Some(ref bi) = p.bus_info else { continue; };
+            let Some(ref bi) = p.bus_info else {
+                continue;
+            };
             let Some(crate::resolve::Symbol::Bus(binfo)) =
                 self.symbols.globals.get(&bi.bus_name.name).map(|(s, _)| s)
-                else { continue; };
+            else {
+                continue;
+            };
             for hs in &binfo.handshakes {
                 let guard = match hs.variant.name.as_str() {
                     "valid_ready" | "valid_only" | "valid_stall" => {
@@ -1682,17 +1938,21 @@ impl<'a> TypeChecker<'a> {
                     },
                     _ => continue,
                 };
-                let payloads: Vec<String> = hs.payload_names.iter()
-                    .map(|i| i.name.clone())
-                    .collect();
+                let payloads: Vec<String> =
+                    hs.payload_names.iter().map(|i| i.name.clone()).collect();
                 info.entry(p.name.name.clone()).or_default().push((
                     hs.name.name.clone(),
                     guard,
-                    payloads.into_iter().map(|n| format!("{}_{}", hs.name.name, n)).collect(),
+                    payloads
+                        .into_iter()
+                        .map(|n| format!("{}_{}", hs.name.name, n))
+                        .collect(),
                 ));
             }
         }
-        if info.is_empty() { return; }
+        if info.is_empty() {
+            return;
+        }
 
         for item in &m.body {
             match item {
@@ -1753,7 +2013,9 @@ impl<'a> TypeChecker<'a> {
                     self.walk_comb_for_hs_reads(s, enclosing, info);
                 }
             }
-                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
+            Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {
+                unreachable!("seq-only Stmt variant inside comb-context walker")
+            }
             Stmt::Log(_) => {}
         }
     }
@@ -1827,7 +2089,10 @@ impl<'a> TypeChecker<'a> {
                         for (ch_name, guard, payload_fields) in channels {
                             if payload_fields.iter().any(|pf| pf == &field.name) {
                                 let needs_guard = guard.display(port);
-                                if !enclosing.iter().any(|c| cond_contains_guard(c, port, guard)) {
+                                if !enclosing
+                                    .iter()
+                                    .any(|c| cond_contains_guard(c, port, guard))
+                                {
                                     let span = if expr.span.start == 0 && expr.span.end == 0 {
                                         default_span
                                     } else {
@@ -1882,10 +2147,14 @@ impl<'a> TypeChecker<'a> {
             }
             ExprKind::MethodCall(b, _, args) => {
                 self.check_expr_for_unguarded_payload(b, enclosing, info, default_span);
-                for a in args { self.check_expr_for_unguarded_payload(a, enclosing, info, default_span); }
+                for a in args {
+                    self.check_expr_for_unguarded_payload(a, enclosing, info, default_span);
+                }
             }
             ExprKind::FunctionCall(_, args) => {
-                for a in args { self.check_expr_for_unguarded_payload(a, enclosing, info, default_span); }
+                for a in args {
+                    self.check_expr_for_unguarded_payload(a, enclosing, info, default_span);
+                }
             }
             ExprKind::Ternary(c, t, e) => {
                 self.check_expr_for_unguarded_payload(c, enclosing, info, default_span);
@@ -1902,7 +2171,12 @@ impl<'a> TypeChecker<'a> {
             ExprKind::ExprMatch(s, arms) => {
                 self.check_expr_for_unguarded_payload(s, enclosing, info, default_span);
                 for arm in arms {
-                    self.check_expr_for_unguarded_payload(&arm.value, enclosing, info, default_span);
+                    self.check_expr_for_unguarded_payload(
+                        &arm.value,
+                        enclosing,
+                        info,
+                        default_span,
+                    );
                 }
             }
             _ => {}
@@ -1913,7 +2187,11 @@ impl<'a> TypeChecker<'a> {
         // Find the template in the source file
         let tmpl = self.source.items.iter().find_map(|item| {
             if let Item::Template(t) = item {
-                if t.name.name == tmpl_name.name { Some(t) } else { None }
+                if t.name.name == tmpl_name.name {
+                    Some(t)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -1934,8 +2212,10 @@ impl<'a> TypeChecker<'a> {
             let found = m.params.iter().any(|mp| mp.name.name == tp.name.name);
             if !found {
                 self.errors.push(CompileError::general(
-                    &format!("module `{}` is missing param `{}` required by template `{}`",
-                             m.name.name, tp.name.name, tmpl.name.name),
+                    &format!(
+                        "module `{}` is missing param `{}` required by template `{}`",
+                        m.name.name, tp.name.name, tmpl.name.name
+                    ),
                     m.name.span,
                 ));
             }
@@ -1947,8 +2227,10 @@ impl<'a> TypeChecker<'a> {
             match found {
                 None => {
                     self.errors.push(CompileError::general(
-                        &format!("module `{}` is missing port `{}` required by template `{}`",
-                                 m.name.name, tp.name.name, tmpl.name.name),
+                        &format!(
+                            "module `{}` is missing port `{}` required by template `{}`",
+                            m.name.name, tp.name.name, tmpl.name.name
+                        ),
                         m.name.span,
                     ));
                 }
@@ -1969,8 +2251,10 @@ impl<'a> TypeChecker<'a> {
             let found = m.hooks.iter().any(|mh| mh.hook_name.name == th.name.name);
             if !found {
                 self.errors.push(CompileError::general(
-                    &format!("module `{}` is missing hook `{}` required by template `{}`",
-                             m.name.name, th.name.name, tmpl.name.name),
+                    &format!(
+                        "module `{}` is missing hook `{}` required by template `{}`",
+                        m.name.name, th.name.name, tmpl.name.name
+                    ),
                     m.name.span,
                 ));
             }
@@ -1992,9 +2276,13 @@ impl<'a> TypeChecker<'a> {
     ///     `synthesized` flag needed.
     pub(crate) fn check_port_reg_timing(&mut self, m: &ModuleDecl) {
         // Collect names of *legacy-form* registered output ports only.
-        let port_reg_names: HashSet<String> = m.ports.iter()
-            .filter(|p| p.direction == Direction::Out
-                     && p.reg_info.as_ref().is_some_and(|ri| ri.legacy_port_reg))
+        let port_reg_names: HashSet<String> = m
+            .ports
+            .iter()
+            .filter(|p| {
+                p.direction == Direction::Out
+                    && p.reg_info.as_ref().is_some_and(|ri| ri.legacy_port_reg)
+            })
             .map(|p| p.name.name.clone())
             .collect();
         if port_reg_names.is_empty() {
@@ -2002,18 +2290,26 @@ impl<'a> TypeChecker<'a> {
         }
 
         // Collect internal register names (potential state variables)
-        let internal_reg_names: HashSet<String> = m.body.iter()
-            .filter_map(|item| if let ModuleBodyItem::RegDecl(r) = item {
-                Some(r.name.name.clone())
-            } else {
-                None
+        let internal_reg_names: HashSet<String> = m
+            .body
+            .iter()
+            .filter_map(|item| {
+                if let ModuleBodyItem::RegDecl(r) = item {
+                    Some(r.name.name.clone())
+                } else {
+                    None
+                }
             })
             .collect();
 
         // Collect registered output spans for warning locations.
-        let port_reg_spans: HashMap<String, Span> = m.ports.iter()
-            .filter(|p| p.direction == Direction::Out
-                     && p.reg_info.as_ref().is_some_and(|ri| ri.legacy_port_reg))
+        let port_reg_spans: HashMap<String, Span> = m
+            .ports
+            .iter()
+            .filter(|p| {
+                p.direction == Direction::Out
+                    && p.reg_info.as_ref().is_some_and(|ri| ri.legacy_port_reg)
+            })
             .map(|p| (p.name.name.clone(), p.span))
             .collect();
 
@@ -2023,8 +2319,12 @@ impl<'a> TypeChecker<'a> {
             if let ModuleBodyItem::RegBlock(rb) = item {
                 for stmt in &rb.stmts {
                     self.find_state_dependent_port_reg_assigns(
-                        stmt, &port_reg_names, &internal_reg_names,
-                        &port_reg_spans, &mut warned, false,
+                        stmt,
+                        &port_reg_names,
+                        &internal_reg_names,
+                        &port_reg_spans,
+                        &mut warned,
+                        false,
                     );
                 }
             }
@@ -2071,12 +2371,22 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     self.find_state_dependent_port_reg_assigns(
-                        s, port_reg_names, reg_names, port_reg_spans, warned, in_state,
+                        s,
+                        port_reg_names,
+                        reg_names,
+                        port_reg_spans,
+                        warned,
+                        in_state,
                     );
                 }
                 for s in &ie.else_stmts {
                     self.find_state_dependent_port_reg_assigns(
-                        s, port_reg_names, reg_names, port_reg_spans, warned, in_state,
+                        s,
+                        port_reg_names,
+                        reg_names,
+                        port_reg_spans,
+                        warned,
+                        in_state,
                     );
                 }
             }
@@ -2086,7 +2396,12 @@ impl<'a> TypeChecker<'a> {
                 for arm in &ms.arms {
                     for s in &arm.body {
                         self.find_state_dependent_port_reg_assigns(
-                            s, port_reg_names, reg_names, port_reg_spans, warned, in_state,
+                            s,
+                            port_reg_names,
+                            reg_names,
+                            port_reg_spans,
+                            warned,
+                            in_state,
                         );
                     }
                 }
@@ -2094,7 +2409,12 @@ impl<'a> TypeChecker<'a> {
             Stmt::For(fl) => {
                 for s in &fl.body {
                     self.find_state_dependent_port_reg_assigns(
-                        s, port_reg_names, reg_names, port_reg_spans, warned, inside_state_if,
+                        s,
+                        port_reg_names,
+                        reg_names,
+                        port_reg_spans,
+                        warned,
+                        inside_state_if,
                     );
                 }
             }
@@ -2127,7 +2447,9 @@ impl<'a> TypeChecker<'a> {
         // Build name → TypeExpr map for all in-scope signals
         let mut sig_types: HashMap<String, TypeExpr> = HashMap::new();
         for p in &m.ports {
-            if p.bus_info.is_some() { continue; }
+            if p.bus_info.is_some() {
+                continue;
+            }
             sig_types.insert(p.name.name.clone(), p.ty.clone());
         }
         for item in &m.body {
@@ -2204,8 +2526,16 @@ impl<'a> TypeChecker<'a> {
         Self::collect_assigned_roots_tc(&rb.stmts, &mut assigned);
 
         // Gather reg declarations for assigned registers
-        let reg_decls: Vec<&RegDecl> = m.body.iter()
-            .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i { Some(r) } else { None })
+        let reg_decls: Vec<&RegDecl> = m
+            .body
+            .iter()
+            .filter_map(|i| {
+                if let ModuleBodyItem::RegDecl(r) = i {
+                    Some(r)
+                } else {
+                    None
+                }
+            })
             .collect();
 
         // Resolved reset info: (signal_name, kind, level)
@@ -2218,7 +2548,9 @@ impl<'a> TypeChecker<'a> {
         let mut first_reset: Option<ResetProps> = None;
 
         for name in &assigned {
-            if name.is_empty() { continue; }
+            if name.is_empty() {
+                continue;
+            }
             let rd = match reg_decls.iter().find(|r| r.name.name == *name) {
                 Some(rd) => rd,
                 None => continue,
@@ -2234,14 +2566,20 @@ impl<'a> TypeChecker<'a> {
                             (sig.name.clone(), *k, *l)
                         } else {
                             self.errors.push(CompileError::general(
-                                &format!("`{}` reset signal `{}` is not a Reset port", name, sig.name),
+                                &format!(
+                                    "`{}` reset signal `{}` is not a Reset port",
+                                    name, sig.name
+                                ),
                                 sig.span,
                             ));
                             continue;
                         }
                     } else {
                         self.errors.push(CompileError::general(
-                            &format!("`{}` reset signal `{}` not found in module ports", name, sig.name),
+                            &format!(
+                                "`{}` reset signal `{}` not found in module ports",
+                                name, sig.name
+                            ),
                             sig.span,
                         ));
                         continue;
@@ -2282,7 +2620,11 @@ impl<'a> TypeChecker<'a> {
                     ));
                 }
             } else {
-                first_reset = Some(ResetProps { signal, kind, level });
+                first_reset = Some(ResetProps {
+                    signal,
+                    kind,
+                    level,
+                });
             }
         }
     }
@@ -2322,8 +2664,12 @@ impl<'a> TypeChecker<'a> {
         match &expr.kind {
             ExprKind::Ident(n) => n.clone(),
             ExprKind::FieldAccess(base, _) => Self::expr_root_name_tc(base),
-            ExprKind::Index(base, _) | ExprKind::BitSlice(base, _, _) | ExprKind::PartSelect(base, _, _, _) => Self::expr_root_name_tc(base),
-            ExprKind::LatencyAt(inner, _) | ExprKind::SvaNext(_, inner) => Self::expr_root_name_tc(inner),
+            ExprKind::Index(base, _)
+            | ExprKind::BitSlice(base, _, _)
+            | ExprKind::PartSelect(base, _, _, _) => Self::expr_root_name_tc(base),
+            ExprKind::LatencyAt(inner, _) | ExprKind::SvaNext(_, inner) => {
+                Self::expr_root_name_tc(inner)
+            }
             _ => String::new(),
         }
     }
@@ -2332,14 +2678,18 @@ impl<'a> TypeChecker<'a> {
     /// (e.g. `itcm.cmd_valid` → `"itcm_cmd_valid"`). Used for bus port driven tracking.
     fn expr_flat_name_tc(expr: &Expr) -> String {
         match &expr.kind {
-            ExprKind::LatencyAt(inner, _) | ExprKind::SvaNext(_, inner) => Self::expr_flat_name_tc(inner),
+            ExprKind::LatencyAt(inner, _) | ExprKind::SvaNext(_, inner) => {
+                Self::expr_flat_name_tc(inner)
+            }
             ExprKind::Ident(n) => n.clone(),
             ExprKind::FieldAccess(base, field) => {
                 if let ExprKind::Ident(base_name) = &base.kind {
                     format!("{}_{}", base_name, field.name)
                 // Indexed bus: m_axi[0].valid → m_axi_0_valid
                 } else if let ExprKind::Index(arr, idx) = &base.kind {
-                    if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) = (&arr.kind, &idx.kind) {
+                    if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) =
+                        (&arr.kind, &idx.kind)
+                    {
                         format!("{}_{}_{}", arr_name, i, field.name)
                     } else {
                         Self::expr_root_name_tc(base)
@@ -2348,7 +2698,9 @@ impl<'a> TypeChecker<'a> {
                     Self::expr_root_name_tc(base)
                 }
             }
-            ExprKind::Index(base, _) | ExprKind::BitSlice(base, _, _) | ExprKind::PartSelect(base, _, _, _) => Self::expr_flat_name_tc(base),
+            ExprKind::Index(base, _)
+            | ExprKind::BitSlice(base, _, _)
+            | ExprKind::PartSelect(base, _, _, _) => Self::expr_flat_name_tc(base),
             _ => String::new(),
         }
     }
@@ -2364,7 +2716,9 @@ impl<'a> TypeChecker<'a> {
             Ty::Enum(_, w) => Some(*w),
             Ty::Vec(inner, count) => self.type_total_width(inner).map(|w| w * count),
             Ty::Struct(name) => {
-                if let Some((crate::resolve::Symbol::Struct(info), _)) = self.symbols.globals.get(name) {
+                if let Some((crate::resolve::Symbol::Struct(info), _)) =
+                    self.symbols.globals.get(name)
+                {
                     let mut total = 0u32;
                     for (_, field_ty) in &info.fields {
                         let w = self.type_expr_width(field_ty)?;
@@ -2393,13 +2747,17 @@ impl<'a> TypeChecker<'a> {
                 Some(iw * n)
             }
             TypeExpr::Named(ident) => {
-                if let Some((crate::resolve::Symbol::Struct(info), _)) = self.symbols.globals.get(&ident.name) {
+                if let Some((crate::resolve::Symbol::Struct(info), _)) =
+                    self.symbols.globals.get(&ident.name)
+                {
                     let mut total = 0u32;
                     for (_, field_ty) in &info.fields {
                         total += self.type_expr_width(field_ty)?;
                     }
                     Some(total)
-                } else if let Some((crate::resolve::Symbol::Enum(info), _)) = self.symbols.globals.get(&ident.name) {
+                } else if let Some((crate::resolve::Symbol::Enum(info), _)) =
+                    self.symbols.globals.get(&ident.name)
+                {
                     Some(enum_width(info.variants.len()))
                 } else {
                     None
@@ -2422,28 +2780,42 @@ impl<'a> TypeChecker<'a> {
             // Check RegDecl
             for item in &m.body {
                 if let ModuleBodyItem::RegDecl(r) = item {
-                    if r.name.name != *name { continue; }
+                    if r.name.name != *name {
+                        continue;
+                    }
                     let sig = match &r.reset {
-                        RegReset::Inherit(sig, _) | RegReset::Explicit(sig, _, _, _) => Some(sig.name.clone()),
+                        RegReset::Inherit(sig, _) | RegReset::Explicit(sig, _, _, _) => {
+                            Some(sig.name.clone())
+                        }
                         RegReset::None => None,
                     };
-                    if let Some(s) = sig { reset_signals.insert(s); }
+                    if let Some(s) = sig {
+                        reset_signals.insert(s);
+                    }
                 }
             }
             // Check port reg
             for p in &m.ports {
-                if p.name.name != *name { continue; }
+                if p.name.name != *name {
+                    continue;
+                }
                 if let Some(ri) = &p.reg_info {
                     let sig = match &ri.reset {
-                        RegReset::Inherit(sig, _) | RegReset::Explicit(sig, _, _, _) => Some(sig.name.clone()),
+                        RegReset::Inherit(sig, _) | RegReset::Explicit(sig, _, _, _) => {
+                            Some(sig.name.clone())
+                        }
                         RegReset::None => None,
                     };
-                    if let Some(s) = sig { reset_signals.insert(s); }
+                    if let Some(s) = sig {
+                        reset_signals.insert(s);
+                    }
                 }
             }
         }
 
-        if reset_signals.is_empty() { return; }
+        if reset_signals.is_empty() {
+            return;
+        }
 
         // Check top-level stmts for `if reset_signal { ... }` or `if ~reset_signal { ... }`
         for stmt in &rb.stmts {
@@ -2451,7 +2823,11 @@ impl<'a> TypeChecker<'a> {
                 let tested = match &ie.cond.kind {
                     ExprKind::Ident(id) => Some(id.clone()),
                     ExprKind::Unary(crate::ast::UnaryOp::Not, inner) => {
-                        if let ExprKind::Ident(id) = &inner.kind { Some(id.clone()) } else { None }
+                        if let ExprKind::Ident(id) = &inner.kind {
+                            Some(id.clone())
+                        } else {
+                            None
+                        }
                     }
                     _ => None,
                 };
@@ -2471,7 +2847,13 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_width_compatible(&mut self, lhs_ty: &Ty, rhs_ty: &Ty, name: &str, span: Span) {
+    pub(crate) fn check_width_compatible(
+        &mut self,
+        lhs_ty: &Ty,
+        rhs_ty: &Ty,
+        name: &str,
+        span: Span,
+    ) {
         // Floating-point: no implicit conversion. The target and RHS must be the
         // exact same float type; a float can't be assigned to/from a non-float
         // either. (Errors and todo! propagate silently.)
@@ -2491,7 +2873,11 @@ impl<'a> TypeChecker<'a> {
         }
         match (lhs_ty, rhs_ty) {
             (Ty::UInt(lw), Ty::UInt(rw)) if rw > lw => {
-                let hint = if *rw == lw + 1 { " (arithmetic widening)" } else { "" };
+                let hint = if *rw == lw + 1 {
+                    " (arithmetic widening)"
+                } else {
+                    ""
+                };
                 self.errors.push(CompileError::general(
                     &format!(
                         "width mismatch: `{name}` is UInt<{lw}> but RHS is UInt<{rw}>{hint}; \
@@ -2501,7 +2887,11 @@ impl<'a> TypeChecker<'a> {
                 ));
             }
             (Ty::SInt(lw), Ty::SInt(rw)) if rw > lw => {
-                let hint = if *rw == lw + 1 { " (arithmetic widening)" } else { "" };
+                let hint = if *rw == lw + 1 {
+                    " (arithmetic widening)"
+                } else {
+                    ""
+                };
                 self.errors.push(CompileError::general(
                     &format!(
                         "width mismatch: `{name}` is SInt<{lw}> but RHS is SInt<{rw}>{hint}; \
@@ -2515,8 +2905,14 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Emit an error when an enum match is not exhaustive (no wildcard and missing variants).
-    pub(crate) fn check_match_exhaustive(&mut self, scrutinee: &Expr, patterns: &[Pattern], span: Span,
-                              module_name: &str, local_types: &HashMap<String, Ty>) {
+    pub(crate) fn check_match_exhaustive(
+        &mut self,
+        scrutinee: &Expr,
+        patterns: &[Pattern],
+        span: Span,
+        module_name: &str,
+        local_types: &HashMap<String, Ty>,
+    ) {
         let scrutinee_ty = self.resolve_expr_type(scrutinee, module_name, local_types);
         let enum_name = match &scrutinee_ty {
             Ty::Enum(name, _) => name.clone(),
@@ -2525,11 +2921,20 @@ impl<'a> TypeChecker<'a> {
         if patterns.iter().any(|p| matches!(p, Pattern::Wildcard)) {
             return; // wildcard covers everything
         }
-        let covered: HashSet<String> = patterns.iter().filter_map(|p| {
-            if let Pattern::EnumVariant(_, variant) = p { Some(variant.name.clone()) } else { None }
-        }).collect();
+        let covered: HashSet<String> = patterns
+            .iter()
+            .filter_map(|p| {
+                if let Pattern::EnumVariant(_, variant) = p {
+                    Some(variant.name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
         if let Some((Symbol::Enum(info), _)) = self.symbols.globals.get(&enum_name).cloned() {
-            let missing: Vec<String> = info.variants.iter()
+            let missing: Vec<String> = info
+                .variants
+                .iter()
                 .filter(|v| !covered.contains(*v))
                 .map(|v| format!("`{enum_name}::{v}`"))
                 .collect();
@@ -2554,7 +2959,14 @@ impl<'a> TypeChecker<'a> {
         driven: &mut HashSet<String>,
     ) {
         let empty_regs: HashSet<String> = HashSet::new();
-        self.check_stmt(stmt, module_name, local_types, driven, BlockKind::Seq, &empty_regs);
+        self.check_stmt(
+            stmt,
+            module_name,
+            local_types,
+            driven,
+            BlockKind::Seq,
+            &empty_regs,
+        );
     }
 
     /// Unified `Stmt` typecheck walker for both `comb` and `seq` (and seq's
@@ -2585,7 +2997,11 @@ impl<'a> TypeChecker<'a> {
         match stmt {
             Stmt::Assign(a) => {
                 let name = Self::expr_root_name_tc(&a.target);
-                let target_name = if name.is_empty() { format!("{:?}", a.target.kind) } else { name.clone() };
+                let target_name = if name.is_empty() {
+                    format!("{:?}", a.target.kind)
+                } else {
+                    name.clone()
+                };
                 // Comb-only: `reg` targets must be assigned in seq, not comb.
                 if in_comb && reg_names.contains(&target_name) {
                     self.errors.push(CompileError::general(
@@ -2596,9 +3012,13 @@ impl<'a> TypeChecker<'a> {
                         a.span,
                     ));
                 }
-                if !target_name.is_empty() { driven.insert(target_name.clone()); }
+                if !target_name.is_empty() {
+                    driven.insert(target_name.clone());
+                }
                 let flat = Self::expr_flat_name_tc(&a.target);
-                if flat != target_name { driven.insert(flat.clone()); }
+                if flat != target_name {
+                    driven.insert(flat.clone());
+                }
                 // Vec-of-bus indexed write with a non-literal index — e.g.
                 // `chans[i].sig = ...` inside a `for i in 0..N` loop. The
                 // root name alone ("chans") doesn't satisfy the per-copy
@@ -2610,11 +3030,13 @@ impl<'a> TypeChecker<'a> {
                 if let ExprKind::FieldAccess(base, field) = &a.target.kind {
                     if let ExprKind::Index(arr, idx) = &base.kind {
                         if let ExprKind::Ident(arr_name) = &arr.kind {
-                            let is_literal = matches!(&idx.kind,
-                                ExprKind::Literal(LitKind::Dec(_)) |
-                                ExprKind::Literal(LitKind::Hex(_)) |
-                                ExprKind::Literal(LitKind::Bin(_)) |
-                                ExprKind::Literal(LitKind::Sized(..)));
+                            let is_literal = matches!(
+                                &idx.kind,
+                                ExprKind::Literal(LitKind::Dec(_))
+                                    | ExprKind::Literal(LitKind::Hex(_))
+                                    | ExprKind::Literal(LitKind::Bin(_))
+                                    | ExprKind::Literal(LitKind::Sized(..))
+                            );
                             if !is_literal {
                                 if let Some(&n) = self.vec_of_bus_ports.get(arr_name) {
                                     for i in 0..n {
@@ -2633,10 +3055,18 @@ impl<'a> TypeChecker<'a> {
                 // behavior); seq uses resolve_expr_type to handle Index /
                 // BitSlice correctly.
                 let lhs_ty: Option<Ty> = if in_comb {
-                    if is_indexed { None } else { local_types.get(&target_name).cloned() }
+                    if is_indexed {
+                        None
+                    } else {
+                        local_types.get(&target_name).cloned()
+                    }
                 } else {
                     let t = self.resolve_expr_type(&a.target, module_name, local_types);
-                    if t != Ty::Error && local_types.contains_key(&target_name) { Some(t) } else { None }
+                    if t != Ty::Error && local_types.contains_key(&target_name) {
+                        Some(t)
+                    } else {
+                        None
+                    }
                 };
                 if let Some(lhs_ty) = lhs_ty {
                     self.check_width_compatible(&lhs_ty, &rhs_ty, &target_name, a.span);
@@ -2662,11 +3092,25 @@ impl<'a> TypeChecker<'a> {
                     // branches are not multi-driven. Merge after.
                     let mut then_driven = driven.clone();
                     for s in &ie.then_stmts {
-                        self.check_stmt(s, module_name, local_types, &mut then_driven, block_kind, reg_names);
+                        self.check_stmt(
+                            s,
+                            module_name,
+                            local_types,
+                            &mut then_driven,
+                            block_kind,
+                            reg_names,
+                        );
                     }
                     let mut else_driven = driven.clone();
                     for s in &ie.else_stmts {
-                        self.check_stmt(s, module_name, local_types, &mut else_driven, block_kind, reg_names);
+                        self.check_stmt(
+                            s,
+                            module_name,
+                            local_types,
+                            &mut else_driven,
+                            block_kind,
+                            reg_names,
+                        );
                     }
                     for nm in then_driven.iter().chain(else_driven.iter()) {
                         driven.insert(nm.clone());
@@ -2682,7 +3126,13 @@ impl<'a> TypeChecker<'a> {
             }
             Stmt::Match(m) => {
                 let patterns: Vec<Pattern> = m.arms.iter().map(|a| a.pattern.clone()).collect();
-                self.check_match_exhaustive(&m.scrutinee, &patterns, m.span, module_name, local_types);
+                self.check_match_exhaustive(
+                    &m.scrutinee,
+                    &patterns,
+                    m.span,
+                    module_name,
+                    local_types,
+                );
                 for arm in &m.arms {
                     for s in &arm.body {
                         self.check_stmt(s, module_name, local_types, driven, block_kind, reg_names);
@@ -2707,17 +3157,22 @@ impl<'a> TypeChecker<'a> {
                     ));
                     return;
                 }
-                let valid_reset = self.source.items.iter().find_map(|item| {
-                    if let Item::Module(m) = item {
-                        if m.name.name == module_name {
-                            return Some(m.ports.iter().any(|p| {
-                                p.name.name == ib.reset_signal.name
-                                    && matches!(&p.ty, TypeExpr::Reset(_, _))
-                            }));
+                let valid_reset = self
+                    .source
+                    .items
+                    .iter()
+                    .find_map(|item| {
+                        if let Item::Module(m) = item {
+                            if m.name.name == module_name {
+                                return Some(m.ports.iter().any(|p| {
+                                    p.name.name == ib.reset_signal.name
+                                        && matches!(&p.ty, TypeExpr::Reset(_, _))
+                                }));
+                            }
                         }
-                    }
-                    None
-                }).unwrap_or(false);
+                        None
+                    })
+                    .unwrap_or(false);
                 if !valid_reset {
                     self.errors.push(CompileError::general(
                         &format!(
@@ -2796,22 +3251,34 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Stmt::IfElse(ie) => {
-                for s in &ie.then_stmts { Self::reject_bare_assign_in_for(s, in_for, errors); }
-                for s in &ie.else_stmts { Self::reject_bare_assign_in_for(s, in_for, errors); }
+                for s in &ie.then_stmts {
+                    Self::reject_bare_assign_in_for(s, in_for, errors);
+                }
+                for s in &ie.else_stmts {
+                    Self::reject_bare_assign_in_for(s, in_for, errors);
+                }
             }
             Stmt::For(f) => {
-                for s in &f.body { Self::reject_bare_assign_in_for(s, true, errors); }
+                for s in &f.body {
+                    Self::reject_bare_assign_in_for(s, true, errors);
+                }
             }
             Stmt::Match(m) => {
                 for arm in &m.arms {
-                    for s in &arm.body { Self::reject_bare_assign_in_for(s, in_for, errors); }
+                    for s in &arm.body {
+                        Self::reject_bare_assign_in_for(s, in_for, errors);
+                    }
                 }
             }
             Stmt::Init(ib) => {
-                for s in &ib.body { Self::reject_bare_assign_in_for(s, in_for, errors); }
+                for s in &ib.body {
+                    Self::reject_bare_assign_in_for(s, in_for, errors);
+                }
             }
             Stmt::DoUntil { body, .. } => {
-                for s in body { Self::reject_bare_assign_in_for(s, in_for, errors); }
+                for s in body {
+                    Self::reject_bare_assign_in_for(s, in_for, errors);
+                }
             }
             _ => {}
         }
@@ -2852,12 +3319,22 @@ impl<'a> TypeChecker<'a> {
         driven: &mut HashSet<String>,
         reg_names: &HashSet<String>,
     ) {
-        self.check_stmt(stmt, module_name, local_types, driven, BlockKind::Comb, reg_names);
+        self.check_stmt(
+            stmt,
+            module_name,
+            local_types,
+            driven,
+            BlockKind::Comb,
+            reg_names,
+        );
     }
 
     /// Check for latches: signals assigned on some but not all paths in a comb block.
     /// Returns (all_assigned, fully_assigned) for the statement list.
-    fn comb_latch_targets(stmts: &[Stmt], symbols: &crate::resolve::SymbolTable) -> (HashSet<String>, HashSet<String>) {
+    fn comb_latch_targets(
+        stmts: &[Stmt],
+        symbols: &crate::resolve::SymbolTable,
+    ) -> (HashSet<String>, HashSet<String>) {
         let mut all = HashSet::new();
         let mut full = HashSet::new();
 
@@ -2873,7 +3350,8 @@ impl<'a> TypeChecker<'a> {
                 Stmt::IfElse(ie) => {
                     let (then_all, then_full) = Self::comb_latch_targets(&ie.then_stmts, symbols);
                     let (else_all, else_full) = Self::comb_latch_targets(&ie.else_stmts, symbols);
-                    all.extend(then_all); all.extend(else_all);
+                    all.extend(then_all);
+                    all.extend(else_all);
                     // Const-true cond (e.g. desugared `port.ch.no_send()` /
                     // `.send(x)` wrappers): the then-branch is unconditional,
                     // promote its assigns to full regardless of an empty else.
@@ -2881,7 +3359,9 @@ impl<'a> TypeChecker<'a> {
                         ExprKind::Literal(LitKind::Sized(_, n)) if *n != 0)
                         || matches!(&ie.cond.kind, ExprKind::Literal(LitKind::Dec(n)) if *n != 0);
                     if cond_is_true {
-                        for name in &then_full { full.insert(name.clone()); }
+                        for name in &then_full {
+                            full.insert(name.clone());
+                        }
                     } else {
                         // A signal is fully assigned through an if/else only if
                         // assigned on BOTH branches.  No else = empty else_full.
@@ -2891,8 +3371,13 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 Stmt::Match(m) => {
-                    let has_wildcard = m.arms.iter().any(|a| matches!(a.pattern, Pattern::Wildcard));
-                    let arm_results: Vec<(HashSet<String>, HashSet<String>)> = m.arms.iter()
+                    let has_wildcard = m
+                        .arms
+                        .iter()
+                        .any(|a| matches!(a.pattern, Pattern::Wildcard));
+                    let arm_results: Vec<(HashSet<String>, HashSet<String>)> = m
+                        .arms
+                        .iter()
                         .map(|arm| {
                             // Comb match arm bodies are Vec<Stmt> — extract assign targets.
                             let mut arm_all = HashSet::new();
@@ -2916,12 +3401,24 @@ impl<'a> TypeChecker<'a> {
                     let mut is_exhaustive = has_wildcard || m.unique;
                     if !is_exhaustive {
                         // Check if all arms are EnumVariant patterns covering every variant
-                        let covered: HashSet<String> = m.arms.iter().filter_map(|a| {
-                            if let Pattern::EnumVariant(_, v) = &a.pattern { Some(v.name.clone()) } else { None }
-                        }).collect();
+                        let covered: HashSet<String> = m
+                            .arms
+                            .iter()
+                            .filter_map(|a| {
+                                if let Pattern::EnumVariant(_, v) = &a.pattern {
+                                    Some(v.name.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
                         // Find the enum name from the first EnumVariant pattern
                         if let Some(enum_name) = m.arms.iter().find_map(|a| {
-                            if let Pattern::EnumVariant(e, _) = &a.pattern { Some(e.name.clone()) } else { None }
+                            if let Pattern::EnumVariant(e, _) = &a.pattern {
+                                Some(e.name.clone())
+                            } else {
+                                None
+                            }
                         }) {
                             if let Some((Symbol::Enum(info), _)) = symbols.globals.get(&enum_name) {
                                 is_exhaustive = info.variants.iter().all(|v| covered.contains(v));
@@ -2930,8 +3427,10 @@ impl<'a> TypeChecker<'a> {
                     }
                     if is_exhaustive {
                         if let Some(first_full) = arm_results.first().map(|(_, f)| f.clone()) {
-                            let intersection: HashSet<String> = arm_results.iter()
-                                .fold(first_full, |acc, (_, f)| acc.intersection(f).cloned().collect());
+                            let intersection: HashSet<String> =
+                                arm_results.iter().fold(first_full, |acc, (_, f)| {
+                                    acc.intersection(f).cloned().collect()
+                                });
                             full.extend(intersection);
                         }
                     }
@@ -2948,7 +3447,9 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                    Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
+                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {
+                    unreachable!("seq-only Stmt variant inside comb-context walker")
+                }
                 Stmt::Log(_) => {}
             }
         }
@@ -3030,7 +3531,8 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 } else {
-                    self.errors.push(CompileError::undefined(&ident.name, ident.span));
+                    self.errors
+                        .push(CompileError::undefined(&ident.name, ident.span));
                     Ty::Error
                 }
             }
@@ -3071,9 +3573,13 @@ impl<'a> TypeChecker<'a> {
                     TypeExpr::SInt(w) => eval_type_width_expr(w).map(Ty::SInt).unwrap_or(Ty::Error),
                     TypeExpr::Bool | TypeExpr::Bit => Ty::Bool,
                     TypeExpr::Named(ident) => {
-                        if let Some((crate::resolve::Symbol::Struct(_), _)) = self.symbols.globals.get(&ident.name) {
+                        if let Some((crate::resolve::Symbol::Struct(_), _)) =
+                            self.symbols.globals.get(&ident.name)
+                        {
                             Ty::Struct(ident.name.clone())
-                        } else if let Some((crate::resolve::Symbol::Enum(info), _)) = self.symbols.globals.get(&ident.name) {
+                        } else if let Some((crate::resolve::Symbol::Enum(info), _)) =
+                            self.symbols.globals.get(&ident.name)
+                        {
                             Ty::Enum(ident.name.clone(), enum_width(info.variants.len()))
                         } else {
                             Ty::Error
@@ -3153,8 +3659,12 @@ impl<'a> TypeChecker<'a> {
                     UnaryOp::RedAnd | UnaryOp::RedOr | UnaryOp::RedXor => Ty::Bool,
                 }
             }
-            ExprKind::FieldAccess(base, field) => self.resolve_field_access_type(base, field, expr.span, module_name, local_types),
-            ExprKind::MethodCall(base, method, args) => self.resolve_method_call_type(base, method, args, module_name, local_types),
+            ExprKind::FieldAccess(base, field) => {
+                self.resolve_field_access_type(base, field, expr.span, module_name, local_types)
+            }
+            ExprKind::MethodCall(base, method, args) => {
+                self.resolve_method_call_type(base, method, args, module_name, local_types)
+            }
             ExprKind::Cast(inner, ty) => {
                 let src_ty = self.resolve_expr_type(inner, module_name, local_types);
                 let dst_ty = self.resolve_type_expr(ty, module_name, local_types);
@@ -3209,7 +3719,11 @@ impl<'a> TypeChecker<'a> {
                 match (hi_val, lo_val) {
                     (Some(h), Some(l)) if h >= l => {
                         let w = (h - l + 1) as u32;
-                        if let Ty::SInt(_) = base_ty { Ty::SInt(w) } else { Ty::UInt(w) }
+                        if let Ty::SInt(_) = base_ty {
+                            Ty::SInt(w)
+                        } else {
+                            Ty::UInt(w)
+                        }
                     }
                     _ => Ty::Error,
                 }
@@ -3247,7 +3761,13 @@ impl<'a> TypeChecker<'a> {
             }
             ExprKind::ExprMatch(scrutinee, arms) => {
                 let patterns: Vec<Pattern> = arms.iter().map(|a| a.pattern.clone()).collect();
-                self.check_match_exhaustive(scrutinee, &patterns, expr.span, module_name, local_types);
+                self.check_match_exhaustive(
+                    scrutinee,
+                    &patterns,
+                    expr.span,
+                    module_name,
+                    local_types,
+                );
                 // Return type from first non-wildcard arm
                 for arm in arms {
                     return self.resolve_expr_type(&arm.value, module_name, local_types);
@@ -3256,13 +3776,16 @@ impl<'a> TypeChecker<'a> {
             }
             ExprKind::Concat(parts) => {
                 // Total width = sum of each part's width (Bool=1, UInt<N>=N, else 1)
-                let total: u32 = parts.iter().map(|p| {
-                    match self.resolve_expr_type(p, module_name, local_types) {
-                        Ty::UInt(w) | Ty::SInt(w) => w,
-                        Ty::Bool => 1,
-                        _ => 1,
-                    }
-                }).sum();
+                let total: u32 = parts
+                    .iter()
+                    .map(
+                        |p| match self.resolve_expr_type(p, module_name, local_types) {
+                            Ty::UInt(w) | Ty::SInt(w) => w,
+                            Ty::Bool => 1,
+                            _ => 1,
+                        },
+                    )
+                    .sum();
                 Ty::UInt(total)
             }
             ExprKind::Repeat(count, value) => {
@@ -3278,7 +3801,11 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Clog2(arg) => {
                 // $clog2 returns a compile-time constant width value
                 if let Some(v) = self.eval_const_expr(arg, local_types) {
-                    let bits = if v == 0 { 1 } else { 64 - v.leading_zeros() as u64 };
+                    let bits = if v == 0 {
+                        1
+                    } else {
+                        64 - v.leading_zeros() as u64
+                    };
                     Ty::UInt(bits as u32)
                 } else {
                     Ty::UInt(32) // fallback: treat as generic integer
@@ -3302,7 +3829,10 @@ impl<'a> TypeChecker<'a> {
                     Ty::Enum(_, w) => Ty::SInt(w),
                     _ => {
                         self.errors.push(CompileError::general(
-                            &format!("signed() requires UInt, SInt, or Bool operand, got {}", inner_ty.display()),
+                            &format!(
+                                "signed() requires UInt, SInt, or Bool operand, got {}",
+                                inner_ty.display()
+                            ),
                             expr.span,
                         ));
                         Ty::Error
@@ -3317,7 +3847,10 @@ impl<'a> TypeChecker<'a> {
                     Ty::Enum(_, w) => Ty::UInt(w),
                     _ => {
                         self.errors.push(CompileError::general(
-                            &format!("unsigned() requires UInt, SInt, or Bool operand, got {}", inner_ty.display()),
+                            &format!(
+                                "unsigned() requires UInt, SInt, or Bool operand, got {}",
+                                inner_ty.display()
+                            ),
                             expr.span,
                         ));
                         Ty::Error
@@ -3337,7 +3870,9 @@ impl<'a> TypeChecker<'a> {
                 self.resolve_expr_type(scrutinee, module_name, local_types);
                 for m in members {
                     match m {
-                        InsideMember::Single(e) => { self.resolve_expr_type(e, module_name, local_types); }
+                        InsideMember::Single(e) => {
+                            self.resolve_expr_type(e, module_name, local_types);
+                        }
                         InsideMember::Range(lo, hi) => {
                             self.resolve_expr_type(lo, module_name, local_types);
                             self.resolve_expr_type(hi, module_name, local_types);
@@ -3361,7 +3896,9 @@ impl<'a> TypeChecker<'a> {
                     let ta = self.resolve_expr_type(&call_args[0], module_name, local_types);
                     let tb = self.resolve_expr_type(&call_args[1], module_name, local_types);
                     let tc = self.resolve_expr_type(&call_args[2], module_name, local_types);
-                    if ta == Ty::Error || tb == Ty::Error || tc == Ty::Error { return Ty::Error; }
+                    if ta == Ty::Error || tb == Ty::Error || tc == Ty::Error {
+                        return Ty::Error;
+                    }
                     if !ta.is_float() || tb != ta || tc != ta {
                         self.errors.push(CompileError::general(
                             &format!("`fma` requires three operands of the same float type, got {}, {}, {}",
@@ -3396,7 +3933,9 @@ impl<'a> TypeChecker<'a> {
                 if name == "rose" || name == "fell" {
                     if !self.in_sva_context {
                         self.errors.push(CompileError::general(
-                            &format!("`{name}(...)` is only legal inside `assert` / `cover` bodies"),
+                            &format!(
+                                "`{name}(...)` is only legal inside `assert` / `cover` bodies"
+                            ),
                             expr.span,
                         ));
                         return Ty::Error;
@@ -3411,7 +3950,10 @@ impl<'a> TypeChecker<'a> {
                     let inner = self.resolve_expr_type(&call_args[0], module_name, local_types);
                     if inner != Ty::Bool && inner != Ty::Error && inner != Ty::Todo {
                         self.errors.push(CompileError::general(
-                            &format!("`{name}(expr)` requires Bool argument, got {}", inner.display()),
+                            &format!(
+                                "`{name}(expr)` requires Bool argument, got {}",
+                                inner.display()
+                            ),
                             call_args[0].span,
                         ));
                     }
@@ -3461,7 +4003,8 @@ impl<'a> TypeChecker<'a> {
                 }
                 if let Some((Symbol::Function(overloads), _)) = self.symbols.globals.get(name) {
                     // Resolve argument types first.
-                    let arg_tys: Vec<Ty> = call_args.iter()
+                    let arg_tys: Vec<Ty> = call_args
+                        .iter()
                         .map(|a| {
                             let mut lt = local_types.clone();
                             self.resolve_expr_type(a, module_name, &mut lt)
@@ -3471,23 +4014,28 @@ impl<'a> TypeChecker<'a> {
                     // Find matching overload: same arity, compatible types.
                     let overloads = overloads.clone(); // detach borrow so we can call &mut self methods
                     let chosen = overloads.iter().enumerate().find(|(_, ov)| {
-                        if ov.arg_types.len() != arg_tys.len() { return false; }
-                        ov.arg_types.iter().zip(arg_tys.iter()).all(|(expected_te, actual_ty)| {
-                            match (expected_te, actual_ty) {
-                                (TypeExpr::UInt(we), Ty::UInt(wa)) => {
-                                    // Compare widths when the expression is a simple literal.
-                                    eval_type_width_expr(we).map_or(true, |ew| ew == *wa)
+                        if ov.arg_types.len() != arg_tys.len() {
+                            return false;
+                        }
+                        ov.arg_types
+                            .iter()
+                            .zip(arg_tys.iter())
+                            .all(|(expected_te, actual_ty)| {
+                                match (expected_te, actual_ty) {
+                                    (TypeExpr::UInt(we), Ty::UInt(wa)) => {
+                                        // Compare widths when the expression is a simple literal.
+                                        eval_type_width_expr(we).map_or(true, |ew| ew == *wa)
+                                    }
+                                    (TypeExpr::SInt(we), Ty::SInt(wa)) => {
+                                        eval_type_width_expr(we).map_or(true, |ew| ew == *wa)
+                                    }
+                                    (TypeExpr::Bool, Ty::Bool) => true,
+                                    (TypeExpr::Bit, Ty::UInt(1)) => true,
+                                    (TypeExpr::UInt(_), Ty::Todo)
+                                    | (TypeExpr::SInt(_), Ty::Todo) => true,
+                                    _ => false,
                                 }
-                                (TypeExpr::SInt(we), Ty::SInt(wa)) => {
-                                    eval_type_width_expr(we).map_or(true, |ew| ew == *wa)
-                                }
-                                (TypeExpr::Bool, Ty::Bool) => true,
-                                (TypeExpr::Bit,  Ty::UInt(1)) => true,
-                                (TypeExpr::UInt(_), Ty::Todo)
-                                | (TypeExpr::SInt(_), Ty::Todo) => true,
-                                _ => false,
-                            }
-                        })
+                            })
                     });
 
                     match chosen {
@@ -3500,12 +4048,18 @@ impl<'a> TypeChecker<'a> {
                         }
                         None => {
                             // No exact type match; try arity-only match as fallback.
-                            if let Some(ov) = overloads.iter().find(|ov| ov.arg_types.len() == call_args.len()) {
+                            if let Some(ov) = overloads
+                                .iter()
+                                .find(|ov| ov.arg_types.len() == call_args.len())
+                            {
                                 let ret_ty = ov.ret_ty.clone();
                                 self.resolve_type_expr(&ret_ty, module_name, local_types)
                             } else {
                                 self.errors.push(CompileError::general(
-                                    &format!("no matching overload for `{name}` with {} argument(s)", call_args.len()),
+                                    &format!(
+                                        "no matching overload for `{name}` with {} argument(s)",
+                                        call_args.len()
+                                    ),
                                     expr.span,
                                 ));
                                 Ty::Error
@@ -3577,7 +4131,8 @@ impl<'a> TypeChecker<'a> {
         if let Ty::Bus(name) = &base_ty {
             if let Some((sym, _)) = self.symbols.globals.get(name) {
                 if let crate::resolve::Symbol::Bus(info) = sym {
-                    let _eff = info.effective_signals(&info.default_param_map()); for (sname, _dir, sty) in &_eff {
+                    let _eff = info.effective_signals(&info.default_param_map());
+                    for (sname, _dir, sty) in &_eff {
                         if sname == &field.name {
                             return self.resolve_type_expr(sty, module_name, local_types);
                         }
@@ -3660,7 +4215,10 @@ impl<'a> TypeChecker<'a> {
                             }
                             if (method.name == "zext" || method.name == "sext") && target_w == sw {
                                 self.errors.push(CompileError::general(
-                                    &format!(".{}<{}>() on a {}-bit value is a no-op — remove the cast", method.name, target_w, sw),
+                                    &format!(
+                                        ".{}<{}>() on a {}-bit value is a no-op — remove the cast",
+                                        method.name, target_w, sw
+                                    ),
                                     method.span,
                                 ));
                                 return Ty::Error;
@@ -3692,12 +4250,20 @@ impl<'a> TypeChecker<'a> {
             // `.to_sint<N>()` convert a float to an integer (toward-zero,
             // saturating per the RISC-V profile — see doc/plan_fp_types.md §6).
             "to_fp32" | "to_bf16" => {
-                let target = if method.name == "to_fp32" { Ty::FP32 } else { Ty::BF16 };
+                let target = if method.name == "to_fp32" {
+                    Ty::FP32
+                } else {
+                    Ty::BF16
+                };
                 match &base_ty {
                     Ty::FP32 | Ty::BF16 | Ty::UInt(_) | Ty::SInt(_) | Ty::Bool => {
                         if base_ty == target {
                             self.errors.push(CompileError::general(
-                                &format!(".{}() on a {} value is a no-op — remove the cast", method.name, target.display()),
+                                &format!(
+                                    ".{}() on a {} value is a no-op — remove the cast",
+                                    method.name,
+                                    target.display()
+                                ),
                                 method.span,
                             ));
                             return Ty::Error;
@@ -3708,7 +4274,11 @@ impl<'a> TypeChecker<'a> {
                     Ty::Error => Ty::Error,
                     _ => {
                         self.errors.push(CompileError::general(
-                            &format!(".{}() requires a float or integer operand, got {}", method.name, base_ty.display()),
+                            &format!(
+                                ".{}() requires a float or integer operand, got {}",
+                                method.name,
+                                base_ty.display()
+                            ),
                             method.span,
                         ));
                         Ty::Error
@@ -3718,7 +4288,11 @@ impl<'a> TypeChecker<'a> {
             "to_uint" | "to_sint" => {
                 if !base_ty.is_float() && !matches!(base_ty, Ty::Todo | Ty::Error) {
                     self.errors.push(CompileError::general(
-                        &format!(".{}<N>() requires a floating-point operand, got {}", method.name, base_ty.display()),
+                        &format!(
+                            ".{}<N>() requires a floating-point operand, got {}",
+                            method.name,
+                            base_ty.display()
+                        ),
                         method.span,
                     ));
                     return Ty::Error;
@@ -3726,13 +4300,20 @@ impl<'a> TypeChecker<'a> {
                 if let Some(width_expr) = args.first() {
                     if let Some(w) = self.eval_const_expr(width_expr, local_types) {
                         let target_w = w as u32;
-                        if method.name == "to_uint" { Ty::UInt(target_w) } else { Ty::SInt(target_w) }
+                        if method.name == "to_uint" {
+                            Ty::UInt(target_w)
+                        } else {
+                            Ty::SInt(target_w)
+                        }
                     } else {
                         Ty::Error
                     }
                 } else {
                     self.errors.push(CompileError::general(
-                        &format!(".{}<N>() requires a width type argument, e.g. .{}<32>()", method.name, method.name),
+                        &format!(
+                            ".{}<N>() requires a width type argument, e.g. .{}<32>()",
+                            method.name, method.name
+                        ),
                         method.span,
                     ));
                     Ty::Error
@@ -3754,7 +4335,10 @@ impl<'a> TypeChecker<'a> {
                                 Ty::Bool => 1,
                                 _ => {
                                     self.errors.push(CompileError::general(
-                                        &format!(".reverse(N) requires UInt/SInt/Bool base, got {}", base_ty.display()),
+                                        &format!(
+                                            ".reverse(N) requires UInt/SInt/Bool base, got {}",
+                                            base_ty.display()
+                                        ),
                                         method.span,
                                     ));
                                     return Ty::Error;
@@ -3784,14 +4368,17 @@ impl<'a> TypeChecker<'a> {
             // Vec reduction + predicate methods (plan_vec_methods.md v1, PR #1 subset).
             // `item` is the per-iteration element, `index` is the position (UInt<clog2(N)>).
             // Both are injected into the predicate's local scope during checking.
-            "any" | "all" | "count" | "contains"
-            | "reduce_or" | "reduce_and" | "reduce_xor" | "find_first" => {
+            "any" | "all" | "count" | "contains" | "reduce_or" | "reduce_and" | "reduce_xor"
+            | "find_first" => {
                 let (elem_ty, n) = match &base_ty {
                     Ty::Vec(inner, count) => ((**inner).clone(), *count),
                     _ => {
                         self.errors.push(CompileError::general(
-                            &format!("`.{}(...)` requires a Vec<T,N> receiver, got {}",
-                                method.name, base_ty.display()),
+                            &format!(
+                                "`.{}(...)` requires a Vec<T,N> receiver, got {}",
+                                method.name,
+                                base_ty.display()
+                            ),
                             method.span,
                         ));
                         return Ty::Error;
@@ -3799,19 +4386,27 @@ impl<'a> TypeChecker<'a> {
                 };
                 if n == 0 {
                     self.errors.push(CompileError::general(
-                        &format!("`.{}(...)` on a zero-length Vec has no meaningful result", method.name),
+                        &format!(
+                            "`.{}(...)` on a zero-length Vec has no meaningful result",
+                            method.name
+                        ),
                         method.span,
                     ));
                     return Ty::Error;
                 }
                 let idx_w = crate::width::index_width(n as u64);
-                let pred_needed = !matches!(method.name.as_str(),
-                    "reduce_or" | "reduce_and" | "reduce_xor" | "contains");
+                let pred_needed = !matches!(
+                    method.name.as_str(),
+                    "reduce_or" | "reduce_and" | "reduce_xor" | "contains"
+                );
 
                 if pred_needed {
                     if args.len() != 1 {
                         self.errors.push(CompileError::general(
-                            &format!("`.{}(pred)` takes exactly 1 argument (the predicate)", method.name),
+                            &format!(
+                                "`.{}(pred)` takes exactly 1 argument (the predicate)",
+                                method.name
+                            ),
                             method.span,
                         ));
                         return Ty::Error;
@@ -3836,7 +4431,9 @@ impl<'a> TypeChecker<'a> {
                         self.errors.push(CompileError::general(
                             &format!(
                                 "`.{}` predicate must be Bool, got {}",
-                                method.name, pred_ty.display()),
+                                method.name,
+                                pred_ty.display()
+                            ),
                             args[0].span,
                         ));
                         return Ty::Error;
@@ -3852,8 +4449,7 @@ impl<'a> TypeChecker<'a> {
                     let arg_ty = self.resolve_expr_type(&args[0], module_name, local_types);
                     // Basic element-type compatibility (same kind + width).
                     let compatible = match (&elem_ty, &arg_ty) {
-                        (Ty::UInt(a), Ty::UInt(b))
-                        | (Ty::SInt(a), Ty::SInt(b)) => a == b,
+                        (Ty::UInt(a), Ty::UInt(b)) | (Ty::SInt(a), Ty::SInt(b)) => a == b,
                         (Ty::Bool, Ty::Bool) => true,
                         _ => elem_ty == arg_ty,
                     };
@@ -3898,8 +4494,11 @@ impl<'a> TypeChecker<'a> {
                             Ty::SInt(w) => Ty::SInt(*w),
                             _ => {
                                 self.errors.push(CompileError::general(
-                                    &format!("`.{}()` requires UInt/SInt/Bool element type, got `{}`",
-                                        method.name, elem_ty.display()),
+                                    &format!(
+                                        "`.{}()` requires UInt/SInt/Bool element type, got `{}`",
+                                        method.name,
+                                        elem_ty.display()
+                                    ),
                                     method.span,
                                 ));
                                 return Ty::Error;
@@ -3912,16 +4511,27 @@ impl<'a> TypeChecker<'a> {
             _ => Ty::Error,
         }
     }
-    pub(crate) fn check_precedence_ambiguity(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr, span: Span) {
+    pub(crate) fn check_precedence_ambiguity(
+        &mut self,
+        op: BinOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        span: Span,
+    ) {
         let is_bitwise = matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor);
-        let is_comparison = matches!(op, BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte);
+        let is_comparison = matches!(
+            op,
+            BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte
+        );
 
         // Case 1: comparison with unparenthesized bitwise child
         // e.g. `a & b == c` — ARCH parses as (a & b) == c, SV parses as a & (b == c)
         if is_comparison {
             for child in [lhs, rhs] {
                 if let ExprKind::Binary(child_op, _, _) = &child.kind {
-                    if matches!(child_op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) && !child.parenthesized {
+                    if matches!(child_op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor)
+                        && !child.parenthesized
+                    {
                         self.errors.push(CompileError::general(
                             &format!(
                                 "ambiguous precedence: bitwise '{}' inside comparison '{}' — add parentheses (ARCH and SystemVerilog parse this differently)",
@@ -3939,7 +4549,11 @@ impl<'a> TypeChecker<'a> {
         if is_bitwise {
             for child in [lhs, rhs] {
                 if let ExprKind::Binary(child_op, _, _) = &child.kind {
-                    if matches!(child_op, BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte) && !child.parenthesized {
+                    if matches!(
+                        child_op,
+                        BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte
+                    ) && !child.parenthesized
+                    {
                         self.errors.push(CompileError::general(
                             &format!(
                                 "ambiguous precedence: comparison '{}' inside bitwise '{}' — add parentheses (ARCH and SystemVerilog parse this differently)",
@@ -4009,9 +4623,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         match op {
-            BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => {
-                Ty::Bool
-            }
+            BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => Ty::Bool,
             BinOp::And | BinOp::Or | BinOp::Implies | BinOp::ImpliesNext => Ty::Bool,
             BinOp::Add | BinOp::Sub => {
                 let lw = lt.width().unwrap_or(1);
@@ -4057,7 +4669,11 @@ impl<'a> TypeChecker<'a> {
                 // Bool is UInt<1>; bitwise ops on two 1-bit types stay Bool.
                 let lw = lt.width().unwrap_or(1);
                 let rw = rt.width().unwrap_or(1);
-                if lw.max(rw) == 1 { Ty::Bool } else { Ty::UInt(lw.max(rw)) }
+                if lw.max(rw) == 1 {
+                    Ty::Bool
+                } else {
+                    Ty::UInt(lw.max(rw))
+                }
             }
             BinOp::Shl | BinOp::Shr => lt.clone(),
         }
@@ -4113,16 +4729,28 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Binary(BinOp::Div, lhs, rhs) => {
                 let l = self.eval_const_expr(lhs, local_types)?;
                 let r = self.eval_const_expr(rhs, local_types)?;
-                if r == 0 { None } else { Some(l / r) }
+                if r == 0 {
+                    None
+                } else {
+                    Some(l / r)
+                }
             }
             ExprKind::Binary(BinOp::Mod, lhs, rhs) => {
                 let l = self.eval_const_expr(lhs, local_types)?;
                 let r = self.eval_const_expr(rhs, local_types)?;
-                if r == 0 { None } else { Some(l % r) }
+                if r == 0 {
+                    None
+                } else {
+                    Some(l % r)
+                }
             }
             ExprKind::Clog2(arg) => {
                 let v = self.eval_const_expr(arg, local_types)?;
-                if v <= 1 { Some(1) } else { Some(64 - (v - 1).leading_zeros() as u64) }
+                if v <= 1 {
+                    Some(1)
+                } else {
+                    Some(64 - (v - 1).leading_zeros() as u64)
+                }
             }
             _ => None,
         }
@@ -4164,20 +4792,36 @@ impl<'a> TypeChecker<'a> {
             guard_sig: Option<String>,
         }
 
-        let async_resets: HashSet<String> = m.ports.iter()
-            .filter_map(|p| if let TypeExpr::Reset(ResetKind::Async, _) = &p.ty {
-                Some(p.name.name.clone())
-            } else { None })
+        let async_resets: HashSet<String> = m
+            .ports
+            .iter()
+            .filter_map(|p| {
+                if let TypeExpr::Reset(ResetKind::Async, _) = &p.ty {
+                    Some(p.name.name.clone())
+                } else {
+                    None
+                }
+            })
             .collect();
-        let sync_resets: HashSet<String> = m.ports.iter()
-            .filter_map(|p| if let TypeExpr::Reset(ResetKind::Sync, _) = &p.ty {
-                Some(p.name.name.clone())
-            } else { None })
+        let sync_resets: HashSet<String> = m
+            .ports
+            .iter()
+            .filter_map(|p| {
+                if let TypeExpr::Reset(ResetKind::Sync, _) = &p.ty {
+                    Some(p.name.name.clone())
+                } else {
+                    None
+                }
+            })
             .collect();
         let kind_of_reset = |sig: &str| -> Option<ResetKind> {
-            if async_resets.contains(sig) { Some(ResetKind::Async) }
-            else if sync_resets.contains(sig) { Some(ResetKind::Sync) }
-            else { None }
+            if async_resets.contains(sig) {
+                Some(ResetKind::Async)
+            } else if sync_resets.contains(sig) {
+                Some(ResetKind::Sync)
+            } else {
+                None
+            }
         };
 
         let mut flop_info: HashMap<String, FlopInfo> = HashMap::new();
@@ -4192,38 +4836,56 @@ impl<'a> TypeChecker<'a> {
             if let ModuleBodyItem::RegDecl(rd) = item {
                 let sig = extract_reset_sig(&rd.reset);
                 let kind = sig.as_deref().and_then(kind_of_reset);
-                flop_info.insert(rd.name.name.clone(), FlopInfo {
-                    reset_sig: sig,
-                    reset_kind: kind,
-                    decl_span: rd.name.span,
-                    guard_sig: rd.guard.as_ref().map(|g| g.name.clone()),
-                });
+                flop_info.insert(
+                    rd.name.name.clone(),
+                    FlopInfo {
+                        reset_sig: sig,
+                        reset_kind: kind,
+                        decl_span: rd.name.span,
+                        guard_sig: rd.guard.as_ref().map(|g| g.name.clone()),
+                    },
+                );
             }
         }
         for p in &m.ports {
             if let Some(ri) = &p.reg_info {
                 let sig = extract_reset_sig(&ri.reset);
                 let kind = sig.as_deref().and_then(kind_of_reset);
-                flop_info.insert(p.name.name.clone(), FlopInfo {
-                    reset_sig: sig,
-                    reset_kind: kind,
-                    decl_span: p.name.span,
-                    guard_sig: ri.guard.as_ref().map(|g| g.name.clone()),
-                });
+                flop_info.insert(
+                    p.name.name.clone(),
+                    FlopInfo {
+                        reset_sig: sig,
+                        reset_kind: kind,
+                        decl_span: p.name.span,
+                        guard_sig: ri.guard.as_ref().map(|g| g.name.clone()),
+                    },
+                );
             }
         }
         // Fast path: if no async-reset flops exist, no domain originated,
         // no violation possible. Skip the heavier work.
-        let any_async = flop_info.values().any(|fi| matches!(fi.reset_kind, Some(ResetKind::Async)));
-        if !any_async { return; }
+        let any_async = flop_info
+            .values()
+            .any(|fi| matches!(fi.reset_kind, Some(ResetKind::Async)));
+        if !any_async {
+            return;
+        }
 
         let flop_set: HashSet<String> = flop_info.keys().cloned().collect();
 
         // 2. Build let-binding transitive flop reads. A `let x = expr;` is
         //    a combinational wire; if `expr` reads flop r, then any
         //    consumer reading `x` is effectively reading r.
-        let lets: Vec<&LetBinding> = m.body.iter()
-            .filter_map(|i| if let ModuleBodyItem::LetBinding(l) = i { Some(l) } else { None })
+        let lets: Vec<&LetBinding> = m
+            .body
+            .iter()
+            .filter_map(|i| {
+                if let ModuleBodyItem::LetBinding(l) = i {
+                    Some(l)
+                } else {
+                    None
+                }
+            })
             .collect();
         let let_names: HashSet<String> = lets.iter().map(|l| l.name.name.clone()).collect();
         let mut let_deps: HashMap<String, HashSet<String>> = HashMap::new();
@@ -4251,7 +4913,9 @@ impl<'a> TypeChecker<'a> {
                 let entry = let_deps.get_mut(&l.name.name).unwrap();
                 let before = entry.len();
                 entry.extend(to_add);
-                if entry.len() != before { changed = true; }
+                if entry.len() != before {
+                    changed = true;
+                }
             }
         }
 
@@ -4259,7 +4923,9 @@ impl<'a> TypeChecker<'a> {
         //    seq block, collect rhs reads; flops feed directly, lets feed
         //    transitively via let_deps.
         let mut flop_deps: HashMap<String, HashSet<String>> = HashMap::new();
-        for f in &flop_set { flop_deps.insert(f.clone(), HashSet::new()); }
+        for f in &flop_set {
+            flop_deps.insert(f.clone(), HashSet::new());
+        }
 
         fn walk_seq_assigns(
             stmts: &[Stmt],
@@ -4327,7 +4993,9 @@ impl<'a> TypeChecker<'a> {
         while changed {
             changed = false;
             for (name, info) in &flop_info {
-                if matches!(info.reset_kind, Some(ResetKind::Async)) { continue; }
+                if matches!(info.reset_kind, Some(ResetKind::Async)) {
+                    continue;
+                }
                 let deps = flop_deps.get(name).cloned().unwrap_or_default();
                 let mut new_reach: HashSet<String> = HashSet::new();
                 for src in &deps {
@@ -4371,7 +5039,11 @@ impl<'a> TypeChecker<'a> {
                                  `{my_reset}` but its data input transitively reads from \
                                  register(s) reset by async signal(s) {} — async reset \
                                  domains cannot be crossed without a `synchronizer kind reset`.",
-                                foreign.iter().map(|d| format!("`{d}`")).collect::<Vec<_>>().join(", ")
+                                foreign
+                                    .iter()
+                                    .map(|d| format!("`{d}`"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
                             ),
                             info.decl_span,
                         ));
@@ -4395,14 +5067,18 @@ impl<'a> TypeChecker<'a> {
                         // those domains, gating the unreset data).
                         let waived_by_guard = info.guard_sig.as_ref().and_then(|g| {
                             let gi = flop_info.get(g)?;
-                            if !matches!(gi.reset_kind, Some(ResetKind::Async)) { return None; }
+                            if !matches!(gi.reset_kind, Some(ResetKind::Async)) {
+                                return None;
+                            }
                             let g_reset = gi.reset_sig.as_ref()?;
                             // Every reach domain must equal the guard's
                             // reset signal — otherwise the guard doesn't
                             // protect the foreign domain(s) we cross.
                             if r.iter().all(|d| d == g_reset) {
                                 Some((g.clone(), g_reset.clone()))
-                            } else { None }
+                            } else {
+                                None
+                            }
                         });
                         if waived_by_guard.is_some() {
                             continue;
@@ -4418,15 +5094,26 @@ impl<'a> TypeChecker<'a> {
                         let domain_phrase = if domains.len() == 1 {
                             format!("async reset domain `{}`", domains[0])
                         } else {
-                            format!("multiple async reset domains ({})",
-                                domains.iter().map(|d| format!("`{d}`")).collect::<Vec<_>>().join(", "))
+                            format!(
+                                "multiple async reset domains ({})",
+                                domains
+                                    .iter()
+                                    .map(|d| format!("`{d}`"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
                         };
                         // Hint about the issue-#260 waiver path when the
                         // user has a guard but it doesn't qualify (so they
                         // can fix the guard's reset rather than reaching
                         // for `pragma rdc_safe`).
-                        let guard_hint = match (&info.guard_sig, info.guard_sig.as_ref().and_then(|g| flop_info.get(g))) {
-                            (Some(g), Some(gi)) if !matches!(gi.reset_kind, Some(ResetKind::Async)) => {
+                        let guard_hint = match (
+                            &info.guard_sig,
+                            info.guard_sig.as_ref().and_then(|g| flop_info.get(g)),
+                        ) {
+                            (Some(g), Some(gi))
+                                if !matches!(gi.reset_kind, Some(ResetKind::Async)) =>
+                            {
                                 format!(" (Note: `guard {g}` is present but `{g}` is not async-reset, so the guard waiver does not apply.)")
                             }
                             (Some(g), None) => {
@@ -4458,8 +5145,17 @@ impl<'a> TypeChecker<'a> {
         // clock pulses on `clk_out`. Walk every inst whose target
         // construct is a `clkgate` and compute reach for the parent-side
         // signal driving its `enable` port. Non-empty → violation.
-        let clkgate_constructs: HashSet<String> = self.source.items.iter()
-            .filter_map(|it| if let Item::Clkgate(c) = it { Some(c.name.name.clone()) } else { None })
+        let clkgate_constructs: HashSet<String> = self
+            .source
+            .items
+            .iter()
+            .filter_map(|it| {
+                if let Item::Clkgate(c) = it {
+                    Some(c.name.name.clone())
+                } else {
+                    None
+                }
+            })
             .collect();
         if !clkgate_constructs.is_empty() {
             let reach_for_signal = |sig: &Expr| -> HashSet<String> {
@@ -4467,10 +5163,14 @@ impl<'a> TypeChecker<'a> {
                 Self::collect_expr_reads(sig, &mut reads);
                 let mut acc: HashSet<String> = HashSet::new();
                 for r in &reads {
-                    if let Some(rr) = reach.get(r) { acc.extend(rr.iter().cloned()); }
+                    if let Some(rr) = reach.get(r) {
+                        acc.extend(rr.iter().cloned());
+                    }
                     if let Some(ld) = let_deps.get(r) {
                         for f in ld {
-                            if let Some(rr) = reach.get(f) { acc.extend(rr.iter().cloned()); }
+                            if let Some(rr) = reach.get(f) {
+                                acc.extend(rr.iter().cloned());
+                            }
                         }
                     }
                 }
@@ -4478,9 +5178,13 @@ impl<'a> TypeChecker<'a> {
             };
             for item in &m.body {
                 if let ModuleBodyItem::Inst(inst) = item {
-                    if !clkgate_constructs.contains(&inst.module_name.name) { continue; }
+                    if !clkgate_constructs.contains(&inst.module_name.name) {
+                        continue;
+                    }
                     for conn in &inst.connections {
-                        if conn.port_name.name != "enable" { continue; }
+                        if conn.port_name.name != "enable" {
+                            continue;
+                        }
                         let domains = reach_for_signal(&conn.signal);
                         if !domains.is_empty() {
                             let mut sorted: Vec<String> = domains.into_iter().collect();
@@ -4488,8 +5192,14 @@ impl<'a> TypeChecker<'a> {
                             let domain_phrase = if sorted.len() == 1 {
                                 format!("async reset domain `{}`", sorted[0])
                             } else {
-                                format!("async reset domains ({})",
-                                    sorted.iter().map(|d| format!("`{d}`")).collect::<Vec<_>>().join(", "))
+                                format!(
+                                    "async reset domains ({})",
+                                    sorted
+                                        .iter()
+                                        .map(|d| format!("`{d}`"))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                )
                             };
                             self.errors.push(CompileError::general(
                                 &format!(
@@ -4541,44 +5251,77 @@ impl<'a> TypeChecker<'a> {
         // diagnostic. A heterogeneous group (some reset, some data
         // synchronisers off the same source) gets the more general
         // "RDC/CDC" wording.
-        let sync_kinds: HashMap<String, SyncKind> = self.source.items.iter()
-            .filter_map(|it| if let Item::Synchronizer(s) = it {
-                Some((s.name.name.clone(), s.kind))
-            } else { None })
+        let sync_kinds: HashMap<String, SyncKind> = self
+            .source
+            .items
+            .iter()
+            .filter_map(|it| {
+                if let Item::Synchronizer(s) = it {
+                    Some((s.name.name.clone(), s.kind))
+                } else {
+                    None
+                }
+            })
             .collect();
-        if sync_kinds.is_empty() { return; }
+        if sync_kinds.is_empty() {
+            return;
+        }
         // Per-port clock domain map (rebuilt locally — independent of
         // phase 1's CDC gate so a single-clock module with reconvergent
         // syncs into that one domain still trips).
-        let clk_domain: HashMap<String, String> = m.ports.iter()
-            .filter_map(|p| if let TypeExpr::Clock(domain) = &p.ty {
-                Some((p.name.name.clone(), domain.name.clone()))
-            } else { None })
+        let clk_domain: HashMap<String, String> = m
+            .ports
+            .iter()
+            .filter_map(|p| {
+                if let TypeExpr::Clock(domain) = &p.ty {
+                    Some((p.name.name.clone(), domain.name.clone()))
+                } else {
+                    None
+                }
+            })
             .collect();
         // Build let-binding indirection map: `let x = expr;` lets the
         // source-tracing pass walk through `x` to its underlying source
         // registers, catching common-source-via-comb cases (Aldec article
         // 2140's bit-slice / common-source-register patterns).
-        let let_map: HashMap<String, &Expr> = m.body.iter()
-            .filter_map(|i| if let ModuleBodyItem::LetBinding(l) = i {
-                Some((l.name.name.clone(), &l.value))
-            } else { None })
+        let let_map: HashMap<String, &Expr> = m
+            .body
+            .iter()
+            .filter_map(|i| {
+                if let ModuleBodyItem::LetBinding(l) = i {
+                    Some((l.name.name.clone(), &l.value))
+                } else {
+                    None
+                }
+            })
             .collect();
         // Per-sync-instance terminal source-register set (after walking
         // through bit-slice, concat, unary/binary, let bindings). For
         // each terminal source ident, group by (ident, dest_domain).
         #[allow(clippy::type_complexity)]
-        let mut groups: HashMap<(String, String), Vec<(String, SyncKind, crate::lexer::Span)>> = HashMap::new();
+        let mut groups: HashMap<
+            (String, String),
+            Vec<(String, SyncKind, crate::lexer::Span)>,
+        > = HashMap::new();
         for item in &m.body {
-            let ModuleBodyItem::Inst(inst) = item else { continue; };
-            let Some(kind) = sync_kinds.get(&inst.module_name.name) else { continue; };
+            let ModuleBodyItem::Inst(inst) = item else {
+                continue;
+            };
+            let Some(kind) = sync_kinds.get(&inst.module_name.name) else {
+                continue;
+            };
             let mut src_set: HashSet<String> = HashSet::new();
             let mut dst_clk_sig: Option<String> = None;
             for conn in &inst.connections {
                 match conn.port_name.name.as_str() {
                     "data_in" => {
                         let mut visited = HashSet::new();
-                        Self::collect_source_idents(&conn.signal, &let_map, &mut visited, &mut src_set);
+                        Self::collect_source_idents(
+                            &conn.signal,
+                            &let_map,
+                            &mut visited,
+                            &mut src_set,
+                        );
                     }
                     "dst_clk" => {
                         if let ExprKind::Ident(n) = &conn.signal.kind {
@@ -4588,13 +5331,21 @@ impl<'a> TypeChecker<'a> {
                     _ => {}
                 }
             }
-            if src_set.is_empty() { continue; }
-            let Some(clk) = dst_clk_sig else { continue; };
-            let Some(dom) = clk_domain.get(&clk) else { continue; };
+            if src_set.is_empty() {
+                continue;
+            }
+            let Some(clk) = dst_clk_sig else {
+                continue;
+            };
+            let Some(dom) = clk_domain.get(&clk) else {
+                continue;
+            };
             for src in &src_set {
-                groups.entry((src.clone(), dom.clone()))
-                    .or_default()
-                    .push((inst.name.name.clone(), *kind, inst.span));
+                groups.entry((src.clone(), dom.clone())).or_default().push((
+                    inst.name.name.clone(),
+                    *kind,
+                    inst.span,
+                ));
             }
         }
         // Sort for deterministic diagnostics across HashMap iteration.
@@ -4607,14 +5358,21 @@ impl<'a> TypeChecker<'a> {
         let mut reported_inst_sets: HashSet<Vec<String>> = HashSet::new();
         for key in sorted_keys {
             let users = &groups[&key];
-            if users.len() < 2 { continue; }
+            if users.len() < 2 {
+                continue;
+            }
             let mut inst_set: Vec<String> = users.iter().map(|(n, _, _)| n.clone()).collect();
             inst_set.sort();
             inst_set.dedup();
-            if inst_set.len() < 2 { continue; }
-            if !reported_inst_sets.insert(inst_set.clone()) { continue; }
+            if inst_set.len() < 2 {
+                continue;
+            }
+            if !reported_inst_sets.insert(inst_set.clone()) {
+                continue;
+            }
             let (source, domain) = key;
-            let inst_list = inst_set.iter()
+            let inst_list = inst_set
+                .iter()
                 .map(|n| format!("`{n}`"))
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -4626,9 +5384,9 @@ impl<'a> TypeChecker<'a> {
             let any_reset = users.iter().any(|(_, k, _)| *k == SyncKind::Reset);
             let any_data = users.iter().any(|(_, k, _)| *k != SyncKind::Reset);
             let (label, sync_word, settle_word) = match (any_reset, any_data) {
-                (true,  false) => ("RDC",     "reset synchronisers", "deassert"),
-                (false, true)  => ("CDC",     "synchronisers",       "settle"),
-                _              => ("RDC/CDC", "synchronisers",       "settle"),
+                (true, false) => ("RDC", "reset synchronisers", "deassert"),
+                (false, true) => ("CDC", "synchronisers", "settle"),
+                _ => ("RDC/CDC", "synchronisers", "settle"),
             };
             self.errors.push(CompileError::general(
                 &format!(
@@ -4680,13 +5438,23 @@ impl<'a> TypeChecker<'a> {
                 Self::collect_source_idents(base, let_map, visited, out);
                 Self::collect_source_idents(idx, let_map, visited, out);
             }
-            ExprKind::BitSlice(base, _, _) => Self::collect_source_idents(base, let_map, visited, out),
-            ExprKind::PartSelect(base, _, _, _) => Self::collect_source_idents(base, let_map, visited, out),
-            ExprKind::FieldAccess(base, _) => Self::collect_source_idents(base, let_map, visited, out),
+            ExprKind::BitSlice(base, _, _) => {
+                Self::collect_source_idents(base, let_map, visited, out)
+            }
+            ExprKind::PartSelect(base, _, _, _) => {
+                Self::collect_source_idents(base, let_map, visited, out)
+            }
+            ExprKind::FieldAccess(base, _) => {
+                Self::collect_source_idents(base, let_map, visited, out)
+            }
             ExprKind::Cast(e, _) => Self::collect_source_idents(e, let_map, visited, out),
-            ExprKind::Signed(e) | ExprKind::Unsigned(e) => Self::collect_source_idents(e, let_map, visited, out),
+            ExprKind::Signed(e) | ExprKind::Unsigned(e) => {
+                Self::collect_source_idents(e, let_map, visited, out)
+            }
             ExprKind::Concat(parts) => {
-                for p in parts { Self::collect_source_idents(p, let_map, visited, out); }
+                for p in parts {
+                    Self::collect_source_idents(p, let_map, visited, out);
+                }
             }
             ExprKind::Repeat(n, e) => {
                 Self::collect_source_idents(n, let_map, visited, out);
@@ -4698,13 +5466,19 @@ impl<'a> TypeChecker<'a> {
                 Self::collect_source_idents(e, let_map, visited, out);
             }
             ExprKind::FunctionCall(_, args) => {
-                for a in args { Self::collect_source_idents(a, let_map, visited, out); }
+                for a in args {
+                    Self::collect_source_idents(a, let_map, visited, out);
+                }
             }
             ExprKind::MethodCall(base, _, args) => {
                 Self::collect_source_idents(base, let_map, visited, out);
-                for a in args { Self::collect_source_idents(a, let_map, visited, out); }
+                for a in args {
+                    Self::collect_source_idents(a, let_map, visited, out);
+                }
             }
-            ExprKind::Clog2(e) | ExprKind::Onehot(e) => Self::collect_source_idents(e, let_map, visited, out),
+            ExprKind::Clog2(e) | ExprKind::Onehot(e) => {
+                Self::collect_source_idents(e, let_map, visited, out)
+            }
             _ => {}
         }
     }
@@ -4741,18 +5515,18 @@ impl<'a> TypeChecker<'a> {
         let lookup_ports = |name: &str| -> Vec<PortDecl> {
             for item in &self.source.items {
                 let ports = match item {
-                    Item::Module(m)       if m.name.name == name => Some(&m.ports),
-                    Item::Fsm(f)          if f.name.name == name => Some(&f.ports),
-                    Item::Fifo(f)         if f.name.name == name => Some(&f.ports),
-                    Item::Ram(r)          if r.name.name == name => Some(&r.ports),
-                    Item::Cam(c)          if c.name.name == name => Some(&c.ports),
-                    Item::Counter(c)      if c.name.name == name => Some(&c.ports),
-                    Item::Arbiter(a)      if a.name.name == name => Some(&a.ports),
-                    Item::Regfile(r)      if r.name.name == name => Some(&r.ports),
-                    Item::Pipeline(p)     if p.name.name == name => Some(&p.ports),
-                    Item::Linklist(l)     if l.name.name == name => Some(&l.ports),
+                    Item::Module(m) if m.name.name == name => Some(&m.ports),
+                    Item::Fsm(f) if f.name.name == name => Some(&f.ports),
+                    Item::Fifo(f) if f.name.name == name => Some(&f.ports),
+                    Item::Ram(r) if r.name.name == name => Some(&r.ports),
+                    Item::Cam(c) if c.name.name == name => Some(&c.ports),
+                    Item::Counter(c) if c.name.name == name => Some(&c.ports),
+                    Item::Arbiter(a) if a.name.name == name => Some(&a.ports),
+                    Item::Regfile(r) if r.name.name == name => Some(&r.ports),
+                    Item::Pipeline(p) if p.name.name == name => Some(&p.ports),
+                    Item::Linklist(l) if l.name.name == name => Some(&l.ports),
                     Item::Synchronizer(s) if s.name.name == name => Some(&s.ports),
-                    Item::Clkgate(c)      if c.name.name == name => Some(&c.ports),
+                    Item::Clkgate(c) if c.name.name == name => Some(&c.ports),
                     _ => None,
                 };
                 if let Some(p) = ports {
@@ -4762,20 +5536,32 @@ impl<'a> TypeChecker<'a> {
             Vec::new()
         };
         for item in &m.body {
-            let ModuleBodyItem::Inst(inst) = item else { continue; };
+            let ModuleBodyItem::Inst(inst) = item else {
+                continue;
+            };
             let sub_ports = lookup_ports(&inst.module_name.name);
             for conn in &inst.connections {
-                let port = sub_ports.iter().find(|p| p.name.name == conn.port_name.name);
-                let Some(port) = port else { continue; };
-                if !matches!(&port.ty, TypeExpr::Reset(_, _)) { continue; }
-                if conn.direction != ConnectDir::Input { continue; }
+                let port = sub_ports
+                    .iter()
+                    .find(|p| p.name.name == conn.port_name.name);
+                let Some(port) = port else {
+                    continue;
+                };
+                if !matches!(&port.ty, TypeExpr::Reset(_, _)) {
+                    continue;
+                }
+                if conn.direction != ConnectDir::Input {
+                    continue;
+                }
                 // Direct reset source → trust. A reset-type cast such as
                 // `rst as Reset<Async, Low>` is an instantiation-time reset
                 // annotation, not reset-combining logic; peel through it so
                 // legacy reset-override examples stay legal. Real logic under
                 // the cast, e.g. `(rst_a | rst_b) as Reset<Async>`, remains a
                 // combiner and is still rejected.
-                if Self::is_direct_reset_inst_signal(&conn.signal) { continue; }
+                if Self::is_direct_reset_inst_signal(&conn.signal) {
+                    continue;
+                }
                 self.errors.push(CompileError::general(
                     &format!(
                         "RDC violation: inst `{inst_name}` (instance of `{sub}`) has its \
@@ -4817,8 +5603,14 @@ impl<'a> TypeChecker<'a> {
         // Find the instantiated module's definition
         let child_module = self.source.items.iter().find_map(|item| {
             if let Item::Module(m) = item {
-                if m.name.name == inst.module_name.name { Some(m) } else { None }
-            } else { None }
+                if m.name.name == inst.module_name.name {
+                    Some(m)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         });
         let child_module = match child_module {
             Some(m) => m,
@@ -4826,10 +5618,16 @@ impl<'a> TypeChecker<'a> {
         };
 
         // Build child module's clock port → domain map
-        let child_clk_domain: HashMap<String, String> = child_module.ports.iter()
-            .filter_map(|p| if let TypeExpr::Clock(domain) = &p.ty {
-                Some((p.name.name.clone(), domain.name.clone()))
-            } else { None })
+        let child_clk_domain: HashMap<String, String> = child_module
+            .ports
+            .iter()
+            .filter_map(|p| {
+                if let TypeExpr::Clock(domain) = &p.ty {
+                    Some((p.name.name.clone(), domain.name.clone()))
+                } else {
+                    None
+                }
+            })
             .collect();
 
         if child_clk_domain.is_empty() {
@@ -4878,7 +5676,11 @@ impl<'a> TypeChecker<'a> {
                     let mut reads = HashSet::new();
                     Self::collect_stmt_reads(&rb.stmts, &mut reads);
                     for read_name in &reads {
-                        if child_module.ports.iter().any(|p| p.name.name == *read_name && p.direction == Direction::In) {
+                        if child_module
+                            .ports
+                            .iter()
+                            .any(|p| p.name.name == *read_name && p.direction == Direction::In)
+                        {
                             child_port_domain.insert(read_name.clone(), domain.clone());
                         }
                     }
@@ -4900,7 +5702,8 @@ impl<'a> TypeChecker<'a> {
                 let mut targets = HashSet::new();
                 Self::collect_comb_stmt_targets(&cb.stmts, &mut targets);
                 // If all register reads are from the same domain, targets inherit that domain
-                let domains: HashSet<&String> = reads.iter()
+                let domains: HashSet<&String> = reads
+                    .iter()
                     .filter_map(|r| parent_reg_domain.get(r))
                     .collect();
                 if domains.len() == 1 {
@@ -4913,23 +5716,38 @@ impl<'a> TypeChecker<'a> {
         }
 
         // Build connection map: inst port name → connected signal name
-        let conn_signal: HashMap<String, String> = inst.connections.iter()
+        let conn_signal: HashMap<String, String> = inst
+            .connections
+            .iter()
             .filter_map(|c| {
                 if let ExprKind::Ident(sig_name) = &c.signal.kind {
                     Some((c.port_name.name.clone(), sig_name.clone()))
-                } else { None }
+                } else {
+                    None
+                }
             })
             .collect();
 
         // Find which clock domain each inst clock port is connected to
-        let inst_clk_mapping: HashMap<String, String> = inst.connections.iter()
+        let inst_clk_mapping: HashMap<String, String> = inst
+            .connections
+            .iter()
             .filter_map(|c| {
-                let child_port = child_module.ports.iter().find(|p| p.name.name == c.port_name.name)?;
+                let child_port = child_module
+                    .ports
+                    .iter()
+                    .find(|p| p.name.name == c.port_name.name)?;
                 if let TypeExpr::Clock(_) = &child_port.ty {
                     if let ExprKind::Ident(sig_name) = &c.signal.kind {
-                        parent_clk_domain.get(sig_name).map(|d| (c.port_name.name.clone(), d.clone()))
-                    } else { None }
-                } else { None }
+                        parent_clk_domain
+                            .get(sig_name)
+                            .map(|d| (c.port_name.name.clone(), d.clone()))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
             })
             .collect();
 
@@ -4938,7 +5756,11 @@ impl<'a> TypeChecker<'a> {
             let port_name = &conn.port_name.name;
 
             // Skip clock and reset ports
-            if let Some(child_port) = child_module.ports.iter().find(|p| p.name.name == *port_name) {
+            if let Some(child_port) = child_module
+                .ports
+                .iter()
+                .find(|p| p.name.name == *port_name)
+            {
                 if matches!(&child_port.ty, TypeExpr::Clock(_) | TypeExpr::Reset(..)) {
                     continue;
                 }
@@ -4952,12 +5774,16 @@ impl<'a> TypeChecker<'a> {
 
             // Map child domain to parent domain via clock connections
             // Find which parent clock is connected to the child clock in this domain
-            let expected_parent_domain = inst_clk_mapping.iter()
-                .find_map(|(child_clk, parent_domain)| {
-                    if child_clk_domain.get(child_clk) == Some(child_domain) {
-                        Some(parent_domain.as_str())
-                    } else { None }
-                });
+            let expected_parent_domain =
+                inst_clk_mapping
+                    .iter()
+                    .find_map(|(child_clk, parent_domain)| {
+                        if child_clk_domain.get(child_clk) == Some(child_domain) {
+                            Some(parent_domain.as_str())
+                        } else {
+                            None
+                        }
+                    });
 
             let expected_parent_domain = match expected_parent_domain {
                 Some(d) => d,
@@ -5036,7 +5862,9 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 Stmt::Log(l) => {
-                    for arg in &l.args { Self::collect_expr_reads(arg, out); }
+                    for arg in &l.args {
+                        Self::collect_expr_reads(arg, out);
+                    }
                 }
                 Stmt::For(f) => {
                     Self::collect_stmt_reads(&f.body, out);
@@ -5057,7 +5885,9 @@ impl<'a> TypeChecker<'a> {
 
     fn collect_expr_reads(expr: &Expr, out: &mut HashSet<String>) {
         match &expr.kind {
-            ExprKind::Ident(name) => { out.insert(name.clone()); }
+            ExprKind::Ident(name) => {
+                out.insert(name.clone());
+            }
             ExprKind::Binary(_, lhs, rhs) => {
                 Self::collect_expr_reads(lhs, out);
                 Self::collect_expr_reads(rhs, out);
@@ -5080,10 +5910,14 @@ impl<'a> TypeChecker<'a> {
             ExprKind::FieldAccess(base, _) => Self::collect_expr_reads(base, out),
             ExprKind::MethodCall(base, _, args) => {
                 Self::collect_expr_reads(base, out);
-                for a in args { Self::collect_expr_reads(a, out); }
+                for a in args {
+                    Self::collect_expr_reads(a, out);
+                }
             }
             ExprKind::FunctionCall(_, args) => {
-                for a in args { Self::collect_expr_reads(a, out); }
+                for a in args {
+                    Self::collect_expr_reads(a, out);
+                }
             }
             ExprKind::Ternary(cond, then_e, else_e) => {
                 Self::collect_expr_reads(cond, out);
@@ -5092,11 +5926,15 @@ impl<'a> TypeChecker<'a> {
             }
             ExprKind::Match(scrut, arms) => {
                 Self::collect_expr_reads(scrut, out);
-                for arm in arms { Self::collect_stmt_reads(&arm.body, out); }
+                for arm in arms {
+                    Self::collect_stmt_reads(&arm.body, out);
+                }
             }
             ExprKind::ExprMatch(scrut, arms) => {
                 Self::collect_expr_reads(scrut, out);
-                for arm in arms { Self::collect_expr_reads(&arm.value, out); }
+                for arm in arms {
+                    Self::collect_expr_reads(&arm.value, out);
+                }
             }
             ExprKind::Inside(scrut, members) => {
                 Self::collect_expr_reads(scrut, out);
@@ -5126,15 +5964,21 @@ impl<'a> TypeChecker<'a> {
                 }
                 Stmt::Match(m) => {
                     Self::collect_expr_reads(&m.scrutinee, out);
-                    for arm in &m.arms { Self::collect_comb_stmt_reads(&arm.body, out); }
+                    for arm in &m.arms {
+                        Self::collect_comb_stmt_reads(&arm.body, out);
+                    }
                 }
                 Stmt::Log(l) => {
-                    for arg in &l.args { Self::collect_expr_reads(arg, out); }
+                    for arg in &l.args {
+                        Self::collect_expr_reads(arg, out);
+                    }
                 }
                 Stmt::For(f) => {
                     Self::collect_comb_stmt_reads(&f.body, out);
                 }
-                    Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
+                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {
+                    unreachable!("seq-only Stmt variant inside comb-context walker")
+                }
             }
         }
     }
@@ -5143,19 +5987,28 @@ impl<'a> TypeChecker<'a> {
     fn collect_comb_stmt_targets(stmts: &[Stmt], out: &mut HashSet<String>) {
         for stmt in stmts {
             match stmt {
-                Stmt::Assign(a) => { let name = Self::expr_root_name_tc(&a.target); if !name.is_empty() { out.insert(name); } }
+                Stmt::Assign(a) => {
+                    let name = Self::expr_root_name_tc(&a.target);
+                    if !name.is_empty() {
+                        out.insert(name);
+                    }
+                }
                 Stmt::IfElse(ie) => {
                     Self::collect_comb_stmt_targets(&ie.then_stmts, out);
                     Self::collect_comb_stmt_targets(&ie.else_stmts, out);
                 }
                 Stmt::Match(m) => {
-                    for arm in &m.arms { Self::collect_comb_stmt_targets(&arm.body, out); }
+                    for arm in &m.arms {
+                        Self::collect_comb_stmt_targets(&arm.body, out);
+                    }
                 }
                 Stmt::Log(_) => {}
                 Stmt::For(f) => {
                     Self::collect_comb_stmt_targets(&f.body, out);
                 }
-                    Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
+                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {
+                    unreachable!("seq-only Stmt variant inside comb-context walker")
+                }
             }
         }
     }
@@ -5173,7 +6026,9 @@ impl<'a> TypeChecker<'a> {
             if let (Some(h), Some(l), Some(default)) = (
                 crate::elaborate::try_eval_i64(hi, &empty),
                 crate::elaborate::try_eval_i64(lo, &empty),
-                p.default.as_ref().and_then(|d| crate::elaborate::try_eval_i64(d, &empty)),
+                p.default
+                    .as_ref()
+                    .and_then(|d| crate::elaborate::try_eval_i64(d, &empty)),
             ) {
                 let width = (h - l + 1).max(0) as u32;
                 if width < 64 && default as u64 >= (1u64 << width) {
@@ -5291,7 +6146,10 @@ impl<'a> TypeChecker<'a> {
         for sb in &f.states {
             if sb.transitions.is_empty() {
                 self.errors.push(CompileError::general(
-                    &format!("state `{}` has no transitions (dead-end state)", sb.name.name),
+                    &format!(
+                        "state `{}` has no transitions (dead-end state)",
+                        sb.name.name
+                    ),
                     sb.name.span,
                 ));
             }
@@ -5333,12 +6191,15 @@ impl<'a> TypeChecker<'a> {
         // v2: optional dual-write port. If any write2_* port is present,
         // all four must be, so codegen can assume the full bundle.
         let w2_names = ["write2_valid", "write2_idx", "write2_key", "write2_set"];
-        let w2_present: Vec<bool> = w2_names.iter()
+        let w2_present: Vec<bool> = w2_names
+            .iter()
             .map(|n| c.ports.iter().any(|p| p.name.name == *n))
             .collect();
         let has_w2 = w2_present.iter().any(|b| *b);
         if has_w2 && !w2_present.iter().all(|b| *b) {
-            let missing: Vec<&str> = w2_names.iter().zip(&w2_present)
+            let missing: Vec<&str> = w2_names
+                .iter()
+                .zip(&w2_present)
                 .filter(|(_, present)| !**present)
                 .map(|(name, _)| *name)
                 .collect();
@@ -5352,17 +6213,25 @@ impl<'a> TypeChecker<'a> {
         }
         // v3: optional value payload. Activation = VAL_W param + write_value
         // + read_value (and write2_value if dual-write is enabled).
-        let has_val_w     = c.params.iter().any(|p| p.name.name == "VAL_W");
+        let has_val_w = c.params.iter().any(|p| p.name.name == "VAL_W");
         let has_write_val = c.ports.iter().any(|p| p.name.name == "write_value");
-        let has_read_val  = c.ports.iter().any(|p| p.name.name == "read_value");
-        let has_w2_val    = c.ports.iter().any(|p| p.name.name == "write2_value");
+        let has_read_val = c.ports.iter().any(|p| p.name.name == "read_value");
+        let has_w2_val = c.ports.iter().any(|p| p.name.name == "write2_value");
         if has_val_w || has_write_val || has_read_val || has_w2_val {
             // Any one present → all required (matched to the active write port set).
             let mut missing: Vec<&str> = Vec::new();
-            if !has_val_w     { missing.push("param VAL_W");      }
-            if !has_write_val { missing.push("port write_value"); }
-            if !has_read_val  { missing.push("port read_value");  }
-            if has_w2 && !has_w2_val { missing.push("port write2_value"); }
+            if !has_val_w {
+                missing.push("param VAL_W");
+            }
+            if !has_write_val {
+                missing.push("port write_value");
+            }
+            if !has_read_val {
+                missing.push("port read_value");
+            }
+            if has_w2 && !has_w2_val {
+                missing.push("port write2_value");
+            }
             if !missing.is_empty() {
                 self.errors.push(CompileError::general(
                     &format!(
@@ -5420,14 +6289,20 @@ impl<'a> TypeChecker<'a> {
         // true_dual requires exactly 2 port groups
         if r.kind == crate::ast::RamKind::TrueDual && r.port_groups.len() != 2 {
             self.errors.push(CompileError::general(
-                &format!("true_dual ram `{}` must have exactly 2 port groups", r.name.name),
+                &format!(
+                    "true_dual ram `{}` must have exactly 2 port groups",
+                    r.name.name
+                ),
                 r.name.span,
             ));
         }
         // simple_dual requires exactly 2 port groups
         if r.kind == crate::ast::RamKind::SimpleDual && r.port_groups.len() != 2 {
             self.errors.push(CompileError::general(
-                &format!("simple_dual ram `{}` must have exactly 2 port groups", r.name.name),
+                &format!(
+                    "simple_dual ram `{}` must have exactly 2 port groups",
+                    r.name.name
+                ),
                 r.name.span,
             ));
         }
@@ -5445,7 +6320,10 @@ impl<'a> TypeChecker<'a> {
                 for s in &pg.signals {
                     if s.name.name == "wen" || s.name.name == "wdata" {
                         self.errors.push(CompileError::general(
-                            &format!("rom `{}` must not have write signal `{}`", r.name.name, s.name.name),
+                            &format!(
+                                "rom `{}` must not have write signal `{}`",
+                                r.name.name, s.name.name
+                            ),
                             s.name.span,
                         ));
                     }
@@ -5466,8 +6344,14 @@ impl<'a> TypeChecker<'a> {
         }
 
         // Required port names
-        let required = ["push_valid", "push_ready", "push_data",
-                        "pop_valid",  "pop_ready",  "pop_data"];
+        let required = [
+            "push_valid",
+            "push_ready",
+            "push_data",
+            "pop_valid",
+            "pop_ready",
+            "pop_data",
+        ];
         let present: Vec<&str> = f.ports.iter().map(|p| p.name.name.as_str()).collect();
         for req in &required {
             if !present.contains(req) {
@@ -5481,7 +6365,10 @@ impl<'a> TypeChecker<'a> {
         // Require a type parameter for memory element width.
         // Without it, push_data/pop_data widths won't propagate to the
         // internal memory array, producing silently wrong codegen.
-        let has_type_param = f.params.iter().any(|p| matches!(p.kind, crate::ast::ParamKind::Type(_)));
+        let has_type_param = f
+            .params
+            .iter()
+            .any(|p| matches!(p.kind, crate::ast::ParamKind::Type(_)));
         if !has_type_param {
             self.errors.push(CompileError::general(
                 &format!(
@@ -5517,8 +6404,16 @@ impl<'a> TypeChecker<'a> {
         }
 
         // Must have exactly two clock ports from different domains
-        let clk_ports: Vec<(&Ident, &Ident)> = s.ports.iter()
-            .filter_map(|p| if let TypeExpr::Clock(domain) = &p.ty { Some((&p.name, domain)) } else { None })
+        let clk_ports: Vec<(&Ident, &Ident)> = s
+            .ports
+            .iter()
+            .filter_map(|p| {
+                if let TypeExpr::Clock(domain) = &p.ty {
+                    Some((&p.name, domain))
+                } else {
+                    None
+                }
+            })
             .collect();
         if clk_ports.len() != 2 {
             self.errors.push(CompileError::general(
@@ -5537,7 +6432,10 @@ impl<'a> TypeChecker<'a> {
         for req in &["data_in", "data_out"] {
             if !port_names.contains(req) {
                 self.errors.push(CompileError::general(
-                    &format!("synchronizer `{}` is missing required port `{req}`", s.name.name),
+                    &format!(
+                        "synchronizer `{}` is missing required port `{req}`",
+                        s.name.name
+                    ),
                     s.name.span,
                 ));
             }
@@ -5549,7 +6447,10 @@ impl<'a> TypeChecker<'a> {
                 if let ExprKind::Literal(LitKind::Dec(v)) = &default.kind {
                     if *v < 2 {
                         self.errors.push(CompileError::general(
-                            &format!("synchronizer `{}`: STAGES must be >= 2 (got {})", s.name.name, v),
+                            &format!(
+                                "synchronizer `{}`: STAGES must be >= 2 (got {})",
+                                s.name.name, v
+                            ),
                             stages_param.name.span,
                         ));
                     }
@@ -5577,13 +6478,19 @@ impl<'a> TypeChecker<'a> {
                 }
                 SyncKind::Reset if !is_single_bit => {
                     self.errors.push(CompileError::general(
-                        &format!("synchronizer `{}`: `kind reset` requires single-bit (Bool) data ports", s.name.name),
+                        &format!(
+                            "synchronizer `{}`: `kind reset` requires single-bit (Bool) data ports",
+                            s.name.name
+                        ),
                         data_in.span,
                     ));
                 }
                 SyncKind::Pulse if !is_single_bit => {
                     self.errors.push(CompileError::general(
-                        &format!("synchronizer `{}`: `kind pulse` requires single-bit (Bool) data ports", s.name.name),
+                        &format!(
+                            "synchronizer `{}`: `kind pulse` requires single-bit (Bool) data ports",
+                            s.name.name
+                        ),
                         data_in.span,
                     ));
                 }
@@ -5604,29 +6511,41 @@ impl<'a> TypeChecker<'a> {
         }
 
         // Must have exactly one Clock input and one Clock output with matching domain
-        let clk_in_ports: Vec<&crate::ast::PortDecl> = c.ports.iter()
+        let clk_in_ports: Vec<&crate::ast::PortDecl> = c
+            .ports
+            .iter()
             .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)) && p.direction == Direction::In)
             .collect();
-        let clk_out_ports: Vec<&crate::ast::PortDecl> = c.ports.iter()
+        let clk_out_ports: Vec<&crate::ast::PortDecl> = c
+            .ports
+            .iter()
             .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)) && p.direction == Direction::Out)
             .collect();
 
         if clk_in_ports.len() != 1 {
             self.errors.push(CompileError::general(
-                &format!("clkgate `{}` must have exactly 1 Clock input port", c.name.name),
+                &format!(
+                    "clkgate `{}` must have exactly 1 Clock input port",
+                    c.name.name
+                ),
                 c.name.span,
             ));
         }
         if clk_out_ports.len() != 1 {
             self.errors.push(CompileError::general(
-                &format!("clkgate `{}` must have exactly 1 Clock output port", c.name.name),
+                &format!(
+                    "clkgate `{}` must have exactly 1 Clock output port",
+                    c.name.name
+                ),
                 c.name.span,
             ));
         }
 
         // Check domains match
         if clk_in_ports.len() == 1 && clk_out_ports.len() == 1 {
-            if let (TypeExpr::Clock(d_in), TypeExpr::Clock(d_out)) = (&clk_in_ports[0].ty, &clk_out_ports[0].ty) {
+            if let (TypeExpr::Clock(d_in), TypeExpr::Clock(d_out)) =
+                (&clk_in_ports[0].ty, &clk_out_ports[0].ty)
+            {
                 if d_in.name != d_out.name {
                     self.errors.push(CompileError::general(
                         &format!("clkgate `{}`: input clock domain `{}` must match output clock domain `{}`",
@@ -5638,10 +6557,16 @@ impl<'a> TypeChecker<'a> {
         }
 
         // Must have enable port (Bool input)
-        let has_enable = c.ports.iter().any(|p| p.name.name == "enable" && p.direction == Direction::In);
+        let has_enable = c
+            .ports
+            .iter()
+            .any(|p| p.name.name == "enable" && p.direction == Direction::In);
         if !has_enable {
             self.errors.push(CompileError::general(
-                &format!("clkgate `{}` is missing required `enable: in Bool` port", c.name.name),
+                &format!(
+                    "clkgate `{}` is missing required `enable: in Bool` port",
+                    c.name.name
+                ),
                 c.name.span,
             ));
         }
@@ -5687,7 +6612,10 @@ impl<'a> TypeChecker<'a> {
         if let ArbiterPolicy::Custom(ref fn_ident) = a.policy {
             if a.hook.is_none() {
                 self.errors.push(CompileError::general(
-                    &format!("custom policy `{}` requires a `hook grant_select` declaration", fn_ident.name),
+                    &format!(
+                        "custom policy `{}` requires a `hook grant_select` declaration",
+                        fn_ident.name
+                    ),
                     fn_ident.span,
                 ));
                 return;
@@ -5696,7 +6624,10 @@ impl<'a> TypeChecker<'a> {
             // Verify the hook's bound function name matches the policy name
             if hook.fn_name.name != fn_ident.name {
                 self.errors.push(CompileError::general(
-                    &format!("hook function `{}` does not match policy name `{}`", hook.fn_name.name, fn_ident.name),
+                    &format!(
+                        "hook function `{}` does not match policy name `{}`",
+                        hook.fn_name.name, fn_ident.name
+                    ),
                     hook.fn_name.span,
                 ));
             }
@@ -5717,7 +6648,8 @@ impl<'a> TypeChecker<'a> {
             // Verify hook argument bindings reference declared ports or params
             let port_names: Vec<&str> = a.ports.iter().map(|p| p.name.name.as_str()).collect();
             let param_names: Vec<&str> = a.params.iter().map(|p| p.name.name.as_str()).collect();
-            let hook_param_names: Vec<&str> = hook.params.iter().map(|p| p.name.name.as_str()).collect();
+            let hook_param_names: Vec<&str> =
+                hook.params.iter().map(|p| p.name.name.as_str()).collect();
             // Hook parameter names must not shadow arbiter port names — the
             // codegen emits the function inside the module, so a name collision
             // produces SV VARHIDDEN warnings.
@@ -5739,7 +6671,10 @@ impl<'a> TypeChecker<'a> {
                     && !param_names.contains(&arg.name.as_str())
                 {
                     self.errors.push(CompileError::general(
-                        &format!("hook argument `{}` is not a hook parameter, port, or param", arg.name),
+                        &format!(
+                            "hook argument `{}` is not a hook parameter, port, or param",
+                            arg.name
+                        ),
                         arg.span,
                     ));
                 }
@@ -5791,10 +6726,14 @@ impl<'a> TypeChecker<'a> {
     ) {
         match item {
             ModuleBodyItem::CombBlock(cb) => {
-                for s in &cb.stmts { self.walk_pipeline_comb_stmt(s, cur_idx, stage_idx, cur_name); }
+                for s in &cb.stmts {
+                    self.walk_pipeline_comb_stmt(s, cur_idx, stage_idx, cur_name);
+                }
             }
             ModuleBodyItem::RegBlock(rb) => {
-                for s in &rb.stmts { self.walk_pipeline_stmt(s, cur_idx, stage_idx, cur_name); }
+                for s in &rb.stmts {
+                    self.walk_pipeline_stmt(s, cur_idx, stage_idx, cur_name);
+                }
             }
             ModuleBodyItem::LetBinding(lb) => {
                 self.check_pipeline_cross_stage_expr(&lb.value, cur_idx, stage_idx, cur_name);
@@ -5812,8 +6751,11 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn walk_pipeline_comb_stmt(
-        &mut self, s: &Stmt, cur_idx: usize,
-        stage_idx: &HashMap<&str, usize>, cur_name: &str,
+        &mut self,
+        s: &Stmt,
+        cur_idx: usize,
+        stage_idx: &HashMap<&str, usize>,
+        cur_name: &str,
     ) {
         match s {
             Stmt::Assign(a) => {
@@ -5821,16 +6763,23 @@ impl<'a> TypeChecker<'a> {
             }
             Stmt::IfElse(ie) => {
                 self.check_pipeline_cross_stage_expr(&ie.cond, cur_idx, stage_idx, cur_name);
-                for s in &ie.then_stmts { self.walk_pipeline_comb_stmt(s, cur_idx, stage_idx, cur_name); }
-                for s in &ie.else_stmts { self.walk_pipeline_comb_stmt(s, cur_idx, stage_idx, cur_name); }
+                for s in &ie.then_stmts {
+                    self.walk_pipeline_comb_stmt(s, cur_idx, stage_idx, cur_name);
+                }
+                for s in &ie.else_stmts {
+                    self.walk_pipeline_comb_stmt(s, cur_idx, stage_idx, cur_name);
+                }
             }
             _ => {}
         }
     }
 
     fn walk_pipeline_stmt(
-        &mut self, s: &Stmt, cur_idx: usize,
-        stage_idx: &HashMap<&str, usize>, cur_name: &str,
+        &mut self,
+        s: &Stmt,
+        cur_idx: usize,
+        stage_idx: &HashMap<&str, usize>,
+        cur_name: &str,
     ) {
         match s {
             Stmt::Assign(a) => {
@@ -5838,16 +6787,23 @@ impl<'a> TypeChecker<'a> {
             }
             Stmt::IfElse(ie) => {
                 self.check_pipeline_cross_stage_expr(&ie.cond, cur_idx, stage_idx, cur_name);
-                for s in &ie.then_stmts { self.walk_pipeline_stmt(s, cur_idx, stage_idx, cur_name); }
-                for s in &ie.else_stmts { self.walk_pipeline_stmt(s, cur_idx, stage_idx, cur_name); }
+                for s in &ie.then_stmts {
+                    self.walk_pipeline_stmt(s, cur_idx, stage_idx, cur_name);
+                }
+                for s in &ie.else_stmts {
+                    self.walk_pipeline_stmt(s, cur_idx, stage_idx, cur_name);
+                }
             }
             _ => {}
         }
     }
 
     pub(crate) fn check_pipeline_cross_stage_expr(
-        &mut self, expr: &Expr, cur_idx: usize,
-        stage_idx: &HashMap<&str, usize>, cur_name: &str,
+        &mut self,
+        expr: &Expr,
+        cur_idx: usize,
+        stage_idx: &HashMap<&str, usize>,
+        cur_name: &str,
     ) {
         match &expr.kind {
             ExprKind::FieldAccess(base, _field) => {
@@ -5879,8 +6835,12 @@ impl<'a> TypeChecker<'a> {
                 self.check_pipeline_cross_stage_expr(l, cur_idx, stage_idx, cur_name);
                 self.check_pipeline_cross_stage_expr(r, cur_idx, stage_idx, cur_name);
             }
-            ExprKind::Unary(_, e) | ExprKind::Cast(e, _) | ExprKind::Clog2(e)
-            | ExprKind::Onehot(e) | ExprKind::Signed(e) | ExprKind::Unsigned(e)
+            ExprKind::Unary(_, e)
+            | ExprKind::Cast(e, _)
+            | ExprKind::Clog2(e)
+            | ExprKind::Onehot(e)
+            | ExprKind::Signed(e)
+            | ExprKind::Unsigned(e)
             | ExprKind::LatencyAt(e, _)
             | ExprKind::SvaNext(_, e) => {
                 self.check_pipeline_cross_stage_expr(e, cur_idx, stage_idx, cur_name);
@@ -5905,7 +6865,9 @@ impl<'a> TypeChecker<'a> {
                 self.check_pipeline_cross_stage_expr(e, cur_idx, stage_idx, cur_name);
             }
             ExprKind::Concat(xs) | ExprKind::FunctionCall(_, xs) => {
-                for x in xs { self.check_pipeline_cross_stage_expr(x, cur_idx, stage_idx, cur_name); }
+                for x in xs {
+                    self.check_pipeline_cross_stage_expr(x, cur_idx, stage_idx, cur_name);
+                }
             }
             ExprKind::Repeat(n, x) => {
                 self.check_pipeline_cross_stage_expr(n, cur_idx, stage_idx, cur_name);
@@ -5913,7 +6875,9 @@ impl<'a> TypeChecker<'a> {
             }
             ExprKind::MethodCall(recv, _, args) => {
                 self.check_pipeline_cross_stage_expr(recv, cur_idx, stage_idx, cur_name);
-                for a in args { self.check_pipeline_cross_stage_expr(a, cur_idx, stage_idx, cur_name); }
+                for a in args {
+                    self.check_pipeline_cross_stage_expr(a, cur_idx, stage_idx, cur_name);
+                }
             }
             _ => {}
         }
@@ -5935,8 +6899,14 @@ impl<'a> TypeChecker<'a> {
             self.check_pascal_case(&stage.name);
 
             // Every stage must have at least one RegDecl + RegBlock (always on)
-            let has_reg = stage.body.iter().any(|i| matches!(i, ModuleBodyItem::RegDecl(_)));
-            let has_always = stage.body.iter().any(|i| matches!(i, ModuleBodyItem::RegBlock(_)));
+            let has_reg = stage
+                .body
+                .iter()
+                .any(|i| matches!(i, ModuleBodyItem::RegDecl(_)));
+            let has_always = stage
+                .body
+                .iter()
+                .any(|i| matches!(i, ModuleBodyItem::RegBlock(_)));
 
             if !has_reg || !has_always {
                 self.errors.push(CompileError::general(
@@ -5975,7 +6945,8 @@ impl<'a> TypeChecker<'a> {
         // breaks timing. Hazard expressions (stall_cond / flush /
         // forward) live outside `stage.body` and are intentionally
         // exempt.
-        let stage_idx: HashMap<&str, usize> = stage_names.iter()
+        let stage_idx: HashMap<&str, usize> = stage_names
+            .iter()
             .enumerate()
             .map(|(i, n)| (*n, i))
             .collect();
@@ -6045,11 +7016,15 @@ impl<'a> TypeChecker<'a> {
     /// breaks the comb path. See the call site for the rationale.
     fn check_pipeline_no_comb_input_to_output(&mut self, p: &PipelineDecl) {
         use std::collections::HashSet;
-        let input_ports: HashSet<String> = p.ports.iter()
+        let input_ports: HashSet<String> = p
+            .ports
+            .iter()
             .filter(|pt| pt.direction == Direction::In)
             .map(|pt| pt.name.name.clone())
             .collect();
-        let output_ports: HashSet<String> = p.ports.iter()
+        let output_ports: HashSet<String> = p
+            .ports
+            .iter()
             .filter(|pt| pt.direction == Direction::Out)
             .map(|pt| pt.name.name.clone())
             .collect();
@@ -6065,8 +7040,12 @@ impl<'a> TypeChecker<'a> {
         for stage in &p.stages {
             for item in &stage.body {
                 match item {
-                    ModuleBodyItem::RegDecl(r) => { reg_names.insert(r.name.name.clone()); }
-                    ModuleBodyItem::PipeRegDecl(pr) => { reg_names.insert(pr.name.name.clone()); }
+                    ModuleBodyItem::RegDecl(r) => {
+                        reg_names.insert(r.name.name.clone());
+                    }
+                    ModuleBodyItem::PipeRegDecl(pr) => {
+                        reg_names.insert(pr.name.name.clone());
+                    }
                     _ => {}
                 }
             }
@@ -6084,7 +7063,11 @@ impl<'a> TypeChecker<'a> {
                         drivers.push((lb.name.name.clone(), reads, lb.name.span));
                     }
                     ModuleBodyItem::CombBlock(cb) => {
-                        Self::collect_pipeline_comb_drivers(&cb.stmts, &HashSet::new(), &mut drivers);
+                        Self::collect_pipeline_comb_drivers(
+                            &cb.stmts,
+                            &HashSet::new(),
+                            &mut drivers,
+                        );
                     }
                     _ => {}
                 }
@@ -6114,7 +7097,8 @@ impl<'a> TypeChecker<'a> {
                 continue;
             }
             let direct_input = reads.iter().find(|id| input_ports.contains(*id)).cloned();
-            let via = reads.iter()
+            let via = reads
+                .iter()
                 .find(|id| tainted.contains(*id) && !input_ports.contains(*id))
                 .cloned();
             let src_desc = match (&direct_input, &via) {
@@ -6138,7 +7122,11 @@ impl<'a> TypeChecker<'a> {
     fn collect_pipeline_comb_drivers(
         stmts: &[Stmt],
         guards: &std::collections::HashSet<String>,
-        out: &mut Vec<(String, std::collections::HashSet<String>, crate::lexer::Span)>,
+        out: &mut Vec<(
+            String,
+            std::collections::HashSet<String>,
+            crate::lexer::Span,
+        )>,
     ) {
         use crate::comb_graph::collect_expr_idents;
         for s in stmts {
@@ -6231,9 +7219,15 @@ impl<'a> TypeChecker<'a> {
     /// enums / structs / functions. Each contained item is checked the
     /// same way it would be at top level.
     pub(crate) fn check_package(&mut self, pkg: &crate::ast::PackageDecl) {
-        for e in &pkg.enums { self.check_enum(e); }
-        for s in &pkg.structs { self.check_struct(s); }
-        for f in &pkg.functions { self.check_function(f); }
+        for e in &pkg.enums {
+            self.check_enum(e);
+        }
+        for s in &pkg.structs {
+            self.check_struct(s);
+        }
+        for f in &pkg.functions {
+            self.check_function(f);
+        }
     }
 
     /// Extern packages have no ARCH-side values to validate.
@@ -6252,32 +7246,50 @@ impl<'a> TypeChecker<'a> {
 
         // Required params: DEPTH (const) and DATA (type)
         let has_depth = l.params.iter().any(|p| p.name.name == "DEPTH");
-        let has_data  = l.params.iter().any(|p| p.name.name == "DATA");
+        let has_data = l.params.iter().any(|p| p.name.name == "DATA");
         if !has_depth {
             self.errors.push(CompileError::general(
-                &format!("linklist `{}` is missing required param `DEPTH: const`", l.name.name),
+                &format!(
+                    "linklist `{}` is missing required param `DEPTH: const`",
+                    l.name.name
+                ),
                 l.name.span,
             ));
         }
         if !has_data {
             self.errors.push(CompileError::general(
-                &format!("linklist `{}` is missing required param `DATA: type`", l.name.name),
+                &format!(
+                    "linklist `{}` is missing required param `DATA: type`",
+                    l.name.name
+                ),
                 l.name.span,
             ));
         }
 
         // Required ports: clk and rst
-        let has_clk = l.ports.iter().any(|p| matches!(&p.ty, crate::ast::TypeExpr::Clock(_)));
-        let has_rst = l.ports.iter().any(|p| matches!(&p.ty, crate::ast::TypeExpr::Reset(_, _)));
+        let has_clk = l
+            .ports
+            .iter()
+            .any(|p| matches!(&p.ty, crate::ast::TypeExpr::Clock(_)));
+        let has_rst = l
+            .ports
+            .iter()
+            .any(|p| matches!(&p.ty, crate::ast::TypeExpr::Reset(_, _)));
         if !has_clk {
             self.errors.push(CompileError::general(
-                &format!("linklist `{}` is missing required `clk: in Clock<...>` port", l.name.name),
+                &format!(
+                    "linklist `{}` is missing required `clk: in Clock<...>` port",
+                    l.name.name
+                ),
                 l.name.span,
             ));
         }
         if !has_rst {
             self.errors.push(CompileError::general(
-                &format!("linklist `{}` is missing required `rst: in Reset<...>` port", l.name.name),
+                &format!(
+                    "linklist `{}` is missing required `rst: in Reset<...>` port",
+                    l.name.name
+                ),
                 l.name.span,
             ));
         }
@@ -6285,7 +7297,9 @@ impl<'a> TypeChecker<'a> {
         // `prev` op requires doubly or circular_doubly
         for op in &l.ops {
             self.check_snake_case(&op.name);
-            for p in &op.ports { self.check_snake_case(&p.name); }
+            for p in &op.ports {
+                self.check_snake_case(&p.name);
+            }
 
             if op.name.name == "prev"
                 && !matches!(l.kind, LinklistKind::Doubly | LinklistKind::CircularDoubly)
@@ -6306,14 +7320,25 @@ impl<'a> TypeChecker<'a> {
             // there is no codegen arm for it. Keep this list in lockstep with the
             // dispatch arms in emit_ll_op_controller.
             let known_ops = [
-                "alloc", "free", "insert_head", "insert_tail", "insert_after",
-                "delete_head", "delete", "read_data", "write_data", "next", "prev",
+                "alloc",
+                "free",
+                "insert_head",
+                "insert_tail",
+                "insert_after",
+                "delete_head",
+                "delete",
+                "read_data",
+                "write_data",
+                "next",
+                "prev",
             ];
             if !known_ops.contains(&op.name.name.as_str()) {
                 self.errors.push(CompileError::general(
                     &format!(
                         "linklist `{}`: unknown op `{}`; known ops: {}",
-                        l.name.name, op.name.name, known_ops.join(", ")
+                        l.name.name,
+                        op.name.name,
+                        known_ops.join(", ")
                     ),
                     op.name.span,
                 ));
@@ -6321,7 +7346,10 @@ impl<'a> TypeChecker<'a> {
 
             if op.latency == 0 {
                 self.errors.push(CompileError::general(
-                    &format!("linklist `{}`: op `{}` latency must be ≥ 1", l.name.name, op.name.name),
+                    &format!(
+                        "linklist `{}`: op `{}` latency must be ≥ 1",
+                        l.name.name, op.name.name
+                    ),
                     op.name.span,
                 ));
             }
@@ -6345,9 +7373,17 @@ impl<'a> TypeChecker<'a> {
         // the controller knows which head to index. When NUM_HEADS == 1,
         // the port must NOT appear (back-compat + avoids confusion).
         let num_heads = linklist_num_heads(l);
-        let head_idx_w = if num_heads <= 1 { 0 } else { clog2_u32(num_heads) };
+        let head_idx_w = if num_heads <= 1 {
+            0
+        } else {
+            clog2_u32(num_heads)
+        };
         let head_addressed = [
-            "insert_head", "insert_tail", "insert_after", "delete_head", "delete",
+            "insert_head",
+            "insert_tail",
+            "insert_after",
+            "delete_head",
+            "delete",
         ];
         for op in &l.ops {
             let has_head_idx = op.ports.iter().any(|p| p.name.name == "req_head_idx");
@@ -6458,13 +7494,17 @@ impl<'a> TypeChecker<'a> {
                         self.warnings.push(CompileWarning {
                             message: format!(
                                 "function `{}`: return type mismatch (declared {}, got {})",
-                                f.name.name, expected_ret.display(), ret_ty.display()
+                                f.name.name,
+                                expected_ret.display(),
+                                ret_ty.display()
                             ),
                             span: expr.span,
                         });
                     }
                 }
-                FunctionBodyItem::IfElse(_) | FunctionBodyItem::For(_) | FunctionBodyItem::Assign(_) => {
+                FunctionBodyItem::IfElse(_)
+                | FunctionBodyItem::For(_)
+                | FunctionBodyItem::Assign(_) => {
                     // Type checking for control flow in functions is deferred
                     // (expressions within are checked by the SV backend)
                 }
@@ -6544,8 +7584,7 @@ fn cond_contains_guard(cond: &Expr, port: &str, guard: &HandshakePayloadGuard) -
                         && expr_is_port_field(rhs, port, req_field)))
         }
         ExprKind::Binary(BinOp::And, lhs, rhs) | ExprKind::Binary(BinOp::BitAnd, lhs, rhs) => {
-            cond_contains_guard(lhs, port, guard)
-                || cond_contains_guard(rhs, port, guard)
+            cond_contains_guard(lhs, port, guard) || cond_contains_guard(rhs, port, guard)
         }
         _ => false,
     }
@@ -6582,17 +7621,27 @@ enum OpClass {
 fn classify(op: BinOp) -> OpClass {
     match op {
         BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => OpClass::Bitwise,
-        BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => OpClass::Comparison,
+        BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => {
+            OpClass::Comparison
+        }
         BinOp::And | BinOp::Or | BinOp::Implies | BinOp::ImpliesNext => OpClass::Logical,
         BinOp::Shl | BinOp::Shr => OpClass::Shift,
-        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
-            | BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap => OpClass::Arith,
+        BinOp::Add
+        | BinOp::Sub
+        | BinOp::Mul
+        | BinOp::Div
+        | BinOp::Mod
+        | BinOp::AddWrap
+        | BinOp::SubWrap
+        | BinOp::MulWrap => OpClass::Arith,
     }
 }
 
 /// If `child` is a naked Binary expression, return its operator class + span.
 fn naked_binary_class(child: &Expr) -> Option<(OpClass, BinOp, Span)> {
-    if child.parenthesized { return None; }
+    if child.parenthesized {
+        return None;
+    }
     if let ExprKind::Binary(op, _, _) = &child.kind {
         Some((classify(*op), *op, child.span))
     } else {
@@ -6668,7 +7717,13 @@ fn check_precedence_expr(e: &Expr, errors: &mut Vec<CompileError>) {
                         // Only warn when the binary is arithmetic/bitwise/shift/comparison
                         // (logical is usually intended as the boolean result).
                         let bc = classify(*bop);
-                        if matches!(bc, OpClass::Arith | OpClass::Bitwise | OpClass::Shift | OpClass::Comparison) {
+                        if matches!(
+                            bc,
+                            OpClass::Arith
+                                | OpClass::Bitwise
+                                | OpClass::Shift
+                                | OpClass::Comparison
+                        ) {
                             errors.push(CompileError::general(
                                 &format!(
                                     "ambiguous precedence: ternary branch contains a `{bop}` expression — wrap branch in parens: `... ? ... : (expr)` or wrap the whole ternary"
@@ -6699,10 +7754,14 @@ fn check_precedence_expr(e: &Expr, errors: &mut Vec<CompileError>) {
             check_precedence_expr(width, errors);
         }
         ExprKind::FunctionCall(_, args) => {
-            for a in args { check_precedence_expr(a, errors); }
+            for a in args {
+                check_precedence_expr(a, errors);
+            }
         }
         ExprKind::Concat(parts) => {
-            for p in parts { check_precedence_expr(p, errors); }
+            for p in parts {
+                check_precedence_expr(p, errors);
+            }
         }
         ExprKind::Repeat(n, expr) => {
             check_precedence_expr(n, errors);
@@ -6712,7 +7771,9 @@ fn check_precedence_expr(e: &Expr, errors: &mut Vec<CompileError>) {
         ExprKind::Cast(inner, _) => check_precedence_expr(inner, errors),
         ExprKind::MethodCall(base, _, args) => {
             check_precedence_expr(base, errors);
-            for a in args { check_precedence_expr(a, errors); }
+            for a in args {
+                check_precedence_expr(a, errors);
+            }
         }
         ExprKind::Clog2(inner) => check_precedence_expr(inner, errors),
         ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => check_precedence_expr(inner, errors),
@@ -6781,17 +7842,25 @@ fn check_precedence_in_item(item: &Item, errors: &mut Vec<CompileError>) {
             }
             Stmt::IfElse(ie) => {
                 check_precedence_expr(&ie.cond, errors);
-                for s in &ie.then_stmts { walk_stmt(s, errors); }
-                for s in &ie.else_stmts { walk_stmt(s, errors); }
+                for s in &ie.then_stmts {
+                    walk_stmt(s, errors);
+                }
+                for s in &ie.else_stmts {
+                    walk_stmt(s, errors);
+                }
             }
             Stmt::Match(m) => {
                 check_precedence_expr(&m.scrutinee, errors);
                 for arm in &m.arms {
-                    for s in &arm.body { walk_stmt(s, errors); }
+                    for s in &arm.body {
+                        walk_stmt(s, errors);
+                    }
                 }
             }
             Stmt::Log(l) => {
-                for a in &l.args { check_precedence_expr(a, errors); }
+                for a in &l.args {
+                    check_precedence_expr(a, errors);
+                }
             }
             Stmt::For(fl) => {
                 match &fl.range {
@@ -6800,19 +7869,27 @@ fn check_precedence_in_item(item: &Item, errors: &mut Vec<CompileError>) {
                         check_precedence_expr(e, errors);
                     }
                     ForRange::ValueList(vs) => {
-                        for v in vs { check_precedence_expr(v, errors); }
+                        for v in vs {
+                            check_precedence_expr(v, errors);
+                        }
                     }
                 }
-                for s in &fl.body { walk_stmt(s, errors); }
+                for s in &fl.body {
+                    walk_stmt(s, errors);
+                }
             }
             Stmt::Init(ib) => {
-                for s in &ib.body { walk_stmt(s, errors); }
+                for s in &ib.body {
+                    walk_stmt(s, errors);
+                }
             }
             Stmt::WaitUntil(expr, _) => {
                 check_precedence_expr(expr, errors);
             }
             Stmt::DoUntil { body, cond, .. } => {
-                for s in body { walk_stmt(s, errors); }
+                for s in body {
+                    walk_stmt(s, errors);
+                }
                 check_precedence_expr(cond, errors);
             }
         }
@@ -6826,17 +7903,25 @@ fn check_precedence_in_item(item: &Item, errors: &mut Vec<CompileError>) {
             }
             Stmt::IfElse(ie) => {
                 check_precedence_expr(&ie.cond, errors);
-                for s in &ie.then_stmts { walk_comb(s, errors); }
-                for s in &ie.else_stmts { walk_comb(s, errors); }
+                for s in &ie.then_stmts {
+                    walk_comb(s, errors);
+                }
+                for s in &ie.else_stmts {
+                    walk_comb(s, errors);
+                }
             }
             Stmt::Match(m) => {
                 check_precedence_expr(&m.scrutinee, errors);
                 for arm in &m.arms {
-                    for s in &arm.body { walk_comb(s, errors); }
+                    for s in &arm.body {
+                        walk_comb(s, errors);
+                    }
                 }
             }
             Stmt::Log(l) => {
-                for a in &l.args { check_precedence_expr(a, errors); }
+                for a in &l.args {
+                    check_precedence_expr(a, errors);
+                }
             }
             Stmt::For(fl) => {
                 match &fl.range {
@@ -6845,12 +7930,18 @@ fn check_precedence_in_item(item: &Item, errors: &mut Vec<CompileError>) {
                         check_precedence_expr(e, errors);
                     }
                     ForRange::ValueList(vs) => {
-                        for v in vs { check_precedence_expr(v, errors); }
+                        for v in vs {
+                            check_precedence_expr(v, errors);
+                        }
                     }
                 }
-                for s in &fl.body { walk_comb(s, errors); }
+                for s in &fl.body {
+                    walk_comb(s, errors);
+                }
             }
-                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
+            Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {
+                unreachable!("seq-only Stmt variant inside comb-context walker")
+            }
         }
     }
 
@@ -6858,22 +7949,32 @@ fn check_precedence_in_item(item: &Item, errors: &mut Vec<CompileError>) {
         for it in body {
             match it {
                 ModuleBodyItem::RegDecl(r) => {
-                    if let Some(ref e) = r.init { check_precedence_expr(e, errors); }
+                    if let Some(ref e) = r.init {
+                        check_precedence_expr(e, errors);
+                    }
                 }
                 ModuleBodyItem::LetBinding(l) => {
                     check_precedence_expr(&l.value, errors);
                 }
                 ModuleBodyItem::CombBlock(cb) => {
-                    for s in &cb.stmts { walk_comb(s, errors); }
+                    for s in &cb.stmts {
+                        walk_comb(s, errors);
+                    }
                 }
                 ModuleBodyItem::RegBlock(rb) => {
-                    for s in &rb.stmts { walk_stmt(s, errors); }
+                    for s in &rb.stmts {
+                        walk_stmt(s, errors);
+                    }
                 }
                 ModuleBodyItem::LatchBlock(lb) => {
-                    for s in &lb.stmts { walk_stmt(s, errors); }
+                    for s in &lb.stmts {
+                        walk_stmt(s, errors);
+                    }
                 }
                 ModuleBodyItem::Inst(inst) => {
-                    for c in &inst.connections { check_precedence_expr(&c.signal, errors); }
+                    for c in &inst.connections {
+                        check_precedence_expr(&c.signal, errors);
+                    }
                 }
                 ModuleBodyItem::Assert(a) => {
                     check_precedence_expr(&a.expr, errors);
@@ -6886,25 +7987,43 @@ fn check_precedence_in_item(item: &Item, errors: &mut Vec<CompileError>) {
     match item {
         Item::Module(m) => walk_body(&m.body, errors),
         Item::Fsm(f) => {
-            for l in &f.lets { check_precedence_expr(&l.value, errors); }
+            for l in &f.lets {
+                check_precedence_expr(&l.value, errors);
+            }
             for r in &f.regs {
-                if let Some(ref e) = r.init { check_precedence_expr(e, errors); }
+                if let Some(ref e) = r.init {
+                    check_precedence_expr(e, errors);
+                }
             }
             for sb in &f.states {
-                for s in &sb.seq_stmts { walk_stmt(s, errors); }
-                for s in &sb.comb_stmts { walk_comb(s, errors); }
-                for tr in &sb.transitions { check_precedence_expr(&tr.condition, errors); }
+                for s in &sb.seq_stmts {
+                    walk_stmt(s, errors);
+                }
+                for s in &sb.comb_stmts {
+                    walk_comb(s, errors);
+                }
+                for tr in &sb.transitions {
+                    check_precedence_expr(&tr.condition, errors);
+                }
             }
-            for s in &f.default_seq { walk_stmt(s, errors); }
-            for s in &f.default_comb { walk_comb(s, errors); }
-            for a in &f.asserts { check_precedence_expr(&a.expr, errors); }
+            for s in &f.default_seq {
+                walk_stmt(s, errors);
+            }
+            for s in &f.default_comb {
+                walk_comb(s, errors);
+            }
+            for a in &f.asserts {
+                check_precedence_expr(&a.expr, errors);
+            }
         }
         Item::Function(f) => {
             for it in &f.body {
                 match it {
                     FunctionBodyItem::Let(l) => check_precedence_expr(&l.value, errors),
                     FunctionBodyItem::Return(e) => check_precedence_expr(e, errors),
-                    FunctionBodyItem::IfElse(_) | FunctionBodyItem::For(_) | FunctionBodyItem::Assign(_) => {}
+                    FunctionBodyItem::IfElse(_)
+                    | FunctionBodyItem::For(_)
+                    | FunctionBodyItem::Assign(_) => {}
                 }
             }
         }
@@ -6963,8 +8082,12 @@ pub fn enum_width(num_variants: usize) -> u32 {
 /// this param (matches DEPTH).
 pub fn linklist_num_heads(l: &crate::ast::LinklistDecl) -> u32 {
     use crate::ast::{ExprKind, LitKind};
-    let Some(p) = l.params.iter().find(|p| p.name.name == "NUM_HEADS") else { return 1; };
-    let Some(def) = &p.default else { return 1; };
+    let Some(p) = l.params.iter().find(|p| p.name.name == "NUM_HEADS") else {
+        return 1;
+    };
+    let Some(def) = &p.default else {
+        return 1;
+    };
     match &def.kind {
         ExprKind::Literal(LitKind::Dec(v))
         | ExprKind::Literal(LitKind::Hex(v))

@@ -79,8 +79,8 @@ pub struct BusDecl {
     pub doc: Option<String>,
     pub inner_doc: Option<String>,
     pub params: Vec<ParamDecl>,
-    pub signals: Vec<PortDecl>,  // direction = from initiator's perspective
-    pub generates: Vec<BusGenerateIf>,  // conditional signal groups
+    pub signals: Vec<PortDecl>, // direction = from initiator's perspective
+    pub generates: Vec<BusGenerateIf>, // conditional signal groups
     /// Handshake sub-constructs declared in this bus. The synthesized
     /// PortDecls already live in `signals` (or inside `generates`); this
     /// list preserves the grouping so codegen can emit per-variant SVA
@@ -435,15 +435,15 @@ pub struct TypeAliasDecl {
 impl ModuleBodyItem {
     pub fn span(&self) -> Span {
         match self {
-            ModuleBodyItem::RegDecl(r)    => r.span,
-            ModuleBodyItem::RegBlock(r)   => r.span,
+            ModuleBodyItem::RegDecl(r) => r.span,
+            ModuleBodyItem::RegBlock(r) => r.span,
             ModuleBodyItem::LatchBlock(l) => l.span,
-            ModuleBodyItem::CombBlock(c)  => c.span,
+            ModuleBodyItem::CombBlock(c) => c.span,
             ModuleBodyItem::LetBinding(l) => l.span,
-            ModuleBodyItem::Inst(i)       => i.span,
-            ModuleBodyItem::Generate(g)   => match g {
+            ModuleBodyItem::Inst(i) => i.span,
+            ModuleBodyItem::Generate(g) => match g {
                 GenerateDecl::For(f) => f.span,
-                GenerateDecl::If(i)  => i.span,
+                GenerateDecl::If(i) => i.span,
             },
             ModuleBodyItem::PipeRegDecl(p) => p.span,
             ModuleBodyItem::WireDecl(w) => w.span,
@@ -498,12 +498,15 @@ pub struct PipeRegDecl {
 // ── Assert / Cover ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum AssertKind { Assert, Cover }
+pub enum AssertKind {
+    Assert,
+    Cover,
+}
 
 #[derive(Debug, Clone)]
 pub struct AssertDecl {
     pub kind: AssertKind,
-    pub name: Option<Ident>,   // optional label (e.g. `assert no_overflow: expr;`)
+    pub name: Option<Ident>, // optional label (e.g. `assert no_overflow: expr;`)
     pub expr: Expr,
     pub span: Span,
 }
@@ -719,11 +722,25 @@ pub enum ThreadStmt {
     /// `fork ... and ... join` — parallel branches
     ForkJoin(Vec<Vec<ThreadStmt>>, Span),
     /// `for var in start..end ... end for` — counted loop with waits
-    For { var: Ident, start: Expr, end: Expr, body: Vec<ThreadStmt>, span: Span },
+    For {
+        var: Ident,
+        start: Expr,
+        end: Expr,
+        body: Vec<ThreadStmt>,
+        span: Span,
+    },
     /// `lock resource_name ... end lock resource_name` — exclusive bus access
-    Lock { resource: Ident, body: Vec<ThreadStmt>, span: Span },
+    Lock {
+        resource: Ident,
+        body: Vec<ThreadStmt>,
+        span: Span,
+    },
     /// `do ... until cond;` — hold comb outputs while waiting for condition
-    DoUntil { body: Vec<ThreadStmt>, cond: Expr, span: Span },
+    DoUntil {
+        body: Vec<ThreadStmt>,
+        cond: Expr,
+        span: Span,
+    },
     /// `log(Level, "TAG", "fmt", args...);` — debug output
     Log(LogStmt),
     /// `return expr;` — valid only inside a TLM target thread body
@@ -924,26 +941,28 @@ pub enum ConnectDir {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
     Always = 0,
-    Low    = 1,
+    Low = 1,
     Medium = 2,
-    High   = 3,
-    Full   = 4,
-    Debug  = 5,
+    High = 3,
+    Full = 4,
+    Debug = 5,
 }
 
 impl LogLevel {
     pub fn name(self) -> &'static str {
         match self {
             LogLevel::Always => "ALWAYS",
-            LogLevel::Low    => "LOW",
+            LogLevel::Low => "LOW",
             LogLevel::Medium => "MEDIUM",
-            LogLevel::High   => "HIGH",
-            LogLevel::Full   => "FULL",
-            LogLevel::Debug  => "DEBUG",
+            LogLevel::High => "HIGH",
+            LogLevel::Full => "FULL",
+            LogLevel::Debug => "DEBUG",
         }
     }
 
-    pub fn value(self) -> u8 { self as u8 }
+    pub fn value(self) -> u8 {
+        self as u8
+    }
 }
 
 // Statements inside reg blocks
@@ -963,7 +982,11 @@ pub enum Stmt {
     WaitUntil(Expr, Span),
     /// `do ... until cond;` — hold comb/seq outputs while waiting for condition.
     /// Only valid inside a pipeline stage `seq` block.
-    DoUntil { body: Vec<Stmt>, cond: Expr, span: Span },
+    DoUntil {
+        body: Vec<Stmt>,
+        cond: Expr,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -976,8 +999,8 @@ pub struct InitBlock {
 
 #[derive(Debug, Clone)]
 pub enum ForRange {
-    Range(Expr, Expr),      // start..end
-    ValueList(Vec<Expr>),   // {a, b, c}
+    Range(Expr, Expr),    // start..end
+    ValueList(Vec<Expr>), // {a, b, c}
 }
 
 #[derive(Debug, Clone)]
@@ -1070,10 +1093,18 @@ pub struct Expr {
 
 impl Expr {
     pub fn new(kind: ExprKind, span: Span) -> Self {
-        Expr { kind, span, parenthesized: false }
+        Expr {
+            kind,
+            span,
+            parenthesized: false,
+        }
     }
     pub fn parens(kind: ExprKind, span: Span) -> Self {
-        Expr { kind, span, parenthesized: true }
+        Expr {
+            kind,
+            span,
+            parenthesized: true,
+        }
     }
 }
 
@@ -1092,11 +1123,11 @@ pub enum ExprKind {
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Unary(UnaryOp, Box<Expr>),
     FieldAccess(Box<Expr>, Ident),
-    MethodCall(Box<Expr>, Ident, Vec<Expr>),  // receiver, method, type_args encoded as exprs
+    MethodCall(Box<Expr>, Ident, Vec<Expr>), // receiver, method, type_args encoded as exprs
     Cast(Box<Expr>, Box<TypeExpr>),
     Index(Box<Expr>, Box<Expr>),
-    BitSlice(Box<Expr>, Box<Expr>, Box<Expr>),  // base[hi:lo]
-    PartSelect(Box<Expr>, Box<Expr>, Box<Expr>, bool),  // base[start +: width] (true=+:, false=-:)
+    BitSlice(Box<Expr>, Box<Expr>, Box<Expr>), // base[hi:lo]
+    PartSelect(Box<Expr>, Box<Expr>, Box<Expr>, bool), // base[start +: width] (true=+:, false=-:)
     StructLiteral(Ident, Vec<FieldInit>),
     EnumVariant(Ident, Ident), // EnumName::Variant
     Todo,
@@ -1300,16 +1331,16 @@ impl Item {
     /// `regfile`, `pipeline`, `linklist`).
     pub fn is_interface(&self) -> bool {
         match self {
-            Item::Module(m)        => m.is_interface,
-            Item::Fsm(f)           => f.common.is_interface,
-            Item::Fifo(f)          => f.common.is_interface,
-            Item::Ram(r)           => r.common.is_interface,
-            Item::Cam(c)           => c.common.is_interface,
-            Item::Counter(c)       => c.common.is_interface,
-            Item::Arbiter(a)       => a.common.is_interface,
-            Item::Regfile(r)       => r.common.is_interface,
-            Item::Pipeline(p)      => p.common.is_interface,
-            Item::Linklist(l)      => l.common.is_interface,
+            Item::Module(m) => m.is_interface,
+            Item::Fsm(f) => f.common.is_interface,
+            Item::Fifo(f) => f.common.is_interface,
+            Item::Ram(r) => r.common.is_interface,
+            Item::Cam(c) => c.common.is_interface,
+            Item::Counter(c) => c.common.is_interface,
+            Item::Arbiter(a) => a.common.is_interface,
+            Item::Regfile(r) => r.common.is_interface,
+            Item::Pipeline(p) => p.common.is_interface,
+            Item::Linklist(l) => l.common.is_interface,
             // The remaining variants (Domain, Struct, Enum, Function,
             // Template, Synchronizer, Clkgate, Bus, Package, Use)
             // either don't get instantiated across `.archi` boundaries
@@ -1325,16 +1356,46 @@ impl Item {
     /// flag (and the assignment took effect); `false` otherwise.
     pub fn set_is_interface(&mut self, val: bool) -> bool {
         match self {
-            Item::Module(m)        => { m.is_interface = val; true }
-            Item::Fsm(f)           => { f.common.is_interface = val; true }
-            Item::Fifo(f)          => { f.common.is_interface = val; true }
-            Item::Ram(r)           => { r.common.is_interface = val; true }
-            Item::Cam(c)           => { c.common.is_interface = val; true }
-            Item::Counter(c)       => { c.common.is_interface = val; true }
-            Item::Arbiter(a)       => { a.common.is_interface = val; true }
-            Item::Regfile(r)       => { r.common.is_interface = val; true }
-            Item::Pipeline(p)      => { p.common.is_interface = val; true }
-            Item::Linklist(l)      => { l.common.is_interface = val; true }
+            Item::Module(m) => {
+                m.is_interface = val;
+                true
+            }
+            Item::Fsm(f) => {
+                f.common.is_interface = val;
+                true
+            }
+            Item::Fifo(f) => {
+                f.common.is_interface = val;
+                true
+            }
+            Item::Ram(r) => {
+                r.common.is_interface = val;
+                true
+            }
+            Item::Cam(c) => {
+                c.common.is_interface = val;
+                true
+            }
+            Item::Counter(c) => {
+                c.common.is_interface = val;
+                true
+            }
+            Item::Arbiter(a) => {
+                a.common.is_interface = val;
+                true
+            }
+            Item::Regfile(r) => {
+                r.common.is_interface = val;
+                true
+            }
+            Item::Pipeline(p) => {
+                p.common.is_interface = val;
+                true
+            }
+            Item::Linklist(l) => {
+                l.common.is_interface = val;
+                true
+            }
             _ => false,
         }
     }
@@ -1381,7 +1442,9 @@ pub trait Construct {
     /// arbiter, regfile, synchronizer, clkgate, linklist, bus, struct,
     /// enum, package); `None` for the rest. Default returns `None`,
     /// matching the original `_ => None` arm in `interface::emit_interface`.
-    fn emit_interface(&self) -> Option<String> { None }
+    fn emit_interface(&self) -> Option<String> {
+        None
+    }
 
     /// Run typecheck on this construct. Default is a no-op (matches the
     /// `Item::Use(_) => {}` arm in the original dispatch). Each
@@ -1403,7 +1466,12 @@ pub trait Construct {
     /// (Module is handled specially by the caller because it needs the
     /// debug-module set; Domain / Struct / Enum / Function / Template
     /// / Bus / Package / Use don't generate sim code).
-    fn emit_sim(&self, _simgen: &crate::sim_codegen::SimCodegen) -> Option<crate::sim_codegen::SimModel> { None }
+    fn emit_sim(
+        &self,
+        _simgen: &crate::sim_codegen::SimCodegen,
+    ) -> Option<crate::sim_codegen::SimModel> {
+        None
+    }
 }
 
 // ── Construct trait impls ────────────────────────────────────────────────────
@@ -1455,39 +1523,164 @@ macro_rules! impl_construct_direct {
     };
 }
 
-impl_construct_direct!(ModuleDecl,           "module",       iface = crate::interface::emit_module_interface,       check = check_module,       emit_sv = emit_module);
-impl_construct_via_common!(FsmDecl,          "fsm",          iface = crate::interface::emit_fsm_interface,          check = check_fsm,          emit_sv = emit_fsm,          emit_sim = gen_fsm);
-impl_construct_via_common!(FifoDecl,         "fifo",         iface = crate::interface::emit_fifo_interface,         check = check_fifo,         emit_sv = emit_fifo,         emit_sim = gen_fifo);
-impl_construct_via_common!(RamDecl,          "ram",          iface = crate::interface::emit_ram_interface,          check = check_ram,          emit_sv = emit_ram,          emit_sim = gen_ram);
-impl_construct_via_common!(CamDecl,          "cam",          iface = crate::interface::emit_cam_interface,          check = check_cam,          emit_sv = emit_cam,          emit_sim = gen_cam);
-impl_construct_via_common!(CounterDecl,      "counter",      iface = crate::interface::emit_counter_interface,      check = check_counter,      emit_sv = emit_counter,      emit_sim = gen_counter);
-impl_construct_via_common!(ArbiterDecl,      "arbiter",      iface = crate::interface::emit_arbiter_interface,      check = check_arbiter,      emit_sv = emit_arbiter,      emit_sim = gen_arbiter);
-impl_construct_via_common!(RegfileDecl,      "regfile",      iface = crate::interface::emit_regfile_interface,      check = check_regfile,      emit_sv = emit_regfile,      emit_sim = gen_regfile);
-impl_construct_via_common!(PipelineDecl,     "pipeline",     iface = crate::interface::emit_pipeline_interface,     check = check_pipeline,     emit_sv = emit_pipeline,     emit_sim = gen_pipeline);
-impl_construct_via_common!(LinklistDecl,     "linklist",     iface = crate::interface::emit_linklist_interface,     check = check_linklist,     emit_sv = emit_linklist,     emit_sim = gen_linklist);
+impl_construct_direct!(
+    ModuleDecl,
+    "module",
+    iface = crate::interface::emit_module_interface,
+    check = check_module,
+    emit_sv = emit_module
+);
+impl_construct_via_common!(
+    FsmDecl,
+    "fsm",
+    iface = crate::interface::emit_fsm_interface,
+    check = check_fsm,
+    emit_sv = emit_fsm,
+    emit_sim = gen_fsm
+);
+impl_construct_via_common!(
+    FifoDecl,
+    "fifo",
+    iface = crate::interface::emit_fifo_interface,
+    check = check_fifo,
+    emit_sv = emit_fifo,
+    emit_sim = gen_fifo
+);
+impl_construct_via_common!(
+    RamDecl,
+    "ram",
+    iface = crate::interface::emit_ram_interface,
+    check = check_ram,
+    emit_sv = emit_ram,
+    emit_sim = gen_ram
+);
+impl_construct_via_common!(
+    CamDecl,
+    "cam",
+    iface = crate::interface::emit_cam_interface,
+    check = check_cam,
+    emit_sv = emit_cam,
+    emit_sim = gen_cam
+);
+impl_construct_via_common!(
+    CounterDecl,
+    "counter",
+    iface = crate::interface::emit_counter_interface,
+    check = check_counter,
+    emit_sv = emit_counter,
+    emit_sim = gen_counter
+);
+impl_construct_via_common!(
+    ArbiterDecl,
+    "arbiter",
+    iface = crate::interface::emit_arbiter_interface,
+    check = check_arbiter,
+    emit_sv = emit_arbiter,
+    emit_sim = gen_arbiter
+);
+impl_construct_via_common!(
+    RegfileDecl,
+    "regfile",
+    iface = crate::interface::emit_regfile_interface,
+    check = check_regfile,
+    emit_sv = emit_regfile,
+    emit_sim = gen_regfile
+);
+impl_construct_via_common!(
+    PipelineDecl,
+    "pipeline",
+    iface = crate::interface::emit_pipeline_interface,
+    check = check_pipeline,
+    emit_sv = emit_pipeline,
+    emit_sim = gen_pipeline
+);
+impl_construct_via_common!(
+    LinklistDecl,
+    "linklist",
+    iface = crate::interface::emit_linklist_interface,
+    check = check_linklist,
+    emit_sv = emit_linklist,
+    emit_sim = gen_linklist
+);
 
-impl_construct_direct!(DomainDecl,           "domain",                                                              check = check_domain,       emit_sv = emit_domain);
-impl_construct_direct!(StructDecl,           "struct",       iface = crate::interface::emit_struct,                 check = check_struct,       emit_sv = emit_struct);
-impl_construct_direct!(EnumDecl,             "enum",         iface = crate::interface::emit_enum,                   check = check_enum,         emit_sv = emit_enum);
-impl_construct_direct!(FunctionDecl,         "function",                                                            check = check_function);
-impl_construct_direct!(SynchronizerDecl,     "synchronizer", iface = crate::interface::emit_synchronizer_interface, check = check_synchronizer, emit_sv = emit_synchronizer, emit_sim = gen_synchronizer);
-impl_construct_direct!(ClkGateDecl,          "clkgate",      iface = crate::interface::emit_clkgate_interface,      check = check_clkgate,      emit_sv = emit_clkgate,      emit_sim = gen_clkgate);
-impl_construct_direct!(BusDecl,              "bus",          iface = crate::interface::emit_bus_interface,          check = check_bus);
-impl_construct_direct!(PackageDecl,          "package",      iface = crate::interface::emit_package_interface,      check = check_package,      emit_sv = emit_package);
-impl_construct_direct!(TemplateDecl,         "template",                                                            check = check_template);
+impl_construct_direct!(
+    DomainDecl,
+    "domain",
+    check = check_domain,
+    emit_sv = emit_domain
+);
+impl_construct_direct!(
+    StructDecl,
+    "struct",
+    iface = crate::interface::emit_struct,
+    check = check_struct,
+    emit_sv = emit_struct
+);
+impl_construct_direct!(
+    EnumDecl,
+    "enum",
+    iface = crate::interface::emit_enum,
+    check = check_enum,
+    emit_sv = emit_enum
+);
+impl_construct_direct!(FunctionDecl, "function", check = check_function);
+impl_construct_direct!(
+    SynchronizerDecl,
+    "synchronizer",
+    iface = crate::interface::emit_synchronizer_interface,
+    check = check_synchronizer,
+    emit_sv = emit_synchronizer,
+    emit_sim = gen_synchronizer
+);
+impl_construct_direct!(
+    ClkGateDecl,
+    "clkgate",
+    iface = crate::interface::emit_clkgate_interface,
+    check = check_clkgate,
+    emit_sv = emit_clkgate,
+    emit_sim = gen_clkgate
+);
+impl_construct_direct!(
+    BusDecl,
+    "bus",
+    iface = crate::interface::emit_bus_interface,
+    check = check_bus
+);
+impl_construct_direct!(
+    PackageDecl,
+    "package",
+    iface = crate::interface::emit_package_interface,
+    check = check_package,
+    emit_sv = emit_package
+);
+impl_construct_direct!(TemplateDecl, "template", check = check_template);
 
 // `extern package` — opaque type declarations for SV-side packages.
 // No SV body emission (the SV package lives upstream); typecheck is a
 // no-op (there are no ARCH-side values to validate).
-impl_construct_direct!(ExternPackageDecl,    "extern package",                                                      check = check_extern_package);
+impl_construct_direct!(
+    ExternPackageDecl,
+    "extern package",
+    check = check_extern_package
+);
 
 // `Use` has only `doc` — no inner doc (single-line decl).
 impl Construct for UseDecl {
-    fn kind_label(&self) -> &'static str { "use" }
-    fn name(&self)      -> &Ident         { &self.name }
-    fn span(&self)      -> Span           { self.span }
-    fn doc(&self)       -> Option<&str>   { self.doc.as_deref() }
-    fn inner_doc(&self) -> Option<&str>   { None }
+    fn kind_label(&self) -> &'static str {
+        "use"
+    }
+    fn name(&self) -> &Ident {
+        &self.name
+    }
+    fn span(&self) -> Span {
+        self.span
+    }
+    fn doc(&self) -> Option<&str> {
+        self.doc.as_deref()
+    }
+    fn inner_doc(&self) -> Option<&str> {
+        None
+    }
 }
 
 // ── Function ──────────────────────────────────────────────────────────────────
@@ -1563,15 +1756,15 @@ pub struct FunctionAssign {
 /// (`param_int`, `resolve_count_expr`).
 #[derive(Debug, Clone)]
 pub struct ConstructCommon {
-    pub name:    Ident,
-    pub params:  Vec<ParamDecl>,
-    pub ports:   Vec<PortDecl>,
+    pub name: Ident,
+    pub params: Vec<ParamDecl>,
+    pub ports: Vec<PortDecl>,
     pub asserts: Vec<AssertDecl>,
-    pub span:    Span,
+    pub span: Span,
     /// Outer doc comment from immediately-preceding `///` lines. None when
     /// the construct has no doc-comment block above it. See
     /// `doc/plan_arch_doc_comments.md` for the V1 surface.
-    pub doc:     Option<String>,
+    pub doc: Option<String>,
     /// Inner doc comment from `//!` lines that appear between the opening
     /// keyword + name and any other body item. Distinct from `doc` so
     /// downstream tooling can tell "from the outside" prose apart from
@@ -1600,10 +1793,17 @@ impl ConstructCommon {
     /// duplicated in `codegen::emit_regfile`, `sim_codegen::gen_regfile`,
     /// and `sim_codegen/linklist.rs`.
     pub fn param_int(&self, name: &str, default: u64) -> u64 {
-        self.params.iter()
+        self.params
+            .iter()
             .find(|p| p.name.name == name)
             .and_then(|p| p.default.as_ref())
-            .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v) } else { None })
+            .and_then(|e| {
+                if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind {
+                    Some(*v)
+                } else {
+                    None
+                }
+            })
             .unwrap_or(default)
     }
 
@@ -1650,10 +1850,14 @@ pub struct FsmDecl {
 }
 impl std::ops::Deref for FsmDecl {
     type Target = ConstructCommon;
-    fn deref(&self) -> &ConstructCommon { &self.common }
+    fn deref(&self) -> &ConstructCommon {
+        &self.common
+    }
 }
 impl std::ops::DerefMut for FsmDecl {
-    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
+    fn deref_mut(&mut self) -> &mut ConstructCommon {
+        &mut self.common
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1689,10 +1893,14 @@ pub struct FifoDecl {
 }
 impl std::ops::Deref for FifoDecl {
     type Target = ConstructCommon;
-    fn deref(&self) -> &ConstructCommon { &self.common }
+    fn deref(&self) -> &ConstructCommon {
+        &self.common
+    }
 }
 impl std::ops::DerefMut for FifoDecl {
-    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
+    fn deref_mut(&mut self) -> &mut ConstructCommon {
+        &mut self.common
+    }
 }
 
 // ── Synchronizer (CDC) ──────────────────────────────────────────────────────
@@ -1756,10 +1964,14 @@ pub struct RamDecl {
 }
 impl std::ops::Deref for RamDecl {
     type Target = ConstructCommon;
-    fn deref(&self) -> &ConstructCommon { &self.common }
+    fn deref(&self) -> &ConstructCommon {
+        &self.common
+    }
 }
 impl std::ops::DerefMut for RamDecl {
-    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
+    fn deref_mut(&mut self) -> &mut ConstructCommon {
+        &mut self.common
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1825,10 +2037,14 @@ pub struct CamDecl {
 }
 impl std::ops::Deref for CamDecl {
     type Target = ConstructCommon;
-    fn deref(&self) -> &ConstructCommon { &self.common }
+    fn deref(&self) -> &ConstructCommon {
+        &self.common
+    }
 }
 impl std::ops::DerefMut for CamDecl {
-    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
+    fn deref_mut(&mut self) -> &mut ConstructCommon {
+        &mut self.common
+    }
 }
 
 // ── Counter ───────────────────────────────────────────────────────────────────
@@ -1842,10 +2058,14 @@ pub struct CounterDecl {
 }
 impl std::ops::Deref for CounterDecl {
     type Target = ConstructCommon;
-    fn deref(&self) -> &ConstructCommon { &self.common }
+    fn deref(&self) -> &ConstructCommon {
+        &self.common
+    }
 }
 impl std::ops::DerefMut for CounterDecl {
-    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
+    fn deref_mut(&mut self) -> &mut ConstructCommon {
+        &mut self.common
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1886,10 +2106,14 @@ pub struct ArbiterDecl {
 }
 impl std::ops::Deref for ArbiterDecl {
     type Target = ConstructCommon;
-    fn deref(&self) -> &ConstructCommon { &self.common }
+    fn deref(&self) -> &ConstructCommon {
+        &self.common
+    }
 }
 impl std::ops::DerefMut for ArbiterDecl {
-    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
+    fn deref_mut(&mut self) -> &mut ConstructCommon {
+        &mut self.common
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1897,18 +2121,18 @@ pub enum ArbiterPolicy {
     RoundRobin,
     Priority,
     Lru,
-    Weighted(Expr),  // weight expression (param reference)
-    Custom(Ident),   // user function name as policy
+    Weighted(Expr), // weight expression (param reference)
+    Custom(Ident),  // user function name as policy
 }
 
 /// `hook grant_select(req_mask: UInt<N>, ...) -> UInt<N> = FnName(arg1, arg2, ...);`
 #[derive(Debug, Clone)]
 pub struct ArbiterHookDecl {
-    pub hook_name: Ident,          // e.g. "grant_select"
-    pub params: Vec<FunctionArg>,  // formal parameters with types
-    pub ret_ty: TypeExpr,          // return type
-    pub fn_name: Ident,            // bound function name
-    pub fn_args: Vec<Ident>,       // bound arguments
+    pub hook_name: Ident,         // e.g. "grant_select"
+    pub params: Vec<FunctionArg>, // formal parameters with types
+    pub ret_ty: TypeExpr,         // return type
+    pub fn_name: Ident,           // bound function name
+    pub fn_args: Vec<Ident>,      // bound arguments
     pub span: Span,
 }
 
@@ -1962,10 +2186,14 @@ pub enum RegfileFlops {
 }
 impl std::ops::Deref for RegfileDecl {
     type Target = ConstructCommon;
-    fn deref(&self) -> &ConstructCommon { &self.common }
+    fn deref(&self) -> &ConstructCommon {
+        &self.common
+    }
 }
 impl std::ops::DerefMut for RegfileDecl {
-    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
+    fn deref_mut(&mut self) -> &mut ConstructCommon {
+        &mut self.common
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1987,10 +2215,14 @@ pub struct PipelineDecl {
 }
 impl std::ops::Deref for PipelineDecl {
     type Target = ConstructCommon;
-    fn deref(&self) -> &ConstructCommon { &self.common }
+    fn deref(&self) -> &ConstructCommon {
+        &self.common
+    }
 }
 impl std::ops::DerefMut for PipelineDecl {
-    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
+    fn deref_mut(&mut self) -> &mut ConstructCommon {
+        &mut self.common
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2048,10 +2280,14 @@ pub struct LinklistDecl {
 }
 impl std::ops::Deref for LinklistDecl {
     type Target = ConstructCommon;
-    fn deref(&self) -> &ConstructCommon { &self.common }
+    fn deref(&self) -> &ConstructCommon {
+        &self.common
+    }
 }
 impl std::ops::DerefMut for LinklistDecl {
-    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
+    fn deref_mut(&mut self) -> &mut ConstructCommon {
+        &mut self.common
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2062,10 +2298,14 @@ pub struct OpDecl {
 }
 impl std::ops::Deref for OpDecl {
     type Target = ConstructCommon;
-    fn deref(&self) -> &ConstructCommon { &self.common }
+    fn deref(&self) -> &ConstructCommon {
+        &self.common
+    }
 }
 impl std::ops::DerefMut for OpDecl {
-    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
+    fn deref_mut(&mut self) -> &mut ConstructCommon {
+        &mut self.common
+    }
 }
 
 // ── Template ─────────────────────────────────────────────────────────────────
