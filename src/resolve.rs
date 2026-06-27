@@ -286,7 +286,7 @@ fn eval_bus_cond(expr: &Expr, param_map: &HashMap<String, &Expr>) -> bool {
         }
         ExprKind::Literal(lit) => match lit {
             LitKind::Dec(n) | LitKind::Hex(n) | LitKind::Bin(n) => *n != 0,
-            LitKind::Sized(_, n) => *n != 0,
+            LitKind::Sized(_, n) | LitKind::ParamSized(_, n) => *n != 0,
             LitKind::Float(bits) => f64::from_bits(*bits) != 0.0,
         },
         ExprKind::Bool(b) => *b,
@@ -328,9 +328,11 @@ fn eval_bus_cond(expr: &Expr, param_map: &HashMap<String, &Expr>) -> bool {
 fn eval_bus_int(expr: &Expr, param_map: &HashMap<String, &Expr>) -> Option<i64> {
     match &expr.kind {
         ExprKind::Literal(lit) => match lit {
-            LitKind::Dec(n) | LitKind::Hex(n) | LitKind::Bin(n) | LitKind::Sized(_, n) => {
-                Some(*n as i64)
-            }
+            LitKind::Dec(n)
+            | LitKind::Hex(n)
+            | LitKind::Bin(n)
+            | LitKind::Sized(_, n)
+            | LitKind::ParamSized(_, n) => Some(*n as i64),
             // Float literals are not valid in integer bus-condition contexts.
             LitKind::Float(_) => None,
         },

@@ -2910,6 +2910,11 @@ fn lit_to_term(l: &LitKind) -> SmtTerm {
             width: *w,
             signed: false,
         },
+        LitKind::ParamSized(_, v) => SmtTerm {
+            s: bv_lit(*v, 32),
+            width: 32,
+            signed: false,
+        },
         // Float literals are unreachable here in practice — FP types are rejected
         // by `check_scalar_type` before emission. Fall back to the FP32 bit
         // pattern as a 32-bit vector so this stays total.

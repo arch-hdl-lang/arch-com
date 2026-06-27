@@ -553,6 +553,7 @@ fn expr_str(expr: &Expr) -> String {
             LitKind::Hex(v) => format!("0x{:X}", v),
             LitKind::Bin(v) => format!("0b{:b}", v),
             LitKind::Sized(width, val) => format!("{width}'d{val}"),
+            LitKind::ParamSized(name, val) => format!("{name}'d{val}"),
             LitKind::Float(bits) => {
                 let v = f64::from_bits(*bits);
                 if v.fract() == 0.0 {
