@@ -5495,36 +5495,37 @@ impl Parser {
                     self.advance();
                     // 'and' and 'latch' are both keyword tokens, handle both specially
                     let span = self.peek_span();
-                    let kind_val =
-                        match self.peek_kind() {
-                            Some(TokenKind::And) => {
-                                self.advance();
-                                "and"
-                            }
-                            Some(TokenKind::Latch) => {
-                                self.advance();
-                                "latch"
-                            }
-                            Some(TokenKind::Ident(_)) => {
-                                let val = self.expect_ident()?;
-                                match val.name.as_str() {
-                                    "latch" => "latch",
-                                    other => return Err(CompileError::general(
+                    let kind_val = match self.peek_kind() {
+                        Some(TokenKind::And) => {
+                            self.advance();
+                            "and"
+                        }
+                        Some(TokenKind::Latch) => {
+                            self.advance();
+                            "latch"
+                        }
+                        Some(TokenKind::Ident(_)) => {
+                            let val = self.expect_ident()?;
+                            match val.name.as_str() {
+                                "latch" => "latch",
+                                other => {
+                                    return Err(CompileError::general(
                                         &format!(
                                             "unknown clkgate kind `{other}`; expected latch or and"
                                         ),
                                         val.span,
-                                    )),
+                                    ))
                                 }
                             }
-                            _ => {
-                                return Err(CompileError::unexpected_token(
-                                    "latch or and",
-                                    &format!("{:?}", self.peek_kind()),
-                                    span,
-                                ))
-                            }
-                        };
+                        }
+                        _ => {
+                            return Err(CompileError::unexpected_token(
+                                "latch or and",
+                                &format!("{:?}", self.peek_kind()),
+                                span,
+                            ))
+                        }
+                    };
                     self.expect(TokenKind::Semi)?;
                     kind = Some(match kind_val {
                         "latch" => ClkGateKind::Latch,
@@ -6561,17 +6562,18 @@ impl Parser {
                         None => return Err(CompileError::UnexpectedEof),
                     };
                     self.expect(TokenKind::Semi)?;
-                    kind =
-                        match kind_str.as_str() {
-                            "flop" => crate::ast::RegfileKind::Flop,
-                            "latch" => crate::ast::RegfileKind::Latch,
-                            other => return Err(CompileError::general(
+                    kind = match kind_str.as_str() {
+                        "flop" => crate::ast::RegfileKind::Flop,
+                        "latch" => crate::ast::RegfileKind::Latch,
+                        other => {
+                            return Err(CompileError::general(
                                 &format!(
                                     "unknown regfile kind `{other}`; expected `flop` or `latch`"
                                 ),
                                 span,
-                            )),
-                        };
+                            ))
+                        }
+                    };
                 }
                 Some(TokenKind::Ports) => {
                     let arr = self.parse_port_array()?;
