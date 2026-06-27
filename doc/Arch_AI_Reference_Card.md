@@ -706,6 +706,11 @@ ram Name
 end ram Name
 ```
 
+`en` (chip/read enable) is **optional** on any RAM port. When omitted the
+port is always enabled: it reads every cycle and writes whenever `wen` (or,
+for `simple_dual`, on every write-port access). Applies uniformly to
+`single`, `simple_dual`, and `true_dual` kinds at every `latency`.
+
 ---
 
 ### cam
