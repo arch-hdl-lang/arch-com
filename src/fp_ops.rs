@@ -263,6 +263,11 @@ fn f32_to_bf16(p: FpCompat) -> FpFn {
 // differential harness is the oracle.
 const ADD_G: u32 = 30; // bounded-adder guard bits (field = 24 + ADD_G)
 const FMA_W: u32 = 470;
+// FMA bounded-adder guard bits (field = 48-bit product + FMA_G). Catastrophic
+// cancellation in a*b+c forces the product/addend LSB gap to <= 47, so FMA_G>=47
+// guarantees no significant bit is ever folded into sticky; 48 gives one bit of
+// margin. Field 96 vs the exact-wide 470 -> ~5x narrower datapath.
+const FMA_G: u32 = 48;
 
 fn f32_add_core(name: &str, flip_b_sign: bool, p: FpCompat) -> FpFn {
     let a = var("a", 32);
@@ -352,34 +357,51 @@ fn fma_f32(p: FpCompat) -> FpFn {
     let mp = mul(&zext(&da.mant, 48), &zext(&db.mant, 48));
     let ep = add(&da.eunb, &db.eunb);
 
-    // align product (ep) and c (eunb_c) to the lower exponent
-    let p_ge_c = sge(&ep, &dc.eunb);
-    let e_lo = ite(&p_ge_c, &dc.eunb, &ep);
-    let pt = ite(
-        &p_ge_c,
-        &shl(&zext(&mp, FMA_W), &sub(&ep, &dc.eunb)),
-        &zext(&mp, FMA_W),
-    );
-    let ct = ite(
-        &p_ge_c,
-        &zext(&dc.mant, FMA_W),
-        &shl(&zext(&dc.mant, FMA_W), &sub(&dc.eunb, &ep)),
-    );
-    let same = eq(&sp, &dc.sign);
-    let pt_gt = ugt(&pt, &ct);
+    // ── Bounded sticky-fold alignment (mirrors f32_add_core) ──────────────
+    // Anchor at the operand with the higher LSB-exponent and shift the lower
+    // one down, folding everything past the FMA_G guard region into one sticky
+    // bit (appended as the low bit so the subtraction borrows correctly). The
+    // product is 48-bit and c is 24-bit; FMA_G keeps the full product through
+    // catastrophic cancellation, which can only occur when c is the higher
+    // operand (an LSB gap of <= 47).
+    let c_mant48 = zext(&dc.mant, 48);
+    let hi_is_p = sge(&ep, &dc.eunb);
+    let psel = |fp_: &Bv, fc: &Bv| ite(&hi_is_p, fp_, fc);
+    let sig_hi = psel(&mp, &c_mant48);
+    let sig_lo = psel(&c_mant48, &mp);
+    let e_hi = psel(&ep, &dc.eunb);
+    let sign_hi = psel(&sp, &dc.sign);
+    let sign_lo = psel(&dc.sign, &sp);
+
+    let diff = sub(&e_hi, &psel(&dc.eunb, &ep)); // e_hi - e_lo >= 0
+    let fw = 48 + FMA_G; // aligned-field width
+    let hi_field = shl(&zext(&sig_hi, fw), &cst(FMA_G as u128, 16));
+    let lo_ext = shl(&zext(&sig_lo, fw), &cst(FMA_G as u128, 16));
+    let lo_field = lshr(&lo_ext, &diff);
+    let mask = sub(&shl(&cst(1, fw), &diff), &cst(1, fw)); // (1<<diff)-1
+    let sticky = ne(&band(&lo_ext, &mask), &cst(0, fw));
+
+    let hi_e = concat(&hi_field, &cst(0, 1)); // fw+1
+    let lo_e = concat(&lo_field, &sticky); // fw+1
+    let same = eq(&sign_hi, &sign_lo);
+    let ge = uge(&hi_e, &lo_e);
+    let raw = ite(&ge, &sub(&hi_e, &lo_e), &sub(&lo_e, &hi_e)); // fw+1
+    let mw = fw + 2; // add-carry headroom
     let mag = ite(
         &same,
-        &add(&pt, &ct),
-        &ite(&pt_gt, &sub(&pt, &ct), &sub(&ct, &pt)),
+        &add(&zext(&hi_e, mw), &zext(&lo_e, mw)),
+        &zext(&raw, mw),
     );
-    let res_sign = ite(&same, &sp, &ite(&pt_gt, &sp, &dc.sign));
-    let cancel = and(&bnot(&same), &eq(&pt, &ct));
-    let general = ite(&cancel, &cst(0, 32), &normround(&res_sign, &mag, &e_lo));
+    let res_sign = ite(&same, &sign_hi, &ite(&ge, &sign_hi, &sign_lo));
+    let e0 = sub(&e_hi, &cst((FMA_G + 1) as u128, 16)); // LSB exponent of mag
+    // exact cancellation (opposite signs, equal magnitude incl. sticky) -> +0
+    let cancel = and(&bnot(&same), &eq(&raw, &cst(0, fw + 1)));
+    let general = ite(&cancel, &cst(0, 32), &normround(&res_sign, &mag, &e0));
 
     // product==0 (finite): result = signed-zero(sp) + c
     let prod_zero_res = call("arch_f32_add", &[concat(&sp, &cst(0, 31)), c.clone()], 32);
     // c==0 (finite, product nonzero): round the product alone
-    let prod_only = normround(&sp, &zext(&mp, FMA_W), &ep);
+    let prod_only = normround(&sp, &mp, &ep);
 
     let inf_p = concat(&sp, &concat(&cst(0xFF, 8), &cst(0, 23)));
     let inf_c = concat(&dc.sign, &concat(&cst(0xFF, 8), &cst(0, 23)));
