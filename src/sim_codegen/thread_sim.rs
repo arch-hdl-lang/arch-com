@@ -29,9 +29,9 @@
 //   - Predicate / expression shapes: idents, literals, !/~, all binops
 
 use crate::ast::{
-    ArbiterPolicy, BinOp, CombAssign, ForRange, Stmt, Direction, Expr, ExprKind, IfElseOf,
-    LitKind, ModuleBodyItem, ModuleDecl, RegAssign, ResetLevel,
-    ParamDecl, ThreadBlock, ThreadStmt, TypeExpr, UnaryOp,
+    ArbiterPolicy, BinOp, CombAssign, Direction, Expr, ExprKind, ForRange, IfElseOf, LitKind,
+    ModuleBodyItem, ModuleDecl, ParamDecl, RegAssign, ResetLevel, Stmt, ThreadBlock, ThreadStmt,
+    TypeExpr, UnaryOp,
 };
 use crate::diagnostics::CompileWarning;
 use crate::sim_codegen::SimModel;
@@ -91,7 +91,10 @@ enum WaitKind {
     /// already this thread (priority-arbitrated; lower thread index
     /// wins ties because pass 2 of the scheduler resumes slots in
     /// declaration order). On resume the coroutine claims the holder.
-    LockAcquire(String /* resource name */, usize /* this thread index */),
+    LockAcquire(
+        String, /* resource name */
+        usize,  /* this thread index */
+    ),
 }
 
 struct ForLoopInfo {
@@ -113,7 +116,12 @@ struct ThreadInfo {
     branches: Vec<Branch>,
 }
 
-pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads: u32) -> Result<SimModel, String> {
+pub fn gen_module_thread(
+    m: &ModuleDecl,
+    debug: bool,
+    wave: bool,
+    num_os_threads: u32,
+) -> Result<SimModel, String> {
     let mut sink = Vec::new();
     gen_module_thread_with_warnings(m, debug, wave, num_os_threads, &mut sink)
 }
@@ -134,17 +142,24 @@ pub fn gen_module_thread_with_warnings(
     // which is what makes --thread-sim=both cross-check practical.
     let class = format!("V{}", m.name.name);
 
-    let threads: Vec<&ThreadBlock> = m.body.iter().filter_map(|i| match i {
-        ModuleBodyItem::Thread(t) => Some(t),
-        _ => None,
-    }).collect();
+    let threads: Vec<&ThreadBlock> = m
+        .body
+        .iter()
+        .filter_map(|i| match i {
+            ModuleBodyItem::Thread(t) => Some(t),
+            _ => None,
+        })
+        .collect();
     if threads.is_empty() {
         return Err(format!("module `{}` has no thread blocks", class));
     }
     validate_wide_thread_sim_exprs(m, &class)?;
     for (i, t) in threads.iter().enumerate() {
         if t.tlm_target.is_some() || t.implement.is_some() {
-            return Err(format!("module `{}` thread #{}: TLM/implement not yet supported", class, i));
+            return Err(format!(
+                "module `{}` thread #{}: TLM/implement not yet supported",
+                class, i
+            ));
         }
     }
 
@@ -156,10 +171,12 @@ pub fn gen_module_thread_with_warnings(
             | ModuleBodyItem::CombBlock(_)
             | ModuleBodyItem::RegBlock(_)
             | ModuleBodyItem::Resource(_) => {}
-            _ => return Err(format!(
-                "module `{}`: thread sim does not yet support this body item kind",
-                class
-            )),
+            _ => {
+                return Err(format!(
+                    "module `{}`: thread sim does not yet support this body item kind",
+                    class
+                ))
+            }
         }
     }
     // Partition each thread body into segments + collected branches.
@@ -168,9 +185,14 @@ pub fn gen_module_thread_with_warnings(
         let mut branches: Vec<Branch> = Vec::new();
         let main_segs = partition(&t.body, &mut branches, ti)
             .map_err(|e| format!("module `{}` thread #{}: {}", class, ti, e))?;
-        thread_infos.push(ThreadInfo { main_segs, branches });
+        thread_infos.push(ThreadInfo {
+            main_segs,
+            branches,
+        });
     }
-    let resource_count = m.body.iter()
+    let resource_count = m
+        .body
+        .iter()
         .filter(|item| matches!(item, ModuleBodyItem::Resource(_)))
         .count();
     if resource_count > 0 && threads.len() > 64 {
@@ -182,11 +204,15 @@ pub fn gen_module_thread_with_warnings(
     }
 
     // Ports + regs as fields.
-    let clk_name = m.ports.iter()
+    let clk_name = m
+        .ports
+        .iter()
         .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
         .map(|p| p.name.name.clone())
         .ok_or_else(|| format!("module `{}` has no clock port", class))?;
-    let (rst_name, rst_active_low) = m.ports.iter()
+    let (rst_name, rst_active_low) = m
+        .ports
+        .iter()
         .find_map(|p| match &p.ty {
             TypeExpr::Reset(_, lvl) => Some((p.name.name.clone(), matches!(lvl, ResetLevel::Low))),
             _ => None,
@@ -206,7 +232,10 @@ pub fn gen_module_thread_with_warnings(
     for p in &m.params {
         if let Some(def) = &p.default {
             let val = eval_const_with_params(def, &m.params);
-            header.push_str(&format!("  static constexpr uint64_t {} = {}ULL;\n", p.name.name, val));
+            header.push_str(&format!(
+                "  static constexpr uint64_t {} = {}ULL;\n",
+                p.name.name, val
+            ));
         }
     }
     if !m.params.is_empty() {
@@ -224,13 +253,20 @@ pub fn gen_module_thread_with_warnings(
     for item in &m.body {
         if let ModuleBodyItem::RegDecl(r) = item {
             if let TypeExpr::Vec(elem, count_expr) = &r.ty {
-                let elem_ty = port_or_reg_cpp_ty_with_params(elem, &m.params)
-                    .map_err(|e| format!("module `{}` reg `{}` element: {}", class, r.name.name, e))?;
+                let elem_ty = port_or_reg_cpp_ty_with_params(elem, &m.params).map_err(|e| {
+                    format!("module `{}` reg `{}` element: {}", class, r.name.name, e)
+                })?;
                 let count = eval_const_with_params(count_expr, &m.params);
                 if count == 0 {
-                    return Err(format!("module `{}` reg `{}`: Vec count = 0 (param resolution not yet supported)", class, r.name.name));
+                    return Err(format!(
+                        "module `{}` reg `{}`: Vec count = 0 (param resolution not yet supported)",
+                        class, r.name.name
+                    ));
                 }
-                header.push_str(&format!("  {} {}[{}] = {{}};\n", elem_ty, r.name.name, count));
+                header.push_str(&format!(
+                    "  {} {}[{}] = {{}};\n",
+                    elem_ty, r.name.name, count
+                ));
                 vec_reg_info.push((r.name.name.clone(), elem_ty, count));
             } else {
                 let cpp_ty = port_or_reg_cpp_ty_with_params(&r.ty, &m.params)
@@ -248,7 +284,9 @@ pub fn gen_module_thread_with_warnings(
         m.ports.iter().map(|p| p.name.name.as_str()).collect();
     for item in &m.body {
         if let ModuleBodyItem::LetBinding(lb) = item {
-            if port_names_set.contains(lb.name.name.as_str()) { continue; }
+            if port_names_set.contains(lb.name.name.as_str()) {
+                continue;
+            }
             // For typed lets, infer width; for untyped (target=port),
             // the previous filter already skipped them.
             let cpp_ty = match &lb.ty {
@@ -279,8 +317,14 @@ pub fn gen_module_thread_with_warnings(
         for br in &info.branches {
             // Branch slot starts in Done so the scheduler skips it
             // until the parent's fork-launch resets it.
-            header.push_str(&format!("    _t{i}_br{}_slot.kind = arch_rt::WaitKind::Done;\n", br.id));
-            header.push_str(&format!("    _sched_{i}.slots.push_back(&_t{i}_br{}_slot);\n", br.id));
+            header.push_str(&format!(
+                "    _t{i}_br{}_slot.kind = arch_rt::WaitKind::Done;\n",
+                br.id
+            ));
+            header.push_str(&format!(
+                "    _sched_{i}.slots.push_back(&_t{i}_br{}_slot);\n",
+                br.id
+            ));
         }
     }
     // Initial settle — run each per-thread scheduler in declaration
@@ -296,7 +340,9 @@ pub fn gen_module_thread_with_warnings(
         // signals _end_barrier. The main TB-driving thread (caller of
         // eval()) coordinates by hitting both barriers per posedge.
         for (i, _) in thread_infos.iter().enumerate() {
-            header.push_str(&format!("    _worker_{i} = std::thread([this]{{ _worker_loop_{i}(); }});\n"));
+            header.push_str(&format!(
+                "    _worker_{i} = std::thread([this]{{ _worker_loop_{i}(); }});\n"
+            ));
         }
     }
     header.push_str("  }\n");
@@ -307,7 +353,9 @@ pub fn gen_module_thread_with_warnings(
         header.push_str("    _shutdown.store(true, std::memory_order_release);\n");
         header.push_str("    _start_barrier.wait();\n");
         for (i, _) in thread_infos.iter().enumerate() {
-            header.push_str(&format!("    if (_worker_{i}.joinable()) _worker_{i}.join();\n"));
+            header.push_str(&format!(
+                "    if (_worker_{i}.joinable()) _worker_{i}.join();\n"
+            ));
         }
     }
     for (i, info) in thread_infos.iter().enumerate() {
@@ -325,7 +373,8 @@ pub fn gen_module_thread_with_warnings(
         // Auto-open VCD on first eval if Verilated::traceFile() is set
         // (TB convention: arch sim --wave out.vcd passes +trace+out.vcd
         // which the verilated.cpp stub captures into traceFile()).
-        header.push_str("    if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
+        header
+            .push_str("    if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
         header.push_str("      trace_open(Verilated::traceFile());\n");
     }
     // Detect rising edge of clk (Verilator convention) and run the
@@ -346,7 +395,7 @@ pub fn gen_module_thread_with_warnings(
     if wave {
         header.push_str("      if (_trace_fp) trace_dump(_trace_time++);\n");
     }
-    header.push_str("      return;\n");  // _do_posedge settled comb via its own eval() at the end
+    header.push_str("      return;\n"); // _do_posedge settled comb via its own eval() at the end
     header.push_str("    }\n");
     // Comb-only eval (clk falling or steady) — falls through to the
     // segment switches and module-level comb below, then logs at end.
@@ -431,7 +480,10 @@ pub fn gen_module_thread_with_warnings(
         if let ModuleBodyItem::RegDecl(r) = item {
             if let TypeExpr::Vec(_, count_expr) = &r.ty {
                 let count = eval_const_with_params(count_expr, &m.params);
-                header.push_str(&format!("      for (uint64_t _i = 0; _i < {count}; _i++) {} [_i] = 0;\n", r.name.name));
+                header.push_str(&format!(
+                    "      for (uint64_t _i = 0; _i < {count}; _i++) {} [_i] = 0;\n",
+                    r.name.name
+                ));
             } else {
                 header.push_str(&format!("      {} = 0;\n", r.name.name));
             }
@@ -440,15 +492,23 @@ pub fn gen_module_thread_with_warnings(
     for (i, info) in thread_infos.iter().enumerate() {
         header.push_str(&format!("      _slot_{i}.thread.destroy();\n"));
         header.push_str(&format!("      _slot_{i}.thread = _make_thread_{i}();\n"));
-        header.push_str(&format!("      _slot_{i}.kind = arch_rt::WaitKind::Ready;\n"));
+        header.push_str(&format!(
+            "      _slot_{i}.kind = arch_rt::WaitKind::Ready;\n"
+        ));
         header.push_str(&format!("      _slot_{i}.cycles_remaining = 0;\n"));
         header.push_str(&format!("      _slot_{i}.pred = nullptr;\n"));
         header.push_str(&format!("      _seg_{i} = 0;\n"));
         // Branch slots return to Done so they don't run until next fork-launch.
         for br in &info.branches {
             header.push_str(&format!("      _t{i}_br{}_slot.thread.destroy();\n", br.id));
-            header.push_str(&format!("      _t{i}_br{}_slot.kind = arch_rt::WaitKind::Done;\n", br.id));
-            header.push_str(&format!("      _t{i}_br{}_slot.cycles_remaining = 0;\n", br.id));
+            header.push_str(&format!(
+                "      _t{i}_br{}_slot.kind = arch_rt::WaitKind::Done;\n",
+                br.id
+            ));
+            header.push_str(&format!(
+                "      _t{i}_br{}_slot.cycles_remaining = 0;\n",
+                br.id
+            ));
             header.push_str(&format!("      _t{i}_br{}_slot.pred = nullptr;\n", br.id));
             header.push_str(&format!("      _t{i}_br{}_seg = 0;\n", br.id));
         }
@@ -496,14 +556,22 @@ pub fn gen_module_thread_with_warnings(
             }
             header.push_str(&format!("      _slot_{ti}.thread.destroy();\n"));
             header.push_str(&format!("      _slot_{ti}.thread = _make_thread_{ti}();\n"));
-            header.push_str(&format!("      _slot_{ti}.kind = arch_rt::WaitKind::Ready;\n"));
+            header.push_str(&format!(
+                "      _slot_{ti}.kind = arch_rt::WaitKind::Ready;\n"
+            ));
             header.push_str(&format!("      _slot_{ti}.cycles_remaining = 0;\n"));
             header.push_str(&format!("      _slot_{ti}.pred = nullptr;\n"));
             header.push_str(&format!("      _seg_{ti} = 0;\n"));
             // Reset this thread's branches too.
             for br in &thread_infos[ti].branches {
-                header.push_str(&format!("      _t{ti}_br{}_slot.thread.destroy();\n", br.id));
-                header.push_str(&format!("      _t{ti}_br{}_slot.kind = arch_rt::WaitKind::Done;\n", br.id));
+                header.push_str(&format!(
+                    "      _t{ti}_br{}_slot.thread.destroy();\n",
+                    br.id
+                ));
+                header.push_str(&format!(
+                    "      _t{ti}_br{}_slot.kind = arch_rt::WaitKind::Done;\n",
+                    br.id
+                ));
                 header.push_str(&format!("      _t{ti}_br{}_seg = 0;\n", br.id));
             }
             header.push_str("    }\n");
@@ -543,15 +611,22 @@ pub fn gen_module_thread_with_warnings(
         // the TB can call after reset.
         header.push_str(&format!("  void _dbg_log_ports() {{\n"));
         for p in &m.ports {
-            if matches!(&p.ty, TypeExpr::Clock(_)) { continue; }
+            if matches!(&p.ty, TypeExpr::Clock(_)) {
+                continue;
+            }
             let pname = &p.name.name;
-            let dir = match p.direction { Direction::In => "in", Direction::Out => "out" };
+            let dir = match p.direction {
+                Direction::In => "in",
+                Direction::Out => "out",
+            };
             let bits = match &p.ty {
                 TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Reset(..) => 1,
                 TypeExpr::UInt(w) => eval_const_with_params(w, &m.params),
-                _ => continue,  // Vec / wide / bus skipped in Phase 5 spike
+                _ => continue, // Vec / wide / bus skipped in Phase 5 spike
             };
-            if bits == 0 || bits > 64 { continue; }
+            if bits == 0 || bits > 64 {
+                continue;
+            }
             header.push_str(&format!("    if ({pname} != _dbg_prev_{pname}) {{\n"));
             header.push_str(&format!(
                 "      printf(\"[%llu][{mod}.{pname}]({dir}) 0x%llx -> 0x%llx\\n\", \
@@ -579,7 +654,9 @@ pub fn gen_module_thread_with_warnings(
                 TypeExpr::UInt(w) => eval_const_with_params(w, &m.params) as u32,
                 _ => continue,
             };
-            if width == 0 || width > 64 { continue; }
+            if width == 0 || width > 64 {
+                continue;
+            }
             signals.push(crate::sim_codegen::TraceSignal {
                 vcd_name: p.name.name.clone(),
                 cpp_expr: p.name.name.clone(),
@@ -600,7 +677,9 @@ pub fn gen_module_thread_with_warnings(
                         TypeExpr::UInt(w) => eval_const_with_params(w, &m.params) as u32,
                         _ => continue,
                     };
-                    if elem_width == 0 || elem_width > 64 { continue; }
+                    if elem_width == 0 || elem_width > 64 {
+                        continue;
+                    }
                     let count = eval_const_with_params(count_expr, &m.params);
                     for i in 0..count {
                         signals.push(crate::sim_codegen::TraceSignal {
@@ -616,7 +695,9 @@ pub fn gen_module_thread_with_warnings(
                         TypeExpr::UInt(w) => eval_const_with_params(w, &m.params) as u32,
                         _ => continue,
                     };
-                    if width == 0 || width > 64 { continue; }
+                    if width == 0 || width > 64 {
+                        continue;
+                    }
                     signals.push(crate::sim_codegen::TraceSignal {
                         vcd_name: r.name.name.clone(),
                         cpp_expr: r.name.name.clone(),
@@ -699,10 +780,15 @@ pub fn gen_module_thread_with_warnings(
     if debug {
         header.push_str("  uint64_t _dbg_cycle = 0;\n");
         for p in &m.ports {
-            if matches!(&p.ty, TypeExpr::Clock(_)) { continue; }
+            if matches!(&p.ty, TypeExpr::Clock(_)) {
+                continue;
+            }
             let cpp_ty = port_or_reg_cpp_ty_with_params(&p.ty, &m.params)
                 .map_err(|e| format!("module `{}` port `{}`: {}", class, p.name.name, e))?;
-            header.push_str(&format!("  {}\n", field_decl(&cpp_ty, &format!("_dbg_prev_{}", p.name.name))));
+            header.push_str(&format!(
+                "  {}\n",
+                field_decl(&cpp_ty, &format!("_dbg_prev_{}", p.name.name))
+            ));
         }
     }
     // Per-user-thread scheduler. Each owns its main slot + its fork
@@ -734,8 +820,14 @@ pub fn gen_module_thread_with_warnings(
     // lowered lock arbiters.
     for item in &m.body {
         if let ModuleBodyItem::Resource(r) = item {
-            header.push_str(&format!("  uint64_t _resource_{}_req_mask = 0;\n", r.name.name));
-            header.push_str(&format!("  int32_t _resource_{}_holder = -1;\n", r.name.name));
+            header.push_str(&format!(
+                "  uint64_t _resource_{}_req_mask = 0;\n",
+                r.name.name
+            ));
+            header.push_str(&format!(
+                "  int32_t _resource_{}_holder = -1;\n",
+                r.name.name
+            ));
             match &r.policy {
                 ArbiterPolicy::Priority => {}
                 ArbiterPolicy::RoundRobin => {
@@ -750,7 +842,10 @@ pub fn gen_module_thread_with_warnings(
                         "  uint32_t _resource_{}_lru_order[{}] = {{{}}};\n",
                         r.name.name,
                         threads.len(),
-                        (0..threads.len()).map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+                        (0..threads.len())
+                            .map(|i| i.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ));
                 }
                 ArbiterPolicy::Weighted(weight) => {
@@ -764,11 +859,17 @@ pub fn gen_module_thread_with_warnings(
                         "  uint32_t _resource_{}_credits[{}] = {{{}}};\n",
                         r.name.name,
                         threads.len(),
-                        std::iter::repeat(credit.to_string()).take(threads.len()).collect::<Vec<_>>().join(", ")
+                        std::iter::repeat(credit.to_string())
+                            .take(threads.len())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ));
                 }
                 ArbiterPolicy::Custom(_) => {
-                    header.push_str(&format!("  uint64_t _resource_{}_last_grant_onehot = 0;\n", r.name.name));
+                    header.push_str(&format!(
+                        "  uint64_t _resource_{}_last_grant_onehot = 0;\n",
+                        r.name.name
+                    ));
                 }
             }
         }
@@ -815,7 +916,11 @@ pub fn gen_module_thread_with_warnings(
                 body_cpp.push_str(&format!("{pad2}{lhs} = {rhs};\n"));
             }
             for ie in &seg.entry_seq_if {
-                emit_seq_if(ie, &mut body_cpp, ind + if seg.for_loop.is_some() {2} else {0})?;
+                emit_seq_if(
+                    ie,
+                    &mut body_cpp,
+                    ind + if seg.for_loop.is_some() { 2 } else { 0 },
+                )?;
             }
             // Wait.
             match &seg.wait_kind {
@@ -844,14 +949,22 @@ pub fn gen_module_thread_with_warnings(
                     // tick resumes it. Then wait until all branch slots
                     // are Done.
                     for &bid in branch_ids {
-                        body_cpp.push_str(&format!("{pad2}_t{ti}_br{bid}_slot.thread.destroy();\n"));
-                        body_cpp.push_str(&format!("{pad2}_t{ti}_br{bid}_slot.thread = _t{ti}_br{bid}_make();\n"));
-                        body_cpp.push_str(&format!("{pad2}_t{ti}_br{bid}_slot.kind = arch_rt::WaitKind::Ready;\n"));
-                        body_cpp.push_str(&format!("{pad2}_t{ti}_br{bid}_slot.cycles_remaining = 0;\n"));
+                        body_cpp
+                            .push_str(&format!("{pad2}_t{ti}_br{bid}_slot.thread.destroy();\n"));
+                        body_cpp.push_str(&format!(
+                            "{pad2}_t{ti}_br{bid}_slot.thread = _t{ti}_br{bid}_make();\n"
+                        ));
+                        body_cpp.push_str(&format!(
+                            "{pad2}_t{ti}_br{bid}_slot.kind = arch_rt::WaitKind::Ready;\n"
+                        ));
+                        body_cpp.push_str(&format!(
+                            "{pad2}_t{ti}_br{bid}_slot.cycles_remaining = 0;\n"
+                        ));
                         body_cpp.push_str(&format!("{pad2}_t{ti}_br{bid}_slot.pred = nullptr;\n"));
                         body_cpp.push_str(&format!("{pad2}_t{ti}_br{bid}_seg = 0;\n"));
                     }
-                    let pred = branch_ids.iter()
+                    let pred = branch_ids
+                        .iter()
                         .map(|b| format!("_t{ti}_br{b}_slot.kind == arch_rt::WaitKind::Done"))
                         .collect::<Vec<_>>()
                         .join(" && ");
@@ -859,7 +972,11 @@ pub fn gen_module_thread_with_warnings(
                         "{pad2}co_await arch_rt::wait_until(&_slot_{ti}, [this]{{ return {pred}; }});\n"
                     ));
                 }
-                WaitKind::IfElseJoin { cond, then_branch, else_branch } => {
+                WaitKind::IfElseJoin {
+                    cond,
+                    then_branch,
+                    else_branch,
+                } => {
                     emit_ifelse_join_wait(
                         &mut body_cpp,
                         &pad2,
@@ -880,7 +997,9 @@ pub fn gen_module_thread_with_warnings(
                     body_cpp.push_str(&format!(
                         "{pad2}  co_await arch_rt::wait_until(&_slot_{ti}, [this]{{ return _resource_{res}_can_acquire({my_id}); }});\n"
                     ));
-                    body_cpp.push_str(&format!("{pad2}  if (_resource_{res}_can_acquire({my_id})) {{\n"));
+                    body_cpp.push_str(&format!(
+                        "{pad2}  if (_resource_{res}_can_acquire({my_id})) {{\n"
+                    ));
                     body_cpp.push_str(&format!("{pad2}    _resource_{res}_claim({my_id});\n"));
                     body_cpp.push_str(&format!("{pad2}    break;\n"));
                     body_cpp.push_str(&format!("{pad2}  }}\n"));
@@ -901,7 +1020,11 @@ pub fn gen_module_thread_with_warnings(
                 body_cpp.push_str(&format!("{pad2}{lhs} = {rhs};\n"));
             }
             for ie in &seg.post_wait_seq_if {
-                emit_seq_if(ie, &mut body_cpp, ind + if seg.for_loop.is_some() {2} else {0})?;
+                emit_seq_if(
+                    ie,
+                    &mut body_cpp,
+                    ind + if seg.for_loop.is_some() { 2 } else { 0 },
+                )?;
             }
             if seg.for_loop.is_some() {
                 let pad_close = " ".repeat(ind);
@@ -920,7 +1043,8 @@ pub fn gen_module_thread_with_warnings(
         // sit at Done until the parent's next fork-launch resets them.
         for br in &info.branches {
             header.push_str(&format!(
-                "  arch_rt::ArchThread _t{ti}_br{}_make() {{\n", br.id
+                "  arch_rt::ArchThread _t{ti}_br{}_make() {{\n",
+                br.id
             ));
             for (si, seg) in br.segs.iter().enumerate() {
                 let pad = "    ";
@@ -932,7 +1056,11 @@ pub fn gen_module_thread_with_warnings(
                         v = fl.var
                     ));
                 }
-                let pad2 = if seg.for_loop.is_some() { "      " } else { "    " };
+                let pad2 = if seg.for_loop.is_some() {
+                    "      "
+                } else {
+                    "    "
+                };
                 header.push_str(&format!("{pad2}_t{ti}_br{}_seg = {si};\n", br.id));
                 for sa in &seg.entry_seq {
                     let lhs = expr_to_cpp(&sa.target)?;
@@ -952,7 +1080,8 @@ pub fn gen_module_thread_with_warnings(
                     WaitKind::Cycles(n) => {
                         let n_str = expr_to_cpp(n)?;
                         header.push_str(&format!(
-                            "{pad2}co_await arch_rt::wait_cycles(&_t{ti}_br{}_slot, {n_str});\n", br.id
+                            "{pad2}co_await arch_rt::wait_cycles(&_t{ti}_br{}_slot, {n_str});\n",
+                            br.id
                         ));
                     }
                     WaitKind::Terminal => {
@@ -967,14 +1096,19 @@ pub fn gen_module_thread_with_warnings(
                         // visibility).
                         if !seg.hold_comb.is_empty() {
                             header.push_str(&format!(
-                                "{pad2}co_await arch_rt::wait_cycles(&_t{ti}_br{}_slot, 1);\n", br.id
+                                "{pad2}co_await arch_rt::wait_cycles(&_t{ti}_br{}_slot, 1);\n",
+                                br.id
                             ));
                         }
                     }
                     WaitKind::ForkJoin(_) => {
                         return Err("nested fork/join inside fork branch not yet supported".into());
                     }
-                    WaitKind::IfElseJoin { cond, then_branch, else_branch } => {
+                    WaitKind::IfElseJoin {
+                        cond,
+                        then_branch,
+                        else_branch,
+                    } => {
                         emit_ifelse_join_wait(
                             &mut header,
                             pad2,
@@ -1054,7 +1188,11 @@ pub fn gen_module_thread_with_warnings(
 // `branches`; the caller passes a fresh Vec at the top level.
 // `thread_id` identifies the owning thread (used as priority for
 // LockAcquire — lower id wins).
-fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>, thread_id: usize) -> Result<Vec<Segment>, String> {
+fn partition(
+    body: &[ThreadStmt],
+    branches: &mut Vec<Branch>,
+    thread_id: usize,
+) -> Result<Vec<Segment>, String> {
     let mut segs: Vec<Segment> = Vec::new();
     let mut cur = new_segment();
 
@@ -1100,7 +1238,10 @@ fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>, thread_id: usize) 
                         cur.entry_seq_if.push(ie.clone());
                     }
                     IfKind::Mixed => {
-                        return Err("mixed CombAssign + SeqAssign inside `if/else` not yet supported".into());
+                        return Err(
+                            "mixed CombAssign + SeqAssign inside `if/else` not yet supported"
+                                .into(),
+                        );
                     }
                     IfKind::Empty => {}
                 }
@@ -1113,24 +1254,38 @@ fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>, thread_id: usize) 
                 cur.wait_kind = WaitKind::Cycles(n.clone());
                 segs.push(std::mem::replace(&mut cur, new_segment()));
             }
-            ThreadStmt::For { var, start, end, body, .. } => {
+            ThreadStmt::For {
+                var,
+                start,
+                end,
+                body,
+                ..
+            } => {
                 if !contains_wait(body) {
-                    return Err("`for` without internal `wait` is unusual; use `for` in comb instead. \
-                        Phase 2 thread-sim only handles `for` containing a wait.".into());
+                    return Err(
+                        "`for` without internal `wait` is unusual; use `for` in comb instead. \
+                        Phase 2 thread-sim only handles `for` containing a wait."
+                            .into(),
+                    );
                 }
                 // Flush any pending pre-loop hold/seq into a 1-cycle yield
                 // segment if non-empty (so the held outputs get a cycle to
                 // settle before the loop). For Phase 2, error if pending.
                 if !cur.hold_comb.is_empty() || !cur.entry_seq.is_empty() {
-                    return Err("`for` preceded by un-flushed comb/seq assigns not yet supported \
-                        (insert a `wait` before the for loop)".into());
+                    return Err(
+                        "`for` preceded by un-flushed comb/seq assigns not yet supported \
+                        (insert a `wait` before the for loop)"
+                            .into(),
+                    );
                 }
                 // Partition the loop body — Phase 2 supports a body with
                 // exactly one wait (like BurstRead). The loop body is then
                 // a single segment that gets wrapped in a C++ for loop.
                 let inner = partition(body, branches, thread_id)?;
                 if inner.len() != 1 {
-                    return Err("`for` body must contain exactly one wait segment in Phase 2".into());
+                    return Err(
+                        "`for` body must contain exactly one wait segment in Phase 2".into(),
+                    );
                 }
                 let mut inner_seg = inner.into_iter().next().unwrap();
                 inner_seg.for_loop = Some(ForLoopInfo {
@@ -1144,9 +1299,15 @@ fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>, thread_id: usize) 
                 // Flush any pending into a 1-cycle yield segment so the
                 // pre-fork holds get a chance to settle. Phase 3a: error
                 // if pending (force user to put a wait before fork).
-                if !cur.hold_comb.is_empty() || !cur.entry_seq.is_empty() || !cur.entry_seq_if.is_empty() {
-                    return Err("fork preceded by un-flushed comb/seq assigns not yet supported \
-                        (insert a wait before the fork)".into());
+                if !cur.hold_comb.is_empty()
+                    || !cur.entry_seq.is_empty()
+                    || !cur.entry_seq_if.is_empty()
+                {
+                    return Err(
+                        "fork preceded by un-flushed comb/seq assigns not yet supported \
+                        (insert a wait before the fork)"
+                            .into(),
+                    );
                 }
                 // Allocate a Branch per branch body, partition each.
                 let mut branch_ids: Vec<usize> = Vec::new();
@@ -1164,9 +1325,15 @@ fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>, thread_id: usize) 
                 // Flush pending into a state before the lock, since the
                 // pre-lock CombAssigns/SeqAssigns shouldn't be held while
                 // waiting to acquire the resource.
-                if !cur.hold_comb.is_empty() || !cur.entry_seq.is_empty() || !cur.entry_seq_if.is_empty() {
-                    return Err("`lock` preceded by un-flushed comb/seq assigns not yet supported \
-                        (insert a wait before the lock)".into());
+                if !cur.hold_comb.is_empty()
+                    || !cur.entry_seq.is_empty()
+                    || !cur.entry_seq_if.is_empty()
+                {
+                    return Err(
+                        "`lock` preceded by un-flushed comb/seq assigns not yet supported \
+                        (insert a wait before the lock)"
+                            .into(),
+                    );
                 }
                 // Acquire segment: wait until lock is free or already held by us.
                 cur.wait_kind = WaitKind::LockAcquire(resource.name.clone(), thread_id);
@@ -1189,8 +1356,14 @@ fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>, thread_id: usize) 
                 // Phase 4 scope: body must contain only CombAssign,
                 // SeqAssign, IfElse (no nested waits, no for-loops,
                 // no fork/join). This covers the axi_dma_thread case.
-                if !cur.hold_comb.is_empty() || !cur.entry_seq.is_empty() || !cur.entry_seq_if.is_empty() {
-                    return Err("`do until` preceded by un-flushed comb/seq assigns not yet supported".into());
+                if !cur.hold_comb.is_empty()
+                    || !cur.entry_seq.is_empty()
+                    || !cur.entry_seq_if.is_empty()
+                {
+                    return Err(
+                        "`do until` preceded by un-flushed comb/seq assigns not yet supported"
+                            .into(),
+                    );
                 }
                 if contains_wait(body) {
                     return Err("`do until` body containing nested `wait` not yet supported".into());
@@ -1202,22 +1375,24 @@ fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>, thread_id: usize) 
                     match s {
                         ThreadStmt::CombAssign(a) => hold_comb.push(Stmt::Assign(a.clone())),
                         ThreadStmt::SeqAssign(a) => post_seq.push(a.clone()),
-                        ThreadStmt::IfElse(ie) => {
-                            match classify_ifelse(ie) {
-                                IfKind::PureComb => {
-                                    let comb_ie = lower_thread_ifelse_to_comb(ie)?;
-                                    hold_comb.push(Stmt::IfElse(comb_ie));
-                                }
-                                IfKind::PureSeq => post_seq_if.push(ie.clone()),
-                                IfKind::Mixed => return Err(
-                                    "mixed comb+seq IfElse inside `do until` body not yet supported".into()),
-                                IfKind::Empty => {}
+                        ThreadStmt::IfElse(ie) => match classify_ifelse(ie) {
+                            IfKind::PureComb => {
+                                let comb_ie = lower_thread_ifelse_to_comb(ie)?;
+                                hold_comb.push(Stmt::IfElse(comb_ie));
                             }
+                            IfKind::PureSeq => post_seq_if.push(ie.clone()),
+                            IfKind::Mixed => return Err(
+                                "mixed comb+seq IfElse inside `do until` body not yet supported"
+                                    .into(),
+                            ),
+                            IfKind::Empty => {}
+                        },
+                        _ => {
+                            return Err(format!(
+                                "stmt kind not supported inside `do until` body: {:?}",
+                                std::mem::discriminant(s)
+                            ))
                         }
-                        _ => return Err(format!(
-                            "stmt kind not supported inside `do until` body: {:?}",
-                            std::mem::discriminant(s)
-                        )),
                     }
                 }
                 cur.hold_comb = hold_comb;
@@ -1226,7 +1401,12 @@ fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>, thread_id: usize) 
                 cur.wait_kind = WaitKind::Until(cond.clone());
                 segs.push(std::mem::replace(&mut cur, new_segment()));
             }
-            other => return Err(format!("thread stmt not yet supported: {:?}", std::mem::discriminant(other))),
+            other => {
+                return Err(format!(
+                    "thread stmt not yet supported: {:?}",
+                    std::mem::discriminant(other)
+                ))
+            }
         }
     }
     // Trailing segment: if it's pure-seq (no held comb), fold its
@@ -1246,8 +1426,10 @@ fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>, thread_id: usize) 
                 prev.wait_kind,
                 WaitKind::Until(_) | WaitKind::Cycles(_) | WaitKind::IfElseJoin { .. }
             ) {
-                prev.post_wait_seq.extend(std::mem::take(&mut cur.entry_seq));
-                prev.post_wait_seq_if.extend(std::mem::take(&mut cur.entry_seq_if));
+                prev.post_wait_seq
+                    .extend(std::mem::take(&mut cur.entry_seq));
+                prev.post_wait_seq_if
+                    .extend(std::mem::take(&mut cur.entry_seq_if));
             } else {
                 cur.wait_kind = WaitKind::Terminal;
                 segs.push(cur);
@@ -1276,7 +1458,12 @@ fn new_segment() -> Segment {
     }
 }
 
-enum IfKind { PureComb, PureSeq, Mixed, Empty }
+enum IfKind {
+    PureComb,
+    PureSeq,
+    Mixed,
+    Empty,
+}
 
 fn classify_ifelse(ie: &IfElseOf<ThreadStmt>) -> IfKind {
     let (mut has_comb, mut has_seq) = (false, false);
@@ -1328,8 +1515,12 @@ fn lower_thread_ifelse_to_comb(ie: &IfElseOf<ThreadStmt>) -> Result<IfElseOf<Stm
 
 fn emit_branch_launch(out: &mut String, pad: &str, ti: usize, bid: usize) {
     out.push_str(&format!("{pad}_t{ti}_br{bid}_slot.thread.destroy();\n"));
-    out.push_str(&format!("{pad}_t{ti}_br{bid}_slot.thread = _t{ti}_br{bid}_make();\n"));
-    out.push_str(&format!("{pad}_t{ti}_br{bid}_slot.kind = arch_rt::WaitKind::Ready;\n"));
+    out.push_str(&format!(
+        "{pad}_t{ti}_br{bid}_slot.thread = _t{ti}_br{bid}_make();\n"
+    ));
+    out.push_str(&format!(
+        "{pad}_t{ti}_br{bid}_slot.kind = arch_rt::WaitKind::Ready;\n"
+    ));
     out.push_str(&format!("{pad}_t{ti}_br{bid}_slot.cycles_remaining = 0;\n"));
     out.push_str(&format!("{pad}_t{ti}_br{bid}_slot.pred = nullptr;\n"));
     out.push_str(&format!("{pad}_t{ti}_br{bid}_seg = 0;\n"));
@@ -1373,14 +1564,22 @@ fn emit_seq_stmt(s: &crate::ast::Stmt, out: &mut String, indent: usize) -> Resul
         Stmt::IfElse(ie) => {
             let cond = expr_to_cpp_bool(&ie.cond)?;
             out.push_str(&format!("{pad}if ({cond}) {{\n"));
-            for s in &ie.then_stmts { emit_seq_stmt(s, out, indent + 2)?; }
+            for s in &ie.then_stmts {
+                emit_seq_stmt(s, out, indent + 2)?;
+            }
             if !ie.else_stmts.is_empty() {
                 out.push_str(&format!("{pad}}} else {{\n"));
-                for s in &ie.else_stmts { emit_seq_stmt(s, out, indent + 2)?; }
+                for s in &ie.else_stmts {
+                    emit_seq_stmt(s, out, indent + 2)?;
+                }
             }
             out.push_str(&format!("{pad}}}\n"));
         }
-        _ => return Err(format!("module-level seq stmt kind not yet supported by thread sim")),
+        _ => {
+            return Err(format!(
+                "module-level seq stmt kind not yet supported by thread sim"
+            ))
+        }
     }
     Ok(())
 }
@@ -1396,10 +1595,14 @@ fn emit_comb_stmt(cs: &Stmt, out: &mut String, indent: usize) -> Result<(), Stri
         Stmt::IfElse(ie) => {
             let cond = expr_to_cpp_bool(&ie.cond)?;
             out.push_str(&format!("{pad}if ({cond}) {{\n"));
-            for s in &ie.then_stmts { emit_comb_stmt(s, out, indent + 2)?; }
+            for s in &ie.then_stmts {
+                emit_comb_stmt(s, out, indent + 2)?;
+            }
             if !ie.else_stmts.is_empty() {
                 out.push_str(&format!("{pad}}} else {{\n"));
-                for s in &ie.else_stmts { emit_comb_stmt(s, out, indent + 2)?; }
+                for s in &ie.else_stmts {
+                    emit_comb_stmt(s, out, indent + 2)?;
+                }
             }
             out.push_str(&format!("{pad}}}\n"));
         }
@@ -1478,8 +1681,15 @@ fn expr_to_cpp(e: &Expr) -> Result<String, String> {
             // hold the right width). Emit the receiver verbatim.
             match method.name.as_str() {
                 "trunc" | "zext" | "sext" | "resize" => expr_to_cpp(recv),
-                _ => Err(format!("method `.{}()` not yet supported by thread sim", method.name)),
-            }.map(|s| { let _ = args; s })
+                _ => Err(format!(
+                    "method `.{}()` not yet supported by thread sim",
+                    method.name
+                )),
+            }
+            .map(|s| {
+                let _ = args;
+                s
+            })
         }
         ExprKind::BitSlice(base, hi, lo) => {
             // base[hi:lo] — extract bits. C++ equivalent:
@@ -1487,7 +1697,9 @@ fn expr_to_cpp(e: &Expr) -> Result<String, String> {
             let b = expr_to_cpp(base)?;
             let h = expr_to_cpp(hi)?;
             let l = expr_to_cpp(lo)?;
-            Ok(format!("(({b}) >> ({l}) & ((1ull << (({h}) - ({l}) + 1)) - 1))"))
+            Ok(format!(
+                "(({b}) >> ({l}) & ((1ull << (({h}) - ({l}) + 1)) - 1))"
+            ))
         }
         ExprKind::Binary(op, lhs, rhs) => {
             let l = expr_to_cpp(lhs)?;
@@ -1498,17 +1710,27 @@ fn expr_to_cpp(e: &Expr) -> Result<String, String> {
                 BinOp::Mul | BinOp::MulWrap => "*",
                 BinOp::Div => "/",
                 BinOp::Mod => "%",
-                BinOp::Eq => "==", BinOp::Neq => "!=",
-                BinOp::Lt => "<",  BinOp::Gt => ">",
-                BinOp::Lte => "<=", BinOp::Gte => ">=",
-                BinOp::And => "&&", BinOp::Or => "||",
-                BinOp::BitAnd => "&", BinOp::BitOr => "|", BinOp::BitXor => "^",
-                BinOp::Shl => "<<", BinOp::Shr => ">>",
+                BinOp::Eq => "==",
+                BinOp::Neq => "!=",
+                BinOp::Lt => "<",
+                BinOp::Gt => ">",
+                BinOp::Lte => "<=",
+                BinOp::Gte => ">=",
+                BinOp::And => "&&",
+                BinOp::Or => "||",
+                BinOp::BitAnd => "&",
+                BinOp::BitOr => "|",
+                BinOp::BitXor => "^",
+                BinOp::Shl => "<<",
+                BinOp::Shr => ">>",
                 _ => return Err(format!("binop {:?} not yet supported", op)),
             };
             Ok(format!("({} {} {})", l, op_str, r))
         }
-        _ => Err(format!("expr shape not supported: {:?}", std::mem::discriminant(&e.kind))),
+        _ => Err(format!(
+            "expr shape not supported: {:?}",
+            std::mem::discriminant(&e.kind)
+        )),
     }
 }
 
@@ -1521,8 +1743,14 @@ fn expr_to_cpp_bool(e: &Expr) -> Result<String, String> {
         ExprKind::Binary(op, _, _) => {
             let s = expr_to_cpp(e)?;
             match op {
-                BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt
-                | BinOp::Lte | BinOp::Gte | BinOp::And | BinOp::Or => Ok(s),
+                BinOp::Eq
+                | BinOp::Neq
+                | BinOp::Lt
+                | BinOp::Gt
+                | BinOp::Lte
+                | BinOp::Gte
+                | BinOp::And
+                | BinOp::Or => Ok(s),
                 _ => Ok(format!("({} != 0)", s)),
             }
         }
@@ -1532,7 +1760,9 @@ fn expr_to_cpp_bool(e: &Expr) -> Result<String, String> {
 
 fn port_or_reg_cpp_ty_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> Result<String, String> {
     match ty {
-        TypeExpr::Clock(_) | TypeExpr::Reset(..) | TypeExpr::Bool | TypeExpr::Bit => Ok("uint8_t".to_string()),
+        TypeExpr::Clock(_) | TypeExpr::Reset(..) | TypeExpr::Bool | TypeExpr::Bit => {
+            Ok("uint8_t".to_string())
+        }
         TypeExpr::UInt(w) => uint_cpp_ty(eval_const_with_params(w, params)),
         TypeExpr::SInt(w) => int_cpp_ty(eval_const_with_params(w, params)),
         other => Err(format!("type {:?} not supported", other)),
@@ -1604,7 +1834,9 @@ fn expr_uses_wide_name(expr: &Expr, wide_names: &HashSet<String>) -> bool {
             expr_uses_wide_name(base, wide_names)
                 || args.iter().any(|arg| expr_uses_wide_name(arg, wide_names))
         }
-        ExprKind::Concat(parts) => parts.iter().any(|part| expr_uses_wide_name(part, wide_names)),
+        ExprKind::Concat(parts) => parts
+            .iter()
+            .any(|part| expr_uses_wide_name(part, wide_names)),
         ExprKind::Literal(_) | ExprKind::Bool(_) => false,
         _ => false,
     }
@@ -1726,7 +1958,9 @@ fn validate_thread_stmt_wide_exprs(
         ThreadStmt::WaitCycles(expr, _) => {
             validate_wide_expr(expr, wide_names, class, "wait-cycles count")?;
         }
-        ThreadStmt::For { start, end, body, .. } => {
+        ThreadStmt::For {
+            start, end, body, ..
+        } => {
             validate_wide_expr(start, wide_names, class, "for-range start")?;
             validate_wide_expr(end, wide_names, class, "for-range end")?;
             for stmt in body {
@@ -1818,16 +2052,19 @@ fn eval_const_with_params(e: &Expr, params: &[ParamDecl]) -> u64 {
         ExprKind::Literal(LitKind::Hex(v)) => *v,
         ExprKind::Literal(LitKind::Bin(v)) => *v,
         ExprKind::Literal(LitKind::Sized(_, v)) => *v,
-        ExprKind::Ident(name) => {
-            params.iter()
-                .find(|p| p.name.name == *name)
-                .and_then(|p| p.default.as_ref())
-                .map(|d| eval_const_with_params(d, params))
-                .unwrap_or(0)
-        }
+        ExprKind::Ident(name) => params
+            .iter()
+            .find(|p| p.name.name == *name)
+            .and_then(|p| p.default.as_ref())
+            .map(|d| eval_const_with_params(d, params))
+            .unwrap_or(0),
         ExprKind::Clog2(a) => {
             let v = eval_const_with_params(a, params);
-            if v <= 1 { 0 } else { 64 - (v - 1).leading_zeros() as u64 }
+            if v <= 1 {
+                0
+            } else {
+                64 - (v - 1).leading_zeros() as u64
+            }
         }
         ExprKind::Unary(op, a) => {
             let v = eval_const_with_params(a, params);
@@ -1845,8 +2082,20 @@ fn eval_const_with_params(e: &Expr, params: &[ParamDecl]) -> u64 {
                 BinOp::Add | BinOp::AddWrap => lv.wrapping_add(rv),
                 BinOp::Sub | BinOp::SubWrap => lv.wrapping_sub(rv),
                 BinOp::Mul | BinOp::MulWrap => lv.wrapping_mul(rv),
-                BinOp::Div => if rv == 0 { 0 } else { lv / rv },
-                BinOp::Mod => if rv == 0 { 0 } else { lv % rv },
+                BinOp::Div => {
+                    if rv == 0 {
+                        0
+                    } else {
+                        lv / rv
+                    }
+                }
+                BinOp::Mod => {
+                    if rv == 0 {
+                        0
+                    } else {
+                        lv % rv
+                    }
+                }
                 BinOp::Shl => lv.wrapping_shl(rv as u32),
                 BinOp::Shr => lv.wrapping_shr(rv as u32),
                 BinOp::BitAnd => lv & rv,
@@ -1867,7 +2116,12 @@ fn uint_cpp_ty(bits: u64) -> Result<String, String> {
         17..=32 => "uint32_t".to_string(),
         33..=64 => "uint64_t".to_string(),
         65..=1024 => format!("VlWide<{}>", wide_words(bits)),
-        _ => return Err(format!("UInt<{}> > 1024 bits not supported by thread sim", bits)),
+        _ => {
+            return Err(format!(
+                "UInt<{}> > 1024 bits not supported by thread sim",
+                bits
+            ))
+        }
     })
 }
 
@@ -1879,14 +2133,21 @@ fn int_cpp_ty(bits: u64) -> Result<String, String> {
         17..=32 => "int32_t".to_string(),
         33..=64 => "int64_t".to_string(),
         65..=1024 => format!("VlWide<{}>", wide_words(bits)),
-        _ => return Err(format!("SInt<{}> > 1024 bits not supported by thread sim", bits)),
+        _ => {
+            return Err(format!(
+                "SInt<{}> > 1024 bits not supported by thread sim",
+                bits
+            ))
+        }
     })
 }
 
 fn collect_thread_driven_outputs(threads: &[&ThreadBlock], m: &ModuleDecl) -> Vec<String> {
     use std::collections::HashSet;
     let mut out: HashSet<String> = HashSet::new();
-    let port_outs: HashSet<&str> = m.ports.iter()
+    let port_outs: HashSet<&str> = m
+        .ports
+        .iter()
         .filter(|p| p.direction == Direction::Out && p.reg_info.is_none())
         .map(|p| p.name.name.as_str())
         .collect();
@@ -1895,7 +2156,9 @@ fn collect_thread_driven_outputs(threads: &[&ThreadBlock], m: &ModuleDecl) -> Ve
             match s {
                 ThreadStmt::CombAssign(a) => {
                     if let ExprKind::Ident(n) = &a.target.kind {
-                        if port_outs.contains(n.as_str()) { out.insert(n.clone()); }
+                        if port_outs.contains(n.as_str()) {
+                            out.insert(n.clone());
+                        }
                     }
                 }
                 ThreadStmt::IfElse(ie) => {
@@ -1906,42 +2169,60 @@ fn collect_thread_driven_outputs(threads: &[&ThreadBlock], m: &ModuleDecl) -> Ve
                 | ThreadStmt::Lock { body, .. }
                 | ThreadStmt::DoUntil { body, .. } => walk(body, port_outs, out),
                 ThreadStmt::ForkJoin(branches, _) => {
-                    for b in branches { walk(b, port_outs, out); }
+                    for b in branches {
+                        walk(b, port_outs, out);
+                    }
                 }
                 _ => {}
             }
         }
     }
-    for t in threads { walk(&t.body, &port_outs, &mut out); }
+    for t in threads {
+        walk(&t.body, &port_outs, &mut out);
+    }
     let mut v: Vec<String> = out.into_iter().collect();
     v.sort();
     v
 }
 
-fn emit_resource_helpers(header: &mut String, m: &ModuleDecl, num_threads: usize) -> Result<(), String> {
+fn emit_resource_helpers(
+    header: &mut String,
+    m: &ModuleDecl,
+    num_threads: usize,
+) -> Result<(), String> {
     for item in &m.body {
-        let ModuleBodyItem::Resource(r) = item else { continue; };
+        let ModuleBodyItem::Resource(r) = item else {
+            continue;
+        };
         let res = &r.name.name;
         header.push_str(&format!("  uint32_t _resource_{res}_select() {{\n"));
         header.push_str(&format!("    uint64_t _req = _resource_{res}_req_mask;\n"));
         header.push_str("    if (_req == 0) return 0xffffffffu;\n");
         match &r.policy {
             ArbiterPolicy::Priority => {
-                header.push_str(&format!("    for (uint32_t _idx = 0; _idx < {num_threads}; _idx++) {{\n"));
+                header.push_str(&format!(
+                    "    for (uint32_t _idx = 0; _idx < {num_threads}; _idx++) {{\n"
+                ));
                 header.push_str("      if ((_req >> _idx) & 1ULL) return _idx;\n");
                 header.push_str("    }\n");
                 header.push_str("    return 0xffffffffu;\n");
             }
             ArbiterPolicy::RoundRobin => {
-                header.push_str(&format!("    for (uint32_t _step = 0; _step < {num_threads}; _step++) {{\n"));
+                header.push_str(&format!(
+                    "    for (uint32_t _step = 0; _step < {num_threads}; _step++) {{\n"
+                ));
                 header.push_str(&format!("      uint32_t _idx = (_resource_{res}_last_grant + 1 + _step) % {num_threads};\n"));
                 header.push_str("      if ((_req >> _idx) & 1ULL) return _idx;\n");
                 header.push_str("    }\n");
                 header.push_str("    return 0xffffffffu;\n");
             }
             ArbiterPolicy::Lru => {
-                header.push_str(&format!("    for (uint32_t _rank = 0; _rank < {num_threads}; _rank++) {{\n"));
-                header.push_str(&format!("      uint32_t _idx = _resource_{res}_lru_order[_rank];\n"));
+                header.push_str(&format!(
+                    "    for (uint32_t _rank = 0; _rank < {num_threads}; _rank++) {{\n"
+                ));
+                header.push_str(&format!(
+                    "      uint32_t _idx = _resource_{res}_lru_order[_rank];\n"
+                ));
                 header.push_str("      if ((_req >> _idx) & 1ULL) return _idx;\n");
                 header.push_str("    }\n");
                 header.push_str("    return 0xffffffffu;\n");
@@ -1949,13 +2230,17 @@ fn emit_resource_helpers(header: &mut String, m: &ModuleDecl, num_threads: usize
             ArbiterPolicy::Weighted(weight) => {
                 let credit = eval_const_with_params(weight, &m.params).max(1);
                 header.push_str("    bool _has_credit = false;\n");
-                header.push_str(&format!("    for (uint32_t _idx = 0; _idx < {num_threads}; _idx++) {{\n"));
+                header.push_str(&format!(
+                    "    for (uint32_t _idx = 0; _idx < {num_threads}; _idx++) {{\n"
+                ));
                 header.push_str(&format!("      if (((_req >> _idx) & 1ULL) && _resource_{res}_credits[_idx] != 0) _has_credit = true;\n"));
                 header.push_str("    }\n");
                 header.push_str("    if (!_has_credit) {\n");
                 header.push_str(&format!("      for (uint32_t _idx = 0; _idx < {num_threads}; _idx++) _resource_{res}_credits[_idx] = {credit};\n"));
                 header.push_str("    }\n");
-                header.push_str(&format!("    for (uint32_t _step = 0; _step < {num_threads}; _step++) {{\n"));
+                header.push_str(&format!(
+                    "    for (uint32_t _step = 0; _step < {num_threads}; _step++) {{\n"
+                ));
                 header.push_str(&format!("      uint32_t _idx = (_resource_{res}_last_grant + 1 + _step) % {num_threads};\n"));
                 header.push_str(&format!("      if (((_req >> _idx) & 1ULL) && _resource_{res}_credits[_idx] != 0) return _idx;\n"));
                 header.push_str("    }\n");
@@ -1987,24 +2272,42 @@ fn emit_resource_helpers(header: &mut String, m: &ModuleDecl, num_threads: usize
                     fn_ident.name,
                     args.join(", ")
                 ));
-                header.push_str(&format!("    for (int32_t _idx = (int32_t){num_threads} - 1; _idx >= 0; --_idx) {{\n"));
-                header.push_str("      if ((_grant_onehot >> (uint32_t)_idx) & 1ULL) return (uint32_t)_idx;\n");
+                header.push_str(&format!(
+                    "    for (int32_t _idx = (int32_t){num_threads} - 1; _idx >= 0; --_idx) {{\n"
+                ));
+                header.push_str(
+                    "      if ((_grant_onehot >> (uint32_t)_idx) & 1ULL) return (uint32_t)_idx;\n",
+                );
                 header.push_str("    }\n");
                 header.push_str("    return 0xffffffffu;\n");
             }
         }
         header.push_str("  }\n");
-        header.push_str(&format!("  bool _resource_{res}_can_acquire(uint32_t _tid) {{\n"));
-        header.push_str(&format!("    if (_resource_{res}_holder == (int32_t)_tid) return true;\n"));
-        header.push_str(&format!("    if (_resource_{res}_holder != -1) return false;\n"));
+        header.push_str(&format!(
+            "  bool _resource_{res}_can_acquire(uint32_t _tid) {{\n"
+        ));
+        header.push_str(&format!(
+            "    if (_resource_{res}_holder == (int32_t)_tid) return true;\n"
+        ));
+        header.push_str(&format!(
+            "    if (_resource_{res}_holder != -1) return false;\n"
+        ));
         header.push_str(&format!("    return _resource_{res}_select() == _tid;\n"));
         header.push_str("  }\n");
-        header.push_str(&format!("  void _resource_{res}_note_request(uint32_t _tid) {{\n"));
-        header.push_str(&format!("    _resource_{res}_req_mask |= (1ULL << _tid);\n"));
+        header.push_str(&format!(
+            "  void _resource_{res}_note_request(uint32_t _tid) {{\n"
+        ));
+        header.push_str(&format!(
+            "    _resource_{res}_req_mask |= (1ULL << _tid);\n"
+        ));
         header.push_str("  }\n");
         header.push_str(&format!("  void _resource_{res}_claim(uint32_t _tid) {{\n"));
-        header.push_str(&format!("    _resource_{res}_req_mask &= ~(1ULL << _tid);\n"));
-        header.push_str(&format!("    if (_resource_{res}_holder == (int32_t)_tid) return;\n"));
+        header.push_str(&format!(
+            "    _resource_{res}_req_mask &= ~(1ULL << _tid);\n"
+        ));
+        header.push_str(&format!(
+            "    if (_resource_{res}_holder == (int32_t)_tid) return;\n"
+        ));
         header.push_str(&format!("    _resource_{res}_holder = (int32_t)_tid;\n"));
         match &r.policy {
             ArbiterPolicy::Priority => {}
@@ -2018,19 +2321,27 @@ fn emit_resource_helpers(header: &mut String, m: &ModuleDecl, num_threads: usize
                 header.push_str(&format!("      _resource_{res}_lru_order[_pos] = _resource_{res}_lru_order[_pos + 1];\n"));
                 header.push_str("      _pos++;\n");
                 header.push_str("    }\n");
-                header.push_str(&format!("    _resource_{res}_lru_order[{num_threads} - 1] = _tid;\n"));
+                header.push_str(&format!(
+                    "    _resource_{res}_lru_order[{num_threads} - 1] = _tid;\n"
+                ));
             }
             ArbiterPolicy::Weighted(_) => {
                 header.push_str(&format!("    if (_resource_{res}_credits[_tid] != 0) _resource_{res}_credits[_tid]--;\n"));
                 header.push_str(&format!("    _resource_{res}_last_grant = _tid;\n"));
             }
             ArbiterPolicy::Custom(_) => {
-                header.push_str(&format!("    _resource_{res}_last_grant_onehot = (1ULL << _tid);\n"));
+                header.push_str(&format!(
+                    "    _resource_{res}_last_grant_onehot = (1ULL << _tid);\n"
+                ));
             }
         }
         header.push_str("  }\n");
-        header.push_str(&format!("  void _resource_{res}_release(uint32_t _tid) {{\n"));
-        header.push_str(&format!("    if (_resource_{res}_holder == (int32_t)_tid) _resource_{res}_holder = -1;\n"));
+        header.push_str(&format!(
+            "  void _resource_{res}_release(uint32_t _tid) {{\n"
+        ));
+        header.push_str(&format!(
+            "    if (_resource_{res}_holder == (int32_t)_tid) _resource_{res}_holder = -1;\n"
+        ));
         header.push_str("  }\n");
     }
     Ok(())
@@ -2049,7 +2360,10 @@ fn emit_resource_reset(
     match &r.policy {
         ArbiterPolicy::Priority => {}
         ArbiterPolicy::RoundRobin => {
-            header.push_str(&format!("{pad}_resource_{res}_last_grant = {};\n", num_threads.saturating_sub(1)));
+            header.push_str(&format!(
+                "{pad}_resource_{res}_last_grant = {};\n",
+                num_threads.saturating_sub(1)
+            ));
         }
         ArbiterPolicy::Lru => {
             for idx in 0..num_threads {
@@ -2058,9 +2372,14 @@ fn emit_resource_reset(
         }
         ArbiterPolicy::Weighted(weight) => {
             let credit = eval_const_with_params(weight, params).max(1);
-            header.push_str(&format!("{pad}_resource_{res}_last_grant = {};\n", num_threads.saturating_sub(1)));
+            header.push_str(&format!(
+                "{pad}_resource_{res}_last_grant = {};\n",
+                num_threads.saturating_sub(1)
+            ));
             for idx in 0..num_threads {
-                header.push_str(&format!("{pad}_resource_{res}_credits[{idx}] = {credit};\n"));
+                header.push_str(&format!(
+                    "{pad}_resource_{res}_credits[{idx}] = {credit};\n"
+                ));
             }
         }
         ArbiterPolicy::Custom(_) => {
