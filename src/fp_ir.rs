@@ -86,7 +86,14 @@ pub fn var(name: &str, width: u32) -> Bv {
 /// `x[hi:lo]` — result width `hi-lo+1`.
 pub fn extract(x: &Bv, hi: u32, lo: u32) -> Bv {
     assert!(hi >= lo && hi < x.width(), "extract out of range");
-    Bv::mk(hi - lo + 1, Kind::Extract { x: x.clone(), hi, lo })
+    Bv::mk(
+        hi - lo + 1,
+        Kind::Extract {
+            x: x.clone(),
+            hi,
+            lo,
+        },
+    )
 }
 /// `{a, b}` — concatenation, `a` is the high part.
 pub fn concat(a: &Bv, b: &Bv) -> Bv {
@@ -102,7 +109,14 @@ pub fn zext(x: &Bv, to: u32) -> Bv {
 }
 fn bin(op: Bin, a: &Bv, b: &Bv) -> Bv {
     assert_eq!(a.width(), b.width(), "binop width mismatch");
-    Bv::mk(a.width(), Kind::Bin { op, a: a.clone(), b: b.clone() })
+    Bv::mk(
+        a.width(),
+        Kind::Bin {
+            op,
+            a: a.clone(),
+            b: b.clone(),
+        },
+    )
 }
 pub fn add(a: &Bv, b: &Bv) -> Bv {
     bin(Bin::Add, a, b)
@@ -137,11 +151,25 @@ pub fn bnot(x: &Bv) -> Bv {
 pub fn ite(c: &Bv, t: &Bv, e: &Bv) -> Bv {
     assert_eq!(c.width(), 1, "ite condition must be 1-bit");
     assert_eq!(t.width(), e.width(), "ite arms width mismatch");
-    Bv::mk(t.width(), Kind::Ite { c: c.clone(), t: t.clone(), e: e.clone() })
+    Bv::mk(
+        t.width(),
+        Kind::Ite {
+            c: c.clone(),
+            t: t.clone(),
+            e: e.clone(),
+        },
+    )
 }
 fn cmp(op: Cmp, a: &Bv, b: &Bv) -> Bv {
     assert_eq!(a.width(), b.width(), "compare width mismatch");
-    Bv::mk(1, Kind::Cmp { op, a: a.clone(), b: b.clone() })
+    Bv::mk(
+        1,
+        Kind::Cmp {
+            op,
+            a: a.clone(),
+            b: b.clone(),
+        },
+    )
 }
 pub fn eq(a: &Bv, b: &Bv) -> Bv {
     cmp(Cmp::Eq, a, b)
@@ -189,7 +217,13 @@ pub fn not(a: &Bv) -> Bv {
 }
 /// Call another `FpFn` by name; `width` is the callee's return width.
 pub fn call(name: &str, args: &[Bv], width: u32) -> Bv {
-    Bv::mk(width, Kind::Call { name: name.to_string(), args: args.to_vec() })
+    Bv::mk(
+        width,
+        Kind::Call {
+            name: name.to_string(),
+            args: args.to_vec(),
+        },
+    )
 }
 
 /// A single FP helper: name, typed parameters, and a return expression.
@@ -224,7 +258,10 @@ fn is_leaf(b: &Bv) -> bool {
 }
 
 fn linearize(body: &Bv) -> Lin {
-    let mut lin = Lin { ids: HashMap::new(), order: Vec::new() };
+    let mut lin = Lin {
+        ids: HashMap::new(),
+        order: Vec::new(),
+    };
     fn go(b: &Bv, lin: &mut Lin) {
         if is_leaf(b) {
             return;
@@ -345,7 +382,13 @@ fn render_sv_fn(f: &FpFn) -> String {
     );
     for b in &lin.order {
         let id = lin.ids[&(Rc::as_ptr(&b.0) as usize)];
-        let _ = writeln!(s, "  logic {}_t{} = {};", sv_decl_width(b.width()), id, sv_rhs(b, &lin));
+        let _ = writeln!(
+            s,
+            "  logic {}_t{} = {};",
+            sv_decl_width(b.width()),
+            id,
+            sv_rhs(b, &lin)
+        );
     }
     let _ = writeln!(s, "  {} = {};", f.name, sv_ref(&f.body, &lin));
     let _ = writeln!(s, "endfunction");
@@ -417,8 +460,11 @@ fn smt_rhs(b: &Bv, lin: &Lin) -> String {
 
 fn render_smt_fn(f: &FpFn) -> String {
     let lin = linearize(&f.body);
-    let params: Vec<String> =
-        f.params.iter().map(|(n, w)| format!("({n} {})", smt_sort(*w))).collect();
+    let params: Vec<String> = f
+        .params
+        .iter()
+        .map(|(n, w)| format!("({n} {})", smt_sort(*w)))
+        .collect();
     let mut body = smt_ref(&f.body, &lin);
     // Wrap the temporaries as nested `let`s, innermost last.
     for b in lin.order.iter().rev() {
@@ -503,7 +549,12 @@ fn lean_rhs(b: &Bv, lin: &Lin) -> String {
         }
         // Selector is a 1-bit BV; `c == 1#1` is a Bool the `if` bit-blasts.
         Kind::Ite { c, t, e } => {
-            format!("(if {} == (BitVec.ofNat 1 1) then {} else {})", r(c), r(t), r(e))
+            format!(
+                "(if {} == (BitVec.ofNat 1 1) then {} else {})",
+                r(c),
+                r(t),
+                r(e)
+            )
         }
         Kind::Call { name, args } => {
             let a: Vec<String> = args.iter().map(|x| r(x)).collect();
@@ -515,12 +566,26 @@ fn lean_rhs(b: &Bv, lin: &Lin) -> String {
 fn render_lean_fn(f: &FpFn) -> String {
     let lin = linearize(&f.body);
     let mut s = String::new();
-    let params: Vec<String> =
-        f.params.iter().map(|(n, w)| format!("({n} : BitVec {w})")).collect();
-    let _ = writeln!(s, "def {} {} : BitVec {} :=", f.name, params.join(" "), f.ret_w);
+    let params: Vec<String> = f
+        .params
+        .iter()
+        .map(|(n, w)| format!("({n} : BitVec {w})"))
+        .collect();
+    let _ = writeln!(
+        s,
+        "def {} {} : BitVec {} :=",
+        f.name,
+        params.join(" "),
+        f.ret_w
+    );
     for b in &lin.order {
         let id = lin.ids[&(Rc::as_ptr(&b.0) as usize)];
-        let _ = writeln!(s, "  let _t{id} : BitVec {} := {}", b.width(), lean_rhs(b, &lin));
+        let _ = writeln!(
+            s,
+            "  let _t{id} : BitVec {} := {}",
+            b.width(),
+            lean_rhs(b, &lin)
+        );
     }
     let _ = writeln!(s, "  {}", lean_ref(&f.body, &lin));
     s
@@ -530,7 +595,11 @@ fn render_lean_fn(f: &FpFn) -> String {
 /// `BitVec`, dependency-free — Lean core only). Wrap in a `namespace` and proofs
 /// at the call site (see `proofs/lean_fp_equiv/`).
 pub fn render_lean(funcs: &[FpFn]) -> String {
-    funcs.iter().map(render_lean_fn).collect::<Vec<_>>().join("\n")
+    funcs
+        .iter()
+        .map(render_lean_fn)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -548,7 +617,9 @@ mod tests {
         let f = FpFn::new("t", &[("a", 8), ("b", 8)], 8, body);
 
         let sv = render_sv(&[f]);
-        assert!(sv.contains("function automatic logic [7:0] t(input logic [7:0] a, input logic [7:0] b);"));
+        assert!(sv.contains(
+            "function automatic logic [7:0] t(input logic [7:0] a, input logic [7:0] b);"
+        ));
         assert!(sv.contains(" + "));
         assert!(sv.contains("[0]"));
         assert!(sv.contains("? "));
@@ -598,9 +669,20 @@ mod tests {
         let f = FpFn::new("k", &[("a", 8), ("b", 8)], 8, body);
         let lean = render_lean(&[f]);
         for needle in [
-            "BitVec.slt", "++", "BitVec.setWidth", "~~~", "&&&", "^^^", ">>>", "<<<", ".toNat",
+            "BitVec.slt",
+            "++",
+            "BitVec.setWidth",
+            "~~~",
+            "&&&",
+            "^^^",
+            ">>>",
+            "<<<",
+            ".toNat",
         ] {
-            assert!(lean.contains(needle), "Lean output missing {needle}:\n{lean}");
+            assert!(
+                lean.contains(needle),
+                "Lean output missing {needle}:\n{lean}"
+            );
         }
     }
 }
