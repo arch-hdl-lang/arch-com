@@ -4579,18 +4579,9 @@ impl<'a> TypeChecker<'a> {
         // type (no widening). The two operands must be the identical float type;
         // there is no implicit float conversion (use `.to_fp32()`/`.to_bf16()`).
         if lt.is_float() || rt.is_float() {
-            let sym = match op {
-                BinOp::Add => "+",
-                BinOp::Sub => "-",
-                BinOp::Mul => "*",
-                BinOp::Eq => "==",
-                BinOp::Neq => "!=",
-                BinOp::Lt => "<",
-                BinOp::Gt => ">",
-                BinOp::Lte => "<=",
-                BinOp::Gte => ">=",
-                _ => "<op>",
-            };
+            // Render the real operator (`/`, `%`, `<<`, …) for the diagnostics
+            // below, including the unsupported-op arm — never a `<op>` placeholder.
+            let sym = op.to_string();
             match op {
                 BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => {
                     if lt != rt {
