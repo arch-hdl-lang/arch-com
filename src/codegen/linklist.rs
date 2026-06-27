@@ -11,7 +11,10 @@ impl<'a> Codegen<'a> {
         use crate::ast::LinklistKind;
         let n = &l.name.name;
         let is_doubly = matches!(l.kind, LinklistKind::Doubly | LinklistKind::CircularDoubly);
-        let is_circular = matches!(l.kind, LinklistKind::CircularSingly | LinklistKind::CircularDoubly);
+        let is_circular = matches!(
+            l.kind,
+            LinklistKind::CircularSingly | LinklistKind::CircularDoubly
+        );
 
         // Multi-head linklist support. NUM_HEADS defaults to 1; when set
         // to N > 1, the head / tail / length registers become arrays
@@ -19,20 +22,26 @@ impl<'a> Codegen<'a> {
         // The node pool and free list stay shared across all heads.
         let num_heads = crate::typecheck::linklist_num_heads(l);
         let multi_head = num_heads > 1;
-        let num_heads_expr = l.params.iter()
+        let num_heads_expr = l
+            .params
+            .iter()
             .find(|p| p.name.name == "NUM_HEADS")
             .and_then(|p| p.default.as_ref())
             .map(|e| self.emit_expr_str(e))
             .unwrap_or_else(|| "1".to_string());
 
         // Resolve DEPTH default expression and DATA SV type
-        let depth_expr = l.params.iter()
+        let depth_expr = l
+            .params
+            .iter()
             .find(|p| p.name.name == "DEPTH")
             .and_then(|p| p.default.as_ref())
             .map(|e| self.emit_expr_str(e))
             .unwrap_or_else(|| "16".to_string());
 
-        let data_default_sv = l.params.iter()
+        let data_default_sv = l
+            .params
+            .iter()
             .find(|p| p.name.name == "DATA")
             .and_then(|p| match &p.kind {
                 crate::ast::ParamKind::Type(ty) => Some(self.emit_port_type_str(ty)),
@@ -43,17 +52,23 @@ impl<'a> Codegen<'a> {
         // Operations that touch a specific head (need `req_head_idx` when
         // multi-head). Shared-pool ops (alloc, free) and slot-addressed
         // ops (read_data, write_data, next, prev) don't.
-        let head_addressed_op = |name: &str| matches!(
-            name,
-            "insert_head" | "insert_tail" | "insert_after" | "delete_head" | "delete"
-        );
+        let head_addressed_op = |name: &str| {
+            matches!(
+                name,
+                "insert_head" | "insert_tail" | "insert_after" | "delete_head" | "delete"
+            )
+        };
 
         // Find clk/rst port names
-        let clk_name = l.ports.iter()
+        let clk_name = l
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, crate::ast::TypeExpr::Clock(_)))
             .map(|p| p.name.name.as_str())
             .unwrap_or("clk");
-        let rst_name = l.ports.iter()
+        let rst_name = l
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, crate::ast::TypeExpr::Reset(_, _)))
             .map(|p| p.name.name.as_str())
             .unwrap_or("rst");
@@ -76,21 +91,34 @@ impl<'a> Codegen<'a> {
 
         // Op ports — one group per declared op
         let all_ops = &l.ops;
-        let status_ports: Vec<&crate::ast::PortDecl> = l.ports.iter()
-            .filter(|p| !matches!(&p.ty, crate::ast::TypeExpr::Clock(_) | crate::ast::TypeExpr::Reset(_, _)))
+        let status_ports: Vec<&crate::ast::PortDecl> = l
+            .ports
+            .iter()
+            .filter(|p| {
+                !matches!(
+                    &p.ty,
+                    crate::ast::TypeExpr::Clock(_) | crate::ast::TypeExpr::Reset(_, _)
+                )
+            })
             .collect();
 
         // Collect all port lines then emit with trailing comma logic
         let mut port_lines: Vec<String> = Vec::new();
         for op in all_ops {
             for p in &op.ports {
-                let dir = match p.direction { Direction::In => "input ", Direction::Out => "output" };
+                let dir = match p.direction {
+                    Direction::In => "input ",
+                    Direction::Out => "output",
+                };
                 let ty_str = self.emit_ll_port_type(&p.ty);
                 port_lines.push(format!("{dir} {ty_str} {}_{}", op.name.name, p.name.name));
             }
         }
         for p in &status_ports {
-            let dir = match p.direction { Direction::In => "input ", Direction::Out => "output" };
+            let dir = match p.direction {
+                Direction::In => "input ",
+                Direction::Out => "output",
+            };
             let ty_str = self.emit_ll_port_type(&p.ty);
             port_lines.push(format!("{dir} {ty_str} {}", p.name.name));
         }
@@ -162,7 +190,11 @@ impl<'a> Codegen<'a> {
                 self.line(&format!("logic _ctrl_{on}_resp_v;"));
             }
             // latch any output data ports
-            for p in op.ports.iter().filter(|p| p.direction == Direction::Out && p.name.name != "req_ready" && p.name.name != "resp_valid") {
+            for p in op.ports.iter().filter(|p| {
+                p.direction == Direction::Out
+                    && p.name.name != "req_ready"
+                    && p.name.name != "resp_valid"
+            }) {
                 let ty = self.emit_ll_port_type(&p.ty);
                 self.line(&format!("{ty} _ctrl_{on}_{};", p.name.name));
             }
@@ -239,8 +271,15 @@ impl<'a> Codegen<'a> {
                 self.line(&format!("assign {on}_resp_valid = _ctrl_{on}_resp_v;"));
             }
             // wire other output data ports
-            for p in op.ports.iter().filter(|p| p.direction == Direction::Out && p.name.name != "req_ready" && p.name.name != "resp_valid") {
-                self.line(&format!("assign {}_{} = _ctrl_{on}_{};", on, p.name.name, p.name.name));
+            for p in op.ports.iter().filter(|p| {
+                p.direction == Direction::Out
+                    && p.name.name != "req_ready"
+                    && p.name.name != "resp_valid"
+            }) {
+                self.line(&format!(
+                    "assign {}_{} = _ctrl_{on}_{};",
+                    on, p.name.name, p.name.name
+                ));
             }
         }
         self.line("");
@@ -262,17 +301,23 @@ impl<'a> Codegen<'a> {
             self.line("for (_ll_i = 0; _ll_i < NUM_HEADS; _ll_i++) begin");
             self.indent += 1;
             self.line("_head_r[_ll_i] <= '0;");
-            if l.track_tail { self.line("_tail_r[_ll_i] <= '0;"); }
+            if l.track_tail {
+                self.line("_tail_r[_ll_i] <= '0;");
+            }
             self.line("_length_r[_ll_i] <= '0;");
             self.indent -= 1;
             self.line("end");
         } else {
             self.line("_head_r <= '0;");
-            if l.track_tail { self.line("_tail_r <= '0;"); }
+            if l.track_tail {
+                self.line("_tail_r <= '0;");
+            }
         }
         for op in all_ops {
             let on = &op.name.name;
-            if op.latency > 1 { self.line(&format!("_ctrl_{on}_busy <= 1'b0;")); }
+            if op.latency > 1 {
+                self.line(&format!("_ctrl_{on}_busy <= 1'b0;"));
+            }
             if op.ports.iter().any(|p| p.name.name == "resp_valid") {
                 self.line(&format!("_ctrl_{on}_resp_v <= 1'b0;"));
             }
@@ -301,8 +346,12 @@ impl<'a> Codegen<'a> {
         self.line("");
 
         if !l.asserts.is_empty() {
-            let clk = l.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
-                .map(|p| p.name.name.clone()).unwrap_or_else(|| "clk".to_string());
+            let clk = l
+                .ports
+                .iter()
+                .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                .map(|p| p.name.name.clone())
+                .unwrap_or_else(|| "clk".to_string());
             self.line("");
             let asserts = l.asserts.clone();
             let lname = l.name.name.clone();
@@ -334,10 +383,10 @@ impl<'a> Codegen<'a> {
         num_heads: u32,
     ) {
         let on = &op.name.name;
-        let has_req_valid   = op.ports.iter().any(|p| p.name.name == "req_valid");
-        let has_resp_valid  = op.ports.iter().any(|p| p.name.name == "resp_valid");
-        let has_req_handle  = op.ports.iter().any(|p| p.name.name == "req_handle");
-        let has_req_data    = op.ports.iter().any(|p| p.name.name == "req_data");
+        let has_req_valid = op.ports.iter().any(|p| p.name.name == "req_valid");
+        let has_resp_valid = op.ports.iter().any(|p| p.name.name == "resp_valid");
+        let has_req_handle = op.ports.iter().any(|p| p.name.name == "req_handle");
+        let has_req_data = op.ports.iter().any(|p| p.name.name == "req_data");
         let multi_head = num_heads > 1;
         let is_head_addr = matches!(
             on.as_str(),
@@ -354,18 +403,26 @@ impl<'a> Codegen<'a> {
         // compiler.
         let head_r_accept = if multi_head && is_head_addr {
             format!("_head_r[{on}_req_head_idx]")
-        } else { "_head_r".to_string() };
+        } else {
+            "_head_r".to_string()
+        };
         let head_r_busy = if multi_head && is_head_addr {
             format!("_head_r[_ctrl_{on}_head_idx]")
-        } else { "_head_r".to_string() };
+        } else {
+            "_head_r".to_string()
+        };
         // _tail_r is only read at the busy cycle (post-accept). The
         // accept-cycle variant would be `_tail_r[<op>_req_head_idx]`
         // if an op ever needed it.
         let tail_r_busy = if multi_head && is_head_addr {
             format!("_tail_r[_ctrl_{on}_head_idx]")
-        } else { "_tail_r".to_string() };
+        } else {
+            "_tail_r".to_string()
+        };
 
-        self.line(&format!("// ── {on} ─────────────────────────────────────────"));
+        self.line(&format!(
+            "// ── {on} ─────────────────────────────────────────"
+        ));
 
         // Multi-head `insert_head` falls back to a $fatal only on the
         // latency-1 fast path — that path doesn't carry a busy register,
@@ -384,25 +441,37 @@ impl<'a> Codegen<'a> {
         match on.as_str() {
             "alloc" => {
                 // Latency-1: dequeue one slot from free list
-                let guard = if has_req_valid { format!("{on}_req_valid && !(_fl_cnt == '0)") } else { "1'b1".into() };
+                let guard = if has_req_valid {
+                    format!("{on}_req_valid && !(_fl_cnt == '0)")
+                } else {
+                    "1'b1".into()
+                };
                 self.line(&format!("if ({guard}) begin"));
                 self.indent += 1;
                 self.line("_fl_rdp <= _fl_rdp + 1'b1;");
                 self.line("_fl_cnt <= _fl_cnt - 1'b1;");
                 if has_resp_valid {
                     self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;"));
-                    self.line(&format!("_ctrl_{on}_resp_handle <= _fl_mem[_fl_rdp[HANDLE_W-1:0]];"));
+                    self.line(&format!(
+                        "_ctrl_{on}_resp_handle <= _fl_mem[_fl_rdp[HANDLE_W-1:0]];"
+                    ));
                 }
                 self.indent -= 1;
                 self.line("end");
             }
             "free" => {
                 // Latency-1: enqueue slot back onto free list
-                let guard = if has_req_valid { format!("{on}_req_valid") } else { "1'b1".into() };
+                let guard = if has_req_valid {
+                    format!("{on}_req_valid")
+                } else {
+                    "1'b1".into()
+                };
                 self.line(&format!("if ({guard}) begin"));
                 self.indent += 1;
                 if has_req_handle {
-                    self.line(&format!("_fl_mem[_fl_wrp[HANDLE_W-1:0]] <= {on}_req_handle;"));
+                    self.line(&format!(
+                        "_fl_mem[_fl_wrp[HANDLE_W-1:0]] <= {on}_req_handle;"
+                    ));
                 }
                 self.line("_fl_wrp <= _fl_wrp + 1'b1;");
                 self.line("_fl_cnt <= _fl_cnt + 1'b1;");
@@ -426,28 +495,40 @@ impl<'a> Codegen<'a> {
                     // uses the per-head length counter so chains from other
                     // heads don't mask this head's emptiness.
                     if multi_head {
-                        self.line(&format!("_ctrl_{on}_was_empty <= (_length_r[{on}_req_head_idx] == '0);"));
+                        self.line(&format!(
+                            "_ctrl_{on}_was_empty <= (_length_r[{on}_req_head_idx] == '0);"
+                        ));
                         self.line(&format!("_ctrl_{on}_head_idx  <= {on}_req_head_idx;"));
                     } else {
-                        self.line(&format!("_ctrl_{on}_was_empty <= (_fl_cnt == CNT_W'(DEPTH));"));
+                        self.line(&format!(
+                            "_ctrl_{on}_was_empty <= (_fl_cnt == CNT_W'(DEPTH));"
+                        ));
                     }
                     self.line(&format!("_ctrl_{on}_busy <= 1'b1;"));
                     self.indent -= 1;
                     self.line(&format!("end else if (_ctrl_{on}_busy) begin"));
                     self.indent += 1;
-                    self.line(&format!("_next_mem[_ctrl_{on}_resp_handle] <= {head_r_busy};"));
+                    self.line(&format!(
+                        "_next_mem[_ctrl_{on}_resp_handle] <= {head_r_busy};"
+                    ));
                     if is_doubly {
                         // old head.prev = new node; new node.prev = sentinel (0)
-                        self.line(&format!("_prev_mem[{head_r_busy}] <= _ctrl_{on}_resp_handle;"));
+                        self.line(&format!(
+                            "_prev_mem[{head_r_busy}] <= _ctrl_{on}_resp_handle;"
+                        ));
                     }
                     self.line(&format!("{head_r_busy} <= _ctrl_{on}_resp_handle;"));
                     if track_tail {
-                        self.line(&format!("if (_ctrl_{on}_was_empty) {tail_r_busy} <= _ctrl_{on}_resp_handle;"));
+                        self.line(&format!(
+                            "if (_ctrl_{on}_was_empty) {tail_r_busy} <= _ctrl_{on}_resp_handle;"
+                        ));
                     }
                     if multi_head {
                         self.line(&format!("_length_r[_ctrl_{on}_head_idx] <= _length_r[_ctrl_{on}_head_idx] + 1'b1;"));
                     }
-                    if has_resp_valid { self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;")); }
+                    if has_resp_valid {
+                        self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;"));
+                    }
                     self.line(&format!("_ctrl_{on}_busy <= 1'b0;"));
                     self.indent -= 1;
                     self.line("end");
@@ -456,12 +537,16 @@ impl<'a> Codegen<'a> {
                     let slot = "_fl_mem[_fl_rdp[HANDLE_W-1:0]]";
                     self.line(&format!("if ({on}_req_valid && !(_fl_cnt == '0)) begin"));
                     self.indent += 1;
-                    if has_req_data { self.line(&format!("_data_mem[{slot}] <= {on}_req_data;")); }
+                    if has_req_data {
+                        self.line(&format!("_data_mem[{slot}] <= {on}_req_data;"));
+                    }
                     self.line(&format!("_next_mem[{slot}] <= _head_r;"));
                     self.line(&format!("_head_r <= {slot};"));
                     self.line("_fl_rdp <= _fl_rdp + 1'b1;");
                     self.line("_fl_cnt <= _fl_cnt - 1'b1;");
-                    if has_resp_valid { self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;")); }
+                    if has_resp_valid {
+                        self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;"));
+                    }
                     self.indent -= 1;
                     self.line("end");
                 }
@@ -473,17 +558,23 @@ impl<'a> Codegen<'a> {
                 self.indent += 1;
                 let slot = "_fl_mem[_fl_rdp[HANDLE_W-1:0]]";
                 self.line(&format!("_ctrl_{on}_resp_handle <= {slot};"));
-                if has_req_data { self.line(&format!("_data_mem[{slot}] <= {on}_req_data;")); }
+                if has_req_data {
+                    self.line(&format!("_data_mem[{slot}] <= {on}_req_data;"));
+                }
                 self.line("_fl_rdp <= _fl_rdp + 1'b1;");
                 self.line("_fl_cnt <= _fl_cnt - 1'b1;");
                 // Empty check: single-head uses pool occupancy; multi-head
                 // uses the per-head length counter so chains from other
                 // heads don't mask this head's emptiness.
                 if multi_head {
-                    self.line(&format!("_ctrl_{on}_was_empty <= (_length_r[{on}_req_head_idx] == '0);"));
+                    self.line(&format!(
+                        "_ctrl_{on}_was_empty <= (_length_r[{on}_req_head_idx] == '0);"
+                    ));
                     self.line(&format!("_ctrl_{on}_head_idx  <= {on}_req_head_idx;"));
                 } else {
-                    self.line(&format!("_ctrl_{on}_was_empty <= (_fl_cnt == CNT_W'(DEPTH));"));
+                    self.line(&format!(
+                        "_ctrl_{on}_was_empty <= (_fl_cnt == CNT_W'(DEPTH));"
+                    ));
                 }
                 self.line(&format!("_ctrl_{on}_busy <= 1'b1;"));
                 self.indent -= 1;
@@ -493,18 +584,28 @@ impl<'a> Codegen<'a> {
                     self.line(&format!("if (!_ctrl_{on}_was_empty) _next_mem[{tail_r_busy}] <= _ctrl_{on}_resp_handle;"));
                     if is_doubly {
                         // new node.prev = old tail
-                        self.line(&format!("_prev_mem[_ctrl_{on}_resp_handle] <= {tail_r_busy};"));
+                        self.line(&format!(
+                            "_prev_mem[_ctrl_{on}_resp_handle] <= {tail_r_busy};"
+                        ));
                     }
                     self.line(&format!("{tail_r_busy} <= _ctrl_{on}_resp_handle;"));
-                    self.line(&format!("if (_ctrl_{on}_was_empty) {head_r_busy} <= _ctrl_{on}_resp_handle;"));
+                    self.line(&format!(
+                        "if (_ctrl_{on}_was_empty) {head_r_busy} <= _ctrl_{on}_resp_handle;"
+                    ));
                 } else {
                     self.line(&format!("if (!_ctrl_{on}_was_empty) _next_mem[{head_r_busy}] <= _ctrl_{on}_resp_handle;"));
-                    self.line(&format!("if (_ctrl_{on}_was_empty) {head_r_busy} <= _ctrl_{on}_resp_handle;"));
+                    self.line(&format!(
+                        "if (_ctrl_{on}_was_empty) {head_r_busy} <= _ctrl_{on}_resp_handle;"
+                    ));
                 }
                 if multi_head {
-                    self.line(&format!("_length_r[_ctrl_{on}_head_idx] <= _length_r[_ctrl_{on}_head_idx] + 1'b1;"));
+                    self.line(&format!(
+                        "_length_r[_ctrl_{on}_head_idx] <= _length_r[_ctrl_{on}_head_idx] + 1'b1;"
+                    ));
                 }
-                if has_resp_valid { self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;")); }
+                if has_resp_valid {
+                    self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;"));
+                }
                 self.line(&format!("_ctrl_{on}_busy <= 1'b0;"));
                 self.indent -= 1;
                 self.line("end");
@@ -519,10 +620,14 @@ impl<'a> Codegen<'a> {
                 let guard = format!("!_ctrl_{on}_busy && {on}_req_valid && {pool_gate}");
                 self.line(&format!("if ({guard}) begin"));
                 self.indent += 1;
-                self.line(&format!("_ctrl_delete_head_resp_data <= _data_mem[{head_r_accept}];"));
+                self.line(&format!(
+                    "_ctrl_delete_head_resp_data <= _data_mem[{head_r_accept}];"
+                ));
                 self.line(&format!("_ctrl_delete_head_slot      <= {head_r_accept};"));
                 if multi_head {
-                    self.line(&format!("_ctrl_{on}_head_idx          <= {on}_req_head_idx;"));
+                    self.line(&format!(
+                        "_ctrl_{on}_head_idx          <= {on}_req_head_idx;"
+                    ));
                 }
                 self.line(&format!("_ctrl_{on}_busy <= 1'b1;"));
                 self.indent -= 1;
@@ -533,60 +638,96 @@ impl<'a> Codegen<'a> {
                 self.line("_fl_wrp <= _fl_wrp + 1'b1;");
                 self.line("_fl_cnt <= _fl_cnt + 1'b1;");
                 // Advance head
-                self.line(&format!("{head_r_busy} <= _next_mem[_ctrl_delete_head_slot];"));
+                self.line(&format!(
+                    "{head_r_busy} <= _next_mem[_ctrl_delete_head_slot];"
+                ));
                 if multi_head {
-                    self.line(&format!("_length_r[_ctrl_{on}_head_idx] <= _length_r[_ctrl_{on}_head_idx] - 1'b1;"));
+                    self.line(&format!(
+                        "_length_r[_ctrl_{on}_head_idx] <= _length_r[_ctrl_{on}_head_idx] - 1'b1;"
+                    ));
                 }
-                if has_resp_valid { self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;")); }
+                if has_resp_valid {
+                    self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;"));
+                }
                 self.line(&format!("_ctrl_{on}_busy <= 1'b0;"));
                 self.indent -= 1;
                 self.line("end");
             }
             "read_data" => {
                 // Latency-1: RAM read (registered output)
-                let guard = if has_req_valid { format!("{on}_req_valid") } else { "1'b1".into() };
+                let guard = if has_req_valid {
+                    format!("{on}_req_valid")
+                } else {
+                    "1'b1".into()
+                };
                 self.line(&format!("if ({guard}) begin"));
                 self.indent += 1;
                 if has_req_handle {
-                    self.line(&format!("_ctrl_{on}_resp_data <= _data_mem[{on}_req_handle];"));
+                    self.line(&format!(
+                        "_ctrl_{on}_resp_data <= _data_mem[{on}_req_handle];"
+                    ));
                 }
-                if has_resp_valid { self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;")); }
+                if has_resp_valid {
+                    self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;"));
+                }
                 self.indent -= 1;
                 self.line("end");
             }
             "write_data" => {
                 // Latency-1: RAM write
-                let guard = if has_req_valid { format!("{on}_req_valid") } else { "1'b1".into() };
+                let guard = if has_req_valid {
+                    format!("{on}_req_valid")
+                } else {
+                    "1'b1".into()
+                };
                 self.line(&format!("if ({guard}) begin"));
                 self.indent += 1;
                 if has_req_handle && has_req_data {
                     self.line(&format!("_data_mem[{on}_req_handle] <= {on}_req_data;"));
                 }
-                if has_resp_valid { self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;")); }
+                if has_resp_valid {
+                    self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;"));
+                }
                 self.indent -= 1;
                 self.line("end");
             }
             "next" => {
                 // Latency-1: follow next pointer
-                let guard = if has_req_valid { format!("{on}_req_valid") } else { "1'b1".into() };
+                let guard = if has_req_valid {
+                    format!("{on}_req_valid")
+                } else {
+                    "1'b1".into()
+                };
                 self.line(&format!("if ({guard}) begin"));
                 self.indent += 1;
                 if has_req_handle {
-                    self.line(&format!("_ctrl_{on}_resp_handle <= _next_mem[{on}_req_handle];"));
+                    self.line(&format!(
+                        "_ctrl_{on}_resp_handle <= _next_mem[{on}_req_handle];"
+                    ));
                 }
-                if has_resp_valid { self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;")); }
+                if has_resp_valid {
+                    self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;"));
+                }
                 self.indent -= 1;
                 self.line("end");
             }
             "prev" => {
                 // Latency-1: follow prev pointer (doubly only)
-                let guard = if has_req_valid { format!("{on}_req_valid") } else { "1'b1".into() };
+                let guard = if has_req_valid {
+                    format!("{on}_req_valid")
+                } else {
+                    "1'b1".into()
+                };
                 self.line(&format!("if ({guard}) begin"));
                 self.indent += 1;
                 if has_req_handle {
-                    self.line(&format!("_ctrl_{on}_resp_handle <= _prev_mem[{on}_req_handle];"));
+                    self.line(&format!(
+                        "_ctrl_{on}_resp_handle <= _prev_mem[{on}_req_handle];"
+                    ));
                 }
-                if has_resp_valid { self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;")); }
+                if has_resp_valid {
+                    self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;"));
+                }
                 self.indent -= 1;
                 self.line("end");
             }
@@ -597,7 +738,9 @@ impl<'a> Codegen<'a> {
                 self.indent += 1;
                 let slot = "_fl_mem[_fl_rdp[HANDLE_W-1:0]]";
                 self.line(&format!("_ctrl_{on}_resp_handle <= {slot};"));
-                if has_req_data { self.line(&format!("_data_mem[{slot}] <= {on}_req_data;")); }
+                if has_req_data {
+                    self.line(&format!("_data_mem[{slot}] <= {on}_req_data;"));
+                }
                 // Latch after_handle so cycle 2 doesn't read live port
                 self.line(&format!("_ctrl_{on}_after_handle <= {on}_req_handle;"));
                 // new.next = after.next (the successor)
@@ -612,17 +755,27 @@ impl<'a> Codegen<'a> {
                 self.line(&format!("end else if (_ctrl_{on}_busy) begin"));
                 self.indent += 1;
                 // after.next = new
-                self.line(&format!("_next_mem[_ctrl_{on}_after_handle] <= _ctrl_{on}_resp_handle;"));
+                self.line(&format!(
+                    "_next_mem[_ctrl_{on}_after_handle] <= _ctrl_{on}_resp_handle;"
+                ));
                 if is_doubly {
                     // new.prev = after
-                    self.line(&format!("_prev_mem[_ctrl_{on}_resp_handle] <= _ctrl_{on}_after_handle;"));
+                    self.line(&format!(
+                        "_prev_mem[_ctrl_{on}_resp_handle] <= _ctrl_{on}_after_handle;"
+                    ));
                     // successor.prev = new  (new.next is already committed from cycle 1)
-                    self.line(&format!("_prev_mem[_next_mem[_ctrl_{on}_resp_handle]] <= _ctrl_{on}_resp_handle;"));
+                    self.line(&format!(
+                        "_prev_mem[_next_mem[_ctrl_{on}_resp_handle]] <= _ctrl_{on}_resp_handle;"
+                    ));
                 }
                 if multi_head {
-                    self.line(&format!("_length_r[_ctrl_{on}_head_idx] <= _length_r[_ctrl_{on}_head_idx] + 1'b1;"));
+                    self.line(&format!(
+                        "_length_r[_ctrl_{on}_head_idx] <= _length_r[_ctrl_{on}_head_idx] + 1'b1;"
+                    ));
                 }
-                if has_resp_valid { self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;")); }
+                if has_resp_valid {
+                    self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;"));
+                }
                 self.line(&format!("_ctrl_{on}_busy <= 1'b0;"));
                 self.indent -= 1;
                 self.line("end");
@@ -642,13 +795,19 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.line(&format!("end else if (_ctrl_{on}_busy) begin"));
                 self.indent += 1;
-                self.line(&format!("_fl_mem[_fl_wrp[HANDLE_W-1:0]] <= _ctrl_{on}_slot;"));
+                self.line(&format!(
+                    "_fl_mem[_fl_wrp[HANDLE_W-1:0]] <= _ctrl_{on}_slot;"
+                ));
                 self.line("_fl_wrp <= _fl_wrp + 1'b1;");
                 self.line("_fl_cnt <= _fl_cnt + 1'b1;");
                 if multi_head {
-                    self.line(&format!("_length_r[_ctrl_{on}_head_idx] <= _length_r[_ctrl_{on}_head_idx] - 1'b1;"));
+                    self.line(&format!(
+                        "_length_r[_ctrl_{on}_head_idx] <= _length_r[_ctrl_{on}_head_idx] - 1'b1;"
+                    ));
                 }
-                if has_resp_valid { self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;")); }
+                if has_resp_valid {
+                    self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;"));
+                }
                 self.line(&format!("_ctrl_{on}_busy <= 1'b0;"));
                 self.indent -= 1;
                 self.line("end");
