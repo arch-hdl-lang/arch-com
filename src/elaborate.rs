@@ -31,7 +31,16 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
     // AST. Aliases are pure substitution — once resolved, downstream passes
     // (typecheck / elaborate / codegen / sim) treat the AST as if the user
     // had inlined the aliased types by hand.
-    let ast = crate::type_alias::resolve_type_aliases(ast)?;
+    let mut ast = crate::type_alias::resolve_type_aliases(ast)?;
+
+    // Normalize bare float literals sitting in BF16 declaration slots
+    // (`reg`/`port reg` reset & init values, typed `let` initializers) into an
+    // explicit `.to_bf16()` cast, so they are rounded to bf16 at lowering
+    // instead of being emitted as a 32-bit FP32 constant and truncated into the
+    // 16-bit reg/wire (arch#620). Runs before typecheck so the wrapped form is
+    // what gets type-checked — and the cast form already lowers correctly in
+    // both the SV and sim backends.
+    coerce_bf16_decl_literals(&mut ast);
 
     // Build enum variant → value map for resolving enum-typed params
     let enum_values: HashMap<String, Vec<(String, u64)>> = ast
@@ -191,6 +200,78 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
         };
         normalize_count1_portarray_conns(&mut sf);
         lower_tlm_connects(sf)
+    }
+}
+
+/// Pre-typecheck normalization for bare float literals in **BF16 reset and
+/// typed-`let` slots**. A float literal (`1.5`, `3.0e-2`) is typed FP32; when
+/// one is used directly as the reset value of a `BF16` register, or as a
+/// typed-`let` initializer of `BF16` type, the FP32 bit pattern would otherwise
+/// be emitted as a 32-bit constant and silently truncated into the 16-bit
+/// storage (arch#620 — `reset => 1.5` reset the reg to `0x0000`). Rewriting it
+/// to `(lit).to_bf16()` rounds the literal to bf16 at lowering; that cast form
+/// already lowers correctly in both the SV (`arch_f32_to_bf16(...)`) and
+/// native-sim backends (both are eval-based for these slots).
+///
+/// FP32 slots need no rewrite — a float literal already emits at 32-bit width.
+/// Only direct `TypeExpr::BF16` annotations are handled here; param-aliased
+/// float types are left to the type checker (which rejects, never miscompiles).
+///
+/// Out of scope (each is either loudly rejected today — not a silent
+/// miscompile — or needs coordinated work in a separate change):
+///  - reg / `port reg` **`init`** values: the native sim applies `init` in the
+///    constructor member-init list, which const-folds literals but cannot fold
+///    a `to_bf16(...)` call → it would fix SV but diverge in sim. Tracked
+///    separately so SV and sim stay consistent.
+///  - comb/seq assignment targets and binary-operator operands.
+fn coerce_bf16_decl_literals(ast: &mut SourceFile) {
+    for item in &mut ast.items {
+        let Item::Module(m) = item else { continue };
+        // `port reg` outputs of BF16 type: reset slot.
+        for p in &mut m.ports {
+            if matches!(p.ty, TypeExpr::BF16) {
+                if let Some(ri) = &mut p.reg_info {
+                    wrap_reset_bf16(&mut ri.reset);
+                }
+            }
+        }
+        for bi in &mut m.body {
+            match bi {
+                ModuleBodyItem::RegDecl(r) if matches!(r.ty, TypeExpr::BF16) => {
+                    wrap_reset_bf16(&mut r.reset);
+                }
+                ModuleBodyItem::LetBinding(l) if matches!(l.ty, Some(TypeExpr::BF16)) => {
+                    wrap_float_lit_as_bf16(&mut l.value);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Apply [`wrap_float_lit_as_bf16`] to the value expression of a reset clause.
+fn wrap_reset_bf16(reset: &mut RegReset) {
+    match reset {
+        RegReset::Explicit(_, _, _, v) | RegReset::Inherit(_, v) => wrap_float_lit_as_bf16(v),
+        RegReset::None => {}
+    }
+}
+
+/// If `e` is a bare float literal, replace it in place with `(e).to_bf16()`.
+/// Non-literal expressions (already-cast values, identifiers, …) are untouched,
+/// so an explicit `(1.5).to_bf16()` is never double-wrapped.
+fn wrap_float_lit_as_bf16(e: &mut Expr) {
+    if matches!(e.kind, ExprKind::Literal(LitKind::Float(_))) {
+        let span = e.span;
+        let inner = e.clone();
+        e.kind = ExprKind::MethodCall(
+            Box::new(inner),
+            Ident {
+                name: "to_bf16".to_string(),
+                span,
+            },
+            Vec::new(),
+        );
     }
 }
 
