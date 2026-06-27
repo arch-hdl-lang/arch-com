@@ -4960,7 +4960,7 @@ end linklist BadMh
         .collect::<String>();
     assert!(
         msg.contains("req_head_idx")
-            && msg.contains("multi-head") == false
+            && !msg.contains("multi-head")
             && msg.contains("NUM_HEADS"),
         "expected NUM_HEADS-specific error, got: {msg}"
     );
@@ -16960,7 +16960,7 @@ fn test_doc_outer_on_struct_enum_function() {
     assert!(
         s.doc
             .as_ref()
-            .map_or(false, |d| d.contains("Cache line state")),
+            .is_some_and(|d| d.contains("Cache line state")),
         "struct should have outer doc, got {:?}",
         s.doc
     );
@@ -16971,7 +16971,7 @@ fn test_doc_outer_on_struct_enum_function() {
     assert!(
         e.doc
             .as_ref()
-            .map_or(false, |d| d.contains("Branch direction")),
+            .is_some_and(|d| d.contains("Branch direction")),
         "enum should have outer doc, got {:?}",
         e.doc
     );
@@ -16982,7 +16982,7 @@ fn test_doc_outer_on_struct_enum_function() {
     assert!(
         f.doc
             .as_ref()
-            .map_or(false, |d| d.contains("Saturating add")),
+            .is_some_and(|d| d.contains("Saturating add")),
         "function should have outer doc, got {:?}",
         f.doc
     );
@@ -17014,7 +17014,7 @@ fn test_doc_outer_on_bus_synchronizer_clkgate() {
         _ => panic!("expected bus"),
     };
     assert!(
-        b.doc.as_ref().map_or(false, |d| d.contains("AXI4")),
+        b.doc.as_ref().is_some_and(|d| d.contains("AXI4")),
         "bus should have outer doc, got {:?}",
         b.doc
     );
@@ -17023,7 +17023,7 @@ fn test_doc_outer_on_bus_synchronizer_clkgate() {
         _ => panic!("expected synchronizer"),
     };
     assert!(
-        s.doc.as_ref().map_or(false, |d| d.contains("2-FF")),
+        s.doc.as_ref().is_some_and(|d| d.contains("2-FF")),
         "synchronizer should have outer doc, got {:?}",
         s.doc
     );
@@ -17066,7 +17066,7 @@ fn test_inner_doc_on_counter_and_arbiter() {
         c.common
             .inner_doc
             .as_ref()
-            .map_or(false, |d| d.contains("watchdog timer")),
+            .is_some_and(|d| d.contains("watchdog timer")),
         "counter inner_doc missing, got {:?}",
         c.common.inner_doc
     );
@@ -17078,7 +17078,7 @@ fn test_inner_doc_on_counter_and_arbiter() {
         a.common
             .inner_doc
             .as_ref()
-            .map_or(false, |d| d.contains("Round-robin")),
+            .is_some_and(|d| d.contains("Round-robin")),
         "arbiter inner_doc missing, got {:?}",
         a.common.inner_doc
     );
@@ -17097,7 +17097,7 @@ fn test_doc_outer_on_use_decl() {
         _ => panic!("expected use"),
     };
     assert!(
-        u.doc.as_ref().map_or(false, |d| d.contains("cache-line")),
+        u.doc.as_ref().is_some_and(|d| d.contains("cache-line")),
         "use decl should have outer doc, got {:?}",
         u.doc
     );
@@ -17534,7 +17534,7 @@ fn test_regfile_latch_internal_sim_codegen_emits_sample_flops_and_gated_capture(
     // sim_codegen must mirror the SV semantics for `flops: internal`:
     // sample we_q/waddr_q/wdata_q on rising edge, then capture into _rf
     // during clk-low (the half-cycle latch transparency window).
-    let source = format!("{LATCH_RF_INTERNAL_DECL}");
+    let source = LATCH_RF_INTERNAL_DECL.to_string();
     let cpp = compile_to_sim_h(&source, false);
     assert!(
         cpp.contains("_we_q"),
@@ -20306,8 +20306,7 @@ end fsm BrokenFsm
         .expect("parser accepts body-less fsm now; default-state check moved to resolve");
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate");
     let resolve_err = resolve::resolve(&ast)
-        .err()
-        .expect("real fsm without default_state must still error");
+        .expect_err("real fsm without default_state must still error");
     let msg = format!("{resolve_err:?}");
     assert!(
         msg.contains("default state"),

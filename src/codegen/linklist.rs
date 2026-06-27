@@ -285,7 +285,7 @@ impl<'a> Codegen<'a> {
         self.line("");
 
         // ── Reset + free-list init + op controllers ───────────────────────────
-        self.line(&format!("integer _ll_i;"));
+        self.line("integer _ll_i;");
         self.line(&format!("always_ff @(posedge {clk_name}) begin"));
         self.indent += 1;
         self.line(&format!("if ({rst_name}) begin"));
@@ -429,9 +429,7 @@ impl<'a> Codegen<'a> {
         // so per-head bookkeeping has nowhere to land. The latency≥2
         // path below threads `_ctrl_<op>_head_idx` through normally.
         if multi_head && on == "insert_head" && op.latency < 2 {
-            self.line(&format!(
-                "// NOTE: latency-1 `insert_head` is not supported for multi-head (NUM_HEADS > 1)."
-            ));
+            self.line("// NOTE: latency-1 `insert_head` is not supported for multi-head (NUM_HEADS > 1).");
             self.line(&format!(
                 "initial $fatal(1, \"linklist: latency-1 `{on}` not supported for multi-head\");"
             ));
@@ -484,7 +482,7 @@ impl<'a> Codegen<'a> {
                     let guard = format!("!_ctrl_{on}_busy && {on}_req_valid && !(_fl_cnt == '0)");
                     self.line(&format!("if ({guard}) begin"));
                     self.indent += 1;
-                    let slot = format!("_fl_mem[_fl_rdp[HANDLE_W-1:0]]");
+                    let slot = "_fl_mem[_fl_rdp[HANDLE_W-1:0]]".to_string();
                     self.line(&format!("_ctrl_{on}_resp_handle <= {slot};"));
                     if has_req_data {
                         self.line(&format!("_data_mem[{slot}] <= {on}_req_data;"));

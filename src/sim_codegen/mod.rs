@@ -817,7 +817,7 @@ PYBIND11_MODULE({pybind_module}, m) {{
 
     /// Emit a lambda-based pybind11 binding for a VlWide field.
     fn emit_wide_binding(&self, class: &str, field: &str, width: u32) -> String {
-        let words = (width + 31) / 32;
+        let words = width.div_ceil(32);
         format!(
             r#"        .def_property("{field}",
             []({class}& self) -> uint64_t {{
@@ -1368,7 +1368,7 @@ fn collect_trace_signals(
                     continue;
                 }
                 let name = &l.name.name;
-                if l.ty.as_ref().map_or(false, |t| {
+                if l.ty.as_ref().is_some_and(|t| {
                     matches!(t, TypeExpr::Vec(..) | TypeExpr::Named(_))
                 }) {
                     continue;
@@ -1557,7 +1557,7 @@ fn eval_width_in(expr: &Expr, ctx: &Ctx) -> u32 {
 
 /// Number of 32-bit words needed for `bits` bits.
 fn wide_words(bits: u32) -> u32 {
-    (bits + 31) / 32
+    bits.div_ceil(32)
 }
 
 /// True if a signal width requires a wide (VlWide) type.
@@ -1934,7 +1934,7 @@ fn expand_bus_connections(
                             parent_vec_of_bus_wires_2d.get(parent_name).copied()
                         {
                             if let ExprKind::Literal(LitKind::Dec(m_idx)) = &idx.kind {
-                                if (n_n as u32) == *n {
+                                if n_n == *n {
                                     return (0..*n)
                                         .map(|j| {
                                             let port_j = Ident::new(
@@ -2953,7 +2953,7 @@ impl<'a> Ctx<'a> {
     /// Resolve a name to its C++ field/variable name.
     fn resolve_name(&self, name: &str, is_lhs: bool) -> String {
         // FSM Vec port-regs always use `_name` (internal C array) regardless of mode.
-        if self.fsm_vec_port_regs.map_or(false, |s| s.contains(name)) {
+        if self.fsm_vec_port_regs.is_some_and(|s| s.contains(name)) {
             return format!("_{name}");
         }
         if self.reg_names.contains(name) {
@@ -2978,7 +2978,7 @@ impl<'a> Ctx<'a> {
         } else if self.inst_names.contains(name) {
             format!("_inst_{name}")
         } else if self.port_names.contains(name)
-            && self.vec_names.map_or(false, |s| s.contains(name))
+            && self.vec_names.is_some_and(|s| s.contains(name))
         {
             // Vec-typed port: header exposes flattened `name_0..name_N-1`
             // scalars for external access, but the body indexes into the
@@ -3023,11 +3023,7 @@ impl<'a> Ctx<'a> {
                     } else {
                         Some(format!("{}.{}", base_name, field.name))
                     }
-                } else if let Some(base_path) = self.vec_path_of_expr(base) {
-                    Some(format!("{}.{}", base_path, field.name))
-                } else {
-                    None
-                }
+                } else { self.vec_path_of_expr(base).map(|base_path| format!("{}.{}", base_path, field.name)) }
             }
             // Outer index of a 2D Vec (e.g. `Vec<Vec<Bus,N>,M>`): the result
             // is still a Vec, so propagate the base name. Used by
@@ -3037,7 +3033,7 @@ impl<'a> Ctx<'a> {
                 if let ExprKind::Ident(name) = &base.kind {
                     if self
                         .vec_2d_names
-                        .map_or(false, |s| s.contains(name.as_str()))
+                        .is_some_and(|s| s.contains(name.as_str()))
                     {
                         return Some(name.clone());
                     }
@@ -3050,7 +3046,7 @@ impl<'a> Ctx<'a> {
 
     fn expr_is_vec(&self, expr: &Expr) -> bool {
         self.vec_path_of_expr(expr)
-            .map(|name| self.vec_names.map_or(false, |s| s.contains(name.as_str())))
+            .map(|name| self.vec_names.is_some_and(|s| s.contains(name.as_str())))
             .unwrap_or(false)
     }
 
@@ -3118,7 +3114,7 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
             if let Some(base_name) = ctx.vec_path_of_expr(base) {
                 if ctx
                     .vec_names
-                    .map_or(false, |s| s.contains(base_name.as_str()))
+                    .is_some_and(|s| s.contains(base_name.as_str()))
                 {
                     // Vec element width: total port/reg/field width / element count.
                     let total = ctx.widths.get(base_name.as_str()).copied().unwrap_or(0);
@@ -3381,21 +3377,21 @@ fn lower_vec_method_cpp(
             if n_usize == 0 {
                 return "false".to_string();
             }
-            let terms: Vec<String> = (0..n as u64).map(emit_at).collect();
+            let terms: Vec<String> = (0..n).map(emit_at).collect();
             format!("({})", terms.join(" || "))
         }
         "all" => {
             if n_usize == 0 {
                 return "true".to_string();
             }
-            let terms: Vec<String> = (0..n as u64).map(emit_at).collect();
+            let terms: Vec<String> = (0..n).map(emit_at).collect();
             format!("({})", terms.join(" && "))
         }
         "count" => {
             if n_usize == 0 {
                 return "0".to_string();
             }
-            let terms: Vec<String> = (0..n as u64)
+            let terms: Vec<String> = (0..n)
                 .map(|i| format!("({} ? 1u : 0u)", emit_at(i)))
                 .collect();
             format!("({})", terms.join(" + "))
@@ -3408,7 +3404,7 @@ fn lower_vec_method_cpp(
             if n_usize == 0 {
                 return "false".to_string();
             }
-            let terms: Vec<String> = (0..n as u64)
+            let terms: Vec<String> = (0..n)
                 .map(|i| format!("({recv_b}[{i}] == {x})"))
                 .collect();
             format!("({})", terms.join(" || "))
@@ -3417,21 +3413,21 @@ fn lower_vec_method_cpp(
             if n_usize == 0 {
                 return "0".to_string();
             }
-            let terms: Vec<String> = (0..n as u64).map(|i| format!("{recv_b}[{i}]")).collect();
+            let terms: Vec<String> = (0..n).map(|i| format!("{recv_b}[{i}]")).collect();
             format!("({})", terms.join(" | "))
         }
         "reduce_and" => {
             if n_usize == 0 {
                 return "0".to_string();
             }
-            let terms: Vec<String> = (0..n as u64).map(|i| format!("{recv_b}[{i}]")).collect();
+            let terms: Vec<String> = (0..n).map(|i| format!("{recv_b}[{i}]")).collect();
             format!("({})", terms.join(" & "))
         }
         "reduce_xor" => {
             if n_usize == 0 {
                 return "0".to_string();
             }
-            let terms: Vec<String> = (0..n as u64).map(|i| format!("{recv_b}[{i}]")).collect();
+            let terms: Vec<String> = (0..n).map(|i| format!("{recv_b}[{i}]")).collect();
             format!("({})", terms.join(" ^ "))
         }
         _ => format!("{recv_b}.{}()", method.name),
@@ -4482,7 +4478,7 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
             if let Some(dst_name) = vec_name_of_expr(&a.target) {
                 if ctx
                     .vec_names
-                    .map_or(false, |s| s.contains(dst_name.as_str()))
+                    .is_some_and(|s| s.contains(dst_name.as_str()))
                 {
                     let lhs = cpp_expr_lhs(&a.target, ctx);
                     let rhs = cpp_expr(&a.value, ctx);
@@ -4503,9 +4499,8 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
                     if let Some(rhs_name) = vec_name_of_expr(&a.value) {
                         if ctx
                             .vec_names
-                            .map_or(false, |s| s.contains(rhs_name.as_str()))
-                        {
-                            if count > 0 {
+                            .is_some_and(|s| s.contains(rhs_name.as_str()))
+                            && count > 0 {
                                 out.push_str(&format!(
                                     "{}for (size_t _i = 0; _i < {count}; ++_i) {{ {lhs}[_i] = {rhs}[_i]; }}\n",
                                     ind(indent)
@@ -4515,7 +4510,6 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
                                 }
                                 return;
                             }
-                        }
                     }
                 }
             }
@@ -4526,7 +4520,7 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
                 if let ExprKind::Ident(base_name) = &base.kind {
                     if !ctx
                         .vec_names
-                        .map_or(false, |s| s.contains(base_name.as_str()))
+                        .is_some_and(|s| s.contains(base_name.as_str()))
                     {
                         let resolved_base = ctx.resolve_name(base_name, is_seq);
                         let idx_cpp = cpp_expr(idx_expr, ctx);
@@ -4771,7 +4765,7 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
             let is_low = ctx
                 .reset_levels
                 .get(rst_name.as_str())
-                .map_or(false, |level| *level == ResetLevel::Low);
+                .is_some_and(|level| *level == ResetLevel::Low);
             let cond = if is_low {
                 format!("(!{})", rst_name)
             } else {
@@ -5568,7 +5562,7 @@ fn build_signed_names(ports: &[PortDecl], body: &[ModuleBodyItem]) -> HashSet<St
                 }
             }
             ModuleBodyItem::LetBinding(l) => {
-                if l.ty.as_ref().map_or(false, type_is_signed_scalar) {
+                if l.ty.as_ref().is_some_and(type_is_signed_scalar) {
                     s.insert(l.name.name.clone());
                 }
             }
@@ -5780,7 +5774,7 @@ impl<'a> SimCodegen<'a> {
                                 _ => 32,
                             };
                             widths.insert(l.name.name.clone(), w);
-                            if l.ty.as_ref().map_or(false, type_is_signed_scalar) {
+                            if l.ty.as_ref().is_some_and(type_is_signed_scalar) {
                                 signed.insert(l.name.name.clone());
                             }
                         }
@@ -5881,7 +5875,7 @@ impl<'a> SimCodegen<'a> {
                                 );
                                 out.push_str(&format!("{indent}}}\n"));
                             } else {
-                                out.push_str("\n");
+                                out.push('\n');
                             }
                         }
                         FunctionBodyItem::For(fl) => {
@@ -5947,7 +5941,7 @@ impl<'a> SimCodegen<'a> {
                             emit_fn_items(&ie.else_body, &ctx, &ret_ty, "    ", &mut h);
                             h.push_str("  }\n");
                         } else {
-                            h.push_str("\n");
+                            h.push('\n');
                         }
                     }
                     FunctionBodyItem::For(_) | FunctionBodyItem::Assign(_) => {
@@ -7240,9 +7234,7 @@ impl<'a> SimCodegen<'a> {
                 .any(|i| matches!(i, ModuleBodyItem::WireDecl(w) if ty_references_named(&w.ty)))
             || m.ports.iter().any(|p| ty_references_named(&p.ty));
         let mut h = String::new();
-        h.push_str(&format!(
-            "#pragma once\n#include <cstdint>\n#include <cstdio>\n#include \"verilated.h\"\n"
-        ));
+        h.push_str("#pragma once\n#include <cstdint>\n#include <cstdio>\n#include \"verilated.h\"\n");
         if has_structs {
             h.push_str("#include \"VStructs.h\"\n");
         }
@@ -9847,7 +9839,7 @@ impl<'a> SimCodegen<'a> {
                                     .collect::<Vec<_>>()
                                     .join(" || ");
                                 let mut idx_expr = "0u".to_string();
-                                for i in (0..n as u64).rev() {
+                                for i in (0..n).rev() {
                                     let hit = &hits[i as usize];
                                     idx_expr = format!("(({hit}) ? (uint32_t){i} : {idx_expr})");
                                 }
@@ -10382,7 +10374,7 @@ impl<'a> SimCodegen<'a> {
             let step_ps = half_periods
                 .iter()
                 .map(|(_, hp)| *hp)
-                .reduce(|a, b| gcd(a, b))
+                .reduce(gcd)
                 .unwrap();
 
             cpp.push_str(&format!("\nvoid {class}::tick() {{\n"));
@@ -10433,12 +10425,9 @@ impl<'a> SimCodegen<'a> {
                     Direction::In => "in",
                     Direction::Out => "out",
                 };
-                match &p.ty {
-                    TypeExpr::Clock(_) => {
-                        cpp.push_str(&format!("  // {pname}: clock — skipped\n"));
-                        continue;
-                    }
-                    _ => {}
+                if let TypeExpr::Clock(_) = &p.ty {
+                    cpp.push_str(&format!("  // {pname}: clock — skipped\n"));
+                    continue;
                 }
 
                 if let Some(vi) = vec_port_infos.iter().find(|v| v.name == *pname) {
@@ -10556,7 +10545,7 @@ impl<'a> SimCodegen<'a> {
                         "if (_rising_{c}) {{ _dbg_cycle++; _dbg_last_clk = \"{c}\"; }}"
                     ));
                 }
-                cpp.push_str("\n");
+                cpp.push('\n');
             }
             cpp.push_str("}\n\n");
         }
@@ -10588,7 +10577,7 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str("static void _arch_cov_dump() {\n");
             cpp.push_str(&format!("  if ({class}::_arch_cov_dumped) return;\n"));
             cpp.push_str(&format!("  {class}::_arch_cov_dumped = true;\n"));
-            cpp.push_str(&format!("  uint64_t total = 0; uint64_t hit = 0;\n"));
+            cpp.push_str("  uint64_t total = 0; uint64_t hit = 0;\n");
             cpp.push_str(&format!("  for (uint32_t i = 0; i < {n_cov}; i++) {{ total++; if ({class}::_arch_cov[i]) hit++; }}\n"));
             cpp.push_str(&format!("  fprintf(stderr, \"[{class}] branch coverage: %llu/%llu hit (%.1f%%)\\n\", (unsigned long long)hit, (unsigned long long)total, total ? (100.0 * hit / total) : 0.0);\n"));
             // Per-arm breakdown — file:line if a SourceMap is available,
@@ -11190,8 +11179,7 @@ impl<'a> SimCodegen<'a> {
             .ports
             .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Reset(..)));
-        let rst_is_low = rst_port.map_or(
-            false,
+        let rst_is_low = rst_port.is_some_and(
             |rp| matches!(&rp.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low),
         );
         let rst_guard = rst_port.map(|rp| {

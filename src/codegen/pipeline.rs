@@ -283,7 +283,7 @@ impl<'a> Codegen<'a> {
 
         // ── Detect wait-stages (variable-latency with wait until / do..until) ─
         let wait_stage_flags: Vec<bool> =
-            p.stages.iter().map(|s| Self::stage_has_wait(s)).collect();
+            p.stages.iter().map(Self::stage_has_wait).collect();
         let has_any_wait_stage = wait_stage_flags.iter().any(|f| *f);
 
         // Declare FSM state registers for wait-stages
@@ -1102,12 +1102,12 @@ impl<'a> Codegen<'a> {
                 ExprKind::Ident(name.clone())
             }
             ExprKind::Binary(op, l, r) => ExprKind::Binary(
-                op.clone(),
+                *op,
                 Box::new(Self::substitute_params_in_expr(l, params)),
                 Box::new(Self::substitute_params_in_expr(r, params)),
             ),
             ExprKind::Unary(op, x) => ExprKind::Unary(
-                op.clone(),
+                *op,
                 Box::new(Self::substitute_params_in_expr(x, params)),
             ),
             other => other.clone(),

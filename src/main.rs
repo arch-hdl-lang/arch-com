@@ -495,7 +495,7 @@ impl MultiSource {
         let (filename, file_source, local_offset) = self.locate(offset);
         let relocated_err = err.relocate(local_offset);
         Report::new(relocated_err).with_source_code(NamedSource::new(
-            filename.to_string(),
+            filename,
             file_source.to_string(),
         ))
     }
@@ -1050,7 +1050,7 @@ fn main() -> miette::Result<()> {
                     run_thread_sim_cross_check(&arch_files, &tb_files, outdir.as_deref(), fp_compat)
                 }
                 other => {
-                    return Err(miette::miette!(
+                    Err(miette::miette!(
                         "--thread-sim: expected `fsm`, `parallel`, or `both`, got `{}`",
                         other
                     ))
@@ -3222,10 +3222,10 @@ fn parse_graph_source_ast(ms: &MultiSource) -> miette::Result<arch::ast::SourceF
         let offset = spans.first().map(|s| s.start).unwrap_or(0);
         let (filename, file_source, local_offset) = ms.locate(offset);
         let err = CompileError::LexerError {
-            span: miette::SourceSpan::new(local_offset.into(), 1_usize.into()),
+            span: miette::SourceSpan::new(local_offset.into(), 1_usize),
         };
         Report::new(err).with_source_code(NamedSource::new(
-            filename.to_string(),
+            filename,
             file_source.to_string(),
         ))
     })?;
@@ -3488,11 +3488,11 @@ fn run_check_multi_opts_with_thread_map_and_params(
         let err = CompileError::LexerError {
             span: miette::SourceSpan::new(
                 local_offset.into(),
-                (spans[0].end - spans[0].start).into(),
+                spans[0].end - spans[0].start ,
             ),
         };
         Report::new(err).with_source_code(NamedSource::new(
-            filename.to_string(),
+            filename,
             file_source.to_string(),
         ))
     })?;

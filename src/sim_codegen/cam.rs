@@ -179,7 +179,7 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
         cpp.push_str(&format!("  {mask_ty} _m = 0;\n"));
         cpp.push_str(&format!("  for (uint32_t i = 0; i < {depth}; i++) {{\n"));
-        cpp.push_str(&format!("    if ((_entry_valid_r >> i) & 1) {{\n"));
+        cpp.push_str("    if ((_entry_valid_r >> i) & 1) {\n");
         cpp.push_str("      if (_entry_key_r[i] == search_key) {\n");
         cpp.push_str(&format!("        _m |= ({mask_ty})1 << i;\n"));
         cpp.push_str("      }\n");

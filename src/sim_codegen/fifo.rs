@@ -127,8 +127,8 @@ impl<'a> SimCodegen<'a> {
             .map(|p| p.name.name.as_str())
             .collect();
         let is_async = clk_ports.len() >= 2
-            && clk_ports.iter().any(|n| *n == "wr_clk")
-            && clk_ports.iter().any(|n| *n == "rd_clk");
+            && clk_ports.contains(&"wr_clk")
+            && clk_ports.contains(&"rd_clk");
         if is_async {
             port_inits.push("_clk_prev_wr(0)".to_string());
             port_inits.push("_clk_prev_rd(0)".to_string());

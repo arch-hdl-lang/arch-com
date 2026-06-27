@@ -161,7 +161,7 @@ impl<'a> SimCodegen<'a> {
                 h.push_str(path);
                 h.push_str("\", \"r\");\n");
                 h.push_str("      if (_f) {\n");
-                h.push_str(&format!("        char _line[256]; int _i = 0;\n"));
+                h.push_str("        char _line[256]; int _i = 0;\n");
                 h.push_str("        while (fgets(_line, sizeof(_line), _f) && _i < ");
                 h.push_str(&format!("{depth}"));
                 h.push_str(") {\n");

@@ -397,6 +397,12 @@ pub struct SymbolTable {
     pub module_scopes: HashMap<String, HashMap<String, (Symbol, Span)>>,
 }
 
+impl Default for SymbolTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SymbolTable {
     pub fn new() -> Self {
         Self {

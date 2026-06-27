@@ -23,7 +23,7 @@ impl<'a> Codegen<'a> {
 
         // Parse NUM_REQ as integer for bit width calculations
         let num_req_int: u64 = num_req_default.parse().unwrap_or(4);
-        let req_width = crate::width::index_width(num_req_int as u64);
+        let req_width = crate::width::index_width(num_req_int);
 
         let clk = a
             .ports
@@ -139,7 +139,7 @@ impl<'a> Codegen<'a> {
                         parenthesized: false,
                     }),
             );
-            self.line(&format!("logic grant_valid_comb;"));
+            self.line("logic grant_valid_comb;");
             self.line(&format!(
                 "logic [{}:0] grant_requester_comb;",
                 req_width - 1
@@ -283,7 +283,7 @@ impl<'a> Codegen<'a> {
                     self.line(&format!("logic [{}:0] {dst_gr};", req_width - 1));
                     self.line(&format!(
                         "logic [{}] {dst_rr};",
-                        Self::fold_width_str(&num_req_str)
+                        Self::fold_width_str(num_req_str)
                     ));
                 }
 
@@ -351,7 +351,7 @@ impl<'a> Codegen<'a> {
                 if is_scalar {
                     format!("{dir} logic {name}")
                 } else {
-                    format!("{dir} logic [{}] {name}", Self::fold_width_str(&count_str))
+                    format!("{dir} logic [{}] {name}", Self::fold_width_str(count_str))
                 }
             }
             _ => {

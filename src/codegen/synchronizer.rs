@@ -228,7 +228,7 @@ impl<'a> Codegen<'a> {
         // Gray-to-binary decode: binary[i] = XOR of all gray bits from MSB down to i
         // Computed as: b = g ^ (g>>1) ^ (g>>2) ^ ... — no self-reference, no ordering issue.
         self.line("// Gray-to-binary decode (prefix XOR — no self-reference)");
-        self.line(&format!("always_comb begin"));
+        self.line("always_comb begin");
         self.indent += 1;
         self.line("gray_to_bin = gray_chain[STAGES-1];");
         self.line(&format!("for (int i = 1; i < $bits({data_ty}); i++)"));
@@ -264,8 +264,7 @@ impl<'a> Codegen<'a> {
         self.line("");
 
         let rst_name = rst_port.map(|rp| rp.name.name.as_str()).unwrap_or("1'b0");
-        let is_low = rst_port.map_or(
-            false,
+        let is_low = rst_port.is_some_and(
             |rp| matches!(&rp.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low),
         );
         let rst_active = if is_low {
@@ -374,8 +373,7 @@ impl<'a> Codegen<'a> {
         _stages: usize,
     ) {
         let rst_name = rst_port.map(|rp| rp.name.name.as_str());
-        let is_low = rst_port.map_or(
-            false,
+        let is_low = rst_port.is_some_and(
             |rp| matches!(&rp.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low),
         );
         let rst_cond = rst_name.map(|n| {

@@ -2500,7 +2500,7 @@ impl<'a> FormalCtx<'a> {
                 ))
             }
         }
-        .map_err(|e: CompileError| CompileError::general(&format!("{}", e_display(&e, span)), span))
+        .map_err(|e: CompileError| CompileError::general(&e_display(&e, span).to_string(), span))
     }
 
     fn encode_unary(
@@ -2729,8 +2729,8 @@ impl<'a> FormalCtx<'a> {
         };
         let disjuncts: Vec<String> = per_cycle
             .iter()
-            .enumerate()
-            .map(|(_i, p)| format!("(= {p} {matcher})"))
+            
+            .map(|p| format!("(= {p} {matcher})"))
             .collect();
         let assertion = if disjuncts.len() == 1 {
             disjuncts.into_iter().next().unwrap()
@@ -2761,7 +2761,7 @@ impl<'a> FormalCtx<'a> {
         let status = match first_word {
             "sat" => {
                 // Find earliest cycle where per_cycle[i] equals matcher.
-                let model = sr.stdout.splitn(2, '\n').nth(1).unwrap_or("").to_string();
+                let model = sr.stdout.split_once('\n').map(|x| x.1).unwrap_or("").to_string();
                 let assignments = parse_model(&model);
                 // Determine failing cycle by evaluating per_cycle against the model.
                 let failing_cycle = find_first_failing_cycle(
@@ -2832,7 +2832,7 @@ struct SmtTerm {
 
 fn bv_lit(value: u64, width: u32) -> String {
     // Prefer hex for widths divisible by 4, else decimal form.
-    if width % 4 == 0 && width <= 64 {
+    if width.is_multiple_of(4) && width <= 64 {
         let digits = (width / 4) as usize;
         let mask = if width >= 64 {
             u64::MAX

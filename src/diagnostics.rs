@@ -104,7 +104,7 @@ pub struct CompileWarning {
 }
 
 pub fn span_to_source_span(span: Span) -> SourceSpan {
-    SourceSpan::new(span.start.into(), (span.end - span.start).into())
+    SourceSpan::new(span.start.into(), span.end - span.start )
 }
 
 impl CompileError {
@@ -183,7 +183,7 @@ impl CompileError {
     /// Create a copy of this error with the span offset adjusted for multi-file reporting.
     pub fn relocate(self, new_offset: usize) -> Self {
         fn respan(span: SourceSpan, new_offset: usize) -> SourceSpan {
-            SourceSpan::new(new_offset.into(), span.len().into())
+            SourceSpan::new(new_offset.into(), span.len())
         }
         match self {
             CompileError::UnexpectedToken {

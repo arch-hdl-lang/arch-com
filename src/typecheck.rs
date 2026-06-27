@@ -1763,7 +1763,7 @@ impl<'a> TypeChecker<'a> {
             .map(|ports| {
                 ports
                     .iter()
-                    .filter(|p| p.bus_info.as_ref().map_or(false, |bi| bi.count.is_some()))
+                    .filter(|p| p.bus_info.as_ref().is_some_and(|bi| bi.count.is_some()))
                     .map(|p| p.name.name.clone())
                     .collect()
             })
@@ -3769,7 +3769,7 @@ impl<'a> TypeChecker<'a> {
                     local_types,
                 );
                 // Return type from first non-wildcard arm
-                for arm in arms {
+                if let Some(arm) = arms.iter().next() {
                     return self.resolve_expr_type(&arm.value, module_name, local_types);
                 }
                 Ty::Error
@@ -4006,8 +4006,8 @@ impl<'a> TypeChecker<'a> {
                     let arg_tys: Vec<Ty> = call_args
                         .iter()
                         .map(|a| {
-                            let mut lt = local_types.clone();
-                            self.resolve_expr_type(a, module_name, &mut lt)
+                            let lt = local_types.clone();
+                            self.resolve_expr_type(a, module_name, &lt)
                         })
                         .collect();
 
@@ -4024,10 +4024,10 @@ impl<'a> TypeChecker<'a> {
                                 match (expected_te, actual_ty) {
                                     (TypeExpr::UInt(we), Ty::UInt(wa)) => {
                                         // Compare widths when the expression is a simple literal.
-                                        eval_type_width_expr(we).map_or(true, |ew| ew == *wa)
+                                        eval_type_width_expr(we).is_none_or(|ew| ew == *wa)
                                     }
                                     (TypeExpr::SInt(we), Ty::SInt(wa)) => {
-                                        eval_type_width_expr(we).map_or(true, |ew| ew == *wa)
+                                        eval_type_width_expr(we).is_none_or(|ew| ew == *wa)
                                     }
                                     (TypeExpr::Bool, Ty::Bool) => true,
                                     (TypeExpr::Bit, Ty::UInt(1)) => true,
@@ -4501,7 +4501,7 @@ impl<'a> TypeChecker<'a> {
                                     ),
                                     method.span,
                                 ));
-                                return Ty::Error;
+                                Ty::Error
                             }
                         }
                     }

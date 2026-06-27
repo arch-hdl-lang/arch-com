@@ -609,7 +609,7 @@ pub fn gen_module_thread_with_warnings(
         // before any posedge). Called once from constructor or first
         // eval — for parity with fsm, we emit it as a public method
         // the TB can call after reset.
-        header.push_str(&format!("  void _dbg_log_ports() {{\n"));
+        header.push_str("  void _dbg_log_ports() {\n");
         for p in &m.ports {
             if matches!(&p.ty, TypeExpr::Clock(_)) {
                 continue;
@@ -859,8 +859,7 @@ pub fn gen_module_thread_with_warnings(
                         "  uint32_t _resource_{}_credits[{}] = {{{}}};\n",
                         r.name.name,
                         threads.len(),
-                        std::iter::repeat(credit.to_string())
-                            .take(threads.len())
+                        std::iter::repeat_n(credit.to_string(), threads.len())
                             .collect::<Vec<_>>()
                             .join(", ")
                     ));
@@ -1576,9 +1575,7 @@ fn emit_seq_stmt(s: &crate::ast::Stmt, out: &mut String, indent: usize) -> Resul
             out.push_str(&format!("{pad}}}\n"));
         }
         _ => {
-            return Err(format!(
-                "module-level seq stmt kind not yet supported by thread sim"
-            ))
+            return Err("module-level seq stmt kind not yet supported by thread sim".to_string())
         }
     }
     Ok(())
@@ -1686,9 +1683,8 @@ fn expr_to_cpp(e: &Expr) -> Result<String, String> {
                     method.name
                 )),
             }
-            .map(|s| {
+            .inspect(|_s| {
                 let _ = args;
-                s
             })
         }
         ExprKind::BitSlice(base, hi, lo) => {
@@ -1770,7 +1766,7 @@ fn port_or_reg_cpp_ty_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> Result
 }
 
 fn wide_words(bits: u64) -> u64 {
-    (bits + 31) / 32
+    bits.div_ceil(32)
 }
 
 fn scalar_width_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> Option<u64> {

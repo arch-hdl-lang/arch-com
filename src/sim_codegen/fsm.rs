@@ -58,7 +58,7 @@ impl<'a> SimCodegen<'a> {
 
         let n_states = f.state_names.len();
         let state_bits = enum_width(n_states);
-        let state_ty = cpp_uint(state_bits as u32);
+        let state_ty = cpp_uint(state_bits);
 
         let state_idx: HashMap<String, usize> = f
             .state_names
@@ -357,7 +357,7 @@ impl<'a> SimCodegen<'a> {
         }
         // Built-in `state` identifier inside fsm scope: read of the current
         // encoded state. Lowers to `_state_r` in sim, with width = clog2(N).
-        fsm_widths.insert("state".to_string(), state_bits as u32);
+        fsm_widths.insert("state".to_string(), state_bits);
         let fsm_ident_subst: HashMap<String, String> =
             std::iter::once(("state".to_string(), "_state_r".to_string())).collect();
         let ctx_fsm = {
@@ -623,7 +623,7 @@ impl<'a> SimCodegen<'a> {
         let mut extra_sigs_owned: Vec<(String, String, u32)> = vec![(
             "state_r".to_string(),
             "_state_r".to_string(),
-            state_bits as u32,
+            state_bits,
         )];
         extra_sigs_owned.extend(fsm_flat_vec_traces);
         // Add flattened bus port signals to trace. Use the param-aware
@@ -663,7 +663,7 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str("static void _arch_cov_dump() {\n");
             cpp.push_str(&format!("  if ({class}::_arch_cov_dumped) return;\n"));
             cpp.push_str(&format!("  {class}::_arch_cov_dumped = true;\n"));
-            cpp.push_str(&format!("  uint64_t total = 0; uint64_t hit = 0;\n"));
+            cpp.push_str("  uint64_t total = 0; uint64_t hit = 0;\n");
             cpp.push_str(&format!("  for (uint32_t i = 0; i < {n_cov}; i++) {{ total++; if ({class}::_arch_cov[i]) hit++; }}\n"));
             cpp.push_str(&format!("  fprintf(stderr, \"[{class}] FSM coverage: %llu/%llu hit (%.1f%%)\\n\", (unsigned long long)hit, (unsigned long long)total, total ? (100.0 * hit / total) : 0.0);\n"));
             // --coverage-dat: also append per-point Verilator-compatible

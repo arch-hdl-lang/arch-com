@@ -474,7 +474,7 @@ impl<'a> Codegen<'a> {
                 }
             }
             let n = decls.len();
-            (decls.into_iter().chain(rest.into_iter()).collect(), n)
+            (decls.into_iter().chain(rest).collect(), n)
         };
 
         // Stage 3: LetBinding decl pre-emit. Simple typed `let foo: T = expr;`
@@ -1466,7 +1466,7 @@ impl<'a> Codegen<'a> {
             for stmt in &guarded_stmts {
                 if let Stmt::Init(ib) = stmt {
                     let port = m.ports.iter().find(|p| p.name.name == ib.reset_signal.name);
-                    let is_low = port.map_or(false, |p| {
+                    let is_low = port.is_some_and(|p| {
                         matches!(&p.ty, TypeExpr::Reset(_, ResetLevel::Low))
                     });
                     let cond = if is_low {
@@ -1501,7 +1501,7 @@ impl<'a> Codegen<'a> {
                 for stmt in &unguarded_stmts {
                     if let Stmt::Init(ib) = stmt {
                         let port = m.ports.iter().find(|p| p.name.name == ib.reset_signal.name);
-                        let is_low = port.map_or(false, |p| {
+                        let is_low = port.is_some_and(|p| {
                             matches!(&p.ty, TypeExpr::Reset(_, ResetLevel::Low))
                         });
                         let cond = if is_low {
@@ -1566,7 +1566,7 @@ impl<'a> Codegen<'a> {
                 if let Stmt::Init(ib) = stmt {
                     // Emit as an explicit `if (rst_cond) begin ... end` block
                     let port = m.ports.iter().find(|p| p.name.name == ib.reset_signal.name);
-                    let is_low = port.map_or(false, |p| {
+                    let is_low = port.is_some_and(|p| {
                         matches!(&p.ty, TypeExpr::Reset(_, ResetLevel::Low))
                     });
                     let cond = if is_low {
@@ -1643,7 +1643,7 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_latch_block(&mut self, lb: &LatchBlock) {
-        self.line(&format!("always_latch begin"));
+        self.line("always_latch begin");
         self.indent += 1;
         self.line(&format!("if ({}) begin", lb.enable.name));
         self.indent += 1;

@@ -334,8 +334,7 @@ impl<'a> Codegen<'a> {
             .iter()
             .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .collect();
-        let wr_clk = clock_ports
-            .get(0)
+        let wr_clk = clock_ports.first()
             .map(|p| p.name.name.as_str())
             .unwrap_or("wr_clk");
         let rd_clk = clock_ports

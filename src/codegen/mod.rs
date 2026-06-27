@@ -806,7 +806,7 @@ impl<'a> Codegen<'a> {
         for w in errors {
             self.warnings.push(w);
         }
-        harnesses.into_iter().map(|(_, h)| h).collect()
+        harnesses.into_values().collect()
     }
 
     fn walk_item_for_shared(
@@ -1105,7 +1105,7 @@ impl<'a> Codegen<'a> {
                 let suffix: String = ov
                     .arg_types
                     .iter()
-                    .map(|t| Self::type_mangle_tag(t))
+                    .map(Self::type_mangle_tag)
                     .collect::<Vec<_>>()
                     .join("_");
                 return format!("{name}_{suffix}");
@@ -2061,7 +2061,7 @@ impl<'a> Codegen<'a> {
                     for bi in &m.body {
                         if let ModuleBodyItem::LetBinding(l) = bi {
                             if l.name.name == name {
-                                return l.ty.as_ref().and_then(|t| fmt_of(t));
+                                return l.ty.as_ref().and_then(&fmt_of);
                             }
                         }
                     }
@@ -2069,7 +2069,7 @@ impl<'a> Codegen<'a> {
                 Item::Fsm(f) if f.name.name == self.current_construct => {
                     for l in &f.lets {
                         if l.name.name == name {
-                            return l.ty.as_ref().and_then(|t| fmt_of(t));
+                            return l.ty.as_ref().and_then(&fmt_of);
                         }
                     }
                 }
@@ -2106,7 +2106,7 @@ impl<'a> Codegen<'a> {
                                 return l
                                     .ty
                                     .as_ref()
-                                    .map_or(false, |t| matches!(t, TypeExpr::SInt(_)));
+                                    .is_some_and(|t| matches!(t, TypeExpr::SInt(_)));
                             }
                         }
                     }
@@ -2117,7 +2117,7 @@ impl<'a> Codegen<'a> {
                             return l
                                 .ty
                                 .as_ref()
-                                .map_or(false, |t| matches!(t, TypeExpr::SInt(_)));
+                                .is_some_and(|t| matches!(t, TypeExpr::SInt(_)));
                         }
                     }
                 }
@@ -2832,7 +2832,7 @@ impl<'a> Codegen<'a> {
             // Try to match `<group>{idx}_<sig>` against any known port array.
             let matched = target_port_arrays.iter().find_map(|(group, _n, sigs)| {
                 let pname = &c.port_name.name;
-                let prefix = format!("{group}");
+                let prefix = group.to_string();
                 let rest = pname.strip_prefix(&prefix)?;
                 // rest looks like "0_valid" — split on first underscore
                 let und = rest.find('_')?;
@@ -3169,7 +3169,7 @@ impl<'a> Codegen<'a> {
                 } else {
                     // Missing element — emit dummy so SV still parses (typecheck
                     // should have rejected this upstream).
-                    parts.push(format!("'0"));
+                    parts.push("'0".to_string());
                 }
             }
             connections.push(format!(
@@ -3757,7 +3757,7 @@ impl<'a> Codegen<'a> {
             let label_stem = format!("{}_{}", port_name, hs.name.name);
             let sig_prefix = format!("{}_{}", port_name, hs.name.name);
             self.emit_handshake_channel_asserts(
-                &hs,
+                hs,
                 &clk,
                 rst_active.as_deref(),
                 &sig_prefix,
@@ -5613,7 +5613,7 @@ impl<'a> Codegen<'a> {
                 let bits = if *v == 0 {
                     1
                 } else {
-                    (64 - v.leading_zeros()) as u32
+                    64 - v.leading_zeros() 
                 };
                 bits.to_string()
             }
@@ -6399,7 +6399,7 @@ impl<'a> Codegen<'a> {
                         let suffix: String = ov
                             .arg_types
                             .iter()
-                            .map(|t| Self::type_mangle_tag(t))
+                            .map(Self::type_mangle_tag)
                             .collect::<Vec<_>>()
                             .join("_");
                         format!("{name}_{suffix}")

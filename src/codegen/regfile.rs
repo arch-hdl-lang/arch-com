@@ -248,7 +248,7 @@ impl<'a> Codegen<'a> {
                     // Address with `init[k]=v` is immutable — drive a constant.
                     self.line(&format!("assign rf_data[{k}] = {val};"));
                 } else {
-                    self.line(&format!("always_latch begin"));
+                    self.line("always_latch begin");
                     self.indent += 1;
                     if internal_flops {
                         // ICG-equivalent gating: latch transparent only during

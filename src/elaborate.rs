@@ -708,11 +708,10 @@ fn elaborate_module_variant(
                 let derived_default_tracks = p
                     .default
                     .as_ref()
-                    .map_or(false, |d| expr_references_params(d, &param_names))
-                    && p.default
+                    .is_some_and(|d| expr_references_params(d, &param_names))
+                    && (p.default
                         .as_ref()
-                        .and_then(|d| try_eval_i64(d, &param_vals))
-                        .map_or(false, |dv| dv == val);
+                        .and_then(|d| try_eval_i64(d, &param_vals)) == Some(val));
                 if matches!(p.kind, ParamKind::EnumConst(_)) {
                     // Preserve the EnumVariant expression for clean SV output
                 } else if derived_default_tracks {
@@ -1016,7 +1015,7 @@ fn lower_tlm_connects_in_module(
         let bus_decl = bus_defs.get(&from.bus_name);
         for (target, to) in &target_infos {
             let compatible = if decoded_connect {
-                bus_decl.map_or(false, |_| {
+                bus_decl.is_some_and(|_| {
                     tlm_connect_decoded_shapes_compatible(&from.shape, &to.shape, &from.methods)
                 })
             } else {
@@ -1492,7 +1491,7 @@ fn lower_decoded_tlm_connect(
         );
     }
 
-    let route_w = clog2_width(conn.targets.len() as u64).max(1) as u32;
+    let route_w = clog2_width(conn.targets.len() as u64).max(1);
     let mut logic = Vec::new();
     let mut comb_stmts = Vec::new();
     let mut seq_stmts = Vec::new();
@@ -1611,7 +1610,7 @@ fn lower_decoded_tlm_connect(
         let missing_method_selectors: Vec<Expr> = selectors
             .iter()
             .zip(target_supports_method.iter())
-            .filter_map(|(selector, supports_method)| (!*supports_method).then(|| selector.clone()))
+            .filter(|&(_selector, supports_method)| !*supports_method).map(|(selector, _supports_method)| selector.clone())
             .collect();
         let missing_method_selected = tlm_or_chain(&missing_method_selectors, span);
         let req_fire = tlm_and(
@@ -1679,15 +1678,11 @@ fn lower_decoded_tlm_connect(
             .iter()
             .zip(route_matches.iter())
             .zip(target_supports_method.iter())
-            .filter_map(|((wire, route_match), supports_method)| {
-                (*supports_method).then(|| {
-                    tlm_and(
+            .filter(|&((_wire, _route_match), supports_method)| *supports_method).map(|((wire, route_match), _supports_method)| tlm_and(
                         route_match.clone(),
                         tlm_bus_field(wire, &format!("{}_rsp_valid", method.name.name), span),
                         span,
-                    )
-                })
-            })
+                    ))
             .collect();
         let mut rsp_valid_terms = rsp_valid_terms;
         if let Some(err_valid_name) = &err_valid_name {
@@ -1703,18 +1698,12 @@ fn lower_decoded_tlm_connect(
             let supported_route_matches: Vec<Expr> = route_matches
                 .iter()
                 .zip(target_supports_method.iter())
-                .filter_map(|(route_match, supports_method)| {
-                    (*supports_method).then(|| route_match.clone())
-                })
+                .filter(|&(_route_match, supports_method)| *supports_method).map(|(route_match, _supports_method)| route_match.clone())
                 .collect();
             let rsp_data_terms: Vec<Expr> = target_wires
                 .iter()
                 .zip(target_supports_method.iter())
-                .filter_map(|(wire, supports_method)| {
-                    (*supports_method).then(|| {
-                        tlm_bus_field(wire, &format!("{}_rsp_data", method.name.name), span)
-                    })
-                })
+                .filter(|&(_wire, supports_method)| *supports_method).map(|(wire, _supports_method)| tlm_bus_field(wire, &format!("{}_rsp_data", method.name.name), span))
                 .collect();
             let mut rsp_data =
                 tlm_mux_by_selectors(&supported_route_matches, &rsp_data_terms, span);
@@ -5869,7 +5858,7 @@ fn gen_if_cond_truthy(e: &Expr, params: &HashMap<String, &Expr>) -> bool {
         ExprKind::Bool(b) => *b,
         ExprKind::Ident(name) => params
             .get(name)
-            .map_or(false, |v| gen_if_cond_truthy(v, params)),
+            .is_some_and(|v| gen_if_cond_truthy(v, params)),
         _ => false,
     }
 }
@@ -7327,7 +7316,7 @@ fn infer_expr_uint_width(expr: &Expr, type_map: &HashMap<String, SignalInfo>) ->
             if *v == 0 {
                 1
             } else {
-                (u64::BITS - v.leading_zeros()) as u32
+                u64::BITS - v.leading_zeros()
             }
         }
         _ => 16,
@@ -7607,9 +7596,9 @@ fn offset_thread_state_targets(states: &mut [ThreadFsmState], base: usize, len: 
     }
 }
 
-fn flatten_thread_ifelse_chain<'a>(
-    ie: &'a ThreadIfElse,
-) -> (Vec<(Expr, &'a [ThreadStmt])>, &'a [ThreadStmt]) {
+fn flatten_thread_ifelse_chain(
+    ie: &ThreadIfElse,
+) -> (Vec<(Expr, &[ThreadStmt])>, &[ThreadStmt]) {
     let mut arms = vec![(ie.cond.clone(), ie.then_stmts.as_slice())];
     let mut else_stmts = ie.else_stmts.as_slice();
     while let [ThreadStmt::IfElse(nested)] = else_stmts {
@@ -10129,13 +10118,13 @@ fn lower_pipe_reg_module(mut m: ModuleDecl) -> Result<ModuleDecl, Vec<CompileErr
     let mut inserted = false;
     for bi in m.body {
         if !inserted && matches!(bi, ModuleBodyItem::RegBlock(_)) {
-            new_body.extend(extra_body.drain(..));
+            new_body.append(&mut extra_body);
             inserted = true;
         }
         new_body.push(bi);
     }
     if !inserted {
-        new_body.extend(extra_body.drain(..));
+        new_body.append(&mut extra_body);
     }
     m.body = new_body;
     Ok(m)
@@ -12849,7 +12838,7 @@ fn inline_lower_tlm_initiator_group(
     };
 
     let mut comb_stmts = Vec::new();
-    for (_, agg) in &aggs {
+    for agg in aggs.values() {
         let issue_conds: Vec<Expr> = agg.issues.iter().map(|(c, _, _, _, _)| c.clone()).collect();
         let mut want_refs: Vec<Expr> = Vec::new();
         for (i, cond) in issue_conds.iter().enumerate() {
@@ -14067,7 +14056,7 @@ fn inline_lower_tlm_initiator(
         }
         acc
     };
-    for (_, agg) in &aggs {
+    for agg in aggs.values() {
         // req_valid = OR of issue states
         let issue_idxs: Vec<u64> = agg.issues.iter().map(|(i, _)| *i).collect();
         comb_stmts.push(Stmt::Assign(CombAssign {

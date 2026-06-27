@@ -134,7 +134,7 @@ impl<'a> Codegen<'a> {
                 let max_cond = if let Some(mp) = &max_port {
                     format!("count_r == {mp}")
                 } else {
-                    format!("&count_r") // all bits set
+                    "&count_r".to_string() // all bits set
                 };
                 let inc_cond = if has_inc {
                     "else if (inc) begin"
@@ -153,7 +153,7 @@ impl<'a> Codegen<'a> {
                 let max_val = if let Some(mp) = &max_port {
                     mp.clone()
                 } else {
-                    format!("'1")
+                    "'1".to_string()
                 };
                 let dec_cond = if has_dec {
                     "else if (dec) begin"
@@ -175,7 +175,7 @@ impl<'a> Codegen<'a> {
                 let max_cond = if let Some(mp) = &max_port {
                     format!("count_r < {mp}")
                 } else {
-                    format!("!(&count_r)")
+                    "!(&count_r)".to_string()
                 };
                 let inc_cond = if has_inc {
                     "else if (inc) begin"
@@ -255,7 +255,7 @@ impl<'a> Codegen<'a> {
             let max_expr = if let Some(mp) = &max_port {
                 format!("count_r == {mp}")
             } else {
-                format!("&count_r")
+                "&count_r".to_string()
             };
             self.line(&format!("assign at_max = ({max_expr});"));
         }

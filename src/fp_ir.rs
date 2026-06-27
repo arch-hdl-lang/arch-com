@@ -359,7 +359,7 @@ fn sv_rhs(b: &Bv, lin: &Lin) -> String {
         }
         Kind::Ite { c, t, e } => format!("{} ? {} : {}", r(c), r(t), r(e)),
         Kind::Call { name, args } => {
-            let a: Vec<String> = args.iter().map(|x| r(x)).collect();
+            let a: Vec<String> = args.iter().map(r).collect();
             format!("{}({})", name, a.join(", "))
         }
     }
@@ -452,7 +452,7 @@ fn smt_rhs(b: &Bv, lin: &Lin) -> String {
         }
         Kind::Ite { c, t, e } => format!("(ite (= {} #b1) {} {})", r(c), r(t), r(e)),
         Kind::Call { name, args } => {
-            let a: Vec<String> = args.iter().map(|x| r(x)).collect();
+            let a: Vec<String> = args.iter().map(r).collect();
             format!("({} {})", name, a.join(" "))
         }
     }
@@ -557,7 +557,7 @@ fn lean_rhs(b: &Bv, lin: &Lin) -> String {
             )
         }
         Kind::Call { name, args } => {
-            let a: Vec<String> = args.iter().map(|x| r(x)).collect();
+            let a: Vec<String> = args.iter().map(r).collect();
             format!("({} {})", name, a.join(" "))
         }
     }

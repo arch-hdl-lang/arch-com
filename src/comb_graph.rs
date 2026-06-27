@@ -1948,11 +1948,10 @@ fn tarjan_scc(adj: &[Vec<usize>], n: usize) -> Vec<Vec<usize>> {
                     stack.push(w);
                     on_stack[w] = true;
                     call_stack.push(Frame { v: w, iter_pos: 0 });
-                } else if on_stack[w] {
-                    if index_of[w] < lowlink[v] {
+                } else if on_stack[w]
+                    && index_of[w] < lowlink[v] {
                         lowlink[v] = index_of[w];
                     }
-                }
             } else {
                 // All neighbors processed — possibly emit SCC.
                 if lowlink[v] == index_of[v] {
