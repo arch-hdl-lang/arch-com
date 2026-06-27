@@ -3436,8 +3436,9 @@ impl<'a> Codegen<'a> {
     }
 
     /// For each `reg ... guard <sig>` in the module, emit:
-    ///   1. A shadow `_<reg>_written` flag, set on any seq-block commit for the reg.
-    ///   2. An SVA contract `<sig> |-> _<reg>_written` (in translate_off).
+    /// 1. A shadow `_<reg>_written` flag, set on any seq-block commit for the reg.
+    /// 2. An SVA contract `<sig> |-> _<reg>_written` (in translate_off).
+    ///
     /// This catches the producer-bug pattern: `valid` asserts but data was never
     /// written. Verilator `--assert` and EBMC formal both consume this.
     ///
@@ -3777,14 +3778,14 @@ impl<'a> Codegen<'a> {
     /// - `hs`        — channel metadata (variant, name, array shape).
     /// - `clk`       — already-resolved clock signal name (no edge keyword).
     /// - `rst_active`— already-resolved active-level reset expression
-    ///                 (e.g. `rst` or `!rst_n`); `None` skips `disable iff`.
+    ///   (e.g. `rst` or `!rst_n`); `None` skips `disable iff`.
     /// - `sig_prefix`— prefix for the per-variant control signals; the
-    ///                 helper appends `_valid`/`_ready`/etc. For the bus
-    ///                 path this is `<port>_<chname>`; for arbiters it is
-    ///                 just `<chname>` (signals are top-level).
+    ///   helper appends `_valid`/`_ready`/etc. For the bus
+    ///   path this is `<port>_<chname>`; for arbiters it is
+    ///   just `<chname>` (signals are top-level).
     /// - `label_stem`— middle of `_auto_hs_<stem>_<rule>` for SV labels.
-    ///                 Bus-path stem is `<port>_<chname>`; arbiter is
-    ///                 `<chname>` (plus a per-lane suffix when arrayed).
+    ///   Bus-path stem is `<port>_<chname>`; arbiter is
+    ///   `<chname>` (plus a per-lane suffix when arrayed).
     /// - `mod_name`  — enclosing construct name for the `$fatal` message.
     ///
     /// When `hs.array_count` is `Some(expr)`, the property is wrapped in
@@ -3976,10 +3977,9 @@ impl<'a> Codegen<'a> {
     /// 1. `logic [W-1:0] __<port>_<ch>_credit;` — the credit register,
     ///    width = clog2(DEPTH+1).
     /// 2. An `always_ff` block that resets the counter to DEPTH on reset
-    ///    and updates it each cycle:
-    ///       -1 when send_valid && !credit_return
-    ///       +1 when credit_return && !send_valid
-    ///       no change when both fire in the same cycle (plan §Lowering).
+    ///    and updates it each cycle: `-1` when `send_valid && !credit_return`,
+    ///    `+1` when `credit_return && !send_valid`, no change when both fire
+    ///    in the same cycle (plan §Lowering).
     /// 3. `wire __<port>_<ch>_can_send = __<port>_<ch>_credit != 0;` —
     ///    combinational current-cycle availability. Users whose design
     ///    needs a timing-relief flop will opt in via the upcoming

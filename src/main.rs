@@ -2391,11 +2391,12 @@ sys.exit(0 if ok else 1)
 /// dependency files prepended.
 /// Locate the shipped standard library directory containing curated bus
 /// definitions (BusAxiStream, BusAxiLite, BusApb, etc.). Resolution:
-///   1. `ARCH_STDLIB_PATH` env override (absolute path to stdlib/)
-///   2. Disabled entirely if `ARCH_NO_STDLIB=1`
-///   3. `<exe>/../stdlib/` — matches `cargo run` layout (target/debug/arch → ../../stdlib)
-///   4. `<exe>/../../stdlib/` — matches cargo workspace runs
-///   5. `<exe>/../share/arch/stdlib/` — matches Unix `<prefix>/bin/arch` installs
+/// 1. `ARCH_STDLIB_PATH` env override (absolute path to stdlib/)
+/// 2. Disabled entirely if `ARCH_NO_STDLIB=1`
+/// 3. `<exe>/../stdlib/` — matches `cargo run` layout (target/debug/arch → ../../stdlib)
+/// 4. `<exe>/../../stdlib/` — matches cargo workspace runs
+/// 5. `<exe>/../share/arch/stdlib/` — matches Unix `<prefix>/bin/arch` installs
+///
 /// Returns None if none of these resolve to an existing directory.
 fn resolve_stdlib_dir() -> Option<PathBuf> {
     if std::env::var("ARCH_NO_STDLIB").is_ok() {

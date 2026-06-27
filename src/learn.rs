@@ -646,6 +646,7 @@ pub fn print_stats() -> std::io::Result<()> {
 /// - `code == Some(c)`: event's error_code equals `c`
 /// - `substr == Some(s)`: `s` appears in diff_summary, error_message, or file_path
 /// - `older_than_days == Some(d)`: event timestamp is older than `d` days ago
+///
 /// If `dry_run` is true, nothing is written; just counts.
 pub fn prune(
     code: Option<&str>,

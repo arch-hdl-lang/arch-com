@@ -1628,20 +1628,6 @@ impl<'a> TypeChecker<'a> {
         self.check_handshake_reads(m);
     }
 
-    /// Compile-time lint: if a module has a bus port whose bus declares one or
-    /// more `handshake` channels, every read of a payload signal inside
-    /// comb/seq/latch blocks should sit under an `if <port>.<valid>` (or the
-    /// variant's `<port>.<req>`) conditional.
-    ///
-    /// v1 scope:
-    /// - Recognized guards: the exact valid/req field access (`port.ch_valid`),
-    ///   either directly as the if-condition or as an AND-conjunct of it.
-    /// - Does NOT trace let-bindings: `let g = port.ch_valid; if g ...` is a
-    ///   known false-positive and documented in the plan. If this becomes
-    ///   noisy, extend by resolving single-ident let RHS before matching.
-    /// - Variants with no valid signal (`ready_only`) are skipped entirely;
-    ///   `req_ack_2phase` uses the pending-transfer guard (`req != ack`).
-
     /// Check an `inst` declaration: validates port connections (unconnected
     /// inputs error, unconnected outputs warn), expands whole-bus connections
     /// to per-signal driven entries, and marks output signals as driven.
@@ -1911,6 +1897,19 @@ impl<'a> TypeChecker<'a> {
             }
         }
     }
+    /// Compile-time lint: if a module has a bus port whose bus declares one or
+    /// more `handshake` channels, every read of a payload signal inside
+    /// comb/seq/latch blocks should sit under an `if <port>.<valid>` (or the
+    /// variant's `<port>.<req>`) conditional.
+    ///
+    /// v1 scope:
+    /// - Recognized guards: the exact valid/req field access (`port.ch_valid`),
+    ///   either directly as the if-condition or as an AND-conjunct of it.
+    /// - Does NOT trace let-bindings: `let g = port.ch_valid; if g ...` is a
+    ///   known false-positive and documented in the plan. If this becomes
+    ///   noisy, extend by resolving single-ident let RHS before matching.
+    /// - Variants with no valid signal (`ready_only`) are skipped entirely;
+    ///   `req_ack_2phase` uses the pending-transfer guard (`req != ack`).
     pub(crate) fn check_handshake_reads(&mut self, m: &ModuleDecl) {
         use std::collections::HashMap as Map;
         // port_name -> Vec<(channel_name, guard, payload_field_names)>
@@ -4110,10 +4109,6 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Detects expressions where ARCH and SV precedence differ and the user
-    /// has not added parentheses. Specifically: bitwise ops (`&`, `|`, `^`)
-    /// mixed with comparison ops (`==`, `!=`, `<`, `>`, `<=`, `>=`) as children.
-
     /// Resolve `ExprKind::FieldAccess(base, field)` — the type of a `.field`
     /// access on a struct, bus, or `Reset.asserted` polarity-abstracted bool.
     /// Extracted from `resolve_expr_type` for readability — the original arm
@@ -4544,6 +4539,9 @@ impl<'a> TypeChecker<'a> {
             _ => Ty::Error,
         }
     }
+    /// Detects expressions where ARCH and SV precedence differ and the user
+    /// has not added parentheses. Specifically: bitwise ops (`&`, `|`, `^`)
+    /// mixed with comparison ops (`==`, `!=`, `<`, `>`, `<=`, `>=`) as children.
     pub(crate) fn check_precedence_ambiguity(
         &mut self,
         op: BinOp,
@@ -7594,14 +7592,15 @@ impl<'a> TypeChecker<'a> {
 /// condition properly guards a payload read.
 ///
 /// Accepted patterns:
-///   - `port.valid` / `port.req`                 (exact level guard)
-///   - `port.req != port.ack`                    (2-phase pending guard)
-///   - `guard && X`                              (AND conjunct, either side)
-///   - `(guard) && X`                            (parens are transparent in AST)
+/// - `port.valid` / `port.req`                 (exact level guard)
+/// - `port.req != port.ack`                    (2-phase pending guard)
+/// - `guard && X`                              (AND conjunct, either side)
+/// - `(guard) && X`                            (parens are transparent in AST)
+///
 /// Not accepted:
-///   - `port.valid || X`                         (not guaranteed)
-///   - `let g = port.valid; if g ...`            (v1 does not trace lets)
-///   - `!port.valid` / else branch               (negation not modeled)
+/// - `port.valid || X`                         (not guaranteed)
+/// - `let g = port.valid; if g ...`            (v1 does not trace lets)
+/// - `!port.valid` / else branch               (negation not modeled)
 fn cond_contains_guard(cond: &Expr, port: &str, guard: &HandshakePayloadGuard) -> bool {
     match &cond.kind {
         ExprKind::FieldAccess(base, field) => {
