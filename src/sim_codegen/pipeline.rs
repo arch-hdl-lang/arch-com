@@ -1264,6 +1264,7 @@ impl<'a> SimCodegen<'a> {
             vec_of_bus_wire_count: None,
             coverage: None,
             params,
+            vinit_regs: None,
         };
         match &expr.kind {
             ExprKind::FieldAccess(base, field) => {

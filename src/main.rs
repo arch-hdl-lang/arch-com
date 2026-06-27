@@ -3,7 +3,7 @@ use miette::{IntoDiagnostic, NamedSource, Report, WrapErr};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use arch::ast::Item;
+use arch::ast::{BinOp, Expr, ExprKind, Item, LitKind, ParamDecl, ParamKind, SourceFile, UnaryOp};
 use arch::codegen::Codegen;
 use arch::diagnostics::CompileError;
 use arch::elaborate;
@@ -281,9 +281,9 @@ enum Command {
         #[arg(long)]
         auto_thread_asserts: bool,
         /// Override a module param default: --param NAME=VALUE (repeatable).
-        /// Value must be an integer literal. The override is passed to the
-        /// C++ compiler as -DNAME=VALUE; the generated header's `#ifndef`
-        /// guard then defers to the command-line definition.
+        /// Value must be an integer literal. The override is applied before
+        /// sim codegen and also passed to the C++ compiler as -DNAME=VALUE
+        /// for generated header guards.
         #[arg(long = "param", value_name = "NAME=VALUE")]
         param_overrides: Vec<String>,
         /// Floating-point special-value compatibility profile (doc/plan_fp_types.md
@@ -1829,11 +1829,20 @@ fn run_sim_opts(
     // 1. Parse + type-check
     let all_files = resolve_use_imports(arch_files)?;
     let ms = MultiSource::from_files(&all_files)?;
-    let (ast, symbols, overload_map) = run_check_multi_opts(
-        &ms,
-        thread_sim_parallel,
-        /*auto_thread_asserts=*/ false,
-    )?;
+    let (ast, symbols, overload_map) = if param_overrides.is_empty() {
+        run_check_multi_opts(
+            &ms,
+            thread_sim_parallel,
+            /*auto_thread_asserts=*/ false,
+        )?
+    } else {
+        run_check_multi_opts_with_param_overrides(
+            &ms,
+            thread_sim_parallel,
+            /*auto_thread_asserts=*/ false,
+            param_overrides,
+        )?
+    };
 
     // 2. Set up output directory
     let build_dir = outdir
@@ -3232,6 +3241,165 @@ fn parse_graph_source_ast(ms: &MultiSource) -> miette::Result<arch::ast::SourceF
     Ok(parsed_ast)
 }
 
+fn params_mut_for_item(item: &mut Item) -> Option<(&str, &mut Vec<ParamDecl>)> {
+    match item {
+        Item::Module(m) => Some((&m.name.name, &mut m.params)),
+        Item::Fsm(f) => Some((&f.common.name.name, &mut f.common.params)),
+        Item::Fifo(f) => Some((&f.common.name.name, &mut f.common.params)),
+        Item::Ram(r) => Some((&r.common.name.name, &mut r.common.params)),
+        Item::Cam(c) => Some((&c.common.name.name, &mut c.common.params)),
+        Item::Counter(c) => Some((&c.common.name.name, &mut c.common.params)),
+        Item::Arbiter(a) => Some((&a.common.name.name, &mut a.common.params)),
+        Item::Regfile(r) => Some((&r.common.name.name, &mut r.common.params)),
+        Item::Pipeline(p) => Some((&p.common.name.name, &mut p.common.params)),
+        Item::Linklist(l) => Some((&l.common.name.name, &mut l.common.params)),
+        Item::Synchronizer(s) => Some((&s.name.name, &mut s.params)),
+        Item::Clkgate(c) => Some((&c.name.name, &mut c.params)),
+        Item::Bus(b) => Some((&b.name.name, &mut b.params)),
+        Item::Template(t) => Some((&t.name.name, &mut t.params)),
+        Item::Package(p) => Some((&p.name.name, &mut p.params)),
+        _ => None,
+    }
+}
+
+fn const_expr_i64(expr: &Expr, values: &std::collections::HashMap<String, i64>) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::Literal(LitKind::Dec(v))
+        | ExprKind::Literal(LitKind::Hex(v))
+        | ExprKind::Literal(LitKind::Bin(v))
+        | ExprKind::Literal(LitKind::Sized(_, v)) => Some(*v as i64),
+        ExprKind::Ident(name) => values.get(name).copied(),
+        ExprKind::Unary(op, inner) => {
+            let v = const_expr_i64(inner, values)?;
+            match op {
+                UnaryOp::Neg => Some(v.wrapping_neg()),
+                UnaryOp::Not => Some(!v),
+                _ => None,
+            }
+        }
+        ExprKind::Binary(op, lhs, rhs) => {
+            let l = const_expr_i64(lhs, values)?;
+            let r = const_expr_i64(rhs, values)?;
+            match op {
+                BinOp::Add | BinOp::AddWrap => Some(l.wrapping_add(r)),
+                BinOp::Sub | BinOp::SubWrap => Some(l.wrapping_sub(r)),
+                BinOp::Mul | BinOp::MulWrap => Some(l.wrapping_mul(r)),
+                BinOp::Div => (r != 0).then_some(l / r),
+                BinOp::Mod => (r != 0).then_some(l % r),
+                BinOp::Shl => Some(l.wrapping_shl(r as u32)),
+                BinOp::Shr => Some(((l as u64).wrapping_shr(r as u32)) as i64),
+                BinOp::BitAnd => Some(l & r),
+                BinOp::BitOr => Some(l | r),
+                BinOp::BitXor => Some(l ^ r),
+                _ => None,
+            }
+        }
+        ExprKind::Clog2(inner) => {
+            let v = const_expr_i64(inner, values)?;
+            if v <= 1 {
+                Some(0)
+            } else {
+                Some(64 - ((v as u64) - 1).leading_zeros() as i64)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn literal_for_param_override(
+    param: &ParamDecl,
+    value: u64,
+    values: &std::collections::HashMap<String, i64>,
+) -> LitKind {
+    if let ParamKind::WidthConst(hi, lo) = &param.kind {
+        if let (Some(h), Some(l)) = (const_expr_i64(hi, values), const_expr_i64(lo, values)) {
+            if h >= l {
+                return LitKind::Sized((h - l + 1) as u32, value);
+            }
+        }
+    }
+    LitKind::Dec(value)
+}
+
+fn apply_overrides_to_params(
+    construct_name: &str,
+    params: &mut [ParamDecl],
+    overrides: &std::collections::HashMap<String, u64>,
+    seen: &mut std::collections::HashSet<String>,
+) -> miette::Result<()> {
+    let mut values = std::collections::HashMap::<String, i64>::new();
+    for p in params.iter() {
+        if let Some(default) = &p.default {
+            if let Some(v) = const_expr_i64(default, &values) {
+                values.insert(p.name.name.clone(), v);
+            }
+        }
+    }
+
+    for p in params.iter_mut() {
+        let Some(&value) = overrides.get(&p.name.name) else {
+            continue;
+        };
+        seen.insert(p.name.name.clone());
+        if p.is_local {
+            return Err(miette::miette!(
+                "--param {}={} targets local param `{}` in `{}`; local params are not overridable",
+                p.name.name,
+                value,
+                p.name.name,
+                construct_name,
+            ));
+        }
+        if !matches!(
+            p.kind,
+            ParamKind::Const | ParamKind::WidthConst(..) | ParamKind::Logic(_)
+        ) {
+            return Err(miette::miette!(
+                "--param {}={} targets non-integer param `{}` in `{}`; only const/logic value params are supported",
+                p.name.name,
+                value,
+                p.name.name,
+                construct_name,
+            ));
+        }
+        let lit = literal_for_param_override(p, value, &values);
+        p.default = Some(Expr::new(ExprKind::Literal(lit), p.name.span));
+        values.insert(p.name.name.clone(), value as i64);
+    }
+    Ok(())
+}
+
+fn apply_top_param_overrides(
+    ast: &mut SourceFile,
+    overrides: &std::collections::HashMap<String, u64>,
+) -> miette::Result<()> {
+    if overrides.is_empty() {
+        return Ok(());
+    }
+
+    let mut seen = std::collections::HashSet::<String>::new();
+    for item in ast.items.iter_mut() {
+        let Some((construct_name, params)) = params_mut_for_item(item) else {
+            continue;
+        };
+        apply_overrides_to_params(construct_name, params, overrides, &mut seen)?;
+    }
+
+    let mut unknown: Vec<_> = overrides
+        .keys()
+        .filter(|name| !seen.contains(*name))
+        .cloned()
+        .collect();
+    unknown.sort();
+    if !unknown.is_empty() {
+        return Err(miette::miette!(
+            "--param override(s) did not match any non-local value parameter: {}",
+            unknown.join(", ")
+        ));
+    }
+    Ok(())
+}
+
 fn run_check_multi(
     ms: &MultiSource,
 ) -> miette::Result<(
@@ -3253,7 +3421,13 @@ fn run_check_multi_opts(
     resolve::SymbolTable,
     std::collections::HashMap<usize, usize>,
 )> {
-    run_check_multi_opts_with_thread_map(ms, skip_lower_threads, auto_thread_asserts, None)
+    run_check_multi_opts_with_thread_map_and_params(
+        ms,
+        skip_lower_threads,
+        auto_thread_asserts,
+        None,
+        None,
+    )
 }
 
 fn run_check_multi_opts_with_thread_map(
@@ -3261,6 +3435,45 @@ fn run_check_multi_opts_with_thread_map(
     skip_lower_threads: bool,
     auto_thread_asserts: bool,
     thread_map: Option<std::rc::Rc<std::cell::RefCell<arch::thread_map::ThreadMap>>>,
+) -> miette::Result<(
+    arch::ast::SourceFile,
+    resolve::SymbolTable,
+    std::collections::HashMap<usize, usize>,
+)> {
+    run_check_multi_opts_with_thread_map_and_params(
+        ms,
+        skip_lower_threads,
+        auto_thread_asserts,
+        thread_map,
+        None,
+    )
+}
+
+fn run_check_multi_opts_with_param_overrides(
+    ms: &MultiSource,
+    skip_lower_threads: bool,
+    auto_thread_asserts: bool,
+    param_overrides: &std::collections::HashMap<String, u64>,
+) -> miette::Result<(
+    arch::ast::SourceFile,
+    resolve::SymbolTable,
+    std::collections::HashMap<usize, usize>,
+)> {
+    run_check_multi_opts_with_thread_map_and_params(
+        ms,
+        skip_lower_threads,
+        auto_thread_asserts,
+        None,
+        Some(param_overrides),
+    )
+}
+
+fn run_check_multi_opts_with_thread_map_and_params(
+    ms: &MultiSource,
+    skip_lower_threads: bool,
+    auto_thread_asserts: bool,
+    thread_map: Option<std::rc::Rc<std::cell::RefCell<arch::thread_map::ThreadMap>>>,
+    param_overrides: Option<&std::collections::HashMap<String, u64>>,
 ) -> miette::Result<(
     arch::ast::SourceFile,
     resolve::SymbolTable,
@@ -3338,6 +3551,10 @@ fn run_check_multi_opts_with_thread_map(
     if !prec_errors.is_empty() {
         let err = prec_errors.into_iter().next().unwrap();
         return Err(ms.report_error(err));
+    }
+
+    if let Some(overrides) = param_overrides {
+        apply_top_param_overrides(&mut parsed_ast, overrides)?;
     }
 
     // Resolve module-scope `type Name = ...;` aliases by inlining them at

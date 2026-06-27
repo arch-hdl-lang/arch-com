@@ -28533,3 +28533,458 @@ end module WideMul140
         "diagnostic should point users at filing an enhancement request; got stderr:\n{stderr}"
     );
 }
+
+#[test]
+fn test_arch_sim_param_override_reaches_parametric_slices() {
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("ParamSliceRegress.arch");
+    let tb_path = td.path().join("ParamSliceRegress_tb.cpp");
+    let outdir = td.path().join("sim");
+
+    std::fs::write(
+        &arch_path,
+        r#"
+domain D
+  freq_mhz: 100
+end domain D
+
+module ParamSliceRegress
+  param CounterWidth: const = 32;
+
+  port clk: in Clock<D>;
+  port rst_n: in Reset<Async, Low>;
+  port inc: in Bool;
+  port low_we: in Bool;
+  port high_we: in Bool;
+  port data: in UInt<32>;
+  port val: out UInt<64>;
+
+  reg counter_q: UInt<64> reset rst_n => 0;
+
+  default seq on clk rising;
+
+  seq
+    if high_we
+      counter_q[CounterWidth-1:0] <= {data, counter_q[31:0]}[CounterWidth-1:0];
+    elsif low_we
+      counter_q[CounterWidth-1:0] <= {counter_q[63:32], data}[CounterWidth-1:0];
+    elsif inc
+      counter_q[CounterWidth-1:0] <= (counter_q[CounterWidth-1:0] + 1).trunc<CounterWidth>();
+    end if
+  end seq
+
+  let val = counter_q[CounterWidth-1:0].resize<64>();
+end module ParamSliceRegress
+"#,
+    )
+    .expect("write arch fixture");
+
+    std::fs::write(
+        &tb_path,
+        r#"
+#include "VParamSliceRegress.h"
+#include <cstdio>
+
+static VParamSliceRegress dut;
+
+static void tick() {
+  dut.clk = 0; dut.eval();
+  dut.clk = 1; dut.eval();
+  dut.clk = 0; dut.eval();
+}
+
+static bool expect_val(unsigned long long want, const char* label) {
+  dut.eval();
+  unsigned long long got = (unsigned long long)dut.val;
+  if (got != want) {
+    std::printf("FAIL %s got=%llu want=%llu\n", label, got, want);
+    return false;
+  }
+  return true;
+}
+
+int main() {
+  bool ok = true;
+  dut.rst_n = 0;
+  dut.inc = 0;
+  dut.low_we = 0;
+  dut.high_we = 0;
+  dut.data = 0;
+  tick();
+  dut.rst_n = 1;
+  tick();
+
+  dut.low_we = 1;
+  dut.data = 1;
+  tick();
+  dut.low_we = 0;
+  ok &= expect_val(1, "write low bit");
+
+  dut.inc = 1;
+  tick();
+  dut.inc = 0;
+  ok &= expect_val(0, "CounterWidth=1 increment wraps");
+
+  dut.high_we = 1;
+  dut.data = 0xffffffffu;
+  tick();
+  dut.high_we = 0;
+  ok &= expect_val(0, "CounterWidth=1 high write stays outside active width");
+
+  std::printf(ok ? "PASS param_slice_override\n" : "FAIL param_slice_override\n");
+  return ok ? 0 : 1;
+}
+"#,
+    )
+    .expect("write tb fixture");
+
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg(&arch_path)
+        .arg("--param")
+        .arg("CounterWidth=1")
+        .arg("--tb")
+        .arg(&tb_path)
+        .arg("--outdir")
+        .arg(&outdir)
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && stdout.contains("PASS param_slice_override"),
+        "arch sim --param must affect parametric slice/trunc codegen\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_comb_graph_cycles_with_parent_intermediates_need_three_settle_passes() {
+    // Regression: a direct cyclic instance graph normally needs two settle
+    // passes, but if parent comb wires also feed an instance input, one pass
+    // is consumed refreshing those parent intermediates. ibex_ex_block has
+    // this shape: parent bridge wires feed multdiv, multdiv feeds ALU, and
+    // ALU feeds multdiv. The native simulator therefore needs settle_depth=3.
+    let source = r#"
+        module A
+          port i: in UInt<1>;
+          port o: out UInt<1>;
+          comb
+            o = i;
+          end comb
+        end module A
+
+        module B
+          port i: in UInt<1>;
+          port bridge: in UInt<1>;
+          port o: out UInt<1>;
+          comb
+            o = i ^ bridge;
+          end comb
+        end module B
+
+        module Top
+          port seed: in UInt<1>;
+          port q: out UInt<1>;
+          wire wa: UInt<1>;
+          wire wb: UInt<1>;
+          wire bridged: UInt<1>;
+
+          inst a: A
+            i <- wb;
+            o -> wa;
+          end inst a
+
+          inst b: B
+            i <- wa;
+            bridge <- bridged;
+            o -> wb;
+          end inst b
+
+          comb
+            bridged = seed;
+            q = wa;
+          end comb
+        end module Top
+    "#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let _ = checker.check().expect("type check error");
+    let top = ast
+        .items
+        .iter()
+        .find_map(|item| match item {
+            arch::ast::Item::Module(m) if m.name.name == "Top" => Some(m),
+            _ => None,
+        })
+        .expect("Top module");
+    let analysis =
+        arch::comb_graph::analyze_module(top, &symbols, &ast).expect("comb graph analysis");
+    assert_eq!(analysis.settle_depth, 3);
+}
+
+#[test]
+fn test_sim_guard_check_uses_internal_names_for_guarded_reset_none_regs() {
+    // A guarded reset-none reg gets a native-sim vinit check. Internal regs in
+    // generated C++ are stored with leading underscores, so the guard check
+    // must render `_valid_q`, not bare `valid_q`.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+
+module M
+  port clk: in Clock<D>;
+  port rst: in Reset<Async, Low>;
+  port d:   in UInt<8>;
+  port v_in: in Bool;
+  port q:   out UInt<8>;
+
+  reg valid_q: Bool reset rst => false;
+  reg data_q: UInt<8> guard valid_q reset none;
+
+  seq on clk rising
+    valid_q <= v_in;
+    data_q <= d;
+  end seq
+
+  let q = data_q;
+end module M
+"#;
+    let cpp = compile_to_sim_h(source, false);
+    assert!(
+        cpp.contains("bool _data_q_vinit = false;"),
+        "guarded reset-none native sim check should declare a shadow valid bit:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("_data_q_vinit = true;"),
+        "seq writes to guarded reset-none regs should mark the shadow valid bit:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("if (_valid_q && !_data_q_vinit)"),
+        "guarded reset-none native sim check should use internal storage names:\n{cpp}"
+    );
+    assert!(
+        !cpp.contains("if (valid_q && !_data_q_vinit)"),
+        "guarded reset-none native sim check must not emit bare internal reg names:\n{cpp}"
+    );
+}
+
+#[test]
+fn test_native_sim_vec_inst_output_packs_scalar_parent_port() {
+    // Regression from arch-ibex IbexIfStage: a child Vec<UInt<1>, N> output
+    // connected to a packed parent UInt<N> output must pack lanes into bits.
+    // The broken native sim path treated the packed parent as C-array storage
+    // and emitted `packed_out[i] = ...`, which failed C++ compilation.
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/native_vec_inst_output_packed_port/Probe.arch")
+        .arg("--tb")
+        .arg("tests/native_vec_inst_output_packed_port/tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for native Vec inst output packed port probe");
+    assert!(
+        out.status.success(),
+        "native Vec inst output packed port sim should compile + run\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS native Vec inst output packed port"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn test_native_sim_arbiter_indexed_handshake_packs_request_array() {
+    // Regression from arch-ibex IbexIcache/FbAgeArb: arbiter indexed
+    // handshake connections such as `request[0].valid <- req0` flatten to
+    // `request0_valid` in the AST, but the native arbiter model stores the
+    // request array as packed `request_valid/request_ready` fields.
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/native_arbiter_indexed_handshake/Probe.arch")
+        .arg("--tb")
+        .arg("tests/native_arbiter_indexed_handshake/tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for native arbiter indexed handshake probe");
+    assert!(
+        out.status.success(),
+        "native arbiter indexed handshake sim should compile + run\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS native arbiter indexed handshake"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn test_native_sim_vec_element_bit_slice_assignment_updates_element() {
+    // Regression from arch-ibex IbexIcache: assigning to a bit slice of a Vec
+    // element, e.g. `fill_data_q[0][31:0] <= instr`, must lower to a
+    // mask-and-OR update of the element. Emitting the read-side slice
+    // expression on the LHS is invalid C++.
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/native_vec_element_slice_assign/Probe.arch")
+        .arg("--tb")
+        .arg("tests/native_vec_element_slice_assign/tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for native Vec element slice assignment probe");
+    assert!(
+        out.status.success(),
+        "native Vec element slice assignment sim should compile + run\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS native Vec element slice assign"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn test_native_sim_package_struct_fsm_ports_compile_with_coverage() {
+    // Regression from arch-ibex IbexIdStage: package struct signals crossing a
+    // parent module into an FSM child must include VStructs.h, default-construct
+    // struct ports/regs, skip scalar-style struct traces, and avoid output-toggle
+    // coverage casts of struct instance outputs.
+    let td = tempfile::tempdir().expect("tempdir");
+    let coverage_dat = td.path().join("coverage.dat");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/native_pkg_struct_fsm/Probe.arch")
+        .arg("--tb")
+        .arg("tests/native_pkg_struct_fsm/tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .arg("--coverage")
+        .arg("--coverage-dat")
+        .arg(&coverage_dat)
+        .output()
+        .expect("run arch sim for native package struct FSM coverage probe");
+    assert!(
+        out.status.success(),
+        "native package struct FSM coverage sim should compile + run\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS native package struct FSM coverage"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let coverage_text = std::fs::read_to_string(&coverage_dat).expect("read coverage.dat");
+    assert!(
+        coverage_text.contains("tests/native_pkg_struct_fsm/Probe.arch")
+            && coverage_text.contains("state Idle")
+            && coverage_text.contains("trans Idle -> Seen"),
+        "coverage records should include the struct/FSM fixture state and transition hits:\n{coverage_text}"
+    );
+}
+
+#[test]
+fn test_arch_sim_coverage_dat_records_ternary_expression_arms() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch = td.path().join("TernaryCov.arch");
+    let tb = td.path().join("tb_ternary_cov.cpp");
+    let coverage = td.path().join("coverage.dat");
+
+    std::fs::write(
+        &arch,
+        "/// Ternary expression coverage smoke test.\n\
+module TernaryCov\n\
+  port a: in UInt<1>;\n\
+  port b: in UInt<1>;\n\
+  port y: out UInt<1>;\n\
+\n\
+  let y = a ? b : 0;\n\
+end module TernaryCov\n",
+    )
+    .expect("write TernaryCov.arch");
+
+    std::fs::write(
+        &tb,
+        "#include \"VTernaryCov.h\"\n\
+#include <cstdio>\n\
+\n\
+int main() {\n\
+  VTernaryCov dut;\n\
+  dut.a = 0;\n\
+  dut.b = 0;\n\
+  dut.eval();\n\
+  if (dut.y != 0) return 1;\n\
+\n\
+  dut.a = 1;\n\
+  dut.b = 1;\n\
+  dut.eval();\n\
+  if (dut.y != 1) return 2;\n\
+\n\
+  std::puts(\"PASS ternary coverage\");\n\
+  return 0;\n\
+}\n",
+    )
+    .expect("write tb_ternary_cov.cpp");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("sim")
+        .arg(&arch)
+        .arg("--tb")
+        .arg(&tb)
+        .arg("--outdir")
+        .arg(td.path())
+        .arg("--coverage-dat")
+        .arg(&coverage)
+        .output()
+        .expect("run arch sim with coverage");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "arch sim should pass for ternary coverage\nstdout:\n{}\nstderr:\n{}",
+        stdout,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("PASS ternary coverage"),
+        "expected PASS marker in arch-sim stdout:\n{stdout}"
+    );
+
+    let coverage_text = std::fs::read_to_string(&coverage).expect("read coverage.dat");
+    assert!(
+        coverage_text.contains("\u{1}page\u{2}v_expr")
+            && coverage_text.contains("\u{1}comment\u{2}expr-then")
+            && coverage_text.contains("\u{1}comment\u{2}expr-else"),
+        "ternary arms should be emitted as expression coverage records:\n{coverage_text}"
+    );
+    assert!(
+        coverage_text
+            .lines()
+            .any(|line| line.contains("\u{1}comment\u{2}expr-then") && !line.ends_with(" 0"))
+            && coverage_text
+                .lines()
+                .any(|line| line.contains("\u{1}comment\u{2}expr-else") && !line.ends_with(" 0")),
+        "both ternary arms should be hit by the smoke bench:\n{coverage_text}"
+    );
+}

@@ -82,9 +82,16 @@ impl<'a> SimCodegen<'a> {
         };
 
         let mut h = String::new();
+        let has_structs = f.ports.iter().any(|p| ty_references_named(&p.ty))
+            || f.regs.iter().any(|r| ty_references_named(&r.ty))
+            || f.wires.iter().any(|w| ty_references_named(&w.ty));
         h.push_str(
-            "#pragma once\n#include <cstdint>\n#include <cstdio>\n#include \"verilated.h\"\n\n",
+            "#pragma once\n#include <cstdint>\n#include <cstdio>\n#include \"verilated.h\"\n",
         );
+        if has_structs {
+            h.push_str("#include \"VStructs.h\"\n");
+        }
+        h.push('\n');
         // Emit param constants as #define
         for p in &f.params {
             if matches!(p.kind, ParamKind::Const | ParamKind::WidthConst(..)) {
@@ -211,7 +218,13 @@ impl<'a> SimCodegen<'a> {
             .filter(|p| {
                 !fsm_vec_port_names.contains(&p.name.name) && !bus_port_names.contains(&p.name.name)
             })
-            .map(|p| format!("{}(0)", p.name.name))
+            .map(|p| {
+                if ty_references_named(&p.ty) {
+                    format!("{}()", p.name.name)
+                } else {
+                    format!("{}(0)", p.name.name)
+                }
+            })
             .collect();
         let vec_port_flat_inits: Vec<String> = fsm_vec_port_infos
             .iter()
@@ -239,6 +252,8 @@ impl<'a> SimCodegen<'a> {
                         ),
                     );
                     format!("{}({})", r.name.name, init_val)
+                } else if ty_references_named(&r.ty) {
+                    format!("{}()", r.name.name)
                 } else {
                     format!("{}(0)", r.name.name)
                 }

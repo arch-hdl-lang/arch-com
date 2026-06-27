@@ -1069,15 +1069,23 @@ pub fn analyze_module(
         // At the instance level this appears as a cycle (ctrl ↔ lru_upd), but
         // it converges in 2 passes because lru_tree_in is register-driven.
         //
-        // We treat such cycles as requiring settle_depth=2 (not an error).
+        // We treat such cycles as requiring extra settle passes (not an error).
         // The topo sort for the cyclic nodes is undefined; fall back to the
         // original declaration order for ALL instances in this module so that
-        // the first pass produces partially-valid values and the second pass
-        // converges.  (For truly non-convergent loops the single-driver rule
-        // should prevent them from type-checking.)
+        // the early passes produce partially-valid values and the last pass
+        // converges. If parent comb intermediates bridge any instance inputs,
+        // one pass is consumed just refreshing those bridges before the
+        // instance feedback loop can settle, so 3 passes are needed.
+        // (For truly non-convergent loops the single-driver rule should
+        // prevent them from type-checking.)
+        let settle_depth = if parent_has_comb_intermediates(m) {
+            3
+        } else {
+            2
+        };
         return Ok(ModuleAnalysis {
             sorted_inst_indices: (0..n).collect(),
-            settle_depth: 2,
+            settle_depth,
         });
     }
 
