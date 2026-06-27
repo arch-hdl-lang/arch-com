@@ -13,7 +13,9 @@ impl<'a> Codegen<'a> {
         let n = &a.name.name.clone();
 
         // Find NUM_REQ param
-        let num_req_default = a.params.iter()
+        let num_req_default = a
+            .params
+            .iter()
             .find(|p| p.name.name == "NUM_REQ")
             .and_then(|p| p.default.as_ref())
             .map(|e| self.emit_expr_str(e))
@@ -23,7 +25,9 @@ impl<'a> Codegen<'a> {
         let num_req_int: u64 = num_req_default.parse().unwrap_or(4);
         let req_width = crate::width::index_width(num_req_int as u64);
 
-        let clk = a.ports.iter()
+        let clk = a
+            .ports
+            .iter()
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone())
             .unwrap_or_else(|| "clk".to_string());
@@ -37,10 +41,15 @@ impl<'a> Codegen<'a> {
         } else {
             for (i, p) in a.params.iter().enumerate() {
                 let comma = if i < a.params.len() - 1 { "," } else { "" };
-                let default_str = p.default.as_ref()
+                let default_str = p
+                    .default
+                    .as_ref()
                     .map(|e| format!(" = {}", self.emit_expr_str(e)))
                     .unwrap_or_default();
-                self.line(&format!("parameter int {}{default_str}{comma}", p.name.name));
+                self.line(&format!(
+                    "parameter int {}{default_str}{comma}",
+                    p.name.name
+                ));
             }
         }
         self.indent -= 1;
@@ -50,7 +59,10 @@ impl<'a> Codegen<'a> {
         // Scalar ports (clk, rst)
         let mut all_ports: Vec<String> = Vec::new();
         for p in &a.ports {
-            let dir = match p.direction { Direction::In => "input", Direction::Out => "output" };
+            let dir = match p.direction {
+                Direction::In => "input",
+                Direction::Out => "output",
+            };
             let ty_str = self.emit_port_type_str(&p.ty);
             all_ports.push(format!("{dir} {ty_str} {}", p.name.name));
         }
@@ -58,7 +70,10 @@ impl<'a> Codegen<'a> {
         for pa in &a.port_arrays {
             let count_str = self.emit_expr_str(&pa.count_expr);
             for s in &pa.signals {
-                let dir = match s.direction { Direction::In => "input", Direction::Out => "output" };
+                let dir = match s.direction {
+                    Direction::In => "input",
+                    Direction::Out => "output",
+                };
                 let port_name = format!("{}_{}", pa.name.name, s.name.name);
                 let port_str = self.emit_port_array_signal_str(dir, &s.ty, &port_name, &count_str);
                 all_ports.push(port_str);
@@ -90,11 +105,15 @@ impl<'a> Codegen<'a> {
         // Input signal in it → req_valid_sig; output signal → req_ready_sig
         let (req_valid_sig, req_ready_sig) = if let Some(pa) = a.port_arrays.first() {
             let pfx = &pa.name.name;
-            let valid = pa.signals.iter()
+            let valid = pa
+                .signals
+                .iter()
                 .find(|s| s.direction == Direction::In)
                 .map(|s| format!("{pfx}_{}", s.name.name))
                 .unwrap_or_else(|| format!("{pfx}_valid"));
-            let ready = pa.signals.iter()
+            let ready = pa
+                .signals
+                .iter()
                 .find(|s| s.direction == Direction::Out)
                 .map(|s| format!("{pfx}_{}", s.name.name))
                 .unwrap_or_else(|| format!("{pfx}_ready"));
@@ -110,39 +129,104 @@ impl<'a> Codegen<'a> {
         // which are then pipelined to the actual output ports.
         let (gv_sig, gr_sig, rr_sig) = if latency > 1 {
             let num_req_str = self.emit_expr_str(
-                &a.params.iter().find(|p| p.name.name == "NUM_REQ")
+                &a.params
+                    .iter()
+                    .find(|p| p.name.name == "NUM_REQ")
                     .and_then(|p| p.default.clone())
                     .unwrap_or(crate::ast::Expr {
                         kind: crate::ast::ExprKind::Literal(crate::ast::LitKind::Dec(num_req_int)),
                         span: a.span,
                         parenthesized: false,
-                    })
+                    }),
             );
             self.line(&format!("logic grant_valid_comb;"));
-            self.line(&format!("logic [{}:0] grant_requester_comb;", req_width - 1));
-            self.line(&format!("logic [{}] {req_ready_sig}_comb;", Self::fold_width_str(&num_req_str)));
+            self.line(&format!(
+                "logic [{}:0] grant_requester_comb;",
+                req_width - 1
+            ));
+            self.line(&format!(
+                "logic [{}] {req_ready_sig}_comb;",
+                Self::fold_width_str(&num_req_str)
+            ));
             self.line("");
-            ("grant_valid_comb".to_string(), "grant_requester_comb".to_string(), format!("{req_ready_sig}_comb"))
+            (
+                "grant_valid_comb".to_string(),
+                "grant_requester_comb".to_string(),
+                format!("{req_ready_sig}_comb"),
+            )
         } else {
-            ("grant_valid".to_string(), "grant_requester".to_string(), req_ready_sig.clone())
+            (
+                "grant_valid".to_string(),
+                "grant_requester".to_string(),
+                req_ready_sig.clone(),
+            )
         };
 
         // ── Arbiter logic ─────────────────────────────────────────────────────
         match policy {
             ArbiterPolicy::RoundRobin => {
-                self.emit_arbiter_round_robin(&clk, &rst, is_async, is_low, req_width, num_req_int, &req_valid_sig, &rr_sig, &gv_sig, &gr_sig);
+                self.emit_arbiter_round_robin(
+                    &clk,
+                    &rst,
+                    is_async,
+                    is_low,
+                    req_width,
+                    num_req_int,
+                    &req_valid_sig,
+                    &rr_sig,
+                    &gv_sig,
+                    &gr_sig,
+                );
             }
             ArbiterPolicy::Priority => {
-                self.emit_arbiter_priority(req_width, num_req_int, &req_valid_sig, &rr_sig, &gv_sig, &gr_sig);
+                self.emit_arbiter_priority(
+                    req_width,
+                    num_req_int,
+                    &req_valid_sig,
+                    &rr_sig,
+                    &gv_sig,
+                    &gr_sig,
+                );
             }
             ArbiterPolicy::Lru => {
-                self.emit_arbiter_round_robin(&clk, &rst, is_async, is_low, req_width, num_req_int, &req_valid_sig, &rr_sig, &gv_sig, &gr_sig);
+                self.emit_arbiter_round_robin(
+                    &clk,
+                    &rst,
+                    is_async,
+                    is_low,
+                    req_width,
+                    num_req_int,
+                    &req_valid_sig,
+                    &rr_sig,
+                    &gv_sig,
+                    &gr_sig,
+                );
             }
             ArbiterPolicy::Weighted(_) => {
-                self.emit_arbiter_priority(req_width, num_req_int, &req_valid_sig, &rr_sig, &gv_sig, &gr_sig);
+                self.emit_arbiter_priority(
+                    req_width,
+                    num_req_int,
+                    &req_valid_sig,
+                    &rr_sig,
+                    &gv_sig,
+                    &gr_sig,
+                );
             }
             ArbiterPolicy::Custom(ref fn_ident) => {
-                self.emit_arbiter_custom(a, fn_ident, &clk, &rst, is_async, is_low, req_width, num_req_int, &req_valid_sig, &rr_sig, &gv_sig, &gr_sig);
+                self.emit_arbiter_custom(
+                    a,
+                    fn_ident,
+                    &clk,
+                    &rst,
+                    is_async,
+                    is_low,
+                    req_width,
+                    num_req_int,
+                    &req_valid_sig,
+                    &rr_sig,
+                    &gv_sig,
+                    &gr_sig,
+                );
             }
         }
 
@@ -155,9 +239,21 @@ impl<'a> Codegen<'a> {
             self.line("");
 
             for s in 0..stages {
-                let src_gv = if s == 0 { gv_sig.clone() } else { format!("grant_valid_p{s}") };
-                let src_gr = if s == 0 { gr_sig.clone() } else { format!("grant_requester_p{s}") };
-                let src_rr = if s == 0 { rr_sig.clone() } else { format!("{req_ready_sig}_p{s}") };
+                let src_gv = if s == 0 {
+                    gv_sig.clone()
+                } else {
+                    format!("grant_valid_p{s}")
+                };
+                let src_gr = if s == 0 {
+                    gr_sig.clone()
+                } else {
+                    format!("grant_requester_p{s}")
+                };
+                let src_rr = if s == 0 {
+                    rr_sig.clone()
+                } else {
+                    format!("{req_ready_sig}_p{s}")
+                };
                 let dst_suffix = if s == stages - 1 {
                     // Last stage drives the output ports directly
                     String::new()
@@ -165,15 +261,30 @@ impl<'a> Codegen<'a> {
                     format!("_p{}", s + 1)
                 };
 
-                let dst_gv = if dst_suffix.is_empty() { "grant_valid".to_string() } else { format!("grant_valid{dst_suffix}") };
-                let dst_gr = if dst_suffix.is_empty() { "grant_requester".to_string() } else { format!("grant_requester{dst_suffix}") };
-                let dst_rr = if dst_suffix.is_empty() { req_ready_sig.clone() } else { format!("{req_ready_sig}{dst_suffix}") };
+                let dst_gv = if dst_suffix.is_empty() {
+                    "grant_valid".to_string()
+                } else {
+                    format!("grant_valid{dst_suffix}")
+                };
+                let dst_gr = if dst_suffix.is_empty() {
+                    "grant_requester".to_string()
+                } else {
+                    format!("grant_requester{dst_suffix}")
+                };
+                let dst_rr = if dst_suffix.is_empty() {
+                    req_ready_sig.clone()
+                } else {
+                    format!("{req_ready_sig}{dst_suffix}")
+                };
 
                 // Declare intermediate regs (not needed for last stage which drives output ports)
                 if !dst_suffix.is_empty() {
                     self.line(&format!("logic {dst_gv};"));
                     self.line(&format!("logic [{}:0] {dst_gr};", req_width - 1));
-                    self.line(&format!("logic [{}] {dst_rr};", Self::fold_width_str(&num_req_str)));
+                    self.line(&format!(
+                        "logic [{}] {dst_rr};",
+                        Self::fold_width_str(&num_req_str)
+                    ));
                 }
 
                 self.line(&format!("always_ff @({ff_sens}) begin"));
@@ -197,8 +308,12 @@ impl<'a> Codegen<'a> {
         }
 
         if !a.asserts.is_empty() {
-            let clk = a.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
-                .map(|p| p.name.name.clone()).unwrap_or_else(|| "clk".to_string());
+            let clk = a
+                .ports
+                .iter()
+                .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                .map(|p| p.name.name.clone())
+                .unwrap_or_else(|| "clk".to_string());
             self.line("");
             let asserts = a.asserts.clone();
             let aname = a.name.name.clone();
@@ -250,7 +365,6 @@ impl<'a> Codegen<'a> {
         }
     }
 
-
     fn emit_arbiter_round_robin(
         &mut self,
         clk: &str,
@@ -294,7 +408,9 @@ impl<'a> Codegen<'a> {
         self.line(&format!("{req_ready} = '0;"));
         self.line(&format!("{grant_requester_sig} = '0;"));
         self.line("arb_found = 1'b0;");
-        self.line(&format!("for (arb_i = 0; arb_i < {num_req}; arb_i++) begin"));
+        self.line(&format!(
+            "for (arb_i = 0; arb_i < {num_req}; arb_i++) begin"
+        ));
         self.indent += 1;
         // All index arithmetic in integer domain; only cast at use sites
         self.line(&format!(
@@ -317,15 +433,27 @@ impl<'a> Codegen<'a> {
         self.line("end");
     }
 
-    fn emit_arbiter_priority(&mut self, req_width: u32, num_req: u64, req_valid: &str, req_ready: &str, grant_valid_sig: &str, grant_requester_sig: &str) {
+    fn emit_arbiter_priority(
+        &mut self,
+        req_width: u32,
+        num_req: u64,
+        req_valid: &str,
+        req_ready: &str,
+        grant_valid_sig: &str,
+        grant_requester_sig: &str,
+    ) {
         self.line("always_comb begin");
         self.indent += 1;
         self.line(&format!("{grant_valid_sig} = 1'b0;"));
         self.line(&format!("{req_ready} = '0;"));
         self.line(&format!("{grant_requester_sig} = '0;"));
-        self.line(&format!("for (int pri_i = 0; pri_i < {num_req}; pri_i++) begin"));
+        self.line(&format!(
+            "for (int pri_i = 0; pri_i < {num_req}; pri_i++) begin"
+        ));
         self.indent += 1;
-        self.line(&format!("if (!{grant_valid_sig} && {req_valid}[pri_i]) begin"));
+        self.line(&format!(
+            "if (!{grant_valid_sig} && {req_valid}[pri_i]) begin"
+        ));
         self.indent += 1;
         self.line(&format!("{grant_valid_sig} = 1'b1;"));
         self.line(&format!("{grant_requester_sig} = {req_width}'(pri_i);"));
@@ -370,29 +498,35 @@ impl<'a> Codegen<'a> {
         self.line(&format!("always_ff @({ff_sens}) begin"));
         self.indent += 1;
         self.line(&format!("if ({rst_cond}) last_grant_r <= '0;"));
-        self.line(&format!("else if ({grant_valid_sig}) last_grant_r <= grant_onehot;"));
+        self.line(&format!(
+            "else if ({grant_valid_sig}) last_grant_r <= grant_onehot;"
+        ));
         self.indent -= 1;
         self.line("end");
         self.line("");
 
         // Build function call arguments from hook bindings
         let hook = a.hook.as_ref().unwrap();
-        let args: Vec<String> = hook.fn_args.iter().map(|arg| {
-            let name = &arg.name;
-            // Map hook formal param names to actual SV signals
-            let hook_param = hook.params.iter().find(|p| p.name.name == *name);
-            if hook_param.is_some() {
-                // This is a hook formal param — map known names to SV signals
-                match name.as_str() {
-                    "req_mask" => req_valid.to_string(),
-                    "last_grant" => "last_grant_r".to_string(),
-                    _ => name.clone(),
+        let args: Vec<String> = hook
+            .fn_args
+            .iter()
+            .map(|arg| {
+                let name = &arg.name;
+                // Map hook formal param names to actual SV signals
+                let hook_param = hook.params.iter().find(|p| p.name.name == *name);
+                if hook_param.is_some() {
+                    // This is a hook formal param — map known names to SV signals
+                    match name.as_str() {
+                        "req_mask" => req_valid.to_string(),
+                        "last_grant" => "last_grant_r".to_string(),
+                        _ => name.clone(),
+                    }
+                } else {
+                    // Must be a port or param name on the arbiter — use as-is
+                    name.clone()
                 }
-            } else {
-                // Must be a port or param name on the arbiter — use as-is
-                name.clone()
-            }
-        }).collect();
+            })
+            .collect();
         let args_str = args.join(", ");
 
         // grant_onehot decl was hoisted above (next to last_grant_r)
@@ -407,7 +541,9 @@ impl<'a> Codegen<'a> {
         self.line(&format!("{grant_requester_sig} = '0;"));
         self.line(&format!("for (int ci = 0; ci < {num_req}; ci++) begin"));
         self.indent += 1;
-        self.line(&format!("if (grant_onehot[ci]) {grant_requester_sig} = {req_width}'(ci);"));
+        self.line(&format!(
+            "if (grant_onehot[ci]) {grant_requester_sig} = {req_width}'(ci);"
+        ));
         self.indent -= 1;
         self.line("end");
         self.indent -= 1;

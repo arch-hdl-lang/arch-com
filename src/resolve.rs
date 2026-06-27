@@ -152,23 +152,35 @@ pub struct BusInfo {
 impl BusInfo {
     /// Build a param map from this bus's default param values.
     pub fn default_param_map(&self) -> HashMap<String, &Expr> {
-        self.params.iter()
+        self.params
+            .iter()
             .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
             .collect()
     }
 
     /// Return the effective signal list after evaluating generate_if blocks
     /// using the given param map (bus defaults + port-site overrides).
-    pub fn effective_signals(&self, param_map: &HashMap<String, &Expr>) -> Vec<(String, Direction, TypeExpr)> {
+    pub fn effective_signals(
+        &self,
+        param_map: &HashMap<String, &Expr>,
+    ) -> Vec<(String, Direction, TypeExpr)> {
         let mut result = self.signals.clone();
         let mut tlm_methods = self.tlm_methods.clone();
         for gen in &self.generates {
             let cond_val = eval_bus_cond(&gen.cond, param_map);
-            let sigs = if cond_val { &gen.then_signals } else { &gen.else_signals };
+            let sigs = if cond_val {
+                &gen.then_signals
+            } else {
+                &gen.else_signals
+            };
             for s in sigs {
                 result.push((s.name.name.clone(), s.direction, s.ty.clone()));
             }
-            let methods = if cond_val { &gen.then_tlm_methods } else { &gen.else_tlm_methods };
+            let methods = if cond_val {
+                &gen.then_tlm_methods
+            } else {
+                &gen.else_tlm_methods
+            };
             tlm_methods.extend(methods.clone());
         }
         // Expand credit_channel sub-constructs into their wire protocol:
@@ -185,25 +197,33 @@ impl BusInfo {
         // abstraction get a typecheck error pointing at the scaffolding gap.
         for cc in &self.credit_channels {
             let (vd_dir, ret_dir) = match cc.role_dir {
-                Direction::Out => (Direction::Out, Direction::In),   // send role
-                Direction::In  => (Direction::In,  Direction::Out),  // receive role
+                Direction::Out => (Direction::Out, Direction::In), // send role
+                Direction::In => (Direction::In, Direction::Out),  // receive role
             };
             // Payload type: take the default of the channel's `T` param.
             // Channel-level param overrides at the bus-port-instance site
             // are a future extension.
-            let payload_ty = cc.params.iter()
+            let payload_ty = cc
+                .params
+                .iter()
                 .find(|p| p.name.name == "T")
                 .and_then(|p| match &p.kind {
                     crate::ast::ParamKind::Type(te) => Some(te.clone()),
                     _ => None,
                 })
-                .unwrap_or_else(|| TypeExpr::UInt(Box::new(Expr::new(
-                    ExprKind::Literal(LitKind::Dec(64)),
-                    cc.span,
-                ))));
+                .unwrap_or_else(|| {
+                    TypeExpr::UInt(Box::new(Expr::new(
+                        ExprKind::Literal(LitKind::Dec(64)),
+                        cc.span,
+                    )))
+                });
             let bool_ty = TypeExpr::Bool;
-            result.push((format!("{}_send_valid", cc.name.name), vd_dir, bool_ty.clone()));
-            result.push((format!("{}_send_data",  cc.name.name), vd_dir, payload_ty));
+            result.push((
+                format!("{}_send_valid", cc.name.name),
+                vd_dir,
+                bool_ty.clone(),
+            ));
+            result.push((format!("{}_send_data", cc.name.name), vd_dir, payload_ty));
             result.push((format!("{}_credit_return", cc.name.name), ret_dir, bool_ty));
         }
         // Expand tlm_method sub-constructs into their two-channel wire
@@ -221,15 +241,27 @@ impl BusInfo {
             let bool_ty = TypeExpr::Bool;
             result.push((format!("{name}_req_valid"), Direction::Out, bool_ty.clone()));
             if let Some(tag_w) = &m.out_of_order_tags {
-                result.push((format!("{name}_req_tag"), Direction::Out, TypeExpr::UInt(Box::new(tag_w.clone()))));
+                result.push((
+                    format!("{name}_req_tag"),
+                    Direction::Out,
+                    TypeExpr::UInt(Box::new(tag_w.clone())),
+                ));
             }
             for (arg_name, arg_ty) in &m.args {
-                result.push((format!("{name}_{}", arg_name.name), Direction::Out, arg_ty.clone()));
+                result.push((
+                    format!("{name}_{}", arg_name.name),
+                    Direction::Out,
+                    arg_ty.clone(),
+                ));
             }
-            result.push((format!("{name}_req_ready"), Direction::In,  bool_ty.clone()));
-            result.push((format!("{name}_rsp_valid"), Direction::In,  bool_ty.clone()));
+            result.push((format!("{name}_req_ready"), Direction::In, bool_ty.clone()));
+            result.push((format!("{name}_rsp_valid"), Direction::In, bool_ty.clone()));
             if let Some(tag_w) = &m.out_of_order_tags {
-                result.push((format!("{name}_rsp_tag"), Direction::In, TypeExpr::UInt(Box::new(tag_w.clone()))));
+                result.push((
+                    format!("{name}_rsp_tag"),
+                    Direction::In,
+                    TypeExpr::UInt(Box::new(tag_w.clone())),
+                ));
             }
             if let Some(ret_ty) = &m.ret {
                 result.push((format!("{name}_rsp_data"), Direction::In, ret_ty.clone()));
@@ -252,13 +284,11 @@ fn eval_bus_cond(expr: &Expr, param_map: &HashMap<String, &Expr>) -> bool {
                 false
             }
         }
-        ExprKind::Literal(lit) => {
-            match lit {
-                LitKind::Dec(n) | LitKind::Hex(n) | LitKind::Bin(n) => *n != 0,
-                LitKind::Sized(_, n) => *n != 0,
-                LitKind::Float(bits) => f64::from_bits(*bits) != 0.0,
-            }
-        }
+        ExprKind::Literal(lit) => match lit {
+            LitKind::Dec(n) | LitKind::Hex(n) | LitKind::Bin(n) => *n != 0,
+            LitKind::Sized(_, n) => *n != 0,
+            LitKind::Float(bits) => f64::from_bits(*bits) != 0.0,
+        },
         ExprKind::Bool(b) => *b,
         // Binary comparison / logical ops — evaluate both operands as
         // integers (when possible) and apply the op. Supports the common
@@ -267,19 +297,19 @@ fn eval_bus_cond(expr: &Expr, param_map: &HashMap<String, &Expr>) -> bool {
             use crate::ast::BinOp;
             match op {
                 BinOp::And => eval_bus_cond(l, param_map) && eval_bus_cond(r, param_map),
-                BinOp::Or  => eval_bus_cond(l, param_map) || eval_bus_cond(r, param_map),
+                BinOp::Or => eval_bus_cond(l, param_map) || eval_bus_cond(r, param_map),
                 _ => match (eval_bus_int(l, param_map), eval_bus_int(r, param_map)) {
                     (Some(lv), Some(rv)) => match op {
-                        BinOp::Eq  => lv == rv,
+                        BinOp::Eq => lv == rv,
                         BinOp::Neq => lv != rv,
-                        BinOp::Lt  => lv < rv,
-                        BinOp::Gt  => lv > rv,
+                        BinOp::Lt => lv < rv,
+                        BinOp::Gt => lv > rv,
                         BinOp::Lte => lv <= rv,
                         BinOp::Gte => lv >= rv,
                         _ => true, // conservative
                     },
                     _ => true, // conservative
-                }
+                },
             }
         }
         ExprKind::Unary(op, e) => {
@@ -298,7 +328,9 @@ fn eval_bus_cond(expr: &Expr, param_map: &HashMap<String, &Expr>) -> bool {
 fn eval_bus_int(expr: &Expr, param_map: &HashMap<String, &Expr>) -> Option<i64> {
     match &expr.kind {
         ExprKind::Literal(lit) => match lit {
-            LitKind::Dec(n) | LitKind::Hex(n) | LitKind::Bin(n) | LitKind::Sized(_, n) => Some(*n as i64),
+            LitKind::Dec(n) | LitKind::Hex(n) | LitKind::Bin(n) | LitKind::Sized(_, n) => {
+                Some(*n as i64)
+            }
             // Float literals are not valid in integer bus-condition contexts.
             LitKind::Float(_) => None,
         },
@@ -381,7 +413,13 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
     // Built-in domain: SysDomain is always available (can be overridden by user)
     table.globals.insert(
         "SysDomain".to_string(),
-        (Symbol::Domain(DomainInfo { name: "SysDomain".to_string(), freq_mhz: None }), Span { start: 0, end: 0 }),
+        (
+            Symbol::Domain(DomainInfo {
+                name: "SysDomain".to_string(),
+                freq_mhz: None,
+            }),
+            Span { start: 0, end: 0 },
+        ),
     );
 
     // Build the set of names that have a real (non-interface) definition
@@ -394,10 +432,15 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
     // `arch sim` errors with `duplicate definition: ClkDiv2` because the
     // `.archi` stub auto-loaded by the inst-resolver and the `.arch` real
     // module both register as separate globals.
-    let real_names: std::collections::HashSet<String> = source_file.items.iter()
+    let real_names: std::collections::HashSet<String> = source_file
+        .items
+        .iter()
         .filter_map(|it| {
-            if it.is_interface() { None }
-            else { Some(it.as_construct().name().name.clone()) }
+            if it.is_interface() {
+                None
+            } else {
+                Some(it.as_construct().name().name.clone())
+            }
         })
         .collect();
 
@@ -418,12 +461,26 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                 } else if table.globals.contains_key(&d.name.name) {
                     errors.push(CompileError::duplicate(&d.name.name, d.name.span));
                 } else {
-                    let freq_mhz = d.fields.iter()
+                    let freq_mhz = d
+                        .fields
+                        .iter()
                         .find(|f| f.name.name == "freq_mhz")
-                        .and_then(|f| if let ExprKind::Literal(LitKind::Dec(v)) = &f.value.kind { Some(*v) } else { None });
+                        .and_then(|f| {
+                            if let ExprKind::Literal(LitKind::Dec(v)) = &f.value.kind {
+                                Some(*v)
+                            } else {
+                                None
+                            }
+                        });
                     table.globals.insert(
                         d.name.name.clone(),
-                        (Symbol::Domain(DomainInfo { name: d.name.name.clone(), freq_mhz }), d.name.span),
+                        (
+                            Symbol::Domain(DomainInfo {
+                                name: d.name.name.clone(),
+                                freq_mhz,
+                            }),
+                            d.name.span,
+                        ),
                     );
                 }
             }
@@ -439,34 +496,44 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                             .map(|f| (f.name.name.clone(), f.ty.clone()))
                             .collect(),
                     };
-                    table.globals.insert(
-                        s.name.name.clone(),
-                        (Symbol::Struct(info), s.name.span),
-                    );
+                    table
+                        .globals
+                        .insert(s.name.name.clone(), (Symbol::Struct(info), s.name.span));
                 }
             }
             Item::Enum(e) => {
                 if table.globals.contains_key(&e.name.name) {
                     errors.push(CompileError::duplicate(&e.name.name, e.name.span));
                 } else {
-                    let values: Vec<Option<u64>> = e.values.iter().map(|v| {
-                        v.as_ref().and_then(|expr| match &expr.kind {
-                            crate::ast::ExprKind::Literal(crate::ast::LitKind::Dec(n)) => Some(*n),
-                            crate::ast::ExprKind::Literal(crate::ast::LitKind::Hex(n)) => Some(*n),
-                            crate::ast::ExprKind::Literal(crate::ast::LitKind::Bin(n)) => Some(*n),
-                            crate::ast::ExprKind::Literal(crate::ast::LitKind::Sized(_, n)) => Some(*n),
-                            _ => None,
+                    let values: Vec<Option<u64>> = e
+                        .values
+                        .iter()
+                        .map(|v| {
+                            v.as_ref().and_then(|expr| match &expr.kind {
+                                crate::ast::ExprKind::Literal(crate::ast::LitKind::Dec(n)) => {
+                                    Some(*n)
+                                }
+                                crate::ast::ExprKind::Literal(crate::ast::LitKind::Hex(n)) => {
+                                    Some(*n)
+                                }
+                                crate::ast::ExprKind::Literal(crate::ast::LitKind::Bin(n)) => {
+                                    Some(*n)
+                                }
+                                crate::ast::ExprKind::Literal(crate::ast::LitKind::Sized(_, n)) => {
+                                    Some(*n)
+                                }
+                                _ => None,
+                            })
                         })
-                    }).collect();
+                        .collect();
                     let info = EnumInfo {
                         name: e.name.name.clone(),
                         variants: e.variants.iter().map(|v| v.name.clone()).collect(),
                         values,
                     };
-                    table.globals.insert(
-                        e.name.name.clone(),
-                        (Symbol::Enum(info), e.name.span),
-                    );
+                    table
+                        .globals
+                        .insert(e.name.name.clone(), (Symbol::Enum(info), e.name.span));
                 }
             }
             Item::Module(m) => {
@@ -478,10 +545,9 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         params: m.params.clone(),
                         ports: m.ports.clone(),
                     };
-                    table.globals.insert(
-                        m.name.name.clone(),
-                        (Symbol::Module(info), m.name.span),
-                    );
+                    table
+                        .globals
+                        .insert(m.name.name.clone(), (Symbol::Module(info), m.name.span));
                 }
             }
             Item::Fsm(f) => {
@@ -499,12 +565,15 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         state_names: Vec::new(),
                         default_state: String::new(),
                     };
-                    table.globals.insert(f.name.name.clone(), (Symbol::Fsm(info), f.name.span));
+                    table
+                        .globals
+                        .insert(f.name.name.clone(), (Symbol::Fsm(info), f.name.span));
                 } else {
                     // Real fsm: enforce `default state Name;` (was a parse
                     // error pre-PR for `fsm`-stub support; moved here so
                     // the parser can accept body-less `.archi` stubs).
-                    let declared: Vec<String> = f.state_names.iter().map(|s| s.name.clone()).collect();
+                    let declared: Vec<String> =
+                        f.state_names.iter().map(|s| s.name.clone()).collect();
                     let default_state_name = match &f.default_state {
                         Some(ds) => {
                             if !declared.contains(&ds.name) {
@@ -527,7 +596,8 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                     for sb in &f.states {
                         for tr in &sb.transitions {
                             if !declared.contains(&tr.target.name) {
-                                errors.push(CompileError::undefined(&tr.target.name, tr.target.span));
+                                errors
+                                    .push(CompileError::undefined(&tr.target.name, tr.target.span));
                             }
                         }
                     }
@@ -537,7 +607,9 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         state_names: declared,
                         default_state: default_state_name,
                     };
-                    table.globals.insert(f.name.name.clone(), (Symbol::Fsm(info), f.name.span));
+                    table
+                        .globals
+                        .insert(f.name.name.clone(), (Symbol::Fsm(info), f.name.span));
                 }
             }
             Item::Fifo(f) => {
@@ -550,7 +622,9 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         ports: f.ports.clone(),
                         is_async,
                     };
-                    table.globals.insert(f.name.name.clone(), (Symbol::Fifo(info), f.name.span));
+                    table
+                        .globals
+                        .insert(f.name.name.clone(), (Symbol::Fifo(info), f.name.span));
                 }
             }
             Item::Ram(r) => {
@@ -562,15 +636,21 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         kind: r.kind,
                         latency: r.latency,
                     };
-                    table.globals.insert(r.name.name.clone(), (Symbol::Ram(info), r.name.span));
+                    table
+                        .globals
+                        .insert(r.name.name.clone(), (Symbol::Ram(info), r.name.span));
                 }
             }
             Item::Cam(c) => {
                 if table.globals.contains_key(&c.name.name) {
                     errors.push(CompileError::duplicate(&c.name.name, c.name.span));
                 } else {
-                    let info = CamInfo { name: c.name.name.clone() };
-                    table.globals.insert(c.name.name.clone(), (Symbol::Cam(info), c.name.span));
+                    let info = CamInfo {
+                        name: c.name.name.clone(),
+                    };
+                    table
+                        .globals
+                        .insert(c.name.name.clone(), (Symbol::Cam(info), c.name.span));
                 }
             }
             Item::Counter(c) => {
@@ -582,7 +662,9 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         mode: c.mode,
                         direction: c.direction,
                     };
-                    table.globals.insert(c.name.name.clone(), (Symbol::Counter(info), c.name.span));
+                    table
+                        .globals
+                        .insert(c.name.name.clone(), (Symbol::Counter(info), c.name.span));
                 }
             }
             Item::Arbiter(a) => {
@@ -590,24 +672,41 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                     errors.push(CompileError::duplicate(&a.name.name, a.name.span));
                 } else {
                     // Try to find NUM_REQ param
-                    let num_req = a.params.iter().find_map(|p| {
-                        if p.name.name == "NUM_REQ" {
-                            if let Some(Expr { kind: ExprKind::Literal(LitKind::Dec(n)), .. }) = &p.default {
-                                return Some(*n);
+                    let num_req = a
+                        .params
+                        .iter()
+                        .find_map(|p| {
+                            if p.name.name == "NUM_REQ" {
+                                if let Some(Expr {
+                                    kind: ExprKind::Literal(LitKind::Dec(n)),
+                                    ..
+                                }) = &p.default
+                                {
+                                    return Some(*n);
+                                }
                             }
-                        }
-                        None
-                    }).unwrap_or(2);
-                    let info = ArbiterInfo { name: a.name.name.clone(), num_req };
-                    table.globals.insert(a.name.name.clone(), (Symbol::Arbiter(info), a.name.span));
+                            None
+                        })
+                        .unwrap_or(2);
+                    let info = ArbiterInfo {
+                        name: a.name.name.clone(),
+                        num_req,
+                    };
+                    table
+                        .globals
+                        .insert(a.name.name.clone(), (Symbol::Arbiter(info), a.name.span));
                 }
             }
             Item::Regfile(r) => {
                 if table.globals.contains_key(&r.name.name) {
                     errors.push(CompileError::duplicate(&r.name.name, r.name.span));
                 } else {
-                    let info = RegfileInfo { name: r.name.name.clone() };
-                    table.globals.insert(r.name.name.clone(), (Symbol::Regfile(info), r.name.span));
+                    let info = RegfileInfo {
+                        name: r.name.name.clone(),
+                    };
+                    table
+                        .globals
+                        .insert(r.name.name.clone(), (Symbol::Regfile(info), r.name.span));
                 }
             }
             Item::Pipeline(p) => {
@@ -620,7 +719,9 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         ports: p.ports.clone(),
                         stage_names: p.stages.iter().map(|s| s.name.name.clone()).collect(),
                     };
-                    table.globals.insert(p.name.name.clone(), (Symbol::Pipeline(info), p.name.span));
+                    table
+                        .globals
+                        .insert(p.name.name.clone(), (Symbol::Pipeline(info), p.name.span));
                 }
             }
             Item::Function(f) => {
@@ -630,27 +731,39 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                     ret_ty: f.ret_ty.clone(),
                     shared: f.shared,
                 };
-                if let Some((Symbol::Function(overloads), _)) = table.globals.get_mut(&f.name.name) {
+                if let Some((Symbol::Function(overloads), _)) = table.globals.get_mut(&f.name.name)
+                {
                     overloads.push(info);
                 } else if table.globals.contains_key(&f.name.name) {
                     errors.push(CompileError::duplicate(&f.name.name, f.name.span));
                 } else {
-                    table.globals.insert(f.name.name.clone(), (Symbol::Function(vec![info]), f.name.span));
+                    table.globals.insert(
+                        f.name.name.clone(),
+                        (Symbol::Function(vec![info]), f.name.span),
+                    );
                 }
             }
             Item::Linklist(l) => {
                 if table.globals.contains_key(&l.name.name) {
                     errors.push(CompileError::duplicate(&l.name.name, l.name.span));
                 } else {
-                    let info = LinklistInfo { name: l.name.name.clone(), kind: l.kind.clone() };
-                    table.globals.insert(l.name.name.clone(), (Symbol::Linklist(info), l.name.span));
+                    let info = LinklistInfo {
+                        name: l.name.name.clone(),
+                        kind: l.kind.clone(),
+                    };
+                    table
+                        .globals
+                        .insert(l.name.name.clone(), (Symbol::Linklist(info), l.name.span));
                 }
             }
             Item::Template(t) => {
                 if table.globals.contains_key(&t.name.name) {
                     errors.push(CompileError::duplicate(&t.name.name, t.name.span));
                 } else {
-                    table.globals.insert(t.name.name.clone(), (Symbol::Template(t.name.name.clone()), t.name.span));
+                    table.globals.insert(
+                        t.name.name.clone(),
+                        (Symbol::Template(t.name.name.clone()), t.name.span),
+                    );
                 }
             }
             Item::Bus(b) => {
@@ -660,15 +773,19 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                     let info = BusInfo {
                         name: b.name.name.clone(),
                         params: b.params.clone(),
-                        signals: b.signals.iter()
+                        signals: b
+                            .signals
+                            .iter()
                             .map(|s| (s.name.name.clone(), s.direction, s.ty.clone()))
                             .collect(),
                         generates: b.generates.clone(),
                         handshakes: b.handshakes.clone(),
                         credit_channels: b.credit_channels.clone(),
-                                tlm_methods: b.tlm_methods.clone(),
+                        tlm_methods: b.tlm_methods.clone(),
                     };
-                    table.globals.insert(b.name.name.clone(), (Symbol::Bus(info), b.name.span));
+                    table
+                        .globals
+                        .insert(b.name.name.clone(), (Symbol::Bus(info), b.name.span));
                 }
             }
             Item::Package(pkg) => {
@@ -687,12 +804,26 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         } else if table.globals.contains_key(&d.name.name) {
                             errors.push(CompileError::duplicate(&d.name.name, d.name.span));
                         } else {
-                            let freq_mhz = d.fields.iter()
+                            let freq_mhz = d
+                                .fields
+                                .iter()
                                 .find(|f| f.name.name == "freq_mhz")
-                                .and_then(|f| if let ExprKind::Literal(LitKind::Dec(v)) = &f.value.kind { Some(*v) } else { None });
+                                .and_then(|f| {
+                                    if let ExprKind::Literal(LitKind::Dec(v)) = &f.value.kind {
+                                        Some(*v)
+                                    } else {
+                                        None
+                                    }
+                                });
                             table.globals.insert(
                                 d.name.name.clone(),
-                                (Symbol::Domain(DomainInfo { name: d.name.name.clone(), freq_mhz }), d.name.span),
+                                (
+                                    Symbol::Domain(DomainInfo {
+                                        name: d.name.name.clone(),
+                                        freq_mhz,
+                                    }),
+                                    d.name.span,
+                                ),
                             );
                         }
                     }
@@ -700,21 +831,35 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         if table.globals.contains_key(&e.name.name) {
                             errors.push(CompileError::duplicate(&e.name.name, e.name.span));
                         } else {
-                            let values: Vec<Option<u64>> = e.values.iter().map(|v| {
-                                v.as_ref().and_then(|expr| match &expr.kind {
-                                    crate::ast::ExprKind::Literal(crate::ast::LitKind::Dec(n)) => Some(*n),
-                                    crate::ast::ExprKind::Literal(crate::ast::LitKind::Hex(n)) => Some(*n),
-                                    crate::ast::ExprKind::Literal(crate::ast::LitKind::Bin(n)) => Some(*n),
-                                    crate::ast::ExprKind::Literal(crate::ast::LitKind::Sized(_, n)) => Some(*n),
-                                    _ => None,
+                            let values: Vec<Option<u64>> = e
+                                .values
+                                .iter()
+                                .map(|v| {
+                                    v.as_ref().and_then(|expr| match &expr.kind {
+                                        crate::ast::ExprKind::Literal(
+                                            crate::ast::LitKind::Dec(n),
+                                        ) => Some(*n),
+                                        crate::ast::ExprKind::Literal(
+                                            crate::ast::LitKind::Hex(n),
+                                        ) => Some(*n),
+                                        crate::ast::ExprKind::Literal(
+                                            crate::ast::LitKind::Bin(n),
+                                        ) => Some(*n),
+                                        crate::ast::ExprKind::Literal(
+                                            crate::ast::LitKind::Sized(_, n),
+                                        ) => Some(*n),
+                                        _ => None,
+                                    })
                                 })
-                            }).collect();
+                                .collect();
                             let info = EnumInfo {
                                 name: e.name.name.clone(),
                                 variants: e.variants.iter().map(|v| v.name.clone()).collect(),
                                 values,
                             };
-                            table.globals.insert(e.name.name.clone(), (Symbol::Enum(info), e.name.span));
+                            table
+                                .globals
+                                .insert(e.name.name.clone(), (Symbol::Enum(info), e.name.span));
                         }
                     }
                     for s in &pkg.structs {
@@ -723,9 +868,15 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         } else {
                             let info = StructInfo {
                                 name: s.name.name.clone(),
-                                fields: s.fields.iter().map(|f| (f.name.name.clone(), f.ty.clone())).collect(),
+                                fields: s
+                                    .fields
+                                    .iter()
+                                    .map(|f| (f.name.name.clone(), f.ty.clone()))
+                                    .collect(),
                             };
-                            table.globals.insert(s.name.name.clone(), (Symbol::Struct(info), s.name.span));
+                            table
+                                .globals
+                                .insert(s.name.name.clone(), (Symbol::Struct(info), s.name.span));
                         }
                     }
                     for b in &pkg.buses {
@@ -735,7 +886,9 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                             let info = BusInfo {
                                 name: b.name.name.clone(),
                                 params: b.params.clone(),
-                                signals: b.signals.iter()
+                                signals: b
+                                    .signals
+                                    .iter()
                                     .map(|s| (s.name.name.clone(), s.direction, s.ty.clone()))
                                     .collect(),
                                 generates: b.generates.clone(),
@@ -743,7 +896,9 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                                 credit_channels: b.credit_channels.clone(),
                                 tlm_methods: b.tlm_methods.clone(),
                             };
-                            table.globals.insert(b.name.name.clone(), (Symbol::Bus(info), b.name.span));
+                            table
+                                .globals
+                                .insert(b.name.name.clone(), (Symbol::Bus(info), b.name.span));
                         }
                     }
                     for f in &pkg.functions {
@@ -753,12 +908,17 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                             ret_ty: f.ret_ty.clone(),
                             shared: f.shared,
                         };
-                        if let Some((Symbol::Function(overloads), _)) = table.globals.get_mut(&f.name.name) {
+                        if let Some((Symbol::Function(overloads), _)) =
+                            table.globals.get_mut(&f.name.name)
+                        {
                             overloads.push(info);
                         } else if table.globals.contains_key(&f.name.name) {
                             errors.push(CompileError::duplicate(&f.name.name, f.name.span));
                         } else {
-                            table.globals.insert(f.name.name.clone(), (Symbol::Function(vec![info]), f.name.span));
+                            table.globals.insert(
+                                f.name.name.clone(),
+                                (Symbol::Function(vec![info]), f.name.span),
+                            );
                         }
                     }
                     for p in &pkg.params {
@@ -782,25 +942,45 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                 if table.globals.contains_key(&s.name.name) {
                     errors.push(CompileError::duplicate(&s.name.name, s.name.span));
                 } else {
-                    let stages = s.params.iter()
+                    let stages = s
+                        .params
+                        .iter()
                         .find(|p| p.name.name == "STAGES")
                         .and_then(|p| p.default.as_ref())
-                        .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v) } else { None })
+                        .and_then(|e| {
+                            if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind {
+                                Some(*v)
+                            } else {
+                                None
+                            }
+                        })
                         .unwrap_or(2);
-                    table.globals.insert(s.name.name.clone(), (Symbol::Synchronizer(SynchronizerInfo {
-                        name: s.name.name.clone(),
-                        stages,
-                    }), s.name.span));
+                    table.globals.insert(
+                        s.name.name.clone(),
+                        (
+                            Symbol::Synchronizer(SynchronizerInfo {
+                                name: s.name.name.clone(),
+                                stages,
+                            }),
+                            s.name.span,
+                        ),
+                    );
                 }
             }
             Item::Clkgate(c) => {
                 if table.globals.contains_key(&c.name.name) {
                     errors.push(CompileError::duplicate(&c.name.name, c.name.span));
                 } else {
-                    table.globals.insert(c.name.name.clone(), (Symbol::Clkgate(ClkGateInfo {
-                        name: c.name.name.clone(),
-                        kind: c.kind.clone(),
-                    }), c.name.span));
+                    table.globals.insert(
+                        c.name.name.clone(),
+                        (
+                            Symbol::Clkgate(ClkGateInfo {
+                                name: c.name.name.clone(),
+                                kind: c.kind.clone(),
+                            }),
+                            c.name.span,
+                        ),
+                    );
                 }
             }
         }
@@ -901,10 +1081,15 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                             ret_ty: f.ret_ty.clone(),
                             shared: f.shared,
                         };
-                        if let Some((Symbol::Function(overloads), _)) = table.globals.get_mut(&f.name.name) {
+                        if let Some((Symbol::Function(overloads), _)) =
+                            table.globals.get_mut(&f.name.name)
+                        {
                             overloads.push(info);
                         } else if !table.globals.contains_key(&f.name.name) {
-                            table.globals.insert(f.name.name.clone(), (Symbol::Function(vec![info]), f.name.span));
+                            table.globals.insert(
+                                f.name.name.clone(),
+                                (Symbol::Function(vec![info]), f.name.span),
+                            );
                         }
                     }
                     _ => {}
@@ -920,34 +1105,47 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
         if let Item::Fsm(f) = item {
             let mut scope = HashMap::new();
             for p in &f.params {
-                scope.insert(p.name.name.clone(),
-                    (Symbol::Param(p.name.name.clone()), p.name.span));
+                scope.insert(
+                    p.name.name.clone(),
+                    (Symbol::Param(p.name.name.clone()), p.name.span),
+                );
             }
             for p in &f.ports {
-                scope.insert(p.name.name.clone(),
-                    (Symbol::Port(PortInfo {
-                        name: p.name.name.clone(),
-                        direction: p.direction,
-                        ty: p.ty.clone(),
-                    }), p.name.span));
+                scope.insert(
+                    p.name.name.clone(),
+                    (
+                        Symbol::Port(PortInfo {
+                            name: p.name.name.clone(),
+                            direction: p.direction,
+                            ty: p.ty.clone(),
+                        }),
+                        p.name.span,
+                    ),
+                );
             }
             for r in &f.regs {
-                scope.entry(r.name.name.clone()).or_insert_with(||
-                    (Symbol::Reg(RegInfo {
-                        name: r.name.name.clone(),
-                        ty: r.ty.clone(),
-                        reset: r.reset.clone(),
-                    }), r.name.span));
+                scope.entry(r.name.name.clone()).or_insert_with(|| {
+                    (
+                        Symbol::Reg(RegInfo {
+                            name: r.name.name.clone(),
+                            ty: r.ty.clone(),
+                            reset: r.reset.clone(),
+                        }),
+                        r.name.span,
+                    )
+                });
             }
             for l in &f.lets {
                 if l.ty.is_some() {
-                    scope.entry(l.name.name.clone()).or_insert_with(||
-                        (Symbol::Let(l.name.name.clone()), l.name.span));
+                    scope
+                        .entry(l.name.name.clone())
+                        .or_insert_with(|| (Symbol::Let(l.name.name.clone()), l.name.span));
                 }
             }
             for w in &f.wires {
-                scope.entry(w.name.name.clone()).or_insert_with(||
-                    (Symbol::Let(w.name.name.clone()), w.name.span));
+                scope
+                    .entry(w.name.name.clone())
+                    .or_insert_with(|| (Symbol::Let(w.name.name.clone()), w.name.span));
             }
             table.module_scopes.insert(f.name.name.clone(), scope);
         }

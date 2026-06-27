@@ -14,7 +14,11 @@
 /// is 0 for n=0 or n=1 — degenerate; most callers want
 /// [`index_width`] instead, which floors to 1).
 pub fn clog2(n: u64) -> u32 {
-    if n <= 1 { 0 } else { (n - 1).ilog2() + 1 }
+    if n <= 1 {
+        0
+    } else {
+        (n - 1).ilog2() + 1
+    }
 }
 
 /// Width in bits to *address* an array of `n` items, with a 1-bit

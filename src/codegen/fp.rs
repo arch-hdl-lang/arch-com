@@ -20,6 +20,8 @@ pub(super) fn fp_sv_helpers(profile: FpCompat) -> String {
          // shared bit-vector IR (the same source emits the SMT-LIB equivalence\n\
          // model; see doc/plan_fp_types.md §8). Do not edit by hand. ──\n",
     );
-    s.push_str(&crate::fp_ir::render_sv(&crate::fp_ops::fp_functions(profile)));
+    s.push_str(&crate::fp_ir::render_sv(&crate::fp_ops::fp_functions(
+        profile,
+    )));
     s
 }

@@ -103,7 +103,12 @@ pub(crate) fn emit_bus_interface(b: &BusDecl) -> String {
 /// Generic emitter for constructs with name + params + ports (regfile, etc.)
 /// Constructs with additional semantic fields (kind, policy, latency) use
 /// their own per-type emitter instead — see emit_synchronizer_interface etc.
-pub(crate) fn emit_generic(keyword: &str, name: &str, params: &[ParamDecl], ports: &[PortDecl]) -> String {
+pub(crate) fn emit_generic(
+    keyword: &str,
+    name: &str,
+    params: &[ParamDecl],
+    ports: &[PortDecl],
+) -> String {
     let mut s = format!("{keyword} {name}\n");
     emit_params(&mut s, params);
     emit_ports(&mut s, ports);
@@ -187,7 +192,11 @@ pub(crate) fn emit_arbiter_interface(a: &ArbiterDecl) -> String {
                 Direction::In => "in",
                 Direction::Out => "out",
             };
-            s.push_str(&format!("    {}: {dir} {};\n", sig.name.name, type_str(&sig.ty)));
+            s.push_str(&format!(
+                "    {}: {dir} {};\n",
+                sig.name.name,
+                type_str(&sig.ty)
+            ));
         }
         s.push_str(&format!("  end ports {}\n", pa.name.name));
     }
@@ -271,11 +280,16 @@ pub(crate) fn emit_package_interface(p: &PackageDecl) -> String {
     // Function signatures (no body)
     for f in &p.functions {
         let fname = &f.name.name;
-        let params: Vec<String> = f.args.iter()
+        let params: Vec<String> = f
+            .args
+            .iter()
             .map(|fp| format!("{}: {}", fp.name.name, type_str(&fp.ty)))
             .collect();
-        out.push_str(&format!("  function {fname}({}) -> {};\n",
-            params.join(", "), type_str(&f.ret_ty)));
+        out.push_str(&format!(
+            "  function {fname}({}) -> {};\n",
+            params.join(", "),
+            type_str(&f.ret_ty)
+        ));
     }
     out.push_str(&format!("end package {name}\n"));
     out
@@ -293,21 +307,29 @@ pub(crate) fn emit_params(s: &mut String, params: &[ParamDecl]) {
         match &p.kind {
             ParamKind::Const => {
                 if let Some(ref def) = p.default {
-                    s.push_str(&format!("  {local}param {name}: const = {};\n", expr_str(def)));
+                    s.push_str(&format!(
+                        "  {local}param {name}: const = {};\n",
+                        expr_str(def)
+                    ));
                 } else {
                     s.push_str(&format!("  {local}param {name}: const;\n"));
                 }
             }
             ParamKind::WidthConst(hi, lo) => {
-                let default_str = p.default.as_ref()
+                let default_str = p
+                    .default
+                    .as_ref()
                     .map(|d| format!(" = {}", expr_str(d)))
                     .unwrap_or_default();
-                let unpacked = p.unpacked_size.as_ref()
+                let unpacked = p
+                    .unpacked_size
+                    .as_ref()
                     .map(|s| format!(" [{}]", expr_str(s)))
                     .unwrap_or_default();
                 s.push_str(&format!(
                     "  {local}param {name}[{}:{}]: const{unpacked}{default_str};\n",
-                    expr_str(hi), expr_str(lo)
+                    expr_str(hi),
+                    expr_str(lo)
                 ));
             }
             ParamKind::Type(ty) => {
@@ -317,10 +339,14 @@ pub(crate) fn emit_params(s: &mut String, params: &[ParamDecl]) {
                 ));
             }
             ParamKind::EnumConst(enum_name) => {
-                let default_str = p.default.as_ref()
+                let default_str = p
+                    .default
+                    .as_ref()
                     .map(|d| format!(" = {}", expr_str(d)))
                     .unwrap_or_default();
-                let unpacked = p.unpacked_size.as_ref()
+                let unpacked = p
+                    .unpacked_size
+                    .as_ref()
                     .map(|s| format!(" [{}]", expr_str(s)))
                     .unwrap_or_default();
                 s.push_str(&format!(
@@ -328,7 +354,9 @@ pub(crate) fn emit_params(s: &mut String, params: &[ParamDecl]) {
                 ));
             }
             ParamKind::ConstVec(ty) => {
-                let default_str = p.default.as_ref()
+                let default_str = p
+                    .default
+                    .as_ref()
                     .map(|d| format!(" = {}", expr_str(d)))
                     .unwrap_or_default();
                 s.push_str(&format!(
@@ -337,10 +365,14 @@ pub(crate) fn emit_params(s: &mut String, params: &[ParamDecl]) {
                 ));
             }
             ParamKind::Logic(ty) => {
-                let default_str = p.default.as_ref()
+                let default_str = p
+                    .default
+                    .as_ref()
                     .map(|d| format!(" = {}", expr_str(d)))
                     .unwrap_or_default();
-                let unpacked = p.unpacked_size.as_ref()
+                let unpacked = p
+                    .unpacked_size
+                    .as_ref()
                     .map(|s| format!(" [{}]", expr_str(s)))
                     .unwrap_or_default();
                 s.push_str(&format!(
@@ -421,9 +453,9 @@ pub(crate) fn emit_ports_with_deps(
             // is unpacked-Vec, causing port-shape mismatches at the
             // SV inst boundary.
             let unpacked_kw = match (p.unpacked, p.unpacked_ascending) {
-                (true, true)  => "unpacked ascending ",
+                (true, true) => "unpacked ascending ",
                 (true, false) => "unpacked ",
-                _             => "",
+                _ => "",
             };
             // Registered output ports are emitted in the canonical
             // `pipe_reg<T, N>` spelling. This includes legacy `port reg`
@@ -435,7 +467,9 @@ pub(crate) fn emit_ports_with_deps(
                     RegReset::Inherit(rst, val) | RegReset::Explicit(rst, _, _, val) => {
                         let rst_name = &rst.name;
                         let rst_val = expr_str(val);
-                        s.push_str(&format!("  port {name}: {dir} {reg_ty} reset {rst_name} => {rst_val};\n"));
+                        s.push_str(&format!(
+                            "  port {name}: {dir} {reg_ty} reset {rst_name} => {rst_val};\n"
+                        ));
                     }
                     RegReset::None => {
                         s.push_str(&format!("  port {name}: {dir} {reg_ty};\n"));
@@ -453,7 +487,8 @@ pub(crate) fn emit_ports_with_deps(
                         if let Some(set) = map.get(name) {
                             let mut sorted: Vec<&String> = set.iter().collect();
                             sorted.sort();
-                            let inner: String = sorted.iter()
+                            let inner: String = sorted
+                                .iter()
                                 .map(|s| s.as_str())
                                 .collect::<Vec<_>>()
                                 .join(", ");
@@ -464,7 +499,8 @@ pub(crate) fn emit_ports_with_deps(
                     } else if let Some(deps) = &p.comb_deps {
                         let mut sorted: Vec<&String> = deps.iter().map(|i| &i.name).collect();
                         sorted.sort();
-                        let inner: String = sorted.iter()
+                        let inner: String = sorted
+                            .iter()
                             .map(|s| s.as_str())
                             .collect::<Vec<_>>()
                             .join(", ");
@@ -475,7 +511,9 @@ pub(crate) fn emit_ports_with_deps(
                 } else {
                     String::new()
                 };
-                s.push_str(&format!("  port {name}: {dir} {unpacked_kw}{ty}{dep_suffix};\n"));
+                s.push_str(&format!(
+                    "  port {name}: {dir} {unpacked_kw}{ty}{dep_suffix};\n"
+                ));
             }
         }
     }
@@ -517,10 +555,20 @@ fn expr_str(expr: &Expr) -> String {
             LitKind::Sized(width, val) => format!("{width}'d{val}"),
             LitKind::Float(bits) => {
                 let v = f64::from_bits(*bits);
-                if v.fract() == 0.0 { format!("{v:.1}") } else { v.to_string() }
+                if v.fract() == 0.0 {
+                    format!("{v:.1}")
+                } else {
+                    v.to_string()
+                }
             }
         },
-        ExprKind::Bool(b) => if *b { "true".to_string() } else { "false".to_string() },
+        ExprKind::Bool(b) => {
+            if *b {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        }
         ExprKind::Ident(name) => name.clone(),
         ExprKind::Binary(op, l, r) => format!("({} {} {})", expr_str(l), op, expr_str(r)),
         ExprKind::Clog2(inner) => format!("clog2({})", expr_str(inner)),
