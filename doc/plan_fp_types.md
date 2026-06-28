@@ -466,6 +466,72 @@ reference). To guard against our own integration bugs (rounding-mode globals,
 NaN-canonicalization wrapper), run SoftFloat's bundled `testfloat_gen`/`testfloat_ver`
 vectors against our configured instance once, in CI.
 
+### 8.4 Renderer faithfulness — machine-checking the "cannot drift" claim
+
+§8.1 argues the emitted SV and the SMT proof model "cannot drift" because both
+are rendered from one in-Rust IR (`src/fp_ir.rs`) — nothing hand-transcribed.
+That argument is *sound for structural drift* (sharing, let-binding, control flow,
+node order) because all renderers consume the **same** `linearize` pass. But it
+leaves the **per-operator syntax tables trusted, not checked**: `render_sv`,
+`render_smt`, and `render_lean` are line-for-line parallel walks of the same SSA
+order, differing only in how each `Kind` node prints (`+` vs `bvadd` vs `+`, `<`
+vs `bvult` vs `BitVec.ult`, …). A bug in *one* operator's mapping would drift
+silently. This section is the plan to close that residual gap, with the **Lean**
+rendering as the trusted anchor — it now carries a machine-checked, `sorry`-free
+proof that the bounded sticky-fold FMA equals the exact-wide reference
+(`proofs/lean_fp_equiv`, `arch_fma_f32_eq_ref`, PR #639), so trust flows:
+
+```
+render_lean  ──(operator correspondence)──  render_smt  ──(Yosys miter)──  render_sv
+  [proved spec]                              [cross-checked]               [emitted RTL]
+```
+
+Because the structural skeleton is shared and proven-identical-by-construction,
+faithfulness reduces to a **fixed ~20-row per-operator obligation**, not a
+whole-function induction.
+
+**Phase 1 — the SV leg (the only dialect with no formal semantics in the stack;
+do this first).** `render_sv(fp_functions(profile))` → wrap in a module → Yosys
+`read_verilog -sv; prep; write_smt2` (or Yosys `miter` + `sat`, or **EQY**) →
+miter each `arch_*` function against `render_smt`'s `define-fun` of the same name;
+assert `unsat`. This is a **structural** equivalence (identical operators on both
+sides), so a CSE-ing bit-blaster cancels the shared 24×24 multiplier — meaning
+even `mul`/`fma` are **solver-tractable here**, unlike the SAT-hard
+`vs FloatingPoint-theory` miters of §8.1. Wire as a `cargo test` / CI job
+(skip-if-`yosys`-absent, like the §8.1 z3 gate); first verify the emitted SV
+parses, then start with `arch_fma_f32` and `arch_f32_add`. This is the high-value
+step: it turns §8.1's "cannot drift" *argument* into a machine-checked *fact* for
+the one renderer that can't be reasoned about formally.
+
+**Phase 2 — upgrade Lean↔SMT from cross-validation to a proof (optional rigor).**
+Already cross-validated empirically: `fp_smt_proof.rs::equiv_proof("fma_equiv", …)`
+has z3 prove `arch_fma_f32 ≡ arch_fma_f32_ref` from `render_smt`, i.e. the *same*
+theorem the Lean proof proves from `render_lean` — two renderers, two provers, one
+result. To make it a *proof* of renderer agreement, establish the ~20-row operator
+correspondence (each `Kind`'s SMT rendering ≡ its Lean rendering). Most are `rfl` /
+`bv_decide`; the load-bearing few — where the dialects genuinely diverge — are the
+signed / `ugt` / `uge` **operand swaps** (`render_lean` emits `bvsgt a b` as
+`BitVec.slt b a`, `fp_ir.rs:541–546`), the shift `.toNat`, `ofBool` vs
+`(ite … #b1 #b0)`, and `setWidth` vs `zero_extend`. Per-function equivalence then
+follows structurally from the shared linearizer.
+
+**Residual trust (after both phases).** (1) Yosys's SV front-end semantics
+(`function automatic`, `$signed` compares, `<<`/`>>`, `{N'b0, x}`) must match the
+downstream synthesis tool's — Yosys is a sound reference, but if the target is a
+specific vendor flow that's a small extra assumption. (2) SMT-LIB `QF_BV` ≡ Lean
+`BitVec` semantics — standard and well-established, unproven unless someone
+formalizes SMT-LIB in Lean. (3) The IEEE-754 *anchor* itself bottoms out as in
+§8.3: `arch_fma_f32_ref` is correctly-rounded **by construction** (it rounds an
+*exact* 470-bit aligned significand — exact because the alignment gap is ≤ 421 bits,
+proven — so it realizes "RNE of the exact `a·b+c`", the 754 definition), with the
+one inspection-level assumption being that `roundNE_f32` (a textbook GRS rounder)
+*is* RNE. That assumption is independently cross-checked by the SMT `FloatingPoint`
+theory (§8.1) and the SoftFloat differential (§8.2/§8.3); the deepest single upgrade
+that would remove it is a Flocq-style Lean proof `roundNE_f32 = round-nearest-even(ℝ
+value)` (the `Rat` machinery in `proofs/lean_fp_equiv/…/Round.lean` is the foothold).
+A cheap robustness win for the §8.1 legs meanwhile: cross-solver each miter on z3 +
+cvc5 + bitwuzla (independent float→bitvector encoders).
+
 ## 9. Open questions (resolve before/at implementation)
 
 1. ~~float→int rounding~~ **Decided**: toward-zero, saturating, NaN → int max —
