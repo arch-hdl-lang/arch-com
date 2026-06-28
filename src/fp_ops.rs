@@ -394,7 +394,7 @@ fn fma_f32(p: FpCompat) -> FpFn {
     );
     let res_sign = ite(&same, &sign_hi, &ite(&ge, &sign_hi, &sign_lo));
     let e0 = sub(&e_hi, &cst((FMA_G + 1) as u128, 16)); // LSB exponent of mag
-    // exact cancellation (opposite signs, equal magnitude incl. sticky) -> +0
+                                                        // exact cancellation (opposite signs, equal magnitude incl. sticky) -> +0
     let cancel = and(&bnot(&same), &eq(&raw, &cst(0, fw + 1)));
     let general = ite(&cancel, &cst(0, 32), &normround(&res_sign, &mag, &e0));
 
@@ -498,7 +498,12 @@ pub fn fma_f32_ref(p: FpCompat) -> FpFn {
             ),
         ),
     );
-    FpFn::new("arch_fma_f32_ref", &[("a", 32), ("b", 32), ("c", 32)], 32, body)
+    FpFn::new(
+        "arch_fma_f32_ref",
+        &[("a", 32), ("b", 32), ("c", 32)],
+        32,
+        body,
+    )
 }
 
 /// FMA body parameterized on a **free** 48-bit product `mp` (instead of
@@ -545,7 +550,11 @@ pub fn fma_param(sticky: bool, p: FpCompat) -> FpFn {
         let ge = uge(&hi_e, &lo_e);
         let raw = ite(&ge, &sub(&hi_e, &lo_e), &sub(&lo_e, &hi_e));
         let mw = fw + 2;
-        let mag = ite(&same, &add(&zext(&hi_e, mw), &zext(&lo_e, mw)), &zext(&raw, mw));
+        let mag = ite(
+            &same,
+            &add(&zext(&hi_e, mw), &zext(&lo_e, mw)),
+            &zext(&raw, mw),
+        );
         let res_sign = ite(&same, &sign_hi, &ite(&ge, &sign_hi, &sign_lo));
         let e0 = sub(&e_hi, &cst((FMA_G + 1) as u128, 16));
         let cancel = and(&bnot(&same), &eq(&raw, &cst(0, fw + 1)));
@@ -554,11 +563,23 @@ pub fn fma_param(sticky: bool, p: FpCompat) -> FpFn {
     } else {
         let p_ge_c = sge(&ep, &dc.eunb);
         let e_lo = ite(&p_ge_c, &dc.eunb, &ep);
-        let pt = ite(&p_ge_c, &shl(&zext(&mp, FMA_W), &sub(&ep, &dc.eunb)), &zext(&mp, FMA_W));
-        let ct = ite(&p_ge_c, &zext(&dc.mant, FMA_W), &shl(&zext(&dc.mant, FMA_W), &sub(&dc.eunb, &ep)));
+        let pt = ite(
+            &p_ge_c,
+            &shl(&zext(&mp, FMA_W), &sub(&ep, &dc.eunb)),
+            &zext(&mp, FMA_W),
+        );
+        let ct = ite(
+            &p_ge_c,
+            &zext(&dc.mant, FMA_W),
+            &shl(&zext(&dc.mant, FMA_W), &sub(&dc.eunb, &ep)),
+        );
         let same = eq(&sp, &dc.sign);
         let pt_gt = ugt(&pt, &ct);
-        let mag = ite(&same, &add(&pt, &ct), &ite(&pt_gt, &sub(&pt, &ct), &sub(&ct, &pt)));
+        let mag = ite(
+            &same,
+            &add(&pt, &ct),
+            &ite(&pt_gt, &sub(&pt, &ct), &sub(&ct, &pt)),
+        );
         let res_sign = ite(&same, &sp, &ite(&pt_gt, &sp, &dc.sign));
         let cancel = and(&bnot(&same), &eq(&pt, &ct));
         let gen = ite(&cancel, &cst(0, 32), &normround(&res_sign, &mag, &e_lo));
@@ -581,12 +602,20 @@ pub fn fma_param(sticky: bool, p: FpCompat) -> FpFn {
                 &ite(
                     &dc.is_inf,
                     &inf_c,
-                    &ite(&prod_zero, &prod_zero_res, &ite(&dc.is_zero, &prod_only, &general)),
+                    &ite(
+                        &prod_zero,
+                        &prod_zero_res,
+                        &ite(&dc.is_zero, &prod_only, &general),
+                    ),
                 ),
             ),
         ),
     );
-    let nm = if sticky { "arch_fma_param_new" } else { "arch_fma_param_ref" };
+    let nm = if sticky {
+        "arch_fma_param_new"
+    } else {
+        "arch_fma_param_ref"
+    };
     FpFn::new(nm, &[("a", 32), ("b", 32), ("c", 32), ("mp", 48)], 32, body)
 }
 
