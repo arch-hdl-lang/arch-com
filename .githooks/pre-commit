@@ -22,13 +22,10 @@ common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd -P)"
 # Linked worktree (git-dir lives under .git/worktrees/<name>) → always allowed.
 [[ "$git_dir" != "$common_dir" ]] && exit 0
 
-# We are in the PRIMARY checkout. It is reserved for the codex pipeline, which
-# commits here on codex/* branches; allow those. Everyone else must use a
-# linked worktree.
+# We are in the PRIMARY checkout — blocked for everyone (no per-branch or
+# per-pipeline exceptions). Automation that must commit here sets the explicit
+# WORKTREE_ENFORCE_SKIP=1 bypass above.
 branch="$(git branch --show-current 2>/dev/null || true)"
-case "$branch" in
-  codex/*) exit 0 ;;
-esac
 
 cat >&2 <<EOF
 ✗ pre-commit: refusing to commit in the PRIMARY checkout (branch: ${branch:-DETACHED}).

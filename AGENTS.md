@@ -24,8 +24,8 @@ Run `scripts/setup_hooks.sh` in local clones to install the versioned hooks
 branches when the review marker is missing or stale. The `pre-commit` hook
 refuses commits in the shared **primary** checkout (so concurrent agents don't
 share one working tree) — work in your own linked worktree
-(`git worktree add ../arch-wt-<name> -b <branch>`); `codex/*` branches and
-`WORKTREE_ENFORCE_SKIP=1` are exempt.
+(`git worktree add ../arch-wt-<name> -b <branch>`). No branch is exempt;
+automation that must commit in the primary sets `WORKTREE_ENFORCE_SKIP=1`.
 
 After opening a PR, run `scripts/monitor_pr_ci.sh [pr-number-or-url]`. If any
 check fails, inspect the linked logs, fix the branch, push the fix, and rerun
