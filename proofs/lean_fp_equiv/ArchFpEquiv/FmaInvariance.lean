@@ -90,19 +90,19 @@ theorem fma_eq_ref_diff_small (a b c : BitVec 32)
       arch_fma_f32_ref_finite a b c ha hb hc hnc470, hscale,
       roundNE_scale _ _ _ _ (Nat.pos_of_ne_zero hm470), hexp, hsign]
 
-/-- **Same sign, `diff > 48`, normal result.** The high significand dominates
-    (`sig_hi ≥ 2^23`, normal), so the result is normal. Align exponents with
-    `roundNE_scale` (scaling `mag98` up by `2^(diff−49)`), then collapse to the
-    reference at `g = diff − 1` via `roundNE_sticky_collapse_normal`. `hbig` (result
-    normal) is taken as a hypothesis, discharged downstream from operand exponents. -/
+/-- **Same sign, `diff > 48`, `sig_hi ≥ 2^23`.** The high significand dominates.
+    Align exponents with `roundNE_scale` (scaling `mag98` up by `2^(diff−49)`),
+    then collapse to the reference at `g = diff − 1`, dispatching on whether the
+    result is normal (`roundNE_sticky_collapse_normal`) or subnormal
+    (`roundNE_sticky_collapse_subnormal`). `sig_hi ≥ 2^23` makes both branch
+    conditions derivable — no `hbig` hypothesis needed. (Same sign is additive, so
+    `log2(m1) = log2(sig_hi) + diff` with no borrow drop.) -/
 theorem fma_eq_ref_same_big (a b c : BitVec 32)
     (ha : finiteNonzero a = true) (hb : finiteNonzero b = true) (hc : finiteNonzero c = true)
     (hsame : BitVec.extractLsb 31 31 c = BitVec.extractLsb 31 31 a ^^^ BitVec.extractLsb 31 31 b)
     (hdlo : 49 ≤ (fmaDiff98 a b c).toNat) (hdhi : (fmaDiff98 a b c).toNat ≤ 421)
     (hsig23 : 2 ^ 23 ≤ (fmaSigHi98 a b c).toNat)
-    (hnc : arch_fma_mag98 a b c ≠ 0#98)
-    (hbig : 0 < (Nat.log2 ((arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49)) : Int)
-      + (arch_fma_elo a b c).toInt + 127) :
+    (hnc : arch_fma_mag98 a b c ≠ 0#98) :
     arch_fma_f32 a b c = arch_fma_f32_ref a b c := by
   have hHpos : 1 ≤ (fmaSigHi98 a b c).toNat := Nat.le_trans Nat.one_le_two_pow hsig23
   have hmag98ge : 2 ^ 49 ≤ (arch_fma_mag98 a b c).toNat := by
@@ -146,11 +146,24 @@ theorem fma_eq_ref_same_big (a b c : BitVec 32)
       hexp2,
       ← roundNE_scale (arch_fma_sign98 a b c == 1#1) (arch_fma_mag98 a b c).toNat
         (arch_fma_elo a b c).toInt ((fmaDiff98 a b c).toNat - 49) hmag98pos,
-      roundNE_sticky_collapse_normal (arch_fma_sign98 a b c == 1#1)
-        ((arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49))
-        (arch_fma_mag a b c).toNat (arch_fma_elo a b c).toInt ((fmaDiff98 a b c).toNat - 1)
-        hm1 hchi hcst hbig hsh,
       hsign]
+  -- the result rounds the same as the reference; dispatch normal vs subnormal
+  by_cases hbig : 0 < (Nat.log2 ((arch_fma_mag98 a b c).toNat
+      * 2 ^ ((fmaDiff98 a b c).toNat - 49)) : Int) + (arch_fma_elo a b c).toInt + 127
+  · exact roundNE_sticky_collapse_normal (arch_fma_sign a b c == 1#1)
+      ((arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49))
+      (arch_fma_mag a b c).toNat (arch_fma_elo a b c).toInt ((fmaDiff98 a b c).toNat - 1)
+      hm1 hchi hcst hbig hsh
+  · have hsub : (Nat.log2 ((arch_fma_mag98 a b c).toNat
+        * 2 ^ ((fmaDiff98 a b c).toNat - 49)) : Int) + (arch_fma_elo a b c).toInt + 127 ≤ 0 := by
+      omega
+    have hshsub : ((fmaDiff98 a b c).toNat - 1 : Nat) < (-149 : Int) - (arch_fma_elo a b c).toInt := by
+      have h := hsh
+      omega
+    exact roundNE_sticky_collapse_subnormal (arch_fma_sign a b c == 1#1)
+      ((arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49))
+      (arch_fma_mag a b c).toNat (arch_fma_elo a b c).toInt ((fmaDiff98 a b c).toNat - 1)
+      hm1 hchi hcst hsub hshsub
 
 /-- **Opposite sign, `diff > 48`, normal result.** The diff-sign analog of
     `fma_eq_ref_same_big`. The leading-bit condition `hsh` is taken as a hypothesis
