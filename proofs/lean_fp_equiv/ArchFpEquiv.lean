@@ -11,6 +11,8 @@ import ArchFpEquiv.Round98
 import ArchFpEquiv.Fma
 import ArchFpEquiv.FmaSticky
 import ArchFpEquiv.FmaMag98Nat
+import ArchFpEquiv.FmaGRS
+import ArchFpEquiv.FmaMag470Nat
 import ArchFpEquiv.FmaStickyInvariance
 import ArchFpEquiv.Bf16FmaNote
 import ArchFpEquiv.SpecCheck
