@@ -18,7 +18,7 @@ fn main() {
             let mut funcs = arch::fp_ops::fp_functions(p);
             // Lean-only helpers (decode fields + shared rounder at the mul width)
             // that let the Tier-2 proof state the finite-product reduction.
-            funcs.extend(arch::fp_ops::lean_extra_functions());
+            funcs.extend(arch::fp_ops::lean_extra_functions(p));
             print!("namespace ArchFp\n\n");
             print!("{}", arch::fp_ir::render_lean(&funcs));
             print!("\nend ArchFp\n");

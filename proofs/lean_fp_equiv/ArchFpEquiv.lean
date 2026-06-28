@@ -7,6 +7,15 @@ import ArchFpEquiv.RoundBridge
 import ArchFpEquiv.RoundProof
 import ArchFpEquiv.Equiv
 import ArchFpEquiv.RoundFma
+import ArchFpEquiv.Round98
 import ArchFpEquiv.Fma
+import ArchFpEquiv.FmaSticky
+import ArchFpEquiv.FmaMag98Nat
+import ArchFpEquiv.FmaGRS
+import ArchFpEquiv.FmaMag470Nat
+import ArchFpEquiv.FmaStickyInvariance
+import ArchFpEquiv.FmaInvariance
 import ArchFpEquiv.Bf16FmaNote
 import ArchFpEquiv.SpecCheck
+import ArchFpEquiv.FmaRefSpecial
+import ArchFpEquiv.FmaEquiv

@@ -1,4 +1,5 @@
 import ArchFpEquiv.Fma
+import ArchFpEquiv.FmaSticky
 
 /-!
 # `bf16_fma` is fused f32-accumulate — NOT correctly-rounded bf16 fma
@@ -36,15 +37,15 @@ theorem archBf16Fma_eq_narrow_roundNE (a b c : BitVec 16)
     (ha : finiteNonzero (arch_bf16_to_f32 a) = true)
     (hb : finiteNonzero (arch_bf16_to_f32 b) = true)
     (hc : finiteNonzero (arch_bf16_to_f32 c) = true)
-    (hnc : arch_fma_mag (arch_bf16_to_f32 a) (arch_bf16_to_f32 b) (arch_bf16_to_f32 c) ≠ 0#470) :
+    (hnc : arch_fma_mag98 (arch_bf16_to_f32 a) (arch_bf16_to_f32 b) (arch_bf16_to_f32 c) ≠ 0#98) :
     archBf16Fma a b c
       = arch_f32_to_bf16
           (roundNE_f32
-            (arch_fma_sign (arch_bf16_to_f32 a) (arch_bf16_to_f32 b) (arch_bf16_to_f32 c) == 1#1)
-            (arch_fma_mag (arch_bf16_to_f32 a) (arch_bf16_to_f32 b) (arch_bf16_to_f32 c)).toNat
-            (arch_fma_elo (arch_bf16_to_f32 a) (arch_bf16_to_f32 b) (arch_bf16_to_f32 c)).toInt) := by
+            (arch_fma_sign98 (arch_bf16_to_f32 a) (arch_bf16_to_f32 b) (arch_bf16_to_f32 c) == 1#1)
+            (arch_fma_mag98 (arch_bf16_to_f32 a) (arch_bf16_to_f32 b) (arch_bf16_to_f32 c)).toNat
+            (arch_fma_elo98 (arch_bf16_to_f32 a) (arch_bf16_to_f32 b) (arch_bf16_to_f32 c)).toInt) := by
   unfold archBf16Fma
-  rw [arch_fma_f32_finite_correct _ _ _ ha hb hc hnc]
+  rw [arch_fma_f32_sticky_finite _ _ _ ha hb hc hnc]
 
 /-! ## Special-value composition (closes the non-finite path)
 
@@ -72,10 +73,10 @@ theorem archBf16Fma_cancel (a b c : BitVec 16)
     (ha : finiteNonzero (arch_bf16_to_f32 a) = true)
     (hb : finiteNonzero (arch_bf16_to_f32 b) = true)
     (hc : finiteNonzero (arch_bf16_to_f32 c) = true)
-    (hcanc : arch_fma_mag (arch_bf16_to_f32 a) (arch_bf16_to_f32 b) (arch_bf16_to_f32 c) = 0#470) :
+    (hcanc : arch_fma_mag98 (arch_bf16_to_f32 a) (arch_bf16_to_f32 b) (arch_bf16_to_f32 c) = 0#98) :
     archBf16Fma a b c = 0#16 := by
   unfold archBf16Fma
-  rw [fma_cancel _ _ _ ha hb hc hcanc]
+  rw [fma_cancel98 _ _ _ ha hb hc hcanc]
   unfold arch_f32_to_bf16
   bv_decide
 

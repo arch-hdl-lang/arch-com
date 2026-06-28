@@ -263,6 +263,11 @@ fn f32_to_bf16(p: FpCompat) -> FpFn {
 // differential harness is the oracle.
 const ADD_G: u32 = 30; // bounded-adder guard bits (field = 24 + ADD_G)
 const FMA_W: u32 = 470;
+// FMA bounded-adder guard bits (field = 48-bit product + FMA_G). Catastrophic
+// cancellation in a*b+c forces the product/addend LSB gap to <= 47, so FMA_G>=47
+// guarantees no significant bit is ever folded into sticky; 48 gives one bit of
+// margin. Field 96 vs the exact-wide 470 -> ~5x narrower datapath.
+const FMA_G: u32 = 48;
 
 fn f32_add_core(name: &str, flip_b_sign: bool, p: FpCompat) -> FpFn {
     let a = var("a", 32);
@@ -352,34 +357,51 @@ fn fma_f32(p: FpCompat) -> FpFn {
     let mp = mul(&zext(&da.mant, 48), &zext(&db.mant, 48));
     let ep = add(&da.eunb, &db.eunb);
 
-    // align product (ep) and c (eunb_c) to the lower exponent
-    let p_ge_c = sge(&ep, &dc.eunb);
-    let e_lo = ite(&p_ge_c, &dc.eunb, &ep);
-    let pt = ite(
-        &p_ge_c,
-        &shl(&zext(&mp, FMA_W), &sub(&ep, &dc.eunb)),
-        &zext(&mp, FMA_W),
-    );
-    let ct = ite(
-        &p_ge_c,
-        &zext(&dc.mant, FMA_W),
-        &shl(&zext(&dc.mant, FMA_W), &sub(&dc.eunb, &ep)),
-    );
-    let same = eq(&sp, &dc.sign);
-    let pt_gt = ugt(&pt, &ct);
+    // ── Bounded sticky-fold alignment (mirrors f32_add_core) ──────────────
+    // Anchor at the operand with the higher LSB-exponent and shift the lower
+    // one down, folding everything past the FMA_G guard region into one sticky
+    // bit (appended as the low bit so the subtraction borrows correctly). The
+    // product is 48-bit and c is 24-bit; FMA_G keeps the full product through
+    // catastrophic cancellation, which can only occur when c is the higher
+    // operand (an LSB gap of <= 47).
+    let c_mant48 = zext(&dc.mant, 48);
+    let hi_is_p = sge(&ep, &dc.eunb);
+    let psel = |fp_: &Bv, fc: &Bv| ite(&hi_is_p, fp_, fc);
+    let sig_hi = psel(&mp, &c_mant48);
+    let sig_lo = psel(&c_mant48, &mp);
+    let e_hi = psel(&ep, &dc.eunb);
+    let sign_hi = psel(&sp, &dc.sign);
+    let sign_lo = psel(&dc.sign, &sp);
+
+    let diff = sub(&e_hi, &psel(&dc.eunb, &ep)); // e_hi - e_lo >= 0
+    let fw = 48 + FMA_G; // aligned-field width
+    let hi_field = shl(&zext(&sig_hi, fw), &cst(FMA_G as u128, 16));
+    let lo_ext = shl(&zext(&sig_lo, fw), &cst(FMA_G as u128, 16));
+    let lo_field = lshr(&lo_ext, &diff);
+    let mask = sub(&shl(&cst(1, fw), &diff), &cst(1, fw)); // (1<<diff)-1
+    let sticky = ne(&band(&lo_ext, &mask), &cst(0, fw));
+
+    let hi_e = concat(&hi_field, &cst(0, 1)); // fw+1
+    let lo_e = concat(&lo_field, &sticky); // fw+1
+    let same = eq(&sign_hi, &sign_lo);
+    let ge = uge(&hi_e, &lo_e);
+    let raw = ite(&ge, &sub(&hi_e, &lo_e), &sub(&lo_e, &hi_e)); // fw+1
+    let mw = fw + 2; // add-carry headroom
     let mag = ite(
         &same,
-        &add(&pt, &ct),
-        &ite(&pt_gt, &sub(&pt, &ct), &sub(&ct, &pt)),
+        &add(&zext(&hi_e, mw), &zext(&lo_e, mw)),
+        &zext(&raw, mw),
     );
-    let res_sign = ite(&same, &sp, &ite(&pt_gt, &sp, &dc.sign));
-    let cancel = and(&bnot(&same), &eq(&pt, &ct));
-    let general = ite(&cancel, &cst(0, 32), &normround(&res_sign, &mag, &e_lo));
+    let res_sign = ite(&same, &sign_hi, &ite(&ge, &sign_hi, &sign_lo));
+    let e0 = sub(&e_hi, &cst((FMA_G + 1) as u128, 16)); // LSB exponent of mag
+                                                        // exact cancellation (opposite signs, equal magnitude incl. sticky) -> +0
+    let cancel = and(&bnot(&same), &eq(&raw, &cst(0, fw + 1)));
+    let general = ite(&cancel, &cst(0, 32), &normround(&res_sign, &mag, &e0));
 
     // product==0 (finite): result = signed-zero(sp) + c
     let prod_zero_res = call("arch_f32_add", &[concat(&sp, &cst(0, 31)), c.clone()], 32);
     // c==0 (finite, product nonzero): round the product alone
-    let prod_only = normround(&sp, &zext(&mp, FMA_W), &ep);
+    let prod_only = normround(&sp, &mp, &ep);
 
     let inf_p = concat(&sp, &concat(&cst(0xFF, 8), &cst(0, 23)));
     let inf_c = concat(&dc.sign, &concat(&cst(0xFF, 8), &cst(0, 23)));
@@ -407,6 +429,194 @@ fn fma_f32(p: FpCompat) -> FpFn {
         ),
     );
     FpFn::new("arch_fma_f32", &[("a", 32), ("b", 32), ("c", 32)], 32, body)
+}
+
+/// The pre-sticky-fold **exact-wide (FMA_W=470)** FMA, kept only as the proof
+/// reference for the new-vs-old equivalence miter (`equiv_proof("fma_equiv")`).
+/// Identical to `fma_f32` except the `general` path aligns into a 470-bit field
+/// (no sticky), so the shared `mul`/specials cancel and z3 discharges the miter
+/// without a multiplier-equivalence — transferring the existing machine-checked
+/// correctness of this exact-wide FMA to the bounded sticky-fold one.
+pub fn fma_f32_ref(p: FpCompat) -> FpFn {
+    let a = var("a", 32);
+    let b = var("b", 32);
+    let c = var("c", 32);
+    let da = decode(&a);
+    let db = decode(&b);
+    let dc = decode(&c);
+    let n = cst(nan32(p), 32);
+    let sp = bxor(&da.sign, &db.sign);
+    let prod_inf = or(&da.is_inf, &db.is_inf);
+    let prod_zero = or(&da.is_zero, &db.is_zero);
+    let mp = mul(&zext(&da.mant, 48), &zext(&db.mant, 48));
+    let ep = add(&da.eunb, &db.eunb);
+    let p_ge_c = sge(&ep, &dc.eunb);
+    let e_lo = ite(&p_ge_c, &dc.eunb, &ep);
+    let pt = ite(
+        &p_ge_c,
+        &shl(&zext(&mp, FMA_W), &sub(&ep, &dc.eunb)),
+        &zext(&mp, FMA_W),
+    );
+    let ct = ite(
+        &p_ge_c,
+        &zext(&dc.mant, FMA_W),
+        &shl(&zext(&dc.mant, FMA_W), &sub(&dc.eunb, &ep)),
+    );
+    let same = eq(&sp, &dc.sign);
+    let pt_gt = ugt(&pt, &ct);
+    let mag = ite(
+        &same,
+        &add(&pt, &ct),
+        &ite(&pt_gt, &sub(&pt, &ct), &sub(&ct, &pt)),
+    );
+    let res_sign = ite(&same, &sp, &ite(&pt_gt, &sp, &dc.sign));
+    let cancel = and(&bnot(&same), &eq(&pt, &ct));
+    let general = ite(&cancel, &cst(0, 32), &normround(&res_sign, &mag, &e_lo));
+    let prod_zero_res = call("arch_f32_add", &[concat(&sp, &cst(0, 31)), c.clone()], 32);
+    let prod_only = normround(&sp, &zext(&mp, FMA_W), &ep);
+    let inf_p = concat(&sp, &concat(&cst(0xFF, 8), &cst(0, 23)));
+    let inf_c = concat(&dc.sign, &concat(&cst(0xFF, 8), &cst(0, 23)));
+    let zero_times_inf = or(&and(&da.is_inf, &db.is_zero), &and(&da.is_zero, &db.is_inf));
+    let body = ite(
+        &or(&or(&da.is_nan, &db.is_nan), &dc.is_nan),
+        &n,
+        &ite(
+            &zero_times_inf,
+            &n,
+            &ite(
+                &prod_inf,
+                &ite(&and(&dc.is_inf, &ne(&dc.sign, &sp)), &n, &inf_p),
+                &ite(
+                    &dc.is_inf,
+                    &inf_c,
+                    &ite(
+                        &prod_zero,
+                        &prod_zero_res,
+                        &ite(&dc.is_zero, &prod_only, &general),
+                    ),
+                ),
+            ),
+        ),
+    );
+    FpFn::new(
+        "arch_fma_f32_ref",
+        &[("a", 32), ("b", 32), ("c", 32)],
+        32,
+        body,
+    )
+}
+
+/// FMA body parameterized on a **free** 48-bit product `mp` (instead of
+/// `mul(mant_a, mant_b)`), for the multiply-abstracted equivalence proof. With
+/// `mp` a free input there is no multiplier in the query at all, so the
+/// new-vs-ref miter is a pure shift/add/round equivalence — solver-tractable
+/// like the f32 add. `sticky=true` is the bounded sticky-fold general path;
+/// `false` is the exact-wide (470-bit) reference. Proving them equal for *all*
+/// `mp` (a superset of real products) is sufficient and avoids any
+/// multiplier-equivalence. Used only by `equiv_proof("fma_equiv_abs")`.
+pub fn fma_param(sticky: bool, p: FpCompat) -> FpFn {
+    let a = var("a", 32);
+    let b = var("b", 32);
+    let c = var("c", 32);
+    let mp = var("mp", 48); // free product (abstracted)
+    let da = decode(&a);
+    let db = decode(&b);
+    let dc = decode(&c);
+    let n = cst(nan32(p), 32);
+    let sp = bxor(&da.sign, &db.sign);
+    let prod_inf = or(&da.is_inf, &db.is_inf);
+    let prod_zero = or(&da.is_zero, &db.is_zero);
+    let ep = add(&da.eunb, &db.eunb);
+
+    let (general, prod_only) = if sticky {
+        let c_mant48 = zext(&dc.mant, 48);
+        let hi_is_p = sge(&ep, &dc.eunb);
+        let psel = |fp_: &Bv, fc: &Bv| ite(&hi_is_p, fp_, fc);
+        let sig_hi = psel(&mp, &c_mant48);
+        let sig_lo = psel(&c_mant48, &mp);
+        let e_hi = psel(&ep, &dc.eunb);
+        let sign_hi = psel(&sp, &dc.sign);
+        let sign_lo = psel(&dc.sign, &sp);
+        let diff = sub(&e_hi, &psel(&dc.eunb, &ep));
+        let fw = 48 + FMA_G;
+        let hi_field = shl(&zext(&sig_hi, fw), &cst(FMA_G as u128, 16));
+        let lo_ext = shl(&zext(&sig_lo, fw), &cst(FMA_G as u128, 16));
+        let lo_field = lshr(&lo_ext, &diff);
+        let mask = sub(&shl(&cst(1, fw), &diff), &cst(1, fw));
+        let sticky_b = ne(&band(&lo_ext, &mask), &cst(0, fw));
+        let hi_e = concat(&hi_field, &cst(0, 1));
+        let lo_e = concat(&lo_field, &sticky_b);
+        let same = eq(&sign_hi, &sign_lo);
+        let ge = uge(&hi_e, &lo_e);
+        let raw = ite(&ge, &sub(&hi_e, &lo_e), &sub(&lo_e, &hi_e));
+        let mw = fw + 2;
+        let mag = ite(
+            &same,
+            &add(&zext(&hi_e, mw), &zext(&lo_e, mw)),
+            &zext(&raw, mw),
+        );
+        let res_sign = ite(&same, &sign_hi, &ite(&ge, &sign_hi, &sign_lo));
+        let e0 = sub(&e_hi, &cst((FMA_G + 1) as u128, 16));
+        let cancel = and(&bnot(&same), &eq(&raw, &cst(0, fw + 1)));
+        let gen = ite(&cancel, &cst(0, 32), &normround(&res_sign, &mag, &e0));
+        (gen, normround(&sp, &mp, &ep))
+    } else {
+        let p_ge_c = sge(&ep, &dc.eunb);
+        let e_lo = ite(&p_ge_c, &dc.eunb, &ep);
+        let pt = ite(
+            &p_ge_c,
+            &shl(&zext(&mp, FMA_W), &sub(&ep, &dc.eunb)),
+            &zext(&mp, FMA_W),
+        );
+        let ct = ite(
+            &p_ge_c,
+            &zext(&dc.mant, FMA_W),
+            &shl(&zext(&dc.mant, FMA_W), &sub(&dc.eunb, &ep)),
+        );
+        let same = eq(&sp, &dc.sign);
+        let pt_gt = ugt(&pt, &ct);
+        let mag = ite(
+            &same,
+            &add(&pt, &ct),
+            &ite(&pt_gt, &sub(&pt, &ct), &sub(&ct, &pt)),
+        );
+        let res_sign = ite(&same, &sp, &ite(&pt_gt, &sp, &dc.sign));
+        let cancel = and(&bnot(&same), &eq(&pt, &ct));
+        let gen = ite(&cancel, &cst(0, 32), &normround(&res_sign, &mag, &e_lo));
+        (gen, normround(&sp, &zext(&mp, FMA_W), &ep))
+    };
+
+    let prod_zero_res = call("arch_f32_add", &[concat(&sp, &cst(0, 31)), c.clone()], 32);
+    let inf_p = concat(&sp, &concat(&cst(0xFF, 8), &cst(0, 23)));
+    let inf_c = concat(&dc.sign, &concat(&cst(0xFF, 8), &cst(0, 23)));
+    let zero_times_inf = or(&and(&da.is_inf, &db.is_zero), &and(&da.is_zero, &db.is_inf));
+    let body = ite(
+        &or(&or(&da.is_nan, &db.is_nan), &dc.is_nan),
+        &n,
+        &ite(
+            &zero_times_inf,
+            &n,
+            &ite(
+                &prod_inf,
+                &ite(&and(&dc.is_inf, &ne(&dc.sign, &sp)), &n, &inf_p),
+                &ite(
+                    &dc.is_inf,
+                    &inf_c,
+                    &ite(
+                        &prod_zero,
+                        &prod_zero_res,
+                        &ite(&dc.is_zero, &prod_only, &general),
+                    ),
+                ),
+            ),
+        ),
+    );
+    let nm = if sticky {
+        "arch_fma_param_new"
+    } else {
+        "arch_fma_param_ref"
+    };
+    FpFn::new(nm, &[("a", 32), ("b", 32), ("c", 32), ("mp", 48)], 32, body)
 }
 
 // ── int <-> float ───────────────────────────────────────────────────────────
@@ -597,7 +807,7 @@ pub fn fp_functions(p: FpCompat) -> Vec<FpFn> {
 /// appears identically on both sides of that equation and `bv_decide` discharges
 /// it structurally (no SAT-hard multiplier-equivalence). This isolates the entire
 /// remaining Tier-2 crux into one function: `arch_round48`.
-pub fn lean_extra_functions() -> Vec<FpFn> {
+pub fn lean_extra_functions(p: FpCompat) -> Vec<FpFn> {
     let decode_mant = {
         let x = var("x", 32);
         FpFn::new("arch_decode_mant", &[("x", 32)], 24, decode(&x).mant)
@@ -632,6 +842,24 @@ pub fn lean_extra_functions() -> Vec<FpFn> {
             32,
             normround(&s, &sig, &e0),
         )
+    };
+    // Sticky-fold FMA rounder width: mag is mw = (48 + FMA_G) + 2 = 98 bits.
+    // These are the pieces the *new* fma correctness proof reduces to (the
+    // tractable width-98 analogue of round470/msb470).
+    let round98 = {
+        let s = var("s", 1);
+        let sig = var("sig", 98);
+        let e0 = var("e0", 16);
+        FpFn::new(
+            "arch_round98",
+            &[("s", 1), ("sig", 98), ("e0", 16)],
+            32,
+            normround(&s, &sig, &e0),
+        )
+    };
+    let msb98 = {
+        let sig = var("sig", 98);
+        FpFn::new("arch_msb_index98", &[("sig", 98)], 16, msb_index(&sig))
     };
     let msb470 = {
         let sig = var("sig", 470);
@@ -694,6 +922,75 @@ pub fn lean_extra_functions() -> Vec<FpFn> {
         1,
         fma_part("sign"),
     );
+
+    // ── Sticky-fold (new) fma pre-rounding pieces, width 98 ──────────────────
+    // The 98-bit magnitude, its LSB exponent e0, and the result sign of the
+    // *new* bounded sticky-fold general path — the reduction target for the new
+    // fma correctness proof (analogue of fma_mag/elo/sign at the 98-bit rounder).
+    let fma_part_new = |which: &str| -> Bv {
+        let a = var("a", 32);
+        let b = var("b", 32);
+        let c = var("c", 32);
+        let da = decode(&a);
+        let db = decode(&b);
+        let dc = decode(&c);
+        let sp = bxor(&da.sign, &db.sign);
+        let mp = mul(&zext(&da.mant, 48), &zext(&db.mant, 48));
+        let ep = add(&da.eunb, &db.eunb);
+        let c_mant48 = zext(&dc.mant, 48);
+        let hi_is_p = sge(&ep, &dc.eunb);
+        let psel = |fp_: &Bv, fc: &Bv| ite(&hi_is_p, fp_, fc);
+        let sig_hi = psel(&mp, &c_mant48);
+        let sig_lo = psel(&c_mant48, &mp);
+        let e_hi = psel(&ep, &dc.eunb);
+        let sign_hi = psel(&sp, &dc.sign);
+        let sign_lo = psel(&dc.sign, &sp);
+        let diff = sub(&e_hi, &psel(&dc.eunb, &ep));
+        let fw = 48 + FMA_G;
+        let hi_field = shl(&zext(&sig_hi, fw), &cst(FMA_G as u128, 16));
+        let lo_ext = shl(&zext(&sig_lo, fw), &cst(FMA_G as u128, 16));
+        let lo_field = lshr(&lo_ext, &diff);
+        let mask = sub(&shl(&cst(1, fw), &diff), &cst(1, fw));
+        let sticky = ne(&band(&lo_ext, &mask), &cst(0, fw));
+        let hi_e = concat(&hi_field, &cst(0, 1));
+        let lo_e = concat(&lo_field, &sticky);
+        let same = eq(&sign_hi, &sign_lo);
+        let ge = uge(&hi_e, &lo_e);
+        let raw = ite(&ge, &sub(&hi_e, &lo_e), &sub(&lo_e, &hi_e));
+        let mw = fw + 2;
+        let mag = ite(
+            &same,
+            &add(&zext(&hi_e, mw), &zext(&lo_e, mw)),
+            &zext(&raw, mw),
+        );
+        let res_sign = ite(&same, &sign_hi, &ite(&ge, &sign_hi, &sign_lo));
+        let e0 = sub(&e_hi, &cst((FMA_G + 1) as u128, 16));
+        match which {
+            "mag" => mag,
+            "elo" => e0,
+            "sign" => res_sign,
+            _ => unreachable!(),
+        }
+    };
+    let fma_mag98 = FpFn::new(
+        "arch_fma_mag98",
+        &[("a", 32), ("b", 32), ("c", 32)],
+        98,
+        fma_part_new("mag"),
+    );
+    let fma_elo98 = FpFn::new(
+        "arch_fma_elo98",
+        &[("a", 32), ("b", 32), ("c", 32)],
+        16,
+        fma_part_new("elo"),
+    );
+    let fma_sign98 = FpFn::new(
+        "arch_fma_sign98",
+        &[("a", 32), ("b", 32), ("c", 32)],
+        1,
+        fma_part_new("sign"),
+    );
+
     vec![
         decode_mant,
         decode_eunb,
@@ -701,8 +998,15 @@ pub fn lean_extra_functions() -> Vec<FpFn> {
         msb48,
         round470,
         msb470,
+        round98,
+        msb98,
         fma_mag,
         fma_elo,
         fma_sign,
+        fma_mag98,
+        fma_elo98,
+        fma_sign98,
+        // exact-wide reference FMA, for the sticky-fold equivalence theorem
+        fma_f32_ref(p),
     ]
 }
