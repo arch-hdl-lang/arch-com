@@ -28,6 +28,28 @@ theorem div_pow_eq_of_div_pow_eq (m1 m2 g k : Nat) (hk : g ≤ k) (h : m1 / 2 ^ 
     rw [Nat.div_div_eq_div_mul, ← Nat.pow_add, show g + (k - g) = k from by omega]
   rw [e1, e2, h]
 
+/-- `log2 m = log2 (m / 2^g) + g` when `m` has a bit at/above position `g`. -/
+theorem log2_div_pow (m g : Nat) (hm : 2 ^ g ≤ m) : Nat.log2 m = Nat.log2 (m / 2 ^ g) + g := by
+  have hgpos : 0 < (2 : Nat) ^ g := Nat.pow_pos (by decide)
+  have hq : 1 ≤ m / 2 ^ g := (Nat.one_le_div_iff hgpos).mpr hm
+  have hq0 : m / 2 ^ g ≠ 0 := by omega
+  have hm0 : m ≠ 0 := by omega
+  have hself : 2 ^ Nat.log2 (m / 2 ^ g) ≤ m / 2 ^ g := (Nat.le_log2 hq0).mp (Nat.le_refl _)
+  have hlt : m / 2 ^ g < 2 ^ (Nat.log2 (m / 2 ^ g) + 1) := (Nat.log2_lt hq0).mp (Nat.lt_succ_self _)
+  have hbound : m < (m / 2 ^ g + 1) * 2 ^ g := by
+    rw [Nat.add_mul, Nat.one_mul]
+    have h1 := Nat.div_add_mod m (2 ^ g)
+    have h2 := Nat.mod_lt m hgpos
+    rw [Nat.mul_comm] at h1; omega
+  have hlo : Nat.log2 (m / 2 ^ g) + g ≤ Nat.log2 m := by
+    rw [Nat.le_log2 hm0, Nat.pow_add]
+    exact Nat.le_trans (Nat.mul_le_mul_right _ hself) (Nat.div_mul_le_self m (2 ^ g))
+  have hhi : Nat.log2 m < Nat.log2 (m / 2 ^ g) + g + 1 := by
+    rw [Nat.log2_lt hm0,
+        show Nat.log2 (m / 2 ^ g) + g + 1 = (Nat.log2 (m / 2 ^ g) + 1) + g from by omega, Nat.pow_add]
+    exact Nat.lt_of_lt_of_le hbound (Nat.mul_le_mul_right _ (by omega))
+  omega
+
 /-- Mixed-radix split of a residue: low `k` bits = (mid bits)·2^g + (low `g` bits). -/
 theorem mod_pow_decomp (m g k : Nat) (hk : g ≤ k) :
     m % 2 ^ k = (m / 2 ^ g % 2 ^ (k - g)) * 2 ^ g + m % 2 ^ g := by

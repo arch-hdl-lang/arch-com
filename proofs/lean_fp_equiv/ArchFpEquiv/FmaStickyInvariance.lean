@@ -2,6 +2,7 @@ import ArchFpEquiv.RoundFma
 import ArchFpEquiv.Round98
 import ArchFpEquiv.FmaSticky
 import ArchFpEquiv.Fma
+import ArchFpEquiv.FmaGRS
 import Std.Tactic.BVDecide
 
 /-!
@@ -188,5 +189,32 @@ theorem roundNE_scale (neg : Bool) (n : Nat) (e : Int) (k : Nat) (hn : 0 < n) :
       keptOf_scale n k e hn]
   congr 1
   rw [log2_mul_pow2 n k hn]; omega
+
+/-- **GRS collapse lifted to `roundNE_f32` (normal case).** Two magnitudes that
+    agree above bit `g`, share the low-`g` sticky status, and produce a *normal*
+    result whose round shift `log2 − 23` exceeds `g`, round to the same f32. -/
+theorem roundNE_sticky_collapse_normal (neg : Bool) (m1 m2 : Nat) (e : Int) (g : Nat)
+    (hm1 : 2 ^ g ≤ m1) (hhi : m1 / 2 ^ g = m2 / 2 ^ g) (hst : (m1 % 2 ^ g = 0) ↔ (m2 % 2 ^ g = 0))
+    (hbig : 0 < (Nat.log2 m1 : Int) + e + 127) (hsh : g + 24 ≤ Nat.log2 m1) :
+    roundNE_f32 neg m1 e = roundNE_f32 neg m2 e := by
+  have hgpos : 0 < (2 : Nat) ^ g := Nat.pow_pos (by decide)
+  have hq1 : 1 ≤ m1 / 2 ^ g := (Nat.one_le_div_iff hgpos).mpr hm1
+  have hm2 : 2 ^ g ≤ m2 := (Nat.one_le_div_iff hgpos).mp (by rw [← hhi]; exact hq1)
+  have hm1ne : m1 ≠ 0 := by omega
+  have hm2ne : m2 ≠ 0 := by omega
+  have hlog : Nat.log2 m1 = Nat.log2 m2 := by
+    rw [log2_div_pow m1 g hm1, log2_div_pow m2 g hm2, hhi]
+  have hlogc : (Nat.log2 m1 : Int) = Nat.log2 m2 := by exact_mod_cast hlog
+  have hshc : (g : Int) + 24 ≤ Nat.log2 m1 := by exact_mod_cast hsh
+  rw [roundNE_f32_eq_encode neg m1 e hm1ne, roundNE_f32_eq_encode neg m2 e hm2ne]
+  congr 1
+  · rw [hlog]
+  · simp only [keptOf]
+    rw [hlog]
+    have hBigP : ¬ ((↑(Nat.log2 m2) + e : Int) + 127 ≤ 0) := by omega
+    have hShP : ¬ ((↑(Nat.log2 m2) + e - 23 : Int) - e ≤ 0) := by omega
+    have hshnat : ((↑(Nat.log2 m2) + e - 23 : Int) - e).toNat = Nat.log2 m2 - 23 := by omega
+    simp only [if_neg hBigP, if_neg hShP, hshnat]
+    exact rneQuot_sticky_collapse m1 m2 g (Nat.log2 m2 - 23) (by omega) hhi hst
 
 end ArchFp
