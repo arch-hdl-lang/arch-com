@@ -245,7 +245,7 @@ private theorem foldedlow_eq_zero_iff (L D : Nat) (hpos : 0 < 2 ^ D) :
 
 /-- The folded low part is below `2^49`: the guard-doubled shifted significand
     (`< 2^48`) plus the sticky bit. -/
-private theorem foldedlow_lt (L D : Nat) (hL : L < 2 ^ 48) (hD : 49 ≤ D) :
+theorem foldedlow_lt (L D : Nat) (hL : L < 2 ^ 48) (hD : 49 ≤ D) :
     L * 2 ^ 48 / 2 ^ D * 2 + (if L * 2 ^ 48 % 2 ^ D ≠ 0 then 1 else 0) < 2 ^ 49 := by
   have hq : L * 2 ^ 48 / 2 ^ D < 2 ^ 47 := by
     rw [Nat.div_lt_iff_lt_mul (Nat.pow_pos (by decide)), ← Nat.pow_add]
