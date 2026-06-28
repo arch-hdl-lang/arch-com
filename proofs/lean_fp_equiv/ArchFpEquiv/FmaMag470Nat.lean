@@ -97,4 +97,29 @@ theorem fma_mag470_same_nat (a b c : BitVec 32)
         hsw48, Nat.mod_eq_of_lt
           (key _ _ (mul_pow_lt469 _ _ (BitVec.isLt _) hd) (Nat.lt_of_lt_of_le (hm24 _) h48))]
 
+/-- **The `diff ≤ 48` (no-fold) identity.** When the operands are within the fold
+    window, the sticky-fold magnitude is exactly the reference scaled by
+    `2^(49−diff)` — so they round identically (the `roundNE_scale` case). -/
+theorem mag98_eq_mag470_scaled_same (a b c : BitVec 32)
+    (hsame : BitVec.extractLsb 31 31 c = BitVec.extractLsb 31 31 a ^^^ BitVec.extractLsb 31 31 b)
+    (hd48 : (fmaDiff98 a b c).toNat ≤ 48) :
+    (arch_fma_mag98 a b c).toNat
+      = (arch_fma_mag a b c).toNat * 2 ^ (49 - (fmaDiff98 a b c).toNat) := by
+  rw [fma_mag98_same_nat a b c hsame, fma_mag470_same_nat a b c hsame (by omega)]
+  unfold fmaHiNat fmaLoNat
+  generalize hD : (fmaDiff98 a b c).toNat = D at hd48 ⊢
+  generalize (fmaSigHi98 a b c).toNat = H
+  generalize (fmaSigLo98 a b c).toNat = L
+  have hsplit : (2 : Nat) ^ 48 = 2 ^ (48 - D) * 2 ^ D := by rw [← Nat.pow_add]; congr 1; omega
+  have hdiv : L * 2 ^ 48 / 2 ^ D = L * 2 ^ (48 - D) := by
+    rw [hsplit, ← Nat.mul_assoc, Nat.mul_div_cancel _ (Nat.pow_pos (by decide))]
+  have hmod : L * 2 ^ 48 % 2 ^ D = 0 := by
+    rw [hsplit, ← Nat.mul_assoc]; exact Nat.mul_mod_left _ _
+  have p49 : (2 : Nat) ^ D * 2 ^ (49 - D) = 2 ^ 49 := by rw [← Nat.pow_add]; congr 1; omega
+  have p49' : (2 : Nat) ^ (49 - D) = 2 ^ (48 - D) * 2 := by
+    rw [show 49 - D = (48 - D) + 1 from by omega, Nat.pow_succ]
+  rw [hdiv, hmod, if_neg (by decide : ¬((0 : Nat) ≠ 0)), Nat.add_zero,
+      Nat.add_mul, Nat.mul_assoc H (2 ^ D) (2 ^ (49 - D)), p49, p49',
+      ← Nat.mul_assoc L (2 ^ (48 - D)) 2]
+
 end ArchFp
