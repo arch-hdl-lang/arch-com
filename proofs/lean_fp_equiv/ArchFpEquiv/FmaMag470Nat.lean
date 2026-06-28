@@ -1,4 +1,5 @@
 import ArchFpEquiv.FmaMag98Nat
+import ArchFpEquiv.FmaGRS
 import Std.Tactic.BVDecide
 
 /-!
@@ -368,6 +369,17 @@ private theorem collapse_of_decomp_sub (Q G r1 r2 : Nat)
   · simp [h0]
   · rw [if_neg (by omega), if_neg (by omega)]
     exact ⟨fun h => by omega, fun h => by omega⟩
+
+/-- `log2` pinned by a power-of-two bracket. -/
+theorem log2_eq_of_range (n e : Nat) (h1 : 2 ^ e ≤ n) (h2 : n < 2 ^ (e + 1)) :
+    Nat.log2 n = e := by
+  have hn : n ≠ 0 := by have : 0 < (2 : Nat) ^ e := Nat.pow_pos (by decide); omega
+  rw [Nat.log2_eq_iff hn]; exact ⟨h1, h2⟩
+
+/-- `log2 (m·2^k) = log2 m + k` for `m ≥ 1` — shifting up by `k` bits adds `k`. -/
+theorem log2_mul_pow (m k : Nat) (hm : 1 ≤ m) : Nat.log2 (m * 2 ^ k) = Nat.log2 m + k := by
+  have h2k : 2 ^ k ≤ m * 2 ^ k := Nat.le_mul_of_pos_left _ hm
+  rw [log2_div_pow (m * 2 ^ k) k h2k, Nat.mul_div_left m (Nat.pow_pos (by decide))]
 
 /-- The tight bound: the folded low part is below `2^48` (guard-doubled shifted
     significand `< 2^48`, since the floor is `< 2^47`, plus the sticky bit fits in
