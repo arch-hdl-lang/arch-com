@@ -217,4 +217,30 @@ theorem roundNE_sticky_collapse_normal (neg : Bool) (m1 m2 : Nat) (e : Int) (g :
     simp only [if_neg hBigP, if_neg hShP, hshnat]
     exact rneQuot_sticky_collapse m1 m2 g (Nat.log2 m2 - 23) (by omega) hhi hst
 
+/-- **GRS collapse lifted to `roundNE_f32` (subnormal case).** The companion to
+    `roundNE_sticky_collapse_normal` for a *subnormal* result (`log2 + e + 127 ≤ 0`):
+    the kept shift is the fixed `−149 − e` floor instead of `log2 − 23`. With `g`
+    below that floor and the large-magnitude guarantee (`2^g ≤ m1`, so the shift is
+    positive), the same `rneQuot` collapse applies. -/
+theorem roundNE_sticky_collapse_subnormal (neg : Bool) (m1 m2 : Nat) (e : Int) (g : Nat)
+    (hm1 : 2 ^ g ≤ m1) (hhi : m1 / 2 ^ g = m2 / 2 ^ g) (hst : (m1 % 2 ^ g = 0) ↔ (m2 % 2 ^ g = 0))
+    (hsub : (Nat.log2 m1 : Int) + e + 127 ≤ 0) (hsh : (g : Int) < -149 - e) :
+    roundNE_f32 neg m1 e = roundNE_f32 neg m2 e := by
+  have hgpos : 0 < (2 : Nat) ^ g := Nat.pow_pos (by decide)
+  have hq1 : 1 ≤ m1 / 2 ^ g := (Nat.one_le_div_iff hgpos).mpr hm1
+  have hm2 : 2 ^ g ≤ m2 := (Nat.one_le_div_iff hgpos).mp (by rw [← hhi]; exact hq1)
+  have hm1ne : m1 ≠ 0 := by omega
+  have hm2ne : m2 ≠ 0 := by omega
+  have hlog : Nat.log2 m1 = Nat.log2 m2 := by
+    rw [log2_div_pow m1 g hm1, log2_div_pow m2 g hm2, hhi]
+  rw [roundNE_f32_eq_encode neg m1 e hm1ne, roundNE_f32_eq_encode neg m2 e hm2ne]
+  congr 1
+  · rw [hlog]
+  · simp only [keptOf]
+    rw [hlog]
+    have hBigP : ((↑(Nat.log2 m2) + e : Int) + 127 ≤ 0) := by rw [← hlog]; exact hsub
+    have hShP : ¬ (((-149 : Int) - e) ≤ 0) := by omega
+    simp only [if_pos hBigP, if_neg hShP]
+    exact rneQuot_sticky_collapse m1 m2 g ((-149 - e).toNat) (by omega) hhi hst
+
 end ArchFp
