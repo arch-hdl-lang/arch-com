@@ -122,4 +122,39 @@ theorem mag98_eq_mag470_scaled_same (a b c : BitVec 32)
       Nat.add_mul, Nat.mul_assoc H (2 ^ D) (2 ^ (49 - D)), p49, p49',
       ← Nat.mul_assoc L (2 ^ (48 - D)) 2]
 
+/-- `Int.bmod` by `2^16` is the identity on the signed range. -/
+private theorem bmod16_id (x : Int) (h1 : -(2 ^ 15) ≤ x) (h2 : x < 2 ^ 15) :
+    Int.bmod x (2 ^ 16) = x := by
+  rw [Int.bmod_def]
+  have e1 : ((2 ^ 16 : Nat) : Int) = 65536 := by decide
+  have e2 : (2 : Int) ^ 15 = 32768 := by decide
+  omega
+
+/-- **The exponent identity.** `e_lo = e98 + 49 − diff` at the `Int` (signed) level
+    — the reference's alignment exponent vs the sticky-fold's, differing by exactly
+    `49 − diff`. Closes the `roundNE_scale` exponent obligation. -/
+theorem fma_elo_toInt_rel (a b c : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true) (hc : finiteNonzero c = true) :
+    (arch_fma_elo a b c).toInt
+      = (arch_fma_elo98 a b c).toInt + 49 - (fmaDiff98 a b c).toInt := by
+  have hbv : arch_fma_elo a b c = arch_fma_elo98 a b c + 49#16 - fmaDiff98 a b c := by
+    unfold arch_fma_elo arch_fma_elo98 fmaDiff98 fmaSel98 fpEunb; bv_decide
+  obtain ⟨h98lo, h98hi⟩ := fma_elo98_bounds a b c ha hb hc
+  have hdlo : 0 ≤ (fmaDiff98 a b c).toInt := by
+    have h : BitVec.sle 0#16 (fmaDiff98 a b c) = true := by
+      unfold finiteNonzero isNaN isInf isZero expField fracField fmaDiff98 fmaSel98 fpEunb at *
+      bv_decide
+    rw [BitVec.sle_iff_toInt_le] at h; simpa using h
+  have hdhi : (fmaDiff98 a b c).toInt ≤ 421 := by
+    have h : BitVec.sle (fmaDiff98 a b c) (BitVec.ofNat 16 421) = true := by
+      unfold finiteNonzero isNaN isInf isZero expField fracField fmaDiff98 fmaSel98 fpEunb at *
+      bv_decide
+    rw [BitVec.sle_iff_toInt_le] at h
+    rw [show (BitVec.ofNat 16 421).toInt = 421 from by decide] at h; exact h
+  have p15 : (2 : Int) ^ 15 = 32768 := by decide
+  rw [hbv, BitVec.toInt_sub, BitVec.toInt_add,
+      show (49#16 : BitVec 16).toInt = 49 from by decide,
+      bmod16_id ((arch_fma_elo98 a b c).toInt + 49) (by omega) (by omega),
+      bmod16_id _ (by omega) (by omega)]
+
 end ArchFp
