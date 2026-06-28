@@ -1,4 +1,5 @@
 import ArchFpEquiv.Model
+import ArchFpEquiv.FmaSticky
 import Std.Tactic.BVDecide
 
 /-!
@@ -206,9 +207,6 @@ theorem loComposite97_toNat (x : BitVec 48) (d : Nat) :
       = x.toNat * 2 ^ 48 / 2 ^ d * 2 + (if x.toNat * 2 ^ 48 % 2 ^ d ≠ 0 then 1 else 0) := by
   rw [append_bit_toNat, loField96_toNat, sticky_ofBool_toNat, loExt96_toNat]
 
-/-- `BitVec.ofBool β == 1#1` is just `β`. -/
-theorem ofBool_beq_one (β : Bool) : (BitVec.ofBool β == 1#1) = β := by cases β <;> decide
-
 /-- For a single bit, swapping the branches of a shared `if` flips nothing in the
     equality test: `(ite c X Y == ite c Y X) = (X == Y)`. -/
 theorem ite_beq_ite_swap {c : Prop} [Decidable c] (X Y : BitVec 1) :
@@ -250,5 +248,33 @@ theorem fma_mag98_diff_nat (a b c : BitVec 32)
   simp only [ofBool_beq_one, ite_beq_ite_swap, hdiff, Bool.false_eq_true, if_false]
   rw [show (BitVec.setWidth 96 (48#16) : BitVec 96).toNat = 48 from by rw [setWidth96_toNat16]; rfl,
       setWidth96_toNat16, setWidth98_absdiff_toNat, hiField97_toNat, loComposite97_toNat]
+
+-- ── capstone: the sticky-fold fma rounds an explicit GRS magnitude ────────────
+
+/-- **Same-sign capstone.** A finite non-cancelling same-sign fma is the RNE
+    rounding of the explicit guard/round/sticky magnitude `fmaHiNat + fmaLoNat`
+    (combining the proved rounding reduction with the magnitude characterization). -/
+theorem arch_fma_f32_same_grs (a b c : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true) (hc : finiteNonzero c = true)
+    (hnc : arch_fma_mag98 a b c ≠ 0#98)
+    (hsame : BitVec.extractLsb 31 31 c = BitVec.extractLsb 31 31 a ^^^ BitVec.extractLsb 31 31 b) :
+    arch_fma_f32 a b c
+      = roundNE_f32 (arch_fma_sign98 a b c == 1#1) (fmaHiNat a b c + fmaLoNat a b c)
+          (arch_fma_elo98 a b c).toInt := by
+  rw [arch_fma_f32_sticky_finite a b c ha hb hc hnc, fma_mag98_same_nat a b c hsame]
+
+/-- **Diff-sign capstone.** A finite non-cancelling opposing-sign fma is the RNE
+    rounding of the absolute-difference magnitude. -/
+theorem arch_fma_f32_diff_grs (a b c : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true) (hc : finiteNonzero c = true)
+    (hnc : arch_fma_mag98 a b c ≠ 0#98)
+    (hdiff : (BitVec.extractLsb 31 31 a ^^^ BitVec.extractLsb 31 31 b == BitVec.extractLsb 31 31 c)
+      = false) :
+    arch_fma_f32 a b c
+      = roundNE_f32 (arch_fma_sign98 a b c == 1#1)
+          (if fmaLoNat a b c ≤ fmaHiNat a b c then fmaHiNat a b c - fmaLoNat a b c
+           else fmaLoNat a b c - fmaHiNat a b c)
+          (arch_fma_elo98 a b c).toInt := by
+  rw [arch_fma_f32_sticky_finite a b c ha hb hc hnc, fma_mag98_diff_nat a b c hdiff]
 
 end ArchFp
