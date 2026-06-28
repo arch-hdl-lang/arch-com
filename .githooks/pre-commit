@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Enforce that ordinary work happens in a *linked git worktree*, not the shared
+# PRIMARY checkout. Two sessions/agents editing one working tree is what lets a
+# `git add -A` sweep up a neighbor's files and a half-finished edit break your
+# build (see the incident write-up in CLAUDE.md "Claim work / worktrees").
+#
+# IMPORTANT — this is a CLIENT-SIDE GUARD ONLY. Whether a commit was authored in
+# a worktree is not recorded in the commit, so this cannot be enforced
+# server-side or in CI. It requires `core.hooksPath=.githooks` (set by
+# scripts/setup_hooks.sh / documented in the README).
+#
+# Bypass for a legitimate one-off (solo clone, maintenance, automation):
+#     WORKTREE_ENFORCE_SKIP=1 git commit ...        # or: git commit --no-verify
+
+[[ "${WORKTREE_ENFORCE_SKIP:-0}" == 1 ]] && exit 0
+
+git_dir="$(cd "$(git rev-parse --git-dir)" && pwd -P)"
+common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd -P)"
+
+# Linked worktree (git-dir lives under .git/worktrees/<name>) → always allowed.
+[[ "$git_dir" != "$common_dir" ]] && exit 0
+
+# We are in the PRIMARY checkout — blocked for everyone (no per-branch or
+# per-pipeline exceptions). Automation that must commit here sets the explicit
+# WORKTREE_ENFORCE_SKIP=1 bypass above.
+branch="$(git branch --show-current 2>/dev/null || true)"
+
+cat >&2 <<EOF
+✗ pre-commit: refusing to commit in the PRIMARY checkout (branch: ${branch:-DETACHED}).
+
+  The primary checkout ($common_dir) is shared by concurrent sessions/agents.
+  Committing here risks 'git add -A' picking up a neighbor's in-progress files
+  and their half-finished code breaking your build. Work in your own worktree:
+
+      git worktree add ../arch-wt-<name> -b <your-branch>
+      cd ../arch-wt-<name>     # then re-run your commit there
+
+  Legitimate one-off (solo clone / maintenance / automation):
+      WORKTREE_ENFORCE_SKIP=1 git commit ...        # or: git commit --no-verify
+EOF
+exit 1
