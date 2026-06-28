@@ -97,6 +97,70 @@ theorem fma_mag470_same_nat (a b c : BitVec 32)
         hsw48, Nat.mod_eq_of_lt
           (key _ _ (mul_pow_lt469 _ _ (BitVec.isLt _) hd) (Nat.lt_of_lt_of_le (hm24 _) h48))]
 
+/-- Symmetry of the `≤`-phrased absolute difference (`split_ifs` is Mathlib-only). -/
+private theorem ite_absdiff_comm (P Q : Nat) :
+    (if P ≤ Q then Q - P else P - Q) = if Q ≤ P then P - Q else Q - P := by
+  rcases Nat.lt_trichotomy P Q with h | h | h
+  · rw [if_pos (Nat.le_of_lt h), if_neg (by omega)]
+  · subst h; simp
+  · rw [if_neg (by omega), if_pos (Nat.le_of_lt h)]
+
+/-- The reference's abs-difference selector, at the `Nat` level. The hardware
+    picks `X−Y` vs `Y−X` by `ult Y X`; either way the `toNat` is the symmetric
+    `max−min`, which we phrase with a `≤` test to line up with the mag98 form. -/
+private theorem bv470_absdiff_toNat (X Y : BitVec 470) :
+    (if BitVec.ofBool (BitVec.ult Y X) == 1#1 then X - Y else Y - X).toNat
+      = if Y.toNat ≤ X.toNat then X.toNat - Y.toNat else Y.toNat - X.toNat := by
+  rw [ofBool_beq_one]
+  rcases Nat.lt_trichotomy Y.toNat X.toNat with h | h | h
+  · rw [if_pos (by rw [BitVec.ult_eq_decide]; exact decide_eq_true h),
+        if_pos (Nat.le_of_lt h), BitVec.toNat_sub_of_le (Nat.le_of_lt h)]
+  · rw [if_neg (by rw [BitVec.ult_eq_decide]; simp only [decide_eq_true_eq]; omega),
+        if_pos (Nat.le_of_eq h), BitVec.toNat_sub_of_le (Nat.le_of_eq h.symm)]
+    omega
+  · rw [if_neg (by rw [BitVec.ult_eq_decide]; simp only [decide_eq_true_eq]; omega),
+        if_neg (by omega), BitVec.toNat_sub_of_le (Nat.le_of_lt h)]
+
+/-- **Reference magnitude, opposite sign.** `mag470 = |sig_hi·2^diff − sig_lo|`,
+    expressed with the same `≤` test the mag98 abs-difference uses, so the two
+    compose under scaling. -/
+theorem fma_mag470_diff_nat (a b c : BitVec 32)
+    (hdiff : (BitVec.extractLsb 31 31 a ^^^ BitVec.extractLsb 31 31 b
+      == BitVec.extractLsb 31 31 c) = false)
+    (hd : (fmaDiff98 a b c).toNat ≤ 421) :
+    (arch_fma_mag a b c).toNat
+      = if (fmaSigLo98 a b c).toNat ≤ (fmaSigHi98 a b c).toNat * 2 ^ (fmaDiff98 a b c).toNat
+        then (fmaSigHi98 a b c).toNat * 2 ^ (fmaDiff98 a b c).toNat - (fmaSigLo98 a b c).toNat
+        else (fmaSigLo98 a b c).toNat - (fmaSigHi98 a b c).toNat * 2 ^ (fmaDiff98 a b c).toNat := by
+  have hm24 : ∀ x : BitVec 24, x.toNat < 2 ^ 48 :=
+    fun x => Nat.lt_of_lt_of_le x.isLt (Nat.pow_le_pow_right (by decide) (by omega))
+  have hsw48 : ∀ x : BitVec 24, (BitVec.setWidth 48 x).toNat = x.toNat := fun x => by
+    rw [BitVec.toNat_setWidth, Nat.mod_eq_of_lt (hm24 x)]
+  simp only [fmaSigHi98, fmaSigLo98, fmaDiff98, fmaSel98, fpEunb, fpMant24] at hd ⊢
+  unfold arch_fma_mag
+  simp only [hdiff, BitVec.ofBool_false]
+  rw [if_neg (by decide), bv470_absdiff_toNat]
+  generalize hsb : BitVec.sle
+      (if (BitVec.ofBool (BitVec.extractLsb 30 23 c == 0#8) == 1#1) = true then 65387#16
+       else BitVec.setWidth 16 (BitVec.extractLsb 30 23 c) - 150#16)
+      ((if (BitVec.ofBool (BitVec.extractLsb 30 23 a == 0#8) == 1#1) = true then 65387#16
+        else BitVec.setWidth 16 (BitVec.extractLsb 30 23 a) - 150#16) +
+       if (BitVec.ofBool (BitVec.extractLsb 30 23 b == 0#8) == 1#1) = true then 65387#16
+       else BitVec.setWidth 16 (BitVec.extractLsb 30 23 b) - 150#16) = sb at hd ⊢
+  simp only [ofBool_beq_one] at hd ⊢
+  cases sb
+  · -- sb = false: c is the higher operand (its field is shifted, product unshifted)
+    simp only [reduceIte, Bool.false_eq_true, if_false] at hd ⊢
+    rw [setWidth470_toNat _ (by omega : (16 : Nat) ≤ 470),
+        setWidth470_toNat _ (by omega : (48 : Nat) ≤ 470),
+        setWidth470_shift_toNat _ _ (by omega), hsw48]
+    exact ite_absdiff_comm _ _
+  · -- sb = true: the product is the higher operand (product shifted, c unshifted)
+    simp only [reduceIte] at hd ⊢
+    rw [setWidth470_toNat _ (by omega : (16 : Nat) ≤ 470),
+        setWidth470_shift_toNat _ _ (by omega),
+        setWidth470_toNat _ (by omega : (24 : Nat) ≤ 470), hsw48]
+
 /-- **The `diff ≤ 48` (no-fold) identity.** When the operands are within the fold
     window, the sticky-fold magnitude is exactly the reference scaled by
     `2^(49−diff)` — so they round identically (the `roundNE_scale` case). -/
