@@ -411,6 +411,22 @@ private theorem log2_HF (H F : Nat) (hF : F < 2 ^ 49) (hH : 1 ≤ H) :
         Nat.div_eq_of_lt hF, Nat.add_zero]
   rw [log2_div_pow _ 49 hge, hdiv]
 
+/-- For `diff ≥ 50` the folded low part is below `2^47` (the floor is `< 2^46`).
+    Gives `low1 = foldedlow·2^(diff−49) < 2^(diff−2)` — the headroom the `g = diff−2`
+    boundary collapse needs. -/
+theorem foldedlow_lt_47 (L D : Nat) (hL : L < 2 ^ 48) (hD : 50 ≤ D) :
+    L * 2 ^ 48 / 2 ^ D * 2 + (if L * 2 ^ 48 % 2 ^ D ≠ 0 then 1 else 0) < 2 ^ 47 := by
+  have hq : L * 2 ^ 48 / 2 ^ D < 2 ^ 46 := by
+    rw [Nat.div_lt_iff_lt_mul (Nat.pow_pos (by decide)), ← Nat.pow_add]
+    calc L * 2 ^ 48 < 2 ^ 48 * 2 ^ 48 :=
+            (Nat.mul_lt_mul_right (Nat.pow_pos (by decide))).mpr hL
+      _ = 2 ^ 96 := by rw [← Nat.pow_add]
+      _ ≤ 2 ^ (46 + D) := Nat.pow_le_pow_right (by decide) (by omega)
+  have p46 : (2 : Nat) ^ 47 = 2 ^ 46 * 2 := by rw [← Nat.pow_succ]
+  by_cases hs : L * 2 ^ 48 % 2 ^ D ≠ 0
+  · rw [if_pos hs]; omega
+  · rw [if_neg hs]; omega
+
 /-- The tight bound: the folded low part is below `2^48` (guard-doubled shifted
     significand `< 2^48`, since the floor is `< 2^47`, plus the sticky bit fits in
     the freed-up parity). Needed to place the collapse at `g = diff − 1`. -/
@@ -483,6 +499,39 @@ private theorem collapse_hyps_core_sub_pred (H F L D : Nat)
     rw [Nat.sub_mul, Nat.mul_assoc, e49, step2]
   rw [em1, step2]
   exact collapse_of_decomp_sub (H * 2) (D - 1) (F * 2 ^ (D - 49)) L hr1 hr2 hQ hz
+
+/-- `g = D − 2` plumbing (for the diff-sign power-of-two boundary). -/
+private theorem pred_aux2 (F D : Nat) (hF : F < 2 ^ 47) (hD : 50 ≤ D) :
+    F * 2 ^ (D - 49) < 2 ^ (D - 2) ∧ (2 : Nat) ^ D = 2 ^ (D - 2) * 2 ^ 2 := by
+  refine ⟨?_, by rw [← Nat.pow_add]; congr 1; omega⟩
+  have e47 : (2 : Nat) ^ 47 * 2 ^ (D - 49) = 2 ^ (D - 2) := by rw [← Nat.pow_add]; congr 1; omega
+  have := (Nat.mul_lt_mul_right (Nat.pow_pos (by decide) : (0:Nat) < 2 ^ (D - 49))).mpr hF
+  rwa [e47] at this
+
+/-- The `g = D − 2` borrow core: `(H·2^49 − F)·2^(D−49)` and `H·2^D − L`, both
+    decomposed as `(H·4)·2^(D−2) − (low < 2^(D−2))`. The scale the diff-sign
+    power-of-two boundary needs (`g = diff − 2 < sh = diff − 1`). Needs `F < 2^47`. -/
+private theorem collapse_hyps_core_sub_pred2 (H F L D : Nat)
+    (hF : F < 2 ^ 47) (hL : L < 2 ^ 48) (hD : 50 ≤ D) (hH : 1 ≤ H) (hFL : F = 0 ↔ L = 0) :
+    (H * 2 ^ 49 - F) * 2 ^ (D - 49) / 2 ^ (D - 2) = (H * 2 ^ D - L) / 2 ^ (D - 2)
+    ∧ ((H * 2 ^ 49 - F) * 2 ^ (D - 49) % 2 ^ (D - 2) = 0 ↔ (H * 2 ^ D - L) % 2 ^ (D - 2) = 0) := by
+  have e49 : (2 : Nat) ^ 49 * 2 ^ (D - 49) = 2 ^ D := by rw [← Nat.pow_add]; congr 1; omega
+  obtain ⟨hr1, eD⟩ := pred_aux2 F D hF hD
+  have step2 : H * 2 ^ D = H * 2 ^ 2 * 2 ^ (D - 2) := by
+    rw [eD, Nat.mul_comm (2 ^ (D - 2)) (2 ^ 2), ← Nat.mul_assoc]
+  have hr2 : L < 2 ^ (D - 2) := Nat.lt_of_lt_of_le hL (Nat.pow_le_pow_right (by decide) (by omega))
+  have hQ : 1 ≤ H * 2 ^ 2 := Nat.pos_of_ne_zero (Nat.mul_ne_zero (by omega) (by decide))
+  have hz : F * 2 ^ (D - 49) = 0 ↔ L = 0 := by
+    rw [Nat.mul_eq_zero]
+    constructor
+    · rintro (h | h)
+      · exact hFL.mp h
+      · exact absurd h (Nat.pos_iff_ne_zero.mp (Nat.pow_pos (by decide)))
+    · intro h; exact Or.inl (hFL.mpr h)
+  have em1 : (H * 2 ^ 49 - F) * 2 ^ (D - 49) = H * 2 ^ 2 * 2 ^ (D - 2) - F * 2 ^ (D - 49) := by
+    rw [Nat.sub_mul, Nat.mul_assoc, e49, step2]
+  rw [em1, step2]
+  exact collapse_of_decomp_sub (H * 2 ^ 2) (D - 2) (F * 2 ^ (D - 49)) L hr1 hr2 hQ hz
 
 /-- **Collapse hypotheses, same sign.** For `diff > 48` the scaled sticky-fold
     magnitude `mag98·2^(diff−49)` and the reference `mag470` agree above bit `diff`
@@ -610,6 +659,45 @@ theorem mag98_scaled_collapse_diff_pred (a b c : BitVec 32)
   rw [if_pos hle98, if_pos hle470]
   exact collapse_hyps_core_sub_pred (fmaSigHi98 a b c).toNat _ (fmaSigLo98 a b c).toNat
     (fmaDiff98 a b c).toNat hFlt hLlt hdlo hHpos
+    (foldedlow_eq_zero_iff _ _ (Nat.pow_pos (by decide)))
+
+/-- **Collapse hypotheses at `g = diff − 2`, opposite sign.** For `diff ≥ 50` the
+    tighter `foldedlow < 2^47` lets the collapse drop to `g = diff − 2` — the scale
+    the diff-sign power-of-two boundary (`sig_hi = 2^23`) needs, where `g = diff − 1`
+    coincides with the rounding shift. -/
+theorem mag98_scaled_collapse_diff_pred2 (a b c : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true) (hc : finiteNonzero c = true)
+    (hdiff : (BitVec.extractLsb 31 31 a ^^^ BitVec.extractLsb 31 31 b
+      == BitVec.extractLsb 31 31 c) = false)
+    (hdlo : 50 ≤ (fmaDiff98 a b c).toNat) (hdhi : (fmaDiff98 a b c).toNat ≤ 421) :
+    (arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49)
+        / 2 ^ ((fmaDiff98 a b c).toNat - 2)
+      = (arch_fma_mag a b c).toNat / 2 ^ ((fmaDiff98 a b c).toNat - 2)
+    ∧ ((arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49)
+        % 2 ^ ((fmaDiff98 a b c).toNat - 2) = 0
+      ↔ (arch_fma_mag a b c).toNat % 2 ^ ((fmaDiff98 a b c).toNat - 2) = 0) := by
+  have hHpos := fmaSigHi98_pos a b c ha hb hc
+  have hLlt : (fmaSigLo98 a b c).toNat < 2 ^ 48 :=
+    Nat.lt_of_lt_of_le (fmaSigLo98 a b c).isLt (Nat.pow_le_pow_right (by decide) (by omega))
+  rw [fma_mag98_diff_nat a b c hdiff, fma_mag470_diff_nat a b c hdiff hdhi]
+  unfold fmaHiNat fmaLoNat
+  have hF47 := foldedlow_lt_47 (fmaSigLo98 a b c).toNat (fmaDiff98 a b c).toNat hLlt hdlo
+  have hF48 := foldedlow_lt_48 (fmaSigLo98 a b c).toNat (fmaDiff98 a b c).toNat hLlt (by omega)
+  have hle98 : (fmaSigLo98 a b c).toNat * 2 ^ 48 / 2 ^ (fmaDiff98 a b c).toNat * 2
+      + (if (fmaSigLo98 a b c).toNat * 2 ^ 48 % 2 ^ (fmaDiff98 a b c).toNat ≠ 0 then 1 else 0)
+      ≤ (fmaSigHi98 a b c).toNat * 2 ^ 49 := by
+    have : 2 ^ 49 ≤ (fmaSigHi98 a b c).toNat * 2 ^ 49 := Nat.le_mul_of_pos_left _ hHpos
+    omega
+  have hle470 : (fmaSigLo98 a b c).toNat
+      ≤ (fmaSigHi98 a b c).toNat * 2 ^ (fmaDiff98 a b c).toNat := by
+    have h1 : (fmaSigLo98 a b c).toNat < 2 ^ (fmaDiff98 a b c).toNat :=
+      Nat.lt_of_lt_of_le hLlt (Nat.pow_le_pow_right (by decide) (by omega))
+    have h2 : 2 ^ (fmaDiff98 a b c).toNat
+        ≤ (fmaSigHi98 a b c).toNat * 2 ^ (fmaDiff98 a b c).toNat := Nat.le_mul_of_pos_left _ hHpos
+    omega
+  rw [if_pos hle98, if_pos hle470]
+  exact collapse_hyps_core_sub_pred2 (fmaSigHi98 a b c).toNat _ (fmaSigLo98 a b c).toNat
+    (fmaDiff98 a b c).toNat hF47 hLlt hdlo hHpos
     (foldedlow_eq_zero_iff _ _ (Nat.pow_pos (by decide)))
 
 /-- **Same-sign magnitude log2.** `log2(mag98) = log2(sig_hi) + 49` — the high
