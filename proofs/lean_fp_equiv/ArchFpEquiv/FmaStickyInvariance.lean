@@ -101,4 +101,92 @@ theorem rneQuot_scale (n k sh : Nat) (hk : k < sh) :
   unfold rneQuot
   simp only [hdiv, hmod, hg, hc1, hc2]
 
+/-- `rneQuot` is exact (no round-up) when the dropped bits are all zero. -/
+theorem rneQuot_exact (m s : Nat) (h : m % 2 ^ s = 0) : rneQuot m s = m / 2 ^ s := by
+  have hp : 0 < 2 ^ (s - 1) := Nat.pow_pos (by decide)
+  unfold rneQuot
+  rw [h, if_neg]
+  · exact Nat.add_zero _
+  · rintro (hlt | ⟨heq, _⟩)
+    · exact absurd hlt (Nat.not_lt_zero _)
+    · omega
+
+-- ── the post-`kept` encoder, factored out of `roundNE_f32` ────────────────────
+
+/-- The tail of `roundNE_f32` (subnormal/normal/overflow encoding) as a function of
+    `(neg, biased, kept)` — everything in `roundNE_f32` after `kept` is computed. -/
+def roundNE_encode (neg : Bool) (biased : Int) (kept : Nat) : BitVec 32 :=
+  let sgn : Nat := if neg then 2 ^ 31 else 0
+  if biased ≤ 0 then BitVec.ofNat 32 (sgn + kept % 2 ^ 31)
+  else
+    let carry : Bool := 2 ^ 24 ≤ kept
+    let biased_n : Int := if carry then biased + 1 else biased
+    let kept_n : Nat := if carry then kept / 2 else kept
+    if 255 ≤ biased_n then BitVec.ofNat 32 (sgn + 0x7F800000)
+    else BitVec.ofNat 32 (sgn + (biased_n.toNat % 256) * 2 ^ 23 + kept_n % 2 ^ 23)
+
+/-- The `kept` (rounded-and-shifted significand) computed inside `roundNE_f32`. -/
+def keptOf (sig : Nat) (e0 : Int) : Nat :=
+  let ev : Int := (Nat.log2 sig : Int) + e0
+  let biased : Int := ev + 127
+  let k : Int := if biased ≤ 0 then -149 else ev - 23
+  let sh : Int := k - e0
+  if sh ≤ 0 then sig * 2 ^ (-sh).toNat else rneQuot sig sh.toNat
+
+/-- `roundNE_f32` factors as `roundNE_encode` of its biased exponent and `keptOf`
+    (definitional — just names the two halves of the spec). -/
+theorem roundNE_f32_eq_encode (neg : Bool) (sig : Nat) (e0 : Int) (hsig : sig ≠ 0) :
+    roundNE_f32 neg sig e0
+      = roundNE_encode neg ((Nat.log2 sig : Int) + e0 + 127) (keptOf sig e0) := by
+  unfold roundNE_f32 roundNE_encode keptOf
+  rw [if_neg hsig]
+
+/-- **The `kept` core scales.** Dropping `sh` bits of `sig·2^k` (with `sh` measured
+    from the same exponent `e0`) equals dropping `sh-k` bits of `sig` — exactly when
+    `sh ≤ k` (the extra `k` factors out as an exact power-of-two), and by `rneQuot`
+    scaling when `sh > k`. `S` is the shift amount `k_shift - e0`. -/
+theorem kept_core_scale (n k : Nat) (S : Int) :
+    (if S ≤ 0 then (n * 2 ^ k) * 2 ^ (-S).toNat else rneQuot (n * 2 ^ k) S.toNat)
+      = (if S - (k : Int) ≤ 0 then n * 2 ^ (-(S - (k : Int))).toNat
+         else rneQuot n (S - (k : Int)).toNat) := by
+  by_cases hS : S ≤ 0
+  · rw [if_pos hS, if_pos (by omega : S - (k : Int) ≤ 0)]
+    rw [show (-(S - (k : Int))).toNat = k + (-S).toNat from by omega, Nat.pow_add]
+    exact Nat.mul_assoc _ _ _
+  · by_cases hSk : S - (k : Int) ≤ 0
+    · rw [if_neg (by omega), if_pos hSk]
+      have hfac : n * 2 ^ k = n * 2 ^ (k - S.toNat) * 2 ^ S.toNat := by
+        rw [Nat.mul_assoc, ← Nat.pow_add]; congr 2; omega
+      have hmod : (n * 2 ^ k) % 2 ^ S.toNat = 0 := by rw [hfac]; exact Nat.mul_mod_left _ _
+      have hdiv : (n * 2 ^ k) / 2 ^ S.toNat = n * 2 ^ (k - S.toNat) := by
+        rw [hfac]; exact Nat.mul_div_cancel _ (Nat.pow_pos (by decide))
+      rw [rneQuot_exact _ _ hmod, hdiv,
+          show k - S.toNat = (-(S - (k : Int))).toNat from by omega]
+    · rw [if_neg (by omega), if_neg hSk, rneQuot_scale n k S.toNat (by omega),
+          show S.toNat - k = (S - (k : Int)).toNat from by omega]
+
+/-- **Value-level scaling invariance of `keptOf`.** -/
+theorem keptOf_scale (n k : Nat) (e : Int) (hn : 0 < n) :
+    keptOf (n * 2 ^ k) e = keptOf n (e + (k : Int)) := by
+  simp only [keptOf]
+  rw [log2_mul_pow2 n k hn,
+      show (↑(Nat.log2 n + k) : Int) + e = ↑(Nat.log2 n) + (e + ↑k) from by omega]
+  generalize hK : (if (↑(Nat.log2 n) + (e + (k : Int))) + 127 ≤ 0 then (-149 : Int)
+                   else (↑(Nat.log2 n) + (e + (k : Int))) - 23) = K
+  rw [show (K - (e + (k : Int))) = (K - e) - (k : Int) from by omega]
+  exact kept_core_scale n k (K - e)
+
+/-- **Value-level rounding scaling invariance.** Rounding `sig·2^k` at exponent `e`
+    is the same f32 as rounding `sig` at exponent `e+k` — the foundation for the
+    `d ≤ FMA_G` (exact, no fold) case of the sticky-fold invariance. -/
+theorem roundNE_scale (neg : Bool) (n : Nat) (e : Int) (k : Nat) (hn : 0 < n) :
+    roundNE_f32 neg (n * 2 ^ k) e = roundNE_f32 neg n (e + (k : Int)) := by
+  have hne : n * 2 ^ k ≠ 0 :=
+    Nat.mul_ne_zero (by omega) (Nat.pos_iff_ne_zero.mp (Nat.pow_pos (by decide)))
+  rw [roundNE_f32_eq_encode neg (n * 2 ^ k) e hne,
+      roundNE_f32_eq_encode neg n (e + (k : Int)) (by omega),
+      keptOf_scale n k e hn]
+  congr 1
+  rw [log2_mul_pow2 n k hn]; omega
+
 end ArchFp
