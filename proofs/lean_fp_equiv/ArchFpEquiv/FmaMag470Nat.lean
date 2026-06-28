@@ -222,6 +222,90 @@ theorem mag98_eq_mag470_scaled_diff (a b c : BitVec 32)
       Nat.mul_assoc L (2 ^ (48 - D)) 2, hk, hH,
       absdiff_mul (H * 2 ^ D) L (2 ^ (49 - D)) (Nat.pow_pos (by decide))]
 
+/-- The folded low significand vanishes exactly when the low operand does — the
+    GRS fold drops no information about *whether* the tail is nonzero. -/
+private theorem foldedlow_eq_zero_iff (L D : Nat) (hpos : 0 < 2 ^ D) :
+    (L * 2 ^ 48 / 2 ^ D * 2 + (if L * 2 ^ 48 % 2 ^ D ≠ 0 then 1 else 0) = 0) ↔ L = 0 := by
+  have h48 : (2 : Nat) ^ 48 ≠ 0 := Nat.pos_iff_ne_zero.mp (Nat.pow_pos (by decide))
+  rcases Nat.eq_zero_or_pos (L * 2 ^ 48 % 2 ^ D) with hm | hm
+  · rw [if_neg (by omega), Nat.add_zero]
+    constructor
+    · intro h
+      have hfloor : L * 2 ^ 48 / 2 ^ D = 0 := by omega
+      have hlt : L * 2 ^ 48 < 2 ^ D :=
+        (Nat.div_eq_zero_iff.mp hfloor).resolve_left (Nat.pos_iff_ne_zero.mp hpos)
+      rw [Nat.mod_eq_of_lt hlt] at hm
+      exact (Nat.mul_eq_zero.mp hm).resolve_right h48
+    · intro h; rw [h, Nat.zero_mul, Nat.zero_div, Nat.zero_mul]
+  · rw [if_pos (by omega)]
+    constructor
+    · intro h; omega
+    · intro h; rw [h, Nat.zero_mul, Nat.zero_mod] at hm; omega
+
+/-- The two `roundNE_sticky_collapse` hypotheses for `g = diff`, abstracted over the
+    significands: `m1 = (H·2^49 + F)·2^(D−49)` and `m2 = H·2^D + L` agree above bit
+    `D` (both quotient `H`) and have the same low-zero status, given `F < 2^49`,
+    `L < 2^48`, `D ≥ 49`, and that `F` vanishes iff `L` does. -/
+private theorem collapse_hyps_core (H F L D : Nat)
+    (hF : F < 2 ^ 49) (hL : L < 2 ^ 48) (hD : 49 ≤ D) (hFL : F = 0 ↔ L = 0) :
+    (H * 2 ^ 49 + F) * 2 ^ (D - 49) / 2 ^ D = (H * 2 ^ D + L) / 2 ^ D
+    ∧ ((H * 2 ^ 49 + F) * 2 ^ (D - 49) % 2 ^ D = 0 ↔ (H * 2 ^ D + L) % 2 ^ D = 0) := by
+  have hpos : 0 < (2 : Nat) ^ D := Nat.pow_pos (by decide)
+  have e49 : (2 : Nat) ^ 49 * 2 ^ (D - 49) = 2 ^ D := by rw [← Nat.pow_add]; congr 1; omega
+  have hF' : F * 2 ^ (D - 49) < 2 ^ D := by
+    have := (Nat.mul_lt_mul_right (Nat.pow_pos (by decide) : (0:Nat) < 2 ^ (D - 49))).mpr hF
+    rwa [e49] at this
+  have hL' : L < 2 ^ D := Nat.lt_of_lt_of_le hL (Nat.pow_le_pow_right (by decide) (by omega))
+  have hr1 : (H * 2 ^ 49 + F) * 2 ^ (D - 49) = 2 ^ D * H + F * 2 ^ (D - 49) := by
+    rw [Nat.add_mul, Nat.mul_assoc, e49, Nat.mul_comm H (2 ^ D)]
+  refine ⟨?_, ?_⟩
+  · rw [hr1, Nat.mul_add_div hpos, Nat.div_eq_of_lt hF', Nat.add_zero,
+        Nat.mul_comm H (2 ^ D), Nat.mul_add_div hpos, Nat.div_eq_of_lt hL', Nat.add_zero]
+  · rw [hr1, Nat.mul_add_mod, Nat.mod_eq_of_lt hF', Nat.mul_comm H (2 ^ D),
+        Nat.mul_add_mod, Nat.mod_eq_of_lt hL']
+    constructor
+    · intro h
+      exact hFL.mp ((Nat.mul_eq_zero.mp h).resolve_right
+        (Nat.pos_iff_ne_zero.mp (Nat.pow_pos (by decide))))
+    · intro h; rw [hFL.mpr h, Nat.zero_mul]
+
+/-- **Collapse hypotheses, same sign.** For `diff > 48` the scaled sticky-fold
+    magnitude `mag98·2^(diff−49)` and the reference `mag470` agree above bit `diff`
+    (both quotient `sig_hi`) and share the low-zero status — the two preconditions
+    of `roundNE_sticky_collapse_normal` at `g = diff`. -/
+theorem mag98_scaled_collapse_same (a b c : BitVec 32)
+    (hsame : BitVec.extractLsb 31 31 c = BitVec.extractLsb 31 31 a ^^^ BitVec.extractLsb 31 31 b)
+    (hdlo : 49 ≤ (fmaDiff98 a b c).toNat) (hdhi : (fmaDiff98 a b c).toNat ≤ 421) :
+    (arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49)
+        / 2 ^ (fmaDiff98 a b c).toNat
+      = (arch_fma_mag a b c).toNat / 2 ^ (fmaDiff98 a b c).toNat
+    ∧ ((arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49)
+        % 2 ^ (fmaDiff98 a b c).toNat = 0
+      ↔ (arch_fma_mag a b c).toNat % 2 ^ (fmaDiff98 a b c).toNat = 0) := by
+  rw [fma_mag98_same_nat a b c hsame, fma_mag470_same_nat a b c hsame hdhi]
+  unfold fmaHiNat fmaLoNat
+  have hLlt : (fmaSigLo98 a b c).toNat < 2 ^ 48 :=
+    Nat.lt_of_lt_of_le (fmaSigLo98 a b c).isLt (Nat.pow_le_pow_right (by decide) (by omega))
+  have hFlt : (fmaSigLo98 a b c).toNat * 2 ^ 48 / 2 ^ (fmaDiff98 a b c).toNat * 2
+      + (if (fmaSigLo98 a b c).toNat * 2 ^ 48 % 2 ^ (fmaDiff98 a b c).toNat ≠ 0 then 1 else 0)
+      < 2 ^ 49 := by
+    have hq : (fmaSigLo98 a b c).toNat * 2 ^ 48 / 2 ^ (fmaDiff98 a b c).toNat < 2 ^ 47 := by
+      rw [Nat.div_lt_iff_lt_mul (Nat.pow_pos (by decide)), ← Nat.pow_add]
+      calc (fmaSigLo98 a b c).toNat * 2 ^ 48 < 2 ^ 48 * 2 ^ 48 :=
+              (Nat.mul_lt_mul_right (Nat.pow_pos (by decide))).mpr hLlt
+        _ = 2 ^ 96 := by rw [← Nat.pow_add]
+        _ ≤ 2 ^ (47 + (fmaDiff98 a b c).toNat) := Nat.pow_le_pow_right (by decide) (by omega)
+    have p47 : (2 : Nat) ^ 48 = 2 ^ 47 * 2 := by rw [← Nat.pow_succ]
+    have p48 : (2 : Nat) ^ 49 = 2 ^ 48 * 2 := by rw [← Nat.pow_succ]
+    have hBpos : 0 < (2 : Nat) ^ 48 := Nat.pow_pos (by decide)
+    by_cases hs : (fmaSigLo98 a b c).toNat * 2 ^ 48 % 2 ^ (fmaDiff98 a b c).toNat ≠ 0
+    · rw [if_pos hs]; omega
+    · rw [if_neg hs]; omega
+  have hFL := foldedlow_eq_zero_iff (fmaSigLo98 a b c).toNat (fmaDiff98 a b c).toNat
+    (Nat.pow_pos (by decide))
+  exact collapse_hyps_core (fmaSigHi98 a b c).toNat _ (fmaSigLo98 a b c).toNat
+    (fmaDiff98 a b c).toNat hFlt hLlt hdlo hFL
+
 /-- `Int.bmod` by `2^16` is the identity on the signed range. -/
 private theorem bmod16_id (x : Int) (h1 : -(2 ^ 15) ≤ x) (h2 : x < 2 ^ 15) :
     Int.bmod x (2 ^ 16) = x := by
