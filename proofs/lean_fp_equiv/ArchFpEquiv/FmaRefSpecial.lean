@@ -51,7 +51,7 @@ theorem fma_ref_inf_prod (a b c : BitVec 32)
 
 /-- A finite product plus an infinite addend gives the addend's infinity (reference). -/
 theorem fma_ref_inf_c (a b c : BitVec 32)
-    (hna : isNaN a = false) (hnb : isNaN b = false) (hnc : isNaN c = false)
+    (hna : isNaN a = false) (hnb : isNaN b = false) (_hnc : isNaN c = false)
     (hpa : isInf a = false) (hpb : isInf b = false) (hci : isInf c = true) :
     arch_fma_f32_ref a b c = sgn c ++ (0xFF#8 ++ 0#23) := by
   unfold isNaN isInf expField fracField sgn arch_fma_f32_ref at *

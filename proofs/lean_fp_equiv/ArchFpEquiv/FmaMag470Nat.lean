@@ -73,7 +73,7 @@ theorem fma_mag470_same_nat (a b c : BitVec 32)
     intro A B hA hB; omega
   simp only [fmaSigHi98, fmaSigLo98, fmaDiff98, fmaSel98, fpEunb, fpMant24] at hd ⊢
   unfold arch_fma_mag
-  simp only [hsame, beq_self_eq_true, BitVec.ofBool_true, ite_self]
+  simp only [hsame, beq_self_eq_true, BitVec.ofBool_true]
   rw [if_pos (by decide : ((1 : BitVec 1) == 1#1) = true)]
   generalize hsb : BitVec.sle
       (if (BitVec.ofBool (BitVec.extractLsb 30 23 c == 0#8) == 1#1) = true then 65387#16
@@ -85,7 +85,7 @@ theorem fma_mag470_same_nat (a b c : BitVec 32)
   simp only [ofBool_beq_one] at hd ⊢
   cases sb
   · -- sb = false: c is the higher operand (its field is shifted, product unshifted)
-    simp only [reduceIte, Bool.false_eq_true, if_false] at hd ⊢
+    simp only [Bool.false_eq_true, if_false] at hd ⊢
     rw [setWidth470_toNat _ (by omega : (16 : Nat) ≤ 470), BitVec.toNat_add,
         setWidth470_toNat _ (by omega : (48 : Nat) ≤ 470), setWidth470_shift_toNat _ _ (by omega),
         hsw48, Nat.mod_eq_of_lt
@@ -151,7 +151,7 @@ theorem fma_mag470_diff_nat (a b c : BitVec 32)
   simp only [ofBool_beq_one] at hd ⊢
   cases sb
   · -- sb = false: c is the higher operand (its field is shifted, product unshifted)
-    simp only [reduceIte, Bool.false_eq_true, if_false] at hd ⊢
+    simp only [Bool.false_eq_true, if_false] at hd ⊢
     rw [setWidth470_toNat _ (by omega : (16 : Nat) ≤ 470),
         setWidth470_toNat _ (by omega : (48 : Nat) ≤ 470),
         setWidth470_shift_toNat _ _ (by omega), hsw48]
