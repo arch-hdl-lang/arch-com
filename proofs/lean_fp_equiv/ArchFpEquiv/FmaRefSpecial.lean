@@ -68,4 +68,14 @@ theorem fma_ref_prod_zero (a b c : BitVec 32)
   unfold isNaN isInf isZero expField fracField sgn arch_fma_f32_ref at *
   bv_decide (config := { timeout := 300 })
 
+/-- **Exact cancellation (reference).** When the sticky-fold magnitude vanishes,
+    the reference fma is `+0` — the exact-wide sum cancels too. -/
+theorem fma_ref_cancel98 (a b c : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true) (hc : finiteNonzero c = true)
+    (hcanc : arch_fma_mag98 a b c = 0#98) :
+    arch_fma_f32_ref a b c = 0#32 := by
+  unfold finiteNonzero isNaN isInf isZero expField fracField
+    arch_fma_f32_ref arch_fma_mag98 at *
+  bv_decide (config := { timeout := 300 })
+
 end ArchFp

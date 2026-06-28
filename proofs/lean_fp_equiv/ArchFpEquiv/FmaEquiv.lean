@@ -14,6 +14,27 @@ invariance cases in `FmaInvariance.lean`.
 
 namespace ArchFp
 
+set_option maxHeartbeats 4000000
+set_option maxRecDepth 100000
+
+/-- **Exact-cancellation equivalence.** When the sticky-fold magnitude vanishes,
+    both fmas are `+0`. -/
+theorem fma_eq_ref_cancel (a b c : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true) (hc : finiteNonzero c = true)
+    (hcanc : arch_fma_mag98 a b c = 0#98) :
+    arch_fma_f32 a b c = arch_fma_f32_ref a b c := by
+  rw [fma_cancel98 a b c ha hb hc hcanc, fma_ref_cancel98 a b c ha hb hc hcanc]
+
+/-- **Zero-addend equivalence.** With `a,b` finite-nonzero and `c = 0`, both fmas
+    round the product alone — `bv_decide` equates them directly (the `c = 0` branch
+    prunes the addend, leaving the shared product rounding). -/
+theorem fma_eq_ref_czero (a b c : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true) (hcz : isZero c = true) :
+    arch_fma_f32 a b c = arch_fma_f32_ref a b c := by
+  unfold finiteNonzero isNaN isInf isZero expField fracField
+    arch_fma_f32 arch_fma_f32_ref at *
+  bv_decide (config := { timeout := 600 })
+
 /-- **Special-value equivalence.** When any operand is NaN/Inf, or the product has
     a zero factor, the sticky-fold and reference fma agree — both short-circuit to
     the same special value (NaN, signed infinity, or the reduced adder call). -/
