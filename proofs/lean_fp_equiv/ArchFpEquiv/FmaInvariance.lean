@@ -455,4 +455,40 @@ theorem fma_eq_ref_diff_big_sub (a b c : BitVec 32)
     (arch_fma_mag a b c).toNat (arch_fma_elo a b c).toInt ((fmaDiff98 a b c).toNat - 1)
     hm1 hchi hcst hsub hshsub
 
+/-- **The `diff = 49` no-scaling boundary.** At `diff = 49` the fold is the
+    identity (`foldedlow = sig_lo`, `foldedlow49`), so `mag98 = mag470` exactly and
+    `e98 = e_ref` (both `= e_hi − 49`) — for both signs. The two fmas round the same
+    Nat at the same exponent, no collapse needed. (Resolves the `diff = 49` corner
+    of the diff-sign power-of-two boundary, where `g = diff − 2 = 47` would be too low.) -/
+theorem fma_eq_ref_diff49 (a b c : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true) (hc : finiteNonzero c = true)
+    (hd49 : (fmaDiff98 a b c).toNat = 49) (hnc : arch_fma_mag98 a b c ≠ 0#98) :
+    arch_fma_f32 a b c = arch_fma_f32_ref a b c := by
+  have hmageq : (arch_fma_mag98 a b c).toNat = (arch_fma_mag a b c).toNat := by
+    by_cases hs : BitVec.extractLsb 31 31 c = BitVec.extractLsb 31 31 a ^^^ BitVec.extractLsb 31 31 b
+    · rw [fma_mag98_same_nat a b c hs, fma_mag470_same_nat a b c hs (by omega)]
+      unfold fmaHiNat fmaLoNat; rw [hd49, foldedlow49]
+    · have hdiff : (BitVec.extractLsb 31 31 a ^^^ BitVec.extractLsb 31 31 b
+          == BitVec.extractLsb 31 31 c) = false := by
+        rw [beq_eq_false_iff_ne]; exact fun h => hs h.symm
+      rw [fma_mag98_diff_nat a b c hdiff, fma_mag470_diff_nat a b c hdiff (by omega)]
+      unfold fmaHiNat fmaLoNat; rw [hd49, foldedlow49]
+  have hnc' : (arch_fma_mag98 a b c).toNat ≠ 0 :=
+    fun h => hnc (BitVec.eq_of_toNat_eq (by simp [h]))
+  have hnc470 : arch_fma_mag a b c ≠ 0#470 := by
+    intro h; rw [h] at hmageq; exact hnc' (by rw [hmageq]; rfl)
+  have hdint : (fmaDiff98 a b c).toInt = ((fmaDiff98 a b c).toNat : Int) :=
+    BitVec.toInt_eq_toNat_of_lt (by
+      have h15 : (2 ^ 15 : Nat) = 32768 := by decide
+      omega)
+  have heeq : (arch_fma_elo98 a b c).toInt = (arch_fma_elo a b c).toInt := by
+    rw [fma_elo_toInt_rel a b c ha hb hc, hdint, hd49]; push_cast; omega
+  have hsign : (arch_fma_sign98 a b c == 1#1) = (arch_fma_sign a b c == 1#1) := by
+    unfold finiteNonzero isNaN isInf isZero expField fracField at ha hb hc
+    unfold arch_fma_mag98 at hnc
+    unfold arch_fma_sign98 arch_fma_sign
+    bv_decide
+  rw [arch_fma_f32_sticky_finite a b c ha hb hc hnc,
+      arch_fma_f32_ref_finite a b c ha hb hc hnc470, hmageq, heeq, hsign]
+
 end ArchFp

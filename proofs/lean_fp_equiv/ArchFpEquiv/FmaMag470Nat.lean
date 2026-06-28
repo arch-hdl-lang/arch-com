@@ -243,6 +243,24 @@ private theorem foldedlow_eq_zero_iff (L D : Nat) (hpos : 0 < 2 ^ D) :
     · intro h; omega
     · intro h; rw [h, Nat.zero_mul, Nat.zero_mod] at hm; omega
 
+/-- At `diff = 49` the fold is the identity: the `>>49` of `L·2^48` is `L/2`,
+    doubled back with the sticky bit recovering the dropped LSB — so `foldedlow = L`.
+    (This makes `diff = 49` the no-scaling boundary where `mag98 = mag470`.) -/
+theorem foldedlow49 (L : Nat) :
+    L * 2 ^ 48 / 2 ^ 49 * 2 + (if L * 2 ^ 48 % 2 ^ 49 ≠ 0 then 1 else 0) = L := by
+  have h49 : (2 : Nat) ^ 49 = 2 ^ 48 * 2 := by rw [← Nat.pow_succ]
+  have hBpos : 0 < (2 : Nat) ^ 48 := Nat.pow_pos (by decide)
+  have hdiv : L * 2 ^ 48 / 2 ^ 49 = L / 2 := by
+    rw [h49, Nat.mul_comm L (2 ^ 48), Nat.mul_div_mul_left L 2 hBpos]
+  have hmod : L * 2 ^ 48 % 2 ^ 49 = L % 2 * 2 ^ 48 := by
+    rw [h49, Nat.mul_comm L (2 ^ 48), Nat.mul_mod_mul_left, Nat.mul_comm (2 ^ 48) (L % 2)]
+  rw [hdiv, hmod]
+  have hmod2 : L % 2 = 0 ∨ L % 2 = 1 := by omega
+  have hdm : L = L / 2 * 2 + L % 2 := by omega
+  rcases hmod2 with h | h
+  · rw [h, Nat.zero_mul, if_neg (by decide)]; omega
+  · rw [h, Nat.one_mul, if_pos (by exact Nat.pos_iff_ne_zero.mp hBpos)]; omega
+
 /-- The folded low part is below `2^49`: the guard-doubled shifted significand
     (`< 2^48`) plus the sticky bit. -/
 theorem foldedlow_lt (L D : Nat) (hL : L < 2 ^ 48) (hD : 49 ≤ D) :
