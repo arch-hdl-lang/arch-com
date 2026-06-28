@@ -38,4 +38,15 @@ theorem setWidth470_toNat {n : Nat} (x : BitVec n) (hn : n ≤ 470) :
   rw [BitVec.toNat_setWidth,
       Nat.mod_eq_of_lt (Nat.lt_of_lt_of_le x.isLt (Nat.pow_le_pow_right (by decide) hn))]
 
+/-- For finite operands the exponent gap is at most 421, so the reference's
+    shifted operand stays inside 470 bits (the alignment is exact, no fold). -/
+theorem fma_diff98_bound (a b c : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true) (hc : finiteNonzero c = true) :
+    (fmaDiff98 a b c).toNat ≤ 421 := by
+  have h : BitVec.ule (fmaDiff98 a b c) (BitVec.ofNat 16 421) = true := by
+    unfold finiteNonzero isNaN isInf isZero expField fracField fmaDiff98 fmaSel98 fpEunb at *
+    bv_decide
+  rw [BitVec.ule] at h
+  simpa using of_decide_eq_true h
+
 end ArchFp
