@@ -778,7 +778,7 @@ pub fn fp_functions(p: FpCompat) -> Vec<FpFn> {
 /// appears identically on both sides of that equation and `bv_decide` discharges
 /// it structurally (no SAT-hard multiplier-equivalence). This isolates the entire
 /// remaining Tier-2 crux into one function: `arch_round48`.
-pub fn lean_extra_functions() -> Vec<FpFn> {
+pub fn lean_extra_functions(p: FpCompat) -> Vec<FpFn> {
     let decode_mant = {
         let x = var("x", 32);
         FpFn::new("arch_decode_mant", &[("x", 32)], 24, decode(&x).mant)
@@ -813,6 +813,24 @@ pub fn lean_extra_functions() -> Vec<FpFn> {
             32,
             normround(&s, &sig, &e0),
         )
+    };
+    // Sticky-fold FMA rounder width: mag is mw = (48 + FMA_G) + 2 = 98 bits.
+    // These are the pieces the *new* fma correctness proof reduces to (the
+    // tractable width-98 analogue of round470/msb470).
+    let round98 = {
+        let s = var("s", 1);
+        let sig = var("sig", 98);
+        let e0 = var("e0", 16);
+        FpFn::new(
+            "arch_round98",
+            &[("s", 1), ("sig", 98), ("e0", 16)],
+            32,
+            normround(&s, &sig, &e0),
+        )
+    };
+    let msb98 = {
+        let sig = var("sig", 98);
+        FpFn::new("arch_msb_index98", &[("sig", 98)], 16, msb_index(&sig))
     };
     let msb470 = {
         let sig = var("sig", 470);
@@ -875,6 +893,75 @@ pub fn lean_extra_functions() -> Vec<FpFn> {
         1,
         fma_part("sign"),
     );
+
+    // ── Sticky-fold (new) fma pre-rounding pieces, width 98 ──────────────────
+    // The 98-bit magnitude, its LSB exponent e0, and the result sign of the
+    // *new* bounded sticky-fold general path — the reduction target for the new
+    // fma correctness proof (analogue of fma_mag/elo/sign at the 98-bit rounder).
+    let fma_part_new = |which: &str| -> Bv {
+        let a = var("a", 32);
+        let b = var("b", 32);
+        let c = var("c", 32);
+        let da = decode(&a);
+        let db = decode(&b);
+        let dc = decode(&c);
+        let sp = bxor(&da.sign, &db.sign);
+        let mp = mul(&zext(&da.mant, 48), &zext(&db.mant, 48));
+        let ep = add(&da.eunb, &db.eunb);
+        let c_mant48 = zext(&dc.mant, 48);
+        let hi_is_p = sge(&ep, &dc.eunb);
+        let psel = |fp_: &Bv, fc: &Bv| ite(&hi_is_p, fp_, fc);
+        let sig_hi = psel(&mp, &c_mant48);
+        let sig_lo = psel(&c_mant48, &mp);
+        let e_hi = psel(&ep, &dc.eunb);
+        let sign_hi = psel(&sp, &dc.sign);
+        let sign_lo = psel(&dc.sign, &sp);
+        let diff = sub(&e_hi, &psel(&dc.eunb, &ep));
+        let fw = 48 + FMA_G;
+        let hi_field = shl(&zext(&sig_hi, fw), &cst(FMA_G as u128, 16));
+        let lo_ext = shl(&zext(&sig_lo, fw), &cst(FMA_G as u128, 16));
+        let lo_field = lshr(&lo_ext, &diff);
+        let mask = sub(&shl(&cst(1, fw), &diff), &cst(1, fw));
+        let sticky = ne(&band(&lo_ext, &mask), &cst(0, fw));
+        let hi_e = concat(&hi_field, &cst(0, 1));
+        let lo_e = concat(&lo_field, &sticky);
+        let same = eq(&sign_hi, &sign_lo);
+        let ge = uge(&hi_e, &lo_e);
+        let raw = ite(&ge, &sub(&hi_e, &lo_e), &sub(&lo_e, &hi_e));
+        let mw = fw + 2;
+        let mag = ite(
+            &same,
+            &add(&zext(&hi_e, mw), &zext(&lo_e, mw)),
+            &zext(&raw, mw),
+        );
+        let res_sign = ite(&same, &sign_hi, &ite(&ge, &sign_hi, &sign_lo));
+        let e0 = sub(&e_hi, &cst((FMA_G + 1) as u128, 16));
+        match which {
+            "mag" => mag,
+            "elo" => e0,
+            "sign" => res_sign,
+            _ => unreachable!(),
+        }
+    };
+    let fma_mag98 = FpFn::new(
+        "arch_fma_mag98",
+        &[("a", 32), ("b", 32), ("c", 32)],
+        98,
+        fma_part_new("mag"),
+    );
+    let fma_elo98 = FpFn::new(
+        "arch_fma_elo98",
+        &[("a", 32), ("b", 32), ("c", 32)],
+        16,
+        fma_part_new("elo"),
+    );
+    let fma_sign98 = FpFn::new(
+        "arch_fma_sign98",
+        &[("a", 32), ("b", 32), ("c", 32)],
+        1,
+        fma_part_new("sign"),
+    );
+
     vec![
         decode_mant,
         decode_eunb,
@@ -882,8 +969,15 @@ pub fn lean_extra_functions() -> Vec<FpFn> {
         msb48,
         round470,
         msb470,
+        round98,
+        msb98,
         fma_mag,
         fma_elo,
         fma_sign,
+        fma_mag98,
+        fma_elo98,
+        fma_sign98,
+        // exact-wide reference FMA, for the sticky-fold equivalence theorem
+        fma_f32_ref(p),
     ]
 }
