@@ -316,9 +316,15 @@ See `doc/ARCH_HDL_Specification.md` for the full language reference and `doc/COM
 Install the versioned local git hooks with:
 
 ```sh
-git config core.hooksPath .githooks
-chmod +x .githooks/pre-push scripts/pre_pr_review.sh
+scripts/setup_hooks.sh        # sets core.hooksPath=.githooks and chmods the hooks
 ```
+
+This installs two guards: `pre-push` (the PR-review-marker gate below) and
+`pre-commit`, which keeps work out of the shared **primary** checkout — commit
+from your own linked worktree (`git worktree add ../arch-wt-<name> -b <branch>`)
+so concurrent sessions don't share one working tree. Both are client-side guards
+(bypass `pre-commit` for a one-off with `WORKTREE_ENFORCE_SKIP=1` or
+`git commit --no-verify`).
 
 Before opening a PR, run a code-review pass against the branch diff, address or
 accept the findings, then record the reviewed HEAD:
