@@ -381,6 +381,18 @@ theorem log2_mul_pow (m k : Nat) (hm : 1 ≤ m) : Nat.log2 (m * 2 ^ k) = Nat.log
   have h2k : 2 ^ k ≤ m * 2 ^ k := Nat.le_mul_of_pos_left _ hm
   rw [log2_div_pow (m * 2 ^ k) k h2k, Nat.mul_div_left m (Nat.pow_pos (by decide))]
 
+/-- `log2 (H·2^49 + F) = log2 H + 49` for `H ≥ 1`, `F < 2^49`: the additive low part
+    stays below the `2^49` weight so it cannot reach the next bit. Pure-Nat — keep
+    `H`,`F` abstract (omega chokes evaluating `2^49` unarily; bound `hge` via `le_trans`). -/
+private theorem log2_HF (H F : Nat) (hF : F < 2 ^ 49) (hH : 1 ≤ H) :
+    Nat.log2 (H * 2 ^ 49 + F) = Nat.log2 H + 49 := by
+  have hge : 2 ^ 49 ≤ H * 2 ^ 49 + F :=
+    Nat.le_trans (Nat.le_mul_of_pos_left _ hH) (Nat.le_add_right _ _)
+  have hdiv : (H * 2 ^ 49 + F) / 2 ^ 49 = H := by
+    rw [Nat.mul_comm H (2 ^ 49), Nat.mul_add_div (Nat.pow_pos (by decide)),
+        Nat.div_eq_of_lt hF, Nat.add_zero]
+  rw [log2_div_pow _ 49 hge, hdiv]
+
 /-- The tight bound: the folded low part is below `2^48` (guard-doubled shifted
     significand `< 2^48`, since the floor is `< 2^47`, plus the sticky bit fits in
     the freed-up parity). Needed to place the collapse at `g = diff − 1`. -/
@@ -581,6 +593,34 @@ theorem mag98_scaled_collapse_diff_pred (a b c : BitVec 32)
   exact collapse_hyps_core_sub_pred (fmaSigHi98 a b c).toNat _ (fmaSigLo98 a b c).toNat
     (fmaDiff98 a b c).toNat hFlt hLlt hdlo hHpos
     (foldedlow_eq_zero_iff _ _ (Nat.pow_pos (by decide)))
+
+/-- **Same-sign magnitude log2.** `log2(mag98) = log2(sig_hi) + 49` — the high
+    significand sits at weight `2^49` and the additive folded low part (`< 2^49`)
+    cannot reach the next power. Feeds the normal sub-case's `hsh`/`hbig`. -/
+theorem log2_mag98_same (a b c : BitVec 32)
+    (hsame : BitVec.extractLsb 31 31 c = BitVec.extractLsb 31 31 a ^^^ BitVec.extractLsb 31 31 b)
+    (hdlo : 49 ≤ (fmaDiff98 a b c).toNat) (hHpos : 1 ≤ (fmaSigHi98 a b c).toNat) :
+    Nat.log2 (arch_fma_mag98 a b c).toNat = Nat.log2 (fmaSigHi98 a b c).toNat + 49 := by
+  rw [fma_mag98_same_nat a b c hsame]
+  unfold fmaHiNat fmaLoNat
+  have hLlt : (fmaSigLo98 a b c).toNat < 2 ^ 48 :=
+    Nat.lt_of_lt_of_le (fmaSigLo98 a b c).isLt (Nat.pow_le_pow_right (by decide) (by omega))
+  exact log2_HF (fmaSigHi98 a b c).toNat _
+    (foldedlow_lt (fmaSigLo98 a b c).toNat (fmaDiff98 a b c).toNat hLlt hdlo) hHpos
+
+/-- The scaled same-sign magnitude log2: `log2(mag98·2^(diff−49)) = log2(sig_hi) + diff`.
+    The `hsh`/`hbig` ingredient for the same-sign normal `diff > 48` sub-case. -/
+theorem log2_mag98_scaled_same (a b c : BitVec 32)
+    (hsame : BitVec.extractLsb 31 31 c = BitVec.extractLsb 31 31 a ^^^ BitVec.extractLsb 31 31 b)
+    (hdlo : 49 ≤ (fmaDiff98 a b c).toNat) (hHpos : 1 ≤ (fmaSigHi98 a b c).toNat) :
+    Nat.log2 ((arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49))
+      = Nat.log2 (fmaSigHi98 a b c).toNat + (fmaDiff98 a b c).toNat := by
+  have hmpos : 1 ≤ (arch_fma_mag98 a b c).toNat := by
+    rw [fma_mag98_same_nat a b c hsame]; unfold fmaHiNat
+    refine Nat.le_trans Nat.one_le_two_pow
+      (Nat.le_trans (Nat.le_mul_of_pos_left _ hHpos) (Nat.le_add_right _ _))
+  rw [log2_mul_pow _ _ hmpos, log2_mag98_same a b c hsame hdlo hHpos]
+  omega
 
 /-- `Int.bmod` by `2^16` is the identity on the signed range. -/
 private theorem bmod16_id (x : Int) (h1 : -(2 ^ 15) ≤ x) (h2 : x < 2 ^ 15) :
