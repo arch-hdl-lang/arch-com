@@ -17,3 +17,4 @@ import ArchFpEquiv.FmaStickyInvariance
 import ArchFpEquiv.FmaInvariance
 import ArchFpEquiv.Bf16FmaNote
 import ArchFpEquiv.SpecCheck
+import ArchFpEquiv.FmaRefSpecial
