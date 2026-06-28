@@ -143,6 +143,14 @@ def fmaDiff98 (a b c : BitVec 32) : BitVec 16 :=
   (if fmaSel98 a b c == BitVec.ofNat 1 1 then fpEunb a + fpEunb b else fpEunb c)
     - (if fmaSel98 a b c == BitVec.ofNat 1 1 then fpEunb c else fpEunb a + fpEunb b)
 
+/-- High significand at weight `2^49` (the aligned magnitude's high part). -/
+def fmaHiNat (a b c : BitVec 32) : Nat := (fmaSigHi98 a b c).toNat * 2 ^ 49
+
+/-- Low significand `/2^diff`, doubled for the guard bit, plus the sticky bit. -/
+def fmaLoNat (a b c : BitVec 32) : Nat :=
+  (fmaSigLo98 a b c).toNat * 2 ^ 48 / 2 ^ (fmaDiff98 a b c).toNat * 2
+    + (if (fmaSigLo98 a b c).toNat * 2 ^ 48 % 2 ^ (fmaDiff98 a b c).toNat ≠ 0 then 1 else 0)
+
 /-- **The same-sign sticky-fold magnitude as a Nat formula.** When the product
     and the addend have the same effective sign (`sign(a·b) = sign(c)`), the
     98-bit aligned magnitude is the GRS form: high significand at weight `2^49`,
@@ -150,10 +158,7 @@ def fmaDiff98 (a b c : BitVec 32) : BitVec 16 :=
     guard bit, plus the sticky bit (any bit dropped by the `>>diff`). -/
 theorem fma_mag98_same_nat (a b c : BitVec 32)
     (hsame : BitVec.extractLsb 31 31 c = BitVec.extractLsb 31 31 a ^^^ BitVec.extractLsb 31 31 b) :
-    (arch_fma_mag98 a b c).toNat
-      = (fmaSigHi98 a b c).toNat * 2 ^ 49
-        + (fmaSigLo98 a b c).toNat * 2 ^ 48 / 2 ^ (fmaDiff98 a b c).toNat * 2
-        + (if (fmaSigLo98 a b c).toNat * 2 ^ 48 % 2 ^ (fmaDiff98 a b c).toNat ≠ 0 then 1 else 0) := by
+    (arch_fma_mag98 a b c).toNat = fmaHiNat a b c + fmaLoNat a b c := by
   -- bounds (from the operand significand widths) that drop the final `% 2^98`
   have hHi : (fmaSigHi98 a b c).toNat * 2 ^ 49 < 2 ^ 97 :=
     Nat.lt_of_lt_of_le (mul_pow_lt (fmaSigHi98 a b c).isLt)
@@ -169,7 +174,8 @@ theorem fma_mag98_same_nat (a b c : BitVec 32)
   have h9697 : (2 : Nat) ^ 97 = 2 ^ 96 * 2 := by rw [show (97 : Nat) = 96 + 1 from rfl, Nat.pow_succ]
   have h9798 : (2 : Nat) ^ 98 = 2 ^ 97 + 2 ^ 97 := by
     rw [show (98 : Nat) = 97 + 1 from rfl, Nat.pow_succ, Nat.mul_two]
-  simp only [fmaSigHi98, fmaSigLo98, fmaDiff98, fmaSel98, fpEunb, fpMant24] at hHi hLoX hField hstk ⊢
+  simp only [fmaHiNat, fmaLoNat, fmaSigHi98, fmaSigLo98, fmaDiff98, fmaSel98, fpEunb, fpMant24]
+    at hHi hLoX hField hstk ⊢
   unfold arch_fma_mag98
   simp only [hsame, beq_self_eq_true, BitVec.ofBool_true, ite_self]
   rw [if_pos (by decide : ((1 : BitVec 1) == 1#1) = true),
@@ -184,5 +190,65 @@ theorem fma_mag98_same_nat (a b c : BitVec 32)
   have key : ∀ H F S : Nat, H < 2 ^ 97 → F < 2 ^ 96 → S ≤ 1 → H + (F * 2 + S) < 2 ^ 98 := by
     intro H F S h1 h2 h3; omega
   rw [Nat.mod_eq_of_lt (key _ _ _ hHi hField hstk), ← Nat.add_assoc]
+
+-- ── diff-sign branch (cancellation: `|hi_e − lo_e|`) ──────────────────────────
+
+/-- The 97-bit high field `(sig_hi << 48) ++ 0` carries `sig_hi · 2^49`. -/
+theorem hiField97_toNat (x : BitVec 48) :
+    ((BitVec.setWidth 96 x <<< (48 : Nat)) ++ (0#1 : BitVec 1)).toNat = x.toNat * 2 ^ 49 := by
+  rw [append_bit_toNat, loExt96_toNat, show (0#1 : BitVec 1).toNat = 0 from by decide, Nat.add_zero,
+      Nat.mul_assoc, ← Nat.pow_succ]
+
+/-- The 97-bit low composite (shifted field ++ sticky) as the GRS Nat value. -/
+theorem loComposite97_toNat (x : BitVec 48) (d : Nat) :
+    ((BitVec.setWidth 96 x <<< (48 : Nat)) >>> d ++
+        BitVec.ofBool ((BitVec.setWidth 96 x <<< (48 : Nat)) &&& ((1#96 <<< d) - 1#96) != 0#96)).toNat
+      = x.toNat * 2 ^ 48 / 2 ^ d * 2 + (if x.toNat * 2 ^ 48 % 2 ^ d ≠ 0 then 1 else 0) := by
+  rw [append_bit_toNat, loField96_toNat, sticky_ofBool_toNat, loExt96_toNat]
+
+/-- `BitVec.ofBool β == 1#1` is just `β`. -/
+theorem ofBool_beq_one (β : Bool) : (BitVec.ofBool β == 1#1) = β := by cases β <;> decide
+
+/-- For a single bit, swapping the branches of a shared `if` flips nothing in the
+    equality test: `(ite c X Y == ite c Y X) = (X == Y)`. -/
+theorem ite_beq_ite_swap {c : Prop} [Decidable c] (X Y : BitVec 1) :
+    ((if c then X else Y) == (if c then Y else X)) = (X == Y) := by
+  by_cases h : c
+  · rw [if_pos h, if_pos h]
+  · rw [if_neg h, if_neg h]; revert X Y; decide
+
+/-- The diff-sign magnitude: `setWidth 98 |X − Y|` is the Nat absolute difference. -/
+theorem setWidth98_absdiff_toNat (X Y : BitVec 97) :
+    (BitVec.setWidth 98 (if BitVec.ule Y X = true then X - Y else Y - X)).toNat
+      = (if Y.toNat ≤ X.toNat then X.toNat - Y.toNat else Y.toNat - X.toNat) := by
+  have hX : X.toNat < 2 ^ 97 := X.isLt
+  have hY : Y.toNat < 2 ^ 97 := Y.isLt
+  have hle98 : (2 : Nat) ^ 97 ≤ 2 ^ 98 := Nat.pow_le_pow_right (by decide) (by omega)
+  rw [BitVec.toNat_setWidth]
+  by_cases h : Y.toNat ≤ X.toNat
+  · have hu : BitVec.ule Y X = true := by rw [BitVec.ule]; exact decide_eq_true h
+    rw [if_pos hu, if_pos h, BitVec.toNat_sub,
+        show 2 ^ 97 - Y.toNat + X.toNat = 2 ^ 97 + (X.toNat - Y.toNat) from by omega, Nat.add_mod_left,
+        Nat.mod_eq_of_lt (by omega), Nat.mod_eq_of_lt (by omega)]
+  · have hu : ¬ (BitVec.ule Y X = true) := by
+      rw [BitVec.ule]; simp only [decide_eq_true_eq]; omega
+    rw [if_neg hu, if_neg h, BitVec.toNat_sub,
+        show 2 ^ 97 - X.toNat + Y.toNat = 2 ^ 97 + (Y.toNat - X.toNat) from by omega, Nat.add_mod_left,
+        Nat.mod_eq_of_lt (by omega), Nat.mod_eq_of_lt (by omega)]
+
+/-- **The diff-sign sticky-fold magnitude as a Nat formula.** When the product and
+    the addend have opposing effective signs, the aligned magnitude is the absolute
+    difference of the high part and the (GRS-folded) low part. -/
+theorem fma_mag98_diff_nat (a b c : BitVec 32)
+    (hdiff : (BitVec.extractLsb 31 31 a ^^^ BitVec.extractLsb 31 31 b == BitVec.extractLsb 31 31 c)
+      = false) :
+    (arch_fma_mag98 a b c).toNat
+      = if fmaLoNat a b c ≤ fmaHiNat a b c then fmaHiNat a b c - fmaLoNat a b c
+        else fmaLoNat a b c - fmaHiNat a b c := by
+  simp only [fmaHiNat, fmaLoNat, fmaSigHi98, fmaSigLo98, fmaDiff98, fmaSel98, fpEunb, fpMant24]
+  unfold arch_fma_mag98
+  simp only [ofBool_beq_one, ite_beq_ite_swap, hdiff, Bool.false_eq_true, if_false]
+  rw [show (BitVec.setWidth 96 (48#16) : BitVec 96).toNat = 48 from by rw [setWidth96_toNat16]; rfl,
+      setWidth96_toNat16, setWidth98_absdiff_toNat, hiField97_toNat, loComposite97_toNat]
 
 end ArchFp
