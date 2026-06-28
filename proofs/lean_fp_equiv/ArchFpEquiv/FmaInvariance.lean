@@ -152,4 +152,70 @@ theorem fma_eq_ref_same_big (a b c : BitVec 32)
         hm1 hchi hcst hbig hsh,
       hsign]
 
+/-- **Opposite sign, `diff > 48`, normal result.** The diff-sign analog of
+    `fma_eq_ref_same_big`. The leading-bit condition `hsh` is taken as a hypothesis
+    (for opposite sign the borrow can drop `log2` when `sig_hi` is a power of two,
+    so the bound is genuinely case-dependent — discharged downstream); everything
+    else (`hm1`, `hnc470`) is derived from `hsh` and the collapse. -/
+theorem fma_eq_ref_diff_big (a b c : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true) (hc : finiteNonzero c = true)
+    (hdiff : (BitVec.extractLsb 31 31 a ^^^ BitVec.extractLsb 31 31 b
+      == BitVec.extractLsb 31 31 c) = false)
+    (hdlo : 49 ≤ (fmaDiff98 a b c).toNat) (hdhi : (fmaDiff98 a b c).toNat ≤ 421)
+    (hnc : arch_fma_mag98 a b c ≠ 0#98)
+    (hsh : (fmaDiff98 a b c).toNat - 1 + 24
+      ≤ Nat.log2 ((arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49)))
+    (hbig : 0 < (Nat.log2 ((arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49)) : Int)
+      + (arch_fma_elo a b c).toInt + 127) :
+    arch_fma_f32 a b c = arch_fma_f32_ref a b c := by
+  -- sign first, while the context is free of the Int/log2 hyps bv_decide can't reduce
+  have hb49 : BitVec.ule 49#16 (fmaDiff98 a b c) = true := by
+    rw [BitVec.ule_eq_decide, show (49#16 : BitVec 16).toNat = 49 from by decide]
+    exact decide_eq_true hdlo
+  have hsign : (arch_fma_sign98 a b c == 1#1) = (arch_fma_sign a b c == 1#1) := by
+    unfold finiteNonzero isNaN isInf isZero expField fracField at ha hb hc
+    unfold arch_fma_mag98 at hnc
+    unfold fmaDiff98 fmaSel98 fpEunb at hb49
+    unfold arch_fma_sign98 arch_fma_sign
+    bv_decide
+  -- the scaled magnitude is nonzero
+  have hmag98pos : 0 < (arch_fma_mag98 a b c).toNat :=
+    Nat.pos_of_ne_zero (fun h => hnc (BitVec.eq_of_toNat_eq (by simp [h])))
+  have hm1ne : 0 < (arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49) :=
+    Nat.mul_pos hmag98pos (Nat.pow_pos (by decide))
+  -- m1 ≥ 2^(diff−1) follows from hsh (it bounds log2 below)
+  have hlogge : (fmaDiff98 a b c).toNat - 1
+      ≤ Nat.log2 ((arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49)) := by omega
+  have hm1 : 2 ^ ((fmaDiff98 a b c).toNat - 1)
+      ≤ (arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49) :=
+    Nat.le_trans (Nat.pow_le_pow_right (by decide) hlogge)
+      ((Nat.le_log2 (Nat.pos_iff_ne_zero.mp hm1ne)).mp (Nat.le_refl _))
+  -- collapse hyps at g = diff − 1
+  obtain ⟨hchi, hcst⟩ := mag98_scaled_collapse_diff_pred a b c ha hb hc hdiff hdlo hdhi
+  -- mag470 ≠ 0: the shared quotient is ≥ 1
+  have hgpos : 0 < (2 : Nat) ^ ((fmaDiff98 a b c).toNat - 1) := Nat.pow_pos (by decide)
+  have hm470ge : 2 ^ ((fmaDiff98 a b c).toNat - 1) ≤ (arch_fma_mag a b c).toNat :=
+    (Nat.one_le_div_iff hgpos).mp (hchi ▸ (Nat.one_le_div_iff hgpos).mpr hm1)
+  have hnc470 : arch_fma_mag a b c ≠ 0#470 := by
+    intro h; rw [h] at hm470ge
+    exact absurd (Nat.le_trans hgpos hm470ge) (by simp)
+  -- exponent alignment
+  have hdint : (fmaDiff98 a b c).toInt = ((fmaDiff98 a b c).toNat : Int) :=
+    BitVec.toInt_eq_toNat_of_lt (by
+      have h15 : (2 ^ 15 : Nat) = 32768 := by decide
+      omega)
+  have hexp2 : (arch_fma_elo98 a b c).toInt
+      = (arch_fma_elo a b c).toInt + (((fmaDiff98 a b c).toNat - 49 : Nat) : Int) := by
+    rw [fma_elo_toInt_rel a b c ha hb hc, hdint]; omega
+  rw [arch_fma_f32_sticky_finite a b c ha hb hc hnc,
+      arch_fma_f32_ref_finite a b c ha hb hc hnc470,
+      hexp2,
+      ← roundNE_scale (arch_fma_sign98 a b c == 1#1) (arch_fma_mag98 a b c).toNat
+        (arch_fma_elo a b c).toInt ((fmaDiff98 a b c).toNat - 49) hmag98pos,
+      roundNE_sticky_collapse_normal (arch_fma_sign98 a b c == 1#1)
+        ((arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49))
+        (arch_fma_mag a b c).toNat (arch_fma_elo a b c).toInt ((fmaDiff98 a b c).toNat - 1)
+        hm1 hchi hcst hbig hsh,
+      hsign]
+
 end ArchFp
