@@ -14,5 +14,6 @@ import ArchFpEquiv.FmaMag98Nat
 import ArchFpEquiv.FmaGRS
 import ArchFpEquiv.FmaMag470Nat
 import ArchFpEquiv.FmaStickyInvariance
+import ArchFpEquiv.FmaInvariance
 import ArchFpEquiv.Bf16FmaNote
 import ArchFpEquiv.SpecCheck
