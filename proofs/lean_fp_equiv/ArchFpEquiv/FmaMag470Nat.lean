@@ -657,4 +657,16 @@ theorem fma_elo_toInt_rel (a b c : BitVec 32)
       bmod16_id ((arch_fma_elo98 a b c).toInt + 49) (by omega) (by omega),
       bmod16_id _ (by omega) (by omega)]
 
+/-- **Small higher significand ⇒ subnormal exponent.** When `sig_hi < 2^23` (the
+    higher operand is subnormal), the higher exponent `e_hi = diff + e_lo` is at
+    most the subnormal floor `−149` (as a 16-bit signed value). This forces the
+    `diff > 48` result subnormal, the regime where `sig_hi ≥ 2^23` would fail. -/
+theorem ehi_small (a b c : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true) (hc : finiteNonzero c = true)
+    (hsmall : BitVec.ult (fmaSigHi98 a b c) (BitVec.ofNat 48 (2 ^ 23)) = true) :
+    BitVec.sle (fmaDiff98 a b c + arch_fma_elo a b c) (BitVec.ofNat 16 65387) = true := by
+  simp only [finiteNonzero, isNaN, isInf, isZero, expField, fracField,
+    fmaSigHi98, fmaSel98, fpEunb, fpMant24, fmaDiff98, arch_fma_elo] at *
+  bv_decide
+
 end ArchFp
