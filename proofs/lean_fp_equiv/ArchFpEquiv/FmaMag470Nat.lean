@@ -186,6 +186,42 @@ theorem mag98_eq_mag470_scaled_same (a b c : BitVec 32)
       Nat.add_mul, Nat.mul_assoc H (2 ^ D) (2 ^ (49 - D)), p49, p49',
       ← Nat.mul_assoc L (2 ^ (48 - D)) 2]
 
+/-- Scaling an abs-difference by `k>0` distributes through the `≤`-selector. -/
+private theorem absdiff_mul (P Q k : Nat) (hk : 0 < k) :
+    (if Q ≤ P then P - Q else Q - P) * k
+      = if Q * k ≤ P * k then P * k - Q * k else Q * k - P * k := by
+  by_cases h : Q ≤ P
+  · rw [if_pos h, if_pos (Nat.mul_le_mul_right k h), Nat.sub_mul]
+  · rw [if_neg h, if_neg (fun hc => h (Nat.le_of_mul_le_mul_right hc hk)), Nat.sub_mul]
+
+/-- **The `diff ≤ 48` (no-fold) identity, opposite sign.** Same scaling as the
+    same-sign case: within the fold window the sticky-fold abs-difference is the
+    reference abs-difference scaled by `2^(49−diff)`, so they round identically. -/
+theorem mag98_eq_mag470_scaled_diff (a b c : BitVec 32)
+    (hdiff : (BitVec.extractLsb 31 31 a ^^^ BitVec.extractLsb 31 31 b
+      == BitVec.extractLsb 31 31 c) = false)
+    (hd48 : (fmaDiff98 a b c).toNat ≤ 48) :
+    (arch_fma_mag98 a b c).toNat
+      = (arch_fma_mag a b c).toNat * 2 ^ (49 - (fmaDiff98 a b c).toNat) := by
+  rw [fma_mag98_diff_nat a b c hdiff,
+      fma_mag470_diff_nat a b c hdiff (Nat.le_trans hd48 (by decide : (48 : Nat) ≤ 421))]
+  unfold fmaHiNat fmaLoNat
+  generalize hD : (fmaDiff98 a b c).toNat = D at hd48 ⊢
+  generalize (fmaSigHi98 a b c).toNat = H
+  generalize (fmaSigLo98 a b c).toNat = L
+  have hsplit : (2 : Nat) ^ 48 = 2 ^ (48 - D) * 2 ^ D := by rw [← Nat.pow_add]; congr 1; omega
+  have hdiv : L * 2 ^ 48 / 2 ^ D = L * 2 ^ (48 - D) := by
+    rw [hsplit, ← Nat.mul_assoc, Nat.mul_div_cancel _ (Nat.pow_pos (by decide))]
+  have hmod : L * 2 ^ 48 % 2 ^ D = 0 := by
+    rw [hsplit, ← Nat.mul_assoc]; exact Nat.mul_mod_left _ _
+  have hk : (2 : Nat) ^ (48 - D) * 2 = 2 ^ (49 - D) := by
+    rw [show 49 - D = (48 - D) + 1 from by omega, Nat.pow_succ]
+  have hH : H * 2 ^ 49 = H * 2 ^ D * 2 ^ (49 - D) := by
+    rw [Nat.mul_assoc, ← Nat.pow_add]; congr 2; omega
+  rw [hdiv, hmod, if_neg (by decide : ¬((0 : Nat) ≠ 0)), Nat.add_zero,
+      Nat.mul_assoc L (2 ^ (48 - D)) 2, hk, hH,
+      absdiff_mul (H * 2 ^ D) L (2 ^ (49 - D)) (Nat.pow_pos (by decide))]
+
 /-- `Int.bmod` by `2^16` is the identity on the signed range. -/
 private theorem bmod16_id (x : Int) (h1 : -(2 ^ 15) ≤ x) (h2 : x < 2 ^ 15) :
     Int.bmod x (2 ^ 16) = x := by
