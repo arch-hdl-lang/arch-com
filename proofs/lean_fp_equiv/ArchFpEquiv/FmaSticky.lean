@@ -71,4 +71,13 @@ theorem arch_fma_f32_sticky_finite (a b c : BitVec 32)
   obtain ⟨hlo, hhi⟩ := fma_elo98_bounds a b c ha hb hc
   exact arch_round98_correct _ _ _ hlo hhi
 
+/-- Exact cancellation (`mag98 = 0`) of a finite sticky-fold fma is `+0`
+    (the width-98 analogue of the old `Fma.fma_cancel`). -/
+theorem fma_cancel98 (a b c : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true) (hc : finiteNonzero c = true)
+    (hcanc : arch_fma_mag98 a b c = 0#98) :
+    arch_fma_f32 a b c = 0#32 := by
+  unfold finiteNonzero isNaN isInf isZero expField fracField arch_fma_f32 arch_fma_mag98 at *
+  bv_decide (config := { timeout := 300 })
+
 end ArchFp
