@@ -349,4 +349,110 @@ theorem fma_eq_ref_diff_big (a b c : BitVec 32)
       (arch_fma_mag a b c).toNat (arch_fma_elo a b c).toInt ((fmaDiff98 a b c).toNat - 1)
       hm1 hchi hcst hsub hshsub
 
+set_option maxHeartbeats 1600000 in
+/-- **Opposite sign, `diff > 48`, `sig_hi < 2^23`.** The higher operand is
+    subnormal so the result is subnormal (`e_hi ≤ −149` via `ehi_small_int`); only
+    the subnormal collapse applies. The tight `foldedlow < 2^48` keeps `mag98 ≥ 2^48`
+    (no near-cancellation at `diff > 48`), giving `hm1`. -/
+theorem fma_eq_ref_diff_big_sub (a b c : BitVec 32)
+    (ha : finiteNonzero a = true) (hb : finiteNonzero b = true) (hc : finiteNonzero c = true)
+    (hdiff : (BitVec.extractLsb 31 31 a ^^^ BitVec.extractLsb 31 31 b
+      == BitVec.extractLsb 31 31 c) = false)
+    (hdlo : 49 ≤ (fmaDiff98 a b c).toNat) (hdhi : (fmaDiff98 a b c).toNat ≤ 421)
+    (hsmall : (fmaSigHi98 a b c).toNat < 2 ^ 23)
+    (hnc : arch_fma_mag98 a b c ≠ 0#98) :
+    arch_fma_f32 a b c = arch_fma_f32_ref a b c := by
+  have hb49 : BitVec.ule 49#16 (fmaDiff98 a b c) = true := by
+    rw [BitVec.ule_eq_decide, show (49#16 : BitVec 16).toNat = 49 from by decide]
+    exact decide_eq_true hdlo
+  have hsign : (arch_fma_sign98 a b c == 1#1) = (arch_fma_sign a b c == 1#1) := by
+    unfold finiteNonzero isNaN isInf isZero expField fracField at ha hb hc
+    unfold arch_fma_mag98 at hnc
+    unfold fmaDiff98 fmaSel98 fpEunb at hb49
+    unfold arch_fma_sign98 arch_fma_sign
+    bv_decide
+  have hHpos : 1 ≤ (fmaSigHi98 a b c).toNat := fmaSigHi98_pos a b c ha hb hc
+  have hmag98pos : 0 < (arch_fma_mag98 a b c).toNat :=
+    Nat.pos_of_ne_zero (fun h => hnc (BitVec.eq_of_toNat_eq (by simp [h])))
+  have hm1ne : 0 < (arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49) :=
+    Nat.mul_pos hmag98pos (Nat.pow_pos (by decide))
+  have hLlt : (fmaSigLo98 a b c).toNat < 2 ^ 48 :=
+    Nat.lt_of_lt_of_le (fmaSigLo98 a b c).isLt (Nat.pow_le_pow_right (by decide) (by omega))
+  have hF48 := foldedlow_lt_48 (fmaSigLo98 a b c).toNat (fmaDiff98 a b c).toNat hLlt hdlo
+  -- resolved hi−lo magnitude, with both bounds 2^48 ≤ mag98 ≤ sig_hi·2^49
+  have hmageq : (arch_fma_mag98 a b c).toNat
+      = (fmaSigHi98 a b c).toNat * 2 ^ 49
+        - ((fmaSigLo98 a b c).toNat * 2 ^ 48 / 2 ^ (fmaDiff98 a b c).toNat * 2
+          + (if (fmaSigLo98 a b c).toNat * 2 ^ 48 % 2 ^ (fmaDiff98 a b c).toNat ≠ 0 then 1 else 0)) := by
+    rw [fma_mag98_diff_nat a b c hdiff]; unfold fmaHiNat fmaLoNat
+    generalize hFe : (fmaSigLo98 a b c).toNat * 2 ^ 48 / 2 ^ (fmaDiff98 a b c).toNat * 2
+      + (if (fmaSigLo98 a b c).toNat * 2 ^ 48 % 2 ^ (fmaDiff98 a b c).toNat ≠ 0 then 1 else 0) = F
+      at hF48 ⊢
+    generalize hHe : (fmaSigHi98 a b c).toNat = H at hHpos ⊢
+    have h1 : 2 ^ 49 ≤ H * 2 ^ 49 := Nat.le_mul_of_pos_left _ hHpos
+    rw [if_pos (by omega)]
+  have hmag98ge : 2 ^ 48 ≤ (arch_fma_mag98 a b c).toNat := by
+    rw [hmageq]
+    have h1 : 2 ^ 49 ≤ (fmaSigHi98 a b c).toNat * 2 ^ 49 := Nat.le_mul_of_pos_left _ hHpos
+    have e : (2 : Nat) ^ 49 = 2 ^ 48 + 2 ^ 48 := by rw [show (49 : Nat) = 48 + 1 from rfl, Nat.pow_succ, Nat.mul_two]
+    omega
+  have hmag98le : (arch_fma_mag98 a b c).toNat ≤ (fmaSigHi98 a b c).toNat * 2 ^ 49 := by
+    rw [hmageq]; omega
+  have hm1 : 2 ^ ((fmaDiff98 a b c).toNat - 1)
+      ≤ (arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49) := by
+    have e1 : 2 ^ 48 * 2 ^ ((fmaDiff98 a b c).toNat - 49) = 2 ^ ((fmaDiff98 a b c).toNat - 1) := by
+      rw [← Nat.pow_add,
+        show 48 + ((fmaDiff98 a b c).toNat - 49) = (fmaDiff98 a b c).toNat - 1 from by omega]
+    rw [← e1]; exact Nat.mul_le_mul_right _ hmag98ge
+  have hm1le : (arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49)
+      ≤ (fmaSigHi98 a b c).toNat * 2 ^ (fmaDiff98 a b c).toNat := by
+    have e1 : (fmaSigHi98 a b c).toNat * 2 ^ 49 * 2 ^ ((fmaDiff98 a b c).toNat - 49)
+        = (fmaSigHi98 a b c).toNat * 2 ^ (fmaDiff98 a b c).toNat := by
+      rw [Nat.mul_assoc, ← Nat.pow_add,
+        show 49 + ((fmaDiff98 a b c).toNat - 49) = (fmaDiff98 a b c).toNat from by omega]
+    rw [← e1]; exact Nat.mul_le_mul_right _ hmag98le
+  -- subnormal-determining facts
+  have hehi := ehi_small_int a b c ha hb hc hsmall hdhi
+  have hlog22 : Nat.log2 (fmaSigHi98 a b c).toNat < 23 :=
+    (Nat.log2_lt (Nat.pos_iff_ne_zero.mp hHpos)).mpr hsmall
+  have hlogle : Nat.log2 ((arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49))
+      ≤ Nat.log2 (fmaSigHi98 a b c).toNat + (fmaDiff98 a b c).toNat := by
+    have hmono : Nat.log2 ((arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49))
+        ≤ Nat.log2 ((fmaSigHi98 a b c).toNat * 2 ^ (fmaDiff98 a b c).toNat) :=
+      (Nat.le_log2 (Nat.pos_iff_ne_zero.mp (Nat.mul_pos hHpos (Nat.pow_pos (by decide))))).mpr
+        (Nat.le_trans ((Nat.le_log2 (Nat.pos_iff_ne_zero.mp hm1ne)).mp (Nat.le_refl _)) hm1le)
+    rw [log2_mul_pow _ _ hHpos] at hmono; exact hmono
+  obtain ⟨hchi, hcst⟩ := mag98_scaled_collapse_diff_pred a b c ha hb hc hdiff hdlo hdhi
+  have hgpos : 0 < (2 : Nat) ^ ((fmaDiff98 a b c).toNat - 1) := Nat.pow_pos (by decide)
+  have hm470ge : 2 ^ ((fmaDiff98 a b c).toNat - 1) ≤ (arch_fma_mag a b c).toNat :=
+    (Nat.one_le_div_iff hgpos).mp (hchi ▸ (Nat.one_le_div_iff hgpos).mpr hm1)
+  have hnc470 : arch_fma_mag a b c ≠ 0#470 := by
+    intro h; rw [h] at hm470ge
+    exact absurd (Nat.le_trans hgpos hm470ge) (by simp)
+  have hdint : (fmaDiff98 a b c).toInt = ((fmaDiff98 a b c).toNat : Int) :=
+    BitVec.toInt_eq_toNat_of_lt (by
+      have h15 : (2 ^ 15 : Nat) = 32768 := by decide
+      omega)
+  have hexp2 : (arch_fma_elo98 a b c).toInt
+      = (arch_fma_elo a b c).toInt + (((fmaDiff98 a b c).toNat - 49 : Nat) : Int) := by
+    rw [fma_elo_toInt_rel a b c ha hb hc, hdint]; omega
+  have hsub : (Nat.log2 ((arch_fma_mag98 a b c).toNat
+      * 2 ^ ((fmaDiff98 a b c).toNat - 49)) : Int) + (arch_fma_elo a b c).toInt + 127 ≤ 0 := by
+    have : (Nat.log2 ((arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49)) : Int)
+        ≤ (Nat.log2 (fmaSigHi98 a b c).toNat : Int) + (fmaDiff98 a b c).toNat := by
+      exact_mod_cast hlogle
+    push_cast at this ⊢; omega
+  have hshsub : ((fmaDiff98 a b c).toNat - 1 : Nat) < (-149 : Int) - (arch_fma_elo a b c).toInt := by
+    omega
+  rw [arch_fma_f32_sticky_finite a b c ha hb hc hnc,
+      arch_fma_f32_ref_finite a b c ha hb hc hnc470,
+      hexp2,
+      ← roundNE_scale (arch_fma_sign98 a b c == 1#1) (arch_fma_mag98 a b c).toNat
+        (arch_fma_elo a b c).toInt ((fmaDiff98 a b c).toNat - 49) hmag98pos,
+      hsign]
+  exact roundNE_sticky_collapse_subnormal (arch_fma_sign a b c == 1#1)
+    ((arch_fma_mag98 a b c).toNat * 2 ^ ((fmaDiff98 a b c).toNat - 49))
+    (arch_fma_mag a b c).toNat (arch_fma_elo a b c).toInt ((fmaDiff98 a b c).toNat - 1)
+    hm1 hchi hcst hsub hshsub
+
 end ArchFp

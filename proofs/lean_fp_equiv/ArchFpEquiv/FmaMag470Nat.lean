@@ -396,7 +396,7 @@ private theorem log2_HF (H F : Nat) (hF : F < 2 ^ 49) (hH : 1 ≤ H) :
 /-- The tight bound: the folded low part is below `2^48` (guard-doubled shifted
     significand `< 2^48`, since the floor is `< 2^47`, plus the sticky bit fits in
     the freed-up parity). Needed to place the collapse at `g = diff − 1`. -/
-private theorem foldedlow_lt_48 (L D : Nat) (hL : L < 2 ^ 48) (hD : 49 ≤ D) :
+theorem foldedlow_lt_48 (L D : Nat) (hL : L < 2 ^ 48) (hD : 49 ≤ D) :
     L * 2 ^ 48 / 2 ^ D * 2 + (if L * 2 ^ 48 % 2 ^ D ≠ 0 then 1 else 0) < 2 ^ 48 := by
   have hq : L * 2 ^ 48 / 2 ^ D < 2 ^ 47 := by
     rw [Nat.div_lt_iff_lt_mul (Nat.pow_pos (by decide)), ← Nat.pow_add]
