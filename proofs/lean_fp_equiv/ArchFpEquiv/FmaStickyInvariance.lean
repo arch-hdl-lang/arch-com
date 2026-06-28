@@ -65,4 +65,40 @@ theorem arch_fma_f32_ref_finite (a b c : BitVec 32)
   obtain ⟨hlo, hhi⟩ := fma_elo_bounds a b c ha hb hc
   exact arch_round470_correct _ _ _ hlo hhi
 
+-- ── value-level rounding lemmas (Nat) ────────────────────────────────────────
+
+/-- `Nat.log2 (n · 2^k) = Nat.log2 n + k` for `n > 0`. -/
+theorem log2_mul_pow2 (n k : Nat) (hn : 0 < n) :
+    Nat.log2 (n * 2 ^ k) = Nat.log2 n + k := by
+  have hn0 : n ≠ 0 := by omega
+  have h2k : 0 < 2 ^ k := Nat.pow_pos (by decide)
+  have hnk0 : n * 2 ^ k ≠ 0 := Nat.mul_ne_zero hn0 (Nat.pos_iff_ne_zero.mp h2k)
+  have hself : 2 ^ Nat.log2 n ≤ n := (Nat.le_log2 hn0).mp (Nat.le_refl _)
+  have hlt : n < 2 ^ (Nat.log2 n + 1) := (Nat.log2_lt hn0).mp (Nat.lt_succ_self _)
+  have hlo : Nat.log2 n + k ≤ Nat.log2 (n * 2 ^ k) := by
+    rw [Nat.le_log2 hnk0, Nat.pow_add]; exact Nat.mul_le_mul_right _ hself
+  have hhi : Nat.log2 (n * 2 ^ k) < Nat.log2 n + k + 1 := by
+    rw [Nat.log2_lt hnk0, show Nat.log2 n + k + 1 = (Nat.log2 n + 1) + k by omega, Nat.pow_add]
+    exact (Nat.mul_lt_mul_right h2k).mpr hlt
+  omega
+
+/-- `rneQuot` scaling: dividing-by-`2^sh` after scaling-by-`2^k` is the same as
+    dividing-by-`2^(sh-k)`, when `k < sh` (the rounding branch has a guard bit). -/
+theorem rneQuot_scale (n k sh : Nat) (hk : k < sh) :
+    rneQuot (n * 2 ^ k) sh = rneQuot n (sh - k) := by
+  have h2k : 0 < 2 ^ k := Nat.pow_pos (by decide)
+  have hpow : 2 ^ sh = 2 ^ (sh - k) * 2 ^ k := by rw [← Nat.pow_add]; congr 1; omega
+  have hg : 2 ^ (sh - 1) = 2 ^ (sh - k - 1) * 2 ^ k := by rw [← Nat.pow_add]; congr 1; omega
+  have hdiv : n * 2 ^ k / 2 ^ sh = n / 2 ^ (sh - k) := by
+    rw [hpow, Nat.mul_div_mul_right _ _ h2k]
+  have hmod : (n * 2 ^ k) % 2 ^ sh = (n % 2 ^ (sh - k)) * 2 ^ k := by
+    rw [hpow, Nat.mul_comm (2 ^ (sh - k)) (2 ^ k), Nat.mul_comm n (2 ^ k), Nat.mul_mod_mul_left,
+        Nat.mul_comm (2 ^ k) (n % 2 ^ (sh - k))]
+  have hc1 : (2 ^ (sh - k - 1) * 2 ^ k < (n % 2 ^ (sh - k)) * 2 ^ k)
+           = (2 ^ (sh - k - 1) < n % 2 ^ (sh - k)) := propext (Nat.mul_lt_mul_right h2k)
+  have hc2 : ((n % 2 ^ (sh - k)) * 2 ^ k = 2 ^ (sh - k - 1) * 2 ^ k)
+           = (n % 2 ^ (sh - k) = 2 ^ (sh - k - 1)) := propext (Nat.mul_right_cancel_iff h2k)
+  unfold rneQuot
+  simp only [hdiv, hmod, hg, hc1, hc2]
+
 end ArchFp
