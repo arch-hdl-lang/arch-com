@@ -5737,7 +5737,13 @@ impl<'a> Codegen<'a> {
                 LitKind::Hex(v) => format!("'h{v:X}"),
                 LitKind::Bin(v) => format!("'b{v:b}"),
                 LitKind::Sized(w, v) => format!("{w}'d{v}"),
-                LitKind::ParamSized(name, v) => format!("{name}'d{v}"),
+                // A param-width literal that survives to codegen still has a
+                // symbolic width (the module kept `param W` rather than being
+                // monomorphized). `W'd{v}` is NOT legal SystemVerilog — a
+                // sized-literal width must be a constant number, not a
+                // parameter. Emit a size cast `W'({v})` instead, which is the
+                // legal parameterized form and carries the same value.
+                LitKind::ParamSized(name, v) => format!("{name}'({v})"),
                 // Float literal (FP32 by default) → 32-bit binary32 bit pattern.
                 LitKind::Float(bits) => {
                     format!("32'h{:08X}", (f64::from_bits(*bits) as f32).to_bits())
