@@ -331,6 +331,7 @@ Call:        FnName(arg1, arg2)    // overload-resolved by argument types
 Enum:        E::Variant
 Struct lit:  S { f: val }
 Sized lit:   8'hFF  16'd1024  4'b1010   // Verilog-style
+Param lit:   W'd0  ADDR_WIDTH'd42        // param-width prefix → typed UInt<W>
 todo!        // compilable placeholder; warns at compile, aborts at sim runtime
 ```
 

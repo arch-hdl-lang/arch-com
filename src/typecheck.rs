@@ -3641,7 +3641,26 @@ impl<'a> TypeChecker<'a> {
                     Ty::UInt(bits)
                 }
                 LitKind::Sized(w, _) => Ty::UInt(*w),
-                LitKind::ParamSized(_, _) => Ty::UInt(32),
+                LitKind::ParamSized(name, _) => {
+                    // A param-width sized literal `W'dN` has type `UInt<W>`.
+                    // Resolve the width identifier against the active param
+                    // environment (the same mechanism that turns a `UInt<W>`
+                    // port into `UInt<8>`). Top-level modules never run
+                    // `subst_expr_params`, so the literal still arrives here as
+                    // `ParamSized`; without this it defaulted to `UInt<32>`,
+                    // which spuriously rejected `W'd0` into a `UInt<W>` target
+                    // for any W != 32. Fall back to 32 only when the param is
+                    // genuinely unbound (generic context).
+                    let ident = Expr {
+                        kind: ExprKind::Ident(name.clone()),
+                        span: expr.span,
+                        parenthesized: false,
+                    };
+                    match self.eval_const_expr(&ident, local_types) {
+                        Some(w) if w > 0 => Ty::UInt(w as u32),
+                        _ => Ty::UInt(32),
+                    }
+                }
                 // Float literals default to FP32; BF16 values are written via an
                 // explicit `.to_bf16()` conversion (no implicit float narrowing).
                 LitKind::Float(_) => Ty::FP32,

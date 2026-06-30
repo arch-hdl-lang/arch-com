@@ -722,6 +722,10 @@ A module is the fundamental unit of design in Arch. Every module follows the sam
 | //                                  `NAME[i]` reads as a packed part-select.   |
 |                                                                                |
 | // local param NAME: const = expr;  // derived — emits `localparam` (not overridable) |
+| //                                  // valid in module, ram, counter, arbiter |
+| //                                                                             |
+| // A param-width sized literal `NAME'dV` (e.g. `W'd0`, `ADDR_WIDTH'd42`) is    |
+| // typed `UInt<NAME>` — same widening rules as a concrete `8'd0`.              |
 |                                                                                |
 | //                                                                             |
 |                                                                                |

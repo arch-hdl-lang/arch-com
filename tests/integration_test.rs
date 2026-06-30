@@ -29093,3 +29093,80 @@ end module IntBadOrder
         "non-enum match must also enforce wildcard-last"
     );
 }
+
+#[test]
+fn test_param_sized_literal_types_as_param_width() {
+    // Regression for the param-width sized-literal (`W'dN`) feature (#636):
+    // a `W'dN` literal must be typed `UInt<W>`, not a fixed `UInt<32>`.
+    // Top-level modules never run `subst_expr_params`, so the literal reaches
+    // the type checker as `LitKind::ParamSized` and its width must be resolved
+    // from the active param environment.
+
+    // W = 8: `W'd0` into a `UInt<8>` reg/port must type-check (previously
+    // failed with "RHS is UInt<32>").
+    let ok_small = r#"
+module ParamLitSmall
+  param W: const = 8;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  reg r: UInt<W> reset rst => W'd0;
+  port o: out UInt<W>;
+  seq on clk rising
+    r <= W'd5;
+  end seq
+  comb
+    o = r;
+  end comb
+end module ParamLitSmall
+"#;
+    typecheck_source(ok_small).expect("W'd0 / W'd5 must type as UInt<W> for W=8");
+
+    // W = 48 (> 32): also fine — exercises the wider-than-default path.
+    let ok_wide = r#"
+module ParamLitWide
+  param W: const = 48;
+  port o: out UInt<W>;
+  comb
+    o = W'd5;
+  end comb
+end module ParamLitWide
+"#;
+    typecheck_source(ok_wide).expect("W'd5 must type as UInt<48> for W=48");
+
+    // Genuine over-width assignment must STILL be rejected: a `W'dN` literal
+    // (W=8) behaves exactly like the concrete `8'dN`, which widens losslessly
+    // into a wider target — so this case is accepted, matching `8'd5`.
+    let widen_ok = r#"
+module ParamLitWiden
+  param W: const = 8;
+  port o: out UInt<16>;
+  comb
+    o = W'd5;
+  end comb
+end module ParamLitWiden
+"#;
+    typecheck_source(widen_ok)
+        .expect("W'd5 (UInt<8>) widening into UInt<16> matches concrete 8'd5 semantics");
+}
+
+#[test]
+fn test_param_sized_literal_overwidth_still_rejected() {
+    // The fix must not make `W'dN` more permissive than a concrete sized
+    // literal: a wider param literal into a narrower target must still require
+    // an explicit `.trunc<N>()`, exactly as `32'd5` into `UInt<16>` does.
+    let source = r#"
+module ParamLitTrunc
+  param W: const = 32;
+  port o: out UInt<16>;
+  comb
+    o = W'd5;
+  end comb
+end module ParamLitTrunc
+"#;
+    let errs = typecheck_source(source)
+        .expect_err("W'd5 with W=32 into UInt<16> must require explicit trunc");
+    assert!(
+        format!("{errs:?}").contains("width mismatch"),
+        "expected a width-mismatch error, got: {errs:?}"
+    );
+}
