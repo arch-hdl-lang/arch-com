@@ -29170,3 +29170,29 @@ end module ParamLitTrunc
         "expected a width-mismatch error, got: {errs:?}"
     );
 }
+
+#[test]
+fn test_param_sized_literal_emits_valid_sv_size_cast() {
+    // A param-width sized literal that survives to SV codegen (top-level
+    // module keeps `param W` symbolic) must emit a legal SystemVerilog size
+    // cast `W'(5)`, NOT `W'd5` — the latter is rejected by Verilator because a
+    // sized-literal width must be a constant number, not a parameter (#636).
+    let source = r#"
+module ParamLitSv
+  param W: const = 8;
+  port o: out UInt<W>;
+  comb
+    o = W'd5;
+  end comb
+end module ParamLitSv
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("W'(5)"),
+        "expected size-cast `W'(5)` in emitted SV, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("W'd5"),
+        "must not emit invalid `W'd5` (illegal SV literal width):\n{sv}"
+    );
+}
