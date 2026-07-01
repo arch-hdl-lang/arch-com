@@ -217,7 +217,7 @@ end pipelined
 ```
 
 On startup the compiler loads each `.archpipe` into the registry → usable as
-`fma_pipe<8>`. (Full-custom *datapath* IR — not just a reschedule of the trusted
+`fma<pipelined, 8>`. (Full-custom *datapath* IR — not just a reschedule of the trusted
 comb IR — is a later extension; schedule-over-known-IR is the v1 scope and already
 covers the 6/7/10-stage experiments.)
 
@@ -272,7 +272,7 @@ registered depth and that any consumer of `acc_out` reads it at latency 6.
 
 1. **Registry + `arch ops` + enforcement** — table, type-check lookup, enumerated
    error, generated spec section. (No new datapath; wire the existing 6-stage.)
-2. **`fma_pipe<N>` surface + latency typing** — parser, latency on exprs, the
+2. **`fma<pipelined, N>` surface + latency typing** — parser, latency on exprs, the
    alignment check, codegen binding to `pipe_reg`.
 3. **Builtin 6-stage as a `verified` entry** — productize the staging schedule;
    land the sequential-equiv proof obligation that sets `status=verified`.
