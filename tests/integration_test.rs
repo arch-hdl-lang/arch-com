@@ -29172,3 +29172,55 @@ end module BadWidthName
         "expected an unknown-width diagnostic, got:\n{rendered}"
     );
 }
+
+#[test]
+fn test_match_wildcard_not_last_errors_in_expression_match() {
+    // The wildcard-last rule must also fire for the *expression* match form
+    // (`let x: T = match ... end match`), which lowers to `ExprKind::ExprMatch`
+    // and is checked at a separate call site from statement matches. #634 wired
+    // this path but shipped tests only for statement (`comb`) matches.
+    let source = r#"
+module ExprBadOrder
+  port c: in UInt<2>;
+  port o: out UInt<8>;
+  let o_val: UInt<8> = match c
+      0 => 10,
+      _ => 0,
+      1 => 20,
+    end match;
+  comb
+    o = o_val;
+  end comb
+end module ExprBadOrder
+"#;
+    let errs = typecheck_source(source)
+        .expect_err("expected unreachable-arm error for expression match with `_` not last");
+    assert!(
+        format!("{errs:?}").contains("unreachable match arm"),
+        "expression match must also enforce wildcard-last"
+    );
+}
+
+#[test]
+fn test_match_wildcard_last_accepted_in_expression_match() {
+    // Companion to the above: `_` as the final arm of an expression match
+    // type-checks cleanly.
+    let source = r#"
+module ExprGoodOrder
+  port c: in UInt<2>;
+  port o: out UInt<8>;
+  let o_val: UInt<8> = match c
+      0 => 10,
+      1 => 20,
+      _ => 0,
+    end match;
+  comb
+    o = o_val;
+  end comb
+end module ExprGoodOrder
+"#;
+    assert!(
+        typecheck_source(source).is_ok(),
+        "an expression match with `_` as the final arm must type-check"
+    );
+}
