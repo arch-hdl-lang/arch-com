@@ -47,6 +47,7 @@ Common mistakes to avoid:
 - 'inside' operator: expr inside {val1, val2, lo..hi} — returns Bool, set membership
 - 'for i in {a, b, c}' — compile-time unrolled value-list iteration (inside comb/seq blocks)
 - 'unique if' and 'unique match' assert mutual exclusivity to synthesis (parallel mux): use 'unique if sel == 0 ... end if' or 'unique match opcode ... end match'; emits SV 'unique if' / 'unique case'
+- For truth-table, K-map, minterm/don't-care, mux-input, decoder, or opcode logic, prefer `unique match` or named minterm `let`s before hand-simplifying; this keeps case structure visible and avoids Boolean-minimization slips. Use plain `match` when priority order matters.
 - .trunc<N>() errors if N >= source width (not truncating); .zext<N>()/.sext<N>() error if N <= source width (not extending)
 - signed(x) / unsigned(x): same-width reinterpret cast (no width arg needed); prefer signed(x) over x.sext<N>() when entering signed arithmetic chains
 - Wrapping arithmetic operators +%, -%, *% give result width = max(W(a),W(b)) with no widening — prefer these over .trunc<N>() when the intent is modular arithmetic: 'let x: UInt<8> = a +% b;' instead of 'let x: UInt<8> = (a + b).trunc<8>();'
