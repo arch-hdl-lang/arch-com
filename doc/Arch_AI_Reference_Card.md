@@ -76,8 +76,9 @@ pipe_reg delayed: source stages 3;                   // N-stage internal delay c
 //   port q: out T                   → comb (=), output reflects state same cycle
 //   port q: out pipe_reg<T, 1> ...  → seq q@1 <= ...; 1-cycle latency
 //   port q: out pipe_reg<T, N> ...  → seq q@N <= ...; N-cycle latency (cascade)
-// Use plain port + comb for zero-latency FSM outputs (e.g. cocotb expects same-cycle response).
-// Use pipe_reg<T, N> for glitch-free registered outputs; N visible to LLMs in the signature.
+// Do NOT default outputs to pipe_reg. Choose timing from the prompt/waveform.
+// Use plain port + comb for combinational, same-cycle FSM, or level-sensitive outputs.
+// Use pipe_reg<T, N> only when a registered/flopped output and its latency are intended.
 
 default seq on clk rising;           // set default clock for all seq blocks
 
@@ -340,6 +341,12 @@ logic, prefer `unique match` or named minterm `let`s before hand-simplifying.
 This keeps the case structure visible and avoids Boolean-minimization slips.
 Use plain `match` when priority order matters.
 
+For vector-neighbor, sliding-window, edge-detect, or other boundary-sensitive
+vector logic, use compact whole-vector shifts only after every boundary bit is
+accounted for. If the prompt names edge exceptions such as no neighbor,
+wraparound, or unused boundary bits, prefer explicit MSB-to-LSB concat or named
+per-bit `let`s with the boundary constants/wrap bits written out.
+
 Statement-form example:
 
 ```
@@ -375,7 +382,7 @@ module Name
 
   reg default: reset rst => 0;           // wildcard default for all regs
   reg r: UInt<W>;                        // inherits reset from default
-  port y_reg: out pipe_reg<UInt<W>, 1>;  // 1-cycle registered output port
+  port y_reg: out pipe_reg<UInt<W>, 1>;  // 1-cycle registered output port; use only when intended
   pipe_reg d: r stages 2;               // 2-stage delay of r (read-only)
 
   let y_comb = a;
@@ -393,6 +400,7 @@ Notes:
 - No implicit latches: `comb` signals must be assigned on all paths (missing `else` = error)
 - Single driver per signal (error)
 - All ports must be connected at instantiation
+- Do not default outputs to `pipe_reg`: use plain `out` with `let`/`comb` for combinational, same-cycle FSM, waveform-derived level-sensitive, or edge-observed outputs; use `pipe_reg` only for intended registered output latency.
 
 **Instantiation:**
 
@@ -543,6 +551,8 @@ end fsm Name
 - `default ... end default` provides defaults emitted before state `case`; states only override what differs
 - Implicit hold: if no transition fires, FSM stays in current state — no `-> Self when true` needed
 - Multiple transitions: mutual exclusivity checked; `unique if` emitted when exclusive, `priority if` otherwise
+- For prose-derived FSMs, derive and preserve a standard transition table before coding: `input condition`, `current state`, `next state`, `output`. Also call out each input/output port's timing/type (input sampling edge, combinational/state-derived output, registered output, or `pipe_reg` latency). Save it as `transition_table.md` when writing files, or embed it as `///` doc comments above the FSM/module for code-only outputs. For serial protocols, include a distinct row/state for each sampled symbol boundary: start, every data bit, stop/parity, done, and error/recovery.
+- Interpret the table's `output` column together with each port's timing/type note. For combinational or state-derived outputs, the entry is the value visible in the current state. For registered or `pipe_reg` outputs, the entry is the value assigned by that state's sequential action and when it becomes externally visible. Do not invent extra `done`/`valid` ports or extra states because of this rule; choose output timing from the prompt/waveform.
 
 **FSM datapath extension** — `reg`, `let`, and `seq` inside FSM states:
 
