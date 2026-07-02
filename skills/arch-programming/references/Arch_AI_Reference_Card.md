@@ -323,7 +323,8 @@ SVA-only:    |->  (overlap implication, same-cycle)
              // use `(!a) || b` for plain Boolean implication.
              // The legacy `implies` keyword is a deprecated alias for `|->`.
 Ternary:     cond ? a : b      // right-associative; chains for priority muxes
-Match:       match x { E::A => val1, E::B => val2, _ => default }
+Match expr:  match x { E::A => val1, E::B => val2, _ => default }
+Match stmt:  match x ... end match; add `unique` when arms are mutually exclusive
 Set member:  expr inside {val1, val2, lo..hi}   // returns Bool, emits SV inside
 Field:       s.field
 Index:       a[i]
@@ -332,6 +333,23 @@ Enum:        E::Variant
 Struct lit:  S { f: val }
 Sized lit:   8'hFF  16'd1024  4'b1010   // Verilog-style
 todo!        // compilable placeholder; warns at compile, aborts at sim runtime
+```
+
+For truth-table, K-map, minterm/don't-care, mux-input, decoder, or opcode
+logic, prefer `unique match` or named minterm `let`s before hand-simplifying.
+This keeps the case structure visible and avoids Boolean-minimization slips.
+Use plain `match` when priority order matters.
+
+Statement-form example:
+
+```
+comb
+  unique match sel
+    0 => y = a;
+    1 => y = b;
+    _ => y = 0;
+  end match
+end comb
 ```
 
 ---
