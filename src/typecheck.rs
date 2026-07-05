@@ -3641,7 +3641,10 @@ impl<'a> TypeChecker<'a> {
                     Ty::UInt(bits)
                 }
                 LitKind::Sized(w, _) => Ty::UInt(*w),
-                LitKind::ParamSized(_, _) => Ty::UInt(32),
+                LitKind::ParamSized(name, _) => self
+                    .resolve_param_sized_literal_width(name, expr, local_types)
+                    .map(Ty::UInt)
+                    .unwrap_or(Ty::Error),
                 // Float literals default to FP32; BF16 values are written via an
                 // explicit `.to_bf16()` conversion (no implicit float narrowing).
                 LitKind::Float(_) => Ty::FP32,
@@ -3746,6 +3749,13 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             ExprKind::BitSlice(base, hi, lo) => {
+                if !Self::is_portable_bit_slice_base(base) {
+                    self.errors.push(CompileError::general(
+                        "cannot bit-slice this expression directly; SystemVerilog backends cannot portably emit `(expr)[hi:lo]`. For same-width modular arithmetic, use wrapping operators such as `+%` or `-%`; otherwise assign the expression to a typed `let`/wire first and slice the named value.",
+                        base.span,
+                    ));
+                    return Ty::Error;
+                }
                 let base_ty = self.resolve_expr_type(base, module_name, local_types);
                 let hi_val = self.eval_const_expr(hi, local_types);
                 let lo_val = self.eval_const_expr(lo, local_types);
@@ -4108,6 +4118,25 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+    }
+
+    fn is_portable_bit_slice_base(base: &Expr) -> bool {
+        matches!(
+            base.kind,
+            ExprKind::Ident(_)
+                | ExprKind::SynthIdent(_, _)
+                | ExprKind::Literal(_)
+                | ExprKind::Bool(_)
+                | ExprKind::EnumVariant(_, _)
+                | ExprKind::Index(_, _)
+                | ExprKind::BitSlice(_, _, _)
+                | ExprKind::PartSelect(_, _, _, _)
+                | ExprKind::FieldAccess(_, _)
+                | ExprKind::Concat(_)
+                | ExprKind::Repeat(_, _)
+                | ExprKind::FunctionCall(_, _)
+                | ExprKind::MethodCall(_, _, _)
+        )
     }
 
     /// Resolve `ExprKind::FieldAccess(base, field)` — the type of a `.field`
@@ -4785,6 +4814,106 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             _ => None,
+        }
+    }
+
+    fn eval_const_expr_i64(&self, expr: &Expr, local_types: &HashMap<String, Ty>) -> Option<i64> {
+        match &expr.kind {
+            ExprKind::Literal(LitKind::Dec(v))
+            | ExprKind::Literal(LitKind::Hex(v))
+            | ExprKind::Literal(LitKind::Bin(v))
+            | ExprKind::Literal(LitKind::Sized(_, v)) => i64::try_from(*v).ok(),
+            ExprKind::Ident(name) => {
+                if let Some(p) = self.active_params.iter().find(|p| p.name.name == *name) {
+                    if let Some(default) = &p.default {
+                        return self.eval_const_expr_i64(default, local_types);
+                    }
+                }
+
+                for item in &self.source.items {
+                    if let Item::Module(m) = item {
+                        for p in &m.params {
+                            if p.name.name == *name {
+                                if let Some(default) = &p.default {
+                                    return self.eval_const_expr_i64(default, local_types);
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            ExprKind::Unary(UnaryOp::Neg, inner) => {
+                self.eval_const_expr_i64(inner, local_types)?.checked_neg()
+            }
+            ExprKind::Binary(BinOp::Add, lhs, rhs) => self
+                .eval_const_expr_i64(lhs, local_types)?
+                .checked_add(self.eval_const_expr_i64(rhs, local_types)?),
+            ExprKind::Binary(BinOp::Sub, lhs, rhs) => self
+                .eval_const_expr_i64(lhs, local_types)?
+                .checked_sub(self.eval_const_expr_i64(rhs, local_types)?),
+            ExprKind::Binary(BinOp::Mul, lhs, rhs) => self
+                .eval_const_expr_i64(lhs, local_types)?
+                .checked_mul(self.eval_const_expr_i64(rhs, local_types)?),
+            ExprKind::Binary(BinOp::Div, lhs, rhs) => {
+                let l = self.eval_const_expr_i64(lhs, local_types)?;
+                let r = self.eval_const_expr_i64(rhs, local_types)?;
+                if r == 0 {
+                    None
+                } else {
+                    l.checked_div(r)
+                }
+            }
+            ExprKind::Binary(BinOp::Mod, lhs, rhs) => {
+                let l = self.eval_const_expr_i64(lhs, local_types)?;
+                let r = self.eval_const_expr_i64(rhs, local_types)?;
+                if r == 0 {
+                    None
+                } else {
+                    l.checked_rem(r)
+                }
+            }
+            ExprKind::Clog2(arg) => {
+                let v = self.eval_const_expr_i64(arg, local_types)?;
+                if v <= 1 {
+                    Some(1)
+                } else {
+                    Some((64 - ((v as u64) - 1).leading_zeros()) as i64)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn resolve_param_sized_literal_width(
+        &mut self,
+        name: &str,
+        expr: &Expr,
+        local_types: &HashMap<String, Ty>,
+    ) -> Option<u32> {
+        match self.eval_const_expr_i64(
+            &Expr::new(ExprKind::Ident(name.to_string()), expr.span),
+            local_types,
+        ) {
+            Some(width) if width > 0 => Some(width as u32),
+            Some(width) => {
+                self.errors.push(CompileError::General {
+                    message: format!(
+                        "sized literal width param `{name}` must be greater than zero, got {width}"
+                    ),
+                    span: crate::diagnostics::span_to_source_span(expr.span),
+                });
+                None
+            }
+            None => {
+                self.errors.push(CompileError::General {
+                    message: format!(
+                        "sized literal width param `{name}` must resolve to a positive integer constant"
+                    ),
+                    span: crate::diagnostics::span_to_source_span(expr.span),
+                });
+                None
+            }
         }
     }
 

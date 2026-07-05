@@ -59,7 +59,7 @@ Preserve design provenance in generated `.arch` files. Add file front matter wit
 
 Prefer visible timing in port signatures. Use `port name: out pipe_reg<T, N> reset rst => value;` for registered outputs and assign `name@N <= expr` in `seq` blocks. Use plain `out T` driven by `comb` or `let` when the output must respond in the same cycle.
 
-Use explicit width handling. Prefer wrapping arithmetic (`+%`, `-%`, `*%`) for deliberate modular arithmetic; otherwise use `.trunc<N>()`, `.zext<N>()`, `.sext<N>()`, `.resize<N>()`, slices, `signed()`, or `unsigned()` as required by the type checker.
+Use explicit width handling. Prefer wrapping arithmetic (`+%`, `-%`, `*%`) for deliberate modular arithmetic; otherwise use `.trunc<N>()`, `.zext<N>()`, `.sext<N>()`, `.resize<N>()`, slices, `signed()`, or `unsigned()` as required by the type checker. For Icarus-targeted flows, avoid bit-selecting cast/conversion results such as `unsigned(x)[i]` or `x.sext<N>()[i]`, and avoid slicing arithmetic expressions such as `(a + b)[7:0]`; assign conversions/arithmetic to named typed intermediates and drive whole slices/lanes when possible.
 
 Avoid common syntax errors: instantiation connections use `port <- signal` for inputs and `port -> wire` for outputs; chained conditionals use `elsif`; bit slices use `expr[hi:lo]`; bus fields use dot notation; `SysDomain` is built in.
 
