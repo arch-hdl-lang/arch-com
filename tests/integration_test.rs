@@ -175,6 +175,44 @@ end module Placeholder
 // ── Operators ─────────────────────────────────────────────────────────────────
 
 #[test]
+fn test_bit_slice_arithmetic_expression_errors_with_wrapping_hint() {
+    let source = r#"
+module SliceArithmeticExpr
+  port a: in SInt<4>;
+  port y: out SInt<4>;
+
+  let one_s: SInt<4> = signed(4'd1);
+  let y = signed((a + one_s)[3:0]);
+end module SliceArithmeticExpr
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let errors = checker
+        .check()
+        .expect_err("arithmetic expression bit-slice should error");
+    let rendered = format!("{errors:?}");
+    assert!(rendered.contains("cannot bit-slice this expression directly"));
+    assert!(rendered.contains("+%"));
+    assert!(rendered.contains("-%"));
+
+    let fixed = r#"
+module SliceArithmeticExpr
+  port a: in SInt<4>;
+  port y: out SInt<4>;
+
+  let one_s: SInt<4> = signed(4'd1);
+  let y = a +% one_s;
+end module SliceArithmeticExpr
+"#;
+    let sv = compile_to_sv(fixed);
+    assert!(sv.contains("assign y = 4'(a + one_s);"), "got:\n{sv}");
+}
+
+#[test]
 fn test_bang_prefix_is_logical_not_alias() {
     // arch#496: `!` is a symbolic alias for the `not` keyword (logical-not),
     // exactly parallel to `&&`==`and` / `||`==`or` (#493). It must lower to
@@ -29091,5 +29129,26 @@ end module IntBadOrder
     assert!(
         format!("{errs:?}").contains("unreachable match arm"),
         "non-enum match must also enforce wildcard-last"
+    );
+}
+
+#[test]
+fn test_param_sized_literal_rejects_non_positive_width_with_clear_error() {
+    let source = r#"
+module BadWidth
+  param W: const = 0;
+  port x: out UInt<1>;
+  let x = W'd0;
+end module BadWidth
+"#;
+    let errs = typecheck_source(source).expect_err("expected non-positive width error");
+    let rendered = format!("{errs:?}");
+    assert!(
+        rendered.contains("sized literal width param `W` must be greater than zero, got 0"),
+        "expected a width-specific diagnostic, got:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("expected UInt<1>, found UInt<32>"),
+        "must not fall back to the bogus UInt<32> mismatch:\n{rendered}"
     );
 }

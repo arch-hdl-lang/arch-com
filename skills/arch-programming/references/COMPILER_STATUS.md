@@ -1,7 +1,12 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-06-08
-> Compiler version: 0.70.4
+> Last updated: 2026-07-05
+> Compiler version: 0.70.6
+>
+> **0.70.6 release highlights:**
+> - **Icarus-portable CVDP generation guidance** — ARCH MCP and skill instructions now steer generated code away from indexed casts/conversions, nested signed-extension chains, and direct slices of arithmetic expressions that Icarus rejects or mishandles.
+> - **Safer type checking for portable slices** — `arch check` now rejects direct bit-slicing of non-portable expression bases such as arithmetic expressions and points users toward wrapping arithmetic or named typed intermediates.
+> - **Parameterized sized literals** — literals such as `W'd0` now resolve to the positive integer value of `W` instead of falling back to `UInt<32>`, with a clear diagnostic for non-positive widths.
 >
 > **0.70.4 release highlights:**
 > - **Lean construct proof expansion** — construct certificates now cover bus `credit_channel` accounting in Lean and SMT, strengthen round-robin arbiter certificates with a bounded scan witness, add one-step thread effect replay, and add reusable Lean theorem libraries for async FIFO Gray-code decoding and abstract pipeline valid/stall/flush behavior.
