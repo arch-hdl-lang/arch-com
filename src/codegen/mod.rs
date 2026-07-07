@@ -5737,7 +5737,16 @@ impl<'a> Codegen<'a> {
                 LitKind::Hex(v) => format!("'h{v:X}"),
                 LitKind::Bin(v) => format!("'b{v:b}"),
                 LitKind::Sized(w, v) => format!("{w}'d{v}"),
-                LitKind::ParamSized(name, v) => format!("{name}'d{v}"),
+                // A parameter-width sized literal (`W'd5`) is NOT legal
+                // SystemVerilog — the size of a sized literal must be a decimal
+                // *number*, not a parameter reference (both Verilator and
+                // iverilog reject `W'd5` with a syntax error). Emit the legal
+                // parameterized form instead: a size cast `W'(5)`, which carries
+                // the identical value and width. (The type checker already
+                // resolves the ARCH type to `UInt<W>` via
+                // `resolve_param_sized_literal_width`; this is the SV-surface
+                // counterpart.)
+                LitKind::ParamSized(name, v) => format!("{name}'({v})"),
                 // Float literal (FP32 by default) → 32-bit binary32 bit pattern.
                 LitKind::Float(bits) => {
                     format!("32'h{:08X}", (f64::from_bits(*bits) as f32).to_bits())
