@@ -6185,6 +6185,12 @@ impl<'a> Codegen<'a> {
                 // because bit-select doesn't compose with the parenthesized
                 // expression — but `func()[hi:lo]` is valid (function-call
                 // result is an "lvalue-like" form per the SV grammar).
+                // Repeat (replication `{N{a}}`) is the same grammar class as
+                // Concat (multiple_concatenation): Verilator/iverilog accept
+                // `{2{a}}[hi:lo]` bare but reject `({2{a}})[hi:lo]`. Without
+                // this arm the paren'd form is emitted and fails Verilator with
+                // a syntax error even though typecheck's
+                // `is_portable_bit_slice_base` classifies Repeat as portable.
                 let b = if matches!(
                     base.kind,
                     ExprKind::Ident(_)
@@ -6193,6 +6199,7 @@ impl<'a> Codegen<'a> {
                         | ExprKind::Index(_, _)
                         | ExprKind::FieldAccess(_, _)
                         | ExprKind::Concat(_)
+                        | ExprKind::Repeat(_, _)
                         | ExprKind::FunctionCall(_, _)
                         | ExprKind::MethodCall(_, _, _)
                 ) {
