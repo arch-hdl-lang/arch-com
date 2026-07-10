@@ -29152,3 +29152,23 @@ end module BadWidth
         "must not fall back to the bogus UInt<32> mismatch:\n{rendered}"
     );
 }
+
+#[test]
+fn test_param_sized_literal_rejects_unknown_width_name() {
+    let source = r#"
+module BadWidthName
+  port o: out UInt<32>;
+  comb
+    o = TYPO'd5;
+  end comb
+end module BadWidthName
+"#;
+    let errs = typecheck_source(source).expect_err("expected unknown width-name error");
+    let rendered = format!("{errs:?}");
+    assert!(
+        rendered.contains(
+            "sized literal width param `TYPO` must resolve to a positive integer constant"
+        ),
+        "expected an unknown-width diagnostic, got:\n{rendered}"
+    );
+}
