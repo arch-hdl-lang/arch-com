@@ -213,6 +213,32 @@ end module SliceArithmeticExpr
 }
 
 #[test]
+fn test_repeat_base_bit_slice_emits_bare_no_parens() {
+    // arch#653 item 2: a replication `{N{a}}` as a bit-slice base is classified
+    // portable by typecheck's `is_portable_bit_slice_base`, but codegen used to
+    // wrap it in parens — `({2{a}})[3:0]` — which Verilator/iverilog reject as a
+    // syntax error (the guardrail's own Icarus-portability goal defeated). Repeat
+    // is the same grammar class as Concat, so the bare form `{2{a}}[3:0]` is
+    // legal SV and must be emitted without the enclosing parens.
+    let source = r#"
+module RepeatSlice
+  port a: in UInt<4>;
+  port y: out UInt<4>;
+  let y = {2{a}}[3:0];
+end module RepeatSlice
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign y = {2{a}}[3:0];"),
+        "expected bare repeat-slice, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("({2{a}})[3:0]"),
+        "repeat-slice base must not be parenthesized (Verilator syntax error), got:\n{sv}"
+    );
+}
+
+#[test]
 fn test_bang_prefix_is_logical_not_alias() {
     // arch#496: `!` is a symbolic alias for the `not` keyword (logical-not),
     // exactly parallel to `&&`==`and` / `||`==`or` (#493). It must lower to
