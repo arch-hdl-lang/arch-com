@@ -29250,3 +29250,29 @@ end module ExprGoodOrder
         "an expression match with `_` as the final arm must type-check"
     );
 }
+
+#[test]
+fn test_param_sized_literal_emits_valid_sv_size_cast() {
+    // A param-width sized literal (`W'd5`) that survives to SV codegen must be
+    // emitted as a legal SystemVerilog size cast `W'(5)`, NOT the invalid
+    // `W'd5` form (a sized-literal width must be a decimal number, not a
+    // parameter — Verilator and iverilog both reject `W'd5` with a syntax
+    // error). Regression for the codegen half of the #636 param-sized-literal
+    // feature (typecheck half fixed in #651).
+    let source = r#"
+module ParamSizedEmit
+  param W: const = 8;
+  port x: out UInt<8>;
+  let x = W'd5;
+end module ParamSizedEmit
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign x = W'(5);"),
+        "expected a size-cast `W'(5)`, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("W'd5"),
+        "must not emit the invalid parameter-width sized literal `W'd5`:\n{sv}"
+    );
+}
