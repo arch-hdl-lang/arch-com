@@ -3649,16 +3649,25 @@ impl<'a> TypeChecker<'a> {
                     // `subst_expr_params`, so the literal still arrives here as
                     // `ParamSized`; without this it defaulted to `UInt<32>`,
                     // which spuriously rejected `W'd0` into a `UInt<W>` target
-                    // for any W != 32. Fall back to 32 only when the param is
-                    // genuinely unbound (generic context).
+                    // for any W != 32.
                     let ident = Expr {
                         kind: ExprKind::Ident(name.clone()),
                         span: expr.span,
                         parenthesized: false,
                     };
-                    match self.eval_const_expr(&ident, local_types) {
-                        Some(w) if w > 0 => Ty::UInt(w as u32),
-                        _ => Ty::UInt(32),
+                    if let Some(w) = self.eval_const_expr(&ident, local_types) {
+                        Ty::UInt(w as u32)
+                    } else if self.active_params.iter().any(|p| p.name.name == *name) {
+                        // Generic module param with no default yet: preserve the
+                        // pre-existing placeholder typing so generic modules can
+                        // still check before instantiation.
+                        Ty::UInt(32)
+                    } else {
+                        self.errors.push(CompileError::general(
+                            &format!("unknown param-width literal width '{name}'"),
+                            expr.span,
+                        ));
+                        Ty::Error
                     }
                 }
                 // Float literals default to FP32; BF16 values are written via an

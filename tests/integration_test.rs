@@ -29172,6 +29172,26 @@ end module ParamLitTrunc
 }
 
 #[test]
+fn test_param_sized_literal_unknown_width_name_errors() {
+    // A misspelled param-width prefix must not silently type as UInt<32>; that
+    // can mask the typo if the surrounding context also happens to be 32 bits.
+    let source = r#"
+module ParamLitUnknownWidth
+  port o: out UInt<32>;
+  comb
+    o = TYPO'd5;
+  end comb
+end module ParamLitUnknownWidth
+"#;
+    let errs = typecheck_source(source).expect_err("unknown param-width prefix must be rejected");
+    let msg = format!("{errs:?}");
+    assert!(
+        msg.contains("unknown param-width literal width 'TYPO'"),
+        "expected an unknown-width diagnostic, got: {msg}"
+    );
+}
+
+#[test]
 fn test_param_sized_literal_emits_valid_sv_size_cast() {
     // A param-width sized literal that survives to SV codegen (top-level
     // module keeps `param W` symbolic) must emit a legal SystemVerilog size
