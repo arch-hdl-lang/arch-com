@@ -5741,12 +5741,15 @@ impl<'a> Codegen<'a> {
                 // SystemVerilog — the size of a sized literal must be a decimal
                 // *number*, not a parameter reference (both Verilator and
                 // iverilog reject `W'd5` with a syntax error). Emit the legal
-                // parameterized form instead: a size cast `W'(5)`, which carries
-                // the identical value and width. (The type checker already
-                // resolves the ARCH type to `UInt<W>` via
+                // parameterized form instead: a size cast, but keep the operand
+                // explicitly unsigned. Plain `W'(15)` parses, yet it behaves like
+                // a signed 4-bit value (`-1`) while `4'd15` is unsigned `15`.
+                // `W'($unsigned(15))` preserves the original literal semantics
+                // while staying valid under both Verilator and iverilog. (The
+                // type checker already resolves the ARCH type to `UInt<W>` via
                 // `resolve_param_sized_literal_width`; this is the SV-surface
                 // counterpart.)
-                LitKind::ParamSized(name, v) => format!("{name}'({v})"),
+                LitKind::ParamSized(name, v) => format!("{name}'($unsigned({v}))"),
                 // Float literal (FP32 by default) → 32-bit binary32 bit pattern.
                 LitKind::Float(bits) => {
                     format!("32'h{:08X}", (f64::from_bits(*bits) as f32).to_bits())
