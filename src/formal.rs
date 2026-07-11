@@ -2048,7 +2048,7 @@ impl<'a> FormalCtx<'a> {
                     expr.span,
                 ))
             }
-            Literal(l) => Ok(lit_to_term(l)),
+            Literal(l) => lit_to_term(l, &self.params, expr.span),
             Bool(b) => Ok(SmtTerm {
                 s: if *b { "#b1".to_string() } else { "#b0".to_string() },
                 width: 1,
@@ -2894,37 +2894,51 @@ fn cc_payload_width(meta: &CreditChannelMeta) -> Option<u32> {
     }
 }
 
-fn lit_to_term(l: &LitKind) -> SmtTerm {
+fn lit_to_term(
+    l: &LitKind,
+    params: &HashMap<String, u64>,
+    span: Span,
+) -> Result<SmtTerm, CompileError> {
     match l {
         LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v) => {
             // Intrinsic width = bit-length, or 1 for value 0.
             let w = if *v == 0 { 1 } else { 64 - v.leading_zeros() };
-            SmtTerm {
+            Ok(SmtTerm {
                 s: bv_lit(*v, w),
                 width: w,
                 signed: false,
-            }
+            })
         }
-        LitKind::Sized(w, v) => SmtTerm {
+        LitKind::Sized(w, v) => Ok(SmtTerm {
             s: bv_lit(*v, *w),
             width: *w,
             signed: false,
-        },
-        LitKind::ParamSized(_, v) => SmtTerm {
-            s: bv_lit(*v, 32),
-            width: 32,
-            signed: false,
-        },
+        }),
+        LitKind::ParamSized(name, v) => {
+            let Some(width) = params.get(name).copied().map(|w| w as u32) else {
+                return Err(CompileError::general(
+                    &format!(
+                        "param-sized literal width `{name}` is not a resolvable const parameter"
+                    ),
+                    span,
+                ));
+            };
+            Ok(SmtTerm {
+                s: bv_lit(*v, width),
+                width,
+                signed: false,
+            })
+        }
         // Float literals are unreachable here in practice — FP types are rejected
         // by `check_scalar_type` before emission. Fall back to the FP32 bit
         // pattern as a 32-bit vector so this stays total.
         LitKind::Float(bits) => {
             let f = (f64::from_bits(*bits)) as f32;
-            SmtTerm {
+            Ok(SmtTerm {
                 s: bv_lit(f.to_bits() as u64, 32),
                 width: 32,
                 signed: false,
-            }
+            })
         }
     }
 }

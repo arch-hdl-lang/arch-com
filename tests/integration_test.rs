@@ -25275,6 +25275,80 @@ fn test_native_sim_vec_inst_input_wire_param_sized_fanout() {
 }
 
 #[test]
+fn test_param_sized_literal_uses_param_width_in_check_build_and_formal() {
+    // Regression for PR #636. `W'd0` parsed, but the typechecker/formal backend
+    // still treated it as UInt<32>, so the new syntax failed in normal module
+    // code and widened SMT literals silently.
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("ParamSized.arch");
+    let sv_out = td.path().join("ParamSized.sv");
+    let smt_out = td.path().join("ParamSized.smt2");
+    std::fs::write(
+        &src,
+        r#"
+module ParamSized
+  param W: const = 5;
+  port o: out UInt<W>;
+  let o = W'd0;
+end module ParamSized
+"#,
+    )
+    .expect("write source");
+
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let check = std::process::Command::new(arch_bin)
+        .arg("check")
+        .arg(&src)
+        .output()
+        .expect("run arch check");
+    assert!(
+        check.status.success(),
+        "arch check should accept param-sized literals at the resolved width\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg(&src)
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("run arch build");
+    assert!(
+        build.status.success(),
+        "arch build should preserve param-sized literals in SV\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let sv = std::fs::read_to_string(&sv_out).expect("read SV");
+    assert!(
+        sv.contains("assign o = W'($unsigned(0));"),
+        "expected emitted SV to use the legal param-width size cast form:\n{sv}"
+    );
+
+    let formal = std::process::Command::new(arch_bin)
+        .arg("formal")
+        .arg(&src)
+        .arg("--emit-smt")
+        .arg(&smt_out)
+        .output()
+        .expect("run arch formal");
+    assert!(
+        formal.status.success(),
+        "arch formal should accept param-sized literals and resolve their width\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&formal.stdout),
+        String::from_utf8_lossy(&formal.stderr)
+    );
+    let smt = std::fs::read_to_string(&smt_out).expect("read SMT");
+    assert!(
+        smt.contains("(_ bv0 5)"),
+        "expected SMT emission to use the resolved 5-bit width, not a fallback width:\n{smt}"
+    );
+}
+
+#[test]
 fn test_native_sim_bool_not_pipe_reg_outputs_and_ampamp() {
     // Regression for arch-com#492. Native sim used to tokenize `&&` as
     // bitwise `&` plus reduction `&` on the RHS, then infer
