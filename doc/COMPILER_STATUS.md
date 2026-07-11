@@ -1,7 +1,10 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-07-05
-> Compiler version: 0.70.6
+> Last updated: 2026-07-11
+> Compiler version: 0.70.7
+>
+> **0.70.7 release highlights:**
+> - **Param-sized literal follow-through** — the `0.70.6` param-width literal work now carries through typecheck and formal: `W'dN` is typed using the positive integer value of `W`, non-positive widths get a targeted diagnostic instead of a fallback `UInt<32>` mismatch, unknown width names are rejected clearly, and `arch formal` resolves param-sized literal widths instead of dropping them on the SMT path.
 >
 > **0.70.6 release highlights:**
 > - **Icarus-portable CVDP generation guidance** — ARCH MCP and skill instructions now steer generated code away from indexed casts/conversions, nested signed-extension chains, and direct slices of arithmetic expressions that Icarus rejects or mishandles.
