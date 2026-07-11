@@ -38,8 +38,7 @@ ARCH already has `pipe_reg<T, N>`, but it is a **delay line** — "a cascade of 
 flops" (spec §18a); `q@K` lowers to the K-th shift-register tap. Writing
 
 ```arch
-pipe_reg<FP32, 6> acc;
-acc@6 <= fma(a, b, c);     // WRONG mental model
+pipe_reg acc: fma(a, b, c) stages 6;   // WRONG mental model
 ```
 
 produces *correct values at 6-cycle latency* but keeps the FMA as one
@@ -152,10 +151,11 @@ depth**. This is syntactically distinct from a comb `fma`, so the
 delay-line trap (§Motivation) is impossible to write by accident:
 
 ```arch
-pipe_reg<FP32, 6> acc reset rst => 0;
-
-acc@6 <= fma<pipelined, 6>(a, b, c);  // (1) depth 6 is DECLARED in the call;
-                                 //     compiler looks up (fma, FP32, 6) in the registry
+port acc: out pipe_reg<FP32, 6> reset rst => 0;
+seq on clk rising
+  acc@6 <= fma<pipelined, 6>(a, b, c);  // (1) depth 6 is DECLARED in the call;
+                                   //     compiler looks up (fma, FP32, 6) in the registry
+end seq
 
 let s: FP32 = acc@6;             // (2) consumer reads at latency 6 (LatencyAt)
 ```
