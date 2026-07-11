@@ -239,6 +239,183 @@ end module RepeatSlice
 }
 
 #[test]
+fn test_part_select_additive_base_rejected() {
+    // arch#653 item 1: `ExprKind::PartSelect` (`[start +: w]` / `[start -: w]`)
+    // was not guarded at typecheck, so a low-precedence base like `a + b`
+    // silently emitted precedence-wrong SV (`a + b[s +: 4]`). Must now be
+    // rejected the same way BitSlice already is, for both `+:` and `-:`.
+    let plus_source = r#"
+module PsAddPlus
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port s: in UInt<3>;
+  port y: out UInt<4>;
+  let y = (a + b)[s +: 4];
+end module PsAddPlus
+"#;
+    let tokens = lexer::tokenize(plus_source).expect("lexer error");
+    let mut parser = Parser::new(tokens, plus_source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let errors = checker
+        .check()
+        .expect_err("part-select on additive base (+:) should error");
+    let rendered = format!("{errors:?}");
+    assert!(rendered.contains("cannot part-select this expression directly"));
+    assert!(rendered.contains("+%"));
+    assert!(rendered.contains("-%"));
+
+    let minus_source = r#"
+module PsAddMinus
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port s: in UInt<3>;
+  port y: out UInt<4>;
+  let y = (a + b)[s -: 4];
+end module PsAddMinus
+"#;
+    let tokens = lexer::tokenize(minus_source).expect("lexer error");
+    let mut parser = Parser::new(tokens, minus_source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let errors = checker
+        .check()
+        .expect_err("part-select on additive base (-:) should error");
+    let rendered = format!("{errors:?}");
+    assert!(rendered.contains("cannot part-select this expression directly"));
+}
+
+#[test]
+fn test_part_select_shift_base_rejected() {
+    // Same guardrail, shift-expression base — another low-precedence
+    // operator class that would otherwise silently miscompile.
+    let source = r#"
+module PsShift
+  port a: in UInt<8>;
+  port s: in UInt<3>;
+  port y: out UInt<2>;
+  let y = (a >> 1)[s +: 2];
+end module PsShift
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let errors = checker
+        .check()
+        .expect_err("part-select on shift base should error");
+    let rendered = format!("{errors:?}");
+    assert!(rendered.contains("cannot part-select this expression directly"));
+}
+
+#[test]
+fn test_part_select_portable_bases_accepted() {
+    // No regression: identifier, indexed-Vec-element, and field-access bases
+    // remain accepted for part-select — only expression bases are rejected.
+    let source = r#"
+struct Wrapped
+  data: UInt<16>;
+end struct Wrapped
+
+module PsPortableBases
+  port a: in UInt<16>;
+  port v: in Vec<UInt<16>, 4>;
+  port idx: in UInt<2>;
+  port w: in Wrapped;
+  port s: in UInt<4>;
+  port y_ident: out UInt<4>;
+  port y_index: out UInt<4>;
+  port y_field: out UInt<4>;
+  comb
+    y_ident = a[s +: 4];
+    y_index = v[idx][s +: 4];
+    y_field = w.data[s +: 4];
+  end comb
+end module PsPortableBases
+"#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module PsPortableBases"), "got:\n{sv}");
+}
+
+#[test]
+fn test_chained_bit_slice_rejected() {
+    // arch#653 item 2: `BitSlice` was previously in `is_portable_bit_slice_base`,
+    // so a chained bit-select `a[7:4][1:0]` typechecked, but codegen wraps the
+    // inner slice in parens (`(a[7:4])[1:0]`) which Verilator/iverilog reject —
+    // chained bit-select isn't legal SV even bare. Now rejected at typecheck.
+    let source = r#"
+module ChainedSlice
+  port a: in UInt<8>;
+  port y: out UInt<2>;
+  let y = a[7:4][1:0];
+end module ChainedSlice
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let errors = checker.check().expect_err("chained bit-slice should error");
+    let rendered = format!("{errors:?}");
+    assert!(rendered.contains("cannot bit-slice this expression directly"));
+}
+
+#[test]
+fn test_slice_on_part_select_base_rejected() {
+    // `PartSelect` was also previously in `is_portable_bit_slice_base`, so a
+    // bit-slice of a part-select result (`a[s +: 4][1:0]`) typechecked, but
+    // codegen paren's the base (`(a[s +: 4])[1:0]`) which is not legal SV.
+    let source = r#"
+module SliceOfPartSelect
+  port a: in UInt<8>;
+  port s: in UInt<3>;
+  port y: out UInt<2>;
+  let y = a[s +: 4][1:0];
+end module SliceOfPartSelect
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let errors = checker
+        .check()
+        .expect_err("bit-slice on part-select base should error");
+    let rendered = format!("{errors:?}");
+    assert!(rendered.contains("cannot bit-slice this expression directly"));
+}
+
+#[test]
+fn test_part_select_let_intermediate_rewrite_compiles() {
+    // Positive control: the diagnostic's recommended fix — bind the rejected
+    // expression to a named `let` first — type-checks and builds cleanly.
+    let source = r#"
+module PsAddFixed
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port s: in UInt<3>;
+  port y: out UInt<4>;
+  let sum: UInt<9> = a + b;
+  let y = sum[s +: 4];
+end module PsAddFixed
+"#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module PsAddFixed"), "got:\n{sv}");
+    assert!(
+        sv.contains("sum"),
+        "expected named intermediate in SV:\n{sv}"
+    );
+}
+
+#[test]
 fn test_bang_prefix_is_logical_not_alias() {
     // arch#496: `!` is a symbolic alias for the `not` keyword (logical-not),
     // exactly parallel to `&&`==`and` / `||`==`or` (#493). It must lower to

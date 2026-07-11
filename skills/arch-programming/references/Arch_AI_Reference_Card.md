@@ -177,9 +177,13 @@ x.sext<N>()    // sign-extend; N must be > source width
 x.resize<N>()  // direction-agnostic: widens or narrows; no direction check
                // UInt/Bool → N'($unsigned(x)); SInt → N'($signed(x))
                // use when N is a param or direction varies by instantiation
-x[hi:lo]       // bit-slice (SV: x[hi:lo])
+x[hi:lo]       // bit-slice, constant range (SV: x[hi:lo])
+x[start +: w]  // variable part-select, grows up from start (SV: x[start +: w])
+x[start -: w]  // variable part-select, grows down from start (SV: x[start -: w])
 x[i]           // single bit extract
 ```
+
+**Portable bit-slice/part-select base (compiler-enforced):** `[hi:lo]` and `[start +: w]`/`[start -: w]` require the base to be one of: identifier, literal, indexed access (`v[i]`), field access (`s.field`), concat (`{a,b}`), replication (`{N{a}}`), or function/method-call result. Anything else — an arithmetic/logical/shift expression, or **another bit-slice/part-select result** (chained slicing like `a[7:4][1:0]`) — is a compile error (`cannot bit-slice`/`cannot part-select this expression directly`), because the parenthesized form is *also* illegal SV (Verilator/iverilog reject it even parenthesized). Fix: bind to a named `let` first — `let sum = a + b; let y = sum[s +: 4];` — or use a wrapping op (`+%`/`-%`/`*%`) for same-width modular arithmetic.
 
 **Cast direction rules** (compiler-enforced when source width is known):
 

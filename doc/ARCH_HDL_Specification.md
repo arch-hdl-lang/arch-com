@@ -422,6 +422,54 @@ end seq
 
 > *⚑ **Wrapping operators** (`+%`, `-%`, `*%`) are the ergonomic alternative to the `.trunc<N>()` boilerplate: `let x: UInt<8> = a +% b;` is equivalent to `let x: UInt<8> = (a + b).trunc<8>();`. The result width is `max(W(a), W(b))` for all three. The SV backend emits a size cast `W'(a op b)`. Use wrapping ops when the intent is deliberate modular arithmetic, not overflow capture.*
 
+**3.2.1 Bit-Slice and Part-Select: Portable Base Requirement**
+
+Arch has two bit-range extraction forms, both of which read a contiguous range of bits out of a value:
+
+| Form | Syntax | Meaning | SV codegen |
+|------|--------|---------|------------|
+| Bit-slice | `expr[hi:lo]` | Fixed range, `hi` and `lo` are compile-time constants. Result width `hi−lo+1`. | `expr[hi:lo]` |
+| Variable part-select | `expr[start +: w]` / `expr[start -: w]` | Range of constant width `w` at a runtime-variable `start` offset, growing up (`+:`) or down (`-:`) from `start`. Result width `w`. | `expr[start +: w]` / `expr[start -: w]` |
+
+```
+let rd: UInt<5> = instr[11:7];        // bit-slice, constant range
+let field: UInt<8> = data[idx +: 8];  // variable part-select, runtime start
+```
+
+**Both forms require a portable base expression.** Not every Arch expression can legally be the target of `[hi:lo]` or `[start +: w]`/`[start -: w]` — SystemVerilog's bit-select/part-select grammar does not compose with arbitrary parenthesized expressions, and this holds for Verilator, Icarus (iverilog), and Yosys alike. A base is portable when it is one of:
+
+- an identifier (`a`, a signal or port name)
+- an integer literal
+- an indexed access (`v[i]`, e.g. a `Vec` element)
+- a field access (`s.field`)
+- a concatenation (`{a, b}`)
+- a replication (`{N{a}}`)
+- a function-call or method-call result (`f(x)`, `x.method()`)
+
+Anything else — an arithmetic or logical expression (`a + b`), a shift (`a >> 1`), a ternary, **or a bit-slice/part-select result itself** (chained slicing, e.g. `a[7:4][1:0]`) — is **rejected at `arch check`**:
+
+```
+port a: in UInt<8>;
+port b: in UInt<8>;
+port s: in UInt<3>;
+
+let y = (a + b)[s +: 4];   // ✗ COMPILE ERROR: cannot part-select this
+                            //   expression directly
+let z = a[7:4][1:0];       // ✗ COMPILE ERROR: cannot bit-slice this
+                            //   expression directly (chained slice)
+```
+
+The parenthesized form is not a workaround — `(a + b)[s +: 4]` and `(a[7:4])[1:0]` are themselves illegal SystemVerilog (Verilator and iverilog both reject bit-select/part-select applied to a parenthesized non-selectable expression), so silently emitting parens would just move the syntax error from `arch check` to `arch build`'s output. The compiler instead rejects the construct up front and points at the fix: bind the expression to a named `let`/wire first, then slice or part-select the named value.
+
+```
+let sum: UInt<9> = a + b;
+let y = sum[s +: 4];        // ✓ portable base — sum is an identifier
+```
+
+For same-width modular arithmetic specifically, prefer the wrapping operators (`+%`, `-%`, `*%`) over a slice of an arithmetic result — `a +% b` already produces a same-width value with no truncation boilerplate needed.
+
+> *⚑ The portable-base set applies uniformly to both `[hi:lo]` bit-slice and `[start +: w]`/`[start -: w]` variable part-select — they share the same `is_portable_bit_slice_base` check in the type checker. A replication base (`{N{a}}[hi:lo]`) is portable and emitted bare (no enclosing parens); Verilator/iverilog accept `{N{a}}[hi:lo]` but reject the parenthesized `({N{a}})[hi:lo]`, so codegen never wraps a `Repeat` base.*
+
 **3.3 Struct and Enum Types**
 
 +--------------------------------------------------------------------+
