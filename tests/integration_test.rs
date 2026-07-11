@@ -29276,3 +29276,81 @@ end module ParamSizedEmit
         "must not emit the invalid parameter-width sized literal `W'd5`:\n{sv}"
     );
 }
+
+#[test]
+fn test_part_select_arithmetic_expression_errors_with_wrapping_hint() {
+    // arch#653 item 1: a variable part-select `(expr)[start +: w]` on a
+    // low-precedence base silently miscompiled — `(a + b)[2 +: 3]` emitted
+    // `a + b[2 +: 3]` (the select binds to `b` alone) with NO diagnostic,
+    // because the `PartSelect` arm was never wired to #651's
+    // `is_portable_bit_slice_base` guard (only `BitSlice` was). This mirrors
+    // the bit-slice guard onto part-selects.
+    let source = r#"
+module PartSelectArithmeticExpr
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port y: out UInt<3>;
+  let y = (a + b)[2 +: 3];
+end module PartSelectArithmeticExpr
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let errors = checker
+        .check()
+        .expect_err("arithmetic-expression part-select should error");
+    let rendered = format!("{errors:?}");
+    assert!(
+        rendered.contains("cannot part-select this expression directly"),
+        "got:\n{rendered}"
+    );
+    assert!(rendered.contains("+%"));
+    assert!(rendered.contains("-%"));
+
+    // A shift base is likewise low-precedence and must be rejected.
+    let shift_src = r#"
+module PartSelectShiftExpr
+  port a: in UInt<8>;
+  port s: in UInt<3>;
+  port y: out UInt<2>;
+  let y = (a >> 1)[s +: 2];
+end module PartSelectShiftExpr
+"#;
+    let tokens = lexer::tokenize(shift_src).expect("lexer error");
+    let mut parser = Parser::new(tokens, shift_src);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let errors = checker
+        .check()
+        .expect_err("shift-expression part-select should error");
+    assert!(
+        format!("{errors:?}").contains("cannot part-select this expression directly"),
+        "shift base must be rejected"
+    );
+}
+
+#[test]
+fn test_part_select_named_value_base_accepted() {
+    // The `let`-first form the diagnostic recommends must type-check cleanly
+    // and emit a bare `name[start +: width]` — the only portable lowering.
+    let source = r#"
+module PartSelectNamed
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port s: in UInt<3>;
+  port y: out UInt<3>;
+  let sum: UInt<9> = a + b;
+  let y = sum[s +: 3];
+end module PartSelectNamed
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign y = sum[s +: 3];"),
+        "expected a bare named-value part-select, got:\n{sv}"
+    );
+}

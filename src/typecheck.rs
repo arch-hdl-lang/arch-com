@@ -3771,7 +3771,24 @@ impl<'a> TypeChecker<'a> {
                     _ => Ty::Error,
                 }
             }
-            ExprKind::PartSelect(_base, _start, width, _up) => {
+            ExprKind::PartSelect(base, _start, width, _up) => {
+                // A variable part-select `(base)[start +: w]` lowers to
+                // `base[start +: w]` in SV, which requires `base` to be a
+                // selectable reference — the same restriction the `BitSlice`
+                // arm above enforces via `is_portable_bit_slice_base`. Without
+                // this guard a low-precedence base silently miscompiles: e.g.
+                // `(a + b)[start +: w]` emits `a + b[start +: w]`, which parses
+                // as `a + (b[start +: w])` (the select binds to `b` alone) with
+                // no diagnostic. The parenthesized form is not an escape either
+                // — Verilator/iverilog reject `(a + b)[start +: w]` — so the
+                // only valid lowering is a named intermediate.
+                if !Self::is_portable_bit_slice_base(base) {
+                    self.errors.push(CompileError::general(
+                        "cannot part-select this expression directly; SystemVerilog backends cannot portably emit `(expr)[start +: width]`. For same-width modular arithmetic, use wrapping operators such as `+%` or `-%`; otherwise assign the expression to a typed `let`/wire first and part-select the named value.",
+                        base.span,
+                    ));
+                    return Ty::Error;
+                }
                 // width is const; result type is UInt<width>
                 match self.eval_const_expr(width, local_types) {
                     Some(w) if w > 0 => Ty::UInt(w as u32),

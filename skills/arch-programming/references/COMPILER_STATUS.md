@@ -5,7 +5,7 @@
 >
 > **0.70.6 release highlights:**
 > - **Icarus-portable CVDP generation guidance** — ARCH MCP and skill instructions now steer generated code away from indexed casts/conversions, nested signed-extension chains, and direct slices of arithmetic expressions that Icarus rejects or mishandles.
-> - **Safer type checking for portable slices** — `arch check` now rejects direct bit-slicing of non-portable expression bases such as arithmetic expressions and points users toward wrapping arithmetic or named typed intermediates.
+> - **Safer type checking for portable slices** — `arch check` now rejects direct bit-slicing *and variable part-selecting* (`(expr)[start +: w]`) of non-portable expression bases such as arithmetic expressions and points users toward wrapping arithmetic or named typed intermediates. (The part-select guard closes a silent miscompile where `(a + b)[start +: w]` emitted `a + b[start +: w]`.)
 > - **Parameterized sized literals** — literals such as `W'd0` now resolve to the positive integer value of `W` instead of falling back to `UInt<32>`, with a clear diagnostic for non-positive widths. SV codegen emits the legal size-cast form `W'(0)` (a parameter is not a valid sized-literal width — Verilator and iverilog both reject `W'd0`).
 >
 > **0.70.4 release highlights:**
