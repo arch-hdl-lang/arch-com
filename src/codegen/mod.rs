@@ -5619,6 +5619,7 @@ impl<'a> Codegen<'a> {
                 bits.to_string()
             }
             ExprKind::Literal(LitKind::Sized(w, _)) => w.to_string(),
+            ExprKind::Literal(LitKind::ParamSized(name, _)) => name.clone(),
             ExprKind::MethodCall(_, method, args)
                 if matches!(method.name.as_str(), "trunc" | "zext" | "sext" | "resize") =>
             {

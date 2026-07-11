@@ -152,6 +152,29 @@ end module SimpleAlu
 }
 
 #[test]
+fn test_param_sized_literal_width_cast_is_valid_systemverilog() {
+    let source = r#"
+module ParamSizedWrapWidth
+  param SCORE_WIDTH: const = 12;
+  port score: in UInt<SCORE_WIDTH>;
+  port magnitude: out UInt<SCORE_WIDTH>;
+  comb
+    magnitude = SCORE_WIDTH'd0 -% score;
+  end comb
+end module ParamSizedWrapWidth
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("SCORE_WIDTH'(SCORE_WIDTH'($unsigned(0)) - score)"),
+        "parameter-sized literal should drive the wrapping width cast:\n{sv}"
+    );
+    assert!(
+        !sv.contains("$bits(SCORE_WIDTH'd0)") && !sv.contains("SCORE_WIDTH'd0"),
+        "parameter-sized literals must not be passed to $bits:\n{sv}"
+    );
+}
+
+#[test]
 fn test_todo_placeholder() {
     let source = r#"
 domain SysDomain
