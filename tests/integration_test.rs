@@ -29431,25 +29431,30 @@ end module ExprGoodOrder
 #[test]
 fn test_param_sized_literal_emits_valid_sv_size_cast() {
     // A param-width sized literal (`W'd5`) that survives to SV codegen must be
-    // emitted as a legal SystemVerilog size cast `W'(5)`, NOT the invalid
-    // `W'd5` form (a sized-literal width must be a decimal number, not a
-    // parameter — Verilator and iverilog both reject `W'd5` with a syntax
-    // error). Regression for the codegen half of the #636 param-sized-literal
-    // feature (typecheck half fixed in #651).
+    // emitted as a legal SystemVerilog size cast with an explicitly unsigned
+    // payload, NOT the invalid `W'd5` form. Bare `W'(15)` parses, but it
+    // behaves like signed 4-bit `-1`; `W'($unsigned(15))` preserves the
+    // original unsigned-sized-literal semantics while still compiling under
+    // Verilator and iverilog. Regression for the codegen half of the #636
+    // param-sized-literal feature (typecheck half fixed in #651).
     let source = r#"
 module ParamSizedEmit
-  param W: const = 8;
-  port x: out UInt<8>;
-  let x = W'd5;
+  param W: const = 4;
+  port x: out UInt<4>;
+  let x = W'd15;
 end module ParamSizedEmit
 "#;
     let sv = compile_to_sv(source);
     assert!(
-        sv.contains("assign x = W'(5);"),
-        "expected a size-cast `W'(5)`, got:\n{sv}"
+        sv.contains("assign x = W'($unsigned(15));"),
+        "expected an unsigned size-cast `W'($unsigned(15))`, got:\n{sv}"
     );
     assert!(
-        !sv.contains("W'd5"),
-        "must not emit the invalid parameter-width sized literal `W'd5`:\n{sv}"
+        !sv.contains("W'd15"),
+        "must not emit the invalid parameter-width sized literal `W'd15`:\n{sv}"
+    );
+    assert!(
+        !sv.contains("W'(15)"),
+        "must not emit a signed size-cast that changes literal semantics:\n{sv}"
     );
 }
