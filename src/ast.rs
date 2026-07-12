@@ -1194,11 +1194,59 @@ pub enum LitKind {
     /// is the literal value. The width is resolved during elaboration.
     ParamSized(String, u64),
     /// Floating-point literal, e.g. `1.5`, `3.0e-2`. The decimal value is
-    /// parsed to an f64 (exact enough for source literals); the concrete
-    /// FP32/BF16 bit pattern is produced by rounding to the context type at
-    /// lowering. Stored as raw bits so the AST stays `Clone`/`Debug` without
-    /// pulling float `PartialEq` semantics into derived comparisons.
+    /// parsed to an f64 (exact enough for source literals). A *standalone*
+    /// float literal (no known-float-type context) defaults to FP32. When a
+    /// literal sits in a slot with a known float type (typed `let`, `reg`/
+    /// `port reg` `init`, a comparison against a known-format operand, …),
+    /// the pre-typecheck elaboration pass `coerce_typed_float_literals`
+    /// (arch#622/#624) rewrites it to [`LitKind::TypedFloat`] instead,
+    /// rounded to that format at compile time. Stored as raw bits so the AST
+    /// stays `Clone`/`Debug` without pulling float `PartialEq` semantics into
+    /// derived comparisons.
     Float(u64), // f64::to_bits of the parsed literal value
+    /// A float literal already resolved against a known-float-type context
+    /// and rounded (round-to-nearest-even, single rounding step from the
+    /// parsed `f64` — see `crate::fp_lit`) to that format's bit pattern at
+    /// compile time. Never produced by the parser — only by
+    /// `elaborate::coerce_typed_float_literals`. `fmt` names the target
+    /// format; the payload is the packed bit pattern (16 bits for BF16, 32
+    /// for FP32), zero-extended into the `u64`.
+    ///
+    /// Note: the `reg`/`port reg` **`reset`** slot is deliberately NOT
+    /// produced by that pass — it keeps the `#623` `(lit).to_bf16()` eval
+    /// rewrite (`elaborate::coerce_bf16_decl_literals`), which rounds via an
+    /// f64 -> f32 -> bf16 double step. Unifying the two was considered and
+    /// rejected: a direct decimal -> bf16 single rounding step here can
+    /// diverge from the shipped double-rounding-through-f32 reset behavior
+    /// for pathological decimals, and changing shipped reset semantics
+    /// silently was out of scope for this change. See the arch#622/#624 PR
+    /// description for the residual-asymmetry note.
+    TypedFloat(FloatLitFmt, u64),
+}
+
+/// Target format for a [`LitKind::TypedFloat`] literal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatLitFmt {
+    Fp32,
+    Bf16,
+}
+
+impl FloatLitFmt {
+    /// `(exp_bits, mant_bits)` for `crate::fp_lit::round_f64_to_narrow`.
+    pub fn exp_mant_bits(self) -> (u32, u32) {
+        match self {
+            FloatLitFmt::Fp32 => (8, 23),
+            FloatLitFmt::Bf16 => (8, 7),
+        }
+    }
+
+    /// Total bit width of the packed format.
+    pub fn width(self) -> u32 {
+        match self {
+            FloatLitFmt::Fp32 => 32,
+            FloatLitFmt::Bf16 => 16,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

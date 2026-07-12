@@ -288,6 +288,12 @@ fn eval_bus_cond(expr: &Expr, param_map: &HashMap<String, &Expr>) -> bool {
             LitKind::Dec(n) | LitKind::Hex(n) | LitKind::Bin(n) => *n != 0,
             LitKind::Sized(_, n) | LitKind::ParamSized(_, n) => *n != 0,
             LitKind::Float(bits) => f64::from_bits(*bits) != 0.0,
+            // Mask off the sign bit before comparing so -0.0 reads falsy,
+            // matching the `Float` arm's `!= 0.0` (IEEE `-0.0 == 0.0`).
+            LitKind::TypedFloat(fmt, bits) => {
+                let sign_mask = 1u64 << (fmt.width() - 1);
+                (*bits & !sign_mask) != 0
+            }
         },
         ExprKind::Bool(b) => *b,
         // Binary comparison / logical ops — evaluate both operands as
@@ -334,7 +340,7 @@ fn eval_bus_int(expr: &Expr, param_map: &HashMap<String, &Expr>) -> Option<i64> 
             | LitKind::Sized(_, n)
             | LitKind::ParamSized(_, n) => Some(*n as i64),
             // Float literals are not valid in integer bus-condition contexts.
-            LitKind::Float(_) => None,
+            LitKind::Float(_) | LitKind::TypedFloat(..) => None,
         },
         ExprKind::Ident(name) => {
             let val_expr = param_map.get(name.as_str())?;

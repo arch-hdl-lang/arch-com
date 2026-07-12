@@ -641,8 +641,17 @@ Landed and tested (`cargo test --test fp_test`, plus the full suite green):
    partially wired** (compares + conversions proven exhaustively under z3; RNE
    arithmetic deferred — see §8.1 status), and the **§8.2 differential campaign
    is wired** (delta #2).
-4. **Float literals default to `FP32`**; `BF16` immediates use `.to_bf16()`
-   (§3.3, resolved open question — keeps no-implicit-conversion uniform).
+4. **Superseded by arch#622/#624 (context-typed float literals):** a float
+   literal now takes its type from a known-float-type context slot (typed
+   `let`, `reg`/`port reg` `init`/`reset`, port defaults, comparisons/
+   arithmetic against a known-format operand), correctly rounded at compile
+   time via a single rounding step (decimal → f64 → target) — no `.to_bf16()`
+   cast needed in any of those positions, and the rule is uniform across all
+   slots (the reset slot's earlier f32-routed path from #623 was superseded
+   by maintainer decision; see the spec's "Literals" section for the
+   double-rounding witness this eliminated). A standalone/ambiguous literal
+   still defaults to `FP32`. See `doc/ARCH_HDL_Specification.md` §3.8
+   "Literals" for the full rule.
 
 ### v1 scope restrictions (enforced — rejected, never miscompiled)
 
@@ -659,8 +668,10 @@ pattern:
 
 Each has a clear error and is a natural follow-up once dispatch is driven off the
 type-checker's resolved-type map instead of a backend-rebuilt name set. Also: a
-float `reg`'s reset value must be a **float literal** (`reset rst => 0.0`); an
-integer literal is rejected (it would store a bit pattern, not the value).
+float `reg`'s reset/init value, a typed-`let` initializer, and a port default
+must be a **float literal** (`reset rst => 0.0`); an integer literal is
+rejected everywhere a float type is expected (it would store a bit pattern,
+not the value) — see arch#622/#624.
 
 ### Conversion semantics (sim, validated)
 

@@ -562,6 +562,23 @@ fn expr_str(expr: &Expr) -> String {
                     v.to_string()
                 }
             }
+            // Re-emit as plain ARCH source: a decimal float literal carrying
+            // the already-rounded value. `.archi` consumers re-elaborate from
+            // source, so `coerce_typed_float_literals` re-derives the same
+            // `TypedFloat` (rounding an exactly-representable value is a
+            // no-op) if the slot is still known-float-typed there.
+            LitKind::TypedFloat(fmt, bits) => {
+                let v = match fmt {
+                    FloatLitFmt::Fp32 => f32::from_bits(*bits as u32) as f64,
+                    // bf16 is the top 16 bits of the equivalent f32 pattern.
+                    FloatLitFmt::Bf16 => f32::from_bits((*bits as u32) << 16) as f64,
+                };
+                if v.fract() == 0.0 {
+                    format!("{v:.1}")
+                } else {
+                    v.to_string()
+                }
+            }
         },
         ExprKind::Bool(b) => {
             if *b {

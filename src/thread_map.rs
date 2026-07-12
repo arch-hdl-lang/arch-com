@@ -1,4 +1,6 @@
-use crate::ast::{BinOp, Expr, ExprKind, ForRange, InsideMember, LitKind, Stmt, UnaryOp};
+use crate::ast::{
+    BinOp, Expr, ExprKind, FloatLitFmt, ForRange, InsideMember, LitKind, Stmt, UnaryOp,
+};
 use crate::lexer::Span;
 
 #[derive(Debug, Clone, Default)]
@@ -966,6 +968,13 @@ fn lit_label(lit: &LitKind) -> String {
         LitKind::Sized(w, v) => format!("{w}'d{v}"),
         LitKind::ParamSized(name, v) => format!("{name}'d{v}"),
         LitKind::Float(bits) => f64::from_bits(*bits).to_string(),
+        LitKind::TypedFloat(fmt, bits) => {
+            let v = match fmt {
+                FloatLitFmt::Fp32 => f32::from_bits(*bits as u32) as f64,
+                FloatLitFmt::Bf16 => f32::from_bits((*bits as u32) << 16) as f64,
+            };
+            v.to_string()
+        }
     }
 }
 

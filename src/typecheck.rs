@@ -638,6 +638,58 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // Same foot-gun check as above, for the `init` slot (arch#624) and
+        // `port` default-value slot (arch#622): an integer literal directly
+        // initializing a float reg/port is almost never the intent (it would
+        // store the bit pattern, not the numeric value) and is rejected
+        // consistently with `reset`, never silently accepted.
+        {
+            let mut int_lit_float_slots: Vec<(Span, &'static str, String)> = Vec::new();
+            for item in &m.body {
+                if let ModuleBodyItem::RegDecl(r) = item {
+                    if matches!(r.ty, TypeExpr::FP32 | TypeExpr::BF16) {
+                        if let Some(v) = &r.init {
+                            if is_bare_int_literal(v) {
+                                let tn = if matches!(r.ty, TypeExpr::FP32) {
+                                    "FP32"
+                                } else {
+                                    "BF16"
+                                };
+                                int_lit_float_slots.push((v.span, tn, r.name.name.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+            for p in &m.ports {
+                if matches!(p.ty, TypeExpr::FP32 | TypeExpr::BF16) {
+                    let tn = if matches!(p.ty, TypeExpr::FP32) {
+                        "FP32"
+                    } else {
+                        "BF16"
+                    };
+                    if let Some(ri) = &p.reg_info {
+                        if let Some(v) = &ri.init {
+                            if is_bare_int_literal(v) {
+                                int_lit_float_slots.push((v.span, tn, p.name.name.clone()));
+                            }
+                        }
+                    }
+                    if let Some(v) = &p.default {
+                        if is_bare_int_literal(v) {
+                            int_lit_float_slots.push((v.span, tn, p.name.name.clone()));
+                        }
+                    }
+                }
+            }
+            for (span, tn, name) in int_lit_float_slots {
+                self.errors.push(CompileError::general(
+                    &format!("float `{name}: {tn}` initializer must be a float literal (e.g. `0.0`), not an integer literal"),
+                    span,
+                ));
+            }
+        }
+
         // Track driven signals
         let mut driven: HashSet<String> = HashSet::new();
 
@@ -3648,8 +3700,15 @@ impl<'a> TypeChecker<'a> {
                     .map(Ty::UInt)
                     .unwrap_or(Ty::Error),
                 // Float literals default to FP32; BF16 values are written via an
-                // explicit `.to_bf16()` conversion (no implicit float narrowing).
+                // explicit `.to_bf16()` conversion (no implicit float narrowing)
+                // OR by sitting in a known-BF16-type context slot, which the
+                // pre-typecheck `coerce_typed_float_literals` pass (arch#622)
+                // already rewrote to `LitKind::TypedFloat` below.
                 LitKind::Float(_) => Ty::FP32,
+                // Already resolved against its context type at compile time
+                // (arch#622/#624) — take that type directly.
+                LitKind::TypedFloat(FloatLitFmt::Fp32, _) => Ty::FP32,
+                LitKind::TypedFloat(FloatLitFmt::Bf16, _) => Ty::BF16,
             },
             ExprKind::Bool(_) => Ty::Bool,
             ExprKind::Ident(name) => {
@@ -8411,6 +8470,18 @@ fn type_expr_contains_float(ty: &TypeExpr) -> bool {
         TypeExpr::Vec(inner, _) => type_expr_contains_float(inner),
         _ => false,
     }
+}
+
+/// True if `e` is a bare integer literal (`Dec`/`Hex`/`Bin`/`Sized`) — used to
+/// reject the "integer literal into a float slot" foot-gun consistently
+/// across `reset` (arch#620/#623), `init` and port `default` (arch#622/#624).
+fn is_bare_int_literal(e: &Expr) -> bool {
+    matches!(
+        &e.kind,
+        ExprKind::Literal(
+            LitKind::Dec(_) | LitKind::Hex(_) | LitKind::Bin(_) | LitKind::Sized(_, _)
+        )
+    )
 }
 
 fn types_compatible(expected: &Ty, actual: &Ty) -> bool {
