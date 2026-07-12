@@ -7147,6 +7147,18 @@ impl<'a> TypeChecker<'a> {
             for item in &stage.body {
                 if let ModuleBodyItem::CombBlock(cb) = item {
                     Self::collect_comb_stmt_targets(&cb.stmts, &mut driven);
+                    // `collect_comb_stmt_targets` above only tells us a target
+                    // is assigned on SOME path (e.g. one arm of an if/else) —
+                    // it doesn't confirm every control path assigns it. Since
+                    // `wire` isn't legal in a stage and `reg` can't be
+                    // assigned in `comb`, an output port is the only
+                    // comb-assignable target here, so `check_comb_latch`
+                    // (the same no-implicit-latch analysis module bodies
+                    // use) doubles as the pipeline stage's latch guard: a
+                    // partial if/match with no covering else/wildcard arm is
+                    // reported as "infers a latch" instead of being silently
+                    // accepted or mis-reported as "not driven". See #557.
+                    self.check_comb_latch(&cb.stmts, cb.span);
                 }
                 if let ModuleBodyItem::Inst(inst) = item {
                     for conn in &inst.connections {

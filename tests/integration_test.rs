@@ -3566,6 +3566,256 @@ end pipeline RegPipe
     );
 }
 
+/// `arch check` rejects `source` with a diagnostic whose Display/Debug text
+/// contains `needle`; returns the joined error text for failure messages.
+fn pipeline_check_err_contains(source: &str, needle: &str) {
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let elaborated = elaborate::elaborate(ast).expect("elaborate");
+    let symbols = resolve::resolve(&elaborated).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &elaborated);
+    let errs = checker
+        .check()
+        .expect_err("expected pipeline typecheck to reject source");
+    let msg = errs.iter().map(|e| format!("{e:?}")).collect::<String>();
+    assert!(
+        msg.contains(needle),
+        "expected diagnostic containing `{needle}`, got: {msg}"
+    );
+}
+
+// Issue #557: the pipeline output-coverage check only recognized a
+// top-level `Stmt::Assign` with a bare `Ident` as "driving" an output —
+// an output assigned inside an exhaustive `if`/`else` (or `match`) was
+// wrongly rejected as "not driven", even though the identical shape in a
+// plain `module` type-checks clean. The fix makes `check_pipeline` reuse
+// `collect_comb_stmt_targets` (recursive) for coverage AND run
+// `check_comb_latch` (the same no-implicit-latch analysis module bodies
+// use) so a genuinely partial branch set is still caught — now reported
+// as "infers a latch" instead of the previous misleading "not driven".
+// These tests are differential pairs: exhaustive (accept) vs. the same
+// shape missing one arm (reject as latch), at increasing nesting depth
+// and across both `if`/`else` and `match`.
+
+#[test]
+fn test_pipeline_allows_exhaustive_if_else_output() {
+    // Exact repro from GH issue #557.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline PipeIfElse
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port o: out UInt<8>;
+  stage S
+    reg held: UInt<8> reset rst => 0;
+    reg sel_r: Bool reset rst => false;
+    seq on clk rising
+      held <= a;
+      sel_r <= false;
+    end seq
+    comb
+      if sel_r
+        o = held;
+      else
+        o = held;
+      end if
+    end comb
+  end stage S
+end pipeline PipeIfElse
+"#;
+    assert!(
+        pipeline_checks_ok(source),
+        "an output driven on every arm of an exhaustive if/else must be accepted"
+    );
+}
+
+#[test]
+fn test_pipeline_rejects_partial_if_output_as_latch() {
+    // Same shape as above but with the `else` arm dropped — `o` is only
+    // driven on one control path. Must still be rejected, and with the
+    // proper latch diagnostic (not the old misleading "not driven").
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline PipePartialIf
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port o: out UInt<8>;
+  stage S
+    reg held: UInt<8> reset rst => 0;
+    reg sel_r: Bool reset rst => false;
+    seq on clk rising
+      held <= a;
+      sel_r <= false;
+    end seq
+    comb
+      if sel_r
+        o = held;
+      end if
+    end comb
+  end stage S
+end pipeline PipePartialIf
+"#;
+    pipeline_check_err_contains(source, "infers a latch");
+}
+
+#[test]
+fn test_pipeline_allows_nested_exhaustive_if_else_output() {
+    // Two-level nested if/else where every leaf path assigns `o`.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline PipeNestedIf
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port o: out UInt<8>;
+  stage S
+    reg held: UInt<8> reset rst => 0;
+    reg sel_r: Bool reset rst => false;
+    reg sel2_r: Bool reset rst => false;
+    seq on clk rising
+      held <= a;
+      sel_r <= false;
+      sel2_r <= false;
+    end seq
+    comb
+      if sel_r
+        if sel2_r
+          o = held;
+        else
+          o = held +% 1;
+        end if
+      else
+        o = held;
+      end if
+    end comb
+  end stage S
+end pipeline PipeNestedIf
+"#;
+    assert!(
+        pipeline_checks_ok(source),
+        "an output driven on every leaf path of a nested exhaustive if/else must be accepted"
+    );
+}
+
+#[test]
+fn test_pipeline_rejects_nested_partial_if_as_latch() {
+    // Same nested shape but the inner if is missing its else — `o` is
+    // undriven on the `sel_r && !sel2_r` path.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline PipeNestedIfPartial
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port o: out UInt<8>;
+  stage S
+    reg held: UInt<8> reset rst => 0;
+    reg sel_r: Bool reset rst => false;
+    reg sel2_r: Bool reset rst => false;
+    seq on clk rising
+      held <= a;
+      sel_r <= false;
+      sel2_r <= false;
+    end seq
+    comb
+      if sel_r
+        if sel2_r
+          o = held;
+        end if
+      else
+        o = held;
+      end if
+    end comb
+  end stage S
+end pipeline PipeNestedIfPartial
+"#;
+    pipeline_check_err_contains(source, "infers a latch");
+}
+
+#[test]
+fn test_pipeline_allows_exhaustive_match_output() {
+    // `match` covering every enum variant (no wildcard needed).
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+enum SelKind
+  A,
+  B
+end enum SelKind
+pipeline PipeMatch
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port o: out UInt<8>;
+  stage S
+    reg held: UInt<8> reset rst => 0;
+    reg sel_r: SelKind reset rst => SelKind::A;
+    seq on clk rising
+      held <= a;
+      sel_r <= SelKind::A;
+    end seq
+    comb
+      match sel_r
+        SelKind::A => o = held;
+        SelKind::B => o = held +% 1;
+      end match
+    end comb
+  end stage S
+end pipeline PipeMatch
+"#;
+    assert!(
+        pipeline_checks_ok(source),
+        "an output driven on every arm of an exhaustive match must be accepted"
+    );
+}
+
+#[test]
+fn test_pipeline_rejects_partial_match_as_latch() {
+    // Missing the `B` arm entirely, and no wildcard — `o` is undriven when
+    // `sel_r == SelKind::B`.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+enum SelKind
+  A,
+  B
+end enum SelKind
+pipeline PipeMatchPartial
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port o: out UInt<8>;
+  stage S
+    reg held: UInt<8> reset rst => 0;
+    reg sel_r: SelKind reset rst => SelKind::A;
+    seq on clk rising
+      held <= a;
+      sel_r <= SelKind::A;
+    end seq
+    comb
+      match sel_r
+        SelKind::A => o = held;
+      end match
+    end comb
+  end stage S
+end pipeline PipeMatchPartial
+"#;
+    pipeline_check_err_contains(source, "infers a latch");
+}
+
 #[test]
 fn test_pipeline_sim_codegen_sign_extends_sext() {
     let source = r#"
