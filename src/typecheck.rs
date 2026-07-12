@@ -4262,9 +4262,7 @@ impl<'a> TypeChecker<'a> {
                     // #462 fixed for sibling modules.
                     let mut bus_scope = info.params.clone();
                     for (pname, pval) in &overrides {
-                        if let Some(pd) =
-                            bus_scope.iter_mut().find(|pd| &pd.name.name == pname)
-                        {
+                        if let Some(pd) = bus_scope.iter_mut().find(|pd| &pd.name.name == pname) {
                             pd.default = Some(pval.clone());
                         }
                     }
@@ -4275,8 +4273,7 @@ impl<'a> TypeChecker<'a> {
                     let eff = info.effective_signals(&pm);
                     for (sname, _dir, sty) in &eff {
                         if sname == &field.name {
-                            let saved =
-                                std::mem::replace(&mut self.active_params, bus_scope);
+                            let saved = std::mem::replace(&mut self.active_params, bus_scope);
                             let ty = self.resolve_type_expr(sty, module_name, local_types);
                             self.active_params = saved;
                             return ty;
