@@ -107,6 +107,15 @@ enum Command {
         #[command(subcommand)]
         command: CoverageCommand,
     },
+    /// List the pipelined-operator implementation registry
+    /// (doc/proposal_pipelined_operators.md). Passive listing only — for
+    /// "which depth should I use" guidance, use `arch advise`.
+    Ops {
+        /// Emit the markdown table used for doc/generated/pipelined_ops.md
+        /// instead of the plain-text listing.
+        #[arg(long)]
+        markdown: bool,
+    },
     /// Compile ARCH to SystemVerilog
     Build {
         /// Input .arch file(s)
@@ -909,6 +918,14 @@ fn main() -> miette::Result<()> {
         Command::Coverage { command } => match command {
             CoverageCommand::Merge { inputs, out } => run_coverage_merge(&inputs, &out),
         },
+        Command::Ops { markdown } => {
+            if markdown {
+                print!("{}", arch::pipelined_ops::format_markdown_table());
+            } else {
+                print!("{}", arch::pipelined_ops::format_text_table());
+            }
+            Ok(())
+        }
         Command::LearnClear => {
             arch::learn::clear_store().into_diagnostic()?;
             eprintln!("Cleared ~/.arch/learn/");
