@@ -736,6 +736,15 @@ let nan: Bool = is_nan(a);
   - `x.to_bf16()` — `FP32`→`BF16` (round-to-nearest-even).
   - `x.to_sint<N>()` / `x.to_uint<N>()` — float→integer, toward-zero, per-N saturating, NaN→type-max (RISC-V profile).
 
+**Rounding convention: correctly-rounded (CR) vs. f32-routed (VR(f32)).** Not every float op/conversion is correctly-rounded to its destination format. Two are declared to route through an `FP32` intermediate instead, matching mainstream hardware (NVIDIA Tensor Core / TPU bf16-fma convention; RISC-V has no direct int→bf16 instruction):
+
+  - `fma(a, b, c)` with `BF16` operands ≡ `narrow_bf16(fma(f32(a), f32(b), f32(c)))` — one correctly-rounded `FP32` fma, then a second rounding narrow to `BF16`. **Not** correctly-rounded `a·b+c` in `BF16` (differs on ~0.37% of finite inputs, always by 1 ULP). See PR #627.
+  - `<SInt<N>|UInt<N>>.to_bf16()` ≡ `narrow_bf16(f32(i))` — routes through `FP32` rather than converting directly to `BF16`. This is a double rounding and is **not** correctly-rounded int→`BF16` for `|i| ≥ 2²⁴` (integers below `2²⁴` are exact in `FP32`, so no double-rounding hazard). Witness: `i = 16842753` (`= 2²⁴+2¹⁶+1`) → arch produces `0x4b80`; the correctly-rounded `BF16` value is `0x4b81` (off by 1 ULP) — `(float)16842753` ties-to-even down to the exact `BF16` midpoint between `0x4b80`/`0x4b81`, and the narrow then ties to the even significand. Brute-forced over `[1, 2³⁰)`: 8064 mismatches, all `|i| ≥ 2²⁴`, each off by exactly 1 `BF16` ULP. See issue #629.
+
+  All other float ops (`+ - *`, `f32` `fma`, `f32`↔`BF16` narrow/widen, comparisons, float↔int per §3.8) are correctly-rounded (machine-checked — see `proofs/lean_fp_equiv` and the SMT equivalence suite under `tests/fp_v1/smt_proof`).
+
+  General convention: **compile-time float constants are correctly rounded from source** (a `BF16` literal or reset value is rounded once, directly, at compile time — never routed through `FP32`); **runtime `BF16` operations/conversions listed above are f32-routed**. This split is intentional — literals have no hardware rounding step to emulate, while `bf16_fma` and `int.to_bf16()` mirror how real hardware computes them.
+
 **Literals.** Float literals (`1.5`, `3.0e-2`, `0.0`) are typed `FP32`. In two positions a bare float literal in a `BF16` slot is rounded to bf16 at compile time so no cast is needed: a **`BF16` reg reset value** (`reg acc: BF16 reset rst => 1.5;`) and a **typed-`BF16` `let`** (`let h: BF16 = 1.5;`). In all other positions — a `BF16` comb/seq assignment target, or a mixed-type operand such as `a_bf16 + 1.5` — a `BF16` constant requires an explicit cast (`(1.5).to_bf16()`) and is otherwise rejected by the no-implicit-conversion rule. A float `reg` reset value must be a float literal (`reset rst => 0.0`), not an integer literal.
 
 **v1 scope.** Floats are supported only as scalar signals plus the operators above. Floats inside `Vec`, in `struct` fields, and in module-local `function` signatures are rejected at type-check (never silently miscompiled); these are deferred follow-ups.

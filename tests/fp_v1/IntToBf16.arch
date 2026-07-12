@@ -1,0 +1,12 @@
+// int.to_bf16() witness fixture (issue #629). Declared semantics: f32-routed
+// (int -> f32 (RNE) -> bf16 (RNE)), matching the bf16 fma f32-accumulate
+// convention (PR #627). This is a double rounding and is NOT correctly-rounded
+// int->bf16 for |i| >= 2^24 (integers below 2^24 are exact in FP32, so there
+// is no double-rounding hazard there). See doc/ARCH_HDL_Specification.md §3.8
+// "Rounding convention" and doc/proposal_fp_rounding_semantics.md.
+module IntToBf16
+  port i: in SInt<32>;
+  port h: out BF16;
+
+  comb h = i.to_bf16(); end comb
+end module IntToBf16

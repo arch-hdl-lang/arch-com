@@ -1030,9 +1030,13 @@ static inline uint64_t _arch_repeat(uint64_t val, uint32_t n, uint32_t val_width
 // NOT correctly-rounded bf16 — the narrow is a second, non-innocuous rounding;
 // it matches the RTL and the NVIDIA/TPU convention but differs from a
 // correctly-rounded bf16 fma by 1 ULP on ~0.37% of inputs (see fp_ops.rs and
-// proofs/lean_fp_equiv, PR #627). NaN results are canonicalized to the RISC-V
-// default pattern (0x7FC00000 / 0x7FC0); float→int is toward-zero, saturating,
-// NaN→type-max (RISC-V profile, §6).
+// proofs/lean_fp_equiv, PR #627). int.to_bf16() is DECLARED as the same
+// f32-routed convention (narrow_bf16(f32(i))) — also a double rounding, also
+// NOT correctly-rounded for |i| >= 2^24, off by 1 ULP on 8064/2^30 inputs (see
+// issue #629, doc/ARCH_HDL_Specification.md §3.8 "Rounding convention"). NaN
+// results are canonicalized to the RISC-V default pattern (0x7FC00000 /
+// 0x7FC0); float→int is toward-zero, saturating, NaN→type-max (RISC-V
+// profile, §6).
 static inline float    _arch_f32b(uint32_t b){ float f; memcpy(&f,&b,4); return f; }
 static inline uint32_t _arch_b32f(float f){ uint32_t b; memcpy(&b,&f,4); return b; }
 static inline uint32_t _arch_f32_canon(uint32_t b){

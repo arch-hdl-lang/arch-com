@@ -6081,17 +6081,19 @@ impl<'a> Codegen<'a> {
                             Some("f32") => format!("arch_f32_to_bf16({b})"),
                             Some("bf16") => b,
                             _ => {
-                                // int -> f32 (RNE) -> bf16 (RNE). NOTE: this is a
-                                // *double* rounding and is NOT correctly-rounded
+                                // int -> f32 (RNE) -> bf16 (RNE). DECLARED semantics
+                                // (issue #629, resolved as f32-routed / VR(f32)):
+                                // int.to_bf16() == narrow_bf16(f32(i)), matching the
+                                // bf16 fma f32-accumulate convention (PR #627). This
+                                // is a *double* rounding and is NOT correctly-rounded
                                 // int->bf16 for |i| >= 2^24 — the f32 step can land
                                 // exactly on a bf16 midpoint and tie-to-even the
                                 // wrong way (witness i=16842753 -> 0x4b80, correctly
                                 // rounded 0x4b81). Routing via f32 is hardware-
-                                // realistic (no direct int->bf16 in RISC-V) and the
-                                // sim runtime matches, but the result is not the
-                                // correctly-rounded bf16. Same double-rounding class
-                                // as bf16 fma (PR #627); tracked in the int->bf16
-                                // issue. Sim mirror: src/sim_codegen _arch_{i,u}_to_bf16.
+                                // realistic (no direct int->bf16 in RISC-V) and
+                                // intended, not a bug — see doc/ARCH_HDL_Specification.md
+                                // §3.8 "Rounding convention" and doc/proposal_fp_rounding_semantics.md.
+                                // Sim mirror: src/sim_codegen _arch_{i,u}_to_bf16.
                                 if self.expr_is_signed(base) {
                                     format!("arch_f32_to_bf16(arch_i64_to_f32(64'($signed({b}))))")
                                 } else {
