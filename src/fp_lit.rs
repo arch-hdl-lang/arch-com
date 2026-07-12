@@ -302,4 +302,77 @@ mod tests {
         assert_eq!(f64_to_bf16_bits(1e40), 0x7F80); // +inf
         assert_eq!(f64_to_bf16_bits(-1e40), 0xFF80); // -inf
     }
+
+    /// Mirror of the runtime f32 -> bf16 RNE narrow (`arch_f32_to_bf16` /
+    /// `_arch_f2bf16`): round the top 16 bits with ties-to-even via the
+    /// add-and-shift trick.
+    fn f32_to_bf16_rne(f: f32) -> u16 {
+        let u = f.to_bits();
+        let lsb = (u >> 16) & 1;
+        (u.wrapping_add(0x7FFF + lsb) >> 16) as u16
+    }
+
+    /// The witness that the direct decimal -> f64 -> bf16 single-rounding fold
+    /// and the legacy f32-routed path (decimal -> f64 -> f32 -> bf16, the
+    /// pre-unification #623 reset behavior) are NOT the same function: a
+    /// decimal that lands strictly between a bf16 rounding midpoint m and
+    /// m + half-f32-ulp collapses onto m in the f32 step, and the second
+    /// rounding then ties-to-even the wrong way.
+    ///
+    /// x = 1 + 2^-8 + 2^-30 (exactly `1.003906250931322574615478515625`):
+    ///  - direct:  x is strictly above the midpoint between bf16 1.0 (0x3F80)
+    ///             and 1+2^-7 (0x3F81) -> correctly rounds UP to 0x3F81.
+    ///  - via f32: RN_f32(x) = 1 + 2^-8 exactly (x is within half an f32-ulp
+    ///             of it) = the bf16 midpoint -> tie -> even significand ->
+    ///             0x3F80. Off by 1 bf16 ULP from the correctly-rounded value.
+    ///
+    /// This is why the reset slot's f32-routed rewrite was superseded
+    /// (maintainer decision on arch#622/#624): all compile-time float
+    /// constants now take the single-rounding path, which is the correctly-
+    /// rounded one.
+    #[test]
+    fn double_rounding_via_f32_diverges_on_witness() {
+        let x: f64 = "1.003906250931322574615478515625".parse().unwrap();
+        // The decimal is exact: it is 1 + 2^-8 + 2^-30, representable in f64.
+        assert_eq!(x, 1.0 + 2.0f64.powi(-8) + 2.0f64.powi(-30));
+        // Direct single-step fold (the shipped semantics): correctly rounded.
+        assert_eq!(f64_to_bf16_bits(x), 0x3F81);
+        // Legacy f32-routed double rounding: collapses to the midpoint, then
+        // ties down to even — 1 ULP below the correctly-rounded result.
+        assert_eq!(f32_to_bf16_rne(x as f32), 0x3F80);
+    }
+
+    /// For every *ordinary* literal (anything not engineered to sit within
+    /// half an f32-ulp of a bf16 midpoint), the two paths agree — randomized
+    /// lock that the reset-slot unification is invisible outside the
+    /// witness class above.
+    #[test]
+    fn double_rounding_via_f32_agrees_off_midpoints() {
+        let mut state: u64 = 0x243F6A8885A308D3;
+        let mut checked = 0u32;
+        for _ in 0..200_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let v = f64::from_bits(state);
+            if !v.is_finite() {
+                continue;
+            }
+            // Skip the divergence class: values whose f32 rounding lands
+            // exactly on a bf16 rounding boundary tie (low 16 bits of the
+            // f32 pattern == 0x8000). Everything else must agree.
+            let f = v as f32;
+            if !f.is_finite() || (f.to_bits() & 0xFFFF) == 0x8000 {
+                continue;
+            }
+            assert_eq!(
+                f64_to_bf16_bits(v),
+                f32_to_bf16_rne(f),
+                "paths diverged off-midpoint for {v:e} (bits {:#018x})",
+                state
+            );
+            checked += 1;
+        }
+        assert!(checked > 100_000, "sample too small: {checked}");
+    }
 }

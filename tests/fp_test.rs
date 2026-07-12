@@ -725,9 +725,14 @@ fn fp_compat_sim_profiles() {
 }
 
 /// A bare float literal in a BF16 reset value or a typed-BF16 `let` is rounded
-/// to bf16 (via `arch_f32_to_bf16`) at lowering, not emitted as a 32-bit FP32
-/// constant truncated into the 16-bit storage (arch#620). The pre-typecheck
-/// pass rewrites it to `(lit).to_bf16()`.
+/// to bf16 **at compile time** and emitted as the exact 16-bit constant, not
+/// as a 32-bit FP32 constant truncated into the 16-bit storage (arch#620).
+///
+/// Locked SV shape updated with the reset-slot unification (arch#622/#624,
+/// maintainer-authorized): reset previously lowered through a runtime
+/// `arch_f32_to_bf16(32'h3FC00000)` call (#623); it now folds to `16'h3FC0`
+/// like init/let. For 1.5 (and every non-pathological literal) the resulting
+/// bits are identical — only the emission shape changed.
 #[test]
 fn fp_bf16_literal_coerced_in_reset_and_let() {
     let src = "module Bf16Lit\n\
@@ -757,8 +762,8 @@ fn fp_bf16_literal_coerced_in_reset_and_let() {
         String::from_utf8_lossy(&chk.stderr),
     );
 
-    // The emitted SV rounds via the bf16 helper and never assigns a 32-bit
-    // constant into the 16-bit reg/wire.
+    // The emitted SV carries the compile-time-rounded 16-bit constant and
+    // never assigns a 32-bit constant into the 16-bit reg/wire.
     let out = arch()
         .arg("build")
         .arg(&path)
@@ -767,16 +772,16 @@ fn fp_bf16_literal_coerced_in_reset_and_let() {
     assert!(out.status.success(), "arch build should succeed");
     let sv = std::fs::read_to_string(td.path().join("Bf16Lit.sv")).expect("read sv");
     assert!(
-        sv.contains("r <= arch_f32_to_bf16("),
-        "BF16 reset must round via arch_f32_to_bf16, got:\n{sv}"
+        sv.contains("r <= 16'h3FC0;"),
+        "BF16 reset must fold to the exact 16-bit constant (reset unification, #622/#624), got:\n{sv}"
     );
     assert!(
-        sv.contains("arch_f32_to_bf16(32'h3FC00000)"),
-        "expected the f32 pattern of 1.5 fed to the bf16 rounder, got:\n{sv}"
+        sv.contains("assign k = 16'h3FC0;"),
+        "BF16 let must fold to the exact 16-bit constant, got:\n{sv}"
     );
     assert!(
-        !sv.contains("r <= 32'h3FC00000;"),
-        "BF16 reg must NOT receive a raw 32-bit constant (the #620 truncation bug):\n{sv}"
+        !sv.contains("32'h3FC00000"),
+        "no 32-bit FP32 pattern of 1.5 should remain anywhere (the #620 truncation shape):\n{sv}"
     );
 }
 
@@ -833,6 +838,26 @@ fn fp_bf16_context_typed_literals_sv_shape() {
         !sv.contains("32'h3F000000") && !sv.contains("32'h3FC00000") && !sv.contains("32'h4049"),
         "no 32-bit FP32 constant should appear in this BF16-only design, got:\n{sv}"
     );
+    // Double-rounding witness (1 + 2^-8 + 2^-30): the SAME literal in the
+    // reset, init, and let slots must fold to the SAME, correctly-rounded
+    // 16-bit constant 0x3F81 (reset unification, arch#622/#624). The
+    // superseded f32-routed reset path (#623) produced 0x3F80 here.
+    assert!(
+        sv.contains("rw_rst <= 16'h3F81;"),
+        "witness reset must fold to the correctly-rounded 16'h3F81, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("logic [15:0] rw_init = 16'h3F81;"),
+        "witness init must fold to the correctly-rounded 16'h3F81, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign kw = 16'h3F81;"),
+        "witness let must fold to the correctly-rounded 16'h3F81, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("16'h3F80"),
+        "the f32-routed (double-rounded) witness value 0x3F80 must not appear:\n{sv}"
+    );
 }
 
 /// `arch sim` end-to-end: the context-typed BF16 literals read back the
@@ -853,7 +878,7 @@ fn fp_bf16_context_typed_literals_sim() {
         .expect("run arch sim");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        out.status.success() && stdout.contains("5 pass / 0 fail"),
+        out.status.success() && stdout.contains("9 pass / 0 fail"),
         "BF16 context-typed literal sim should pass; got:\n{stdout}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stderr),
     );

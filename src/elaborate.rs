@@ -33,22 +33,24 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
     // had inlined the aliased types by hand.
     let mut ast = crate::type_alias::resolve_type_aliases(ast)?;
 
-    // Normalize bare float literals sitting in the BF16 `reset` slot into an
-    // explicit `.to_bf16()` cast, so they are rounded to bf16 at lowering
-    // instead of being emitted as a 32-bit FP32 constant and truncated into the
-    // 16-bit reg/wire (arch#620/#623). Runs before typecheck so the wrapped
-    // form is what gets type-checked — and the cast form already lowers
-    // correctly in both the SV and sim backends.
-    coerce_bf16_decl_literals(&mut ast);
-
-    // Context-typed float literals (arch#622) + the BF16 `init` constant-fold
-    // fix (arch#624): a bare float literal sitting in any OTHER known-BF16
-    // slot (typed `let`, `reg`/`port reg` `init`, comparisons/arithmetic
-    // against a known-BF16 operand, port defaults) is rounded directly to
-    // bf16 at compile time and rewritten to a self-contained `TypedFloat`
-    // literal. Must run before typecheck (the rewritten literal is what gets
-    // type-checked) and after the reset-only pass above (so the two don't
-    // double-handle the same slot).
+    // Context-typed float literals (arch#622) + the BF16 constant-fold fixes
+    // (arch#620/#623/#624): a bare float literal sitting in any known-BF16
+    // slot (typed `let`, `reg`/`port reg` `init` AND `reset`, comparisons/
+    // arithmetic against a known-BF16 operand, port defaults) is rounded
+    // directly to bf16 at compile time (single RNE step, decimal -> f64 ->
+    // bf16) and rewritten to a self-contained `TypedFloat` literal. Must run
+    // before typecheck (the rewritten literal is what gets type-checked).
+    //
+    // The `reset` slot originally used an eval-based `(lit).to_bf16()`
+    // rewrite instead (#623), which routed through an FP32 intermediate
+    // (decimal -> f64 -> f32 -> bf16, a double rounding). It was unified
+    // onto this single-rounding fold path by maintainer decision on
+    // #622/#624 — an AUTHORIZED behavior change: the two paths diverge for
+    // decimals that land within half an f32-ulp of a bf16 rounding midpoint
+    // (witness: `1.003906250931322574615478515625` = 1 + 2^-8 + 2^-30 gives
+    // 0x3F80 via the f32 route but correctly rounds to 0x3F81 — locked in
+    // fp_lit's `double_rounding_via_f32_diverges_on_witness` test). The
+    // fold's single-step result is the correctly-rounded one.
     coerce_typed_float_literals(&mut ast);
 
     // Build enum variant → value map for resolving enum-typed params
@@ -212,102 +214,34 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
     }
 }
 
-/// Pre-typecheck normalization for bare float literals in the **BF16 `reg`/
-/// `port reg` reset slot** (arch#620, arch#623). A float literal (`1.5`,
-/// `3.0e-2`) is typed FP32; when one is used directly as the reset value of a
-/// `BF16` register, the FP32 bit pattern would otherwise be emitted as a
-/// 32-bit constant and silently truncated into the 16-bit storage
-/// (`reset => 1.5` reset the reg to `0x0000`). Rewriting it to
-/// `(lit).to_bf16()` rounds the literal to bf16 at lowering; that cast form
-/// already lowers correctly in both the SV (`arch_f32_to_bf16(...)`) and
-/// native-sim backends (both are eval-based for the reset slot).
-///
-/// This is deliberately kept separate from [`coerce_typed_float_literals`]
-/// (arch#622/#624), which handles every *other* known-float-type literal
-/// slot (typed `let`, `reg`/`port reg` `init`, comparisons, port defaults) via
-/// a direct single-rounding-step compile-time fold
-/// (`fp_lit::round_f64_to_narrow`, decimal -> f64 -> bf16). The two paths are
-/// NOT bit-identical in general: this reset path rounds decimal -> f64 -> f32
-/// -> bf16 (the `.to_bf16()` eval chain routes through an FP32 intermediate,
-/// since a bare float literal always emits at FP32 width first), a *double*
-/// rounding step, whereas the new path is a *single* step straight to bf16.
-/// Double rounding through f32 is not provably safe here in the same way the
-/// direct single-rounding path is (see `fp_lit` module docs) — reset was
-/// shipped and verified end-to-end before this literal-typing work landed, so
-/// unifying it onto the new path was reconsidered and rejected for this
-/// change to avoid silently changing already-shipped reset semantics. See the
-/// arch#622/#624 PR description for the residual-asymmetry note and the
-/// maintainer follow-up this leaves open.
-///
-/// FP32 slots need no rewrite — a float literal already emits at 32-bit
-/// width. Only direct `TypeExpr::BF16` annotations are handled here;
-/// param-aliased float types are left to the type checker (which rejects,
-/// never miscompiles).
-fn coerce_bf16_decl_literals(ast: &mut SourceFile) {
-    for item in &mut ast.items {
-        let Item::Module(m) = item else { continue };
-        // `port reg` outputs of BF16 type: reset slot.
-        for p in &mut m.ports {
-            if matches!(p.ty, TypeExpr::BF16) {
-                if let Some(ri) = &mut p.reg_info {
-                    wrap_reset_bf16(&mut ri.reset);
-                }
-            }
-        }
-        for bi in &mut m.body {
-            if let ModuleBodyItem::RegDecl(r) = bi {
-                if matches!(r.ty, TypeExpr::BF16) {
-                    wrap_reset_bf16(&mut r.reset);
-                }
-            }
-        }
-    }
-}
-
-/// Apply [`wrap_float_lit_as_bf16`] to the value expression of a reset clause.
-fn wrap_reset_bf16(reset: &mut RegReset) {
-    match reset {
-        RegReset::Explicit(_, _, _, v) | RegReset::Inherit(_, v) => wrap_float_lit_as_bf16(v),
-        RegReset::None => {}
-    }
-}
-
-/// If `e` is a bare float literal, replace it in place with `(e).to_bf16()`.
-/// Non-literal expressions (already-cast values, identifiers, …) are untouched,
-/// so an explicit `(1.5).to_bf16()` is never double-wrapped.
-fn wrap_float_lit_as_bf16(e: &mut Expr) {
-    if matches!(e.kind, ExprKind::Literal(LitKind::Float(_))) {
-        let span = e.span;
-        let inner = e.clone();
-        e.kind = ExprKind::MethodCall(
-            Box::new(inner),
-            Ident {
-                name: "to_bf16".to_string(),
-                span,
-            },
-            Vec::new(),
-        );
-    }
-}
-
 /// Pre-typecheck normalization implementing arch#622 (context-typed float
 /// literals) and arch#624 (BF16 `init` constant folding): a bare float
 /// literal sitting in a slot whose expected type is a **known BF16-typed**
 /// context — a typed `let` initializer, a `reg`/`port reg` `init` value, a
-/// `PortDecl` default, or one side of a comparison/arithmetic `Binary` op
-/// against an operand of known BF16 type — is rewritten in place to
-/// `LitKind::TypedFloat(FloatLitFmt::Bf16, bits)`, where `bits` is the
-/// literal's decimal value rounded *directly* (single step, RNE) to bf16 via
-/// [`crate::fp_lit::f64_to_bf16_bits`]. Downstream (typecheck, both codegen
-/// backends) treats a `TypedFloat` literal as already being its target type,
-/// emitting the exact rounded bit pattern with no runtime conversion call —
-/// which is what makes this safe to use for `init` (arch#624): the native
-/// sim's C++ constructor member-init list needs a foldable constant, and a
-/// `TypedFloat` literal already is one (unlike `(lit).to_bf16()`, which
-/// requires an eval call the constructor list can't perform).
+/// `reg`/`port reg` `reset` value, a `PortDecl` default, or one side of a
+/// comparison/arithmetic `Binary` op against an operand of known BF16 type —
+/// is rewritten in place to `LitKind::TypedFloat(FloatLitFmt::Bf16, bits)`,
+/// where `bits` is the literal's decimal value rounded *directly* (single
+/// step, RNE) to bf16 via [`crate::fp_lit::f64_to_bf16_bits`]. Downstream
+/// (typecheck, both codegen backends) treats a `TypedFloat` literal as
+/// already being its target type, emitting the exact rounded bit pattern with
+/// no runtime conversion call — which is what makes this safe to use for
+/// `init` (arch#624): the native sim's C++ constructor member-init list needs
+/// a foldable constant, and a `TypedFloat` literal already is one (unlike
+/// `(lit).to_bf16()`, which requires an eval call the constructor list can't
+/// perform).
 ///
-/// The `reset` slot is deliberately excluded — see
-/// [`coerce_bf16_decl_literals`]'s doc comment for why.
+/// **Reset unification (supersedes the #623 rewrite).** The `reset` slot
+/// originally went through a separate eval-based `(lit).to_bf16()` rewrite
+/// (#620/#623), which routed the constant through an FP32 intermediate
+/// (decimal -> f64 -> f32 -> bf16 — a double rounding). By maintainer
+/// decision on #622/#624 it now folds through this same single-rounding path.
+/// This is a deliberate behavior change for pathological decimals that land
+/// within half an f32-ulp of a bf16 rounding midpoint: e.g.
+/// `1.003906250931322574615478515625` (= 1 + 2^-8 + 2^-30) produced 0x3F80
+/// via the old f32 route but correctly rounds to 0x3F81. The fold's result is
+/// the correctly-rounded one; every ordinary literal (1.5, 0.5, pi, ...) is
+/// bit-identical under both paths.
 ///
 /// FP32 is not a target of this pass: a standalone/ambiguous float literal
 /// already defaults to FP32 (`typecheck`'s `LitKind::Float => Ty::FP32`), so
@@ -351,13 +285,14 @@ fn coerce_typed_float_literals(ast: &mut SourceFile) {
             }
         }
 
-        // `port reg` outputs: `init` and `default` slots.
+        // `port reg` outputs: `init`, `reset`, and `default` slots.
         for p in &mut m.ports {
             if matches!(p.ty, TypeExpr::BF16) {
                 if let Some(ri) = &mut p.reg_info {
                     if let Some(init) = &mut ri.init {
                         coerce_bf16_lit(init);
                     }
+                    coerce_bf16_reset(&mut ri.reset);
                 }
                 if let Some(default) = &mut p.default {
                     coerce_bf16_lit(default);
@@ -371,6 +306,7 @@ fn coerce_typed_float_literals(ast: &mut SourceFile) {
                     if let Some(init) = &mut r.init {
                         coerce_bf16_lit(init);
                     }
+                    coerce_bf16_reset(&mut r.reset);
                 }
                 ModuleBodyItem::LetBinding(l) if matches!(l.ty, Some(TypeExpr::BF16)) => {
                     coerce_bf16_lit(&mut l.value);
@@ -396,6 +332,14 @@ fn coerce_typed_float_literals(ast: &mut SourceFile) {
                 _ => {}
             }
         }
+    }
+}
+
+/// Apply [`coerce_bf16_lit`] to the value expression of a reset clause.
+fn coerce_bf16_reset(reset: &mut RegReset) {
+    match reset {
+        RegReset::Explicit(_, _, _, v) | RegReset::Inherit(_, v) => coerce_bf16_lit(v),
+        RegReset::None => {}
     }
 }
 

@@ -1,7 +1,7 @@
 // Context-typed BF16 literal coverage (arch#622/#624): a bare float literal
-// in a known-BF16 slot — reg `init`, typed `let`, and a comparison against a
-// BF16 signal — is rounded to bf16 directly at compile time, no `.to_bf16()`
-// cast needed.
+// in a known-BF16 slot — reg `init`, reg `reset`, typed `let`, and a
+// comparison against a BF16 signal — is rounded to bf16 directly at compile
+// time (single RNE step), no `.to_bf16()` cast needed.
 module Bf16LitCtx
   port clk: in Clock<Sys>;
   port rst: in Reset<Sync>;
@@ -10,11 +10,23 @@ module Bf16LitCtx
   port o_let: out BF16;
   port o_let2: out BF16;
   port o_cmp: out Bool;
+  port o_w_rst: out BF16;
+  port o_w_init: out BF16;
+  port o_w_let: out BF16;
   // `init` slot (arch#624): rounds to 0x3FC0 (bf16 of 1.5), no runtime
   // to_bf16() call, no member-init-list truncation to 0.
   reg r: BF16 init 1.5;
+  // The double-rounding witness (= 1 + 2^-8 + 2^-30): the same literal in
+  // all three slots must produce the SAME, correctly-rounded bits 0x3F81.
+  // The legacy f32-routed reset path (#623, superseded) produced 0x3F80
+  // here — this locks the reset-slot unification.
+  reg rw_rst: BF16 reset rst => 1.003906250931322574615478515625;
+  reg rw_init: BF16 init 1.003906250931322574615478515625;
+  let kw: BF16 = 1.003906250931322574615478515625;
   seq on clk rising
     r <= r;
+    rw_rst <= rw_rst;
+    rw_init <= rw_init;
   end seq
   // typed `let` slot (arch#622): rounds to 0x4049 (bf16 of pi, RNE).
   let k: BF16 = 3.14159265358979;
@@ -28,4 +40,7 @@ module Bf16LitCtx
   comb o_init = r; end comb
   comb o_let = k; end comb
   comb o_let2 = k2; end comb
+  comb o_w_rst = rw_rst; end comb
+  comb o_w_init = rw_init; end comb
+  comb o_w_let = kw; end comb
 end module Bf16LitCtx

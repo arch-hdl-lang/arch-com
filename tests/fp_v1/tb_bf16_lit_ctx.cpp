@@ -15,5 +15,12 @@ int main(){
   // `a` = bf16(0.6) = 0x3F19, comparison `a > 0.5` should be true.
   dut.a=0x3F19; dut.eval();
   CHECK(dut.o_cmp==1, "0.6 > 0.5 is true (got %d)", (int)dut.o_cmp);
+  // Double-rounding witness (1 + 2^-8 + 2^-30): reset == init == let ==
+  // 0x3F81, the correctly-rounded value. The superseded f32-routed reset
+  // path (#623) would have produced 0x3F80 for o_w_rst.
+  CHECK((uint16_t)dut.o_w_rst==0x3F81,  "witness reset: 0x3F81 correctly rounded (got 0x%04X)", (unsigned)dut.o_w_rst);
+  CHECK((uint16_t)dut.o_w_init==0x3F81, "witness init:  0x3F81 correctly rounded (got 0x%04X)", (unsigned)dut.o_w_init);
+  CHECK((uint16_t)dut.o_w_let==0x3F81,  "witness let:   0x3F81 correctly rounded (got 0x%04X)", (unsigned)dut.o_w_let);
+  CHECK(dut.o_w_rst==dut.o_w_init && dut.o_w_init==dut.o_w_let, "witness: reset == init == let");
   printf("=== %d pass / %d fail ===\n",pass,fail); return fail==0?0:1;
 }

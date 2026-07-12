@@ -643,14 +643,15 @@ Landed and tested (`cargo test --test fp_test`, plus the full suite green):
    is wired** (delta #2).
 4. **Superseded by arch#622/#624 (context-typed float literals):** a float
    literal now takes its type from a known-float-type context slot (typed
-   `let`, `reg`/`port reg` `init`/`reset`, comparisons/arithmetic against a
-   known-format operand), correctly rounded at compile time — no `.to_bf16()`
-   cast needed in any of those positions. A standalone/ambiguous literal still
-   defaults to `FP32`. See `doc/ARCH_HDL_Specification.md` §3.8 "Literals" for
-   the full rule, including the one documented residual asymmetry (the `reset`
-   slot rounds via a slightly different internal path than `init`/`let`/
-   comparisons for historical reasons — bit-identical for all practical
-   literals, see the spec for the caveat).
+   `let`, `reg`/`port reg` `init`/`reset`, port defaults, comparisons/
+   arithmetic against a known-format operand), correctly rounded at compile
+   time via a single rounding step (decimal → f64 → target) — no `.to_bf16()`
+   cast needed in any of those positions, and the rule is uniform across all
+   slots (the reset slot's earlier f32-routed path from #623 was superseded
+   by maintainer decision; see the spec's "Literals" section for the
+   double-rounding witness this eliminated). A standalone/ambiguous literal
+   still defaults to `FP32`. See `doc/ARCH_HDL_Specification.md` §3.8
+   "Literals" for the full rule.
 
 ### v1 scope restrictions (enforced — rejected, never miscompiled)
 
