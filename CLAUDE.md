@@ -81,6 +81,31 @@ and `claude/*` branches: it warns on overlap at push time but **never blocks**
 (bypass with `--no-verify`, or `CLAIM_CHECK_SKIP=1` to skip just the claim
 scan). Delete-only pushes (`git push --delete`) skip the hook entirely.
 
+## Fix-PR lifecycle (finish work you start)
+
+The repo finds bugs faster than it books them. Two audits (2026-07) showed the
+leak is at the last two stages, not in the finding: a fix PR (#643) sat
+unmerged while its bug shipped live for a week, and 3 of 5 issues in the
+"correctness backlog" turned out to be phantoms — already fixed by PRs that
+never said so. Rules:
+
+- **A PR that fixes a live bug must say `closes #N` in its body.** A fix that
+  merges without closing its issue creates a phantom: the issue outlives the
+  bug and someone later re-investigates it from scratch (#437, #462, #557 all
+  aged 4–6 weeks this way).
+- **A PR fixing a live miscompile gets same-day review-or-merge.** Track it on
+  the issue until it lands — "PR opened" is not "bug closed". If it must wait
+  on a maintainer decision, label it `awaiting-decision` and say why in the PR.
+- **Re-reproduce before you fix.** Before working a backlog issue, confirm it
+  still reproduces on a freshly built binary from current `origin/main`. If it
+  doesn't, bisect to the fixing commit if cheap and close the issue with that
+  evidence — a NOT-REPRODUCIBLE finding is a valid, valuable outcome.
+- **Sweep for stranded PRs**: `scripts/green_pr_sweep.sh` lists open PRs that
+  are green, mergeable, and ≥1 day old across arch-com + harc-com — finished
+  work nobody landed. The mirror image of `claim_check.sh` (duplicate work at
+  the start ↔ stranded work at the end). Run it in every review session;
+  advisory, never merges anything itself.
+
 ## Project Overview
 
 `arch-com` is a compiler for **ARCH**, a purpose-built hardware description language (HDL) for micro-architecture work. The compiler ingests `.arch` source files and emits deterministic, readable SystemVerilog. The language is explicitly designed to be generated correctly by LLMs from natural-language hardware descriptions.
