@@ -203,6 +203,36 @@ fn fp_to_int_saturation_sim() {
     );
 }
 
+/// Pinned characterization test for `int.to_bf16()` (issue #629, decided
+/// 2026-07-12): DECLARED semantics are f32-routed —
+/// `narrow_bf16(f32(i))` — the same convention as `bf16` fma's f32-accumulate
+/// (PR #627), documented in doc/ARCH_HDL_Specification.md §3.8 "Rounding
+/// convention". This locks the arch-sim backend's result for the witness
+/// (`i=16842753` → `0x4b80`, NOT the correctly-rounded `0x4b81` — 1 bf16 ULP
+/// away) plus an exact case below `2^24` where no double-rounding hazard
+/// exists. If a future change makes `int.to_bf16()` correctly-rounded, this
+/// test trips loudly — that would be a user-facing semantics change requiring
+/// a fresh spec decision, not a silent codegen tweak (see issue #629).
+#[test]
+fn fp_int_to_bf16_f32_routed_witness_sim() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = arch()
+        .arg("sim")
+        .arg("tests/fp_v1/IntToBf16.arch")
+        .arg("--tb")
+        .arg("tests/fp_v1/tb_int_to_bf16.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("2 pass / 0 fail"),
+        "int.to_bf16() f32-routed witness (arch sim) should pass; got:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
 /// v1 rejects floats in positions the float-op dispatch can't resolve:
 /// inside `Vec`, in `struct` fields, and in module-local `function`
 /// signatures — rather than silently emitting integer arithmetic.
@@ -363,6 +393,91 @@ fn fp_rtl_differential_equiv_verilator() {
     assert!(
         stdout.contains("ARCH_FP_RTL_DIFF: ALL PASS"),
         "RTL differential check failed\nstdout:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+/// Pinned characterization test for `int.to_bf16()` on the built-SV backend
+/// (issue #629, decided 2026-07-12) — the built-SV counterpart to
+/// `fp_int_to_bf16_f32_routed_witness_sim`. Calls the emitted synthesizable
+/// helpers directly (`arch_f32_to_bf16(arch_i64_to_f32(i))`, the exact
+/// lowering `arch build` uses — see `src/codegen/mod.rs` `"to_bf16"` arm) and
+/// locks the same f32-routed witness (`i=16842753` → `0x4b80`, not the
+/// correctly-rounded `0x4b81`) plus the same exact case below `2^24`. Skips
+/// cleanly when Verilator is not installed.
+#[test]
+fn fp_int_to_bf16_f32_routed_witness_verilator() {
+    fn verilator_available() -> bool {
+        std::process::Command::new("verilator")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    if !verilator_available() {
+        eprintln!("skipping fp_int_to_bf16_f32_routed_witness_verilator: verilator not in PATH");
+        return;
+    }
+
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv = td.path().join("FpArith.sv");
+
+    // `arch build` emits the full FP helper block (arch_i64_to_f32,
+    // arch_f32_to_bf16, ...) ahead of any module using FP; FpArith.arch pulls
+    // in the whole package so we can call the helpers directly from the tb.
+    let out = arch()
+        .arg("build")
+        .arg(format!("{manifest}/tests/fp_v1/FpArith.arch"))
+        .arg("-o")
+        .arg(&sv)
+        .output()
+        .expect("run arch build");
+    assert!(
+        out.status.success(),
+        "arch build failed\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let obj = td.path().join("obj");
+    let tb = format!("{manifest}/tests/fp_v1/rtl_diff/tb_int_to_bf16_witness.sv");
+    let vout = std::process::Command::new("verilator")
+        .args([
+            "--binary",
+            "--timing",
+            "-Wno-WIDTH",
+            "-Wno-UNOPTFLAT",
+            "-Wno-WIDTHTRUNC",
+            "-Wno-WIDTHEXPAND",
+            "-Wno-SHORTREAL",
+            "-Wno-BLKANDNBLK",
+            "-Wno-UNUSEDSIGNAL",
+            "-Wno-MULTITOP",
+            "--top-module",
+            "tb",
+            "-o",
+            "sim_int_to_bf16",
+        ])
+        .arg("-Mdir")
+        .arg(&obj)
+        .arg(&sv)
+        .arg(&tb)
+        .output()
+        .expect("run verilator");
+    assert!(
+        vout.status.success(),
+        "verilator build failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&vout.stdout),
+        String::from_utf8_lossy(&vout.stderr)
+    );
+
+    let run = std::process::Command::new(obj.join("sim_int_to_bf16"))
+        .output()
+        .expect("run verilated sim");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        stdout.contains("ARCH_INT_TO_BF16_WITNESS: ALL PASS"),
+        "int.to_bf16() f32-routed witness (built SV) failed\nstdout:\n{stdout}\nstderr:\n{}",
         String::from_utf8_lossy(&run.stderr)
     );
 }
