@@ -1,0 +1,111 @@
+name: nightly-equivalence
+
+# Dual-backend (SV+Verilator vs native arch sim) equivalence sweep.
+# Closes #244: this schedules the EXISTING backend-equivalence machinery
+# (tools/run_arch_regression.py + tests/backend_equiv/run.sh) on a nightly
+# cadence instead of only ad hoc on developer machines. It does not invent
+# a new comparison framework.
+#
+# See scripts/nightly_equivalence.py for the glue: it runs the broad
+# regression gate (check -> build -> Verilator lint -> arch sim, with real
+# C++ TBs for units in tests/arch_sim_manifest.json) under bounded
+# parallelism, then serially re-runs anything that failed once before
+# reporting a real divergence — Verilator is known to be flaky under
+# parallel load ("Broken pipe" class failures), so a nightly that reports
+# every transient blip as red gets ignored.
+
+on:
+  schedule:
+    # 09:00 UTC nightly.
+    - cron: '0 9 * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: nightly-equivalence-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  equivalence-sweep:
+    name: dual-backend equivalence sweep
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: nightly-equiv-cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            nightly-equiv-cargo-${{ runner.os }}-
+
+      - name: Install Verilator (apt)
+        id: apt_verilator
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq verilator
+          echo "version=$(verilator --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Check Verilator version
+        id: verilator_check
+        run: |
+          ver="${{ steps.apt_verilator.outputs.version }}"
+          major="${ver%%.*}"
+          echo "apt-provided Verilator: $ver"
+          if [ "${major:-0}" -ge 5 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Fallback path if a future ubuntu-latest image regresses to a <5.x
+      # apt package: build and cache a known-good Verilator release. This
+      # step is skipped entirely while apt keeps providing 5.x (the common
+      # case today), so it costs nothing on the happy path.
+      - name: Cache built Verilator (fallback)
+        if: steps.verilator_check.outputs.ok != 'true'
+        id: cache_verilator_build
+        uses: actions/cache@v4
+        with:
+          path: /opt/verilator-built
+          key: verilator-build-v5.034-${{ runner.os }}
+
+      - name: Build Verilator from source (fallback)
+        if: steps.verilator_check.outputs.ok != 'true' && steps.cache_verilator_build.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get install -y -qq git make autoconf g++ flex bison ccache \
+            libgoogle-perftools-dev numactl perl-doc libfl2 libfl-dev zlibc zlib1g zlib1g-dev
+          git clone --depth 1 --branch v5.034 https://github.com/verilator/verilator /tmp/verilator-src
+          cd /tmp/verilator-src
+          autoconf
+          ./configure --prefix=/opt/verilator-built
+          make -j"$(nproc)"
+          sudo make install PREFIX=/opt/verilator-built
+
+      - name: Use fallback Verilator on PATH (fallback)
+        if: steps.verilator_check.outputs.ok != 'true'
+        run: echo "/opt/verilator-built/bin" >> "$GITHUB_PATH"
+
+      - name: Verilator version (final)
+        run: verilator --version
+
+      - name: Build arch (release)
+        run: cargo build --release
+
+      - name: Run nightly dual-backend equivalence sweep
+        run: python3 scripts/nightly_equivalence.py --jobs 2
+
+      - name: Upload scratch logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-equivalence-logs
+          path: /tmp/arch-nightly-equiv-*/
+          retention-days: 7
