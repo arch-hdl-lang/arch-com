@@ -4690,6 +4690,58 @@ impl Parser {
                         span,
                         parenthesized: false,
                     })
+                } else if self.check(TokenKind::Lt)
+                    && matches!(self.peek_real_kind_at(1), Some(TokenKind::Pipelined))
+                {
+                    // Pipelined-operator call: Name<pipelined, N>(arg, ...)
+                    // (doc/proposal_pipelined_operators.md phase 2). Only
+                    // triggers on the exact `< pipelined , <int> >` shape —
+                    // any other `<` after an identifier falls through to
+                    // ordinary comparison-operator / plain-call parsing
+                    // below, so `a < b` and `fma(a,b,c)` are unaffected.
+                    self.advance(); // consume `<`
+                    self.expect(TokenKind::Pipelined)?;
+                    self.expect(TokenKind::Comma)?;
+                    // v1 restriction: depth must be a literal integer token
+                    // written directly in the call, mirroring how
+                    // `pipe_reg<T, N>` requires a literal depth today — not
+                    // a const-param-resolvable expression.
+                    let depth_span = self.peek_span();
+                    let old_no_angle = self.no_angle;
+                    self.no_angle = true;
+                    let depth_expr = self.parse_expr()?;
+                    self.no_angle = old_no_angle;
+                    let stages: u32 = match &depth_expr.kind {
+                        ExprKind::Literal(LitKind::Dec(n))
+                        | ExprKind::Literal(LitKind::Hex(n))
+                        | ExprKind::Literal(LitKind::Bin(n))
+                        | ExprKind::Literal(LitKind::Sized(_, n)) => *n as u32,
+                        _ => {
+                            return Err(CompileError::general(
+                                &format!(
+                                    "`{}<pipelined, N>(...)` requires N to be a compile-time integer literal",
+                                    ident.name
+                                ),
+                                depth_span,
+                            ));
+                        }
+                    };
+                    self.expect(TokenKind::Gt)?;
+                    self.expect(TokenKind::LParen)?;
+                    let mut call_args = Vec::new();
+                    while !self.check(TokenKind::RParen) {
+                        call_args.push(self.parse_expr()?);
+                        if !self.eat(TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    let end = self.expect(TokenKind::RParen)?;
+                    let span = ident.span.merge(end.span);
+                    Ok(Expr {
+                        kind: ExprKind::PipelinedCall(ident.name, call_args, stages),
+                        span,
+                        parenthesized: false,
+                    })
                 } else if self.check(TokenKind::LParen) {
                     // Function call: Name(arg, ...)
                     self.advance(); // consume `(`

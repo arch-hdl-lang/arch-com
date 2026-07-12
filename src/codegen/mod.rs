@@ -5703,6 +5703,17 @@ impl<'a> Codegen<'a> {
     /// Core expression emitter — never adds outer parens itself.
     fn emit_expr_inner(&self, expr: &Expr) -> String {
         match &expr.kind {
+            // Retimed-datapath codegen for `<pipelined, N>` calls is not
+            // implemented yet (proposal phase 3 — see
+            // `pipelined_ops::find_pipelined_calls`, called before codegen
+            // starts so this arm should be unreachable in practice; kept
+            // as a loud backstop rather than silently falling back to a
+            // comb cone, which would misrepresent an un-retimed operator
+            // as pipelined).
+            ExprKind::PipelinedCall(name, _, stages) => unreachable!(
+                "codegen reached `{name}<pipelined, {stages}>(...)` — this should have been \
+                 rejected by pipelined_ops::find_pipelined_calls before codegen started"
+            ),
             // `q@K` on RHS lowers to the K-th tap of the pipe_reg
             // chain (`q` being the final flop, source being the input
             // before any flop). Numbering counts cycles of delay from

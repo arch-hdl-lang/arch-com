@@ -1053,6 +1053,21 @@ impl<'a> TypeChecker<'a> {
                         // Do NOT insert into local_types or driven here — handled above per case
                     } else {
                         let ty = self.resolve_expr_type(&l.value, &m.name.name, &local_types);
+                        // `let` bindings are always a fixed combinational
+                        // expression (spec: "declaration (fixed combinational
+                        // expr)") — a latency-N (N>0) `<pipelined, N>` result
+                        // has no cycle to land on here; it must be bound in a
+                        // `seq` block via an `@N` tap.
+                        if let ExprKind::PipelinedCall(name, _, call_stages) = &l.value.kind {
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "`{name}<pipelined, {call_stages}>(...)` produces a latency-{call_stages} \
+                                     result and cannot be used in a `let` binding (always combinational); \
+                                     bind it in a `seq` block via `target@{call_stages} <= {name}<pipelined, {call_stages}>(...)`"
+                                ),
+                                l.value.span,
+                            ));
+                        }
                         if let Some(declared_ty) = &l.ty {
                             let expected =
                                 self.resolve_type_expr(declared_ty, &m.name.name, &local_types);
@@ -3135,6 +3150,7 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 let rhs_ty = self.resolve_expr_type(&a.value, module_name, local_types);
+                self.check_pipelined_call_binding(a, in_comb);
                 let is_indexed = !matches!(&a.target.kind, ExprKind::Ident(_));
                 // LHS-type lookup: comb uses local_types directly so missing
                 // entries silently skip the width check (matches historical
@@ -3625,6 +3641,187 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The cycle offset an expression's value materializes at, per the
+    /// `LatencyAt`/`PipelinedCall` machinery (`doc/proposal_pipelined_operators.md`
+    /// §2). `0` for any expression not explicitly annotated — i.e. a plain
+    /// signal read or a comb result. Used by [`Self::check_operand_latency_alignment`]
+    /// to reject mixed-latency combinations without auto-alignment (v1: no
+    /// auto-inserted delay lines — see the proposal's "Mixed-latency
+    /// expressions" decision).
+    fn expr_latency_tc(expr: &Expr) -> u32 {
+        match &expr.kind {
+            ExprKind::PipelinedCall(_, _, n) => *n,
+            ExprKind::LatencyAt(_, n) => *n,
+            _ => 0,
+        }
+    }
+
+    /// Rejects combining operands materializing at different cycle offsets
+    /// in a single expression (e.g. `acc@6 + x` where `x` is latency-0),
+    /// per the proposal's "no auto-alignment in v1" rule. Reports the
+    /// *first* mismatching pair found, phrased like the proposal's
+    /// `fadd(acc@6, x)` example: "operands at cycle 6 and cycle 0".
+    fn check_operand_latency_alignment(&mut self, operands: &[&Expr], span: Span) {
+        let mut first: Option<(u32, Span)> = None;
+        for op in operands {
+            let lat = Self::expr_latency_tc(op);
+            match &first {
+                None => first = Some((lat, op.span)),
+                Some((f, _)) if *f != lat => {
+                    self.errors.push(CompileError::general(
+                        &format!("operands at cycle {} and cycle {}", f, lat),
+                        span,
+                    ));
+                    return;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Typecheck resolution for `Name<pipelined, N>(args...)` —
+    /// `doc/proposal_pipelined_operators.md` §2. Reuses the same operand
+    /// type-profile detection each registry operator's bare comb form
+    /// already uses (currently only `fma`), resolves `(operator, profile, N)`
+    /// against `pipelined_ops::lookup`, and returns the operator's normal
+    /// result type. The call's own latency (`N`) is not carried in `Ty` —
+    /// callers recover it structurally via [`Self::expr_latency_tc`], which
+    /// treats a `PipelinedCall` node itself as materializing at cycle `N`.
+    fn resolve_pipelined_call_type(
+        &mut self,
+        name: &str,
+        call_args: &[Expr],
+        stages: u32,
+        span: Span,
+        module_name: &str,
+        local_types: &HashMap<String, Ty>,
+    ) -> Ty {
+        if name != "fma" {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "`{name}<pipelined, {stages}>(...)` — `{name}` is not a registry-backed \
+                     pipelined operator; only `fma` is registered today (run `arch ops` to list all)"
+                ),
+                span,
+            ));
+            return Ty::Error;
+        }
+        // Same arity/type-profile rule as bare `fma(a, b, c)` (see the
+        // `FunctionCall` arm below) — three same-float-type operands.
+        if call_args.len() != 3 {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "`fma<pipelined, {stages}>(a, b, c)` takes 3 arguments, got {}",
+                    call_args.len()
+                ),
+                span,
+            ));
+            return Ty::Error;
+        }
+        let arg_tys: Vec<Ty> = call_args
+            .iter()
+            .map(|a| self.resolve_expr_type(a, module_name, local_types))
+            .collect();
+        if arg_tys.iter().any(|t| *t == Ty::Error) {
+            return Ty::Error;
+        }
+        let ta = &arg_tys[0];
+        if !ta.is_float() || arg_tys[1] != *ta || arg_tys[2] != *ta {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "`fma<pipelined, {stages}>` requires three operands of the same float type, got {}, {}, {}",
+                    arg_tys[0].display(), arg_tys[1].display(), arg_tys[2].display()
+                ),
+                span,
+            ));
+            return Ty::Error;
+        }
+        // The pipelined call's own inputs are combinational (cycle-0) reads
+        // — no auto-alignment, so mixed-latency operands are rejected here
+        // the same way they are for any other multi-operand call.
+        let arg_refs: Vec<&Expr> = call_args.iter().collect();
+        self.check_operand_latency_alignment(&arg_refs, span);
+
+        let profile = match ta {
+            Ty::FP32 => "FP32",
+            Ty::BF16 => "BF16",
+            _ => unreachable!("is_float() already restricted ta to FP32/BF16"),
+        };
+        match crate::pipelined_ops::lookup(name, profile, stages) {
+            Ok(_entry) => ta.clone(),
+            Err(miss) => {
+                // Reuse LookupMiss's Display verbatim — it already renders
+                // the exact enumerated-miss error text specified in
+                // doc/proposal_pipelined_operators.md §1.
+                self.errors
+                    .push(CompileError::general(&miss.to_string(), span));
+                Ty::Error
+            }
+        }
+    }
+
+    /// Enforces the comb-context restriction and the optional delay-line
+    /// warning from `doc/proposal_pipelined_operators.md` §2 for one
+    /// assignment statement (`target <op> value;`).
+    ///
+    /// - A bare `PipelinedCall` (latency N>0) directly assigned in a
+    ///   `comb` block is an error — it has no cycle to land on.
+    /// - The optional delay-line warning: `acc@N <= fma(a,b,c)` (comb fma,
+    ///   *not* `<pipelined, N>`) written into an `@N` (N>=1) tap compiles
+    ///   (unchanged pipe_reg delay-line semantics) but warns, since it's
+    ///   almost always a "did you mean `fma<pipelined, N>`?" mistake — the
+    ///   delay-line trap the proposal's Motivation section describes.
+    ///
+    /// The seq-context binding/consistency rule ("latency-M result bound
+    /// at @N", "must be bound via a tapped target") is enforced earlier,
+    /// in `elaborate::validate_pipe_assign_stmt` — it runs *before* the
+    /// pipe_reg cascade rewrite strips the `@N` off the target, which by
+    /// the time this function runs has already happened for any
+    /// `PipelinedCall` reaching a seq assignment (a program that failed
+    /// that check never reaches typecheck at all).
+    fn check_pipelined_call_binding(&mut self, a: &Assign, in_comb: bool) {
+        let target_latency = match &a.target.kind {
+            ExprKind::LatencyAt(_, n) => Some(*n),
+            _ => None,
+        };
+        match &a.value.kind {
+            ExprKind::PipelinedCall(name, _, call_stages) => {
+                if in_comb {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "`{name}<pipelined, {call_stages}>(...)` produces a latency-{call_stages} \
+                             result and cannot be used in a `comb` block; bind it in a `seq` block via \
+                             `target@{call_stages} <= {name}<pipelined, {call_stages}>(...)`"
+                        ),
+                        a.span,
+                    ));
+                }
+            }
+            ExprKind::FunctionCall(name, _) if !in_comb => {
+                // Optional warning (proposal §2, "No silent retiming of
+                // arbitrary exprs"): a bare comb call delayed via a
+                // pipe_reg tap is legal (unchanged delay-line semantics)
+                // but is almost always meant to be the pipelined variant.
+                if let Some(target_n) = target_latency {
+                    if target_n >= 1
+                        && crate::pipelined_ops::BUILTIN_REGISTRY
+                            .iter()
+                            .any(|e| e.operator == name)
+                    {
+                        self.warnings.push(CompileWarning {
+                            message: format!(
+                                "comb `{name}` delayed {target_n} cycles via `@{target_n}`; did you mean \
+                                 `{name}<pipelined, {target_n}>(...)`?"
+                            ),
+                            span: a.span,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn resolve_expr_type(
         &mut self,
         expr: &Expr,
@@ -3650,6 +3847,14 @@ impl<'a> TypeChecker<'a> {
                 // target context is known.
                 self.resolve_expr_type(inner, module_name, local_types)
             }
+            ExprKind::PipelinedCall(name, call_args, stages) => self.resolve_pipelined_call_type(
+                name,
+                call_args,
+                *stages,
+                expr.span,
+                module_name,
+                local_types,
+            ),
             ExprKind::SynthIdent(_, ty) => {
                 // SynthIdent carries its own type — used by the
                 // credit_channel dispatch pass (PR #3b-v). No symbol-table
@@ -3739,6 +3944,7 @@ impl<'a> TypeChecker<'a> {
                 self.check_precedence_ambiguity(*op, lhs, rhs, expr.span);
                 let lt = self.resolve_expr_type(lhs, module_name, local_types);
                 let rt = self.resolve_expr_type(rhs, module_name, local_types);
+                self.check_operand_latency_alignment(&[lhs.as_ref(), rhs.as_ref()], expr.span);
                 self.binop_result_type(*op, &lt, &rt, expr.span)
             }
             ExprKind::Unary(op, operand) => {
@@ -4018,6 +4224,10 @@ impl<'a> TypeChecker<'a> {
                         ));
                         return Ty::Error;
                     }
+                    self.check_operand_latency_alignment(
+                        &[&call_args[0], &call_args[1], &call_args[2]],
+                        expr.span,
+                    );
                     return ta;
                 }
                 if name == "is_nan" {

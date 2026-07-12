@@ -1964,6 +1964,14 @@ impl Builder {
                     self.walk_expr(owner, rel, scope, arg, ExprUse::Read);
                 }
             }
+            ExprKind::PipelinedCall(_name, args, _stages) => {
+                // Registry-resolved builtin operator (e.g. `fma<pipelined, N>`),
+                // not a user construct — no `calls` edge to a construct, just
+                // walk operand reads like a plain FunctionCall.
+                for arg in args {
+                    self.walk_expr(owner, rel, scope, arg, ExprUse::Read);
+                }
+            }
             ExprKind::Ternary(c, t, e) => {
                 self.walk_expr(owner, rel, scope, c, ExprUse::Read);
                 self.walk_expr(owner, rel, scope, t, ExprUse::Read);

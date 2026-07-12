@@ -1994,6 +1994,21 @@ impl<'a> FormalCtx<'a> {
             // `q@0` is the same as `q` at t. Non-@0 reads are rejected by
             // typecheck before reaching formal emission.
             LatencyAt(inner, _) => self.encode_raw(inner, t),
+            // `fma<pipelined, N>(...)` — the retimed staged datapath (and
+            // its sequential-equivalence proof obligation vs. the trusted
+            // comb operator) is proposal phase 3
+            // (doc/proposal_pipelined_operators.md), not yet implemented.
+            // Reject explicitly rather than silently encoding it as the
+            // comb operator, which would misrepresent an unverified
+            // pipeline as formally checked.
+            PipelinedCall(name, _, stages) => Err(CompileError::general(
+                &format!(
+                    "`{name}<pipelined, {stages}>(...)` is not yet supported by `arch formal` \
+                     — the staged datapath and its equivalence proof obligation land in a \
+                     later phase of doc/proposal_pipelined_operators.md"
+                ),
+                expr.span,
+            )),
             // SVA `##N expr` — forward cycle-shift. Encode `expr` at
             // cycle `t + N`. run_property clamps max_t so this never
             // goes out of the unrolled range.

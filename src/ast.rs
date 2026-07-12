@@ -1154,6 +1154,17 @@ pub enum ExprKind {
     Unsigned(Box<Expr>),
     /// Pure combinational function call: Name(arg, ...)
     FunctionCall(String, Vec<Expr>),
+    /// Pipelined-operator call: `Name<pipelined, N>(arg, ...)` — proposal
+    /// `doc/proposal_pipelined_operators.md` phase 2. `N` (the third field)
+    /// is the declared pipeline depth, a compile-time integer literal (v1
+    /// restriction — no const-param-resolvable expressions yet). Resolved
+    /// against `pipelined_ops::lookup(operator, profile, N)` at typecheck
+    /// time; the call's result carries latency `N` (composes with the
+    /// existing `LatencyAt` / `@N` tap machinery). Distinct from bare
+    /// `FunctionCall` so the delay-line trap described in the proposal's
+    /// Motivation section (`acc@6 <= fma(a,b,c)` silently NOT being
+    /// retimed) cannot be written by accident.
+    PipelinedCall(String, Vec<Expr>, u32),
     /// SVA delay-shift: `##N expr`. Inside an `assert`/`cover` body, shifts
     /// the cycle of `expr` forward by `N` (i.e. evaluates `expr` at cycle
     /// `t + N` when the surrounding property is checked at cycle `t`).
