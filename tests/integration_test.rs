@@ -22711,6 +22711,167 @@ fn test_local_param_names_are_scoped_per_instantiated_module() {
     );
 }
 
+/// Run typecheck only (no codegen) and return its result.
+fn typecheck_errors(source: &str) -> Result<(), Vec<String>> {
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    checker
+        .check()
+        .map(|_| ())
+        .map_err(|errs| errs.iter().map(|e| e.to_string()).collect())
+}
+
+/// Bus-scoped variant of the issue-#462 local-param collision class: a bus
+/// signal typed with a bus param must keep the BUS's param value at
+/// `port.signal` access sites, even when the enclosing module declares a
+/// same-named param with a different value. Pre-fix, the module's param
+/// shadowed the bus's (the field type below resolved to UInt<8>) and the
+/// truncating assignment was silently accepted.
+#[test]
+fn test_bus_param_width_not_shadowed_by_module_param() {
+    let source = r#"
+bus LinkBus
+  param W: const = 48;
+  wide: in UInt<W>;
+end bus LinkBus
+
+module Consumer
+  param W: const = 8;
+  port clk: in Clock<SysDomain>;
+  port link: initiator LinkBus;
+  port o: out UInt<8>;
+
+  let x: UInt<8> = link.wide;
+
+  comb
+    o = x;
+  end comb
+end module Consumer
+"#;
+    let errs = typecheck_errors(source).expect_err(
+        "48-bit bus signal into UInt<8> let must be a width mismatch; \
+         module param W=8 must not shadow bus param W=48",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("UInt<48>")),
+        "mismatch must report the bus's width (UInt<48>), got: {errs:?}"
+    );
+}
+
+/// A bus-param-typed signal must width-check even when the enclosing module
+/// has no same-named param. Pre-fix, the width expr didn't fold at all
+/// (bus params were invisible to eval_const_expr), the field type collapsed
+/// to Ty::Error, and every width check on the signal was silently skipped.
+#[test]
+fn test_bus_param_width_folds_without_module_param() {
+    let source = r#"
+bus LinkBus
+  param W: const = 48;
+  wide: in UInt<W>;
+end bus LinkBus
+
+module Consumer
+  port clk: in Clock<SysDomain>;
+  port link: initiator LinkBus;
+  port o: out UInt<8>;
+
+  let x: UInt<8> = link.wide;
+
+  comb
+    o = x;
+  end comb
+end module Consumer
+"#;
+    let errs = typecheck_errors(source)
+        .expect_err("48-bit bus signal into UInt<8> let must be a width mismatch");
+    assert!(
+        errs.iter().any(|e| e.contains("UInt<48>")),
+        "mismatch must report the bus's width (UInt<48>), got: {errs:?}"
+    );
+}
+
+/// Port-site `<P=expr>` overrides fold in the *enclosing module's* scope and
+/// then bind the bus param — including the common passthrough idiom where
+/// the override value is the module's own same-named param.
+#[test]
+fn test_bus_port_param_override_folds_in_module_scope() {
+    // Distinctly named module param.
+    let renamed = r#"
+bus LinkBus
+  param W: const = 48;
+  wide: in UInt<W>;
+end bus LinkBus
+
+module Consumer
+  param MW: const = 16;
+  port clk: in Clock<SysDomain>;
+  port link: initiator LinkBus<W=MW>;
+  port o: out UInt<16>;
+
+  let x: UInt<16> = link.wide;
+
+  comb
+    o = x;
+  end comb
+end module Consumer
+"#;
+    typecheck_errors(renamed).expect("override W=MW (16) must type link.wide as UInt<16>");
+
+    // Same-named passthrough (`<W=W>`) — must fold the module's W, not
+    // recurse into the bus's own W.
+    let passthrough = r#"
+bus LinkBus
+  param W: const = 48;
+  wide: in UInt<W>;
+end bus LinkBus
+
+module Consumer
+  param W: const = 16;
+  port clk: in Clock<SysDomain>;
+  port link: initiator LinkBus<W=W>;
+  port o: out UInt<16>;
+
+  let x: UInt<16> = link.wide;
+
+  comb
+    o = x;
+  end comb
+end module Consumer
+"#;
+    typecheck_errors(passthrough)
+        .expect("passthrough override W=W (16) must type link.wide as UInt<16>");
+
+    // Literal override: reads must check against the overridden width.
+    let literal = r#"
+bus LinkBus
+  param W: const = 48;
+  wide: in UInt<W>;
+end bus LinkBus
+
+module Consumer
+  port clk: in Clock<SysDomain>;
+  port link: initiator LinkBus<W=16>;
+  port o: out UInt<8>;
+
+  let x: UInt<8> = link.wide;
+
+  comb
+    o = x;
+  end comb
+end module Consumer
+"#;
+    let errs = typecheck_errors(literal)
+        .expect_err("16-bit (overridden) bus signal into UInt<8> let must mismatch");
+    assert!(
+        errs.iter().any(|e| e.contains("UInt<16>")),
+        "mismatch must report the overridden width (UInt<16>), got: {errs:?}"
+    );
+}
+
 #[test]
 fn test_native_sim_does_not_emit_fields_for_param_inst_inputs() {
     let source = r#"

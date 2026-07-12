@@ -189,8 +189,10 @@ impl<'a> TypeChecker<'a> {
             Item::Regfile(r) => r.params.clone(),
             Item::Pipeline(p) => p.params.clone(),
             Item::Linklist(l) => l.params.clone(),
+            Item::Bus(b) => b.params.clone(),
             Item::Synchronizer(s) => s.params.clone(),
             Item::Clkgate(c) => c.params.clone(),
+            Item::Template(t) => t.params.clone(),
             Item::Package(p) => p.params.clone(),
             _ => Vec::new(),
         }
@@ -4150,6 +4152,50 @@ impl<'a> TypeChecker<'a> {
         )
     }
 
+    /// Find the port-site `<P=expr>` bus-param overrides for a bus field
+    /// access base (`port.sig` or `vec_port[i].sig`) and fold each value to a
+    /// literal in the *current* (enclosing-construct) param scope — override
+    /// exprs like `initiator BusVr<DATA_W=DATA_W>` reference the enclosing
+    /// module's params, not the bus's. Values that don't const-fold are
+    /// dropped, falling back to the bus's declared default.
+    fn bus_port_param_overrides(
+        &self,
+        base: &Expr,
+        module_name: &str,
+        local_types: &HashMap<String, Ty>,
+    ) -> Vec<(String, Expr)> {
+        let base_name = match &base.kind {
+            ExprKind::Ident(n) => n,
+            ExprKind::Index(inner, _) => match &inner.kind {
+                ExprKind::Ident(n) => n,
+                _ => return Vec::new(),
+            },
+            _ => return Vec::new(),
+        };
+        let Some(port) = self.source.items.iter().find_map(|item| {
+            let ports: &[PortDecl] = match item {
+                Item::Module(m) if m.name.name == module_name => &m.ports,
+                Item::Fsm(f) if f.name.name == module_name => &f.ports,
+                Item::Pipeline(p) if p.name.name == module_name => &p.ports,
+                _ => return None,
+            };
+            ports.iter().find(|p| p.name.name == *base_name)
+        }) else {
+            return Vec::new();
+        };
+        let Some(ref bi) = port.bus_info else {
+            return Vec::new();
+        };
+        bi.params
+            .iter()
+            .filter_map(|pa| {
+                let v = self.eval_const_expr(&pa.value, local_types)?;
+                let lit = Expr::new(ExprKind::Literal(LitKind::Dec(v)), pa.value.span);
+                Some((pa.name.name.clone(), lit))
+            })
+            .collect()
+    }
+
     /// Resolve `ExprKind::FieldAccess(base, field)` — the type of a `.field`
     /// access on a struct, bus, or `Reset.asserted` polarity-abstracted bool.
     /// Extracted from `resolve_expr_type` for readability — the original arm
@@ -4200,10 +4246,40 @@ impl<'a> TypeChecker<'a> {
         if let Ty::Bus(name) = &base_ty {
             if let Some((sym, _)) = self.symbols.globals.get(name) {
                 if let crate::resolve::Symbol::Bus(info) = sym {
-                    let _eff = info.effective_signals(&info.default_param_map());
-                    for (sname, _dir, sty) in &_eff {
+                    // Port-site `<P=expr>` overrides, when the base names a
+                    // bus port (or a `Vec<Bus,N>` element) of the enclosing
+                    // construct. The override exprs were written at the port
+                    // site, so they fold in the *enclosing* param scope —
+                    // e.g. `initiator BusVr<DATA_W=DATA_W>` binds the bus's
+                    // DATA_W to the module's — and are pre-folded to literals
+                    // here, while the enclosing scope is still active.
+                    let overrides = self.bus_port_param_overrides(base, module_name, local_types);
+                    // The signal's declared type folds in the *bus's* param
+                    // scope: bus param defaults, with the pre-folded port-site
+                    // overrides substituted in. Resolving it in the enclosing
+                    // scope instead lets a same-named module param shadow the
+                    // bus param — the cross-construct collision class issue
+                    // #462 fixed for sibling modules.
+                    let mut bus_scope = info.params.clone();
+                    for (pname, pval) in &overrides {
+                        if let Some(pd) =
+                            bus_scope.iter_mut().find(|pd| &pd.name.name == pname)
+                        {
+                            pd.default = Some(pval.clone());
+                        }
+                    }
+                    let mut pm = info.default_param_map();
+                    for (pname, pval) in &overrides {
+                        pm.insert(pname.clone(), pval);
+                    }
+                    let eff = info.effective_signals(&pm);
+                    for (sname, _dir, sty) in &eff {
                         if sname == &field.name {
-                            return self.resolve_type_expr(sty, module_name, local_types);
+                            let saved =
+                                std::mem::replace(&mut self.active_params, bus_scope);
+                            let ty = self.resolve_type_expr(sty, module_name, local_types);
+                            self.active_params = saved;
+                            return ty;
                         }
                     }
                     self.errors.push(CompileError::general(
