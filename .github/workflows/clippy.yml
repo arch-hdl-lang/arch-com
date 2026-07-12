@@ -26,8 +26,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      # `cargo clippy` resolves the toolchain via rust-toolchain.toml's pin
+      # (1.94.0), overriding whatever toolchain the action installs — so the
+      # installed toolchain must match that pin and carry the clippy
+      # component, same as rustfmt.yml does for rustfmt.
+      - name: Install pinned Rust toolchain + clippy
+        uses: dtolnay/rust-toolchain@1.94.0
         with:
           components: clippy
 
