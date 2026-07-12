@@ -4,10 +4,22 @@
 //! the registry table, a type-check-facing lookup with an enumerated miss
 //! error, and the data behind the `arch ops` CLI listing.
 //!
-//! This module intentionally does **not** wire up the `fma<pipelined, N>`
-//! call surface or latency typing (§2 of the proposal) — that is phase 2.
-//! `lookup` is exposed for phase 2's typecheck integration and is exercised
-//! directly by tests in the meantime.
+//! Phase 2 (this module, additionally) wires up the `fma<pipelined, N>`
+//! call surface, parsed as `ast::ExprKind::PipelinedCall`, and its latency
+//! typing (see `typecheck.rs`'s `PipelinedCall` handling). Codegen —
+//! binding the call to an actual retimed staged datapath in `arch build`
+//! / `arch sim` — is deferred: `builtin:fma_f32_s6` today is a single
+//! combinational cone (`src/fp_ops.rs`), not staged RTL; "6-stage" is
+//! purely a downstream Yosys synthesis-retiming characterization the
+//! compiler never sees. Productizing a real staged schedule with an
+//! equivalence proof is proposal phase 3. `find_pipelined_calls` below is
+//! the codegen-side backstop: `arch build` / `arch sim` scan the
+//! elaborated module bodies for any `PipelinedCall` and refuse with a
+//! clear "not yet implemented" error rather than silently falling back to
+//! comb + delay-line (which would be functionally correct but would
+//! misrepresent an un-retimed cone as the requested pipelined operator).
+//! `arch check` does not run this scan — typecheck alone is fully
+//! supported.
 //!
 //! The registry key is `(operator, profile, stages)`. Entries carry a
 //! verification `status`: `verified` means the staged IR has been proven
@@ -259,6 +271,168 @@ pub fn format_markdown_table() -> String {
         ));
     }
     out
+}
+
+/// A `PipelinedCall` found by [`find_pipelined_calls`]: the operator name,
+/// declared depth, and source span, for building the deferred-codegen
+/// error message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FoundPipelinedCall {
+    pub operator: String,
+    pub stages: u32,
+    pub span: crate::lexer::Span,
+}
+
+/// Scans every `module` in `source` for `PipelinedCall` expressions
+/// (`fma<pipelined, N>(...)` and friends) reachable from `comb`/`seq`/
+/// `latch` block statements. Used by `arch build` / `arch sim` (not
+/// `arch check`) to refuse compilation with a clear, explicit error before
+/// codegen — see the module doc comment above for why codegen can't yet
+/// bind these calls to a real staged datapath.
+///
+/// Scope note: only module `comb`/`seq`/`latch` blocks are scanned — the
+/// only context the proposal's surface syntax and worked example cover in
+/// phase 2. Other constructs (`fsm`, `pipeline`, `thread`, ...) don't
+/// support the pipelined-operator surface yet.
+pub fn find_pipelined_calls(source: &crate::ast::SourceFile) -> Vec<FoundPipelinedCall> {
+    use crate::ast::{Item, ModuleBodyItem};
+    let mut out = Vec::new();
+    for item in &source.items {
+        if let Item::Module(m) = item {
+            for bi in &m.body {
+                match bi {
+                    ModuleBodyItem::CombBlock(cb) => scan_stmts(&cb.stmts, &mut out),
+                    ModuleBodyItem::RegBlock(rb) => scan_stmts(&rb.stmts, &mut out),
+                    ModuleBodyItem::LatchBlock(lb) => scan_stmts(&lb.stmts, &mut out),
+                    ModuleBodyItem::LetBinding(l) => scan_expr(&l.value, &mut out),
+                    _ => {}
+                }
+            }
+        }
+    }
+    out
+}
+
+fn scan_stmts(stmts: &[crate::ast::Stmt], out: &mut Vec<FoundPipelinedCall>) {
+    use crate::ast::Stmt;
+    for s in stmts {
+        match s {
+            Stmt::Assign(a) => scan_expr(&a.value, out),
+            Stmt::IfElse(ie) => {
+                scan_expr(&ie.cond, out);
+                scan_stmts(&ie.then_stmts, out);
+                scan_stmts(&ie.else_stmts, out);
+            }
+            Stmt::Match(m) => {
+                scan_expr(&m.scrutinee, out);
+                for arm in &m.arms {
+                    scan_stmts(&arm.body, out);
+                }
+            }
+            Stmt::Log(l) => {
+                for a in &l.args {
+                    scan_expr(a, out);
+                }
+            }
+            Stmt::For(f) => scan_stmts(&f.body, out),
+            Stmt::Init(i) => scan_stmts(&i.body, out),
+            Stmt::WaitUntil(e, _) => scan_expr(e, out),
+            Stmt::DoUntil { body, cond, .. } => {
+                scan_stmts(body, out);
+                scan_expr(cond, out);
+            }
+        }
+    }
+}
+
+fn scan_expr(expr: &crate::ast::Expr, out: &mut Vec<FoundPipelinedCall>) {
+    use crate::ast::ExprKind::*;
+    match &expr.kind {
+        PipelinedCall(name, args, stages) => {
+            out.push(FoundPipelinedCall {
+                operator: name.clone(),
+                stages: *stages,
+                span: expr.span,
+            });
+            for a in args {
+                scan_expr(a, out);
+            }
+        }
+        Binary(_, a, b) => {
+            scan_expr(a, out);
+            scan_expr(b, out);
+        }
+        Unary(_, e)
+        | Cast(e, _)
+        | LatencyAt(e, _)
+        | SvaNext(_, e)
+        | Signed(e)
+        | Unsigned(e)
+        | Clog2(e)
+        | Onehot(e)
+        | Repeat(e, _) => scan_expr(e, out),
+        FieldAccess(e, _) => scan_expr(e, out),
+        MethodCall(recv, _, args) => {
+            scan_expr(recv, out);
+            for a in args {
+                scan_expr(a, out);
+            }
+        }
+        Index(base, idx) => {
+            scan_expr(base, out);
+            scan_expr(idx, out);
+        }
+        BitSlice(base, hi, lo) => {
+            scan_expr(base, out);
+            scan_expr(hi, out);
+            scan_expr(lo, out);
+        }
+        PartSelect(base, start, width, _) => {
+            scan_expr(base, out);
+            scan_expr(start, out);
+            scan_expr(width, out);
+        }
+        StructLiteral(_, fields) => {
+            for f in fields {
+                scan_expr(&f.value, out);
+            }
+        }
+        Match(scrut, arms) => {
+            scan_expr(scrut, out);
+            for arm in arms {
+                scan_stmts(&arm.body, out);
+            }
+        }
+        ExprMatch(scrut, arms) => {
+            scan_expr(scrut, out);
+            for arm in arms {
+                scan_expr(&arm.value, out);
+            }
+        }
+        Concat(xs) | FunctionCall(_, xs) => {
+            for x in xs {
+                scan_expr(x, out);
+            }
+        }
+        Inside(e, members) => {
+            scan_expr(e, out);
+            for m in members {
+                match m {
+                    crate::ast::InsideMember::Single(v) => scan_expr(v, out),
+                    crate::ast::InsideMember::Range(lo, hi) => {
+                        scan_expr(lo, out);
+                        scan_expr(hi, out);
+                    }
+                }
+            }
+        }
+        Ternary(c, t, e) => {
+            scan_expr(c, out);
+            scan_expr(t, out);
+            scan_expr(e, out);
+        }
+        Literal(_) | Ident(_) | SynthIdent(_, _) | EnumVariant(_, _) | Todo | Bool(_) => {}
+    }
 }
 
 #[cfg(test)]

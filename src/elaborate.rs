@@ -10173,12 +10173,15 @@ fn make_zero_expr(sp: Span) -> Expr {
 // Called from main.rs after `lower_threads` so every other elaboration
 // pass sees the original unexpanded form.
 
-pub fn lower_pipe_reg_ports(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
+pub fn lower_pipe_reg_ports(
+    ast: SourceFile,
+) -> Result<(SourceFile, Vec<crate::diagnostics::CompileWarning>), Vec<CompileError>> {
     let mut new_items: Vec<Item> = Vec::with_capacity(ast.items.len());
     let mut errors: Vec<CompileError> = Vec::new();
+    let mut warnings: Vec<crate::diagnostics::CompileWarning> = Vec::new();
     for item in ast.items {
         match item {
-            Item::Module(m) => match lower_pipe_reg_module(m) {
+            Item::Module(m) => match lower_pipe_reg_module(m, &mut warnings) {
                 Ok(new_m) => new_items.push(Item::Module(new_m)),
                 Err(mut errs) => errors.append(&mut errs),
             },
@@ -10188,11 +10191,14 @@ pub fn lower_pipe_reg_ports(ast: SourceFile) -> Result<SourceFile, Vec<CompileEr
     if !errors.is_empty() {
         return Err(errors);
     }
-    Ok(SourceFile {
-        items: new_items,
-        inner_doc: None,
-        frontmatter: None,
-    })
+    Ok((
+        SourceFile {
+            items: new_items,
+            inner_doc: None,
+            frontmatter: None,
+        },
+        warnings,
+    ))
 }
 
 struct PipePortInfoLocal {
@@ -10204,7 +10210,10 @@ struct PipePortInfoLocal {
     span: Span,
 }
 
-fn lower_pipe_reg_module(mut m: ModuleDecl) -> Result<ModuleDecl, Vec<CompileError>> {
+fn lower_pipe_reg_module(
+    mut m: ModuleDecl,
+    warnings: &mut Vec<crate::diagnostics::CompileWarning>,
+) -> Result<ModuleDecl, Vec<CompileError>> {
     // Collect metadata for every pipe_reg port (latency >= 1).
     // Ports with latency == 1 still participate in the @N validation —
     // legacy `port reg` is equivalent to `pipe_reg<T, 1>`.
@@ -10241,7 +10250,13 @@ fn lower_pipe_reg_module(mut m: ModuleDecl) -> Result<ModuleDecl, Vec<CompileErr
     let mut errors: Vec<CompileError> = Vec::new();
     for bi in &m.body {
         if let ModuleBodyItem::RegBlock(rb) = bi {
-            validate_pipe_assignments(&rb.stmts, &all_pipe_ports, &pipe_depths, &mut errors);
+            validate_pipe_assignments(
+                &rb.stmts,
+                &all_pipe_ports,
+                &pipe_depths,
+                &mut errors,
+                warnings,
+            );
         }
         if let ModuleBodyItem::CombBlock(cb) = bi {
             validate_comb_pipe_refs(
@@ -10325,9 +10340,10 @@ fn validate_pipe_assignments(
     ports: &[PipePortInfoLocal],
     pipe_depths: &std::collections::HashMap<String, u32>,
     errors: &mut Vec<CompileError>,
+    warnings: &mut Vec<crate::diagnostics::CompileWarning>,
 ) {
     for s in stmts {
-        validate_pipe_assign_stmt(s, ports, pipe_depths, errors);
+        validate_pipe_assign_stmt(s, ports, pipe_depths, errors, warnings);
     }
 }
 
@@ -10336,6 +10352,7 @@ fn validate_pipe_assign_stmt(
     ports: &[PipePortInfoLocal],
     pipe_depths: &std::collections::HashMap<String, u32>,
     errors: &mut Vec<CompileError>,
+    warnings: &mut Vec<crate::diagnostics::CompileWarning>,
 ) {
     match stmt {
         Stmt::Assign(a) => {
@@ -10343,13 +10360,55 @@ fn validate_pipe_assign_stmt(
             // pipe_reg port. Validate per the error matrix.
             let (target_name, latency_opt) = match &a.target.kind {
                 ExprKind::LatencyAt(inner, n) => match &inner.kind {
-                    ExprKind::Ident(name) => (name.clone(), Some(*n)),
-                    _ => return,
+                    ExprKind::Ident(name) => (Some(name.clone()), Some(*n)),
+                    _ => (None, None),
                 },
-                ExprKind::Ident(name) => (name.clone(), None),
-                _ => return,
+                ExprKind::Ident(name) => (Some(name.clone()), None),
+                _ => (None, None),
             };
-            let Some(pp) = ports.iter().find(|p| p.name == target_name) else {
+            let pp = target_name
+                .as_ref()
+                .and_then(|n| ports.iter().find(|p| &p.name == n));
+            // `doc/proposal_pipelined_operators.md` §2: the call is
+            // authoritative for latency, the `@N` tap is a consistency
+            // check against it. Checked here — *before* the cascade
+            // rewrite below, which would otherwise strip the `@N` off the
+            // target, leaving nothing left for typecheck to compare
+            // against — and independent of whether the target happens to
+            // be a recognized `pipe_reg` port (a bare `reg` target is
+            // equally required to be tapped: a 1-cycle flop can't hold an
+            // N>1-cycle-delayed value).
+            if let ExprKind::PipelinedCall(name, _, call_stages) = &a.value.kind {
+                let declared_depth = pp.map(|p| p.latency);
+                match (latency_opt, declared_depth) {
+                    (Some(n), _) if n != *call_stages => {
+                        errors.push(CompileError::general(
+                            &format!("latency-{call_stages} result bound at @{n}"),
+                            a.span,
+                        ));
+                    }
+                    (Some(_), Some(depth)) if depth != *call_stages => {
+                        // Tapped at the right N, but the port itself is
+                        // declared a different depth — still a mismatch.
+                        errors.push(CompileError::general(
+                            &format!("latency-{call_stages} result bound at @{depth}"),
+                            a.span,
+                        ));
+                    }
+                    (None, _) => {
+                        errors.push(CompileError::general(
+                            &format!(
+                                "`{name}<pipelined, {call_stages}>(...)` produces a latency-{call_stages} \
+                                 result — it must be bound via a tapped target, e.g. \
+                                 `target@{call_stages} <= {name}<pipelined, {call_stages}>(...)`"
+                            ),
+                            a.span,
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            let Some(pp) = pp else {
                 return;
             };
             match latency_opt {
@@ -10373,20 +10432,44 @@ fn validate_pipe_assign_stmt(
                 }
                 _ => {}
             }
+            // Optional warning (doc/proposal_pipelined_operators.md §2,
+            // "No silent retiming of arbitrary exprs"): a bare comb call
+            // delayed via a pipe_reg tap is legal (unchanged delay-line
+            // semantics — the flop cascade just holds the *result*) but is
+            // almost always a "meant the pipelined variant" mistake. Only
+            // fires for tapped writes into an *actual* pipe_reg port
+            // (`pp` is `Some` here), and only when the callee is a
+            // registered pipelined operator.
+            if let ExprKind::FunctionCall(name, _) = &a.value.kind {
+                if pp.latency >= 1
+                    && crate::pipelined_ops::BUILTIN_REGISTRY
+                        .iter()
+                        .any(|e| e.operator == *name)
+                {
+                    warnings.push(crate::diagnostics::CompileWarning {
+                        message: format!(
+                            "comb `{name}` delayed {depth} cycles via `@{depth}`; did you mean \
+                             `{name}<pipelined, {depth}>(...)`?",
+                            depth = pp.latency
+                        ),
+                        span: a.span,
+                    });
+                }
+            }
             // RHS `q@K` for pipe_reg `q`: K must be 0..=N.
             validate_rhs_latency_with_depths(&a.value, pipe_depths, errors);
         }
         Stmt::IfElse(ie) => {
-            validate_pipe_assignments(&ie.then_stmts, ports, pipe_depths, errors);
-            validate_pipe_assignments(&ie.else_stmts, ports, pipe_depths, errors);
+            validate_pipe_assignments(&ie.then_stmts, ports, pipe_depths, errors, warnings);
+            validate_pipe_assignments(&ie.else_stmts, ports, pipe_depths, errors, warnings);
         }
         Stmt::Match(m) => {
             for arm in &m.arms {
-                validate_pipe_assignments(&arm.body, ports, pipe_depths, errors);
+                validate_pipe_assignments(&arm.body, ports, pipe_depths, errors, warnings);
             }
         }
-        Stmt::For(f) => validate_pipe_assignments(&f.body, ports, pipe_depths, errors),
-        Stmt::Init(ib) => validate_pipe_assignments(&ib.body, ports, pipe_depths, errors),
+        Stmt::For(f) => validate_pipe_assignments(&f.body, ports, pipe_depths, errors, warnings),
+        Stmt::Init(ib) => validate_pipe_assignments(&ib.body, ports, pipe_depths, errors, warnings),
         _ => {}
     }
 }

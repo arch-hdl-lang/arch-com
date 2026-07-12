@@ -65,7 +65,7 @@ fn compile_to_sv_with_opts(source: &str, opts: &elaborate::ThreadLowerOpts) -> S
     let ast = elaborate::lower_tlm_target_threads(ast).expect("tlm_target lowering error");
     let ast = elaborate::lower_tlm_initiator_calls(ast).expect("tlm_initiator lowering error");
     let ast = elaborate::lower_threads_with_opts(ast, opts).expect("lower_threads error");
-    let ast = elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg_ports error");
+    let ast = (elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg_ports error")).0;
     let ast = elaborate::lower_credit_channel_dispatch(ast).expect("credit_channel dispatch error");
     let symbols = resolve::resolve(&ast).expect("resolve error");
     let checker = TypeChecker::new(&symbols, &ast);
@@ -82,7 +82,7 @@ fn warnings_after_full_lower(source: &str) -> Vec<String> {
     let ast = elaborate::lower_tlm_target_threads(ast).expect("tlm_target lowering error");
     let ast = elaborate::lower_tlm_initiator_calls(ast).expect("tlm_initiator lowering error");
     let ast = elaborate::lower_threads(ast).expect("lower_threads error");
-    let ast = elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg_ports error");
+    let ast = (elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg_ports error")).0;
     let ast = elaborate::lower_credit_channel_dispatch(ast).expect("credit_channel dispatch error");
     let symbols = resolve::resolve(&ast).expect("resolve error");
     let checker = TypeChecker::new(&symbols, &ast);
@@ -6662,7 +6662,7 @@ fn compile_to_sim_h(source: &str, inputs_start_uninit: bool) -> String {
     let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target lowering");
     let ast = arch::elaborate::lower_tlm_initiator_calls(ast).expect("tlm initiator lowering");
     let ast = arch::elaborate::lower_threads(ast).expect("lower threads error");
-    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg error");
+    let ast = (arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg error")).0;
     let ast = arch::elaborate::lower_credit_channel_dispatch(ast).expect("cc dispatch error");
     let symbols = arch::resolve::resolve(&ast).expect("resolve error");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
@@ -6690,7 +6690,7 @@ fn compile_to_thread_sim_result(source: &str) -> Result<String, String> {
     let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
     let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target lowering");
     let ast = arch::elaborate::lower_tlm_initiator_calls(ast).expect("tlm initiator lowering");
-    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg error");
+    let ast = (arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg error")).0;
     let ast = arch::elaborate::lower_credit_channel_dispatch(ast).expect("cc dispatch error");
     let symbols = arch::resolve::resolve(&ast).expect("resolve error");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
@@ -6730,7 +6730,7 @@ fn compile_to_thread_sim_collect_warnings(source: &str) -> Vec<arch::diagnostics
     let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
     let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target lowering");
     let ast = arch::elaborate::lower_tlm_initiator_calls(ast).expect("tlm initiator lowering");
-    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg error");
+    let ast = (arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg error")).0;
     let ast = arch::elaborate::lower_credit_channel_dispatch(ast).expect("cc dispatch error");
     let symbols = arch::resolve::resolve(&ast).expect("resolve error");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
@@ -7227,7 +7227,7 @@ fn test_check_port_reg_timing_skips_synthesized_thread_lowered_regs() {
     let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target lowering");
     let ast = arch::elaborate::lower_tlm_initiator_calls(ast).expect("tlm initiator lowering");
     let ast = arch::elaborate::lower_threads(ast).expect("thread lowering");
-    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("pipe_reg lowering");
+    let ast = (arch::elaborate::lower_pipe_reg_ports(ast).expect("pipe_reg lowering")).0;
     let ast = arch::elaborate::lower_credit_channel_dispatch(ast).expect("credit_channel lowering");
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
@@ -10164,7 +10164,7 @@ fn test_port_reg_deprecation_warning_fires() {
     let ast = parser.parse_source_file().expect("parse");
     let ast = arch::elaborate::elaborate(ast).expect("elaborate");
     let ast = arch::elaborate::lower_threads(ast).expect("lower threads");
-    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg");
+    let ast = (arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg")).0;
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
     let (warnings, _) = arch::typecheck::TypeChecker::new(&symbols, &ast)
         .check()
@@ -10196,7 +10196,7 @@ fn test_pipe_reg_port_no_deprecation_warning() {
     let ast = parser.parse_source_file().expect("parse");
     let ast = arch::elaborate::elaborate(ast).expect("elaborate");
     let ast = arch::elaborate::lower_threads(ast).expect("lower threads");
-    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg");
+    let ast = (arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg")).0;
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
     let (warnings, _) = arch::typecheck::TypeChecker::new(&symbols, &ast)
         .check()
@@ -10266,7 +10266,7 @@ fn test_handshake_legacy_keyword_emits_deprecation_warning() {
     let ast = parser.parse_source_file().expect("parse");
     let ast = arch::elaborate::elaborate(ast).expect("elaborate");
     let ast = arch::elaborate::lower_threads(ast).expect("lower threads");
-    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg");
+    let ast = (arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg")).0;
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
     let (warnings, _) = arch::typecheck::TypeChecker::new(&symbols, &ast)
         .check()
@@ -10304,7 +10304,7 @@ fn test_handshake_channel_no_deprecation_warning() {
     let ast = parser.parse_source_file().expect("parse");
     let ast = arch::elaborate::elaborate(ast).expect("elaborate");
     let ast = arch::elaborate::lower_threads(ast).expect("lower threads");
-    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg");
+    let ast = (arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg")).0;
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
     let (warnings, _) = arch::typecheck::TypeChecker::new(&symbols, &ast)
         .check()
@@ -19069,7 +19069,7 @@ fn test_thread_sim_rejects_wide_arithmetic_until_codegen_supports_it() {
     let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
     let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target lowering");
     let ast = arch::elaborate::lower_tlm_initiator_calls(ast).expect("tlm initiator lowering");
-    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg error");
+    let ast = (arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg error")).0;
     let ast = arch::elaborate::lower_credit_channel_dispatch(ast).expect("cc dispatch error");
     let m = ast
         .items
@@ -21150,7 +21150,7 @@ end module Parent
     let ast = elaborate::lower_tlm_initiator_calls(ast).expect("tlm_initiator lowering");
     let ast = elaborate::lower_threads_with_opts(ast, &elaborate::ThreadLowerOpts::default())
         .expect("lower_threads");
-    let ast = elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg_ports");
+    let ast = (elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg_ports")).0;
     let ast = elaborate::lower_credit_channel_dispatch(ast).expect("credit_channel dispatch");
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = TypeChecker::new(&symbols, &ast);
@@ -21228,7 +21228,7 @@ end module Parent
     let ast = elaborate::lower_tlm_initiator_calls(ast).expect("tlm_initiator lowering");
     let ast = elaborate::lower_threads_with_opts(ast, &elaborate::ThreadLowerOpts::default())
         .expect("lower_threads");
-    let ast = elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg_ports");
+    let ast = (elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg_ports")).0;
     let ast = elaborate::lower_credit_channel_dispatch(ast).expect("credit_channel dispatch");
     let symbols = resolve::resolve(&ast)
         .expect("resolve must accept fsm interface stub (no default_state validation)");
@@ -25043,7 +25043,7 @@ fn compile_to_sv_with_sdc(source: &str) -> (String, Option<String>) {
     let ast = elaborate::lower_tlm_initiator_calls(ast).expect("tlm_initiator lowering error");
     let ast = elaborate::lower_threads_with_opts(ast, &elaborate::ThreadLowerOpts::default())
         .expect("lower_threads error");
-    let ast = elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg_ports error");
+    let ast = (elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg_ports error")).0;
     let ast = elaborate::lower_credit_channel_dispatch(ast).expect("credit_channel dispatch error");
     let symbols = resolve::resolve(&ast).expect("resolve error");
     let checker = TypeChecker::new(&symbols, &ast);
@@ -26916,7 +26916,7 @@ fn typecheck_source(source: &str) -> Result<(), Vec<arch::diagnostics::CompileEr
     let ast = elaborate::lower_tlm_initiator_calls(ast).expect("tlm_initiator");
     let ast = elaborate::lower_threads_with_opts(ast, &elaborate::ThreadLowerOpts::default())
         .expect("lower_threads");
-    let ast = elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg");
+    let ast = (elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg")).0;
     let ast = elaborate::lower_credit_channel_dispatch(ast).expect("credit_channel");
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = TypeChecker::new(&symbols, &ast);

@@ -205,6 +205,10 @@ pub fn expr_label(expr: &Expr) -> String {
             let args = args.iter().map(expr_label).collect::<Vec<_>>().join(", ");
             format!("{}({})", name, args)
         }
+        ExprKind::PipelinedCall(name, args, stages) => {
+            let args = args.iter().map(expr_label).collect::<Vec<_>>().join(", ");
+            format!("{}<pipelined, {}>({})", name, stages, args)
+        }
         ExprKind::Concat(parts) => {
             let parts = parts.iter().map(expr_label).collect::<Vec<_>>().join(", ");
             format!("{{{parts}}}")

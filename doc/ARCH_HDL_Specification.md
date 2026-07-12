@@ -757,6 +757,103 @@ The rule is **uniform across all slots**: `let`, `init`, reset, port defaults, a
 
 **Compatibility profile.** `arch build|sim --fp-compat=riscv|cuda` (default `riscv`) selects the special-value corners. Both profiles share an identical RNE arithmetic core and differ only in the canonical NaN bit pattern (`0x7FC00000`/`0x7FC0` vs `0x7FFFFFFF`/`0x7FFF`) and the NaN→int result (type-max vs `0`).
 
+**3.8a Pipelined operators (`<pipelined, N>`)**
+
+The float builtins above (`fma`, and any future registry-backed operator) are
+combinational by default: `fma(a, b, c)` lowers to a single comb cone, correct
+but capped at whatever clock a same-cycle multiply-add-normalize datapath can
+close at. For operators the compiler has a *characterized, staged*
+implementation for, an explicit pipelined variant is available:
+
+```
+fma<pipelined, N>(a, b, c)
+```
+
+`pipelined` is a reserved keyword (shared with `pipeline` / `pipe_reg`); `N`
+is the declared pipeline depth, a **compile-time integer literal** (v1
+restriction — no const-param-resolvable expressions yet, matching
+`pipe_reg<T, N>`'s existing literal-only depth). The compiler looks up
+`(operator, type-profile, N)` in a built-in implementation registry; a miss
+is a hard error enumerating the depths that *do* exist for that operator/type
+pair:
+
+```
+error: no pipelined implementation of fma<FP32> with 5 stages
+  available depths: {6}      (run `arch ops` to list all)
+```
+
+Run `arch ops` (or `arch ops --pipelined`) to list every registered
+`(operator, profile, depth)` combination, its verification status, and its
+characterized fmax — the concrete set is intentionally kept out of this
+normative section (it churns as implementations are added) and lives in the
+generated `doc/generated/pipelined_ops.md` instead.
+
+**The call's depth is authoritative; the tap is a consistency check.** A
+`<pipelined, N>` call produces a value with latency `N` — it must be bound
+into a `pipe_reg<T, N>`-typed target via the matching `@N` tap, exactly like
+any other pipe_reg write:
+
+```
+port acc_out: out pipe_reg<FP32, 6>;
+seq on clk rising
+  acc_out@6 <= fma<pipelined, 6>(a, b, acc_in);
+end seq
+```
+
+The `6` in `<pipelined, 6>` is the single source of truth for the operator's
+latency — it is *not* inferred from the `pipe_reg` declaration or the `@N`
+tap. If the tap and the call disagree, it's an error naming both numbers:
+
+```
+acc_out@6 <= fma<pipelined, 4>(a, b, c);
+// error: latency-4 result bound at @6
+```
+
+An untapped (bare) target is likewise an error — a latency-`N` (`N > 0`)
+result has no cycle to land on without an explicit `@N`. And a `<pipelined,
+N>` call is rejected outright in a `comb` block or a `let` binding (both are
+always combinational, latency-0 contexts):
+
+```
+let x: FP32 = fma<pipelined, 6>(a, b, c);
+// error: `fma<pipelined, 6>(...)` produces a latency-6 result and cannot be
+//        used in a `let` binding (always combinational); bind it in a `seq`
+//        block via `target@6 <= fma<pipelined, 6>(...)`
+```
+
+**No auto-alignment (v1).** Combining operands that materialize at different
+cycle offsets in one expression — including a `<pipelined, N>` call's own
+arguments — is a compile error naming both cycles; there is no automatic
+delay-line insertion to align them. If you need aligned operands, tap each
+one explicitly at the same `@N` first:
+
+```
+let bad: FP32 = fadd(acc@6, x);   // error: operands at cycle 6 and cycle 0
+```
+
+**The delay-line trap.** `pipe_reg<T, N>` is a delay line — N flops shifting
+a *value* — not an operator retimer. Writing a bare comb call into a pipe_reg
+tap still compiles and is still correct (the flops just delay the comb
+result), but it does **not** distribute the operator's logic across the
+stages, so it does not get the pipelined variant's timing benefit. This is
+almost always a mistake, so the compiler warns (not errors — the form stays
+legal, matching existing `pipe_reg` delay-line semantics):
+
+```
+acc_out@6 <= fma(a, b, c);
+// warning: comb `fma` delayed 6 cycles via `@6`; did you mean
+//          `fma<pipelined, 6>(...)`?
+```
+
+**Codegen status.** As of this writing, `arch build` / `arch sim` accept
+`<pipelined, N>` through `arch check` (parsing, registry resolution, and all
+latency-typing rules above are fully enforced) but do not yet bind the call
+to a retimed staged datapath — `arch build`/`arch sim` refuse with an
+explicit "not yet implemented" error rather than silently falling back to an
+un-retimed comb cone. Landing the staged RTL and its sequential-equivalence
+proof is tracked separately; check `arch ops` / the compiler's release notes
+for current status.
+
 **4. Modules**
 
 A module is the fundamental unit of design in Arch. Every module follows the same four-section schema --- params, ports, body, optional verification. This regularity is intentional: an AI encountering any Arch construct can immediately orient itself using the same mental model.

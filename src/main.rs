@@ -510,6 +510,40 @@ impl MultiSource {
     }
 }
 
+/// Codegen-side backstop for `arch build` / `arch sim` (not `arch check`,
+/// which fully supports `<pipelined, N>` through typecheck): refuses to
+/// proceed into SV or sim codegen if the program still contains any
+/// `fma<pipelined, N>(...)`-style call. Binding these to a real retimed
+/// staged datapath is proposal phase 3
+/// (doc/proposal_pipelined_operators.md) — `builtin:fma_f32_s6` today is a
+/// single combinational cone, not staged RTL; see
+/// `pipelined_ops` module docs for the investigation that established
+/// this. Surfacing a clear, explicit error here is safer than silently
+/// falling back to comb + delay-line, which would compute correct values
+/// but misrepresent an un-retimed cone as the requested pipelined
+/// operator — and would risk the two backends (SV, sim) diverging if
+/// either one's fallback ever drifted from the other's.
+fn reject_pipelined_calls_before_codegen(
+    ast: &arch::ast::SourceFile,
+    ms: &MultiSource,
+) -> miette::Result<()> {
+    let found = arch::pipelined_ops::find_pipelined_calls(ast);
+    if let Some(f) = found.into_iter().next() {
+        let err = CompileError::general(
+            &format!(
+                "`{}<pipelined, {}>(...)` typechecks (`arch check` accepts it) but codegen for \
+                 pipelined operators is not yet implemented — the retimed staged datapath and its \
+                 equivalence proof are proposal phase 3 (doc/proposal_pipelined_operators.md), not yet \
+                 landed. Tracked in the phase-2 PR; not supported by `arch build` / `arch sim` yet.",
+                f.operator, f.stages
+            ),
+            f.span,
+        );
+        return Err(ms.report_error(err));
+    }
+    Ok(())
+}
+
 fn thread_map_sources_from_multi(ms: &MultiSource) -> Vec<arch::thread_map::ThreadMapSource> {
     ms.segments
         .iter()
@@ -1149,6 +1183,7 @@ fn main() -> miette::Result<()> {
                     auto_thread_asserts,
                     thread_map_store.clone(),
                 )?;
+                reject_pipelined_calls_before_codegen(&ast, &ms)?;
                 let thread_map_sources = thread_map_sources_from_multi(&ms);
 
                 let comments = lexer::extract_comments(&ms.combined);
@@ -1860,6 +1895,7 @@ fn run_sim_opts(
             param_overrides,
         )?
     };
+    reject_pipelined_calls_before_codegen(&ast, &ms)?;
 
     // 2. Set up output directory
     let build_dir = outdir
@@ -3681,7 +3717,7 @@ fn run_check_multi_opts_with_thread_map_and_params(
     }
 
     // Lower `pipe_reg<T, N>` ports with N > 1 into an N-stage cascade.
-    let ast = elaborate::lower_pipe_reg_ports(ast).map_err(|errs| {
+    let (ast, pipe_reg_warnings) = elaborate::lower_pipe_reg_ports(ast).map_err(|errs| {
         let err = errs.into_iter().next().unwrap();
         ms.report_error(err)
     })?;
@@ -3701,10 +3737,11 @@ fn run_check_multi_opts_with_thread_map_and_params(
 
     // Type check
     let checker = TypeChecker::new(&symbols, &ast);
-    let (warnings, overload_map) = checker.check().map_err(|errs| {
+    let (mut warnings, overload_map) = checker.check().map_err(|errs| {
         let err = errs.into_iter().next().unwrap();
         ms.report_error(err)
     })?;
+    warnings.extend(pipe_reg_warnings);
 
     for w in &warnings {
         let (filename, _, local_offset) = ms.locate(w.span.start);

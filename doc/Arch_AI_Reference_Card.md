@@ -261,6 +261,18 @@ x.to_uint<N>()   // float→UInt<N>: toward-zero, per-N saturating, negatives/Na
 | `riscv` (default) | `0x7FC00000` / `0x7FC0` | type max |
 | `cuda` | `0x7FFFFFFF` / `0x7FFF` | `0` |
 
+**Pipelined operators (`<pipelined, N>`)** — `fma(a,b,c)` is combinational (latency 0). For a registry-backed staged implementation, declare the depth in the call: `fma<pipelined, N>(...)`. `N` is a compile-time integer literal, looked up against `(operator, profile, N)` in the compiler's builtin registry (`arch ops` lists what's registered). The call's depth is authoritative — bind the result into a matching `pipe_reg<T, N>` tap; a mismatch, an untapped target, or comb/`let` use is a compile error. No auto-alignment: combining a tapped and an untapped operand in one expression errors, naming both cycles.
+
+```
+port acc_out: out pipe_reg<FP32, 6>;
+seq on clk rising
+  acc_out@6 <= fma<pipelined, 6>(a, b, acc_in);  // 6 = declared depth, checked against @6
+end seq
+let s: FP32 = acc_out@6;                          // consumer reads at latency 6
+```
+
+`acc@6 <= fma(a,b,c)` (comb `fma` delayed via a pipe_reg tap, not `<pipelined, 6>`) still compiles — same values, just not retimed — but warns: *"did you mean `fma<pipelined, 6>(...)`?"*. Codegen for `<pipelined, N>` (binding to real staged RTL) is not yet implemented as of this writing — `arch check` accepts the surface, `arch build`/`arch sim` refuse explicitly rather than silently emitting an un-retimed comb cone.
+
 **Vec methods** (parallel-reduction; fully unrolled; no runtime iteration):
 
 ```
