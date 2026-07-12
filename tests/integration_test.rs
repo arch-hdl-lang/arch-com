@@ -4686,6 +4686,464 @@ int main() {
     );
 }
 
+/// Regression test for #590: a `pipeline` wait-stage with two or more
+/// sequential waits must run the inter-wait assignment even when the
+/// idle-state (state 0) fast path is taken — i.e. the first wait's
+/// condition is already true the cycle the stage accepts new data.
+/// Before the fix, `flag <= true;` (the assignment between `wait until go`
+/// and `do ... until ready`) was emitted only on the state-1 -> state-2
+/// edge, so the idle-state-0 -> state-2 fast-path edge silently dropped it.
+#[test]
+fn test_pipeline_wait_stage_fastpath_sets_inter_wait_assign_in_sim() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("WaitPipe.arch");
+    let tb_path = td.path().join("tb_wait_pipe_fastpath.cpp");
+    std::fs::write(
+        &arch_path,
+        r#"
+pipeline WaitPipe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port ready: in Bool;
+  port out_flag: out Bool;
+  port out_done: out Bool;
+  port out_cnt: out UInt<3>;
+
+  stage Work
+    reg flag: Bool reset rst => false;
+    reg done: Bool reset rst => false;
+    reg cnt: UInt<3> reset rst => 0;
+
+    seq on clk rising
+      wait until go;
+      flag <= true;
+      do
+        cnt <= (cnt + 1).trunc<3>();
+      until ready;
+      done <= true;
+    end seq
+
+    comb
+      out_flag = flag;
+      out_done = done;
+      out_cnt = cnt;
+    end comb
+  end stage Work
+end pipeline WaitPipe
+"#,
+    )
+    .expect("write arch");
+    std::fs::write(
+        &tb_path,
+        r#"
+#include "VWaitPipe.h"
+#include <cstdio>
+
+static void tick(VWaitPipe& dut) {
+  dut.clk = 0;
+  dut.eval();
+  dut.clk = 1;
+  dut.eval();
+  dut.clk = 0;
+  dut.eval();
+}
+
+int main() {
+  VWaitPipe dut;
+  dut.rst = 1;
+  dut.go = 0;
+  dut.ready = 0;
+  tick(dut);
+
+  dut.rst = 0;
+  // Drive go and ready HIGH before the stage ever dispatches: state 0's
+  // fast path must fire on the very first non-reset cycle.
+  dut.go = 1;
+  dut.ready = 1;
+  tick(dut);        // idle fast-path: wait-until is already satisfied
+  if (!dut.out_flag) {
+    std::printf("FAIL fast-path did not set flag flag=%u done=%u cnt=%u\n",
+                (unsigned)dut.out_flag, (unsigned)dut.out_done,
+                (unsigned)dut.out_cnt);
+    return 1;
+  }
+
+  tick(dut);        // do-until also already satisfied -> trailing assign runs
+  if (!dut.out_flag || !dut.out_done || dut.out_cnt != 1) {
+    std::printf("FAIL fast-path completion flag=%u done=%u cnt=%u\n",
+                (unsigned)dut.out_flag, (unsigned)dut.out_done,
+                (unsigned)dut.out_cnt);
+    return 1;
+  }
+
+  std::printf("PASS pipeline wait fast-path sim\n");
+  return 0;
+}
+"#,
+    )
+    .expect("write tb");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("sim")
+        .arg(&arch_path)
+        .arg("--tb")
+        .arg(&tb_path)
+        .arg("--outdir")
+        .arg(td.path().join("build"))
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && stdout.contains("PASS pipeline wait fast-path sim"),
+        "pipeline wait-stage fast-path sim should compile and run\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+/// #590 follow-up: the fast path must fire on *every* back-to-back
+/// transaction, not just the first dispatch after reset. Uses a free-running
+/// hit counter (instead of a sticky bool) as the inter-wait assignment so
+/// repeated firings are individually observable.
+#[test]
+fn test_pipeline_wait_stage_fastpath_back_to_back_in_sim() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("WaitPipeBackToBack.arch");
+    let tb_path = td.path().join("tb_wait_pipe_back_to_back.cpp");
+    std::fs::write(
+        &arch_path,
+        r#"
+pipeline WaitPipeBackToBack
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port ready: in Bool;
+  port out_hits: out UInt<4>;
+  port out_cnt: out UInt<3>;
+
+  stage Work
+    reg hits: UInt<4> reset rst => 0;
+    reg cnt: UInt<3> reset rst => 0;
+
+    seq on clk rising
+      wait until go;
+      hits <= (hits + 1).trunc<4>();
+      do
+        cnt <= (cnt + 1).trunc<3>();
+      until ready;
+    end seq
+
+    comb
+      out_hits = hits;
+      out_cnt = cnt;
+    end comb
+  end stage Work
+end pipeline WaitPipeBackToBack
+"#,
+    )
+    .expect("write arch");
+    std::fs::write(
+        &tb_path,
+        r#"
+#include "VWaitPipeBackToBack.h"
+#include <cstdio>
+
+static void tick(VWaitPipeBackToBack& dut) {
+  dut.clk = 0;
+  dut.eval();
+  dut.clk = 1;
+  dut.eval();
+  dut.clk = 0;
+  dut.eval();
+}
+
+int main() {
+  VWaitPipeBackToBack dut;
+  dut.rst = 1;
+  dut.go = 0;
+  dut.ready = 0;
+  tick(dut);
+
+  dut.rst = 0;
+  // Hold go and ready high across every transaction: each 2-cycle
+  // (idle-fast-path, do-until) round trip should bump `hits` exactly once.
+  dut.go = 1;
+  dut.ready = 1;
+  for (unsigned txn = 1; txn <= 4; ++txn) {
+    tick(dut);  // idle fast-path: hits += 1
+    if (dut.out_hits != txn) {
+      std::printf("FAIL txn %u: expected hits=%u got hits=%u cnt=%u\n", txn,
+                  txn, (unsigned)dut.out_hits, (unsigned)dut.out_cnt);
+      return 1;
+    }
+    tick(dut);  // do-until: ready already true, returns to idle
+  }
+
+  std::printf("PASS pipeline wait fast-path back-to-back sim\n");
+  return 0;
+}
+"#,
+    )
+    .expect("write tb");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("sim")
+        .arg(&arch_path)
+        .arg("--tb")
+        .arg(&tb_path)
+        .arg("--outdir")
+        .arg(td.path().join("build"))
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && stdout.contains("PASS pipeline wait fast-path back-to-back sim"),
+        "pipeline wait-stage back-to-back fast-path sim should compile and run\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+/// #590 SV/Verilator cross-check for the same fast-path repro exercised by
+/// `test_pipeline_wait_stage_fastpath_sets_inter_wait_assign_in_sim` above —
+/// the two backends (arch sim's native C++ model, and `arch build`'s SV run
+/// through real Verilator) must agree.
+#[test]
+fn test_pipeline_wait_stage_fastpath_verilator_behavior() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping pipeline wait-stage fast-path Verilator check: verilator not found");
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("WaitPipe.arch");
+    let tb_path = td.path().join("tb_wait_pipe_fastpath_verilator.cpp");
+    let sv_out = td.path().join("WaitPipe.sv");
+    let obj_dir = td.path().join("obj_dir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    std::fs::write(
+        &arch_path,
+        r#"
+pipeline WaitPipe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port ready: in Bool;
+  port out_flag: out Bool;
+  port out_done: out Bool;
+  port out_cnt: out UInt<3>;
+
+  stage Work
+    reg flag: Bool reset rst => false;
+    reg done: Bool reset rst => false;
+    reg cnt: UInt<3> reset rst => 0;
+
+    seq on clk rising
+      wait until go;
+      flag <= true;
+      do
+        cnt <= (cnt + 1).trunc<3>();
+      until ready;
+      done <= true;
+    end seq
+
+    comb
+      out_flag = flag;
+      out_done = done;
+      out_cnt = cnt;
+    end comb
+  end stage Work
+end pipeline WaitPipe
+"#,
+    )
+    .expect("write arch");
+
+    std::fs::write(
+        &tb_path,
+        r#"
+#include "VWaitPipe.h"
+#include <cstdio>
+
+static void tick(VWaitPipe& dut) {
+  dut.clk = 0;
+  dut.eval();
+  dut.clk = 1;
+  dut.eval();
+  dut.clk = 0;
+  dut.eval();
+}
+
+int main() {
+  VWaitPipe dut;
+  dut.rst = 1;
+  dut.go = 0;
+  dut.ready = 0;
+  tick(dut);
+
+  dut.rst = 0;
+  dut.go = 1;
+  dut.ready = 1;
+  tick(dut);        // idle fast-path: wait-until already satisfied
+  if (!dut.out_flag) {
+    std::printf("FAIL fast-path did not set flag flag=%u done=%u cnt=%u\n",
+                (unsigned)dut.out_flag, (unsigned)dut.out_done,
+                (unsigned)dut.out_cnt);
+    return 1;
+  }
+
+  tick(dut);        // do-until also already satisfied -> trailing assign runs
+  if (!dut.out_flag || !dut.out_done || dut.out_cnt != 1) {
+    std::printf("FAIL fast-path completion flag=%u done=%u cnt=%u\n",
+                (unsigned)dut.out_flag, (unsigned)dut.out_done,
+                (unsigned)dut.out_cnt);
+    return 1;
+  }
+
+  std::printf("PASS pipeline wait fast-path verilator\n");
+  return 0;
+}
+"#,
+    )
+    .expect("write tb");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg(&arch_path)
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build WaitPipe SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let verilate = std::process::Command::new("verilator")
+        .arg("--cc")
+        .arg("--exe")
+        .arg("--build")
+        .arg("--sv")
+        .arg("--assert")
+        .arg("-Wno-fatal")
+        .arg("-Wno-WIDTH")
+        .arg("-Wno-DECLFILENAME")
+        .arg("--top-module")
+        .arg("WaitPipe")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&sv_out)
+        .arg(&tb_path)
+        .output()
+        .expect("verilate WaitPipe");
+    assert!(
+        verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr)
+    );
+
+    let exe = obj_dir.join("VWaitPipe");
+    let run = std::process::Command::new(&exe)
+        .output()
+        .expect("run Verilator WaitPipe");
+    assert!(
+        run.status.success(),
+        "Verilator sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("PASS pipeline wait fast-path verilator"),
+        "expected PASS marker in Verilator stdout:\n{}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+}
+
+/// #590 Task 3: same-register writes that straddle the first wait boundary
+/// of a wait-stage must warn, since the idle-state-0 fast path can now run
+/// both writes on the same clock edge (last write wins, pre-wait value never
+/// observable).
+#[test]
+fn test_pipeline_wait_stage_collapse_warning() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+pipeline WaitCollapseWarn
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port out_x: out UInt<4>;
+
+  stage Work
+    reg x: UInt<4> reset rst => 0;
+    seq on clk rising
+      x <= 1;
+      wait until go;
+      x <= 2;
+    end seq
+    comb
+      out_x = x;
+    end comb
+  end stage Work
+end pipeline WaitCollapseWarn
+"#;
+    let warnings = warnings_after_full_lower(source);
+    assert!(
+        warnings.iter().any(|w| w.contains("register 'x'")
+            && w.contains("before and after")
+            && w.contains("wait")),
+        "expected a same-cycle collapse warning naming register 'x', got: {warnings:?}"
+    );
+}
+
+/// #590 Task 3 negative case: distinct registers assigned before/after the
+/// wait boundary never collide, so no collapse warning should fire.
+#[test]
+fn test_pipeline_wait_stage_no_collapse_warning_for_distinct_registers() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+pipeline WaitNoCollapseWarn
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port out_a: out UInt<4>;
+  port out_b: out UInt<4>;
+
+  stage Work
+    reg a: UInt<4> reset rst => 0;
+    reg b: UInt<4> reset rst => 0;
+    seq on clk rising
+      a <= 1;
+      wait until go;
+      b <= 2;
+    end seq
+    comb
+      out_a = a;
+      out_b = b;
+    end comb
+  end stage Work
+end pipeline WaitNoCollapseWarn
+"#;
+    let warnings = warnings_after_full_lower(source);
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.contains("before and after") && w.contains("wait")),
+        "expected no same-cycle collapse warning for distinct registers, got: {warnings:?}"
+    );
+}
+
 #[test]
 fn test_clog2_in_type_args() {
     // $clog2(DEPTH) in type width expressions

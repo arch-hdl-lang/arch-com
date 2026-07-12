@@ -896,6 +896,31 @@ impl<'a> SimCodegen<'a> {
                 "{pad2}      _{prefix}_valid_r = {upstream_valid};\n"
             ));
         } else {
+            // Multiple wait groups: fast-path from idle straight into the
+            // second wait group, so it must run that group's pre-assigns
+            // here too (mirrors the state N -> N+1 case below) — otherwise
+            // any inter-wait assignment between the first and second wait
+            // is silently dropped whenever the first wait's condition is
+            // already true on dispatch (see issue #590).
+            let next_group = &groups[1];
+            for stmt in &next_group.pre_assigns {
+                self.emit_pipeline_sim_stmt(
+                    cpp,
+                    stmt,
+                    prefix,
+                    si,
+                    sn,
+                    sp,
+                    srn,
+                    pn,
+                    rn,
+                    ln,
+                    w,
+                    em,
+                    params,
+                    indent + 6,
+                );
+            }
             cpp.push_str(&format!("{pad2}      _{prefix}_fsm_state = 2;\n"));
         }
         cpp.push_str(&format!("{pad2}    }} else {{\n"));

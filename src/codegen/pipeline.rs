@@ -819,6 +819,16 @@ impl<'a> Codegen<'a> {
                 // Propagate valid
                 self.line(&format!("{prefix}_valid_r <= {upstream_valid};"));
             } else {
+                // Multiple wait groups: fast-path from idle straight into the
+                // second wait group, so it must run that group's pre-assigns
+                // here too (mirrors the state N -> N+1 edge below) — otherwise
+                // any inter-wait assignment between the first and second wait
+                // is silently dropped whenever the first wait's condition is
+                // already true on dispatch (see issue #590).
+                let next_g = &groups[1];
+                for a in &next_g.pre_assigns {
+                    self.emit_pipeline_reg_stmt(a, prefix, si, stage_names, stage_regs, port_names);
+                }
                 // Advance to next wait state
                 self.line(&format!("{prefix}_fsm_state <= {bits}'d2;"));
             }

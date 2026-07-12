@@ -7179,6 +7179,107 @@ impl<'a> TypeChecker<'a> {
         // Reject it here; the combinational logic belongs in a wrapping
         // `module` whose result the pipeline then registers.
         self.check_pipeline_no_comb_input_to_output(p);
+
+        // Warn when a wait-stage's idle fast-path can collapse an
+        // inter-wait assignment into the same cycle as the assignment that
+        // follows the next wait boundary (see #590 — fixed by emitting the
+        // next group's pre-assigns on the fast-path edge, but if the wait
+        // condition is already true at dispatch, both writes still land on
+        // the same clock edge and the pre-wait value is never observable).
+        for stage in &p.stages {
+            self.check_pipeline_wait_stage_collapse(stage);
+        }
+    }
+
+    /// See #590. Partition a wait-stage's `seq` statements into the same
+    /// [pre-assigns, wait, pre-assigns, wait, ..., trailing] groups the
+    /// codegen (`emit_pipeline_wait_stage_ff` in `src/codegen/pipeline.rs`)
+    /// and sim codegen (`emit_pipeline_sim_wait_stage` in
+    /// `src/sim_codegen/pipeline.rs`) use, and warn on any register that is
+    /// assigned in both the group before the first wait and the group that
+    /// runs immediately after it — those two groups can now execute back to
+    /// back in a single cycle via the idle fast-path (state 0), in which
+    /// case the second write silently wins.
+    fn check_pipeline_wait_stage_collapse(&mut self, stage: &StageDecl) {
+        let mut seq_stmts: &[Stmt] = &[];
+        for item in &stage.body {
+            if let ModuleBodyItem::RegBlock(rb) = item {
+                seq_stmts = &rb.stmts;
+                break;
+            }
+        }
+        if seq_stmts.is_empty() {
+            return;
+        }
+
+        struct WaitGroup<'a> {
+            pre_assigns: Vec<&'a Stmt>,
+            wait_span: Span,
+        }
+
+        let mut groups: Vec<WaitGroup> = Vec::new();
+        let mut cur_assigns: Vec<&Stmt> = Vec::new();
+        for stmt in seq_stmts {
+            match stmt {
+                Stmt::WaitUntil(_, span) => {
+                    groups.push(WaitGroup {
+                        pre_assigns: std::mem::take(&mut cur_assigns),
+                        wait_span: *span,
+                    });
+                }
+                Stmt::DoUntil { span, .. } => {
+                    groups.push(WaitGroup {
+                        pre_assigns: std::mem::take(&mut cur_assigns),
+                        wait_span: *span,
+                    });
+                }
+                other => cur_assigns.push(other),
+            }
+        }
+        let trailing = std::mem::take(&mut cur_assigns);
+
+        if groups.is_empty() {
+            return;
+        }
+
+        // The two groups that the idle-state fast path can now run back to
+        // back on the same clock edge: group[0].pre_assigns, followed by
+        // either group[1].pre_assigns (2+ waits) or `trailing` (exactly 1
+        // wait — see the `if (cond) { trailing }` fast-path arm in codegen).
+        let second: &[&Stmt] = if groups.len() > 1 {
+            &groups[1].pre_assigns
+        } else {
+            &trailing
+        };
+        if second.is_empty() {
+            return;
+        }
+
+        let mut first_targets: HashSet<String> = HashSet::new();
+        for s in &groups[0].pre_assigns {
+            Self::collect_stmt_targets(std::slice::from_ref(*s), &mut first_targets);
+        }
+        if first_targets.is_empty() {
+            return;
+        }
+
+        let mut second_targets: HashSet<String> = HashSet::new();
+        for s in second {
+            Self::collect_stmt_targets(std::slice::from_ref(*s), &mut second_targets);
+        }
+
+        let wait_span = groups[0].wait_span;
+        let mut names: Vec<&String> = first_targets.intersection(&second_targets).collect();
+        names.sort();
+        for name in names {
+            self.warnings.push(CompileWarning {
+                message: format!(
+                    "register '{name}' is assigned both before and after a `wait` in stage `{}`; when the wait condition is already true at dispatch both assignments execute in the same cycle and the last write wins — the pre-wait value is never observable on the fast path",
+                    stage.name.name
+                ),
+                span: wait_span,
+            });
+        }
     }
 
     /// Reject any `pipeline` output port that combinationally depends on an
