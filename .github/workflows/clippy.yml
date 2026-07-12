@@ -1,0 +1,46 @@
+name: clippy
+
+# Errors-only clippy gate: fails only on deny-by-default lints (e.g.
+# `clippy::never_loop`), which are always real bugs. Does NOT run with
+# `-D warnings` — as of this workflow's introduction the tree carries ~200
+# pre-existing warn-level warnings (185 in the lib, 6 in the `arch` bin, 11 in
+# tests/integration_test.rs; see the PR description that introduced this
+# workflow for the full count). Promoting to `-D warnings` is tracked as a
+# follow-up once that backlog is cleaned up incrementally — see the PR body
+# for the plan. Until then this job only guards against new deny-level
+# regressions, which `cargo clippy` catches without any extra flags.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: clippy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clippy:
+    name: cargo clippy (errors only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-clippy-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-clippy-${{ runner.os }}-
+
+      - name: cargo clippy --release --all-targets
+        run: cargo clippy --release --all-targets

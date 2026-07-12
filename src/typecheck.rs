@@ -3819,10 +3819,10 @@ impl<'a> TypeChecker<'a> {
                     local_types,
                 );
                 // Return type from first non-wildcard arm
-                for arm in arms {
-                    return self.resolve_expr_type(&arm.value, module_name, local_types);
+                match arms.first() {
+                    Some(arm) => self.resolve_expr_type(&arm.value, module_name, local_types),
+                    None => Ty::Error,
                 }
-                Ty::Error
             }
             ExprKind::Concat(parts) => {
                 // Total width = sum of each part's width (Bool=1, UInt<N>=N, else 1)
