@@ -33,14 +33,23 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
     // had inlined the aliased types by hand.
     let mut ast = crate::type_alias::resolve_type_aliases(ast)?;
 
-    // Normalize bare float literals sitting in BF16 declaration slots
-    // (`reg`/`port reg` reset & init values, typed `let` initializers) into an
+    // Normalize bare float literals sitting in the BF16 `reset` slot into an
     // explicit `.to_bf16()` cast, so they are rounded to bf16 at lowering
     // instead of being emitted as a 32-bit FP32 constant and truncated into the
-    // 16-bit reg/wire (arch#620). Runs before typecheck so the wrapped form is
-    // what gets type-checked — and the cast form already lowers correctly in
-    // both the SV and sim backends.
+    // 16-bit reg/wire (arch#620/#623). Runs before typecheck so the wrapped
+    // form is what gets type-checked — and the cast form already lowers
+    // correctly in both the SV and sim backends.
     coerce_bf16_decl_literals(&mut ast);
+
+    // Context-typed float literals (arch#622) + the BF16 `init` constant-fold
+    // fix (arch#624): a bare float literal sitting in any OTHER known-BF16
+    // slot (typed `let`, `reg`/`port reg` `init`, comparisons/arithmetic
+    // against a known-BF16 operand, port defaults) is rounded directly to
+    // bf16 at compile time and rewritten to a self-contained `TypedFloat`
+    // literal. Must run before typecheck (the rewritten literal is what gets
+    // type-checked) and after the reset-only pass above (so the two don't
+    // double-handle the same slot).
+    coerce_typed_float_literals(&mut ast);
 
     // Build enum variant → value map for resolving enum-typed params
     let enum_values: HashMap<String, Vec<(String, u64)>> = ast
@@ -203,27 +212,37 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
     }
 }
 
-/// Pre-typecheck normalization for bare float literals in **BF16 reset and
-/// typed-`let` slots**. A float literal (`1.5`, `3.0e-2`) is typed FP32; when
-/// one is used directly as the reset value of a `BF16` register, or as a
-/// typed-`let` initializer of `BF16` type, the FP32 bit pattern would otherwise
-/// be emitted as a 32-bit constant and silently truncated into the 16-bit
-/// storage (arch#620 — `reset => 1.5` reset the reg to `0x0000`). Rewriting it
-/// to `(lit).to_bf16()` rounds the literal to bf16 at lowering; that cast form
+/// Pre-typecheck normalization for bare float literals in the **BF16 `reg`/
+/// `port reg` reset slot** (arch#620, arch#623). A float literal (`1.5`,
+/// `3.0e-2`) is typed FP32; when one is used directly as the reset value of a
+/// `BF16` register, the FP32 bit pattern would otherwise be emitted as a
+/// 32-bit constant and silently truncated into the 16-bit storage
+/// (`reset => 1.5` reset the reg to `0x0000`). Rewriting it to
+/// `(lit).to_bf16()` rounds the literal to bf16 at lowering; that cast form
 /// already lowers correctly in both the SV (`arch_f32_to_bf16(...)`) and
-/// native-sim backends (both are eval-based for these slots).
+/// native-sim backends (both are eval-based for the reset slot).
 ///
-/// FP32 slots need no rewrite — a float literal already emits at 32-bit width.
-/// Only direct `TypeExpr::BF16` annotations are handled here; param-aliased
-/// float types are left to the type checker (which rejects, never miscompiles).
+/// This is deliberately kept separate from [`coerce_typed_float_literals`]
+/// (arch#622/#624), which handles every *other* known-float-type literal
+/// slot (typed `let`, `reg`/`port reg` `init`, comparisons, port defaults) via
+/// a direct single-rounding-step compile-time fold
+/// (`fp_lit::round_f64_to_narrow`, decimal -> f64 -> bf16). The two paths are
+/// NOT bit-identical in general: this reset path rounds decimal -> f64 -> f32
+/// -> bf16 (the `.to_bf16()` eval chain routes through an FP32 intermediate,
+/// since a bare float literal always emits at FP32 width first), a *double*
+/// rounding step, whereas the new path is a *single* step straight to bf16.
+/// Double rounding through f32 is not provably safe here in the same way the
+/// direct single-rounding path is (see `fp_lit` module docs) — reset was
+/// shipped and verified end-to-end before this literal-typing work landed, so
+/// unifying it onto the new path was reconsidered and rejected for this
+/// change to avoid silently changing already-shipped reset semantics. See the
+/// arch#622/#624 PR description for the residual-asymmetry note and the
+/// maintainer follow-up this leaves open.
 ///
-/// Out of scope (each is either loudly rejected today — not a silent
-/// miscompile — or needs coordinated work in a separate change):
-///  - reg / `port reg` **`init`** values: the native sim applies `init` in the
-///    constructor member-init list, which const-folds literals but cannot fold
-///    a `to_bf16(...)` call → it would fix SV but diverge in sim. Tracked
-///    separately so SV and sim stay consistent.
-///  - comb/seq assignment targets and binary-operator operands.
+/// FP32 slots need no rewrite — a float literal already emits at 32-bit
+/// width. Only direct `TypeExpr::BF16` annotations are handled here;
+/// param-aliased float types are left to the type checker (which rejects,
+/// never miscompiles).
 fn coerce_bf16_decl_literals(ast: &mut SourceFile) {
     for item in &mut ast.items {
         let Item::Module(m) = item else { continue };
@@ -236,14 +255,10 @@ fn coerce_bf16_decl_literals(ast: &mut SourceFile) {
             }
         }
         for bi in &mut m.body {
-            match bi {
-                ModuleBodyItem::RegDecl(r) if matches!(r.ty, TypeExpr::BF16) => {
+            if let ModuleBodyItem::RegDecl(r) = bi {
+                if matches!(r.ty, TypeExpr::BF16) {
                     wrap_reset_bf16(&mut r.reset);
                 }
-                ModuleBodyItem::LetBinding(l) if matches!(l.ty, Some(TypeExpr::BF16)) => {
-                    wrap_float_lit_as_bf16(&mut l.value);
-                }
-                _ => {}
             }
         }
     }
@@ -272,6 +287,224 @@ fn wrap_float_lit_as_bf16(e: &mut Expr) {
             },
             Vec::new(),
         );
+    }
+}
+
+/// Pre-typecheck normalization implementing arch#622 (context-typed float
+/// literals) and arch#624 (BF16 `init` constant folding): a bare float
+/// literal sitting in a slot whose expected type is a **known BF16-typed**
+/// context — a typed `let` initializer, a `reg`/`port reg` `init` value, a
+/// `PortDecl` default, or one side of a comparison/arithmetic `Binary` op
+/// against an operand of known BF16 type — is rewritten in place to
+/// `LitKind::TypedFloat(FloatLitFmt::Bf16, bits)`, where `bits` is the
+/// literal's decimal value rounded *directly* (single step, RNE) to bf16 via
+/// [`crate::fp_lit::f64_to_bf16_bits`]. Downstream (typecheck, both codegen
+/// backends) treats a `TypedFloat` literal as already being its target type,
+/// emitting the exact rounded bit pattern with no runtime conversion call —
+/// which is what makes this safe to use for `init` (arch#624): the native
+/// sim's C++ constructor member-init list needs a foldable constant, and a
+/// `TypedFloat` literal already is one (unlike `(lit).to_bf16()`, which
+/// requires an eval call the constructor list can't perform).
+///
+/// The `reset` slot is deliberately excluded — see
+/// [`coerce_bf16_decl_literals`]'s doc comment for why.
+///
+/// FP32 is not a target of this pass: a standalone/ambiguous float literal
+/// already defaults to FP32 (`typecheck`'s `LitKind::Float => Ty::FP32`), so
+/// an FP32-typed slot with a bare float literal already type-checks and
+/// already emits the correctly-rounded 32-bit constant — there is nothing to
+/// fix. (The helper and the `TypedFloat` representation are format-generic so
+/// a future narrower format, e.g. FP16/FP8, is a small follow-up: extend the
+/// ident-type map + slot list below.)
+///
+/// Integer literals are never rewritten by this pass (only
+/// `LitKind::Float`), so `let h: BF16 = 1;` / `reg r: BF16 init 1;` remain
+/// exactly as type-mismatched as before — `typecheck` rejects them (a
+/// `TypedFloat`-typed slot expects `Ty::BF16`; an integer literal's inferred
+/// type is `Ty::UInt(_)`, a mismatch).
+fn coerce_typed_float_literals(ast: &mut SourceFile) {
+    for item in &mut ast.items {
+        let Item::Module(m) = item else { continue };
+
+        // Local (module-scope only — good enough for direct comparisons
+        // against a same-module signal, which is the common case the #622
+        // issue calls out) ident -> declared type map, built from ports,
+        // `reg`/`port reg` decls, typed `let` bindings, and `wire` decls.
+        let mut bf16_idents: HashSet<String> = HashSet::new();
+        for p in &m.ports {
+            if matches!(p.ty, TypeExpr::BF16) {
+                bf16_idents.insert(p.name.name.clone());
+            }
+        }
+        for bi in &m.body {
+            match bi {
+                ModuleBodyItem::RegDecl(r) if matches!(r.ty, TypeExpr::BF16) => {
+                    bf16_idents.insert(r.name.name.clone());
+                }
+                ModuleBodyItem::LetBinding(l) if matches!(l.ty, Some(TypeExpr::BF16)) => {
+                    bf16_idents.insert(l.name.name.clone());
+                }
+                ModuleBodyItem::WireDecl(w) if matches!(w.ty, TypeExpr::BF16) => {
+                    bf16_idents.insert(w.name.name.clone());
+                }
+                _ => {}
+            }
+        }
+
+        // `port reg` outputs: `init` and `default` slots.
+        for p in &mut m.ports {
+            if matches!(p.ty, TypeExpr::BF16) {
+                if let Some(ri) = &mut p.reg_info {
+                    if let Some(init) = &mut ri.init {
+                        coerce_bf16_lit(init);
+                    }
+                }
+                if let Some(default) = &mut p.default {
+                    coerce_bf16_lit(default);
+                }
+            }
+        }
+
+        for bi in &mut m.body {
+            match bi {
+                ModuleBodyItem::RegDecl(r) if matches!(r.ty, TypeExpr::BF16) => {
+                    if let Some(init) = &mut r.init {
+                        coerce_bf16_lit(init);
+                    }
+                }
+                ModuleBodyItem::LetBinding(l) if matches!(l.ty, Some(TypeExpr::BF16)) => {
+                    coerce_bf16_lit(&mut l.value);
+                }
+                ModuleBodyItem::CombBlock(cb) => {
+                    for s in &mut cb.stmts {
+                        coerce_bf16_lits_in_stmt(s, &bf16_idents);
+                    }
+                }
+                ModuleBodyItem::RegBlock(rb) => {
+                    for s in &mut rb.stmts {
+                        coerce_bf16_lits_in_stmt(s, &bf16_idents);
+                    }
+                }
+                ModuleBodyItem::LatchBlock(lb) => {
+                    for s in &mut lb.stmts {
+                        coerce_bf16_lits_in_stmt(s, &bf16_idents);
+                    }
+                }
+                ModuleBodyItem::Assert(a) => {
+                    coerce_bf16_lits_in_expr(&mut a.expr, &bf16_idents);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// If `e` is a bare float literal, replace it in place with the compile-time
+/// bf16-rounded `LitKind::TypedFloat`. Non-literal expressions are untouched.
+fn coerce_bf16_lit(e: &mut Expr) {
+    if let ExprKind::Literal(LitKind::Float(bits)) = &e.kind {
+        let v = f64::from_bits(*bits);
+        let rounded = crate::fp_lit::f64_to_bf16_bits(v) as u64;
+        e.kind = ExprKind::Literal(LitKind::TypedFloat(FloatLitFmt::Bf16, rounded));
+    }
+}
+
+/// Walk a `Binary` expression tree, rewriting a bare float-literal operand to
+/// bf16 whenever the *other* operand is a `+`/`-`/`*`/comparison sibling of a
+/// known-BF16 identifier (from `bf16_idents`). Recurses into the common
+/// expression-tree shapes that can appear inside a statement (nested binary
+/// ops, unary, ternary, method-call args, function-call args, index/field
+/// access, concat/repeat) so a literal buried a few levels deep (e.g.
+/// `(a_bf16 + 1.0) > 2.0`) is still found. Does not cross a `Cast`/
+/// `MethodCall` boundary that already fixes a different float type (e.g.
+/// inside `x.to_fp32()`'s argument) — those already have explicit typing.
+fn coerce_bf16_lits_in_expr(e: &mut Expr, bf16_idents: &HashSet<String>) {
+    match &mut e.kind {
+        ExprKind::Binary(_, lhs, rhs) => {
+            let lhs_is_bf16 = ident_is_bf16(lhs, bf16_idents);
+            let rhs_is_bf16 = ident_is_bf16(rhs, bf16_idents);
+            if rhs_is_bf16 {
+                coerce_bf16_lit(lhs);
+            }
+            if lhs_is_bf16 {
+                coerce_bf16_lit(rhs);
+            }
+            coerce_bf16_lits_in_expr(lhs, bf16_idents);
+            coerce_bf16_lits_in_expr(rhs, bf16_idents);
+        }
+        ExprKind::Unary(_, inner) | ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => {
+            coerce_bf16_lits_in_expr(inner, bf16_idents);
+        }
+        ExprKind::Ternary(cond, t, f) => {
+            coerce_bf16_lits_in_expr(cond, bf16_idents);
+            coerce_bf16_lits_in_expr(t, bf16_idents);
+            coerce_bf16_lits_in_expr(f, bf16_idents);
+        }
+        ExprKind::FieldAccess(base, _) => coerce_bf16_lits_in_expr(base, bf16_idents),
+        ExprKind::MethodCall(base, _, args) => {
+            coerce_bf16_lits_in_expr(base, bf16_idents);
+            for a in args {
+                coerce_bf16_lits_in_expr(a, bf16_idents);
+            }
+        }
+        ExprKind::FunctionCall(_, args) => {
+            for a in args {
+                coerce_bf16_lits_in_expr(a, bf16_idents);
+            }
+        }
+        ExprKind::Index(base, idx) => {
+            coerce_bf16_lits_in_expr(base, bf16_idents);
+            coerce_bf16_lits_in_expr(idx, bf16_idents);
+        }
+        ExprKind::Concat(items) => {
+            for it in items {
+                coerce_bf16_lits_in_expr(it, bf16_idents);
+            }
+        }
+        ExprKind::Repeat(n, inner) => {
+            coerce_bf16_lits_in_expr(n, bf16_idents);
+            coerce_bf16_lits_in_expr(inner, bf16_idents);
+        }
+        ExprKind::Inside(base, _) => coerce_bf16_lits_in_expr(base, bf16_idents),
+        _ => {}
+    }
+}
+
+/// True if `e` is a bare identifier declared with BF16 type in the current
+/// module scope.
+fn ident_is_bf16(e: &Expr, bf16_idents: &HashSet<String>) -> bool {
+    matches!(&e.kind, ExprKind::Ident(name) if bf16_idents.contains(name))
+}
+
+/// Walk a statement tree (comb/seq/latch bodies), applying
+/// [`coerce_bf16_lits_in_expr`] to every expression reachable from it
+/// (assignment RHS, condition exprs, nested if/for/match bodies).
+fn coerce_bf16_lits_in_stmt(s: &mut Stmt, bf16_idents: &HashSet<String>) {
+    match s {
+        Stmt::Assign(a) => coerce_bf16_lits_in_expr(&mut a.value, bf16_idents),
+        Stmt::IfElse(ie) => {
+            coerce_bf16_lits_in_expr(&mut ie.cond, bf16_idents);
+            for s in &mut ie.then_stmts {
+                coerce_bf16_lits_in_stmt(s, bf16_idents);
+            }
+            for s in &mut ie.else_stmts {
+                coerce_bf16_lits_in_stmt(s, bf16_idents);
+            }
+        }
+        Stmt::For(fl) => {
+            for s in &mut fl.body {
+                coerce_bf16_lits_in_stmt(s, bf16_idents);
+            }
+        }
+        Stmt::Match(me) => {
+            coerce_bf16_lits_in_expr(&mut me.scrutinee, bf16_idents);
+            for arm in &mut me.arms {
+                for s in &mut arm.body {
+                    coerce_bf16_lits_in_stmt(s, bf16_idents);
+                }
+            }
+        }
+        _ => {}
     }
 }
 

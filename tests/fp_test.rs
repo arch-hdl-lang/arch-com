@@ -779,3 +779,167 @@ fn fp_bf16_literal_coerced_in_reset_and_let() {
         "BF16 reg must NOT receive a raw 32-bit constant (the #620 truncation bug):\n{sv}"
     );
 }
+
+// ── arch#622 / arch#624: context-typed float literals ──────────────────────
+
+/// `arch build`: a bare BF16-context float literal in `let`/`init`/comparison
+/// slots emits the exact rounded width-correct constant directly — no
+/// `arch_f32_to_bf16(...)` runtime helper call, no 32-bit constant anywhere
+/// near the 16-bit storage (the arch#620/#624 truncation shape).
+#[test]
+fn fp_bf16_context_typed_literals_sv_shape() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src_path = std::path::Path::new("tests/fp_v1/Bf16LitCtx.arch");
+    let sv_path = td.path().join("Bf16LitCtx.sv");
+    let out = arch()
+        .arg("build")
+        .arg(src_path)
+        .arg("--o")
+        .arg(&sv_path)
+        .output()
+        .expect("run arch build");
+    assert!(
+        out.status.success(),
+        "arch build should succeed\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let sv = std::fs::read_to_string(&sv_path).expect("read sv");
+
+    // init: bf16(1.5) = 0x3FC0, folded straight into the declaration
+    // initializer (fixes the arch#624 "sim constructor can't fold to_bf16"
+    // gap — this is the SV half of that fix).
+    assert!(
+        sv.contains("logic [15:0] r = 16'h3FC0;"),
+        "BF16 `init` must emit the exact 16-bit constant, got:\n{sv}"
+    );
+    // let: bf16(pi) = 0x4049, bf16(0.1) = 0x3DCD (RNE, not truncation of
+    // 0x3DCC).
+    assert!(
+        sv.contains("assign k = 16'h4049;"),
+        "BF16 `let` must emit the exact 16-bit constant, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign k2 = 16'h3DCD;"),
+        "BF16 `let` of 0.1 must round (RNE) to 0x3DCD, not truncate to 0x3DCC, got:\n{sv}"
+    );
+    // comparison: `a > 0.5` must call arch_bf16_gt with a 16-bit 0.5
+    // constant (0x3F00), never the 32-bit FP32 pattern (0x3F000000), which
+    // would be a width mismatch feeding a `uint16_t`-shaped SV helper arg.
+    assert!(
+        sv.contains("arch_bf16_gt(a, 16'h3F00)"),
+        "BF16 comparison literal must be the 16-bit bf16 pattern, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("32'h3F000000") && !sv.contains("32'h3FC00000") && !sv.contains("32'h4049"),
+        "no 32-bit FP32 constant should appear in this BF16-only design, got:\n{sv}"
+    );
+}
+
+/// `arch sim` end-to-end: the context-typed BF16 literals read back the
+/// correctly-rounded bit patterns, and the comparison against a BF16 port
+/// behaves correctly — sim and SV (previous test) agree on the same
+/// constants.
+#[test]
+fn fp_bf16_context_typed_literals_sim() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = arch()
+        .arg("sim")
+        .arg("tests/fp_v1/Bf16LitCtx.arch")
+        .arg("--tb")
+        .arg("tests/fp_v1/tb_bf16_lit_ctx.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("5 pass / 0 fail"),
+        "BF16 context-typed literal sim should pass; got:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+/// Standalone / ambiguous float literals are unaffected: they still default
+/// to FP32 exactly as before context-typing landed.
+#[test]
+fn fp_standalone_literal_still_defaults_fp32() {
+    let src = r#"module StandaloneLit
+  port o: out FP32;
+  let k: FP32 = 1.5;
+  comb o = k; end comb
+end module StandaloneLit
+"#;
+    let td = tempfile::tempdir().expect("tempdir");
+    let path = td.path().join("StandaloneLit.arch");
+    std::fs::write(&path, src).unwrap();
+    let out = arch()
+        .arg("build")
+        .arg(&path)
+        .output()
+        .expect("run arch build");
+    assert!(out.status.success(), "arch build should succeed");
+    let sv = std::fs::read_to_string(td.path().join("StandaloneLit.sv")).expect("read sv");
+    assert!(
+        sv.contains("32'h3FC00000"),
+        "standalone FP32 literal should still emit the 32-bit FP32 pattern, got:\n{sv}"
+    );
+}
+
+/// An integer literal in a known-BF16 `let` slot is rejected (never silently
+/// accepted-and-miscompiled), consistent with the existing `reset` rule.
+#[test]
+fn fp_bf16_let_integer_literal_rejected() {
+    let src = r#"module BadLetInt
+  port o: out BF16;
+  let k: BF16 = 1;
+  comb o = k; end comb
+end module BadLetInt
+"#;
+    let td = tempfile::tempdir().expect("tempdir");
+    let path = td.path().join("BadLetInt.arch");
+    std::fs::write(&path, src).unwrap();
+    let out = arch()
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run arch check");
+    assert!(
+        !out.status.success(),
+        "integer literal in a BF16 `let` slot must be rejected"
+    );
+}
+
+/// An integer literal in a BF16 `reg init` slot is rejected with a clear
+/// message pointing at the float spelling (arch#624 acceptance criterion:
+/// "decide reject-vs-accept consistently with the reset rule" — reject).
+#[test]
+fn fp_bf16_init_integer_literal_rejected() {
+    let src = r#"module BadInitInt
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync>;
+  port o: out BF16;
+  reg r: BF16 init 1;
+  seq on clk rising
+    r <= r;
+  end seq
+  comb o = r; end comb
+end module BadInitInt
+"#;
+    let td = tempfile::tempdir().expect("tempdir");
+    let path = td.path().join("BadInitInt.arch");
+    std::fs::write(&path, src).unwrap();
+    let out = arch()
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run arch check");
+    assert!(
+        !out.status.success(),
+        "integer literal in a BF16 `reg init` slot must be rejected"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("float literal") && stderr.contains("integer literal"),
+        "error should point at the float-literal-required rule; got:\n{stderr}"
+    );
+}

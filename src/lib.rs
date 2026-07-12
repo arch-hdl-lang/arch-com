@@ -7,6 +7,7 @@ pub mod diagnostics;
 pub mod elaborate;
 pub mod formal;
 pub mod fp_ir;
+pub mod fp_lit;
 pub mod fp_ops;
 pub mod fp_smt_proof;
 pub mod graph;

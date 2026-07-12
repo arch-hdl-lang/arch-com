@@ -2940,6 +2940,17 @@ fn lit_to_term(
                 signed: false,
             })
         }
+        // A literal already rounded to its context float type at compile
+        // time (arch#622/#624). Same "unreachable in practice" caveat as
+        // `Float` above; stays total for width purposes.
+        LitKind::TypedFloat(fmt, bits) => {
+            let width = fmt.width();
+            Ok(SmtTerm {
+                s: bv_lit(*bits, width),
+                width,
+                signed: false,
+            })
+        }
     }
 }
 

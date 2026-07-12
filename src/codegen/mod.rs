@@ -2005,6 +2005,8 @@ impl<'a> Codegen<'a> {
             },
             ExprKind::Ident(name) => self.ident_float_fmt(name),
             ExprKind::Literal(LitKind::Float(_)) => Some("f32"),
+            ExprKind::Literal(LitKind::TypedFloat(FloatLitFmt::Fp32, _)) => Some("f32"),
+            ExprKind::Literal(LitKind::TypedFloat(FloatLitFmt::Bf16, _)) => Some("bf16"),
             ExprKind::MethodCall(_, method, _) => match method.name.as_str() {
                 "to_fp32" => Some("f32"),
                 "to_bf16" => Some("bf16"),
@@ -2148,7 +2150,7 @@ impl<'a> Codegen<'a> {
                     let val = match lit {
                         LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v) => *v as i64,
                         LitKind::Sized(_, v) | LitKind::ParamSized(_, v) => *v as i64,
-                        LitKind::Float(_) => return None, // not an integer constant
+                        LitKind::Float(_) | LitKind::TypedFloat(..) => return None, // not an integer constant
                     };
                     Some(val)
                 }
@@ -2182,6 +2184,7 @@ impl<'a> Codegen<'a> {
                     LitKind::Sized(w, v) => format!("{w}'{v}"),
                     LitKind::ParamSized(name, v) => format!("{name}'{v}"),
                     LitKind::Float(bits) => format!("f{bits}"),
+                    LitKind::TypedFloat(fmt, bits) => format!("tf{fmt:?}{bits}"),
                 },
                 ExprKind::Binary(op, lhs, rhs) => {
                     format!("({} {:?} {})", expr_key(lhs), op, expr_key(rhs))
@@ -2199,7 +2202,7 @@ impl<'a> Codegen<'a> {
                     let val = match lit {
                         LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v) => *v as i64,
                         LitKind::Sized(_, v) | LitKind::ParamSized(_, v) => *v as i64,
-                        LitKind::Float(_) => {
+                        LitKind::Float(_) | LitKind::TypedFloat(..) => {
                             terms.push((sign, None, expr_key(expr)));
                             return;
                         }
@@ -5755,6 +5758,14 @@ impl<'a> Codegen<'a> {
                 LitKind::Float(bits) => {
                     format!("32'h{:08X}", (f64::from_bits(*bits) as f32).to_bits())
                 }
+                // A literal already rounded to its context float type at
+                // compile time (arch#622/#624) — emit the exact width-correct
+                // constant directly, no runtime helper call (avoids the #620/
+                // #624 WIDTHTRUNC truncation bug for narrow formats).
+                LitKind::TypedFloat(fmt, bits) => match fmt {
+                    FloatLitFmt::Fp32 => format!("32'h{bits:08X}"),
+                    FloatLitFmt::Bf16 => format!("16'h{bits:04X}"),
+                },
             },
             ExprKind::Bool(true) => "1'b1".to_string(),
             ExprKind::Bool(false) => "1'b0".to_string(),

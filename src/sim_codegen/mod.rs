@@ -3287,6 +3287,10 @@ fn infer_expr_float(expr: &Expr, ctx: &Ctx) -> Option<FpFmt> {
         ExprKind::Ident(name) => ctx.float_names.get(name.as_str()).copied(),
         // Float literals default to FP32.
         ExprKind::Literal(LitKind::Float(_)) => Some(FpFmt::Fp32),
+        // Already resolved against its context float type at compile time
+        // (arch#622/#624).
+        ExprKind::Literal(LitKind::TypedFloat(FloatLitFmt::Fp32, _)) => Some(FpFmt::Fp32),
+        ExprKind::Literal(LitKind::TypedFloat(FloatLitFmt::Bf16, _)) => Some(FpFmt::Bf16),
         ExprKind::Cast(_, ty) => match ty.as_ref() {
             TypeExpr::FP32 => Some(FpFmt::Fp32),
             TypeExpr::BF16 => Some(FpFmt::Bf16),
@@ -3506,6 +3510,10 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             // Float literals are FP32 by default — emit the binary32 bit pattern
             // as an unsigned hex constant (matches the uint32_t carrier).
             LitKind::Float(bits) => format!("0x{:X}u", (f64::from_bits(*bits) as f32).to_bits()),
+            // Already rounded to its context float type at compile time
+            // (arch#622/#624) — emit the exact bit pattern directly (fits
+            // the uint16_t/uint32_t carrier by construction).
+            LitKind::TypedFloat(_, bits) => format!("0x{bits:X}u"),
         },
         ExprKind::Bool(true) => "1".to_string(),
         ExprKind::Bool(false) => "0".to_string(),
@@ -7476,6 +7484,14 @@ impl<'a> SimCodegen<'a> {
                                 ExprKind::Literal(LitKind::Hex(v)) => format!("0x{:X}", v),
                                 ExprKind::Literal(LitKind::Bin(v)) => v.to_string(),
                                 ExprKind::Literal(LitKind::Sized(_, v)) => v.to_string(),
+                                // Already rounded to its context float type
+                                // at compile time (arch#622/#624) — the
+                                // constructor member-init list needs a
+                                // foldable constant, which this already is
+                                // (no runtime to_bf16() call needed).
+                                ExprKind::Literal(LitKind::TypedFloat(_, bits)) => {
+                                    format!("0x{bits:X}")
+                                }
                                 ExprKind::Bool(b) => {
                                     if *b {
                                         "1".to_string()
@@ -7511,6 +7527,10 @@ impl<'a> SimCodegen<'a> {
                         ExprKind::Literal(LitKind::Hex(v)) => format!("0x{:X}", v),
                         ExprKind::Literal(LitKind::Bin(v)) => v.to_string(),
                         ExprKind::Literal(LitKind::Sized(_, v)) => v.to_string(),
+                        // See the `RegDecl` init-list case above (arch#622/#624).
+                        ExprKind::Literal(LitKind::TypedFloat(_, bits)) => {
+                            format!("0x{bits:X}")
+                        }
                         ExprKind::Bool(b) => {
                             if *b {
                                 "1".to_string()

@@ -1466,6 +1466,7 @@ impl<'a> SimCodegen<'a> {
                 LitKind::Float(bits) => {
                     format!("0x{:X}u", (f64::from_bits(*bits) as f32).to_bits())
                 }
+                LitKind::TypedFloat(_, bits) => format!("0x{bits:X}u"),
             },
             ExprKind::Bool(b) => {
                 if *b {
