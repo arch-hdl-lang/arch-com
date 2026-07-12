@@ -48,8 +48,9 @@ jobs:
       - name: cargo build --release
         run: cargo build --release
 
-      - name: cargo test --release
-        run: cargo test --release
+      # `cargo test --release` runs unconditionally in the `test` workflow
+      # (.github/workflows/test.yml) on every PR/push, so it is not repeated
+      # here — this job only needs the release binary for the sim sweep below.
 
       - name: Run sim sweep (parallel)
         # `--keep` preserves the per-test work dirs even on success so the

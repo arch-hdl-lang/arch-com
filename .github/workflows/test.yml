@@ -1,0 +1,57 @@
+name: test
+
+# The main correctness gate: builds the compiler and runs the full `cargo
+# test` suite. Runs on every PR and every push to main (no path filter) so it
+# can be safely wired up as a required status check — a path-filtered
+# workflow never reports on PRs outside its filter, which would leave a
+# required check permanently pending on e.g. docs-only PRs.
+#
+# Dependency policy: the runner does NOT install verilator, iverilog, z3, the
+# Lean/lake toolchain, or pybind11. Every test that shells out to one of
+# those tools already skip-cleanly (eprintln + early return) when the tool is
+# absent from PATH — see tests/common/mod.rs and the `skipping: ... not
+# found` guards throughout tests/integration_test.rs and tests/fp_test.rs.
+# This matches the existing convention in examples.yml, which also runs
+# `cargo test --release` without installing any of those tools. Leaving them
+# uninstalled keeps the gate fast and avoids new flakiness from pinning
+# distro-packaged versions of large external tools; it trades away some
+# coverage (Verilator/iverilog parity legs, z3 differential/SMT proofs, Lean
+# proof-replay tests) that already runs on contributor/agent machines with
+# those tools installed. If reviewers want that coverage in CI, it belongs in
+# a slower opt-in/nightly tier, not this PR gate.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-test-${{ runner.os }}-
+
+      - name: cargo build --release
+        run: cargo build --release
+
+      - name: cargo test --release
+        run: cargo test --release
