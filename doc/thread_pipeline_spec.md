@@ -103,7 +103,7 @@ When a pipeline stage contains `wait until` or `do..until`, the compiler generat
 3. **FSM case logic**: inside the pipeline's `always_ff` block
 
 The FSM has these states:
-- **State 0 (idle)**: checks upstream valid, fast-paths if wait condition is already met
+- **State 0 (idle)**: checks upstream valid, fast-paths if wait condition is already met. When a stage has two or more sequential waits, the fast path also runs the *next* wait group's pre-assigns (the assignments that sit between the first and second wait) — see [Fast Path](#fast-path) below.
 - **State 1..N (waiting)**: loops each cycle checking the condition; advances when true
 
 ### Stall Chain Integration
@@ -129,7 +129,30 @@ end
 
 ### Fast Path
 
-In state 0 (idle), the compiler checks if the wait condition is *already* true when upstream data arrives. If so, the trailing assigns execute immediately without entering the wait state — the pipeline advances in a single cycle, identical to a non-wait stage.
+In state 0 (idle), the compiler checks if the *first* wait condition is *already* true when upstream data arrives. If so, the stage skips straight past state 1 (the dedicated wait state) on the very same clock edge:
+
+- **Single wait** (`wait until cond; <trailing assigns>;`): the trailing assigns execute immediately and the stage returns to idle — the pipeline advances in a single cycle, identical to a non-wait stage.
+- **Two or more waits** (`wait until cond1; <group-1 assigns>; wait until cond2; ...`): the fast path additionally runs the *next* wait group's pre-assigns (`<group-1 assigns>`, i.e. everything between the first and second wait) before advancing to state 2. This mirrors the state-1 → state-2 transition edge exactly, so the fast path (condition already true at dispatch) and the slow path (condition becomes true one or more cycles later) always execute the same assignments on the transition out of each wait — they only differ in which clock edge that transition happens to land on.
+
+#### Same-cycle collapse
+
+Because the fast path can run a whole wait group's worth of code on the *same* edge as the group before it, a register that is assigned **both** immediately before the first wait **and** immediately after it (i.e. in the group that runs right after the first wait resolves) can have both writes land on the same clock edge whenever the first wait's condition is already true at dispatch. When that happens the second write wins (last-assignment-wins, same as any other single-cycle multiple-assignment resolution) and the pre-wait value is **never observable** — not in a register read, not in a waveform — because it existed for zero cycles.
+
+```arch
+seq on clk rising
+  x <= 1;            // pre-wait assign
+  wait until go;
+  x <= 2;             // post-wait assign — same register
+end seq
+```
+
+If `go` is already `1` the cycle this stage dispatches, both `x <= 1` and `x <= 2` execute on that edge and `x` becomes `2` directly; `x == 1` is never observable. If `go` is `0` at dispatch, `x <= 1` fires on the dispatch edge and `x <= 2` fires later once `go` goes high — both values *are* observable in that case. The compiler emits a warning (`arch check` / `arch build` / `arch sim`) whenever it detects this shape, naming the register and the wait it straddles, so this is a compile-time-flagged design smell rather than a silent behavior change:
+
+```
+warning: register 'x' is assigned both before and after a `wait` in stage `Work`; when the wait condition is already true at dispatch both assignments execute in the same cycle and the last write wins — the pre-wait value is never observable on the fast path
+```
+
+The warning is advisory, not an error — some designs intentionally want "the wait's completion value wins, whether or not the wait actually blocked," in which case the two assignments are equivalent to a single conditional assignment and the warning can be safely ignored. If distinct behavior is required for the blocked vs. non-blocked case, use two different registers instead of reusing one across the wait boundary.
 
 ---
 
@@ -168,6 +191,40 @@ case (dataaccess_fsm_state)
   default: dataaccess_fsm_state <= '0;
 endcase
 ```
+
+For a stage with **two** waits — `wait until go; flag <= true; do cnt <= cnt+1; until ready; done <= true;` — state 0's fast path additionally runs the second group's pre-assign (`flag <= true`) before jumping to state 2:
+
+```systemverilog
+case (work_fsm_state)
+  2'd0: begin                       // Idle
+    if (1'b1) begin
+      if (go) begin                  // Fast path: first wait already true
+        work_flag <= 1'b1;           // group-2 pre-assign — now emitted here too (#590)
+        work_fsm_state <= 2'd2;      // jump straight to the do-until state
+      end else begin                 // Slow path: enter wait state
+        work_fsm_state <= 2'd1;
+      end
+    end
+  end
+  2'd1: begin                       // Waiting for go
+    if (go) begin
+      work_flag <= 1'b1;             // same group-2 pre-assign, slow-path edge
+      work_fsm_state <= 2'd2;
+    end
+  end
+  2'd2: begin                       // do..until ready
+    work_cnt <= (work_cnt + 1'b1);
+    if (ready) begin
+      work_done <= 1'b1;
+      work_fsm_state <= '0;
+      work_valid_r <= 1'b1;
+    end
+  end
+  default: work_fsm_state <= '0;
+endcase
+```
+
+Both the state-0→state-2 edge and the state-1→state-2 edge now emit `work_flag <= 1'b1`, so `flag` is set whenever `wait until go` resolves — whether that happens on the very first cycle (fast path) or after one or more cycles of waiting (slow path).
 
 ---
 

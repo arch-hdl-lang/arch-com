@@ -5619,6 +5619,7 @@ impl<'a> Codegen<'a> {
                 bits.to_string()
             }
             ExprKind::Literal(LitKind::Sized(w, _)) => w.to_string(),
+            ExprKind::Literal(LitKind::ParamSized(name, _)) => name.clone(),
             ExprKind::MethodCall(_, method, args)
                 if matches!(method.name.as_str(), "trunc" | "zext" | "sext" | "resize") =>
             {
@@ -5737,7 +5738,19 @@ impl<'a> Codegen<'a> {
                 LitKind::Hex(v) => format!("'h{v:X}"),
                 LitKind::Bin(v) => format!("'b{v:b}"),
                 LitKind::Sized(w, v) => format!("{w}'d{v}"),
-                LitKind::ParamSized(name, v) => format!("{name}'d{v}"),
+                // A parameter-width sized literal (`W'd5`) is NOT legal
+                // SystemVerilog — the size of a sized literal must be a decimal
+                // *number*, not a parameter reference (both Verilator and
+                // iverilog reject `W'd5` with a syntax error). Emit the legal
+                // parameterized form instead: a size cast, but keep the operand
+                // explicitly unsigned. Plain `W'(15)` parses, yet it behaves like
+                // a signed 4-bit value (`-1`) while `4'd15` is unsigned `15`.
+                // `W'($unsigned(15))` preserves the original literal semantics
+                // while staying valid under both Verilator and iverilog. (The
+                // type checker already resolves the ARCH type to `UInt<W>` via
+                // `resolve_param_sized_literal_width`; this is the SV-surface
+                // counterpart.)
+                LitKind::ParamSized(name, v) => format!("{name}'($unsigned({v}))"),
                 // Float literal (FP32 by default) → 32-bit binary32 bit pattern.
                 LitKind::Float(bits) => {
                     format!("32'h{:08X}", (f64::from_bits(*bits) as f32).to_bits())
@@ -6185,6 +6198,12 @@ impl<'a> Codegen<'a> {
                 // because bit-select doesn't compose with the parenthesized
                 // expression — but `func()[hi:lo]` is valid (function-call
                 // result is an "lvalue-like" form per the SV grammar).
+                // Repeat (replication `{N{a}}`) is the same grammar class as
+                // Concat (multiple_concatenation): Verilator/iverilog accept
+                // `{2{a}}[hi:lo]` bare but reject `({2{a}})[hi:lo]`. Without
+                // this arm the paren'd form is emitted and fails Verilator with
+                // a syntax error even though typecheck's
+                // `is_portable_bit_slice_base` classifies Repeat as portable.
                 let b = if matches!(
                     base.kind,
                     ExprKind::Ident(_)
@@ -6193,6 +6212,7 @@ impl<'a> Codegen<'a> {
                         | ExprKind::Index(_, _)
                         | ExprKind::FieldAccess(_, _)
                         | ExprKind::Concat(_)
+                        | ExprKind::Repeat(_, _)
                         | ExprKind::FunctionCall(_, _)
                         | ExprKind::MethodCall(_, _, _)
                 ) {

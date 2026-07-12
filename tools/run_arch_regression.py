@@ -19,6 +19,7 @@ import argparse
 import concurrent.futures
 import dataclasses
 import fnmatch
+import functools
 import json
 import os
 from pathlib import Path
@@ -241,20 +242,37 @@ def write_sim_smoke_tb(sim_dir: Path) -> Path | None:
     return tb
 
 
+@functools.lru_cache(maxsize=1)
+def _gxx_is_clang() -> bool:
+    # -fbracket-depth and -Wparentheses-equality are clang-only. On macOS
+    # `g++` is clang in disguise, so they work; on Linux `g++` is real GCC
+    # and rejects them with "unrecognized command line option", failing every
+    # compile instantly. Probe once per run.
+    try:
+        out = subprocess.run(
+            ["g++", "--version"], capture_output=True, text=True, timeout=10
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return "clang" in out.lower()
+
+
 def compile_sim_smoke(sim_dir: Path, log_dir: Path, timeout: float | None) -> StepResult:
     tb = write_sim_smoke_tb(sim_dir)
     if tb is None:
         return StepResult("sim_compile", "skip", 0.0, [], "", "no generated V*.h headers\n")
 
+    clang_only_flags = (
+        ["-fbracket-depth=4096", "-Wno-parentheses-equality"] if _gxx_is_clang() else []
+    )
     cpp_files = [sim_dir / "verilated.cpp", *sorted(sim_dir.glob("V*.cpp")), tb]
     cmd = [
         "g++",
         "-std=c++17",
         "-O0",
-        "-fbracket-depth=4096",
+        *clang_only_flags,
         "-Wno-unused-variable",
         "-Wno-unused-parameter",
-        "-Wno-parentheses-equality",
         "-I",
         str(sim_dir),
         *[str(p) for p in cpp_files if p.exists()],

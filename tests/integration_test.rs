@@ -152,6 +152,29 @@ end module SimpleAlu
 }
 
 #[test]
+fn test_param_sized_literal_width_cast_is_valid_systemverilog() {
+    let source = r#"
+module ParamSizedWrapWidth
+  param SCORE_WIDTH: const = 12;
+  port score: in UInt<SCORE_WIDTH>;
+  port magnitude: out UInt<SCORE_WIDTH>;
+  comb
+    magnitude = SCORE_WIDTH'd0 -% score;
+  end comb
+end module ParamSizedWrapWidth
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("SCORE_WIDTH'(SCORE_WIDTH'($unsigned(0)) - score)"),
+        "parameter-sized literal should drive the wrapping width cast:\n{sv}"
+    );
+    assert!(
+        !sv.contains("$bits(SCORE_WIDTH'd0)") && !sv.contains("SCORE_WIDTH'd0"),
+        "parameter-sized literals must not be passed to $bits:\n{sv}"
+    );
+}
+
+#[test]
 fn test_todo_placeholder() {
     let source = r#"
 domain SysDomain
@@ -173,6 +196,247 @@ end module Placeholder
 }
 
 // ── Operators ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_bit_slice_arithmetic_expression_errors_with_wrapping_hint() {
+    let source = r#"
+module SliceArithmeticExpr
+  port a: in SInt<4>;
+  port y: out SInt<4>;
+
+  let one_s: SInt<4> = signed(4'd1);
+  let y = signed((a + one_s)[3:0]);
+end module SliceArithmeticExpr
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let errors = checker
+        .check()
+        .expect_err("arithmetic expression bit-slice should error");
+    let rendered = format!("{errors:?}");
+    assert!(rendered.contains("cannot bit-slice this expression directly"));
+    assert!(rendered.contains("+%"));
+    assert!(rendered.contains("-%"));
+
+    let fixed = r#"
+module SliceArithmeticExpr
+  port a: in SInt<4>;
+  port y: out SInt<4>;
+
+  let one_s: SInt<4> = signed(4'd1);
+  let y = a +% one_s;
+end module SliceArithmeticExpr
+"#;
+    let sv = compile_to_sv(fixed);
+    assert!(sv.contains("assign y = 4'(a + one_s);"), "got:\n{sv}");
+}
+
+#[test]
+fn test_repeat_base_bit_slice_emits_bare_no_parens() {
+    // arch#653 item 2: a replication `{N{a}}` as a bit-slice base is classified
+    // portable by typecheck's `is_portable_bit_slice_base`, but codegen used to
+    // wrap it in parens — `({2{a}})[3:0]` — which Verilator/iverilog reject as a
+    // syntax error (the guardrail's own Icarus-portability goal defeated). Repeat
+    // is the same grammar class as Concat, so the bare form `{2{a}}[3:0]` is
+    // legal SV and must be emitted without the enclosing parens.
+    let source = r#"
+module RepeatSlice
+  port a: in UInt<4>;
+  port y: out UInt<4>;
+  let y = {2{a}}[3:0];
+end module RepeatSlice
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign y = {2{a}}[3:0];"),
+        "expected bare repeat-slice, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("({2{a}})[3:0]"),
+        "repeat-slice base must not be parenthesized (Verilator syntax error), got:\n{sv}"
+    );
+}
+
+#[test]
+fn test_part_select_additive_base_rejected() {
+    // arch#653 item 1: `ExprKind::PartSelect` (`[start +: w]` / `[start -: w]`)
+    // was not guarded at typecheck, so a low-precedence base like `a + b`
+    // silently emitted precedence-wrong SV (`a + b[s +: 4]`). Must now be
+    // rejected the same way BitSlice already is, for both `+:` and `-:`.
+    let plus_source = r#"
+module PsAddPlus
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port s: in UInt<3>;
+  port y: out UInt<4>;
+  let y = (a + b)[s +: 4];
+end module PsAddPlus
+"#;
+    let tokens = lexer::tokenize(plus_source).expect("lexer error");
+    let mut parser = Parser::new(tokens, plus_source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let errors = checker
+        .check()
+        .expect_err("part-select on additive base (+:) should error");
+    let rendered = format!("{errors:?}");
+    assert!(rendered.contains("cannot part-select this expression directly"));
+    assert!(rendered.contains("+%"));
+    assert!(rendered.contains("-%"));
+
+    let minus_source = r#"
+module PsAddMinus
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port s: in UInt<3>;
+  port y: out UInt<4>;
+  let y = (a + b)[s -: 4];
+end module PsAddMinus
+"#;
+    let tokens = lexer::tokenize(minus_source).expect("lexer error");
+    let mut parser = Parser::new(tokens, minus_source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let errors = checker
+        .check()
+        .expect_err("part-select on additive base (-:) should error");
+    let rendered = format!("{errors:?}");
+    assert!(rendered.contains("cannot part-select this expression directly"));
+}
+
+#[test]
+fn test_part_select_shift_base_rejected() {
+    // Same guardrail, shift-expression base — another low-precedence
+    // operator class that would otherwise silently miscompile.
+    let source = r#"
+module PsShift
+  port a: in UInt<8>;
+  port s: in UInt<3>;
+  port y: out UInt<2>;
+  let y = (a >> 1)[s +: 2];
+end module PsShift
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let errors = checker
+        .check()
+        .expect_err("part-select on shift base should error");
+    let rendered = format!("{errors:?}");
+    assert!(rendered.contains("cannot part-select this expression directly"));
+}
+
+#[test]
+fn test_part_select_portable_bases_accepted() {
+    // No regression: identifier, indexed-Vec-element, and field-access bases
+    // remain accepted for part-select — only expression bases are rejected.
+    let source = r#"
+struct Wrapped
+  data: UInt<16>;
+end struct Wrapped
+
+module PsPortableBases
+  port a: in UInt<16>;
+  port v: in Vec<UInt<16>, 4>;
+  port idx: in UInt<2>;
+  port w: in Wrapped;
+  port s: in UInt<4>;
+  port y_ident: out UInt<4>;
+  port y_index: out UInt<4>;
+  port y_field: out UInt<4>;
+  comb
+    y_ident = a[s +: 4];
+    y_index = v[idx][s +: 4];
+    y_field = w.data[s +: 4];
+  end comb
+end module PsPortableBases
+"#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module PsPortableBases"), "got:\n{sv}");
+}
+
+#[test]
+fn test_chained_bit_slice_rejected() {
+    // arch#653 item 2: `BitSlice` was previously in `is_portable_bit_slice_base`,
+    // so a chained bit-select `a[7:4][1:0]` typechecked, but codegen wraps the
+    // inner slice in parens (`(a[7:4])[1:0]`) which Verilator/iverilog reject —
+    // chained bit-select isn't legal SV even bare. Now rejected at typecheck.
+    let source = r#"
+module ChainedSlice
+  port a: in UInt<8>;
+  port y: out UInt<2>;
+  let y = a[7:4][1:0];
+end module ChainedSlice
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let errors = checker.check().expect_err("chained bit-slice should error");
+    let rendered = format!("{errors:?}");
+    assert!(rendered.contains("cannot bit-slice this expression directly"));
+}
+
+#[test]
+fn test_slice_on_part_select_base_rejected() {
+    // `PartSelect` was also previously in `is_portable_bit_slice_base`, so a
+    // bit-slice of a part-select result (`a[s +: 4][1:0]`) typechecked, but
+    // codegen paren's the base (`(a[s +: 4])[1:0]`) which is not legal SV.
+    let source = r#"
+module SliceOfPartSelect
+  port a: in UInt<8>;
+  port s: in UInt<3>;
+  port y: out UInt<2>;
+  let y = a[s +: 4][1:0];
+end module SliceOfPartSelect
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let errors = checker
+        .check()
+        .expect_err("bit-slice on part-select base should error");
+    let rendered = format!("{errors:?}");
+    assert!(rendered.contains("cannot bit-slice this expression directly"));
+}
+
+#[test]
+fn test_part_select_let_intermediate_rewrite_compiles() {
+    // Positive control: the diagnostic's recommended fix — bind the rejected
+    // expression to a named `let` first — type-checks and builds cleanly.
+    let source = r#"
+module PsAddFixed
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port s: in UInt<3>;
+  port y: out UInt<4>;
+  let sum: UInt<9> = a + b;
+  let y = sum[s +: 4];
+end module PsAddFixed
+"#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module PsAddFixed"), "got:\n{sv}");
+    assert!(
+        sv.contains("sum"),
+        "expected named intermediate in SV:\n{sv}"
+    );
+}
 
 #[test]
 fn test_bang_prefix_is_logical_not_alias() {
@@ -3302,6 +3566,256 @@ end pipeline RegPipe
     );
 }
 
+/// `arch check` rejects `source` with a diagnostic whose Display/Debug text
+/// contains `needle`; returns the joined error text for failure messages.
+fn pipeline_check_err_contains(source: &str, needle: &str) {
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let elaborated = elaborate::elaborate(ast).expect("elaborate");
+    let symbols = resolve::resolve(&elaborated).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &elaborated);
+    let errs = checker
+        .check()
+        .expect_err("expected pipeline typecheck to reject source");
+    let msg = errs.iter().map(|e| format!("{e:?}")).collect::<String>();
+    assert!(
+        msg.contains(needle),
+        "expected diagnostic containing `{needle}`, got: {msg}"
+    );
+}
+
+// Issue #557: the pipeline output-coverage check only recognized a
+// top-level `Stmt::Assign` with a bare `Ident` as "driving" an output —
+// an output assigned inside an exhaustive `if`/`else` (or `match`) was
+// wrongly rejected as "not driven", even though the identical shape in a
+// plain `module` type-checks clean. The fix makes `check_pipeline` reuse
+// `collect_comb_stmt_targets` (recursive) for coverage AND run
+// `check_comb_latch` (the same no-implicit-latch analysis module bodies
+// use) so a genuinely partial branch set is still caught — now reported
+// as "infers a latch" instead of the previous misleading "not driven".
+// These tests are differential pairs: exhaustive (accept) vs. the same
+// shape missing one arm (reject as latch), at increasing nesting depth
+// and across both `if`/`else` and `match`.
+
+#[test]
+fn test_pipeline_allows_exhaustive_if_else_output() {
+    // Exact repro from GH issue #557.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline PipeIfElse
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port o: out UInt<8>;
+  stage S
+    reg held: UInt<8> reset rst => 0;
+    reg sel_r: Bool reset rst => false;
+    seq on clk rising
+      held <= a;
+      sel_r <= false;
+    end seq
+    comb
+      if sel_r
+        o = held;
+      else
+        o = held;
+      end if
+    end comb
+  end stage S
+end pipeline PipeIfElse
+"#;
+    assert!(
+        pipeline_checks_ok(source),
+        "an output driven on every arm of an exhaustive if/else must be accepted"
+    );
+}
+
+#[test]
+fn test_pipeline_rejects_partial_if_output_as_latch() {
+    // Same shape as above but with the `else` arm dropped — `o` is only
+    // driven on one control path. Must still be rejected, and with the
+    // proper latch diagnostic (not the old misleading "not driven").
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline PipePartialIf
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port o: out UInt<8>;
+  stage S
+    reg held: UInt<8> reset rst => 0;
+    reg sel_r: Bool reset rst => false;
+    seq on clk rising
+      held <= a;
+      sel_r <= false;
+    end seq
+    comb
+      if sel_r
+        o = held;
+      end if
+    end comb
+  end stage S
+end pipeline PipePartialIf
+"#;
+    pipeline_check_err_contains(source, "infers a latch");
+}
+
+#[test]
+fn test_pipeline_allows_nested_exhaustive_if_else_output() {
+    // Two-level nested if/else where every leaf path assigns `o`.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline PipeNestedIf
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port o: out UInt<8>;
+  stage S
+    reg held: UInt<8> reset rst => 0;
+    reg sel_r: Bool reset rst => false;
+    reg sel2_r: Bool reset rst => false;
+    seq on clk rising
+      held <= a;
+      sel_r <= false;
+      sel2_r <= false;
+    end seq
+    comb
+      if sel_r
+        if sel2_r
+          o = held;
+        else
+          o = held +% 1;
+        end if
+      else
+        o = held;
+      end if
+    end comb
+  end stage S
+end pipeline PipeNestedIf
+"#;
+    assert!(
+        pipeline_checks_ok(source),
+        "an output driven on every leaf path of a nested exhaustive if/else must be accepted"
+    );
+}
+
+#[test]
+fn test_pipeline_rejects_nested_partial_if_as_latch() {
+    // Same nested shape but the inner if is missing its else — `o` is
+    // undriven on the `sel_r && !sel2_r` path.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline PipeNestedIfPartial
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port o: out UInt<8>;
+  stage S
+    reg held: UInt<8> reset rst => 0;
+    reg sel_r: Bool reset rst => false;
+    reg sel2_r: Bool reset rst => false;
+    seq on clk rising
+      held <= a;
+      sel_r <= false;
+      sel2_r <= false;
+    end seq
+    comb
+      if sel_r
+        if sel2_r
+          o = held;
+        end if
+      else
+        o = held;
+      end if
+    end comb
+  end stage S
+end pipeline PipeNestedIfPartial
+"#;
+    pipeline_check_err_contains(source, "infers a latch");
+}
+
+#[test]
+fn test_pipeline_allows_exhaustive_match_output() {
+    // `match` covering every enum variant (no wildcard needed).
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+enum SelKind
+  A,
+  B
+end enum SelKind
+pipeline PipeMatch
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port o: out UInt<8>;
+  stage S
+    reg held: UInt<8> reset rst => 0;
+    reg sel_r: SelKind reset rst => SelKind::A;
+    seq on clk rising
+      held <= a;
+      sel_r <= SelKind::A;
+    end seq
+    comb
+      match sel_r
+        SelKind::A => o = held;
+        SelKind::B => o = held +% 1;
+      end match
+    end comb
+  end stage S
+end pipeline PipeMatch
+"#;
+    assert!(
+        pipeline_checks_ok(source),
+        "an output driven on every arm of an exhaustive match must be accepted"
+    );
+}
+
+#[test]
+fn test_pipeline_rejects_partial_match_as_latch() {
+    // Missing the `B` arm entirely, and no wildcard — `o` is undriven when
+    // `sel_r == SelKind::B`.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+enum SelKind
+  A,
+  B
+end enum SelKind
+pipeline PipeMatchPartial
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port o: out UInt<8>;
+  stage S
+    reg held: UInt<8> reset rst => 0;
+    reg sel_r: SelKind reset rst => SelKind::A;
+    seq on clk rising
+      held <= a;
+      sel_r <= SelKind::A;
+    end seq
+    comb
+      match sel_r
+        SelKind::A => o = held;
+      end match
+    end comb
+  end stage S
+end pipeline PipeMatchPartial
+"#;
+    pipeline_check_err_contains(source, "infers a latch");
+}
+
 #[test]
 fn test_pipeline_sim_codegen_sign_extends_sext() {
     let source = r#"
@@ -4419,6 +4933,464 @@ int main() {
     assert!(
         out.status.success() && stdout.contains("PASS pipeline wait/do-until sim"),
         "pipeline wait/do-until sim should compile and run\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+/// Regression test for #590: a `pipeline` wait-stage with two or more
+/// sequential waits must run the inter-wait assignment even when the
+/// idle-state (state 0) fast path is taken — i.e. the first wait's
+/// condition is already true the cycle the stage accepts new data.
+/// Before the fix, `flag <= true;` (the assignment between `wait until go`
+/// and `do ... until ready`) was emitted only on the state-1 -> state-2
+/// edge, so the idle-state-0 -> state-2 fast-path edge silently dropped it.
+#[test]
+fn test_pipeline_wait_stage_fastpath_sets_inter_wait_assign_in_sim() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("WaitPipe.arch");
+    let tb_path = td.path().join("tb_wait_pipe_fastpath.cpp");
+    std::fs::write(
+        &arch_path,
+        r#"
+pipeline WaitPipe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port ready: in Bool;
+  port out_flag: out Bool;
+  port out_done: out Bool;
+  port out_cnt: out UInt<3>;
+
+  stage Work
+    reg flag: Bool reset rst => false;
+    reg done: Bool reset rst => false;
+    reg cnt: UInt<3> reset rst => 0;
+
+    seq on clk rising
+      wait until go;
+      flag <= true;
+      do
+        cnt <= (cnt + 1).trunc<3>();
+      until ready;
+      done <= true;
+    end seq
+
+    comb
+      out_flag = flag;
+      out_done = done;
+      out_cnt = cnt;
+    end comb
+  end stage Work
+end pipeline WaitPipe
+"#,
+    )
+    .expect("write arch");
+    std::fs::write(
+        &tb_path,
+        r#"
+#include "VWaitPipe.h"
+#include <cstdio>
+
+static void tick(VWaitPipe& dut) {
+  dut.clk = 0;
+  dut.eval();
+  dut.clk = 1;
+  dut.eval();
+  dut.clk = 0;
+  dut.eval();
+}
+
+int main() {
+  VWaitPipe dut;
+  dut.rst = 1;
+  dut.go = 0;
+  dut.ready = 0;
+  tick(dut);
+
+  dut.rst = 0;
+  // Drive go and ready HIGH before the stage ever dispatches: state 0's
+  // fast path must fire on the very first non-reset cycle.
+  dut.go = 1;
+  dut.ready = 1;
+  tick(dut);        // idle fast-path: wait-until is already satisfied
+  if (!dut.out_flag) {
+    std::printf("FAIL fast-path did not set flag flag=%u done=%u cnt=%u\n",
+                (unsigned)dut.out_flag, (unsigned)dut.out_done,
+                (unsigned)dut.out_cnt);
+    return 1;
+  }
+
+  tick(dut);        // do-until also already satisfied -> trailing assign runs
+  if (!dut.out_flag || !dut.out_done || dut.out_cnt != 1) {
+    std::printf("FAIL fast-path completion flag=%u done=%u cnt=%u\n",
+                (unsigned)dut.out_flag, (unsigned)dut.out_done,
+                (unsigned)dut.out_cnt);
+    return 1;
+  }
+
+  std::printf("PASS pipeline wait fast-path sim\n");
+  return 0;
+}
+"#,
+    )
+    .expect("write tb");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("sim")
+        .arg(&arch_path)
+        .arg("--tb")
+        .arg(&tb_path)
+        .arg("--outdir")
+        .arg(td.path().join("build"))
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && stdout.contains("PASS pipeline wait fast-path sim"),
+        "pipeline wait-stage fast-path sim should compile and run\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+/// #590 follow-up: the fast path must fire on *every* back-to-back
+/// transaction, not just the first dispatch after reset. Uses a free-running
+/// hit counter (instead of a sticky bool) as the inter-wait assignment so
+/// repeated firings are individually observable.
+#[test]
+fn test_pipeline_wait_stage_fastpath_back_to_back_in_sim() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("WaitPipeBackToBack.arch");
+    let tb_path = td.path().join("tb_wait_pipe_back_to_back.cpp");
+    std::fs::write(
+        &arch_path,
+        r#"
+pipeline WaitPipeBackToBack
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port ready: in Bool;
+  port out_hits: out UInt<4>;
+  port out_cnt: out UInt<3>;
+
+  stage Work
+    reg hits: UInt<4> reset rst => 0;
+    reg cnt: UInt<3> reset rst => 0;
+
+    seq on clk rising
+      wait until go;
+      hits <= (hits + 1).trunc<4>();
+      do
+        cnt <= (cnt + 1).trunc<3>();
+      until ready;
+    end seq
+
+    comb
+      out_hits = hits;
+      out_cnt = cnt;
+    end comb
+  end stage Work
+end pipeline WaitPipeBackToBack
+"#,
+    )
+    .expect("write arch");
+    std::fs::write(
+        &tb_path,
+        r#"
+#include "VWaitPipeBackToBack.h"
+#include <cstdio>
+
+static void tick(VWaitPipeBackToBack& dut) {
+  dut.clk = 0;
+  dut.eval();
+  dut.clk = 1;
+  dut.eval();
+  dut.clk = 0;
+  dut.eval();
+}
+
+int main() {
+  VWaitPipeBackToBack dut;
+  dut.rst = 1;
+  dut.go = 0;
+  dut.ready = 0;
+  tick(dut);
+
+  dut.rst = 0;
+  // Hold go and ready high across every transaction: each 2-cycle
+  // (idle-fast-path, do-until) round trip should bump `hits` exactly once.
+  dut.go = 1;
+  dut.ready = 1;
+  for (unsigned txn = 1; txn <= 4; ++txn) {
+    tick(dut);  // idle fast-path: hits += 1
+    if (dut.out_hits != txn) {
+      std::printf("FAIL txn %u: expected hits=%u got hits=%u cnt=%u\n", txn,
+                  txn, (unsigned)dut.out_hits, (unsigned)dut.out_cnt);
+      return 1;
+    }
+    tick(dut);  // do-until: ready already true, returns to idle
+  }
+
+  std::printf("PASS pipeline wait fast-path back-to-back sim\n");
+  return 0;
+}
+"#,
+    )
+    .expect("write tb");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("sim")
+        .arg(&arch_path)
+        .arg("--tb")
+        .arg(&tb_path)
+        .arg("--outdir")
+        .arg(td.path().join("build"))
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && stdout.contains("PASS pipeline wait fast-path back-to-back sim"),
+        "pipeline wait-stage back-to-back fast-path sim should compile and run\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+/// #590 SV/Verilator cross-check for the same fast-path repro exercised by
+/// `test_pipeline_wait_stage_fastpath_sets_inter_wait_assign_in_sim` above —
+/// the two backends (arch sim's native C++ model, and `arch build`'s SV run
+/// through real Verilator) must agree.
+#[test]
+fn test_pipeline_wait_stage_fastpath_verilator_behavior() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping pipeline wait-stage fast-path Verilator check: verilator not found");
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("WaitPipe.arch");
+    let tb_path = td.path().join("tb_wait_pipe_fastpath_verilator.cpp");
+    let sv_out = td.path().join("WaitPipe.sv");
+    let obj_dir = td.path().join("obj_dir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    std::fs::write(
+        &arch_path,
+        r#"
+pipeline WaitPipe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port ready: in Bool;
+  port out_flag: out Bool;
+  port out_done: out Bool;
+  port out_cnt: out UInt<3>;
+
+  stage Work
+    reg flag: Bool reset rst => false;
+    reg done: Bool reset rst => false;
+    reg cnt: UInt<3> reset rst => 0;
+
+    seq on clk rising
+      wait until go;
+      flag <= true;
+      do
+        cnt <= (cnt + 1).trunc<3>();
+      until ready;
+      done <= true;
+    end seq
+
+    comb
+      out_flag = flag;
+      out_done = done;
+      out_cnt = cnt;
+    end comb
+  end stage Work
+end pipeline WaitPipe
+"#,
+    )
+    .expect("write arch");
+
+    std::fs::write(
+        &tb_path,
+        r#"
+#include "VWaitPipe.h"
+#include <cstdio>
+
+static void tick(VWaitPipe& dut) {
+  dut.clk = 0;
+  dut.eval();
+  dut.clk = 1;
+  dut.eval();
+  dut.clk = 0;
+  dut.eval();
+}
+
+int main() {
+  VWaitPipe dut;
+  dut.rst = 1;
+  dut.go = 0;
+  dut.ready = 0;
+  tick(dut);
+
+  dut.rst = 0;
+  dut.go = 1;
+  dut.ready = 1;
+  tick(dut);        // idle fast-path: wait-until already satisfied
+  if (!dut.out_flag) {
+    std::printf("FAIL fast-path did not set flag flag=%u done=%u cnt=%u\n",
+                (unsigned)dut.out_flag, (unsigned)dut.out_done,
+                (unsigned)dut.out_cnt);
+    return 1;
+  }
+
+  tick(dut);        // do-until also already satisfied -> trailing assign runs
+  if (!dut.out_flag || !dut.out_done || dut.out_cnt != 1) {
+    std::printf("FAIL fast-path completion flag=%u done=%u cnt=%u\n",
+                (unsigned)dut.out_flag, (unsigned)dut.out_done,
+                (unsigned)dut.out_cnt);
+    return 1;
+  }
+
+  std::printf("PASS pipeline wait fast-path verilator\n");
+  return 0;
+}
+"#,
+    )
+    .expect("write tb");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg(&arch_path)
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build WaitPipe SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let verilate = std::process::Command::new("verilator")
+        .arg("--cc")
+        .arg("--exe")
+        .arg("--build")
+        .arg("--sv")
+        .arg("--assert")
+        .arg("-Wno-fatal")
+        .arg("-Wno-WIDTH")
+        .arg("-Wno-DECLFILENAME")
+        .arg("--top-module")
+        .arg("WaitPipe")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&sv_out)
+        .arg(&tb_path)
+        .output()
+        .expect("verilate WaitPipe");
+    assert!(
+        verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr)
+    );
+
+    let exe = obj_dir.join("VWaitPipe");
+    let run = std::process::Command::new(&exe)
+        .output()
+        .expect("run Verilator WaitPipe");
+    assert!(
+        run.status.success(),
+        "Verilator sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("PASS pipeline wait fast-path verilator"),
+        "expected PASS marker in Verilator stdout:\n{}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+}
+
+/// #590 Task 3: same-register writes that straddle the first wait boundary
+/// of a wait-stage must warn, since the idle-state-0 fast path can now run
+/// both writes on the same clock edge (last write wins, pre-wait value never
+/// observable).
+#[test]
+fn test_pipeline_wait_stage_collapse_warning() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+pipeline WaitCollapseWarn
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port out_x: out UInt<4>;
+
+  stage Work
+    reg x: UInt<4> reset rst => 0;
+    seq on clk rising
+      x <= 1;
+      wait until go;
+      x <= 2;
+    end seq
+    comb
+      out_x = x;
+    end comb
+  end stage Work
+end pipeline WaitCollapseWarn
+"#;
+    let warnings = warnings_after_full_lower(source);
+    assert!(
+        warnings.iter().any(|w| w.contains("register 'x'")
+            && w.contains("before and after")
+            && w.contains("wait")),
+        "expected a same-cycle collapse warning naming register 'x', got: {warnings:?}"
+    );
+}
+
+/// #590 Task 3 negative case: distinct registers assigned before/after the
+/// wait boundary never collide, so no collapse warning should fire.
+#[test]
+fn test_pipeline_wait_stage_no_collapse_warning_for_distinct_registers() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+pipeline WaitNoCollapseWarn
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go: in Bool;
+  port out_a: out UInt<4>;
+  port out_b: out UInt<4>;
+
+  stage Work
+    reg a: UInt<4> reset rst => 0;
+    reg b: UInt<4> reset rst => 0;
+    seq on clk rising
+      a <= 1;
+      wait until go;
+      b <= 2;
+    end seq
+    comb
+      out_a = a;
+      out_b = b;
+    end comb
+  end stage Work
+end pipeline WaitNoCollapseWarn
+"#;
+    let warnings = warnings_after_full_lower(source);
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.contains("before and after") && w.contains("wait")),
+        "expected no same-cycle collapse warning for distinct registers, got: {warnings:?}"
     );
 }
 
@@ -21989,6 +22961,167 @@ fn test_local_param_names_are_scoped_per_instantiated_module() {
     );
 }
 
+/// Run typecheck only (no codegen) and return its result.
+fn typecheck_errors(source: &str) -> Result<(), Vec<String>> {
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    checker
+        .check()
+        .map(|_| ())
+        .map_err(|errs| errs.iter().map(|e| e.to_string()).collect())
+}
+
+/// Bus-scoped variant of the issue-#462 local-param collision class: a bus
+/// signal typed with a bus param must keep the BUS's param value at
+/// `port.signal` access sites, even when the enclosing module declares a
+/// same-named param with a different value. Pre-fix, the module's param
+/// shadowed the bus's (the field type below resolved to UInt<8>) and the
+/// truncating assignment was silently accepted.
+#[test]
+fn test_bus_param_width_not_shadowed_by_module_param() {
+    let source = r#"
+bus LinkBus
+  param W: const = 48;
+  wide: in UInt<W>;
+end bus LinkBus
+
+module Consumer
+  param W: const = 8;
+  port clk: in Clock<SysDomain>;
+  port link: initiator LinkBus;
+  port o: out UInt<8>;
+
+  let x: UInt<8> = link.wide;
+
+  comb
+    o = x;
+  end comb
+end module Consumer
+"#;
+    let errs = typecheck_errors(source).expect_err(
+        "48-bit bus signal into UInt<8> let must be a width mismatch; \
+         module param W=8 must not shadow bus param W=48",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("UInt<48>")),
+        "mismatch must report the bus's width (UInt<48>), got: {errs:?}"
+    );
+}
+
+/// A bus-param-typed signal must width-check even when the enclosing module
+/// has no same-named param. Pre-fix, the width expr didn't fold at all
+/// (bus params were invisible to eval_const_expr), the field type collapsed
+/// to Ty::Error, and every width check on the signal was silently skipped.
+#[test]
+fn test_bus_param_width_folds_without_module_param() {
+    let source = r#"
+bus LinkBus
+  param W: const = 48;
+  wide: in UInt<W>;
+end bus LinkBus
+
+module Consumer
+  port clk: in Clock<SysDomain>;
+  port link: initiator LinkBus;
+  port o: out UInt<8>;
+
+  let x: UInt<8> = link.wide;
+
+  comb
+    o = x;
+  end comb
+end module Consumer
+"#;
+    let errs = typecheck_errors(source)
+        .expect_err("48-bit bus signal into UInt<8> let must be a width mismatch");
+    assert!(
+        errs.iter().any(|e| e.contains("UInt<48>")),
+        "mismatch must report the bus's width (UInt<48>), got: {errs:?}"
+    );
+}
+
+/// Port-site `<P=expr>` overrides fold in the *enclosing module's* scope and
+/// then bind the bus param — including the common passthrough idiom where
+/// the override value is the module's own same-named param.
+#[test]
+fn test_bus_port_param_override_folds_in_module_scope() {
+    // Distinctly named module param.
+    let renamed = r#"
+bus LinkBus
+  param W: const = 48;
+  wide: in UInt<W>;
+end bus LinkBus
+
+module Consumer
+  param MW: const = 16;
+  port clk: in Clock<SysDomain>;
+  port link: initiator LinkBus<W=MW>;
+  port o: out UInt<16>;
+
+  let x: UInt<16> = link.wide;
+
+  comb
+    o = x;
+  end comb
+end module Consumer
+"#;
+    typecheck_errors(renamed).expect("override W=MW (16) must type link.wide as UInt<16>");
+
+    // Same-named passthrough (`<W=W>`) — must fold the module's W, not
+    // recurse into the bus's own W.
+    let passthrough = r#"
+bus LinkBus
+  param W: const = 48;
+  wide: in UInt<W>;
+end bus LinkBus
+
+module Consumer
+  param W: const = 16;
+  port clk: in Clock<SysDomain>;
+  port link: initiator LinkBus<W=W>;
+  port o: out UInt<16>;
+
+  let x: UInt<16> = link.wide;
+
+  comb
+    o = x;
+  end comb
+end module Consumer
+"#;
+    typecheck_errors(passthrough)
+        .expect("passthrough override W=W (16) must type link.wide as UInt<16>");
+
+    // Literal override: reads must check against the overridden width.
+    let literal = r#"
+bus LinkBus
+  param W: const = 48;
+  wide: in UInt<W>;
+end bus LinkBus
+
+module Consumer
+  port clk: in Clock<SysDomain>;
+  port link: initiator LinkBus<W=16>;
+  port o: out UInt<8>;
+
+  let x: UInt<8> = link.wide;
+
+  comb
+    o = x;
+  end comb
+end module Consumer
+"#;
+    let errs = typecheck_errors(literal)
+        .expect_err("16-bit (overridden) bus signal into UInt<8> let must mismatch");
+    assert!(
+        errs.iter().any(|e| e.contains("UInt<16>")),
+        "mismatch must report the overridden width (UInt<16>), got: {errs:?}"
+    );
+}
+
 #[test]
 fn test_native_sim_does_not_emit_fields_for_param_inst_inputs() {
     let source = r#"
@@ -25007,6 +26140,80 @@ fn test_native_sim_vec_inst_input_wire_param_sized_fanout() {
         String::from_utf8_lossy(&out.stdout).contains("PASS native Vec inst input wire"),
         "expected PASS marker in stdout:\n{}",
         String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn test_param_sized_literal_uses_param_width_in_check_build_and_formal() {
+    // Regression for PR #636. `W'd0` parsed, but the typechecker/formal backend
+    // still treated it as UInt<32>, so the new syntax failed in normal module
+    // code and widened SMT literals silently.
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("ParamSized.arch");
+    let sv_out = td.path().join("ParamSized.sv");
+    let smt_out = td.path().join("ParamSized.smt2");
+    std::fs::write(
+        &src,
+        r#"
+module ParamSized
+  param W: const = 5;
+  port o: out UInt<W>;
+  let o = W'd0;
+end module ParamSized
+"#,
+    )
+    .expect("write source");
+
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let check = std::process::Command::new(arch_bin)
+        .arg("check")
+        .arg(&src)
+        .output()
+        .expect("run arch check");
+    assert!(
+        check.status.success(),
+        "arch check should accept param-sized literals at the resolved width\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg(&src)
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("run arch build");
+    assert!(
+        build.status.success(),
+        "arch build should preserve param-sized literals in SV\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let sv = std::fs::read_to_string(&sv_out).expect("read SV");
+    assert!(
+        sv.contains("assign o = W'($unsigned(0));"),
+        "expected emitted SV to use the legal param-width size cast form:\n{sv}"
+    );
+
+    let formal = std::process::Command::new(arch_bin)
+        .arg("formal")
+        .arg(&src)
+        .arg("--emit-smt")
+        .arg(&smt_out)
+        .output()
+        .expect("run arch formal");
+    assert!(
+        formal.status.success(),
+        "arch formal should accept param-sized literals and resolve their width\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&formal.stdout),
+        String::from_utf8_lossy(&formal.stderr)
+    );
+    let smt = std::fs::read_to_string(&smt_out).expect("read SMT");
+    assert!(
+        smt.contains("(_ bv0 5)"),
+        "expected SMT emission to use the resolved 5-bit width, not a fallback width:\n{smt}"
     );
 }
 
@@ -29091,5 +30298,129 @@ end module IntBadOrder
     assert!(
         format!("{errs:?}").contains("unreachable match arm"),
         "non-enum match must also enforce wildcard-last"
+    );
+}
+
+#[test]
+fn test_param_sized_literal_rejects_non_positive_width_with_clear_error() {
+    let source = r#"
+module BadWidth
+  param W: const = 0;
+  port x: out UInt<1>;
+  let x = W'd0;
+end module BadWidth
+"#;
+    let errs = typecheck_source(source).expect_err("expected non-positive width error");
+    let rendered = format!("{errs:?}");
+    assert!(
+        rendered.contains("sized literal width param `W` must be greater than zero, got 0"),
+        "expected a width-specific diagnostic, got:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("expected UInt<1>, found UInt<32>"),
+        "must not fall back to the bogus UInt<32> mismatch:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_param_sized_literal_rejects_unknown_width_name() {
+    let source = r#"
+module BadWidthName
+  port o: out UInt<32>;
+  comb
+    o = TYPO'd5;
+  end comb
+end module BadWidthName
+"#;
+    let errs = typecheck_source(source).expect_err("expected unknown width-name error");
+    let rendered = format!("{errs:?}");
+    assert!(
+        rendered.contains(
+            "sized literal width param `TYPO` must resolve to a positive integer constant"
+        ),
+        "expected an unknown-width diagnostic, got:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_match_wildcard_not_last_errors_in_expression_match() {
+    // The wildcard-last rule must also fire for the *expression* match form
+    // (`let x: T = match ... end match`), which lowers to `ExprKind::ExprMatch`
+    // and is checked at a separate call site from statement matches. #634 wired
+    // this path but shipped tests only for statement (`comb`) matches.
+    let source = r#"
+module ExprBadOrder
+  port c: in UInt<2>;
+  port o: out UInt<8>;
+  let o_val: UInt<8> = match c
+      0 => 10,
+      _ => 0,
+      1 => 20,
+    end match;
+  comb
+    o = o_val;
+  end comb
+end module ExprBadOrder
+"#;
+    let errs = typecheck_source(source)
+        .expect_err("expected unreachable-arm error for expression match with `_` not last");
+    assert!(
+        format!("{errs:?}").contains("unreachable match arm"),
+        "expression match must also enforce wildcard-last"
+    );
+}
+
+#[test]
+fn test_match_wildcard_last_accepted_in_expression_match() {
+    // Companion to the above: `_` as the final arm of an expression match
+    // type-checks cleanly.
+    let source = r#"
+module ExprGoodOrder
+  port c: in UInt<2>;
+  port o: out UInt<8>;
+  let o_val: UInt<8> = match c
+      0 => 10,
+      1 => 20,
+      _ => 0,
+    end match;
+  comb
+    o = o_val;
+  end comb
+end module ExprGoodOrder
+"#;
+    assert!(
+        typecheck_source(source).is_ok(),
+        "an expression match with `_` as the final arm must type-check"
+    );
+}
+
+#[test]
+fn test_param_sized_literal_emits_valid_sv_size_cast() {
+    // A param-width sized literal (`W'd5`) that survives to SV codegen must be
+    // emitted as a legal SystemVerilog size cast with an explicitly unsigned
+    // payload, NOT the invalid `W'd5` form. Bare `W'(15)` parses, but it
+    // behaves like signed 4-bit `-1`; `W'($unsigned(15))` preserves the
+    // original unsigned-sized-literal semantics while still compiling under
+    // Verilator and iverilog. Regression for the codegen half of the #636
+    // param-sized-literal feature (typecheck half fixed in #651).
+    let source = r#"
+module ParamSizedEmit
+  param W: const = 4;
+  port x: out UInt<4>;
+  let x = W'd15;
+end module ParamSizedEmit
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign x = W'($unsigned(15));"),
+        "expected an unsigned size-cast `W'($unsigned(15))`, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("W'd15"),
+        "must not emit the invalid parameter-width sized literal `W'd15`:\n{sv}"
+    );
+    assert!(
+        !sv.contains("W'(15)"),
+        "must not emit a signed size-cast that changes literal semantics:\n{sv}"
     );
 }

@@ -189,8 +189,10 @@ impl<'a> TypeChecker<'a> {
             Item::Regfile(r) => r.params.clone(),
             Item::Pipeline(p) => p.params.clone(),
             Item::Linklist(l) => l.params.clone(),
+            Item::Bus(b) => b.params.clone(),
             Item::Synchronizer(s) => s.params.clone(),
             Item::Clkgate(c) => c.params.clone(),
+            Item::Template(t) => t.params.clone(),
             Item::Package(p) => p.params.clone(),
             _ => Vec::new(),
         }
@@ -3641,7 +3643,10 @@ impl<'a> TypeChecker<'a> {
                     Ty::UInt(bits)
                 }
                 LitKind::Sized(w, _) => Ty::UInt(*w),
-                LitKind::ParamSized(_, _) => Ty::UInt(32),
+                LitKind::ParamSized(name, _) => self
+                    .resolve_param_sized_literal_width(name, expr, local_types)
+                    .map(Ty::UInt)
+                    .unwrap_or(Ty::Error),
                 // Float literals default to FP32; BF16 values are written via an
                 // explicit `.to_bf16()` conversion (no implicit float narrowing).
                 LitKind::Float(_) => Ty::FP32,
@@ -3746,6 +3751,13 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             ExprKind::BitSlice(base, hi, lo) => {
+                if !Self::is_portable_bit_slice_base(base) {
+                    self.errors.push(CompileError::general(
+                        "cannot bit-slice this expression directly; SystemVerilog backends cannot portably emit `(expr)[hi:lo]`. For same-width modular arithmetic, use wrapping operators such as `+%` or `-%`; otherwise assign the expression to a typed `let`/wire first and slice the named value.",
+                        base.span,
+                    ));
+                    return Ty::Error;
+                }
                 let base_ty = self.resolve_expr_type(base, module_name, local_types);
                 let hi_val = self.eval_const_expr(hi, local_types);
                 let lo_val = self.eval_const_expr(lo, local_types);
@@ -3761,7 +3773,14 @@ impl<'a> TypeChecker<'a> {
                     _ => Ty::Error,
                 }
             }
-            ExprKind::PartSelect(_base, _start, width, _up) => {
+            ExprKind::PartSelect(base, _start, width, _up) => {
+                if !Self::is_portable_bit_slice_base(base) {
+                    self.errors.push(CompileError::general(
+                        "cannot part-select this expression directly; SystemVerilog backends cannot portably emit `(expr)[start +: width]` (or `-:`). For same-width modular arithmetic, use wrapping operators such as `+%` or `-%`; otherwise assign the expression to a typed `let`/wire first and part-select the named value.",
+                        base.span,
+                    ));
+                    return Ty::Error;
+                }
                 // width is const; result type is UInt<width>
                 match self.eval_const_expr(width, local_types) {
                     Some(w) if w > 0 => Ty::UInt(w as u32),
@@ -3802,10 +3821,10 @@ impl<'a> TypeChecker<'a> {
                     local_types,
                 );
                 // Return type from first non-wildcard arm
-                for arm in arms {
-                    return self.resolve_expr_type(&arm.value, module_name, local_types);
+                match arms.first() {
+                    Some(arm) => self.resolve_expr_type(&arm.value, module_name, local_types),
+                    None => Ty::Error,
                 }
-                Ty::Error
             }
             ExprKind::Concat(parts) => {
                 // Total width = sum of each part's width (Bool=1, UInt<N>=N, else 1)
@@ -4110,6 +4129,73 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Bases that SystemVerilog backends (Verilator/iverilog) accept as the
+    /// target of a bit-slice `[hi:lo]` or part-select `[start +: w]` without
+    /// needing to be bound to a named `let` first. `BitSlice`, `PartSelect`,
+    /// `Bool`, and `EnumVariant` were removed from this list — chained
+    /// bit-select (`(a[7:4])[1:0]`) and slicing/part-selecting a literal
+    /// bool/enum-variant produce SV that Verilator/iverilog reject even when
+    /// parenthesized, so those bases must be rejected here rather than
+    /// allowed through to codegen. See issue #653.
+    fn is_portable_bit_slice_base(base: &Expr) -> bool {
+        matches!(
+            base.kind,
+            ExprKind::Ident(_)
+                | ExprKind::SynthIdent(_, _)
+                | ExprKind::Literal(_)
+                | ExprKind::Index(_, _)
+                | ExprKind::FieldAccess(_, _)
+                | ExprKind::Concat(_)
+                | ExprKind::Repeat(_, _)
+                | ExprKind::FunctionCall(_, _)
+                | ExprKind::MethodCall(_, _, _)
+        )
+    }
+
+    /// Find the port-site `<P=expr>` bus-param overrides for a bus field
+    /// access base (`port.sig` or `vec_port[i].sig`) and fold each value to a
+    /// literal in the *current* (enclosing-construct) param scope — override
+    /// exprs like `initiator BusVr<DATA_W=DATA_W>` reference the enclosing
+    /// module's params, not the bus's. Values that don't const-fold are
+    /// dropped, falling back to the bus's declared default.
+    fn bus_port_param_overrides(
+        &self,
+        base: &Expr,
+        module_name: &str,
+        local_types: &HashMap<String, Ty>,
+    ) -> Vec<(String, Expr)> {
+        let base_name = match &base.kind {
+            ExprKind::Ident(n) => n,
+            ExprKind::Index(inner, _) => match &inner.kind {
+                ExprKind::Ident(n) => n,
+                _ => return Vec::new(),
+            },
+            _ => return Vec::new(),
+        };
+        let Some(port) = self.source.items.iter().find_map(|item| {
+            let ports: &[PortDecl] = match item {
+                Item::Module(m) if m.name.name == module_name => &m.ports,
+                Item::Fsm(f) if f.name.name == module_name => &f.ports,
+                Item::Pipeline(p) if p.name.name == module_name => &p.ports,
+                _ => return None,
+            };
+            ports.iter().find(|p| p.name.name == *base_name)
+        }) else {
+            return Vec::new();
+        };
+        let Some(ref bi) = port.bus_info else {
+            return Vec::new();
+        };
+        bi.params
+            .iter()
+            .filter_map(|pa| {
+                let v = self.eval_const_expr(&pa.value, local_types)?;
+                let lit = Expr::new(ExprKind::Literal(LitKind::Dec(v)), pa.value.span);
+                Some((pa.name.name.clone(), lit))
+            })
+            .collect()
+    }
+
     /// Resolve `ExprKind::FieldAccess(base, field)` — the type of a `.field`
     /// access on a struct, bus, or `Reset.asserted` polarity-abstracted bool.
     /// Extracted from `resolve_expr_type` for readability — the original arm
@@ -4160,10 +4246,37 @@ impl<'a> TypeChecker<'a> {
         if let Ty::Bus(name) = &base_ty {
             if let Some((sym, _)) = self.symbols.globals.get(name) {
                 if let crate::resolve::Symbol::Bus(info) = sym {
-                    let _eff = info.effective_signals(&info.default_param_map());
-                    for (sname, _dir, sty) in &_eff {
+                    // Port-site `<P=expr>` overrides, when the base names a
+                    // bus port (or a `Vec<Bus,N>` element) of the enclosing
+                    // construct. The override exprs were written at the port
+                    // site, so they fold in the *enclosing* param scope —
+                    // e.g. `initiator BusVr<DATA_W=DATA_W>` binds the bus's
+                    // DATA_W to the module's — and are pre-folded to literals
+                    // here, while the enclosing scope is still active.
+                    let overrides = self.bus_port_param_overrides(base, module_name, local_types);
+                    // The signal's declared type folds in the *bus's* param
+                    // scope: bus param defaults, with the pre-folded port-site
+                    // overrides substituted in. Resolving it in the enclosing
+                    // scope instead lets a same-named module param shadow the
+                    // bus param — the cross-construct collision class issue
+                    // #462 fixed for sibling modules.
+                    let mut bus_scope = info.params.clone();
+                    for (pname, pval) in &overrides {
+                        if let Some(pd) = bus_scope.iter_mut().find(|pd| &pd.name.name == pname) {
+                            pd.default = Some(pval.clone());
+                        }
+                    }
+                    let mut pm = info.default_param_map();
+                    for (pname, pval) in &overrides {
+                        pm.insert(pname.clone(), pval);
+                    }
+                    let eff = info.effective_signals(&pm);
+                    for (sname, _dir, sty) in &eff {
                         if sname == &field.name {
-                            return self.resolve_type_expr(sty, module_name, local_types);
+                            let saved = std::mem::replace(&mut self.active_params, bus_scope);
+                            let ty = self.resolve_type_expr(sty, module_name, local_types);
+                            self.active_params = saved;
+                            return ty;
                         }
                     }
                     self.errors.push(CompileError::general(
@@ -4785,6 +4898,106 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             _ => None,
+        }
+    }
+
+    fn eval_const_expr_i64(&self, expr: &Expr, local_types: &HashMap<String, Ty>) -> Option<i64> {
+        match &expr.kind {
+            ExprKind::Literal(LitKind::Dec(v))
+            | ExprKind::Literal(LitKind::Hex(v))
+            | ExprKind::Literal(LitKind::Bin(v))
+            | ExprKind::Literal(LitKind::Sized(_, v)) => i64::try_from(*v).ok(),
+            ExprKind::Ident(name) => {
+                if let Some(p) = self.active_params.iter().find(|p| p.name.name == *name) {
+                    if let Some(default) = &p.default {
+                        return self.eval_const_expr_i64(default, local_types);
+                    }
+                }
+
+                for item in &self.source.items {
+                    if let Item::Module(m) = item {
+                        for p in &m.params {
+                            if p.name.name == *name {
+                                if let Some(default) = &p.default {
+                                    return self.eval_const_expr_i64(default, local_types);
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            ExprKind::Unary(UnaryOp::Neg, inner) => {
+                self.eval_const_expr_i64(inner, local_types)?.checked_neg()
+            }
+            ExprKind::Binary(BinOp::Add, lhs, rhs) => self
+                .eval_const_expr_i64(lhs, local_types)?
+                .checked_add(self.eval_const_expr_i64(rhs, local_types)?),
+            ExprKind::Binary(BinOp::Sub, lhs, rhs) => self
+                .eval_const_expr_i64(lhs, local_types)?
+                .checked_sub(self.eval_const_expr_i64(rhs, local_types)?),
+            ExprKind::Binary(BinOp::Mul, lhs, rhs) => self
+                .eval_const_expr_i64(lhs, local_types)?
+                .checked_mul(self.eval_const_expr_i64(rhs, local_types)?),
+            ExprKind::Binary(BinOp::Div, lhs, rhs) => {
+                let l = self.eval_const_expr_i64(lhs, local_types)?;
+                let r = self.eval_const_expr_i64(rhs, local_types)?;
+                if r == 0 {
+                    None
+                } else {
+                    l.checked_div(r)
+                }
+            }
+            ExprKind::Binary(BinOp::Mod, lhs, rhs) => {
+                let l = self.eval_const_expr_i64(lhs, local_types)?;
+                let r = self.eval_const_expr_i64(rhs, local_types)?;
+                if r == 0 {
+                    None
+                } else {
+                    l.checked_rem(r)
+                }
+            }
+            ExprKind::Clog2(arg) => {
+                let v = self.eval_const_expr_i64(arg, local_types)?;
+                if v <= 1 {
+                    Some(1)
+                } else {
+                    Some((64 - ((v as u64) - 1).leading_zeros()) as i64)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn resolve_param_sized_literal_width(
+        &mut self,
+        name: &str,
+        expr: &Expr,
+        local_types: &HashMap<String, Ty>,
+    ) -> Option<u32> {
+        match self.eval_const_expr_i64(
+            &Expr::new(ExprKind::Ident(name.to_string()), expr.span),
+            local_types,
+        ) {
+            Some(width) if width > 0 => Some(width as u32),
+            Some(width) => {
+                self.errors.push(CompileError::General {
+                    message: format!(
+                        "sized literal width param `{name}` must be greater than zero, got {width}"
+                    ),
+                    span: crate::diagnostics::span_to_source_span(expr.span),
+                });
+                None
+            }
+            None => {
+                self.errors.push(CompileError::General {
+                    message: format!(
+                        "sized literal width param `{name}` must resolve to a positive integer constant"
+                    ),
+                    span: crate::diagnostics::span_to_source_span(expr.span),
+                });
+                None
+            }
         }
     }
 
@@ -7007,6 +7220,18 @@ impl<'a> TypeChecker<'a> {
             for item in &stage.body {
                 if let ModuleBodyItem::CombBlock(cb) = item {
                     Self::collect_comb_stmt_targets(&cb.stmts, &mut driven);
+                    // `collect_comb_stmt_targets` above only tells us a target
+                    // is assigned on SOME path (e.g. one arm of an if/else) —
+                    // it doesn't confirm every control path assigns it. Since
+                    // `wire` isn't legal in a stage and `reg` can't be
+                    // assigned in `comb`, an output port is the only
+                    // comb-assignable target here, so `check_comb_latch`
+                    // (the same no-implicit-latch analysis module bodies
+                    // use) doubles as the pipeline stage's latch guard: a
+                    // partial if/match with no covering else/wildcard arm is
+                    // reported as "infers a latch" instead of being silently
+                    // accepted or mis-reported as "not driven". See #557.
+                    self.check_comb_latch(&cb.stmts, cb.span);
                 }
                 if let ModuleBodyItem::Inst(inst) = item {
                     for conn in &inst.connections {
@@ -7039,6 +7264,107 @@ impl<'a> TypeChecker<'a> {
         // Reject it here; the combinational logic belongs in a wrapping
         // `module` whose result the pipeline then registers.
         self.check_pipeline_no_comb_input_to_output(p);
+
+        // Warn when a wait-stage's idle fast-path can collapse an
+        // inter-wait assignment into the same cycle as the assignment that
+        // follows the next wait boundary (see #590 — fixed by emitting the
+        // next group's pre-assigns on the fast-path edge, but if the wait
+        // condition is already true at dispatch, both writes still land on
+        // the same clock edge and the pre-wait value is never observable).
+        for stage in &p.stages {
+            self.check_pipeline_wait_stage_collapse(stage);
+        }
+    }
+
+    /// See #590. Partition a wait-stage's `seq` statements into the same
+    /// [pre-assigns, wait, pre-assigns, wait, ..., trailing] groups the
+    /// codegen (`emit_pipeline_wait_stage_ff` in `src/codegen/pipeline.rs`)
+    /// and sim codegen (`emit_pipeline_sim_wait_stage` in
+    /// `src/sim_codegen/pipeline.rs`) use, and warn on any register that is
+    /// assigned in both the group before the first wait and the group that
+    /// runs immediately after it — those two groups can now execute back to
+    /// back in a single cycle via the idle fast-path (state 0), in which
+    /// case the second write silently wins.
+    fn check_pipeline_wait_stage_collapse(&mut self, stage: &StageDecl) {
+        let mut seq_stmts: &[Stmt] = &[];
+        for item in &stage.body {
+            if let ModuleBodyItem::RegBlock(rb) = item {
+                seq_stmts = &rb.stmts;
+                break;
+            }
+        }
+        if seq_stmts.is_empty() {
+            return;
+        }
+
+        struct WaitGroup<'a> {
+            pre_assigns: Vec<&'a Stmt>,
+            wait_span: Span,
+        }
+
+        let mut groups: Vec<WaitGroup> = Vec::new();
+        let mut cur_assigns: Vec<&Stmt> = Vec::new();
+        for stmt in seq_stmts {
+            match stmt {
+                Stmt::WaitUntil(_, span) => {
+                    groups.push(WaitGroup {
+                        pre_assigns: std::mem::take(&mut cur_assigns),
+                        wait_span: *span,
+                    });
+                }
+                Stmt::DoUntil { span, .. } => {
+                    groups.push(WaitGroup {
+                        pre_assigns: std::mem::take(&mut cur_assigns),
+                        wait_span: *span,
+                    });
+                }
+                other => cur_assigns.push(other),
+            }
+        }
+        let trailing = std::mem::take(&mut cur_assigns);
+
+        if groups.is_empty() {
+            return;
+        }
+
+        // The two groups that the idle-state fast path can now run back to
+        // back on the same clock edge: group[0].pre_assigns, followed by
+        // either group[1].pre_assigns (2+ waits) or `trailing` (exactly 1
+        // wait — see the `if (cond) { trailing }` fast-path arm in codegen).
+        let second: &[&Stmt] = if groups.len() > 1 {
+            &groups[1].pre_assigns
+        } else {
+            &trailing
+        };
+        if second.is_empty() {
+            return;
+        }
+
+        let mut first_targets: HashSet<String> = HashSet::new();
+        for s in &groups[0].pre_assigns {
+            Self::collect_stmt_targets(std::slice::from_ref(*s), &mut first_targets);
+        }
+        if first_targets.is_empty() {
+            return;
+        }
+
+        let mut second_targets: HashSet<String> = HashSet::new();
+        for s in second {
+            Self::collect_stmt_targets(std::slice::from_ref(*s), &mut second_targets);
+        }
+
+        let wait_span = groups[0].wait_span;
+        let mut names: Vec<&String> = first_targets.intersection(&second_targets).collect();
+        names.sort();
+        for name in names {
+            self.warnings.push(CompileWarning {
+                message: format!(
+                    "register '{name}' is assigned both before and after a `wait` in stage `{}`; when the wait condition is already true at dispatch both assignments execute in the same cycle and the last write wins — the pre-wait value is never observable on the fast path",
+                    stage.name.name
+                ),
+                span: wait_span,
+            });
+        }
     }
 
     /// Reject any `pipeline` output port that combinationally depends on an

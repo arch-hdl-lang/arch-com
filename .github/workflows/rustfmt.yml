@@ -13,11 +13,6 @@ on:
       - '.github/workflows/rustfmt.yml'
   pull_request:
     branches: [main]
-    paths:
-      - '**/*.rs'
-      - 'rustfmt.toml'
-      - 'rust-toolchain.toml'
-      - '.github/workflows/rustfmt.yml'
 
 concurrency:
   group: rustfmt-${{ github.ref }}

@@ -1,7 +1,18 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-06-08
-> Compiler version: 0.70.4
+> Last updated: 2026-07-11
+> Compiler version: 0.70.7
+>
+> **Unreleased (since 0.70.7):**
+> - **Pipeline wait-stage idle fast-path no longer drops inter-wait assignments** (#590) — a `pipeline` stage with two or more sequential `wait`s was silently dropping any assignment between the first and second wait whenever the idle-state (state 0) fast path fired (i.e. the first wait's condition was already true the cycle the stage accepted new data). Fixed identically in both backends: `src/codegen/pipeline.rs` (SV) and `src/sim_codegen/pipeline.rs` (native sim) now emit the second wait group's pre-assigns on the state-0 → state-2 fast-path edge, mirroring the existing state-1 → state-2 slow-path edge. New compile-time warning (`arch check`/`build`/`sim`) fires when a register is assigned both immediately before the first wait and immediately after it — that pair can now land on the same clock edge via the fast path, so the pre-wait value may never be architecturally observable (last write wins). `thread` construct's `wait until` lowering was checked for the same bug class and found clean — see `doc/thread_lowering_algorithm.md` §4/4d.1: every inter-wait assignment gets its own dedicated FSM state that always executes for exactly one cycle before advancing (no idle/upstream-valid fast-path shortcut exists for threads), so there is no edge that can skip it.
+>
+> **0.70.7 release highlights:**
+> - **Param-sized literal follow-through** — the `0.70.6` param-width literal work now carries through typecheck and formal: `W'dN` is typed using the positive integer value of `W`, non-positive widths get a targeted diagnostic instead of a fallback `UInt<32>` mismatch, unknown width names are rejected clearly, and `arch formal` resolves param-sized literal widths instead of dropping them on the SMT path.
+>
+> **0.70.6 release highlights:**
+> - **Icarus-portable CVDP generation guidance** — ARCH MCP and skill instructions now steer generated code away from indexed casts/conversions, nested signed-extension chains, and direct slices of arithmetic expressions that Icarus rejects or mishandles.
+> - **Safer type checking for portable slices** — `arch check` now rejects direct bit-slicing of non-portable expression bases such as arithmetic expressions and points users toward wrapping arithmetic or named typed intermediates. Extended to variable part-select `expr[start +: w]` / `expr[start -: w]` (arch#653 item 1) — previously ungated, so a low-precedence base like `(a + b)[s +: 4]` silently miscompiled (`arch build` emitted precedence-wrong SV with no diagnostic). The shared portable-base allowlist (`is_portable_bit_slice_base`) was also reconciled with what Verilator/iverilog actually accept as a bit-select/part-select base (arch#653 item 2): `BitSlice`, `PartSelect`, `Bool`, and `EnumVariant` bases are no longer accepted — chained bit-select (`a[7:4][1:0]`), a slice/part-select of a part-select, and a slice/part-select of a `Bool`/enum-variant literal are Verilator/iverilog syntax errors even when the base is parenthesized, so they are now rejected at typecheck with the same "bind to a named `let`" diagnostic. `Repeat` (`{N{a}}[hi:lo]`) is unaffected — codegen already emits it bare (no parens), which Verilator/iverilog accept.
+> - **Parameterized sized literals** — literals such as `W'd0` now resolve to the positive integer value of `W` instead of falling back to `UInt<32>`, with a clear diagnostic for non-positive widths. SV codegen emits the legal size-cast form `W'(0)` (a parameter is not a valid sized-literal width — Verilator and iverilog both reject `W'd0`).
 >
 > **0.70.4 release highlights:**
 > - **Lean construct proof expansion** — construct certificates now cover bus `credit_channel` accounting in Lean and SMT, strengthen round-robin arbiter certificates with a bounded scan witness, add one-step thread effect replay, and add reusable Lean theorem libraries for async FIFO Gray-code decoding and abstract pipeline valid/stall/flush behavior.

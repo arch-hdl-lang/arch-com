@@ -11,12 +11,6 @@ on:
       - '.github/workflows/examples.yml'
   pull_request:
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'examples/**'
-      - '.github/workflows/examples.yml'
 
 # Cancel in-progress runs of this workflow on the same ref when a new commit
 # is pushed — saves CI minutes when someone pushes a quick fix-up.
@@ -48,8 +42,9 @@ jobs:
       - name: cargo build --release
         run: cargo build --release
 
-      - name: cargo test --release
-        run: cargo test --release
+      # `cargo test --release` runs unconditionally in the `test` workflow
+      # (.github/workflows/test.yml) on every PR/push, so it is not repeated
+      # here — this job only needs the release binary for the sim sweep below.
 
       - name: Run sim sweep (parallel)
         # `--keep` preserves the per-test work dirs even on success so the
