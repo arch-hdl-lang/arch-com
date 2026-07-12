@@ -56,19 +56,26 @@ jobs:
       - name: Check Verilator version
         id: verilator_check
         run: |
+          # Floor is 5.034, not just "any 5.x": ARCH's generated reset loops
+          # use non-blocking assignment to arrays inside for-loops, which
+          # older 5.x builds reject as Unsupported (%Error-BLKLOOPINIT).
+          # ubuntu-latest apt ships 5.020 today, which fails exactly there —
+          # the first real nightly run proved it on buf_mgr__setup_counter.
           ver="${{ steps.apt_verilator.outputs.version }}"
           major="${ver%%.*}"
+          minor="${ver#*.}"; minor="${minor%%[^0-9]*}"
+          major=$((10#${major:-0})); minor=$((10#${minor:-0}))
           echo "apt-provided Verilator: $ver"
-          if [ "${major:-0}" -ge 5 ]; then
+          if [ "$major" -gt 5 ] || { [ "$major" -eq 5 ] && [ "$minor" -ge 34 ]; }; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Fallback path if a future ubuntu-latest image regresses to a <5.x
-      # apt package: build and cache a known-good Verilator release. This
-      # step is skipped entirely while apt keeps providing 5.x (the common
-      # case today), so it costs nothing on the happy path.
+      # Fallback path when apt's Verilator is below the 5.034 floor (true on
+      # today's ubuntu-latest, which ships 5.020): build and cache a
+      # known-good release. Cached after the first run, so the cost is a
+      # one-time ~15 min build per runner image generation.
       - name: Cache built Verilator (fallback)
         if: steps.verilator_check.outputs.ok != 'true'
         id: cache_verilator_build
