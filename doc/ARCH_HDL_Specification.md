@@ -845,14 +845,47 @@ acc_out@6 <= fma(a, b, c);
 //          `fma<pipelined, 6>(...)`?
 ```
 
-**Codegen status.** As of this writing, `arch build` / `arch sim` accept
-`<pipelined, N>` through `arch check` (parsing, registry resolution, and all
-latency-typing rules above are fully enforced) but do not yet bind the call
-to a retimed staged datapath — `arch build`/`arch sim` refuse with an
-explicit "not yet implemented" error rather than silently falling back to an
-un-retimed comb cone. Landing the staged RTL and its sequential-equivalence
-proof is tracked separately; check `arch ops` / the compiler's release notes
-for current status.
+**Codegen status.** `arch build` / `arch sim` bind every registry entry that
+carries a codegen implementation (currently `fma<FP32, 6>`) to the following
+shape: the ordinary combinational operator (`fma(a, b, c)` — the same helper
+bare `fma` calls) feeds the `pipe_reg<T, N>` register cascade the call is
+bound to, i.e. the emitted RTL is *comb operator + N register stages*, not a
+hand-split staged datapath:
+
+```systemverilog
+always_ff @(posedge clk) begin
+  acc_out_stg1 <= arch_fma_f32(a, b, acc_in);  // stage 1: the comb operator
+  acc_out_stg2 <= acc_out_stg1;                // stages 2..N-1: passthrough
+  ...
+  acc_out      <= acc_out_stg5;                // final tap
+end
+```
+
+The native-sim backend mirrors this exactly (the same N-deep shift structure,
+evaluated on the same clock-edge semantics). **Sequential equivalence to the
+comb operator holds by construction**: the staged form is a pure N-cycle
+delay of a value computed by the same already-verified comb IR node, not an
+independently written pipeline that could diverge from it — there is no
+separate "staged datapath" to prove equivalent, only the comb operator (already
+verified — see the FP correctness work referenced in §3.8) plus an ordinary
+register cascade (already verified — same as any other `pipe_reg` write).
+Cross-backend (native-sim ⇄ Verilator-on-emitted-SV) lock-step agreement is
+regression-tested (random operands, back-to-back throughput, mid-stream
+reset).
+
+The **timing win** (the entire point of `<pipelined, N>` over a delay-lined
+comb call) comes from downstream synthesis retiming the register cascade
+across the comb cone — the compiler emits the *shape* that synthesis can
+retime, it does not perform the retiming itself. A registry entry's
+characterized fmax (`arch ops`, `doc/generated/pipelined_ops.md`) reflects
+that downstream synthesis result, not something visible in the emitted RTL
+directly; see `tests/fp_v1/synth/README.md` for the characterization flow and
+its current reproducibility caveats.
+
+A registry row that typechecks but has no codegen binding wired yet (a future
+row landed ahead of its codegen support) still refuses explicitly at `arch
+build` / `arch sim` — "not yet implemented" — rather than silently falling
+back to an un-retimed comb cone; there is no such row today.
 
 **4. Modules**
 
