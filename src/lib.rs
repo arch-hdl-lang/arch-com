@@ -14,6 +14,7 @@ pub mod interface;
 pub mod learn;
 pub mod lexer;
 pub mod parser;
+pub mod pipelined_ops;
 pub mod resolve;
 pub mod signal_flow;
 pub mod sim_codegen;
