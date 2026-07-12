@@ -1,5 +1,10 @@
 # Proposal: pipelined arithmetic operators via a verified implementation registry
 
+> **Status: APPROVED 2026-07-12** — design adopted as proposed (maintainer
+> sign-off), with the conservative v1 answers to both open questions (explicit
+> alignment; `.archpipe` schedule-only). Implementation proceeds per the phase
+> plan below; spec sections land with the implementation PRs, not this doc.
+
 Status: design proposal / discussion. No implementation in this note. User-facing
 syntax + type-system change — requires sign-off before any code, and a spec update
 is part of the eventual fix.
@@ -293,13 +298,12 @@ registered depth and that any consumer of `acc_out` reads it at latency 6.
   reserved keyword (`src/lexer.rs:189`, alongside `pipeline` / `pipe_reg`), whereas
   bare `pipe` is not a word keyword (it lexes as `|`). Reusing `pipelined` keeps the
   pipe-family vocabulary consistent and needs no new reserved word.
-- **Mixed-latency expressions.** Should the compiler *auto-insert* delay-line
-  `pipe_reg`s to align a latency-0 operand with a latency-6 one (convenience), or
-  always require the user to align explicitly (safety)? Proposal: require explicit
-  in v1; revisit auto-alignment later.
-- **Scope of `.archpipe` v1.** Schedule-over-trusted-IR only, or also full custom
-  datapath IR? Proposal: schedule-only in v1 (keeps the equiv obligation a pure
-  retiming check).
+- **Mixed-latency expressions** (decided, maintainer sign-off 2026-07-12). Require
+  explicit alignment in v1 — no auto-inserted delay lines; latency mismatch is a
+  compile error. Revisit auto-alignment later if usage shows real friction.
+- **Scope of `.archpipe` v1** (decided, maintainer sign-off 2026-07-12).
+  Schedule-over-trusted-IR only — the equivalence obligation stays a pure
+  retiming check. Full custom datapath IR is out of scope for v1.
 
 ## Non-goals (v1)
 
