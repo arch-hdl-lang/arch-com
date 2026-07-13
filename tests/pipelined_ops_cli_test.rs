@@ -45,7 +45,12 @@ fn ops_text_listing_snapshot() {
     assert_eq!(cells[3], "verified");
     assert_eq!(cells[4], "~260");
     assert_eq!(cells[5], "MHz");
-    assert_eq!(cells[6], "builtin:fma_f32_s6");
+    // fmax cell is now an annotated "~260 MHz (external run — see notes)"
+    // (proposal phase 3 — see src/pipelined_ops.rs registry entry notes for
+    // why this repo's checked-in synth flow doesn't reproduce it), so the
+    // `impl` column has shifted further right; only its value (the last
+    // whitespace-split cell) is a stable assertion target.
+    assert_eq!(cells.last().copied(), Some("builtin:fma_f32_s6"));
     assert!(stdout.contains("fma<FP32, 6>:"));
 }
 
@@ -73,5 +78,7 @@ fn ops_markdown_listing_is_well_formed() {
     assert!(stdout.starts_with("<!-- GENERATED FILE. DO NOT EDIT BY HAND."));
     assert!(stdout
         .contains("| operator | profile | stages | status | fmax (ng45, typ) | impl | notes |"));
-    assert!(stdout.contains("| `fma` | FP32 | 6 | verified | ~260 MHz | `builtin:fma_f32_s6` |"));
+    assert!(stdout.contains(
+        "| `fma` | FP32 | 6 | verified | ~260 MHz (external run — see notes) | `builtin:fma_f32_s6` |"
+    ));
 }

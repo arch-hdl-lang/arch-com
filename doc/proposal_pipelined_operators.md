@@ -4,6 +4,12 @@
 > sign-off), with the conservative v1 answers to both open questions (explicit
 > alignment; `.archpipe` schedule-only). Implementation proceeds per the phase
 > plan below; spec sections land with the implementation PRs, not this doc.
+>
+> **Phases 1–3 DONE (2026-07-12).** `fma<pipelined, 6>` type-checks *and*
+> builds/sims end-to-end on both backends — see phase 3 in "Implementation
+> phases" below for the clarified comb+retime implementation form and where
+> the verification obligation and characterization honesty live. Phases 4–5
+> (`.archpipe` loader, generalizing beyond `fma`) are not started.
 
 Status: design proposal / discussion. No implementation in this note. User-facing
 syntax + type-system change — requires sign-off before any code, and a spec update
@@ -277,14 +283,35 @@ registered depth and that any consumer of `acc_out` reads it at latency 6.
 
 1. **Registry + `arch ops` + enforcement** — table, type-check lookup, enumerated
    error, generated spec section. (No new datapath; wire the existing 6-stage.)
+   **DONE.**
 2. **`fma<pipelined, N>` surface + latency typing** — parser, latency on exprs, the
-   alignment check, codegen binding to `pipe_reg`.
+   alignment check, codegen binding to `pipe_reg`. **DONE.**
 3. **Builtin 6-stage as a `verified` entry** — productize the staging schedule;
    land the sequential-equiv proof obligation that sets `status=verified`.
+   **DONE, with a clarified implementation form** (maintainer note,
+   2026-07-12): the "6-stage" characterization is the proven combinational
+   sticky-fold `fma` cone plus N output register stages, **retimed by
+   downstream synthesis** — not a hand-split staged datapath. So
+   `builtin:fma_f32_s6` lowers (both `arch build` and `arch sim`) to the comb
+   `fma` operator feeding the existing `pipe_reg<T, N>` register cascade; no
+   bespoke staged-datapath codegen exists or is needed (`src/pipelined_ops.rs`
+   module doc comment). Sequential equivalence to the comb operator holds *by
+   construction* (a pure N-cycle delay of an already-verified comb IR node),
+   which is the verification obligation this phase closes — locked by a
+   randomized lock-step regression test (native-sim ⇄ Verilator-on-emitted-SV,
+   `tests/pipelined_fma_lockstep_test.rs`) rather than a separate formal
+   equivalence proof (there is no second implementation to prove equivalent
+   to the first). The registry's `~260 MHz` fmax figure remains an
+   **external** Yosys+OpenSTA+Nangate45 characterization; this repo's
+   checked-in synthesis flow (`tests/fp_v1/synth/run_synth.sh --stages N
+   MODULE`) cannot reproduce it without a Liberty file and OpenSTA (neither
+   available in this repo's sandboxes) — see `tests/fp_v1/synth/README.md`
+   "Staged/pipelined operators" for what the checked-in flow *does*
+   reproduce (a logic-depth proxy) and why.
 4. **`.archpipe` loader + verification gate** — file format, `ARCH_LIB_PATH`
-   discovery, `unverified` warning path, `arch formal` promotion.
+   discovery, `unverified` warning path, `arch formal` promotion. Not started.
 5. **Generalize beyond fma** — `mul_pipe`, `add_pipe`; additional characterized
-   depths.
+   depths. Not started.
 
 ## Open questions
 

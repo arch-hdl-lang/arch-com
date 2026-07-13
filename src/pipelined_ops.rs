@@ -6,27 +6,47 @@
 //!
 //! Phase 2 (this module, additionally) wires up the `fma<pipelined, N>`
 //! call surface, parsed as `ast::ExprKind::PipelinedCall`, and its latency
-//! typing (see `typecheck.rs`'s `PipelinedCall` handling). Codegen —
-//! binding the call to an actual retimed staged datapath in `arch build`
-//! / `arch sim` — is deferred: `builtin:fma_f32_s6` today is a single
-//! combinational cone (`src/fp_ops.rs`), not staged RTL; "6-stage" is
-//! purely a downstream Yosys synthesis-retiming characterization the
-//! compiler never sees. Productizing a real staged schedule with an
-//! equivalence proof is proposal phase 3. `find_pipelined_calls` below is
-//! the codegen-side backstop: `arch build` / `arch sim` scan the
-//! elaborated module bodies for any `PipelinedCall` and refuse with a
-//! clear "not yet implemented" error rather than silently falling back to
-//! comb + delay-line (which would be functionally correct but would
-//! misrepresent an un-retimed cone as the requested pipelined operator).
-//! `arch check` does not run this scan — typecheck alone is fully
-//! supported.
+//! typing (see `typecheck.rs`'s `PipelinedCall` handling).
+//!
+//! Phase 3 (this module, additionally) binds `builtin:fma_f32_s6` to a
+//! real codegen shape: **the existing verified combinational sticky-fold
+//! FMA (`src/fp_ops.rs`, called the same way bare `fma(a,b,c)` is) feeding
+//! the N-deep `pipe_reg` register chain the call is bound to.** The
+//! characterized "6-stage, ~260 MHz" datapath in the registry notes is
+//! this exact shape — comb cone + N output register stages — run through
+//! Yosys/abc retiming (`buffer -N 8; upsize; dnsize`); the compiler does
+//! not need to hand-split the datapath because retiming does that job
+//! downstream. Concretely: `lower_pipelined_calls` (below) rewrites every
+//! `PipelinedCall(op, args, N)` reaching codegen into a plain
+//! `FunctionCall(op, args)` — the `elaborate::lower_pipe_reg_ports` cascade
+//! rewrite (which runs *before* typecheck) has already turned
+//! `acc@N <= op<pipelined, N>(args)` into `acc_stg1 <= op<pipelined, N>(args); acc_stg2 <= acc_stg1; ...`,
+//! so once the call itself collapses to the ordinary comb form, the
+//! existing pipe_reg register-cascade codegen (shared by `arch build` and
+//! `arch sim` — both already emit N flops per pipe_reg port) does the
+//! rest, with **no bespoke staged-datapath codegen required**. Sequential
+//! equivalence to the comb operator is therefore true *by construction*:
+//! the retimed datapath is a pure N-cycle delay of a value computed by the
+//! same trusted comb IR node, not an independent hand-written pipeline
+//! that could diverge from it.
+//!
+//! `lower_pipelined_calls` only performs this rewrite for registry entries
+//! whose `codegen_impl` is `Some(_)`. Entries with `codegen_impl: None`
+//! (future registry rows added ahead of their codegen support landing)
+//! still hit the same "typechecks but codegen is not yet implemented"
+//! error `arch build` / `arch sim` used to raise unconditionally — so a
+//! future un-wired row fails loudly instead of silently falling back to
+//! an un-retimed comb cone. `arch check` never calls this pass — typecheck
+//! alone is fully supported for any registered row regardless of codegen
+//! status.
 //!
 //! The registry key is `(operator, profile, stages)`. Entries carry a
 //! verification `status`: `verified` means the staged IR has been proven
-//! sequentially equivalent to the trusted combinational operator (see
-//! phase 3 of the proposal for wiring the FMA proof obligation);
-//! `unverified` entries (added by future `.archpipe` loading, phase 4) are
-//! usable only with an explicit opt-in.
+//! sequentially equivalent to the trusted combinational operator — true by
+//! construction for `builtin:fma_f32_s6` per the paragraph above, since
+//! the "staged IR" *is* the comb IR plus registers, not a separate
+//! datapath; `unverified` entries (added by future `.archpipe` loading,
+//! phase 4) are usable only with an explicit opt-in.
 
 use std::fmt;
 
@@ -75,6 +95,14 @@ pub struct PipelinedOpEntry {
     pub impl_id: &'static str,
     /// Free-text characterization / provenance notes.
     pub notes: Option<&'static str>,
+    /// Codegen binding: the name of the plain combinational operator this
+    /// entry retimes (e.g. `Some("fma")` — codegen calls it exactly the
+    /// way bare `fma(a, b, c)` is called, then relies on the surrounding
+    /// `pipe_reg` cascade for the N register stages). `None` means the
+    /// entry has typecheck support (via `lookup`) but no codegen binding
+    /// yet — `arch build` / `arch sim` refuse with a "not yet implemented"
+    /// error rather than silently emitting an un-retimed comb cone.
+    pub codegen_impl: Option<&'static str>,
 }
 
 /// The compiler-owned builtin registry.
@@ -92,12 +120,21 @@ pub const BUILTIN_REGISTRY: &[PipelinedOpEntry] = &[PipelinedOpEntry {
     profile: "FP32",
     stages: 6,
     status: VerifyStatus::Verified,
-    fmax_ng45_typ: Some("~260 MHz"),
+    fmax_ng45_typ: Some("~260 MHz (external run — see notes)"),
     impl_id: "builtin:fma_f32_s6",
     notes: Some(
-        "sticky-fold FMA, buffered (Yosys abc: buffer -N 8; upsize; dnsize); \
-         6-stage is the characterized knee vs. 7/10 stages",
+        "sticky-fold FMA, buffered (Yosys abc: buffer -N 8; upsize; dnsize) — an \
+         EXTERNAL Nangate45 (typ.) Yosys+OpenSTA+Liberty characterization not \
+         reproducible by this repo's checked-in flow (no Liberty/OpenSTA in \
+         the dev/CI sandbox); 6-stage is the characterized knee vs. 7/10 \
+         stages. Codegen = comb `fma` IR + 6 pipe_reg stages, retimed \
+         downstream by synthesis (sequential equivalence holds by \
+         construction — see this module's doc comment). Reproducible \
+         logic-depth proxy (not fmax): tests/fp_v1/synth/run_synth.sh \
+         --stages 6 F32Fma, documented in tests/fp_v1/synth/README.md \
+         'Staged/pipelined operators'",
     ),
+    codegen_impl: Some("fma"),
 }];
 
 /// Returns the builtin registry rows, sorted deterministically by
@@ -433,6 +470,218 @@ fn scan_expr(expr: &crate::ast::Expr, out: &mut Vec<FoundPipelinedCall>) {
         }
         Literal(_) | Ident(_) | SynthIdent(_, _) | EnumVariant(_, _) | Todo | Bool(_) => {}
     }
+}
+
+/// Resolves the codegen binding for `(operator, stages)` — Phase 3. Scans
+/// every registry row matching `operator`/`stages` (profile-agnostic: the
+/// bound comb function, e.g. `"fma"`, is itself polymorphic over profile
+/// the same way bare `fma(a, b, c)` is, so codegen does not need to
+/// rediscover the profile typecheck already resolved). Returns:
+///
+/// - `Ok(fn_name)` if at least one matching row has `codegen_impl: Some(_)`.
+/// - `Err(())` if every matching row (there must be at least one — a
+///   program reaching this call already passed typecheck's `lookup`) has
+///   `codegen_impl: None`: a registered-but-not-yet-implemented row, which
+///   must fail loudly rather than silently falling back to an un-retimed
+///   comb cone.
+fn resolve_codegen_impl(operator: &str, stages: u32) -> Result<&'static str, ()> {
+    BUILTIN_REGISTRY
+        .iter()
+        .filter(|e| e.operator == operator && e.stages == stages)
+        .find_map(|e| e.codegen_impl)
+        .ok_or(())
+}
+
+/// Phase-3 codegen-facing lowering: rewrites every `PipelinedCall(op, args, N)`
+/// reachable from a module's `comb`/`seq`/`latch` blocks or `let` bindings
+/// into the plain `FunctionCall(op, args)` the existing comb-operator
+/// codegen (`arch build` and `arch sim` alike) already fully supports.
+///
+/// Must run **after** typecheck (which validated the `(operator, profile,
+/// stages)` registry lookup and all the latency-alignment / binding rules)
+/// and **after** `elaborate::lower_pipe_reg_ports` (which already turned
+/// `acc@N <= op<pipelined, N>(args)` into the register cascade
+/// `acc_stg1 <= op<pipelined, N>(args); acc_stg2 <= acc_stg1; ...; acc <= acc_stg{N-1};`
+/// — so by the time this pass runs, every remaining `PipelinedCall` sits as
+/// the direct RHS of the first cascade stage, and stripping it down to the
+/// bare comb call is sufficient: the surrounding N-deep register chain
+/// (already emitted by ordinary pipe_reg codegen) supplies the retiming.
+///
+/// Returns the first registry-lacks-codegen error encountered (mirroring
+/// the Phase 2 `reject_pipelined_calls_before_codegen` error text) so
+/// `arch build` / `arch sim` can still refuse loudly for any future
+/// registry row added ahead of its codegen support landing. `arch check`
+/// must not call this — it only cares about typecheck's `lookup`, not
+/// codegen availability.
+pub fn lower_pipelined_calls(
+    source: &mut crate::ast::SourceFile,
+) -> Result<(), FoundPipelinedCall> {
+    use crate::ast::{Item, ModuleBodyItem};
+    for item in &mut source.items {
+        if let Item::Module(m) = item {
+            for bi in &mut m.body {
+                match bi {
+                    ModuleBodyItem::CombBlock(cb) => lower_stmts(&mut cb.stmts)?,
+                    ModuleBodyItem::RegBlock(rb) => lower_stmts(&mut rb.stmts)?,
+                    ModuleBodyItem::LatchBlock(lb) => lower_stmts(&mut lb.stmts)?,
+                    ModuleBodyItem::LetBinding(l) => lower_expr(&mut l.value)?,
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn lower_stmts(stmts: &mut [crate::ast::Stmt]) -> Result<(), FoundPipelinedCall> {
+    for s in stmts {
+        lower_stmt(s)?;
+    }
+    Ok(())
+}
+
+fn lower_stmt(stmt: &mut crate::ast::Stmt) -> Result<(), FoundPipelinedCall> {
+    use crate::ast::Stmt;
+    match stmt {
+        Stmt::Assign(a) => lower_expr(&mut a.value)?,
+        Stmt::IfElse(ie) => {
+            lower_expr(&mut ie.cond)?;
+            lower_stmts(&mut ie.then_stmts)?;
+            lower_stmts(&mut ie.else_stmts)?;
+        }
+        Stmt::Match(m) => {
+            lower_expr(&mut m.scrutinee)?;
+            for arm in &mut m.arms {
+                lower_stmts(&mut arm.body)?;
+            }
+        }
+        Stmt::Log(l) => {
+            for a in &mut l.args {
+                lower_expr(a)?;
+            }
+        }
+        Stmt::For(f) => lower_stmts(&mut f.body)?,
+        Stmt::Init(i) => lower_stmts(&mut i.body)?,
+        Stmt::WaitUntil(e, _) => lower_expr(e)?,
+        Stmt::DoUntil { body, cond, .. } => {
+            lower_stmts(body)?;
+            lower_expr(cond)?;
+        }
+    }
+    Ok(())
+}
+
+fn lower_expr(expr: &mut crate::ast::Expr) -> Result<(), FoundPipelinedCall> {
+    use crate::ast::ExprKind::*;
+    // First recurse into children so a `PipelinedCall` nested inside a
+    // larger expression (not just the direct RHS of a cascade stage) is
+    // also lowered — matches `scan_expr`'s traversal shape.
+    match &mut expr.kind {
+        Binary(_, a, b) => {
+            lower_expr(a)?;
+            lower_expr(b)?;
+        }
+        Unary(_, e)
+        | Cast(e, _)
+        | LatencyAt(e, _)
+        | SvaNext(_, e)
+        | Signed(e)
+        | Unsigned(e)
+        | Clog2(e)
+        | Onehot(e)
+        | Repeat(e, _) => lower_expr(e)?,
+        FieldAccess(e, _) => lower_expr(e)?,
+        MethodCall(recv, _, args) => {
+            lower_expr(recv)?;
+            for a in args {
+                lower_expr(a)?;
+            }
+        }
+        Index(base, idx) => {
+            lower_expr(base)?;
+            lower_expr(idx)?;
+        }
+        BitSlice(base, hi, lo) => {
+            lower_expr(base)?;
+            lower_expr(hi)?;
+            lower_expr(lo)?;
+        }
+        PartSelect(base, start, width, _) => {
+            lower_expr(base)?;
+            lower_expr(start)?;
+            lower_expr(width)?;
+        }
+        StructLiteral(_, fields) => {
+            for f in fields {
+                lower_expr(&mut f.value)?;
+            }
+        }
+        Match(scrut, arms) => {
+            lower_expr(scrut)?;
+            for arm in arms {
+                lower_stmts(&mut arm.body)?;
+            }
+        }
+        ExprMatch(scrut, arms) => {
+            lower_expr(scrut)?;
+            for arm in arms {
+                lower_expr(&mut arm.value)?;
+            }
+        }
+        Concat(xs) | FunctionCall(_, xs) => {
+            for x in xs {
+                lower_expr(x)?;
+            }
+        }
+        Inside(e, members) => {
+            lower_expr(e)?;
+            for m in members {
+                match m {
+                    crate::ast::InsideMember::Single(v) => lower_expr(v)?,
+                    crate::ast::InsideMember::Range(lo, hi) => {
+                        lower_expr(lo)?;
+                        lower_expr(hi)?;
+                    }
+                }
+            }
+        }
+        Ternary(c, t, e) => {
+            lower_expr(c)?;
+            lower_expr(t)?;
+            lower_expr(e)?;
+        }
+        PipelinedCall(_, args, _) => {
+            for a in args {
+                lower_expr(a)?;
+            }
+        }
+        Literal(_) | Ident(_) | SynthIdent(_, _) | EnumVariant(_, _) | Todo | Bool(_) => {}
+    }
+    // Now lower this node itself, if it is a PipelinedCall.
+    if let PipelinedCall(name, _, stages) = &expr.kind {
+        let (name, stages) = (name.clone(), *stages);
+        match resolve_codegen_impl(&name, stages) {
+            Ok(fn_name) => {
+                // Replace `PipelinedCall(name, args, stages)` with the
+                // equivalent bare `FunctionCall(name, args)` — see the
+                // module doc comment: the N register stages are supplied
+                // by the surrounding pipe_reg cascade, not by this node.
+                let old = std::mem::replace(&mut expr.kind, Todo);
+                let PipelinedCall(_, args, _) = old else {
+                    unreachable!("matched PipelinedCall above")
+                };
+                expr.kind = FunctionCall(fn_name.to_string(), args);
+            }
+            Err(()) => {
+                return Err(FoundPipelinedCall {
+                    operator: name,
+                    stages,
+                    span: expr.span,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

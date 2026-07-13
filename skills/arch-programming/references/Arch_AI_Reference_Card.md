@@ -271,7 +271,7 @@ end seq
 let s: FP32 = acc_out@6;                          // consumer reads at latency 6
 ```
 
-`acc@6 <= fma(a,b,c)` (comb `fma` delayed via a pipe_reg tap, not `<pipelined, 6>`) still compiles — same values, just not retimed — but warns: *"did you mean `fma<pipelined, 6>(...)`?"*. Codegen for `<pipelined, N>` (binding to real staged RTL) is not yet implemented as of this writing — `arch check` accepts the surface, `arch build`/`arch sim` refuse explicitly rather than silently emitting an un-retimed comb cone.
+`acc@6 <= fma(a,b,c)` (comb `fma` delayed via a pipe_reg tap, not `<pipelined, 6>`) still compiles — same values, just not retimed — but warns: *"did you mean `fma<pipelined, 6>(...)`?"*. Codegen binds `<pipelined, N>` to the comb operator feeding the `pipe_reg` register cascade (`arch build`/`arch sim` both; sequential equivalence to the comb operator holds by construction — no separately-verified staged datapath). The clock-frequency win comes from downstream synthesis retiming that emitted shape, not from anything the compiler does to the RTL directly.
 
 **Vec methods** (parallel-reduction; fully unrolled; no runtime iteration):
 

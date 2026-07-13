@@ -1,13 +1,14 @@
-//! `fma<pipelined, N>` surface + latency typing (proposal phase 2,
-//! `doc/proposal_pipelined_operators.md`).
+//! `fma<pipelined, N>` surface + latency typing (proposal phase 2) and its
+//! codegen binding (proposal phase 3), `doc/proposal_pipelined_operators.md`.
 //!
 //! Covers: parser accept/reject, registry-miss error text, the
 //! binding/consistency mismatch error, the mixed-latency-expression error,
 //! comb-context rejection, the delay-line "did you mean" warning, and the
-//! worked example end-to-end through `arch check` (codegen is deferred —
-//! see the module doc comment on `src/pipelined_ops.rs` — so `arch build`
-//! is asserted to fail with the explicit deferred-codegen error, not to
-//! succeed).
+//! worked example end-to-end through `arch check` AND (phase 3) `arch
+//! build`, which now binds the call to comb `fma` + the pipe_reg register
+//! cascade — see the module doc comment on `src/pipelined_ops.rs`.
+//! Cross-backend (sim ⇄ Verilator) lock-step equivalence and the
+//! latency-exactness check live in `tests/pipelined_fma_lockstep_test.rs`.
 
 use std::io::Write;
 use std::process::Command;
@@ -47,18 +48,6 @@ fn normalize(s: &str) -> String {
         .join(" ")
 }
 
-fn run_build(src: &str) -> std::process::Output {
-    let (td, path) = write_arch(src);
-    let out_sv = td.path().join("M.sv");
-    arch()
-        .arg("build")
-        .arg(&path)
-        .arg("-o")
-        .arg(&out_sv)
-        .output()
-        .expect("run arch build")
-}
-
 const WORKED_EXAMPLE: &str = r#"
 module DotProductStep
   port clk: in Clock<Sys>;
@@ -87,22 +76,66 @@ fn worked_example_passes_check() {
     );
 }
 
-/// Codegen is explicitly deferred (proposal phase 3 — no staged RTL exists
-/// yet for `builtin:fma_f32_s6`, only a synthesis-retiming characterization
-/// the compiler never sees). `arch build` must refuse loudly, not silently
-/// fall back to a comb cone.
+/// Phase 3: `arch build` now binds `fma<pipelined, 6>` to the comb `fma`
+/// helper (`arch_fma_f32`) feeding the 6-deep pipe_reg register cascade —
+/// see `src/pipelined_ops.rs` module docs for why no bespoke staged-datapath
+/// codegen is needed (the cascade already exists for ordinary `pipe_reg`
+/// ports; this just supplies its stage-1 input from the comb operator
+/// instead of a plain `let`/assignment).
 #[test]
-fn worked_example_build_is_explicitly_deferred() {
-    let out = run_build(WORKED_EXAMPLE);
+fn worked_example_builds_comb_plus_cascade() {
+    let (_td, path) = write_arch(WORKED_EXAMPLE);
+    let sv_path = path.with_extension("sv");
+    let out = arch()
+        .arg("build")
+        .arg(&path)
+        .arg("-o")
+        .arg(&sv_path)
+        .output()
+        .expect("run arch build");
     assert!(
-        !out.status.success(),
-        "arch build must refuse pipelined-call codegen until phase 3 lands"
+        out.status.success(),
+        "arch build should bind fma<pipelined, 6> to comb+cascade (phase 3)\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
     );
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let sv = std::fs::read_to_string(&sv_path).expect("read emitted SV");
+    // Stage 1 gets the comb call; stages 2..N are pure passthrough; the
+    // final `acc_out` register (declared latency-1, per
+    // `elaborate::lower_pipe_reg_ports`) is the last stage of the cascade.
     assert!(
-        normalize(&stderr).contains("codegen for pipelined operators is not yet implemented"),
-        "expected explicit deferred-codegen error, got:\n{stderr}"
+        sv.contains("acc_out_stg1 <= arch_fma_f32(a, b, acc_in);"),
+        "expected comb fma feeding stage 1, got:\n{sv}"
     );
+    for k in 2..=5 {
+        assert!(
+            sv.contains(&format!(
+                "acc_out_stg{k} <= acc_out_stg{prev};",
+                prev = k - 1
+            )),
+            "expected passthrough cascade stage {k}, got:\n{sv}"
+        );
+    }
+    assert!(
+        sv.contains("acc_out <= acc_out_stg5;"),
+        "expected final tap from stage 5, got:\n{sv}"
+    );
+    // No leftover `pipelined` surface text should reach the SV — it must
+    // have been fully lowered to the plain comb call.
+    assert!(
+        !sv.contains("pipelined"),
+        "no trace of the `<pipelined, N>` surface should reach emitted SV, got:\n{sv}"
+    );
+}
+
+/// `arch ops` — the registry entry now shows `verified` end-to-end, and
+/// codegen actually exists for it (phase 3 closes the loop the registry's
+/// `status` field promised).
+#[test]
+fn arch_ops_shows_verified_fma_row() {
+    let out = arch().arg("ops").output().expect("run arch ops");
+    assert!(out.status.success(), "arch ops should succeed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("fma") && stdout.contains("FP32") && stdout.contains("verified"));
 }
 
 /// Bare `fma(a, b, c)` (no `<pipelined, N>`) is completely unaffected —

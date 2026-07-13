@@ -510,38 +510,35 @@ impl MultiSource {
     }
 }
 
-/// Codegen-side backstop for `arch build` / `arch sim` (not `arch check`,
-/// which fully supports `<pipelined, N>` through typecheck): refuses to
-/// proceed into SV or sim codegen if the program still contains any
-/// `fma<pipelined, N>(...)`-style call. Binding these to a real retimed
-/// staged datapath is proposal phase 3
-/// (doc/proposal_pipelined_operators.md) — `builtin:fma_f32_s6` today is a
-/// single combinational cone, not staged RTL; see
-/// `pipelined_ops` module docs for the investigation that established
-/// this. Surfacing a clear, explicit error here is safer than silently
-/// falling back to comb + delay-line, which would compute correct values
-/// but misrepresent an un-retimed cone as the requested pipelined
-/// operator — and would risk the two backends (SV, sim) diverging if
-/// either one's fallback ever drifted from the other's.
-fn reject_pipelined_calls_before_codegen(
-    ast: &arch::ast::SourceFile,
+/// Codegen-side binding for `arch build` / `arch sim` (not `arch check`,
+/// which fully supports `<pipelined, N>` through typecheck alone): rewrites
+/// every `fma<pipelined, N>(...)`-style call reaching codegen into the
+/// plain comb call the registry's `codegen_impl` binds it to (proposal
+/// phase 3, `doc/proposal_pipelined_operators.md` — see `pipelined_ops`
+/// module docs for the comb+retime shape and why no bespoke staged-datapath
+/// codegen is needed). Registry rows that typecheck but have no
+/// `codegen_impl` wired yet (`codegen_impl: None` — a future row landed
+/// ahead of its codegen support) still refuse loudly here, exactly like
+/// the phase-2 backstop did unconditionally, rather than silently falling
+/// back to comb + delay-line (which would compute correct values but
+/// misrepresent an un-retimed cone as the requested pipelined operator).
+fn lower_pipelined_calls_before_codegen(
+    ast: &mut arch::ast::SourceFile,
     ms: &MultiSource,
 ) -> miette::Result<()> {
-    let found = arch::pipelined_ops::find_pipelined_calls(ast);
-    if let Some(f) = found.into_iter().next() {
+    arch::pipelined_ops::lower_pipelined_calls(ast).map_err(|f| {
         let err = CompileError::general(
             &format!(
                 "`{}<pipelined, {}>(...)` typechecks (`arch check` accepts it) but codegen for \
-                 pipelined operators is not yet implemented — the retimed staged datapath and its \
-                 equivalence proof are proposal phase 3 (doc/proposal_pipelined_operators.md), not yet \
-                 landed. Tracked in the phase-2 PR; not supported by `arch build` / `arch sim` yet.",
+                 this depth is not yet implemented — no `codegen_impl` is wired for this registry \
+                 row (doc/proposal_pipelined_operators.md phase 3/4). Not supported by \
+                 `arch build` / `arch sim` yet.",
                 f.operator, f.stages
             ),
             f.span,
         );
-        return Err(ms.report_error(err));
-    }
-    Ok(())
+        ms.report_error(err)
+    })
 }
 
 fn thread_map_sources_from_multi(ms: &MultiSource) -> Vec<arch::thread_map::ThreadMapSource> {
@@ -1177,13 +1174,14 @@ fn main() -> miette::Result<()> {
                         arch::thread_map::ThreadMap::default(),
                     ))
                 });
-                let (ast, symbols, overload_map) = run_check_multi_opts_with_thread_map(
+                let (mut ast, symbols, overload_map) = run_check_multi_opts_with_thread_map(
                     &ms,
                     false,
                     auto_thread_asserts,
                     thread_map_store.clone(),
                 )?;
-                reject_pipelined_calls_before_codegen(&ast, &ms)?;
+                lower_pipelined_calls_before_codegen(&mut ast, &ms)?;
+                let ast = ast;
                 let thread_map_sources = thread_map_sources_from_multi(&ms);
 
                 let comments = lexer::extract_comments(&ms.combined);
@@ -1881,7 +1879,7 @@ fn run_sim_opts(
     // 1. Parse + type-check
     let all_files = resolve_use_imports(arch_files)?;
     let ms = MultiSource::from_files(&all_files)?;
-    let (ast, symbols, overload_map) = if param_overrides.is_empty() {
+    let (mut ast, symbols, overload_map) = if param_overrides.is_empty() {
         run_check_multi_opts(
             &ms,
             thread_sim_parallel,
@@ -1895,7 +1893,8 @@ fn run_sim_opts(
             param_overrides,
         )?
     };
-    reject_pipelined_calls_before_codegen(&ast, &ms)?;
+    lower_pipelined_calls_before_codegen(&mut ast, &ms)?;
+    let ast = ast;
 
     // 2. Set up output directory
     let build_dir = outdir

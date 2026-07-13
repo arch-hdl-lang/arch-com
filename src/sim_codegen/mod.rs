@@ -3487,14 +3487,14 @@ fn cpp_expr_lhs(expr: &Expr, ctx: &Ctx) -> String {
 
 fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
     match &expr.kind {
-        // See the matching arm in codegen/mod.rs::emit_expr_inner: retimed
-        // sim stepping for `<pipelined, N>` calls is proposal phase 3, not
-        // yet implemented. `pipelined_ops::find_pipelined_calls` rejects
-        // these before sim codegen starts, so this is a loud backstop, not
-        // the primary error path.
+        // See the matching arm in codegen/mod.rs::emit_expr_inner:
+        // `pipelined_ops::lower_pipelined_calls` (proposal phase 3)
+        // rewrites every codegen-backed `PipelinedCall` into a plain
+        // `FunctionCall` before sim codegen starts, so this is a loud
+        // backstop, not the primary error path.
         ExprKind::PipelinedCall(name, _, stages) => unreachable!(
             "sim codegen reached `{name}<pipelined, {stages}>(...)` — this should have been \
-             rejected by pipelined_ops::find_pipelined_calls before codegen started"
+             lowered by pipelined_ops::lower_pipelined_calls before codegen started"
         ),
         // Latency annotation: transparent to sim emission. The assignment
         // site handles directing the write to stage 0 of the pipe chain;
