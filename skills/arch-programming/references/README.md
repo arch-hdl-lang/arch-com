@@ -126,7 +126,7 @@ arch learn-prune --code other --dry-run    # preview removal by error code, subs
 arch learn-clear                    # wipe the store
 ```
 
-Design goals: **local-first** (no telemetry, no network); **capped** (100 MB default via `ARCH_LEARN_MAX_MB`, warns at 90% full); **opt-out** (`ARCH_NO_LEARN=1` disables capture entirely). The long-term roadmap — idiom capture, contributor sharing, promoting stable patterns to compiler lints — lives in [`doc/plan_arch_learning_system.md`](doc/plan_arch_learning_system.md).
+Design goals: **local-first** (no telemetry, no network); **capped** (100 MB default via `ARCH_LEARN_MAX_MB`, warns at 90% full); **opt-out** (`ARCH_NO_LEARN=1` disables capture entirely). The long-term roadmap — idiom capture, contributor sharing, promoting stable patterns to compiler lints — lives in [`doc/archive/plan_arch_learning_system.md`](doc/archive/plan_arch_learning_system.md).
 
 ## Code graph tooling
 

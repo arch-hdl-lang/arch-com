@@ -26,7 +26,7 @@ pub mod type_alias;
 pub mod typecheck;
 pub mod width;
 
-/// Floating-point special-value compatibility profile (doc/plan_fp_types.md §6.2).
+/// Floating-point special-value compatibility profile (doc/archive/plan_fp_types.md §6.2).
 ///
 /// Both profiles share an identical IEEE-754 RNE arithmetic core, full subnormal
 /// support, and toward-zero in-range float→int conversion. They differ only in

@@ -11694,7 +11694,7 @@ fn subst_expr_params(expr: &Expr, param_map: &HashMap<String, &Expr>) -> Expr {
 // Recognizes `target_reg <= port.method(args);` as a TLM call site inside a
 // thread body and expands it into the synthesizable request/response protocol
 // described in doc/ARCH_HDL_Specification.md §18d/§22 and
-// doc/plan_tlm_method.md. Call sites outside this shape are rejected with a
+// doc/archive/plan_tlm_method.md. Call sites outside this shape are rejected with a
 // targeted message.
 
 pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {

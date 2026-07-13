@@ -1,4 +1,4 @@
-// Layer 1 NoC validation for credit_channel — see doc/plan_credit_channel.md
+// Layer 1 NoC validation for credit_channel — see doc/archive/plan_credit_channel.md
 // §"Validation plan — NoC flit credit". A producer + consumer connected
 // through a single credit_channel(DEPTH=8) carrying UInt<64> flits, with
 // LFSR-throttled rates so the C++ TB can stress balanced / asymmetric

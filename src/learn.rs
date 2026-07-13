@@ -2,7 +2,7 @@
 //!
 //! Captures error→fix pairs locally, builds a lexical index, and answers
 //! `arch advise <query>` lookups. All data stays on-device under
-//! `~/.arch/learn/`. See `doc/plan_arch_learning_system.md` for the roadmap.
+//! `~/.arch/learn/`. See `doc/archive/plan_arch_learning_system.md` for the roadmap.
 //!
 //! v1 is deliberately minimal:
 //! - JSONL event stream (hand-written JSON serde, no serde_json dep)

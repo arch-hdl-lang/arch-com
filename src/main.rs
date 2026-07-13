@@ -190,7 +190,7 @@ enum Command {
         /// .sv files and linked together downstream.
         #[arg(long)]
         no_inline_deps: bool,
-        /// Floating-point special-value compatibility profile (doc/plan_fp_types.md
+        /// Floating-point special-value compatibility profile (doc/archive/plan_fp_types.md
         /// §6.2): `riscv` (default) or `cuda`. Shares one IEEE-754 RNE arithmetic
         /// core; selects only the canonical NaN pattern (0x7FC00000/0x7FC0 vs
         /// 0x7FFFFFFF/0x7FFF) and the NaN→int result (type max vs 0).
@@ -295,7 +295,7 @@ enum Command {
         /// for generated header guards.
         #[arg(long = "param", value_name = "NAME=VALUE")]
         param_overrides: Vec<String>,
-        /// Floating-point special-value compatibility profile (doc/plan_fp_types.md
+        /// Floating-point special-value compatibility profile (doc/archive/plan_fp_types.md
         /// §6.2): `riscv` (default) or `cuda`. Honored identically by the SV and
         /// sim backends so they never disagree.
         #[arg(long = "fp-compat", default_value = "riscv")]
@@ -348,7 +348,7 @@ enum Command {
         /// by construction). See `arch build` help for the property set.
         #[arg(long)]
         auto_thread_asserts: bool,
-        /// Floating-point special-value compatibility profile (doc/plan_fp_types.md
+        /// Floating-point special-value compatibility profile (doc/archive/plan_fp_types.md
         /// §6.2): `riscv` (default) or `cuda`. Accepted for parity with `build`/`sim`.
         #[arg(long = "fp-compat", default_value = "riscv")]
         fp_compat: String,

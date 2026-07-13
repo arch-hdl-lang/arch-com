@@ -94,14 +94,14 @@ pub struct BusDecl {
     pub credit_channels: Vec<CreditChannelMeta>,
     /// TLM method sub-constructs declared in this bus. The parser captures
     /// the method surface here; elaboration/codegen materialize the flattened
-    /// request/response wires and thread lowering. See doc/plan_tlm_method.md.
+    /// request/response wires and thread lowering. See doc/archive/plan_tlm_method.md.
     pub tlm_methods: Vec<TlmMethodMeta>,
     pub span: Span,
 }
 
 /// Metadata for one `tlm_method` sub-construct inside a bus. The declaration
 /// shape is shared by bus flattening, initiator call lowering, target thread
-/// lowering, and protocol assertion generation. See doc/plan_tlm_method.md.
+/// lowering, and protocol assertion generation. See doc/archive/plan_tlm_method.md.
 #[derive(Debug, Clone)]
 pub struct TlmMethodMeta {
     /// Method name (e.g. `read`).
@@ -130,7 +130,7 @@ pub struct HandshakeMeta {
     pub variant: Ident,
     /// True if the declaration used the legacy `handshake` keyword rather
     /// than `handshake_channel`. Typecheck emits a deprecation warning for
-    /// the legacy form — semantics are identical. See plan_bus_unification.md.
+    /// the legacy form — semantics are identical. See doc/archive/plan_bus_unification.md.
     pub legacy_handshake_kw: bool,
     /// Role on the initiator side: `Out` = send, `In` = receive.
     pub role_dir: Direction,
@@ -153,7 +153,7 @@ pub struct HandshakeMeta {
 /// scaffolding: parser stores shape + params, but no PortDecls are
 /// materialized yet — the wire protocol (send_valid / send_data /
 /// credit_return) and the per-port-site counter + fifo synthesis land in a
-/// follow-up PR. See doc/plan_credit_channel.md.
+/// follow-up PR. See doc/archive/plan_credit_channel.md.
 #[derive(Debug, Clone)]
 pub struct CreditChannelMeta {
     /// Channel name (e.g. `data`).
@@ -360,7 +360,7 @@ pub struct PortRegInfo {
     pub reset: RegReset,
     /// Optional valid-signal guard — tells tools this reg is intentionally
     /// uninitialized as long as the guard signal is low. See
-    /// `doc/plan_reg_guard_syntax.md` for semantics.
+    /// `doc/archive/plan_reg_guard_syntax.md` for semantics.
     pub guard: Option<Ident>,
     /// Pipeline depth (number of clock edges between internal write and
     /// external observation). Legacy `port reg` syntax: 1.
@@ -660,7 +660,7 @@ pub struct ThreadBlock {
 }
 
 /// Binding of a `thread` body to a TLM method declaration on a bus port.
-/// See `doc/plan_tlm_method.md` for the lowering semantics.
+/// See `doc/archive/plan_tlm_method.md` for the lowering semantics.
 #[derive(Debug, Clone)]
 pub struct TlmTargetBinding {
     /// Bus port name that carries the method (e.g. `s`).
@@ -2111,7 +2111,7 @@ pub enum RamInit {
 
 /// Content-addressable memory: combinational match of a search key against
 /// a vector of (valid, key) entries. Single write port (set/clear by index).
-/// See doc/plan_cam.md for full semantics.
+/// See doc/archive/plan_cam.md for full semantics.
 #[derive(Debug, Clone)]
 pub struct CamDecl {
     pub common: ConstructCommon,
