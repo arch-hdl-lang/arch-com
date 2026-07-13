@@ -4337,11 +4337,19 @@ fn lower_module_threads(
     sorted_comb.sort();
     for name in sorted_comb {
         if let Some(info) = type_map.get(name.as_str()) {
+            // shared(and) idles at the identity element (all-ones) so a
+            // thread that hasn't yet driven its state doesn't force the
+            // AND-reduction low; every other comb-driven output (including
+            // shared(or), whose identity is 0) keeps the plain zero default.
+            let default_expr = match info.shared {
+                Some(SharedReduction::And) => make_ones_expr(sp),
+                _ => make_zero_expr(sp),
+            };
             merged_ports.push(PortDecl {
                 name: Ident::new(name.clone(), sp),
                 direction: Direction::Out,
                 ty: info.ty.clone(),
-                default: Some(make_zero_expr(sp)),
+                default: Some(default_expr),
                 reg_info: None,
                 bus_info: None,
                 shared: info.shared,
@@ -4574,29 +4582,33 @@ fn lower_module_threads(
         }));
     }
 
-    // ── Collect shared(or) signal names for OR-accumulation ────────────
-    let shared_or_signals: HashSet<String> = type_map
+    // ── Collect shared(or)/shared(and) signal names for reduction ──────
+    // Maps signal name -> its reduction kind. Both `or` and `and` follow
+    // the same shadow-wire-plus-reduction lowering; only the fold operator
+    // and the idle-thread identity element differ (0 for or, 1 for and —
+    // see doc/thread_multi_outstanding_spec.md "Default value").
+    let shared_signals: HashMap<String, SharedReduction> = type_map
         .iter()
-        .filter(|(_, info)| matches!(info.shared, Some(SharedReduction::Or)))
-        .map(|(name, _)| name.clone())
+        .filter_map(|(name, info)| info.shared.map(|r| (name.clone(), r)))
         .collect();
 
-    // shared(or) signals that are seq-driven need per-thread shadow wires + OR reduction
-    let shared_or_seq: HashSet<String> = shared_or_signals
+    // shared signals that are seq-driven need per-thread shadow wires + reduction
+    let shared_seq: HashMap<String, SharedReduction> = shared_signals
         .iter()
-        .filter(|n| all_seq_driven.contains(*n))
-        .cloned()
+        .filter(|(n, _)| all_seq_driven.contains(n.as_str()))
+        .map(|(n, r)| (n.clone(), *r))
         .collect();
-    // shared(or) signals that are comb-driven use inline OR-accumulation (existing behavior)
-    let _shared_or_comb: HashSet<String> = shared_or_signals
+    let shared_seq_names: HashSet<String> = shared_seq.keys().cloned().collect();
+    // shared signals that are comb-driven use inline accumulation (existing behavior)
+    let _shared_comb: HashMap<String, SharedReduction> = shared_signals
         .iter()
-        .filter(|n| all_comb_driven.contains(*n))
-        .cloned()
+        .filter(|(n, _)| all_comb_driven.contains(n.as_str()))
+        .map(|(n, r)| (n.clone(), *r))
         .collect();
 
-    // For seq shared(or) signals, create per-thread input wires and OR reduction
+    // For seq shared signals, create per-thread input wires and the reduction
     let n_threads = threads.len();
-    for sig_name in &shared_or_seq {
+    for (sig_name, reduction) in &shared_seq {
         if let Some(info) = type_map.get(sig_name.as_str()) {
             // Per-thread input wires: _sig_in_0, _sig_in_1, ...
             for ti in 0..n_threads {
@@ -4610,13 +4622,17 @@ fn lower_module_threads(
                     span: sp,
                 }));
             }
-            // OR reduction in comb block: sig_next = _sig_in_0 | _sig_in_1 | ...
-            let mut or_expr = Expr::new(ExprKind::Ident(format!("_{}_in_0", sig_name)), sp);
+            let fold_op = match reduction {
+                SharedReduction::Or => BinOp::BitOr,
+                SharedReduction::And => BinOp::BitAnd,
+            };
+            // Reduction in comb block: sig_next = _sig_in_0 <op> _sig_in_1 <op> ...
+            let mut red_expr = Expr::new(ExprKind::Ident(format!("_{}_in_0", sig_name)), sp);
             for ti in 1..n_threads {
-                or_expr = Expr::new(
+                red_expr = Expr::new(
                     ExprKind::Binary(
-                        BinOp::BitOr,
-                        Box::new(or_expr),
+                        fold_op,
+                        Box::new(red_expr),
                         Box::new(Expr::new(
                             ExprKind::Ident(format!("_{}_in_{}", sig_name, ti)),
                             sp,
@@ -4625,12 +4641,12 @@ fn lower_module_threads(
                     sp,
                 );
             }
-            // Wire for OR reduction result
+            // Wire for reduction result
             let next_name = format!("_{}_next", sig_name);
             merged_body.push(ModuleBodyItem::LetBinding(LetBinding {
                 name: Ident::new(next_name.clone(), sp),
                 ty: Some(info.ty.clone()),
-                value: or_expr,
+                value: red_expr,
                 span: sp,
                 destructure_fields: Vec::new(),
             }));
@@ -4737,14 +4753,15 @@ fn lower_module_threads(
                 }
             }
         }
-        // Rewrite seq assigns to shared(or) signals → comb assigns to per-thread shadow wires
-        // e.g. `r_ready <= 1` in thread 2 → `_r_ready_in_2 = 1` (comb)
-        if !shared_or_seq.is_empty() {
+        // Rewrite seq assigns to shared(or)/shared(and) signals → comb assigns
+        // to per-thread shadow wires, e.g. `r_ready <= 1` in thread 2 →
+        // `_r_ready_in_2 = 1` (comb). The reduction fold happens later.
+        if !shared_seq_names.is_empty() {
             for state in &mut raw_states {
                 let mut moved_comb = Vec::new();
                 let new_seq = rewrite_shared_or_seq_stmts(
                     &state.seq_stmts,
-                    &shared_or_seq,
+                    &shared_seq_names,
                     ti,
                     sp,
                     &mut moved_comb,
@@ -5336,7 +5353,7 @@ fn lower_module_threads(
             // This state's own comb outputs
             if !raw.comb_stmts.is_empty() {
                 let transformed_stmts =
-                    transform_shared_or_assigns(&raw.comb_stmts, &shared_or_signals, sp);
+                    transform_shared_or_assigns(&raw.comb_stmts, &shared_signals, sp);
                 all_thread_comb.push(Stmt::IfElse(IfElse {
                     cond: state_cond.clone(),
                     then_stmts: transformed_stmts,
@@ -5353,8 +5370,8 @@ fn lower_module_threads(
         }
     }
 
-    // Add shared(or) seq reduction: sig <= _sig_next
-    for sig_name in &shared_or_seq {
+    // Add shared(or)/shared(and) seq reduction: sig <= _sig_next
+    for sig_name in shared_seq.keys() {
         all_thread_seq.push(Stmt::Assign(RegAssign {
             target: Expr::new(ExprKind::Ident(sig_name.clone()), sp),
             value: Expr::new(ExprKind::Ident(format!("_{}_next", sig_name)), sp),
@@ -5476,12 +5493,18 @@ fn lower_module_threads(
             }));
         }
     }
-    // Default shared(or) seq per-thread input wires = 0
-    for sig_name in &shared_or_seq {
+    // Default shared(or)/shared(and) seq per-thread input wires = reduction identity.
+    // A thread that hasn't reached its drive point contributes the identity
+    // element so it doesn't skew the reduction: 0 for or, 1 for and.
+    for (sig_name, reduction) in &shared_seq {
+        let identity = match reduction {
+            SharedReduction::Or => make_zero_expr(sp),
+            SharedReduction::And => make_ones_expr(sp),
+        };
         for ti in 0..n_threads {
             merged_comb.push(Stmt::Assign(CombAssign {
                 target: Expr::new(ExprKind::Ident(format!("_{}_in_{}", sig_name, ti)), sp),
-                value: make_zero_expr(sp),
+                value: identity.clone(),
                 span: sp,
             }));
         }
@@ -10012,7 +10035,11 @@ fn rewrite_shared_or_seq_stmts(
 
 /// Transform comb assigns for shared(or) signals: `sig = val` → `sig = sig | val`.
 /// This ensures multiple threads OR-accumulate rather than last-writer-wins.
-fn transform_shared_or_assigns(stmts: &[Stmt], shared_or: &HashSet<String>, sp: Span) -> Vec<Stmt> {
+fn transform_shared_or_assigns(
+    stmts: &[Stmt],
+    shared: &HashMap<String, SharedReduction>,
+    sp: Span,
+) -> Vec<Stmt> {
     stmts
         .iter()
         .map(|stmt| {
@@ -10023,13 +10050,17 @@ fn transform_shared_or_assigns(stmts: &[Stmt], shared_or: &HashSet<String>, sp: 
                         _ => None,
                     };
                     if let Some(ref name) = target_name {
-                        if shared_or.contains(name) {
-                            // sig = sig | val
+                        if let Some(reduction) = shared.get(name) {
+                            let fold_op = match reduction {
+                                SharedReduction::Or => BinOp::BitOr,
+                                SharedReduction::And => BinOp::BitAnd,
+                            };
+                            // sig = sig <op> val
                             return Stmt::Assign(CombAssign {
                                 target: a.target.clone(),
                                 value: Expr::new(
                                     ExprKind::Binary(
-                                        BinOp::BitOr,
+                                        fold_op,
                                         Box::new(Expr::new(ExprKind::Ident(name.clone()), sp)),
                                         Box::new(a.value.clone()),
                                     ),
@@ -10043,8 +10074,8 @@ fn transform_shared_or_assigns(stmts: &[Stmt], shared_or: &HashSet<String>, sp: 
                 }
                 Stmt::IfElse(ie) => Stmt::IfElse(IfElse {
                     cond: ie.cond.clone(),
-                    then_stmts: transform_shared_or_assigns(&ie.then_stmts, shared_or, sp),
-                    else_stmts: transform_shared_or_assigns(&ie.else_stmts, shared_or, sp),
+                    then_stmts: transform_shared_or_assigns(&ie.then_stmts, shared, sp),
+                    else_stmts: transform_shared_or_assigns(&ie.else_stmts, shared, sp),
                     unique: ie.unique,
                     span: ie.span,
                 }),
@@ -10153,6 +10184,17 @@ fn rename_ident_in_comb_stmts(stmts: &mut [Stmt], old: &str, new: &str) {
 
 fn make_zero_expr(sp: Span) -> Expr {
     Expr::new(ExprKind::Literal(LitKind::Dec(0)), sp)
+}
+
+/// All-ones expression at the target signal's width — the identity element
+/// for AND-reduction (`shared(and)`). Bitwise-complement of zero: widened
+/// (zero-extended) to the target width by context, then inverted, so it
+/// works for both 1-bit `Bool` and wider `logic[N:0]` shared signals.
+fn make_ones_expr(sp: Span) -> Expr {
+    Expr::new(
+        ExprKind::Unary(UnaryOp::BitNot, Box::new(make_zero_expr(sp))),
+        sp,
+    )
 }
 
 // ── pipe_reg<T, N> port lowering ─────────────────────────────────────────

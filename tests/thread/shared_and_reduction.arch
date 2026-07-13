@@ -1,0 +1,28 @@
+module AllReadyAnd
+  port clk:       in Clock<SysDomain>;
+  port rst_n:     in Reset<Async, Low>;
+  port r0:        in Bool;
+  port r1:        in Bool;
+  port go2:       in Bool;
+  port all_ready: out Bool shared(and);
+
+  // Two threads drive all_ready every cycle from an input.
+  thread T0 on clk rising, rst_n low
+    all_ready = r0;
+    wait 1 cycle;
+  end thread T0
+
+  thread T1 on clk rising, rst_n low
+    all_ready = r1;
+    wait 1 cycle;
+  end thread T1
+
+  // T2 starts idle (not yet driving all_ready) until go2 fires. While
+  // idle it must contribute the AND identity (1), not force the
+  // reduction low.
+  thread T2 on clk rising, rst_n low
+    wait until go2;
+    all_ready = 1;
+    wait 1 cycle;
+  end thread T2
+end module AllReadyAnd

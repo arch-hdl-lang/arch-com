@@ -27062,6 +27062,243 @@ end module SharedOrPort
     );
 }
 
+/// `shared(and)` ports must be exempt from the multi-driver check too —
+/// symmetric with `shared(or)` (part of #501: AND-reduction lowering).
+#[test]
+fn test_multi_driver_shared_and_port_exempt() {
+    let source = r#"
+module SharedAndPort
+  port a: in Bool;
+  port b: in Bool;
+  port out: out Bool shared(and);
+  comb
+    out = a;
+  end comb
+  comb
+    out = b;
+  end comb
+end module SharedAndPort
+"#;
+    assert!(
+        typecheck_source(source).is_ok(),
+        "shared(and) port driven from two comb blocks should NOT be a multi-driver error"
+    );
+}
+
+/// `shared(and)` comb-driven lowering (part of #501): each thread's
+/// contribution is folded with `&`, and the idle default is the AND
+/// identity element `~0` (all-ones) — NOT `0`, which would be the OR
+/// identity and would spuriously force the reduction low before any
+/// thread has driven the signal.
+#[test]
+fn test_shared_and_reduction_comb_lowering() {
+    let source = include_str!("thread/shared_and_reduction.arch");
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("all_ready = ~0;"),
+        "shared(and) comb default must be the AND identity (all-ones), not 0:\n{sv}"
+    );
+    assert!(
+        sv.contains("all_ready = all_ready & r0;"),
+        "thread contribution should fold with `&`, not overwrite:\n{sv}"
+    );
+    assert!(
+        sv.contains("all_ready = all_ready & r1;"),
+        "thread contribution should fold with `&`, not overwrite:\n{sv}"
+    );
+    assert!(
+        sv.contains("all_ready = all_ready & 1;"),
+        "T2's active-state contribution should also fold with `&`:\n{sv}"
+    );
+    // Must NOT contain a bare `all_ready = 0;` default (that's the shared(or)
+    // shape — mixing them up is the classic and-reduction identity bug).
+    assert!(
+        !sv.contains("all_ready = 0;"),
+        "shared(and) must not use the OR identity (0) as its default:\n{sv}"
+    );
+}
+
+/// `shared(and)` seq-driven lowering (part of #501): per-thread shadow
+/// wires default to the AND identity `~0`, fold with `&` into
+/// `_all_ready_next`, then register on the clock edge.
+#[test]
+fn test_shared_and_reduction_seq_lowering() {
+    let source = include_str!("thread/shared_and_reduction_seq.arch");
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("_all_ready_in_0 = ~0;") && sv.contains("_all_ready_in_1 = ~0;"),
+        "seq shared(and) shadow wires must default to the AND identity (~0), not 0:\n{sv}"
+    );
+    assert!(
+        sv.contains("_all_ready_next = _all_ready_in_0 & _all_ready_in_1;"),
+        "seq shared(and) reduction must fold shadow wires with `&`:\n{sv}"
+    );
+    assert!(
+        sv.contains("all_ready <= _all_ready_next;"),
+        "reduced value must be registered into the shared port:\n{sv}"
+    );
+}
+
+/// Regression: `shared(or)` lowering must be byte-for-byte unaffected by
+/// generalizing the reduction machinery to also support `shared(and)`.
+#[test]
+fn test_shared_or_reduction_unchanged_after_and_support() {
+    let source = include_str!("thread/shared_reduction.arch");
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("r_ready = 0;"),
+        "shared(or) default must remain the OR identity (0):\n{sv}"
+    );
+    assert!(
+        sv.contains("r_ready = r_ready | 1;"),
+        "shared(or) contribution must still fold with `|`:\n{sv}"
+    );
+    assert!(
+        !sv.contains("~0"),
+        "shared(or)-only design must not emit any AND-identity (~0) code:\n{sv}"
+    );
+}
+
+/// End-to-end native-sim behavioral check for `shared(and)` comb-driven
+/// reduction, cross-checked between the fsm-lowering and pre-lowering
+/// parallel thread-sim paths (`--thread-sim both`). Exercises the exact
+/// scenario that exposes an identity-element bug: a thread (T2) that has
+/// not yet reached its drive point must NOT force the AND-reduction low.
+#[test]
+fn test_shared_and_reduction_comb_arch_sim_behavior() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("--thread-sim")
+        .arg("both")
+        .arg("tests/thread/shared_and_reduction.arch")
+        .arg("--tb")
+        .arg("tests/thread/tb_shared_and_reduction.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim --thread-sim both");
+    assert!(
+        out.status.success(),
+        "shared(and) comb sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS SharedAndReduction"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("Cross-check PASS"),
+        "expected thread-sim cross-check marker in stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Same as above for the seq-driven `shared(and)` variant.
+#[test]
+fn test_shared_and_reduction_seq_arch_sim_behavior() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("--thread-sim")
+        .arg("both")
+        .arg("tests/thread/shared_and_reduction_seq.arch")
+        .arg("--tb")
+        .arg("tests/thread/tb_shared_and_reduction_seq.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim --thread-sim both");
+    assert!(
+        out.status.success(),
+        "shared(and) seq sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS SharedAndReductionSeq"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("Cross-check PASS"),
+        "expected thread-sim cross-check marker in stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// sim<->SV agreement for `shared(and)`: run the exact same TB against a
+/// real Verilator build of the emitted SystemVerilog and check the same
+/// PASS marker fires. Skips gracefully if Verilator isn't installed.
+#[test]
+fn test_shared_and_reduction_verilator_behavior() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping shared(and) Verilator smoke: verilator not found");
+        return;
+    }
+
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("AllReadyAnd.sv");
+    let obj_dir = td.path().join("obj_dir");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/thread/shared_and_reduction.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("arch build");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let tb_abs =
+        std::fs::canonicalize("tests/thread/tb_shared_and_reduction.cpp").expect("tb path");
+    let verilate = std::process::Command::new("verilator")
+        .args([
+            "--cc",
+            "--exe",
+            "--build",
+            "-Wno-WIDTH",
+            "-Wno-UNOPTFLAT",
+            "-Wno-DECLFILENAME",
+            "--top-module",
+            "AllReadyAnd",
+            "-Mdir",
+        ])
+        .arg(&obj_dir)
+        .arg(&sv_out)
+        .arg(&tb_abs)
+        .output()
+        .expect("verilate");
+    assert!(
+        verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr)
+    );
+
+    let run = std::process::Command::new(obj_dir.join("VAllReadyAnd"))
+        .output()
+        .expect("run verilator sim");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success() && stdout.contains("PASS SharedAndReduction"),
+        "Verilator sim should pass\nstdout:\n{stdout}"
+    );
+}
+
 /// `lhs_base_name` collapses `vec[i]` and `vec[j]` to the same underlying
 /// signal — by design, because two `comb` blocks become two distinct
 /// `always_comb` blocks driving the same `logic` array, and SV's

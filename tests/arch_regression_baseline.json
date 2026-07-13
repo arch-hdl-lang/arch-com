@@ -373,6 +373,18 @@
       ]
     },
     {
+      "name": "thread__shared_and_reduction",
+      "files": [
+        "tests/thread/shared_and_reduction.arch"
+      ]
+    },
+    {
+      "name": "thread__shared_and_reduction_seq",
+      "files": [
+        "tests/thread/shared_and_reduction_seq.arch"
+      ]
+    },
+    {
       "name": "thread__thread_for_loop",
       "files": [
         "tests/thread/thread_for_loop.arch"
