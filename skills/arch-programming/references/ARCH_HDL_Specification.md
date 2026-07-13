@@ -1025,7 +1025,14 @@ sim`) are byte-identical to the same design with the `where` clauses removed.
 
 `where` applies uniformly wherever a `const` param is legal: `module`,
 `fsm`, `fifo`, `ram`, `arbiter`, `pipeline`, `bus`, and the other first-class
-constructs that share the `ParamDecl` schema.
+constructs that share the `ParamDecl` schema. For `bus` params, whose
+overrides happen at port declarations rather than inst sites, the
+instantiation-site check runs at every `port p: initiator/target
+BusName<PARAM=value>;` override:
+
+```
+error: param `DATA_W`=48 on bus port `b` violates constraint declared on `MiniBus`: ...
+```
 
 Example, from the motivating case (cache sizing):
 

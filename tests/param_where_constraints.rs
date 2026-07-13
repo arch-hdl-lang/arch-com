@@ -387,3 +387,65 @@ end module Top
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── Bus port param overrides ────────────────────────────────────────────────
+
+const BUS_SRC: &str = r#"
+bus MiniBus
+  param DATA_W: const = 32 where DATA_W == 8 or DATA_W == 16 or DATA_W == 32 or DATA_W == 64;
+  valid: out Bool;
+  data:  out UInt<DATA_W>;
+end bus MiniBus
+"#;
+
+#[test]
+fn test_where_bus_port_override_satisfied() {
+    let src = format!(
+        r#"
+{BUS_SRC}
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port b: initiator MiniBus<DATA_W=64>;
+  comb
+    b.valid = 1;
+    b.data = 0;
+  end comb
+end module M
+"#
+    );
+    check_source(&src).expect("DATA_W=64 satisfies the bus constraint");
+}
+
+#[test]
+fn test_where_bus_port_override_violation() {
+    let src = format!(
+        r#"
+{BUS_SRC}
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port b: initiator MiniBus<DATA_W=48>;
+  comb
+    b.valid = 1;
+    b.data = 0;
+  end comb
+end module M
+"#
+    );
+    let err = check_source(&src).expect_err("DATA_W=48 violates the bus constraint");
+    assert!(
+        err.contains("param `DATA_W`=48 on bus port `b` violates constraint declared on `MiniBus`"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_where_bus_default_violation() {
+    let src = BUS_SRC.replace("const = 32 where", "const = 48 where");
+    let err = check_source(&src).expect_err("bus default DATA_W=48 violates its own constraint");
+    assert!(
+        err.contains("default value DATA_W=48 violates constraint"),
+        "unexpected error: {err}"
+    );
+}

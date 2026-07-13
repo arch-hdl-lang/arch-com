@@ -742,6 +742,10 @@ impl<'a> TypeChecker<'a> {
                         self.symbols.globals.get(&bi.bus_name.name)
                     {
                         local_types.insert(p.name.name.clone(), Ty::Bus(bi.bus_name.name.clone()));
+                        // Bus params are overridden at the port declaration
+                        // (`port axi: initiator BusAxi4<DATA_W=64>;`), not at
+                        // an inst site — enforce `where` constraints here.
+                        self.check_bus_port_param_constraints(p, bi);
                     } else {
                         self.errors.push(CompileError::general(
                             &format!("unknown bus type `{}`", bi.bus_name.name),
@@ -6722,6 +6726,74 @@ impl<'a> TypeChecker<'a> {
                         v,
                         inst.name.name,
                         inst.module_name.name,
+                        crate::interface::expr_str(constraint)
+                    ),
+                    site_span,
+                ));
+            }
+        }
+    }
+
+    /// Bus-port param-override `where` check (issue #600). Bus params are
+    /// overridden at port declarations (`port axi: initiator
+    /// BusAxi4<DATA_W=64>;`), not at inst sites — this is the bus analogue
+    /// of `check_inst_param_constraints`. Override RHS expressions are
+    /// evaluated against the enclosing construct's params; unresolvable
+    /// values are skipped (elaboration re-checks the resolved variant).
+    pub(crate) fn check_bus_port_param_constraints(
+        &mut self,
+        port: &PortDecl,
+        bi: &crate::ast::BusPortInfo,
+    ) {
+        let Some(Item::Bus(bus)) = self.find_item_by_name(&bi.bus_name.name) else {
+            return;
+        };
+        if bus.params.iter().all(|p| p.constraint.is_none()) {
+            return;
+        }
+        let bus_params = bus.params.clone();
+
+        // Enclosing construct's const param values, for override RHS
+        // expressions like `<DATA_W=DATA_W>` referencing the module's params.
+        let mut enclosing_vals: HashMap<String, i64> = HashMap::new();
+        for ap in &self.active_params {
+            if let Some(def) = &ap.default {
+                if let Some(v) = crate::elaborate::try_eval_i64(def, &enclosing_vals) {
+                    enclosing_vals.insert(ap.name.name.clone(), v);
+                }
+            }
+        }
+
+        let mut bus_vals: HashMap<String, i64> = HashMap::new();
+        for bp in &bus_params {
+            let override_assign = bi
+                .params
+                .iter()
+                .find(|pa| pa.name.name == bp.name.name && pa.ty.is_none());
+            let effective = if let Some(pa) = override_assign {
+                crate::elaborate::try_eval_i64(&pa.value, &enclosing_vals)
+            } else {
+                bp.default
+                    .as_ref()
+                    .and_then(|d| crate::elaborate::try_eval_i64(d, &bus_vals))
+            };
+            let Some(v) = effective else {
+                continue;
+            };
+            bus_vals.insert(bp.name.name.clone(), v);
+
+            let Some(constraint) = &bp.constraint else {
+                continue;
+            };
+            if let Some(0) = crate::elaborate::try_eval_i64(constraint, &bus_vals) {
+                let site_span = override_assign.map(|pa| pa.value.span).unwrap_or(port.span);
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "param `{}`={} on bus port `{}` violates constraint declared on `{}`: {}",
+                        bp.name.name,
+                        v,
+                        port.name.name,
+                        bi.bus_name.name,
                         crate::interface::expr_str(constraint)
                     ),
                     site_span,
