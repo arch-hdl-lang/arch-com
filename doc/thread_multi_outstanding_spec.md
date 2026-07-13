@@ -34,6 +34,14 @@ But it cannot express **N outstanding transactions on a single shared interface*
 
 ## New Language Feature: `shared(reduction)` Signals
 
+> **Status: Implemented.** Both `shared(or)` and `shared(and)` lower to
+> per-thread shadow-wire reduction (comb-driven signals fold inline;
+> seq-driven signals get per-thread shadow wires reduced into a `_next`
+> wire and registered). See `tests/thread/shared_reduction.arch` (`or`)
+> and `tests/thread/shared_and_reduction.arch` /
+> `shared_and_reduction_seq.arch` (`and`) for worked examples covering
+> both comb- and seq-driven variants and idle-thread identity handling.
+
 ### Syntax
 
 ```arch

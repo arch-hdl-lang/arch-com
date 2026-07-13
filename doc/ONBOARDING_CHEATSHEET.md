@@ -100,7 +100,7 @@ Thread blocks live inside modules and lower to FSM + inst before resolve/typeche
   - `tests/l1d/`
   - `tests/cvdp/`
   - `tests/verilog_eval/` (benchmark corpus + runners)
-  - `tests/thread/` (10 tests: basic, named, once, wait_cycles, if_else, fork_join, for_loop, generate, resource_lock, shared_reduction)
+  - `tests/thread/` (12 tests: basic, named, once, wait_cycles, if_else, fork_join, for_loop, generate, resource_lock, shared_reduction, shared_and_reduction, shared_and_reduction_seq)
 
 ## 5) Practical command loop (validated in this workspace)
 

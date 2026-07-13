@@ -1,0 +1,21 @@
+module AllReadyAndSeq
+  port clk:       in Clock<SysDomain>;
+  port rst_n:     in Reset<Async, Low>;
+  port r0:        in Bool;
+  port r1:        in Bool;
+  port all_ready: out Bool shared(and);
+
+  // Register-driven variant: threads assign the shared port with `<=`,
+  // making it seq-driven. The compiler must route this through
+  // per-thread shadow wires (_all_ready_in_N) reduced with `&` into
+  // _all_ready_next, then registered on the clock edge.
+  thread T0 on clk rising, rst_n low
+    all_ready <= r0;
+    wait 1 cycle;
+  end thread T0
+
+  thread T1 on clk rising, rst_n low
+    all_ready <= r1;
+    wait 1 cycle;
+  end thread T1
+end module AllReadyAndSeq

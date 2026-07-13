@@ -376,6 +376,8 @@ The `tests/thread/` directory contains 10 thread construct tests (all Verilator-
 | `generate_thread` | 4-channel DMA via generate_for |
 | `resource_lock` | Shared bus with priority arbiter |
 | `shared_reduction` | Multi-driver `r_ready` with OR reduction |
+| `shared_and_reduction` | Multi-driver `all_ready` with AND reduction (comb-driven, idle-thread identity) |
+| `shared_and_reduction_seq` | Multi-driver `all_ready` with AND reduction (seq-driven, shadow-wire lowering) |
 
 ## Editor support
 
