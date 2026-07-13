@@ -30664,12 +30664,16 @@ int main() {
 }
 
 #[test]
-fn test_comb_graph_cycles_with_parent_intermediates_need_three_settle_passes() {
+fn test_comb_graph_cycles_with_parent_intermediates_need_four_settle_passes() {
     // Regression: a direct cyclic instance graph normally needs two settle
     // passes, but if parent comb wires also feed an instance input, one pass
-    // is consumed refreshing those parent intermediates. ibex_ex_block has
-    // this shape: parent bridge wires feed multdiv, multdiv feeds ALU, and
-    // ALU feeds multdiv. The native simulator therefore needs settle_depth=3.
+    // is consumed refreshing those parent intermediates, and an instance
+    // output consumed through an intermediate produced by a later-in-source
+    // comb block lags one more (see analyze_module step 6 — eval() now
+    // delegates settling entirely to eval_comb(), so this depth is the only
+    // settle iteration that runs). ibex_ex_block has the cyclic shape:
+    // parent bridge wires feed multdiv, multdiv feeds ALU, and ALU feeds
+    // multdiv. The native simulator therefore needs settle_depth=4.
     let source = r#"
         module A
           port i: in UInt<1>;
@@ -30729,7 +30733,7 @@ fn test_comb_graph_cycles_with_parent_intermediates_need_three_settle_passes() {
         .expect("Top module");
     let analysis =
         arch::comb_graph::analyze_module(top, &symbols, &ast).expect("comb graph analysis");
-    assert_eq!(analysis.settle_depth, 3);
+    assert_eq!(analysis.settle_depth, 4);
 }
 
 #[test]
