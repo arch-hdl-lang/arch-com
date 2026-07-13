@@ -1342,7 +1342,13 @@ impl Parser {
             ParamKind::ConstVec(ty)
         } else if matches!(
             self.peek_kind(),
-            Some(TokenKind::UInt | TokenKind::SInt | TokenKind::Bool)
+            Some(
+                TokenKind::UInt
+                    | TokenKind::SInt
+                    | TokenKind::Bool
+                    | TokenKind::FP32
+                    | TokenKind::BF16
+            )
         ) {
             // Logic-typed value const: `param NAME: UInt<W> = <default>;`
             // (or SInt / Bool). Same SV shape as `WidthConst` but
