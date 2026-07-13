@@ -5861,8 +5861,12 @@ fn lower_module_threads(
             // (issue #501): a lock-guarded state's outputs must never appear
             // before the grant cycle, so overlapping into a lock body would
             // leak critical-section outputs into the preceding state.
-            // Multi-transition and TLM-return states are skipped — their
-            // successor is condition-dependent, not the natural next state.
+            // Multi-transition states are skipped — their successor is
+            // condition-dependent, not the natural next state. The
+            // terminal_return guard is defensive: today `terminal_return` is
+            // only set by the TLM response-router partition path, whose
+            // states never reach this loop, but the guard keeps overlap
+            // correct if that ever changes.
             if raw.multi_transitions.is_empty() && raw.terminal_return.is_none() {
                 if let Some(ref trans_cond) = raw.transition_cond {
                     let next_si = if let Some(folded_tgt) = raw.folded_exit_target {

@@ -504,8 +504,9 @@ The overlap is Mealy-style: the next state's outputs respond to the transition c
 
 The overlap also does not apply to:
 - multi-transition states (fork/join dispatch, `if`/`else` dispatch) — the successor is condition-dependent
-- TLM target return states
 - terminal states of `thread once` (self-loop; nothing to overlap)
+
+TLM method target threads are lowered by a dedicated response-router path and do not participate in the overlap.  As with each state's own comb arm, a thread's `default_when` condition does not gate the overlap arm — `default_when` preempts the *seq* side (state register and registered assigns) only.
 
 ## 20.16  Auto-Emitted Spec-Contract SVA (`--auto-thread-asserts`)
 
