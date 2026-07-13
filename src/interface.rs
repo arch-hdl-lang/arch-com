@@ -306,13 +306,18 @@ pub(crate) fn emit_params(s: &mut String, params: &[ParamDecl]) {
         let name = &p.name.name;
         match &p.kind {
             ParamKind::Const => {
+                let where_str = p
+                    .constraint
+                    .as_ref()
+                    .map(|c| format!(" where {}", expr_str(c)))
+                    .unwrap_or_default();
                 if let Some(ref def) = p.default {
                     s.push_str(&format!(
-                        "  {local}param {name}: const = {};\n",
+                        "  {local}param {name}: const = {}{where_str};\n",
                         expr_str(def)
                     ));
                 } else {
-                    s.push_str(&format!("  {local}param {name}: const;\n"));
+                    s.push_str(&format!("  {local}param {name}: const{where_str};\n"));
                 }
             }
             ParamKind::WidthConst(hi, lo) => {
@@ -326,8 +331,13 @@ pub(crate) fn emit_params(s: &mut String, params: &[ParamDecl]) {
                     .as_ref()
                     .map(|s| format!(" [{}]", expr_str(s)))
                     .unwrap_or_default();
+                let where_str = p
+                    .constraint
+                    .as_ref()
+                    .map(|c| format!(" where {}", expr_str(c)))
+                    .unwrap_or_default();
                 s.push_str(&format!(
-                    "  {local}param {name}[{}:{}]: const{unpacked}{default_str};\n",
+                    "  {local}param {name}[{}:{}]: const{unpacked}{default_str}{where_str};\n",
                     expr_str(hi),
                     expr_str(lo)
                 ));
@@ -546,7 +556,7 @@ fn type_str(ty: &TypeExpr) -> String {
 }
 
 /// Format an Expr as ARCH syntax (simplified — handles common width expressions).
-fn expr_str(expr: &Expr) -> String {
+pub(crate) fn expr_str(expr: &Expr) -> String {
     match &expr.kind {
         ExprKind::Literal(lit) => match lit {
             LitKind::Dec(v) => v.to_string(),

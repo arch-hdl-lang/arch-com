@@ -1,7 +1,7 @@
 //! ---
 //! tags: [tlm_method, target, thread, early_return]
 //! refs:
-//!   - "doc/plan_tlm_method.md"
+//!   - "doc/archive/plan_tlm_method.md"
 //! ---
 //!
 //! TLM target early-return lowering smoke test.

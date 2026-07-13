@@ -27,7 +27,7 @@ Both were found by ad-hoc audit, not by any structural guard. The
 `p₁ ≥ 2·p₂ + 2` rule is a **known fallacy** for round-to-nearest applied to an
 arbitrary real (it fails already at `p₁ = 4, p₂ = 1`:
 `RNE₁(RNE₄(1.4375)) = 2` but `RNE₁(1.4375) = 1`), yet it was used as blanket
-justification across `fp_ops.rs`, `sim_codegen`, and `doc/plan_fp_types.md`.
+justification across `fp_ops.rs`, `sim_codegen`, and `doc/archive/plan_fp_types.md`.
 
 The risk is open-ended: every *future* narrow format (fp16, fp8 E4M3/E5M2 — the
 natural next step for LLM inference, cf. #622) re-introduces the same hazard for

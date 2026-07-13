@@ -4411,7 +4411,39 @@ fn lower_module_threads(
     sorted_resources.sort();
     for res_name in sorted_resources {
         let n_threads = threads.len();
+        // Resource kind: `mutex` = 1 slot; `semaphore<N>` = N slots (N is a
+        // const expr, module-param references allowed, evaluated here). A
+        // `lock` referencing a resource with no explicit `resource`
+        // declaration defaults to `mutex<priority>` (1 slot) — unchanged
+        // from the pre-semaphore default.
+        let (policy, hook, n_slots) = match resource_decls.get(res_name) {
+            Some(rd) => {
+                let n = match &rd.kind {
+                    ResourceKind::Mutex => 1u64,
+                    ResourceKind::Semaphore(n_expr) => {
+                        let n = eval_const_expr_for_lower(n_expr, &parent_params);
+                        if n == 0 {
+                            errors.push(CompileError::general(
+                                &format!(
+                                    "resource `{}`: semaphore<N> requires N >= 1 (got 0)",
+                                    res_name
+                                ),
+                                rd.span,
+                            ));
+                            1
+                        } else {
+                            n
+                        }
+                    }
+                };
+                (rd.policy.clone(), rd.hook.clone(), n as usize)
+            }
+            None => (ArbiterPolicy::Priority, None, 1usize),
+        };
         // Per-thread scalar req/grant wires (internal to the merged module).
+        // `req_{ti}` is asserted for the whole lock body (unchanged from
+        // mutex); `grant_{ti}` is the final signal `lower_thread_lock`
+        // gates output-driving and transitions on.
         for ti in 0..n_threads {
             merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
                 bus_params: Vec::new(),
@@ -4435,6 +4467,232 @@ fn lower_module_threads(
                 ty: TypeExpr::Bool,
                 unpacked: false,
                 unpacked_ascending: false,
+                span: sp,
+            }));
+        }
+        // ── semaphore<N> (N > 1): holder tracking ────────────────────────
+        //
+        // Unlike mutex (where the arbiter's own sticky `ready` IS the hold
+        // state — `req` stays high the whole lock body, so `ready` stays
+        // high until `req` deasserts at lock exit), a semaphore needs up
+        // to N *simultaneous* holders. The arbiter construct itself only
+        // ever grants one winner per cycle, so we generalize by feeding it
+        // only *waiting* (not-yet-admitted) requesters, and track admitted
+        // holders in a separate per-thread `held` register:
+        //
+        //   waiting_i  = req_i & !held_i      (comb — competes only pre-admission)
+        //   [arbiter]  admits one waiting_i per cycle, subject to:
+        //   admit_i    = arb_grant_i & waiting_i & (holder_count < N)
+        //   held_i     <= admit_i ? 1 : (held_i & req_i ? held_i : 0)  (seq)
+        //   grant_i    = held_i | admit_i     (comb — fed to lower_thread_lock)
+        //   holder_count = popcount(held_0..held_{n-1})
+        //
+        // `admit_i` is combinational, so a thread that wins arbitration on
+        // an empty/undersubscribed semaphore sees `grant_i` go high the
+        // same cycle — the same "zero-cycle lock" property mutex documents
+        // (`lower_thread_lock`'s doc comment), now also true per-holder for
+        // semaphores. `held_i` register is what makes the property persist
+        // across cycles once a slot is occupied by another thread's grant.
+        //
+        // `semaphore<1, policy>` does NOT enter this branch — `n_slots > 1`
+        // is false for N==1, so it falls through to the exact same
+        // raw-arbiter-ready path `mutex` uses below (bit-identical
+        // codegen, not just behaviorally equivalent). See
+        // `test_semaphore_1_is_bit_identical_to_mutex` in
+        // tests/integration_test.rs.
+        if n_slots > 1 {
+            for ti in 0..n_threads {
+                merged_body.push(ModuleBodyItem::RegDecl(RegDecl {
+                    name: Ident::new(format!("_{}_held_{}", res_name, ti), sp),
+                    ty: TypeExpr::Bool,
+                    init: Some(make_zero_expr(sp)),
+                    reset: RegReset::Inherit(Ident::new(rst_name.clone(), sp), make_zero_expr(sp)),
+                    guard: None,
+                    multicycle: None,
+                    span: sp,
+                }));
+                merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
+                    bus_params: Vec::new(),
+                    name: Ident::new(format!("_{}_waiting_{}", res_name, ti), sp),
+                    ty: TypeExpr::Bool,
+                    unpacked: false,
+                    unpacked_ascending: false,
+                    span: sp,
+                }));
+                merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
+                    bus_params: Vec::new(),
+                    name: Ident::new(format!("_{}_admit_{}", res_name, ti), sp),
+                    ty: TypeExpr::Bool,
+                    unpacked: false,
+                    unpacked_ascending: false,
+                    span: sp,
+                }));
+            }
+            // Width must match the natural IEEE-1800 §11.6 ripple-widening
+            // result of summing `n_threads` 1-bit ternary terms: each `+`
+            // widens by 1 bit, so an n-term chain settles at n bits (not
+            // clog2(n+1) — that would require an explicit `.trunc<W>()`
+            // the compiler doesn't insert here).
+            let count_width = (n_threads as u32).max(1);
+            let holder_count = format!("_{}_holder_count", res_name);
+            merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
+                bus_params: Vec::new(),
+                name: Ident::new(holder_count.clone(), sp),
+                ty: TypeExpr::UInt(Box::new(Expr::new(
+                    ExprKind::Literal(LitKind::Dec(count_width as u64)),
+                    sp,
+                ))),
+                unpacked: false,
+                unpacked_ascending: false,
+                span: sp,
+            }));
+            // holder_count = (held_0 ? 1 : 0) + (held_1 ? 1 : 0) + ...
+            let mut count_expr: Option<Expr> = None;
+            for ti in 0..n_threads {
+                let held_ident =
+                    Expr::new(ExprKind::Ident(format!("_{}_held_{}", res_name, ti)), sp);
+                let term = Expr::new(
+                    ExprKind::Ternary(
+                        Box::new(held_ident),
+                        Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(1)), sp)),
+                        Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(0)), sp)),
+                    ),
+                    sp,
+                );
+                count_expr = Some(match count_expr {
+                    Some(acc) => Expr::new(
+                        ExprKind::Binary(BinOp::Add, Box::new(acc), Box::new(term)),
+                        sp,
+                    ),
+                    None => term,
+                });
+            }
+            let mut sem_comb: Vec<Stmt> = Vec::new();
+            sem_comb.push(Stmt::Assign(CombAssign {
+                target: Expr::new(ExprKind::Ident(holder_count.clone()), sp),
+                value: count_expr
+                    .unwrap_or_else(|| Expr::new(ExprKind::Literal(LitKind::Dec(0)), sp)),
+                span: sp,
+            }));
+            let n_slots_lit = Expr::new(ExprKind::Literal(LitKind::Dec(n_slots as u64)), sp);
+            for ti in 0..n_threads {
+                let req_ident = Expr::new(ExprKind::Ident(format!("_{}_req_{}", res_name, ti)), sp);
+                let held_ident =
+                    Expr::new(ExprKind::Ident(format!("_{}_held_{}", res_name, ti)), sp);
+                // waiting_i = req_i & !held_i
+                sem_comb.push(Stmt::Assign(CombAssign {
+                    target: Expr::new(ExprKind::Ident(format!("_{}_waiting_{}", res_name, ti)), sp),
+                    value: Expr::new(
+                        ExprKind::Binary(
+                            BinOp::And,
+                            Box::new(req_ident.clone()),
+                            Box::new(Expr::new(
+                                ExprKind::Unary(UnaryOp::Not, Box::new(held_ident.clone())),
+                                sp,
+                            )),
+                        ),
+                        sp,
+                    ),
+                    span: sp,
+                }));
+                // admit_i = grant_packed[i] & waiting_i & (holder_count < N)
+                let arb_grant_i = Expr::new(
+                    ExprKind::Index(
+                        Box::new(Expr::new(
+                            ExprKind::Ident(format!("_{}_grant_packed", res_name)),
+                            sp,
+                        )),
+                        Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(ti as u64)), sp)),
+                    ),
+                    sp,
+                );
+                let waiting_i =
+                    Expr::new(ExprKind::Ident(format!("_{}_waiting_{}", res_name, ti)), sp);
+                let count_lt_n = Expr::new(
+                    ExprKind::Binary(
+                        BinOp::Lt,
+                        Box::new(Expr::new(ExprKind::Ident(holder_count.clone()), sp)),
+                        Box::new(n_slots_lit.clone()),
+                    ),
+                    sp,
+                );
+                let admit_val = Expr::new(
+                    ExprKind::Binary(
+                        BinOp::And,
+                        Box::new(Expr::new(
+                            ExprKind::Binary(
+                                BinOp::And,
+                                Box::new(arb_grant_i),
+                                Box::new(waiting_i),
+                            ),
+                            sp,
+                        )),
+                        Box::new(count_lt_n),
+                    ),
+                    sp,
+                );
+                sem_comb.push(Stmt::Assign(CombAssign {
+                    target: Expr::new(ExprKind::Ident(format!("_{}_admit_{}", res_name, ti)), sp),
+                    value: admit_val,
+                    span: sp,
+                }));
+                // grant_i = held_i | admit_i
+                sem_comb.push(Stmt::Assign(CombAssign {
+                    target: Expr::new(ExprKind::Ident(format!("_{}_grant_{}", res_name, ti)), sp),
+                    value: Expr::new(
+                        ExprKind::Binary(
+                            BinOp::BitOr,
+                            Box::new(held_ident),
+                            Box::new(Expr::new(
+                                ExprKind::Ident(format!("_{}_admit_{}", res_name, ti)),
+                                sp,
+                            )),
+                        ),
+                        sp,
+                    ),
+                    span: sp,
+                }));
+            }
+            merged_body.push(ModuleBodyItem::CombBlock(CombBlock {
+                stmts: sem_comb,
+                span: sp,
+            }));
+            // held_i <= admit_i ? 1 : (held_i & req_i ? held_i : 0)
+            // i.e.: admit -> hold; still requesting while held -> keep holding;
+            // req deasserted (lock body exited) -> release.
+            let mut sem_seq: Vec<Stmt> = Vec::new();
+            for ti in 0..n_threads {
+                let held_name = format!("_{}_held_{}", res_name, ti);
+                let admit_ident =
+                    Expr::new(ExprKind::Ident(format!("_{}_admit_{}", res_name, ti)), sp);
+                let held_ident = Expr::new(ExprKind::Ident(held_name.clone()), sp);
+                let req_ident = Expr::new(ExprKind::Ident(format!("_{}_req_{}", res_name, ti)), sp);
+                let still_held = Expr::new(
+                    ExprKind::Binary(
+                        BinOp::And,
+                        Box::new(held_ident.clone()),
+                        Box::new(req_ident),
+                    ),
+                    sp,
+                );
+                let next_val = Expr::new(
+                    ExprKind::Ternary(
+                        Box::new(admit_ident),
+                        Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(1)), sp)),
+                        Box::new(still_held),
+                    ),
+                    sp,
+                );
+                sem_seq.push(Stmt::Assign(RegAssign {
+                    target: Expr::new(ExprKind::Ident(held_name), sp),
+                    value: next_val,
+                    span: sp,
+                }));
+            }
+            merged_body.push(ModuleBodyItem::RegBlock(RegBlock {
+                clock: Ident::new(clk_name.clone(), sp),
+                clock_edge: ClockEdge::Rising,
+                stmts: sem_seq,
                 span: sp,
             }));
         }
@@ -4494,9 +4752,27 @@ fn lower_module_threads(
         }));
 
         // Pack/unpack between scalar wires and packed vectors.
+        //
+        // n_slots <= 1 (`mutex<policy>`, or `semaphore<1, policy>` — the
+        // `n_slots > 1` branch above is skipped entirely for N==1, so
+        // `semaphore<1, policy>` takes this exact same path as `mutex`,
+        // making the two bit-identical in the merged module, not merely
+        // behaviorally equivalent): the arbiter's own sticky `ready` IS
+        // the grant — `req_i` feeds the arbiter directly and `grant_i` is
+        // the raw per-thread `ready` bit.
+        //
+        // n_slots > 1: the arbiter only sees *waiting* (not-yet-admitted)
+        // requesters (`waiting_i`, computed above); `grant_i` is already
+        // fully driven by the `sem_comb` block above (`held_i | admit_i`),
+        // so only the request side is packed here.
         let mut pack_stmts: Vec<Stmt> = Vec::new();
         for ti in 0..n_threads {
-            // _packed[ti] = _req_ti
+            let req_source = if n_slots > 1 {
+                format!("_{}_waiting_{}", res_name, ti)
+            } else {
+                format!("_{}_req_{}", res_name, ti)
+            };
+            // _packed[ti] = <req_source>
             pack_stmts.push(Stmt::Assign(CombAssign {
                 target: Expr::new(
                     ExprKind::Index(
@@ -4505,22 +4781,27 @@ fn lower_module_threads(
                     ),
                     sp,
                 ),
-                value: Expr::new(ExprKind::Ident(format!("_{}_req_{}", res_name, ti)), sp),
+                value: Expr::new(ExprKind::Ident(req_source), sp),
                 span: sp,
             }));
-            // _grant_ti = _grant_packed[ti]
-            pack_stmts.push(Stmt::Assign(CombAssign {
-                target: Expr::new(ExprKind::Ident(format!("_{}_grant_{}", res_name, ti)), sp),
-                value: Expr::new(
-                    ExprKind::Index(
-                        Box::new(Expr::new(ExprKind::Ident(grant_packed.clone()), sp)),
-                        Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(ti as u64)), sp)),
+            if n_slots <= 1 {
+                // _grant_ti = _grant_packed[ti]
+                pack_stmts.push(Stmt::Assign(CombAssign {
+                    target: Expr::new(ExprKind::Ident(format!("_{}_grant_{}", res_name, ti)), sp),
+                    value: Expr::new(
+                        ExprKind::Index(
+                            Box::new(Expr::new(ExprKind::Ident(grant_packed.clone()), sp)),
+                            Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(ti as u64)), sp)),
+                        ),
+                        sp,
                     ),
-                    sp,
-                ),
-                span: sp,
-            }));
-            // _release_packed[ti] = _release_ti
+                    span: sp,
+                }));
+            }
+            // _release_packed[ti] = _release_ti (all resource kinds: the
+            // synthesized lock arbiter always has the request_release port;
+            // for semaphore<N>, the held-register logic doesn't consume it
+            // but the arbiter's hold latch still clears harmlessly).
             pack_stmts.push(Stmt::Assign(CombAssign {
                 target: Expr::new(
                     ExprKind::Index(
@@ -4538,11 +4819,6 @@ fn lower_module_threads(
             span: sp,
         }));
 
-        // Synthesize the per-resource arbiter Item.
-        let (policy, hook) = match resource_decls.get(res_name) {
-            Some(rd) => (rd.policy.clone(), rd.hook.clone()),
-            None => (ArbiterPolicy::Priority, None),
-        };
         let arb_module_name = format!("_arb_{}_{}", m.name.name, res_name);
         let arb_decl = synthesize_lock_arbiter(
             &arb_module_name,
@@ -4957,6 +5233,7 @@ fn lower_module_threads(
                 name: Ident::new(state_names[si].clone(), sp),
                 kind: ParamKind::WidthConst(hi_lit, lo_lit),
                 default: Some(Expr::new(ExprKind::Literal(LitKind::Dec(si as u64)), sp)),
+                constraint: None,
                 is_local: true,
                 span: sp,
                 unpacked_size: None,
@@ -6014,6 +6291,7 @@ fn synthesize_lock_arbiter(
                 name: Ident::new("NUM_REQ".to_string(), sp),
                 kind: ParamKind::Const,
                 default: Some(n_threads_expr),
+                constraint: None,
                 is_local: false,
                 span: sp,
                 unpacked_size: None,
@@ -11602,7 +11880,7 @@ fn subst_expr_params(expr: &Expr, param_map: &HashMap<String, &Expr>) -> Expr {
 // Recognizes `target_reg <= port.method(args);` as a TLM call site inside a
 // thread body and expands it into the synthesizable request/response protocol
 // described in doc/ARCH_HDL_Specification.md §18d/§22 and
-// doc/plan_tlm_method.md. Call sites outside this shape are rejected with a
+// doc/archive/plan_tlm_method.md. Call sites outside this shape are rejected with a
 // targeted message.
 
 pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {

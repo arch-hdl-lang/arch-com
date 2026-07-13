@@ -167,7 +167,7 @@ pub struct Codegen<'a> {
     /// Set when any FP32/BF16 operation was emitted, so the `arch_f32_*` /
     /// `arch_bf16_*` SystemVerilog helper package is prepended to the output.
     fp_helpers_used: std::cell::Cell<bool>,
-    /// Floating-point special-value profile (doc/plan_fp_types.md §6.2).
+    /// Floating-point special-value profile (doc/archive/plan_fp_types.md §6.2).
     /// Selects the emitted NaN-canonicalization / NaN→int constants.
     fp_compat: crate::FpCompat,
     /// Name of the construct currently being emitted (for symbol lookups).
@@ -2050,7 +2050,7 @@ impl<'a> Codegen<'a> {
         None
     }
 
-    /// Float format of a `let` binding by AST lookup (modules + fsms).
+    /// Float format of a `let`/`wire` binding by AST lookup (modules + fsms).
     fn let_binding_float_fmt(&self, name: &str) -> Option<&'static str> {
         let fmt_of = |t: &TypeExpr| match t {
             TypeExpr::FP32 => Some("f32"),
@@ -2061,10 +2061,14 @@ impl<'a> Codegen<'a> {
             match item {
                 Item::Module(m) if m.name.name == self.current_construct => {
                     for bi in &m.body {
-                        if let ModuleBodyItem::LetBinding(l) = bi {
-                            if l.name.name == name {
+                        match bi {
+                            ModuleBodyItem::LetBinding(l) if l.name.name == name => {
                                 return l.ty.as_ref().and_then(|t| fmt_of(t));
                             }
+                            ModuleBodyItem::WireDecl(w) if w.name.name == name => {
+                                return fmt_of(&w.ty);
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -2103,13 +2107,17 @@ impl<'a> Codegen<'a> {
             match item {
                 Item::Module(m) if m.name.name == self.current_construct => {
                     for bi in &m.body {
-                        if let ModuleBodyItem::LetBinding(l) = bi {
-                            if l.name.name == name {
+                        match bi {
+                            ModuleBodyItem::LetBinding(l) if l.name.name == name => {
                                 return l
                                     .ty
                                     .as_ref()
                                     .map_or(false, |t| matches!(t, TypeExpr::SInt(_)));
                             }
+                            ModuleBodyItem::WireDecl(w) if w.name.name == name => {
+                                return matches!(w.ty, TypeExpr::SInt(_));
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -3988,7 +3996,7 @@ impl<'a> Codegen<'a> {
     ///    combinational current-cycle availability. Users whose design
     ///    needs a timing-relief flop will opt in via the upcoming
     ///    `CAN_SEND_REGISTERED` channel param (next-state flop semantics,
-    ///    option (b) — see doc/plan_credit_channel.md).
+    ///    option (b) — see doc/archive/plan_credit_channel.md).
     ///
     /// PR #3b-ii emits only the sender-side state — target-side FIFO +
     /// credit_return-pulse wiring lands in PR #3b-iii; `ch.send()` /

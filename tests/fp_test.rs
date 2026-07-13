@@ -2,7 +2,7 @@
 //!
 //! Covers the front-end (parse + type check), the SoftFloat-semantics
 //! simulation backend (host IEEE-754 RNE), and the SystemVerilog emission
-//! shape. See doc/plan_fp_types.md.
+//! shape. See doc/archive/plan_fp_types.md.
 
 use std::process::Command;
 
@@ -311,7 +311,7 @@ fn fp_unsupported_operator_named_in_error() {
     }
 }
 
-/// Differential equivalence (doc/plan_fp_types.md §8.2): the emitted
+/// Differential equivalence (doc/archive/plan_fp_types.md §8.2): the emitted
 /// synthesizable FP helpers, verilated and run against a host IEEE-754 (DPI-C)
 /// reference over corner + randomized + cancellation-prone vectors, must be
 /// bit-exact for every op / compare / conversion / BF16 wrapper.
@@ -482,7 +482,7 @@ fn fp_int_to_bf16_f32_routed_witness_verilator() {
     );
 }
 
-/// SMT equivalence proofs (doc/plan_fp_types.md §8.1). The proof model is
+/// SMT equivalence proofs (doc/archive/plan_fp_types.md §8.1). The proof model is
 /// rendered from the SAME shared IR as the emitted SystemVerilog
 /// (`arch::fp_smt_proof::equiv_proof` over `arch::fp_ops`), so the RTL and the
 /// formally-checked model are one source — they cannot drift. Each generated
@@ -551,7 +551,7 @@ fn fp_smt_equivalence_proofs() {
     eprintln!("\n{cert}");
 }
 
-/// RNE arithmetic equivalence (doc/plan_fp_types.md §8.1), the slower miters.
+/// RNE arithmetic equivalence (doc/archive/plan_fp_types.md §8.1), the slower miters.
 ///
 /// - **f32 `add`/`sub`** are proved `unsat` vs `fp.add`/`fp.sub` over all 2^64
 ///   inputs (~80 s each). Tractable because the bounded adder keeps the datapath
@@ -606,7 +606,7 @@ fn fp_smt_arith_proofs() {
     }
 }
 
-/// `--fp-compat=cuda` (doc/plan_fp_types.md §6.2) selects the CUDA special-value
+/// `--fp-compat=cuda` (doc/archive/plan_fp_types.md §6.2) selects the CUDA special-value
 /// profile in the emitted SystemVerilog: canonical NaN 0x7FFFFFFF / 0x7FFF and
 /// NaN->int = 0. The default `riscv` profile keeps 0x7FC00000 / 0x7FC0 and
 /// NaN->type-max. The arithmetic datapath is identical across profiles.

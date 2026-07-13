@@ -756,13 +756,15 @@ pub fn gen_module_thread_with_warnings(
                 });
             }
         }
-        // Per-resource holder fields (-1 = free, otherwise thread index).
+        // Per-resource holder-mask fields (bit i set == thread i currently
+        // holds a slot). `mutex` and `semaphore<1, _>` never have more than
+        // one bit set at a time; `semaphore<N, _>` (N > 1) may have up to N.
         for item in &m.body {
             if let ModuleBodyItem::Resource(r) = item {
                 signals.push(crate::sim_codegen::TraceSignal {
-                    vcd_name: format!("_resource_{}_holder", r.name.name),
-                    cpp_expr: format!("(uint32_t)_resource_{}_holder", r.name.name),
-                    width: 32,
+                    vcd_name: format!("_resource_{}_holder_mask", r.name.name),
+                    cpp_expr: format!("_resource_{}_holder_mask", r.name.name),
+                    width: 64,
                     is_wide: false,
                 });
             }
@@ -849,8 +851,11 @@ pub fn gen_module_thread_with_warnings(
                 "  uint64_t _resource_{}_req_mask = 0;\n",
                 r.name.name
             ));
+            // Bitmask of currently-held slots (bit i == thread i holds).
+            // mutex / semaphore<1> only ever have one bit set; semaphore<N>
+            // may have up to N.
             header.push_str(&format!(
-                "  int32_t _resource_{}_holder = -1;\n",
+                "  uint64_t _resource_{}_holder_mask = 0;\n",
                 r.name.name
             ));
             match &r.policy {
@@ -2071,6 +2076,21 @@ fn field_decl(ty: &str, name: &str) -> String {
     }
 }
 
+/// Number of concurrent holders a resource allows: 1 for `mutex`, N for
+/// `semaphore<N, policy>` (N const-evaluated against the module's params —
+/// module-param references like `semaphore<WORKERS, round_robin>` resolve
+/// here the same way `weighted<W>` credits do). Floors at 1 so a
+/// mis-elaborated `semaphore<0>` (rejected earlier at compile time with a
+/// diagnostic) never divides-by-zero or under-flows arbitration state here.
+fn resource_n_slots(r: &crate::ast::ResourceDecl, params: &[ParamDecl]) -> u64 {
+    match &r.kind {
+        crate::ast::ResourceKind::Mutex => 1,
+        crate::ast::ResourceKind::Semaphore(n_expr) => {
+            eval_const_with_params(n_expr, params).max(1)
+        }
+    }
+}
+
 fn eval_const_with_params(e: &Expr, params: &[ParamDecl]) -> u64 {
     match &e.kind {
         ExprKind::Literal(LitKind::Dec(v)) => *v,
@@ -2308,14 +2328,19 @@ fn emit_resource_helpers(
             }
         }
         header.push_str("  }\n");
+        // `n_slots`: 1 for `mutex`, N (const-evaluated, module params
+        // resolved) for `semaphore<N, policy>`. `semaphore<1, policy>` also
+        // takes n_slots == 1, so it runs the identical acquire/claim/release
+        // logic mutex does — no separate code path needed.
+        let n_slots = resource_n_slots(r, &m.params);
         header.push_str(&format!(
             "  bool _resource_{res}_can_acquire(uint32_t _tid) {{\n"
         ));
         header.push_str(&format!(
-            "    if (_resource_{res}_holder == (int32_t)_tid) return true;\n"
+            "    if ((_resource_{res}_holder_mask >> _tid) & 1ULL) return true;\n"
         ));
         header.push_str(&format!(
-            "    if (_resource_{res}_holder != -1) return false;\n"
+            "    if (__builtin_popcountll(_resource_{res}_holder_mask) >= {n_slots}u) return false;\n"
         ));
         header.push_str(&format!("    return _resource_{res}_select() == _tid;\n"));
         header.push_str("  }\n");
@@ -2331,9 +2356,11 @@ fn emit_resource_helpers(
             "    _resource_{res}_req_mask &= ~(1ULL << _tid);\n"
         ));
         header.push_str(&format!(
-            "    if (_resource_{res}_holder == (int32_t)_tid) return;\n"
+            "    if ((_resource_{res}_holder_mask >> _tid) & 1ULL) return;\n"
         ));
-        header.push_str(&format!("    _resource_{res}_holder = (int32_t)_tid;\n"));
+        header.push_str(&format!(
+            "    _resource_{res}_holder_mask |= (1ULL << _tid);\n"
+        ));
         match &r.policy {
             ArbiterPolicy::Priority => {}
             ArbiterPolicy::RoundRobin => {
@@ -2365,7 +2392,7 @@ fn emit_resource_helpers(
             "  void _resource_{res}_release(uint32_t _tid) {{\n"
         ));
         header.push_str(&format!(
-            "    if (_resource_{res}_holder == (int32_t)_tid) _resource_{res}_holder = -1;\n"
+            "    _resource_{res}_holder_mask &= ~(1ULL << _tid);\n"
         ));
         header.push_str("  }\n");
     }
@@ -2381,7 +2408,7 @@ fn emit_resource_reset(
 ) {
     let res = &r.name.name;
     header.push_str(&format!("{pad}_resource_{res}_req_mask = 0;\n"));
-    header.push_str(&format!("{pad}_resource_{res}_holder = -1;\n"));
+    header.push_str(&format!("{pad}_resource_{res}_holder_mask = 0;\n"));
     match &r.policy {
         ArbiterPolicy::Priority => {}
         ArbiterPolicy::RoundRobin => {

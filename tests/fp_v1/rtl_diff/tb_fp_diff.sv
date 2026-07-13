@@ -1,4 +1,4 @@
-// Differential testbench for the synthesizable FP helpers (doc/plan_fp_types.md
+// Differential testbench for the synthesizable FP helpers (doc/archive/plan_fp_types.md
 // §8.2). The `arch_*` helper functions come from the `arch build` output that is
 // verilated alongside this file; the reference is host IEEE-754 via DPI-C
 // (dpi_ref.cpp), i.e. the same semantics the arch-sim backend implements.

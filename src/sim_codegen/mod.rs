@@ -1118,7 +1118,7 @@ static inline uint64_t _arch_f32_to_uint(uint32_t b, int bits){
     return (v > maxv) ? maxv : v;
 }
 "#.to_string();
-        // Profile shim (doc/plan_fp_types.md §6.2): the `cuda` profile differs
+        // Profile shim (doc/archive/plan_fp_types.md §6.2): the `cuda` profile differs
         // from the default `riscv` only in the canonical NaN pattern and the
         // NaN→int result; the arithmetic core is untouched.
         match fp_compat {

@@ -140,7 +140,7 @@ pub struct BusInfo {
     /// Credit channels declared in this bus. PR #3 scaffolding: elaboration
     /// rejects modules that instantiate a bus with non-empty credit_channels
     /// because counter + fifo synthesis is not wired up yet. See
-    /// doc/plan_credit_channel.md.
+    /// doc/archive/plan_credit_channel.md.
     pub credit_channels: Vec<crate::ast::CreditChannelMeta>,
     /// TLM method sub-constructs declared in this bus. PR-tlm-1
     /// scaffolding: populated by the parser; typecheck currently rejects
@@ -1077,6 +1077,16 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                                     }),
                                     i.name.span,
                                 ),
+                            );
+                        }
+                    }
+                    ModuleBodyItem::WireDecl(w) => {
+                        if scope.contains_key(&w.name.name) {
+                            errors.push(CompileError::duplicate(&w.name.name, w.name.span));
+                        } else {
+                            scope.insert(
+                                w.name.name.clone(),
+                                (Symbol::Let(w.name.name.clone()), w.name.span),
                             );
                         }
                     }

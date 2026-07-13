@@ -910,6 +910,9 @@ A module is the fundamental unit of design in Arch. Every module follows the sam
 |                                                                                |
 | // param NAME: const = value;       // untyped int — emits `parameter int`     |
 |                                                                                |
+| // param NAME: const = value where ConstExpr; // optional compile-time        |
+| //                                  constraint — see §4.1a                     |
+|                                                                                |
 | // param NAME[hi:lo]: const = value; // width-qualified — emits `parameter [hi:lo]` |
 |                                                                                |
 | // param NAME: type = SomeType;     // type alias — emits `parameter type`     |
@@ -960,6 +963,93 @@ A module is the fundamental unit of design in Arch. Every module follows the sam
 |                                                                                |
 | **end** **module** Adder                                                       |
 +--------------------------------------------------------------------------------+
+
+**4.1a Compile-Time Parameter Constraints (`where`)**
+
+A `const`-kind `param` declaration (plain or width-qualified) may carry an
+optional `where` clause naming a compile-time Boolean predicate on that
+param:
+
+```
+ParamDecl := 'param' IDENT ':' ParamKind '=' ConstExpr ('where' ConstExpr)? ';'
+```
+
+`where` is only legal on `const` / width-qualified `const` params — a `where`
+clause on a `type`, `Vec<T,N>`, enum-typed, or logic-typed (`UInt<W>`/`SInt<W>`)
+param is a compile error at parse time.
+
+The constraint expression:
+
+- Is evaluated at compile time using the same rules as param defaults —
+  literals, earlier `const` params declared in the same block, and
+  compile-time intrinsics such as `$clog2`.
+- May reference the declared param itself (its own name resolves to its
+  effective value at each check site — the default at the definition site,
+  the concrete override at an instantiation site).
+- Must type-check as `Bool`. A non-Bool result (e.g. an arithmetic
+  expression) is a compile error at the definition site.
+
+Two check sites enforce the constraint:
+
+1. **Definition site.** After type-checking the construct, the compiler
+   const-evaluates the constraint against the declared default. A violated
+   default is a compile error naming the param, its default value, and the
+   constraint source verbatim:
+   ```
+   error: default value SIZE=3 violates constraint: (SIZE & (SIZE - 1)) == 0
+   ```
+2. **Instantiation site.** At every `inst ... param NAME = VALUE;` override
+   (including instances produced by `generate_for` elaboration and
+   derived-param chains — a later param whose default expression reads an
+   overridden earlier param, e.g. `param B: const = A * 2 where B <= 64;`,
+   is re-evaluated with the effective value of `A`), the compiler
+   const-evaluates the constraint with the concrete override in effect and
+   reports a violation naming the param, its evaluated value, the
+   instantiating `inst`, and the declaring construct:
+   ```
+   error: param `SIZE`=3 in inst `l1d` violates constraint declared on `Cache`: (SIZE & (SIZE - 1)) == 0
+   ```
+   There is no custom message-string syntax in v1 — the error always quotes
+   the constraint expression verbatim rather than a user-supplied string.
+
+**Separate compilation.** `arch build` emits the `where` clause verbatim in
+the `.archi` interface file alongside the param's kind and default, so a
+downstream compilation unit that only sees the `.archi` stub (no access to
+the original `.arch` source) still enforces the constraint at its own
+instantiation sites.
+
+**Erased before codegen.** The constraint exists purely as a compile-time
+check — for a design whose params satisfy every `where` clause, the emitted
+SystemVerilog (`arch build`), SMT-LIB2 (`arch formal`), and sim C++ (`arch
+sim`) are byte-identical to the same design with the `where` clauses removed.
+
+`where` applies uniformly wherever a `const` param is legal: `module`,
+`fsm`, `fifo`, `ram`, `arbiter`, `pipeline`, `bus`, and the other first-class
+constructs that share the `ParamDecl` schema. For `bus` params, whose
+overrides happen at port declarations rather than inst sites, the
+instantiation-site check runs at every `port p: initiator/target
+BusName<PARAM=value>;` override:
+
+```
+error: param `DATA_W`=48 on bus port `b` violates constraint declared on `MiniBus`: ...
+```
+
+Example, from the motivating case (cache sizing):
+
+```arch
+module Cache
+  param SIZE:   const = 1024 where SIZE > 0 and (SIZE & (SIZE - 1)) == 0;
+  param DATA_W: const = 32   where DATA_W == 8 or DATA_W == 16 or DATA_W == 32 or DATA_W == 64;
+  param STAGES: const = 2    where STAGES >= 1 and STAGES <= 8;
+  ...
+end module Cache
+```
+
+`where` is complementary to `assert` (a runtime/formal property checked
+during `arch sim` / `arch formal`) and to `generate if` (which routes
+codegen around a condition but never rejects) — it is the compile-time,
+always-on rejection of invalid parameter values, checked by `arch check`,
+`arch build`, `arch sim`, and `arch formal` alike.
 
 **4.2 Combinational vs Registered Blocks**
 
@@ -5089,7 +5179,7 @@ Real schedulers rarely use a single integer key. Arch allows struct types as pri
 
 **18a. First-Class Sub-Construct: handshake_channel (inside bus)**
 
-> **Keyword rename (v0.44.0):** the opening/closing keyword is `handshake_channel`. The legacy `handshake` keyword still parses and emits a deprecation warning (silence with `ARCH_NO_DEPRECATIONS=1`); it will be removed in v0.45.0. The rename aligns this sub-construct with its siblings `credit_channel` and `tlm_method` under the unified `bus` umbrella (see `doc/plan_bus_unification.md`). Semantics are unchanged.
+> **Keyword rename (v0.44.0):** the opening/closing keyword is `handshake_channel`. The legacy `handshake` keyword still parses and emits a deprecation warning (silence with `ARCH_NO_DEPRECATIONS=1`); it will be removed in v0.45.0. The rename aligns this sub-construct with its siblings `credit_channel` and `tlm_method` under the unified `bus` umbrella (see `doc/archive/plan_bus_unification.md`). Semantics are unchanged.
 
 `handshake_channel` collapses the valid/ready/payload vocabulary that dominates every on-chip interface — AXI/APB/AHB/Avalon, streaming pipelines, async GALS bridges — into one declaration per channel. It is a **compile-time sum type**: a single keyword names the *payload role*, a variant name selects the flow-control shape, and the compiler synthesizes the flat individual-wire port declarations with their directions derived mechanically. The user never flips individual wires by hand, so the dominant "I flipped valid and ready" bug class is eliminated by construction.
 
@@ -5396,7 +5486,7 @@ The cross-module occupancy invariant (`occupancy == DEPTH - credit`) is deferred
 - Runtime-parameterizable depth (DEPTH is compile-time const).
 - `arch sim --pybind --test` simulation on `pipeline` / `thread` / `arbiter` constructs carrying credit_channel ports — the C++ mirror currently lives in the `module` emitter path. `module`-based designs simulate correctly; the other construct emitters will inherit the same hook when a concrete need surfaces.
 
-Full design history and the broader roadmap are in `doc/plan_credit_channel.md` and `doc/plan_bus_unification.md`.
+Full design history and the broader roadmap are in `doc/archive/plan_credit_channel.md` and `doc/archive/plan_bus_unification.md`.
 
 **18d. First-Class Sub-Construct: tlm_method (inside bus)**
 
@@ -5594,7 +5684,7 @@ Both target and initiator passes emit ordinary `RegDecl` + `RegBlock` + `CombBlo
 - Non-literal `out_of_order tags` expressions.
 - Statements after `return` in the same TLM target block. Branch-local target `return expr;` is supported, but it terminates that block.
 
-Full design and evolution in `doc/plan_tlm_method.md`.
+Full design and evolution in `doc/archive/plan_tlm_method.md`.
 
 **18e. Standard Bus Library**
 
@@ -7518,7 +7608,7 @@ the design:
 
 **22.4 Current TLM Boundaries**
 
-The implemented TLM surface ends here. Older sketches for `Future<T>`, `await`, `pipelined method`, `burst`, LT/AT simulation modes, selective refinement flags, user-visible token APIs, and the retired `implement` pool direction have been removed from the normative spec because they are not accepted by the current compiler. Current TLM status, remaining work, and historical pivots are tracked in `doc/plan_tlm_method.md`.
+The implemented TLM surface ends here. Older sketches for `Future<T>`, `await`, `pipelined method`, `burst`, LT/AT simulation modes, selective refinement flags, user-visible token APIs, and the retired `implement` pool direction have been removed from the normative spec because they are not accepted by the current compiler. Current TLM status, remaining work, and historical pivots are tracked in `doc/archive/plan_tlm_method.md`.
 
 Use the implemented forms above for all current RTL-backed TLM work:
 

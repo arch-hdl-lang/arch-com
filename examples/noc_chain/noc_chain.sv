@@ -1,4 +1,4 @@
-// 3-stage credit_channel forwarding chain — see doc/plan_credit_channel.md
+// 3-stage credit_channel forwarding chain — see doc/archive/plan_credit_channel.md
 // §"Stretch: 4×4 mesh" for the broader vision. This is the minimal multi-
 // hop demo: a Producer feeds Router0 → Router1 → Router2 → Consumer,
 // each link a separate credit_channel. Validates that credit-based

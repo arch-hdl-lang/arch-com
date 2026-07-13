@@ -144,8 +144,12 @@ seq_default_decl = "default" "seq" "on" ident ( "rising" | "falling" ) ";" ;
 
 (* param: overridable at inst site (SV parameter).
    local param: derived, not overridable (SV localparam).
-   Enum-typed: param NAME: EnumName = EnumName::Variant *)
-param_decl = [ "local" ] "param" ident [ "[" expr ":" expr "]" ] ":" param_kind [ "=" expr ] ";" ;
+   Enum-typed: param NAME: EnumName = EnumName::Variant
+   where: optional compile-time Boolean constraint on a `const`-kind param
+   (bare or width-qualified only — rejected on "type" / enum / logic /
+   Vec-of-const kinds). Checked at the definition site (against the
+   default) and at every inst-site override; erased before codegen. *)
+param_decl = [ "local" ] "param" ident [ "[" expr ":" expr "]" ] ":" param_kind [ "=" expr ] [ "where" expr ] ";" ;
 
 param_kind = "const"
            | "type" "=" type_expr

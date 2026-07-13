@@ -323,7 +323,7 @@ impl Parser {
 
     /// Parse a `tlm_method` declaration inside a bus body. Captures name,
     /// args, ret type, and concurrency mode for later bus flattening and
-    /// thread lowering. See doc/plan_tlm_method.md.
+    /// thread lowering. See doc/archive/plan_tlm_method.md.
     ///
     /// Grammar:
     ///   'tlm_method' Ident '(' (Ident ':' TypeExpr (',' Ident ':' TypeExpr)*)? ')'
@@ -394,7 +394,7 @@ impl Parser {
     /// Parse a `credit_channel` block inside a bus body. PR #3 scaffolding:
     /// captures the channel name, role, and params (`T`, `DEPTH`). No
     /// PortDecls are materialized — the wire protocol + per-port-site counter
-    /// + fifo synthesis land in a follow-up PR. See doc/plan_credit_channel.md.
+    /// + fifo synthesis land in a follow-up PR. See doc/archive/plan_credit_channel.md.
     ///
     /// Grammar:
     ///   'credit_channel' Ident ':' ('send'|'receive') NEWLINE
@@ -563,7 +563,7 @@ impl Parser {
     ///   'end' 'handshake' Ident
     ///
     /// Variants: valid_ready, valid_only, ready_only, valid_stall,
-    /// req_ack_4phase, req_ack_2phase. See doc/plan_handshake_construct.md.
+    /// req_ack_4phase, req_ack_2phase. See doc/archive/plan_handshake_construct.md.
     ///
     /// `send`/`receive` name the payload-flow role (NOT wire direction):
     /// `send` = this side produces the payload (drives valid/req/payload,
@@ -573,7 +573,7 @@ impl Parser {
         parent_span: Span,
     ) -> Result<(Vec<PortDecl>, Vec<BusGenerateIf>, HandshakeMeta), CompileError> {
         // Accept both `handshake` (legacy) and `handshake_channel` (new).
-        // See plan_bus_unification.md for the rename rationale.
+        // See doc/archive/plan_bus_unification.md for the rename rationale.
         let is_legacy = self.check(TokenKind::Handshake);
         let opening_tok = if is_legacy {
             TokenKind::Handshake
@@ -845,7 +845,7 @@ impl Parser {
     /// position (a future extension could lift it once arbiter generate-if
     /// machinery exists; today arbiter ports have no such concept).
     ///
-    /// See doc/plan_handshake_construct.md for the variant catalog.
+    /// See doc/archive/plan_handshake_construct.md for the variant catalog.
     fn parse_handshake_channel_construct_port(
         &mut self,
     ) -> Result<(Vec<PortDecl>, Option<PortArrayDecl>, HandshakeMeta), CompileError> {
@@ -1387,6 +1387,25 @@ impl Parser {
         } else {
             None
         };
+        // Optional `where ConstExpr` compile-time constraint. Only legal on
+        // `const`-kind params (plain or width-const); type/logic/enum/vec
+        // params reject it with a clear parse-time error.
+        let constraint = if self.eat_contextual("where") {
+            let where_span = self
+                .tokens
+                .get(self.pos.saturating_sub(1))
+                .map(|t| t.span)
+                .unwrap_or(start);
+            if !matches!(kind, ParamKind::Const | ParamKind::WidthConst(_, _)) {
+                return Err(CompileError::general(
+                    "`where` constraint clauses are only allowed on `const` params, not type/logic/enum/vec params",
+                    where_span,
+                ));
+            }
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
         self.expect(TokenKind::Semi)?;
         let end_span = self
             .tokens
@@ -1397,6 +1416,7 @@ impl Parser {
             name,
             kind,
             default,
+            constraint,
             is_local,
             span: start.merge(end_span),
             unpacked_size,
@@ -2819,28 +2839,45 @@ impl Parser {
         })
     }
 
-    /// Parse `resource name : mutex<policy>;` (one-liner) or
-    /// `resource name : mutex<policy> hook ... end resource name` (block form).
+    /// Parse `resource name : mutex<policy>;` / `resource name : semaphore<N, policy>;`
+    /// (one-liner) or the block form with a trailing `hook ... end resource name`.
     ///
     /// `policy` is one of: `round_robin`, `priority`, `lru`, `weighted<W>`,
     /// or any other identifier — treated as `Custom(<ident>)`. A `Custom`
     /// policy may add a `hook grant_select(...) = FnName(...);` clause; the
     /// hook closes with `end resource <name>`.
+    ///
+    /// `semaphore<N, policy>` additionally parses a leading const expr `N`
+    /// (module param references allowed, e.g. `semaphore<WORKERS, priority>`)
+    /// followed by a comma before the policy.
     fn parse_resource_decl(&mut self) -> Result<ResourceDecl, CompileError> {
         let start = self.expect_contextual("resource")?.span;
         let name = self.expect_ident()?;
         self.expect(TokenKind::Colon)?;
 
-        // Parse `mutex<policy>` — accepts the same policy grammar as `arbiter`.
-        self.expect_contextual("mutex")?;
+        // Parse `mutex<policy>` or `semaphore<N, policy>` — the policy
+        // grammar is identical to `arbiter`'s in both cases.
+        let is_semaphore = self.check_ident("semaphore");
+        if is_semaphore {
+            self.expect_contextual("semaphore")?;
+        } else {
+            self.expect_contextual("mutex")?;
+        }
         self.expect(TokenKind::Lt)?;
+        let n_expr = if is_semaphore {
+            let n = self.parse_type_arg_expr()?;
+            self.expect(TokenKind::Comma)?;
+            Some(n)
+        } else {
+            None
+        };
         let policy_ident = self.expect_ident()?;
         let policy = match policy_ident.name.as_str() {
             "round_robin" => ArbiterPolicy::RoundRobin,
             "priority" => ArbiterPolicy::Priority,
             "lru" => ArbiterPolicy::Lru,
             "weighted" => {
-                // `mutex<weighted<W>>` — inner `<W>` (param expr).
+                // `mutex<weighted<W>>` / `semaphore<N, weighted<W>>` — inner `<W>` (param expr).
                 self.expect(TokenKind::Lt)?;
                 let w = self.parse_type_arg_expr()?;
                 self.expect(TokenKind::Gt)?;
@@ -2873,8 +2910,14 @@ impl Parser {
             closing.span
         };
 
+        let kind = match n_expr {
+            Some(n) => crate::ast::ResourceKind::Semaphore(n),
+            None => crate::ast::ResourceKind::Mutex,
+        };
+
         Ok(ResourceDecl {
             name,
+            kind,
             policy,
             hook,
             span: start.merge(end_span),
@@ -4225,7 +4268,7 @@ impl Parser {
         loop {
             // Postfix `@N` — latency annotation on pipe_reg references.
             // Valid on LHS (sink side, N = declared depth) and on RHS (source
-            // side, only N = 0 in v1 per doc/plan_pipe_reg_at_syntax.md).
+            // side, only N = 0 in v1 per doc/archive/plan_pipe_reg_at_syntax.md).
             // Parser is permissive here; typecheck enforces the placement
             // and value constraints.
             if self.check(TokenKind::At) {
@@ -6296,7 +6339,7 @@ impl Parser {
                     // `handshake_channel` desugars to either a flat group of
                     // PortDecls (no `[N]`) or a PortArrayDecl (with `[N]`).
                     // Reuses the same payload/variant/direction parser as the
-                    // bus-body path; see doc/plan_handshake_construct.md.
+                    // bus-body path; see doc/archive/plan_handshake_construct.md.
                     let (decls, opt_array, meta) = self.parse_handshake_channel_construct_port()?;
                     ports.extend(decls);
                     if let Some(arr) = opt_array {

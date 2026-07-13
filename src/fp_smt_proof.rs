@@ -5,7 +5,7 @@
 //! `define-fun`s rendered from the IR, followed by a miter asserting the negation
 //! of equivalence to the IEEE-754 `FloatingPoint` theory. `unsat` from a solver
 //! ⇒ the emitted RTL operator equals IEEE-754 over its entire input space
-//! (doc/plan_fp_types.md §8.1). Because the RTL and this model are rendered from
+//! (doc/archive/plan_fp_types.md §8.1). Because the RTL and this model are rendered from
 //! one source they cannot drift.
 //!
 //! `TRACTABLE` lists the operators a bit-vector FP solver (z3) discharges

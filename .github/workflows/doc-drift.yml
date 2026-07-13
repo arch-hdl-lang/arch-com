@@ -1,0 +1,56 @@
+name: doc-drift
+
+# Grammar-surface PRs (src/lexer.rs, src/parser.rs, src/ast.rs) must also
+# touch doc/ in the same PR. Doc drift — features landing without spec
+# updates — is the most recurring finding in this repo's daily reviews.
+# Logic lives in scripts/check_doc_drift.sh (locally runnable:
+# `scripts/check_doc_drift.sh origin/main`); this workflow just wires it up
+# and handles the `no-doc-needed` label escape hatch, which isn't visible to
+# a local `git diff` and has to be read from the PR event payload here.
+#
+# NB: runs on EVERY PR to main, deliberately with no `paths:` filter. This
+# job is intended to become a REQUIRED status check under main's branch
+# protection, and a required check that is path-filtered never reports on
+# PRs that don't touch those paths — leaving them stuck "Expected — waiting
+# for status" and unmergeable. When no surface file changed, the script
+# exits 0 immediately, so running unconditionally is cheap and correct.
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: doc-drift-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  doc-drift:
+    name: doc drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for no-doc-needed label
+        id: label-check
+        env:
+          PR_LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          echo "PR labels: ${PR_LABELS}"
+          if echo "${PR_LABELS}" | grep -q '"no-doc-needed"'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip (no-doc-needed label present)
+        if: steps.label-check.outputs.skip == 'true'
+        run: |
+          echo "PR is labeled 'no-doc-needed' — skipping doc drift check."
+          echo "This label is for pure internal refactors of a grammar-surface"
+          echo "file (e.g. src/parser.rs) with no user-facing syntax/semantics"
+          echo "change, such as the planned parser/elaborate splits."
+
+      - name: Run doc drift check
+        if: steps.label-check.outputs.skip != 'true'
+        run: scripts/check_doc_drift.sh "origin/${{ github.event.pull_request.base.ref }}"

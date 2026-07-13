@@ -11,6 +11,8 @@ Every construct uses the same layout:
 ```
 keyword Name
   param NAME: const = value;          // untyped int → parameter int (32-bit)
+  param NAME: const = value where ConstExpr; // optional compile-time constraint, e.g.:
+                                       //   param SIZE: const = 8 where SIZE > 0 and (SIZE & (SIZE - 1)) == 0; // power of two
   param NAME[hi:lo]: const = value;   // width-qualified → parameter [hi:lo]
   param NAME: type = SomeType;        // compile-time type parameter
 
@@ -685,13 +687,15 @@ end module M
 - Multiple threads in one module share one `always_ff` — no multi-driver conflicts
 - Thread-driven `reg` declarations are **automatically** lifted to the `_ModuleName_threads` submodule
 
-**Lock arbiter policy** selected via `mutex<...>` on the `resource` decl:
+**Lock arbiter policy** selected via `mutex<...>` / `semaphore<N, ...>` on the `resource` decl:
 
-- `mutex<priority>` (default) — `grant[i] = req[i] && !grant[j<i]`; thread 0 always wins, thread N waits only for lower-index threads. Acyclic waits-for graph.
-- `mutex<round_robin>` / `mutex<lru>` / `mutex<weighted<W>>` — bounded-wait fairness (any requester granted within ≤ N cycles for round_robin/lru; long-run proportional for weighted).
-- `mutex<MyFn>` — user-supplied `hook grant_select(...) -> UInt<N>` returns a one-hot grant. Compiler enforces mutual exclusion; the user owns deadlock freedom.
+- `mutex<policy>` — exclusive, one holder at a time.
+- `semaphore<N, policy>` (v0.71.0+) — up to `N` concurrent holders; same policy vocabulary. `N` is a const expr (module-param references allowed) and must be `>= 1`. `semaphore<1, policy>` lowers bit-identically to `mutex<policy>`. See `doc/thread_spec_section.md` §20.8.4 for the holder-counting hardware shape.
+- `priority` (default) — `grant[i] = req[i] && !grant[j<i]`; thread 0 always wins, thread N waits only for lower-index threads. Acyclic waits-for graph.
+- `round_robin` / `lru` / `weighted<W>` — bounded-wait fairness (any requester granted within ≤ N cycles for round_robin/lru; long-run proportional for weighted).
+- `MyFn` (custom, `mutex<MyFn>` / `semaphore<N, MyFn>`) — user-supplied `hook grant_select(...) -> UInt<N>` returns a one-hot grant. Compiler enforces mutual exclusion (or the N-slot bound for `semaphore`); the user owns deadlock freedom.
 
-`arch sim --thread-sim parallel` honours the policy directly, so `--thread-sim both` is an exact cross-check against the FSM-lowered path. See `doc/thread_lowering_algorithm.md` for the per-policy liveness story.
+`arch sim --thread-sim parallel` honours the policy directly, so `--thread-sim both` cross-checks it against the FSM-lowered path for most `lock` shapes. **Known gap**: a `lock` body that releases via `wait until <release-signal>` (rather than terminating the thread) has a 1-cycle release-to-re-grant skew in the FSM/SV path that the coroutine `--thread-sim parallel` path doesn't have (the freed slot becomes visible to a waiting thread's arbiter one cycle later in the FSM path, once the releasing thread's registered state has actually advanced) — both backends are independently correct but not cycle-identical for that shape, so `--thread-sim both`'s strict trace-identity check is not usable there; verify each backend separately instead (see `tests/thread/tb_semaphore_basic.cpp`). This predates and is independent of `semaphore` — it reproduces with plain `mutex` too. See `doc/thread_lowering_algorithm.md` for the per-policy liveness story.
 
 ---
 
@@ -1339,7 +1343,7 @@ Use explicit threads when the protocol needs separate channels, beat-by-beat bur
 
 Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); runtime-loop and conditional-branch TLM calls are serialized direct blocking assignments; one call per worker/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; RHS-fork tails after `join all;` are compute-only; no nested/composed TLM calls; no dynamic-length TLM return types; no `pipelined`; no first-class `burst`; no `Future<T>`/`await`.
 
-Full spec: `doc/ARCH_HDL_Specification.md` §18d and §22. Design history / remaining work: `doc/plan_tlm_method.md`.
+Full spec: `doc/ARCH_HDL_Specification.md` §18d and §22. Design history / remaining work: `doc/archive/plan_tlm_method.md`.
 
 ### Standard bus library (zero-setup `use`)
 

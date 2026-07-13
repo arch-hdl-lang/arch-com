@@ -25,7 +25,7 @@
 //! intentionally NOT what this module does — see the reset-path note above.
 //!
 //! `exp_bits`/`mant_bits` are `u32` so this same routine backs any future
-//! narrow format (FP16, FP8, MX block formats, …) — see `doc/plan_fp_types.md`.
+//! narrow format (FP16, FP8, MX block formats, …) — see `doc/archive/plan_fp_types.md`.
 
 /// Round `x` to the nearest value representable in an IEEE-754-like binary
 /// format with `exp_bits` exponent bits (bias = `2^(exp_bits-1) - 1`, and the
