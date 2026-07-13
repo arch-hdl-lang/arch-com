@@ -251,7 +251,7 @@ The NoC flit credit validation test from `plan_credit_channel.md`
 ### PR #6 — `tlm_method`
 
 Landed as a bus sub-construct. The implemented subset is documented in
-`doc/plan_tlm_method.md` and the normative spec.
+`doc/archive/plan_tlm_method.md` and the normative spec.
 
 ## Non-goals
 
@@ -399,7 +399,7 @@ TLM needs a lower-level escape hatch.
 ## What this plan does NOT say
 
 - `tlm_method` has landed as an implemented subset. Further work is tracked
-  in `doc/plan_tlm_method.md`.
+  in `doc/archive/plan_tlm_method.md`.
 - Does not pick final wire-protocol names for credit_channel
   (`send_valid` vs `push_valid`, etc.). PR #3 locks them down.
 - Does not address cross-clock-domain buses. `credit_channel` v1 is

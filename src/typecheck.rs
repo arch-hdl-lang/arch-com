@@ -1693,7 +1693,7 @@ impl<'a> TypeChecker<'a> {
         // Tier 1.5 (Option A): warn on handshake payload reads that are not
         // enclosed in an `if <port>.<valid>` scope. Catches consumer-side
         // contract violations (reading stale/undefined payload when the
-        // producer hasn't asserted valid). See doc/plan_handshake_construct.md.
+        // producer hasn't asserted valid). See doc/archive/plan_handshake_construct.md.
         self.check_handshake_reads(m);
     }
 
@@ -4659,7 +4659,7 @@ impl<'a> TypeChecker<'a> {
             // Float conversions. `.to_fp32()` / `.to_bf16()` take no args and
             // widen/narrow/convert into the named float type. `.to_uint<N>()` /
             // `.to_sint<N>()` convert a float to an integer (toward-zero,
-            // saturating per the RISC-V profile — see doc/plan_fp_types.md §6).
+            // saturating per the RISC-V profile — see doc/archive/plan_fp_types.md §6).
             "to_fp32" | "to_bf16" => {
                 let target = if method.name == "to_fp32" {
                     Ty::FP32

@@ -3,7 +3,7 @@
 //! One in-Rust description of each FP operator's bit-logic renders to BOTH
 //! synthesizable SystemVerilog (`render_sv`) and SMT-LIB2 (`render_smt`). The
 //! simulated/synthesized RTL and the formally-checked model are therefore the
-//! *same source* — they cannot drift (doc/plan_fp_types.md §8).
+//! *same source* — they cannot drift (doc/archive/plan_fp_types.md §8).
 //!
 //! The IR is a small DAG of fixed-width bit-vector nodes. Both renderers
 //! linearize the DAG into administrative-normal form (one operation per named

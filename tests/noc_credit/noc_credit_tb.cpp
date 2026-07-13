@@ -1,4 +1,4 @@
-// NoC credit_channel testbench — see doc/plan_credit_channel.md §"Validation
+// NoC credit_channel testbench — see doc/archive/plan_credit_channel.md §"Validation
 // plan — NoC flit credit". Exercises the producer/consumer pair under
 // balanced, producer-fast, and recovery scenarios. Self-checks for
 // in-order delivery + monotonic seq_no progress.

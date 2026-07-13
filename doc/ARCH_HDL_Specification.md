@@ -5079,7 +5079,7 @@ Real schedulers rarely use a single integer key. Arch allows struct types as pri
 
 **18a. First-Class Sub-Construct: handshake_channel (inside bus)**
 
-> **Keyword rename (v0.44.0):** the opening/closing keyword is `handshake_channel`. The legacy `handshake` keyword still parses and emits a deprecation warning (silence with `ARCH_NO_DEPRECATIONS=1`); it will be removed in v0.45.0. The rename aligns this sub-construct with its siblings `credit_channel` and `tlm_method` under the unified `bus` umbrella (see `doc/plan_bus_unification.md`). Semantics are unchanged.
+> **Keyword rename (v0.44.0):** the opening/closing keyword is `handshake_channel`. The legacy `handshake` keyword still parses and emits a deprecation warning (silence with `ARCH_NO_DEPRECATIONS=1`); it will be removed in v0.45.0. The rename aligns this sub-construct with its siblings `credit_channel` and `tlm_method` under the unified `bus` umbrella (see `doc/archive/plan_bus_unification.md`). Semantics are unchanged.
 
 `handshake_channel` collapses the valid/ready/payload vocabulary that dominates every on-chip interface — AXI/APB/AHB/Avalon, streaming pipelines, async GALS bridges — into one declaration per channel. It is a **compile-time sum type**: a single keyword names the *payload role*, a variant name selects the flow-control shape, and the compiler synthesizes the flat individual-wire port declarations with their directions derived mechanically. The user never flips individual wires by hand, so the dominant "I flipped valid and ready" bug class is eliminated by construction.
 
@@ -5386,7 +5386,7 @@ The cross-module occupancy invariant (`occupancy == DEPTH - credit`) is deferred
 - Runtime-parameterizable depth (DEPTH is compile-time const).
 - `arch sim --pybind --test` simulation on `pipeline` / `thread` / `arbiter` constructs carrying credit_channel ports — the C++ mirror currently lives in the `module` emitter path. `module`-based designs simulate correctly; the other construct emitters will inherit the same hook when a concrete need surfaces.
 
-Full design history and the broader roadmap are in `doc/plan_credit_channel.md` and `doc/plan_bus_unification.md`.
+Full design history and the broader roadmap are in `doc/archive/plan_credit_channel.md` and `doc/archive/plan_bus_unification.md`.
 
 **18d. First-Class Sub-Construct: tlm_method (inside bus)**
 
@@ -5584,7 +5584,7 @@ Both target and initiator passes emit ordinary `RegDecl` + `RegBlock` + `CombBlo
 - Non-literal `out_of_order tags` expressions.
 - Statements after `return` in the same TLM target block. Branch-local target `return expr;` is supported, but it terminates that block.
 
-Full design and evolution in `doc/plan_tlm_method.md`.
+Full design and evolution in `doc/archive/plan_tlm_method.md`.
 
 **18e. Standard Bus Library**
 
@@ -7508,7 +7508,7 @@ the design:
 
 **22.4 Current TLM Boundaries**
 
-The implemented TLM surface ends here. Older sketches for `Future<T>`, `await`, `pipelined method`, `burst`, LT/AT simulation modes, selective refinement flags, user-visible token APIs, and the retired `implement` pool direction have been removed from the normative spec because they are not accepted by the current compiler. Current TLM status, remaining work, and historical pivots are tracked in `doc/plan_tlm_method.md`.
+The implemented TLM surface ends here. Older sketches for `Future<T>`, `await`, `pipelined method`, `burst`, LT/AT simulation modes, selective refinement flags, user-visible token APIs, and the retired `implement` pool direction have been removed from the normative spec because they are not accepted by the current compiler. Current TLM status, remaining work, and historical pivots are tracked in `doc/archive/plan_tlm_method.md`.
 
 Use the implemented forms above for all current RTL-backed TLM work:
 

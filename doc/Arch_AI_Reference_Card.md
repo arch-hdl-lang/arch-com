@@ -1339,7 +1339,7 @@ Use explicit threads when the protocol needs separate channels, beat-by-beat bur
 
 Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); runtime-loop and conditional-branch TLM calls are serialized direct blocking assignments; one call per worker/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; RHS-fork tails after `join all;` are compute-only; no nested/composed TLM calls; no dynamic-length TLM return types; no `pipelined`; no first-class `burst`; no `Future<T>`/`await`.
 
-Full spec: `doc/ARCH_HDL_Specification.md` §18d and §22. Design history / remaining work: `doc/plan_tlm_method.md`.
+Full spec: `doc/ARCH_HDL_Specification.md` §18d and §22. Design history / remaining work: `doc/archive/plan_tlm_method.md`.
 
 ### Standard bus library (zero-setup `use`)
 

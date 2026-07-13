@@ -323,7 +323,7 @@ impl Parser {
 
     /// Parse a `tlm_method` declaration inside a bus body. Captures name,
     /// args, ret type, and concurrency mode for later bus flattening and
-    /// thread lowering. See doc/plan_tlm_method.md.
+    /// thread lowering. See doc/archive/plan_tlm_method.md.
     ///
     /// Grammar:
     ///   'tlm_method' Ident '(' (Ident ':' TypeExpr (',' Ident ':' TypeExpr)*)? ')'
@@ -394,7 +394,7 @@ impl Parser {
     /// Parse a `credit_channel` block inside a bus body. PR #3 scaffolding:
     /// captures the channel name, role, and params (`T`, `DEPTH`). No
     /// PortDecls are materialized — the wire protocol + per-port-site counter
-    /// + fifo synthesis land in a follow-up PR. See doc/plan_credit_channel.md.
+    /// + fifo synthesis land in a follow-up PR. See doc/archive/plan_credit_channel.md.
     ///
     /// Grammar:
     ///   'credit_channel' Ident ':' ('send'|'receive') NEWLINE
@@ -563,7 +563,7 @@ impl Parser {
     ///   'end' 'handshake' Ident
     ///
     /// Variants: valid_ready, valid_only, ready_only, valid_stall,
-    /// req_ack_4phase, req_ack_2phase. See doc/plan_handshake_construct.md.
+    /// req_ack_4phase, req_ack_2phase. See doc/archive/plan_handshake_construct.md.
     ///
     /// `send`/`receive` name the payload-flow role (NOT wire direction):
     /// `send` = this side produces the payload (drives valid/req/payload,
@@ -573,7 +573,7 @@ impl Parser {
         parent_span: Span,
     ) -> Result<(Vec<PortDecl>, Vec<BusGenerateIf>, HandshakeMeta), CompileError> {
         // Accept both `handshake` (legacy) and `handshake_channel` (new).
-        // See plan_bus_unification.md for the rename rationale.
+        // See doc/archive/plan_bus_unification.md for the rename rationale.
         let is_legacy = self.check(TokenKind::Handshake);
         let opening_tok = if is_legacy {
             TokenKind::Handshake
@@ -845,7 +845,7 @@ impl Parser {
     /// position (a future extension could lift it once arbiter generate-if
     /// machinery exists; today arbiter ports have no such concept).
     ///
-    /// See doc/plan_handshake_construct.md for the variant catalog.
+    /// See doc/archive/plan_handshake_construct.md for the variant catalog.
     fn parse_handshake_channel_construct_port(
         &mut self,
     ) -> Result<(Vec<PortDecl>, Option<PortArrayDecl>, HandshakeMeta), CompileError> {
@@ -4225,7 +4225,7 @@ impl Parser {
         loop {
             // Postfix `@N` — latency annotation on pipe_reg references.
             // Valid on LHS (sink side, N = declared depth) and on RHS (source
-            // side, only N = 0 in v1 per doc/plan_pipe_reg_at_syntax.md).
+            // side, only N = 0 in v1 per doc/archive/plan_pipe_reg_at_syntax.md).
             // Parser is permissive here; typecheck enforces the placement
             // and value constraints.
             if self.check(TokenKind::At) {
@@ -6296,7 +6296,7 @@ impl Parser {
                     // `handshake_channel` desugars to either a flat group of
                     // PortDecls (no `[N]`) or a PortArrayDecl (with `[N]`).
                     // Reuses the same payload/variant/direction parser as the
-                    // bus-body path; see doc/plan_handshake_construct.md.
+                    // bus-body path; see doc/archive/plan_handshake_construct.md.
                     let (decls, opt_array, meta) = self.parse_handshake_channel_construct_port()?;
                     ports.extend(decls);
                     if let Some(arr) = opt_array {

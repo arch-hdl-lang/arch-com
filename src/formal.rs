@@ -84,7 +84,7 @@ pub fn run(
 
     // 2. Flatten sub-instances into a synthetic flat module. For designs
     //    without any sub-inst, this is a no-op clone. See
-    //    doc/plan_hierarchical_formal.md for the design.
+    //    doc/archive/plan_hierarchical_formal.md for the design.
     let flat_module: ModuleDecl;
     let mut carried_credit_sites: Vec<CarriedCreditSite> = Vec::new();
     let encode_module: &ModuleDecl = if module
@@ -2058,7 +2058,7 @@ impl<'a> FormalCtx<'a> {
                 }
                 Err(CompileError::general(
                     &format!(
-                        "formal encoding of synthesized identifier `{name}` is not yet supported — only credit_channel scalar state and derived can_send/valid are modelled today (see doc/plan_hierarchical_formal.md PR-hf4)",
+                        "formal encoding of synthesized identifier `{name}` is not yet supported — only credit_channel scalar state and derived can_send/valid are modelled today (see doc/archive/plan_hierarchical_formal.md PR-hf4)",
                     ),
                     expr.span,
                 ))
