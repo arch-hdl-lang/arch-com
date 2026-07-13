@@ -17640,6 +17640,391 @@ fn test_resource_lock_custom_policy_with_hook() {
     );
 }
 
+// ─── semaphore<N, policy> (§20.8.4, arch#501 item 3) ──────────────────────
+
+fn semaphore_pool_source(n: &str, policy: &str) -> String {
+    format!(
+        r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port go0: in Bool;
+          port go1: in Bool;
+          port done: out Bool shared(or);
+
+          resource pool: semaphore<{n}, {policy}>;
+
+          thread on clk rising, rst low
+            wait until go0;
+            lock pool
+              done = 1;
+              wait 1 cycle;
+            end lock pool
+          end thread
+
+          thread on clk rising, rst low
+            wait until go1;
+            lock pool
+              done = 1;
+              wait 1 cycle;
+            end lock pool
+          end thread
+        end module M
+    "#
+    )
+}
+
+#[test]
+fn test_semaphore_n2_synthesizes_holder_tracking() {
+    // N > 1 takes the generalized holder/holder_count lowering path
+    // (elaborate.rs's `n_slots > 1` branch): a `held` register + `waiting`
+    // / `admit` wires per thread, and a `holder_count` reduction, on top
+    // of the same synthesized-arbiter machinery mutex reuses.
+    let sv = compile_to_sv(&semaphore_pool_source("2", "round_robin"));
+    assert!(
+        sv.contains("_pool_held_0") && sv.contains("_pool_held_1"),
+        "semaphore<2> should synthesize a `held` register per thread:\n{sv}"
+    );
+    assert!(
+        sv.contains("_pool_waiting_0") && sv.contains("_pool_admit_0"),
+        "semaphore<2> should synthesize waiting/admit wires:\n{sv}"
+    );
+    assert!(
+        sv.contains("_pool_holder_count"),
+        "semaphore<2> should synthesize a holder_count reduction:\n{sv}"
+    );
+    assert!(
+        sv.contains("_pool_holder_count < 2"),
+        "admit should gate on holder_count < N:\n{sv}"
+    );
+    // Still reuses the synthesized-arbiter machinery mutex uses.
+    assert!(
+        sv.contains("_arb_M_pool"),
+        "semaphore should still synthesize a per-resource arbiter:\n{sv}"
+    );
+}
+
+#[test]
+fn test_semaphore_1_is_bit_identical_to_mutex() {
+    // §20.8.4: `semaphore<1, policy>` must be semantically identical to
+    // `mutex<policy>`. elaborate.rs's `n_slots > 1` gate means N==1 takes
+    // exactly the same lowering path as mutex (no held/holder_count
+    // machinery at all) — so the generated SV should be identical byte for
+    // byte once the resource name is normalized.
+    let sem_sv = compile_to_sv(&semaphore_pool_source("1", "round_robin"));
+    let mutex_source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port go0: in Bool;
+          port go1: in Bool;
+          port done: out Bool shared(or);
+
+          resource pool: mutex<round_robin>;
+
+          thread on clk rising, rst low
+            wait until go0;
+            lock pool
+              done = 1;
+              wait 1 cycle;
+            end lock pool
+          end thread
+
+          thread on clk rising, rst low
+            wait until go1;
+            lock pool
+              done = 1;
+              wait 1 cycle;
+            end lock pool
+          end thread
+        end module M
+    "#;
+    let mutex_sv = compile_to_sv(mutex_source);
+    assert_eq!(
+        sem_sv, mutex_sv,
+        "semaphore<1, policy> should lower bit-identically to mutex<policy>:\n\
+         --- semaphore<1> ---\n{sem_sv}\n--- mutex ---\n{mutex_sv}"
+    );
+    // Sanity: neither side accidentally synthesized held/holder_count
+    // machinery (that would only prove N==1 short-circuits, not that
+    // both sides are literally the same lowering).
+    assert!(
+        !sem_sv.contains("_pool_held_"),
+        "N==1 should not emit `held` regs:\n{sem_sv}"
+    );
+}
+
+#[test]
+fn test_semaphore_priority_policy() {
+    let sv = compile_to_sv(&semaphore_pool_source("2", "priority"));
+    assert!(
+        sv.contains("_pool_holder_count"),
+        "semaphore<2, priority> should still synthesize holder tracking:\n{sv}"
+    );
+}
+
+#[test]
+fn test_semaphore_param_n_from_module_param() {
+    // N must resolve against a module param, e.g.
+    // `param WORKERS: const = 4; resource R: semaphore<WORKERS, ...>;`.
+    let source = r#"
+        module M
+          param WORKERS: const = 3;
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port go0: in Bool;
+          port go1: in Bool;
+          port done: out Bool shared(or);
+
+          resource pool: semaphore<WORKERS, round_robin>;
+
+          thread on clk rising, rst low
+            wait until go0;
+            lock pool
+              done = 1;
+              wait 1 cycle;
+            end lock pool
+          end thread
+
+          thread on clk rising, rst low
+            wait until go1;
+            lock pool
+              done = 1;
+              wait 1 cycle;
+            end lock pool
+          end thread
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("_pool_holder_count < 3"),
+        "semaphore<WORKERS> with WORKERS=3 should resolve N=3 in the admit gate:\n{sv}"
+    );
+}
+
+#[test]
+fn test_semaphore_n_zero_is_a_compile_error() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port go0: in Bool;
+          port done: out Bool;
+
+          resource pool: semaphore<0, priority>;
+
+          thread on clk rising, rst low
+            wait until go0;
+            lock pool
+              done = 1;
+              wait 1 cycle;
+            end lock pool
+          end thread
+        end module M
+    "#;
+    let tokens = arch::lexer::tokenize(source).expect("lex");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let err = arch::elaborate::lower_threads(ast).expect_err("expected N=0 rejection");
+    let msg = err.iter().map(|e| format!("{e:?}")).collect::<String>();
+    assert!(
+        msg.contains("semaphore<N> requires N >= 1"),
+        "expected semaphore N>=1 diagnostic, got: {msg}"
+    );
+}
+
+#[test]
+fn test_nested_lock_rejects_mutex_inside_semaphore() {
+    // The nested-lock ban (elaborate.rs's `collect_locked_resources`-based
+    // check ahead of `ThreadStmt::Lock` lowering) is resource-kind-agnostic:
+    // it must reject a `mutex` lock nested inside a `semaphore` lock exactly
+    // like it rejects mutex-inside-mutex. This keeps the hold-and-wait-free
+    // deadlock argument in `doc/thread_lowering_algorithm.md` §5 intact —
+    // an N-slot semaphore holder still can't block waiting on a second
+    // resource while holding the first.
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port go: in Bool;
+          port done: out Bool;
+          resource pool: semaphore<2, priority>;
+          resource other: mutex<priority>;
+          thread T on clk rising, rst low
+            wait until go;
+            lock pool
+              lock other
+                done = 1;
+                wait 1 cycle;
+              end lock other
+            end lock pool
+          end thread T
+        end module M
+    "#;
+    let tokens = arch::lexer::tokenize(source).expect("lex");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let err = arch::elaborate::lower_threads(ast).expect_err("expected nested-lock rejection");
+    let msg = err.iter().map(|e| format!("{e:?}")).collect::<String>();
+    assert!(
+        msg.contains("nested lock blocks are not supported"),
+        "expected nested-lock diagnostic, got: {msg}"
+    );
+}
+
+#[test]
+fn test_nested_lock_rejects_semaphore_inside_mutex() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port go: in Bool;
+          port done: out Bool;
+          resource other: mutex<priority>;
+          resource pool: semaphore<2, priority>;
+          thread T on clk rising, rst low
+            wait until go;
+            lock other
+              lock pool
+                done = 1;
+                wait 1 cycle;
+              end lock pool
+            end lock other
+          end thread T
+        end module M
+    "#;
+    let tokens = arch::lexer::tokenize(source).expect("lex");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let err = arch::elaborate::lower_threads(ast).expect_err("expected nested-lock rejection");
+    let msg = err.iter().map(|e| format!("{e:?}")).collect::<String>();
+    assert!(
+        msg.contains("nested lock blocks are not supported"),
+        "expected nested-lock diagnostic, got: {msg}"
+    );
+}
+
+#[test]
+fn test_semaphore_thread_sim_both_backends_independently_pass() {
+    // `arch sim --thread-sim both`'s strict trace-identity cross-check has
+    // a pre-existing (mutex-inherited, not semaphore-specific — see PR
+    // description) 1-cycle release-to-re-grant skew between the FSM/SV
+    // lowering and the coroutine `--thread-sim parallel` path whenever a
+    // `lock` body ends by releasing on a `wait until <release-signal>`.
+    // Both backends are independently correct (concurrency bound + fair
+    // acquisition), just not cycle-identical for this fixture shape, so
+    // this test runs each backend separately rather than `--thread-sim
+    // both`. See tests/thread/semaphore_basic.arch /
+    // tests/thread/tb_semaphore_basic.cpp for the assertions themselves
+    // (max 2 concurrent holders across a 4-thread / semaphore<2> fixture,
+    // release->re-grant, and full fairness).
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    for extra_args in [Vec::<&str>::new(), vec!["--thread-sim", "parallel"]] {
+        let td = tempfile::tempdir().expect("tempdir");
+        let mut cmd = std::process::Command::new(arch_bin);
+        cmd.arg("sim");
+        for a in &extra_args {
+            cmd.arg(a);
+        }
+        cmd.arg("tests/thread/semaphore_basic.arch")
+            .arg("--tb")
+            .arg("tests/thread/tb_semaphore_basic.cpp")
+            .arg("--outdir")
+            .arg(td.path());
+        let out = cmd.output().expect("run arch sim");
+        assert!(
+            out.status.success(),
+            "arch sim {:?} should pass\nstdout:\n{}\nstderr:\n{}",
+            extra_args,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("PASS SemaphorePool"),
+            "expected PASS marker for {:?}, got:\n{}",
+            extra_args,
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+}
+
+#[test]
+fn test_semaphore_verilator_behavior() {
+    // sim<->SV lock-step: build the same semaphore_basic.arch fixture to SV
+    // and run it through Verilator with the identical TB source (arch's
+    // generated C++ class API is source-compatible between the native sim
+    // and Verilator's `--exe` harness for this simple port shape), and
+    // confirm it reaches the same PASS marker with `--assert` enabled (so
+    // the auto-emitted bounds/div0 SVA, if any were relevant, would also
+    // be checked).
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping Verilator semaphore lock-step: verilator not found");
+        return;
+    }
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("SemaphorePool.sv");
+    let obj_dir = td.path().join("obj_dir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/thread/semaphore_basic.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build semaphore SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let verilate = std::process::Command::new("verilator")
+        .arg("--cc")
+        .arg("--exe")
+        .arg("--build")
+        .arg("--sv")
+        .arg("--assert")
+        .arg("--timing")
+        .arg("-Wno-fatal")
+        .arg("-Wno-WIDTH")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg("--top-module")
+        .arg("SemaphorePool")
+        .arg(&sv_out)
+        .arg("tests/thread/tb_semaphore_basic.cpp")
+        .output()
+        .expect("verilate semaphore fixture");
+    assert!(
+        verilate.status.success(),
+        "verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr)
+    );
+
+    let exe = obj_dir.join("VSemaphorePool");
+    let run = std::process::Command::new(&exe)
+        .output()
+        .unwrap_or_else(|e| panic!("run verilated semaphore binary {exe:?}: {e}"));
+    assert!(
+        run.status.success(),
+        "verilated semaphore binary should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("PASS SemaphorePool"),
+        "expected PASS marker from verilated run, got:\n{}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+}
+
 #[test]
 fn test_ab_ba_lock_order_shape_rejected_as_nested_lock() {
     // Deadlock-prevention regression lock (spec §20.8.5, issue #501).

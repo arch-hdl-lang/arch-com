@@ -2819,28 +2819,45 @@ impl Parser {
         })
     }
 
-    /// Parse `resource name : mutex<policy>;` (one-liner) or
-    /// `resource name : mutex<policy> hook ... end resource name` (block form).
+    /// Parse `resource name : mutex<policy>;` / `resource name : semaphore<N, policy>;`
+    /// (one-liner) or the block form with a trailing `hook ... end resource name`.
     ///
     /// `policy` is one of: `round_robin`, `priority`, `lru`, `weighted<W>`,
     /// or any other identifier — treated as `Custom(<ident>)`. A `Custom`
     /// policy may add a `hook grant_select(...) = FnName(...);` clause; the
     /// hook closes with `end resource <name>`.
+    ///
+    /// `semaphore<N, policy>` additionally parses a leading const expr `N`
+    /// (module param references allowed, e.g. `semaphore<WORKERS, priority>`)
+    /// followed by a comma before the policy.
     fn parse_resource_decl(&mut self) -> Result<ResourceDecl, CompileError> {
         let start = self.expect_contextual("resource")?.span;
         let name = self.expect_ident()?;
         self.expect(TokenKind::Colon)?;
 
-        // Parse `mutex<policy>` — accepts the same policy grammar as `arbiter`.
-        self.expect_contextual("mutex")?;
+        // Parse `mutex<policy>` or `semaphore<N, policy>` — the policy
+        // grammar is identical to `arbiter`'s in both cases.
+        let is_semaphore = self.check_ident("semaphore");
+        if is_semaphore {
+            self.expect_contextual("semaphore")?;
+        } else {
+            self.expect_contextual("mutex")?;
+        }
         self.expect(TokenKind::Lt)?;
+        let n_expr = if is_semaphore {
+            let n = self.parse_type_arg_expr()?;
+            self.expect(TokenKind::Comma)?;
+            Some(n)
+        } else {
+            None
+        };
         let policy_ident = self.expect_ident()?;
         let policy = match policy_ident.name.as_str() {
             "round_robin" => ArbiterPolicy::RoundRobin,
             "priority" => ArbiterPolicy::Priority,
             "lru" => ArbiterPolicy::Lru,
             "weighted" => {
-                // `mutex<weighted<W>>` — inner `<W>` (param expr).
+                // `mutex<weighted<W>>` / `semaphore<N, weighted<W>>` — inner `<W>` (param expr).
                 self.expect(TokenKind::Lt)?;
                 let w = self.parse_type_arg_expr()?;
                 self.expect(TokenKind::Gt)?;
@@ -2873,8 +2890,14 @@ impl Parser {
             closing.span
         };
 
+        let kind = match n_expr {
+            Some(n) => crate::ast::ResourceKind::Semaphore(n),
+            None => crate::ast::ResourceKind::Mutex,
+        };
+
         Ok(ResourceDecl {
             name,
+            kind,
             policy,
             hook,
             span: start.merge(end_span),

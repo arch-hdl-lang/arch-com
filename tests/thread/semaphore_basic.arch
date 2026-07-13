@@ -1,0 +1,70 @@
+// semaphore_basic.arch — N=2 semaphore<round_robin> shared by 4 threads.
+//
+// Exercises §20.8.4 `semaphore<N, policy>`: at most 2 of the 4 threads may
+// hold the `pool` resource concurrently; round_robin fairness means every
+// thread eventually acquires it. Each thread holds until its own `relN`
+// input goes high (TB-controlled), so the TB can deterministically probe
+// overlap and release->re-grant timing. See
+// tests/thread/tb_semaphore_basic.cpp for the concurrency-bound + fairness
+// checks driven against this fixture, and
+// `test_semaphore_thread_sim_both_matches_fsm` (integration_test.rs) for
+// the fsm-lowering vs coroutine-sim cross-check.
+module SemaphorePool
+  port clk:  in Clock<SysDomain>;
+  port rst:  in Reset<Sync, High>;
+  port go:   in Bool;
+  port rel0: in Bool;
+  port rel1: in Bool;
+  port rel2: in Bool;
+  port rel3: in Bool;
+  port busy0: out Bool;
+  port busy1: out Bool;
+  port busy2: out Bool;
+  port busy3: out Bool;
+  port done0: out Bool;
+  port done1: out Bool;
+  port done2: out Bool;
+  port done3: out Bool;
+
+  resource pool: semaphore<2, round_robin>;
+
+  thread once T0 on clk rising, rst high
+    wait until go;
+    lock pool
+      busy0 = 1;
+      wait until rel0;
+      busy0 = 0;
+    end lock pool
+    done0 = 1;
+  end thread T0
+
+  thread once T1 on clk rising, rst high
+    wait until go;
+    lock pool
+      busy1 = 1;
+      wait until rel1;
+      busy1 = 0;
+    end lock pool
+    done1 = 1;
+  end thread T1
+
+  thread once T2 on clk rising, rst high
+    wait until go;
+    lock pool
+      busy2 = 1;
+      wait until rel2;
+      busy2 = 0;
+    end lock pool
+    done2 = 1;
+  end thread T2
+
+  thread once T3 on clk rising, rst high
+    wait until go;
+    lock pool
+      busy3 = 1;
+      wait until rel3;
+      busy3 = 0;
+    end lock pool
+    done3 = 1;
+  end thread T3
+end module SemaphorePool

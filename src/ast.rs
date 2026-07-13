@@ -765,10 +765,16 @@ pub struct IfElseOf<S> {
 
 pub type ThreadIfElse = IfElseOf<ThreadStmt>;
 
-/// `resource name : mutex<policy>;` — shared bus arbitration declaration.
+/// `resource name : mutex<policy>;` / `resource name : semaphore<N, policy>;`
+/// — shared bus arbitration declaration.
 ///
 /// One-liner: `resource bus: mutex<round_robin>;` / `mutex<priority>` / `mutex<lru>`
 /// / `mutex<weighted<W>>` / `mutex<MyFn>` (the last picks the `Custom(MyFn)` policy).
+///
+/// `semaphore<N, policy>` (v0.71.0+) reuses the same policy grammar but allows
+/// up to `N` concurrent holders instead of `mutex`'s exclusive one. `N` is a
+/// const expr (module param references allowed) evaluated at elaboration
+/// time. `semaphore<1, policy>` is semantically identical to `mutex<policy>`.
 ///
 /// Block form (for custom policies needing a hook):
 /// ```text
@@ -781,13 +787,26 @@ pub type ThreadIfElse = IfElseOf<ThreadStmt>;
 /// The lock arbiter is synthesized per resource by `lower_module_threads`,
 /// reusing the existing `arbiter` construct's codegen by emitting an
 /// `ArbiterDecl` Item with `policy` and `hook` carried over from this
-/// declaration.
+/// declaration. `semaphore<N>` additionally synthesizes a per-thread
+/// holder register (`held_i`) and a slot counter so up to `N` threads can
+/// hold concurrently; see `lower_module_threads` in `elaborate.rs`.
 #[derive(Debug, Clone)]
 pub struct ResourceDecl {
     pub name: Ident,
+    pub kind: ResourceKind,
     pub policy: ArbiterPolicy,
     pub hook: Option<ArbiterHookDecl>,
     pub span: Span,
+}
+
+/// `mutex<policy>` (exclusive, 1 holder) vs `semaphore<N, policy>` (up to
+/// `N` concurrent holders). `N` is carried as an `Expr` because it may
+/// reference a module param (e.g. `semaphore<WORKERS, round_robin>`); it is
+/// const-evaluated during `lower_module_threads`.
+#[derive(Debug, Clone)]
+pub enum ResourceKind {
+    Mutex,
+    Semaphore(Expr),
 }
 
 /// Block context — propagated through typecheck and codegen so a single
