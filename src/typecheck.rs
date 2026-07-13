@@ -720,6 +720,7 @@ impl<'a> TypeChecker<'a> {
         for p in &m.params {
             self.check_upper_snake(&p.name);
             self.check_width_const_overflow(p);
+            self.check_param_where_default(p);
         }
 
         // Check ports — no naming enforcement; ports must match external interfaces
@@ -741,6 +742,10 @@ impl<'a> TypeChecker<'a> {
                         self.symbols.globals.get(&bi.bus_name.name)
                     {
                         local_types.insert(p.name.name.clone(), Ty::Bus(bi.bus_name.name.clone()));
+                        // Bus params are overridden at the port declaration
+                        // (`port axi: initiator BusAxi4<DATA_W=64>;`), not at
+                        // an inst site — enforce `where` constraints here.
+                        self.check_bus_port_param_constraints(p, bi);
                     } else {
                         self.errors.push(CompileError::general(
                             &format!("unknown bus type `{}`", bi.bus_name.name),
@@ -1149,6 +1154,7 @@ impl<'a> TypeChecker<'a> {
                     };
                     for gi in items {
                         if let crate::ast::GenItem::Inst(inst) = gi {
+                            self.check_inst_param_constraints(inst);
                             // Look up the instantiated module's bus ports so we can
                             // mark per-bus-signal flat names for bus-typed inst-outputs
                             // (`inst_port -> outer_vec[loop_var]`), mirroring
@@ -1704,6 +1710,7 @@ impl<'a> TypeChecker<'a> {
     /// original arm was 122 lines.
     pub(crate) fn check_inst_decl(&mut self, inst: &InstDecl, driven: &mut HashSet<String>) {
         self.check_snake_case(&inst.name);
+        self.check_inst_param_constraints(inst);
         // Find the target construct's bus port info for whole-bus expansion
         let target_bus_ports: Vec<(String, String)> = self
             .source
@@ -6558,12 +6565,250 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Definition-site `where` clause check (issue #600). Called once per
+    /// `ParamDecl` while `self.active_params` holds the full param list of
+    /// the enclosing construct (module/fsm/fifo/ram/arbiter/pipeline/bus/...).
+    /// Only `const`/`WidthConst` params can carry a constraint — the parser
+    /// already rejects `where` on other kinds, so this is a defensive
+    /// no-op elsewhere (e.g. hand-written `.archi` text).
+    pub(crate) fn check_param_where_default(&mut self, p: &ParamDecl) {
+        let Some(constraint) = &p.constraint else {
+            return;
+        };
+
+        // Build a local type env + const value map from this construct's
+        // params, in declaration order, up to and including `p` itself —
+        // matches "may reference the declared param itself and any earlier
+        // const params in the same block" from the spec.
+        let mut local_types: HashMap<String, Ty> = HashMap::new();
+        let mut param_vals: HashMap<String, i64> = HashMap::new();
+        for ap in self.active_params.clone().iter() {
+            if let Some(def) = &ap.default {
+                let ty = self.resolve_expr_type(def, "<param>", &local_types);
+                local_types.insert(ap.name.name.clone(), ty);
+                if let Some(v) = crate::elaborate::try_eval_i64(def, &param_vals) {
+                    param_vals.insert(ap.name.name.clone(), v);
+                }
+            }
+            if ap.name.name == p.name.name {
+                break;
+            }
+        }
+
+        // Must type-check as Bool.
+        let cty = self.resolve_expr_type(constraint, "<param>", &local_types);
+        if cty != Ty::Bool {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "param `{}` where clause must be a Bool expression, found {:?}",
+                    p.name.name, cty
+                ),
+                constraint.span,
+            ));
+            return;
+        }
+
+        let Some(default_v) = param_vals.get(&p.name.name).copied() else {
+            // Default isn't a compile-time-reducible constant — nothing to
+            // validate here (a non-const default on a `const` param is
+            // rejected elsewhere).
+            return;
+        };
+
+        match crate::elaborate::try_eval_i64(constraint, &param_vals) {
+            Some(0) => {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "default value {}={} violates constraint: {}",
+                        p.name.name,
+                        default_v,
+                        crate::interface::expr_str(constraint)
+                    ),
+                    p.span,
+                ));
+            }
+            Some(_) => {}
+            None => {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "param `{}` where clause is not a compile-time-reducible constant expression (only literals, earlier const params, and compile-time intrinsics like $clog2 are allowed)",
+                        p.name.name
+                    ),
+                    constraint.span,
+                ));
+            }
+        }
+    }
+
+    /// Find the top-level construct item declaring `name` (module, fsm,
+    /// fifo, ram, arbiter, pipeline, bus, ...). Used by the instantiation-
+    /// site `where` check to look up the target's `ParamDecl` list.
+    fn find_item_by_name(&self, name: &str) -> Option<&Item> {
+        self.source.items.iter().find(|item| match item {
+            Item::Module(m) => m.name.name == name,
+            Item::Fsm(f) => f.name.name == name,
+            Item::Fifo(f) => f.name.name == name,
+            Item::Ram(r) => r.name.name == name,
+            Item::Cam(c) => c.name.name == name,
+            Item::Counter(c) => c.name.name == name,
+            Item::Arbiter(a) => a.name.name == name,
+            Item::Regfile(r) => r.name.name == name,
+            Item::Pipeline(p) => p.name.name == name,
+            Item::Linklist(l) => l.name.name == name,
+            Item::Bus(b) => b.name.name == name,
+            Item::Synchronizer(s) => s.name.name == name,
+            Item::Clkgate(c) => c.name.name == name,
+            Item::Template(t) => t.name.name == name,
+            _ => false,
+        })
+    }
+
+    /// Instantiation-site `where` clause check (issue #600). Evaluates
+    /// every constrained param of the target construct with the concrete
+    /// override (or derived-default) value in effect at this `inst` site
+    /// and reports a violation with the offending value + constraint
+    /// source. Runs for both plain `inst` statements and instances nested
+    /// in `generate` blocks that survive elaboration (param-dependent
+    /// ranges) — unresolvable values are silently skipped rather than
+    /// flagged, since elaboration will re-check the fully-resolved variant.
+    pub(crate) fn check_inst_param_constraints(&mut self, inst: &InstDecl) {
+        let Some(target_item) = self.find_item_by_name(&inst.module_name.name) else {
+            return;
+        };
+        let target_params = Self::item_params(target_item);
+        if target_params.iter().all(|p| p.constraint.is_none()) {
+            return;
+        }
+
+        // Caller-side (enclosing) const param values, for evaluating
+        // override RHS expressions that reference the caller's own params
+        // (e.g. `inst l1d: Cache param SIZE = OUTER_SIZE;`).
+        let mut enclosing_vals: HashMap<String, i64> = HashMap::new();
+        for ap in &self.active_params {
+            if let Some(def) = &ap.default {
+                if let Some(v) = crate::elaborate::try_eval_i64(def, &enclosing_vals) {
+                    enclosing_vals.insert(ap.name.name.clone(), v);
+                }
+            }
+        }
+
+        // Effective (post-override) values of the target's params, built up
+        // in declaration order so derived params (`param B: const = A*2
+        // where B <= 64;`) see the already-resolved value of `A` — whether
+        // `A` came from an override or its own default.
+        let mut target_vals: HashMap<String, i64> = HashMap::new();
+        for tp in &target_params {
+            let override_assign = inst
+                .param_assigns
+                .iter()
+                .find(|pa| pa.name.name == tp.name.name && pa.ty.is_none());
+            let effective = if let Some(pa) = override_assign {
+                crate::elaborate::try_eval_i64(&pa.value, &enclosing_vals)
+            } else {
+                tp.default
+                    .as_ref()
+                    .and_then(|d| crate::elaborate::try_eval_i64(d, &target_vals))
+            };
+            let Some(v) = effective else {
+                continue;
+            };
+            target_vals.insert(tp.name.name.clone(), v);
+
+            let Some(constraint) = &tp.constraint else {
+                continue;
+            };
+            if let Some(0) = crate::elaborate::try_eval_i64(constraint, &target_vals) {
+                let site_span = override_assign.map(|pa| pa.value.span).unwrap_or(inst.span);
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "param `{}`={} in inst `{}` violates constraint declared on `{}`: {}",
+                        tp.name.name,
+                        v,
+                        inst.name.name,
+                        inst.module_name.name,
+                        crate::interface::expr_str(constraint)
+                    ),
+                    site_span,
+                ));
+            }
+        }
+    }
+
+    /// Bus-port param-override `where` check (issue #600). Bus params are
+    /// overridden at port declarations (`port axi: initiator
+    /// BusAxi4<DATA_W=64>;`), not at inst sites — this is the bus analogue
+    /// of `check_inst_param_constraints`. Override RHS expressions are
+    /// evaluated against the enclosing construct's params; unresolvable
+    /// values are skipped (elaboration re-checks the resolved variant).
+    pub(crate) fn check_bus_port_param_constraints(
+        &mut self,
+        port: &PortDecl,
+        bi: &crate::ast::BusPortInfo,
+    ) {
+        let Some(Item::Bus(bus)) = self.find_item_by_name(&bi.bus_name.name) else {
+            return;
+        };
+        if bus.params.iter().all(|p| p.constraint.is_none()) {
+            return;
+        }
+        let bus_params = bus.params.clone();
+
+        // Enclosing construct's const param values, for override RHS
+        // expressions like `<DATA_W=DATA_W>` referencing the module's params.
+        let mut enclosing_vals: HashMap<String, i64> = HashMap::new();
+        for ap in &self.active_params {
+            if let Some(def) = &ap.default {
+                if let Some(v) = crate::elaborate::try_eval_i64(def, &enclosing_vals) {
+                    enclosing_vals.insert(ap.name.name.clone(), v);
+                }
+            }
+        }
+
+        let mut bus_vals: HashMap<String, i64> = HashMap::new();
+        for bp in &bus_params {
+            let override_assign = bi
+                .params
+                .iter()
+                .find(|pa| pa.name.name == bp.name.name && pa.ty.is_none());
+            let effective = if let Some(pa) = override_assign {
+                crate::elaborate::try_eval_i64(&pa.value, &enclosing_vals)
+            } else {
+                bp.default
+                    .as_ref()
+                    .and_then(|d| crate::elaborate::try_eval_i64(d, &bus_vals))
+            };
+            let Some(v) = effective else {
+                continue;
+            };
+            bus_vals.insert(bp.name.name.clone(), v);
+
+            let Some(constraint) = &bp.constraint else {
+                continue;
+            };
+            if let Some(0) = crate::elaborate::try_eval_i64(constraint, &bus_vals) {
+                let site_span = override_assign.map(|pa| pa.value.span).unwrap_or(port.span);
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "param `{}`={} on bus port `{}` violates constraint declared on `{}`: {}",
+                        bp.name.name,
+                        v,
+                        port.name.name,
+                        bi.bus_name.name,
+                        crate::interface::expr_str(constraint)
+                    ),
+                    site_span,
+                ));
+            }
+        }
+    }
+
     // ── FSM ───────────────────────────────────────────────────────────────────
 
     pub(crate) fn check_fsm(&mut self, f: &FsmDecl) {
         self.check_pascal_case(&f.name);
         for p in &f.params {
             self.check_upper_snake(&p.name);
+            self.check_param_where_default(p);
         }
         for p in &f.ports {
             self.check_snake_case(&p.name);
@@ -6684,6 +6929,7 @@ impl<'a> TypeChecker<'a> {
         self.check_pascal_case(&c.name);
         for p in &c.params {
             self.check_upper_snake(&p.name);
+            self.check_param_where_default(p);
         }
         for p in &c.ports {
             self.check_snake_case(&p.name);
@@ -6770,6 +7016,7 @@ impl<'a> TypeChecker<'a> {
         self.check_pascal_case(&r.name);
         for p in &r.params {
             self.check_upper_snake(&p.name);
+            self.check_param_where_default(p);
         }
         for p in &r.ports {
             self.check_snake_case(&p.name);
@@ -6852,6 +7099,7 @@ impl<'a> TypeChecker<'a> {
         self.check_pascal_case(&f.name);
         for p in &f.params {
             self.check_upper_snake(&p.name);
+            self.check_param_where_default(p);
         }
         for p in &f.ports {
             self.check_snake_case(&p.name);
@@ -6912,6 +7160,7 @@ impl<'a> TypeChecker<'a> {
         self.check_pascal_case(&s.name);
         for p in &s.params {
             self.check_upper_snake(&p.name);
+            self.check_param_where_default(p);
         }
         for p in &s.ports {
             self.check_snake_case(&p.name);
@@ -7019,6 +7268,7 @@ impl<'a> TypeChecker<'a> {
         self.check_pascal_case(&c.name);
         for p in &c.params {
             self.check_upper_snake(&p.name);
+            self.check_param_where_default(p);
         }
         for p in &c.ports {
             self.check_snake_case(&p.name);
@@ -7092,6 +7342,7 @@ impl<'a> TypeChecker<'a> {
         self.check_pascal_case(&c.name);
         for p in &c.params {
             self.check_upper_snake(&p.name);
+            self.check_param_where_default(p);
         }
         for p in &c.ports {
             self.check_snake_case(&p.name);
@@ -7105,6 +7356,7 @@ impl<'a> TypeChecker<'a> {
         self.check_pascal_case(&a.name);
         for p in &a.params {
             self.check_upper_snake(&p.name);
+            self.check_param_where_default(p);
         }
         for p in &a.ports {
             self.check_snake_case(&p.name);
@@ -7207,6 +7459,7 @@ impl<'a> TypeChecker<'a> {
         self.check_pascal_case(&r.name);
         for p in &r.params {
             self.check_upper_snake(&p.name);
+            self.check_param_where_default(p);
         }
         for p in &r.ports {
             self.check_snake_case(&p.name);
@@ -7402,6 +7655,7 @@ impl<'a> TypeChecker<'a> {
 
         for param in &p.params {
             self.check_upper_snake(&param.name);
+            self.check_param_where_default(param);
         }
         for port in &p.ports {
             self.check_snake_case(&port.name);
@@ -7804,6 +8058,7 @@ impl<'a> TypeChecker<'a> {
         self.check_pascal_case(&t.name);
         for p in &t.params {
             self.check_upper_snake(&p.name);
+            self.check_param_where_default(p);
         }
         for p in &t.ports {
             self.check_snake_case(&p.name);
@@ -7827,6 +8082,9 @@ impl<'a> TypeChecker<'a> {
     /// validity, channel param shapes) are enforced at the bus *use*
     /// site (port resolution + emit), not here.
     pub(crate) fn check_bus(&mut self, b: &crate::ast::BusDecl) {
+        for p in &b.params {
+            self.check_param_where_default(p);
+        }
         if std::env::var("ARCH_NO_DEPRECATIONS").is_err() {
             for hs in &b.handshakes {
                 if hs.legacy_handshake_kw {
@@ -7866,6 +8124,7 @@ impl<'a> TypeChecker<'a> {
         self.check_pascal_case(&l.name);
         for p in &l.params {
             self.check_upper_snake(&p.name);
+            self.check_param_where_default(p);
         }
         for p in &l.ports {
             self.check_snake_case(&p.name);

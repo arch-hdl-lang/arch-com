@@ -1387,6 +1387,25 @@ impl Parser {
         } else {
             None
         };
+        // Optional `where ConstExpr` compile-time constraint. Only legal on
+        // `const`-kind params (plain or width-const); type/logic/enum/vec
+        // params reject it with a clear parse-time error.
+        let constraint = if self.eat_contextual("where") {
+            let where_span = self
+                .tokens
+                .get(self.pos.saturating_sub(1))
+                .map(|t| t.span)
+                .unwrap_or(start);
+            if !matches!(kind, ParamKind::Const | ParamKind::WidthConst(_, _)) {
+                return Err(CompileError::general(
+                    "`where` constraint clauses are only allowed on `const` params, not type/logic/enum/vec params",
+                    where_span,
+                ));
+            }
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
         self.expect(TokenKind::Semi)?;
         let end_span = self
             .tokens
@@ -1397,6 +1416,7 @@ impl Parser {
             name,
             kind,
             default,
+            constraint,
             is_local,
             span: start.merge(end_span),
             unpacked_size,

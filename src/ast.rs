@@ -257,6 +257,11 @@ pub struct ParamDecl {
     pub name: Ident,
     pub kind: ParamKind,
     pub default: Option<Expr>,
+    /// Optional `where ConstExpr` compile-time constraint on this param.
+    /// Only legal on `const`-kind params (rejected on type params at parse
+    /// time). Checked at definition site (against `default`) and at every
+    /// instantiation-site override; erased before codegen.
+    pub constraint: Option<Expr>,
     /// `local param` → emits SV `localparam` (not overridable at inst site)
     pub is_local: bool,
     pub span: Span,

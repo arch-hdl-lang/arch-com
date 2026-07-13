@@ -910,6 +910,9 @@ A module is the fundamental unit of design in Arch. Every module follows the sam
 |                                                                                |
 | // param NAME: const = value;       // untyped int — emits `parameter int`     |
 |                                                                                |
+| // param NAME: const = value where ConstExpr; // optional compile-time        |
+| //                                  constraint — see §4.1a                     |
+|                                                                                |
 | // param NAME[hi:lo]: const = value; // width-qualified — emits `parameter [hi:lo]` |
 |                                                                                |
 | // param NAME: type = SomeType;     // type alias — emits `parameter type`     |
@@ -960,6 +963,93 @@ A module is the fundamental unit of design in Arch. Every module follows the sam
 |                                                                                |
 | **end** **module** Adder                                                       |
 +--------------------------------------------------------------------------------+
+
+**4.1a Compile-Time Parameter Constraints (`where`)**
+
+A `const`-kind `param` declaration (plain or width-qualified) may carry an
+optional `where` clause naming a compile-time Boolean predicate on that
+param:
+
+```
+ParamDecl := 'param' IDENT ':' ParamKind '=' ConstExpr ('where' ConstExpr)? ';'
+```
+
+`where` is only legal on `const` / width-qualified `const` params — a `where`
+clause on a `type`, `Vec<T,N>`, enum-typed, or logic-typed (`UInt<W>`/`SInt<W>`)
+param is a compile error at parse time.
+
+The constraint expression:
+
+- Is evaluated at compile time using the same rules as param defaults —
+  literals, earlier `const` params declared in the same block, and
+  compile-time intrinsics such as `$clog2`.
+- May reference the declared param itself (its own name resolves to its
+  effective value at each check site — the default at the definition site,
+  the concrete override at an instantiation site).
+- Must type-check as `Bool`. A non-Bool result (e.g. an arithmetic
+  expression) is a compile error at the definition site.
+
+Two check sites enforce the constraint:
+
+1. **Definition site.** After type-checking the construct, the compiler
+   const-evaluates the constraint against the declared default. A violated
+   default is a compile error naming the param, its default value, and the
+   constraint source verbatim:
+   ```
+   error: default value SIZE=3 violates constraint: (SIZE & (SIZE - 1)) == 0
+   ```
+2. **Instantiation site.** At every `inst ... param NAME = VALUE;` override
+   (including instances produced by `generate_for` elaboration and
+   derived-param chains — a later param whose default expression reads an
+   overridden earlier param, e.g. `param B: const = A * 2 where B <= 64;`,
+   is re-evaluated with the effective value of `A`), the compiler
+   const-evaluates the constraint with the concrete override in effect and
+   reports a violation naming the param, its evaluated value, the
+   instantiating `inst`, and the declaring construct:
+   ```
+   error: param `SIZE`=3 in inst `l1d` violates constraint declared on `Cache`: (SIZE & (SIZE - 1)) == 0
+   ```
+   There is no custom message-string syntax in v1 — the error always quotes
+   the constraint expression verbatim rather than a user-supplied string.
+
+**Separate compilation.** `arch build` emits the `where` clause verbatim in
+the `.archi` interface file alongside the param's kind and default, so a
+downstream compilation unit that only sees the `.archi` stub (no access to
+the original `.arch` source) still enforces the constraint at its own
+instantiation sites.
+
+**Erased before codegen.** The constraint exists purely as a compile-time
+check — for a design whose params satisfy every `where` clause, the emitted
+SystemVerilog (`arch build`), SMT-LIB2 (`arch formal`), and sim C++ (`arch
+sim`) are byte-identical to the same design with the `where` clauses removed.
+
+`where` applies uniformly wherever a `const` param is legal: `module`,
+`fsm`, `fifo`, `ram`, `arbiter`, `pipeline`, `bus`, and the other first-class
+constructs that share the `ParamDecl` schema. For `bus` params, whose
+overrides happen at port declarations rather than inst sites, the
+instantiation-site check runs at every `port p: initiator/target
+BusName<PARAM=value>;` override:
+
+```
+error: param `DATA_W`=48 on bus port `b` violates constraint declared on `MiniBus`: ...
+```
+
+Example, from the motivating case (cache sizing):
+
+```arch
+module Cache
+  param SIZE:   const = 1024 where SIZE > 0 and (SIZE & (SIZE - 1)) == 0;
+  param DATA_W: const = 32   where DATA_W == 8 or DATA_W == 16 or DATA_W == 32 or DATA_W == 64;
+  param STAGES: const = 2    where STAGES >= 1 and STAGES <= 8;
+  ...
+end module Cache
+```
+
+`where` is complementary to `assert` (a runtime/formal property checked
+during `arch sim` / `arch formal`) and to `generate if` (which routes
+codegen around a condition but never rejects) — it is the compile-time,
+always-on rejection of invalid parameter values, checked by `arch check`,
+`arch build`, `arch sim`, and `arch formal` alike.
 
 **4.2 Combinational vs Registered Blocks**
 
