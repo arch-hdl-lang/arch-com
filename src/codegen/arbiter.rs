@@ -172,6 +172,19 @@ impl<'a> Codegen<'a> {
         // `request_valid`, so release → re-grant of the next waiter
         // happens in the same cycle (matching the coroutine thread sim).
         if a.lock_hold {
+            // The request port array carries a third `release` signal for
+            // lock arbiters: the owner's last lock-body state pulses it
+            // when its exit transition fires. Clearing the hold on release
+            // (instead of waiting for request_valid to deassert) lets a
+            // thread that releases and immediately re-requests — a
+            // back-to-back `lock` in a loop, whose request wire never
+            // drops — still hand the next re-arbitration to a waiting
+            // contender.
+            let release_sig = a
+                .port_arrays
+                .first()
+                .map(|pa| format!("{}_release", pa.name.name))
+                .unwrap_or_else(|| "request_release".to_string());
             let ff_sens = Self::ff_sensitivity(&clk, &rst, is_async, is_low);
             let rst_cond = Self::rst_condition(&rst, is_low);
             self.line("logic hold_valid_r;");
@@ -186,7 +199,9 @@ impl<'a> Codegen<'a> {
             self.indent -= 1;
             self.line("end else begin");
             self.indent += 1;
-            self.line(&format!("hold_valid_r <= {gv_sig};"));
+            self.line(&format!(
+                "hold_valid_r <= {gv_sig} && !{release_sig}[{gr_sig}];"
+            ));
             self.line(&format!("if ({gv_sig}) hold_owner_r <= {gr_sig};"));
             self.indent -= 1;
             self.line("end");

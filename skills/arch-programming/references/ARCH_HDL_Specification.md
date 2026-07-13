@@ -2019,11 +2019,14 @@ policy is selected by the `mutex<...>` annotation on the resource
 declaration:
 
 In every policy the grant is **hold-stable**: once a thread is granted, it
-keeps the grant for as long as its request stays asserted (i.e., until it
-reaches `end lock`), regardless of policy preference or later-arriving
-contenders. The policy only decides who wins each *re-arbitration*, which
-happens combinationally the same cycle the previous holder's request
-deasserts — release → next grant is zero-latency.
+keeps the grant until it reaches `end lock`, regardless of policy preference
+or later-arriving contenders. The policy only decides who wins each
+*re-arbitration*: when the holder's request deasserts, re-arbitration is
+combinational (release → next grant is zero-latency, same cycle); when the
+holder immediately re-requests (back-to-back `lock` in a loop), a release
+pulse at the `end lock` boundary still rotates the grant to a waiting
+contender on the next cycle, so beat-level interleaving patterns work and a
+lone requester streams back-to-back without a bubble.
 
 | Policy | Behaviour | Liveness story |
 |---|---|---|

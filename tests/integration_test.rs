@@ -17392,6 +17392,11 @@ fn test_lock_arbiter_emits_hold_latch_user_arbiter_does_not() {
         sv.contains("hold_valid_r") && sv.contains("hold_owner_r"),
         "synthesized lock arbiter should carry the hold latch:\n{sv}"
     );
+    assert!(
+        sv.contains("request_release"),
+        "synthesized lock arbiter should carry the release-pulse port \
+         (clears the hold across back-to-back re-acquisition):\n{sv}"
+    );
 
     let user_sv = compile_to_sv(
         r#"
@@ -17410,7 +17415,7 @@ fn test_lock_arbiter_emits_hold_latch_user_arbiter_does_not() {
     "#,
     );
     assert!(
-        !user_sv.contains("hold_valid_r"),
+        !user_sv.contains("hold_valid_r") && !user_sv.contains("request_release"),
         "user-declared arbiter must keep transactional grant semantics:\n{user_sv}"
     );
 }

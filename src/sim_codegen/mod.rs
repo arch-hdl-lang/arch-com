@@ -11799,6 +11799,9 @@ impl<'a> SimCodegen<'a> {
         for pa in &a.port_arrays {
             h.push_str(&format!("  uint64_t {}_valid;\n", pa.name.name));
             h.push_str(&format!("  uint64_t {}_ready;\n", pa.name.name));
+            if a.lock_hold {
+                h.push_str(&format!("  uint64_t {}_release;\n", pa.name.name));
+            }
         }
         h.push('\n');
 
@@ -11814,6 +11817,9 @@ impl<'a> SimCodegen<'a> {
         for pa in &a.port_arrays {
             all_port_inits.push(format!("{}_valid(0)", pa.name.name));
             all_port_inits.push(format!("{}_ready(0)", pa.name.name));
+            if a.lock_hold {
+                all_port_inits.push(format!("{}_release(0)", pa.name.name));
+            }
         }
         all_port_inits.push("_clk_prev(0)".to_string());
         if a.lock_hold {
@@ -11892,10 +11898,15 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
         cpp.push_str("  if (!_rising) return;\n");
         if a.lock_hold {
+            // Mirrors the SV hold ff: release pulse from the owner's last
+            // lock-body state clears the hold even when the owner's
+            // request stays asserted (back-to-back re-lock).
             cpp.push_str(&format!(
                 "  if ({rst_cond}) {{\n    _hold_valid = 0;\n    _hold_owner = 0;\n  }} else {{\n"
             ));
-            cpp.push_str("    _hold_valid = grant_valid;\n");
+            cpp.push_str(&format!(
+                "    _hold_valid = grant_valid && !(({req_pa_name}_release >> grant_requester) & 1);\n"
+            ));
             cpp.push_str("    if (grant_valid) _hold_owner = grant_requester;\n");
             cpp.push_str("  }\n");
         }

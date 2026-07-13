@@ -734,13 +734,15 @@ Safety: Lock Correctness".  We summarise:
 >    every lock body terminates.
 
 The argument is:
-- Arbiter with hold latch: while the latched owner's `_r_req` stays asserted,
-  the grant is pinned to the owner; only when the resource is free (no owner,
-  or the owner's request deasserted this cycle) does the policy scan pick a
-  winner from the asserted set.  In either case at most one `i` has
-  `_r_grant_i = 1` (mutual exclusion of grants), and some `i` has
-  `_r_grant_i = 1` iff some `_r_req_j = 1` (the owner branch or the scan
-  fires).
+- Arbiter with hold latch: while the owner holds, the grant is pinned to the
+  owner; the hold ends when the owner's request deasserts (combinational) or
+  when its `release` pulse fires at the lock's exit transition (registered —
+  this covers back-to-back re-acquisition where the request wire never
+  deasserts across the `end lock` boundary).  Only when the resource is free
+  does the policy scan pick a winner from the asserted set.  In either case
+  at most one `i` has `_r_grant_i = 1` (mutual exclusion of grants), and some
+  `i` has `_r_grant_i = 1` iff some `_r_req_j = 1` (the owner branch or the
+  scan fires).
 - Grant-gating: while a thread waits at the lock entry state, its `seq` is
   conditional on `_r_grant_i`, so no register updates occur.  Comb outputs
   are zero (default) because the comb stmts are wrapped in `if (_r_grant_i)`.

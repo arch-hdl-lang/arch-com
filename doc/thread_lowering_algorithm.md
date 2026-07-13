@@ -502,19 +502,35 @@ Supported policies and their grant equations (N requesters, indices 0..N-1):
 **Hold latch (lock arbiters only).** A lock requester keeps `request_valid[i]`
 asserted for the whole multi-cycle critical section, so the synthesized lock
 arbiter layers an owner latch (`hold_valid_r` / `hold_owner_r`) on top of the
-policy scan: while the latched owner's request is still asserted, the grant
-stays with the owner and the policy scan is skipped.  The owner check is
-combinational on `request_valid`, so the cycle the owner's request deasserts,
-the policy scan re-arbitrates and the next waiter is granted *in the same
-cycle* (release → re-grant is zero-latency).  Without the latch, round_robin's
-`rr_ptr` — which advances every granted cycle — rotates the grant away from a
-holder mid-critical-section whenever another requester is waiting, and a
-later-arriving lower-indexed requester preempts a priority holder: both break
-mutual exclusion, and a single-cycle release condition can be missed entirely
-(the holder's `grant_i && cond` exit never sees `grant_i` high on the release
-cycle).  User-declared standalone `arbiter` constructs are unaffected — their
-per-cycle transactional grant semantics (one grant event per cycle, pointer
-rotation every grant) are unchanged.
+policy scan: while the owner holds, the grant stays with the owner and the
+policy scan is skipped.  The hold ends at whichever comes first:
+
+- **Request deassert** (combinational): the owner check requires
+  `request_valid[hold_owner_r]`, so the cycle the owner's request drops, the
+  policy scan re-arbitrates and the next waiter is granted *in the same
+  cycle* (release → re-grant is zero-latency).
+- **Release pulse** (registered): each lock's *last body state* asserts a
+  per-thread `request_release[i]` combinationally when its exit transition
+  fires (emitted by the merged-module generation from the `lock_release`
+  marker; a state absorbed by the issue-#306 fold relocates its pulse into
+  the absorbing predecessor's cond-exit arm).  The ff clears `hold_valid_r`
+  on `release[grant_requester]`, so a thread that releases and immediately
+  re-requests — a back-to-back `lock` in a loop, whose request wire never
+  deasserts across the boundary — still hands the next re-arbitration to a
+  waiting contender.  This is what makes beat-level interleaving patterns
+  (e.g. `tests/axi_dma_thread/ThreadAxiReadBeatInterleave.arch`) rotate
+  lanes per beat; a lone requester re-wins the free scan the next cycle, so
+  back-to-back streaming pays no bubble.
+
+Without the latch, round_robin's `rr_ptr` — which advances every granted
+cycle — rotates the grant away from a holder mid-critical-section whenever
+another requester is waiting, and a later-arriving lower-indexed requester
+preempts a priority holder: both break mutual exclusion, and a single-cycle
+release condition can be missed entirely (the holder's `grant_i && cond` exit
+never sees `grant_i` high on the release cycle).  User-declared standalone
+`arbiter` constructs are unaffected — their per-cycle transactional grant
+semantics (one grant event per cycle, pointer rotation every grant) are
+unchanged, and they have no `request_release` port.
 
 For the priority policy, the grant selection is purely combinational — it
 resolves in the same cycle.  The other policies carry the state listed in the
