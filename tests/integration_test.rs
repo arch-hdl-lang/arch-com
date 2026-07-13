@@ -17641,6 +17641,71 @@ fn test_resource_lock_custom_policy_with_hook() {
 }
 
 #[test]
+fn test_ab_ba_lock_order_shape_rejected_as_nested_lock() {
+    // Deadlock-prevention regression lock (spec §20.8.5, issue #501).
+    //
+    // The classic lock-order deadlock — thread 1 holds A while acquiring B,
+    // thread 2 holds B while acquiring A — requires a `lock` block nested
+    // inside another `lock` block. The compiler's deadlock-prevention
+    // mechanism is NOT a lock-order cycle warning: it is the unconditional
+    // nested-lock ban (commit f91e78a; formal proof in
+    // doc/thread_lowering_algorithm.md §"Liveness and Safety: Lock
+    // Correctness", invariant 5 "Lock deadlock freedom"). Hold-and-wait is
+    // unrepresentable, so no AB/BA cycle can ever be expressed.
+    //
+    // This test pins the error text for exactly the AB/BA shape. If a future
+    // change relaxes the nesting ban (making this test fail), that change
+    // MUST consciously reintroduce deadlock protection — i.e. add a static
+    // lock-order cycle analysis across threads — as part of the relaxation.
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port go0: in Bool;
+          port go1: in Bool;
+          port busy: out Bool shared(or);
+          resource a: mutex<priority>;
+          resource b: mutex<priority>;
+
+          thread on clk rising, rst low
+            wait until go0;
+            lock a
+              busy = 1;
+              wait 1 cycle;
+              lock b
+                busy = 1;
+                wait 1 cycle;
+              end lock b
+            end lock a
+          end thread
+
+          thread on clk rising, rst low
+            wait until go1;
+            lock b
+              busy = 1;
+              wait 1 cycle;
+              lock a
+                busy = 1;
+                wait 1 cycle;
+              end lock a
+            end lock b
+          end thread
+        end module M
+    "#;
+    let tokens = arch::lexer::tokenize(source).expect("lex");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let err = arch::elaborate::lower_threads(ast)
+        .expect_err("AB/BA nested-lock shape must be rejected at elaboration");
+    let msg = err.iter().map(|e| format!("{e:?}")).collect::<String>();
+    assert!(
+        msg.contains("nested lock blocks are not supported"),
+        "expected the nested-lock rejection diagnostic (the deadlock-prevention \
+         mechanism); got: {msg}"
+    );
+}
+
+#[test]
 fn test_if_wait_nested() {
     // Nesting: inner if-with-wait inside outer if-with-wait. The recursive
     // partition_thread_body call is what enables nesting per §II.10.4.
