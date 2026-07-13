@@ -31481,3 +31481,109 @@ end module ParamSizedEmit
         "must not emit a signed size-cast that changes literal semantics:\n{sv}"
     );
 }
+
+#[test]
+fn test_thread_comb_overlap_drives_next_state_outputs() {
+    // Issue #501: the comb overlap optimization drives the NEXT state's comb
+    // outputs during the transition cycle of a `wait until` state, removing
+    // the dead cycle between back-to-back states.  For the classic AXI read
+    // loop, `r_ready` (state S1's output) must already assert while S0's
+    // `ar_ready` handshake completes, and the wrap-around transition
+    // (S1 -> S0) must re-assert `ar_valid` during the `r_valid` cycle.
+    let source = r#"
+module BasicThread
+  port clk:      in Clock<SysDomain>;
+  port rst_n:    in Reset<Async, Low>;
+  port ar_valid: out Bool;
+  port ar_addr:  out UInt<32>;
+  port ar_ready: in Bool;
+  port r_ready:  out Bool;
+  port r_valid:  in Bool;
+  port r_data:   in UInt<32>;
+  port data_out: out UInt<32>;
+
+  reg data_r: UInt<32> reset rst_n => 0;
+
+  let data_out = data_r;
+
+  thread on clk rising, rst_n low
+    ar_valid = 1;
+    ar_addr  = 32'd100;
+    wait until ar_ready;
+
+    r_ready = 1;
+    wait until r_valid;
+    data_r <= r_data;
+  end thread
+end module BasicThread
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("_t0_state == _t0_S0_wait_until && ar_ready"),
+        "expected overlap arm driving S1's outputs during S0's transition cycle:\n{sv}"
+    );
+    assert!(
+        sv.contains("_t0_state == _t0_S1_wait_until && r_valid"),
+        "expected wrap-around overlap arm driving S0's outputs during S1's transition cycle:\n{sv}"
+    );
+}
+
+#[test]
+fn test_thread_comb_overlap_never_enters_lock_body() {
+    // Issue #501: the overlap optimization must NOT drive a lock body state's
+    // outputs from the preceding state.  Lock-body outputs are grant-gated;
+    // overlapping them into the prior state would leak critical-section
+    // drives before the arbiter grant.  Every state in this fixture either
+    // is a lock body or transitions INTO one, so no overlap arm
+    // (`_tN_state == <state> && <cond>` in the comb block) may be emitted.
+    let source = r#"
+module SharedBus
+  port clk:      in Clock<SysDomain>;
+  port rst_n:    in Reset<Async, Low>;
+  port bus_valid: out Bool;
+  port bus_addr:  out UInt<32>;
+  port bus_ready: in Bool;
+  port done_0:   out Bool;
+  port done_1:   out Bool;
+
+  resource shared_bus : mutex<priority>;
+
+  thread Writer_0 on clk rising, rst_n low
+    lock shared_bus
+      bus_valid = 1;
+      bus_addr  = 32'h1000;
+      wait until bus_ready;
+      bus_valid = 0;
+    end lock shared_bus
+    done_0 = 1;
+    wait until bus_ready;
+  end thread Writer_0
+
+  thread Writer_1 on clk rising, rst_n low
+    lock shared_bus
+      bus_valid = 1;
+      bus_addr  = 32'h2000;
+      wait until bus_ready;
+      bus_valid = 0;
+    end lock shared_bus
+    done_1 = 1;
+    wait until bus_ready;
+  end thread Writer_1
+end module SharedBus
+"#;
+    let sv = compile_to_sv(source);
+    for ti in 0..2 {
+        for si in 0..3 {
+            for line in sv.lines() {
+                let state_eq = format!("_t{ti}_state == _t{ti}_S{si}");
+                if line.contains(&state_eq) && line.contains(" && ") {
+                    panic!(
+                        "overlap arm leaked into/next to lock body state \
+                         (t{ti} S{si}): `{}`\nfull SV:\n{sv}",
+                        line.trim()
+                    );
+                }
+            }
+        }
+    }
+}

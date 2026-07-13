@@ -5854,10 +5854,54 @@ fn lower_module_threads(
                 }));
             }
 
-            // TODO: Comb overlap optimization (drive next state's outputs on
-            // transition cycle) — disabled pending proper lock-state awareness.
-            // Re-enable when lock body states are tagged to prevent overlap
-            // from leaking lock-guarded outputs into preceding states.
+            // Comb overlap: when this state's single conditional transition
+            // fires, also drive the next state's comb outputs in the same
+            // cycle. This lets back-to-back states pipeline without a dead
+            // cycle. Restricted to next states that are NOT lock bodies
+            // (issue #501): a lock-guarded state's outputs must never appear
+            // before the grant cycle, so overlapping into a lock body would
+            // leak critical-section outputs into the preceding state.
+            // Multi-transition and TLM-return states are skipped — their
+            // successor is condition-dependent, not the natural next state.
+            if raw.multi_transitions.is_empty() && raw.terminal_return.is_none() {
+                if let Some(ref trans_cond) = raw.transition_cond {
+                    let next_si = if let Some(folded_tgt) = raw.folded_exit_target {
+                        folded_tgt
+                    } else if si + 1 < n_states {
+                        si + 1
+                    } else if t.once {
+                        si // terminal once-state: self-loop, nothing to overlap
+                    } else {
+                        0
+                    };
+                    let overlap_target =
+                        raw_states
+                            .get(next_si)
+                            .filter(|_| next_si != si)
+                            .filter(|next| {
+                                !next.is_folded && !next.is_lock_body && !next.comb_stmts.is_empty()
+                            });
+                    if let Some(next) = overlap_target {
+                        let next_comb =
+                            transform_shared_or_assigns(&next.comb_stmts, &shared_signals, sp);
+                        let overlap_cond = Expr::new(
+                            ExprKind::Binary(
+                                BinOp::And,
+                                Box::new(state_cond.clone()),
+                                Box::new(trans_cond.clone()),
+                            ),
+                            sp,
+                        );
+                        all_thread_comb.push(Stmt::IfElse(IfElse {
+                            cond: overlap_cond,
+                            then_stmts: next_comb,
+                            else_stmts: Vec::new(),
+                            unique: false,
+                            span: sp,
+                        }));
+                    }
+                }
+            }
         }
     }
 
@@ -7688,6 +7732,12 @@ struct ThreadFsmState {
     /// `ExitConditions` records the arms that leave a multi-transition
     /// construct already nested inside the lock body.
     lock_release_info: Option<LockReleaseInfo>,
+    /// True when this state belongs to a `lock` body (issue #501).  The comb
+    /// overlap optimization must not drive a lock-guarded state's outputs
+    /// during the preceding state's transition cycle: the first body state's
+    /// outputs are grant-gated, and driving any lock-body outputs before the
+    /// lock is held would leak them into states outside the critical section.
+    is_lock_body: bool,
 }
 
 #[derive(Clone)]
@@ -8217,6 +8267,7 @@ fn redirect_fallthrough_to_return(states: &mut Vec<ThreadFsmState>, return_idx: 
             no_fold_into_prev: false,
             lock_release: None,
             lock_release_info: None,
+            is_lock_body: false,
         });
         return;
     };
@@ -8534,6 +8585,7 @@ fn flush_pending_thread_state(
         no_fold_into_prev: false,
         lock_release: None,
         lock_release_info: None,
+        is_lock_body: false,
     });
     true
 }
@@ -8843,6 +8895,7 @@ fn partition_thread_body_impl(
                         no_fold_into_prev: nfip,
                         lock_release: None,
                         lock_release_info: None,
+                        is_lock_body: false,
                     });
                 } else {
                     // No dead-skid state created; reset next_state_no_fold
@@ -8863,6 +8916,7 @@ fn partition_thread_body_impl(
                     no_fold_into_prev: false,
                     lock_release: None,
                     lock_release_info: None,
+                    is_lock_body: false,
                 });
                 let _ = sp; // span retained for parity with the prior arm
             }
@@ -8916,6 +8970,7 @@ fn partition_thread_body_impl(
                         no_fold_into_prev: false,
                         lock_release: None,
                         lock_release_info: None,
+                        is_lock_body: false,
                     });
                 } else if let Some(idx) = merged_fast_idx {
                     no_trailing_merge_from = Some(idx);
@@ -8943,6 +8998,7 @@ fn partition_thread_body_impl(
                             no_fold_into_prev: false,
                             lock_release: None,
                             lock_release_info: None,
+                            is_lock_body: false,
                         });
                         fast_region = Some((fast_idx, cond));
                         continue;
@@ -8989,6 +9045,7 @@ fn partition_thread_body_impl(
                         no_fold_into_prev: false,
                         lock_release: None,
                         lock_release_info: None,
+                        is_lock_body: false,
                     });
                     // Step 3: recursively partition `then_stmts` and append at then_base.
                     // Empty branches (§II.10.4) skip the recursive call —
@@ -9324,6 +9381,7 @@ fn partition_thread_body_impl(
                     no_fold_into_prev: false,
                     lock_release: None,
                     lock_release_info: None,
+                    is_lock_body: false,
                 });
             }
             ThreadStmt::Return(e, ret_span) => {
@@ -9356,6 +9414,7 @@ fn partition_thread_body_impl(
                                 no_fold_into_prev: false,
                                 lock_release: None,
                                 lock_release_info: None,
+                                is_lock_body: false,
                             });
                         }
                     } else {
@@ -9524,6 +9583,7 @@ fn partition_thread_body_impl(
                 no_fold_into_prev: nfip,
                 lock_release: None,
                 lock_release_info: None,
+                is_lock_body: false,
             });
         }
     }
@@ -9580,6 +9640,7 @@ fn lower_fork_join(
             no_fold_into_prev: false,
             lock_release: None,
             lock_release_info: None,
+            is_lock_body: false,
         });
         branch_states.push(states);
     }
@@ -9730,6 +9791,7 @@ fn lower_fork_join(
             no_fold_into_prev: false,
             lock_release: None,
             lock_release_info: None,
+            is_lock_body: false,
         });
     }
 
@@ -10167,9 +10229,12 @@ fn lower_thread_lock(
 
     let mut body_states = partition_thread_body_with_loop_ids(body, span, cnt_width, loop_id_gen)?;
 
-    // Add req=1 to all body states
+    // Add req=1 to all body states, and tag them as lock-guarded so the comb
+    // overlap optimization never drives their outputs from a preceding state
+    // (issue #501).
     for bs in &mut body_states {
         bs.comb_stmts.insert(0, req_assign.clone());
+        bs.is_lock_body = true;
     }
 
     // First body state: gate comb outputs AND transition on grant.
@@ -10285,6 +10350,7 @@ fn lower_thread_lock(
             no_fold_into_prev: false,
             lock_release: Some(resource_name.to_string()),
             lock_release_info: Some(LockReleaseInfo::AllTransitions),
+            is_lock_body: true,
         });
     }
 
