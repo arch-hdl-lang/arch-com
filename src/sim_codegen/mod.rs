@@ -8246,7 +8246,6 @@ impl<'a> SimCodegen<'a> {
         // settled before edges are detected, and sub-instances correctly detect their
         // own clock edges when called from a parent's eval_posedge().
 
-
         let child_vec_output_shape =
             |inst: &crate::ast::InstDecl, port_name: &str| -> Option<(u64, u32)> {
                 let mut sub_params = self.lookup_inst_params(&inst.module_name.name);
