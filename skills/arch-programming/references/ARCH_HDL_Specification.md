@@ -2018,10 +2018,17 @@ For each `resource`, the compiler generates a combinational arbiter whose
 policy is selected by the `mutex<...>` annotation on the resource
 declaration:
 
+In every policy the grant is **hold-stable**: once a thread is granted, it
+keeps the grant for as long as its request stays asserted (i.e., until it
+reaches `end lock`), regardless of policy preference or later-arriving
+contenders. The policy only decides who wins each *re-arbitration*, which
+happens combinationally the same cycle the previous holder's request
+deasserts — release → next grant is zero-latency.
+
 | Policy | Behaviour | Liveness story |
 |---|---|---|
-| `mutex<priority>` (default) | `grant[i] = req[i] && !grant[0] && … && !grant[i-1]` | Thread 0 always makes progress; thread N waits only for threads with lower index. Acyclic waits-for graph by construction. |
-| `mutex<round_robin>` | Rotates the scan-start pointer each grant, so consecutive contenders alternate. | Bounded wait: any requester is granted within N cycles of asserting its request (N = number of contenders). |
+| `mutex<priority>` (default) | Lowest-indexed requester wins each re-arbitration. | Thread 0 always makes progress; thread N waits only for threads with lower index. Acyclic waits-for graph by construction. |
+| `mutex<round_robin>` | Rotates the scan-start pointer past each outgoing holder, so consecutive contenders alternate. | Bounded wait: any requester is granted within N release events of asserting its request (N = number of contenders). |
 | `mutex<lru>` | Picks the least-recently-granted requester. | Same bounded-wait property as round_robin. |
 | `mutex<weighted<W>>` | Token-bucket-weighted across requesters; `W` is the bucket depth. | Long-run fairness in proportion to per-requester weights. |
 | `mutex<MyFn>` (custom hook) | The user supplies `hook grant_select(req, last_grant) -> grant: UInt<N>` returning a one-hot grant mask. | The compiler enforces one-hot (mutual exclusion), but liveness is the user's obligation — a hook that returns all-zeros under requests deadlocks the arbiter; a hook that consistently picks the same thread starves the others. |

@@ -612,9 +612,7 @@ impl<'a> Codegen<'a> {
                 "if (hold_valid_r && {req_valid}[hold_owner_r]) grant_onehot = {}'(1) << hold_owner_r;",
                 num_req
             ));
-            self.line(&format!(
-                "else grant_onehot = {fn_name}({args_str});"
-            ));
+            self.line(&format!("else grant_onehot = {fn_name}({args_str});"));
         } else {
             self.line(&format!("grant_onehot = {fn_name}({args_str});"));
         }
