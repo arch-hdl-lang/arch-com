@@ -4,6 +4,12 @@ Hardware Description Language
 
 Language Specification · v0.60.0 · May 2026
 
+> **Canonical source.** This Markdown file is the normative ARCH language
+> specification. There is no binary (.docx) twin — historical references to
+> one are stale. User-facing language changes must update this file in the
+> same PR (see CLAUDE.md, "Fix-PR lifecycle"); the bundled skill snapshot
+> under `skills/arch-programming/references/` is kept in sync by CI.
+
 *A purpose-built micro-architecture HDL --- clean RTL semantics, strong types, and first-class pipelines, FSMs, FIFOs, and arbiters. Incorrect design patterns --- multiple drivers, undriven ports, clock-domain crossings, width mismatches --- are compile-time errors, never runtime surprises. Designed to be generated correctly by AI without prior training.*
 
 **1. Design Philosophy**

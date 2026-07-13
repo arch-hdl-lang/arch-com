@@ -110,8 +110,9 @@ never said so. Rules:
 
 `arch-com` is a compiler for **ARCH**, a purpose-built hardware description language (HDL) for micro-architecture work. The compiler ingests `.arch` source files and emits deterministic, readable SystemVerilog. The language is explicitly designed to be generated correctly by LLMs from natural-language hardware descriptions.
 
-Full specification: `doc/ARCH_HDL_Specification.docx`
-Compact AI reference: `doc/Arch_AI_Reference_Card.docx`
+Full specification: `doc/ARCH_HDL_Specification.md` (canonical — greppable,
+diffable, CI-checked via the skill-snapshot sync; no binary twin exists)
+Compact AI reference: `doc/Arch_AI_Reference_Card.md`
 
 ---
 
