@@ -63,6 +63,13 @@ struct ThreadSlot {
     WaitKind   kind = WaitKind::Ready;
     uint32_t   cycles_remaining = 0;
     std::function<bool()> pred;  // for WaitUntil
+    // True while the current suspension is a resource-lock acquisition
+    // (`lock_wait_until`). The lowered FSM fuses lock request + grant +
+    // body-comb into the arrival cycle (the arbiter grant is
+    // combinational), so a thread that suspends at a lock this tick may
+    // be resumed once more within the same tick when the arbiter selects
+    // it. Regular `wait until` keeps the min-1-cycle rule.
+    bool lock_wait = false;
 };
 
 // Awaiter: `co_await wait_until(pred)`. Captures the predicate by value;
@@ -72,15 +79,22 @@ struct ThreadSlot {
 struct WaitUntilAwaiter {
     std::function<bool()> pred;
     ThreadSlot* slot;
+    // Set only via `lock_wait_until` (resource-lock acquisition): the
+    // scheduler may re-fire the slot within the same tick, matching the
+    // lowered FSM's combinational arbiter grant.
+    bool lock_acquire = false;
     bool await_ready() noexcept {
         // Don't short-circuit: even if pred is true now, we want the
         // semantics of "resumes at the *next* posedge where pred is true",
-        // matching the lowered-fsm behavior.
+        // matching the lowered-fsm behavior. (Lock acquisitions get their
+        // same-tick fire through the scheduler's lock_wait re-check
+        // instead, which sees the complete request set for the tick.)
         return false;
     }
     void await_suspend(std::coroutine_handle<>) noexcept {
         slot->kind = WaitKind::WaitUntil;
         slot->pred = std::move(pred);
+        slot->lock_wait = lock_acquire;
     }
     void await_resume() noexcept {}
 };
@@ -93,6 +107,7 @@ struct WaitCyclesAwaiter {
     void await_suspend(std::coroutine_handle<>) noexcept {
         slot->kind = WaitKind::WaitCycles;
         slot->cycles_remaining = n;
+        slot->lock_wait = false;
     }
     void await_resume() noexcept {}
 };
@@ -108,23 +123,16 @@ struct ThreadScheduler {
     //   - WaitUntil:   evaluate pred; if true, mark Ready.
     //   - Ready:       (only first tick, or just-marked-ready) resume the
     //                  coroutine until it suspends or finishes.
-    void tick() {
-        // Semantic: `wait until cond` blocks for AT LEAST one posedge
-        // FROM THE MOMENT OF SUSPENSION. Same for `wait_cycles(N)`.
-        // Concretely:
-        //   - A slot freshly suspended this tick (resumed[i]=true)
-        //     will NOT have its new pred re-evaluated this tick →
-        //     min 1 cycle wait from suspension.
-        //   - A slot that was already WaitUntil at tick start
-        //     (resumed[i]=false) CAN fire mid-tick when its pred
-        //     becomes true due to another slot's resume — it has
-        //     already been waiting ≥1 cycle, so satisfying it now
-        //     respects the min-1 rule.
-        // This is essential for fork-join: the parent's "all branches
-        // Done" pred must fire the same tick branches finish, matching
-        // the lowered-fsm rule that an unconditional state transition
-        // fires at the posedge after the predecessor state's residency.
-        std::vector<bool> resumed(slots.size(), false);
+    // Per-tick bookkeeping. Persists across tick_run() calls within one
+    // posedge so that cross-scheduler iteration (the module posedge
+    // handler re-runs every scheduler until global quiescence) does not
+    // lose the min-1-cycle guarantee.
+    std::vector<bool> resumed;
+    std::vector<bool> lock_refired;
+
+    void tick_begin() {
+        resumed.assign(slots.size(), false);
+        lock_refired.assign(slots.size(), false);
 
         // Pass 1: advance wait conditions based on prior-tick state.
         for (auto* s : slots) {
@@ -135,9 +143,40 @@ struct ThreadScheduler {
                 if (s->pred && s->pred()) s->kind = WaitKind::Ready;
             }
         }
-        // Pass 2 (iterated): resume Ready slots, then re-check preds
-        // for slots that did NOT resume this tick. The resumed[] guard
-        // prevents freshly suspended slots from re-firing same tick.
+    }
+
+    // Pass 2 (iterated): resume Ready slots, then re-check preds for
+    // slots eligible to fire this tick. Returns true when any slot
+    // resumed, so the caller can iterate a group of schedulers to a
+    // global fixed point (a lock released by thread N must be able to
+    // wake a waiter in thread M < N within the same tick — the lowered
+    // FSM's arbiter grant is combinational).
+    //
+    // Semantic: `wait until cond` blocks for AT LEAST one posedge FROM
+    // THE MOMENT OF SUSPENSION. Same for `wait_cycles(N)`. Concretely:
+    //   - A slot freshly suspended this tick (resumed[i]=true) will NOT
+    //     have its new pred re-evaluated this tick → min 1 cycle wait
+    //     from suspension.
+    //   - A slot that was already WaitUntil at tick start
+    //     (resumed[i]=false) CAN fire mid-tick when its pred becomes
+    //     true due to another slot's resume — it has already been
+    //     waiting ≥1 cycle, so satisfying it now respects the min-1
+    //     rule.
+    //   - Exception: a slot suspended at a resource-lock acquisition
+    //     (slot->lock_wait) may re-fire ONCE within the tick it
+    //     suspended. The lowered FSM fuses lock request + grant +
+    //     body-comb into the arrival cycle (the arbiter grant is
+    //     combinational), so zero-latency acquisition of a free
+    //     resource is the faithful timing. The once-per-tick cap
+    //     (lock_refired) matches the FSM, where a thread can pass at
+    //     most one lock entry per clock edge.
+    // The mid-tick re-check is essential for fork-join: the parent's
+    // "all branches Done" pred must fire the same tick branches finish,
+    // matching the lowered-fsm rule that an unconditional state
+    // transition fires at the posedge after the predecessor state's
+    // residency.
+    bool tick_run() {
+        bool progressed = false;
         bool changed = true;
         while (changed) {
             changed = false;
@@ -147,17 +186,32 @@ struct ThreadScheduler {
                     slots[i]->thread.resume();
                     if (slots[i]->thread.done()) slots[i]->kind = WaitKind::Done;
                     changed = true;
+                    progressed = true;
                 }
             }
             for (size_t i = 0; i < slots.size(); ++i) {
-                if (!resumed[i] && slots[i]->kind == WaitKind::WaitUntil) {
-                    if (slots[i]->pred && slots[i]->pred()) {
-                        slots[i]->kind = WaitKind::Ready;
-                        changed = true;
+                if (slots[i]->kind != WaitKind::WaitUntil) continue;
+                bool eligible = !resumed[i]
+                    || (slots[i]->lock_wait && !lock_refired[i]);
+                if (!eligible) continue;
+                if (slots[i]->pred && slots[i]->pred()) {
+                    if (resumed[i]) {
+                        // Same-tick lock re-fire: consume the one-shot
+                        // allowance and re-arm the resume sweep.
+                        lock_refired[i] = true;
+                        resumed[i] = false;
                     }
+                    slots[i]->kind = WaitKind::Ready;
+                    changed = true;
                 }
             }
         }
+        return progressed;
+    }
+
+    void tick() {
+        tick_begin();
+        tick_run();
     }
 
     bool all_done() const {
@@ -211,7 +265,11 @@ struct alignas(64) Barrier {
 
 // Convenience constructors. Pass the slot the coroutine is parked in so
 // the awaiter knows where to write its suspend state.
-inline WaitUntilAwaiter  wait_until (ThreadSlot* s, std::function<bool()> p) { return {std::move(p), s}; }
+inline WaitUntilAwaiter  wait_until (ThreadSlot* s, std::function<bool()> p) { return {std::move(p), s, false}; }
+// Resource-lock acquisition wait: same shape as wait_until, but the
+// scheduler may re-fire the slot once within the tick it suspended
+// (combinational-arbiter-grant timing; see ThreadSlot::lock_wait).
+inline WaitUntilAwaiter  lock_wait_until(ThreadSlot* s, std::function<bool()> p) { return {std::move(p), s, true}; }
 inline WaitCyclesAwaiter wait_cycles(ThreadSlot* s, uint32_t n)              { return {n, s}; }
 
 } // namespace arch_rt

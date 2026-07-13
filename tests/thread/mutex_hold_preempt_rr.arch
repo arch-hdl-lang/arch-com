@@ -1,0 +1,34 @@
+module MutexPreR
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port go0: in Bool;
+  port go1: in Bool;
+  port rel0: in Bool;
+  port rel1: in Bool;
+  port busy0: out Bool;
+  port busy1: out Bool;
+  port done0: out Bool;
+  port done1: out Bool;
+
+  resource pool: mutex<round_robin>;
+
+  thread once T0 on clk rising, rst high
+    wait until go0;
+    lock pool
+      busy0 = 1;
+      wait until rel0;
+      busy0 = 0;
+    end lock pool
+    done0 = 1;
+  end thread T0
+
+  thread once T1 on clk rising, rst high
+    wait until go1;
+    lock pool
+      busy1 = 1;
+      wait until rel1;
+      busy1 = 0;
+    end lock pool
+    done1 = 1;
+  end thread T1
+end module MutexPreR

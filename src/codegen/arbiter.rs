@@ -162,6 +162,54 @@ impl<'a> Codegen<'a> {
             )
         };
 
+        // ── Lock-hold owner latch (synthesized lock arbiters only) ──────────
+        // Lock requesters keep `request_valid` asserted for the whole
+        // multi-cycle critical section, so the grant must stay with the
+        // current owner until its request deasserts. Without this,
+        // round_robin's rotating pointer (or a later-arriving
+        // higher-priority requester) migrates the grant mid-hold and
+        // breaks mutual exclusion. The owner check is combinational on
+        // `request_valid`, so release → re-grant of the next waiter
+        // happens in the same cycle (matching the coroutine thread sim).
+        if a.lock_hold {
+            // The request port array carries a third `release` signal for
+            // lock arbiters: the owner's last lock-body state pulses it
+            // when its exit transition fires. Clearing the hold on release
+            // (instead of waiting for request_valid to deassert) lets a
+            // thread that releases and immediately re-requests — a
+            // back-to-back `lock` in a loop, whose request wire never
+            // drops — still hand the next re-arbitration to a waiting
+            // contender.
+            let release_sig = a
+                .port_arrays
+                .first()
+                .map(|pa| format!("{}_release", pa.name.name))
+                .unwrap_or_else(|| "request_release".to_string());
+            let ff_sens = Self::ff_sensitivity(&clk, &rst, is_async, is_low);
+            let rst_cond = Self::rst_condition(&rst, is_low);
+            self.line("logic hold_valid_r;");
+            self.line(&format!("logic [{}:0] hold_owner_r;", req_width - 1));
+            self.line("");
+            self.line(&format!("always_ff @({ff_sens}) begin"));
+            self.indent += 1;
+            self.line(&format!("if ({rst_cond}) begin"));
+            self.indent += 1;
+            self.line("hold_valid_r <= 1'b0;");
+            self.line("hold_owner_r <= '0;");
+            self.indent -= 1;
+            self.line("end else begin");
+            self.indent += 1;
+            self.line(&format!(
+                "hold_valid_r <= {gv_sig} && !{release_sig}[{gr_sig}];"
+            ));
+            self.line(&format!("if ({gv_sig}) hold_owner_r <= {gr_sig};"));
+            self.indent -= 1;
+            self.line("end");
+            self.indent -= 1;
+            self.line("end");
+            self.line("");
+        }
+
         // ── Arbiter logic ─────────────────────────────────────────────────────
         match policy {
             ArbiterPolicy::RoundRobin => {
@@ -176,6 +224,7 @@ impl<'a> Codegen<'a> {
                     &rr_sig,
                     &gv_sig,
                     &gr_sig,
+                    a.lock_hold,
                 );
             }
             ArbiterPolicy::Priority => {
@@ -186,6 +235,7 @@ impl<'a> Codegen<'a> {
                     &rr_sig,
                     &gv_sig,
                     &gr_sig,
+                    a.lock_hold,
                 );
             }
             ArbiterPolicy::Lru => {
@@ -200,6 +250,7 @@ impl<'a> Codegen<'a> {
                     &rr_sig,
                     &gv_sig,
                     &gr_sig,
+                    a.lock_hold,
                 );
             }
             ArbiterPolicy::Weighted(_) => {
@@ -210,6 +261,7 @@ impl<'a> Codegen<'a> {
                     &rr_sig,
                     &gv_sig,
                     &gr_sig,
+                    a.lock_hold,
                 );
             }
             ArbiterPolicy::Custom(ref fn_ident) => {
@@ -226,6 +278,7 @@ impl<'a> Codegen<'a> {
                     &rr_sig,
                     &gv_sig,
                     &gr_sig,
+                    a.lock_hold,
                 );
             }
         }
@@ -377,6 +430,7 @@ impl<'a> Codegen<'a> {
         req_ready: &str,
         grant_valid_sig: &str,
         grant_requester_sig: &str,
+        lock_hold: bool,
     ) {
         self.line(&format!("logic [{}:0] rr_ptr_r;", req_width - 1));
         self.line("integer arb_i;");
@@ -408,6 +462,21 @@ impl<'a> Codegen<'a> {
         self.line(&format!("{req_ready} = '0;"));
         self.line(&format!("{grant_requester_sig} = '0;"));
         self.line("arb_found = 1'b0;");
+        if lock_hold {
+            // Current owner keeps the grant while its request stays
+            // asserted; the rotating scan below only runs when the
+            // resource is free (arb_found gates it).
+            self.line(&format!(
+                "if (hold_valid_r && {req_valid}[hold_owner_r]) begin"
+            ));
+            self.indent += 1;
+            self.line("arb_found = 1'b1;");
+            self.line(&format!("{grant_valid_sig} = 1'b1;"));
+            self.line(&format!("{grant_requester_sig} = hold_owner_r;"));
+            self.line(&format!("{req_ready}[hold_owner_r] = 1'b1;"));
+            self.indent -= 1;
+            self.line("end");
+        }
         self.line(&format!(
             "for (arb_i = 0; arb_i < {num_req}; arb_i++) begin"
         ));
@@ -441,12 +510,28 @@ impl<'a> Codegen<'a> {
         req_ready: &str,
         grant_valid_sig: &str,
         grant_requester_sig: &str,
+        lock_hold: bool,
     ) {
         self.line("always_comb begin");
         self.indent += 1;
         self.line(&format!("{grant_valid_sig} = 1'b0;"));
         self.line(&format!("{req_ready} = '0;"));
         self.line(&format!("{grant_requester_sig} = '0;"));
+        if lock_hold {
+            // Current owner keeps the grant while its request stays
+            // asserted — a later-arriving higher-priority requester must
+            // not preempt a held lock. The priority scan below only runs
+            // when the resource is free (grant_valid gates it).
+            self.line(&format!(
+                "if (hold_valid_r && {req_valid}[hold_owner_r]) begin"
+            ));
+            self.indent += 1;
+            self.line(&format!("{grant_valid_sig} = 1'b1;"));
+            self.line(&format!("{grant_requester_sig} = hold_owner_r;"));
+            self.line(&format!("{req_ready}[hold_owner_r] = 1'b1;"));
+            self.indent -= 1;
+            self.line("end");
+        }
         self.line(&format!(
             "for (int pri_i = 0; pri_i < {num_req}; pri_i++) begin"
         ));
@@ -480,6 +565,7 @@ impl<'a> Codegen<'a> {
         req_ready: &str,
         grant_valid_sig: &str,
         grant_requester_sig: &str,
+        lock_hold: bool,
     ) {
         let fn_name = &fn_ident.name;
 
@@ -534,7 +620,17 @@ impl<'a> Codegen<'a> {
         // declaration-order. Drive it from the always_comb here.
         self.line("always_comb begin");
         self.indent += 1;
-        self.line(&format!("grant_onehot = {fn_name}({args_str});"));
+        if lock_hold {
+            // Current owner keeps the grant while its request stays
+            // asserted; the hook only arbitrates when the resource is free.
+            self.line(&format!(
+                "if (hold_valid_r && {req_valid}[hold_owner_r]) grant_onehot = {}'(1) << hold_owner_r;",
+                num_req
+            ));
+            self.line(&format!("else grant_onehot = {fn_name}({args_str});"));
+        } else {
+            self.line(&format!("grant_onehot = {fn_name}({args_str});"));
+        }
         self.line(&format!("{grant_valid_sig} = |grant_onehot;"));
         self.line(&format!("{req_ready} = grant_onehot;"));
         // Priority encode one-hot to index

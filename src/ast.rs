@@ -2189,6 +2189,16 @@ pub struct ArbiterDecl {
     /// declared with the pre-PR#343 hand-rolled `port` / `ports[N]`
     /// shape.
     pub handshakes: Vec<HandshakeMeta>,
+    /// True only for arbiters synthesized by `lock` lowering
+    /// (`synthesize_lock_arbiter`). A lock requester holds `request_valid`
+    /// for the full multi-cycle critical section, so the grant must be
+    /// latched to the current owner until its request deasserts —
+    /// otherwise round_robin's rotating pointer (or a later-arriving
+    /// higher-priority requester) migrates the grant mid-hold, violating
+    /// mutual exclusion (Lemma L, doc/thread_lowering_proof.md §II.7).
+    /// User-declared `arbiter` constructs keep the per-cycle transactional
+    /// grant semantics and never set this.
+    pub lock_hold: bool,
 }
 impl std::ops::Deref for ArbiterDecl {
     type Target = ConstructCommon;

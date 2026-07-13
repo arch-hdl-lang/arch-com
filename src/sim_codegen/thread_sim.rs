@@ -329,11 +329,19 @@ pub fn gen_module_thread_with_warnings(
     }
     // Initial settle — run each per-thread scheduler in declaration
     // order so thread N can read signals set by threads 0..N-1 during
-    // their entry segments. ALWAYS sequential in the constructor (workers
-    // not yet spawned).
+    // their entry segments, then iterate the group to a fixed point so
+    // cross-thread wakeups (e.g. a resource-lock grant) also propagate
+    // from higher- to lower-indexed threads within the same tick.
+    // ALWAYS sequential in the constructor (workers not yet spawned).
     for (i, _) in thread_infos.iter().enumerate() {
-        header.push_str(&format!("    _sched_{i}.tick();\n"));
+        header.push_str(&format!("    _sched_{i}.tick_begin();\n"));
     }
+    header.push_str("    for (bool _p = true; _p; ) {\n");
+    header.push_str("      _p = false;\n");
+    for (i, _) in thread_infos.iter().enumerate() {
+        header.push_str(&format!("      _p |= _sched_{i}.tick_run();\n"));
+    }
+    header.push_str("    }\n");
     if mt {
         // Spawn one worker OS thread per user thread. Each worker waits
         // at _start_barrier, ticks its scheduler when signaled, then
@@ -524,8 +532,14 @@ pub fn gen_module_thread_with_warnings(
     // initial state's hold-comb (matching fsm's "state register reset
     // to entry state, comb runs immediately" semantic).
     for (i, _) in thread_infos.iter().enumerate() {
-        header.push_str(&format!("      _sched_{i}.tick();\n"));
+        header.push_str(&format!("      _sched_{i}.tick_begin();\n"));
     }
+    header.push_str("      for (bool _p = true; _p; ) {\n");
+    header.push_str("        _p = false;\n");
+    for (i, _) in thread_infos.iter().enumerate() {
+        header.push_str(&format!("        _p |= _sched_{i}.tick_run();\n"));
+    }
+    header.push_str("      }\n");
     header.push_str("      eval();\n");
     header.push_str("      return;\n");
     header.push_str("    }\n");
@@ -594,10 +608,21 @@ pub fn gen_module_thread_with_warnings(
         header.push_str("    _start_barrier.wait();\n");
         header.push_str("    _end_barrier.wait();\n");
     } else {
-        // Sequential tick (single OS thread, current default).
+        // Sequential tick (single OS thread, current default). Iterate
+        // the scheduler group to a fixed point so a wakeup produced by
+        // thread N (e.g. releasing a resource lock) can fire a waiter
+        // in thread M < N within the same tick — the lowered FSM's
+        // arbiter grant is combinational, so cross-thread handoff must
+        // not depend on thread declaration order.
         for (i, _) in thread_infos.iter().enumerate() {
-            header.push_str(&format!("    _sched_{i}.tick();\n"));
+            header.push_str(&format!("    _sched_{i}.tick_begin();\n"));
         }
+        header.push_str("    for (bool _p = true; _p; ) {\n");
+        header.push_str("      _p = false;\n");
+        for (i, _) in thread_infos.iter().enumerate() {
+            header.push_str(&format!("      _p |= _sched_{i}.tick_run();\n"));
+        }
+        header.push_str("    }\n");
     }
     header.push_str("    eval();\n");
     // Note: --debug logging fires from eval() at end (matches fsm
@@ -1000,7 +1025,7 @@ pub fn gen_module_thread_with_warnings(
                     body_cpp.push_str(&format!("{pad2}_resource_{res}_note_request({my_id});\n"));
                     body_cpp.push_str(&format!("{pad2}while (true) {{\n"));
                     body_cpp.push_str(&format!(
-                        "{pad2}  co_await arch_rt::wait_until(&_slot_{ti}, [this]{{ return _resource_{res}_can_acquire({my_id}); }});\n"
+                        "{pad2}  co_await arch_rt::lock_wait_until(&_slot_{ti}, [this]{{ return _resource_{res}_can_acquire({my_id}); }});\n"
                     ));
                     body_cpp.push_str(&format!(
                         "{pad2}  if (_resource_{res}_can_acquire({my_id})) {{\n"

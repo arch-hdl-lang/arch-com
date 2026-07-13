@@ -89,6 +89,35 @@ Determinism: at each barrier, a fixed iteration order over groups (and
 over threads within a group) makes inter-group signal propagation
 order reproducible regardless of OS thread scheduling.
 
+### Resource-lock timing contract (matches the lowered FSM, 2026-07)
+
+Both backends must agree on `lock` timing; the cross-check (`--thread-sim
+both`) enforces it. The contract, anchored to the FSM path's hold-latched
+combinational arbiter:
+
+- **Acquisition of a free resource is zero-latency**: a thread reaching
+  `lock r` acquires (and its body comb executes) in the same cycle it
+  arrives. In the coroutine scheduler this is implemented by
+  `lock_wait_until` — a suspension flagged `lock_wait` may be re-fired
+  once within the tick it suspended (regular `wait until` keeps the
+  min-1-cycle rule).
+- **Release → re-grant is same-cycle**: the cycle the holder's request
+  deasserts, the arbiter re-arbitrates combinationally and the next
+  waiter's body comb executes. The sequential scheduler achieves this
+  regardless of thread declaration order by iterating the per-thread
+  scheduler group to a fixed point each tick (`tick_begin()` once, then
+  `tick_run()` rounds until quiescent).
+- **The grant is hold-stable**: no policy rotation or later-arriving
+  higher-priority requester can migrate the grant away from a live
+  holder (coroutine side: `_resource_*_holder`; FSM side: the arbiter's
+  `hold_valid_r`/`hold_owner_r` latch).
+
+The multi-OS-thread mode (`--threads N>1`) runs one plain `tick()` per
+worker per barrier round and does not iterate across schedulers; its
+cross-thread lock handoff can therefore lag one cycle when the releaser's
+scheduler ticks after the waiter's. The cross-check runs the sequential
+scheduler, which is the timing-authoritative mode.
+
 ### Shared-signal access protocol
 
 Two categories:
