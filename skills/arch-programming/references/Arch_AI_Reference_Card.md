@@ -11,6 +11,8 @@ Every construct uses the same layout:
 ```
 keyword Name
   param NAME: const = value;          // untyped int → parameter int (32-bit)
+  param NAME: const = value where ConstExpr; // optional compile-time constraint, e.g.:
+                                       //   param SIZE: const = 8 where SIZE > 0 and (SIZE & (SIZE - 1)) == 0; // power of two
   param NAME[hi:lo]: const = value;   // width-qualified → parameter [hi:lo]
   param NAME: type = SomeType;        // compile-time type parameter
 
