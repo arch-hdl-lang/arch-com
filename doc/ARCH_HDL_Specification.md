@@ -915,6 +915,12 @@ A module is the fundamental unit of design in Arch. Every module follows the sam
 |                                                                                |
 | // param NAME[hi:lo]: const = value; // width-qualified — emits `parameter [hi:lo]` |
 |                                                                                |
+| // param NAME: UInt<W> = value;     // logic-typed — emits `parameter [W-1:0]`  |
+| // param NAME: SInt<W> = value;     // logic-typed signed — emits `parameter signed [W-1:0]` |
+| // param NAME: FP32 = value;        // FP32-typed — emits `parameter [31:0]` with bit pattern |
+| // param NAME: BF16 = value;        // BF16-typed — emits `parameter [15:0]` with bit pattern |
+| // param NAME: Bool = value;        // Bool-typed — emits `parameter` (1-bit)   |
+|                                                                                |
 | // param NAME: type = SomeType;     // type alias — emits `parameter type`     |
 |                                                                                |
 | // param NAME: EnumName = EnumName::Variant; // enum-typed — emits `parameter EnumName` |
@@ -924,6 +930,8 @@ A module is the fundamental unit of design in Arch. Every module follows the sam
 | //                                  `NAME[i]` reads as a packed part-select.   |
 |                                                                                |
 | // local param NAME: const = expr;  // derived — emits `localparam` (not overridable) |
+| // local param NAME: FP32 = expr;   // FP32-typed derived — emits `localparam [31:0]` |
+| // local param NAME: BF16 = expr;   // BF16-typed derived — emits `localparam [15:0]` |
 |                                                                                |
 | //                                                                             |
 |                                                                                |

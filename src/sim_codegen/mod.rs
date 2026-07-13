@@ -2563,6 +2563,151 @@ fn try_eval_const_expr_with_params_seen(
     }
 }
 
+fn try_eval_fp_const_expr_with_params_seen(
+    expr: &Expr,
+    params: &[ParamDecl],
+    seen_params: &mut HashSet<String>,
+) -> Option<f64> {
+    match &expr.kind {
+        ExprKind::Literal(LitKind::Float(f64_bits)) => Some(f64::from_bits(*f64_bits)),
+        ExprKind::Literal(LitKind::TypedFloat(fmt, bits)) => {
+            // Typed float already has target bits, convert back to f64 via its value?
+            // For simplicity, treat as f64 from bits if FP32, or approximate for BF16
+            match fmt {
+                crate::ast::FloatLitFmt::Fp32 => {
+                    let f32_bits = *bits as u32;
+                    Some(f32::from_bits(f32_bits) as f64)
+                }
+                crate::ast::FloatLitFmt::Bf16 => {
+                    let bf16_bits = *bits as u16;
+                    // BF16 -> FP32 -> f64: {bf16, 16'b0} with NaN handling
+                    let f32_bits = (bf16_bits as u32) << 16;
+                    // Canonicalize NaN like arch_bf16_to_f32 does: if exponent all 1 and mantissa non-zero, return NaN
+                    let exp = (f32_bits >> 23) & 0xFF;
+                    let mant = f32_bits & 0x7FFFFF;
+                    let canon = if exp == 0xFF && mant != 0 {
+                        f32::from_bits(0x7FC00000) as f64
+                    } else {
+                        f32::from_bits(f32_bits) as f64
+                    };
+                    Some(canon)
+                }
+            }
+        }
+        ExprKind::Ident(name) => {
+            if let Some(p) = params.iter().find(|p| p.name.name == *name) {
+                if let Some(d) = &p.default {
+                    if !seen_params.insert(name.clone()) {
+                        return None;
+                    }
+                    // Try FP eval first, then fall back to int eval converted to f64
+                    let value = try_eval_fp_const_expr_with_params_seen(d, params, seen_params)
+                        .or_else(|| {
+                            try_eval_const_expr_with_params_seen(d, params, seen_params)
+                                .map(|v| v as f64)
+                        });
+                    seen_params.remove(name);
+                    return value;
+                }
+            }
+            None
+        }
+        ExprKind::MethodCall(receiver, method, _args) => {
+            let method_name = method.name.as_str();
+            if method_name == "to_fp32" {
+                if let Some(int_val) =
+                    try_eval_const_expr_with_params_seen(receiver, params, seen_params)
+                {
+                    return Some(int_val as f64);
+                }
+                if let Some(fp_val) =
+                    try_eval_fp_const_expr_with_params_seen(receiver, params, seen_params)
+                {
+                    return Some(fp_val);
+                }
+            } else if method_name == "to_bf16" {
+                // int -> bf16 is f32-routed per spec (double rounding): int -> f32 (RNE) -> bf16 (RNE)
+                if let Some(int_val) =
+                    try_eval_const_expr_with_params_seen(receiver, params, seen_params)
+                {
+                    let f32_bits = crate::fp_lit::f64_to_fp32_bits(int_val as f64);
+                    let f32_val = f32::from_bits(f32_bits) as f64;
+                    return Some(f32_val);
+                }
+                if let Some(fp_val) =
+                    try_eval_fp_const_expr_with_params_seen(receiver, params, seen_params)
+                {
+                    return Some(fp_val);
+                }
+            }
+            None
+        }
+        ExprKind::Unary(op, a) => {
+            let v = try_eval_fp_const_expr_with_params_seen(a, params, seen_params)?;
+            match op {
+                UnaryOp::Neg => Some(-v),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn try_eval_fp_const_expr_with_params(expr: &Expr, params: &[ParamDecl]) -> Option<f64> {
+    try_eval_fp_const_expr_with_params_seen(expr, params, &mut HashSet::new())
+}
+
+/// Evaluate a param's default value as a u64 bit pattern for C++ `#define`
+/// emission. Handles both integer params (direct int eval) and FP params
+/// (FP32/BF16 via FP evaluator + bit pattern conversion, with BF16 double-rounding).
+/// Returns None if the param has no default or cannot be evaluated.
+fn eval_param_const_value(p: &ParamDecl, params: &[ParamDecl]) -> Option<u64> {
+    let def = p.default.as_ref()?;
+    // Check if this param is FP typed
+    let is_bf16 = matches!(&p.kind, ParamKind::Logic(ty) if matches!(ty, TypeExpr::BF16));
+    let is_fp32 = matches!(&p.kind, ParamKind::Logic(ty) if matches!(ty, TypeExpr::FP32));
+    let is_fp = is_bf16 || is_fp32;
+
+    if is_fp {
+        if let Some(fval) = try_eval_fp_const_expr_with_params(def, params) {
+            let bits = if is_bf16 {
+                // fval already accounts for double-rounding for int->bf16 via FP evaluator
+                crate::fp_lit::f64_to_bf16_bits(fval) as u64
+            } else {
+                crate::fp_lit::f64_to_fp32_bits(fval) as u64
+            };
+            return Some(bits);
+        }
+        // Fallback: int eval then convert. For BF16, must double-round via f32
+        // per spec (int -> f32 RNE -> bf16 RNE), not single-round f64->bf16.
+        let int_val = eval_const_expr_with_params(def, params);
+        // Only fallback if int eval looks plausible (non-zero or int-like expr)
+        if int_val != 0
+            || matches!(
+                &def.kind,
+                ExprKind::Literal(_) | ExprKind::Ident(_) | ExprKind::Binary(_, _, _) | ExprKind::Clog2(_)
+            )
+        {
+            if is_bf16 {
+                // Double-round: int -> f32 (RNE) -> bf16 (RNE)
+                let f32_bits = crate::fp_lit::f64_to_fp32_bits(int_val as f64);
+                let f32_val = f32::from_bits(f32_bits);
+                // f32 -> bf16 RNE via add trick (mirrors arch_f32_to_bf16)
+                let u = f32_val.to_bits();
+                let lsb = (u >> 16) & 1;
+                let bf16_bits = (u.wrapping_add(0x7FFF + lsb) >> 16) as u16;
+                return Some(bf16_bits as u64);
+            } else {
+                let bits = crate::fp_lit::f64_to_fp32_bits(int_val as f64) as u64;
+                return Some(bits);
+            }
+        }
+        None
+    } else {
+        Some(eval_const_expr_with_params(def, params))
+    }
+}
+
 /// Param-aware variant of [`vec_array_info`]. Uses
 /// [`eval_const_expr_with_params`] so that `Vec<_, NUM_ENTRIES>` style
 /// declarations whose count is a param identifier resolve to the
@@ -5557,6 +5702,8 @@ fn type_bits_te_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> u32 {
     match ty {
         TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width_with_params(w, params),
         TypeExpr::Bool | TypeExpr::Bit => 1,
+        TypeExpr::FP32 => 32,
+        TypeExpr::BF16 => 16,
         _ => 32,
     }
 }
@@ -5731,8 +5878,7 @@ impl<'a> SimCodegen<'a> {
                 }
                 match &p.kind {
                     ParamKind::Const | ParamKind::WidthConst(..) | ParamKind::Logic(_) => {
-                        if let Some(ref def) = p.default {
-                            let val = eval_const_expr_with_params(def, params);
+                        if let Some(val) = eval_param_const_value(p, params) {
                             h.push_str(&format!(
                                 "#ifndef {}\n#define {} {val}ULL\n#endif\n",
                                 p.name.name, p.name.name
@@ -7274,12 +7420,11 @@ impl<'a> SimCodegen<'a> {
             h.push_str(&format!("#include \"V{}.h\"\n", inst.module_name.name));
         }
         h.push('\n');
-        // Emit param constants as #define
+        // Emit param constants as #define (deduplicated via eval_param_const_value helper)
         for p in &m.params {
             match &p.kind {
                 ParamKind::Const | ParamKind::WidthConst(..) | ParamKind::Logic(_) => {
-                    if let Some(ref def) = p.default {
-                        let val = eval_const_expr_with_params(def, &m.params);
+                    if let Some(val) = eval_param_const_value(p, &m.params) {
                         h.push_str(&format!(
                             "#ifndef {}\n#define {} {val}ULL\n#endif\n",
                             p.name.name, p.name.name
