@@ -2078,6 +2078,11 @@ impl<'a> Codegen<'a> {
                             return l.ty.as_ref().and_then(|t| fmt_of(t));
                         }
                     }
+                    for w in &f.wires {
+                        if w.name.name == name {
+                            return fmt_of(&w.ty);
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -2128,6 +2133,11 @@ impl<'a> Codegen<'a> {
                                 .ty
                                 .as_ref()
                                 .map_or(false, |t| matches!(t, TypeExpr::SInt(_)));
+                        }
+                    }
+                    for w in &f.wires {
+                        if w.name.name == name {
+                            return matches!(w.ty, TypeExpr::SInt(_));
                         }
                     }
                 }
