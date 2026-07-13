@@ -14,6 +14,9 @@ keyword Name
   param NAME: const = value where ConstExpr; // optional compile-time constraint, e.g.:
                                        //   param SIZE: const = 8 where SIZE > 0 and (SIZE & (SIZE - 1)) == 0; // power of two
   param NAME[hi:lo]: const = value;   // width-qualified → parameter [hi:lo]
+  param NAME: UInt<W> = value;        // logic-typed → parameter [W-1:0]
+  param NAME: FP32 = value;           // FP32-typed → parameter [31:0] (bit pattern, e.g. 4096.0)
+  param NAME: BF16 = value;           // BF16-typed → parameter [15:0]
   param NAME: type = SomeType;        // compile-time type parameter
 
   port name: in TypeExpr;

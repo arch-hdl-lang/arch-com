@@ -2045,6 +2045,60 @@ impl<'a> Codegen<'a> {
                 if matches!(sym, Symbol::Let(_)) {
                     return self.let_binding_float_fmt(name);
                 }
+                if matches!(sym, Symbol::Param(_)) {
+                    return self.param_float_fmt(name);
+                }
+            }
+        }
+        None
+    }
+
+    fn param_float_fmt(&self, name: &str) -> Option<&'static str> {
+        for item in &self.source.items {
+            match item {
+                Item::Module(m) if m.name.name == self.current_construct => {
+                    for p in &m.params {
+                        if p.name.name == name {
+                            match &p.kind {
+                                ParamKind::Logic(ty) | ParamKind::Type(ty) => match ty {
+                                    TypeExpr::FP32 => return Some("f32"),
+                                    TypeExpr::BF16 => return Some("bf16"),
+                                    _ => return None,
+                                },
+                                _ => return None,
+                            }
+                        }
+                    }
+                }
+                Item::Fsm(f) if f.name.name == self.current_construct => {
+                    for p in &f.params {
+                        if p.name.name == name {
+                            match &p.kind {
+                                ParamKind::Logic(ty) | ParamKind::Type(ty) => match ty {
+                                    TypeExpr::FP32 => return Some("f32"),
+                                    TypeExpr::BF16 => return Some("bf16"),
+                                    _ => return None,
+                                },
+                                _ => return None,
+                            }
+                        }
+                    }
+                }
+                Item::Package(pkg) => {
+                    for p in &pkg.params {
+                        if p.name.name == name {
+                            match &p.kind {
+                                ParamKind::Logic(ty) | ParamKind::Type(ty) => match ty {
+                                    TypeExpr::FP32 => return Some("f32"),
+                                    TypeExpr::BF16 => return Some("bf16"),
+                                    _ => return None,
+                                },
+                                _ => return None,
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         None
@@ -2076,6 +2130,11 @@ impl<'a> Codegen<'a> {
                     for l in &f.lets {
                         if l.name.name == name {
                             return l.ty.as_ref().and_then(|t| fmt_of(t));
+                        }
+                    }
+                    for w in &f.wires {
+                        if w.name.name == name {
+                            return fmt_of(&w.ty);
                         }
                     }
                 }
@@ -2128,6 +2187,11 @@ impl<'a> Codegen<'a> {
                                 .ty
                                 .as_ref()
                                 .map_or(false, |t| matches!(t, TypeExpr::SInt(_)));
+                        }
+                    }
+                    for w in &f.wires {
+                        if w.name.name == name {
+                            return matches!(w.ty, TypeExpr::SInt(_));
                         }
                     }
                 }
