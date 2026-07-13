@@ -283,16 +283,81 @@ end
 | Type | Meaning | Hardware | Use case |
 |------|---------|----------|----------|
 | `mutex<policy>` | Exclusive — one holder at a time | Arbiter + mux | Single-port bus sharing |
-| `semaphore<N, policy>` | Up to N concurrent holders | Counter-based arbiter | Multi-port memories, banked buses |
+| `semaphore<N, policy>` | Up to N concurrent holders | Counter-based arbiter | Multi-port memories, banked buses; limiting concurrency (e.g. only 4 of 32 threads in an AR phase) |
 
-`semaphore` is planned for future implementation.
+`semaphore<N, policy>` (v0.71.0+) declares a resource with up to `N`
+concurrent holders instead of `mutex`'s exclusive one. `N` is a const expr —
+a literal or a module-param reference (`param WORKERS: const = 4; resource
+pool: semaphore<WORKERS, round_robin>;`) — evaluated at elaboration time; it
+must be `>= 1` (a `semaphore<0, ...>` is a compile error). `policy` reuses
+the exact same vocabulary as `mutex`: `round_robin`, `priority`, `lru`,
+`weighted<W>`, and custom-via-`hook`.
+
+```
+resource pool: semaphore<4, round_robin>;
+
+generate for i in 0..NUM_WORKERS-1
+  thread Worker_i on clk rising, rst_n low
+    wait until start[i];
+    lock pool
+      // only 4 of NUM_WORKERS workers are ever inside here at once
+      ar_valid[i] = 1;
+      wait until ar_ready[i];
+      ar_valid[i] = 0;
+    end lock pool
+  end thread Worker_i
+end generate for i
+```
+
+**`semaphore<1, policy>` is semantically identical to `mutex<policy>`** —
+the compiler lowers the two identically (`semaphore<1, policy>` takes
+exactly the same codegen path as `mutex<policy>`; no separate
+holder-counting machinery is synthesized for `N == 1`).
+
+**Hardware.** For `N > 1`, on top of the synthesized arbiter (§20.8.3)
+shared with `mutex`, the compiler additionally synthesizes, per thread `i`:
+
+- `held_i` — a register, set when thread `i` is admitted and cleared when
+  it releases (its `req` deasserts because it has exited the `lock` body).
+- `waiting_i = req_i & !held_i` — only *not-yet-admitted* requesters
+  compete for arbitration; an already-held thread stops asserting its
+  request into the arbiter the cycle after admission, freeing the arbiter
+  to pick the next waiter while the first thread keeps holding.
+- `holder_count = Σ held_i` and `admit_i = arb_grant_i & waiting_i &
+  (holder_count < N)` — the arbiter's per-cycle single winner is admitted
+  only while there's a free slot.
+- `grant_i = held_i | admit_i` — the signal `lock` gates output-driving
+  and state transitions on (same role `grant_i` plays for `mutex`).
+
+Because `admit_i` is purely combinational, a thread that wins arbitration
+while the semaphore isn't fully occupied sees `grant_i` go high the *same*
+cycle — the "zero-cycle lock" property `mutex` already has (§20.8.2)
+generalizes per-holder to `semaphore`. What does **not** generalize
+cycle-for-cycle: when a holder releases, the freed slot becomes visible to
+a waiting thread's `admit_i` only once that holder's `req` has actually
+deasserted, which (in the default FSM/SV lowering) happens one clock edge
+after the release condition becomes true — a release and the next thread's
+admission are never in the same cycle in the SV/FSM backend. (This is not
+new to `semaphore`: `mutex` has the exact same one-cycle release-to-re-grant
+latency for the same structural reason — it's just newly worth calling out
+here because `semaphore` is where multiple waiters commonly matter. Note
+`--thread-sim parallel`'s coroutine model releases and re-admits within the
+same `eval()`, so it does *not* have this one-cycle bubble — the two
+backends are independently correct but not cycle-identical for a
+release-then-recontend `lock` body; see
+`tests/thread/tb_semaphore_basic.cpp` and its two independent PASS checks.)
+
+**Deadlock freedom.** See §20.8.5's "Deadlock prevention" rule below — the
+nested-lock ban is the deadlock-prevention mechanism, and that argument is
+resource-kind agnostic (it never assumed exclusive, single-holder locking),
+so it covers `semaphore<N>` unchanged.
 
 ### 20.8.5  Rules
 
 - **Exclusive drive**: signals driven inside a `lock` block must not be driven outside any `lock` on the same resource.  The compiler enforces this — these signals have no defined driver when no thread holds the lock (the mux defaults to zero or the last granted value, configurable).
 - **Multiple resources**: a thread may lock different resources in sequence, but nested `lock` blocks are a compile error.  The compiler currently does not support holding multiple resource locks simultaneously.
-- **Nested locks**: any `lock` block inside another `lock` block — including nesting through `if`/`elsif`/`else`, `for`, `fork`/`join`, or `do..until` — is rejected at elaboration time with `nested lock blocks are not supported`.  This keeps the implemented mutual-exclusion invariant simple.
-- **Deadlock prevention (implemented)**: the nested-lock ban *is* the deadlock-prevention mechanism.  The classic lock-order deadlock (thread 1 holds A while acquiring B; thread 2 holds B while acquiring A) requires a thread to hold one resource while requesting another — exactly the hold-and-wait shape the nesting ban makes unrepresentable.  With hold-and-wait impossible and a fixed-priority total order on threads at each arbiter, the waits-for graph is a DAG by construction; see the formal proof in `doc/thread_lowering_algorithm.md` §"Liveness and Safety: Lock Correctness" (invariant 5, "Lock deadlock freedom"; introduced together with the nesting ban in commit `f91e78a`).  No separate lock-order warning is emitted — none is needed while the ban holds.  If a future compiler version relaxes the nesting ban, a static lock-order cycle analysis must be added as part of that change.
+- **Nested locks**: any `lock` block inside another `lock` block — including nesting through `if`/`elsif`/`else`, `for`, `fork`/`join`, or `do..until` — is rejected at elaboration time with `nested lock blocks are not supported`, regardless of resource kind (`mutex` or `semaphore`, in any combination — see `test_nested_lock_rejects_mutex_inside_semaphore` / `test_nested_lock_rejects_semaphore_inside_mutex` in `tests/integration_test.rs`).  This keeps the implemented mutual-exclusion invariant simple.
+- **Deadlock prevention (implemented)**: the nested-lock ban *is* the deadlock-prevention mechanism.  The classic lock-order deadlock (thread 1 holds A while acquiring B; thread 2 holds B while acquiring A) requires a thread to hold one resource while requesting another — exactly the hold-and-wait shape the nesting ban makes unrepresentable.  With hold-and-wait impossible and a fixed-priority total order on threads at each arbiter, the waits-for graph is a DAG by construction; see the formal proof in `doc/thread_lowering_algorithm.md` §"Liveness and Safety: Lock Correctness" (invariant 5, "Lock deadlock freedom"; introduced together with the nesting ban in commit `f91e78a`).  No separate lock-order warning is emitted — none is needed while the ban holds.  This argument is resource-kind agnostic (it never assumed exclusive, single-holder locking), so it covers `semaphore<N>` unchanged: an edge in the waits-for graph is still an edge no matter how many concurrent holders a resource allows.  If a future compiler version relaxes the nesting ban, a static lock-order cycle analysis must be added as part of that change.
 - **No lock in `comb`/`seq`**: `lock` is only valid inside `thread` blocks.
 
 ## 20.9  Interaction with Other Blocks
