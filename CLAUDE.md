@@ -100,6 +100,13 @@ never said so. Rules:
   still reproduces on a freshly built binary from current `origin/main`. If it
   doesn't, bisect to the fixing commit if cheap and close the issue with that
   evidence — a NOT-REPRODUCIBLE finding is a valid, valuable outcome.
+- **Grammar-surface changes must update doc/ in the same PR.** PRs touching
+  `src/lexer.rs`, `src/parser.rs`, or `src/ast.rs` are checked by CI
+  (`scripts/check_doc_drift.sh`, workflow `doc-drift`, check name `doc
+  drift`) — if none of the changed files are under `doc/`, the check fails
+  with pointers to the relevant spec docs. Pure internal refactors of a
+  surface file with no user-facing syntax/semantics change (e.g. the planned
+  parser/elaborate splits) can use the `no-doc-needed` PR label to skip it.
 - **Sweep for stranded PRs**: `scripts/green_pr_sweep.sh` lists open PRs that
   are green, mergeable, and ≥1 day old across arch-com + harc-com — finished
   work nobody landed. The mirror image of `claim_check.sh` (duplicate work at
