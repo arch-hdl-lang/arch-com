@@ -1080,6 +1080,16 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                             );
                         }
                     }
+                    ModuleBodyItem::WireDecl(w) => {
+                        if scope.contains_key(&w.name.name) {
+                            errors.push(CompileError::duplicate(&w.name.name, w.name.span));
+                        } else {
+                            scope.insert(
+                                w.name.name.clone(),
+                                (Symbol::Let(w.name.name.clone()), w.name.span),
+                            );
+                        }
+                    }
                     ModuleBodyItem::Function(f) => {
                         // Register module-local functions in globals so they're
                         // callable from expressions within this module.
