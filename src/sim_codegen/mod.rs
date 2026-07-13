@@ -2657,6 +2657,60 @@ fn try_eval_fp_const_expr_with_params(expr: &Expr, params: &[ParamDecl]) -> Opti
     try_eval_fp_const_expr_with_params_seen(expr, params, &mut HashSet::new())
 }
 
+/// Evaluate a param's default value as a u64 bit pattern for C++ `#define`
+/// emission. Handles both integer params (direct int eval) and FP params
+/// (FP32/BF16 via FP evaluator + bit pattern conversion, with BF16 double-rounding).
+/// Returns None if the param has no default or cannot be evaluated.
+fn eval_param_const_value(p: &ParamDecl, params: &[ParamDecl]) -> Option<u64> {
+    let def = p.default.as_ref()?;
+    // Check if this param is FP typed
+    let is_bf16 = matches!(&p.kind, ParamKind::Logic(ty) if matches!(ty, TypeExpr::BF16));
+    let is_fp32 = matches!(&p.kind, ParamKind::Logic(ty) if matches!(ty, TypeExpr::FP32));
+    let is_fp = is_bf16 || is_fp32;
+
+    if is_fp {
+        if let Some(fval) = try_eval_fp_const_expr_with_params(def, params) {
+            let bits = if is_bf16 {
+                // fval already accounts for double-rounding for int->bf16 via FP evaluator
+                crate::fp_lit::f64_to_bf16_bits(fval) as u64
+            } else {
+                crate::fp_lit::f64_to_fp32_bits(fval) as u64
+            };
+            return Some(bits);
+        }
+        // Fallback: int eval then convert. For BF16, must double-round via f32
+        // per spec (int -> f32 RNE -> bf16 RNE), not single-round f64->bf16.
+        let int_val = eval_const_expr_with_params(def, params);
+        // Only fallback if int eval looks plausible (non-zero or int-like expr)
+        if int_val != 0
+            || matches!(
+                &def.kind,
+                ExprKind::Literal(_)
+                    | ExprKind::Ident(_)
+                    | ExprKind::Binary(_, _, _)
+                    | ExprKind::Clog2(_)
+            )
+        {
+            if is_bf16 {
+                // Double-round: int -> f32 (RNE) -> bf16 (RNE)
+                let f32_bits = crate::fp_lit::f64_to_fp32_bits(int_val as f64);
+                let f32_val = f32::from_bits(f32_bits);
+                // f32 -> bf16 RNE via add trick (mirrors arch_f32_to_bf16)
+                let u = f32_val.to_bits();
+                let lsb = (u >> 16) & 1;
+                let bf16_bits = (u.wrapping_add(0x7FFF + lsb) >> 16) as u16;
+                return Some(bf16_bits as u64);
+            } else {
+                let bits = crate::fp_lit::f64_to_fp32_bits(int_val as f64) as u64;
+                return Some(bits);
+            }
+        }
+        None
+    } else {
+        Some(eval_const_expr_with_params(def, params))
+    }
+}
+
 /// Param-aware variant of [`vec_array_info`]. Uses
 /// [`eval_const_expr_with_params`] so that `Vec<_, NUM_ENTRIES>` style
 /// declarations whose count is a param identifier resolve to the
@@ -5827,39 +5881,11 @@ impl<'a> SimCodegen<'a> {
                 }
                 match &p.kind {
                     ParamKind::Const | ParamKind::WidthConst(..) | ParamKind::Logic(_) => {
-                        if let Some(ref def) = p.default {
-                            // For FP params (FP32/BF16), use FP const evaluator to get bit pattern
-                            let is_fp = matches!(
-                                &p.kind,
-                                ParamKind::Logic(ty) if matches!(ty, TypeExpr::FP32 | TypeExpr::BF16)
-                            );
-                            if is_fp {
-                                if let Some(fval) = try_eval_fp_const_expr_with_params(def, params)
-                                {
-                                    let bits = if let ParamKind::Logic(TypeExpr::BF16) = &p.kind {
-                                        crate::fp_lit::f64_to_bf16_bits(fval) as u64
-                                    } else {
-                                        crate::fp_lit::f64_to_fp32_bits(fval) as u64
-                                    };
-                                    h.push_str(&format!(
-                                        "#ifndef {}\n#define {} {bits}ULL\n#endif\n",
-                                        p.name.name, p.name.name
-                                    ));
-                                } else {
-                                    // Fallback to int eval (will be 0 if unknown)
-                                    let val = eval_const_expr_with_params(def, params);
-                                    h.push_str(&format!(
-                                        "#ifndef {}\n#define {} {val}ULL\n#endif\n",
-                                        p.name.name, p.name.name
-                                    ));
-                                }
-                            } else {
-                                let val = eval_const_expr_with_params(def, params);
-                                h.push_str(&format!(
-                                    "#ifndef {}\n#define {} {val}ULL\n#endif\n",
-                                    p.name.name, p.name.name
-                                ));
-                            }
+                        if let Some(val) = eval_param_const_value(p, params) {
+                            h.push_str(&format!(
+                                "#ifndef {}\n#define {} {val}ULL\n#endif\n",
+                                p.name.name, p.name.name
+                            ));
                         }
                     }
                     _ => {}
@@ -7397,40 +7423,15 @@ impl<'a> SimCodegen<'a> {
             h.push_str(&format!("#include \"V{}.h\"\n", inst.module_name.name));
         }
         h.push('\n');
-        // Emit param constants as #define
+        // Emit param constants as #define (deduplicated via eval_param_const_value helper)
         for p in &m.params {
             match &p.kind {
                 ParamKind::Const | ParamKind::WidthConst(..) | ParamKind::Logic(_) => {
-                    if let Some(ref def) = p.default {
-                        let is_fp = matches!(
-                            &p.kind,
-                            ParamKind::Logic(ty) if matches!(ty, TypeExpr::FP32 | TypeExpr::BF16)
-                        );
-                        if is_fp {
-                            if let Some(fval) = try_eval_fp_const_expr_with_params(def, &m.params) {
-                                let bits = if let ParamKind::Logic(TypeExpr::BF16) = &p.kind {
-                                    crate::fp_lit::f64_to_bf16_bits(fval) as u64
-                                } else {
-                                    crate::fp_lit::f64_to_fp32_bits(fval) as u64
-                                };
-                                h.push_str(&format!(
-                                    "#ifndef {}\n#define {} {bits}ULL\n#endif\n",
-                                    p.name.name, p.name.name
-                                ));
-                            } else {
-                                let val = eval_const_expr_with_params(def, &m.params);
-                                h.push_str(&format!(
-                                    "#ifndef {}\n#define {} {val}ULL\n#endif\n",
-                                    p.name.name, p.name.name
-                                ));
-                            }
-                        } else {
-                            let val = eval_const_expr_with_params(def, &m.params);
-                            h.push_str(&format!(
-                                "#ifndef {}\n#define {} {val}ULL\n#endif\n",
-                                p.name.name, p.name.name
-                            ));
-                        }
+                    if let Some(val) = eval_param_const_value(p, &m.params) {
+                        h.push_str(&format!(
+                            "#ifndef {}\n#define {} {val}ULL\n#endif\n",
+                            p.name.name, p.name.name
+                        ));
                     }
                 }
                 ParamKind::EnumConst(enum_name) => {
