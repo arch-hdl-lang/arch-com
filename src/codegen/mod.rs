@@ -2050,7 +2050,7 @@ impl<'a> Codegen<'a> {
         None
     }
 
-    /// Float format of a `let` binding by AST lookup (modules + fsms).
+    /// Float format of a `let`/`wire` binding by AST lookup (modules + fsms).
     fn let_binding_float_fmt(&self, name: &str) -> Option<&'static str> {
         let fmt_of = |t: &TypeExpr| match t {
             TypeExpr::FP32 => Some("f32"),
@@ -2061,10 +2061,14 @@ impl<'a> Codegen<'a> {
             match item {
                 Item::Module(m) if m.name.name == self.current_construct => {
                     for bi in &m.body {
-                        if let ModuleBodyItem::LetBinding(l) = bi {
-                            if l.name.name == name {
+                        match bi {
+                            ModuleBodyItem::LetBinding(l) if l.name.name == name => {
                                 return l.ty.as_ref().and_then(|t| fmt_of(t));
                             }
+                            ModuleBodyItem::WireDecl(w) if w.name.name == name => {
+                                return fmt_of(&w.ty);
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -2103,13 +2107,17 @@ impl<'a> Codegen<'a> {
             match item {
                 Item::Module(m) if m.name.name == self.current_construct => {
                     for bi in &m.body {
-                        if let ModuleBodyItem::LetBinding(l) = bi {
-                            if l.name.name == name {
+                        match bi {
+                            ModuleBodyItem::LetBinding(l) if l.name.name == name => {
                                 return l
                                     .ty
                                     .as_ref()
                                     .map_or(false, |t| matches!(t, TypeExpr::SInt(_)));
                             }
+                            ModuleBodyItem::WireDecl(w) if w.name.name == name => {
+                                return matches!(w.ty, TypeExpr::SInt(_));
+                            }
+                            _ => {}
                         }
                     }
                 }
