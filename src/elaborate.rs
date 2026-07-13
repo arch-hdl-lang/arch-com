@@ -5879,6 +5879,7 @@ fn synthesize_lock_arbiter(
         hook,
         latency: 1,
         handshakes: Vec::new(),
+        lock_hold: true,
     }
 }
 

@@ -17309,6 +17309,112 @@ fn test_thread_wait_ifelse_thread_sim_both_branch_latency() {
     );
 }
 
+// Lock release → re-grant timing: a second thread waiting on the same
+// mutex must be admitted the SAME cycle the holder's request deasserts
+// (the lock arbiter's grant is combinational and hold-stable). Both
+// backends must agree — the fsm path via the hold-latched arbiter +
+// hierarchical comb settle, the coroutine path via lock_wait same-tick
+// re-fire. Regression for the release-then-recontend divergence.
+#[test]
+fn test_thread_mutex_release_regrant_round_robin_thread_sim_both() {
+    run_tlm_thread_sim_both(
+        "tests/thread/mutex_release_rr.arch",
+        "tests/thread/tb_mutex_rel.cpp",
+        "PASS MutexRel",
+    );
+}
+
+#[test]
+fn test_thread_mutex_release_regrant_priority_thread_sim_both() {
+    run_tlm_thread_sim_both(
+        "tests/thread/mutex_release_pri.arch",
+        "tests/thread/tb_mutex_relp.cpp",
+        "PASS MutexRelP",
+    );
+}
+
+// Lock hold-stability under late contention: T1 acquires alone, then a
+// higher-priority / rotation-favored requester (T0) arrives mid-hold.
+// The holder must keep the grant until its own release (the TB fails
+// hard if busy1 drops or busy0 rises while T1 holds), and the reverse
+// handoff (releaser index > waiter index) must still be same-cycle.
+#[test]
+fn test_thread_mutex_hold_preempt_priority_thread_sim_both() {
+    run_tlm_thread_sim_both(
+        "tests/thread/mutex_hold_preempt_pri.arch",
+        "tests/thread/tb_mutex_pre.cpp",
+        "PASS MutexPre",
+    );
+}
+
+#[test]
+fn test_thread_mutex_hold_preempt_round_robin_thread_sim_both() {
+    run_tlm_thread_sim_both(
+        "tests/thread/mutex_hold_preempt_rr.arch",
+        "tests/thread/tb_mutex_prer.cpp",
+        "PASS MutexPreR",
+    );
+}
+
+// The hold latch is a lock-lowering artifact: it must appear in the
+// synthesized `_arb_<Mod>_<res>` module but NOT in user-declared
+// `arbiter` constructs, whose per-cycle transactional grant semantics
+// are unchanged.
+#[test]
+fn test_lock_arbiter_emits_hold_latch_user_arbiter_does_not() {
+    let sv = compile_to_sv(
+        r#"
+        module LockHold
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          port go: in Bool;
+          port busy: out Bool;
+
+          resource pool: mutex<round_robin>;
+
+          thread once T0 on clk rising, rst high
+            lock pool
+              busy = 1;
+              wait until go;
+              busy = 0;
+            end lock pool
+          end thread T0
+
+          thread once T1 on clk rising, rst high
+            lock pool
+              wait until go;
+            end lock pool
+          end thread T1
+        end module LockHold
+    "#,
+    );
+    assert!(
+        sv.contains("hold_valid_r") && sv.contains("hold_owner_r"),
+        "synthesized lock arbiter should carry the hold latch:\n{sv}"
+    );
+
+    let user_sv = compile_to_sv(
+        r#"
+        arbiter UserArb
+          policy round_robin;
+          param NUM_REQ: const = 4;
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          ports[NUM_REQ] request
+            valid: in Bool;
+            ready: out Bool;
+          end ports request
+          port grant_valid: out Bool;
+          port grant_requester: out UInt<2>;
+        end arbiter UserArb
+    "#,
+    );
+    assert!(
+        !user_sv.contains("hold_valid_r"),
+        "user-declared arbiter must keep transactional grant semantics:\n{user_sv}"
+    );
+}
+
 #[test]
 fn test_thread_wait_elsif_chain_fuses_to_single_dispatch() {
     // An `elsif` parses as a nested `else { if ... }`. The wait-dispatch

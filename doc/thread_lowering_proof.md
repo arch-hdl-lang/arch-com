@@ -734,19 +734,27 @@ Safety: Lock Correctness".  We summarise:
 >    every lock body terminates.
 
 The argument is:
-- Priority arbiter: `_r_grant_i = _r_req_i ∧ ¬⋁_{j<i} _r_grant_j`.  At most
-  one `i` has `_r_grant_i = 1` (mutual exclusion of grants).  Some `i` has
-  `_r_grant_i = 1` iff some `_r_req_j = 1` (by induction on `i`).
+- Arbiter with hold latch: while the latched owner's `_r_req` stays asserted,
+  the grant is pinned to the owner; only when the resource is free (no owner,
+  or the owner's request deasserted this cycle) does the policy scan pick a
+  winner from the asserted set.  In either case at most one `i` has
+  `_r_grant_i = 1` (mutual exclusion of grants), and some `i` has
+  `_r_grant_i = 1` iff some `_r_req_j = 1` (the owner branch or the scan
+  fires).
 - Grant-gating: while a thread waits at the lock entry state, its `seq` is
   conditional on `_r_grant_i`, so no register updates occur.  Comb outputs
   are zero (default) because the comb stmts are wrapped in `if (_r_grant_i)`.
 - Once granted, the thread proceeds through the lock-body states with `req_i`
-  asserted throughout, so it cannot lose the grant to a higher-priority
-  thread (which would have acquired it before this thread did).  This holds
-  *only* for non-nested locks; nested locks would let a thread reside past
-  the entry state with grant-loss possible — hence rejected.
-- Starvation freedom by induction on priority: thread 0 always wins on
-  request, then thread 1 once thread 0 releases, etc.
+  asserted throughout, and the hold latch guarantees it cannot lose the grant
+  before releasing — regardless of policy state rotation (round_robin/lru) or
+  a higher-priority requester arriving mid-hold.  (Before the hold latch,
+  2026-07, both of those scenarios migrated the grant away from a live holder
+  — the "cannot lose the grant" step was unsound for them.)  Nested locks
+  would add hold-and-wait (a thread holding one resource while blocked on
+  another), the precondition for lock-order deadlock — hence rejected.
+- Starvation freedom by induction on priority: thread 0 wins the
+  re-arbitration at the current owner's release, then thread 1 once thread 0
+  releases, etc.
 
 ### II.8  Multi-thread composition
 

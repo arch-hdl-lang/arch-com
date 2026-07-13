@@ -6348,6 +6348,7 @@ impl Parser {
             hook,
             latency,
             handshakes,
+            lock_hold: false,
         })
     }
 

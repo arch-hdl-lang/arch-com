@@ -499,9 +499,27 @@ Supported policies and their grant equations (N requesters, indices 0..N-1):
 | `weighted<W>` | each thread gets a credit count `W`; deplete-and-refill | per-requester credit reg |
 | custom (`hook grant_select(...)`) | user function returns one-hot grant mask | hook-defined |
 
-For the priority policy, the arbiter is purely combinational — it resolves in
-the same cycle with no flops of its own.  The other policies carry the state
-listed in the third column, updated once per posedge under the grant condition.
+**Hold latch (lock arbiters only).** A lock requester keeps `request_valid[i]`
+asserted for the whole multi-cycle critical section, so the synthesized lock
+arbiter layers an owner latch (`hold_valid_r` / `hold_owner_r`) on top of the
+policy scan: while the latched owner's request is still asserted, the grant
+stays with the owner and the policy scan is skipped.  The owner check is
+combinational on `request_valid`, so the cycle the owner's request deasserts,
+the policy scan re-arbitrates and the next waiter is granted *in the same
+cycle* (release → re-grant is zero-latency).  Without the latch, round_robin's
+`rr_ptr` — which advances every granted cycle — rotates the grant away from a
+holder mid-critical-section whenever another requester is waiting, and a
+later-arriving lower-indexed requester preempts a priority holder: both break
+mutual exclusion, and a single-cycle release condition can be missed entirely
+(the holder's `grant_i && cond` exit never sees `grant_i` high on the release
+cycle).  User-declared standalone `arbiter` constructs are unaffected — their
+per-cycle transactional grant semantics (one grant event per cycle, pointer
+rotation every grant) are unchanged.
+
+For the priority policy, the grant selection is purely combinational — it
+resolves in the same cycle.  The other policies carry the state listed in the
+third column, updated once per posedge under the grant condition; the lock
+hold latch adds one flop pair to every policy.
 
 ### Liveness per policy
 
@@ -509,34 +527,32 @@ listed in the third column, updated once per posedge under the grant condition.
 state 0 (its `grant_i && cond` is false) and Tj currently holds the resource
 (`grant_j = 1`).
 
-**Priority** *(default)*.  `grant[i] = 0` only when some `grant[j]` with
-`j < i` is 1, so every waits-for edge points from a higher-indexed thread to a
-lower-indexed one:
-
-> Ti waits-for Tj  ⟹  index(Tj) < index(Ti)
-
-The waits-for relation is acyclic (any cycle would need a thread index strictly
-less than and strictly greater than itself), so no deadlock can form.
-Corollary: thread 0 always makes progress, which unblocks thread 1, etc. — the
-system is **starvation-free** for all threads as long as every thread's lock
-body eventually terminates.
+**Priority** *(default)*.  While the resource is free, the lowest-indexed
+asserted requester wins; once granted, the hold latch keeps the grant with the
+owner until its request deasserts (a later-arriving lower-indexed requester
+waits).  Every waits-for edge points at the single current owner, so the
+waits-for relation is a star — trivially acyclic — and no deadlock can form.
+On each release, the lowest-indexed waiter wins the re-arbitration, so thread
+0 acquires within one release event of requesting, which unblocks thread 1,
+etc. — the system is **starvation-free** for all threads as long as every
+thread's lock body eventually terminates.
 
 Note: the safety argument here makes thread 0 unconditionally win contention
 with thread N-1.  Designs whose access patterns rely on fairness should declare
 `mutex<round_robin>` or `mutex<lru>` instead of accepting the default
 `mutex<priority>`.
 
-**Round-robin and LRU.**  Both policies grant the highest-priority asserted
-requester *under a rotating priority order* — round_robin advances by 1 after
-every grant; LRU advances to whichever requester was least recently served.
-The safety argument is the same shape per cycle: the policy picks a single
-winner from the asserted set, so mutual exclusion holds and the
-just-not-granted threads remain stalled at lock entry.  Liveness is stronger
-than priority: as long as every lock body terminates in bounded time, every
-asserted requester is granted within at most N grant-events of asserting.
-Acyclicity of the waits-for relation is no longer per-cycle (the priority
-order itself rotates), but the grant-counter argument still rules out
-deadlock cycles.
+**Round-robin and LRU.**  Both policies pick the winner of a free-resource
+re-arbitration *under a rotating priority order* — round_robin scans from one
+past the last owner; LRU picks the least recently served.  Once granted, the
+hold latch keeps the grant with the owner until release, so the rotation is
+observable only at release events (while held, `rr_ptr` tracks `owner + 1`, so
+the next re-arbitration starts just past the outgoing owner).  The safety
+argument is the same shape per cycle: exactly one grant (the owner's, or the
+scan winner's), so mutual exclusion holds and the not-granted threads remain
+stalled at lock entry.  Liveness is stronger than priority: as long as every
+lock body terminates in bounded time, every asserted requester is granted
+within at most N release events of asserting.
 
 **Weighted.**  Each requester carries a credit count.  A requester is eligible
 only while its credit is non-zero; once all eligible requesters' credits are
@@ -558,30 +574,29 @@ Mutual exclusion requires that at most one thread executes inside a given lock's
 critical section at any time.
 
 **Non-nested (sequential) locks — guaranteed**: while thread Ti is inside a lock
-body, its `req_i = 1` throughout all body states.  The arbiter yields `grant_i =
-1` (if Ti is the highest-priority requester) or prevents a lower-priority thread
-Tj from getting `grant_j`.  A lower-priority thread at body state 0 is blocked
-because `grant_j && cond` is false while `grant_i = 1`.  Tj cannot enter body
-state 1 until Ti exits and drops req_i.
+body, its `req_i = 1` throughout all body states, and the arbiter's hold latch
+pins `grant_i = 1` for as long as `req_i` stays asserted — no later-arriving
+requester (regardless of policy preference) can take the grant mid-hold.  A
+contending thread Tj at body state 0 is blocked because `grant_j && cond` is
+false while Ti owns the grant.  Tj cannot enter body state 1 until Ti exits and
+drops `req_i` — at which point the re-arbitration is combinational, so Tj's
+grant (and its state-0 body comb) fires the same cycle Ti's request deasserts.
 
-**Nested locks — not safe (and rejected)**:
-The grant check only gates **body state 0**.  States 1, 2, … execute
-unconditionally.  Consider:
+Historical note: before the hold latch (2026-07), the grant was re-computed
+from the bare policy scan every cycle.  Round_robin's rotating pointer then
+migrated the grant away from a holder whenever a second requester was waiting
+— both threads' body comb executed in alternating cycles and a single-cycle
+release condition could be missed while the holder didn't own the grant that
+cycle.  A later-arriving lower-indexed requester likewise preempted a priority
+holder.  The hold latch closes both holes.
 
-```
-Thread T1 enters lock B (body state 0 → advances to state 1)
-Thread T0 (higher priority) arrives and requests lock B
-grant_B_0 = 1 (T0 wins), grant_B_1 = 0 (T1 is outbid)
-T0 enters B's body state 0 — executes B's critical section
-T1 is in B's body state 1 — no grant check — also executing B's critical section
-⟹ mutual exclusion violated
-```
-
-This scenario can only arise when a thread is already past state 0 of a lock
-when a contender arrives — which can happen with nested locks (where the outer
-lock keeps a thread resident in the inner lock's states while another thread
-arrives).  For non-nested sequential usage, a thread is at state 0 (the entry
-gate) when it first requests the lock, so the grant check is effective.
+**Nested locks — rejected**: the grant check gates **body state 0** only;
+states 1, 2, … execute with the grant assumed held.  That assumption is sound
+for a single lock (the hold latch keeps the grant while `req_i` is asserted),
+but holding one resource while blocking on another is exactly the
+hold-and-wait shape that enables lock-order deadlock (T1 holds A requesting B;
+T2 holds B requesting A).  `partition_thread_body` therefore rejects nesting
+outright — see "Lock deadlock freedom" (invariant 5).
 
 **Compiler enforcement**: `partition_thread_body` calls `collect_locked_resources`
 on the lock body and **rejects any lock block whose body contains another lock

@@ -9805,6 +9805,22 @@ impl<'a> SimCodegen<'a> {
             &loop_var_subst_cell,
         );
 
+        // eval_comb() must reach the module's comb fixed point on its own.
+        // When this module is instantiated as a child, the parent's settle
+        // loop calls eval_comb() once per parent pass — and the parent's
+        // settle_depth knows nothing about feedback *internal* to this
+        // module (e.g. thread req → arbiter inst → grant → thread comb).
+        // Without an internal settle loop, each call advances that
+        // feedback by only one iteration, so grants lag requests by a
+        // full cycle relative to Verilator on the same SV. Modules with
+        // no internal feedback (settle_depth == 1) keep the single pass.
+        let comb_settle_depth = if !insts.is_empty() { settle_depth } else { 1 };
+        if comb_settle_depth > 1 {
+            cpp.push_str(&format!(
+                "  for (int _settle = 0; _settle < {comb_settle_depth}; _settle++) {{\n"
+            ));
+        }
+
         // Credit-channel combinational wires (sender can_send; receiver
         // valid/data once PR-sim-2 lands). Emit early so user comb code
         // can read them.
@@ -10387,6 +10403,9 @@ impl<'a> SimCodegen<'a> {
                     cpp.push_str(&format!("  {n}_{i} = _{n}[{i}];\n"));
                 }
             }
+        }
+        if comb_settle_depth > 1 {
+            cpp.push_str("  } // settle\n");
         }
         cpp.push_str("}\n");
 
@@ -11797,6 +11816,10 @@ impl<'a> SimCodegen<'a> {
             all_port_inits.push(format!("{}_ready(0)", pa.name.name));
         }
         all_port_inits.push("_clk_prev(0)".to_string());
+        if a.lock_hold {
+            all_port_inits.push("_hold_valid(0)".to_string());
+            all_port_inits.push("_hold_owner(0)".to_string());
+        }
         if needs_rr_state {
             // Initialize `_last_grant` to N-1 so the first-cycle scan
             // formula `(_last_grant + 1 + _i) % N` starts at index 0,
@@ -11817,6 +11840,13 @@ impl<'a> SimCodegen<'a> {
         h.push_str("  void final() { trace_close(); }\n");
         h.push_str("private:\n");
         h.push_str("  uint8_t _clk_prev;\n");
+        if a.lock_hold {
+            // Owner latch mirroring the SV emitter's hold_valid_r /
+            // hold_owner_r: a lock holder keeps the grant while its
+            // request stays asserted.
+            h.push_str("  uint8_t _hold_valid;\n");
+            h.push_str("  uint8_t _hold_owner;\n");
+        }
         if needs_rr_state {
             h.push_str("  uint8_t _last_grant;\n");
         }
@@ -11861,6 +11891,14 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("  bool _rising = ({clk_port} && !_clk_prev);\n"));
         cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
         cpp.push_str("  if (!_rising) return;\n");
+        if a.lock_hold {
+            cpp.push_str(&format!(
+                "  if ({rst_cond}) {{\n    _hold_valid = 0;\n    _hold_owner = 0;\n  }} else {{\n"
+            ));
+            cpp.push_str("    _hold_valid = grant_valid;\n");
+            cpp.push_str("    if (grant_valid) _hold_owner = grant_requester;\n");
+            cpp.push_str("  }\n");
+        }
         if needs_rr_state {
             // Reset value is N-1 (not 0): see the constructor-init
             // comment above. The scan formula treats `_last_grant + 1`
@@ -11879,6 +11917,15 @@ impl<'a> SimCodegen<'a> {
         //               round_robin / lru rotate starting after the last grant.
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
         cpp.push_str("  grant_valid = 0;\n  grant_requester = 0;\n");
+        if a.lock_hold {
+            // Current owner keeps the grant while its request stays
+            // asserted; the policy scan below only runs when the
+            // resource is free (grant_valid gates it).
+            cpp.push_str(&format!(
+                "  if (_hold_valid && (({req_pa_name}_valid >> _hold_owner) & 1)) {{\n"
+            ));
+            cpp.push_str("    grant_valid = 1;\n    grant_requester = _hold_owner;\n  }\n");
+        }
         cpp.push_str(&format!(
             "  for (int _i = 0; _i < (int){num_req}; _i++) {{\n"
         ));
@@ -11889,7 +11936,9 @@ impl<'a> SimCodegen<'a> {
         } else {
             cpp.push_str("    int _idx = _i;\n");
         }
-        cpp.push_str(&format!("    if (({req_pa_name}_valid >> _idx) & 1) {{\n"));
+        cpp.push_str(&format!(
+            "    if (!grant_valid && (({req_pa_name}_valid >> _idx) & 1)) {{\n"
+        ));
         cpp.push_str(
             "      grant_valid = 1;\n      grant_requester = _idx;\n      break;\n    }\n  }\n",
         );
