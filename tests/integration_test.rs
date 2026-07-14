@@ -17863,6 +17863,40 @@ fn test_semaphore_relock_round_robin_fairness_696() {
     );
 }
 
+// arch#696 regression (runtime, safety bound): the SAME tight-re-lock churn must
+// never over-subscribe the pool. Four lanes hold a semaphore<2> until their
+// TB-driven release; the TB asserts busy<=2 EVERY cycle, that the pool actually
+// reaches 2 concurrent holders, and drives 60 rounds of release+re-admit churn —
+// the release path the fix newly exercises. Guards against the fix freeing/
+// re-admitting a slot such that >N threads hold at once (adversarial-review gap:
+// the fairness test alone did not check the concurrency bound).
+#[test]
+fn test_semaphore_relock_concurrency_bound_696() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/thread/semaphore_relock_bound.arch")
+        .arg("--tb")
+        .arg("tests/thread/tb_semaphore_relock_bound.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim on semaphore_relock_bound");
+    assert!(
+        out.status.success(),
+        "arch sim must succeed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS SemRelockBound"),
+        "arch#696: semaphore<2> must reach exactly 2 concurrent holders and never \
+         exceed 2 through release/re-admit churn; TB reported:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
 #[test]
 fn test_semaphore_1_is_bit_identical_to_mutex() {
     // §20.8.4: `semaphore<1, policy>` must be semantically identical to

@@ -1,0 +1,45 @@
+// Occupancy probe: 4 lanes RE-LOCK (looping thread) a semaphore<2>. busyN stays
+// high for the whole hold (set before wait until relN, cleared after), so the TB
+// measures true slot occupancy. TB holds all rel low to force max overlap, checks
+// busy<=2 AND that 2 is actually reached, then pulses rel to exercise re-lock churn.
+module SemRelockBound
+  port clk:  in Clock<SysDomain>;
+  port rst:  in Reset<Sync, High>;
+  port rel0: in Bool;
+  port rel1: in Bool;
+  port rel2: in Bool;
+  port rel3: in Bool;
+  port busy0: out Bool;
+  port busy1: out Bool;
+  port busy2: out Bool;
+  port busy3: out Bool;
+  resource pool: semaphore<2, round_robin>;
+  thread T0 on clk rising, rst high
+    lock pool
+      busy0 = 1;
+      wait until rel0;
+      busy0 = 0;
+    end lock pool
+  end thread T0
+  thread T1 on clk rising, rst high
+    lock pool
+      busy1 = 1;
+      wait until rel1;
+      busy1 = 0;
+    end lock pool
+  end thread T1
+  thread T2 on clk rising, rst high
+    lock pool
+      busy2 = 1;
+      wait until rel2;
+      busy2 = 0;
+    end lock pool
+  end thread T2
+  thread T3 on clk rising, rst high
+    lock pool
+      busy3 = 1;
+      wait until rel3;
+      busy3 = 0;
+    end lock pool
+  end thread T3
+end module SemRelockBound
