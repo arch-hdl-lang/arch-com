@@ -4694,11 +4694,7 @@ fn lower_module_threads(
                     sp,
                 );
                 let still_held = Expr::new(
-                    ExprKind::Binary(
-                        BinOp::And,
-                        Box::new(held_and_req),
-                        Box::new(not_release),
-                    ),
+                    ExprKind::Binary(BinOp::And, Box::new(held_and_req), Box::new(not_release)),
                     sp,
                 );
                 let next_val = Expr::new(
