@@ -1075,11 +1075,13 @@ pub fn analyze_module(
         // the early passes produce partially-valid values and the last pass
         // converges. If parent comb intermediates bridge any instance inputs,
         // one pass is consumed just refreshing those bridges before the
-        // instance feedback loop can settle, so 3 passes are needed.
-        // (For truly non-convergent loops the single-driver rule should
-        // prevent them from type-checking.)
+        // instance feedback loop can settle, and (as in the acyclic case
+        // below) an instance output consumed through an intermediate that a
+        // later-in-source comb block produces lags one more pass — so 4
+        // passes are needed. (For truly non-convergent loops the
+        // single-driver rule should prevent them from type-checking.)
         let settle_depth = if parent_has_comb_intermediates(m) {
-            3
+            4
         } else {
             2
         };
@@ -1091,12 +1093,23 @@ pub fn analyze_module(
 
     // ── Step 6: compute settle depth ─────────────────────────────────────
     // With topo-sorted instances, 1 pass through the loop suffices for the
-    // instances themselves.  But if the parent has comb blocks / let bindings
-    // that produce intermediate signals used as instance inputs, those
-    // intermediates are only updated at the end of the loop (parent eval_comb).
-    // In that case we need 2 passes so the second pass sees fresh values.
+    // instances themselves.  But parent comb intermediates add passes. A
+    // settle pass in eval_comb() runs [lets; inst chain; comb blocks in
+    // source order], so:
+    //   * a comb-produced signal feeding an instance input is only fresh on
+    //     the NEXT pass's chain (+1), and
+    //   * an instance output consumed by a comb block through an intermediate
+    //     produced by a LATER comb block in source order (e.g. the lock
+    //     lowering's pack/unpack bridge: thread comb reads _grant_i, which
+    //     the pack/unpack block unpacks from the arbiter output afterwards)
+    //     lags one more pass (+1).
+    // Hence 3 passes when intermediates exist. This is the depth eval_comb()
+    // itself iterates to — eval() delegates to it and runs no settle loop of
+    // its own, so an undercount here is a real one-cycle timing infidelity
+    // (grant lags request vs Verilator), not something an outer loop papers
+    // over.
     let settle_depth = if parent_has_comb_intermediates(m) {
-        2
+        3
     } else {
         1
     };
