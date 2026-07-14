@@ -5137,6 +5137,12 @@ fn lower_module_threads(
         // last state relocates its pulse into the absorbing predecessor's
         // cond-exit arm. Names are constructed post-rename, so grant/cnt
         // idents inside the reused exit conditions are already per-thread.
+        enum LockReleaseFire {
+            Never,
+            Conditional(Expr),
+            Unconditional,
+        }
+
         for si in 0..raw_states.len() {
             let Some(res) = raw_states[si].lock_release.clone() else {
                 continue;
@@ -5161,15 +5167,29 @@ fn lower_module_threads(
                 value: Expr::new(ExprKind::Literal(LitKind::Dec(1)), rel_sp),
                 span: rel_sp,
             });
-            let (target_idx, fire): (usize, Option<Expr>) = if raw_states[si].is_folded {
+            let (target_idx, fire): (usize, LockReleaseFire) = if raw_states[si].is_folded {
                 // Absorbed into the preceding wait_until state's exit arm;
                 // the fold fires on that state's transition condition.
-                (si - 1, raw_states[si - 1].transition_cond.clone())
+                (
+                    si - 1,
+                    raw_states[si - 1]
+                        .transition_cond
+                        .clone()
+                        .map_or(LockReleaseFire::Never, LockReleaseFire::Conditional),
+                )
             } else if !raw_states[si].multi_transitions.is_empty() {
-                let mut disj: Option<Expr> = None;
-                for (cond, _) in &raw_states[si].multi_transitions {
+                // A multi-transition state can contain both a back-edge into
+                // the lock body and an exit to the following statement.  The
+                // release pulse must only fire for the latter: clearing the
+                // arbiter hold latch on a loop-back lets another requester
+                // enter while this thread is still in its critical section.
+                let mut exit_disj: Option<Expr> = None;
+                for (cond, target) in &raw_states[si].multi_transitions {
+                    if !thread_target_is_special(*target) && *target < raw_states.len() {
+                        continue;
+                    }
                     let cond_sp = cond.span;
-                    disj = Some(match disj {
+                    exit_disj = Some(match exit_disj {
                         None => cond.clone(),
                         Some(acc) => Expr::new(
                             ExprKind::Binary(BinOp::Or, Box::new(acc), Box::new(cond.clone())),
@@ -5177,25 +5197,29 @@ fn lower_module_threads(
                         ),
                     });
                 }
-                (si, disj)
+                (
+                    si,
+                    exit_disj.map_or(LockReleaseFire::Never, LockReleaseFire::Conditional),
+                )
             } else if let Some(ref c) = raw_states[si].transition_cond {
-                (si, Some(c.clone()))
+                (si, LockReleaseFire::Conditional(c.clone()))
             } else if raw_states[si].wait_cycles.is_some() {
                 // Counter-based wait exits when the per-thread counter hits 0.
                 let cnt_id = Expr::new(ExprKind::Ident(format!("_t{}_cnt", ti)), sp);
                 (
                     si,
-                    Some(Expr::new(
+                    LockReleaseFire::Conditional(Expr::new(
                         ExprKind::Binary(BinOp::Eq, Box::new(cnt_id), Box::new(make_zero_expr(sp))),
                         sp,
                     )),
                 )
             } else {
                 // Unconditional exit: released every cycle spent in this state.
-                (si, None)
+                (si, LockReleaseFire::Unconditional)
             };
             let stmt = match fire {
-                Some(cond) => {
+                LockReleaseFire::Never => continue,
+                LockReleaseFire::Conditional(cond) => {
                     // Anchor the wrapper (and the assign inside it) to the
                     // fire condition's span — for the folded case that span
                     // belongs to the absorbing predecessor state, keeping
@@ -5215,7 +5239,7 @@ fn lower_module_threads(
                         span: wrap_sp,
                     })
                 }
-                None => rel_assign,
+                LockReleaseFire::Unconditional => rel_assign,
             };
             raw_states[target_idx].comb_stmts.push(stmt);
         }

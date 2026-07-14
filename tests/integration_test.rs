@@ -17421,6 +17421,46 @@ fn test_lock_arbiter_emits_hold_latch_user_arbiter_does_not() {
 }
 
 #[test]
+fn test_lock_release_ignores_internal_for_loop_back_edge() {
+    let sv = compile_to_sv(
+        r#"
+        module LockLoopRelease
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          port ready: in Bool;
+          port busy: out Bool;
+
+          resource pool: mutex<priority>;
+
+          thread once T0 on clk rising, rst high
+            lock pool
+              for i in 0..1
+                busy = 1;
+                wait until ready;
+              end for
+            end lock pool
+          end thread T0
+        end module LockLoopRelease
+    "#,
+    );
+
+    assert!(
+        sv.contains("_pool_release_0"),
+        "lock with a multi-transition body should emit a release pulse:\n{sv}"
+    );
+    assert!(
+        sv.contains("if (ready && _t0_loop_cnt_0 >= 1'(1))"),
+        "release must be guarded by the loop exit condition:\n{sv}"
+    );
+    assert!(
+        !sv.contains(
+            "if ((ready && _t0_loop_cnt_0 < 1'(1)) || (ready && _t0_loop_cnt_0 >= 1'(1)))"
+        ),
+        "release must not include the internal loop-back condition:\n{sv}"
+    );
+}
+
+#[test]
 fn test_thread_wait_elsif_chain_fuses_to_single_dispatch() {
     // An `elsif` parses as a nested `else { if ... }`. The wait-dispatch
     // fusion should flatten that chain so later arms do not pay an extra
