@@ -369,7 +369,7 @@ pub enum TokenKind {
     #[regex(r"0b[01][01_]*", |lex| lex.slice().to_string())]
     BinLiteral(String),
 
-    #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*'[bhd][0-9a-fA-F_]+|[0-9]+[a-zA-Z_][a-zA-Z0-9_]*'[bhd][0-9a-fA-F_]+|[0-9]+'[bhd][0-9a-fA-F_]+", |lex| lex.slice().to_string())]
+    #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*'[bhd][0-9a-fA-F_]+|[0-9]+'[bhd][0-9a-fA-F_]+", |lex| lex.slice().to_string())]
     SizedLiteral(String),
 
     // Float literal: must contain a decimal point (and may have an exponent),

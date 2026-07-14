@@ -2556,7 +2556,23 @@ fn try_eval_const_expr_with_params_seen(
                 BinOp::BitAnd => Some(lv & rv),
                 BinOp::BitOr => Some(lv | rv),
                 BinOp::BitXor => Some(lv ^ rv),
+                BinOp::Eq => Some(if lv == rv { 1 } else { 0 }),
+                BinOp::Neq => Some(if lv != rv { 1 } else { 0 }),
+                BinOp::Lt => Some(if lv < rv { 1 } else { 0 }),
+                BinOp::Gt => Some(if lv > rv { 1 } else { 0 }),
+                BinOp::Lte => Some(if lv <= rv { 1 } else { 0 }),
+                BinOp::Gte => Some(if lv >= rv { 1 } else { 0 }),
+                BinOp::And => Some(if lv != 0 && rv != 0 { 1 } else { 0 }),
+                BinOp::Or => Some(if lv != 0 || rv != 0 { 1 } else { 0 }),
                 _ => None,
+            }
+        }
+        ExprKind::Ternary(cond, then_expr, else_expr) => {
+            let c = try_eval_const_expr_with_params_seen(cond, params, seen_params)?;
+            if c != 0 {
+                try_eval_const_expr_with_params_seen(then_expr, params, seen_params)
+            } else {
+                try_eval_const_expr_with_params_seen(else_expr, params, seen_params)
             }
         }
         _ => None,
