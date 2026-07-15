@@ -11235,10 +11235,11 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("  grant_valid = 0;\n  grant_requester = 0;\n");
         if a.lock_hold {
             // Current owner keeps the grant while its request stays
-            // asserted; the policy scan below only runs when the
-            // resource is free (grant_valid gates it).
+            // asserted and no registered release event is active. The
+            // policy scan below then re-arbitrates immediately after the
+            // release edge, matching the SV arbiter without a bubble.
             cpp.push_str(&format!(
-                "  if (_hold_valid && (({req_pa_name}_valid >> _hold_owner) & 1)) {{\n"
+                "  if (_hold_valid && (({req_pa_name}_valid >> _hold_owner) & 1) && !(({req_pa_name}_release >> _hold_owner) & 1)) {{\n"
             ));
             cpp.push_str("    grant_valid = 1;\n    grant_requester = _hold_owner;\n  }\n");
         }
