@@ -384,12 +384,20 @@ edge):
    port-output valuation `μ_O` from `(μ_I, μ_R, μ_S, ⟨PC_i⟩)`:
    - Each thread `i` in state `s = PC_i` contributes the comb statements of
      `K_i[s]`, gated implicitly by `_t_i_state == s`.
+   - If `K_i[s]` has one conditional transition `c`, `c` is true, and its
+     successor `u` is an eligible simple conditional state (not folded,
+     lock-guarded, multi-transition, counter-wait, unconditional, or
+     terminal), the thread also contributes `K_i[u].comb`. This is the
+     canonical atomic-overlap rule from the thread specification §20.15.
    - For `shared(or)` signals, multiple drivers are OR-reduced.
    - For `lock` resources, the priority arbiter computes `_r_grant_i`.
 
 2. **Seq-update preparation.** Compute the next-register valuation
    `μ'_R` by evaluating the seq statements of `K_i[s]` and any merged trailing
-   assignments (themselves guarded by transition conditions).
+   assignments (themselves guarded by transition conditions). Under the same
+   atomic-overlap rule, evaluate `K_i[u].seq` under guard `c` on the current
+   pre-edge valuation. This pairs an overlapped `ready` with its sequential
+   payload acceptance on the same edge.
 
 3. **PC advance.** For each thread `i` with `K_i[s] = ⟨_, _, τ, w, M⟩`:
    - If `M ≠ ∅`: select the unique `(c, t) ∈ M` with `μ ⊨ c ⇒ true` (priority
@@ -397,6 +405,9 @@ edge):
    - Else if `τ = c` and `μ ⊨ c ⇒ true`: `PC_i' ← next(s, t.once)`.
    - Else if `w = n` and `c_cnt_i = 0`: `PC_i' ← next(s, t.once)`.
    - Else: `PC_i' ← s`.
+   - For an atomic overlap from `s` to `u`, first apply the `s → u` update;
+     then, if `K_i[u].τ` is true in the same pre-edge valuation, apply
+     `u → next(u, t.once)`. The latter nonblocking state write has priority.
    - Where `next(s, once) = s+1` if `s+1 < |K_i|`, `s` if `once ∧ s = |K_i|−1`,
      else `0`.
 
@@ -453,9 +464,14 @@ lowered module.  The one-cycle target step `Γ̂ ─[μ_I]→ Γ̂'` proceeds as
 
 1. Combinational evaluation activates, for each `(i, s)` with `s_i == s`,
    the `IfElse` arm carrying `K_i[s].comb`; defaults of `0` apply otherwise.
+   An eligible `s → u` atomic overlap additionally activates `K_i[u].comb`
+   under `state==s && c`.
 2. The merged `RegBlock` activates, for each `i`: if `default_when_i`
    predicate holds, its body fires and `_t_i_state <= 0`; otherwise the
-   per-state chain fires as in `transition_logic` of §I.3.
+   per-state chain fires as in `transition_logic` of §I.3. For an eligible
+   overlap, the `state==s` arm contains a guarded copy of `K_i[u]`'s complete
+   sequential body after the ordinary `s → u` write, preserving
+   last-nonblocking-write priority when `u` also completes.
 3. Reset assigns `_t_i_state <= 0` and reset-bearing registers to their
    declared reset values.
 
@@ -518,7 +534,9 @@ for each `i`, the block guarded by `s_i == ŝ` where `ŝ = Γ̂.s_i = Γ.PC_i`. 
 the partitioning invariant (II.4 below), the comb statements of `K_i[ŝ]` are
 *exactly* those scheduled in source state `PC_i = ŝ`.  Both run on the same
 register valuation (`Γ.μ_R = Γ̂.μ_R`) and same input stream, so they produce
-the same wire values.  For `shared(or)` signals, both source and target
+the same wire values. If the atomic-overlap predicate holds, both semantics
+also evaluate the eligible successor's comb statements under the identical
+`state==ŝ && transition_cond` guard. For `shared(or)` signals, both source and target
 specify the OR-reduction of all per-thread driver values; for the priority
 arbiter, both define `_r_grant_i = _r_req_i ∧ ¬⋁_{j<i} _r_grant_j`.  Hence
 `μ_O^src = μ_O^tgt`.  ∎(a)
@@ -528,7 +546,9 @@ arbiter, both define `_r_grant_i = _r_req_i ∧ ¬⋁_{j<i} _r_grant_j`.  Hence
 guard the trailing seq stmts by the wait condition of the predecessor; this is
 identical to scheduling the source's trailing block one cycle after the
 predecessor's wait fires (zero dead cycle), and the source semantics is
-defined to do exactly that (II.5).  For `shared(or)` seq signals, each thread
+defined to do exactly that (II.5). For an atomic overlap, both semantics also
+evaluate the eligible successor's full sequential body under the predecessor
+transition guard, using the same pre-edge valuation and statement order. For `shared(or)` seq signals, each thread
 contributes a per-cycle value; the target reduces via `x <= ⋁_i _x_in_i`,
 which equals the source's defined OR-of-drivers semantics.  ∎(b)
 
@@ -542,6 +562,12 @@ target's `transition_logic`:
 | `M = [(c_j, t_j)]`        | `PC' = t_j` for least `j` with `μ ⊨ c_j` | `if (c_0)…; if (c_1)…`       |
 | none (unconditional)       | `PC' = next`                        | `_state <= next`                 |
 | `default_when` fires       | `PC' = 0`                           | `if (cond) {…; _state<=0}`       |
+
+For an eligible atomic overlap, both sides additionally execute the simple
+successor's conditional transition on the same edge. Thus the final PC is
+either the successor or its natural next state; the guarded successor body is
+emitted after the predecessor's state write, so SystemVerilog/ARCH
+last-nonblocking-write semantics matches the source rule in §II.1.1.
 
 The *priority semantics* of the multi-target case warrants a remark.  The
 target emits an unguarded sequence of `IfElse` statements inside the `seq`
@@ -1259,4 +1285,3 @@ formal contract for the planned arch-sim alternate path (`arch sim` without
   `--auto-thread-asserts` properties (`_auto_thread_*`) are different —
   they're emitted *during* `lower_threads` and their correctness is *part
   of* this proof, established as Corollaries W/C/B in §II.11.
-
