@@ -343,9 +343,16 @@ thread_assign = lvalue "=" expr ";"
               | lvalue "<=" [ "fork" ] expr ";"
               ;
 
-(* Resource for mutual exclusion across threads (used by thread_lock).
-   Only three policies accepted by the mutex arbiter — a subset of arbiter_policy. *)
-resource_decl = "resource" ident ":" "mutex" "<" mutex_policy ">" ";" ;
+(* Resource for mutual exclusion / bounded concurrency across threads
+   (used by thread_lock). `mutex<policy>` admits exactly one holder;
+   `semaphore<N, policy>` admits up to N concurrent holders (N is a const
+   expr, may reference a module param, must be >= 1; semaphore<1, policy>
+   lowers identically to mutex<policy>). Both reuse the same three-policy
+   grammar — a subset of arbiter_policy. See thread_spec_section.md §20.8.4. *)
+resource_decl = "resource" ident ":" resource_kind ";" ;
+
+resource_kind = "mutex" "<" mutex_policy ">"
+              | "semaphore" "<" expr "," mutex_policy ">" ;   (* expr = const, must fold to >= 1 *)
 
 mutex_policy = "round_robin" | "priority" | "lru" ;
 
@@ -889,4 +896,5 @@ comment = "//" { any_char_except_newline } newline ;
    Contextual keywords (lexed as identifiers, given meaning by position):
    async, cycle, direction, do, file, fifo, fork, in, join, lifo, lock, mutex,
    once, out, policy, pragma, priority, read_first, resource, round_robin,
+   semaphore,
    state, transition, until, wait, write, write_before_read *)

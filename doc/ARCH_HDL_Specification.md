@@ -2146,6 +2146,27 @@ simulator), the scheduler honours the declared mutex policy directly,
 so `arch sim --thread-sim both` is an exact cross-check against the
 FSM-lowered path for all five policy choices.
 
+**Bounded concurrency: `semaphore<N, policy>`.** A resource may instead be
+declared `semaphore<N, policy>`, which admits **up to `N` concurrent
+holders** rather than one (the counting generalization of `mutex`):
+
+```
+resource pool: semaphore<4, round_robin>;   // at most 4 threads inside a lock at once
+```
+
+`N` is a const expression evaluated at elaboration time and may reference a
+module param (e.g. `semaphore<WORKERS, round_robin>`); it must fold to `>= 1`
+(`semaphore<0, ...>` is a compile error). `policy` reuses the same three-policy
+grammar as `mutex` (`round_robin`, `priority`, `lru`) and decides which waiting
+thread is admitted when a slot frees. **`semaphore<1, policy>` is semantically
+identical to `mutex<policy>`** and the compiler lowers the two identically, so
+the hold-stability and same-cycle release→re-grant guarantees above apply
+per-slot to a semaphore. The canonical use is limiting concurrency onto a
+shared multi-port structure (banked buses, N-port memories, "only 4 of 32
+threads in the AR phase"). See `doc/thread_spec_section.md` §20.8.4 for the
+per-slot arbitration details. `lock`/`end lock` syntax is unchanged; the `lock`
+block simply acquires one of the `N` slots.
+
 **Nested lock blocks are a compile error.** Nesting would allow a higher-priority thread to enter a critical section that a lower-priority thread is already executing (mutual exclusion violation). Sequential (non-nested) lock usage is safe.
 
 Ports driven inside `lock` blocks that are also driven by other threads must be declared `shared(or)`.
