@@ -5066,6 +5066,13 @@ fn lower_module_threads(
                 for (ref mut cond, _) in &mut state.multi_transitions {
                     rename_ident_in_expr(cond, old, new);
                 }
+                if let Some(LockReleaseInfo::ExitConditions(conditions)) =
+                    &mut state.lock_release_info
+                {
+                    for cond in conditions {
+                        rename_ident_in_expr(cond, old, new);
+                    }
+                }
             }
         }
         // Lock signals
@@ -5084,6 +5091,13 @@ fn lower_module_threads(
                 }
                 for (ref mut cond, _) in &mut state.multi_transitions {
                     rename_ident_in_expr(cond, &grant_old, &grant_new);
+                }
+                if let Some(LockReleaseInfo::ExitConditions(conditions)) =
+                    &mut state.lock_release_info
+                {
+                    for cond in conditions {
+                        rename_ident_in_expr(cond, &grant_old, &grant_new);
+                    }
                 }
             }
         }
@@ -5137,6 +5151,12 @@ fn lower_module_threads(
         // last state relocates its pulse into the absorbing predecessor's
         // cond-exit arm. Names are constructed post-rename, so grant/cnt
         // idents inside the reused exit conditions are already per-thread.
+        enum LockReleaseFire {
+            Never,
+            Conditional(Expr),
+            Unconditional,
+        }
+
         for si in 0..raw_states.len() {
             let Some(res) = raw_states[si].lock_release.clone() else {
                 continue;
@@ -5161,41 +5181,62 @@ fn lower_module_threads(
                 value: Expr::new(ExprKind::Literal(LitKind::Dec(1)), rel_sp),
                 span: rel_sp,
             });
-            let (target_idx, fire): (usize, Option<Expr>) = if raw_states[si].is_folded {
+            let (target_idx, fire): (usize, LockReleaseFire) = if raw_states[si].is_folded {
                 // Absorbed into the preceding wait_until state's exit arm;
                 // the fold fires on that state's transition condition.
-                (si - 1, raw_states[si - 1].transition_cond.clone())
+                (
+                    si - 1,
+                    raw_states[si - 1]
+                        .transition_cond
+                        .clone()
+                        .map_or(LockReleaseFire::Never, LockReleaseFire::Conditional),
+                )
             } else if !raw_states[si].multi_transitions.is_empty() {
-                let mut disj: Option<Expr> = None;
-                for (cond, _) in &raw_states[si].multi_transitions {
+                // The lock lowering records whether these arms were created
+                // by a construct inside the lock body or by a construct
+                // outside it.  A lock used as an outer `for` body must
+                // release on every arm (including the outer loop-back), while
+                // a `for` nested inside the lock must release only on the
+                // nested loop's exit arm.
+                let release_conditions: Vec<Expr> = match raw_states[si].lock_release_info.as_ref()
+                {
+                    Some(LockReleaseInfo::AllTransitions) | None => raw_states[si]
+                        .multi_transitions
+                        .iter()
+                        .map(|(cond, _)| cond.clone())
+                        .collect(),
+                    Some(LockReleaseInfo::ExitConditions(conditions)) => conditions.clone(),
+                };
+                let exit_disj = release_conditions.into_iter().reduce(|acc, cond| {
                     let cond_sp = cond.span;
-                    disj = Some(match disj {
-                        None => cond.clone(),
-                        Some(acc) => Expr::new(
-                            ExprKind::Binary(BinOp::Or, Box::new(acc), Box::new(cond.clone())),
-                            cond_sp,
-                        ),
-                    });
-                }
-                (si, disj)
+                    Expr::new(
+                        ExprKind::Binary(BinOp::Or, Box::new(acc), Box::new(cond)),
+                        cond_sp,
+                    )
+                });
+                (
+                    si,
+                    exit_disj.map_or(LockReleaseFire::Never, LockReleaseFire::Conditional),
+                )
             } else if let Some(ref c) = raw_states[si].transition_cond {
-                (si, Some(c.clone()))
+                (si, LockReleaseFire::Conditional(c.clone()))
             } else if raw_states[si].wait_cycles.is_some() {
                 // Counter-based wait exits when the per-thread counter hits 0.
                 let cnt_id = Expr::new(ExprKind::Ident(format!("_t{}_cnt", ti)), sp);
                 (
                     si,
-                    Some(Expr::new(
+                    LockReleaseFire::Conditional(Expr::new(
                         ExprKind::Binary(BinOp::Eq, Box::new(cnt_id), Box::new(make_zero_expr(sp))),
                         sp,
                     )),
                 )
             } else {
                 // Unconditional exit: released every cycle spent in this state.
-                (si, None)
+                (si, LockReleaseFire::Unconditional)
             };
             let stmt = match fire {
-                Some(cond) => {
+                LockReleaseFire::Never => continue,
+                LockReleaseFire::Conditional(cond) => {
                     // Anchor the wrapper (and the assign inside it) to the
                     // fire condition's span — for the folded case that span
                     // belongs to the absorbing predecessor state, keeping
@@ -5215,7 +5256,7 @@ fn lower_module_threads(
                         span: wrap_sp,
                     })
                 }
-                None => rel_assign,
+                LockReleaseFire::Unconditional => rel_assign,
             };
             raw_states[target_idx].comb_stmts.push(stmt);
         }
@@ -7622,6 +7663,18 @@ struct ThreadFsmState {
     /// holding". Without it, a re-locking thread would never rotate the
     /// grant to a waiting contender.
     lock_release: Option<String>,
+    /// Transition provenance for the lock-release pulse. `AllTransitions`
+    /// means every arm of a later multi-transition state leaves this lock
+    /// body (for example, a lock used as the body of an outer `for`).
+    /// `ExitConditions` records the arms that leave a multi-transition
+    /// construct already nested inside the lock body.
+    lock_release_info: Option<LockReleaseInfo>,
+}
+
+#[derive(Clone)]
+enum LockReleaseInfo {
+    AllTransitions,
+    ExitConditions(Vec<Expr>),
 }
 
 /// Issue #306: fold `wait until` exit assignments.
@@ -8144,6 +8197,7 @@ fn redirect_fallthrough_to_return(states: &mut Vec<ThreadFsmState>, return_idx: 
             is_folded: false,
             no_fold_into_prev: false,
             lock_release: None,
+            lock_release_info: None,
         });
         return;
     };
@@ -8460,6 +8514,7 @@ fn flush_pending_thread_state(
         is_folded: false,
         no_fold_into_prev: false,
         lock_release: None,
+        lock_release_info: None,
     });
     true
 }
@@ -8768,6 +8823,7 @@ fn partition_thread_body_impl(
                         is_folded: false,
                         no_fold_into_prev: nfip,
                         lock_release: None,
+                        lock_release_info: None,
                     });
                 } else {
                     // No dead-skid state created; reset next_state_no_fold
@@ -8787,6 +8843,7 @@ fn partition_thread_body_impl(
                     is_folded: false,
                     no_fold_into_prev: false,
                     lock_release: None,
+                    lock_release_info: None,
                 });
                 let _ = sp; // span retained for parity with the prior arm
             }
@@ -8839,6 +8896,7 @@ fn partition_thread_body_impl(
                         is_folded: false,
                         no_fold_into_prev: false,
                         lock_release: None,
+                        lock_release_info: None,
                     });
                 } else if let Some(idx) = merged_fast_idx {
                     no_trailing_merge_from = Some(idx);
@@ -8865,6 +8923,7 @@ fn partition_thread_body_impl(
                             is_folded: false,
                             no_fold_into_prev: false,
                             lock_release: None,
+                            lock_release_info: None,
                         });
                         fast_region = Some((fast_idx, cond));
                         continue;
@@ -8910,6 +8969,7 @@ fn partition_thread_body_impl(
                         is_folded: false,
                         no_fold_into_prev: false,
                         lock_release: None,
+                        lock_release_info: None,
                     });
                     // Step 3: recursively partition `then_stmts` and append at then_base.
                     // Empty branches (§II.10.4) skip the recursive call —
@@ -9244,6 +9304,7 @@ fn partition_thread_body_impl(
                     is_folded: false,
                     no_fold_into_prev: false,
                     lock_release: None,
+                    lock_release_info: None,
                 });
             }
             ThreadStmt::Return(e, ret_span) => {
@@ -9275,6 +9336,7 @@ fn partition_thread_body_impl(
                                 is_folded: false,
                                 no_fold_into_prev: false,
                                 lock_release: None,
+                                lock_release_info: None,
                             });
                         }
                     } else {
@@ -9442,6 +9504,7 @@ fn partition_thread_body_impl(
                 is_folded: false,
                 no_fold_into_prev: nfip,
                 lock_release: None,
+                lock_release_info: None,
             });
         }
     }
@@ -9497,6 +9560,7 @@ fn lower_fork_join(
             is_folded: false,
             no_fold_into_prev: false,
             lock_release: None,
+            lock_release_info: None,
         });
         branch_states.push(states);
     }
@@ -9646,6 +9710,7 @@ fn lower_fork_join(
             is_folded: false,
             no_fold_into_prev: false,
             lock_release: None,
+            lock_release_info: None,
         });
     }
 
@@ -10159,7 +10224,30 @@ fn lower_thread_lock(
     // Mark the last body state so merged-module generation can emit the
     // combinational release pulse when its exit transition fires (see the
     // `lock_release` field doc).
+    let release_info = body_states.last().map(|last| {
+        if last.multi_transitions.is_empty() {
+            // No multi-transition was created inside the lock body. If an
+            // enclosing construct (for example, a loop around this lock)
+            // later expands this state into multiple arms, every arm exits
+            // the lock body and must release the arbiter hold.
+            LockReleaseInfo::AllTransitions
+        } else {
+            // Multi-transitions already present here were created inside the
+            // lock body. Only arms that leave this local body-state vector
+            // release the lock; internal loop-back arms keep the hold latch.
+            let exit_conditions = last
+                .multi_transitions
+                .iter()
+                .filter(|(_, target)| {
+                    thread_target_is_special(*target) || *target >= body_states.len()
+                })
+                .map(|(cond, _)| cond.clone())
+                .collect();
+            LockReleaseInfo::ExitConditions(exit_conditions)
+        }
+    });
     if let Some(last) = body_states.last_mut() {
+        last.lock_release_info = release_info;
         last.lock_release = Some(resource_name.to_string());
     }
 
@@ -10177,6 +10265,7 @@ fn lower_thread_lock(
             is_folded: false,
             no_fold_into_prev: false,
             lock_release: Some(resource_name.to_string()),
+            lock_release_info: Some(LockReleaseInfo::AllTransitions),
         });
     }
 
