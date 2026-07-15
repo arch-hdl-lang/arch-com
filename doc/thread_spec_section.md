@@ -475,7 +475,40 @@ The merge fires `ar_done_r <= 1` on the same clock edge as the `ar_ready` handsh
 
 If the seq assign appears after a multi-transition state (e.g. inside a `for` loop), the compiler uses the loop exit condition as the guard instead of every iteration.
 
-## 20.15  Auto-Emitted Spec-Contract SVA (`--auto-thread-asserts`)
+## 20.15  Comb Overlap Across State Transitions
+
+When a state's single conditional transition fires (`wait until cond` or `do..until cond`), the compiler additionally drives the **next state's comb outputs during the transition cycle**.  This removes the dead cycle between back-to-back states:
+
+```arch
+thread on clk rising, rst_n low
+  ar_valid = 1;
+  ar_addr  = 32'd100;
+  wait until ar_ready;   // ← the cycle ar_ready is high, r_ready is ALREADY driven
+
+  r_ready = 1;
+  wait until r_valid;
+  data_r <= r_data;
+end thread
+```
+
+The generated comb block contains an overlap arm alongside the normal per-state arm:
+
+```sv
+if (_t0_state == _t0_S1_wait_until) r_ready = 1;                 // normal
+if (_t0_state == _t0_S0_wait_until && ar_ready) r_ready = 1;     // overlap
+```
+
+The overlap is Mealy-style: the next state's outputs respond to the transition condition combinationally, one cycle before the state register advances.  Register values read by those outputs are the *pre-transition* values (the transition edge has not fired yet).
+
+**The overlap never applies when the next state is inside a `lock` body.** Lock-body outputs are gated by the arbiter grant (§20.8, §20.13); driving them from the preceding state would leak critical-section signals before the grant cycle.  Transitions *into* a lock block therefore always take the full cycle — the lock's own zero-cycle grant path (§20.13) is the mechanism that removes lock-entry latency, not the overlap.
+
+The overlap also does not apply to:
+- multi-transition states (fork/join dispatch, `if`/`else` dispatch) — the successor is condition-dependent
+- terminal states of `thread once` (self-loop; nothing to overlap)
+
+TLM method target threads are lowered by a dedicated response-router path and do not participate in the overlap.  As with each state's own comb arm, a thread's `default_when` condition does not gate the overlap arm — `default_when` preempts the *seq* side (state register and registered assigns) only.
+
+## 20.16  Auto-Emitted Spec-Contract SVA (`--auto-thread-asserts`)
 
 Off-by-default flag on `arch build` / `arch sim` / `arch formal`. When set, the thread lowerer emits SVA properties anchored to the lowered state register `_t{i}_state` and per-thread counter `_t{i}_cnt`. They encode contracts the source spelled out (`wait until`, `wait N cycle`, `fork/join` branches) but the lowered comb+seq blob has lost — no downstream pass can recover them.
 
