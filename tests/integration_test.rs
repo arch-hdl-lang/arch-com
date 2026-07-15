@@ -31529,6 +31529,115 @@ end module BasicThread
 }
 
 #[test]
+fn test_thread_comb_overlap_consumes_successor_handshake() {
+    // The successor's ready output and its sequential acceptance logic are one
+    // atomic cycle. If `start` and `valid` are both high, advertising `ready`
+    // from S0 must also capture the payload and advance past S1 on that edge.
+    let source = r#"
+module OverlapHandshake
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port start: in Bool;
+  port valid: in Bool;
+  port payload: in UInt<8>;
+  port ready: out Bool;
+  port captured: out pipe_reg<UInt<8>, 1> reset rst => 0;
+  port captured_valid: out pipe_reg<Bool, 1> reset rst => false;
+
+  thread on clk rising, rst high
+    default comb
+      ready = false;
+    end default
+
+    wait until start;
+    do
+      ready = true;
+    until valid;
+    captured <= payload;
+    captured_valid <= true;
+    wait 1 cycle;
+    captured_valid <= false;
+  end thread
+end module OverlapHandshake
+"#;
+    let sv = compile_to_sv(source);
+    let compact = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        compact.contains("if (_t0_state == _t0_S0_wait_until) begin if (start) begin _t0_state <= _t0_S1_wait_until; end if (start) begin if (valid) begin captured <= payload;"),
+        "overlap must execute the successor handshake body on the same edge:\n{sv}"
+    );
+}
+
+#[test]
+fn test_thread_comb_overlap_skips_for_loop_successor() {
+    let source = r#"
+module OverlapFor
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port start: in Bool;
+  port valid: in Bool;
+  port payload: in UInt<8>;
+  port length: in UInt<4>;
+  port ready: out Bool;
+  port captured: out pipe_reg<UInt<8>, 1> reset rst => 0;
+
+  thread on clk rising, rst high
+    default comb
+      ready = false;
+    end default
+    wait until start;
+    for i in 0..length-1
+      do
+        ready = true;
+      until valid;
+      captured <= payload;
+    end for
+    wait 1 cycle;
+  end thread
+end module OverlapFor
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        !sv.contains("_t0_state == _t0_S0_wait_until && start"),
+        "for-loop dispatch must not overlap its ready/counter body into S0:\n{sv}"
+    );
+}
+
+#[test]
+fn test_thread_comb_overlap_auto_assert_allows_successor_completion() {
+    let source = r#"
+module OverlapAssert
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port start: in Bool;
+  port valid: in Bool;
+  port ready: out Bool;
+
+  thread on clk rising, rst high
+    default comb
+      ready = false;
+    end default
+    wait until start;
+    do
+      ready = true;
+    until valid;
+    wait 1 cycle;
+  end thread
+end module OverlapAssert
+"#;
+    let opts = elaborate::ThreadLowerOpts {
+        auto_asserts: true,
+        ..Default::default()
+    };
+    let sv = compile_to_sv_with_opts(source, &opts);
+    let compact = sv.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        compact.contains("|=> (_t0_state == _t0_S1_wait_until || _t0_state == _t0_S2_wait_cycles)"),
+        "source wait assertion must allow the overlapped successor to complete:\n{sv}"
+    );
+}
+
+#[test]
 fn test_thread_comb_overlap_never_enters_lock_body() {
     // Issue #501: the overlap optimization must NOT drive a lock body state's
     // outputs from the preceding state.  Lock-body outputs are grant-gated;

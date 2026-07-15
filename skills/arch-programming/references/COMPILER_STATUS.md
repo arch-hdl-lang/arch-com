@@ -1,9 +1,12 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-07-11
-> Compiler version: 0.70.7
+> Last updated: 2026-07-15
+> Compiler version: 0.70.8
 >
-> **Unreleased (since 0.70.7):**
+> **0.70.8 release highlights:**
+> - **Typed FP parameters and constant evaluation** (#693, #694, #700) — module-scope FP wires and typed FP local parameters now resolve consistently in SystemVerilog and native simulation, including compile-time integer-to-FP conversion. This enables parameterized BF16-to-fixed conversion such as `local param SCALE_FP: FP32 = SCALE_INT.to_fp32();`.
+> - **Parameterized expression evaluation fixes** (#707) — `$clog2` inside ternary parameter expressions now evaluates correctly, unblocking derived-width declarations such as `N > 1 ? $clog2(N) : 1`.
+> - **Atomic thread comb overlap** — when a conditional transition exposes a simple conditional successor state's combinational handshake outputs in the same cycle, lowering now also executes that successor's sequential acceptance body on the same edge. This prevents `ready` from acknowledging a payload that the FSM silently drops. Auto-emitted thread assertions account for same-edge successor completion; dispatch, counter-wait, and unconditional-action successors remain non-overlapped.
 > - **Pipeline wait-stage idle fast-path no longer drops inter-wait assignments** (#590) — a `pipeline` stage with two or more sequential `wait`s was silently dropping any assignment between the first and second wait whenever the idle-state (state 0) fast path fired (i.e. the first wait's condition was already true the cycle the stage accepted new data). Fixed identically in both backends: `src/codegen/pipeline.rs` (SV) and `src/sim_codegen/pipeline.rs` (native sim) now emit the second wait group's pre-assigns on the state-0 → state-2 fast-path edge, mirroring the existing state-1 → state-2 slow-path edge. New compile-time warning (`arch check`/`build`/`sim`) fires when a register is assigned both immediately before the first wait and immediately after it — that pair can now land on the same clock edge via the fast path, so the pre-wait value may never be architecturally observable (last write wins). `thread` construct's `wait until` lowering was checked for the same bug class and found clean — see `doc/thread_lowering_algorithm.md` §4/4d.1: every inter-wait assignment gets its own dedicated FSM state that always executes for exactly one cycle before advancing (no idle/upstream-valid fast-path shortcut exists for threads), so there is no edge that can skip it.
 >
 > **0.70.7 release highlights:**

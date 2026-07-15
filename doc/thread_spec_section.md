@@ -498,12 +498,13 @@ if (_t0_state == _t0_S1_wait_until) r_ready = 1;                 // normal
 if (_t0_state == _t0_S0_wait_until && ar_ready) r_ready = 1;     // overlap
 ```
 
-The overlap is Mealy-style: the next state's outputs respond to the transition condition combinationally, one cycle before the state register advances.  Register values read by those outputs are the *pre-transition* values (the transition edge has not fired yet).
+The overlap is Mealy-style: the next state's outputs respond to the transition condition combinationally. The next state's sequential body also executes on that edge, so a ready/valid successor cannot advertise `ready` without consuming an already asserted `valid` and its payload. If the successor's own transition condition is true, the state register advances through that successor on the same edge. Register values read by the overlapped comb and sequential logic are the *pre-transition* values.
 
 **The overlap never applies when the next state is inside a `lock` body.** Lock-body outputs are gated by the arbiter grant (§20.8, §20.13); driving them from the preceding state would leak critical-section signals before the grant cycle.  Transitions *into* a lock block therefore always take the full cycle — the lock's own zero-cycle grant path (§20.13) is the mechanism that removes lock-entry latency, not the overlap.
 
 The overlap also does not apply to:
 - multi-transition states (fork/join dispatch, `if`/`else` dispatch) — the successor is condition-dependent
+- successor states that are multi-transition dispatches, counter-based `wait N cycle` states, or unconditional action states — only a successor with one conditional transition has defined atomic-overlap semantics
 - terminal states of `thread once` (self-loop; nothing to overlap)
 
 TLM method target threads are lowered by a dedicated response-router path and do not participate in the overlap.  As with each state's own comb arm, a thread's `default_when` condition does not gate the overlap arm — `default_when` preempts the *seq* side (state register and registered assigns) only.
@@ -514,7 +515,7 @@ Off-by-default flag on `arch build` / `arch sim` / `arch formal`. When set, the 
 
 | Source construct | Property class | SVA shape |
 |---|---|---|
-| `wait until <cond>` | `_auto_thread_t{i}_wait_until_s{si}` | `(rst_inactive && state==si && cond) \|=> state==next` |
+| `wait until <cond>` | `_auto_thread_t{i}_wait_until_s{si}` | `(rst_inactive && state==si && cond) \|=> state==next` (or the overlapped successor's exit state when it also completes on that edge) |
 | `wait <N> cycle` | `_auto_thread_t{i}_wait_stay_s{si}` + `_..._wait_done_s{si}` | stay (`cnt!=0` ⇒ stay) and done (`cnt==0` ⇒ advance) |
 | `fork`/`join` branches | `_auto_thread_t{i}_branch_s{si}_b{bi}` | per-(cond, target) `(rst_inactive && state==si && cond) \|=> state==target` |
 

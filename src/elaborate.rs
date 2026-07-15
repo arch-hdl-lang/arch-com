@@ -5551,8 +5551,49 @@ fn lower_module_threads(
             }
         }
 
+        // A comb-overlapped successor is active during the predecessor's
+        // transition cycle. Its sequential body must therefore run on that
+        // same edge as well; otherwise a ready/valid successor advertises
+        // acceptance without consuming the payload. Restrict overlap to a
+        // simple conditional successor: dispatch and counter states need
+        // entry-value forwarding before they can be collapsed safely.
+        let overlap_targets: Vec<Option<usize>> = raw_states
+            .iter()
+            .enumerate()
+            .map(|(si, raw)| {
+                if !raw.multi_transitions.is_empty()
+                    || raw.terminal_return.is_some()
+                    || raw.transition_cond.is_none()
+                {
+                    return None;
+                }
+                let next_si = if let Some(folded_tgt) = raw.folded_exit_target {
+                    folded_tgt
+                } else if si + 1 < n_states {
+                    si + 1
+                } else if t.once {
+                    si
+                } else {
+                    0
+                };
+                raw_states.get(next_si).and_then(|next| {
+                    (next_si != si
+                        && !next.is_folded
+                        && !next.is_lock_body
+                        && next.transition_cond.is_some()
+                        && next.multi_transitions.is_empty()
+                        && next.wait_cycles.is_none()
+                        && next.terminal_return.is_none()
+                        && !next.comb_stmts.is_empty())
+                    .then_some(next_si)
+                })
+            })
+            .collect();
+
         // State transition always_ff
         let mut seq_stmts: Vec<Stmt> = Vec::new();
+        let mut seq_stmt_pos_by_state: Vec<Option<usize>> = vec![None; n_states];
+        let mut state_bodies: Vec<Option<Vec<Stmt>>> = vec![None; n_states];
         for (si, raw) in raw_states.iter().enumerate() {
             // Issue #306: skip states that were absorbed into a preceding
             // wait_until exit arm.  They are unreachable at runtime.
@@ -5751,10 +5792,26 @@ fn lower_module_threads(
                 } else if let Some(ref cond) = raw.transition_cond {
                     // wait_until cond — guard fires ⇒ FSM advances next edge.
                     let antecedent = mk_bin(BinOp::And, in_state.clone(), cond.clone());
+                    let mut consequent = state_eq(next_state);
+                    if let Some(overlap_si) = overlap_targets[si] {
+                        let overlap = &raw_states[overlap_si];
+                        let overlap_next = if let Some(folded_tgt) = overlap.folded_exit_target {
+                            folded_tgt
+                        } else if overlap_si + 1 < n_states {
+                            overlap_si + 1
+                        } else if t.once {
+                            overlap_si
+                        } else {
+                            0
+                        };
+                        if overlap_next != overlap_si {
+                            consequent = mk_bin(BinOp::Or, consequent, state_eq(overlap_next));
+                        }
+                    }
                     push_assert(
                         format!("_auto_thread_t{}_wait_until_s{}", ti, si),
                         antecedent,
-                        state_eq(next_state),
+                        consequent,
                         &mut auto_asserts,
                     );
                 } else if raw.wait_cycles.is_some() {
@@ -5784,9 +5841,36 @@ fn lower_module_threads(
                 // ("|=> next") and add noise without catching anything new.
             }
 
+            state_bodies[si] = Some(body.clone());
+            seq_stmt_pos_by_state[si] = Some(seq_stmts.len());
             seq_stmts.push(Stmt::IfElse(IfElse {
                 cond: state_cond,
                 then_stmts: body,
+                else_stmts: Vec::new(),
+                unique: false,
+                span: sp,
+            }));
+        }
+
+        for (si, target) in overlap_targets.iter().enumerate() {
+            let Some(target_si) = target else {
+                continue;
+            };
+            let Some(source_pos) = seq_stmt_pos_by_state[si] else {
+                continue;
+            };
+            let Some(target_body) = state_bodies[*target_si].clone() else {
+                continue;
+            };
+            let Some(transition_cond) = raw_states[si].transition_cond.clone() else {
+                continue;
+            };
+            let Stmt::IfElse(source_guard) = &mut seq_stmts[source_pos] else {
+                unreachable!("thread state lowering always emits an if guard");
+            };
+            source_guard.then_stmts.push(Stmt::IfElse(IfElse {
+                cond: transition_cond,
+                then_stmts: target_body,
                 else_stmts: Vec::new(),
                 unique: false,
                 span: sp,
@@ -5867,25 +5951,9 @@ fn lower_module_threads(
             // only set by the TLM response-router partition path, whose
             // states never reach this loop, but the guard keeps overlap
             // correct if that ever changes.
-            if raw.multi_transitions.is_empty() && raw.terminal_return.is_none() {
+            if let Some(next_si) = overlap_targets[si] {
                 if let Some(ref trans_cond) = raw.transition_cond {
-                    let next_si = if let Some(folded_tgt) = raw.folded_exit_target {
-                        folded_tgt
-                    } else if si + 1 < n_states {
-                        si + 1
-                    } else if t.once {
-                        si // terminal once-state: self-loop, nothing to overlap
-                    } else {
-                        0
-                    };
-                    let overlap_target =
-                        raw_states
-                            .get(next_si)
-                            .filter(|_| next_si != si)
-                            .filter(|next| {
-                                !next.is_folded && !next.is_lock_body && !next.comb_stmts.is_empty()
-                            });
-                    if let Some(next) = overlap_target {
+                    if let Some(next) = raw_states.get(next_si) {
                         let next_comb =
                             transform_shared_or_assigns(&next.comb_stmts, &shared_signals, sp);
                         let overlap_cond = Expr::new(
