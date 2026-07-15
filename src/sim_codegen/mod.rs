@@ -3083,6 +3083,11 @@ impl<'a> Ctx<'a> {
         self
     }
 
+    fn with_reset_levels(mut self, reset_levels: &'a HashMap<String, ResetLevel>) -> Self {
+        self.reset_levels = reset_levels;
+        self
+    }
+
     fn with_vec_names(mut self, vec_names: &'a HashSet<String>) -> Self {
         self.vec_names = Some(vec_names);
         self
@@ -6520,6 +6525,22 @@ impl<'a> SimCodegen<'a> {
             port_names.insert(flat_name.clone());
         }
 
+        // Keep `.asserted` polarity-aware in every generated C++ expression
+        // context. The eval() refactor moved expression emission into
+        // eval_posedge()/eval_comb(), so both contexts need the module's reset
+        // port map explicitly.
+        let reset_levels: HashMap<String, ResetLevel> = m
+            .ports
+            .iter()
+            .filter_map(|p| {
+                if let TypeExpr::Reset(_, level) = &p.ty {
+                    Some((p.name.name.clone(), *level))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
         let mut reg_names = collect_reg_names(&m.body, &m.ports);
         reg_names.extend(collect_pipe_reg_names(&m.body));
         let port_reg_names = collect_port_reg_names(&m.ports);
@@ -8514,6 +8535,7 @@ impl<'a> SimCodegen<'a> {
             )
             .with_signed_names(&signed_names)
             .with_float_names(&float_names)
+            .with_reset_levels(&reset_levels)
             .with_vec_names(&vec_reg_names)
             .with_vec_2d_names(&vec_2d_names)
             .with_vec_sizes(&vec_sizes)
@@ -8582,6 +8604,7 @@ impl<'a> SimCodegen<'a> {
                                             &bus_port_names,
                                         )
                                         .with_signed_names(&signed_names)
+                                        .with_reset_levels(&reset_levels)
                                         .with_float_names(&float_names);
                                         cpp_expr(expr, &tmp_ctx)
                                     }
@@ -8803,6 +8826,7 @@ impl<'a> SimCodegen<'a> {
                     )
                     .with_signed_names(&signed_names)
                     .with_float_names(&float_names)
+                    .with_reset_levels(&reset_levels)
                     .with_vec_names(&vec_reg_names)
                     .with_vec_2d_names(&vec_2d_names)
                     .with_vec_sizes(&vec_sizes)
@@ -9063,6 +9087,7 @@ impl<'a> SimCodegen<'a> {
         )
         .with_signed_names(&signed_names)
         .with_float_names(&float_names)
+        .with_reset_levels(&reset_levels)
         .with_vec_names(&vec_reg_names)
         .with_vec_2d_names(&vec_2d_names)
         .with_vec_sizes(&vec_sizes)

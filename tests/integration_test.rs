@@ -19913,6 +19913,57 @@ fn test_sim_codegen_async_reset_fires_outside_rising_edge() {
 }
 
 #[test]
+fn test_sim_codegen_reset_asserted_uses_reset_polarity() {
+    // Regression for the eval() → eval_posedge()/eval_comb() refactor: those
+    // Ctx instances must retain the module's reset polarity map so
+    // `rst.asserted` means `rst` while `rst_n.asserted` means `!rst_n`.
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+
+        module HighRst
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port q: out Bool;
+          reg q_r: Bool reset none;
+          seq on clk rising
+            if rst.asserted
+              q_r <= 0;
+            end if
+          end seq
+          let q = q_r;
+        end module HighRst
+
+        module LowRst
+          port clk: in Clock<SysDomain>;
+          port rst_n: in Reset<Sync, Low>;
+          port q: out Bool;
+          reg q_r: Bool reset none;
+          seq on clk rising
+            if rst_n.asserted
+              q_r <= 0;
+            end if
+          end seq
+          let q = q_r;
+        end module LowRst
+    ";
+    let sim = compile_to_sim_h(source, false);
+    assert!(
+        sim.contains("if (rst)"),
+        "active-high `.asserted` must use rst:\n{sim}"
+    );
+    assert!(
+        sim.contains("if (!rst_n)"),
+        "active-low `.asserted` must invert rst_n:\n{sim}"
+    );
+    assert!(
+        !sim.contains("rst.asserted") && !sim.contains("rst_n.asserted"),
+        "native sim must not emit unresolved `.asserted` field access:\n{sim}"
+    );
+}
+
+#[test]
 fn test_sim_codegen_collect_assigns_walks_indexed_lhs() {
     // Regression: `collect_stmt_assigns` only handled `Ident` and
     // `FieldAccess` LHS forms, so `q[hi:lo] <= ...` and `q[i] <= ...`
