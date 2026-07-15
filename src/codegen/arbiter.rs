@@ -173,13 +173,11 @@ impl<'a> Codegen<'a> {
         // happens in the same cycle (matching the coroutine thread sim).
         if a.lock_hold {
             // The request port array carries a third `release` signal for
-            // lock arbiters: the owner's last lock-body state pulses it
-            // when its exit transition fires. Clearing the hold on release
-            // (instead of waiting for request_valid to deassert) lets a
-            // thread that releases and immediately re-requests — a
-            // back-to-back `lock` in a loop, whose request wire never
-            // drops — still hand the next re-arbitration to a waiting
-            // contender.
+            // lock arbiters. It is a registered one-cycle event from the
+            // thread FSM, so the arbiter can observe release after the edge
+            // without creating a combinational release/grant loop. The
+            // combinational owner fast path below is suppressed while the
+            // event is high, allowing immediate post-edge re-arbitration.
             let release_sig = a
                 .port_arrays
                 .first()
@@ -467,7 +465,7 @@ impl<'a> Codegen<'a> {
             // asserted; the rotating scan below only runs when the
             // resource is free (arb_found gates it).
             self.line(&format!(
-                "if (hold_valid_r && {req_valid}[hold_owner_r]) begin"
+                "if (hold_valid_r && {req_valid}[hold_owner_r] && !request_release[hold_owner_r]) begin"
             ));
             self.indent += 1;
             self.line("arb_found = 1'b1;");
@@ -523,7 +521,7 @@ impl<'a> Codegen<'a> {
             // not preempt a held lock. The priority scan below only runs
             // when the resource is free (grant_valid gates it).
             self.line(&format!(
-                "if (hold_valid_r && {req_valid}[hold_owner_r]) begin"
+                "if (hold_valid_r && {req_valid}[hold_owner_r] && !request_release[hold_owner_r]) begin"
             ));
             self.indent += 1;
             self.line(&format!("{grant_valid_sig} = 1'b1;"));
@@ -624,7 +622,7 @@ impl<'a> Codegen<'a> {
             // Current owner keeps the grant while its request stays
             // asserted; the hook only arbitrates when the resource is free.
             self.line(&format!(
-                "if (hold_valid_r && {req_valid}[hold_owner_r]) grant_onehot = {}'(1) << hold_owner_r;",
+                "if (hold_valid_r && {req_valid}[hold_owner_r] && !request_release[hold_owner_r]) grant_onehot = {}'(1) << hold_owner_r;",
                 num_req
             ));
             self.line(&format!("else grant_onehot = {fn_name}({args_str});"));

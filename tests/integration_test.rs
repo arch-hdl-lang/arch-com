@@ -18182,6 +18182,88 @@ fn test_semaphore_thread_sim_both_backends_independently_pass() {
 }
 
 #[test]
+fn test_tight_relock_release_event_is_registered_709() {
+    // arch#709 regression: a tight re-lock used to connect the combinational
+    // lock-exit release pulse back through grant -> admit -> release. The
+    // release event must be registered, and the arbiter's owner fast path must
+    // be disabled while that post-edge event is active so re-arbitration can
+    // still happen without an inserted bubble.
+    let source = r#"
+        module SemaphoreRelock709
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          resource pool: semaphore<2, round_robin>;
+
+          thread T0 on clk rising, rst high
+            lock pool
+              wait 1 cycle;
+            end lock pool
+          end thread T0
+
+          thread T1 on clk rising, rst high
+            lock pool
+              wait 1 cycle;
+            end lock pool
+          end thread T1
+
+          thread T2 on clk rising, rst high
+            lock pool
+              wait 1 cycle;
+            end lock pool
+          end thread T2
+        end module SemaphoreRelock709
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("logic _pool_release_0 = 0"),
+        "lock release must be a registered signal with an initializer:\n{sv}"
+    );
+    assert!(
+        sv.contains("_pool_release_0 <= 1")
+            && sv.contains("_pool_release_1 <= 1")
+            && sv.contains("_pool_release_2 <= 1"),
+        "each lock exit must emit a sequential release event:\n{sv}"
+    );
+    assert!(
+        sv.contains("!request_release[hold_owner_r]"),
+        "the arbiter must re-arbitrate while the registered release event is active:\n{sv}"
+    );
+    assert!(
+        comb_loop_warnings(source).is_empty(),
+        "tight re-lock lowering must not report a combinational SCC"
+    );
+}
+
+#[test]
+fn test_mutex_tight_relock_single_requester_no_bubble_709() {
+    // Runtime regression for the timing contract: one requester should
+    // reacquire immediately after its lock body exits when no contender is
+    // active. The registered release event must not create a bubble.
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/thread/semaphore_relock_single.arch")
+        .arg("--tb")
+        .arg("tests/thread/tb_semaphore_relock_single.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run single-requester tight-relock simulation");
+    assert!(
+        out.status.success(),
+        "single-requester tight-relock simulation should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS MutexRelockSingle709"),
+        "single requester must make progress every cycle:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
 fn test_semaphore_verilator_behavior() {
     // sim<->SV lock-step: build the same semaphore_basic.arch fixture to SV
     // and run it through Verilator with the identical TB source (arch's

@@ -4461,12 +4461,19 @@ fn lower_module_threads(
                 unpacked_ascending: false,
                 span: sp,
             }));
-            merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
-                bus_params: Vec::new(),
+            // Release is an edge-qualified event. Keeping it combinational
+            // lets the lock exit condition depend on grant while the arbiter
+            // consumes release to produce grant, creating a real comb loop
+            // for tight re-locks (arch#709). The registered event is still
+            // visible during the following comb phase, so the arbiter can
+            // hand off immediately after the edge without adding a bubble.
+            merged_body.push(ModuleBodyItem::RegDecl(RegDecl {
                 name: Ident::new(format!("_{}_release_{}", res_name, ti), sp),
                 ty: TypeExpr::Bool,
-                unpacked: false,
-                unpacked_ascending: false,
+                init: Some(make_zero_expr(sp)),
+                reset: RegReset::Inherit(Ident::new(rst_name.clone(), sp), make_zero_expr(sp)),
+                guard: None,
+                multicycle: None,
                 span: sp,
             }));
         }
@@ -4990,6 +4997,20 @@ fn lower_module_threads(
     // ── Per-thread state machines ──────────────────────────────────────
     let mut all_thread_comb: Vec<Stmt> = Vec::new();
     let mut all_thread_seq: Vec<Stmt> = Vec::new();
+    // Release signals are registered one-cycle events. Clear every event at
+    // the start of the merged sequential block; state-specific lock-exit
+    // assignments appended below override this default on the firing edge.
+    let mut release_resources: Vec<&String> = all_resources.iter().collect();
+    release_resources.sort();
+    for res_name in release_resources {
+        for ti in 0..threads.len() {
+            all_thread_seq.push(Stmt::Assign(RegAssign {
+                target: Expr::new(ExprKind::Ident(format!("_{}_release_{}", res_name, ti)), sp),
+                value: Expr::new(ExprKind::Bool(false), sp),
+                span: sp,
+            }));
+        }
+    }
     let mut thread_map_threads: Vec<crate::thread_map::ThreadMapThread> = Vec::new();
     // Per-state `localparam` decls (one set per thread). Issue #247: make
     // thread-lowered FSMs debuggable by giving each state a descriptive
@@ -5141,22 +5162,23 @@ fn lower_module_threads(
         // `is_folded` and skipped during codegen — it becomes unreachable.
         fold_wait_until_exit_assignments(&mut raw_states, t.once);
 
-        // Lock release pulses: for each state marked as the last state of a
-        // `lock` body, emit `_<res>_release_<ti> = 1` combinationally when
-        // that state's exit transition fires. The arbiter's hold latch
-        // clears on this pulse, so a thread that releases and immediately
-        // re-requests (back-to-back `lock` in a loop — its request wire
-        // never deasserts) still lets a waiting contender win the next
-        // re-arbitration. Runs AFTER the fold pass: a folded (absorbed)
-        // last state relocates its pulse into the absorbing predecessor's
-        // cond-exit arm. Names are constructed post-rename, so grant/cnt
-        // idents inside the reused exit conditions are already per-thread.
+        // Lock release events: for each state marked as the last state of a
+        // `lock` body, emit `_<res>_release_<ti> <= 1` sequentially when that
+        // state's exit transition fires. The event is registered so the
+        // release condition may depend on grant without feeding a
+        // combinational release -> grant -> release loop (arch#709). The
+        // arbiter consumes the event in its next ownership update and ignores
+        // the old owner during the following comb phase, preserving immediate
+        // uncontended reacquisition and post-edge handoff. Runs AFTER the
+        // fold pass: a folded (absorbed) last state relocates its event into
+        // the absorbing predecessor's cond-exit arm. Names are constructed
+        // post-rename, so grant/cnt idents inside reused exit conditions are
+        // already per-thread.
         enum LockReleaseFire {
             Never,
             Conditional(Expr),
             Unconditional,
         }
-
         for si in 0..raw_states.len() {
             let Some(res) = raw_states[si].lock_release.clone() else {
                 continue;
@@ -5176,7 +5198,7 @@ fn lower_module_threads(
                     })
                 })
                 .unwrap_or(sp);
-            let rel_assign = Stmt::Assign(CombAssign {
+            let rel_assign = Stmt::Assign(RegAssign {
                 target: Expr::new(ExprKind::Ident(format!("_{}_release_{}", res, ti)), rel_sp),
                 value: Expr::new(ExprKind::Literal(LitKind::Dec(1)), rel_sp),
                 span: rel_sp,
@@ -5258,7 +5280,7 @@ fn lower_module_threads(
                 }
                 LockReleaseFire::Unconditional => rel_assign,
             };
-            raw_states[target_idx].comb_stmts.push(stmt);
+            raw_states[target_idx].seq_stmts.push(stmt);
         }
 
         let n_states = raw_states.len();
@@ -5952,16 +5974,13 @@ fn lower_module_threads(
             }));
         }
     }
-    // Default lock req = 0 / release = 0
+    // Default lock req = 0. Release events are registered and are cleared by
+    // the merged sequential block above before state-specific release events
+    // override them on the same edge.
     for res_name in &all_resources {
         for ti in 0..threads.len() {
             merged_comb.push(Stmt::Assign(CombAssign {
                 target: Expr::new(ExprKind::Ident(format!("_{}_req_{}", res_name, ti)), sp),
-                value: Expr::new(ExprKind::Bool(false), sp),
-                span: sp,
-            }));
-            merged_comb.push(Stmt::Assign(CombAssign {
-                target: Expr::new(ExprKind::Ident(format!("_{}_release_{}", res_name, ti)), sp),
                 value: Expr::new(ExprKind::Bool(false), sp),
                 span: sp,
             }));

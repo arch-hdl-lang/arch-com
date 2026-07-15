@@ -1,0 +1,19 @@
+// arch#709 regression: one requester must reacquire a mutex without a
+// bubble when no other requester is active.
+module MutexRelockSingle709
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port count: out UInt<16>;
+
+  resource pool: mutex<round_robin>;
+
+  reg count_r: UInt<16> reset rst => 0;
+  comb count = count_r; end comb
+
+  thread T on clk rising, rst high
+    lock pool
+      count_r <= count_r +% 1;
+      wait 1 cycle;
+    end lock pool
+  end thread T
+end module MutexRelockSingle709
