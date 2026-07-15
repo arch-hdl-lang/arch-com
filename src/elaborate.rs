@@ -4667,12 +4667,34 @@ fn lower_module_threads(
                     Expr::new(ExprKind::Ident(format!("_{}_admit_{}", res_name, ti)), sp);
                 let held_ident = Expr::new(ExprKind::Ident(held_name.clone()), sp);
                 let req_ident = Expr::new(ExprKind::Ident(format!("_{}_req_{}", res_name, ti)), sp);
-                let still_held = Expr::new(
+                // #696: a semaphore slot is freed by the end-of-lock-body release
+                // pulse (`_<res>_release_<ti>`), NOT only by the request wire
+                // deasserting. A thread that re-locks back-to-back (tight loop)
+                // never deasserts `req_i` across `end lock`, so `held_i & req_i`
+                // alone would pin the slot forever and starve waiting contenders.
+                // Gate the hold on `!release_i` so the slot rotates on the pulse,
+                // matching the arbiter hold-latch (which already consumes the same
+                // pulse via `request_release`, see lock-release-pulse generation).
+                let not_release = Expr::new(
+                    ExprKind::Unary(
+                        UnaryOp::Not,
+                        Box::new(Expr::new(
+                            ExprKind::Ident(format!("_{}_release_{}", res_name, ti)),
+                            sp,
+                        )),
+                    ),
+                    sp,
+                );
+                let held_and_req = Expr::new(
                     ExprKind::Binary(
                         BinOp::And,
                         Box::new(held_ident.clone()),
                         Box::new(req_ident),
                     ),
+                    sp,
+                );
+                let still_held = Expr::new(
+                    ExprKind::Binary(BinOp::And, Box::new(held_and_req), Box::new(not_release)),
                     sp,
                 );
                 let next_val = Expr::new(

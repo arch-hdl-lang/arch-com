@@ -1,0 +1,50 @@
+// semaphore_relock_rr.arch — regression fixture for arch#696.
+//
+// Three lanes each re-acquire a `semaphore<2, round_robin>` pool every
+// iteration of the implicit thread loop with NO intervening wait, so each
+// lane's request wire never deasserts across the `end lock`/`lock` boundary
+// (the "tight re-lock" idiom). The counting semaphore must free the slot on
+// the end-of-lock-body release pulse, not only when the request deasserts —
+// otherwise the two occupied slots stay pinned on T0/T1 and T2 is starved.
+//
+// Before #696 the FSM-lowered (synthesizable) backend starved T2 (cnt2=0)
+// while the coroutine backend rotated fairly, so `--thread-sim both` diverges.
+// tb_semaphore_relock.cpp asserts all three lanes make balanced progress; the
+// cross-check asserts the two backends agree cycle-for-cycle.
+module SemaphoreRelock
+  port clk:  in Clock<SysDomain>;
+  port rst:  in Reset<Sync, High>;
+  port cnt0: out UInt<16>;
+  port cnt1: out UInt<16>;
+  port cnt2: out UInt<16>;
+
+  resource pool: semaphore<2, round_robin>;
+
+  reg c0: UInt<16> reset rst => 0;
+  reg c1: UInt<16> reset rst => 0;
+  reg c2: UInt<16> reset rst => 0;
+  comb cnt0 = c0; end comb
+  comb cnt1 = c1; end comb
+  comb cnt2 = c2; end comb
+
+  thread T0 on clk rising, rst high
+    lock pool
+      c0 <= c0 +% 1;
+      wait 1 cycle;
+    end lock pool
+  end thread T0
+
+  thread T1 on clk rising, rst high
+    lock pool
+      c1 <= c1 +% 1;
+      wait 1 cycle;
+    end lock pool
+  end thread T1
+
+  thread T2 on clk rising, rst high
+    lock pool
+      c2 <= c2 +% 1;
+      wait 1 cycle;
+    end lock pool
+  end thread T2
+end module SemaphoreRelock

@@ -17815,6 +17815,88 @@ fn test_semaphore_n2_synthesizes_holder_tracking() {
     );
 }
 
+// arch#696 regression (structural): the per-thread `held` slot register must
+// be freed by the end-of-lock-body release pulse (`_pool_release_<ti>`), not
+// only when the request wire deasserts. A thread that re-locks back-to-back
+// (tight loop) never deasserts `req`, so `held & req` alone would pin the slot
+// and starve waiting contenders. The next-state must gate on `!release`.
+#[test]
+fn test_semaphore_slot_freed_by_release_pulse_696() {
+    let sv = compile_to_sv(&semaphore_pool_source("2", "round_robin"));
+    assert!(
+        sv.contains("_pool_req_0 && !_pool_release_0")
+            && sv.contains("_pool_req_1 && !_pool_release_1"),
+        "arch#696: each semaphore `held` next-state must gate on `!_pool_release_<ti>` \
+         so a back-to-back re-lock frees its slot; found un-gated hold:\n{sv}"
+    );
+}
+
+// arch#696 regression (runtime, FSM-lowered backend = the synthesizable path
+// that miscompiled): three lanes tight-re-lock a `semaphore<2, round_robin>`
+// with no gap between `end lock` and the next `lock`. Before the fix the FSM
+// lowering parked both slots on T0/T1 and starved T2 (cnt2=0); round_robin
+// must rotate all three. The TB asserts every lane makes balanced progress.
+#[test]
+fn test_semaphore_relock_round_robin_fairness_696() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/thread/semaphore_relock_rr.arch")
+        .arg("--tb")
+        .arg("tests/thread/tb_semaphore_relock.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim on semaphore_relock_rr");
+    assert!(
+        out.status.success(),
+        "arch sim must succeed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS SemRelock"),
+        "arch#696: round_robin semaphore<2> must rotate all three tight-re-lock \
+         lanes (no starvation); TB reported:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+// arch#696 regression (runtime, safety bound): the SAME tight-re-lock churn must
+// never over-subscribe the pool. Four lanes hold a semaphore<2> until their
+// TB-driven release; the TB asserts busy<=2 EVERY cycle, that the pool actually
+// reaches 2 concurrent holders, and drives 60 rounds of release+re-admit churn —
+// the release path the fix newly exercises. Guards against the fix freeing/
+// re-admitting a slot such that >N threads hold at once (adversarial-review gap:
+// the fairness test alone did not check the concurrency bound).
+#[test]
+fn test_semaphore_relock_concurrency_bound_696() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/thread/semaphore_relock_bound.arch")
+        .arg("--tb")
+        .arg("tests/thread/tb_semaphore_relock_bound.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim on semaphore_relock_bound");
+    assert!(
+        out.status.success(),
+        "arch sim must succeed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS SemRelockBound"),
+        "arch#696: semaphore<2> must reach exactly 2 concurrent holders and never \
+         exceed 2 through release/re-admit churn; TB reported:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
 #[test]
 fn test_semaphore_1_is_bit_identical_to_mutex() {
     // §20.8.4: `semaphore<1, policy>` must be semantically identical to
