@@ -388,12 +388,37 @@ Consequences:
    reproduce (a logic-depth proxy) and why.
 3.5. **Staged emission behind a CLI option (§4)** — carry the builtin 6-stage
    schedule as registry data (the internal precursor of the `.archpipe`
-   format); `arch build --staged-ops` (name TBD) emits it at registry-resolved
+   format); `arch build --staged-ops` emits it at registry-resolved
    call sites; default emission and `arch sim` keep the cascade form. Extend
    the lock-step regression to the staged emission (it is a real second
    implementation, so it carries a real equivalence obligation). Update the
    registry note with both measured numbers (~113 MHz cascade on Yosys/ABC,
-   ~260 MHz staged). Not started.
+   ~260 MHz staged). **DONE (2026-07-16).** Implementation notes:
+   - *Schedule carrier*: `pipelined_ops::StagedSchedule` — per-namespace
+     contiguous stage-cut points over the `fp_ir::linearize` temp order
+     (main `arch_fma_f32` t0..t308 + the inlined `arch_f32_add` call as an
+     `A_` namespace, A_t0..A_t174), extracted from the characterized
+     hand-staged run; zero temp-numbering drift, pinned by unit tests that
+     fail loudly if `fp_ops` evolves.
+   - *Renderer*: `fp_ir::render_sv_staged` — same `linearize` walk and the
+     same per-`Kind` syntax table (`sv_rhs_with`) as the comb SV renderer,
+     plus stage-qualified naming, live-set register layers, and input
+     forwarding. Emits a standalone staged module (`ArchF32FmaStaged6`)
+     with reset-free internal layers and a combinational final stage; any
+     structural drift returns `Err` → cascade fallback with a warning.
+   - *Binding-site form*: the elaborate-generated 32-bit cascade regs are
+     rewritten into a **1-bit validity chain** (same reset, value 0) and
+     the port's final assignment becomes
+     `y <= y_stg{N-1} ? <staged>.y : <reset value>` — so the port's own
+     output register supplies edge N and its declared reset, and the
+     post-reset warm-up window is cycle-exact with the cascade emission
+     (internal staged layers stay reset-free, i.e. retiming-friendly).
+   - *Fallbacks (warning, never error)*: no schedule on the row, renderer
+     drift, falling-edge clock, conditional/nested call sites.
+   - *Verification*: `tests/pipelined_fma_lockstep_test.rs` — staged-vs-
+     native-cascade randomized lock-step (1200 cycles, full-32-bit operands,
+     mid-stream reset pulse) bit-exact per cycle, plus staged latency
+     exactness (6 edges) and emission-shape/default-regression tests.
 4. **`.archpipe` loader + verification gate** — file format, `ARCH_LIB_PATH`
    discovery, `unverified` warning path, `arch formal` promotion. Not started.
 5. **Generalize beyond fma** — `mul_pipe`, `add_pipe`; additional characterized

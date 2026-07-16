@@ -350,3 +350,327 @@ fn pipelined_fma_lockstep_sim_vs_verilator() {
          exercised:\n{native_stdout}"
     );
 }
+
+// ─── phase 3.5: staged emission (`arch build --staged-ops`) ─────────────────
+//
+// The staged datapath is a GENUINE second implementation (hand-scheduled
+// per-stage logic + live-set register layers, not the comb cone + delay
+// line), so unlike the cascade form its equivalence is NOT true by
+// construction — the lock-step test below is the discharge of that
+// obligation (proposal §4 / phase 3.5): Verilator on the staged SV vs the
+// native sim (always cascade), bit-for-bit every cycle, including the
+// mid-stream reset pulse and its N-1-cycle warm-up window (reproduced in
+// the staged form by the 1-bit validity chain that replaces the cascade).
+
+/// Builds the fixture with `--staged-ops` and returns the SV path. Asserts
+/// the emitted SV has the staged shape (staged module + instance + validity
+/// chain) and did NOT silently fall back to the cascade.
+fn build_staged(td: &tempfile::TempDir, arch_path: &std::path::Path) -> std::path::PathBuf {
+    let sv_path = td.path().join("staged.sv");
+    let build_out = arch()
+        .arg("build")
+        .arg("--staged-ops")
+        .arg(arch_path)
+        .arg("-o")
+        .arg(&sv_path)
+        .output()
+        .expect("run arch build --staged-ops");
+    assert!(
+        build_out.status.success(),
+        "arch build --staged-ops should succeed\nstderr:\n{}",
+        String::from_utf8_lossy(&build_out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&build_out.stderr);
+    assert!(
+        !stderr.contains("falls back to the cascade emission"),
+        "the builtin fma<pipelined, 6> site must emit staged, not fall back:\n{stderr}"
+    );
+    let sv = std::fs::read_to_string(&sv_path).expect("read staged SV");
+    assert!(
+        sv.contains("module ArchF32FmaStaged6 ("),
+        "staged module definition missing"
+    );
+    assert!(
+        sv.contains("ArchF32FmaStaged6 __staged_fma_0 (.clk(clk), .a(a), .b(b), .c(c), .y(__staged_fma_0_y));"),
+        "staged instance missing"
+    );
+    for k in 1..=5 {
+        assert!(
+            sv.contains(&format!("// ── register layer {k} (")),
+            "staged register layer {k} missing"
+        );
+    }
+    // The parent's cascade became a 1-bit validity chain gating the result.
+    assert!(
+        sv.contains("y_stg1 <= 1'b1;"),
+        "validity chain head missing"
+    );
+    assert!(
+        sv.contains("y <= y_stg5 ? __staged_fma_0_y : 32'h00000000;"),
+        "warm-up gate missing"
+    );
+    // The parent module must NOT compute the result through the comb
+    // function call anymore (that's the cascade form).
+    assert!(
+        !sv.contains("y_stg1 <= arch_fma_f32("),
+        "comb call survived --staged-ops"
+    );
+    sv_path
+}
+
+/// Cheap shape check + default-mode regression: `--staged-ops` emits the
+/// staged structure; the SAME fixture without the flag emits the cascade,
+/// with no staged artifacts. Runs without Verilator.
+#[test]
+fn staged_ops_emits_staged_shape_and_default_stays_cascade() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("F32FmaPipe6Lockstep.arch");
+    std::fs::write(&arch_path, MODULE_SRC).expect("write .arch");
+    build_staged(&td, &arch_path);
+
+    let sv_path = td.path().join("cascade.sv");
+    let build_out = arch()
+        .arg("build")
+        .arg(&arch_path)
+        .arg("-o")
+        .arg(&sv_path)
+        .output()
+        .expect("run arch build");
+    assert!(build_out.status.success());
+    let sv = std::fs::read_to_string(&sv_path).expect("read cascade SV");
+    assert!(
+        sv.contains("y_stg1 <= arch_fma_f32(a, b, c);"),
+        "default build must keep the comb+cascade form"
+    );
+    assert!(
+        !sv.contains("ArchF32FmaStaged6") && !sv.contains("__staged"),
+        "default build must contain no staged artifacts"
+    );
+}
+
+/// A conditional (nested) pipelined call is outside the staged v1 shape:
+/// `--staged-ops` must warn and fall back to the cascade — never error,
+/// never emit a half-rewritten site.
+#[test]
+fn staged_ops_conditional_call_falls_back_with_warning() {
+    let src = r#"
+module F32FmaPipe6Cond
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync, High>;
+  port en: in Bool;
+  port a: in FP32;
+  port b: in FP32;
+  port c: in FP32;
+  port y: out pipe_reg<FP32, 6> reset rst => 0.0;
+
+  seq on clk rising
+    if en
+      y@6 <= fma<pipelined, 6>(a, b, c);
+    end if
+  end seq
+end module F32FmaPipe6Cond
+"#;
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("F32FmaPipe6Cond.arch");
+    std::fs::write(&arch_path, src).expect("write .arch");
+    let sv_path = td.path().join("cond.sv");
+    let build_out = arch()
+        .arg("build")
+        .arg("--staged-ops")
+        .arg(&arch_path)
+        .arg("-o")
+        .arg(&sv_path)
+        .output()
+        .expect("run arch build --staged-ops");
+    assert!(
+        build_out.status.success(),
+        "conditional site must fall back, not error\nstderr:\n{}",
+        String::from_utf8_lossy(&build_out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&build_out.stderr);
+    assert!(
+        stderr.contains("falls back to the cascade emission"),
+        "expected a fallback warning for the conditional site:\n{stderr}"
+    );
+    let sv = std::fs::read_to_string(&sv_path).expect("read SV");
+    assert!(
+        sv.contains("arch_fma_f32(") && !sv.contains("ArchF32FmaStaged6"),
+        "conditional site must emit the cascade form"
+    );
+}
+
+/// Latency-exactness on the STAGED build: fma(2,3,1)=7.0 must first appear
+/// at exactly the 6th posedge (cycle index 5), same as the cascade —
+/// checked via Verilator since the native sim always runs the cascade form.
+#[test]
+fn staged_ops_latency_is_exactly_six_verilator() {
+    if !verilator_available() {
+        eprintln!("skipping staged_ops_latency_is_exactly_six_verilator: verilator not in PATH");
+        return;
+    }
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("F32FmaPipe6Lockstep.arch");
+    std::fs::write(&arch_path, MODULE_SRC).expect("write .arch");
+    let sv_path = build_staged(&td, &arch_path);
+
+    let tb = td.path().join("tb_lat.cpp");
+    std::fs::write(
+        &tb,
+        r#"
+#include "VF32FmaPipe6Lockstep.h"
+#include <cstdio>
+#include <cstdint>
+int main() {
+    VF32FmaPipe6Lockstep dut;
+    dut.rst = 1; dut.a = 0; dut.b = 0; dut.c = 0;
+    dut.clk = 0; dut.eval(); dut.clk = 1; dut.eval();
+    dut.rst = 0;
+    dut.a = 0x40000000u; dut.b = 0x40400000u; dut.c = 0x3F800000u; // 2*3+1=7
+    int first = -1;
+    for (int cyc = 0; cyc < 10; cyc++) {
+        dut.clk = 0; dut.eval(); dut.clk = 1; dut.eval();
+        if (first < 0 && dut.y == 0x40E00000u) first = cyc;
+    }
+    printf("first=%d\n", first);
+    return first == 5 ? 0 : 1;
+}
+"#,
+    )
+    .expect("write tb");
+    let obj_dir = td.path().join("obj_lat");
+    let verilate = std::process::Command::new("verilator")
+        .args([
+            "--cc",
+            "--exe",
+            "--build",
+            "--sv",
+            "-Wno-fatal",
+            "-Wno-WIDTH",
+        ])
+        .arg("--top-module")
+        .arg("F32FmaPipe6Lockstep")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&sv_path)
+        .arg(&tb)
+        .output()
+        .expect("verilate");
+    assert!(
+        verilate.status.success(),
+        "Verilator build should pass\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stderr)
+    );
+    let run = std::process::Command::new(obj_dir.join("VF32FmaPipe6Lockstep"))
+        .output()
+        .expect("run");
+    assert!(
+        run.status.success(),
+        "staged latency must be exactly 6 edges — {}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+}
+
+/// **The phase-3.5 equivalence obligation.** Same >=1000-cycle randomized
+/// stimulus (mid-stream reset pulse included) as the cascade lock-step:
+/// Verilator on the STAGED SV vs the native sim (cascade form) must agree
+/// bit-for-bit on every cycle — including the reset warm-up window, which
+/// the staged form reproduces via its validity chain.
+#[test]
+fn staged_ops_lockstep_sim_vs_verilator() {
+    if !verilator_available() {
+        eprintln!("skipping staged_ops_lockstep_sim_vs_verilator: verilator not in PATH");
+        return;
+    }
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("F32FmaPipe6Lockstep.arch");
+    std::fs::write(&arch_path, MODULE_SRC).expect("write .arch");
+
+    // Native sim (cascade form — the trusted reference).
+    let native_tb = td.path().join("tb_native.cpp");
+    std::fs::write(&native_tb, tb_native()).expect("write native tb");
+    let native_outdir = td.path().join("native_out");
+    std::fs::create_dir_all(&native_outdir).unwrap();
+    let sim_out = arch()
+        .arg("sim")
+        .arg(&arch_path)
+        .arg("--tb")
+        .arg(&native_tb)
+        .arg("--outdir")
+        .arg(&native_outdir)
+        .output()
+        .expect("run arch sim");
+    assert!(
+        sim_out.status.success(),
+        "arch sim should build/run\nstderr:\n{}",
+        String::from_utf8_lossy(&sim_out.stderr)
+    );
+    let native_stdout = String::from_utf8_lossy(&sim_out.stdout).to_string();
+
+    // Staged SV + Verilator.
+    let sv_path = build_staged(&td, &arch_path);
+    let verilator_tb = td.path().join("tb_verilator.cpp");
+    std::fs::write(&verilator_tb, tb_verilator()).expect("write verilator tb");
+    let obj_dir = td.path().join("obj_staged");
+    let verilate = std::process::Command::new("verilator")
+        .args([
+            "--cc",
+            "--exe",
+            "--build",
+            "--sv",
+            "--assert",
+            "-Wno-fatal",
+            "-Wno-WIDTH",
+            "-Wno-DECLFILENAME",
+        ])
+        .arg("--top-module")
+        .arg("F32FmaPipe6Lockstep")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&sv_path)
+        .arg(&verilator_tb)
+        .output()
+        .expect("verilate");
+    assert!(
+        verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr)
+    );
+    let run = std::process::Command::new(obj_dir.join("VF32FmaPipe6Lockstep"))
+        .output()
+        .expect("run verilated sim");
+    assert!(run.status.success());
+    let sv_stdout = String::from_utf8_lossy(&run.stdout).to_string();
+
+    let native_lines: Vec<&str> = native_stdout.lines().collect();
+    let sv_lines: Vec<&str> = sv_stdout.lines().collect();
+    assert_eq!(native_lines.len(), TOTAL_CYCLES);
+    assert_eq!(sv_lines.len(), TOTAL_CYCLES);
+    let mut mismatches = Vec::new();
+    for cyc in 0..TOTAL_CYCLES {
+        if native_lines[cyc] != sv_lines[cyc] {
+            mismatches.push(format!(
+                "cycle {cyc}: native(cascade)=`{}` staged=`{}`",
+                native_lines[cyc], sv_lines[cyc]
+            ));
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "STAGED-vs-cascade lock-step mismatch(es) — the staged datapath is a \
+         real second implementation and this is its equivalence obligation \
+         ({} of {TOTAL_CYCLES} cycles differ):\n{}",
+        mismatches.len(),
+        mismatches.join("\n")
+    );
+    // Reset pulse must have been exercised (not a vacuous pass).
+    let post_reset_zero = native_lines
+        .iter()
+        .skip(703)
+        .take(6)
+        .any(|l| l.ends_with(" 00000000"));
+    assert!(
+        post_reset_zero,
+        "reset pulse not exercised:\n{native_stdout}"
+    );
+}
