@@ -141,6 +141,25 @@ state (has `transition_cond`) and `cur_comb` is empty, the seq assigns are merge
 into the previous state guarded by `transition_cond`.  This eliminates one dead
 cycle.  Similarly for `for`-loop exit transitions.
 
+### Atomic comb-overlap completion
+
+In addition to the trailing-state merge above, `lower_module_threads` computes
+eligible successor states for simple conditional transitions. If state `s` has
+one `transition_cond` `c` and its resolved successor `u` (the folded exit
+target when one is present, otherwise the natural successor) is a non-folded,
+non-lock, non-dispatch, non-counter, conditional state with combinational
+outputs, the lowering emits `u`'s comb statements under `state == s && c`.
+Unless a thread-level `default_when` clause preempts the normal FSM path, the
+same guard also executes `u`'s complete sequential body on that edge. If
+`u`'s own transition condition is true, its exit state is selected with the
+same-edge last-write priority; otherwise the FSM remains in `u` for the next
+cycle. This makes a ready/valid successor an atomic acceptance step rather
+than merely exposing `ready` one cycle early. Lock-body, dispatch, counter,
+unconditional-action, and folded successors are intentionally not eligible.
+A terminal `thread once` state is not overlapped with itself, but a distinct
+conditional terminal successor may still be eligible; if its condition is
+true, the thread reaches the terminal state on that same edge.
+
 ---
 
 ### 4d.1 — Wait/Dispatch Fusion
@@ -359,13 +378,14 @@ end
 
 | State kind | Generated logic |
 |------------|-----------------|
-| `transition_cond = Some(c)` | `if (c) _state <= si+1` |
-| `wait_cycles = Some(n)` | `_cnt <= _cnt - 1; if (_cnt==0) _state <= si+1` (counter pre-loaded by preceding state) |
+| `transition_cond = Some(c)` | `if (c) _state <= resolved_next(state, si)` |
+| `wait_cycles = Some(n)` | `_cnt <= _cnt - 1; if (_cnt==0) _state <= resolved_next(state, si)` (counter pre-loaded by preceding state) |
 | `multi_transitions = [(c0,t0),(c1,t1),…]` | `if (c0) _state <= t0; if (c1) _state <= t1; …` |
-| none (unconditional) | `_state <= next` |
+| none (unconditional) | `_state <= resolved_next(state, si)` |
 
-`next` = `si+1` for non-final states, `0` for the final state of a repeating
-thread, `si` (hold) for `thread once` final state.
+`resolved_next(state, si)` uses `state.folded_exit_target` when present;
+otherwise it is `si+1` for non-final states, `0` for the final state of a
+repeating thread, or `si` (hold) for a `thread once` final state.
 
 All threads share one `always_ff` block to avoid multi-driver conflicts on shared
 registers.
