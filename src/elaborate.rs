@@ -4461,12 +4461,11 @@ fn lower_module_threads(
                 unpacked_ascending: false,
                 span: sp,
             }));
-            // Release is an edge-qualified event. Keeping it combinational
-            // lets the lock exit condition depend on grant while the arbiter
-            // consumes release to produce grant, creating a real comb loop
-            // for tight re-locks (arch#709). The registered event is still
-            // visible during the following comb phase, so the arbiter can
-            // hand off immediately after the edge without adding a bubble.
+            // Release is an edge-qualified event. The arbiter-facing copy is
+            // registered so a lock exit condition can depend on grant
+            // without creating a release -> grant -> release comb loop
+            // (arch#709). A separate combinational release intent below is
+            // used for semaphore holder bookkeeping.
             merged_body.push(ModuleBodyItem::RegDecl(RegDecl {
                 name: Ident::new(format!("_{}_release_{}", res_name, ti), sp),
                 ty: TypeExpr::Bool,
@@ -4474,6 +4473,18 @@ fn lower_module_threads(
                 reset: RegReset::Inherit(Ident::new(rst_name.clone(), sp), make_zero_expr(sp)),
                 guard: None,
                 multicycle: None,
+                span: sp,
+            }));
+            // Combinational release intent is used only by semaphore holder
+            // bookkeeping. The registered release event above remains the
+            // arbiter-facing signal so tight re-locks cannot form a
+            // release -> grant -> release combinational loop.
+            merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
+                bus_params: Vec::new(),
+                name: Ident::new(format!("_{}_release_pending_{}", res_name, ti), sp),
+                ty: TypeExpr::Bool,
+                unpacked: false,
+                unpacked_ascending: false,
                 span: sp,
             }));
         }
@@ -4675,18 +4686,20 @@ fn lower_module_threads(
                 let held_ident = Expr::new(ExprKind::Ident(held_name.clone()), sp);
                 let req_ident = Expr::new(ExprKind::Ident(format!("_{}_req_{}", res_name, ti)), sp);
                 // #696: a semaphore slot is freed by the end-of-lock-body release
-                // pulse (`_<res>_release_<ti>`), NOT only by the request wire
+                // pulse (`_<res>_release_pending_<ti>`), NOT only by the request wire
                 // deasserting. A thread that re-locks back-to-back (tight loop)
                 // never deasserts `req_i` across `end lock`, so `held_i & req_i`
                 // alone would pin the slot forever and starve waiting contenders.
-                // Gate the hold on `!release_i` so the slot rotates on the pulse,
-                // matching the arbiter hold-latch (which already consumes the same
-                // pulse via `request_release`, see lock-release-pulse generation).
+                // Gate the hold on combinational release intent so the slot
+                // is free immediately after the releasing edge. The
+                // arbiter-facing release register is intentionally separate:
+                // it breaks the tight re-lock comb loop without adding a
+                // semaphore handoff bubble.
                 let not_release = Expr::new(
                     ExprKind::Unary(
                         UnaryOp::Not,
                         Box::new(Expr::new(
-                            ExprKind::Ident(format!("_{}_release_{}", res_name, ti)),
+                            ExprKind::Ident(format!("_{}_release_pending_{}", res_name, ti)),
                             sp,
                         )),
                     ),
@@ -5174,6 +5187,7 @@ fn lower_module_threads(
         // the absorbing predecessor's cond-exit arm. Names are constructed
         // post-rename, so grant/cnt idents inside reused exit conditions are
         // already per-thread.
+        #[derive(Clone)]
         enum LockReleaseFire {
             Never,
             Conditional(Expr),
@@ -5256,7 +5270,7 @@ fn lower_module_threads(
                 // Unconditional exit: released every cycle spent in this state.
                 (si, LockReleaseFire::Unconditional)
             };
-            let stmt = match fire {
+            let stmt = match fire.clone() {
                 LockReleaseFire::Never => continue,
                 LockReleaseFire::Conditional(cond) => {
                     // Anchor the wrapper (and the assign inside it) to the
@@ -5281,6 +5295,27 @@ fn lower_module_threads(
                 LockReleaseFire::Unconditional => rel_assign,
             };
             raw_states[target_idx].seq_stmts.push(stmt);
+
+            let pending_assign = Stmt::Assign(CombAssign {
+                target: Expr::new(
+                    ExprKind::Ident(format!("_{}_release_pending_{}", res, ti)),
+                    rel_sp,
+                ),
+                value: Expr::new(ExprKind::Literal(LitKind::Dec(1)), rel_sp),
+                span: rel_sp,
+            });
+            let pending_stmt = match fire {
+                LockReleaseFire::Never => continue,
+                LockReleaseFire::Conditional(cond) => Stmt::IfElse(IfElse {
+                    cond: cond.clone(),
+                    then_stmts: vec![pending_assign],
+                    else_stmts: Vec::new(),
+                    unique: false,
+                    span: cond.span,
+                }),
+                LockReleaseFire::Unconditional => pending_assign,
+            };
+            raw_states[target_idx].comb_stmts.push(pending_stmt);
         }
 
         let n_states = raw_states.len();
@@ -6097,6 +6132,14 @@ fn lower_module_threads(
         for ti in 0..threads.len() {
             merged_comb.push(Stmt::Assign(CombAssign {
                 target: Expr::new(ExprKind::Ident(format!("_{}_req_{}", res_name, ti)), sp),
+                value: Expr::new(ExprKind::Bool(false), sp),
+                span: sp,
+            }));
+            merged_comb.push(Stmt::Assign(CombAssign {
+                target: Expr::new(
+                    ExprKind::Ident(format!("_{}_release_pending_{}", res_name, ti)),
+                    sp,
+                ),
                 value: Expr::new(ExprKind::Bool(false), sp),
                 span: sp,
             }));
