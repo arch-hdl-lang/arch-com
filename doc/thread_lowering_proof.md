@@ -148,9 +148,10 @@ function lower_module_threads(Module M):
 
 ```
 function transition_logic(S, i, s, once):
-    next ← (s+1)             if s+1 < n_states
-         ← s                 if once and s = n_states−1     # terminal hold
-         ← 0                 otherwise                       # repeating wrap
+    natural_next ← (s+1)     if s+1 < n_states
+                  ← s        if once and s = n_states−1     # terminal hold
+                  ← 0        otherwise                       # repeating wrap
+    next ← S.folded_exit_target if present, else natural_next
 
     # Counter-decrement hoist: fires unconditionally for any wait_cycles
     # state, independent of how the transition target is decided.  This
@@ -385,9 +386,10 @@ edge):
    - Each thread `i` in state `s = PC_i` contributes the comb statements of
      `K_i[s]`, gated implicitly by `_t_i_state == s`.
    - If `K_i[s]` has one conditional transition `c`, `c` is true, and its
-     successor `u` is an eligible simple conditional state (not folded,
-     lock-guarded, multi-transition, counter-wait, unconditional, or
-     terminal), the thread also contributes `K_i[u].comb`. This is the
+     resolved successor `u` is an eligible simple conditional state (not
+     folded, lock-guarded, multi-transition, counter-wait, unconditional, or a
+     terminal self-loop), the thread also contributes `K_i[u].comb`. A
+     distinct conditional terminal successor remains eligible. This is the
      canonical atomic-overlap rule from the thread specification §20.15.
    - For `shared(or)` signals, multiple drivers are OR-reduced.
    - For `lock` resources, the priority arbiter computes `_r_grant_i`.
@@ -402,18 +404,19 @@ edge):
 3. **PC advance.** For each thread `i` with `K_i[s] = ⟨_, _, τ, w, M⟩`:
    - If `M ≠ ∅`: select the unique `(c, t) ∈ M` with `μ ⊨ c ⇒ true` (priority
      order = list order), set `PC_i' ← t`.  If none fires, `PC_i' ← PC_i`.
-   - Else if `τ = c` and `μ ⊨ c ⇒ true`: `PC_i' ← next(s, t.once)`.
-   - Else if `w = n` and `c_cnt_i = 0`: `PC_i' ← next(s, t.once)`.
+   - Else if `τ = c` and `μ ⊨ c ⇒ true`: `PC_i' ← resolved_next(K_i[s], s, t.once)`.
+   - Else if `w = n` and `c_cnt_i = 0`: `PC_i' ← resolved_next(K_i[s], s, t.once)`.
    - Else: `PC_i' ← s`.
    - For an atomic overlap from `s` to `u`, first apply the `s → u` update;
      then, if `K_i[u].τ` is true in the same pre-edge valuation, apply
-     `u → next(u, t.once)`. The latter nonblocking state write has priority.
-   - Where `next(s, once) = s+1` if `s+1 < |K_i|`, `s` if `once ∧ s = |K_i|−1`,
-     else `0`.
+     `u → resolved_next(K_i[u], u, t.once)`. The latter nonblocking state
+     write has priority.
+   - `resolved_next(S, s, once)` uses `S.folded_exit_target` when present;
+     otherwise it uses the natural next state (`s+1` when `s+1 < |K_i|`, `s`
+     when `once ∧ s = |K_i|−1`, else `0`).
 
-4. **`default_when` override.** If `μ ⊨ cond_dw_i ⇒ true`, override step 2
-   for thread `i`'s register updates with the `default when` body and force
-   `PC_i' ← 0`.
+4. **`default_when` override.** If `μ ⊨ cond_dw_i ⇒ true`, override steps 2
+   and 3 with thread `i`'s `default when` body and force `PC_i' ← 0`.
 
 The source observation in cycle `t` is `obs(Γ, μ_I) = (μ_I, μ_O, μ_R)
 restricted to ports`.
@@ -555,18 +558,22 @@ which equals the source's defined OR-of-drivers semantics.  ∎(b)
 **(c) PC advance agrees.** Each kind of `K_i[ŝ]` is matched one-to-one with the
 target's `transition_logic`:
 
+In the table, `resolved_next` means `resolved_next(K_i[ŝ], ŝ, t.once)` for the
+current state; it uses `folded_exit_target` when present and otherwise the
+ordinary terminal/repeating successor rule.
+
 | State kind                | Source PC update                    | Target ARCH RTL emitted          |
 |---------------------------|-------------------------------------|-----------------------------------|
-| `τ = c`                   | `PC' = next` if `μ ⊨ c`             | `if (c) _state <= next`          |
-| `w = n` (wait-cycles)     | `PC' = next` if `c_cnt = 0`         | `if (cnt==0) _state <= next`     |
+| `τ = c`                   | `PC' = resolved_next` if `μ ⊨ c`    | `if (c) _state <= resolved_next` |
+| `w = n` (wait-cycles)     | `PC' = resolved_next` if `c_cnt = 0` | `if (cnt==0) _state <= resolved_next` |
 | `M = [(c_j, t_j)]`        | `PC' = t_j` for least `j` with `μ ⊨ c_j` | `if (c_0)…; if (c_1)…`       |
-| none (unconditional)       | `PC' = next`                        | `_state <= next`                 |
+| none (unconditional)       | `PC' = resolved_next`               | `_state <= resolved_next`        |
 | `default_when` fires       | `PC' = 0`                           | `if (cond) {…; _state<=0}`       |
 
 For an eligible atomic overlap, both sides additionally execute the simple
 successor's conditional transition on the same edge. Thus the final PC is
-either the successor or its natural next state; the guarded successor body is
-emitted after the predecessor's state write, so SystemVerilog/ARCH
+either the resolved successor or its resolved next state; the guarded
+successor body is emitted after the predecessor's state write, so SystemVerilog/ARCH
 last-nonblocking-write semantics matches the source rule in §II.1.1.
 
 The *priority semantics* of the multi-target case warrants a remark.  The
@@ -663,7 +670,7 @@ construction:
 Each case is established by direct inspection of `partition_thread_body` in
 `src/elaborate.rs` against the source semantics in §II.1.1.
 
-### II.5  Trailing-tail merge correctness
+### II.5  Trailing-tail merge and atomic-overlap correctness
 
 The trailing-tail optimisation merges trailing seq statements into the last
 state's `seq` guarded by its transition condition.  We prove this is
@@ -702,6 +709,30 @@ not "wait for handshake, then increment one cycle later".  The lowering's
 trailing-merge captures this intent.  Hence the source semantics in §II.1.1
 **must** include the trailing-merge rule; the lemma is then trivially true
 because both sides specify the same schedule.  ∎
+
+The lowering also supports **atomic comb overlap** for a narrower successor
+shape. Let `s` have a single conditional transition `c`, and let `u` be its
+eligible resolved successor (the folded exit target when present, otherwise
+the natural successor): non-folded, non-lock, non-dispatch, non-counter,
+conditional, and with combinational outputs. On an edge where `s` is active
+and `c` is true, and no `default_when` clause preempts the normal FSM path,
+the target evaluates `u.comb` and `u.seq` under the same `state == s ∧ c`
+guard. The ordinary `s → u` state write is emitted first; if `u`'s own
+conditional transition `d` is also true, the guarded `u → next_i(u)` write
+follows and therefore determines the final state under the normal
+last-nonblocking-write rule. If `d` is false, the final state is `u`.
+
+This is the canonical semantics for a successor that exposes a handshake
+output and accepts the transfer on the same edge. The eligibility restrictions
+exclude lock-body outputs (which must remain grant-gated), condition-dependent
+dispatch, counter waits, unconditional action states, and targets whose
+`is_folded` flag is true. A resolved `folded_exit_target` that names a
+non-folded state remains eligible. A terminal `thread once` state is excluded only when it would overlap with
+itself; a distinct conditional terminal successor can still complete on the
+same edge. `default_when` preempts the entire normal FSM sequential path.
+Thus, when the normal path is active, the comb and sequential overlap are
+paired, and a successor cannot advertise `ready` while silently deferring or
+dropping its payload acceptance.
 
 ### II.6  Fork/join faithfulness
 
@@ -1116,28 +1147,41 @@ a compiler bug, a hand-edit of the lowered RTL, or a malformed downstream
 pass — never a user-program error.
 
 Throughout this section, write `s = Γ̂.s_i` for the current target state of
-thread `i`, `next_i(s)` for the index returned by the `next_state`
-computation at line 1626 of `elaborate.rs`, and `rst_inactive` for the
+thread `i`, `next_i(s)` for the resolved successor returned by the
+`next_state` computation (including `folded_exit_target`) in
+`lower_module_threads`, and `rst_inactive` for the
 reset-polarity-corrected guard (`rst` for active-low, `!rst` for
 active-high).  Each property is wrapped in `synopsys translate_off/on` and
 named per the convention `_auto_thread_t{i}_<class>_s{s}[_<sub>]`.
 
 #### II.11.1  Corollary W (wait_until progress)
 
-For a state `s` with `K_i[s].τ = c` and `M = ∅` (a `wait until c` state):
+For a state `s` with `K_i[s].τ = c` and `M = ∅` (a `wait until c` state), let
+`u = overlap_i(s)` when `s` has an eligible atomic-overlap successor, and let
+`u` be undefined otherwise:
+
+Here “`u` is defined” is proof notation, not literal SVA. The emitter
+specializes the consequent to `state == next_i(s)` when no overlap exists, or
+to the disjunction of `state == next_i(s)` and `state == next_i(u)` when it
+does.
 
 > **Property `_auto_thread_t{i}_wait_until_s{s}`**
 > ```
-> (rst_inactive ∧ s_i = s ∧ c)  ⊨>  s_i' = next_i(s)
+> (rst_inactive ∧ s_i = s ∧ c)  ⊨>
+>   s_i' = next_i(s) ∨ (u is defined ∧ s_i' = next_i(u))
 > ```
 > (where `⊨>` is SVA's next-cycle implication `|=>`).
 
 **Derivation.** Take any reachable cycle with `Γ̂.s_i = s ∧ μ ⊨ c` and reset
 not asserted.  By Theorem (II.3), `(Γ, Γ̂) ≈`, so `Γ.PC_i = s` and the
-source's `wait_until c` semantics fires the advance: `Γ.PC_i' = next_i(s)`.
-By Lemma 2 (II.3.2) clause (c), the target's transition logic for the
-`τ = c` case is `if (c) _state <= next`, giving `Γ̂.s_i' = next_i(s)`.  The
-SVA holds.  ∎
+source's `wait_until c` semantics first advances to the resolved successor
+`u = next_i(s)` (or to the folded exit target). If `u` is undefined as an
+overlap target, Lemma 2 (II.3.2) clause (c) gives exactly that state update. If
+`u` is eligible and the normal path is not preempted, the target additionally
+evaluates `u`'s body under `c`; when `u`'s own condition is false the state
+remains `u`, and when it is true the successor exit write selects `next_i(u)`.
+These are the only possible final state values, so the widened SVA consequent
+is sound. ∎
 
 #### II.11.2  Corollary C (wait_cycles bounded liveness)
 
@@ -1156,7 +1200,7 @@ For a state `s` with `K_i[s].w = n` (a `wait n cycle` state):
 **Derivation.** By the partitioning invariant (II.4) the predecessor state
 loads `_t_i_cnt ← n − 1` exactly when control transitions into `s`; by
 Lemma 2 clause (d), the wait state itself emits
-`_t_i_cnt <= _t_i_cnt − 1` and `if (_t_i_cnt == 0) _state <= next`.
+`_t_i_cnt <= _t_i_cnt − 1` and `if (_t_i_cnt == 0) _state <= resolved_next`.
 
 - *Stay:* if `cnt ≠ 0` at the sample point, the only `_state` write in `K_i[s]`
   is guarded by `cnt == 0` (false this cycle), so no transition fires; by the
@@ -1214,6 +1258,13 @@ for every reachable state with the matching kind, gated on
 - **Unconditional advance states** (`τ = ⊥ ∧ M = ∅ ∧ w = ⊥`): the implication
   `s_i = s ⊨> s_i' = next_i(s)` is true by construction at every accepted
   state and adds nothing a tool would catch.
+- **Atomic-overlap successor completion**: for an eligible successor, the
+  wait-until assertion uses the disjunction described in Corollary W because
+  the successor may also complete on the same edge. Dispatch, counter,
+  unconditional, folded, and lock-body successors remain outside the overlap
+  set; terminal self-loops are excluded, while distinct conditional terminal
+  successors may be eligible. Threads with `default_when` are skipped because
+  that clause preempts the normal FSM path.
 
 #### II.11.6  Empirical end-to-end check
 
