@@ -207,10 +207,12 @@ pub struct PipelinedOpEntry {
 /// The compiler-owned builtin registry.
 ///
 /// Seeded per `doc/proposal_pipelined_operators.md` §1 "Initial contents":
-/// the FP32 FMA, 6-stage sticky-fold, buffered — the characterized knee of
-/// the depth sweep (6/7/10 stages; more stages regress because the residual
-/// path is a fine-grained logic-depth cone the registers can't usefully
-/// bisect further).
+/// the FP32 FMA, 6-stage sticky-fold, buffered. The full 2026-07-17 buffered
+/// depth sweep puts the best point at **7 stages (268 MHz)** on a 260–268 MHz
+/// plateau across 5–7 stages (deeper regresses: fixed per-stage register
+/// overhead outweighs the un-splittable residual cones), so a 7-stage
+/// schedule row is a phase-5 candidate; the shipped 6-stage row sits on the
+/// same plateau at ~260 MHz.
 ///
 /// Phase 5 of the proposal generalizes this to `mul`/`add` and additional
 /// depths — that is additive rows here, not new code, by design.
@@ -225,8 +227,10 @@ pub const BUILTIN_REGISTRY: &[PipelinedOpEntry] = &[PipelinedOpEntry {
         "sticky-fold FMA; EXTERNAL Nangate45 (typ.) Yosys+OpenSTA+Liberty \
          characterization, buffered abc flow (buffer -N 8; upsize; dnsize) — \
          not reproducible by this repo's checked-in flow (no Liberty/OpenSTA \
-         in the dev/CI sandbox); 6-stage is the characterized knee vs. 7/10 \
-         stages. TWO emission forms (proposal §4): the default comb+cascade \
+         in the dev/CI sandbox); full depth sweep: 5/6/7 stages form a \
+         260-268 MHz plateau with the best point at 7 stages (268 MHz) — a \
+         7-stage schedule row is a phase-5 candidate; this 6-stage row \
+         measures ~260 MHz. TWO emission forms (proposal §4): the default comb+cascade \
          (retime-friendly RTL; also what `arch sim` runs) measures ~113 MHz \
          on Yosys/ABC, which does NOT retime it (flops never move); `arch \
          build --staged-ops` emits the hand-staged datapath this row's \
