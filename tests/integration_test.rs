@@ -17856,18 +17856,22 @@ fn test_semaphore_n2_synthesizes_holder_tracking() {
 }
 
 // arch#696 regression (structural): the per-thread `held` slot register must
-// be freed by the end-of-lock-body release pulse (`_pool_release_<ti>`), not
-// only when the request wire deasserts. A thread that re-locks back-to-back
-// (tight loop) never deasserts `req`, so `held & req` alone would pin the slot
-// and starve waiting contenders. The next-state must gate on `!release`.
+// be freed by the combinational end-of-lock-body release intent
+// (`_pool_release_pending_<ti>`), not only when the request wire deasserts.
+// A thread that re-locks back-to-back (tight loop) never deasserts `req`, so
+// `held & req` alone would pin the slot and starve waiting contenders. The
+// arbiter still receives the registered `_pool_release_<ti>` event so the
+// tight re-lock path remains free of combinational feedback.
 #[test]
 fn test_semaphore_slot_freed_by_release_pulse_696() {
     let sv = compile_to_sv(&semaphore_pool_source("2", "round_robin"));
     assert!(
-        sv.contains("_pool_req_0 && !_pool_release_0")
-            && sv.contains("_pool_req_1 && !_pool_release_1"),
-        "arch#696: each semaphore `held` next-state must gate on `!_pool_release_<ti>` \
-         so a back-to-back re-lock frees its slot; found un-gated hold:\n{sv}"
+        sv.contains("_pool_req_0 && !_pool_release_pending_0")
+            && sv.contains("_pool_req_1 && !_pool_release_pending_1")
+            && sv.contains("_pool_release_packed[0] = _pool_release_0"),
+        "arch#696: each semaphore `held` next-state must gate on combinational \
+         release intent while the arbiter receives the registered release event; \
+         found an incorrectly gated hold:\n{sv}"
     );
 }
 
