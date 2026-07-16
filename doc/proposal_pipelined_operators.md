@@ -10,6 +10,14 @@
 > phases" below for the clarified comb+retime implementation form and where
 > the verification obligation and characterization honesty live. Phases 4–5
 > (`.archpipe` loader, generalizing beyond `fma`) are not started.
+>
+> **Amendment 2026-07-15 (§4, approved in discussion):** measured data shows
+> the open-source Yosys/ABC flow does **not** retime the phase-3 comb+cascade
+> form (~113 MHz vs. ~260 MHz hand-staged, same flow — details in §4). Design
+> response: keep **both emission forms** — the cascade as the default
+> (retime-friendly RTL for commercial synthesis, and the faster simulation
+> model) and the registry's **staged schedule** behind a CLI option for flows
+> without sequential retiming. Adds phase 3.5.
 
 Status: design proposal / discussion. No implementation in this note. User-facing
 syntax + type-system change — requires sign-off before any code, and a spec update
@@ -279,6 +287,76 @@ registered depth and that any consumer of `acc_out` reads it at latency 6.
 
 ---
 
+## 4. Emission forms: cascade vs. staged (amendment 2026-07-15)
+
+### The measured gap
+
+Phase 3 lowers `builtin:fma_f32_s6` to the comb `fma` cone feeding the ordinary
+`pipe_reg` cascade, on the premise that downstream synthesis retimes the
+registers into the cone. Measured on the emitted SV (Nangate45 typ., Yosys +
+OpenSTA, buffered `abc` flow — the same flow that put the hand-staged schedule at
+259.8 MHz):
+
+| emitted form | retime attempt | fmax | flops moved? |
+|---|---|---|---|
+| comb+cascade (as emitted) | none | 112.8 MHz | — |
+| comb+cascade | `abc -dff -D` (after `dfflibmap`) | 113.2 MHz | no (DFF count unchanged) |
+| comb+cascade | `abc -dff -D` before `dfflibmap`, default + `dretime` scripts | 57–69 MHz | no |
+| comb+cascade, internal stages reset-free | both retime variants | 58–92 MHz | no |
+| hand-staged schedule (`sh6`) | (none needed) | **259.8 MHz** | — |
+
+Two independent blockers, both confirmed: (1) codegen puts the sync reset on
+**all** cascade stages, so ABC partitions the flops into separate sequential
+domains and will not push reset-carrying registers into logic; (2) even with
+resets stripped, classic Yosys/ABC retiming does not move a single flop through
+a ~16k-gate cone. So on the open-source flow the cascade form delivers ~113 MHz
+(comb sticky-fold + an output register), not the registry's ~260 MHz.
+
+### Design response: both forms are legitimate — emit either
+
+The cascade is not a defect to be replaced; it serves two purposes the staged
+form does not:
+
+- **Commercial synthesis.** DC / Genus have real sequential retiming
+  (`set_optimize_registers` etc.) and may well retime the cascade to
+  competitive fmax — unverified here, but the premise is plausible for those
+  tools even though Yosys/ABC fails. Retime-friendly RTL is the right handoff
+  for that flow.
+- **Simulation model.** The cascade is the natural sim form — one call of the
+  already-optimized comb operator plus N register copies — presumably faster
+  (and certainly simpler) than evaluating a hand-staged datapath, and it keeps
+  `arch sim` on the verified comb code path.
+
+The **staged schedule** from the registry is what flows *without* strong
+sequential retiming (Yosys/ABC, the open-source flow this project
+characterizes on) need to reach the characterized fmax.
+
+Therefore `arch build` supports both emission forms, selected by CLI option:
+
+- **Default: cascade** (`comb+pipe_reg`, current phase-3 behavior) —
+  retime-friendly RTL, and always the form `arch sim` uses.
+- **`--staged-ops` (name TBD): staged** — for each registry-resolved
+  `<pipelined, N>` call site, emit the registry entry's staged schedule (the
+  per-stage SSA split) instead of the cascade. This is the form whose ~260 MHz
+  characterization the registry reports.
+
+Consequences:
+
+- The registry's `impl` column becomes the carrier of the staged schedule
+  (exactly what the phase-4 `.archpipe` format encodes) — the builtin ships its
+  hand-staged 6-stage schedule as data, not just as an external experiment.
+- The verification obligation extends to the staged emission: the lock-step
+  regression (native-sim ⇄ Verilator) must run against **both** forms; the
+  staged form is a genuine second implementation, so it carries a real
+  equivalence obligation (unlike the cascade, which is equivalent by
+  construction).
+- The registry note reports both measured numbers honestly: cascade ~113 MHz on
+  Yosys/ABC (no retiming), staged ~260 MHz (buffered), both Nangate45 typ.
+- Retiming-friendliness of the cascade for commercial tools would improve if
+  internal stages were reset-free, but that changes user-visible reset
+  semantics of `pipe_reg` taps — **out of scope** here; revisit only with a
+  spec decision.
+
 ## Implementation phases (post-sign-off)
 
 1. **Registry + `arch ops` + enforcement** — table, type-check lookup, enumerated
@@ -308,6 +386,14 @@ registered depth and that any consumer of `acc_out` reads it at latency 6.
    available in this repo's sandboxes) — see `tests/fp_v1/synth/README.md`
    "Staged/pipelined operators" for what the checked-in flow *does*
    reproduce (a logic-depth proxy) and why.
+3.5. **Staged emission behind a CLI option (§4)** — carry the builtin 6-stage
+   schedule as registry data (the internal precursor of the `.archpipe`
+   format); `arch build --staged-ops` (name TBD) emits it at registry-resolved
+   call sites; default emission and `arch sim` keep the cascade form. Extend
+   the lock-step regression to the staged emission (it is a real second
+   implementation, so it carries a real equivalence obligation). Update the
+   registry note with both measured numbers (~113 MHz cascade on Yosys/ABC,
+   ~260 MHz staged). Not started.
 4. **`.archpipe` loader + verification gate** — file format, `ARCH_LIB_PATH`
    discovery, `unverified` warning path, `arch formal` promotion. Not started.
 5. **Generalize beyond fma** — `mul_pipe`, `add_pipe`; additional characterized
