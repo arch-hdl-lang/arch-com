@@ -167,6 +167,12 @@ pub struct Codegen<'a> {
     /// Set when any FP32/BF16 operation was emitted, so the `arch_f32_*` /
     /// `arch_bf16_*` SystemVerilog helper package is prepended to the output.
     fp_helpers_used: std::cell::Cell<bool>,
+    /// Staged pipelined-operator sites (`arch build --staged-ops`,
+    /// proposal phase 3.5) — see `pipelined_ops::StagedSite`. Empty in
+    /// cascade mode. `staged_emitted` records that at least one instance
+    /// was emitted so `generate()` prepends the staged module text(s).
+    staged_sites: Vec<crate::pipelined_ops::StagedSite>,
+    staged_emitted: std::cell::Cell<bool>,
     /// Floating-point special-value profile (doc/archive/plan_fp_types.md §6.2).
     /// Selects the emitted NaN-canonicalization / NaN→int constants.
     fp_compat: crate::FpCompat,
@@ -253,6 +259,8 @@ impl<'a> Codegen<'a> {
             bus_wires: std::collections::HashMap::new(),
             reset_ports: std::collections::HashMap::new(),
             fp_helpers_used: std::cell::Cell::new(false),
+            staged_sites: Vec::new(),
+            staged_emitted: std::cell::Cell::new(false),
             fp_compat: crate::FpCompat::default(),
             current_construct: String::new(),
             ident_subst: std::collections::HashMap::new(),
@@ -391,6 +399,13 @@ impl<'a> Codegen<'a> {
         self
     }
 
+    /// Install the staged pipelined-operator sites collected by
+    /// `pipelined_ops::lower_pipelined_calls_mode` (phase 3.5,
+    /// `arch build --staged-ops`).
+    pub fn set_staged_sites(&mut self, sites: Vec<crate::pipelined_ops::StagedSite>) {
+        self.staged_sites = sites;
+    }
+
     pub fn generate(&mut self) -> String {
         // `source.items` is borrowed for the whole call but `generate_items`
         // only needs an `&[Item]` slice — clone the Vec into a local so we
@@ -449,6 +464,22 @@ impl<'a> Codegen<'a> {
                 ));
             }
             prefix.push('\n');
+            prefix.push_str(&self.out);
+            self.out = prefix;
+        }
+
+        // Prepend the staged pipelined-operator module(s) if any staged
+        // instance was emitted (deduped by module name — several sites may
+        // share one staged datapath definition).
+        if self.staged_emitted.get() {
+            let mut seen = std::collections::BTreeSet::new();
+            let mut prefix = String::new();
+            for site in &self.staged_sites {
+                if seen.insert(site.sv_module) {
+                    prefix.push_str(&site.sv_text);
+                    prefix.push('\n');
+                }
+            }
             prefix.push_str(&self.out);
             self.out = prefix;
         }

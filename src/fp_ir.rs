@@ -315,9 +315,16 @@ fn sv_decl_width(w: u32) -> String {
 }
 
 fn sv_rhs(b: &Bv, lin: &Lin) -> String {
-    let r = |x: &Bv| sv_ref(x, lin);
+    sv_rhs_with(b, &mut |x: &Bv| sv_ref(x, lin))
+}
+
+/// The single SV per-`Kind` syntax table, parameterized over operand-name
+/// resolution so the plain function renderer (`sv_rhs`) and the staged
+/// datapath renderer (`render_sv_staged`, stage-qualified names) cannot
+/// drift in operator syntax.
+fn sv_rhs_with(b: &Bv, r: &mut dyn FnMut(&Bv) -> String) -> String {
     match &b.0.kind {
-        Kind::Var(_) | Kind::Const { .. } => sv_ref(b, lin),
+        Kind::Var(_) | Kind::Const { .. } => r(b),
         Kind::Extract { x, hi, lo } => {
             if hi == lo {
                 format!("{}[{}]", r(x), hi)
@@ -602,9 +609,453 @@ pub fn render_lean(funcs: &[FpFn]) -> String {
         .join("\n")
 }
 
+// ── staged SystemVerilog renderer (proposal phase 3.5) ──────────────────────
+//
+// Renders one operator as a hand-scheduled N-stage pipelined SV *module*
+// (per-stage `always_comb` blocks + live-set register layers), driven by a
+// `pipelined_ops::StagedSchedule` over the SAME `linearize` walk as the
+// combinational renderers — so temp numbering, CSE structure, and operator
+// syntax (via `sv_rhs_with`) are shared, not duplicated.
+//
+// Structure emitted (for `stages = 6`):
+//   module <Name>(input clk, input args..., output y);
+//     stage-k comb block computing that stage's temps (k = 1..=6)
+//     register layer k (k = 1..=5) carrying the live set + forwarded inputs
+//     assign y = <stage-6 result>;   // COMBINATIONAL out — the caller's
+//   endmodule                        // pipe_reg port supplies edge N + reset
+//
+// Internal layers are deliberately reset-free (retiming-friendly, matching
+// the characterized hand-staged run); cycle-exact post-reset equivalence
+// with the cascade emission is the *caller's* job (codegen emits a warm-up
+// gate at the binding site — see codegen's staged-ops support).
+//
+// Returns `Err` (never panics) if the operator's current linearization does
+// not match the schedule (temp-count drift, missing/extra nested call): the
+// caller falls back to the cascade form with a warning, and the pinned unit
+// tests catch the drift in CI.
+
+/// Which namespace a compound node belongs to in the staged rendering.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum StagedNs {
+    Main,
+    Callee,
+}
+
+impl StagedNs {
+    fn prefix(self) -> &'static str {
+        match self {
+            StagedNs::Main => "t",
+            StagedNs::Callee => "A_t",
+        }
+    }
+}
+
+struct StagedCtx<'a> {
+    sched: &'a crate::pipelined_ops::StagedSchedule,
+    lin_m: Lin,
+    lin_c: Lin,
+    /// The single nested-call node's id in the main namespace.
+    call_id: usize,
+    /// Callee param name → the call-site argument node (main namespace).
+    param_args: Vec<(String, Bv)>,
+    /// (ns, id) → last stage that reads the value (def stage from `sched`).
+    last_use: HashMap<(StagedNs, usize), u32>,
+    /// module input name → last stage that reads it.
+    input_last_use: HashMap<String, u32>,
+}
+
+impl StagedCtx<'_> {
+    fn def_stage(&self, ns: StagedNs, id: usize) -> u32 {
+        match ns {
+            StagedNs::Main => self.sched.main_stage(id),
+            StagedNs::Callee => self.sched.callee_stage(id),
+        }
+    }
+
+    /// Resolve an operand reference from a stage-`k` context. `ns` is the
+    /// namespace of the *referencing* node; callee-param `Var`s re-resolve
+    /// to the call-site argument in the main namespace. Records liveness.
+    fn resolve(&mut self, b: &Bv, ns: StagedNs, k: u32) -> Result<String, String> {
+        match &b.0.kind {
+            Kind::Const { val } => Ok(format!("{}'h{:X}", b.width(), val)),
+            Kind::Var(n) => match ns {
+                StagedNs::Main => {
+                    let e = self.input_last_use.entry(n.clone()).or_insert(k);
+                    *e = (*e).max(k);
+                    if k == 1 {
+                        Ok(n.clone())
+                    } else {
+                        Ok(format!("r{}__in_{}", k - 1, n))
+                    }
+                }
+                StagedNs::Callee => {
+                    let arg = self
+                        .param_args
+                        .iter()
+                        .find(|(p, _)| p == n)
+                        .map(|(_, a)| a.clone())
+                        .ok_or_else(|| format!("callee references unknown param `{n}`"))?;
+                    self.resolve(&arg, StagedNs::Main, k)
+                }
+            },
+            _ => {
+                let (lin, this_ns) = match ns {
+                    StagedNs::Main => (&self.lin_m, StagedNs::Main),
+                    StagedNs::Callee => (&self.lin_c, StagedNs::Callee),
+                };
+                let id = *lin
+                    .ids
+                    .get(&(Rc::as_ptr(&b.0) as usize))
+                    .ok_or_else(|| "operand not in its namespace's linearization".to_string())?;
+                let d = self.def_stage(this_ns, id);
+                if d > k {
+                    return Err(format!(
+                        "schedule is not topological: {}{} defined in stage {d}, read in stage {k}",
+                        this_ns.prefix(),
+                        id
+                    ));
+                }
+                let e = self.last_use.entry((this_ns, id)).or_insert(k);
+                *e = (*e).max(k);
+                if d == k {
+                    Ok(format!("s{k}__{}{id}", this_ns.prefix()))
+                } else {
+                    Ok(format!("r{}__{}{id}", k - 1, this_ns.prefix()))
+                }
+            }
+        }
+    }
+
+    /// Render the RHS for a compound node owned by stage `k`. The main
+    /// namespace's nested-call node renders as an alias of the callee's
+    /// result; everything else goes through the shared syntax table.
+    fn rhs(&mut self, b: &Bv, ns: StagedNs, k: u32) -> Result<String, String> {
+        if let Kind::Call { .. } = &b.0.kind {
+            let result = self.lin_c.order.last().cloned().ok_or("empty callee")?;
+            return self.resolve(&result, StagedNs::Callee, k);
+        }
+        let mut err: Option<String> = None;
+        let text = sv_rhs_with(b, &mut |x: &Bv| match self.resolve(x, ns, k) {
+            Ok(s) => s,
+            Err(e) => {
+                err = Some(e);
+                String::from("/*ERR*/")
+            }
+        });
+        match err {
+            Some(e) => Err(e),
+            None => Ok(text),
+        }
+    }
+}
+
+/// Render `main_fn` as a staged pipelined module per `sched`, inlining the
+/// single nested call to `callee_fn` (the `A_` namespace). See the section
+/// comment above for the emitted structure and the fallback contract.
+pub fn render_sv_staged(
+    main_fn: &FpFn,
+    callee_fn: &FpFn,
+    sched: &crate::pipelined_ops::StagedSchedule,
+    module_name: &str,
+) -> Result<String, String> {
+    let lin_m = linearize(&main_fn.body);
+    let lin_c = linearize(&callee_fn.body);
+
+    // ── structural verification (drift ⇒ Err ⇒ caller falls back) ──
+    if callee_fn.name != sched.callee {
+        return Err(format!(
+            "schedule expects callee `{}`, got `{}`",
+            sched.callee, callee_fn.name
+        ));
+    }
+    if lin_m.order.len() != *sched.main_starts.last().unwrap() {
+        return Err(format!(
+            "main temp count drifted: linearize gives {}, schedule covers {}",
+            lin_m.order.len(),
+            sched.main_starts.last().unwrap()
+        ));
+    }
+    if lin_c.order.len() != *sched.callee_starts.last().unwrap() {
+        return Err(format!(
+            "callee temp count drifted: linearize gives {}, schedule covers {}",
+            lin_c.order.len(),
+            sched.callee_starts.last().unwrap()
+        ));
+    }
+    let calls_m: Vec<usize> = lin_m
+        .order
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| matches!(b.0.kind, Kind::Call { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    if calls_m.len() != 1 {
+        return Err(format!(
+            "expected exactly one nested call in `{}`, found {}",
+            main_fn.name,
+            calls_m.len()
+        ));
+    }
+    if lin_c
+        .order
+        .iter()
+        .any(|b| matches!(b.0.kind, Kind::Call { .. }))
+    {
+        return Err(format!("callee `{}` itself nests a call", callee_fn.name));
+    }
+    let call_id = calls_m[0];
+    let Kind::Call { name, args } = &lin_m.order[call_id].0.kind else {
+        unreachable!("filtered on Kind::Call above")
+    };
+    if name != sched.callee {
+        return Err(format!(
+            "nested call is `{name}`, schedule expects `{}`",
+            sched.callee
+        ));
+    }
+    if args.len() != callee_fn.params.len() {
+        return Err("call arg count != callee param count".to_string());
+    }
+    let param_args: Vec<(String, Bv)> = callee_fn
+        .params
+        .iter()
+        .map(|(p, _)| p.clone())
+        .zip(args.iter().cloned())
+        .map(|(p, a)| (p, a))
+        .collect();
+
+    let stages = sched.stages();
+    let mut ctx = StagedCtx {
+        sched,
+        lin_m,
+        lin_c,
+        call_id,
+        param_args,
+        last_use: HashMap::new(),
+        input_last_use: HashMap::new(),
+    };
+
+    // ── per-stage assignment lists, in intra-stage dependency order:
+    // main ids < call_id, then callee ids, then main ids >= call_id (the
+    // linearizer guarantees call args precede the call node, and callee
+    // temps depend only on callee temps + call args). Two passes share this.
+    let stage_assigns = |ctx: &StagedCtx| -> Vec<Vec<(StagedNs, usize)>> {
+        (1..=stages)
+            .map(|k| {
+                let mut v: Vec<(StagedNs, usize)> = Vec::new();
+                let (m0, m1) = (
+                    ctx.sched.main_starts[(k - 1) as usize],
+                    ctx.sched.main_starts[k as usize],
+                );
+                let (c0, c1) = (
+                    ctx.sched.callee_starts[(k - 1) as usize],
+                    ctx.sched.callee_starts[k as usize],
+                );
+                v.extend((m0..m1.min(ctx.call_id)).map(|i| (StagedNs::Main, i)));
+                v.extend((c0..c1).map(|i| (StagedNs::Callee, i)));
+                v.extend((m0.max(ctx.call_id)..m1).map(|i| (StagedNs::Main, i)));
+                v
+            })
+            .collect()
+    };
+    let per_stage = stage_assigns(&ctx);
+
+    // ── pass 1: liveness (render every RHS, discard text, keep the maps).
+    for (k0, assigns) in per_stage.iter().enumerate() {
+        let k = (k0 + 1) as u32;
+        for &(ns, id) in assigns {
+            let node = match ns {
+                StagedNs::Main => ctx.lin_m.order[id].clone(),
+                StagedNs::Callee => ctx.lin_c.order[id].clone(),
+            };
+            ctx.rhs(&node, ns, k)?;
+        }
+    }
+    // The module output reads the main result in the final stage.
+    let result_node = main_fn.body.clone();
+    ctx.resolve(&result_node, StagedNs::Main, stages)?;
+
+    // ── pass 2: emit (liveness maps are complete; resolve() re-records
+    // idempotently).
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "// {module_name}: hand-scheduled {stages}-stage pipelined `{}` —\n\
+         // generated from the shared bit-vector IR + the registry staged\n\
+         // schedule (src/pipelined_ops.rs). Do not edit by hand.\n\
+         // Internal register layers are reset-free by design; the binding\n\
+         // site's pipe_reg output register supplies the final edge + reset.",
+        main_fn.name
+    );
+    let _ = writeln!(s, "module {module_name} (");
+    let _ = writeln!(s, "  input logic clk,");
+    for (p, w) in &main_fn.params {
+        let _ = writeln!(s, "  input logic {}{},", sv_decl_width(*w), p);
+    }
+    let _ = writeln!(s, "  output logic {}y\n);", sv_decl_width(main_fn.ret_w));
+
+    let node_of = |ctx: &StagedCtx, ns: StagedNs, id: usize| -> Bv {
+        match ns {
+            StagedNs::Main => ctx.lin_m.order[id].clone(),
+            StagedNs::Callee => ctx.lin_c.order[id].clone(),
+        }
+    };
+
+    for (k0, assigns) in per_stage.iter().enumerate() {
+        let k = (k0 + 1) as u32;
+        if assigns.is_empty() {
+            let _ = writeln!(s, "  // ── stage {k}: (no logic — carry layer only)");
+        } else {
+            let _ = writeln!(s, "  // ── stage {k}");
+            for &(ns, id) in assigns {
+                let node = node_of(&ctx, ns, id);
+                let _ = writeln!(
+                    s,
+                    "  logic {}s{k}__{}{id};",
+                    sv_decl_width(node.width()),
+                    ns.prefix()
+                );
+            }
+            let _ = writeln!(s, "  always_comb begin");
+            for &(ns, id) in assigns {
+                let node = node_of(&ctx, ns, id);
+                let rhs = ctx.rhs(&node, ns, k)?;
+                let _ = writeln!(s, "    s{k}__{}{id} = {rhs};", ns.prefix());
+            }
+            let _ = writeln!(s, "  end");
+        }
+
+        // Register layer k (none after the final stage).
+        if k == stages {
+            break;
+        }
+        // Deterministic order: forwarded inputs (param order), then main
+        // temps ascending, then callee temps ascending.
+        let mut carried: Vec<(String, String, u32)> = Vec::new(); // (reg, src, width)
+        for (p, w) in &main_fn.params {
+            let lu = *ctx.input_last_use.get(p).unwrap_or(&0);
+            if lu > k {
+                let src = if k == 1 {
+                    p.clone()
+                } else {
+                    format!("r{}__in_{}", k - 1, p)
+                };
+                carried.push((format!("r{k}__in_{p}"), src, *w));
+            }
+        }
+        for ns in [StagedNs::Main, StagedNs::Callee] {
+            let total = match ns {
+                StagedNs::Main => ctx.lin_m.order.len(),
+                StagedNs::Callee => ctx.lin_c.order.len(),
+            };
+            for id in 0..total {
+                let d = ctx.def_stage(ns, id);
+                let lu = *ctx.last_use.get(&(ns, id)).unwrap_or(&0);
+                if d <= k && lu > k {
+                    let src = if d == k {
+                        format!("s{k}__{}{id}", ns.prefix())
+                    } else {
+                        format!("r{}__{}{id}", k - 1, ns.prefix())
+                    };
+                    let w = node_of(&ctx, ns, id).width();
+                    carried.push((format!("r{k}__{}{id}", ns.prefix()), src, w));
+                }
+            }
+        }
+        let _ = writeln!(s, "  // ── register layer {k} ({} signals)", carried.len());
+        for (reg, _, w) in &carried {
+            let _ = writeln!(s, "  logic {}{};", sv_decl_width(*w), reg);
+        }
+        let _ = writeln!(s, "  always_ff @(posedge clk) begin");
+        for (reg, src, _) in &carried {
+            let _ = writeln!(s, "    {reg} <= {src};");
+        }
+        let _ = writeln!(s, "  end");
+    }
+
+    let y_ref = ctx.resolve(&result_node, StagedNs::Main, stages)?;
+    let _ = writeln!(s, "  assign y = {y_ref};");
+    let _ = writeln!(s, "endmodule");
+    Ok(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pins the zero-drift facts the builtin staged schedule was extracted
+    /// against, and exercises the staged renderer end-to-end on the real
+    /// FMA. If `fp_ops` evolves and this fails, re-derive the schedule
+    /// (see `pipelined_ops::FMA_F32_S6_SCHEDULE` provenance docs).
+    #[test]
+    fn staged_fma_renders_with_expected_structure() {
+        let funcs = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        let fma = funcs.iter().find(|f| f.name == "arch_fma_f32").unwrap();
+        let add = funcs.iter().find(|f| f.name == "arch_f32_add").unwrap();
+        // Zero-drift pins: linearization sizes the schedule was built on.
+        assert_eq!(linearize(&fma.body).order.len(), 309, "main temp count");
+        assert_eq!(linearize(&add.body).order.len(), 175, "callee temp count");
+
+        let sched = crate::pipelined_ops::FMA_F32_S6_SCHEDULE;
+        let sv = render_sv_staged(fma, add, &sched, "ArchF32FmaStaged6")
+            .expect("staged rendering must succeed on the pinned linearization");
+
+        assert!(sv.contains("module ArchF32FmaStaged6 ("));
+        assert!(sv.contains("input logic clk,"));
+        assert!(sv.contains("output logic [31:0] y"));
+        // Six stage comb blocks (stages 2 and 3 are callee-only but non-empty),
+        // five register layers, combinational final result.
+        for k in 1..=6 {
+            assert!(
+                sv.contains(&format!("// ── stage {k}")),
+                "stage {k} present"
+            );
+        }
+        for k in 1..=5 {
+            assert!(
+                sv.contains(&format!("// ── register layer {k} (")),
+                "register layer {k} present"
+            );
+        }
+        assert!(sv.contains("assign y = s6__t308;"), "comb final result");
+        // The nested add is inlined, not called: stage-4 alias of the callee
+        // result, and no SV function-call syntax anywhere in the module.
+        assert!(
+            sv.contains("s4__t44 = s4__A_t174;"),
+            "call inlined as alias"
+        );
+        assert!(!sv.contains("arch_f32_add("), "no function call remains");
+        // Reset-free internal layers (caller supplies output reset).
+        assert!(!sv.contains("rst"), "no reset in the staged datapath");
+        // Decl-then-assign style only (Yosys-frontend-safe): no
+        // decl-with-initializer inside the module.
+        assert!(!sv.contains("; //init"), "sanity");
+        for line in sv.lines() {
+            let t = line.trim_start();
+            if t.starts_with("logic ") {
+                assert!(!t.contains('='), "decl-with-init found: {line}");
+            }
+        }
+    }
+
+    #[test]
+    fn staged_fma_drift_detection_errs_not_panics() {
+        let funcs = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        let fma = funcs.iter().find(|f| f.name == "arch_fma_f32").unwrap();
+        let add = funcs.iter().find(|f| f.name == "arch_f32_add").unwrap();
+        // Wrong callee name.
+        let bad = crate::pipelined_ops::StagedSchedule {
+            callee: "arch_f32_sub",
+            ..crate::pipelined_ops::FMA_F32_S6_SCHEDULE
+        };
+        assert!(render_sv_staged(fma, add, &bad, "M").is_err());
+        // Truncated coverage (temp-count drift).
+        let bad2 = crate::pipelined_ops::StagedSchedule {
+            main_starts: &[0, 44, 44, 44, 231, 273, 300],
+            ..crate::pipelined_ops::FMA_F32_S6_SCHEDULE
+        };
+        assert!(render_sv_staged(fma, add, &bad2, "M").is_err());
+    }
 
     #[test]
     fn renders_both_dialects() {

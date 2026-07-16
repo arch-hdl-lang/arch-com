@@ -40,6 +40,21 @@
 //! alone is fully supported for any registered row regardless of codegen
 //! status.
 //!
+//! Phase 3.5 (proposal §4) adds a SECOND emission form: measured data
+//! showed Yosys/ABC does **not** retime the comb+cascade shape (~113 MHz
+//! vs. ~260 MHz hand-staged, same buffered Nangate45 flow — flops never
+//! move), so `arch build --staged-ops` emits registry entries carrying a
+//! [`StagedSchedule`] as a hand-staged datapath module instead
+//! (`fp_ir::render_sv_staged`), with the binding site's cascade regs
+//! rewritten into a 1-bit validity chain that keeps reset/warm-up behavior
+//! cycle-exact with the cascade (see `lower_staged_sites`). The cascade
+//! remains the default — it is retime-friendly RTL for flows with real
+//! sequential retiming (commercial synthesis), and the form `arch sim`
+//! always runs. The staged datapath is a genuine second implementation, so
+//! its equivalence obligation is discharged by the randomized lock-step
+//! regression (`tests/pipelined_fma_lockstep_test.rs`), not by
+//! construction.
+//!
 //! The registry key is `(operator, profile, stages)`. Entries carry a
 //! verification `status`: `verified` means the staged IR has been proven
 //! sequentially equivalent to the trusted combinational operator — true by
@@ -49,6 +64,85 @@
 //! phase 4) are usable only with an explicit opt-in.
 
 use std::fmt;
+
+/// A staged schedule for an entry: the assignment of the operator's
+/// linearized IR temps (`fp_ir::linearize` order) to pipeline stages —
+/// phase 3.5 of `doc/proposal_pipelined_operators.md` (§4 "Emission forms").
+///
+/// The schedule is expressed as per-namespace stage-start cut points over
+/// contiguous temp ranges: stage `k` (1-based, `1..=stages`) owns main
+/// temps `main_starts[k-1] .. main_starts[k]` and inlined-callee temps
+/// `callee_starts[k-1] .. callee_starts[k]` (half-open). The builtin FMA
+/// schedule was extracted from the externally characterized hand-staged
+/// run (259.8 MHz, Nangate45 typ., buffered abc — the `sh6` strategy of
+/// the depth sweep), whose temp numbering was verified zero-drift against
+/// the current linearization (main result `_t308`, nested call at `_t44`,
+/// callee result `_t174`).
+///
+/// `callee` names the single nested `Kind::Call` whose body is inlined
+/// under the `A_` namespace (for FMA: `arch_f32_add`, the prod-zero path).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StagedSchedule {
+    /// The IR function being staged (e.g. `"arch_fma_f32"`).
+    pub main_fn: &'static str,
+    /// Nested call inlined as the `A_` namespace (e.g. `"arch_f32_add"`).
+    pub callee: &'static str,
+    /// SV module name for the emitted staged datapath.
+    pub sv_module: &'static str,
+    /// Result width in bits (the staged module's `y` port).
+    pub width: u32,
+    /// `stages + 1` cut points over the main function's temp ids;
+    /// `main_starts[0] == 0`, `main_starts[stages] ==` total main temps.
+    pub main_starts: &'static [usize],
+    /// `stages + 1` cut points over the inlined callee's temp ids.
+    pub callee_starts: &'static [usize],
+}
+
+impl StagedSchedule {
+    /// Stage (1-based) that computes main temp `id`.
+    pub fn main_stage(&self, id: usize) -> u32 {
+        Self::stage_of(self.main_starts, id)
+    }
+    /// Stage (1-based) that computes callee (`A_`) temp `id`.
+    pub fn callee_stage(&self, id: usize) -> u32 {
+        Self::stage_of(self.callee_starts, id)
+    }
+    fn stage_of(starts: &[usize], id: usize) -> u32 {
+        debug_assert!(id < *starts.last().unwrap(), "temp id beyond schedule");
+        // `starts` is tiny (stages + 1 entries); a linear scan is obviously
+        // right and the arrays are monotone by construction (unit-tested).
+        for k in 1..starts.len() {
+            if id < starts[k] {
+                return k as u32;
+            }
+        }
+        unreachable!("temp id {id} beyond schedule range")
+    }
+    /// Declared stage count (`stages` in the registry row).
+    pub fn stages(&self) -> u32 {
+        (self.main_starts.len() - 1) as u32
+    }
+}
+
+/// The builtin 6-stage FMA schedule (see [`StagedSchedule`] docs for
+/// provenance). Stage ownership:
+///
+/// | stage | main `arch_fma_f32` temps | inlined `arch_f32_add` temps |
+/// |---|---|---|
+/// | 1 | t0..t43    | A_t0..A_t81    |
+/// | 2 | —          | A_t82..A_t102  |
+/// | 3 | —          | A_t103..A_t161 |
+/// | 4 | t44..t230  | A_t162..A_t174 |
+/// | 5 | t231..t272 | —              |
+/// | 6 | t273..t308 | —              |
+pub const FMA_F32_S6_SCHEDULE: StagedSchedule = StagedSchedule {
+    main_fn: "arch_fma_f32",
+    callee: "arch_f32_add",
+    sv_module: "ArchF32FmaStaged6",
+    width: 32,
+    main_starts: &[0, 44, 44, 44, 231, 273, 309],
+    callee_starts: &[0, 82, 103, 162, 175, 175, 175],
+};
 
 /// Verification status of a registry entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -103,6 +197,11 @@ pub struct PipelinedOpEntry {
     /// yet — `arch build` / `arch sim` refuse with a "not yet implemented"
     /// error rather than silently emitting an un-retimed comb cone.
     pub codegen_impl: Option<&'static str>,
+    /// Staged emission schedule (phase 3.5): `Some(_)` when the entry can
+    /// be emitted as a hand-staged datapath under `arch build --staged-ops`.
+    /// `None` → `--staged-ops` falls back to the cascade form with a
+    /// warning (never an error).
+    pub staged_schedule: Option<StagedSchedule>,
 }
 
 /// The compiler-owned builtin registry.
@@ -123,18 +222,22 @@ pub const BUILTIN_REGISTRY: &[PipelinedOpEntry] = &[PipelinedOpEntry {
     fmax_ng45_typ: Some("~260 MHz (external run — see notes)"),
     impl_id: "builtin:fma_f32_s6",
     notes: Some(
-        "sticky-fold FMA, buffered (Yosys abc: buffer -N 8; upsize; dnsize) — an \
-         EXTERNAL Nangate45 (typ.) Yosys+OpenSTA+Liberty characterization not \
-         reproducible by this repo's checked-in flow (no Liberty/OpenSTA in \
-         the dev/CI sandbox); 6-stage is the characterized knee vs. 7/10 \
-         stages. Codegen = comb `fma` IR + 6 pipe_reg stages, retimed \
-         downstream by synthesis (sequential equivalence holds by \
-         construction — see this module's doc comment). Reproducible \
-         logic-depth proxy (not fmax): tests/fp_v1/synth/run_synth.sh \
-         --stages 6 F32Fma, documented in tests/fp_v1/synth/README.md \
-         'Staged/pipelined operators'",
+        "sticky-fold FMA; EXTERNAL Nangate45 (typ.) Yosys+OpenSTA+Liberty \
+         characterization, buffered abc flow (buffer -N 8; upsize; dnsize) — \
+         not reproducible by this repo's checked-in flow (no Liberty/OpenSTA \
+         in the dev/CI sandbox); 6-stage is the characterized knee vs. 7/10 \
+         stages. TWO emission forms (proposal §4): the default comb+cascade \
+         (retime-friendly RTL; also what `arch sim` runs) measures ~113 MHz \
+         on Yosys/ABC, which does NOT retime it (flops never move); `arch \
+         build --staged-ops` emits the hand-staged datapath this row's \
+         ~260 MHz characterizes. Staged↔cascade equivalence is discharged \
+         by the randomized lock-step regression \
+         (tests/pipelined_fma_lockstep_test.rs). Reproducible logic-depth \
+         proxy (not fmax): tests/fp_v1/synth/run_synth.sh --stages 6 F32Fma \
+         (tests/fp_v1/synth/README.md 'Staged/pipelined operators')",
     ),
     codegen_impl: Some("fma"),
+    staged_schedule: Some(FMA_F32_S6_SCHEDULE),
 }];
 
 /// Returns the builtin registry rows, sorted deterministically by
@@ -516,7 +619,91 @@ fn resolve_codegen_impl(operator: &str, stages: u32) -> Result<&'static str, ()>
 pub fn lower_pipelined_calls(
     source: &mut crate::ast::SourceFile,
 ) -> Result<(), FoundPipelinedCall> {
+    lower_pipelined_calls_mode(
+        source,
+        PipelinedEmission::Cascade,
+        crate::FpCompat::default(),
+    )
+    .map(|_| ())
+}
+
+/// Emission form selector for `lower_pipelined_calls_mode` — proposal §4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelinedEmission {
+    /// Phase-3 default: comb call + `pipe_reg` register cascade.
+    Cascade,
+    /// Phase 3.5 (`arch build --staged-ops`): registry entries WITH a
+    /// staged schedule emit the hand-staged datapath module; entries
+    /// without one fall back to the cascade with a warning.
+    Staged,
+}
+
+/// One staged call site after `PipelinedEmission::Staged` lowering: codegen
+/// emits `sv_text` once per `sv_module` at `$unit` scope, and an instance +
+/// result wire inside `module_name`. The site's cascade registers were
+/// rewritten into a 1-bit validity chain (see `lower_staged_sites`), so the
+/// binding port's reset/warm-up behavior stays cycle-exact with the cascade
+/// emission.
+#[derive(Debug, Clone)]
+pub struct StagedSite {
+    /// ARCH module containing the call site.
+    pub module_name: String,
+    /// Staged SV module (e.g. `ArchF32FmaStaged6`).
+    pub sv_module: &'static str,
+    /// Rendered staged module text (drift-verified at lowering time).
+    pub sv_text: String,
+    /// Instance name, unique per module (e.g. `__staged_fma_0`).
+    pub instance: String,
+    /// Result wire name (e.g. `__staged_fma_0_y`).
+    pub wire: String,
+    /// Result width in bits.
+    pub width: u32,
+    /// Clock signal driving the seq block the call was bound in.
+    pub clk: String,
+    /// The staged module's input port names (the IR function's params),
+    /// paired positionally with `args`.
+    pub ports: Vec<String>,
+    /// Typechecked argument expressions, connected positionally to `ports`.
+    pub args: Vec<crate::ast::Expr>,
+}
+
+/// A `--staged-ops` site that fell back to the cascade emission, with the
+/// reason (no schedule, unsupported shape, renderer drift). Surfaced as a
+/// warning — never an error.
+#[derive(Debug, Clone)]
+pub struct StagedFallback {
+    pub operator: String,
+    pub stages: u32,
+    pub reason: String,
+    pub span: crate::lexer::Span,
+}
+
+/// Outcome of `lower_pipelined_calls_mode`.
+#[derive(Debug, Default)]
+pub struct PipelinedLowering {
+    /// Staged sites for codegen (empty in `Cascade` mode).
+    pub staged_sites: Vec<StagedSite>,
+    /// Cascade fallbacks under `Staged` mode (advisory warnings).
+    pub fallbacks: Vec<StagedFallback>,
+}
+
+pub fn lower_pipelined_calls_mode(
+    source: &mut crate::ast::SourceFile,
+    mode: PipelinedEmission,
+    profile: crate::FpCompat,
+) -> Result<PipelinedLowering, FoundPipelinedCall> {
     use crate::ast::{Item, ModuleBodyItem};
+    let mut out = PipelinedLowering::default();
+    // Staged pass first: rewrites eligible sites in place and removes their
+    // `PipelinedCall` nodes; anything left standing (fallbacks, cascade
+    // mode) is collapsed to the comb call below, exactly as in phase 3.
+    if mode == PipelinedEmission::Staged {
+        for item in &mut source.items {
+            if let Item::Module(m) = item {
+                lower_staged_sites(m, profile, &mut out);
+            }
+        }
+    }
     for item in &mut source.items {
         if let Item::Module(m) = item {
             for bi in &mut m.body {
@@ -530,7 +717,270 @@ pub fn lower_pipelined_calls(
             }
         }
     }
-    Ok(())
+    Ok(out)
+}
+
+/// Rewrites every eligible `X_stg1 <= op<pipelined, N>(args)` site of one
+/// module into the staged-instance form:
+///
+/// - the `N-1` synthesized cascade regs `X_stg1..X_stg{N-1}` become a 1-bit
+///   **validity chain** (same reset, value `false`) — reusing the ordinary
+///   reg/reset codegen for the post-reset warm-up gate;
+/// - `X_stg1 <= <call>` becomes `X_stg1 <= true`;
+/// - `X <= X_stg{N-1}` becomes `X <= X_stg{N-1} ? <wire> : <reset value>`;
+/// - the staged module text is rendered (and drift-verified) here, and the
+///   instance/wire recorded for codegen.
+///
+/// Timing note: the staged module holds register layers 1..N-1 internally
+/// and a combinational final stage; the port's own output register supplies
+/// edge N — total latency is exactly N edges, matching the cascade, and the
+/// validity chain reproduces the cascade's N-1 reset-value warm-up cycles.
+///
+/// Ineligible sites (falling-edge clock, conditional/nested assignment,
+/// missing schedule, renderer drift) are left untouched → the cascade
+/// collapse handles them; a `StagedFallback` records why.
+fn lower_staged_sites(
+    m: &mut crate::ast::ModuleDecl,
+    profile: crate::FpCompat,
+    out: &mut PipelinedLowering,
+) {
+    use crate::ast::{ClockEdge, Expr, ExprKind, ModuleBodyItem, RegReset, Stmt, TypeExpr};
+
+    // ── collect candidate sites: top-level `X_stg1 <= PipelinedCall` ──
+    struct Cand {
+        base: String,
+        operator: String,
+        stages: u32,
+        span: crate::lexer::Span,
+    }
+    let mut cands: Vec<Cand> = Vec::new();
+    for bi in &m.body {
+        let ModuleBodyItem::RegBlock(rb) = bi else {
+            continue;
+        };
+        for s in &rb.stmts {
+            let Stmt::Assign(a) = s else { continue };
+            let ExprKind::PipelinedCall(op, _, n) = &a.value.kind else {
+                continue;
+            };
+            let ExprKind::Ident(t) = &a.target.kind else {
+                continue;
+            };
+            if let Some(base) = t.strip_suffix("_stg1") {
+                if rb.clock_edge == ClockEdge::Falling {
+                    out.fallbacks.push(StagedFallback {
+                        operator: op.clone(),
+                        stages: *n,
+                        reason: "falling-edge clock (staged emission supports rising only)"
+                            .to_string(),
+                        span: a.span,
+                    });
+                    continue;
+                }
+                cands.push(Cand {
+                    base: base.to_owned(),
+                    operator: op.clone(),
+                    stages: *n,
+                    span: a.span,
+                });
+            }
+        }
+        // Nested (conditional) PipelinedCalls: report the fallback, leave
+        // them for the cascade collapse.
+        let mut nested = Vec::new();
+        for s in &rb.stmts {
+            if let Stmt::Assign(a) = s {
+                if matches!(a.value.kind, ExprKind::PipelinedCall(..))
+                    && matches!(a.target.kind, ExprKind::Ident(_))
+                {
+                    continue; // top-level candidate handled above
+                }
+            }
+            scan_stmts(std::slice::from_ref(s), &mut nested);
+        }
+        for f in nested {
+            out.fallbacks.push(StagedFallback {
+                operator: f.operator,
+                stages: f.stages,
+                reason: "pipelined call is conditional or nested (staged emission requires an \
+                         unconditional top-level binding)"
+                    .to_string(),
+                span: f.span,
+            });
+        }
+    }
+
+    let fp_funcs = crate::fp_ops::fp_functions(profile);
+    for cand in cands {
+        // Registry row with a schedule?
+        let sched = match BUILTIN_REGISTRY
+            .iter()
+            .find(|e| e.operator == cand.operator && e.stages == cand.stages)
+            .and_then(|e| e.staged_schedule)
+        {
+            Some(s) => s,
+            None => {
+                out.fallbacks.push(StagedFallback {
+                    operator: cand.operator,
+                    stages: cand.stages,
+                    reason: "registry entry has no staged schedule".to_string(),
+                    span: cand.span,
+                });
+                continue;
+            }
+        };
+        // Render + drift-verify NOW so a failed site can still fall back.
+        let main_fn = fp_funcs.iter().find(|f| f.name == sched.main_fn);
+        let callee_fn = fp_funcs.iter().find(|f| f.name == sched.callee);
+        let (Some(main_fn), Some(callee_fn)) = (main_fn, callee_fn) else {
+            out.fallbacks.push(StagedFallback {
+                operator: cand.operator,
+                stages: cand.stages,
+                reason: format!(
+                    "IR functions `{}`/`{}` not found",
+                    sched.main_fn, sched.callee
+                ),
+                span: cand.span,
+            });
+            continue;
+        };
+        let sv_text =
+            match crate::fp_ir::render_sv_staged(main_fn, callee_fn, &sched, sched.sv_module) {
+                Ok(t) => t,
+                Err(e) => {
+                    out.fallbacks.push(StagedFallback {
+                        operator: cand.operator,
+                        stages: cand.stages,
+                        reason: format!("staged renderer rejected the schedule: {e}"),
+                        span: cand.span,
+                    });
+                    continue;
+                }
+            };
+
+        // The port's declared reset value (cold-pipe output during warm-up).
+        let port_reset_val: Option<Expr> = m
+            .ports
+            .iter()
+            .find(|p| p.name.name == cand.base)
+            .and_then(|p| p.reg_info.as_ref())
+            .and_then(|ri| match &ri.reset {
+                RegReset::None => None,
+                RegReset::Inherit(_, v) | RegReset::Explicit(_, _, _, v) => Some(v.clone()),
+            });
+
+        let idx = out
+            .staged_sites
+            .iter()
+            .filter(|s| s.module_name == m.name.name)
+            .count();
+        let instance = format!("__staged_{}_{}", cand.operator, idx);
+        let wire = format!("{instance}_y");
+        let span = cand.span;
+        let mk = |kind: ExprKind| Expr {
+            kind,
+            span,
+            parenthesized: false,
+        };
+
+        // ── mutate the cascade group in place ──
+        let last_stg = format!("{}_stg{}", cand.base, cand.stages - 1);
+        let mut clk: Option<String> = None;
+        let mut call_args: Option<Vec<Expr>> = None;
+        let mut rewrote_last = false;
+        for bi in &mut m.body {
+            match bi {
+                ModuleBodyItem::RegDecl(r)
+                    if r.name
+                        .name
+                        .strip_prefix(&format!("{}_stg", cand.base))
+                        .is_some_and(|k| {
+                            k.parse::<u32>().is_ok_and(|k| k >= 1 && k < cand.stages)
+                        }) =>
+                {
+                    // 32-bit data stage → 1-bit validity stage, same reset
+                    // signal/kind/polarity, value `false`.
+                    r.ty = TypeExpr::Bool;
+                    match &mut r.reset {
+                        RegReset::None => {}
+                        RegReset::Inherit(_, v) | RegReset::Explicit(_, _, _, v) => {
+                            *v = mk(ExprKind::Bool(false));
+                        }
+                    }
+                    if r.init.is_some() {
+                        r.init = Some(mk(ExprKind::Bool(false)));
+                    }
+                }
+                ModuleBodyItem::RegBlock(rb) => {
+                    for s in &mut rb.stmts {
+                        let Stmt::Assign(a) = s else { continue };
+                        let ExprKind::Ident(t) = &a.target.kind else {
+                            continue;
+                        };
+                        if *t == format!("{}_stg1", cand.base)
+                            && matches!(a.value.kind, ExprKind::PipelinedCall(..))
+                        {
+                            let old = std::mem::replace(&mut a.value, mk(ExprKind::Bool(true)));
+                            let ExprKind::PipelinedCall(_, args, _) = old.kind else {
+                                unreachable!("matched PipelinedCall above")
+                            };
+                            call_args = Some(args);
+                            clk = Some(rb.clock.name.clone());
+                        } else if *t == cand.base {
+                            if let ExprKind::Ident(src) = &a.value.kind {
+                                if *src == last_stg {
+                                    let fallback = port_reset_val
+                                        .clone()
+                                        .unwrap_or_else(|| mk(ExprKind::Bool(false)));
+                                    a.value = mk(ExprKind::Ternary(
+                                        Box::new(mk(ExprKind::Ident(src.clone()))),
+                                        Box::new(mk(ExprKind::Ident(wire.clone()))),
+                                        Box::new(fallback),
+                                    ));
+                                    rewrote_last = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let (Some(args), Some(clk), true) = (call_args, clk, rewrote_last) else {
+            // Shape mismatch — should not happen for the elaborate-generated
+            // cascade. The site may be partially rewritten; that is still
+            // sound only if BOTH halves happened, so surface loudly.
+            out.fallbacks.push(StagedFallback {
+                operator: cand.operator.clone(),
+                stages: cand.stages,
+                reason: "cascade shape not recognized (staged rewrite incomplete — please \
+                         report; falling back may leave a stale validity chain)"
+                    .to_string(),
+                span: cand.span,
+            });
+            continue;
+        };
+        if args.len() != main_fn.params.len() {
+            out.fallbacks.push(StagedFallback {
+                operator: cand.operator.clone(),
+                stages: cand.stages,
+                reason: "call arity != staged IR function arity".to_string(),
+                span: cand.span,
+            });
+            continue;
+        }
+        out.staged_sites.push(StagedSite {
+            module_name: m.name.name.clone(),
+            sv_module: sched.sv_module,
+            sv_text,
+            instance,
+            wire,
+            width: sched.width,
+            clk,
+            ports: main_fn.params.iter().map(|(n, _)| n.clone()).collect(),
+            args,
+        });
+    }
 }
 
 fn lower_stmts(stmts: &mut [crate::ast::Stmt]) -> Result<(), FoundPipelinedCall> {
@@ -753,6 +1203,40 @@ mod tests {
         assert!(row.contains("6"));
         assert!(row.contains("verified"));
         assert!(row.contains("builtin:fma_f32_s6"));
+    }
+
+    #[test]
+    fn fma_s6_schedule_is_monotone_and_covers_both_namespaces_exactly() {
+        let s = FMA_F32_S6_SCHEDULE;
+        assert_eq!(s.stages(), 6);
+        assert_eq!(s.callee, "arch_f32_add");
+        for starts in [s.main_starts, s.callee_starts] {
+            assert_eq!(starts.len(), 7);
+            assert_eq!(starts[0], 0);
+            assert!(starts.windows(2).all(|w| w[0] <= w[1]), "monotone cuts");
+        }
+        // Exact coverage of the verified linearization: main t0..t308
+        // (result _t308), callee A_t0..A_t174 (result _t174) — no gaps or
+        // overlaps by construction of half-open contiguous ranges.
+        assert_eq!(*s.main_starts.last().unwrap(), 309);
+        assert_eq!(*s.callee_starts.last().unwrap(), 175);
+        // Spot-check stage ownership at the boundaries of the extracted table.
+        assert_eq!(s.main_stage(0), 1);
+        assert_eq!(s.main_stage(43), 1);
+        assert_eq!(s.main_stage(44), 4);
+        assert_eq!(s.main_stage(230), 4);
+        assert_eq!(s.main_stage(231), 5);
+        assert_eq!(s.main_stage(272), 5);
+        assert_eq!(s.main_stage(273), 6);
+        assert_eq!(s.main_stage(308), 6);
+        assert_eq!(s.callee_stage(0), 1);
+        assert_eq!(s.callee_stage(81), 1);
+        assert_eq!(s.callee_stage(82), 2);
+        assert_eq!(s.callee_stage(102), 2);
+        assert_eq!(s.callee_stage(103), 3);
+        assert_eq!(s.callee_stage(161), 3);
+        assert_eq!(s.callee_stage(162), 4);
+        assert_eq!(s.callee_stage(174), 4);
     }
 
     #[test]

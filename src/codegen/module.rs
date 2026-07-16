@@ -520,6 +520,7 @@ impl<'a> Codegen<'a> {
         // collected harnesses are always emitted).
         if decls_count == body_items.len() {
             self.emit_shared_harnesses(&shared_harnesses);
+            self.emit_staged_sites(&m_clone);
         }
         for (i, item) in body_items.iter().enumerate() {
             // Boundary between the decls bucket and the rest bucket:
@@ -531,6 +532,7 @@ impl<'a> Codegen<'a> {
             // `__shared_FN_out`, so the wire decls must precede them.
             if i == decls_count {
                 self.emit_shared_harnesses(&shared_harnesses);
+                self.emit_staged_sites(&m_clone);
             }
             self.emit_comments_before(item.span().start);
             match item {
@@ -1281,6 +1283,41 @@ impl<'a> Codegen<'a> {
     }
 
     /// Emit a for-loop (Range or ValueList) as SV.
+    /// Emit the staged pipelined-operator instances bound in this module
+    /// (`arch build --staged-ops`, proposal phase 3.5): one result wire +
+    /// one instance of the staged datapath module per site. Emitted at the
+    /// decls/rest boundary so the wire decl precedes its uses (strict
+    /// decl-before-use frontends) and the connections may reference any
+    /// module-scope decl.
+    fn emit_staged_sites(&mut self, m: &ModuleDecl) {
+        let sites: Vec<crate::pipelined_ops::StagedSite> = self
+            .staged_sites
+            .iter()
+            .filter(|s| s.module_name == m.name.name)
+            .cloned()
+            .collect();
+        for site in sites {
+            self.staged_emitted.set(true);
+            let w = if site.width == 1 {
+                String::new()
+            } else {
+                format!("[{}:0] ", site.width - 1)
+            };
+            self.line(&format!("logic {}{};", w, site.wire));
+            let mut conns = vec![format!(".clk({})", site.clk)];
+            for (port, arg) in site.ports.iter().zip(site.args.iter()) {
+                conns.push(format!(".{}({})", port, self.emit_expr_str(arg)));
+            }
+            conns.push(format!(".y({})", site.wire));
+            self.line(&format!(
+                "{} {} ({});",
+                site.sv_module,
+                site.instance,
+                conns.join(", ")
+            ));
+        }
+    }
+
     fn emit_reg_block(&mut self, rb: &RegBlock, m: &ModuleDecl) {
         let clk_edge = match rb.clock_edge {
             ClockEdge::Rising => "posedge",

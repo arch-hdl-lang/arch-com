@@ -196,6 +196,15 @@ enum Command {
         /// 0x7FFFFFFF/0x7FFF) and the NaN→int result (type max vs 0).
         #[arg(long = "fp-compat", default_value = "riscv")]
         fp_compat: String,
+        /// Emit registry pipelined operators (`fma<pipelined, N>`) as their
+        /// hand-staged datapath modules instead of the default comb+cascade
+        /// form (doc/proposal_pipelined_operators.md §4, phase 3.5). The
+        /// staged form reaches the characterized fmax on flows without
+        /// sequential retiming (Yosys/ABC); the default cascade form is
+        /// retime-friendly RTL for commercial synthesis. Entries without a
+        /// staged schedule fall back to the cascade with a warning.
+        #[arg(long)]
+        staged_ops: bool,
     },
     /// Compile ARCH + C++ testbench and run simulation
     ///
@@ -522,6 +531,43 @@ impl MultiSource {
 /// the phase-2 backstop did unconditionally, rather than silently falling
 /// back to comb + delay-line (which would compute correct values but
 /// misrepresent an un-retimed cone as the requested pipelined operator).
+/// `arch build`'s staged-aware variant of
+/// [`lower_pipelined_calls_before_codegen`]: under `--staged-ops`, registry
+/// entries with a staged schedule are rewritten to the staged-instance form
+/// (proposal phase 3.5) and returned for codegen; anything else collapses to
+/// the cascade exactly as before. Fallbacks print as warnings — never errors.
+fn lower_pipelined_calls_for_build(
+    ast: &mut arch::ast::SourceFile,
+    ms: &MultiSource,
+    staged_ops: bool,
+    fp_compat: arch::FpCompat,
+) -> miette::Result<Vec<arch::pipelined_ops::StagedSite>> {
+    let mode = if staged_ops {
+        arch::pipelined_ops::PipelinedEmission::Staged
+    } else {
+        arch::pipelined_ops::PipelinedEmission::Cascade
+    };
+    let outcome = arch::pipelined_ops::lower_pipelined_calls_mode(ast, mode, fp_compat).map_err(
+        |f| {
+            let err = CompileError::general(
+                &format!(
+                    "`{}<pipelined, {}>(...)` typechecks (`arch check` accepts it) but codegen for                      this depth is not yet implemented — no `codegen_impl` is wired for this registry                      row (doc/proposal_pipelined_operators.md phase 3/4). Not supported by                      `arch build` / `arch sim` yet.",
+                    f.operator, f.stages
+                ),
+                f.span,
+            );
+            ms.report_error(err)
+        },
+    )?;
+    for fb in &outcome.fallbacks {
+        eprintln!(
+            "warning: {}<pipelined, {}> falls back to the cascade emission under --staged-ops: {}",
+            fb.operator, fb.stages, fb.reason
+        );
+    }
+    Ok(outcome.staged_sites)
+}
+
 fn lower_pipelined_calls_before_codegen(
     ast: &mut arch::ast::SourceFile,
     ms: &MultiSource,
@@ -1122,6 +1168,7 @@ fn main() -> miette::Result<()> {
             auto_thread_asserts,
             no_inline_deps,
             fp_compat,
+            staged_ops,
         } => {
             let fp_compat = arch::FpCompat::parse(&fp_compat).map_err(|e| miette::miette!(e))?;
             let files_for_learn = files.clone();
@@ -1180,7 +1227,8 @@ fn main() -> miette::Result<()> {
                     auto_thread_asserts,
                     thread_map_store.clone(),
                 )?;
-                lower_pipelined_calls_before_codegen(&mut ast, &ms)?;
+                let staged_sites =
+                    lower_pipelined_calls_for_build(&mut ast, &ms, staged_ops, fp_compat)?;
                 let ast = ast;
                 let thread_map_sources = thread_map_sources_from_multi(&ms);
 
@@ -1217,6 +1265,7 @@ fn main() -> miette::Result<()> {
                         let mut codegen = Codegen::new(&symbols, &ast, overload_map)
                             .with_comments(comments)
                             .with_fp_compat(fp_compat);
+                        codegen.set_staged_sites(staged_sites.clone());
                         let sv = codegen.generate_items(&file_items);
                         let out_path_hint =
                             o.clone().unwrap_or_else(|| files[0].with_extension("sv"));
@@ -1226,6 +1275,7 @@ fn main() -> miette::Result<()> {
                         let mut codegen = Codegen::new(&symbols, &ast, overload_map)
                             .with_comments(comments)
                             .with_fp_compat(fp_compat);
+                        codegen.set_staged_sites(staged_sites.clone());
                         let sv = codegen.generate();
                         let out_path_hint =
                             o.clone().unwrap_or_else(|| files[0].with_extension("sv"));
@@ -1451,6 +1501,7 @@ fn main() -> miette::Result<()> {
                         let mut codegen = Codegen::new(&symbols, &ast, overload_map.clone())
                             .with_comments(file_comments)
                             .with_fp_compat(fp_compat);
+                        codegen.set_staged_sites(staged_sites.clone());
                         let sv = codegen.generate_items(&file_items);
 
                         let out_path = std::path::Path::new(filename).with_extension("sv");
