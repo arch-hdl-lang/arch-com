@@ -40,15 +40,27 @@ OpenSTA) shows the problem and the opportunity:
 Buffered depth sweep (Yosys `abc` with `buffer -N 8; upsize; dnsize`, which the
 default `abc -liberty` flow omits):
 
-| depth | buffered fmax | DFFs |
+| depth | buffered fmax | cells |
 |---|---|---|
-| 6 | **259.8 MHz** | 1032 |
-| 7 | 256.4 MHz | 1221 |
-| 10 | 241.5 MHz | 1852 |
+| 3 | 223.1 MHz | 12466 |
+| 4 | 223.0 MHz | 12424 |
+| 5 | 259.7 MHz | 13224 |
+| 6 | 259.8 MHz | 13196 |
+| 7 | **268.0 MHz** | 13935 |
+| 8 | 254.5 MHz | 14127 |
+| 10 | 241.5 MHz | 16236 |
 
-So a pipelined FMA reaches ~260 MHz vs. 45 MHz exact-wide — a ~5.8× win — and
-**6 stages is the knee** (more stages regress: the residual path is a fine-grained
-logic-depth cone the registers can't usefully bisect). But there is no way for a
+(Full sweep re-measured 2026-07-17 under the buffered flow; best strategy per
+depth from the original placement study — `depth`/`sh4`/`sh5`/`sh6`/`full7`/
+`max8`/`max10`. An earlier partial sweep read "6 is the knee" from a weaker
+7-stage placement; with the study's best 7-stage staging the knee is **7 stages
+at 268 MHz**, a 260–268 MHz plateau across 5–7, regressing beyond as fixed
+per-stage register overhead outweighs the un-splittable residual cones.)
+
+Under the same buffered flow the exact-wide reference measures 160 MHz
+combinational (its widely-quoted 45 MHz was a fanout artifact of the unbuffered
+default flow) and does not pipeline at all — so the pipelined sticky-fold's
+1.68× ceiling advantage is entirely pipelinability. But there is no way for a
 *user* to ask for the pipelined operator. This proposal adds that surface.
 
 ### The trap this proposal must avoid
