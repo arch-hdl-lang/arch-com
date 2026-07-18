@@ -743,4 +743,49 @@ theorem roundNE_tie_even (neg : Bool) (sig : Nat) (e0 : Int)
   rw [hkeq]
   exact rneQuot_tie_even sig _ (by omega) htie
 
+/-- **Ties to even, subnormal path.** In the rounded subnormal regime
+    (`e0 < -149`, result at or below the subnormal boundary), a half-way
+    input also encodes an even fraction — same transfer, no binade or carry
+    bookkeeping (the `kept = 2^23` boundary stores fraction 0, even). -/
+theorem roundNE_tie_even_subnormal (neg : Bool) (sig : Nat) (e0 : Int)
+    (hsig : sig ≠ 0) (hbias : (Nat.log2 sig : Int) + e0 + 127 ≤ 0)
+    (he : ¬ ((-149 : Int) ≤ e0))
+    (htie : sig % 2 ^ tScale e0 = 2 ^ (tScale e0 - 1)) :
+    (fracField (roundNE_f32 neg sig e0)).toNat % 2 = 0 := by
+  have hlo := Nat.log2_self_le hsig
+  have hhi := Nat.lt_log2_self (n := sig)
+  have hsh : ¬ ((-149 : Int) - e0 ≤ 0) := by omega
+  have htx : ((-149 : Int) - e0).toNat = tScale e0 := by rw [tScale]; omega
+  have hts : 1 ≤ tScale e0 := by rw [tScale]; omega
+  have hy : roundNE_f32 neg sig e0
+      = BitVec.ofNat 32 ((if neg then 2 ^ 31 else 0)
+          + rneQuot sig (tScale e0) % 2 ^ 31) := by
+    rw [roundNE_f32, if_neg hsig]
+    simp only [if_pos hbias, if_neg hsh, htx]
+  have hq : rneQuot sig (tScale e0) ≤ sig / 2 ^ tScale e0 + 1 := by
+    rw [rneQuot]; split <;> omega
+  have hdiv : sig / 2 ^ tScale e0 < 2 ^ 23 := by
+    apply Nat.div_lt_of_lt_mul
+    have hle : Nat.log2 sig + 1 ≤ 23 + tScale e0 := by
+      have h : (tScale e0 : Int) = -(e0 + 149) := by rw [tScale]; omega
+      omega
+    have h1 : (2 : Nat) ^ (Nat.log2 sig + 1) ≤ 2 ^ (23 + tScale e0) :=
+      Nat.pow_le_pow_right (by decide) hle
+    have h2 : (2 : Nat) ^ (23 + tScale e0) = 2 ^ 23 * 2 ^ tScale e0 := by
+      rw [← Nat.pow_add]
+    omega
+  have hkb : rneQuot sig (tScale e0) ≤ 2 ^ 23 := by omega
+  have heven : rneQuot sig (tScale e0) % 2 = 0 :=
+    rneQuot_tie_even sig _ hts htie
+  have hkm : rneQuot sig (tScale e0) % 2 ^ 31 = rneQuot sig (tScale e0) :=
+    Nat.mod_eq_of_lt (by omega)
+  rw [hy, hkm]
+  have hsgn : (if neg then 2 ^ 31 else 0 : Nat) = 0
+      ∨ (if neg then 2 ^ 31 else 0 : Nat) = 2 ^ 31 := by split <;> simp
+  have hlt : (if neg then 2 ^ 31 else 0) + rneQuot sig (tScale e0) < 2 ^ 32 := by
+    rcases hsgn with h | h <;> omega
+  obtain ⟨_, hfr⟩ := fields_toNat _ hlt
+  rw [hfr]
+  rcases hsgn with h | h <;> rw [h] <;> omega
+
 end ArchFp

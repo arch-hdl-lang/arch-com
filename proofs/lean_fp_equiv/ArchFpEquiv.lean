@@ -5,6 +5,7 @@ import ArchFpEquiv.Round
 import ArchFpEquiv.RoundCore
 import ArchFpEquiv.RneValue
 import ArchFpEquiv.RoundReal
+import ArchFpEquiv.FmaValue
 import ArchFpEquiv.RoundBridge
 import ArchFpEquiv.RoundProof
 import ArchFpEquiv.Equiv
