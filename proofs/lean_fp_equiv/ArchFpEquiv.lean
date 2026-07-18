@@ -3,6 +3,8 @@ import ArchFpEquiv.Model
 import ArchFpEquiv.Spec
 import ArchFpEquiv.Round
 import ArchFpEquiv.RoundCore
+import ArchFpEquiv.RneValue
+import ArchFpEquiv.RoundReal
 import ArchFpEquiv.RoundBridge
 import ArchFpEquiv.RoundProof
 import ArchFpEquiv.Equiv
