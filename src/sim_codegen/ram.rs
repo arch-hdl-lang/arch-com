@@ -231,7 +231,11 @@ impl<'a> SimCodegen<'a> {
                     .iter()
                     .flat_map(|pg| {
                         pg.signals.iter().map(move |s| {
-                            (format!("{}_{}", pg.name.name, s.name.name), &s.ty, s.direction)
+                            (
+                                format!("{}_{}", pg.name.name, s.name.name),
+                                &s.ty,
+                                s.direction,
+                            )
                         })
                     })
                     .find(|(n, _, _)| *n == fs.full_name);
@@ -615,10 +619,7 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("}\n\n");
         if self.debug {
             // Clock port for cycle counting
-            let clk_port = if r
-                .ports
-                .iter()
-                .any(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            let clk_port = if r.ports.iter().any(|p| matches!(&p.ty, TypeExpr::Clock(_)))
                 || flat_sigs.iter().any(|s| s.full_name == "clk")
             {
                 Some("clk")

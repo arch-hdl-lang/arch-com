@@ -1596,10 +1596,7 @@ pub(crate) fn collect_simple_debug_ports(
     out
 }
 
-pub(crate) fn emit_simple_debug_header(
-    h: &mut String,
-    ports: &[SimpleDebugPort],
-) {
+pub(crate) fn emit_simple_debug_header(h: &mut String, ports: &[SimpleDebugPort]) {
     if ports.is_empty() {
         return;
     }

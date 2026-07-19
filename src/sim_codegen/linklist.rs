@@ -83,7 +83,9 @@ impl<'a> SimCodegen<'a> {
 
         // ── Header ────────────────────────────────────────────────────────────
         let mut h = String::new();
-        let mut header_inc = "#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\n".to_string();
+        let mut header_inc =
+            "#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\n"
+                .to_string();
         if self.debug {
             header_inc = "#pragma once\n#include <cstdint>\n#include <cstring>\n#include <cstdio>\n#include \"verilated.h\"\n\n".to_string();
         }
