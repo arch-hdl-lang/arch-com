@@ -339,9 +339,11 @@ impl<'a> SimCodegen<'a> {
 
         h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n");
         h.push_str("  void _do_reset();\n  void final_() {}\n");
-        h.push_str("  void trace_open(const char*) {}\n  void trace_dump(uint64_t) {}\n  void trace_close() {}\n\n");
-
-        h.push_str("private:\n");
+        h.push_str("  void trace_open(const char*) {}\n  void trace_dump(uint64_t) {}\n  void trace_close() {}\n");
+        if self.debug {
+            h.push_str("  void _debug_log_ports();\n");
+        }
+        h.push_str("\nprivate:\n");
         h.push_str("  uint8_t _clk_prev;\n");
         for sr in &all_regs {
             if !sr.is_let {
@@ -371,14 +373,24 @@ impl<'a> SimCodegen<'a> {
                 ));
             }
         }
+        if self.debug {
+            let debug_ports = collect_simple_debug_ports(&p.ports, &p.common.params);
+            emit_simple_debug_header(&mut h, &debug_ports);
+        }
         h.push_str("};\n");
 
         // ── Implementation ──
         let mut cpp = String::new();
         cpp.push_str(&format!("#include \"V{name}.h\"\n\n"));
-        cpp.push_str(&format!(
-            "void {class}::eval() {{ eval_comb(); eval_posedge(); eval_comb(); }}\n\n"
-        ));
+        if self.debug {
+            cpp.push_str(&format!(
+                "void {class}::eval() {{ eval_comb(); eval_posedge(); eval_comb(); _debug_log_ports(); }}\n\n"
+            ));
+        } else {
+            cpp.push_str(&format!(
+                "void {class}::eval() {{ eval_comb(); eval_posedge(); eval_comb(); }}\n\n"
+            ));
+        }
 
         // reset()
         cpp.push_str(&format!("void {class}::_do_reset() {{\n"));
@@ -746,7 +758,16 @@ impl<'a> SimCodegen<'a> {
                 }
             }
         }
-        cpp.push_str("}\n");
+        cpp.push_str("}\n\n");
+        if self.debug {
+            let debug_ports = collect_simple_debug_ports(&p.ports, &p.common.params);
+            let clk_port = p
+                .ports
+                .iter()
+                .find(|pt| matches!(&pt.ty, TypeExpr::Clock(_)))
+                .map(|pt| pt.name.name.as_str());
+            emit_simple_debug_impl(&mut cpp, &class, name, &debug_ports, clk_port);
+        }
 
         SimModel {
             class_name: class,

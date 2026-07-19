@@ -295,13 +295,21 @@ impl<'a> SimCodegen<'a> {
         h.push_str(&format!(
             "  explicit {class}(VerilatedContext*) : {class}() {{}}\n"
         ));
-        h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() { trace_close(); }\nprivate:\n");
+        h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() { trace_close(); }\n");
+        if self.debug {
+            h.push_str("  void _debug_log_ports();\n");
+        }
+        h.push_str("private:\n");
         // Private internal arrays for Vec ports
         for vi in &fsm_vec_port_infos {
             h.push_str(&format!("  {} _{}[{}];\n", vi.elem_ty, vi.name, vi.count));
         }
         h.push_str("  uint8_t _clk_prev;\n");
         h.push_str(&format!("  {state_ty} _state_r;\n"));
+        if self.debug {
+            let debug_ports = collect_simple_debug_ports(&f.ports, &f.common.params);
+            emit_simple_debug_header(&mut h, &debug_ports);
+        }
         // };\n deferred until after trace support added
 
         let mut cpp = String::new();
@@ -318,6 +326,9 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
         cpp.push_str("    trace_open(Verilated::traceFile());\n");
         cpp.push_str("  eval_comb();\n  eval_posedge();\n  eval_comb();\n");
+        if self.debug {
+            cpp.push_str("  _debug_log_ports();\n");
+        }
         cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
         cpp.push_str("}\n\n");
 
@@ -650,6 +661,11 @@ impl<'a> SimCodegen<'a> {
             &extra_sigs_ref,
             &f.common.params,
         );
+
+        if self.debug {
+            let debug_ports = collect_simple_debug_ports(&f.ports, &f.common.params);
+            emit_simple_debug_impl(&mut cpp, &class, name, &debug_ports, Some(clk_port));
+        }
 
         // --coverage: per-FSM counter storage + atexit dumper. Same
         // shape as gen_module's coverage emission (#132/#134).

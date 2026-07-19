@@ -83,9 +83,11 @@ impl<'a> SimCodegen<'a> {
 
         // ── Header ────────────────────────────────────────────────────────────
         let mut h = String::new();
-        h.push_str(
-            "#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\n",
-        );
+        let mut header_inc = "#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\n".to_string();
+        if self.debug {
+            header_inc = "#pragma once\n#include <cstdint>\n#include <cstring>\n#include <cstdio>\n#include \"verilated.h\"\n\n".to_string();
+        }
+        h.push_str(&header_inc);
         h.push_str(&format!("class {class} {{\npublic:\n"));
         h.push_str("  uint8_t clk;\n  uint8_t rst;\n");
         for op in &l.ops {
@@ -173,7 +175,11 @@ impl<'a> SimCodegen<'a> {
             h.push_str("    memset(_length_r, 0, sizeof(_length_r));\n");
         }
         h.push_str("  }\n");
-        h.push_str("  void eval();\n  void eval_comb();\n  void eval_posedge();\n  void final() { trace_close(); }\n\nprivate:\n");
+        h.push_str("  void eval();\n  void eval_comb();\n  void eval_posedge();\n  void final() { trace_close(); }\n");
+        if self.debug {
+            h.push_str("  void _debug_log_ports();\n");
+        }
+        h.push_str("\nprivate:\n");
         h.push_str("  uint8_t _clk_prev;\n");
         h.push_str(&format!("  uint8_t _fl_mem[{depth}];\n"));
         h.push_str(&format!("  {data_cpp} _data_mem[{depth}];\n"));
@@ -219,6 +225,55 @@ impl<'a> SimCodegen<'a> {
                 h.push_str(&format!("  uint8_t _ctrl_{on}_head_idx;\n"));
             }
         }
+        if self.debug {
+            // Collect debug ports: main ports + op ports (flattened as op_port)
+            let mut debug_ports: Vec<SimpleDebugPort> = Vec::new();
+            for p in &l.ports {
+                if p.name.name == "clk" || p.name.name == "rst" {
+                    continue;
+                }
+                if matches!(&p.ty, TypeExpr::Clock(_)) {
+                    continue;
+                }
+                if p.bus_info.is_some() || ty_references_named(&p.ty) {
+                    continue;
+                }
+                let dir = match p.direction {
+                    crate::ast::Direction::In => "in",
+                    crate::ast::Direction::Out => "out",
+                }
+                .to_string();
+                let bits = type_bits_te_with_params(&p.ty, &l.params);
+                let cpp_ty = port_cpp_ty(&p.ty);
+                debug_ports.push(SimpleDebugPort {
+                    name: p.name.name.clone(),
+                    cpp_ty,
+                    bits,
+                    dir,
+                });
+            }
+            for op in &l.ops {
+                for p in &op.ports {
+                    let dir = match p.direction {
+                        crate::ast::Direction::In => "in",
+                        crate::ast::Direction::Out => "out",
+                    }
+                    .to_string();
+                    if p.bus_info.is_some() || ty_references_named(&p.ty) {
+                        continue;
+                    }
+                    let bits = type_bits_te_with_params(&p.ty, &l.params);
+                    let cpp_ty = port_cpp_ty(&p.ty);
+                    debug_ports.push(SimpleDebugPort {
+                        name: format!("{}_{}", op.name.name, p.name.name),
+                        cpp_ty,
+                        bits,
+                        dir,
+                    });
+                }
+            }
+            emit_simple_debug_header(&mut h, &debug_ports);
+        }
 
         // ── Implementation ────────────────────────────────────────────────────
         let mut cpp = String::new();
@@ -226,14 +281,20 @@ impl<'a> SimCodegen<'a> {
         // eval(): edge detection lives inside eval_posedge() so that when
         // a parent module calls _inst_q.eval_posedge() directly, the
         // sub-instance still gates correctly on its own clock edge.
-        cpp.push_str(&format!(
-            "void {class}::eval() {{\n\
-             \n  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n\
-             \n    trace_open(Verilated::traceFile());\n\
-             \n  eval_posedge();\n\
-             \n  eval_comb();\n\
-             \n  if (_trace_fp) trace_dump(_trace_time++);\n}}\n\n"
-        ));
+        if self.debug {
+            cpp.push_str(&format!(
+                "void {class}::eval() {{\n  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n    trace_open(Verilated::traceFile());\n  eval_posedge();\n  eval_comb();\n  _debug_log_ports();\n  if (_trace_fp) trace_dump(_trace_time++);\n}}\n\n"
+            ));
+        } else {
+            cpp.push_str(&format!(
+                "void {class}::eval() {{\n\
+                 \n  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n\
+                 \n    trace_open(Verilated::traceFile());\n\
+                 \n  eval_posedge();\n\
+                 \n  eval_comb();\n\
+                 \n  if (_trace_fp) trace_dump(_trace_time++);\n}}\n\n"
+            ));
+        }
 
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
         // Only emit status assigns for status ports the linklist actually
@@ -482,6 +543,55 @@ impl<'a> SimCodegen<'a> {
             }
         }
         cpp.push_str("  }\n}\n");
+
+        if self.debug {
+            let mut debug_ports: Vec<SimpleDebugPort> = Vec::new();
+            for p in &l.ports {
+                if p.name.name == "clk" || p.name.name == "rst" {
+                    continue;
+                }
+                if matches!(&p.ty, TypeExpr::Clock(_)) {
+                    continue;
+                }
+                if p.bus_info.is_some() || ty_references_named(&p.ty) {
+                    continue;
+                }
+                let dir = match p.direction {
+                    crate::ast::Direction::In => "in",
+                    crate::ast::Direction::Out => "out",
+                }
+                .to_string();
+                let bits = type_bits_te_with_params(&p.ty, &l.params);
+                let cpp_ty = port_cpp_ty(&p.ty);
+                debug_ports.push(SimpleDebugPort {
+                    name: p.name.name.clone(),
+                    cpp_ty,
+                    bits,
+                    dir,
+                });
+            }
+            for op in &l.ops {
+                for p in &op.ports {
+                    if p.bus_info.is_some() || ty_references_named(&p.ty) {
+                        continue;
+                    }
+                    let dir = match p.direction {
+                        crate::ast::Direction::In => "in",
+                        crate::ast::Direction::Out => "out",
+                    }
+                    .to_string();
+                    let bits = type_bits_te_with_params(&p.ty, &l.params);
+                    let cpp_ty = port_cpp_ty(&p.ty);
+                    debug_ports.push(SimpleDebugPort {
+                        name: format!("{}_{}", op.name.name, p.name.name),
+                        cpp_ty,
+                        bits,
+                        dir,
+                    });
+                }
+            }
+            emit_simple_debug_impl(&mut cpp, &class, name, &debug_ports, Some("clk"));
+        }
 
         let extra_sigs: Vec<(&str, &str, u32)> = vec![];
         add_trace_to_simple_construct(
