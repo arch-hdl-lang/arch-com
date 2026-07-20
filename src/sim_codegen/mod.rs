@@ -1528,6 +1528,154 @@ fn add_trace_to_simple_construct(
     cpp.push_str(&trace_cpp);
 }
 
+// ── Debug helpers for simple constructs (RAM, FIFO, FSM, etc.) ──────────────
+
+#[derive(Clone, Debug)]
+pub(crate) struct SimpleDebugPort {
+    pub name: String,
+    pub cpp_ty: String,
+    pub bits: u32,
+    pub dir: String,
+}
+
+pub(crate) fn collect_simple_debug_ports(
+    ports: &[PortDecl],
+    params: &[ParamDecl],
+) -> Vec<SimpleDebugPort> {
+    let mut out = Vec::new();
+    for p in ports {
+        // Skip Clock (and Reset is kept? module skips only Clock)
+        if matches!(&p.ty, TypeExpr::Clock(_)) {
+            continue;
+        }
+        if p.bus_info.is_some() {
+            // Bus ports are flattened elsewhere; skip here for simple case
+            // Caller can extend with bus_flat if needed.
+            continue;
+        }
+        // Skip named struct/enum ports (not scalar)
+        if ty_references_named(&p.ty) {
+            continue;
+        }
+        let dir = match p.direction {
+            Direction::In => "in".to_string(),
+            Direction::Out => "out".to_string(),
+        };
+        // Vec handling
+        if let Some((elem_ty_str, _count_str)) = vec_array_info_with_params(&p.ty, params) {
+            // Resolve actual count via param-aware eval
+            let count_val = if let TypeExpr::Vec(_, cnt_expr) = &p.ty {
+                eval_const_expr_with_params(cnt_expr, params) as u64
+            } else {
+                0
+            };
+            let bits = if let TypeExpr::Vec(elem, _) = &p.ty {
+                type_bits_te_with_params(elem, params)
+            } else {
+                32
+            };
+            for i in 0..count_val {
+                out.push(SimpleDebugPort {
+                    name: format!("{}_{}", p.name.name, i),
+                    cpp_ty: elem_ty_str.clone(),
+                    bits,
+                    dir: dir.clone(),
+                });
+            }
+        } else {
+            let bits = type_bits_te_with_params(&p.ty, params);
+            let cpp_ty = cpp_port_type_with_params(&p.ty, params);
+            out.push(SimpleDebugPort {
+                name: p.name.name.clone(),
+                cpp_ty,
+                bits,
+                dir,
+            });
+        }
+    }
+    out
+}
+
+pub(crate) fn emit_simple_debug_header(h: &mut String, ports: &[SimpleDebugPort]) {
+    if ports.is_empty() {
+        return;
+    }
+    h.push_str("  // --debug port shadow copies\n");
+    for p in ports {
+        if p.bits > 64 {
+            // Use same wide type as port for shadow
+            h.push_str(&format!("  {} _dbg_prev_{};\n", p.cpp_ty, p.name));
+        } else {
+            h.push_str(&format!("  {} _dbg_prev_{} = 0;\n", p.cpp_ty, p.name));
+        }
+    }
+    h.push_str("  uint64_t _dbg_cycle = 0;\n");
+}
+
+pub(crate) fn emit_simple_debug_impl(
+    cpp: &mut String,
+    class: &str,
+    construct_name: &str,
+    ports: &[SimpleDebugPort],
+    clk_port: Option<&str>,
+) {
+    if ports.is_empty() {
+        return;
+    }
+    cpp.push_str(&format!("void {class}::_debug_log_ports() {{\n"));
+    for p in ports {
+        let dir = &p.dir;
+        if p.bits > 64 {
+            let words = wide_words(p.bits);
+            cpp.push_str(&format!(
+                "  if (memcmp(&{name}, &_dbg_prev_{name}, sizeof({name})) != 0) {{\n",
+                name = p.name
+            ));
+            cpp.push_str(&format!(
+                "    printf(\"[%llu][{cname}.{pname}]({dir}) 0x\");\n",
+                cname = construct_name,
+                pname = p.name,
+                dir = dir
+            ));
+            cpp.push_str(&format!(
+                "    for (int _w = {words} - 1; _w >= 0; _w--) printf(\"%08x\", _dbg_prev_{name}.data()[_w]);\n",
+                name = p.name,
+                words = words
+            ));
+            cpp.push_str("    printf(\" -> 0x\");\n");
+            cpp.push_str(&format!(
+                "    for (int _w = {words} - 1; _w >= 0; _w--) printf(\"%08x\", {name}.data()[_w]);\n",
+                name = p.name,
+                words = words
+            ));
+            cpp.push_str("    printf(\"\\n\");\n");
+            cpp.push_str(&format!("    _dbg_prev_{name} = {name};\n", name = p.name));
+            cpp.push_str("  }\n");
+        } else {
+            cpp.push_str(&format!(
+                "  if ({name} != _dbg_prev_{name}) {{\n",
+                name = p.name
+            ));
+            cpp.push_str(&format!(
+                "    printf(\"[%llu][{cname}.{pname}]({dir}) 0x%llx -> 0x%llx\\n\", (unsigned long long)_dbg_cycle, (unsigned long long)_dbg_prev_{name}, (unsigned long long){name});\n",
+                cname = construct_name,
+                pname = p.name,
+                dir = dir,
+                name = p.name
+            ));
+            cpp.push_str(&format!("    _dbg_prev_{name} = {name};\n", name = p.name));
+            cpp.push_str("  }\n");
+        }
+    }
+    // Cycle increment
+    if let Some(clk) = clk_port {
+        cpp.push_str(&format!("  if ({clk} && !_clk_prev) _dbg_cycle++;\n"));
+    } else {
+        cpp.push_str("  _dbg_cycle++;\n");
+    }
+    cpp.push_str("}\n\n");
+}
+
 // ── Type helpers ──────────────────────────────────────────────────────────────
 
 /// Evaluate a simple constant expression to a u32 bit-width.
@@ -11093,9 +11241,15 @@ impl<'a> SimCodegen<'a> {
         };
 
         let mut h = String::new();
-        h.push_str(
-            "#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\n",
-        );
+        if self.debug {
+            h.push_str(
+                "#pragma once\n#include <cstdint>\n#include <cstring>\n#include <cstdio>\n#include \"verilated.h\"\n\n",
+            );
+        } else {
+            h.push_str(
+                "#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\n",
+            );
+        }
         h.push_str(&format!("class {class} {{\npublic:\n"));
         for p in &a.ports {
             let ty = cpp_port_type_with_params(&p.ty, &a.params);
@@ -11149,6 +11303,9 @@ impl<'a> SimCodegen<'a> {
         ));
         h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n");
         h.push_str("  void final() { trace_close(); }\n");
+        if self.debug {
+            h.push_str("  void _debug_log_ports();\n");
+        }
         h.push_str("private:\n");
         h.push_str("  uint8_t _clk_prev;\n");
         if a.lock_hold {
@@ -11160,6 +11317,10 @@ impl<'a> SimCodegen<'a> {
         }
         if needs_rr_state {
             h.push_str("  uint8_t _last_grant;\n");
+        }
+        if self.debug {
+            let debug_ports = collect_simple_debug_ports(&a.ports, &a.params);
+            emit_simple_debug_header(&mut h, &debug_ports);
         }
         h.push_str("  void trace_open(const char* filename);\n");
         h.push_str("  void trace_dump(uint64_t time);\n");
@@ -11194,6 +11355,9 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("    trace_open(Verilated::traceFile());\n");
         cpp.push_str("  eval_posedge();\n");
         cpp.push_str("  eval_comb();\n");
+        if self.debug {
+            cpp.push_str("  _debug_log_ports();\n");
+        }
         cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
         cpp.push_str("}\n\n");
 
@@ -11310,7 +11474,11 @@ impl<'a> SimCodegen<'a> {
 
         cpp.push_str(&format!("void {class}::trace_close() {{\n"));
         cpp.push_str("  if (_trace_fp) {{ fclose(_trace_fp); _trace_fp = nullptr; }}\n");
-        cpp.push_str("}\n");
+        cpp.push_str("}\n\n");
+        if self.debug {
+            let debug_ports = collect_simple_debug_ports(&a.ports, &a.params);
+            emit_simple_debug_impl(&mut cpp, &class, name, &debug_ports, Some(clk_port));
+        }
 
         SimModel {
             class_name: class,

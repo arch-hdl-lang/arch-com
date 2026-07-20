@@ -110,12 +110,19 @@ impl<'a> SimCodegen<'a> {
             "  explicit {class}(VerilatedContext*) : {class}() {{}}\n"
         ));
         h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() { trace_close(); }\n");
+        if self.debug {
+            h.push_str("  void _debug_log_ports();\n");
+        }
         h.push_str("private:\n");
         h.push_str("  uint8_t _clk_prev;\n");
         h.push_str(&format!("  {mask_ty} _entry_valid_r;\n"));
         h.push_str(&format!("  {key_ty} _entry_key_r[{depth}];\n"));
         if has_value {
             h.push_str(&format!("  {val_ty} _entry_value_r[{depth}];\n"));
+        }
+        if self.debug {
+            let debug_ports = collect_simple_debug_ports(&c.ports, &c.params);
+            emit_simple_debug_header(&mut h, &debug_ports);
         }
 
         // ── Implementation ──
@@ -126,6 +133,9 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
         cpp.push_str("    trace_open(Verilated::traceFile());\n");
         cpp.push_str("  eval_posedge();\n  eval_comb();\n");
+        if self.debug {
+            cpp.push_str("  _debug_log_ports();\n");
+        }
         cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
         cpp.push_str("}\n\n");
 
@@ -203,6 +213,16 @@ impl<'a> SimCodegen<'a> {
 
         // Suppress unused-variable warning when val_ty isn't referenced.
         let _ = val_ty;
+
+        if self.debug {
+            let debug_ports = collect_simple_debug_ports(&c.ports, &c.params);
+            let clk_port = c
+                .ports
+                .iter()
+                .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                .map(|p| p.name.name.as_str());
+            emit_simple_debug_impl(&mut cpp, &class, name, &debug_ports, clk_port);
+        }
 
         // Trace support — track entry_valid_r and search outputs.
         let extra_sigs: Vec<(&str, &str, u32)> = vec![("entry_valid_r", "_entry_valid_r", depth)];

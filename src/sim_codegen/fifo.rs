@@ -153,6 +153,9 @@ impl<'a> SimCodegen<'a> {
             h.push_str("  void eval_posedge_dual(bool _wr_rising, bool _rd_rising);\n");
         }
         h.push_str("  void final() { trace_close(); }\n");
+        if self.debug {
+            h.push_str("  void _debug_log_ports();\n");
+        }
         h.push_str("private:\n");
         if is_async {
             h.push_str("  uint8_t _clk_prev_wr;\n  uint8_t _clk_prev_rd;\n");
@@ -169,6 +172,19 @@ impl<'a> SimCodegen<'a> {
         h.push_str("  void trace_dump(uint64_t time);\n");
         h.push_str("  void trace_close();\n");
         h.push_str("  FILE* _trace_fp = nullptr;\n  uint64_t _trace_time = 0;\n");
+        // --debug support
+        if self.debug {
+            let debug_ports = collect_simple_debug_ports(&f.ports, &f.params);
+            // Need cstdio for printf
+            if !h.contains("#include <cstdio>") {
+                h = h.replacen(
+                    "#pragma once\n#include <cstdint>\n#include <cstring>\n",
+                    "#pragma once\n#include <cstdint>\n#include <cstring>\n#include <cstdio>\n",
+                    1,
+                );
+            }
+            emit_simple_debug_header(&mut h, &debug_ports);
+        }
         h.push_str("};\n");
 
         let mut cpp = String::new();
@@ -185,6 +201,9 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("void {class}::eval() {{\n"));
         cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
         cpp.push_str("    trace_open(Verilated::traceFile());\n");
+        if self.debug {
+            // Debug will be called after comb settles, before trace dump
+        }
         if is_async {
             // Async FIFO: independent edge detection per side. Push side
             // clocks on wr_clk; pop side clocks on rd_clk. We do not model
@@ -208,6 +227,9 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str("  eval_posedge();\n");
         }
         cpp.push_str("  eval_comb();\n");
+        if self.debug {
+            cpp.push_str("  _debug_log_ports();\n");
+        }
         cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
         cpp.push_str("}\n\n");
 
@@ -354,7 +376,18 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("}\n\n");
         cpp.push_str(&format!("void {class}::trace_close() {{\n"));
         cpp.push_str("  if (_trace_fp) {{ fclose(_trace_fp); _trace_fp = nullptr; }}\n");
-        cpp.push_str("}\n");
+        cpp.push_str("}\n\n");
+
+        if self.debug {
+            let debug_ports = collect_simple_debug_ports(&f.ports, &f.params);
+            // Find clock port for cycle counting
+            let clk_port = f
+                .ports
+                .iter()
+                .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                .map(|p| p.name.name.as_str());
+            emit_simple_debug_impl(&mut cpp, &class, name, &debug_ports, clk_port);
+        }
 
         SimModel {
             class_name: class,

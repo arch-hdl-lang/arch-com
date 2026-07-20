@@ -217,10 +217,76 @@ impl<'a> SimCodegen<'a> {
             }
         }
         h.push_str("  }\n");
+        // Collect debug ports from flat_sigs + r.ports (excluding clock)
+        let mut debug_ports: Vec<SimpleDebugPort> = Vec::new();
+        if self.debug {
+            // From flat_sigs (already have full_name, dir, and we can resolve ty)
+            for fs in &flat_sigs {
+                if fs.full_name == "clk" {
+                    continue;
+                }
+                // Find original ty for bits
+                let orig_ty_opt = r
+                    .port_groups
+                    .iter()
+                    .flat_map(|pg| {
+                        pg.signals.iter().map(move |s| {
+                            (
+                                format!("{}_{}", pg.name.name, s.name.name),
+                                &s.ty,
+                                s.direction,
+                            )
+                        })
+                    })
+                    .find(|(n, _, _)| *n == fs.full_name);
+                if let Some((_, ty, dir)) = orig_ty_opt {
+                    if matches!(ty, TypeExpr::Clock(_)) {
+                        continue;
+                    }
+                    let bits = resolve_sig_bits(ty);
+                    let dir_str = match dir {
+                        Direction::In => "in",
+                        Direction::Out => "out",
+                    }
+                    .to_string();
+                    // Find cpp type: reuse logic for ty_str
+                    let cpp_ty = {
+                        if dir == Direction::Out {
+                            port_elem_ty.clone()
+                        } else {
+                            match ty {
+                                TypeExpr::Bool => "uint8_t".to_string(),
+                                _ => {
+                                    let b = resolve_sig_bits(ty);
+                                    if b > 64 {
+                                        port_elem_ty.clone()
+                                    } else {
+                                        cpp_uint(b).to_string()
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    debug_ports.push(SimpleDebugPort {
+                        name: fs.full_name.clone(),
+                        cpp_ty,
+                        bits,
+                        dir: dir_str,
+                    });
+                }
+            }
+            // Also from r.ports (excluding clock, which is already separate)
+            let extra_dbg = collect_simple_debug_ports(&r.ports, &r.params);
+            debug_ports.extend(extra_dbg);
+        }
+
         h.push_str(&format!(
             "  explicit {class}(VerilatedContext*) : {class}() {{}}\n"
         ));
         h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() { trace_close(); }\n");
+        if self.debug {
+            h.push_str("  void _debug_log_ports();\n");
+        }
         h.push_str("private:\n");
         h.push_str("  uint8_t _clk_prev;\n");
         h.push_str(&format!("  {} _mem[{}];\n", elem_ty, depth));
@@ -232,6 +298,9 @@ impl<'a> SimCodegen<'a> {
             if r.latency == 2 {
                 h.push_str(&format!("  {} _r2_{};\n", elem_ty, fs.full_name));
             }
+        }
+        if self.debug {
+            emit_simple_debug_header(&mut h, &debug_ports);
         }
 
         // ── Implementation ──
@@ -268,6 +337,9 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("    trace_open(Verilated::traceFile());\n");
         cpp.push_str("  eval_posedge();\n");
         cpp.push_str("  eval_comb();\n");
+        if self.debug {
+            cpp.push_str("  _debug_log_ports();\n");
+        }
         cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
         cpp.push_str("}\n\n");
 
@@ -544,7 +616,18 @@ impl<'a> SimCodegen<'a> {
                 _ => {}
             }
         }
-        cpp.push_str("}\n");
+        cpp.push_str("}\n\n");
+        if self.debug {
+            // Clock port for cycle counting
+            let clk_port = if r.ports.iter().any(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                || flat_sigs.iter().any(|s| s.full_name == "clk")
+            {
+                Some("clk")
+            } else {
+                None
+            };
+            emit_simple_debug_impl(&mut cpp, &class, name, &debug_ports, clk_port);
+        }
 
         let extra_sigs: Vec<(&str, &str, u32)> = vec![];
         add_trace_to_simple_construct(
