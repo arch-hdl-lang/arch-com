@@ -764,13 +764,24 @@ fn lower_staged_sites(
         };
         for s in &rb.stmts {
             let Stmt::Assign(a) = s else { continue };
-            let ExprKind::PipelinedCall(op, _, n) = &a.value.kind else {
+            let ExprKind::PipelinedCall(op, args, n) = &a.value.kind else {
                 continue;
             };
             let ExprKind::Ident(t) = &a.target.kind else {
                 continue;
             };
             if let Some(base) = t.strip_suffix("_stg1") {
+                if args.iter().any(expr_contains_pipelined_call) {
+                    out.fallbacks.push(StagedFallback {
+                        operator: op.clone(),
+                        stages: *n,
+                        reason: "nested pipelined call (staged emission requires scalar \
+                                 combinational arguments)"
+                            .to_string(),
+                        span: a.span,
+                    });
+                    continue;
+                }
                 if rb.clock_edge == ClockEdge::Falling {
                     out.fallbacks.push(StagedFallback {
                         operator: op.clone(),
@@ -985,6 +996,12 @@ fn lower_staged_sites(
             args,
         });
     }
+}
+
+fn expr_contains_pipelined_call(expr: &crate::ast::Expr) -> bool {
+    let mut found = Vec::new();
+    scan_expr(expr, &mut found);
+    !found.is_empty()
 }
 
 fn lower_stmts(stmts: &mut [crate::ast::Stmt]) -> Result<(), FoundPipelinedCall> {
