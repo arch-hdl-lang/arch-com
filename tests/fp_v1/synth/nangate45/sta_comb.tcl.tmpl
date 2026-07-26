@@ -1,0 +1,12 @@
+# OpenSTA combinational fmax against a virtual clock. Substitute MODULE / LIB.
+read_liberty LIB
+read_verilog ./MODULE.netlist.v
+link_design MODULE
+create_clock -name vclk -period 100.0
+set_input_delay 0.0 -clock vclk [all_inputs]
+set_output_delay 0.0 -clock vclk [all_outputs]
+report_checks -path_delay max -group_path_count 3 -digits 4
+set ws [worst_slack -max]
+set delay [expr {100.0 - $ws}]
+puts "RESULT MODULE delay_ns=$delay fmax_MHz=[expr {1000.0/$delay}]"
+report_check_types -max_slew -max_capacitance -violators -digits 4

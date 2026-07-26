@@ -86,10 +86,13 @@ to confirm.
 `doc/proposal_pipelined_operators.md`'s registry carries a characterized fmax
 per `(operator, profile, stages)` row — today just `fma<FP32, 6>`, noted as
 "~260 MHz (Yosys abc: `buffer -N 8; upsize; dnsize`)". That figure comes from
-an **external** run: Yosys + OpenSTA against a Nangate45 (typ.) Liberty file,
-which this repo's checked-in flow cannot reproduce — neither a Liberty file
-nor OpenSTA is available in this repo's dev/CI sandboxes, only open-source
-`yosys`/`abc` with generic 2-input gates.
+a Yosys + OpenSTA run against a Nangate45 (typ.) Liberty file. The full flow
+(yosys scripts, the buffered abc script, STA scripts, tool versions, and the
+Liberty file's provenance + sha256) is archived in [`nangate45/`](nangate45/),
+with a reproduction check against the published numbers. It is not run in CI
+— the Liberty file is third-party (referenced by hash, not vendored) and
+OpenSTA is not in the CI sandbox; this directory's `run_synth.sh` remains the
+library-free generic-gate proxy.
 
 `run_synth.sh --stages 6 F32Fma` emits the same shape `arch build` binds
 `fma<pipelined, 6>` to (comb `arch_fma_f32` feeding the 6-deep `pipe_reg`

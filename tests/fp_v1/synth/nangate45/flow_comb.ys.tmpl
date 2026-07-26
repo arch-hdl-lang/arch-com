@@ -1,0 +1,12 @@
+# Nangate45 combinational synthesis of one FP operator (buffered flow).
+# Substitute MODULE / LIB, feed the hoist_decls.py-processed Verilog.
+read_verilog -sv MODULE_h.v
+hierarchy -top MODULE
+synth -top MODULE -flatten
+dfflibmap -liberty LIB
+abc -liberty LIB -script abc_buffered.script
+opt_clean -purge
+setundef -zero
+splitnets -ports
+write_verilog -noattr MODULE.netlist.v
+stat -liberty LIB
