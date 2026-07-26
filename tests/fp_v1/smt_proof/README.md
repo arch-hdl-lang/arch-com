@@ -60,22 +60,30 @@ range catchall, each near-structural. Coverage is by construction — every
 input satisfies exactly one case — so the split predicate itself need not be
 trusted.
 
-Result (2026-07-26, all 22 operators `unsat`; bitwuzla 0.9 / z3 4.15,
+Three mechanical transformations sit inside this path and are part of its
+trust base: `../synth/hoist_decls.py` (syntactic declaration hoisting — yosys
+cannot parse declaration-with-initializer inside functions), yosys's
+`opt_clean` dead-wire removal after flattening, and the state-sort
+specialization of the SMT export (instantiating yosys's state-parametric
+functions at the single state constant). Each is local and reviewable; modulo
+those, a `render_sv`/`render_smt` divergence would have to be a bug shared
+with yosys's independent frontend.
+
+Result (2026-07-26, **all 24 operators `unsat`**; bitwuzla 0.9 / z3 4.15,
 Yosys 0.67; times on an 8-core M-series):
 
 | operator group | verdict | time |
 |---|---|---|
 | f32 add / sub | unsat | ~12 s each |
 | f32 mul | unsat | 14 s (z3; bitwuzla stalls — solver variance, auto-fallback) |
-| f32 fma | unsat | 464 s (510-way split, 8-way parallel) |
-| bf16 add / sub / mul | unsat | 3–21 s |
-| bf16 fma | unsat | 241 s (510-way split on converted operands) |
+| f32 fma | unsat | 471 s (510-way split, 8-way parallel) |
+| bf16 add / sub / mul | unsat | 4–23 s |
+| bf16 fma | unsat | 245 s (510-way split on converted operands) |
 | all 12 comparisons | unsat | <1 s each |
 | widen / narrow conversions | unsat | <1 s each |
+| f32→s64 / u64 (saturating) | unsat | <1 s each |
 
-Not covered: the integer-conversion operators (`arch_f32_to_sint`/`uint`,
-`arch_i64`/`u64_to_f32` — wrapper modules for their width-parameter surface
-not yet written) and the Lean renderer, whose check remains the byte-identical
+Not covered: the Lean renderer, whose check remains the byte-identical
 regeneration audit.
 
 ## Coverage (no silent caps)
