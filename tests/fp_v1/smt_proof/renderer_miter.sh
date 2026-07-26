@@ -65,12 +65,14 @@ ops=(
   "Bf16Ge|arch_bf16_ge|a b|BF16|Bool|y = a >= b"
   "F32ToBf16|arch_f32_to_bf16|a|FP32|BF16|y = a.to_bf16()"
   "Bf16ToF32|arch_bf16_to_f32|a|BF16|FP32|y = a.to_fp32()"
+  "F32ToS64|arch_f32_to_sint|a|FP32|SInt<64>|y = a.to_sint<64>()|(arch_f32_to_sint ARGa (_ bv64 32))"
+  "F32ToU64|arch_f32_to_uint|a|FP32|UInt<64>|y = a.to_uint<64>()|(arch_f32_to_uint ARGa (_ bv64 32))"
 )
 
 echo "# module            verdict   z3 time (s)"
 fail=0
 for spec in "${ops[@]}"; do
-  IFS='|' read -r mod fn inports inty outty body <<<"$spec"
+  IFS='|' read -r mod fn inports inty outty body smtapp <<<"$spec"
   {
     echo "module $mod"
     for p in $inports; do echo "  port $p: in $inty;"; done
@@ -109,7 +111,10 @@ PYSPEC
     args=""
     for p in $inports; do args+=" |${mod}_n $p|"; done
     # yosys exports 1-bit wires as Bool; the arch define-funs use (_ BitVec 1)
-    if [[ "$outty" == "Bool" ]]; then
+    if [[ -n "${smtapp:-}" ]]; then
+      app="${smtapp//ARGa/|${mod}_n a|}"
+      echo "(assert (not (= |${mod}_n y| $app)))"
+    elif [[ "$outty" == "Bool" ]]; then
       echo "(assert (not (= |${mod}_n y| (= ($fn$args) #b1))))"
     else
       echo "(assert (not (= |${mod}_n y| ($fn$args))))"
