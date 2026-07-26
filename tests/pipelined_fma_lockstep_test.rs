@@ -43,6 +43,31 @@ module F32FmaPipe6Lockstep
 end module F32FmaPipe6Lockstep
 "#;
 
+const NESTED_MODULE_SRC: &str = r#"
+module NestedFmaPipe6
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync, High>;
+  port a: in FP32;
+  port b: in FP32;
+  port c: in FP32;
+  port d: in FP32;
+  port e: in FP32;
+  port f: in FP32;
+  port g: in FP32;
+  port h: in FP32;
+  port i: in FP32;
+  port y: out pipe_reg<FP32, 6> reset rst => 0.0;
+
+  seq on clk rising
+    y@6 <= fma<pipelined, 6>(
+      fma<pipelined, 6>(a, b, c),
+      fma<pipelined, 6>(d, e, f),
+      fma<pipelined, 6>(g, h, i)
+    );
+  end seq
+end module NestedFmaPipe6
+"#;
+
 /// Deterministic stimulus generator shared verbatim (byte-for-byte, via
 /// string interpolation of the same Rust `const`) between the native-sim and
 /// Verilator testbenches below — the whole point of the lock-step check is
@@ -122,6 +147,39 @@ int main() {{
 }}
 "#
     )
+}
+
+#[test]
+fn staged_ops_falls_back_for_nested_pipelined_arguments() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("NestedFmaPipe6.arch");
+    let sv_path = td.path().join("NestedFmaPipe6.sv");
+    std::fs::write(&arch_path, NESTED_MODULE_SRC).expect("write .arch");
+
+    let out = arch()
+        .arg("build")
+        .arg("--staged-ops")
+        .arg(&arch_path)
+        .arg("-o")
+        .arg(&sv_path)
+        .output()
+        .expect("run arch build");
+    assert!(
+        out.status.success(),
+        "nested pipelined args should fall back to cascade instead of panicking\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("nested pipelined call"),
+        "fallback warning should identify the unsupported staged shape\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let sv = std::fs::read_to_string(&sv_path).expect("read generated SV");
+    assert!(
+        !sv.contains("pipelined"),
+        "raw pipelined AST node reached SV codegen"
+    );
 }
 
 /// Latency-exactness: a single fma driven for one cycle then held constant
