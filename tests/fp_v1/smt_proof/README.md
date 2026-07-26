@@ -41,6 +41,43 @@ cargo run --release --example dump_fp -- smt               # the define-funs
 cargo run --release --example dump_fp                      # the SystemVerilog
 ```
 
+## Renderer faithfulness — the Yosys-to-SMT miter (`renderer_miter.sh`)
+
+The proofs above check `render_smt`'s model; the shipped artifact is
+`render_sv`'s SystemVerilog. `renderer_miter.sh` closes that gap mechanically:
+Yosys — an independent implementation of SystemVerilog semantics — reads the
+emitted SV (structure-preserving: `read` + `proc` + `flatten`, no
+optimization) and exports SMT2; a solver then checks that export equivalent
+to `render_smt`'s `define-fun` of the same IR. `unsat` means a divergence
+between the two renderers would have to be a bug shared with Yosys's
+independent SV frontend.
+
+The fma miters are SAT-hard monolithically (the renderers implement the
+variable alignment/normalize shifts as different circuits, with the 48-bit
+product in every shifted bit's cone), so the harness case-splits them on the
+alignment gap `diff = |eunb(a)+eunb(b) − eunb(c)|`: 509 constant cases plus a
+range catchall, each near-structural. Coverage is by construction — every
+input satisfies exactly one case — so the split predicate itself need not be
+trusted.
+
+Result (2026-07-26, all 22 operators `unsat`; bitwuzla 0.9 / z3 4.15,
+Yosys 0.67; times on an 8-core M-series):
+
+| operator group | verdict | time |
+|---|---|---|
+| f32 add / sub | unsat | ~12 s each |
+| f32 mul | unsat | 14 s (z3; bitwuzla stalls — solver variance, auto-fallback) |
+| f32 fma | unsat | 464 s (510-way split, 8-way parallel) |
+| bf16 add / sub / mul | unsat | 3–21 s |
+| bf16 fma | unsat | 241 s (510-way split on converted operands) |
+| all 12 comparisons | unsat | <1 s each |
+| widen / narrow conversions | unsat | <1 s each |
+
+Not covered: the integer-conversion operators (`arch_f32_to_sint`/`uint`,
+`arch_i64`/`u64_to_f32` — wrapper modules for their width-parameter surface
+not yet written) and the Lean renderer, whose check remains the byte-identical
+regeneration audit.
+
 ## Coverage (no silent caps)
 
 Proven `unsat` exhaustively (z3 4.8.12):
