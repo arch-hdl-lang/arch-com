@@ -1,0 +1,13 @@
+# OpenSTA sequential fmax for a staged (registered) module with port `clk`.
+read_liberty LIB
+read_verilog ./MODULE.netlist.v
+link_design MODULE
+set period 100.0
+create_clock -name clk -period $period [get_ports clk]
+set_input_delay  0.0 -clock clk [all_inputs]
+set_output_delay 0.0 -clock clk [all_outputs]
+report_checks -path_delay max -group_path_count 3 -digits 4
+set ws [worst_slack -max]
+set delay [expr {$period - $ws}]
+puts "RESULT MODULE worst_slack=$ws delay_ns=$delay fmax_MHz=[expr {1000.0/$delay}]"
+report_check_types -max_slew -max_capacitance -violators -digits 4
