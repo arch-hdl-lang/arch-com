@@ -150,7 +150,7 @@ int main() {{
 }
 
 #[test]
-fn staged_ops_falls_back_for_nested_pipelined_arguments() {
+fn nested_pipelined_arguments_are_rejected() {
     let td = tempfile::tempdir().expect("tempdir");
     let arch_path = td.path().join("NestedFmaPipe6.arch");
     let sv_path = td.path().join("NestedFmaPipe6.sv");
@@ -165,20 +165,15 @@ fn staged_ops_falls_back_for_nested_pipelined_arguments() {
         .output()
         .expect("run arch build");
     assert!(
-        out.status.success(),
-        "nested pipelined args should fall back to cascade instead of panicking\nstdout:\n{}\nstderr:\n{}",
+        !out.status.success(),
+        "nested pipelined args should be rejected instead of silently losing latency\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("nested pipelined call"),
-        "fallback warning should identify the unsupported staged shape\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr).contains("nested pipelined calls are not supported"),
+        "error should identify the unsupported staged shape\nstderr:\n{}",
         String::from_utf8_lossy(&out.stderr)
-    );
-    let sv = std::fs::read_to_string(&sv_path).expect("read generated SV");
-    assert!(
-        !sv.contains("pipelined"),
-        "raw pipelined AST node reached SV codegen"
     );
 }
 

@@ -294,6 +294,36 @@ end module M
     );
 }
 
+/// Nested pipelined calls must be rejected until lowering can preserve the
+/// inner call's latency instead of silently treating it as combinational.
+#[test]
+fn nested_pipelined_call_is_rejected() {
+    let src = r#"
+module M
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync, High>;
+  port a: in FP32;
+  port b: in FP32;
+  port c: in FP32;
+  port out: out pipe_reg<FP32, 6>;
+  seq on clk rising
+    out@6 <= fma<pipelined, 6>(
+      fma<pipelined, 6>(a, b, c),
+      fma<pipelined, 6>(a, b, c),
+      fma<pipelined, 6>(a, b, c)
+    );
+  end seq
+end module M
+"#;
+    let out = run_check(src);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        normalize(&stderr).contains("nested pipelined calls are not supported"),
+        "got:\n{stderr}"
+    );
+}
+
 /// Direct comb-context consumption of a latency-N result is rejected.
 #[test]
 fn comb_context_consumption_is_rejected() {
