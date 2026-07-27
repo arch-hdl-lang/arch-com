@@ -1,7 +1,13 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-07-15
-> Compiler version: 0.70.8
+> Last updated: 2026-07-27
+> Compiler version: 0.71.0
+>
+> **0.71.0 release highlights:**
+> - **`semaphore<N, policy>` thread resource** (part of #501) — `resource`/`lock` in a `thread` now supports counting semaphores admitting up to `N` concurrent holders (`N` a const expr; module params allowed), across the full policy vocabulary (`round_robin | priority | lru | weighted<W> | MyFn`). `semaphore<1, policy>` lowers bit-identically to `mutex<policy>`. Same-cycle lock handoff is preserved so a release pulse and a waiting grant can land on the same edge (#719). See `doc/thread_spec_section.md` §20.8.4 and `doc/Arch_AI_Reference_Card.md`.
+> - **`--staged-ops`: staged SV emission for pipelined operators** (#720, proposal phase 3.5) — `arch build --staged-ops` emits pipelined operators (e.g. `fma<pipelined, N>`) as a per-stage registered pipeline instead of the default combinational cascade, letting downstream synthesis meet timing without manual retiming. Shapes the staged renderer does not yet support (nested pipelined calls in a call's arguments, falling-edge clocks, conditional call sites, arity/schedule mismatches) fall back to the cascade lowering with a warning rather than failing — the nested-argument case previously panicked at the codegen backstop and is now handled (#727). Default emission (no flag) is unchanged.
+> - **`arch sim --debug` covers all non-module constructs** (#725) — port-change logging under `--debug` now fires for `fsm`, `pipeline`, `fifo`, `ram`, `arbiter`, `thread`, and `bus`-bearing constructs, not just plain `module`s, so I/O tracing works uniformly across the construct set.
+> - **Formal FP verification — end-to-end value semantics + renderer faithfulness** (#722, #723, #728, #729) — `arch_fma_f32` is proved in Lean to be the round-to-nearest-even of the exact real product-sum `a·b+c` (R1–R3), and SMT renderer-faithfulness miters prove the emitted SystemVerilog is bit-equivalent to `render_smt` for all FP operators including both FMAs and the integer conversions (24/24 unsat). The RTL and the formally-checked model render from one in-Rust IR, so they cannot drift.
 >
 > **0.70.8 release highlights:**
 > - **Typed FP parameters and constant evaluation** (#693, #694, #700) — module-scope FP wires and typed FP local parameters now resolve consistently in SystemVerilog and native simulation, including compile-time integer-to-FP conversion. This enables parameterized BF16-to-fixed conversion such as `local param SCALE_FP: FP32 = SCALE_INT.to_fp32();`.
