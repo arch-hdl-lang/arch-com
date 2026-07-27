@@ -3663,6 +3663,107 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Returns whether an expression contains a latency-bearing operator call
+    /// below its root. Pipelined calls currently lower to a single register
+    /// cascade at their binding site, so composing one inside another call
+    /// would silently turn the inner result into a combinational expression
+    /// during lowering. Reject the composition until the IR can represent
+    /// the required intermediate pipeline and latency.
+    fn expr_contains_pipelined_call(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::PipelinedCall(_, _, _) => true,
+            ExprKind::Binary(_, a, b) => {
+                Self::expr_contains_pipelined_call(a) || Self::expr_contains_pipelined_call(b)
+            }
+            ExprKind::Unary(_, e)
+            | ExprKind::Cast(e, _)
+            | ExprKind::LatencyAt(e, _)
+            | ExprKind::SvaNext(_, e)
+            | ExprKind::Signed(e)
+            | ExprKind::Unsigned(e)
+            | ExprKind::Clog2(e)
+            | ExprKind::Onehot(e)
+            | ExprKind::Repeat(e, _) => Self::expr_contains_pipelined_call(e),
+            ExprKind::FieldAccess(e, _) => Self::expr_contains_pipelined_call(e),
+            ExprKind::MethodCall(recv, _, args) => {
+                Self::expr_contains_pipelined_call(recv)
+                    || args.iter().any(Self::expr_contains_pipelined_call)
+            }
+            ExprKind::Index(base, idx) => {
+                Self::expr_contains_pipelined_call(base) || Self::expr_contains_pipelined_call(idx)
+            }
+            ExprKind::BitSlice(base, hi, lo) | ExprKind::PartSelect(base, hi, lo, _) => {
+                Self::expr_contains_pipelined_call(base)
+                    || Self::expr_contains_pipelined_call(hi)
+                    || Self::expr_contains_pipelined_call(lo)
+            }
+            ExprKind::StructLiteral(_, fields) => fields
+                .iter()
+                .any(|f| Self::expr_contains_pipelined_call(&f.value)),
+            ExprKind::Match(scrut, arms) => {
+                Self::expr_contains_pipelined_call(scrut)
+                    || arms
+                        .iter()
+                        .any(|arm| arm.body.iter().any(Self::stmt_contains_pipelined_call))
+            }
+            ExprKind::ExprMatch(scrut, arms) => {
+                Self::expr_contains_pipelined_call(scrut)
+                    || arms
+                        .iter()
+                        .any(|arm| Self::expr_contains_pipelined_call(&arm.value))
+            }
+            ExprKind::Concat(xs) | ExprKind::FunctionCall(_, xs) => {
+                xs.iter().any(Self::expr_contains_pipelined_call)
+            }
+            ExprKind::Inside(e, members) => {
+                Self::expr_contains_pipelined_call(e)
+                    || members.iter().any(|member| match member {
+                        InsideMember::Single(v) => Self::expr_contains_pipelined_call(v),
+                        InsideMember::Range(lo, hi) => {
+                            Self::expr_contains_pipelined_call(lo)
+                                || Self::expr_contains_pipelined_call(hi)
+                        }
+                    })
+            }
+            ExprKind::Ternary(c, t, e) => {
+                Self::expr_contains_pipelined_call(c)
+                    || Self::expr_contains_pipelined_call(t)
+                    || Self::expr_contains_pipelined_call(e)
+            }
+            ExprKind::Literal(_)
+            | ExprKind::Ident(_)
+            | ExprKind::SynthIdent(_, _)
+            | ExprKind::EnumVariant(_, _)
+            | ExprKind::Todo
+            | ExprKind::Bool(_) => false,
+        }
+    }
+
+    fn stmt_contains_pipelined_call(stmt: &Stmt) -> bool {
+        match stmt {
+            Stmt::Assign(a) => Self::expr_contains_pipelined_call(&a.value),
+            Stmt::IfElse(ie) => {
+                Self::expr_contains_pipelined_call(&ie.cond)
+                    || ie.then_stmts.iter().any(Self::stmt_contains_pipelined_call)
+                    || ie.else_stmts.iter().any(Self::stmt_contains_pipelined_call)
+            }
+            Stmt::Match(m) => {
+                Self::expr_contains_pipelined_call(&m.scrutinee)
+                    || m.arms
+                        .iter()
+                        .any(|arm| arm.body.iter().any(Self::stmt_contains_pipelined_call))
+            }
+            Stmt::Log(l) => l.args.iter().any(Self::expr_contains_pipelined_call),
+            Stmt::For(f) => f.body.iter().any(Self::stmt_contains_pipelined_call),
+            Stmt::Init(i) => i.body.iter().any(Self::stmt_contains_pipelined_call),
+            Stmt::WaitUntil(e, _) => Self::expr_contains_pipelined_call(e),
+            Stmt::DoUntil { body, cond, .. } => {
+                body.iter().any(Self::stmt_contains_pipelined_call)
+                    || Self::expr_contains_pipelined_call(cond)
+            }
+        }
+    }
+
     /// Rejects combining operands materializing at different cycle offsets
     /// in a single expression (e.g. `acc@6 + x` where `x` is latency-0),
     /// per the proposal's "no auto-alignment in v1" rule. Reports the
@@ -3730,6 +3831,13 @@ impl<'a> TypeChecker<'a> {
             .map(|a| self.resolve_expr_type(a, module_name, local_types))
             .collect();
         if arg_tys.iter().any(|t| *t == Ty::Error) {
+            return Ty::Error;
+        }
+        if call_args.iter().any(Self::expr_contains_pipelined_call) {
+            self.errors.push(CompileError::general(
+                "nested pipelined calls are not supported; bind the inner result to a pipe_reg tap before consuming it",
+                span,
+            ));
             return Ty::Error;
         }
         let ta = &arg_tys[0];
