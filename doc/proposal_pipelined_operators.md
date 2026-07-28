@@ -426,7 +426,10 @@ Consequences:
      post-reset warm-up window is cycle-exact with the cascade emission
      (internal staged layers stay reset-free, i.e. retiming-friendly).
    - *Fallbacks (warning, never error)*: no schedule on the row, renderer
-     drift, falling-edge clock, conditional/nested call sites.
+     drift, falling-edge clock, or conditional call sites. Nested pipelined
+     operator calls are rejected during type checking rather than lowered as
+     combinational expressions, so their inner latency cannot be discarded
+     (#732).
    - *Verification*: `tests/pipelined_fma_lockstep_test.rs` — staged-vs-
      native-cascade randomized lock-step (1200 cycles, full-32-bit operands,
      mid-stream reset pulse) bit-exact per cycle, plus staged latency
