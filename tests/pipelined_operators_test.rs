@@ -324,6 +324,36 @@ end module M
     );
 }
 
+/// A pipelined call nested *below an operator* inside a pipelined argument
+/// must also be rejected — not just direct arg nesting. This exercises the
+/// recursive descent in `expr_contains_pipelined_call` (the `Ternary` branch
+/// here): were any interior branch to stop recursing, only the direct-nesting
+/// test above would still fail, so this pins the walker's recursive reach.
+#[test]
+fn nested_pipelined_call_below_operator_is_rejected() {
+    let src = r#"
+module M
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync, High>;
+  port sel: in Bool;
+  port a: in FP32;
+  port b: in FP32;
+  port c: in FP32;
+  port out: out pipe_reg<FP32, 6>;
+  seq on clk rising
+    out@6 <= fma<pipelined, 6>(sel ? fma<pipelined, 6>(a, b, c) : a, b, c);
+  end seq
+end module M
+"#;
+    let out = run_check(src);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        normalize(&stderr).contains("nested pipelined calls are not supported"),
+        "got:\n{stderr}"
+    );
+}
+
 /// Direct comb-context consumption of a latency-N result is rejected.
 #[test]
 fn comb_context_consumption_is_rejected() {
