@@ -1334,6 +1334,264 @@ end ram NoEnTdp
 }
 
 #[test]
+fn test_true_dual_ram_uses_independent_port_clocks_in_sv() {
+    let source = |latency: u32| {
+        format!(
+            r#"
+ram TwoClockTdp{latency}
+  kind true_dual;
+  latency {latency};
+  param DEPTH: const = 16;
+  param T: type = UInt<8>;
+  port clk_b: in Clock<PortBDomain>;
+  port clk_a: in Clock<PortADomain>;
+  store
+    data: Vec<T, DEPTH>;
+  end store
+  ports a
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports a
+  ports b
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports b
+end ram TwoClockTdp{latency}
+"#
+        )
+    };
+
+    for latency in 0..=2 {
+        let sv = compile_to_sv(&source(latency));
+        assert_eq!(
+            sv.matches("always @(posedge clk_a)").count(),
+            1,
+            "port A must have exactly one memory process on clk_a at latency {latency}:\n{sv}"
+        );
+        assert_eq!(
+            sv.matches("always @(posedge clk_b)").count(),
+            1,
+            "port B must have exactly one memory process on clk_b at latency {latency}:\n{sv}"
+        );
+        if latency == 2 {
+            assert_eq!(
+                sv.matches("always_ff @(posedge clk_a)").count(),
+                1,
+                "port A output register must use clk_a:\n{sv}"
+            );
+            assert_eq!(
+                sv.matches("always_ff @(posedge clk_b)").count(),
+                1,
+                "port B output register must use clk_b:\n{sv}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_true_dual_ram_rejects_unsupported_clock_counts() {
+    let source = |clocks: &str| {
+        format!(
+            r#"
+ram BadClockCount
+  kind true_dual;
+  latency 1;
+  param DEPTH: const = 16;
+  param T: type = UInt<8>;
+{clocks}
+  store
+    data: Vec<T, DEPTH>;
+  end store
+  ports a
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports a
+  ports b
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports b
+end ram BadClockCount
+"#
+        )
+    };
+
+    for (clocks, count) in [
+        ("", 0),
+        (
+            "  port clk_a: in Clock<A>;\n  port clk_b: in Clock<B>;\n  port clk_c: in Clock<C>;",
+            3,
+        ),
+    ] {
+        let errors = typecheck_errors(&source(clocks))
+            .expect_err("true-dual RAM must reject clock counts other than one or two");
+        assert!(
+            errors.iter().any(|error| error.contains(&format!(
+                "must have 1 shared clock or 2 per-port clocks, found {count}"
+            ))),
+            "missing true-dual clock-count diagnostic for {count} clocks:\n{}",
+            errors.join("\n")
+        );
+    }
+}
+
+#[test]
+fn test_two_clock_true_dual_ram_runs_in_native_sim() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("TwoClockTrueDualMem.arch");
+    let tb_path = td.path().join("tb_two_clock_true_dual.cpp");
+    std::fs::write(
+        &arch_path,
+        r#"
+//! ---
+//! tags: [ram, true_dual, dual_clock, native_sim]
+//! ---
+//!
+//! Regression fixture for independently clocked true-dual RAM simulation.
+
+/// 16x8 true-dual RAM with one clock per physical port.
+ram TwoClockTrueDualMem
+  kind true_dual;
+  latency 1;
+  init: zero;
+  param DEPTH: const = 16;
+  param T: type = UInt<8>;
+  port clk_b: in Clock<PortBDomain>;
+  port clk_a: in Clock<PortADomain>;
+  store
+    data: Vec<T, DEPTH>;
+  end store
+  ports a
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports a
+  ports b
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports b
+end ram TwoClockTrueDualMem
+"#,
+    )
+    .expect("write arch");
+    std::fs::write(
+        &tb_path,
+        r#"
+#include "VTwoClockTrueDualMem.h"
+#include <cstdio>
+
+static void tick_a(VTwoClockTrueDualMem& dut) {
+  dut.clk_a = 0;
+  dut.eval();
+  dut.clk_a = 1;
+  dut.eval();
+  dut.clk_a = 0;
+  dut.eval();
+}
+
+static void tick_b(VTwoClockTrueDualMem& dut) {
+  dut.clk_b = 0;
+  dut.eval();
+  dut.clk_b = 1;
+  dut.eval();
+  dut.clk_b = 0;
+  dut.eval();
+}
+
+int main() {
+  VTwoClockTrueDualMem dut;
+
+  // A clk_a edge must not perform a pending Port B write.
+  dut.a_en = 0;
+  dut.b_en = 1;
+  dut.b_wen = 1;
+  dut.b_addr = 5;
+  dut.b_wdata = 0x55;
+  tick_a(dut);
+  dut.b_wen = 0;
+  tick_b(dut);
+  if (dut.b_rdata != 0) {
+    std::printf("FAIL clk_a advanced port B: b=%u\n", (unsigned)dut.b_rdata);
+    return 1;
+  }
+
+  // A clk_b edge must not perform a pending Port A write.
+  dut.b_en = 0;
+  dut.a_en = 1;
+  dut.a_wen = 1;
+  dut.a_addr = 3;
+  dut.a_wdata = 0x2a;
+  tick_b(dut);
+  dut.a_wen = 0;
+  tick_a(dut);
+  if (dut.a_rdata != 0) {
+    std::printf("FAIL clk_b advanced port A: a=%u\n", (unsigned)dut.a_rdata);
+    return 1;
+  }
+
+  // Each port must still write and read normally on its own clock.
+  dut.a_wen = 1;
+  tick_a(dut);
+  dut.a_wen = 0;
+  tick_a(dut);
+  if (dut.a_rdata != 0x2a) {
+    std::printf("FAIL port A own-clock access: a=%u\n", (unsigned)dut.a_rdata);
+    return 1;
+  }
+
+  dut.a_en = 0;
+  dut.b_en = 1;
+  dut.b_wen = 1;
+  tick_b(dut);
+  dut.b_wen = 0;
+  tick_b(dut);
+  if (dut.b_rdata != 0x55) {
+    std::printf("FAIL port B own-clock access: b=%u\n", (unsigned)dut.b_rdata);
+    return 1;
+  }
+
+  std::printf("PASS two_clock_true_dual_ram_native_sim\n");
+  return 0;
+}
+"#,
+    )
+    .expect("write tb");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("sim")
+        .arg("--debug")
+        .arg(&arch_path)
+        .arg("--tb")
+        .arg(&tb_path)
+        .arg("--outdir")
+        .arg(td.path().join("build"))
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && stdout.contains("PASS two_clock_true_dual_ram_native_sim"),
+        "two-clock true-dual RAM native sim should compile and run\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn test_true_dual_ram_runs_in_native_sim() {
     let td = tempfile::tempdir().expect("tempdir");
     let arch_path = td.path().join("TrueDualMem.arch");

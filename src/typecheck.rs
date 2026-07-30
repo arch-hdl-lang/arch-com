@@ -7165,6 +7165,27 @@ impl<'a> TypeChecker<'a> {
                 r.name.span,
             ));
         }
+        // A true-dual RAM supports either one shared clock or one clock per
+        // physical port. Codegen first matches the documented
+        // `clk_<port-group>` convention, then falls back to declaration order.
+        // Reject other counts here instead of silently emitting references to
+        // a fallback/nonexistent clock.
+        if r.kind == crate::ast::RamKind::TrueDual {
+            let clock_count = r
+                .ports
+                .iter()
+                .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                .count();
+            if !(1..=2).contains(&clock_count) {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "true_dual ram `{}` must have 1 shared clock or 2 per-port clocks, found {clock_count}",
+                        r.name.name
+                    ),
+                    r.name.span,
+                ));
+            }
+        }
         // simple_dual requires exactly 2 port groups
         if r.kind == crate::ast::RamKind::SimpleDual && r.port_groups.len() != 2 {
             self.errors.push(CompileError::general(
