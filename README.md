@@ -68,7 +68,7 @@ int main(int argc, char** argv) {
 arch sim --pybind --test test_mymodule.py MyModule.arch
 ```
 
-A drop-in `cocotb_shim/cocotb/` package is placed on `PYTHONPATH`, so plain `import cocotb` works unchanged. The supported surface (decorators, triggers, `Clock`, signal handles) plus the behavioral deltas from real cocotb (tick-sampled scheduler, 2-state values, immediate writes) are documented in **[`doc/arch_sim_cocotb.md`](doc/arch_sim_cocotb.md)**.
+A drop-in `cocotb_shim/cocotb/` package is placed on `PYTHONPATH`, so plain `import cocotb` works unchanged. The native scheduler is event-driven at exact picosecond precision and supports tasks, phase/edge/timer/event triggers, queues, timeouts, signal handles, and the installed `cocotbext-axi` AXI4/AXI4-Lite masters. The complete surface and the remaining differences from four-state GPI simulation are documented in **[`doc/arch_sim_cocotb.md`](doc/arch_sim_cocotb.md)**.
 
 **Built-in debug instrumentation** replaces manual `printf`/`$display` for diagnosing simulation failures:
 

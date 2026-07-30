@@ -9352,6 +9352,13 @@ fn test_handshake_payload_truly_unguarded_still_warns() {
 }
 
 fn compile_to_pybind_cpps(source: &str) -> Vec<(String, String)> {
+    compile_to_pybind_cpps_with_uninit(source, false)
+}
+
+fn compile_to_pybind_cpps_with_uninit(
+    source: &str,
+    inputs_start_uninit: bool,
+) -> Vec<(String, String)> {
     use arch::sim_codegen::SimCodegen;
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
@@ -9360,11 +9367,74 @@ fn compile_to_pybind_cpps(source: &str) -> Vec<(String, String)> {
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     let (_warnings, overload_map) = checker.check().expect("type check");
-    let sim = SimCodegen::new(&symbols, &ast, overload_map);
+    let sim = SimCodegen::new(&symbols, &ast, overload_map)
+        .check_uninit(inputs_start_uninit)
+        .inputs_start_uninit(inputs_start_uninit);
     sim.generate_pybind()
         .into_iter()
         .map(|m| (m.class_name, m.impl_))
         .collect()
+}
+
+#[test]
+fn test_pybind_cocotb_metadata_wide_values_and_input_markers() {
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+
+        bus Stream
+          valid: out Bool;
+          ready: in Bool;
+          data: out UInt<130>;
+        end bus Stream
+
+        module M
+          port clk: in Clock<SysDomain>;
+          port scalar_in: in UInt<130>;
+          port scalar_out: out UInt<130>;
+          port stream: target Stream;
+          let scalar_out = scalar_in;
+          comb
+            stream.ready = 1'b1;
+          end comb
+        end module M
+    ";
+    let wrappers = compile_to_pybind_cpps_with_uninit(source, true);
+    let (_, wrapper) = wrappers
+        .iter()
+        .find(|(name, _)| name == "VM_pybind")
+        .expect("M pybind wrapper");
+
+    assert!(
+        wrapper.contains("py::int_ wide_to_int")
+            && wrapper.contains("void int_to_wide")
+            && wrapper.contains("arch_pybind_detail::wide_to_int(self.scalar_in, 130)")
+            && wrapper.contains("arch_pybind_detail::int_to_wide(self.scalar_in, value, 130)"),
+        "wide pybind properties must preserve arbitrary-width Python integers:\n{wrapper}"
+    );
+    assert!(
+        !wrapper.contains("[](VM& self, uint64_t v)"),
+        "wide pybind setter must not truncate at 64 bits:\n{wrapper}"
+    );
+
+    // Target perspective flips the bus declaration: valid/data are inputs
+    // to M, while ready is an output from M.
+    assert!(
+        wrapper.contains("py::make_tuple(\"stream_valid\", 1, false, true, false, false)")
+            && wrapper.contains("py::make_tuple(\"stream_data\", 130, false, true, false, false)")
+            && wrapper.contains("py::make_tuple(\"stream_ready\", 1, false, false, false, false)"),
+        "bus _port_info directions must be module-relative:\n{wrapper}"
+    );
+
+    assert!(
+        wrapper.contains(".def(\"_mark_input_scalar_in\"")
+            && wrapper.contains(".def(\"_mark_input_stream_valid\"")
+            && wrapper.contains(".def(\"_mark_input_stream_data\"")
+            && !wrapper.contains(".def(\"_mark_input_clk\"")
+            && !wrapper.contains(".def(\"_mark_input_stream_ready\""),
+        "pybind writes must mark checked data inputs initialized, but not clocks or outputs:\n{wrapper}"
+    );
 }
 
 #[test]
@@ -20117,6 +20187,32 @@ fn test_sim_codegen_async_reset_fires_outside_rising_edge() {
     assert!(
         pe_body.contains("_q_r = 0;") && pe_body.contains("_n_q_r = 0;"),
         "async reset must write both live and shadow regs:\n{pe_body}"
+    );
+}
+
+#[test]
+fn test_sim_codegen_falling_edge_seq_uses_falling_edge() {
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port d: in Bool;
+          port q: out Bool;
+          reg q_r: Bool reset rst => false;
+          seq on clk falling
+            q_r <= d;
+          end seq
+          let q = q_r;
+        end module M
+    ";
+    let cpp = compile_to_sim_h(source, false);
+    assert!(
+        cpp.contains("_falling_clk = (!clk && _clk_prev_clk);")
+            && cpp.contains("if (_falling_clk) {"),
+        "falling-edge seq blocks must use a real falling-edge detector:\n{cpp}"
     );
 }
 

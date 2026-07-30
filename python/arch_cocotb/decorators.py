@@ -1,39 +1,51 @@
-"""Cocotb-compatible decorators and task scheduling."""
+"""Cocotb-compatible test registration and task scheduling."""
+
+import asyncio
 
 from arch_cocotb.simulator import _get_sim
 
-# Registry of test functions decorated with @test()
+
 _test_registry = []
 
 
-class test:
-    """Decorator that registers an async test function.
-
-    Usage:
-        @cocotb.test()
-        async def test_example(dut):
-            ...
-    """
-
-    def __init__(self, timeout_time=None, timeout_unit='ns', expect_error=None,
-                 expect_fail=False, skip=False, **kwargs):
+class _Test:
+    def __init__(
+        self,
+        timeout_time=None,
+        timeout_unit="ns",
+        expect_error=None,
+        expect_fail=False,
+        skip=False,
+        **kwargs,
+    ):
         self.timeout_time = timeout_time
+        self.timeout_unit = timeout_unit
+        self.expect_error = expect_error
+        self.expect_fail = expect_fail
         self.skip = skip
 
     def __call__(self, func):
-        if not self.skip:
-            _test_registry.append(func)
         func._cocotb_test = True
+        func._cocotb_test_options = self
+        _test_registry.append(func)
         return func
 
 
+def test(func=None, **kwargs):
+    """Register ``@cocotb.test`` or ``@cocotb.test(...)``."""
+    decorator = _Test(**kwargs)
+    if func is not None:
+        return decorator(func)
+    return decorator
+
+
 def start_soon(coro):
-    """Schedule a coroutine to run concurrently (like cocotb.start_soon)."""
-    sim = _get_sim()
-    return sim.schedule(coro)
+    """Schedule a coroutine and return an awaitable task handle."""
+    return _get_sim().schedule(coro)
 
 
 async def start(coro):
-    """Schedule a coroutine and return immediately (like cocotb.start)."""
-    sim = _get_sim()
-    return sim.schedule(coro)
+    """Deprecated cocotb-compatible scheduling helper."""
+    task = start_soon(coro)
+    await asyncio.sleep(0)
+    return task

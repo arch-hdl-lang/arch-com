@@ -447,7 +447,7 @@ impl<'a> SimCodegen<'a> {
         // `port_0`, `port_1`, ..., `port_{N-1}` populate `bus_port_names`
         // so the bracket-dot expression path (`chans[i].sig`) resolves.
         let mut bus_port_names: HashSet<String> = HashSet::new();
-        let mut bus_flat: Vec<(String, TypeExpr)> = Vec::new();
+        let mut bus_flat: Vec<(String, Direction, TypeExpr)> = Vec::new();
         for p in &m.ports {
             if let Some(ref bi) = p.bus_info {
                 match bi.count.as_ref() {
@@ -461,7 +461,42 @@ impl<'a> SimCodegen<'a> {
                         }
                     }
                 }
-                bus_flat.extend(flatten_bus_port(&p.name.name, bi, self.symbols, &m.params));
+                bus_flat.extend(flatten_bus_port_with_dir(
+                    &p.name.name,
+                    bi,
+                    self.symbols,
+                    &m.params,
+                ));
+            }
+        }
+
+        // Inputs whose generated model has a --inputs-start-uninit valid bit.
+        // Vec inputs and Vec-of-bus inputs are not part of that checker's
+        // current per-lane scope, so do not emit marker methods for them.
+        let mut markable_inputs = HashSet::new();
+        if self.inputs_start_uninit {
+            for p in &m.ports {
+                if p.bus_info.is_none() {
+                    if p.direction == Direction::In
+                        && !matches!(
+                            p.ty,
+                            TypeExpr::Clock(_) | TypeExpr::Reset(_, _) | TypeExpr::Vec(_, _)
+                        )
+                    {
+                        markable_inputs.insert(p.name.name.clone());
+                    }
+                } else if p.bus_info.as_ref().is_some_and(|info| info.count.is_none()) {
+                    let bi = p.bus_info.as_ref().unwrap();
+                    for (name, direction, ty) in
+                        flatten_bus_port_with_dir(&p.name.name, bi, self.symbols, &m.params)
+                    {
+                        if direction == Direction::In
+                            && !matches!(ty, TypeExpr::Clock(_) | TypeExpr::Reset(_, _))
+                        {
+                            markable_inputs.insert(name);
+                        }
+                    }
+                }
             }
         }
 
@@ -510,6 +545,9 @@ impl<'a> SimCodegen<'a> {
                     "        .def_readwrite(\"{field}\", &{class}::{field})"
                 ));
             }
+            if markable_inputs.contains(field) {
+                bindings.push(self.emit_input_marker(&class, field));
+            }
             port_info.push((field.clone(), width, is_signed, is_input, false, false));
         }
 
@@ -534,7 +572,7 @@ impl<'a> SimCodegen<'a> {
         // `type_bits_te` would mis-classify a >64b signal as scalar and
         // emit a corrupted `def_readwrite` instead of the wide binding,
         // and the downstream `port_info` width would be wrong too.
-        for (flat_name, flat_ty) in &bus_flat {
+        for (flat_name, direction, flat_ty) in &bus_flat {
             let width = type_bits_te_with_params(flat_ty, &m.params);
             let is_signed = matches!(flat_ty, TypeExpr::SInt(_));
             if wide_names.contains(flat_name) {
@@ -544,7 +582,17 @@ impl<'a> SimCodegen<'a> {
                     "        .def_readwrite(\"{flat_name}\", &{class}::{flat_name})"
                 ));
             }
-            port_info.push((flat_name.clone(), width, is_signed, true, false, false));
+            if markable_inputs.contains(flat_name) {
+                bindings.push(self.emit_input_marker(&class, flat_name));
+            }
+            port_info.push((
+                flat_name.clone(),
+                width,
+                is_signed,
+                *direction == Direction::In,
+                false,
+                false,
+            ));
         }
 
         // Internal registers (exposed as readonly for testbench inspection)
@@ -724,6 +772,31 @@ auto {helper_name}(const T& self) {{
 namespace py = pybind11;
 
 namespace arch_pybind_detail {{
+template <int WORDS>
+py::int_ wide_to_int(const VlWide<WORDS>& source, unsigned width) {{
+    py::object value = py::int_(0);
+    for (int i = WORDS - 1; i >= 0; --i) {{
+        value = value.attr("__lshift__")(32);
+        value = value.attr("__or__")(py::int_(source.data()[i]));
+    }}
+    py::object mask = py::int_(1).attr("__lshift__")(width);
+    mask = mask.attr("__sub__")(1);
+    return py::reinterpret_borrow<py::int_>(value.attr("__and__")(mask));
+}}
+
+template <int WORDS>
+void int_to_wide(VlWide<WORDS>& target, py::object source, unsigned width) {{
+    py::object value = py::module_::import("builtins").attr("int")(source);
+    py::object mask = py::int_(1).attr("__lshift__")(width);
+    mask = mask.attr("__sub__")(1);
+    value = value.attr("__and__")(mask);
+    for (int i = 0; i < WORDS; ++i) {{
+        py::object word = value.attr("__and__")(py::int_(0xffffffffULL));
+        target.data()[i] = word.cast<uint32_t>();
+        value = value.attr("__rshift__")(32);
+    }}
+}}
+
 template <typename T>
 void eval_comb(T& self) {{
     if constexpr (requires(T& t) {{ t.eval_comb(); }}) {{
@@ -817,18 +890,20 @@ PYBIND11_MODULE({pybind_module}, m) {{
 
     /// Emit a lambda-based pybind11 binding for a VlWide field.
     fn emit_wide_binding(&self, class: &str, field: &str, width: u32) -> String {
-        let words = (width + 31) / 32;
         format!(
             r#"        .def_property("{field}",
-            []({class}& self) -> uint64_t {{
-                uint64_t v = 0;
-                for (int i = std::min({words}u, 2u) - 1; i >= 0; i--)
-                    v = (v << 32) | self.{field}.data()[i];
-                return v;
+            []({class}& self) {{
+                return arch_pybind_detail::wide_to_int(self.{field}, {width});
             }},
-            []({class}& self, uint64_t v) {{
-                self.{field} = VlWide<{words}>(v);
+            []({class}& self, py::object value) {{
+                arch_pybind_detail::int_to_wide(self.{field}, value, {width});
             }})"#,
+        )
+    }
+
+    fn emit_input_marker(&self, class: &str, field: &str) -> String {
+        format!(
+            "        .def(\"_mark_input_{field}\", []({class}& self) {{ self._{field}_vinit = true; }})"
         )
     }
 
@@ -8047,6 +8122,7 @@ impl<'a> SimCodegen<'a> {
         }
         for c in &all_clks {
             h.push_str(&format!("  bool _rising_{c};\n"));
+            h.push_str(&format!("  bool _falling_{c};\n"));
         }
         // --coverage Phase 6: per-(inst, output-port) prev-value
         // shadow for construct port toggle counters. Allocated only
@@ -8576,12 +8652,16 @@ impl<'a> SimCodegen<'a> {
         // eval_posedge()
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
 
-        // Edge detection: detect rising edges and update _clk_prev for all clocks.
+        // Edge detection: detect both supported seq edges, then update the
+        // previous value once. Falling-edge blocks previously used the
+        // rising flag as well, so native sim silently clocked them on the
+        // wrong edge even though SV codegen emitted `negedge`.
         // This runs inside eval_posedge() so that:
         //   - Derived clocks from sub-instances are already settled before detection
         //   - Sub-instances correctly detect their own clock edges when called from parent
         for c in &all_clks {
             cpp.push_str(&format!("  _rising_{c} = ({c} && !_clk_prev_{c});\n"));
+            cpp.push_str(&format!("  _falling_{c} = (!{c} && _clk_prev_{c});\n"));
             cpp.push_str(&format!("  _clk_prev_{c} = {c};\n"));
         }
 
@@ -8842,16 +8922,20 @@ impl<'a> SimCodegen<'a> {
                     false
                 };
 
-                // Guard each seq block on its specific clock's rising edge.
+                // Guard each seq block on its declared clock and edge.
                 // For async reset: use `else if` so the seq body is skipped
                 // when reset was active — the reset arm already cleared the
                 // regs; executing the seq body (e.g. toggle) would overwrite.
-                let rising_gate = if async_reset_emitted {
-                    format!("  else if (_rising_{}) {{\n", rb.clock.name)
-                } else {
-                    format!("  if (_rising_{}) {{\n", rb.clock.name)
+                let edge_kind = match rb.clock_edge {
+                    ClockEdge::Rising => "rising",
+                    ClockEdge::Falling => "falling",
                 };
-                cpp.push_str(&rising_gate);
+                let edge_gate = if async_reset_emitted {
+                    format!("  else if (_{edge_kind}_{}) {{\n", rb.clock.name)
+                } else {
+                    format!("  if (_{edge_kind}_{}) {{\n", rb.clock.name)
+                };
+                cpp.push_str(&edge_gate);
                 let base_indent: usize = 2;
                 // --coverage phase 2: count seq-block entries (rising
                 // edges seen). One counter per top-level seq block;
