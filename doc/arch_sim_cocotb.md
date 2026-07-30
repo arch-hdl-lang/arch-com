@@ -31,8 +31,22 @@ PYTHON=python3 scripts/test_native_cocotb.sh
 ```
 
 `PYTHON` may point at a virtual-environment interpreter. The test script runs
-the focused shim tests, builds both native pybind designs, and runs the
+the focused shim tests, builds the native pybind designs, and runs the
 installed `cocotbext-axi` package directly.
+
+To cross-check the same generated SystemVerilog and test modules using real
+cocotb over Verilator/VPI:
+
+```sh
+python3 -m pip install -r python/requirements-cocotb-verilator.txt
+PYTHON=python3 scripts/test_verilator_cocotb.sh
+```
+
+That requirements file pins cocotb 1.9.2 as a compatibility baseline for
+Verilator 5.032/5.034. Cocotb 2.x can also run the script when paired with
+Verilator 5.036 or newer. The script checks AXI4-Lite, AXI4 incrementing bursts,
+and the 130-bit signal test, then parses cocotb's JUnit output so a failed test
+cannot be mistaken for a successful simulator process.
 
 ## Example
 
@@ -44,7 +58,9 @@ from cocotb.triggers import ClockCycles, ReadOnly, RisingEdge
 
 @cocotb.test(timeout_time=20, timeout_unit="us")
 async def test_counter(dut):
-    cocotb.start_soon(Clock(dut.clk, 3333, units="ps").start(False))
+    cocotb.start_soon(
+        Clock(dut.clk, 3333, units="ps").start(start_high=False)
+    )
 
     dut.rst.value = 1
     dut.enable.value = 0
@@ -59,6 +75,12 @@ async def test_counter(dut):
 
 The same imports can be used with a conventional cocotb simulator, provided
 the test stays within the compatible surface below.
+
+For cross-simulator tests, use the keyword form
+`Clock(...).start(start_high=False)`: cocotb 1.x treats the first positional
+argument to `start()` as a cycle count. After `await ReadOnly()`, wait for an
+edge or a nonzero `Timer` before writing again; real cocotb keeps the coroutine
+in its read-only simulator phase until then.
 
 ## Scheduler semantics
 
@@ -252,3 +274,4 @@ forgotten input or memory initialization.
 | `python/tests/test_arch_cocotb.py` | Focused scheduler/API conformance |
 | `tests/cocotb_axi/` | Installed-package AXI4/AXI4-Lite conformance |
 | `scripts/test_native_cocotb.sh` | Complete local native cocotb test command |
+| `scripts/test_verilator_cocotb.sh` | Real cocotb + Verilator cross-check |

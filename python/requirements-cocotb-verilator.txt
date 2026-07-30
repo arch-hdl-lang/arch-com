@@ -1,0 +1,4 @@
+# Compatibility baseline for Verilator 5.032/5.034.
+# Cocotb 2.x requires Verilator 5.036 or newer.
+cocotb==1.9.2
+-r requirements-cocotbext-axi.txt
