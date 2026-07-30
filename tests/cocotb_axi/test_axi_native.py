@@ -16,7 +16,9 @@ def pause_pattern(seed):
 
 @cocotb.test(timeout_time=500, timeout_unit="us")
 async def axi_memory_conformance(dut):
-    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start(False))
+    cocotb.start_soon(
+        Clock(dut.clk, 10, units="ns").start(start_high=False)
+    )
 
     dut.rst.value = 1
     await ClockCycles(dut.clk, 3)

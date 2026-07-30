@@ -168,7 +168,9 @@ class TaskAndTriggerTests(unittest.TestCase):
 
     def test_clock_cycles_and_deterministic_concurrency(self):
         async def body(dut):
-            cocotb.start_soon(Clock(dut.clk, 10, units="ps").start(False))
+            cocotb.start_soon(
+                Clock(dut.clk, 10, units="ps").start(start_high=False)
+            )
             observed_a = []
             observed_b = []
 
