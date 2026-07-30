@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-07-27
-> Compiler version: 0.71.0
+> Last updated: 2026-07-30
+> Compiler version: 0.71.1
 >
 > **0.71.0 release highlights:**
 > - **`semaphore<N, policy>` thread resource** (part of #501) — `resource`/`lock` in a `thread` now supports counting semaphores admitting up to `N` concurrent holders (`N` a const expr; module params allowed), across the full policy vocabulary (`round_robin | priority | lru | weighted<W> | MyFn`). `semaphore<1, policy>` lowers bit-identically to `mutex<policy>`. Same-cycle lock handoff is preserved so a release pulse and a waiting grant can land on the same edge (#719). See `doc/thread_spec_section.md` §20.8.4 and `doc/Arch_AI_Reference_Card.md`.
