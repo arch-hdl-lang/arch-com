@@ -2218,6 +2218,19 @@ fn run_sim(
     )
 }
 
+/// Choose the first user construct after any thread-lowered helper modules.
+///
+/// `lower_threads` prepends helpers whose generated class names start with
+/// `V_`. Source constructs otherwise retain command-line order, where the
+/// first user construct is the simulator top. Selecting the last non-helper
+/// wrapper accidentally picked the final dependency in multi-file designs.
+fn pybind_user_top_index(wrappers: &[arch::sim_codegen::SimModel]) -> usize {
+    wrappers
+        .iter()
+        .position(|wrapper| !wrapper.class_name.starts_with("V_"))
+        .unwrap_or(0)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_sim_opts(
     arch_files: &[PathBuf],
@@ -2245,7 +2258,7 @@ fn run_sim_opts(
     // 1. Parse + type-check
     let all_files = resolve_use_imports(arch_files)?;
     let ms = MultiSource::from_files(&all_files)?;
-    let (mut ast, symbols, overload_map) = if param_overrides.is_empty() {
+    let (mut ast, _, _) = if param_overrides.is_empty() {
         run_check_multi_opts(
             &ms,
             thread_sim_parallel,
@@ -2262,7 +2275,16 @@ fn run_sim_opts(
         )?
     };
     lower_pipelined_calls_before_codegen(&mut ast, &ms)?;
-    let ast = ast;
+    let ast = arch::elaborate::specialize_fifo_instances_for_sim(ast);
+    let symbols = resolve::resolve(&ast).map_err(|errs| {
+        let err = errs.into_iter().next().unwrap();
+        ms.report_error(err)
+    })?;
+    let checker = TypeChecker::new(&symbols, &ast);
+    let (_, overload_map) = checker.check().map_err(|errs| {
+        let err = errs.into_iter().next().unwrap();
+        ms.report_error(err)
+    })?;
 
     // 2. Set up output directory
     let build_dir = outdir
@@ -2453,13 +2475,10 @@ fn run_sim_opts(
         // with `AttributeError: No signal '<port>' on DUT`).
         // Heuristic: thread-lowered submodule class names start with
         // `V_`; user-module names start with `V<word>` (e.g. `Vibex_alu`).
-        // Prefer the LAST wrapper whose class name doesn't start with
-        // `V_`; fall back to wrapper[0] for designs without thread-
-        // submodule lowering (the existing default shape).
-        let user_top_idx = pybind_wrappers
-            .iter()
-            .rposition(|w| !w.class_name.starts_with("V_"))
-            .unwrap_or(0);
+        // Prefer the FIRST wrapper whose class name doesn't start with
+        // `V_`; source constructs retain command-line order after any
+        // prepended thread helpers.
+        let user_top_idx = pybind_user_top_index(&pybind_wrappers);
 
         // Apply --pybind-module-name if provided. Retarget only the
         // user-top wrapper (the user's intended top module); other
@@ -2563,9 +2582,9 @@ fn run_sim_opts(
         // built so legacy consumers that only check for one .so keep working.
         let _ = pybind_module_name; // retained for callers referencing the variable
         for (i, (wrapper, cpp_path)) in pybind_wrappers.iter().zip(pybind_cpps.iter()).enumerate() {
-            // The first wrapper honors --pybind-module-name; later wrappers
-            // keep their auto-derived names.
-            let class_name = if i == 0 {
+            // The selected user-top wrapper honors --pybind-module-name;
+            // dependency wrappers keep their auto-derived names.
+            let class_name = if i == user_top_idx {
                 effective_first_name.clone()
             } else {
                 wrapper.class_name.clone()
@@ -4170,4 +4189,28 @@ fn run_check_multi_opts_with_thread_map_and_params(
     }
 
     Ok((ast, symbols, overload_map))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pybind_user_top_index;
+    use arch::sim_codegen::SimModel;
+
+    fn wrapper(class_name: &str) -> SimModel {
+        SimModel {
+            class_name: class_name.to_string(),
+            header: String::new(),
+            impl_: String::new(),
+        }
+    }
+
+    #[test]
+    fn pybind_top_is_first_user_wrapper_after_thread_helpers() {
+        let wrappers = vec![
+            wrapper("V_Top_threads_pybind"),
+            wrapper("VTop_pybind"),
+            wrapper("VDependency_pybind"),
+        ];
+        assert_eq!(pybind_user_top_index(&wrappers), 1);
+    }
 }

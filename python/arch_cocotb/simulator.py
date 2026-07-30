@@ -53,6 +53,15 @@ class ArchSimulator:
         self._loop = None
         self._dirty = False
         self._activity = 0
+        supports_phased_eval = getattr(
+            type(self._dut._model),
+            "_arch_supports_phased_eval",
+            None,
+        )
+        self._supports_phased_eval = bool(
+            supports_phased_eval is not None and supports_phased_eval()
+        )
+        self._post_edge_comb_pending = False
 
     # Trigger registration -------------------------------------------------
 
@@ -198,7 +207,9 @@ class ArchSimulator:
         for _ in range(self._MAX_DELTA_CYCLES):
             before = self._activity
             await asyncio.sleep(0)
-            if self._dirty:
+            if self._post_edge_comb_pending:
+                self._evaluate_post_edge()
+            elif self._dirty:
                 self._evaluate_model()
             # asyncio callbacks created by First/Event/Queue are not all ARCH
             # tasks and therefore do not increment `_activity`. If the loop
@@ -217,14 +228,49 @@ class ArchSimulator:
         )
 
     def _evaluate_model(self):
+        if self._supports_phased_eval:
+            self._evaluate_pre_edge()
+            return
+
         self._dirty = False
         previous = dict(self._last_values)
         self._dut._model.eval()
+        self._fire_changed_edges(previous)
 
+    def _evaluate_pre_edge(self):
+        """Evaluate state updates while preserving pre-edge sampled outputs.
+
+        cocotb bus agents sample ready/valid at a clock edge, then drive their
+        next-cycle values.  A generated model's all-in-one ``eval()`` performs
+        its final combinational pass before Python gets the clock trigger,
+        exposing post-edge outputs too early.  Split-capable models therefore
+        run comb + sequential logic first, wake input-edge waiters, and defer
+        the post-edge comb pass until those coroutines have sampled and driven.
+        """
+
+        self._dirty = False
+        previous = dict(self._last_values)
+        self._dut._model.eval_comb()
+        self._dut._model.eval_posedge()
+        self._fire_changed_edges(previous, inputs_only=True)
+        self._post_edge_comb_pending = True
+
+    def _evaluate_post_edge(self):
+        """Finish a split hardware step after clock-edge coroutines run."""
+
+        self._post_edge_comb_pending = False
+        self._dirty = False
+        previous = dict(self._last_values)
+        self._dut._model.eval_comb()
+        self._fire_changed_edges(previous)
+
+    def _fire_changed_edges(self, previous, inputs_only=False):
         for name, waiters in list(self._edge_waiters.items()):
             if not waiters:
                 continue
             signal = self._dut._signals[name]
+            if inputs_only and not signal._is_input:
+                continue
             current = int(signal.value)
             prior = previous.get(name, current)
             fired = []
@@ -294,3 +340,4 @@ class ArchSimulator:
         self._last_values.clear()
         self._tasks.clear()
         self._task_handles.clear()
+        self._post_edge_comb_pending = False

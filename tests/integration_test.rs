@@ -1284,6 +1284,228 @@ end fifo WideAsyncFifo
 }
 
 #[test]
+fn test_native_sim_specializes_fifo_instance_depth_and_payload_type() {
+    let source = r#"
+domain Sys
+  freq_mhz: 100
+end domain Sys
+
+fifo GenericFifo
+  param DEPTH: const = 16;
+  param T: type = UInt<32>;
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync, Low>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+end fifo GenericFifo
+
+module FifoPair
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync, Low>;
+  port in_a: in UInt<62>;
+  port out_a: out UInt<62>;
+  port in_b: in UInt<46>;
+  port out_b: out UInt<46>;
+
+  wire ready_a: Bool;
+  wire valid_a: Bool;
+  wire ready_b: Bool;
+  wire valid_b: Bool;
+
+  inst a: GenericFifo
+    param DEPTH = 2;
+    param T = UInt<62>;
+    clk <- clk;
+    rst <- rst;
+    push_valid <- true;
+    push_ready -> ready_a;
+    push_data <- in_a;
+    pop_valid -> valid_a;
+    pop_ready <- true;
+    pop_data -> out_a;
+  end inst a
+
+  inst b: GenericFifo
+    param DEPTH = 2;
+    param T = UInt<46>;
+    clk <- clk;
+    rst <- rst;
+    push_valid <- true;
+    push_ready -> ready_b;
+    push_data <- in_b;
+    pop_valid -> valid_b;
+    pop_ready <- true;
+    pop_data -> out_b;
+  end inst b
+end module FifoPair
+"#;
+    let tokens = arch::lexer::tokenize(source).expect("lexer error");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse error");
+    let ast = arch::elaborate::elaborate(parsed).expect("elaborate error");
+    let ast = arch::elaborate::specialize_fifo_instances_for_sim(ast);
+    let symbols = arch::resolve::resolve(&ast).expect("resolve error");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let (_, overload_map) = checker.check().expect("type check error");
+    let models = arch::sim_codegen::SimCodegen::new(&symbols, &ast, overload_map).generate();
+
+    let fifo_62 = models
+        .iter()
+        .find(|model| model.class_name.contains("DEPTH_2_T_UInt62"))
+        .expect("missing UInt<62> FIFO specialization");
+    assert!(fifo_62.header.contains("uint64_t push_data;"));
+    assert!(fifo_62.header.contains("uint64_t _mem[2];"));
+
+    let fifo_46 = models
+        .iter()
+        .find(|model| model.class_name.contains("DEPTH_2_T_UInt46"))
+        .expect("missing UInt<46> FIFO specialization");
+    assert!(fifo_46.header.contains("uint64_t push_data;"));
+    assert!(fifo_46.header.contains("uint64_t _mem[2];"));
+
+    let top = models
+        .iter()
+        .find(|model| model.class_name == "VFifoPair")
+        .expect("missing top model");
+    assert!(top.header.contains("VGenericFifo__DEPTH_2_T_UInt62"));
+    assert!(top.header.contains("VGenericFifo__DEPTH_2_T_UInt46"));
+}
+
+#[test]
+fn test_native_fifo_specialization_preserves_named_struct_storage() {
+    let source = r#"
+domain Sys
+  freq_mhz: 100
+end domain Sys
+
+struct Payload
+  data: UInt<40>;
+  last: Bool;
+end struct Payload
+
+fifo StructFifo
+  param DEPTH: const = 8;
+  param T: type = Payload;
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync, Low>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+end fifo StructFifo
+
+module StructFifoTop
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync, Low>;
+  port input: in Payload;
+  port output: out Payload;
+  wire push_ready: Bool;
+  wire pop_valid: Bool;
+
+  inst queue: StructFifo
+    param DEPTH = 2;
+    param T = UInt<41>;
+    clk <- clk;
+    rst <- rst;
+    push_valid <- true;
+    push_ready -> push_ready;
+    push_data <- input;
+    pop_valid -> pop_valid;
+    pop_ready <- true;
+    pop_data -> output;
+  end inst queue
+end module StructFifoTop
+"#;
+    let tokens = arch::lexer::tokenize(source).expect("lexer error");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse error");
+    let ast = arch::elaborate::elaborate(parsed).expect("elaborate error");
+    let ast = arch::elaborate::specialize_fifo_instances_for_sim(ast);
+    let symbols = arch::resolve::resolve(&ast).expect("resolve error");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let (_, overload_map) = checker.check().expect("type check error");
+    let models = arch::sim_codegen::SimCodegen::new(&symbols, &ast, overload_map).generate();
+
+    let fifo = models
+        .iter()
+        .find(|model| model.class_name.contains("DEPTH_2_T_Payload"))
+        .expect("missing named-struct FIFO specialization");
+    assert!(fifo.header.contains("Payload push_data;"));
+    assert!(fifo.header.contains("Payload _mem[2];"));
+}
+
+#[test]
+fn test_native_fifo_specialization_applies_non_equivalent_named_type_override() {
+    let source = r#"
+domain Sys
+  freq_mhz: 100
+end domain Sys
+
+struct Payload
+  data: UInt<40>;
+  last: Bool;
+end struct Payload
+
+fifo StructDefaultFifo
+  param DEPTH: const = 8;
+  param T: type = Payload;
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync, Low>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+end fifo StructDefaultFifo
+
+module UIntFifoTop
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync, Low>;
+  port input: in UInt<8>;
+  port output: out UInt<8>;
+  wire push_ready: Bool;
+  wire pop_valid: Bool;
+
+  inst queue: StructDefaultFifo
+    param DEPTH = 2;
+    param T = UInt<8>;
+    clk <- clk;
+    rst <- rst;
+    push_valid <- true;
+    push_ready -> push_ready;
+    push_data <- input;
+    pop_valid -> pop_valid;
+    pop_ready <- true;
+    pop_data -> output;
+  end inst queue
+end module UIntFifoTop
+"#;
+    let tokens = arch::lexer::tokenize(source).expect("lexer error");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse error");
+    let ast = arch::elaborate::elaborate(parsed).expect("elaborate error");
+    let ast = arch::elaborate::specialize_fifo_instances_for_sim(ast);
+    let symbols = arch::resolve::resolve(&ast).expect("resolve error");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let (_, overload_map) = checker.check().expect("type check error");
+    let models = arch::sim_codegen::SimCodegen::new(&symbols, &ast, overload_map).generate();
+
+    let fifo = models
+        .iter()
+        .find(|model| model.class_name.contains("DEPTH_2_T_UInt8"))
+        .expect("missing non-equivalent UInt<8> FIFO specialization");
+    assert!(fifo.header.contains("uint8_t push_data;"));
+    assert!(fifo.header.contains("uint8_t _mem[2];"));
+}
+
+#[test]
 fn test_fifo_missing_port_errors() {
     let source = r#"
 domain SysDomain
@@ -5206,6 +5428,57 @@ end pipeline StallResizePipe
 }
 
 #[test]
+fn test_pipeline_sim_concat_uses_bit_select_widths() {
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline ConcatWidthPipe
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port input_user: in UInt<7>;
+  port packed_user: out UInt<13>;
+  port packed_bits: out UInt<32>;
+  stage S
+    reg user_r: UInt<13> reset rst => 0;
+    reg bits_r: UInt<32> reset rst => 0;
+    let next_user: UInt<13> = {
+      input_user[6],
+      false,
+      input_user[5],
+      input_user[4],
+      input_user[3],
+      input_user[2],
+      input_user[1],
+      input_user[0],
+      5'b00000
+    };
+    let next_bits: UInt<32> = {30'b0, 1'b1, input_user[0]};
+    seq on clk rising
+      user_r <= next_user;
+      bits_r <= next_bits;
+    end seq
+    comb
+      packed_user = user_r;
+      packed_bits = bits_r;
+    end comb
+  end stage S
+end pipeline ConcatWidthPipe
+"#;
+    let sim = compile_to_sim_h(source, false);
+    assert!(
+        sim.contains("((uint64_t)(((input_user >> 6) & 1)) << 12)")
+            && sim.contains("((uint64_t)(((input_user >> 5) & 1)) << 10)")
+            && sim.contains("((uint64_t)(1) << 1)"),
+        "pipeline simulator concat shifts must use scalar bit-select widths:\n{sim}"
+    );
+    assert!(
+        !sim.contains("<< 61") && !sim.contains("<< 45"),
+        "pipeline simulator used the legacy eight-bit fallback for concat parts:\n{sim}"
+    );
+}
+
+#[test]
 fn test_pipeline_comb_match_emits_case() {
     let source = r#"
 domain D
@@ -5851,6 +6124,54 @@ end pipeline AluPipe
         "missing result connection"
     );
     insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn test_native_pipeline_includes_shared_function_definitions() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+function bump(value: UInt<8>) -> UInt<8>
+  return value +% 1;
+end function bump
+
+struct PipelineMetadata
+  tag: UInt<4>;
+end struct PipelineMetadata
+
+pipeline FunctionPipe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port input_data: in UInt<8>;
+  port input_meta: in PipelineMetadata;
+  port output_data: out UInt<8>;
+  port output_meta: out PipelineMetadata;
+
+  stage Execute
+    reg result: UInt<8> reset rst => 0;
+    reg meta: PipelineMetadata reset rst => 0;
+    seq on clk rising
+      result <= bump(input_data);
+      meta <= input_meta;
+    end seq
+    comb
+      output_data = result;
+      output_meta = meta;
+    end comb
+  end stage Execute
+end pipeline FunctionPipe
+"#;
+    let sim = compile_to_sim_h(source, false);
+    assert!(
+        sim.contains("#include \"VFunctions.h\"")
+            && sim.contains("#include \"VStructs.h\"")
+            && sim.contains("bump(input_data)")
+            && sim.contains("_execute_meta = (input_meta);")
+            && !sim.contains("(input_meta) & 0xFFFFFFFFULL"),
+        "pipeline native model must include shared function and struct definitions:\n{sim}"
+    );
 }
 
 #[test]
@@ -8377,6 +8698,150 @@ fn compile_to_sim_h(source: &str, inputs_start_uninit: bool) -> String {
         .map(|m| format!("{}\n// ---\n{}", m.header, m.impl_))
         .collect::<Vec<_>>()
         .join("\n// ---\n")
+}
+
+#[test]
+fn test_native_wrapping_subtraction_masks_to_hdl_width() {
+    let source = r#"
+        module WrapSub
+          port sample: in UInt<10>;
+          port offset: in UInt<10>;
+          port adjusted: out UInt<10>;
+
+          let wrapped: UInt<10> = sample -% offset;
+          comb
+            adjusted = wrapped;
+          end comb
+        end module WrapSub
+    "#;
+    let sim = compile_to_sim_h(source, false);
+    let wrapped_line = sim
+        .lines()
+        .find(|line| line.contains("_let_wrapped ="))
+        .expect("generated wrapping-subtraction assignment");
+    assert!(
+        wrapped_line.contains("sample - offset") && wrapped_line.contains("0x3FFULL"),
+        "native wrapping subtraction must discard the C++ borrow bits at UInt<10>:\n\
+         {wrapped_line}\n\nfull model:\n{sim}"
+    );
+}
+
+#[test]
+fn test_native_wrapping_subtraction_uses_minimum_unsized_literal_width() {
+    let source = r#"
+        module WrapNegate
+          port magnitude: in UInt<18>;
+          port negated: out UInt<18>;
+
+          let wrapped: UInt<18> = 0 -% magnitude;
+          comb
+            negated = wrapped;
+          end comb
+        end module WrapNegate
+    "#;
+    let sim = compile_to_sim_h(source, false);
+    let wrapped_line = sim
+        .lines()
+        .find(|line| line.contains("_let_wrapped ="))
+        .expect("generated wrapping-negation assignment");
+    assert!(
+        wrapped_line.contains("0 - magnitude") && wrapped_line.contains("0x3FFFFULL"),
+        "an unsized zero is one HDL bit, so UInt<18> determines the wrapping width:\n\
+         {wrapped_line}\n\nfull model:\n{sim}"
+    );
+}
+
+#[test]
+fn test_native_sim_isolates_same_named_params_between_specializations() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_source = td.path().join("ParamSpecializations.arch");
+    let cpp_tb = td.path().join("tb.cpp");
+    let outdir = td.path().join("sim");
+
+    std::fs::write(
+        &arch_source,
+        r#"
+        function passthrough(value: UInt<2>) -> UInt<2>
+          return value;
+        end function passthrough
+
+        module ParamCore
+          param MODE: const = 0;
+          port value: out UInt<2>;
+          let selected: UInt<2> = (MODE == 0) ? 2'd1 : 2'd2;
+          comb
+            value = passthrough(selected);
+          end comb
+        end module ParamCore
+
+        module ModeZero
+          port value: out UInt<2>;
+          inst core: ParamCore
+            param MODE = 0;
+            value -> value;
+          end inst core
+        end module ModeZero
+
+        module ModeOne
+          port value: out UInt<2>;
+          inst core: ParamCore
+            param MODE = 1;
+            value -> value;
+          end inst core
+        end module ModeOne
+
+        module Top
+          port zero_value: out UInt<2>;
+          port one_value: out UInt<2>;
+          inst zero: ModeZero
+            value -> zero_value;
+          end inst zero
+          inst one: ModeOne
+            value -> one_value;
+          end inst one
+        end module Top
+        "#,
+    )
+    .expect("write parameter-specialization ARCH source");
+    std::fs::write(
+        &cpp_tb,
+        r#"
+        #include "VTop.h"
+        #include <cstdio>
+
+        int main() {
+          VTop dut;
+          dut.eval();
+          if (dut.zero_value != 1 || dut.one_value != 2) {
+            std::fprintf(
+                stderr,
+                "parameter specialization leak: zero=%u one=%u\n",
+                unsigned(dut.zero_value),
+                unsigned(dut.one_value));
+            return 1;
+          }
+          std::puts("PASS isolated native parameter specializations");
+          return 0;
+        }
+        "#,
+    )
+    .expect("write parameter-specialization C++ testbench");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("sim")
+        .arg(&arch_source)
+        .arg("--tb")
+        .arg(&cpp_tb)
+        .arg("--outdir")
+        .arg(&outdir)
+        .output()
+        .expect("run native parameter-specialization simulation");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && stdout.contains("PASS isolated native parameter specializations"),
+        "same-named native parameters must remain specialization-local\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
 }
 
 fn compile_to_thread_sim_h(source: &str) -> String {
@@ -35087,6 +35552,80 @@ fn test_native_sim_package_struct_fsm_ports_compile_with_coverage() {
             && coverage_text.contains("state Idle")
             && coverage_text.contains("trans Idle -> Seen"),
         "coverage records should include the struct/FSM fixture state and transition hits:\n{coverage_text}"
+    );
+}
+
+#[test]
+fn test_native_sim_parameterized_bus_wires_preserve_field_widths() {
+    // One module uses two specializations of the same bus. Native C++ must
+    // retain each wire's overrides: the 112-bit field crosses a child-module
+    // boundary through VlWide<4> while the 45-bit field participates in a
+    // concat whose offsets extend beyond bit 31.
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/native_param_bus_wire/Probe.arch")
+        .arg("--tb")
+        .arg("tests/native_param_bus_wire/tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for parameterized bus-wire probe");
+    assert!(
+        out.status.success(),
+        "native parameterized bus-wire sim should compile + run\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PASS native parameterized bus wire"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    let structs =
+        std::fs::read_to_string(td.path().join("VStructs.h")).expect("read generated VStructs.h");
+    assert!(
+        structs.contains("#include \"verilated.h\""),
+        "VStructs.h must include the runtime definitions used by wide fields:\n{structs}"
+    );
+}
+
+#[test]
+fn test_native_fifo_with_struct_payload_includes_struct_definitions() {
+    let source = r#"
+        struct Payload
+          data: UInt<32>;
+          last: Bool;
+        end struct Payload
+
+        fifo PayloadFifo
+          latency 1;
+          param DEPTH: const = 4;
+          param T: type = Payload;
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port push_valid: in Bool;
+          port push_ready: out Bool;
+          port push_data: in T;
+          port pop_valid: out Bool;
+          port pop_ready: in Bool;
+          port pop_data: out T;
+        end fifo PayloadFifo
+    "#;
+    let sim = compile_to_sim_h(source, false);
+    let fifo_header = sim
+        .split("// ---")
+        .find(|part| part.contains("class VPayloadFifo"))
+        .expect("generated FIFO header");
+    assert!(
+        fifo_header.contains("#include \"VStructs.h\""),
+        "struct-payload FIFO must include its generated type definitions:\n{fifo_header}"
+    );
+    assert!(
+        !sim.contains("(push_data >> _i)") && !sim.contains("(pop_data >> _i)"),
+        "struct FIFO payloads cannot use scalar bit-shift VCD tracing:\n{sim}"
     );
 }
 
