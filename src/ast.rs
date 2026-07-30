@@ -1976,6 +1976,8 @@ pub enum FifoKind {
 pub struct FifoDecl {
     pub common: ConstructCommon,
     pub kind: FifoKind,
+    /// Output timing: 0 = combinational array read, 1 = registered FWFT.
+    pub latency: u32,
 }
 impl std::ops::Deref for FifoDecl {
     type Target = ConstructCommon;

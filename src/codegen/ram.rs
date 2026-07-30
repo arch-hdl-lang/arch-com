@@ -363,7 +363,6 @@ impl<'a> Codegen<'a> {
                     }
                     self.indent -= 1;
                     self.line("end");
-                    self.line(&format!("assign {pfx}_{} = {rdata_r};", os.name.name));
                     // latency 2 adds an extra output register stage
                     if r.latency == 2 {
                         let rdata_r2 = format!("{pfx}_{}_r2", os.name.name);
@@ -372,6 +371,8 @@ impl<'a> Codegen<'a> {
                             "always_ff @(posedge {clk}) {rdata_r2} <= {rdata_r};"
                         ));
                         self.line(&format!("assign {pfx}_{} = {rdata_r2};", os.name.name));
+                    } else {
+                        self.line(&format!("assign {pfx}_{} = {rdata_r};", os.name.name));
                     }
                 }
             }
@@ -500,7 +501,14 @@ impl<'a> Codegen<'a> {
         let rdata_b_r = format!("{pfx_b}_{rdata_b}_r");
         match r.latency {
             0 => {
-                self.line(&format!("always_ff @(posedge {clk}) begin"));
+                // A true-dual-port memory must describe each physical port in
+                // its own clocked process. Vivado explicitly rejects two RAM
+                // writes from the same process and dissolves the array into
+                // flip-flops. Plain `always` is intentional here: SystemVerilog
+                // `always_ff` requires a variable to be written by only one
+                // process, while both physical RAM ports legitimately write
+                // the shared `mem` array.
+                self.line(&format!("always @(posedge {clk}) begin"));
                 self.indent += 1;
                 let cond_a = if has_en_a {
                     format!("{pfx_a}_en && {pfx_a}_wen")
@@ -511,6 +519,10 @@ impl<'a> Codegen<'a> {
                 self.indent += 1;
                 self.line(&format!("mem[{pfx_a}_addr] <= {pfx_a}_wdata;"));
                 self.indent -= 1;
+                self.indent -= 1;
+                self.line("end");
+                self.line(&format!("always @(posedge {clk}) begin"));
+                self.indent += 1;
                 let cond_b = if has_en_b {
                     format!("{pfx_b}_en && {pfx_b}_wen")
                 } else {
@@ -529,7 +541,7 @@ impl<'a> Codegen<'a> {
                 self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_a_r};"));
                 self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_b_r};"));
                 self.line("");
-                self.line(&format!("always_ff @(posedge {clk}) begin"));
+                self.line(&format!("always @(posedge {clk}) begin"));
                 self.indent += 1;
                 if has_en_a {
                     self.line(&format!("if ({pfx_a}_en) begin"));
@@ -547,6 +559,10 @@ impl<'a> Codegen<'a> {
                     self.indent -= 1;
                     self.line("end");
                 }
+                self.indent -= 1;
+                self.line("end");
+                self.line(&format!("always @(posedge {clk}) begin"));
+                self.indent += 1;
                 if has_en_b {
                     self.line(&format!("if ({pfx_b}_en) begin"));
                     self.indent += 1;

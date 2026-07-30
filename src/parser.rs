@@ -5444,6 +5444,7 @@ impl Parser {
 
         let inner_doc = self.consume_inner_doc();
         let mut kind: Option<FifoKind> = None;
+        let mut latency: u32 = 0;
         let mut params = Vec::new();
         let mut ports = Vec::new();
         let mut asserts: Vec<AssertDecl> = Vec::new();
@@ -5465,6 +5466,26 @@ impl Parser {
                         }
                     });
                 }
+                Some(TokenKind::Latency) => {
+                    self.advance();
+                    let lit_span = self.peek_span();
+                    latency = match self.peek_kind() {
+                        Some(TokenKind::DecLiteral(s)) => {
+                            let value = s.parse::<u32>().map_err(|_| {
+                                CompileError::general("expected integer after `latency`", lit_span)
+                            })?;
+                            self.advance();
+                            value
+                        }
+                        _ => {
+                            return Err(CompileError::general(
+                                "expected integer after `latency`",
+                                lit_span,
+                            ))
+                        }
+                    };
+                    self.expect(TokenKind::Semi)?;
+                }
                 _ if self.check_param() => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
@@ -5472,7 +5493,7 @@ impl Parser {
                 }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "kind, param, port, assert, or cover",
+                        "kind, latency, param, port, assert, or cover",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -5504,6 +5525,7 @@ impl Parser {
                 is_interface: false,
             },
             kind: kind.unwrap_or(FifoKind::Fifo),
+            latency,
         })
     }
 
