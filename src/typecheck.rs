@@ -8387,12 +8387,31 @@ impl<'a> TypeChecker<'a> {
             ));
         }
 
+        if f.latency > 1 {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "fifo `{}`: latency {} is out of range — must be 0 (combinational) or 1 (registered FWFT)",
+                    f.name.name, f.latency
+                ),
+                f.name.span,
+            ));
+        }
+
         // LIFO must be single-clock (synchronous)
         if f.kind == FifoKind::Lifo {
             let is_async = crate::resolve::detect_async_fifo(&f.ports);
             if is_async {
                 self.errors.push(CompileError::general(
                     &format!("lifo `{}` must be single-clock (synchronous); dual-clock lifo is not supported", f.name.name),
+                    f.name.span,
+                ));
+            }
+            if f.latency != 0 {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "lifo `{}` supports only latency 0; registered FWFT is currently available for fifo kind only",
+                        f.name.name
+                    ),
                     f.name.span,
                 ));
             }

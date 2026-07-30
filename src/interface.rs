@@ -150,6 +150,9 @@ pub(crate) fn emit_fifo_interface(f: &FifoDecl) -> String {
     if f.kind == FifoKind::Lifo {
         s.push_str("  kind lifo;\n");
     }
+    if f.latency != 0 {
+        s.push_str(&format!("  latency {};\n", f.latency));
+    }
     emit_params(&mut s, &f.params);
     emit_ports(&mut s, &f.ports);
     s.push_str(&format!("end fifo {name}\n"));

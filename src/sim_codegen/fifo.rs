@@ -24,6 +24,16 @@ impl<'a> SimCodegen<'a> {
                 }
             })
             .unwrap_or(8);
+        let overflow: u64 = f
+            .params
+            .iter()
+            .find(|p| p.name.name == "OVERFLOW")
+            .and_then(|p| p.default.as_ref())
+            .and_then(|e| match &e.kind {
+                ExprKind::Literal(LitKind::Dec(v)) => Some(*v),
+                _ => None,
+            })
+            .unwrap_or(0);
 
         // Build type-param substitution: param name → concrete TypeExpr (from default)
         let type_param_map: std::collections::HashMap<String, TypeExpr> = f
@@ -141,6 +151,12 @@ impl<'a> SimCodegen<'a> {
             port_inits.push("_wr_ptr(0)".to_string());
             port_inits.push("_rd_ptr(0)".to_string());
         }
+        if f.latency == 1 {
+            port_inits.push("_pop_data_r()".to_string());
+            if is_async {
+                port_inits.push("_pop_data_valid(0)".to_string());
+            }
+        }
         h.push_str(&format!(
             "  {class}() : {} {{\n    memset(_mem, 0, sizeof(_mem));\n  }}\n",
             port_inits.join(", ")
@@ -166,6 +182,12 @@ impl<'a> SimCodegen<'a> {
             h.push_str("  uint32_t _sp;\n");
         } else {
             h.push_str("  uint32_t _wr_ptr;\n  uint32_t _rd_ptr;\n");
+        }
+        if f.latency == 1 {
+            h.push_str(&format!("  {elem_ty} _pop_data_r;\n"));
+            if is_async {
+                h.push_str("  uint8_t _pop_data_valid;\n");
+            }
         }
         h.push_str(&format!("  {elem_ty} _mem[{depth}];\n"));
         h.push_str("  void trace_open(const char* filename);\n");
@@ -240,6 +262,9 @@ impl<'a> SimCodegen<'a> {
             ));
             cpp.push_str(&format!("  if ({rst_cond}) {{\n"));
             cpp.push_str("    _wr_ptr = 0; _rd_ptr = 0;\n");
+            if f.latency == 1 {
+                cpp.push_str("    _pop_data_valid = 0;\n");
+            }
             cpp.push_str("    return;\n  }\n");
             cpp.push_str("  if (_wr_rising && push_valid && push_ready) {\n");
             cpp.push_str(&format!("    _mem[_wr_ptr % {depth}] = push_data;\n"));
@@ -247,11 +272,33 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str(&format!(
                 "    if (_wr_ptr >= 2u * {depth}) _wr_ptr = 0;\n  }}\n"
             ));
-            cpp.push_str("  if (_rd_rising && pop_ready && pop_valid) {\n");
-            cpp.push_str("    _rd_ptr++;\n");
-            cpp.push_str(&format!(
-                "    if (_rd_ptr >= 2u * {depth}) _rd_ptr = 0;\n  }}\n"
-            ));
+            if f.latency == 1 {
+                cpp.push_str("  if (_rd_rising) {\n");
+                cpp.push_str("    if (!_pop_data_valid) {\n");
+                cpp.push_str("      if (_rd_ptr != _wr_ptr) {\n");
+                cpp.push_str(&format!("        _pop_data_r = _mem[_rd_ptr % {depth}];\n"));
+                cpp.push_str("        _pop_data_valid = 1;\n");
+                cpp.push_str("      }\n");
+                cpp.push_str("    } else if (pop_ready) {\n");
+                cpp.push_str("      _rd_ptr++;\n");
+                cpp.push_str(&format!(
+                    "      if (_rd_ptr >= 2u * {depth}) _rd_ptr = 0;\n"
+                ));
+                cpp.push_str("      if (_rd_ptr != _wr_ptr) {\n");
+                cpp.push_str(&format!("        _pop_data_r = _mem[_rd_ptr % {depth}];\n"));
+                cpp.push_str("        _pop_data_valid = 1;\n");
+                cpp.push_str("      } else {\n");
+                cpp.push_str("        _pop_data_valid = 0;\n");
+                cpp.push_str("      }\n");
+                cpp.push_str("    }\n");
+                cpp.push_str("  }\n");
+            } else {
+                cpp.push_str("  if (_rd_rising && pop_ready && pop_valid) {\n");
+                cpp.push_str("    _rd_ptr++;\n");
+                cpp.push_str(&format!(
+                    "    if (_rd_ptr >= 2u * {depth}) _rd_ptr = 0;\n  }}\n"
+                ));
+            }
             cpp.push_str("}\n\n");
             // eval_posedge() — self-gating dual-clock entry point. A parent
             // module drives a sub-instance by calling _inst_X.eval_posedge()
@@ -293,17 +340,55 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str("    if (pop_ready && pop_valid) {\n");
                 cpp.push_str("      if (_sp > 0) _sp--;\n    }\n");
             } else {
-                cpp.push_str("    if (push_valid && push_ready) {\n");
-                cpp.push_str(&format!("      _mem[_wr_ptr % {depth}] = push_data;\n"));
-                cpp.push_str("      _wr_ptr++;\n");
-                cpp.push_str(&format!(
-                    "      if (_wr_ptr >= 2u * {depth}) _wr_ptr = 0;\n    }}\n"
-                ));
-                cpp.push_str("    if (pop_ready && pop_valid) {\n");
-                cpp.push_str("      _rd_ptr++;\n");
-                cpp.push_str(&format!(
-                    "      if (_rd_ptr >= 2u * {depth}) _rd_ptr = 0;\n    }}\n"
-                ));
+                if f.latency == 1 {
+                    cpp.push_str(&format!(
+                        "    uint32_t _count = (_wr_ptr >= _rd_ptr) ? (_wr_ptr - _rd_ptr) : (2u * {depth} - _rd_ptr + _wr_ptr);\n"
+                    ));
+                    cpp.push_str("    bool _do_push = push_valid && push_ready;\n");
+                    cpp.push_str("    bool _do_pop = pop_ready && pop_valid;\n");
+                    cpp.push_str(&format!(
+                        "    bool _drop_oldest = ({}u != 0) && (_count >= {depth}u) && _do_push && !_do_pop;\n",
+                        overflow
+                    ));
+                    cpp.push_str("    if (_count == 0 && _do_push) {\n");
+                    cpp.push_str("      _pop_data_r = push_data;\n");
+                    cpp.push_str("    } else if (_do_pop) {\n");
+                    cpp.push_str("      if (_count == 1) {\n");
+                    cpp.push_str("        if (_do_push) _pop_data_r = push_data;\n");
+                    cpp.push_str("      } else {\n");
+                    cpp.push_str(&format!(
+                        "        _pop_data_r = _mem[(_rd_ptr + 1u) % {depth}];\n"
+                    ));
+                    cpp.push_str("      }\n");
+                    cpp.push_str("    } else if (_drop_oldest) {\n");
+                    cpp.push_str(&format!(
+                        "      _pop_data_r = ({depth}u == 1) ? push_data : _mem[(_rd_ptr + 1u) % {depth}];\n"
+                    ));
+                    cpp.push_str("    }\n");
+                    cpp.push_str("    if (_do_push) {\n");
+                    cpp.push_str(&format!("      _mem[_wr_ptr % {depth}] = push_data;\n"));
+                    cpp.push_str("      _wr_ptr++;\n");
+                    cpp.push_str(&format!(
+                        "      if (_wr_ptr >= 2u * {depth}) _wr_ptr = 0;\n    }}\n"
+                    ));
+                    cpp.push_str("    if (_do_pop || _drop_oldest) {\n");
+                    cpp.push_str("      _rd_ptr++;\n");
+                    cpp.push_str(&format!(
+                        "      if (_rd_ptr >= 2u * {depth}) _rd_ptr = 0;\n    }}\n"
+                    ));
+                } else {
+                    cpp.push_str("    if (push_valid && push_ready) {\n");
+                    cpp.push_str(&format!("      _mem[_wr_ptr % {depth}] = push_data;\n"));
+                    cpp.push_str("      _wr_ptr++;\n");
+                    cpp.push_str(&format!(
+                        "      if (_wr_ptr >= 2u * {depth}) _wr_ptr = 0;\n    }}\n"
+                    ));
+                    cpp.push_str("    if (pop_ready && pop_valid) {\n");
+                    cpp.push_str("      _rd_ptr++;\n");
+                    cpp.push_str(&format!(
+                        "      if (_rd_ptr >= 2u * {depth}) _rd_ptr = 0;\n    }}\n"
+                    ));
+                }
             }
             cpp.push_str("  }\n}\n\n");
         }
@@ -322,10 +407,29 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str("    ? (_wr_ptr - _rd_ptr)\n");
             cpp.push_str("    : (2u * _depth - _rd_ptr + _wr_ptr);\n");
             cpp.push_str("  full       = (_count >= _depth);\n");
-            cpp.push_str("  empty      = (_count == 0);\n");
-            cpp.push_str("  push_ready = !full;\n");
-            cpp.push_str("  pop_valid  = !empty;\n");
-            cpp.push_str("  pop_data = _mem[_rd_ptr % _depth];\n");
+            if is_async && f.latency == 1 {
+                cpp.push_str("  empty      = !_pop_data_valid;\n");
+                if overflow != 0 {
+                    cpp.push_str("  push_ready = 1;\n");
+                } else {
+                    cpp.push_str("  push_ready = !full;\n");
+                }
+                cpp.push_str("  pop_valid  = _pop_data_valid;\n");
+                cpp.push_str("  pop_data   = _pop_data_r;\n");
+            } else {
+                cpp.push_str("  empty      = (_count == 0);\n");
+                if overflow != 0 {
+                    cpp.push_str("  push_ready = 1;\n");
+                } else {
+                    cpp.push_str("  push_ready = !full;\n");
+                }
+                cpp.push_str("  pop_valid  = !empty;\n");
+                if f.latency == 1 {
+                    cpp.push_str("  pop_data   = _pop_data_r;\n");
+                } else {
+                    cpp.push_str("  pop_data = _mem[_rd_ptr % _depth];\n");
+                }
+            }
         }
         cpp.push_str("}\n\n");
 
