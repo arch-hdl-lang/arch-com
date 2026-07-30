@@ -1,0 +1,159 @@
+//! AXI4 incrementing-burst memory target for native cocotbext-axi tests.
+
+module AxiMemory
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  port s_axi_awid: in UInt<4>;
+  port s_axi_awaddr: in UInt<32>;
+  port s_axi_awlen: in UInt<8>;
+  port s_axi_awsize: in UInt<3>;
+  port s_axi_awburst: in UInt<2>;
+  port s_axi_awvalid: in Bool;
+  port s_axi_awready: out Bool;
+
+  port s_axi_wdata: in UInt<32>;
+  port s_axi_wstrb: in UInt<4>;
+  port s_axi_wlast: in Bool;
+  port s_axi_wvalid: in Bool;
+  port s_axi_wready: out Bool;
+
+  port s_axi_bid: out UInt<4>;
+  port s_axi_bresp: out UInt<2>;
+  port s_axi_bvalid: out Bool;
+  port s_axi_bready: in Bool;
+
+  port s_axi_arid: in UInt<4>;
+  port s_axi_araddr: in UInt<32>;
+  port s_axi_arlen: in UInt<8>;
+  port s_axi_arsize: in UInt<3>;
+  port s_axi_arburst: in UInt<2>;
+  port s_axi_arvalid: in Bool;
+  port s_axi_arready: out Bool;
+
+  port s_axi_rid: out UInt<4>;
+  port s_axi_rdata: out UInt<32>;
+  port s_axi_rresp: out UInt<2>;
+  port s_axi_rlast: out Bool;
+  port s_axi_rvalid: out Bool;
+  port s_axi_rready: in Bool;
+
+  reg memory: Vec<UInt<32>, 256> reset rst => 0;
+  reg cycle_count: UInt<8> reset rst => 0;
+
+  reg write_active: Bool reset rst => false;
+  reg write_addr: UInt<32> reset rst => 0;
+  reg write_remaining: UInt<8> reset rst => 0;
+  reg write_id: UInt<4> reset rst => 0;
+  reg b_pending: Bool reset rst => false;
+  reg b_id: UInt<4> reset rst => 0;
+
+  reg read_active: Bool reset rst => false;
+  reg read_addr: UInt<32> reset rst => 0;
+  reg read_remaining: UInt<8> reset rst => 0;
+  reg read_id: UInt<4> reset rst => 0;
+
+  reg awready_r: Bool reset rst => false;
+  reg wready_r: Bool reset rst => false;
+  reg bvalid_r: Bool reset rst => false;
+  reg arready_r: Bool reset rst => false;
+  reg rvalid_r: Bool reset rst => false;
+  reg rdata_r: UInt<32> reset rst => 0;
+  reg rlast_r: Bool reset rst => false;
+  reg rid_r: UInt<4> reset rst => 0;
+
+  let aw_allow: Bool = cycle_count[2:0] != 3'b011;
+  let w_allow: Bool = cycle_count[2:0] != 3'b101;
+  let ar_allow: Bool = cycle_count[3:1] != 3'b110;
+  let aw_fire: Bool = s_axi_awvalid and s_axi_awready;
+  let w_fire: Bool = s_axi_wvalid and s_axi_wready;
+  let b_fire: Bool = s_axi_bvalid and s_axi_bready;
+  let ar_fire: Bool = s_axi_arvalid and s_axi_arready;
+  let r_fire: Bool = s_axi_rvalid and s_axi_rready;
+
+  wire write_word: UInt<32>;
+
+  comb
+    s_axi_awready = awready_r;
+    s_axi_wready = wready_r;
+    s_axi_bid = b_id;
+    s_axi_bresp = 0;
+    s_axi_bvalid = bvalid_r;
+
+    s_axi_arready = arready_r;
+    s_axi_rid = rid_r;
+    s_axi_rdata = rdata_r;
+    s_axi_rresp = 0;
+    s_axi_rlast = rlast_r;
+    s_axi_rvalid = rvalid_r;
+
+    write_word = memory[write_addr[9:2]];
+    if s_axi_wstrb[0:0] == 1
+      write_word[7:0] = s_axi_wdata[7:0];
+    end if
+    if s_axi_wstrb[1:1] == 1
+      write_word[15:8] = s_axi_wdata[15:8];
+    end if
+    if s_axi_wstrb[2:2] == 1
+      write_word[23:16] = s_axi_wdata[23:16];
+    end if
+    if s_axi_wstrb[3:3] == 1
+      write_word[31:24] = s_axi_wdata[31:24];
+    end if
+  end comb
+
+  seq on clk rising
+    cycle_count <= cycle_count +% 1;
+
+    if b_fire
+      b_pending <= false;
+    end if
+
+    if aw_fire
+      write_active <= true;
+      write_addr <= s_axi_awaddr;
+      write_remaining <= s_axi_awlen;
+      write_id <= s_axi_awid;
+    end if
+
+    if w_fire
+      memory[write_addr[9:2]] <= write_word;
+      if s_axi_wlast or write_remaining == 0
+        write_active <= false;
+        b_pending <= true;
+        b_id <= write_id;
+      else
+        write_addr <= write_addr +% 4;
+        write_remaining <= write_remaining -% 1;
+      end if
+    end if
+
+    if ar_fire
+      read_active <= true;
+      read_addr <= s_axi_araddr;
+      read_remaining <= s_axi_arlen;
+      read_id <= s_axi_arid;
+    end if
+
+    if r_fire
+      if rlast_r
+        read_active <= false;
+      else
+        read_addr <= read_addr +% 4;
+        read_remaining <= read_remaining -% 1;
+      end if
+    end if
+  end seq
+
+  // Keep all externally sampled handshake outputs stable across rising edges.
+  seq on clk falling
+    awready_r <= (not write_active) and (not b_pending) and aw_allow;
+    wready_r <= write_active and w_allow;
+    bvalid_r <= b_pending;
+    arready_r <= (not read_active) and ar_allow;
+    rvalid_r <= read_active;
+    rdata_r <= memory[read_addr[9:2]];
+    rlast_r <= read_remaining == 0;
+    rid_r <= read_id;
+  end seq
+end module AxiMemory

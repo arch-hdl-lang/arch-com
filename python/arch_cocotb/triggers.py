@@ -1,128 +1,276 @@
-"""Cocotb-compatible trigger classes for arch sim."""
+"""Cocotb-compatible triggers for ARCH's native event scheduler."""
+
+import asyncio
+from decimal import Decimal, InvalidOperation
 
 from arch_cocotb.simulator import _get_sim
+from arch_cocotb.task import ArchTask
 
 
-class RisingEdge:
-    """Suspend until the next rising edge (0→1) of a signal."""
+class SimTimeoutError(TimeoutError):
+    """Raised by :func:`with_timeout` when simulation time expires."""
+
+
+_TIME_UNIT_PS = {
+    "fs": Decimal("0.001"),
+    "f": Decimal("0.001"),
+    "ps": Decimal(1),
+    "p": Decimal(1),
+    "ns": Decimal(1000),
+    "n": Decimal(1000),
+    "us": Decimal(1_000_000),
+    "u": Decimal(1_000_000),
+    "micro": Decimal(1_000_000),
+    "ms": Decimal(1_000_000_000),
+    "m": Decimal(1_000_000_000),
+    "milli": Decimal(1_000_000_000),
+    "s": Decimal(1_000_000_000_000),
+    "sec": Decimal(1_000_000_000_000),
+}
+
+
+class _EdgeTrigger:
+    _edge_type = "either"
 
     def __init__(self, signal):
-        self._signal = signal
+        self.signal = signal
 
     def __await__(self):
-        sim = _get_sim()
-        return sim.wait_rising_edge(self._signal._name).__await__()
+        return _get_sim().wait_edge(
+            self.signal, self._edge_type, self
+        ).__await__()
 
 
-class FallingEdge:
-    """Suspend until the next falling edge (1→0) of a signal."""
+class RisingEdge(_EdgeTrigger):
+    """Suspend until the next 0-to-1 transition."""
 
-    def __init__(self, signal):
-        self._signal = signal
+    _edge_type = "rising"
 
-    def __await__(self):
-        sim = _get_sim()
-        return sim.wait_falling_edge(self._signal._name).__await__()
+
+class FallingEdge(_EdgeTrigger):
+    """Suspend until the next 1-to-0 transition."""
+
+    _edge_type = "falling"
+
+
+class Edge(_EdgeTrigger):
+    """Suspend until the next value transition."""
 
 
 class ReadOnly:
-    """Suspend until the read-only sync region of the current tick.
-
-    In real cocotb this trigger guarantees that all reactive comb
-    settling has completed before the test reads signal values. Under
-    arch sim's tick-sampled scheduler, every `eval()` already settles
-    the comb network before user code runs, so `ReadOnly()` reduces to
-    a zero-duration timer (a yield to the scheduler with no time
-    advance). Tests written against real cocotb that use it for
-    sampling correctness work unchanged."""
-
-    def __init__(self):
-        pass
+    """Resume after the current timestamp's writes and model deltas settle."""
 
     def __await__(self):
-        sim = _get_sim()
-        return sim.wait_timer(0).__await__()
+        return _get_sim().wait_readonly(self).__await__()
 
 
 class Timer:
-    """Suspend for a specified duration."""
+    """Suspend for an exact integer number of picoseconds."""
 
-    def __init__(self, duration=None, units='ns', unit=None,
-                 timeout_time=None, timeout_unit=None, **kwargs):
-        # Handle cocotb's various Timer signatures
+    def __init__(
+        self,
+        duration=None,
+        units="ns",
+        unit=None,
+        timeout_time=None,
+        timeout_unit=None,
+        **kwargs,
+    ):
         if duration is None and timeout_time is not None:
             duration = timeout_time
+            units = timeout_unit or units
+        if duration is None:
+            duration = kwargs.get("time", 0)
         if unit is not None:
             units = unit
-        if duration is None:
-            duration = kwargs.get('time', 0)
-        self._duration_ns = _to_ns(duration, units)
+        self.duration = duration
+        self.units = units
 
     def __await__(self):
         sim = _get_sim()
-        return sim.wait_timer(self._duration_ns).__await__()
+        duration_ps = _to_ps(self.duration, self.units, sim.step_ps)
+        return sim.wait_timer(duration_ps, self).__await__()
 
 
 class Clock:
-    """Generate a periodic clock signal.
+    """Drive a clock with picosecond-accurate alternating half periods."""
 
-    Usage:
-        cocotb.start_soon(Clock(dut.clk, 10, units='ns').start())
-    """
+    def __init__(self, signal, period, units="ns", unit=None):
+        self.signal = signal
+        self.period = period
+        self.units = unit or units
 
-    def __init__(self, signal, period, units='ns', unit=None):
-        self._signal = signal
-        if unit is not None:
-            units = unit
-        self._half_period_ns = _to_ns(period, units) // 2
-        if self._half_period_ns < 1:
-            self._half_period_ns = 1
-
-    def start(self, start_high=False):
-        """Return a coroutine that toggles the clock forever."""
-        async def _run():
-            sim = _get_sim()
-            val = 1 if start_high else 0
-            self._signal.value = val
-            while True:
-                await sim.wait_timer(self._half_period_ns)
-                val ^= 1
-                self._signal.value = val
-        return _run()
+    async def start(self, start_high=True):
+        sim = _get_sim()
+        period_ps = _to_ps(self.period, self.units, sim.step_ps)
+        if period_ps < 2:
+            raise ValueError("clock period must be at least 2 ps")
+        first_half = period_ps // 2
+        second_half = period_ps - first_half
+        value = 1 if start_high else 0
+        self.signal.value = value
+        delay = first_half if start_high else second_half
+        while True:
+            await sim.wait_timer(delay)
+            value ^= 1
+            self.signal.value = value
+            delay = first_half if value else second_half
 
 
 class ClockCycles:
-    """Suspend for N rising edges of a clock signal."""
+    """Suspend for a number of rising or falling clock edges."""
 
     def __init__(self, signal, num_cycles, rising=True):
-        self._signal = signal
-        self._num_cycles = num_cycles
-        self._rising = rising
+        self.signal = signal
+        self.num_cycles = int(num_cycles)
+        self.rising = rising
 
     def __await__(self):
         return self._wait().__await__()
 
     async def _wait(self):
-        sim = _get_sim()
-        for _ in range(self._num_cycles):
-            if self._rising:
-                await sim.wait_rising_edge(self._signal._name)
+        trigger_type = RisingEdge if self.rising else FallingEdge
+        for _ in range(self.num_cycles):
+            await trigger_type(self.signal)
+        return self
+
+
+class Event:
+    """One-shot coroutine notification carrying optional data."""
+
+    def __init__(self, name=None):
+        self.name = name
+        self.data = None
+        self._is_set = False
+        self._waiters = []
+
+    def set(self, data=None):
+        self.data = data
+        self._is_set = True
+        waiters, self._waiters = self._waiters, []
+        for future in waiters:
+            if not future.done():
+                future.set_result(data)
+
+    def clear(self):
+        self._is_set = False
+
+    def is_set(self):
+        return self._is_set
+
+    def wait(self):
+        # Cocotb returns a reusable trigger object here. cocotbext-axi caches
+        # that object outside loops, so returning a one-shot Python coroutine
+        # would fail with "cannot reuse already awaited coroutine".
+        return _EventWaiter(self)
+
+    async def _wait(self):
+        if self._is_set:
+            return self.data
+        future = _get_sim()._future()
+        self._waiters.append(future)
+        try:
+            return await future
+        finally:
+            if future in self._waiters:
+                self._waiters.remove(future)
+
+
+class _EventWaiter:
+    def __init__(self, event):
+        self._event = event
+
+    def __await__(self):
+        return self._event._wait().__await__()
+
+
+class First:
+    """Resume with the result of the first completed awaitable."""
+
+    def __init__(self, *awaitables):
+        if not awaitables:
+            raise ValueError("First requires at least one awaitable")
+        self.awaitables = awaitables
+
+    def __await__(self):
+        return self._wait().__await__()
+
+    async def _wait(self):
+        tasks = []
+        owned = []
+        for awaitable in self.awaitables:
+            if isinstance(awaitable, ArchTask):
+                task = awaitable._task
+                awaitable._observed = True
             else:
-                await sim.wait_falling_edge(self._signal._name)
+                task = asyncio.ensure_future(awaitable)
+                owned.append(task)
+            tasks.append(task)
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        winner = next(task for task in tasks if task in done)
+        for task in owned:
+            if task is not winner and not task.done():
+                task.cancel()
+        if owned:
+            await asyncio.gather(
+                *(task for task in owned if task is not winner),
+                return_exceptions=True,
+            )
+        return await winner
 
 
-def _to_ns(duration, units):
-    """Convert a duration to nanoseconds."""
-    units = units.lower().rstrip('s')  # normalize: 'ns' 'us' 'ms' etc.
-    scale = {
-        'p': 0.001,
-        'n': 1,
-        'u': 1_000,
-        'micro': 1_000,
-        'm': 1_000_000,
-        'milli': 1_000_000,
-        '': 1_000_000_000,
-        'sec': 1_000_000_000,
-    }
-    mult = scale.get(units, 1)
-    return max(1, int(duration * mult))
+async def with_timeout(
+    awaitable,
+    timeout_time,
+    timeout_unit="ns",
+    *,
+    timeout_units=None,
+):
+    """Await an object, raising ``SimTimeoutError`` on simulated timeout."""
+
+    timer = Timer(timeout_time, units=timeout_units or timeout_unit)
+    if isinstance(awaitable, ArchTask):
+        operation = awaitable
+        owned = False
+    else:
+        async def run_awaitable():
+            return await awaitable
+
+        operation = _get_sim().schedule(run_awaitable())
+        owned = True
+    winner = await First(operation, timer)
+    if winner is timer:
+        if owned:
+            operation.kill()
+        raise SimTimeoutError(
+            f"timed out after {timeout_time} {timeout_units or timeout_unit}"
+        )
+    return winner
+
+
+def _to_ps(duration, units, step_ps=1000):
+    """Convert cocotb time values to exact integer picoseconds."""
+    scale = _unit_ps(units, step_ps)
+    try:
+        picoseconds = Decimal(str(duration)) * scale
+    except (InvalidOperation, ValueError) as error:
+        raise ValueError(f"invalid timer duration: {duration!r}") from error
+    integral = picoseconds.to_integral_value()
+    if picoseconds != integral:
+        raise ValueError(
+            f"{duration} {units} is not representable at 1 ps precision"
+        )
+    result = int(integral)
+    if result < 0:
+        raise ValueError("Timer duration must not be negative")
+    return result
+
+
+def _unit_ps(units, step_ps=1000):
+    """Return the picosecond scale for a cocotb time unit."""
+    unit = "step" if units is None else str(units).lower().rstrip("s")
+    if unit == "step":
+        return Decimal(step_ps)
+    if unit not in _TIME_UNIT_PS:
+        raise ValueError(f"unsupported time unit: {units}")
+    return _TIME_UNIT_PS[unit]

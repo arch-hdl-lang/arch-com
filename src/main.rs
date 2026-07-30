@@ -2604,10 +2604,9 @@ fn run_sim_opts(
         //      existing scripts with `if __name__ == "__main__": main()`
         //      blocks fire (backward-compat).
         //   2. After __main__ returns, if any `@cocotb.test()` functions are
-        //      in `arch_cocotb.decorators._test_registry`, runs them through
-        //      `arch_cocotb.runner.run_tests`. Previously the decorator only
-        //      registered the test and the launcher never iterated the
-        //      registry, so `@cocotb.test` functions were silent no-ops.
+        //      in `arch_cocotb.decorators._test_registry`, runs that registry
+        //      directly. The file must not be imported a second time: doing so
+        //      repeats module-level side effects and creates duplicate tests.
         if let Some(test_path) = test_file {
             eprintln!("Running test: {}", test_path.display());
 
@@ -2679,8 +2678,8 @@ if TEST_DIR and TEST_DIR not in sys.path:
 runpy.run_path(TEST_PATH, run_name="__main__")
 
 # 2. Auto-invoke any `@cocotb.test()` functions the user left in the
-#    registry. Silent no-op if arch_cocotb isn't importable or the
-#    registry is empty.
+#    registry. The test file has already executed, so consume the registry
+#    without importing it again.
 try:
     from arch_cocotb.decorators import _test_registry
 except Exception:
@@ -2696,8 +2695,8 @@ if model_class is None:
           f"cannot auto-run @cocotb.test functions", file=sys.stderr)
     sys.exit(1)
 
-from arch_cocotb.runner import run_tests
-ok = run_tests(model_class, TEST_MODULE)
+from arch_cocotb.runner import run_registered_tests
+ok = run_registered_tests(model_class)
 sys.exit(0 if ok else 1)
 "#,
                 test_path = test_path_abs.display(),

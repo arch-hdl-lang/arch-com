@@ -1,5 +1,6 @@
-"""DUT wrapper that provides cocotb-compatible signal access."""
+"""DUT wrapper providing cocotb-compatible hierarchy and signal discovery."""
 
+import logging
 import re
 
 from arch_cocotb.signal import ArchSignal, ArchSignalValue
@@ -9,33 +10,16 @@ _VEC_MEMBER_RE = re.compile(r"^(.+)_(\d+)$")
 
 
 class _ArchVecProxy:
-    """Indexable proxy over Vec ports.
+    """Indexable proxy over Vec ports flattened by the pybind generator."""
 
-    arch sim's pybind layer flattens `port: <dir> Vec<T, N>` (packed or
-    unpacked) into N scalar attributes named `port_0` .. `port_{N-1}`.
-    Tests written against real Verilator cocotb expect both styles:
+    __slots__ = ("_members", "_name")
 
-      dut.port[i].value = lane_value     # per-lane (works for both)
-      dut.port.value    = whole_packed   # whole-value (packed Vec only
-                                         # under Verilator, since
-                                         # `vec[i]` errors with
-                                         # "Packed objects cannot be
-                                         # indexed")
-
-    The proxy supports both: `[i]` maps to the underlying `port_i`
-    ArchSignal handle, and `.value` composes/decomposes the lanes. Lane
-    0 occupies the LSB bits, matching the cocotb-Verilator convention
-    for packed `logic [N-1:0][W-1:0]`.
-    """
-
-    __slots__ = ("_members",)
-
-    def __init__(self, members):
-        # members: list[ArchSignal] in index order
+    def __init__(self, name, members):
+        self._name = name
         self._members = members
 
-    def __getitem__(self, idx):
-        return self._members[idx]
+    def __getitem__(self, index):
+        return self._members[index]
 
     def __len__(self):
         return len(self._members)
@@ -45,104 +29,116 @@ class _ArchVecProxy:
 
     @property
     def value(self):
-        """Compose lanes into a single packed integer (lane 0 = LSB)."""
         raw = 0
         offset = 0
-        for sig in self._members:
-            lane = int(sig.value) & ((1 << sig._width) - 1)
-            raw |= lane << offset
-            offset += sig._width
-        return ArchSignalValue(raw, offset, signed=False)
+        for signal in self._members:
+            raw |= int(signal.value) << offset
+            offset += len(signal)
+        return ArchSignalValue(raw, offset)
 
     @value.setter
-    def value(self, v):
-        """Decompose a packed integer into lanes (lane 0 = LSB)."""
-        if isinstance(v, ArchSignalValue):
-            v = v.to_unsigned()
-        v = int(v)
+    def value(self, value):
+        value = int(value)
         offset = 0
-        for sig in self._members:
-            mask = (1 << sig._width) - 1
-            sig.value = (v >> offset) & mask
-            offset += sig._width
+        for signal in self._members:
+            mask = (1 << len(signal)) - 1
+            signal.value = (value >> offset) & mask
+            offset += len(signal)
+
+    def setimmediatevalue(self, value):
+        self.value = value
 
 
 class ArchDUT:
-    """Wraps a pybind11 arch sim model instance.
+    """Wrap a generated pybind model as a flat cocotb DUT hierarchy."""
 
-    Provides cocotb-compatible attribute access:
-      dut.signal_name.value          # read
-      dut.signal_name.value = 42     # write
-      dut.PARAM_NAME.value.to_unsigned()  # parameter
-      for sig in dut: ...            # iterate signals
-    """
-
-    def __init__(self, model_class):
-        object.__setattr__(self, '_model', model_class())
-        object.__setattr__(self, '_signals', {})
-        object.__setattr__(self, '_signal_list', [])
-        object.__setattr__(self, '_vec_groups', {})
+    def __init__(self, model_class, name=None):
+        object.__setattr__(self, "_model", model_class())
+        object.__setattr__(self, "_name", name or model_class.__name__)
+        object.__setattr__(self, "_log", logging.getLogger(self._name))
+        object.__setattr__(self, "_signals", {})
+        object.__setattr__(self, "_signal_list", [])
+        object.__setattr__(self, "_vec_groups", {})
+        object.__setattr__(self, "_casefold_names", {})
+        object.__setattr__(self, "_simulator", None)
         self._register_from_port_info()
 
+    def _attach_simulator(self, simulator):
+        object.__setattr__(self, "_simulator", simulator)
+
     def _register_from_port_info(self):
-        """Auto-register signals from the model's _port_info() metadata."""
-        if not hasattr(type(self._model), '_port_info'):
+        if not hasattr(type(self._model), "_port_info"):
             return
         for info in type(self._model)._port_info():
-            # info = (name, width, signed, is_input, is_param, is_internal)
-            name, width, signed, _is_input, is_param, is_internal = info
-            # pybind11 exposes internal regs without underscore prefix
-            cpp_name = name
-            sig = ArchSignal(
-                self, name, width, signed,
-                is_param=is_param, is_internal=is_internal,
-                cpp_name=cpp_name,
+            name, width, signed, is_input, is_param, is_internal = info
+            self.register_signal(
+                name,
+                width,
+                signed=signed,
+                is_input=is_input,
+                is_param=is_param,
+                is_internal=is_internal,
             )
-            self._signals[name] = sig
-            if not is_param:
-                self._signal_list.append(sig)
-        # Detect unpacked-Vec port groups: any name `base_<idx>` where
-        # `base` is not itself a registered scalar AND there are at least
-        # two consecutive indices starting at 0. This avoids false
-        # positives on names that incidentally end in `_<digit>` (e.g. an
-        # SV constant `pkt_512`).
-        groups: dict[str, dict[int, ArchSignal]] = {}
-        for name, sig in self._signals.items():
-            m = _VEC_MEMBER_RE.match(name)
-            if not m:
+
+        groups = {}
+        for name, signal in self._signals.items():
+            match = _VEC_MEMBER_RE.match(name)
+            if not match:
                 continue
-            base, idx_str = m.group(1), m.group(2)
+            base, index_text = match.groups()
             if base in self._signals:
                 continue
-            groups.setdefault(base, {})[int(idx_str)] = sig
+            groups.setdefault(base, {})[int(index_text)] = signal
         for base, members in groups.items():
             indices = sorted(members)
             if len(indices) < 2 or indices != list(range(len(indices))):
                 continue
-            self._vec_groups[base] = _ArchVecProxy([members[i] for i in indices])
+            proxy = _ArchVecProxy(base, [members[index] for index in indices])
+            self._vec_groups[base] = proxy
+            self._casefold_names.setdefault(base.casefold(), base)
 
-    def register_signal(self, name, width, signed=False, is_param=False,
-                        is_internal=False, cpp_name=None):
-        """Manually register a signal (for models without _port_info)."""
-        sig = ArchSignal(
-            self, name, width, signed,
-            is_param=is_param, is_internal=is_internal,
+    def register_signal(
+        self,
+        name,
+        width,
+        signed=False,
+        is_input=False,
+        is_param=False,
+        is_internal=False,
+        cpp_name=None,
+    ):
+        signal = ArchSignal(
+            self,
+            name,
+            width,
+            signed,
+            is_input=is_input,
+            is_param=is_param,
+            is_internal=is_internal,
             cpp_name=cpp_name,
         )
-        self._signals[name] = sig
+        self._signals[name] = signal
+        self._casefold_names.setdefault(name.casefold(), name)
         if not is_param:
-            self._signal_list.append(sig)
+            self._signal_list.append(signal)
+        return signal
 
     def __getattr__(self, name):
-        if name.startswith('_'):
+        if name.startswith("_"):
             raise AttributeError(name)
-        sigs = object.__getattribute__(self, '_signals')
-        if name in sigs:
-            return sigs[name]
-        groups = object.__getattribute__(self, '_vec_groups')
-        if name in groups:
-            return groups[name]
-        raise AttributeError(f"No signal '{name}' on DUT")
+        actual = self._casefold_names.get(name.casefold(), name)
+        if actual in self._signals:
+            return self._signals[actual]
+        if actual in self._vec_groups:
+            return self._vec_groups[actual]
+        raise AttributeError(f"No signal '{name}' on DUT '{self._name}'")
+
+    def __dir__(self):
+        public = list(self._signals) + list(self._vec_groups)
+        return sorted(set(object.__dir__(self)) | set(public))
 
     def __iter__(self):
         return iter(self._signal_list)
+
+    def __len__(self):
+        return len(self._signal_list)
