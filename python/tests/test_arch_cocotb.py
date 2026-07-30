@@ -55,6 +55,110 @@ class FakeModel:
         self._clock_previous = self.clk
 
 
+class IdlessAxiModel:
+    """Minimal flattened AXI4 interface with no physical ID ports."""
+
+    _input_suffixes = {
+        "arready",
+        "rdata",
+        "rvalid",
+        "awready",
+        "wready",
+        "bvalid",
+    }
+
+    def __init__(self):
+        for name, *_ in self._port_info():
+            setattr(self, name, 0)
+
+    @classmethod
+    def _port_info(cls):
+        names = [
+            "m_axi_araddr",
+            "m_axi_arvalid",
+            "m_axi_arready",
+            "m_axi_rdata",
+            "m_axi_rvalid",
+            "m_axi_rready",
+            "m_axi_awaddr",
+            "m_axi_awvalid",
+            "m_axi_awready",
+            "m_axi_wdata",
+            "m_axi_wvalid",
+            "m_axi_wready",
+            "m_axi_bvalid",
+            "m_axi_bready",
+        ]
+        return [
+            (
+                name,
+                32 if name.endswith(("addr", "data")) else 1,
+                False,
+                name.rsplit("_", 1)[-1] in cls._input_suffixes,
+                False,
+                False,
+            )
+            for name in names
+        ]
+
+
+class IdlessAxiTargetModel(IdlessAxiModel):
+    """The same ID-less interface viewed from an AXI target DUT."""
+
+    _input_suffixes = {
+        "araddr",
+        "arvalid",
+        "rready",
+        "awaddr",
+        "awvalid",
+        "wdata",
+        "wvalid",
+        "bready",
+    }
+
+
+class PhasedHandshakeModel:
+    """Registered valid/ready model used to verify cocotb sampling phases."""
+
+    def __init__(self):
+        self.clk = 0
+        self.trigger = 0
+        self.ready = 0
+        self.valid = 0
+        self._valid_reg = 0
+        self._clock_previous = 0
+
+    @staticmethod
+    def _port_info():
+        return [
+            ("clk", 1, False, True, False, False),
+            ("trigger", 1, False, True, False, False),
+            ("ready", 1, False, True, False, False),
+            ("valid", 1, False, False, False, False),
+        ]
+
+    @staticmethod
+    def _arch_supports_phased_eval():
+        return True
+
+    def eval(self):
+        self.eval_comb()
+        self.eval_posedge()
+        self.eval_comb()
+
+    def eval_comb(self):
+        self.valid = self._valid_reg
+
+    def eval_posedge(self):
+        rising = not self._clock_previous and self.clk
+        self._clock_previous = self.clk
+        if rising:
+            if self._valid_reg and self.ready:
+                self._valid_reg = 0
+            elif self.trigger:
+                self._valid_reg = 1
+
+
 def run_native(test_body):
     dut = ArchDUT(FakeModel, name="dut")
     simulator = ArchSimulator(dut)
@@ -96,6 +200,42 @@ class TimingTests(unittest.TestCase):
 
         _, _, dut = run_native(body)
         self.assertEqual(dut._model.eval_count, 1)
+
+    def test_registered_valid_is_sampled_before_post_edge_comb(self):
+        async def body(dut):
+            cocotb.start_soon(
+                Clock(dut.clk, 10, units="ps").start(start_high=False)
+            )
+            wake = Event()
+            captured = Event()
+
+            async def valid_monitor():
+                while True:
+                    await RisingEdge(dut.valid)
+                    wake.set()
+
+            async def sink():
+                while True:
+                    await RisingEdge(dut.clk)
+                    if int(dut.valid.value) and int(dut.ready.value):
+                        captured.set()
+                        return
+                    wake.clear()
+                    await wake.wait()
+
+            cocotb.start_soon(valid_monitor())
+            cocotb.start_soon(sink())
+            dut.ready.value = 1
+            dut.trigger.value = 1
+            await RisingEdge(dut.clk)
+            dut.trigger.value = 0
+            await with_timeout(captured.wait(), 30, "ps")
+            await ReadOnly()
+            self.assertEqual(int(dut.valid.value), 0)
+
+        dut = ArchDUT(PhasedHandshakeModel, name="dut")
+        simulator = ArchSimulator(dut)
+        asyncio.run(simulator.run_test(body, dut))
 
 
 class TaskAndTriggerTests(unittest.TestCase):
@@ -220,6 +360,24 @@ class HandleTests(unittest.TestCase):
             self.assertEqual(int(logic), 8)
 
         run_native(body)
+
+    def test_idless_axi_gets_single_id_compatibility_handles(self):
+        for model, input_ids in (
+            (IdlessAxiModel, {"m_axi_rid", "m_axi_bid"}),
+            (IdlessAxiTargetModel, {"m_axi_arid", "m_axi_awid"}),
+        ):
+            dut = ArchDUT(model, name="dut")
+            for name in ("m_axi_arid", "m_axi_rid", "m_axi_awid", "m_axi_bid"):
+                self.assertIn(name, dir(dut))
+                signal = getattr(dut, name)
+                self.assertEqual(len(signal), 1)
+                self.assertEqual(int(signal.value), 0)
+                self.assertEqual(signal._is_input, name in input_ids)
+                signal.setimmediatevalue(3)
+                self.assertEqual(int(signal.value), 1)
+
+            with self.assertRaises(AttributeError):
+                getattr(dut, "m_axi_missing")
 
 
 if __name__ == "__main__":

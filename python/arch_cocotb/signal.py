@@ -138,3 +138,39 @@ class ArchSignal:
 
     def __repr__(self):
         return f"ArchSignal({self._name!r}, width={self._width})"
+
+
+class ArchLocalSignal:
+    """Cocotb-style signal backed by shim-local two-state storage.
+
+    This is used for protocol defaults that have no physical ARCH port, such
+    as the one-bit zero ID channel on an ID-less AXI4 interface.
+    """
+
+    def __init__(self, name, width=1, value=0, is_input=False):
+        self._name = name
+        self._width = int(width)
+        self._is_input = bool(is_input)
+        self._value = _coerce_integer(value) & self._mask
+        self._type = "GPI_NET"
+
+    @property
+    def _mask(self):
+        return (1 << self._width) - 1 if self._width else 0
+
+    @property
+    def value(self):
+        return ArchSignalValue(self._value, self._width)
+
+    @value.setter
+    def value(self, value):
+        self._value = _coerce_integer(value) & self._mask
+
+    def setimmediatevalue(self, value):
+        self.value = value
+
+    def __len__(self):
+        return self._width
+
+    def __repr__(self):
+        return f"ArchLocalSignal({self._name!r}, width={self._width})"

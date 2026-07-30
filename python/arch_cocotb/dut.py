@@ -3,7 +3,7 @@
 import logging
 import re
 
-from arch_cocotb.signal import ArchSignal, ArchSignalValue
+from arch_cocotb.signal import ArchLocalSignal, ArchSignal, ArchSignalValue
 
 
 _VEC_MEMBER_RE = re.compile(r"^(.+)_(\d+)$")
@@ -96,6 +96,91 @@ class ArchDUT:
             proxy = _ArchVecProxy(base, [members[index] for index in indices])
             self._vec_groups[base] = proxy
             self._casefold_names.setdefault(base.casefold(), base)
+
+        self._register_single_id_axi_defaults()
+
+    def _register_single_id_axi_defaults(self):
+        """Expose one-bit ID handles for otherwise complete ID-less AXI buses.
+
+        `cocotbext-axi` models AXI channel IDs as mandatory handles even for a
+        single-outstanding, single-ID interface. ARCH buses commonly omit
+        those physically redundant ports. Recognize complete flattened AXI
+        read/write channel groups and provide a shim-local one-bit ID channel
+        tied to zero by default. Arbitrary missing signals are not synthesized.
+        """
+
+        names = set(self._signals)
+        prefixes = set()
+        for name in names:
+            for suffix in ("_araddr", "_awaddr"):
+                if name.endswith(suffix):
+                    prefixes.add(name[: -len(suffix)])
+
+        for prefix in sorted(prefixes):
+            read_markers = {
+                f"{prefix}_araddr",
+                f"{prefix}_arvalid",
+                f"{prefix}_arready",
+                f"{prefix}_rdata",
+                f"{prefix}_rvalid",
+                f"{prefix}_rready",
+            }
+            if read_markers <= names:
+                self._register_axi_id_pair(
+                    prefix,
+                    "arid",
+                    "rid",
+                    request_marker="araddr",
+                    response_marker="rdata",
+                )
+
+            write_markers = {
+                f"{prefix}_awaddr",
+                f"{prefix}_awvalid",
+                f"{prefix}_awready",
+                f"{prefix}_wdata",
+                f"{prefix}_wvalid",
+                f"{prefix}_wready",
+                f"{prefix}_bvalid",
+                f"{prefix}_bready",
+            }
+            if write_markers <= names:
+                self._register_axi_id_pair(
+                    prefix,
+                    "awid",
+                    "bid",
+                    request_marker="awaddr",
+                    response_marker="bvalid",
+                )
+
+    def _register_axi_id_pair(
+        self,
+        prefix,
+        request_id,
+        response_id,
+        request_marker,
+        response_marker,
+    ):
+        request_name = f"{prefix}_{request_id}"
+        response_name = f"{prefix}_{response_id}"
+        existing = self._signals.get(request_name) or self._signals.get(response_name)
+        width = len(existing) if existing is not None else 1
+        for name, is_input in (
+            (
+                request_name,
+                self._signals[f"{prefix}_{request_marker}"]._is_input,
+            ),
+            (
+                response_name,
+                self._signals[f"{prefix}_{response_marker}"]._is_input,
+            ),
+        ):
+            if name in self._signals:
+                continue
+            signal = ArchLocalSignal(name, width, is_input=is_input)
+            self._signals[name] = signal
+            self._casefold_names.setdefault(name.casefold(), name)
+            self._signal_list.append(signal)
 
     def register_signal(
         self,
