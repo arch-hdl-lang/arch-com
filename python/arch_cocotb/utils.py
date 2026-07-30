@@ -1,19 +1,15 @@
 """Utility functions compatible with cocotb.utils."""
 
-from arch_cocotb.simulator import _get_sim
+from arch_cocotb.simulator import _get_sim, ps_to_unit
 
 
-def get_sim_time(units='ns'):
-    """Return the current simulation time."""
+def get_sim_time(unit=None, units=None):
+    """Return the current simulation time in the requested unit.
+
+    One simulator step is one picosecond. 'step' and 'fs' return exact
+    integers; other units return floats.
+    """
+    if unit is None:
+        unit = units  # accept legacy keyword
     sim = _get_sim()
-    t = sim.get_sim_time_ns()
-    units = units.lower().rstrip('s')
-    if units == 'n':
-        return float(t)
-    elif units == 'p':
-        return float(t * 1000)
-    elif units == 'u' or units == 'micro':
-        return float(t / 1000)
-    elif units == 'm' or units == 'milli':
-        return float(t / 1_000_000)
-    return float(t)
+    return ps_to_unit(sim.get_sim_time_ps(), unit or 'step')

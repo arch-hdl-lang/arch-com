@@ -1,0 +1,24 @@
+/// Conformance probe for the arch_cocotb shim: free-running counter plus
+/// echo ports at several widths for handle/width/sign testing.
+module ShimProbe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port in_a: in UInt<8>;
+  port in_b: in SInt<12>;
+  port wide_in: in UInt<48>;
+  port count: out UInt<16>;
+  port echo_a: out UInt<8>;
+  port echo_b: out SInt<12>;
+  port wide_out: out UInt<48>;
+
+  reg count_r: UInt<16> reset rst => 0;
+
+  seq on clk rising
+    count_r <= count_r +% 1;
+  end seq
+
+  let count = count_r;
+  let echo_a = in_a;
+  let echo_b = in_b;
+  let wide_out = wide_in;
+end module ShimProbe

@@ -1,2 +1,20 @@
 """Cocotb triggers shim."""
-from arch_cocotb.triggers import RisingEdge, FallingEdge, Timer, ClockCycles, ReadOnly
+
+from arch_cocotb.triggers import (
+    ClockCycles,
+    Combine,
+    Edge,
+    Event,
+    FallingEdge,
+    First,
+    Lock,
+    NextTimeStep,
+    NullTrigger,
+    ReadOnly,
+    ReadWrite,
+    RisingEdge,
+    SimTimeoutError,
+    Timer,
+    Trigger,
+    with_timeout,
+)

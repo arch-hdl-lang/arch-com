@@ -31700,3 +31700,95 @@ end module SharedBus
         }
     }
 }
+
+// ─── cocotb shim conformance (arch sim --pybind --test) ─────────────────────
+
+/// Returns false (and logs) when python3+pybind11 are unavailable, so the
+/// pybind-path tests skip instead of failing in minimal environments.
+fn have_pybind11() -> bool {
+    let ok = std::process::Command::new("python3")
+        .args(["-m", "pybind11", "--includes"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !ok {
+        eprintln!("skipping: python3 with pybind11 not available");
+    }
+    ok
+}
+
+/// Returns false (and logs) when the installed cocotbext-axi package is
+/// unavailable; the AXI conformance tests need it unmodified.
+fn have_cocotbext_axi() -> bool {
+    let ok = std::process::Command::new("python3")
+        .args(["-c", "import cocotbext.axi"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !ok {
+        eprintln!("skipping: cocotbext-axi not installed");
+    }
+    ok
+}
+
+fn run_pybind_test(test_py: &str, arch_src: &str) {
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("--pybind")
+        .arg("--test")
+        .arg(test_py)
+        .arg(arch_src)
+        .env("ARCH_SIM_BUILD_DIR", td.path())
+        .output()
+        .expect("run arch sim --pybind --test");
+    assert!(
+        out.status.success(),
+        "cocotb shim test {test_py} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+/// Spec `ArchNativeCocotbShim` Timing / Tasks-and-Triggers / Handles
+/// sections: ps-exact clocks and timers, ReadOnly phase semantics,
+/// Event/First/with_timeout/kill trigger lifecycle, and handle
+/// introspection — against a real generated pybind model.
+#[test]
+fn test_cocotb_shim_conformance_suite() {
+    if !have_pybind11() {
+        return;
+    }
+    run_pybind_test(
+        "tests/cocotb_shim/test_shim_conformance.py",
+        "tests/cocotb_shim/ShimProbe.arch",
+    );
+}
+
+/// The installed cocotbext-axi AXI-Lite master drives AxilRegs.arch
+/// directly: register R/W, byte strobes, queued transactions, random soak.
+#[test]
+fn test_cocotb_shim_cocotbext_axi_lite() {
+    if !have_pybind11() || !have_cocotbext_axi() {
+        return;
+    }
+    run_pybind_test(
+        "tests/cocotb_shim/test_axil_cocotbext.py",
+        "tests/cocotb_shim/AxilRegs.arch",
+    );
+}
+
+/// The installed cocotbext-axi AXI4 master drives Axi4Mem.arch directly:
+/// incrementing bursts, byte strobes, independent per-channel
+/// backpressure, queued transactions, final memory comparison.
+#[test]
+fn test_cocotb_shim_cocotbext_axi4() {
+    if !have_pybind11() || !have_cocotbext_axi() {
+        return;
+    }
+    run_pybind_test(
+        "tests/cocotb_shim/test_axi4_cocotbext.py",
+        "tests/cocotb_shim/Axi4Mem.arch",
+    );
+}

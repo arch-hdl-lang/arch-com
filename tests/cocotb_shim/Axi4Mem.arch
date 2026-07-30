@@ -1,0 +1,120 @@
+/// AXI4 memory slave (1 KiB, 32-bit data) supporting INCR bursts, byte
+/// strobes, and full ready/valid backpressure on every channel.
+/// Port names follow the cocotbext-axi flat convention so
+/// AxiBus.from_prefix(dut, "s_axi") discovers every channel signal.
+module Axi4Mem
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  port s_axi_awid: in UInt<8>;
+  port s_axi_awaddr: in UInt<16>;
+  port s_axi_awlen: in UInt<8>;
+  port s_axi_awsize: in UInt<3>;
+  port s_axi_awburst: in UInt<2>;
+  port s_axi_awlock: in Bool;
+  port s_axi_awcache: in UInt<4>;
+  port s_axi_awprot: in UInt<3>;
+  port s_axi_awvalid: in Bool;
+  port s_axi_awready: out Bool;
+  port s_axi_wdata: in UInt<32>;
+  port s_axi_wstrb: in UInt<4>;
+  port s_axi_wlast: in Bool;
+  port s_axi_wvalid: in Bool;
+  port s_axi_wready: out Bool;
+  port s_axi_bid: out UInt<8>;
+  port s_axi_bresp: out UInt<2>;
+  port s_axi_bvalid: out Bool;
+  port s_axi_bready: in Bool;
+  port s_axi_arid: in UInt<8>;
+  port s_axi_araddr: in UInt<16>;
+  port s_axi_arlen: in UInt<8>;
+  port s_axi_arsize: in UInt<3>;
+  port s_axi_arburst: in UInt<2>;
+  port s_axi_arlock: in Bool;
+  port s_axi_arcache: in UInt<4>;
+  port s_axi_arprot: in UInt<3>;
+  port s_axi_arvalid: in Bool;
+  port s_axi_arready: out Bool;
+  port s_axi_rid: out UInt<8>;
+  port s_axi_rdata: out UInt<32>;
+  port s_axi_rresp: out UInt<2>;
+  port s_axi_rlast: out Bool;
+  port s_axi_rvalid: out Bool;
+  port s_axi_rready: in Bool;
+
+  reg mem: Vec<UInt<32>, 256> reset none;
+
+  // Write channel: IDLE(0) -> DATA(1) -> RESP(2)
+  reg wstate_r: UInt<2> reset rst => 0;
+  reg waddr_r: UInt<16> reset rst => 0;
+  reg wid_r: UInt<8> reset rst => 0;
+
+  // Read channel: IDLE(0) -> BURST(1)
+  reg rstate_r: UInt<2> reset rst => 0;
+  reg raddr_r: UInt<16> reset rst => 0;
+  reg rid_r: UInt<8> reset rst => 0;
+  reg rlen_r: UInt<8> reset rst => 0;
+
+  let s_axi_awready = wstate_r == 0;
+  let s_axi_wready = wstate_r == 1;
+  let s_axi_bvalid = wstate_r == 2;
+  let s_axi_bid = wid_r;
+  let s_axi_bresp = 0;
+
+  let s_axi_arready = rstate_r == 0;
+  let s_axi_rvalid = rstate_r == 1;
+  let s_axi_rdata = mem[raddr_r[9:2]];
+  let s_axi_rlast = rlen_r == 0;
+  let s_axi_rid = rid_r;
+  let s_axi_rresp = 0;
+
+  // Byte-lane merge of the current write beat into the addressed word.
+  let wold: UInt<32> = mem[waddr_r[9:2]];
+  let wbyte0: UInt<8> = s_axi_wstrb[0] ? s_axi_wdata[7:0] : wold[7:0];
+  let wbyte1: UInt<8> = s_axi_wstrb[1] ? s_axi_wdata[15:8] : wold[15:8];
+  let wbyte2: UInt<8> = s_axi_wstrb[2] ? s_axi_wdata[23:16] : wold[23:16];
+  let wbyte3: UInt<8> = s_axi_wstrb[3] ? s_axi_wdata[31:24] : wold[31:24];
+  let wmerged: UInt<32> = {wbyte3, wbyte2, wbyte1, wbyte0};
+
+  seq on clk rising
+    if wstate_r == 0
+      if s_axi_awvalid
+        waddr_r <= s_axi_awaddr;
+        wid_r <= s_axi_awid;
+        wstate_r <= 1;
+      end if
+    elsif wstate_r == 1
+      if s_axi_wvalid
+        mem[waddr_r[9:2]] <= wmerged;
+        waddr_r <= waddr_r +% 4;
+        if s_axi_wlast
+          wstate_r <= 2;
+        end if
+      end if
+    else
+      if s_axi_bready
+        wstate_r <= 0;
+      end if
+    end if
+  end seq
+
+  seq on clk rising
+    if rstate_r == 0
+      if s_axi_arvalid
+        raddr_r <= s_axi_araddr;
+        rid_r <= s_axi_arid;
+        rlen_r <= s_axi_arlen;
+        rstate_r <= 1;
+      end if
+    else
+      if s_axi_rready
+        if rlen_r == 0
+          rstate_r <= 0;
+        else
+          rlen_r <= rlen_r -% 1;
+          raddr_r <= raddr_r +% 4;
+        end if
+      end if
+    end if
+  end seq
+end module Axi4Mem

@@ -1,5 +1,6 @@
 """DUT wrapper that provides cocotb-compatible signal access."""
 
+import logging
 import re
 
 from arch_cocotb.signal import ArchSignal, ArchSignalValue
@@ -74,15 +75,30 @@ class ArchDUT:
       dut.signal_name.value          # read
       dut.signal_name.value = 42     # write
       dut.PARAM_NAME.value.to_unsigned()  # parameter
-      for sig in dut: ...            # iterate signals
+      for sig in dut: ...            # iterate signals (stable order)
+      dir(dut)                       # lists every exposed port/param
+      dut.SIGNAL_NAME                # case-insensitive fallback
     """
 
     def __init__(self, model_class):
         object.__setattr__(self, '_model', model_class())
+        object.__setattr__(self, '_name', self._derive_name(model_class))
+        object.__setattr__(
+            self, '_log', logging.getLogger(f"cocotb.{self._name}")
+        )
         object.__setattr__(self, '_signals', {})
         object.__setattr__(self, '_signal_list', [])
         object.__setattr__(self, '_vec_groups', {})
+        object.__setattr__(self, '_ci_names', {})
         self._register_from_port_info()
+
+    @staticmethod
+    def _derive_name(model_class):
+        name = model_class.__name__
+        # Generated classes are named V<Module>; strip the prefix.
+        if len(name) > 1 and name.startswith('V'):
+            return name[1:]
+        return name
 
     def _register_from_port_info(self):
         """Auto-register signals from the model's _port_info() metadata."""
@@ -120,6 +136,14 @@ class ArchDUT:
             if len(indices) < 2 or indices != list(range(len(indices))):
                 continue
             self._vec_groups[base] = _ArchVecProxy([members[i] for i in indices])
+        self._rebuild_ci_map()
+
+    def _rebuild_ci_map(self):
+        """Case-insensitive lookup map (first registration wins)."""
+        ci = {}
+        for name in list(self._signals) + list(self._vec_groups):
+            ci.setdefault(name.lower(), name)
+        object.__setattr__(self, '_ci_names', ci)
 
     def register_signal(self, name, width, signed=False, is_param=False,
                         is_internal=False, cpp_name=None):
@@ -132,6 +156,7 @@ class ArchDUT:
         self._signals[name] = sig
         if not is_param:
             self._signal_list.append(sig)
+        self._rebuild_ci_map()
 
     def __getattr__(self, name):
         if name.startswith('_'):
@@ -142,7 +167,24 @@ class ArchDUT:
         groups = object.__getattribute__(self, '_vec_groups')
         if name in groups:
             return groups[name]
+        # Case-insensitive fallback so introspection-based bus discovery
+        # finds signals regardless of case convention.
+        ci = object.__getattribute__(self, '_ci_names')
+        actual = ci.get(name.lower())
+        if actual is not None:
+            return sigs.get(actual) or groups[actual]
         raise AttributeError(f"No signal '{name}' on DUT")
+
+    def __dir__(self):
+        """Expose every port, parameter, and Vec group to introspection."""
+        return sorted(
+            set(super().__dir__())
+            | set(self._signals)
+            | set(self._vec_groups)
+        )
 
     def __iter__(self):
         return iter(self._signal_list)
+
+    def __repr__(self):
+        return f"<ArchDUT {self._name} ({len(self._signals)} signals)>"

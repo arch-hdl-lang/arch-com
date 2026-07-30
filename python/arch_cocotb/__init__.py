@@ -5,7 +5,7 @@ Provides deterministic timing by driving the arch sim C++ model directly
 from Python via pybind11, eliminating VPI callback ordering ambiguity.
 """
 
-from arch_cocotb.decorators import test, start_soon, start
+from arch_cocotb.decorators import test, start_soon, start, create_task
 from arch_cocotb import utils
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

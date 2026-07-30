@@ -1,0 +1,83 @@
+/// AXI4-Lite register file (16 x 32-bit) with byte strobes.
+/// Port names follow the cocotbext-axi flat convention so
+/// AxiLiteBus.from_prefix(dut, "s_axil") discovers every channel signal.
+module AxilRegs
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  port s_axil_awaddr: in UInt<6>;
+  port s_axil_awprot: in UInt<3>;
+  port s_axil_awvalid: in Bool;
+  port s_axil_awready: out Bool;
+  port s_axil_wdata: in UInt<32>;
+  port s_axil_wstrb: in UInt<4>;
+  port s_axil_wvalid: in Bool;
+  port s_axil_wready: out Bool;
+  port s_axil_bresp: out UInt<2>;
+  port s_axil_bvalid: out Bool;
+  port s_axil_bready: in Bool;
+  port s_axil_araddr: in UInt<6>;
+  port s_axil_arprot: in UInt<3>;
+  port s_axil_arvalid: in Bool;
+  port s_axil_arready: out Bool;
+  port s_axil_rdata: out UInt<32>;
+  port s_axil_rresp: out UInt<2>;
+  port s_axil_rvalid: out Bool;
+  port s_axil_rready: in Bool;
+
+  reg regs: Vec<UInt<32>, 16> reset none;
+
+  reg aw_addr_r: UInt<6> reset rst => 0;
+  reg aw_have_r: Bool reset rst => false;
+  reg w_data_r: UInt<32> reset rst => 0;
+  reg w_strb_r: UInt<4> reset rst => 0;
+  reg w_have_r: Bool reset rst => false;
+  reg b_valid_r: Bool reset rst => false;
+
+  reg r_data_r: UInt<32> reset rst => 0;
+  reg r_valid_r: Bool reset rst => false;
+
+  let s_axil_awready = !aw_have_r;
+  let s_axil_wready = !w_have_r;
+  let s_axil_bvalid = b_valid_r;
+  let s_axil_bresp = 0;
+  let s_axil_arready = !r_valid_r;
+  let s_axil_rdata = r_data_r;
+  let s_axil_rresp = 0;
+  let s_axil_rvalid = r_valid_r;
+
+  // Byte-lane merge of the captured write beat into the addressed word.
+  let waddr_idx: UInt<4> = aw_addr_r[5:2];
+  let old_word: UInt<32> = regs[waddr_idx];
+  let byte0: UInt<8> = w_strb_r[0] ? w_data_r[7:0] : old_word[7:0];
+  let byte1: UInt<8> = w_strb_r[1] ? w_data_r[15:8] : old_word[15:8];
+  let byte2: UInt<8> = w_strb_r[2] ? w_data_r[23:16] : old_word[23:16];
+  let byte3: UInt<8> = w_strb_r[3] ? w_data_r[31:24] : old_word[31:24];
+  let merged: UInt<32> = {byte3, byte2, byte1, byte0};
+
+  seq on clk rising
+    if s_axil_awvalid and !aw_have_r
+      aw_addr_r <= s_axil_awaddr;
+      aw_have_r <= true;
+    end if
+    if s_axil_wvalid and !w_have_r
+      w_data_r <= s_axil_wdata;
+      w_strb_r <= s_axil_wstrb;
+      w_have_r <= true;
+    end if
+    if aw_have_r and w_have_r and (!b_valid_r or s_axil_bready)
+      regs[waddr_idx] <= merged;
+      b_valid_r <= true;
+      aw_have_r <= false;
+      w_have_r <= false;
+    elsif b_valid_r and s_axil_bready
+      b_valid_r <= false;
+    end if
+    if s_axil_arvalid and !r_valid_r
+      r_data_r <= regs[s_axil_araddr[5:2]];
+      r_valid_r <= true;
+    elsif r_valid_r and s_axil_rready
+      r_valid_r <= false;
+    end if
+  end seq
+end module AxilRegs

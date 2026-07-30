@@ -1,8 +1,8 @@
 # `arch sim` — cocotb Integration Guide
 
-`arch sim --pybind --test` runs Python testbenches against an ARCH design using a cocotb-compatible API, with no Verilator, iverilog, or VPI in the loop. The generated C++ model is wrapped with pybind11, and a thin scheduler (`arch_cocotb`) drives it tick-by-tick from an asyncio event loop. This flow also supports `--thread-sim parallel`; the pybind wrapper adapts to the pre-lowering thread-sim model's edge-sensitive `eval()` API.
+`arch sim --pybind --test` runs Python testbenches against an ARCH design using a cocotb-compatible API, with no Verilator, iverilog, or VPI in the loop. The generated C++ model is wrapped with pybind11, and an event-driven scheduler (`arch_cocotb`) drives it from an asyncio event loop. This flow also supports `--thread-sim parallel`; the pybind wrapper adapts to the pre-lowering thread-sim model's edge-sensitive `eval()` API.
 
-The intent is "write the same testbench you would for real cocotb" — same decorators, triggers, signal handles, and coroutine patterns — while trading VPI fidelity for deterministic timing and faster iteration.
+The intent is "write the same testbench you would for real cocotb" — same decorators, triggers, signal handles, and coroutine patterns. The shim implements enough of the cocotb 2.x surface that **the installed `cocotbext-axi` package drives ARCH designs unmodified** (see `tests/cocotb_shim/`).
 
 ---
 
@@ -18,7 +18,7 @@ Under the hood this:
 1. Runs the ARCH → C++ codegen (`SimCodegen::generate_pybind`), producing `VMyModule_pybind.cpp` next to the normal `VMyModule.cpp`.
 2. Compiles the pybind11 wrapper with `python3 -m pybind11 --includes` plus the configured C++ compiler (`g++` by default; override with `ARCH_CXX`, e.g. `ARCH_CXX=clang++` — required on Linux, where GCC miscompiles the C++20 coroutine testbench scheduler), emitting `VMyModule_pybind.<ext>` into the build directory (`--outdir` if given, else `$ARCH_SIM_BUILD_DIR`, else `arch_sim_build/`).
 3. Spawns `python3 test_mymodule.py` with `PYTHONPATH` set to find three packages:
-   - `python/cocotb_shim/cocotb/` — so `import cocotb` works unchanged
+   - `python/cocotb_shim/cocotb/` — so `import cocotb` works unchanged (and shadows a real installed cocotb)
    - `python/arch_cocotb/` — the real implementation
    - `arch_sim_build/` — the compiled pybind11 `.so`
 
@@ -47,22 +47,48 @@ async def test_reset(dut):
 
 ## The `cocotb` shim
 
-`python/cocotb_shim/cocotb/` is a drop-in stand-in that re-exports the real implementation from `arch_cocotb`. The shim exposes:
+`python/cocotb_shim/cocotb/` is a drop-in stand-in that re-exports the real implementation from `arch_cocotb`:
 
-| `cocotb` symbol | Maps to |
+| `cocotb` module | Symbols |
 |---|---|
-| `cocotb.test` (decorator) | `arch_cocotb.decorators.test` |
-| `cocotb.start_soon(coro)` | `arch_cocotb.decorators.start_soon` |
-| `cocotb.start(coro)` | `arch_cocotb.decorators.start` |
-| `cocotb.utils.get_sim_time(units)` | `arch_cocotb.utils.get_sim_time` |
-| `cocotb.triggers.RisingEdge` | `arch_cocotb.triggers.RisingEdge` |
-| `cocotb.triggers.FallingEdge` | `arch_cocotb.triggers.FallingEdge` |
-| `cocotb.triggers.Timer` | `arch_cocotb.triggers.Timer` |
-| `cocotb.triggers.ClockCycles` | `arch_cocotb.triggers.ClockCycles` |
-| `cocotb.clock.Clock` | `arch_cocotb.triggers.Clock` |
-| `cocotb.types.Logic` | `cocotb_shim.cocotb.types.Logic` (stub) |
+| `cocotb` | `test` (decorator), `start_soon`, `start`, `create_task`, `__version__` |
+| `cocotb.triggers` | `RisingEdge`, `FallingEdge`, `Edge`, `Timer`, `ClockCycles`, `ReadOnly`, `ReadWrite`, `NextTimeStep`, `NullTrigger`, `Event`, `First`, `Combine`, `Lock`, `with_timeout`, `SimTimeoutError` |
+| `cocotb.clock` | `Clock` |
+| `cocotb.queue` | `Queue`, `PriorityQueue`, `LifoQueue`, `QueueFull`, `QueueEmpty` |
+| `cocotb.types` | `Logic`, `LogicArray`, `Range` |
+| `cocotb.utils` | `get_sim_time` |
+| `cocotb.result` | `SimTimeoutError`, `TestSuccess` |
+| `cocotb.handle` | `SimHandleBase` (alias of `ArchSignal`) |
 
-Because of the shim, you can point the same test file at either `arch sim` or a real cocotb runner without edits, as long as the test only uses the intersection of the APIs listed above.
+Because of the shim, you can point the same test file at either `arch sim` or a real cocotb runner without edits, and cocotb-based bus libraries (`cocotbext-axi`, `cocotb_bus.bus.Bus`) import and run against the native model.
+
+---
+
+## Time model
+
+Internal simulator time is an **integer count of picoseconds** (one cocotb `step` = 1 ps). `Clock`, `Timer`, `@cocotb.test(timeout_time=...)`, `with_timeout`, and `get_sim_time()` all share this one time base, and durations convert exactly — a 3333 ps clock alternates 1666 ps / 1667 ps half-periods, and `Timer(1.5, 'ns')` wakes exactly 1500 ps later. `get_sim_time('step')` (the default) returns the integer ps count; other units return floats.
+
+`Timer` rejects zero and negative durations (matching cocotb). Sub-picosecond durations (`fs`) round to the nearest picosecond.
+
+## Scheduler model
+
+The scheduler is **event-driven**: it advances directly to the next timer deadline (clock transitions are timers under the hood) instead of evaluating the model once per nanosecond. A model evaluation runs when a testbench write is applied, when a clock/input transition occurs, or conservatively after timer callbacks ran.
+
+Within one timestep, the observable phase order mirrors an event-driven simulator:
+
+1. Runnable coroutines execute; `sig.value = x` writes are **buffered deposits**.
+2. Deposits apply to the model's input fields.
+3. Edge waiters on directly-written signals (e.g. `RisingEdge(clk)` when the `Clock` task toggles `clk`) resume **before** the model evaluates the edge — their reads observe pre-edge register state, exactly like cocotb coroutines woken in the active region before NBA updates land. Their reaction writes are buffered as new deposits.
+4. `eval()` runs: sequential logic samples the pre-reaction input values.
+5. Edge waiters on eval-derived signals (registered outputs) resume after eval.
+6. The loop repeats until quiescent; then `ReadWrite` waiters resume, then `ReadOnly` waiters — same timestep, no time advance. `ReadOnly()` is a scheduler phase transition, not a timer.
+7. Only then does time jump to the next deadline; `NextTimeStep` waiters resume there.
+
+This ordering is what cocotb bus models depend on: a source that does `await RisingEdge(clk)` then samples `ready` sees the pre-edge value, and a monitor that does `await ReadOnly()` sees the fully settled post-edge state.
+
+**Write timing.** `sig.value = x` is a deposit — it is *not* visible to the same edge's sequential logic, and a read-back in the same coroutine step returns the old value (same as real cocotb). Use `sig.setimmediatevalue(x)` for an immediate update. All writes are masked to the signal's declared width.
+
+**Trigger cleanup.** Every trigger registration is removed when its await is abandoned: a task killed with `task.kill()`, a `First()` race loser, or a `with_timeout` expiry deregisters its timer/edge/phase registrations. Stale registrations never fire later and never retain task objects.
 
 ---
 
@@ -70,85 +96,56 @@ Because of the shim, you can point the same test file at either `arch sim` or a 
 
 ### `@cocotb.test()`
 
-Registers an async function as a test. Supports `timeout_time=`, `timeout_unit=`, `expect_error=`, `expect_fail=`, and `skip=` for signature compatibility, but only `skip=True` affects behavior in v1.
-
-```python
-@cocotb.test()
-async def test_foo(dut):
-    ...
-```
+Registers an async function as a test. Honors `skip=True`, `timeout_time=`/`timeout_unit=` (enforced via `with_timeout` → `SimTimeoutError`), `expect_error=`, and `expect_fail=`.
 
 ### Triggers
 
 | Trigger | Behavior |
 |---|---|
-| `RisingEdge(signal)` | Suspends until the next 0→1 transition of `signal`. |
-| `FallingEdge(signal)` | Suspends until the next 1→0 transition of `signal`. |
-| `Timer(duration, units='ns')` | Suspends for the given duration. Accepts `ps`/`ns`/`us`/`ms`/`s` (and `unit=` alias). |
-| `ClockCycles(signal, n, rising=True)` | Suspends for N edges of `signal`. |
-
-Triggers are awaitables. They yield a future to the scheduler and resume when the corresponding event fires.
+| `RisingEdge(signal)` | Resume on the next 0→1 transition. |
+| `FallingEdge(signal)` | Resume on the next 1→0 transition. |
+| `Edge(signal)` | Resume on any value change. |
+| `Timer(time, unit='step')` | Resume at the exact deadline. Units: `fs`/`ps`/`ns`/`us`/`ms`/`sec`/`step` (`units=` alias accepted). |
+| `ClockCycles(signal, n, rising=True)` | Count N active edges. |
+| `ReadOnly()` | Resume after settling in the current timestep (no time advance). |
+| `ReadWrite()` | Resume after settling, before the ReadOnly phase. |
+| `NextTimeStep()` | Resume when simulation time next advances. |
+| `NullTrigger()` | Resume after one scheduler yield. |
+| `Event` | `set(data)`, `clear()`, `is_set()`, `wait()`; `set()` wakes every current waiter. |
+| `First(*triggers)` | Resume on the first completion; returns that trigger; losers deregistered. |
+| `Combine(*triggers)` | Resume when all complete. |
+| `Lock` | Async context manager with FIFO handoff. |
+| `with_timeout(trigger, t, unit)` | Result of the awaited thing, or `SimTimeoutError` at the exact deadline. |
 
 ### `Clock(signal, period, units='ns')`
 
-```python
-cocotb.start_soon(Clock(dut.clk, 10, units='ns').start())
-```
+`.start(start_high=True)` returns an infinite coroutine — schedule it with `start_soon`. High time is `period // 2` (in ps), low time is the remainder, so odd periods are exact.
 
-`.start(start_high=False)` returns a coroutine that sets the signal to 0 (or 1) and toggles it forever at `period/2` intervals. The coroutine is infinite — always schedule it with `start_soon`.
+### Task handles
 
-### `start_soon(coro)` / `start(coro)`
-
-`start_soon(coro)` schedules `coro` to run concurrently with the current test and returns immediately. `start(coro)` is an async version that returns a task handle. Both back onto `asyncio.create_task` on the underlying event loop.
+`start_soon(coro)` returns a task handle supporting `await task`, `done()`, `result()`, `kill()` (and the cocotb 2.x `cancel()`), plus `join()`. `cocotb.start(coro)` additionally yields once so the child runs up to its first await. Killing a task removes all of its trigger registrations and prevents further signal writes.
 
 ### Signal access (`dut.<name>`)
 
-Signal handles are instances of `ArchSignal`. They expose a `.value` property:
+Signal handles (`ArchSignal`) expose:
 
 ```python
-dut.enable.value = 1                     # write
-current = int(dut.count.value)           # read (via __int__)
-signed  = dut.result.value.to_signed()   # sign-extended
-unsigned = dut.addr.value.to_unsigned()
+dut.enable.value = 1                     # deposit (next sync point)
+dut.enable.setimmediatevalue(1)          # immediate
+current = int(dut.count.value)           # read
+len(dut.addr)                            # declared width in bits
+signed  = dut.result.value.to_signed()   # sign at declared width
 ```
 
-The returned value object (`ArchSignalValue`) supports `int()`, `bool()`, equality against `int`, `__str__`/`__repr__` (decimal), and hashing. It does **not** implement the full `LogicArray` API — in particular, there is no per-bit `X`/`Z` state (see "Deltas from cocotb" below).
+`ArchSignalValue` supports `int()`, `bool()`, `len()`, equality against ints and other values, `.integer`/`.signed_integer`/`.binstr`, and `to_unsigned()`/`to_signed()` at the declared width. There is still no per-bit `X`/`Z` state (2-state model); `LogicArray` inputs convert `X`/`Z` bits deterministically to 0 on assignment.
 
-Parameters are exposed as read-only signal handles with `.value.to_unsigned()`:
+The DUT handle provides `_name`, `_log` (a standard `logging.Logger`), `dir(dut)` listing every port/parameter (this is what prefix-based bus discovery uses), case-insensitive attribute fallback, and stable iteration over signals.
 
-```python
-WIDTH = int(dut.WIDTH.value)             # param, write raises AttributeError
-```
+Parameters are read-only handles; writing one raises `AttributeError`.
 
-Iteration (`for sig in dut`) yields all registered non-parameter signal handles, useful for bulk setup.
+### `cocotb.utils.get_sim_time(unit='step')`
 
-### `cocotb.utils.get_sim_time('ns')`
-
-Returns the current sim time as a float. `'ps'`, `'ns'` (default), `'us'`, `'ms'` all work.
-
----
-
-## Scheduler model
-
-The scheduler is a 1-tick-at-a-time loop sitting on top of `asyncio`:
-
-```
-while test_task not done:
-    await asyncio.sleep(0)            # let ready coroutines run
-    if test_task done: break
-    time_ns += 1
-    model.eval()                      # atomic: comb → posedge → comb
-    resolve Timer waiters whose deadline ≤ time_ns
-    check every watched signal for rising/falling edges and wake waiters
-    snapshot signal values for next-tick edge detection
-```
-
-Consequences:
-
-- **Deterministic timing.** There is no VPI callback-ordering ambiguity. Writes from Python to `dut.port.value` take effect immediately (direct field set on the pybind11 C++ object) and are visible to `model.eval()` on the very next tick. This is how `arch sim --pybind` sidesteps the `interrupt_mask=X`-style bug that iverilog cocotb runs into.
-- **1 tick = 1 ns by default.** Tunable via `time_unit_ns` in the runner (`arch_cocotb.runner.run_tests`).
-- **Edge detection is sampled.** Each tick takes a snapshot of every signal currently being waited on, then compares against the previous snapshot. An edge that begins and ends inside a single tick (i.e., faster than 1 time unit) will be missed; edges slower than 1 time unit are always caught.
-- **No delta cycles.** Writes do not re-trigger `eval()` within the same tick. If your test writes an input and wants to observe the combinational result, either `await RisingEdge(clk)` (preferred — matches RTL sampling) or `await Timer(1, 'ns')` (generic advance).
+`'step'` returns the integer picosecond count; `'fs'` an exact integer; `'ps'`/`'ns'`/`'us'`/`'ms'`/`'sec'` floats.
 
 ---
 
@@ -157,29 +154,31 @@ Consequences:
 | Area | Real cocotb | `arch sim --pybind` |
 |---|---|---|
 | Backend | VPI / VHPI over iverilog, Verilator, Questa, VCS, etc. | Direct pybind11 on ARCH's native 2-state C++ sim |
-| Logic values | 4-state (0/1/X/Z) via `LogicArray` | 2-state (uint). `X` and `Z` do not exist |
-| Write timing | Inertial / NBA-region; takes effect in the RTL sampling region | Immediate; visible on the next `eval()` tick |
-| Trigger granularity | Event-driven via simulator callbacks | Tick-sampled (see above) |
-| Decorators | Full registration, regression runner, coverage, etc. | Only `@cocotb.test()`, minimal options honored |
-| `LogicArray` / `BinaryValue` | Full bit-vector API with X/Z | `ArchSignalValue` — integer-like, no 4-state |
-| Coroutines spawned from `start_soon` | Cancelled on test-function return | Cancelled on test-task done (same effect in practice) |
+| Logic values | 4-state (0/1/X/Z) via `LogicArray` | 2-state. `X`/`Z` convert to 0 on assignment; reads never produce them |
+| Sub-timestep detail | Full delta-cycle model | Region-ordered phases per timestep (see scheduler model) |
+| Decorators | Full regression manager, coverage | `@cocotb.test()` with skip/timeout/expect options |
 | Waveform output | FST/VCD via the simulator | Use `arch sim --wave out.vcd` separately; not wired through pybind yet |
+| Missing triggers | — | `Join` (use `task.join()`), `ClockCycles` edge-type variants beyond rising/falling |
 
-The biggest gotcha is **2-state logic**. A TB that leaves an input undriven sees `0` under `arch sim`, not `X`. Use `arch sim --inputs-start-uninit` to catch this at simulation time (see CLAUDE.md § "Catching X-propagation from undriven inputs").
+The biggest remaining gotcha is **2-state logic**. A TB that leaves an input undriven sees `0` under `arch sim`, not `X`. Use `arch sim --inputs-start-uninit` to catch this at simulation time (see CLAUDE.md § "Catching X-propagation from undriven inputs").
 
 ---
 
-## Writing a portable testbench
+## Using cocotb bus libraries
 
-If you want the same `.py` file to run under both `arch sim --pybind` and a real cocotb flow, stay inside the intersection:
+`cocotbext-axi` works unmodified:
 
-1. Import via the plain `cocotb` namespace (the shim handles it).
-2. Stick to `RisingEdge` / `FallingEdge` / `Timer` / `ClockCycles` / `Clock` / `start_soon` / `@cocotb.test()` / `cocotb.utils.get_sim_time`.
-3. Treat `dut.sig.value` as an integer-compatible object. Use `int(...)` for comparisons, not `.binstr` / `.is_resolvable` / other 4-state attributes.
-4. Don't rely on any simulator-specific primitives (`ReadOnly`, `ReadWrite`, `NextTimeStep`, `First`, `Lock`, `Event`, `Join`, etc.) — none are in the shim today.
-5. Don't initialize inputs with `1'bx` / `'X'` — pick 0 or run with `--inputs-start-uninit` for the same effect.
+```python
+from cocotbext.axi import AxiBus, AxiMaster
 
-Tests that need richer cocotb features (e.g., full `First()` composition, `LogicArray`, `NextTimeStep`) should run under a real simulator via a separate runner.
+master = AxiMaster(AxiBus.from_prefix(dut, "s_axi"), dut.clk, dut.rst)
+await master.write(0x0000, b'test')
+data = await master.read(0x0000, 4)
+```
+
+Declare the DUT's ports with cocotbext's flat naming convention (`s_axi_awaddr`, `s_axi_awvalid`, …) so `from_prefix` discovers them; see `tests/cocotb_shim/AxilRegs.arch` and `tests/cocotb_shim/Axi4Mem.arch` for working AXI-Lite and AXI4 slaves, and `tests/cocotb_shim/test_axil_cocotbext.py` / `test_axi4_cocotbext.py` for the conformance tests (bursts, byte strobes, independent per-channel backpressure via pause generators, queued transactions).
+
+Note that ports wider than 64 bits are truncated by the pybind layer today — keep bus data widths ≤ 64 bits for pybind-driven tests.
 
 ---
 
@@ -187,9 +186,9 @@ Tests that need richer cocotb features (e.g., full `First()` composition, `Logic
 
 - **`ModuleNotFoundError: No module named 'VFoo_pybind'`** — the pybind11 build failed silently or the Python process did not pick up `arch_sim_build/` on `PYTHONPATH`. Check the `g++` output from `arch sim` for compile errors.
 - **`pybind11 not found`** — `pip install pybind11` into the Python environment `arch sim` will invoke. `--pybind` shells out to `python3 -m pybind11 --includes` to locate headers.
-- **`AttributeError: No signal 'foo' on DUT`** — the port name you referenced is not in the generated `_port_info()` list. Check the `.arch` file — names are case-sensitive and must match the port declaration.
-- **A test hangs** — the scheduler advances one tick per loop iteration, so an `await RisingEdge(dut.clk)` with no `Clock` task running never returns. Make sure `cocotb.start_soon(Clock(...).start())` runs before the first edge await.
-- **An edge fires one cycle late/early** — remember writes are immediate, not NBA-delayed. If you set an input and then immediately `await RisingEdge(clk)`, the DUT samples that input on *this* tick's edge, not next tick's.
+- **`AttributeError: No signal 'foo' on DUT`** — the port name you referenced is not in the generated `_port_info()` list. Check the `.arch` file (a case-insensitive match is attempted before raising).
+- **A test hangs / deadlock error** — an `await RisingEdge(dut.clk)` with no `Clock` task running can never fire. The scheduler raises `deadlock — no timers pending` naming the awaited signals instead of spinning.
+- **A write isn't visible where you expect** — `sig.value = x` is a buffered deposit (cocotb semantics): the same edge's sequential logic doesn't see it, and neither does an immediate read-back. Use `setimmediatevalue()` when you need the old immediate behavior.
 
 ---
 
@@ -197,12 +196,15 @@ Tests that need richer cocotb features (e.g., full `First()` composition, `Logic
 
 | Path | Purpose |
 |---|---|
-| `src/sim_codegen.rs` — `generate_pybind()` | Emits `V<Module>_pybind.cpp` and `_port_info()` metadata |
+| `src/sim_codegen/mod.rs` — `generate_pybind()` | Emits `V<Module>_pybind.cpp` and `_port_info()` metadata |
+| `python/arch_cocotb/simulator.py` | Event-driven scheduler: ps time base, deposits, phases, deadlock detection |
+| `python/arch_cocotb/triggers.py` | All triggers, `Event`, `First`, `Combine`, `Lock`, `with_timeout`, `Clock` |
+| `python/arch_cocotb/task.py` | Task handles (`kill`, `join`) |
+| `python/arch_cocotb/queue.py` | `Queue`, `PriorityQueue`, `LifoQueue` |
+| `python/arch_cocotb/types.py` | `Logic`, `LogicArray`, `Range` |
+| `python/arch_cocotb/dut.py` | `ArchDUT` — signal registration, `dir()`, case-insensitive lookup |
+| `python/arch_cocotb/signal.py` | `ArchSignal`, `ArchSignalValue` — deposits, masking, widths |
 | `python/arch_cocotb/decorators.py` | `@test`, `start_soon`, `start` |
-| `python/arch_cocotb/triggers.py` | `RisingEdge`, `FallingEdge`, `Timer`, `Clock`, `ClockCycles` |
-| `python/arch_cocotb/dut.py` | `ArchDUT` — auto-registers signals from `_port_info()` |
-| `python/arch_cocotb/signal.py` | `ArchSignal`, `ArchSignalValue` |
-| `python/arch_cocotb/simulator.py` | `ArchSimulator` — the tick loop, edge detector, timer heap |
 | `python/arch_cocotb/runner.py` | `run_tests(model_class, test_module_name)` |
-| `python/arch_cocotb/utils.py` | `get_sim_time` |
 | `python/cocotb_shim/cocotb/` | Drop-in `cocotb` namespace backed by `arch_cocotb` |
+| `tests/cocotb_shim/` | Conformance suite + cocotbext-axi AXI-Lite/AXI4 fixtures |
