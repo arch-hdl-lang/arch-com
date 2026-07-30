@@ -3,6 +3,8 @@ use miette::{IntoDiagnostic, NamedSource, Report, WrapErr};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod embedded_python;
+
 use arch::ast::{BinOp, Expr, ExprKind, Item, LitKind, ParamDecl, ParamKind, SourceFile, UnaryOp};
 use arch::codegen::Codegen;
 use arch::diagnostics::CompileError;
@@ -26,6 +28,28 @@ fn cxx_std_flag() -> String {
 /// clang shim, so the default works there.
 fn cxx_compiler() -> String {
     std::env::var("ARCH_CXX").unwrap_or_else(|_| "g++".to_string())
+}
+
+fn cocotb_python_dir(build_dir: &Path) -> miette::Result<PathBuf> {
+    if let Some(explicit) = std::env::var_os("ARCH_PYTHON_DIR") {
+        let explicit = PathBuf::from(explicit);
+        if embedded_python::is_complete_runtime(&explicit) {
+            return Ok(explicit);
+        }
+        return Err(miette::miette!(
+            "ARCH_PYTHON_DIR={} does not contain arch_cocotb/ and cocotb_shim/cocotb/",
+            explicit.display()
+        ));
+    }
+
+    embedded_python::materialize(build_dir)
+        .into_diagnostic()
+        .wrap_err_with(|| {
+            format!(
+                "failed to materialize the embedded cocotb runtime in {}",
+                build_dir.display()
+            )
+        })
 }
 
 #[derive(Parser)]
@@ -2465,6 +2489,10 @@ fn run_sim_opts(
             eprintln!("warning: no pybind11 wrappers generated");
             return Ok(());
         }
+        // Keep every pybind build self-contained, including `--pybind`
+        // invocations without `--test`. The explicit override is primarily
+        // for developing the Python packages without rebuilding the compiler.
+        let python_dir = cocotb_python_dir(&build_dir)?;
 
         // Pick the "user-facing" wrapper as the testbench-default top.
         // `lower_threads` prepends generated `_threads` submodules to the
@@ -2629,30 +2657,13 @@ fn run_sim_opts(
         if let Some(test_path) = test_file {
             eprintln!("Running test: {}", test_path.display());
 
-            // Resolve arch-com's python/ directory relative to the arch
-            // binary, not cwd. The binary lives at
-            // `<arch-com>/target/{debug,release}/arch`, so go up twice and
-            // look for a sibling `python/` directory. Fall back to
-            // `$ARCH_PYTHON_DIR` or the current cwd for development layouts.
-            let python_dir = std::env::current_exe()
-                .ok()
-                .and_then(|exe| {
-                    exe.parent()
-                        .and_then(|p| p.parent())
-                        .and_then(|p| p.parent())
-                        .map(|p| p.join("python"))
-                })
-                .filter(|p| p.is_dir())
-                .or_else(|| std::env::var("ARCH_PYTHON_DIR").ok().map(PathBuf::from))
-                .or_else(|| std::env::current_dir().ok().map(|cwd| cwd.join("python")))
-                .unwrap_or_else(|| PathBuf::from("python"));
-
             let shim_dir = python_dir.join("cocotb_shim");
-            let cocotb_dir = python_dir.to_str().unwrap_or(".");
-            let shim_str = shim_dir.to_str().unwrap_or(".");
-            let build_str = build_dir.to_str().unwrap_or(".");
-
-            let pythonpath = format!("{shim_str}:{cocotb_dir}:{build_str}");
+            let mut python_paths = vec![shim_dir, python_dir, build_dir.clone()];
+            if let Some(existing) = std::env::var_os("PYTHONPATH") {
+                python_paths.extend(std::env::split_paths(&existing));
+            }
+            let pythonpath = std::env::join_paths(python_paths)
+                .map_err(|err| miette::miette!("failed to construct PYTHONPATH: {err}"))?;
 
             let test_path_abs = test_path
                 .canonicalize()

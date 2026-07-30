@@ -18,7 +18,7 @@ trap 'rm -rf "$build_root"' EXIT
 
 python_dir="$(dirname "$python_bin")"
 export PATH="${python_dir}:${PATH}"
-export ARCH_PYTHON_DIR="${repo_root}/python"
+unset ARCH_PYTHON_DIR
 
 target/debug/arch sim --pybind \
   --test tests/cocotb_axi/test_axil_native.py \

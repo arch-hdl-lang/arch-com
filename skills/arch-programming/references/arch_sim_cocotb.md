@@ -2,9 +2,10 @@
 
 `arch sim --pybind --test` runs cocotb-style Python tests directly against the
 ARCH-generated C++ model. Verilator, iverilog, and VPI are not involved. The
-compiler builds a pybind11 extension, installs the repository's `cocotb`
-compatibility package on `PYTHONPATH`, and runs every decorated test with a
-fresh model and scheduler.
+compiler builds a pybind11 extension, materializes its embedded `arch_cocotb`
+and `cocotb` compatibility packages in the simulation build directory, places
+them on `PYTHONPATH`, and runs every decorated test with a fresh model and
+scheduler.
 
 ```sh
 arch sim --pybind --test test_mymodule.py MyModule.arch
@@ -22,6 +23,18 @@ The Python used by `arch` needs pybind11:
 ```sh
 python3 -m pip install pybind11
 ```
+
+The adapter and compatibility shim are embedded in the `arch` executable; they
+do not need to be installed separately. For an installed compiler they are
+materialized beneath
+`<outdir>/_arch_python/<compiler-version>/` on demand. This also makes the
+output of `arch sim --pybind` self-contained when no `--test` is supplied.
+
+`ARCH_PYTHON_DIR` remains available as an explicit override. It must name a
+directory containing both `arch_cocotb/` and `cocotb_shim/cocotb/`. An invalid
+override is reported as an error rather than silently falling back to another
+copy. The override is useful when developing the Python packages without
+rebuilding the compiler.
 
 For the optional upstream AXI conformance tests:
 
