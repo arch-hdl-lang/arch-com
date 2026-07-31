@@ -1,6 +1,5 @@
 ---
 source: tests/integration_test.rs
-assertion_line: 1657
 expression: sv
 ---
 // domain SysDomain
@@ -29,23 +28,29 @@ module P (
   logic s2_valid_r;
   
   // ── Stage data registers ──
-  logic [31:0] s1_latched = 0;
+  logic [31:0] s1_latched;
   logic [31:0] s1_sub_in;
   logic [31:0] s1_sub_out;
-  logic [31:0] s2_captured = 0;
+  logic [31:0] s2_captured;
   
-  // ── Stage register updates ──
+  // ── Pipeline control register updates ──
   always_ff @(posedge clk) begin
     if (rst) begin
       s1_valid_r <= 1'b0;
-      s1_latched <= 0;
       s2_valid_r <= 1'b0;
-      s2_captured <= 0;
     end else begin
       s1_valid_r <= 1'b1;
-      s1_latched <= src;
       s2_valid_r <= s1_valid_r;
-      s2_captured <= s1_sub_out;
+    end
+  end
+  
+  // ── Synchronous/reset-free stage data updates ──
+  always_ff @(posedge clk) begin
+    s1_latched <= src;
+    s2_captured <= s1_sub_out;
+    if (rst) begin
+      s1_latched <= 0;
+      s2_captured <= 0;
     end
   end
   

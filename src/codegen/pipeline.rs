@@ -104,22 +104,17 @@ impl<'a> Codegen<'a> {
         // Collect stage names (in order) and signal names per stage
         let stage_names: Vec<&str> = p.stages.iter().map(|s| s.name.name.as_str()).collect();
 
-        // Build map: stage_name -> Vec<(signal_name, type_str, init_str)> for registers
-        // Comb wire entries have init_str="" to distinguish from real registers.
+        // Build map: stage_name -> Vec<(signal_name, type_str, reg_marker)>.
+        // Real registers use a non-empty marker; comb wires use an empty one.
+        // Declaration init and clocked reset are intentionally kept on the
+        // RegDecl instead of being collapsed into this name-resolution map.
         let mut stage_regs: Vec<Vec<(String, String, String)>> = Vec::new();
         for stage in &p.stages {
             let mut regs = Vec::new();
             for item in &stage.body {
                 if let ModuleBodyItem::RegDecl(r) = item {
                     let ty_str = self.emit_logic_type_str(&r.ty);
-                    let init_str = if let Some(reset_val) = Self::reset_value_expr(&r.reset) {
-                        self.emit_expr_str(reset_val)
-                    } else if let Some(ref init_expr) = r.init {
-                        self.emit_expr_str(init_expr)
-                    } else {
-                        "0".to_string()
-                    };
-                    regs.push((r.name.name.clone(), ty_str, init_str));
+                    regs.push((r.name.name.clone(), ty_str, "reg".to_string()));
                 }
                 // LetBindings in stages are combinational wires — add to stage_regs
                 // so they get declared as `logic` and their names get stage-prefixed.
@@ -266,13 +261,21 @@ impl<'a> Codegen<'a> {
         self.line("// ── Stage data registers ──");
         for (si, stage) in p.stages.iter().enumerate() {
             let prefix = stage.name.name.to_lowercase();
-            for (sig_name, ty_str, init_str) in &stage_regs[si] {
-                if !init_str.is_empty() {
-                    // Real register with initial value
-                    self.line(&format!(
-                        "{} {}_{} = {};",
-                        ty_str, prefix, sig_name, init_str
-                    ));
+            for (sig_name, ty_str, reg_marker) in &stage_regs[si] {
+                if !reg_marker.is_empty() {
+                    let init = stage.body.iter().find_map(|item| match item {
+                        ModuleBodyItem::RegDecl(r) if r.name.name == *sig_name => r.init.as_ref(),
+                        _ => None,
+                    });
+                    if let Some(init) = init {
+                        let init_str = self.emit_expr_str(init);
+                        self.line(&format!(
+                            "{} {}_{} = {};",
+                            ty_str, prefix, sig_name, init_str
+                        ));
+                    } else {
+                        self.line(&format!("{} {}_{};", ty_str, prefix, sig_name));
+                    }
                 } else {
                     // Comb wire (forwarding mux, etc.)
                     self.line(&format!("{} {}_{};", ty_str, prefix, sig_name));
@@ -425,12 +428,62 @@ impl<'a> Codegen<'a> {
         let ff_sens = Self::ff_sensitivity(clk_name, &rst_name, is_async, is_low);
         let rst_cond = Self::rst_condition(&rst_name, is_low);
 
-        // ── always_ff block ──────────────────────────────────────────────────
-        self.line("// ── Stage register updates ──");
+        #[derive(Clone)]
+        struct PipelineResetEntry {
+            stage_idx: usize,
+            name: String,
+            value: String,
+            signal: String,
+            is_async: bool,
+            is_low: bool,
+        }
+
+        let mut reset_entries: Vec<PipelineResetEntry> = Vec::new();
+        let mut sync_data_targets =
+            vec![std::collections::BTreeSet::<String>::new(); p.stages.len()];
+        for (si, stage) in p.stages.iter().enumerate() {
+            for item in &stage.body {
+                let ModuleBodyItem::RegDecl(r) = item else {
+                    continue;
+                };
+                if let Some((signal, reg_is_async, reg_is_low)) =
+                    Self::resolve_pipeline_reg_reset(&r.reset, &p.ports)
+                {
+                    let value = Self::reset_value_expr(&r.reset)
+                        .map(|v| self.emit_expr_str(v))
+                        .expect("resolved pipeline reset must have a value");
+                    reset_entries.push(PipelineResetEntry {
+                        stage_idx: si,
+                        name: r.name.name.clone(),
+                        value,
+                        signal,
+                        is_async: reg_is_async,
+                        is_low: reg_is_low,
+                    });
+                    if !reg_is_async {
+                        sync_data_targets[si].insert(r.name.name.clone());
+                    }
+                } else {
+                    // `reset none`: it remains clocked data and must continue
+                    // updating even while an unrelated reset is asserted.
+                    sync_data_targets[si].insert(r.name.name.clone());
+                }
+            }
+        }
+
+        let mut control_targets = vec![std::collections::BTreeSet::<String>::new(); p.stages.len()];
+        for targets in &mut control_targets {
+            // A stage may explicitly drive its generated valid bit.
+            targets.insert("valid_r".to_string());
+        }
+
+        // ── Pipeline control registers ───────────────────────────────────────
+        // Generated valid/FSM state belongs to the pipeline control reset.
+        // User data registers are emitted separately so their own reset/none
+        // declarations remain authoritative.
+        self.line("// ── Pipeline control register updates ──");
         self.line(&format!("always_ff @({ff_sens}) begin"));
         self.indent += 1;
-
-        // Reset branch
         self.line(&format!("if ({rst_cond}) begin"));
         self.indent += 1;
         for (si, stage) in p.stages.iter().enumerate() {
@@ -439,92 +492,21 @@ impl<'a> Codegen<'a> {
             if wait_stage_flags[si] {
                 self.line(&format!("{prefix}_fsm_state <= '0;"));
             }
-            for (sig_name, _ty_str, init_str) in &stage_regs[si] {
-                if !init_str.is_empty() {
-                    self.line(&format!("{}_{} <= {};", prefix, sig_name, init_str));
-                }
-            }
         }
         self.indent -= 1;
         self.line("end else begin");
         self.indent += 1;
-
-        // Per-stage update logic
-        for (si, stage) in p.stages.iter().enumerate() {
-            let prefix = stage.name.name.to_lowercase();
-
-            if wait_stage_flags[si] {
-                // ── Wait-stage: generate FSM transition logic ────────────
-                self.emit_pipeline_wait_stage_ff(
-                    stage,
-                    &prefix,
-                    si,
-                    &stage_names,
-                    &stage_regs,
-                    &port_names,
-                );
-            } else if has_any_stall {
-                // When this stage is not stalled, it accepts new data
-                self.line(&format!("if (!{prefix}_stall) begin"));
-                self.indent += 1;
-
-                // Valid propagation:
-                //   If upstream is stalled, insert bubble (valid=0)
-                //   Otherwise, accept upstream's valid
-                if si == 0 {
-                    self.line(&format!("{prefix}_valid_r <= 1'b1;"));
-                } else {
-                    let prev_prefix = p.stages[si - 1].name.name.to_lowercase();
-                    self.line(&format!(
-                        "{prefix}_valid_r <= {prev_prefix}_stall ? 1'b0 : {prev_prefix}_valid_r;"
-                    ));
-                }
-
-                // Register assignments from seq blocks
-                for item in &stage.body {
-                    if let ModuleBodyItem::RegBlock(rb) = item {
-                        for stmt in &rb.stmts {
-                            self.emit_pipeline_reg_stmt(
-                                stmt,
-                                &prefix,
-                                si,
-                                &stage_names,
-                                &stage_regs,
-                                &port_names,
-                            );
-                        }
-                    }
-                }
-
-                self.indent -= 1;
-                self.line("end");
-            } else {
-                // No stall logic — unconditional advancement
-                if si == 0 {
-                    self.line(&format!("{prefix}_valid_r <= 1'b1;"));
-                } else {
-                    let prev_prefix = p.stages[si - 1].name.name.to_lowercase();
-                    self.line(&format!("{prefix}_valid_r <= {prev_prefix}_valid_r;"));
-                }
-
-                for item in &stage.body {
-                    if let ModuleBodyItem::RegBlock(rb) = item {
-                        for stmt in &rb.stmts {
-                            self.emit_pipeline_reg_stmt(
-                                stmt,
-                                &prefix,
-                                si,
-                                &stage_names,
-                                &stage_regs,
-                                &port_names,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        // Flush overrides
+        self.emit_pipeline_stage_updates(
+            p,
+            &wait_stage_flags,
+            has_any_stall,
+            &stage_names,
+            &stage_regs,
+            &port_names,
+            &control_targets,
+            true,
+            true,
+        );
         for flush in &p.flush_directives {
             let target_prefix = flush.target_stage.name.to_lowercase();
             let cond_str = self.emit_pipeline_expr_str(
@@ -544,17 +526,6 @@ impl<'a> Codegen<'a> {
                 if wait_stage_flags[si] {
                     self.line(&format!("{target_prefix}_fsm_state <= '0;"));
                 }
-                // `flush ... clear`: also reset every data reg in the
-                // target stage to its declared reset value. Comb wires
-                // (init_str empty) are skipped — they're not registers.
-                if flush.clear {
-                    for (sig_name, _ty, init_str) in &stage_regs[si] {
-                        if init_str.is_empty() {
-                            continue;
-                        }
-                        self.line(&format!("{target_prefix}_{sig_name} <= {init_str};"));
-                    }
-                }
             }
             self.indent -= 1;
             self.line("end");
@@ -566,6 +537,130 @@ impl<'a> Codegen<'a> {
         self.indent -= 1;
         self.line("end");
         self.line("");
+
+        // ── Synchronous-reset and reset-free stage data ──────────────────────
+        if sync_data_targets.iter().any(|s| !s.is_empty()) {
+            self.line("// ── Synchronous/reset-free stage data updates ──");
+            self.line(&format!("always_ff @(posedge {clk_name}) begin"));
+            self.indent += 1;
+            self.emit_pipeline_stage_updates(
+                p,
+                &wait_stage_flags,
+                has_any_stall,
+                &stage_names,
+                &stage_regs,
+                &port_names,
+                &sync_data_targets,
+                false,
+                false,
+            );
+
+            // A clear flush resets only registers that actually declare a
+            // reset value. `reset none` never acquires an implicit clear value.
+            self.emit_pipeline_flush_data_resets(
+                p,
+                &reset_entries
+                    .iter()
+                    .filter(|r| !r.is_async)
+                    .map(|r| (r.stage_idx, r.name.as_str(), r.value.as_str()))
+                    .collect::<Vec<_>>(),
+                &stage_names,
+                &stage_regs,
+                &port_names,
+            );
+
+            let mut sync_reset_groups: std::collections::BTreeMap<
+                (String, bool),
+                Vec<&PipelineResetEntry>,
+            > = std::collections::BTreeMap::new();
+            for entry in reset_entries.iter().filter(|r| !r.is_async) {
+                sync_reset_groups
+                    .entry((entry.signal.clone(), entry.is_low))
+                    .or_default()
+                    .push(entry);
+            }
+            for ((signal, low), entries) in sync_reset_groups {
+                let cond = if low { format!("(!{signal})") } else { signal };
+                self.line(&format!("if ({cond}) begin"));
+                self.indent += 1;
+                for entry in entries {
+                    let prefix = p.stages[entry.stage_idx].name.name.to_lowercase();
+                    self.line(&format!("{prefix}_{} <= {};", entry.name, entry.value));
+                }
+                self.indent -= 1;
+                self.line("end");
+            }
+            self.indent -= 1;
+            self.line("end");
+            self.line("");
+        }
+
+        // ── Asynchronous-reset stage data ────────────────────────────────────
+        let mut async_reset_groups: std::collections::BTreeMap<
+            (String, bool),
+            Vec<&PipelineResetEntry>,
+        > = std::collections::BTreeMap::new();
+        for entry in reset_entries.iter().filter(|r| r.is_async) {
+            async_reset_groups
+                .entry((entry.signal.clone(), entry.is_low))
+                .or_default()
+                .push(entry);
+        }
+        for ((signal, low), entries) in async_reset_groups {
+            let edge = if low { "negedge" } else { "posedge" };
+            let cond = if low {
+                format!("(!{signal})")
+            } else {
+                signal.clone()
+            };
+            let mut targets = vec![std::collections::BTreeSet::<String>::new(); p.stages.len()];
+            for entry in &entries {
+                targets[entry.stage_idx].insert(entry.name.clone());
+            }
+
+            self.line(&format!(
+                "// ── Asynchronous stage data reset by {signal} ──"
+            ));
+            self.line(&format!(
+                "always_ff @(posedge {clk_name} or {edge} {signal}) begin"
+            ));
+            self.indent += 1;
+            self.line(&format!("if ({cond}) begin"));
+            self.indent += 1;
+            for entry in &entries {
+                let prefix = p.stages[entry.stage_idx].name.name.to_lowercase();
+                self.line(&format!("{prefix}_{} <= {};", entry.name, entry.value));
+            }
+            self.indent -= 1;
+            self.line("end else begin");
+            self.indent += 1;
+            self.emit_pipeline_stage_updates(
+                p,
+                &wait_stage_flags,
+                has_any_stall,
+                &stage_names,
+                &stage_regs,
+                &port_names,
+                &targets,
+                false,
+                false,
+            );
+            self.emit_pipeline_flush_data_resets(
+                p,
+                &entries
+                    .iter()
+                    .map(|r| (r.stage_idx, r.name.as_str(), r.value.as_str()))
+                    .collect::<Vec<_>>(),
+                &stage_names,
+                &stage_regs,
+                &port_names,
+            );
+            self.indent -= 1;
+            self.line("end");
+            self.indent -= 1;
+            self.line("end");
+            self.line("");
+        }
 
         // ── Combinational outputs ────────────────────────────────────────────
         self.line("// ── Combinational outputs ──");
@@ -667,6 +762,178 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn emit_pipeline_stage_updates(
+        &mut self,
+        p: &PipelineDecl,
+        wait_stage_flags: &[bool],
+        has_any_stall: bool,
+        stage_names: &[&str],
+        stage_regs: &[Vec<(String, String, String)>],
+        port_names: &std::collections::HashSet<String>,
+        target_sets: &[std::collections::BTreeSet<String>],
+        emit_control: bool,
+        include_logs: bool,
+    ) {
+        for (si, stage) in p.stages.iter().enumerate() {
+            let prefix = stage.name.name.to_lowercase();
+            let targets = &target_sets[si];
+            if !emit_control && targets.is_empty() {
+                continue;
+            }
+
+            if wait_stage_flags[si] {
+                self.emit_pipeline_wait_stage_ff(
+                    stage,
+                    &prefix,
+                    si,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                    targets,
+                    emit_control,
+                    include_logs,
+                );
+                continue;
+            }
+
+            if has_any_stall {
+                self.line(&format!("if (!{prefix}_stall) begin"));
+                self.indent += 1;
+            }
+
+            if emit_control {
+                if si == 0 {
+                    self.line(&format!("{prefix}_valid_r <= 1'b1;"));
+                } else {
+                    let prev_prefix = p.stages[si - 1].name.name.to_lowercase();
+                    if has_any_stall {
+                        self.line(&format!(
+                            "{prefix}_valid_r <= {prev_prefix}_stall ? 1'b0 : {prev_prefix}_valid_r;"
+                        ));
+                    } else {
+                        self.line(&format!("{prefix}_valid_r <= {prev_prefix}_valid_r;"));
+                    }
+                }
+            }
+
+            for item in &stage.body {
+                if let ModuleBodyItem::RegBlock(rb) = item {
+                    for stmt in &rb.stmts {
+                        self.emit_pipeline_reg_stmt_for_targets(
+                            stmt,
+                            &prefix,
+                            si,
+                            stage_names,
+                            stage_regs,
+                            port_names,
+                            targets,
+                            include_logs,
+                        );
+                    }
+                }
+            }
+
+            if has_any_stall {
+                self.indent -= 1;
+                self.line("end");
+            }
+        }
+    }
+
+    fn emit_pipeline_flush_data_resets(
+        &mut self,
+        p: &PipelineDecl,
+        reset_entries: &[(usize, &str, &str)],
+        stage_names: &[&str],
+        stage_regs: &[Vec<(String, String, String)>],
+        port_names: &std::collections::HashSet<String>,
+    ) {
+        for flush in &p.flush_directives {
+            if !flush.clear {
+                continue;
+            }
+            let target_prefix = flush.target_stage.name.to_lowercase();
+            let Some(si) = stage_names
+                .iter()
+                .position(|name| name.to_lowercase() == target_prefix)
+            else {
+                continue;
+            };
+            let matching: Vec<(&str, &str)> = reset_entries
+                .iter()
+                .filter(|(stage_idx, _, _)| *stage_idx == si)
+                .map(|(_, name, value)| (*name, *value))
+                .collect();
+            if matching.is_empty() {
+                continue;
+            }
+            let cond =
+                self.emit_pipeline_expr_str(&flush.condition, stage_names, stage_regs, port_names);
+            self.line(&format!("if ({cond}) begin"));
+            self.indent += 1;
+            for (name, value) in matching {
+                self.line(&format!("{target_prefix}_{name} <= {value};"));
+            }
+            self.indent -= 1;
+            self.line("end");
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_pipeline_reg_stmt_for_targets(
+        &mut self,
+        stmt: &Stmt,
+        current_prefix: &str,
+        current_stage_idx: usize,
+        stage_names: &[&str],
+        stage_regs: &[Vec<(String, String, String)>],
+        port_names: &std::collections::HashSet<String>,
+        target_set: &std::collections::BTreeSet<String>,
+        include_logs: bool,
+    ) {
+        let filtered = if include_logs {
+            Self::filter_stmt_by_assigned_set_keeping_logs(stmt, target_set, true)
+        } else {
+            Self::filter_stmt_by_assigned_set(stmt, target_set, true)
+        };
+        if let Some(filtered) = filtered {
+            self.emit_pipeline_reg_stmt(
+                &filtered,
+                current_prefix,
+                current_stage_idx,
+                stage_names,
+                stage_regs,
+                port_names,
+            );
+        }
+    }
+
+    fn resolve_pipeline_reg_reset(
+        reset: &RegReset,
+        ports: &[PortDecl],
+    ) -> Option<(String, bool, bool)> {
+        match reset {
+            RegReset::None => None,
+            RegReset::Explicit(signal, kind, level, _) => Some((
+                signal.name.clone(),
+                *kind == ResetKind::Async,
+                *level == ResetLevel::Low,
+            )),
+            RegReset::Inherit(signal, _) => ports
+                .iter()
+                .find(|p| p.name.name == signal.name)
+                .and_then(|p| match &p.ty {
+                    TypeExpr::Reset(kind, level) => Some((
+                        signal.name.clone(),
+                        *kind == ResetKind::Async,
+                        *level == ResetLevel::Low,
+                    )),
+                    _ => None,
+                }),
+        }
+    }
+
     // ── Pipeline wait-stage helpers ─────────────────────────────────────────
 
     /// Check if a pipeline stage contains `wait until` or `do..until` in its seq block.
@@ -716,6 +983,7 @@ impl<'a> Codegen<'a> {
     /// State 0 is idle: checks upstream valid, fast-paths if wait condition already met.
     /// Wait states loop until their condition is satisfied, then advance.
     /// Trailing assigns execute when the last wait condition fires, returning to idle.
+    #[allow(clippy::too_many_arguments)]
     fn emit_pipeline_wait_stage_ff(
         &mut self,
         stage: &StageDecl,
@@ -724,6 +992,9 @@ impl<'a> Codegen<'a> {
         stage_names: &[&str],
         stage_regs: &[Vec<(String, String, String)>],
         port_names: &std::collections::HashSet<String>,
+        target_set: &std::collections::BTreeSet<String>,
+        emit_control: bool,
+        include_logs: bool,
     ) {
         // Collect seq stmts from the stage's RegBlock
         let mut seq_stmts: &[Stmt] = &[];
@@ -806,7 +1077,16 @@ impl<'a> Codegen<'a> {
             self.line(&format!("if ({upstream_valid}) begin"));
             self.indent += 1;
             for a in &g.pre_assigns {
-                self.emit_pipeline_reg_stmt(a, prefix, si, stage_names, stage_regs, port_names);
+                self.emit_pipeline_reg_stmt_for_targets(
+                    a,
+                    prefix,
+                    si,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                    target_set,
+                    include_logs,
+                );
             }
             // Fast path: condition already met
             self.line(&format!("if ({cond}) begin"));
@@ -814,10 +1094,21 @@ impl<'a> Codegen<'a> {
             if groups.len() == 1 {
                 // Only one wait group: run trailing assigns and stay idle
                 for a in &trailing {
-                    self.emit_pipeline_reg_stmt(a, prefix, si, stage_names, stage_regs, port_names);
+                    self.emit_pipeline_reg_stmt_for_targets(
+                        a,
+                        prefix,
+                        si,
+                        stage_names,
+                        stage_regs,
+                        port_names,
+                        target_set,
+                        include_logs,
+                    );
                 }
                 // Propagate valid
-                self.line(&format!("{prefix}_valid_r <= {upstream_valid};"));
+                if emit_control {
+                    self.line(&format!("{prefix}_valid_r <= {upstream_valid};"));
+                }
             } else {
                 // Multiple wait groups: fast-path from idle straight into the
                 // second wait group, so it must run that group's pre-assigns
@@ -827,18 +1118,40 @@ impl<'a> Codegen<'a> {
                 // already true on dispatch (see issue #590).
                 let next_g = &groups[1];
                 for a in &next_g.pre_assigns {
-                    self.emit_pipeline_reg_stmt(a, prefix, si, stage_names, stage_regs, port_names);
+                    self.emit_pipeline_reg_stmt_for_targets(
+                        a,
+                        prefix,
+                        si,
+                        stage_names,
+                        stage_regs,
+                        port_names,
+                        target_set,
+                        include_logs,
+                    );
                 }
                 // Advance to next wait state
-                self.line(&format!("{prefix}_fsm_state <= {bits}'d2;"));
+                if emit_control {
+                    self.line(&format!("{prefix}_fsm_state <= {bits}'d2;"));
+                }
             }
             self.indent -= 1;
             self.line("end else begin");
             self.indent += 1;
             // Slow path: enter wait state 1
-            self.line(&format!("{prefix}_fsm_state <= {bits}'d1;"));
+            if emit_control {
+                self.line(&format!("{prefix}_fsm_state <= {bits}'d1;"));
+            }
             for a in &g.hold_assigns {
-                self.emit_pipeline_reg_stmt(a, prefix, si, stage_names, stage_regs, port_names);
+                self.emit_pipeline_reg_stmt_for_targets(
+                    a,
+                    prefix,
+                    si,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                    target_set,
+                    include_logs,
+                );
             }
             self.indent -= 1;
             self.line("end");
@@ -865,7 +1178,16 @@ impl<'a> Codegen<'a> {
 
             // Emit hold assigns (for do..until, every cycle)
             for a in &g.hold_assigns {
-                self.emit_pipeline_reg_stmt(a, prefix, si, stage_names, stage_regs, port_names);
+                self.emit_pipeline_reg_stmt_for_targets(
+                    a,
+                    prefix,
+                    si,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                    target_set,
+                    include_logs,
+                );
             }
 
             self.line(&format!("if ({cond}) begin"));
@@ -875,17 +1197,39 @@ impl<'a> Codegen<'a> {
             if is_last {
                 // Last wait: run trailing assigns, return to idle
                 for a in &trailing {
-                    self.emit_pipeline_reg_stmt(a, prefix, si, stage_names, stage_regs, port_names);
+                    self.emit_pipeline_reg_stmt_for_targets(
+                        a,
+                        prefix,
+                        si,
+                        stage_names,
+                        stage_regs,
+                        port_names,
+                        target_set,
+                        include_logs,
+                    );
                 }
-                self.line(&format!("{prefix}_fsm_state <= '0;"));
-                self.line(&format!("{prefix}_valid_r <= 1'b1;"));
+                if emit_control {
+                    self.line(&format!("{prefix}_fsm_state <= '0;"));
+                    self.line(&format!("{prefix}_valid_r <= 1'b1;"));
+                }
             } else {
                 // Not last: run next group's pre-assigns, advance to next wait state
                 let next_g = &groups[gi + 1];
                 for a in &next_g.pre_assigns {
-                    self.emit_pipeline_reg_stmt(a, prefix, si, stage_names, stage_regs, port_names);
+                    self.emit_pipeline_reg_stmt_for_targets(
+                        a,
+                        prefix,
+                        si,
+                        stage_names,
+                        stage_regs,
+                        port_names,
+                        target_set,
+                        include_logs,
+                    );
                 }
-                self.line(&format!("{prefix}_fsm_state <= {bits}'d{};", state_num + 1));
+                if emit_control {
+                    self.line(&format!("{prefix}_fsm_state <= {bits}'d{};", state_num + 1));
+                }
             }
 
             self.indent -= 1;
@@ -898,7 +1242,9 @@ impl<'a> Codegen<'a> {
         // Default case
         self.line("default: begin");
         self.indent += 1;
-        self.line(&format!("{prefix}_fsm_state <= '0;"));
+        if emit_control {
+            self.line(&format!("{prefix}_fsm_state <= '0;"));
+        }
         self.indent -= 1;
         self.line("end");
 

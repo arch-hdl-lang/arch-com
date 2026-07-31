@@ -22,18 +22,24 @@ module SimplePipe #(
   logic [XLEN-1:0] fetch_captured = 0;
   logic [XLEN-1:0] writeback_result = 0;
   
-  // ── Stage register updates ──
+  // ── Pipeline control register updates ──
   always_ff @(posedge clk) begin
     if (rst) begin
       fetch_valid_r <= 1'b0;
-      fetch_captured <= 0;
       writeback_valid_r <= 1'b0;
-      writeback_result <= 0;
     end else begin
       fetch_valid_r <= 1'b1;
-      fetch_captured <= data_in;
       writeback_valid_r <= fetch_valid_r;
-      writeback_result <= fetch_captured;
+    end
+  end
+  
+  // ── Synchronous/reset-free stage data updates ──
+  always_ff @(posedge clk) begin
+    fetch_captured <= data_in;
+    writeback_result <= fetch_captured;
+    if (rst) begin
+      fetch_captured <= 0;
+      writeback_result <= 0;
     end
   end
   
