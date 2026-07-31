@@ -31780,7 +31780,6 @@ fn test_native_fifo_with_struct_payload_includes_struct_definitions() {
         end struct Payload
 
         fifo PayloadFifo
-          latency 1;
           param DEPTH: const = 4;
           param T: type = Payload;
           port clk: in Clock<SysDomain>;
