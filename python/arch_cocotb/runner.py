@@ -7,6 +7,7 @@ import traceback
 
 from arch_cocotb.decorators import _test_registry
 from arch_cocotb.dut import ArchDUT
+from arch_cocotb.result import TestSuccess
 from arch_cocotb.simulator import ArchSimulator
 from arch_cocotb.triggers import with_timeout
 
@@ -82,6 +83,9 @@ def run_registered_tests(model_class, time_unit_ns=1):
 
 
 def _classify_result(options, error):
+    if isinstance(error, TestSuccess):
+        return "PASS"
+
     expect_error = None if options is None else options.expect_error
     expect_fail = False if options is None else options.expect_fail
 
