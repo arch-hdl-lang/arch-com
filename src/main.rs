@@ -1233,6 +1233,11 @@ fn main() -> miette::Result<()> {
                 let thread_map_sources = thread_map_sources_from_multi(&ms);
 
                 let comments = lexer::extract_comments(&ms.combined);
+                let file_scopes: Vec<std::ops::Range<usize>> = ms
+                    .segments
+                    .iter()
+                    .map(|(start, end, _, _)| *start..*end)
+                    .collect();
 
                 // --no-inline-deps: only emit constructs from the original
                 // input files, not from auto-discovered dependency files.
@@ -1264,6 +1269,7 @@ fn main() -> miette::Result<()> {
                             .collect();
                         let mut codegen = Codegen::new(&symbols, &ast, overload_map)
                             .with_comments(comments)
+                            .with_file_scopes(file_scopes.clone())
                             .with_fp_compat(fp_compat);
                         codegen.set_staged_sites(staged_sites.clone());
                         let sv = codegen.generate_items(&file_items);
@@ -1274,6 +1280,7 @@ fn main() -> miette::Result<()> {
                     } else {
                         let mut codegen = Codegen::new(&symbols, &ast, overload_map)
                             .with_comments(comments)
+                            .with_file_scopes(file_scopes.clone())
                             .with_fp_compat(fp_compat);
                         codegen.set_staged_sites(staged_sites.clone());
                         let sv = codegen.generate();
@@ -1500,6 +1507,7 @@ fn main() -> miette::Result<()> {
 
                         let mut codegen = Codegen::new(&symbols, &ast, overload_map.clone())
                             .with_comments(file_comments)
+                            .with_file_scopes(file_scopes.clone())
                             .with_fp_compat(fp_compat);
                         codegen.set_staged_sites(staged_sites.clone());
                         let sv = codegen.generate_items(&file_items);

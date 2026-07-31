@@ -136,6 +136,11 @@ pub struct Codegen<'a> {
     comment_idx: usize,
     /// Functions collected from the current file; emitted inside each module body.
     pending_functions: Vec<FunctionDecl>,
+    /// Byte ranges for the original source files that were concatenated into
+    /// `source`. A file-scope `use Pkg;` applies only to constructs whose
+    /// spans fall in the same range. Empty for callers that compile one
+    /// in-memory source, where every `use` belongs to that source.
+    file_scopes: Vec<std::ops::Range<usize>>,
     /// Maps call-site span.start → overload index (for overloaded functions only).
     overload_map: std::collections::HashMap<usize, usize>,
     /// Bus port names in the current module → bus name (for FieldAccess rewriting).
@@ -251,6 +256,7 @@ impl<'a> Codegen<'a> {
             comments: Vec::new(),
             comment_idx: 0,
             pending_functions: Vec::new(),
+            file_scopes: Vec::new(),
             overload_map,
             bus_ports: std::collections::HashMap::new(),
             vec_of_bus_port_count: std::collections::HashMap::new(),
@@ -391,6 +397,45 @@ impl<'a> Codegen<'a> {
     pub fn with_comments(mut self, comments: Vec<(Span, String)>) -> Self {
         self.comments = comments;
         self
+    }
+
+    /// Attach the byte range of each original source file in a concatenated
+    /// multi-file AST. Package imports are file-scoped in ARCH, so emitters
+    /// use these ranges to keep each `use` with its owning design units.
+    pub fn with_file_scopes(mut self, scopes: Vec<std::ops::Range<usize>>) -> Self {
+        self.file_scopes = scopes;
+        self
+    }
+
+    /// Return the deduplicated `use` declarations visible to the construct at
+    /// `span`. Elaboration preserves an item's source span when it creates
+    /// parameter specializations, so specialized units inherit the imports
+    /// of their original source file.
+    pub(crate) fn active_uses(&self, span: Span) -> Vec<String> {
+        let has_file_scopes = !self.file_scopes.is_empty();
+        let scope = if !has_file_scopes {
+            None
+        } else {
+            self.file_scopes
+                .iter()
+                .find(|range| range.contains(&span.start))
+        };
+        let mut seen = std::collections::HashSet::new();
+        self.source
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Use(u)
+                    if match scope {
+                        Some(range) => range.contains(&u.span.start),
+                        None => !has_file_scopes,
+                    } && seen.insert(u.name.name.as_str()) =>
+                {
+                    Some(u.name.name.clone())
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// Select the floating-point special-value profile (§6.2). Default `Riscv`.
