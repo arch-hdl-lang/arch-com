@@ -24352,6 +24352,106 @@ fn test_comb_loop_through_register_not_flagged() {
 }
 
 #[test]
+fn test_sibling_top_modules_sharing_signal_names_is_not_a_cycle() {
+    // Two INDEPENDENT top-level modules, each individually acyclic, that
+    // happen to use the same signal names. ModA: q -> p. ModB: p -> q.
+    // Neither has a loop; they are not connected to each other at all.
+    //
+    // Every top-level module used to be expanded into one shared graph at
+    // the same root path (`vec![]`), so `ModA.p` and `ModB.p` interned to
+    // a single node and the two acyclic chains stitched into a fabricated
+    // `p -> q -> p` cycle. Reproduced from the CLI as
+    // `arch check ModA.arch ModB.arch` warning while each file alone was
+    // clean — common signal names (`valid`, `ready`, `cnt`) make this easy
+    // to hit on any multi-file design.
+    let source = r#"
+        module ModA
+          port i: in UInt<8>;
+          port o: out UInt<8>;
+          wire p: UInt<8>;
+          wire q: UInt<8>;
+          comb
+            q = i;
+            p = q +% 1;
+            o = p;
+          end comb
+        end module ModA
+
+        module ModB
+          port i: in UInt<8>;
+          port o: out UInt<8>;
+          wire p: UInt<8>;
+          wire q: UInt<8>;
+          comb
+            p = i;
+            q = p +% 1;
+            o = q;
+          end comb
+        end module ModB
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        cycle_msgs.is_empty(),
+        "two unconnected acyclic top modules must not fabricate a cycle, but got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_comb_loop_attributed_to_the_owning_top_module() {
+    // The cycle lives in `Loop2`, which is declared SECOND. `path_owner`
+    // was keyed on the shared root path `vec![]`, so whichever top was
+    // expanded last overwrote the entry and the warning named the wrong
+    // module — here it blamed the acyclic `Filler`.
+    let source = r#"
+        module Filler
+          port x: in UInt<8>;
+          port y: out UInt<8>;
+          comb
+            y = x;
+          end comb
+        end module Filler
+
+        module Loop2
+          port i: in UInt<8>;
+          port o: out UInt<8>;
+          wire a: UInt<8>;
+          wire b: UInt<8>;
+          comb
+            a = b +% i;
+            b = a +% 1;
+            o = a;
+          end comb
+        end module Loop2
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert_eq!(
+        cycle_msgs.len(),
+        1,
+        "expected exactly one cycle warning, got: {:?}",
+        ws
+    );
+    assert!(
+        cycle_msgs[0].contains("[Loop2]"),
+        "cycle is in Loop2 and must be attributed to it, got: {:?}",
+        cycle_msgs[0]
+    );
+    assert!(
+        !cycle_msgs[0].contains("Filler"),
+        "acyclic Filler must not be blamed, got: {:?}",
+        cycle_msgs[0]
+    );
+}
+
+#[test]
 fn test_interface_module_treated_as_opaque() {
     // A module loaded purely as an `.archi` interface stub (no body) is
     // treated as opaque: every output assumed to depend on every input.
