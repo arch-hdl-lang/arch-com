@@ -332,7 +332,7 @@ fn fp8_round(eb: u32, mb: u32, ocp_top: bool, sign: &Bv, sig: &Bv, e0: &Bv, ovf_
     let kept = add(&kept0, &zext(&roundup, w2));
 
     let fw = eb + mb; // 7 for both fp8 formats
-    // subnormal: {exp,frac} encoding carries up to the smallest normal for free.
+                      // subnormal: {exp,frac} encoding carries up to the smallest normal for free.
     let sub_res = bor(
         &concat(sign, &cst(0, fw)),
         &concat(sign, &extract(&kept, fw - 1, 0)),
@@ -1053,9 +1053,24 @@ pub fn fp_functions(p: FpCompat) -> Vec<FpFn> {
         ("e5m2", "arch_e5m2_to_f32", "arch_f32_to_e5m2"),
         ("e4m3", "arch_e4m3_to_f32", "arch_f32_to_e4m3"),
     ] {
-        v.push(fp8_bin(&format!("arch_{tag}_add"), widen, narrow, "arch_f32_add"));
-        v.push(fp8_bin(&format!("arch_{tag}_sub"), widen, narrow, "arch_f32_sub"));
-        v.push(fp8_bin(&format!("arch_{tag}_mul"), widen, narrow, "arch_f32_mul"));
+        v.push(fp8_bin(
+            &format!("arch_{tag}_add"),
+            widen,
+            narrow,
+            "arch_f32_add",
+        ));
+        v.push(fp8_bin(
+            &format!("arch_{tag}_sub"),
+            widen,
+            narrow,
+            "arch_f32_sub",
+        ));
+        v.push(fp8_bin(
+            &format!("arch_{tag}_mul"),
+            widen,
+            narrow,
+            "arch_f32_mul",
+        ));
         v.push(fp8_fma(&format!("arch_fma_{tag}"), widen, narrow));
         v.push(fp8_cmp(&format!("arch_{tag}_eq"), widen, "arch_f32_eq"));
         v.push(fp8_cmp(&format!("arch_{tag}_ne"), widen, "arch_f32_ne"));

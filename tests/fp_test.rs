@@ -1077,7 +1077,10 @@ fn fp8_compat_sim_profiles() {
         "max5=0x7B",
         "tie5=0x7C",
     ] {
-        assert!(riscv.contains(expect), "riscv profile wrong: missing `{expect}`\n{riscv}");
+        assert!(
+            riscv.contains(expect),
+            "riscv profile wrong: missing `{expect}`\n{riscv}"
+        );
     }
     let cuda = run(&["--fp-compat=cuda"], "c");
     for expect in [
@@ -1090,7 +1093,10 @@ fn fp8_compat_sim_profiles() {
         "max5=0x7B",
         "tie5=0x7B",
     ] {
-        assert!(cuda.contains(expect), "cuda profile wrong: missing `{expect}`\n{cuda}");
+        assert!(
+            cuda.contains(expect),
+            "cuda profile wrong: missing `{expect}`\n{cuda}"
+        );
     }
 }
 
@@ -1127,7 +1133,10 @@ fn fp8_build_emits_helpers_and_dispatch() {
         "arch_e5m2_to_f32(a5)",
         "arch_f32_to_e4m3(f)",
     ] {
-        assert!(sv.contains(dispatch), "dispatch `{dispatch}` missing from SV:\n{sv}");
+        assert!(
+            sv.contains(dispatch),
+            "dispatch `{dispatch}` missing from SV:\n{sv}"
+        );
     }
     // E4M3 is_nan is the sole OCP encoding, not an exponent-class test.
     assert!(
@@ -1140,21 +1149,19 @@ fn fp8_build_emits_helpers_and_dispatch() {
 /// saturation) — the profile-dependent overflow rules apply only at runtime.
 #[test]
 fn fp8_literal_overflow_rejected() {
-    for (ty, lit, max) in [
-        ("FP8E4M3", "500.0", "448"),
-        ("FP8E5M2", "70000.0", "57344"),
-    ] {
+    for (ty, lit, max) in [("FP8E4M3", "500.0", "448"), ("FP8E5M2", "70000.0", "57344")] {
         let src = format!(
             "module BadOvf\n  port o: out {ty};\n  let x: {ty} = {lit};\n  comb o = x; end comb\nend module BadOvf\n"
         );
         let td = tempfile::tempdir().expect("tempdir");
         let path = td.path().join("BadOvf.arch");
         std::fs::write(&path, src).unwrap();
-        let out = arch().arg("check").arg(&path).output().expect("run arch check");
-        assert!(
-            !out.status.success(),
-            "{ty} literal {lit} must be rejected"
-        );
+        let out = arch()
+            .arg("check")
+            .arg(&path)
+            .output()
+            .expect("run arch check");
+        assert!(!out.status.success(), "{ty} literal {lit} must be rejected");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             stderr.contains("overflows") && stderr.contains(max),
@@ -1166,7 +1173,11 @@ fn fp8_literal_overflow_rejected() {
     let td = tempfile::tempdir().expect("tempdir");
     let path = td.path().join("OkTie.arch");
     std::fs::write(&path, src).unwrap();
-    let out = arch().arg("check").arg(&path).output().expect("run arch check");
+    let out = arch()
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run arch check");
     assert!(
         out.status.success(),
         "E4M3 literal 464 ties to 448 and must be accepted:\n{}",
@@ -1199,7 +1210,11 @@ fn fp8_conversion_surface_v1_limits() {
         let td = tempfile::tempdir().expect("tempdir");
         let path = td.path().join(format!("{name}.arch"));
         std::fs::write(&path, src).unwrap();
-        let out = arch().arg("check").arg(&path).output().expect("run arch check");
+        let out = arch()
+            .arg("check")
+            .arg(&path)
+            .output()
+            .expect("run arch check");
         assert!(!out.status.success(), "{name} must be a type error");
         let stderr = String::from_utf8_lossy(&out.stderr);
         for n in needles {

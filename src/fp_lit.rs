@@ -234,7 +234,11 @@ pub fn e5m2_bits_to_f64(h: u8) -> f64 {
     let e = (h >> 2) & 0x1F;
     let f = (h & 0x3) as f64;
     if e == 0x1F {
-        return if f != 0.0 { f64::NAN } else { sign * f64::INFINITY };
+        return if f != 0.0 {
+            f64::NAN
+        } else {
+            sign * f64::INFINITY
+        };
     }
     if e == 0 {
         return sign * f * f64::powi(2.0, -16);
