@@ -793,6 +793,7 @@ PYBIND11_MODULE({pybind_module}, m) {{
             TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(..) => 1,
             TypeExpr::FP32 => 32,
             TypeExpr::BF16 => 16,
+            TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => 8,
             TypeExpr::Named(_) => 32,
             TypeExpr::Vec(_, _) => 32,
         }
@@ -1117,6 +1118,92 @@ static inline uint64_t _arch_f32_to_uint(uint32_t b, int bits){
     uint64_t maxv = ((uint64_t)1 << bits) - 1;
     return (v > maxv) ? maxv : v;
 }
+
+// ── FP8 (E4M3 / E5M2) runtime ────────────────────────────────────────────────
+// E5M2 is IEEE-style (5,3): ±inf at 0x7C, NaN class above it, max finite
+// 0x7B (57344). E4M3 is OCP OFP8: NO infinities, the sole NaN encoding is
+// S.1111.111 (0x7F), exponent 15 with mantissa < 7 are normal values
+// 256..448. All fp8 values are exact in f32, so widen is exact; ops widen
+// to f32, run on the host FPU, then round once to fp8 (mirroring the RTL).
+// Overflow on narrow is profile-dependent (--fp-compat): riscv -> E5M2 ±inf
+// / E4M3 NaN (sign dropped); cuda -> saturate to ±max-finite (PTX satfinite).
+static inline float _arch_e5m2f(uint8_t h){
+    uint32_t s=h>>7, e=(h>>2)&0x1Fu, f=h&3u;
+    float v;
+    if(e==31u){ v = f? nanf("") : INFINITY; }
+    else if(e==0u){ v = ldexpf((float)f, -16); }
+    else { v = ldexpf((float)(4u+f), (int)e-17); }
+    return s? -v : v;
+}
+static inline float _arch_e4m3f(uint8_t h){
+    uint32_t s=h>>7, e=(h>>3)&0xFu, f=h&7u;
+    float v;
+    if((h&0x7Fu)==0x7Fu){ v = nanf(""); }  // OCP: sole NaN, no infinities
+    else if(e==0u){ v = ldexpf((float)f, -9); }
+    else { v = ldexpf((float)(8u+f), (int)e-10); }
+    return s? -v : v;
+}
+static inline uint32_t _arch_e5m2_to_f32(uint8_t h){ return _arch_f32_canon(_arch_b32f(_arch_e5m2f(h))); }
+static inline uint32_t _arch_e4m3_to_f32(uint8_t h){ return _arch_f32_canon(_arch_b32f(_arch_e4m3f(h))); }
+// f32 -> fp8 narrow (RNE), mirroring the IR `fp8_round` bit-exactly.
+// `ocp`: OCP top binade (finite through mant==all-ones-1; the all-ones slot
+// is NaN, so overflow triggers at max-finite + half-ULP after rounding).
+// `ovf`: overflow magnitude byte; `ovf_signed`: whether overflow keeps the
+// sign (riscv E4M3 overflows to NaN with the sign dropped); `nan8`:
+// canonical NaN byte. Input ±inf takes the overflow result in all profiles.
+static inline uint8_t _arch_f32_to_fp8(uint32_t x, int eb, int mb, int ocp,
+                                       uint8_t ovf, int ovf_signed, uint8_t nan8){
+    uint32_t s = x>>31, e = (x>>23)&0xFFu, m = x & 0x7FFFFFu;
+    uint8_t sgn = (uint8_t)(s<<7);
+    if (e==0xFFu && m!=0u) return nan8;                 // NaN (sign dropped)
+    if (e==0xFFu) return ovf_signed ? (uint8_t)(sgn|ovf) : ovf;  // ±inf
+    if (e==0u) return sgn;  // f32 zero/subnormal: far below fp8 min subnormal
+    int bias = (1<<(eb-1))-1;
+    int emax = (1<<eb)-1;                               // all-ones exponent field
+    int t = (int)e - 127 + bias;                        // target biased exponent
+    uint64_t sig = (uint64_t)(m | 0x800000u);           // 24-bit significand
+    int shift = (t >= 1) ? (23-mb) : (23-mb) + (1-t);   // denormalize if t<1
+    if (shift > 26) shift = 26;                         // keep=0, rem<half: ->0
+    uint64_t keep = sig >> shift;
+    uint64_t rem  = sig & (((uint64_t)1<<shift)-1);
+    uint64_t half = (uint64_t)1<<(shift-1);
+    if (rem > half || (rem == half && (keep & 1u))) keep++;
+    if (t >= 1) {
+        if (keep == (uint64_t)2<<mb) { t++; keep >>= 1; }   // carry out of rounding
+        uint32_t mant = (uint32_t)keep & ((1u<<mb)-1u);
+        int over = ocp ? (t > emax || (t == emax && mant == (1u<<mb)-1u))
+                       : (t >= emax);
+        if (over) return ovf_signed ? (uint8_t)(sgn|ovf) : ovf;
+        return (uint8_t)(sgn | ((uint32_t)t<<mb) | mant);
+    }
+    // Subnormal result: keep is in min-subnormal ULPs; keep==2^mb encodes
+    // naturally as the minimum normal (exponent field 1, mantissa 0).
+    return (uint8_t)(sgn | (uint32_t)keep);
+}
+static inline uint8_t _arch_f32_to_e5m2(uint32_t x){ return _arch_f32_to_fp8(x,5,2,0,0x7Cu,1,0x7Eu); }
+static inline uint8_t _arch_f32_to_e4m3(uint32_t x){ return _arch_f32_to_fp8(x,4,3,1,0x7Fu,0,0x7Fu); }
+static inline uint8_t _arch_e5m2_add(uint8_t a,uint8_t b){ return _arch_f32_to_e5m2(_arch_b32f(_arch_e5m2f(a)+_arch_e5m2f(b))); }
+static inline uint8_t _arch_e5m2_sub(uint8_t a,uint8_t b){ return _arch_f32_to_e5m2(_arch_b32f(_arch_e5m2f(a)-_arch_e5m2f(b))); }
+static inline uint8_t _arch_e5m2_mul(uint8_t a,uint8_t b){ return _arch_f32_to_e5m2(_arch_b32f(_arch_e5m2f(a)*_arch_e5m2f(b))); }
+static inline uint8_t _arch_fma_e5m2(uint8_t a,uint8_t b,uint8_t c){ return _arch_f32_to_e5m2(_arch_b32f(fmaf(_arch_e5m2f(a),_arch_e5m2f(b),_arch_e5m2f(c)))); }
+static inline uint8_t _arch_e5m2_eq(uint8_t a,uint8_t b){ return _arch_e5m2f(a)==_arch_e5m2f(b); }
+static inline uint8_t _arch_e5m2_ne(uint8_t a,uint8_t b){ return _arch_e5m2f(a)!=_arch_e5m2f(b); }
+static inline uint8_t _arch_e5m2_lt(uint8_t a,uint8_t b){ return _arch_e5m2f(a)< _arch_e5m2f(b); }
+static inline uint8_t _arch_e5m2_gt(uint8_t a,uint8_t b){ return _arch_e5m2f(a)> _arch_e5m2f(b); }
+static inline uint8_t _arch_e5m2_le(uint8_t a,uint8_t b){ return _arch_e5m2f(a)<=_arch_e5m2f(b); }
+static inline uint8_t _arch_e5m2_ge(uint8_t a,uint8_t b){ return _arch_e5m2f(a)>=_arch_e5m2f(b); }
+static inline uint8_t _arch_e5m2_isnan(uint8_t a){ return (((a>>2)&0x1Fu)==0x1Fu && (a&3u)!=0u) ? 1 : 0; }
+static inline uint8_t _arch_e4m3_add(uint8_t a,uint8_t b){ return _arch_f32_to_e4m3(_arch_b32f(_arch_e4m3f(a)+_arch_e4m3f(b))); }
+static inline uint8_t _arch_e4m3_sub(uint8_t a,uint8_t b){ return _arch_f32_to_e4m3(_arch_b32f(_arch_e4m3f(a)-_arch_e4m3f(b))); }
+static inline uint8_t _arch_e4m3_mul(uint8_t a,uint8_t b){ return _arch_f32_to_e4m3(_arch_b32f(_arch_e4m3f(a)*_arch_e4m3f(b))); }
+static inline uint8_t _arch_fma_e4m3(uint8_t a,uint8_t b,uint8_t c){ return _arch_f32_to_e4m3(_arch_b32f(fmaf(_arch_e4m3f(a),_arch_e4m3f(b),_arch_e4m3f(c)))); }
+static inline uint8_t _arch_e4m3_eq(uint8_t a,uint8_t b){ return _arch_e4m3f(a)==_arch_e4m3f(b); }
+static inline uint8_t _arch_e4m3_ne(uint8_t a,uint8_t b){ return _arch_e4m3f(a)!=_arch_e4m3f(b); }
+static inline uint8_t _arch_e4m3_lt(uint8_t a,uint8_t b){ return _arch_e4m3f(a)< _arch_e4m3f(b); }
+static inline uint8_t _arch_e4m3_gt(uint8_t a,uint8_t b){ return _arch_e4m3f(a)> _arch_e4m3f(b); }
+static inline uint8_t _arch_e4m3_le(uint8_t a,uint8_t b){ return _arch_e4m3f(a)<=_arch_e4m3f(b); }
+static inline uint8_t _arch_e4m3_ge(uint8_t a,uint8_t b){ return _arch_e4m3f(a)>=_arch_e4m3f(b); }
+static inline uint8_t _arch_e4m3_isnan(uint8_t a){ return ((a&0x7Fu)==0x7Fu) ? 1 : 0; }
 "#.to_string();
         // Profile shim (doc/archive/plan_fp_types.md §6.2): the `cuda` profile differs
         // from the default `riscv` only in the canonical NaN pattern and the
@@ -1133,6 +1220,16 @@ static inline uint64_t _arch_f32_to_uint(uint32_t b, int bits){
                 .replace(
                     "if (std::isnan(f)) return UINT64_MAX;",
                     "if (std::isnan(f)) return 0;",
+                )
+                // fp8 narrow: cuda = PTX satfinite (overflow and input ±inf
+                // saturate to ±max-finite) + cuda canonical E5M2 NaN 0x7F.
+                .replace(
+                    "_arch_f32_to_fp8(x,5,2,0,0x7Cu,1,0x7Eu)",
+                    "_arch_f32_to_fp8(x,5,2,0,0x7Bu,1,0x7Fu)",
+                )
+                .replace(
+                    "_arch_f32_to_fp8(x,4,3,1,0x7Fu,0,0x7Fu)",
+                    "_arch_f32_to_fp8(x,4,3,1,0x7Eu,1,0x7Fu)",
                 ),
         }
     }
@@ -1769,6 +1866,7 @@ fn cpp_port_type_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> String {
         // `_arch_fp.h` helpers, never C++ float operators on the storage.
         TypeExpr::FP32 => "uint32_t".to_string(),
         TypeExpr::BF16 => "uint16_t".to_string(),
+        TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => "uint8_t".to_string(),
         TypeExpr::Named(n) => n.name.clone(),
         TypeExpr::Vec(_, _) => "uint32_t".to_string(),
     }
@@ -2414,6 +2512,7 @@ fn cpp_internal_type_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> String 
         }
         TypeExpr::FP32 => "uint32_t".to_string(),
         TypeExpr::BF16 => "uint16_t".to_string(),
+        TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => "uint8_t".to_string(),
         TypeExpr::Named(n) => n.name.clone(),
         TypeExpr::Vec(_, _) => "uint32_t".to_string(),
     }
@@ -2756,6 +2855,12 @@ fn try_eval_fp_const_expr_with_params_seen(
                     };
                     Some(canon)
                 }
+                crate::ast::FloatLitFmt::E4m3 => {
+                    Some(crate::fp_lit::e4m3_bits_to_f64(*bits as u8))
+                }
+                crate::ast::FloatLitFmt::E5m2 => {
+                    Some(crate::fp_lit::e5m2_bits_to_f64(*bits as u8))
+                }
             }
         }
         ExprKind::Ident(name) => {
@@ -2830,13 +2935,28 @@ fn eval_param_const_value(p: &ParamDecl, params: &[ParamDecl]) -> Option<u64> {
     // Check if this param is FP typed
     let is_bf16 = matches!(&p.kind, ParamKind::Logic(ty) if matches!(ty, TypeExpr::BF16));
     let is_fp32 = matches!(&p.kind, ParamKind::Logic(ty) if matches!(ty, TypeExpr::FP32));
-    let is_fp = is_bf16 || is_fp32;
+    let is_e4m3 = matches!(&p.kind, ParamKind::Logic(ty) if matches!(ty, TypeExpr::FP8E4M3));
+    let is_e5m2 = matches!(&p.kind, ParamKind::Logic(ty) if matches!(ty, TypeExpr::FP8E5M2));
+    let is_fp = is_bf16 || is_fp32 || is_e4m3 || is_e5m2;
 
     if is_fp {
         if let Some(fval) = try_eval_fp_const_expr_with_params(def, params) {
             let bits = if is_bf16 {
                 // fval already accounts for double-rounding for int->bf16 via FP evaluator
                 crate::fp_lit::f64_to_bf16_bits(fval) as u64
+            } else if is_e4m3 {
+                // Overflowing fp8 literals are a compile error upstream
+                // (elaborate coercion); None here means the default wasn't a
+                // representable constant — fall through to the int path.
+                match crate::fp_lit::f64_to_e4m3_bits(fval) {
+                    Some(b) => b as u64,
+                    None => return None,
+                }
+            } else if is_e5m2 {
+                match crate::fp_lit::f64_to_e5m2_bits(fval) {
+                    Some(b) => b as u64,
+                    None => return None,
+                }
             } else {
                 crate::fp_lit::f64_to_fp32_bits(fval) as u64
             };
@@ -2864,6 +2984,12 @@ fn eval_param_const_value(p: &ParamDecl, params: &[ParamDecl]) -> Option<u64> {
                 let lsb = (u >> 16) & 1;
                 let bf16_bits = (u.wrapping_add(0x7FFF + lsb) >> 16) as u16;
                 return Some(bf16_bits as u64);
+            } else if is_e4m3 {
+                // In-range ints are exact in f32, so single-rounding the f64
+                // is identical to the f32-routed double rounding here.
+                return crate::fp_lit::f64_to_e4m3_bits(int_val as f64).map(|b| b as u64);
+            } else if is_e5m2 {
+                return crate::fp_lit::f64_to_e5m2_bits(int_val as f64).map(|b| b as u64);
             } else {
                 let bits = crate::fp_lit::f64_to_fp32_bits(int_val as f64) as u64;
                 return Some(bits);
@@ -2961,6 +3087,7 @@ fn type_width_of(ty: &TypeExpr) -> u32 {
         TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(..) => 1,
         TypeExpr::FP32 => 32,
         TypeExpr::BF16 => 16,
+        TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => 8,
         TypeExpr::Vec(..) | TypeExpr::Named(_) => 0,
     }
 }
@@ -3580,6 +3707,8 @@ fn infer_expr_signed(expr: &Expr, ctx: &Ctx) -> bool {
 enum FpFmt {
     Fp32,
     Bf16,
+    E4m3,
+    E5m2,
 }
 
 impl FpFmt {
@@ -3588,6 +3717,8 @@ impl FpFmt {
         match self {
             FpFmt::Fp32 => "f32",
             FpFmt::Bf16 => "bf16",
+            FpFmt::E4m3 => "e4m3",
+            FpFmt::E5m2 => "e5m2",
         }
     }
 }
@@ -3603,14 +3734,20 @@ fn infer_expr_float(expr: &Expr, ctx: &Ctx) -> Option<FpFmt> {
         // (arch#622/#624).
         ExprKind::Literal(LitKind::TypedFloat(FloatLitFmt::Fp32, _)) => Some(FpFmt::Fp32),
         ExprKind::Literal(LitKind::TypedFloat(FloatLitFmt::Bf16, _)) => Some(FpFmt::Bf16),
+        ExprKind::Literal(LitKind::TypedFloat(FloatLitFmt::E4m3, _)) => Some(FpFmt::E4m3),
+        ExprKind::Literal(LitKind::TypedFloat(FloatLitFmt::E5m2, _)) => Some(FpFmt::E5m2),
         ExprKind::Cast(_, ty) => match ty.as_ref() {
             TypeExpr::FP32 => Some(FpFmt::Fp32),
             TypeExpr::BF16 => Some(FpFmt::Bf16),
+            TypeExpr::FP8E4M3 => Some(FpFmt::E4m3),
+            TypeExpr::FP8E5M2 => Some(FpFmt::E5m2),
             _ => None,
         },
         ExprKind::MethodCall(_, method, _) => match method.name.as_str() {
             "to_fp32" => Some(FpFmt::Fp32),
             "to_bf16" => Some(FpFmt::Bf16),
+            "to_fp8e4m3" => Some(FpFmt::E4m3),
+            "to_fp8e5m2" => Some(FpFmt::E5m2),
             _ => None, // to_uint/to_sint produce integers
         },
         // Arithmetic preserves the float format; comparisons are not float.
@@ -4586,6 +4723,8 @@ fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &Ctx) -> Str
         // Float conversions → `_arch_fp.h` helpers.
         "to_fp32" => match infer_expr_float(base, ctx) {
             Some(FpFmt::Bf16) => format!("_arch_bf16_to_f32({b})"),
+            Some(FpFmt::E4m3) => format!("_arch_e4m3_to_f32({b})"),
+            Some(FpFmt::E5m2) => format!("_arch_e5m2_to_f32({b})"),
             Some(FpFmt::Fp32) => b, // no-op (typecheck rejects, but stay total)
             None => {
                 if infer_expr_signed(base, ctx) {
@@ -4598,6 +4737,9 @@ fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &Ctx) -> Str
         "to_bf16" => match infer_expr_float(base, ctx) {
             Some(FpFmt::Fp32) => format!("_arch_f32_to_bf16({b})"),
             Some(FpFmt::Bf16) => b,
+            // fp8 -> bf16 is rejected by typecheck in v1; stay total via f32.
+            Some(FpFmt::E4m3) => format!("_arch_f32_to_bf16(_arch_e4m3_to_f32({b}))"),
+            Some(FpFmt::E5m2) => format!("_arch_f32_to_bf16(_arch_e5m2_to_f32({b}))"),
             None => {
                 if infer_expr_signed(base, ctx) {
                     format!("_arch_i_to_bf16((int64_t)({b}))")
@@ -4606,6 +4748,21 @@ fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &Ctx) -> Str
                 }
             }
         },
+        "to_fp8e4m3" => match infer_expr_float(base, ctx) {
+            Some(FpFmt::Fp32) => format!("_arch_f32_to_e4m3({b})"),
+            Some(FpFmt::E4m3) => b,
+            // Other sources rejected by typecheck in v1; stay total via f32.
+            Some(FpFmt::Bf16) => format!("_arch_f32_to_e4m3(_arch_bf16_to_f32({b}))"),
+            Some(FpFmt::E5m2) => format!("_arch_f32_to_e4m3(_arch_e5m2_to_f32({b}))"),
+            None => format!("_arch_f32_to_e4m3(_arch_u_to_f32((uint64_t)({b})))"),
+        },
+        "to_fp8e5m2" => match infer_expr_float(base, ctx) {
+            Some(FpFmt::Fp32) => format!("_arch_f32_to_e5m2({b})"),
+            Some(FpFmt::E5m2) => b,
+            Some(FpFmt::Bf16) => format!("_arch_f32_to_e5m2(_arch_bf16_to_f32({b}))"),
+            Some(FpFmt::E4m3) => format!("_arch_f32_to_e5m2(_arch_e4m3_to_f32({b}))"),
+            None => format!("_arch_f32_to_e5m2(_arch_u_to_f32((uint64_t)({b})))"),
+        },
         "to_uint" | "to_sint" => {
             let bits = args.first().map(|w| eval_width_in(w, ctx)).unwrap_or(32);
             let signed = method.name == "to_sint";
@@ -4613,6 +4770,8 @@ fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &Ctx) -> Str
             // toward-zero, NaN→type-max conversion to the N-bit integer.
             let f32bits = match infer_expr_float(base, ctx) {
                 Some(FpFmt::Bf16) => format!("_arch_bf16_to_f32({b})"),
+                Some(FpFmt::E4m3) => format!("_arch_e4m3_to_f32({b})"),
+                Some(FpFmt::E5m2) => format!("_arch_e5m2_to_f32({b})"),
                 _ => b,
             };
             let conv = if signed {
@@ -5871,6 +6030,7 @@ fn type_bits_te_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> u32 {
         TypeExpr::Bool | TypeExpr::Bit => 1,
         TypeExpr::FP32 => 32,
         TypeExpr::BF16 => 16,
+        TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => 8,
         _ => 32,
     }
 }
@@ -5931,6 +6091,8 @@ fn type_float_fmt(ty: &TypeExpr) -> Option<FpFmt> {
     match ty {
         TypeExpr::FP32 => Some(FpFmt::Fp32),
         TypeExpr::BF16 => Some(FpFmt::Bf16),
+        TypeExpr::FP8E4M3 => Some(FpFmt::E4m3),
+        TypeExpr::FP8E5M2 => Some(FpFmt::E5m2),
         _ => None,
     }
 }

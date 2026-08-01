@@ -968,3 +968,245 @@ end module BadInitInt
         "error should point at the float-literal-required rule; got:\n{stderr}"
     );
 }
+
+// ── FP8 (E4M3 OCP OFP8 + E5M2) ──────────────────────────────────────────────
+
+/// `arch check` accepts the full FP8 surface (arith fixture, profile probe,
+/// context-typed literals).
+#[test]
+fn fp8_check_passes() {
+    for f in ["Fp8Arith", "Fp8Prof", "Fp8LitCtx"] {
+        let out = arch()
+            .arg("check")
+            .arg(format!("tests/fp_v1/{f}.arch"))
+            .output()
+            .expect("run arch check");
+        assert!(
+            out.status.success(),
+            "arch check should pass for {f}.arch\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
+}
+
+/// End-to-end simulation: FP8 arithmetic, fma, is_nan, OCP top-binade
+/// decoding, subnormals, and RNE narrowing (incl. the 448/464 boundary) all
+/// match hand-computed values.
+#[test]
+fn fp8_sim_matches_reference() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = arch()
+        .arg("sim")
+        .arg("tests/fp_v1/Fp8Arith.arch")
+        .arg("--tb")
+        .arg("tests/fp_v1/tb_fp8.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "arch sim should pass for Fp8Arith\nstdout:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        stdout.contains("25 pass / 0 fail"),
+        "expected all 25 FP8 checks to pass; got:\n{stdout}"
+    );
+}
+
+/// Context-typed FP8 literals: reg init/reset, typed let, and compares
+/// resolve bare float literals to fp8 at compile time (single RNE step).
+#[test]
+fn fp8_lit_ctx_sim() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = arch()
+        .arg("sim")
+        .arg("tests/fp_v1/Fp8LitCtx.arch")
+        .arg("--tb")
+        .arg("tests/fp_v1/tb_fp8_lit_ctx.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("6 pass / 0 fail"),
+        "expected all 6 FP8 literal-context checks to pass; got:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+/// The --fp-compat profile surface for FP8 narrowing: riscv is
+/// non-saturating (E5M2 -> ±inf, E4M3 -> NaN with the sign dropped — OCP has
+/// no infinities), cuda saturates both formats to ±max-finite (PTX
+/// satfinite), including ±inf inputs. Canonical NaNs: E4M3 0x7F always;
+/// E5M2 0x7E riscv / 0x7F cuda.
+#[test]
+fn fp8_compat_sim_profiles() {
+    let run = |extra: &[&str], sub: &str| -> String {
+        let td = tempfile::tempdir().expect("tempdir");
+        let mut cmd = arch();
+        cmd.arg("sim")
+            .arg("tests/fp_v1/Fp8Prof.arch")
+            .arg("--tb")
+            .arg("tests/fp_v1/tb_fp8_prof.cpp")
+            .arg("--outdir")
+            .arg(td.path().join(sub));
+        for a in extra {
+            cmd.arg(a);
+        }
+        let out = cmd.output().expect("run arch sim");
+        assert!(
+            out.status.success(),
+            "sim failed ({extra:?}):\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let riscv = run(&[], "r");
+    for expect in [
+        "povf4=0x7F povf5=0x7C",
+        "novf4=0x7F novf5=0xFC",
+        "pinf4=0x7F pinf5=0x7C",
+        "ninf4=0x7F ninf5=0xFC",
+        "nan4=0x7F nan5=0x7E",
+        "b480_4=0x7F",
+        "max5=0x7B",
+        "tie5=0x7C",
+    ] {
+        assert!(riscv.contains(expect), "riscv profile wrong: missing `{expect}`\n{riscv}");
+    }
+    let cuda = run(&["--fp-compat=cuda"], "c");
+    for expect in [
+        "povf4=0x7E povf5=0x7B",
+        "novf4=0xFE novf5=0xFB",
+        "pinf4=0x7E pinf5=0x7B",
+        "ninf4=0xFE ninf5=0xFB",
+        "nan4=0x7F nan5=0x7F",
+        "b480_4=0x7E",
+        "max5=0x7B",
+        "tie5=0x7B",
+    ] {
+        assert!(cuda.contains(expect), "cuda profile wrong: missing `{expect}`\n{cuda}");
+    }
+}
+
+/// `arch build` emits the fp8 helper functions and dispatches fp8 ops/
+/// conversions to them.
+#[test]
+fn fp8_build_emits_helpers_and_dispatch() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("Fp8Arith.arch");
+    std::fs::copy("tests/fp_v1/Fp8Arith.arch", &arch_path).expect("copy arch into tempdir");
+    let out = arch()
+        .arg("build")
+        .arg(&arch_path)
+        .output()
+        .expect("run arch build");
+    assert!(
+        out.status.success(),
+        "arch build should succeed\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let sv = std::fs::read_to_string(td.path().join("Fp8Arith.sv")).expect("read Fp8Arith.sv");
+    for helper in [
+        "function automatic logic [7:0] arch_e4m3_add",
+        "function automatic logic [7:0] arch_e5m2_add",
+        "function automatic logic [31:0] arch_e4m3_to_f32",
+        "function automatic logic [7:0] arch_f32_to_e5m2",
+        "function automatic logic [7:0] arch_fma_e4m3",
+    ] {
+        assert!(sv.contains(helper), "helper `{helper}` missing from SV");
+    }
+    for dispatch in [
+        "arch_e4m3_add(a4, b4)",
+        "arch_fma_e4m3(a4, b4, c4)",
+        "arch_e5m2_to_f32(a5)",
+        "arch_f32_to_e4m3(f)",
+    ] {
+        assert!(sv.contains(dispatch), "dispatch `{dispatch}` missing from SV:\n{sv}");
+    }
+    // E4M3 is_nan is the sole OCP encoding, not an exponent-class test.
+    assert!(
+        sv.contains("a4[6:0] == 7'h7F"),
+        "E4M3 is_nan should test the sole NaN encoding"
+    );
+}
+
+/// An fp8 literal that overflows the format is a compile error (not a silent
+/// saturation) — the profile-dependent overflow rules apply only at runtime.
+#[test]
+fn fp8_literal_overflow_rejected() {
+    for (ty, lit, max) in [
+        ("FP8E4M3", "500.0", "448"),
+        ("FP8E5M2", "70000.0", "57344"),
+    ] {
+        let src = format!(
+            "module BadOvf\n  port o: out {ty};\n  let x: {ty} = {lit};\n  comb o = x; end comb\nend module BadOvf\n"
+        );
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = td.path().join("BadOvf.arch");
+        std::fs::write(&path, src).unwrap();
+        let out = arch().arg("check").arg(&path).output().expect("run arch check");
+        assert!(
+            !out.status.success(),
+            "{ty} literal {lit} must be rejected"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("overflows") && stderr.contains(max),
+            "error should name the overflow and the max finite value {max}; got:\n{stderr}"
+        );
+    }
+    // The OCP boundary literal 464 ties DOWN to 448 and is accepted.
+    let src = "module OkTie\n  port o: out FP8E4M3;\n  let x: FP8E4M3 = 464.0;\n  comb o = x; end comb\nend module OkTie\n";
+    let td = tempfile::tempdir().expect("tempdir");
+    let path = td.path().join("OkTie.arch");
+    std::fs::write(&path, src).unwrap();
+    let out = arch().arg("check").arg(&path).output().expect("run arch check");
+    assert!(
+        out.status.success(),
+        "E4M3 literal 464 ties to 448 and must be accepted:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// No implicit conversions between fp8 formats (or fp8 and bf16); the only
+/// v1 escape is .to_fp32(). Int conversions on fp8 are deferred to v2.
+#[test]
+fn fp8_conversion_surface_v1_limits() {
+    let cases: [(&str, &str, &[&str]); 3] = [
+        (
+            "BadMix",
+            "module BadMix\n  port a: in FP8E4M3;\n  port b: in FP8E5M2;\n  port o: out FP8E4M3;\n  comb o = a + b; end comb\nend module BadMix\n",
+            &["FP8E4M3", "FP8E5M2"],
+        ),
+        (
+            "BadBf",
+            "module BadBf\n  port a: in FP8E4M3;\n  port o: out BF16;\n  comb o = a.to_bf16(); end comb\nend module BadBf\n",
+            &["not supported in v1", ".to_fp32()"],
+        ),
+        (
+            "BadInt",
+            "module BadInt\n  port a: in FP8E4M3;\n  port o: out UInt<8>;\n  comb o = a.to_uint<8>(); end comb\nend module BadInt\n",
+            &["not supported in v1", ".to_fp32()"],
+        ),
+    ];
+    for (name, src, needles) in cases {
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = td.path().join(format!("{name}.arch"));
+        std::fs::write(&path, src).unwrap();
+        let out = arch().arg("check").arg(&path).output().expect("run arch check");
+        assert!(!out.status.success(), "{name} must be a type error");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        for n in needles {
+            assert!(
+                stderr.contains(n),
+                "{name}: error should contain `{n}`; got:\n{stderr}"
+            );
+        }
+    }
+}

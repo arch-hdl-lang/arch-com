@@ -1761,8 +1761,8 @@ impl<'a> FormalCtx<'a> {
         match ty {
             TypeExpr::UInt(_) | TypeExpr::SInt(_) | TypeExpr::Bool | TypeExpr::Bit
                 | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => Ok(()),
-            TypeExpr::FP32 | TypeExpr::BF16 => Err(CompileError::general(
-                "floating-point types (FP32/BF16) are not supported by `arch formal` v1",
+            TypeExpr::FP32 | TypeExpr::BF16 | TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Err(CompileError::general(
+                "floating-point types (FP32/BF16/FP8E4M3/FP8E5M2) are not supported by `arch formal` v1",
                 span,
             )),
             TypeExpr::Vec(_, _) => Err(CompileError::general(
@@ -1805,7 +1805,8 @@ impl<'a> FormalCtx<'a> {
             TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => {
                 Ok((1, false))
             }
-            TypeExpr::FP32 | TypeExpr::BF16 | TypeExpr::Vec(_, _) | TypeExpr::Named(_) => Err(
+            TypeExpr::FP32 | TypeExpr::BF16 | TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2
+                | TypeExpr::Vec(_, _) | TypeExpr::Named(_) => Err(
                 CompileError::general("type not supported by arch formal v1", span),
             ),
         }

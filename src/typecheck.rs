@@ -15,6 +15,10 @@ pub enum Ty {
     FP32,
     /// bfloat16 (1+8+7 = 16 bits). Stored/carried as 16 bits.
     BF16,
+    /// OCP OFP8 E4M3 (1+4+3 = 8 bits): no infinities, sole NaN S.1111.111.
+    FP8E4M3,
+    /// FP8 E5M2 (1+5+2 = 8 bits): IEEE-style (5,3) with infinities.
+    FP8E5M2,
     Clock(String),                // domain name
     Reset(ResetKind, ResetLevel), // always concrete (Param resolved during elaboration)
     Vec(Box<Ty>, u32),
@@ -28,7 +32,7 @@ pub enum Ty {
 impl Ty {
     /// True for the floating-point types (FP32, BF16).
     pub fn is_float(&self) -> bool {
-        matches!(self, Ty::FP32 | Ty::BF16)
+        matches!(self, Ty::FP32 | Ty::BF16 | Ty::FP8E4M3 | Ty::FP8E5M2)
     }
 }
 
@@ -62,6 +66,7 @@ impl Ty {
             Ty::Bool => Some(1),
             Ty::FP32 => Some(32),
             Ty::BF16 => Some(16),
+            Ty::FP8E4M3 | Ty::FP8E5M2 => Some(8),
             Ty::Enum(_, w) => Some(*w),
             Ty::Vec(inner, count) => inner.width().map(|w| w * count),
             Ty::Struct(_) | Ty::Bus(_) => None,
@@ -77,6 +82,8 @@ impl Ty {
             Ty::Bool => "Bool".to_string(),
             Ty::FP32 => "FP32".to_string(),
             Ty::BF16 => "BF16".to_string(),
+            Ty::FP8E4M3 => "FP8E4M3".to_string(),
+            Ty::FP8E5M2 => "FP8E5M2".to_string(),
             Ty::Clock(d) => format!("Clock<{d}>"),
             Ty::Reset(k, l) => format!(
                 "Reset<{}, {}>",
@@ -522,7 +529,7 @@ impl<'a> TypeChecker<'a> {
             if type_expr_contains_float(&field.ty) {
                 self.errors.push(CompileError::general(
                     &format!(
-                        "floating-point types (FP32/BF16) are not supported in struct fields in v1 (field `{}` of `{}`)",
+                        "floating-point types (FP32/BF16/FP8E4M3/FP8E5M2) are not supported in struct fields in v1 (field `{}` of `{}`)",
                         field.name.name, s.name.name
                     ),
                     field.name.span,
@@ -596,7 +603,7 @@ impl<'a> TypeChecker<'a> {
         for (ty, span, name) in float_decls {
             if matches!(ty, TypeExpr::Vec(..)) && type_expr_contains_float(ty) {
                 self.errors.push(CompileError::general(
-                    &format!("floating-point types (FP32/BF16) inside `Vec` are not supported in v1 (signal `{name}`)"),
+                    &format!("floating-point types (FP32/BF16/FP8E4M3/FP8E5M2) inside `Vec` are not supported in v1 (signal `{name}`)"),
                     span,
                 ));
             }
@@ -2788,6 +2795,7 @@ impl<'a> TypeChecker<'a> {
             Ty::Bool | Ty::Clock(_) | Ty::Reset(_, _) => Some(1),
             Ty::FP32 => Some(32),
             Ty::BF16 => Some(16),
+            Ty::FP8E4M3 | Ty::FP8E5M2 => Some(8),
             Ty::Enum(_, w) => Some(*w),
             Ty::Vec(inner, count) => self.type_total_width(inner).map(|w| w * count),
             Ty::Struct(name) => {
@@ -2816,6 +2824,7 @@ impl<'a> TypeChecker<'a> {
             TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => Some(1),
             TypeExpr::FP32 => Some(32),
             TypeExpr::BF16 => Some(16),
+            TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Some(8),
             TypeExpr::Vec(inner, size) => {
                 let iw = self.type_expr_width(inner)?;
                 let n = eval_type_width_expr(size)?;
@@ -3607,6 +3616,8 @@ impl<'a> TypeChecker<'a> {
             TypeExpr::Bit => Ty::UInt(1),
             TypeExpr::FP32 => Ty::FP32,
             TypeExpr::BF16 => Ty::BF16,
+            TypeExpr::FP8E4M3 => Ty::FP8E4M3,
+            TypeExpr::FP8E5M2 => Ty::FP8E5M2,
             TypeExpr::Clock(domain) => Ty::Clock(domain.name.clone()),
             TypeExpr::Reset(kind, level) => Ty::Reset(*kind, *level),
             TypeExpr::Vec(inner, size_expr) => {
@@ -4029,6 +4040,8 @@ impl<'a> TypeChecker<'a> {
                 // (arch#622/#624) — take that type directly.
                 LitKind::TypedFloat(FloatLitFmt::Fp32, _) => Ty::FP32,
                 LitKind::TypedFloat(FloatLitFmt::Bf16, _) => Ty::BF16,
+                LitKind::TypedFloat(FloatLitFmt::E4m3, _) => Ty::FP8E4M3,
+                LitKind::TypedFloat(FloatLitFmt::E5m2, _) => Ty::FP8E5M2,
             },
             ExprKind::Bool(_) => Ty::Bool,
             ExprKind::Ident(name) => {
@@ -4781,6 +4794,21 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     Ty::BF16
                 };
+                // fp8 -> fp32 widens exactly; fp8 -> bf16 is deferred in v1
+                // (route via .to_fp32()).
+                if matches!(base_ty, Ty::FP8E4M3 | Ty::FP8E5M2) {
+                    if target == Ty::FP32 {
+                        return Ty::FP32;
+                    }
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            ".to_bf16() on {} is not supported in v1 — convert via .to_fp32() first",
+                            base_ty.display()
+                        ),
+                        method.span,
+                    ));
+                    return Ty::Error;
+                }
                 match &base_ty {
                     Ty::FP32 | Ty::BF16 | Ty::UInt(_) | Ty::SInt(_) | Ty::Bool => {
                         if base_ty == target {
@@ -4811,7 +4839,55 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+            // fp8 conversions: FP32 -> fp8 narrows (RNE, profile-dependent
+            // overflow); same-type is a no-op error like the other floats.
+            // BF16/integer sources are deferred in v1 (route via .to_fp32()).
+            "to_fp8e4m3" | "to_fp8e5m2" => {
+                let target = if method.name == "to_fp8e4m3" {
+                    Ty::FP8E4M3
+                } else {
+                    Ty::FP8E5M2
+                };
+                match &base_ty {
+                    Ty::FP32 => target,
+                    t if *t == target => {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                ".{}() on a {} value is a no-op — remove the cast",
+                                method.name,
+                                target.display()
+                            ),
+                            method.span,
+                        ));
+                        Ty::Error
+                    }
+                    Ty::Todo => Ty::Todo,
+                    Ty::Error => Ty::Error,
+                    _ => {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                ".{}() requires an FP32 operand in v1 (got {}) — convert via .to_fp32() first",
+                                method.name,
+                                base_ty.display()
+                            ),
+                            method.span,
+                        ));
+                        Ty::Error
+                    }
+                }
+            }
             "to_uint" | "to_sint" => {
+                if matches!(base_ty, Ty::FP8E4M3 | Ty::FP8E5M2) {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            ".{}<N>() on {} is not supported in v1 — convert via .to_fp32() first",
+                            method.name,
+                            base_ty.display()
+                        ),
+                        method.span,
+                    ));
+                    return Ty::Error;
+                }
                 if !base_ty.is_float() && !matches!(base_ty, Ty::Todo | Ty::Error) {
                     self.errors.push(CompileError::general(
                         &format!(
@@ -8445,14 +8521,14 @@ impl<'a> TypeChecker<'a> {
         for arg in &f.args {
             if type_expr_contains_float(&arg.ty) {
                 self.errors.push(CompileError::general(
-                    &format!("floating-point types (FP32/BF16) are not supported in function parameters in v1 (parameter `{}` of `{}`)", arg.name.name, f.name.name),
+                    &format!("floating-point types (FP32/BF16/FP8E4M3/FP8E5M2) are not supported in function parameters in v1 (parameter `{}` of `{}`)", arg.name.name, f.name.name),
                     arg.name.span,
                 ));
             }
         }
         if type_expr_contains_float(&f.ret_ty) {
             self.errors.push(CompileError::general(
-                &format!("floating-point types (FP32/BF16) are not supported as a function return type in v1 (function `{}`)", f.name.name),
+                &format!("floating-point types (FP32/BF16/FP8E4M3/FP8E5M2) are not supported as a function return type in v1 (function `{}`)", f.name.name),
                 f.name.span,
             ));
         }
@@ -9043,7 +9119,7 @@ fn eval_type_width_expr(e: &Expr) -> Option<u32> {
 /// resolve (Vec elements, struct fields, function signatures).
 fn type_expr_contains_float(ty: &TypeExpr) -> bool {
     match ty {
-        TypeExpr::FP32 | TypeExpr::BF16 => true,
+        TypeExpr::FP32 | TypeExpr::BF16 | TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => true,
         TypeExpr::Vec(inner, _) => type_expr_contains_float(inner),
         _ => false,
     }
@@ -9071,6 +9147,8 @@ fn types_compatible(expected: &Ty, actual: &Ty) -> bool {
         // Floating-point: same type only — no implicit FP32↔BF16 conversion.
         (Ty::FP32, Ty::FP32) => true,
         (Ty::BF16, Ty::BF16) => true,
+        (Ty::FP8E4M3, Ty::FP8E4M3) => true,
+        (Ty::FP8E5M2, Ty::FP8E5M2) => true,
         _ => false,
     }
 }

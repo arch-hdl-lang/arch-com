@@ -160,6 +160,7 @@ Range `for` = runtime SV loop; value-list `for` = compile-time unroll; `generate
 ```
 UInt<N>  SInt<N>  Bool  Bit
 FP32  BF16                                    // IEEE-754 binary32 / bfloat16 (v1; see §2a)
+FP8E4M3  FP8E5M2                              // OCP OFP8 8-bit floats (v1; see §2a)
 Clock<Domain>  Reset<Sync|Async, High|Low>   // polarity defaults High
 Vec<T,N>
 struct S  { f: T; }
@@ -244,14 +245,18 @@ let gt: Bool = a > b;       // == != < > <= >=  → Bool
 let nan: Bool = is_nan(a);  // qNaN/sNaN test → Bool
 ```
 
-**No implicit conversion** — mixing `FP32`/`BF16`, or float↔int, is a compile error. Convert explicitly:
+**No implicit conversion** — mixing float formats (`FP32`/`BF16`/`FP8E4M3`/`FP8E5M2`), or float↔int, is a compile error. Convert explicitly:
 
 ```
-x.to_fp32()      // BF16→FP32 (exact widen) or SInt/UInt→FP32 (RNE)
+x.to_fp32()      // BF16/FP8E4M3/FP8E5M2→FP32 (exact widen) or SInt/UInt→FP32 (RNE)
 x.to_bf16()      // FP32→BF16 (round-to-nearest-even)
+x.to_fp8e4m3()   // FP32→FP8E4M3 (RNE; overflow per --fp-compat profile)
+x.to_fp8e5m2()   // FP32→FP8E5M2 (RNE; overflow per --fp-compat profile)
 x.to_sint<N>()   // float→SInt<N>: toward-zero, per-N saturating, NaN→type-max (riscv)
 x.to_uint<N>()   // float→UInt<N>: toward-zero, per-N saturating, negatives/NaN handling per profile
 ```
+
+**FP8 (v1):** `FP8E4M3` = OCP OFP8 (bias 7, **no infinities**, sole NaN `0x7F`, exponent 15 + mantissa < 7 are finite 256…448, max finite 448); `FP8E5M2` = IEEE-style (bias 15, ±inf `0x7C`, max finite 57344). Same op surface (`+ - *`, `fma`, compares, `is_nan`); all ops widen→f32→narrow; `+ - *` correctly rounded, `fma` = fused f32-accumulate (VR(f32), like BF16). fp8↔BF16 and fp8↔int conversions are **v2** — route via `.to_fp32()`. Overflowing fp8 *literal* = compile error. Runtime narrow overflow per profile: riscv → E5M2 ±inf / E4M3 NaN `0x7F` (sign dropped); cuda → saturate to ±max-finite (`satfinite`), incl. ±inf inputs. Canonical NaNs: E4M3 `0x7F` (both), E5M2 `0x7E` riscv / `0x7F` cuda.
 
 **Float literals are context-typed** (like integer literals): a literal in a slot with a known float type takes that type, correctly rounded (RNE) at compile time — no `.to_bf16()`/`.to_fp32()` cast needed. `let h: BF16 = 1.5;`, `reg acc: BF16 init 1.5;`, `reg acc: BF16 reset rst => 1.5;`, and comparisons/arithmetic against a known-format operand (`a_bf16 > 0.5`) all just work. A standalone/ambiguous literal (no float context) still defaults to **FP32**. An integer literal in a float slot (`reg acc: BF16 init 1;`) is always a type error — write `1.0`. `.to_bf16()`/`.to_fp32()` are still needed only for a *non-literal* value (converting a variable/signal between formats).
 
@@ -259,7 +264,7 @@ x.to_uint<N>()   // float→UInt<N>: toward-zero, per-N saturating, negatives/Na
 
 **v1 scope:** floats are scalar signals + the ops above only. **Not** supported (rejected at type-check, never silently miscompiled): floats inside `Vec`, in `struct` fields, in module-local `function` signatures; `/` `%` and bitwise/shift operators on floats.
 
-**Special-value profile:** `arch build|sim --fp-compat=riscv|cuda` (default `riscv`). Identical RNE arithmetic core; differs only in canonical NaN pattern and NaN→int result.
+**Special-value profile:** `arch build|sim --fp-compat=riscv|cuda` (default `riscv`). Identical RNE arithmetic core; differs only in canonical NaN patterns, NaN→int result, and fp8 narrowing overflow (non-saturating vs `satfinite` — see FP8 above).
 
 | profile | canonical NaN (f32 / bf16) | NaN → int |
 |---|---|---|

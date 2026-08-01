@@ -309,6 +309,10 @@ The Arch type system enforces four independent safety dimensions simultaneously.
 
   **BF16**             16 bits              bfloat16 (8-bit exponent, 7-bit mantissa). Same op surface as FP32. See §3.8.
 
+  **FP8E4M3**          8 bits               OCP OFP8 E4M3 (4-bit exponent, 3-bit mantissa; no infinities, sole NaN `0x7F`, max finite 448). Same op surface as FP32. See §3.8.
+
+  **FP8E5M2**          8 bits               OCP OFP8 E5M2 (5-bit exponent, 2-bit mantissa; IEEE-style ±inf and NaN class, max finite 57344). Same op surface as FP32. See §3.8.
+
   **Clock\<D\>**       1 bit                Carries clock-domain tag D. Cannot appear in arithmetic.
 
   **Reset\<Sync, High\|Low\>**    1 bit                Synchronous reset --- deasserted on the clock edge. Polarity defaults High.
@@ -736,7 +740,7 @@ let gt: Bool = a > b;         // ordered compare → Bool
 let nan: Bool = is_nan(a);
 ```
 
-**No implicit conversion.** Mixing `FP32` and `BF16`, or float and integer, in an operator is a compile error; convert explicitly:
+**No implicit conversion.** Mixing distinct float formats (`FP32`, `BF16`, `FP8E4M3`, `FP8E5M2`), or float and integer, in an operator is a compile error; convert explicitly:
 
   - `x.to_fp32()` — `BF16`→`FP32` (exact widen) or `SInt<N>`/`UInt<N>`→`FP32` (RNE).
   - `x.to_bf16()` — `FP32`→`BF16` (round-to-nearest-even).
@@ -759,9 +763,22 @@ An integer literal in a float slot (`reg acc: BF16 init 1;`, `let h: BF16 = 1;`,
 
 The rule is **uniform across all slots**: `let`, `init`, reset, port defaults, and comparison operands all fold the same literal to the same bit pattern via the same single-rounding path. (History: the reset slot briefly rounded through an `FP32` intermediate — a double rounding that differs from the correctly-rounded value for decimals landing within half an `FP32`-ulp of a `BF16` rounding midpoint, e.g. `1.003906250931322574615478515625` = 1 + 2⁻⁸ + 2⁻³⁰ produced `0x3F80` instead of the correctly-rounded `0x3F81`. That path was superseded when context-typed literals landed; the regression suite locks reset ≡ init ≡ let on this witness.)
 
+**FP8 formats (FP8E4M3 / FP8E5M2).** The two OCP OFP8 8-bit formats are first-class types with the same operator surface as `FP32`/`BF16` (`+ - *`, `fma`, ordered compares, `is_nan`), each emitting `logic[7:0]`:
+
+  - **`FP8E4M3`** — 1 sign + 4 exponent + 3 mantissa bits, bias 7. Per the OCP OFP8 spec this format has **no infinities**: the sole NaN encoding is `S.1111.111` (`0x7F`/`0xFF`), and exponent 15 with mantissa < 7 encodes the *finite* values 256…448. Max finite 448, min subnormal 2⁻⁹.
+  - **`FP8E5M2`** — 1 sign + 5 exponent + 2 mantissa bits, bias 15, IEEE-style: ±inf at `0x7C`/`0xFC`, NaN class above it, max finite 57344 (`0x7B`), min subnormal 2⁻¹⁶.
+
+  All fp8 arithmetic is **widen → `FP32` op → narrow** (like `BF16`): `+ - *` round once from the exact `FP32` result and are correctly rounded; `fma(a,b,c)` is fused `FP32`-accumulate (one CR f32 fma, then a narrow — same VR(f32) convention as the `BF16` fma, **not** correctly-rounded fp8 fma). Compares are exact (quiet on NaN).
+
+  **Conversions.** `x.to_fp32()` (exact widen), `f.to_fp8e4m3()` / `f.to_fp8e5m2()` (`FP32`→fp8, RNE). Direct fp8↔`BF16` and fp8↔integer conversions are **deferred to v2** — route through `.to_fp32()` explicitly (compile error tells you so).
+
+  **Narrowing overflow is profile-dependent** (`--fp-compat`, see below): under `riscv` (default) an `FP32` value whose RNE rounding exceeds the format's max finite maps to `±inf` for `FP8E5M2` and to NaN `0x7F` (sign dropped — the format has no infinities) for `FP8E4M3`; under `cuda` both formats **saturate to ±max-finite** (`±0x7B` / `±0x7E`, PTX `cvt.rn.satfinite` semantics), including for ±inf inputs. The E4M3 overflow boundary follows OCP: a rounded magnitude ≥ 480 overflows, while 464 ties *down* to 448 (even significand) and stays finite. Canonical NaNs: `FP8E4M3` `0x7F` under both profiles; `FP8E5M2` `0x7E` riscv / `0x7F` cuda.
+
+  **Literals** follow the context-typing rule above (`let x: FP8E4M3 = 1.5;` folds to `0x3C` at compile time), with one addition: a literal that overflows the fp8 format (`let x: FP8E4M3 = 500.0;`) is a **compile error**, not a silent saturation — the profile-dependent overflow rules above apply only to runtime narrowing. Use an `FP32` value and convert at runtime if saturation/infinity is intended.
+
 **v1 scope.** Floats are supported only as scalar signals plus the operators above. Floats inside `Vec`, in `struct` fields, and in module-local `function` signatures are rejected at type-check (never silently miscompiled); these are deferred follow-ups.
 
-**Compatibility profile.** `arch build|sim --fp-compat=riscv|cuda` (default `riscv`) selects the special-value corners. Both profiles share an identical RNE arithmetic core and differ only in the canonical NaN bit pattern (`0x7FC00000`/`0x7FC0` vs `0x7FFFFFFF`/`0x7FFF`) and the NaN→int result (type-max vs `0`).
+**Compatibility profile.** `arch build|sim --fp-compat=riscv|cuda` (default `riscv`) selects the special-value corners. Both profiles share an identical RNE arithmetic core and differ only in the canonical NaN bit patterns (`0x7FC00000`/`0x7FC0` vs `0x7FFFFFFF`/`0x7FFF`; for fp8 see the FP8 paragraph above), the NaN→int result (type-max vs `0`), and the fp8 narrowing-overflow behavior (non-saturating vs `satfinite` — see the FP8 paragraph above).
 
 **3.8a Pipelined operators (`<pipelined, N>`)**
 
