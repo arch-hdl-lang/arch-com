@@ -7538,6 +7538,28 @@ end thread driver
 
 For `out_of_order tags N`, the bus flattens two extra wires per method: `<method>_req_tag` and `<method>_rsp_tag`. The initiator cohort assigns one tag per worker and routes response data by `rsp_tag`. A target TLM thread latches `req_tag` with the method arguments and echoes it on `rsp_tag`.
 
+**22.2.3a Mixed-Class Fork Groups Are Rejected**
+
+A direct-call `fork ... and ... join` issue group (§22.2.2) must use one concurrency class across every branch: all `blocking`, or all `out_of_order` on methods with the same `tags N`-bearing declaration shape. Placing one `blocking` call and one `out_of_order` call in the same fork group is a compile-time error:
+
+```
+fork issue group mixes blocking and out_of_order calls (`m.read` is blocking,
+`m.read_ooo` is out_of_order tags 2); split into separate fork groups or make
+the classes uniform
+```
+
+Split the branches into two separate `fork ... and ... join` threads instead — one per class — or change the method declarations so every branch in the group calls methods of the same class. RHS-fork groups (`dst <= fork port.method(args); ... join all;`, §22.2.2) already require every forked issue in the group to target one method, so they cannot mix classes either; that restriction predates this one and is unchanged.
+
+This restriction exists because the generated-thread cohort lowering groups direct-call fork branches by `(port, method)` and only recognizes a cohort once two or more branches share one method. A fork group that mixes classes always calls two *different* methods (concurrency mode is fixed per `tlm_method` declaration), so each class's branch count is checked independently — an unbalanced mix (e.g. two `blocking` branches plus one `out_of_order` branch) could satisfy the cohort check for the repeated class while the compiler had no path left to lower the other branch at all. The check above runs before cohort grouping and rejects every mixed-class shape up front, regardless of how many branches each class has.
+
+**22.2.3b `out_of_order tags N` --- Recommended Bound**
+
+`N` in `tlm_method name(args) -> Ret: out_of_order tags N;` is the literal bit width of the two compiler-generated carrier wires, `<method>_req_tag` and `<method>_rsp_tag` --- it is not a count of tags that the compiler widens with `$clog2`. A cohort or fork group with `W` outstanding workers needs `N` such that `2^N >= W`; the compiler checks this at lowering time and rejects an undersized `N` with `` `{port}.{method}` has {W} workers but only {2^N} out-of-order tags; increase `tags` width ``. Because `N` sets the carrier width directly, it is also the width of every downstream tag-drive mux and per-response tag comparator the lowering generates.
+
+**Recommended cap: `N <= 8`** (256 addressable tags). Every current worker cohort, `fork ... and ... join` group, and RHS-fork group in the test suite and examples uses a single-digit number of outstanding requests, so 8 bits of tag space is generous headroom for TLM's intended fast-prototyping role (see the positioning note in §22.1) without carrying unused carrier width through request/response plumbing.
+
+The compiler does not enforce this cap today. `tags 64` and `tags 128` both compile cleanly, each producing an exactly `N`-bit-wide `req_tag`/`rsp_tag` carrier (`logic [63:0]` / `logic [127:0]`) with no truncation, silent promotion, or width mismatch; the internal tag-capacity check (`tag_slots = 2^N`) explicitly guards `N >= 64` against a wrapping left-shift, so there is no overflow defect at large `N` either. Treat `N <= 8` as design guidance to keep generated hardware lean, not as a compiler-checked limit.
+
 **22.2.4 Generated Code Shape**
 
 Grouped/looped initiator call sites are lowered to one generated driver per
@@ -7647,6 +7669,7 @@ Use the implemented forms above for all current RTL-backed TLM work:
 - Use counted `for` loops for repeated serialized direct blocking call sites inside one initiator thread; runtime bounds are supported for the serialized case.
 - Use `lock RESOURCE ... end lock RESOURCE` plus `resource RESOURCE: mutex<round_robin>;` when independent workers share a TLM method and require round-robin request arbitration.
 - Express multiple outstanding requests with worker threads, `generate_for` workers, direct-call `fork ... and ... join`, or RHS-fork groups.
+- Keep every branch of one `fork ... and ... join` group the same concurrency class (§22.2.3a); keep `out_of_order tags N` at `N <= 8` (§22.2.3b).
 
 **25. AI-Assisted Hardware Design Workflow**
 

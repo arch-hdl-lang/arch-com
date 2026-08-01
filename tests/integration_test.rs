@@ -13336,6 +13336,198 @@ fn test_tlm_fork_join_workers_share_method() {
     );
 }
 
+/// Lower a source string through the same pipeline stages as
+/// `compile_to_sv` up to (and including) TLM initiator lowering, without
+/// panicking on error. Used by the mixed-class `fork ... and ... join`
+/// rejection tests below (arch-com #500 Gap 1), where the point under test
+/// is the `Err` returned by `lower_tlm_initiator_calls` itself.
+fn lower_tlm_initiator_calls_result(
+    source: &str,
+) -> Result<arch::ast::SourceFile, Vec<arch::diagnostics::CompileError>> {
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let ast = elaborate::lower_tlm_target_threads(ast).expect("tlm_target lowering error");
+    elaborate::lower_tlm_initiator_calls(ast)
+}
+
+// arch-com #500 Gap 1: a `fork ... and ... join` direct-call TLM issue group
+// that mixes a `blocking` call and an `out_of_order tags N` call must be
+// rejected with a clean diagnostic naming both classes, not silently lowered
+// or partially dropped. See doc/ARCH_HDL_Specification.md §22.2.2.
+//
+// Before the fix, the balanced 1-blocking/1-out_of_order shape below hit a
+// confusing internal message ("v1 TLM initiator thread body only supports
+// SeqAssign statements ... (found Discriminant(7))") because neither call
+// repeated its `(port, method)` key often enough to be recognized as a
+// same-method cohort. The unbalanced 2-blocking/1-out_of_order shape
+// (`test_tlm_fork_join_mixed_class_partial_cohort_rejected` below) was worse:
+// the 2 blocking calls *did* form a valid same-method cohort, so the
+// `out_of_order` branch was silently dropped from the lowered thread instead
+// of erroring at the TLM lowering stage at all (it later fell through to an
+// unrelated "output port not driven" diagnostic with no mention of the
+// mixed-class root cause).
+
+#[test]
+fn test_tlm_fork_join_mixed_class_blocking_then_ooo_rejected() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+          tlm_method read_ooo(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
+        end bus Mem
+
+        use Mem;
+
+        module MixedBlockingThenOoo
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   addr: Vec<UInt<32>, 2> reset rst => 0;
+          reg   data: Vec<UInt<64>, 2> reset rst => 0;
+          thread workers on clk rising, rst high
+            fork
+              data[0] <= m.read(addr[0]);
+            and
+              data[1] <= m.read_ooo(addr[1]);
+            join
+          end thread workers
+        end module MixedBlockingThenOoo
+    ";
+    let errs = lower_tlm_initiator_calls_result(source)
+        .expect_err("mixed blocking/out_of_order fork group must be rejected");
+    assert!(!errs.is_empty(), "expected at least one error");
+    let msg = errs[0].to_string();
+    assert!(
+        msg.contains("fork issue group mixes blocking and out_of_order calls"),
+        "error should name the mixed-class fork group: {msg}"
+    );
+    assert!(
+        msg.contains("split into separate fork groups or make the classes uniform"),
+        "error should suggest the fix: {msg}"
+    );
+}
+
+#[test]
+fn test_tlm_fork_join_mixed_class_ooo_then_blocking_rejected() {
+    // Same defect, opposite branch order — the diagnostic must not depend
+    // on which class appears first in the fork group.
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+          tlm_method read_ooo(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
+        end bus Mem
+
+        use Mem;
+
+        module MixedOooThenBlocking
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   addr: Vec<UInt<32>, 2> reset rst => 0;
+          reg   data: Vec<UInt<64>, 2> reset rst => 0;
+          thread workers on clk rising, rst high
+            fork
+              data[0] <= m.read_ooo(addr[0]);
+            and
+              data[1] <= m.read(addr[1]);
+            join
+          end thread workers
+        end module MixedOooThenBlocking
+    ";
+    let errs = lower_tlm_initiator_calls_result(source)
+        .expect_err("mixed out_of_order/blocking fork group must be rejected");
+    assert!(!errs.is_empty(), "expected at least one error");
+    let msg = errs[0].to_string();
+    assert!(
+        msg.contains("fork issue group mixes blocking and out_of_order calls"),
+        "error should name the mixed-class fork group: {msg}"
+    );
+}
+
+#[test]
+fn test_tlm_fork_join_mixed_class_partial_cohort_rejected() {
+    // 2 blocking branches on `read` (which alone would form a valid
+    // same-method cohort) plus 1 `out_of_order` branch on `read_ooo`. Before
+    // the fix, this silently dropped the `read_ooo` branch from the lowered
+    // thread entirely instead of erroring during TLM lowering.
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+          tlm_method read_ooo(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
+        end bus Mem
+
+        use Mem;
+
+        module Mixed3Way
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   addr: Vec<UInt<32>, 3> reset rst => 0;
+          reg   data: Vec<UInt<64>, 3> reset rst => 0;
+          thread workers on clk rising, rst high
+            fork
+              data[0] <= m.read(addr[0]);
+            and
+              data[1] <= m.read(addr[1]);
+            and
+              data[2] <= m.read_ooo(addr[2]);
+            join
+          end thread workers
+        end module Mixed3Way
+    ";
+    let errs = lower_tlm_initiator_calls_result(source)
+        .expect_err("partial-cohort mixed-class fork group must be rejected");
+    assert!(!errs.is_empty(), "expected at least one error");
+    let msg = errs[0].to_string();
+    assert!(
+        msg.contains("fork issue group mixes blocking and out_of_order calls"),
+        "error should name the mixed-class fork group, not silently drop the \
+         out_of_order branch: {msg}"
+    );
+}
+
+#[test]
+fn test_tlm_rhs_fork_mixed_methods_already_rejected() {
+    // RHS-fork groups (`dst <= fork port.method(args); ... join all;`) are
+    // separately restricted to a single method per group (see
+    // `inline_lower_tlm_fork_join_all`), so mixing `blocking` and
+    // `out_of_order` methods there was already rejected before this change.
+    // Locked here as a control alongside the direct-call fork/join fix so
+    // the two related restrictions don't drift apart undocumented.
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+          tlm_method read_ooo(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
+        end bus Mem
+
+        use Mem;
+
+        module RhsForkMixedMethods
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   d0: UInt<64> reset rst => 0;
+          reg   d1: UInt<64> reset rst => 0;
+
+          thread driver on clk rising, rst high
+            d0 <= fork m.read(32'h1000);
+            wait 1 cycle;
+            d1 <= fork m.read_ooo(32'h2000);
+            join all;
+          end thread driver
+        end module RhsForkMixedMethods
+    ";
+    let errs = lower_tlm_initiator_calls_result(source)
+        .expect_err("RHS-fork group spanning two methods must be rejected");
+    assert!(!errs.is_empty(), "expected at least one error");
+    let msg = errs[0].to_string();
+    assert!(
+        msg.contains("v1 forked TLM groups must target one method"),
+        "error should mention the one-method restriction: {msg}"
+    );
+}
+
 #[test]
 fn test_tlm_rhs_fork_join_all_workers_share_method() {
     let source = "

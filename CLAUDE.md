@@ -370,6 +370,8 @@ Initiators call as a direct RHS inside a thread: `d <= m.read(addr);`. Targets i
 
 Concurrency is structural: multiple direct worker threads, `generate_for` workers, or one direct-call `fork ... and ... join` thread lower to a request arbiter and response router. Blocking routes by issue-order FIFO; `out_of_order tags N` routes by hidden tag wires. Do not generate `Future<T>`, `await`, `Token<T>`, `pipelined`, or `burst` syntax.
 
+A `fork ... and ... join` group must be class-uniform (all `blocking` or all `out_of_order`) — mixing classes in one group is a compile-time error, not a warning. `out_of_order tags N` sets the `req_tag`/`rsp_tag` carrier's bit width directly (not a tag count via `$clog2`); keep `N <= 8` even though the compiler doesn't enforce it (see spec §22.2.3a/§22.2.3b).
+
 ---
 
 ## Compiler Architecture (to build)

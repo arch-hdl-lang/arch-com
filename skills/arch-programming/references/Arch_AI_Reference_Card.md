@@ -1292,6 +1292,8 @@ end module LoadPair
 
 Supported cohort shapes: multiple direct named worker threads, `generate_for` worker threads, and one direct-call `fork ... and ... join` thread. Blocking cohorts route responses by issue-order FIFO. `out_of_order tags N` cohorts drive `<method>_req_tag` and route by `<method>_rsp_tag`; target threads latch and echo the tag.
 
+A `fork ... and ... join` group must be class-uniform: every branch `blocking`, or every branch `out_of_order`. Mixing classes in one group is a compile error (`fork issue group mixes blocking and out_of_order calls ...`) — split into separate fork groups instead. RHS-fork groups already require every issue to target one method, so they cannot mix classes either.
+
 Timed multiple-outstanding issue in one thread:
 
 ```
@@ -1344,7 +1346,9 @@ Refining TLM into explicit threads:
 
 Use explicit threads when the protocol needs separate channels, beat-by-beat burst interleaving, registered ready paths for timing closure, protocol-specific retry/error/cancel rules, or area/power tuning beyond the generic TLM driver.
 
-Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); runtime-loop and conditional-branch TLM calls are serialized direct blocking assignments; one call per worker/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; RHS-fork tails after `join all;` are compute-only; no nested/composed TLM calls; no dynamic-length TLM return types; no `pipelined`; no first-class `burst`; no `Future<T>`/`await`.
+`out_of_order tags N` sizing: `N` is the literal bit width of the generated `<method>_req_tag` / `<method>_rsp_tag` carrier, not a tag count — a cohort/fork group of `W` outstanding workers needs `2^N >= W`. Recommended cap: `N <= 8` (256 tags); the compiler does not enforce this (`tags 64`, `tags 128` both build cleanly with an `N`-bit carrier), but a needlessly large `N` widens every tag wire, drive mux, and response comparator for no prototyping benefit.
+
+Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); runtime-loop and conditional-branch TLM calls are serialized direct blocking assignments; one call per worker/forked issue; same clock/reset per cohort; literal tag count only; all branches of one `fork ... and ... join` group must be the same concurrency class (no mixing `blocking` and `out_of_order`); RHS-fork offsets require literal `wait N cycle;`; RHS-fork tails after `join all;` are compute-only; no nested/composed TLM calls; no dynamic-length TLM return types; no `pipelined`; no first-class `burst`; no `Future<T>`/`await`.
 
 Full spec: `doc/ARCH_HDL_Specification.md` §18d and §22. Design history / remaining work: `doc/archive/plan_tlm_method.md`.
 
