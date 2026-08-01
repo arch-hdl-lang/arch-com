@@ -770,6 +770,18 @@ The rule is **uniform across all slots**: `let`, `init`, reset, port defaults, a
 
   All fp8 arithmetic is **widen → `FP32` op → narrow** (like `BF16`): `+ - *` round once from the exact `FP32` result and are **machine-proved correctly rounded** — exhaustive SMT `unsat` for every fp8 compare, conversion, and binary op under both `--fp-compat` profiles (`tests/fp_v1/smt_proof`, test `fp8_smt_proofs`). `fma(a,b,c)` is fused `FP32`-accumulate (one CR f32 fma, then a narrow — same VR(f32) convention as the `BF16` fma). Its second rounding was characterized exhaustively over all 2²⁴ triples per format×profile (`examples/fp8_fma_char.rs`): **`FP8E4M3` fma is machine-proved correctly rounded** — the SMT miter against a true CR reference (exact fma in a wide-significand sort, one OCP rounding) discharges `unsat` under both profiles, and the exhaustive sweep measured 0 mismatches (the double rounding is innocuous across E4M3's dynamic range); **`FP8E5M2` fma deviates on 18960/2²⁴ inputs (0.113%) under riscv and 15888/2²⁴ (0.095%) under cuda**, always by 1 ULP. Witness: `fma(0x1E, 0x7A, 0x01)` = (1.5·2⁻⁸)·49152 + 2⁻¹⁶ = 288 + 2⁻¹⁶ — correctly rounded is 320 (strictly above the 256/320 midpoint 288), but 2⁻¹⁶ is exactly half an f32 ULP at 288, so the f32 step ties-to-even down to exactly 288, and the narrow then ties-to-even down to 256. Compares are exact (quiet on NaN).
 
+  **Accumulation guidance.** For accumulation loops (dot products, running sums), hold the accumulator in `FP32` and narrow once at the end — that is the hardware-realistic and numerically superior pattern. FP8 tensor hardware (NVIDIA Tensor Core MMA, AMD MFMA) accumulates in a wide register and converts once per tile; narrowing to fp8 every step both loses precision (fp8 quantization noise compounds per iteration) and adds a rounding per step:
+
+```
+reg acc: FP32 reset rst => 0.0;
+seq on clk rising
+  acc <= fma(a.to_fp32(), b.to_fp32(), acc);    // wide accumulate
+end seq
+comb result = acc.to_fp8e5m2(); end comb        // ONE narrow at the end
+```
+
+  The fp8-typed `fma(a,b,c)` is a convenience for single-step updates where the result must live in fp8 anyway.
+
   **Conversions.** `x.to_fp32()` (exact widen), `f.to_fp8e4m3()` / `f.to_fp8e5m2()` (`FP32`→fp8, RNE). Direct fp8↔`BF16` and fp8↔integer conversions are **deferred to v2** — route through `.to_fp32()` explicitly (compile error tells you so).
 
   **Narrowing overflow is profile-dependent** (`--fp-compat`, see below): under `riscv` (default) an `FP32` value whose RNE rounding exceeds the format's max finite maps to `±inf` for `FP8E5M2` and to NaN `0x7F` (sign dropped — the format has no infinities) for `FP8E4M3`; under `cuda` both formats **saturate to ±max-finite** (`±0x7B` / `±0x7E`, PTX `cvt.rn.satfinite` semantics), including for ±inf inputs. The E4M3 overflow boundary follows OCP: a rounded magnitude ≥ 480 overflows, while 464 ties *down* to 448 (even significand) and stays finite. Canonical NaNs: `FP8E4M3` `0x7F` under both profiles; `FP8E5M2` `0x7E` riscv / `0x7F` cuda.
