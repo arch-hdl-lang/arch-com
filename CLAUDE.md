@@ -107,6 +107,19 @@ never said so. Rules:
   with pointers to the relevant spec docs. Pure internal refactors of a
   surface file with no user-facing syntax/semantics change (e.g. the planned
   parser/elaborate splits) can use the `no-doc-needed` PR label to skip it.
+- **A version bump must update `doc/COMPILER_STATUS.md` in the same PR.** The
+  release PR is where the package `version` in `Cargo.toml` bumps, and the
+  convention is that it also updates the status doc's `> Compiler version:`
+  banner and adds a `> **<version> release highlights:**` block. Release PRs
+  kept landing as Cargo-only (0.71.0 shipped with the banner stuck at 0.70.8),
+  stranding the status doc a release behind. CI now enforces the coupling
+  (`scripts/check_release_doc.sh`, workflow `release-doc`, check name `release
+  doc`): if a PR changes the Cargo version, `doc/COMPILER_STATUS.md` must carry
+  a matching banner and highlights block, or the check fails with the exact
+  lines to add. Remember to re-sync the skill snapshot
+  (`scripts/sync_skill_snapshots.sh refresh`) after editing the status doc. A
+  rare bare re-publish bump with no user-facing change can use the
+  `release-doc-exempt` PR label to skip it.
 - **Sweep for stranded PRs**: `scripts/green_pr_sweep.sh` lists open PRs that
   are green, mergeable, and ≥1 day old across arch-com + harc-com — finished
   work nobody landed. The mirror image of `claim_check.sh` (duplicate work at
