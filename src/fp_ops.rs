@@ -256,6 +256,256 @@ fn f32_to_bf16(p: FpCompat) -> FpFn {
     FpFn::new("arch_f32_to_bf16", &[("x", 32)], 16, body)
 }
 
+// ── fp8 (FP8E4M3 / FP8E5M2) ─────────────────────────────────────────────────
+//
+// Two 8-bit formats, routed through the f32 datapath exactly like bf16
+// (widen -> f32 op -> narrow):
+//   E5M2 = IEEE-style (5,3): bias 15, infinities, NaN class, max finite 57344.
+//   E4M3 = OCP OFP8:         bias 7, NO infinities, the top exponent value
+//          (15) encodes normals 256..448 for mantissa 0..6 and NaN only at
+//          S.1111.111 (0x7F/0xFF), max finite 448.
+// f32->fp8 narrowing overflow is profile-dependent (--fp-compat):
+//   riscv: non-saturating — E5M2 overflows to ±inf, E4M3 to canonical NaN
+//          0x7F (sign dropped; OFP8 non-saturating conversion); input ±inf
+//          maps the same way.
+//   cuda:  saturate to ±max-finite for both formats, including ±inf inputs
+//          (PTX cvt.rn.satfinite / Transformer-Engine convention).
+// Widening is exact for every finite input and reuses `normround` (a <=4-bit
+// significand packs into f32 with no rounding). The narrow uses `fp8_round`,
+// a sibling of `normround` parameterized for 8-bit targets — deliberately a
+// SEPARATE function so the machine-proved f32 rounder stays byte-identical.
+
+/// Canonical quiet NaN, E4M3: `0x7F` is the only NaN encoding OFP8 has
+/// (canonicalization drops the sign), so there is no profile choice.
+fn nan8_e4m3(_p: FpCompat) -> u128 {
+    0x7F
+}
+/// Canonical quiet NaN, E5M2 (mirrors `nan16`/`nan32`): riscv `0x7E`
+/// (quiet-bit-set, zero payload), cuda `0x7F` (all-ones mantissa).
+fn nan8_e5m2(p: FpCompat) -> u128 {
+    match p {
+        FpCompat::Riscv => 0x7E,
+        FpCompat::Cuda => 0x7F,
+    }
+}
+
+/// Round `(sig * 2^e0)` (sign-magnitude, `e0` 16-bit signed, `sig` up to 24
+/// bits) to nearest-even in an 8-bit float format with `eb` exponent and `mb`
+/// mantissa bits. Structure mirrors `normround` with the f32 constants
+/// parameterized: bias `2^(eb-1)-1`, subnormal anchor `-(bias-1+mb)`, carry
+/// bit at `mb+1`. `ocp_top` selects the OFP8 overflow rule (the top exponent
+/// value is still finite except at an all-ones mantissa) vs the IEEE rule
+/// (any result reaching the top exponent value overflows). `ovf_res` is the
+/// profile-dependent overflow result.
+fn fp8_round(eb: u32, mb: u32, ocp_top: bool, sign: &Bv, sig: &Bv, e0: &Bv, ovf_res: &Bv) -> Bv {
+    let w = sig.width();
+    let w2 = w + 2;
+    let zsig = zext(sig, w2);
+
+    let p_msb = msb_index(sig); // sig is non-zero on this path
+
+    let bias: u128 = (1u128 << (eb - 1)) - 1;
+    let anchor_neg: u128 = (1u128 << 16) - (bias + mb as u128 - 1); // -(bias-1+mb) as 16-bit
+    let max_expf: u128 = (1u128 << eb) - 1;
+
+    let ev = add(&p_msb, e0);
+    let biased = add(&ev, &cst(bias, 16));
+    let biased_le0 = sle(&biased, &cst(0, 16));
+    let k = ite(
+        &biased_le0,
+        &cst(anchor_neg, 16),
+        &sub(&ev, &cst(mb as u128, 16)),
+    );
+    let sh = sub(&k, e0);
+    let sh_le0 = sle(&sh, &cst(0, 16));
+
+    let kept_left = shl(&zsig, &neg(&sh));
+    let kept_right = lshr(&zsig, &sh);
+    let kept0 = ite(&sh_le0, &kept_left, &kept_right);
+
+    let gpos = sub(&sh, &cst(1, 16));
+    let guard = ite(&sh_le0, &cst(0, 1), &extract(&lshr(&zsig, &gpos), 0, 0));
+    let mask = sub(&shl(&cst(1, w2), &gpos), &cst(1, w2));
+    let sticky = ite(&sh_le0, &cst(0, 1), &ne(&band(&zsig, &mask), &cst(0, w2)));
+
+    let roundup = and(&guard, &or(&sticky, &extract(&kept0, 0, 0)));
+    let kept = add(&kept0, &zext(&roundup, w2));
+
+    let fw = eb + mb; // 7 for both fp8 formats
+                      // subnormal: {exp,frac} encoding carries up to the smallest normal for free.
+    let sub_res = bor(
+        &concat(sign, &cst(0, fw)),
+        &concat(sign, &extract(&kept, fw - 1, 0)),
+    );
+
+    // normal: a carry into bit mb+1 bumps the exponent.
+    let carry = is1(&extract(&kept, mb + 1, mb + 1));
+    let biased_n = ite(&carry, &add(&biased, &cst(1, 16)), &biased);
+    let kept_n = ite(&carry, &lshr(&kept, &cst(1, 16)), &kept);
+    let overflow = if ocp_top {
+        // OFP8: exponent value 15 is finite except with an all-ones mantissa
+        // (that slot is NaN => rounded magnitude >= 480 overflows).
+        or(
+            &sge(&biased_n, &cst(max_expf + 1, 16)),
+            &and(
+                &eq(&biased_n, &cst(max_expf, 16)),
+                &eq(&extract(&kept_n, mb - 1, 0), &cst((1u128 << mb) - 1, mb)),
+            ),
+        )
+    } else {
+        sge(&biased_n, &cst(max_expf, 16))
+    };
+    let packed = concat(
+        sign,
+        &concat(&extract(&biased_n, eb - 1, 0), &extract(&kept_n, mb - 1, 0)),
+    );
+    let norm_res = ite(&overflow, ovf_res, &packed);
+
+    let zero = concat(sign, &cst(0, fw));
+    ite(
+        &eq(sig, &cst(0, w)),
+        &zero,
+        &ite(&biased_le0, &sub_res, &norm_res),
+    )
+}
+
+fn e5m2_to_f32(p: FpCompat) -> FpFn {
+    let h = var("h", 8);
+    let s = extract(&h, 7, 7);
+    let e = extract(&h, 6, 2);
+    let f = extract(&h, 1, 0);
+    let e_top = eq(&e, &cst(0x1F, 5));
+    let e_z = eq(&e, &cst(0, 5));
+    let f_z = eq(&f, &cst(0, 2));
+    // value = sig3 * 2^e0: normal (4+f)*2^(e-17), subnormal f*2^-16.
+    // Zero-extend the significand to 48 bits (value-preserving) — normround
+    // internals need sig wide enough for its f32-field extracts and 16-bit
+    // shift constants; 48 matches the established mul-product call sites.
+    let sig3 = ite(&e_z, &concat(&cst(0, 1), &f), &concat(&cst(1, 1), &f));
+    let sig24 = zext(&sig3, 48);
+    let e0 = ite(
+        &e_z,
+        &cst((1u128 << 16) - 16, 16),
+        &sub(&zext(&e, 16), &cst(17, 16)),
+    );
+    let widened = normround(&s, &sig24, &e0); // exact: 3-bit sig, no rounding
+    let zero32 = concat(&s, &cst(0, 31));
+    let inf32 = concat(&s, &concat(&cst(0xFF, 8), &cst(0, 23)));
+    let body = ite(
+        &and(&e_top, &bnot(&f_z)),
+        &cst(nan32(p), 32),
+        &ite(
+            &e_top,
+            &inf32,
+            &ite(&eq(&sig3, &cst(0, 3)), &zero32, &widened),
+        ),
+    );
+    FpFn::new("arch_e5m2_to_f32", &[("h", 8)], 32, body)
+}
+
+fn e4m3_to_f32(p: FpCompat) -> FpFn {
+    let h = var("h", 8);
+    let s = extract(&h, 7, 7);
+    let e = extract(&h, 6, 3);
+    let f = extract(&h, 2, 0);
+    let is_nan8 = eq(&extract(&h, 6, 0), &cst(0x7F, 7)); // the ONLY NaN (OFP8)
+    let e_z = eq(&e, &cst(0, 4));
+    // No infinity arm: exp=15 with mantissa <7 are the normals 256..448.
+    // value = sig4 * 2^e0: normal (8+f)*2^(e-10), subnormal f*2^-9.
+    // Zero-extend the significand to 48 bits (value-preserving) — normround
+    // internals need sig wide enough for its f32-field extracts and 16-bit
+    // shift constants; 48 matches the established mul-product call sites.
+    let sig4 = ite(&e_z, &concat(&cst(0, 1), &f), &concat(&cst(1, 1), &f));
+    let sig24 = zext(&sig4, 48);
+    let e0 = ite(
+        &e_z,
+        &cst((1u128 << 16) - 9, 16),
+        &sub(&zext(&e, 16), &cst(10, 16)),
+    );
+    let widened = normround(&s, &sig24, &e0); // exact: 4-bit sig, no rounding
+    let zero32 = concat(&s, &cst(0, 31));
+    let body = ite(
+        &is_nan8,
+        &cst(nan32(p), 32),
+        &ite(&eq(&sig4, &cst(0, 4)), &zero32, &widened),
+    );
+    FpFn::new("arch_e4m3_to_f32", &[("h", 8)], 32, body)
+}
+
+fn f32_to_e5m2(p: FpCompat) -> FpFn {
+    let x = var("x", 32);
+    let d = decode(&x);
+    let s = &d.sign;
+    let inf8 = concat(s, &cst(0x7C, 7)); // ±inf: S.11111.00
+    let max8 = concat(s, &cst(0x7B, 7)); // ±max finite 57344
+    let (inf_res, ovf_res) = match p {
+        FpCompat::Riscv => (inf8.clone(), inf8.clone()),
+        FpCompat::Cuda => (max8.clone(), max8.clone()),
+    };
+    let rounded = fp8_round(5, 2, false, s, &d.mant, &d.eunb, &ovf_res);
+    let zero = concat(s, &cst(0, 7));
+    let body = ite(
+        &d.is_nan,
+        &cst(nan8_e5m2(p), 8),
+        &ite(&d.is_inf, &inf_res, &ite(&d.is_zero, &zero, &rounded)),
+    );
+    FpFn::new("arch_f32_to_e5m2", &[("x", 32)], 8, body)
+}
+
+fn f32_to_e4m3(p: FpCompat) -> FpFn {
+    let x = var("x", 32);
+    let d = decode(&x);
+    let s = &d.sign;
+    let max8 = concat(s, &cst(0x7E, 7)); // ±max finite 448
+    let nan8 = cst(nan8_e4m3(p), 8); // 0x7F, sign dropped (OFP8 canonical)
+    let (inf_res, ovf_res) = match p {
+        FpCompat::Riscv => (nan8.clone(), nan8.clone()),
+        FpCompat::Cuda => (max8.clone(), max8.clone()),
+    };
+    let rounded = fp8_round(4, 3, true, s, &d.mant, &d.eunb, &ovf_res);
+    let zero = concat(s, &cst(0, 7));
+    let body = ite(
+        &d.is_nan,
+        &nan8,
+        &ite(&d.is_inf, &inf_res, &ite(&d.is_zero, &zero, &rounded)),
+    );
+    FpFn::new("arch_f32_to_e4m3", &[("x", 32)], 8, body)
+}
+
+// fp8 arithmetic/compares = widen -> f32 op -> narrow, like bf16. Binary ops
+// are single-rounding-correct candidates (E4M3 add/sub are exact in f32 and
+// both muls fit 24 bits; exhaustively machine-checked in fp_smt_proof); fma
+// is fused f32-accumulate like arch_fma_bf16, NOT correctly-rounded fp8 (the
+// second rounding is characterized exhaustively — see tests/fp_v1).
+fn fp8_bin(name: &str, widen: &str, narrow: &str, f32fn: &str) -> FpFn {
+    let a = var("a", 8);
+    let b = var("b", 8);
+    let wa = call(widen, &[a.clone()], 32);
+    let wb = call(widen, &[b.clone()], 32);
+    let r = call(f32fn, &[wa, wb], 32);
+    let body = call(narrow, &[r], 8);
+    FpFn::new(name, &[("a", 8), ("b", 8)], 8, body)
+}
+fn fp8_fma(name: &str, widen: &str, narrow: &str) -> FpFn {
+    let a = var("a", 8);
+    let b = var("b", 8);
+    let c = var("c", 8);
+    let wa = call(widen, &[a.clone()], 32);
+    let wb = call(widen, &[b.clone()], 32);
+    let wc = call(widen, &[c.clone()], 32);
+    let r = call("arch_fma_f32", &[wa, wb, wc], 32);
+    let body = call(narrow, &[r], 8);
+    FpFn::new(name, &[("a", 8), ("b", 8), ("c", 8)], 8, body)
+}
+fn fp8_cmp(name: &str, widen: &str, f32fn: &str) -> FpFn {
+    let a = var("a", 8);
+    let b = var("b", 8);
+    let wa = call(widen, &[a.clone()], 32);
+    let wb = call(widen, &[b.clone()], 32);
+    let body = call(f32fn, &[wa, wb], 1);
+    FpFn::new(name, &[("a", 8), ("b", 8)], 1, body)
+}
+
 // Exact-wide alignment widths: large enough to hold the exact aligned
 // magnitude so no sticky/borrow logic is needed (the rounder re-derives
 // guard/round/sticky). add: 23 + max-exponent-spread(253) + carry. fma: 48-bit
@@ -795,6 +1045,40 @@ pub fn fp_functions(p: FpCompat) -> Vec<FpFn> {
     v.push(bf16_cmp("arch_bf16_gt", "arch_f32_gt"));
     v.push(bf16_cmp("arch_bf16_le", "arch_f32_le"));
     v.push(bf16_cmp("arch_bf16_ge", "arch_f32_ge"));
+    v.push(e5m2_to_f32(p));
+    v.push(f32_to_e5m2(p));
+    v.push(e4m3_to_f32(p));
+    v.push(f32_to_e4m3(p));
+    for (tag, widen, narrow) in [
+        ("e5m2", "arch_e5m2_to_f32", "arch_f32_to_e5m2"),
+        ("e4m3", "arch_e4m3_to_f32", "arch_f32_to_e4m3"),
+    ] {
+        v.push(fp8_bin(
+            &format!("arch_{tag}_add"),
+            widen,
+            narrow,
+            "arch_f32_add",
+        ));
+        v.push(fp8_bin(
+            &format!("arch_{tag}_sub"),
+            widen,
+            narrow,
+            "arch_f32_sub",
+        ));
+        v.push(fp8_bin(
+            &format!("arch_{tag}_mul"),
+            widen,
+            narrow,
+            "arch_f32_mul",
+        ));
+        v.push(fp8_fma(&format!("arch_fma_{tag}"), widen, narrow));
+        v.push(fp8_cmp(&format!("arch_{tag}_eq"), widen, "arch_f32_eq"));
+        v.push(fp8_cmp(&format!("arch_{tag}_ne"), widen, "arch_f32_ne"));
+        v.push(fp8_cmp(&format!("arch_{tag}_lt"), widen, "arch_f32_lt"));
+        v.push(fp8_cmp(&format!("arch_{tag}_gt"), widen, "arch_f32_gt"));
+        v.push(fp8_cmp(&format!("arch_{tag}_le"), widen, "arch_f32_le"));
+        v.push(fp8_cmp(&format!("arch_{tag}_ge"), widen, "arch_f32_ge"));
+    }
     v
 }
 

@@ -1348,6 +1348,8 @@ impl Parser {
                     | TokenKind::Bool
                     | TokenKind::FP32
                     | TokenKind::BF16
+                    | TokenKind::FP8E4M3
+                    | TokenKind::FP8E5M2
             )
         ) {
             // Logic-typed value const: `param NAME: UInt<W> = <default>;`
@@ -4163,6 +4165,14 @@ impl Parser {
             Some(TokenKind::BF16) => {
                 self.advance();
                 Ok(TypeExpr::BF16)
+            }
+            Some(TokenKind::FP8E4M3) => {
+                self.advance();
+                Ok(TypeExpr::FP8E4M3)
+            }
+            Some(TokenKind::FP8E5M2) => {
+                self.advance();
+                Ok(TypeExpr::FP8E5M2)
             }
             Some(TokenKind::Bit) => {
                 self.advance();

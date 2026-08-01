@@ -1096,6 +1096,12 @@ pub enum TypeExpr {
     FP32,
     /// bfloat16 (1 sign + 8 exp + 7 mant = 16 bits).
     BF16,
+    /// OCP OFP8 E4M3 (1 sign + 4 exp + 3 mant = 8 bits): no infinities,
+    /// sole NaN encoding S.1111.111, max finite 448.
+    FP8E4M3,
+    /// FP8 E5M2 (1 sign + 5 exp + 2 mant = 8 bits): IEEE-style (5,3)
+    /// instantiation with infinities and a NaN class, max finite 57344.
+    FP8E5M2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1264,6 +1270,8 @@ pub enum LitKind {
 pub enum FloatLitFmt {
     Fp32,
     Bf16,
+    E4m3,
+    E5m2,
 }
 
 impl FloatLitFmt {
@@ -1272,6 +1280,8 @@ impl FloatLitFmt {
         match self {
             FloatLitFmt::Fp32 => (8, 23),
             FloatLitFmt::Bf16 => (8, 7),
+            FloatLitFmt::E4m3 => (4, 3),
+            FloatLitFmt::E5m2 => (5, 2),
         }
     }
 
@@ -1280,6 +1290,8 @@ impl FloatLitFmt {
         match self {
             FloatLitFmt::Fp32 => 32,
             FloatLitFmt::Bf16 => 16,
+            FloatLitFmt::E4m3 => 8,
+            FloatLitFmt::E5m2 => 8,
         }
     }
 }

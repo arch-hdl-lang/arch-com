@@ -1,0 +1,48 @@
+// FP8 v1 exercise (E4M3 + E5M2): arithmetic, comparisons, fma, is_nan, and
+// the conversion surface. Plain comb outputs so the testbench sees
+// same-cycle results. E4M3 is OCP OFP8 (no infinities, sole NaN 0x7F,
+// exponent 15 with mantissa < 7 are the normals 256..448); E5M2 is
+// IEEE-style (5,3) with ±inf and a NaN class. Profile-dependent overflow
+// behavior lives in Fp8Prof.arch — everything here is identical under both
+// --fp-compat values.
+module Fp8Arith
+  port a4: in FP8E4M3;
+  port b4: in FP8E4M3;
+  port c4: in FP8E4M3;
+  port sum4:   out FP8E4M3;
+  port diff4:  out FP8E4M3;
+  port prod4:  out FP8E4M3;
+  port fused4: out FP8E4M3;
+  port a4_gt_b4:  out Bool;
+  port a4_is_nan: out Bool;
+  port a4_to_f:   out FP32;
+
+  port a5: in FP8E5M2;
+  port b5: in FP8E5M2;
+  port sum5:   out FP8E5M2;
+  port prod5:  out FP8E5M2;
+  port a5_lt_b5:  out Bool;
+  port a5_is_nan: out Bool;
+  port a5_to_f:   out FP32;
+
+  port f: in FP32;
+  port f_to_4: out FP8E4M3;
+  port f_to_5: out FP8E5M2;
+
+  comb sum4   = a4 + b4; end comb
+  comb diff4  = a4 - b4; end comb
+  comb prod4  = a4 * b4; end comb
+  comb fused4 = fma(a4, b4, c4); end comb
+  comb a4_gt_b4  = a4 > b4; end comb
+  comb a4_is_nan = is_nan(a4); end comb
+  comb a4_to_f   = a4.to_fp32(); end comb
+
+  comb sum5   = a5 + b5; end comb
+  comb prod5  = a5 * b5; end comb
+  comb a5_lt_b5  = a5 < b5; end comb
+  comb a5_is_nan = is_nan(a5); end comb
+  comb a5_to_f   = a5.to_fp32(); end comb
+
+  comb f_to_4 = f.to_fp8e4m3(); end comb
+  comb f_to_5 = f.to_fp8e5m2(); end comb
+end module Fp8Arith

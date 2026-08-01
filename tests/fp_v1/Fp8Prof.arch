@@ -1,0 +1,17 @@
+// Profile probe for the FP8 --fp-compat surface: f32->fp8 narrowing
+// overflow and NaN canonicalization differ per profile (see
+// doc/ARCH_HDL_Specification.md §3.8):
+//   riscv (default): E5M2 overflows to ±inf (0x7C/0xFC); E4M3 overflows to
+//     NaN 0x7F with the sign DROPPED (OCP has no infinities). Canonical
+//     NaNs: E4M3 0x7F, E5M2 0x7E.
+//   cuda: both formats saturate to ±max-finite (E4M3 0x7E/0xFE, E5M2
+//     0x7B/0xFB — PTX satfinite), including ±inf inputs. Canonical NaNs:
+//     E4M3 0x7F, E5M2 0x7F.
+// The testbench prints the raw bytes; fp_test.rs asserts per profile.
+module Fp8Prof
+  port f: in FP32;
+  port o4: out FP8E4M3;
+  port o5: out FP8E5M2;
+  comb o4 = f.to_fp8e4m3(); end comb
+  comb o5 = f.to_fp8e5m2(); end comb
+end module Fp8Prof

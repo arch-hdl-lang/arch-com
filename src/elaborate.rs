@@ -51,7 +51,10 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
     // 0x3F80 via the f32 route but correctly rounds to 0x3F81 — locked in
     // fp_lit's `double_rounding_via_f32_diverges_on_witness` test). The
     // fold's single-step result is the correctly-rounded one.
-    coerce_typed_float_literals(&mut ast);
+    let float_lit_errors = coerce_typed_float_literals(&mut ast);
+    if !float_lit_errors.is_empty() {
+        return Err(float_lit_errors);
+    }
 
     // Build enum variant → value map for resolving enum-typed params
     let enum_values: HashMap<String, Vec<(String, u64)>> = ast
@@ -256,30 +259,49 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
 /// exactly as type-mismatched as before — `typecheck` rejects them (a
 /// `TypedFloat`-typed slot expects `Ty::BF16`; an integer literal's inferred
 /// type is `Ty::UInt(_)`, a mismatch).
-fn coerce_typed_float_literals(ast: &mut SourceFile) {
+/// Narrow-float format a declared type coerces bare float literals into.
+/// FP32 is absent on purpose: bare literals already default to FP32.
+fn narrow_fmt_of_type(ty: &TypeExpr) -> Option<FloatLitFmt> {
+    match ty {
+        TypeExpr::BF16 => Some(FloatLitFmt::Bf16),
+        TypeExpr::FP8E4M3 => Some(FloatLitFmt::E4m3),
+        TypeExpr::FP8E5M2 => Some(FloatLitFmt::E5m2),
+        _ => None,
+    }
+}
+
+fn coerce_typed_float_literals(ast: &mut SourceFile) -> Vec<CompileError> {
+    let mut errors: Vec<CompileError> = Vec::new();
     for item in &mut ast.items {
         let Item::Module(m) = item else { continue };
 
         // Local (module-scope only — good enough for direct comparisons
         // against a same-module signal, which is the common case the #622
-        // issue calls out) ident -> declared type map, built from ports,
-        // `reg`/`port reg` decls, typed `let` bindings, and `wire` decls.
-        let mut bf16_idents: HashSet<String> = HashSet::new();
+        // issue calls out) ident -> narrow float format map, built from
+        // ports, `reg`/`port reg` decls, typed `let` bindings, and `wire`
+        // decls.
+        let mut narrow_idents: HashMap<String, FloatLitFmt> = HashMap::new();
         for p in &m.ports {
-            if matches!(p.ty, TypeExpr::BF16) {
-                bf16_idents.insert(p.name.name.clone());
+            if let Some(fmt) = narrow_fmt_of_type(&p.ty) {
+                narrow_idents.insert(p.name.name.clone(), fmt);
             }
         }
         for bi in &m.body {
             match bi {
-                ModuleBodyItem::RegDecl(r) if matches!(r.ty, TypeExpr::BF16) => {
-                    bf16_idents.insert(r.name.name.clone());
+                ModuleBodyItem::RegDecl(r) => {
+                    if let Some(fmt) = narrow_fmt_of_type(&r.ty) {
+                        narrow_idents.insert(r.name.name.clone(), fmt);
+                    }
                 }
-                ModuleBodyItem::LetBinding(l) if matches!(l.ty, Some(TypeExpr::BF16)) => {
-                    bf16_idents.insert(l.name.name.clone());
+                ModuleBodyItem::LetBinding(l) => {
+                    if let Some(fmt) = l.ty.as_ref().and_then(narrow_fmt_of_type) {
+                        narrow_idents.insert(l.name.name.clone(), fmt);
+                    }
                 }
-                ModuleBodyItem::WireDecl(w) if matches!(w.ty, TypeExpr::BF16) => {
-                    bf16_idents.insert(w.name.name.clone());
+                ModuleBodyItem::WireDecl(w) => {
+                    if let Some(fmt) = narrow_fmt_of_type(&w.ty) {
+                        narrow_idents.insert(w.name.name.clone(), fmt);
+                    }
                 }
                 _ => {}
             }
@@ -287,69 +309,101 @@ fn coerce_typed_float_literals(ast: &mut SourceFile) {
 
         // `port reg` outputs: `init`, `reset`, and `default` slots.
         for p in &mut m.ports {
-            if matches!(p.ty, TypeExpr::BF16) {
+            if let Some(fmt) = narrow_fmt_of_type(&p.ty) {
                 if let Some(ri) = &mut p.reg_info {
                     if let Some(init) = &mut ri.init {
-                        coerce_bf16_lit(init);
+                        coerce_narrow_lit(init, fmt, &mut errors);
                     }
-                    coerce_bf16_reset(&mut ri.reset);
+                    coerce_narrow_reset(&mut ri.reset, fmt, &mut errors);
                 }
                 if let Some(default) = &mut p.default {
-                    coerce_bf16_lit(default);
+                    coerce_narrow_lit(default, fmt, &mut errors);
                 }
             }
         }
 
         for bi in &mut m.body {
             match bi {
-                ModuleBodyItem::RegDecl(r) if matches!(r.ty, TypeExpr::BF16) => {
-                    if let Some(init) = &mut r.init {
-                        coerce_bf16_lit(init);
+                ModuleBodyItem::RegDecl(r) => {
+                    if let Some(fmt) = narrow_fmt_of_type(&r.ty) {
+                        if let Some(init) = &mut r.init {
+                            coerce_narrow_lit(init, fmt, &mut errors);
+                        }
+                        coerce_narrow_reset(&mut r.reset, fmt, &mut errors);
                     }
-                    coerce_bf16_reset(&mut r.reset);
                 }
-                ModuleBodyItem::LetBinding(l) if matches!(l.ty, Some(TypeExpr::BF16)) => {
-                    coerce_bf16_lit(&mut l.value);
+                ModuleBodyItem::LetBinding(l) => {
+                    if let Some(fmt) = l.ty.as_ref().and_then(narrow_fmt_of_type) {
+                        coerce_narrow_lit(&mut l.value, fmt, &mut errors);
+                    }
                 }
                 ModuleBodyItem::CombBlock(cb) => {
                     for s in &mut cb.stmts {
-                        coerce_bf16_lits_in_stmt(s, &bf16_idents);
+                        coerce_narrow_lits_in_stmt(s, &narrow_idents, &mut errors);
                     }
                 }
                 ModuleBodyItem::RegBlock(rb) => {
                     for s in &mut rb.stmts {
-                        coerce_bf16_lits_in_stmt(s, &bf16_idents);
+                        coerce_narrow_lits_in_stmt(s, &narrow_idents, &mut errors);
                     }
                 }
                 ModuleBodyItem::LatchBlock(lb) => {
                     for s in &mut lb.stmts {
-                        coerce_bf16_lits_in_stmt(s, &bf16_idents);
+                        coerce_narrow_lits_in_stmt(s, &narrow_idents, &mut errors);
                     }
                 }
                 ModuleBodyItem::Assert(a) => {
-                    coerce_bf16_lits_in_expr(&mut a.expr, &bf16_idents);
+                    coerce_narrow_lits_in_expr(&mut a.expr, &narrow_idents, &mut errors);
                 }
                 _ => {}
             }
         }
     }
+    errors
 }
 
-/// Apply [`coerce_bf16_lit`] to the value expression of a reset clause.
-fn coerce_bf16_reset(reset: &mut RegReset) {
+/// Apply [`coerce_narrow_lit`] to the value expression of a reset clause.
+fn coerce_narrow_reset(reset: &mut RegReset, fmt: FloatLitFmt, errors: &mut Vec<CompileError>) {
     match reset {
-        RegReset::Explicit(_, _, _, v) | RegReset::Inherit(_, v) => coerce_bf16_lit(v),
+        RegReset::Explicit(_, _, _, v) | RegReset::Inherit(_, v) => {
+            coerce_narrow_lit(v, fmt, errors)
+        }
         RegReset::None => {}
     }
 }
 
 /// If `e` is a bare float literal, replace it in place with the compile-time
-/// bf16-rounded `LitKind::TypedFloat`. Non-literal expressions are untouched.
-fn coerce_bf16_lit(e: &mut Expr) {
+/// rounded `LitKind::TypedFloat` for `fmt`. Non-literal expressions are
+/// untouched. An fp8 literal whose rounded magnitude overflows the format's
+/// largest finite is a compile error (runtime overflow behavior depends on
+/// `--fp-compat`, so a source constant must not fold profile-dependently).
+fn coerce_narrow_lit(e: &mut Expr, fmt: FloatLitFmt, errors: &mut Vec<CompileError>) {
     if let ExprKind::Literal(LitKind::Float(bits)) = &e.kind {
         let v = f64::from_bits(*bits);
-        let rounded = crate::fp_lit::f64_to_bf16_bits(v) as u64;
-        e.kind = ExprKind::Literal(LitKind::TypedFloat(FloatLitFmt::Bf16, rounded));
+        let rounded: Option<u64> = match fmt {
+            FloatLitFmt::Bf16 => Some(crate::fp_lit::f64_to_bf16_bits(v) as u64),
+            FloatLitFmt::Fp32 => Some(crate::fp_lit::f64_to_fp32_bits(v) as u64),
+            FloatLitFmt::E4m3 => crate::fp_lit::f64_to_e4m3_bits(v).map(|b| b as u64),
+            FloatLitFmt::E5m2 => crate::fp_lit::f64_to_e5m2_bits(v).map(|b| b as u64),
+        };
+        match rounded {
+            Some(bits8) => {
+                e.kind = ExprKind::Literal(LitKind::TypedFloat(fmt, bits8));
+            }
+            None => {
+                let (name, max) = match fmt {
+                    FloatLitFmt::E4m3 => ("FP8E4M3", 448.0),
+                    _ => ("FP8E5M2", 57344.0),
+                };
+                errors.push(CompileError::general(
+                    &format!(
+                        "float literal {v} overflows {name} (largest finite value is {max}) — \
+use an FP32 value and convert at runtime if saturation/infinity is intended"
+                    ),
+                    e.span,
+                ));
+            }
+        }
     }
 }
 
@@ -362,89 +416,98 @@ fn coerce_bf16_lit(e: &mut Expr) {
 /// `(a_bf16 + 1.0) > 2.0`) is still found. Does not cross a `Cast`/
 /// `MethodCall` boundary that already fixes a different float type (e.g.
 /// inside `x.to_fp32()`'s argument) — those already have explicit typing.
-fn coerce_bf16_lits_in_expr(e: &mut Expr, bf16_idents: &HashSet<String>) {
+fn coerce_narrow_lits_in_expr(
+    e: &mut Expr,
+    narrow_idents: &HashMap<String, FloatLitFmt>,
+    errors: &mut Vec<CompileError>,
+) {
     match &mut e.kind {
         ExprKind::Binary(_, lhs, rhs) => {
-            let lhs_is_bf16 = ident_is_bf16(lhs, bf16_idents);
-            let rhs_is_bf16 = ident_is_bf16(rhs, bf16_idents);
-            if rhs_is_bf16 {
-                coerce_bf16_lit(lhs);
+            if let Some(fmt) = ident_narrow_fmt(rhs, narrow_idents) {
+                coerce_narrow_lit(lhs, fmt, errors);
             }
-            if lhs_is_bf16 {
-                coerce_bf16_lit(rhs);
+            if let Some(fmt) = ident_narrow_fmt(lhs, narrow_idents) {
+                coerce_narrow_lit(rhs, fmt, errors);
             }
-            coerce_bf16_lits_in_expr(lhs, bf16_idents);
-            coerce_bf16_lits_in_expr(rhs, bf16_idents);
+            coerce_narrow_lits_in_expr(lhs, narrow_idents, errors);
+            coerce_narrow_lits_in_expr(rhs, narrow_idents, errors);
         }
         ExprKind::Unary(_, inner) | ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => {
-            coerce_bf16_lits_in_expr(inner, bf16_idents);
+            coerce_narrow_lits_in_expr(inner, narrow_idents, errors);
         }
         ExprKind::Ternary(cond, t, f) => {
-            coerce_bf16_lits_in_expr(cond, bf16_idents);
-            coerce_bf16_lits_in_expr(t, bf16_idents);
-            coerce_bf16_lits_in_expr(f, bf16_idents);
+            coerce_narrow_lits_in_expr(cond, narrow_idents, errors);
+            coerce_narrow_lits_in_expr(t, narrow_idents, errors);
+            coerce_narrow_lits_in_expr(f, narrow_idents, errors);
         }
-        ExprKind::FieldAccess(base, _) => coerce_bf16_lits_in_expr(base, bf16_idents),
+        ExprKind::FieldAccess(base, _) => coerce_narrow_lits_in_expr(base, narrow_idents, errors),
         ExprKind::MethodCall(base, _, args) => {
-            coerce_bf16_lits_in_expr(base, bf16_idents);
+            coerce_narrow_lits_in_expr(base, narrow_idents, errors);
             for a in args {
-                coerce_bf16_lits_in_expr(a, bf16_idents);
+                coerce_narrow_lits_in_expr(a, narrow_idents, errors);
             }
         }
         ExprKind::FunctionCall(_, args) => {
             for a in args {
-                coerce_bf16_lits_in_expr(a, bf16_idents);
+                coerce_narrow_lits_in_expr(a, narrow_idents, errors);
             }
         }
         ExprKind::Index(base, idx) => {
-            coerce_bf16_lits_in_expr(base, bf16_idents);
-            coerce_bf16_lits_in_expr(idx, bf16_idents);
+            coerce_narrow_lits_in_expr(base, narrow_idents, errors);
+            coerce_narrow_lits_in_expr(idx, narrow_idents, errors);
         }
         ExprKind::Concat(items) => {
             for it in items {
-                coerce_bf16_lits_in_expr(it, bf16_idents);
+                coerce_narrow_lits_in_expr(it, narrow_idents, errors);
             }
         }
         ExprKind::Repeat(n, inner) => {
-            coerce_bf16_lits_in_expr(n, bf16_idents);
-            coerce_bf16_lits_in_expr(inner, bf16_idents);
+            coerce_narrow_lits_in_expr(n, narrow_idents, errors);
+            coerce_narrow_lits_in_expr(inner, narrow_idents, errors);
         }
-        ExprKind::Inside(base, _) => coerce_bf16_lits_in_expr(base, bf16_idents),
+        ExprKind::Inside(base, _) => coerce_narrow_lits_in_expr(base, narrow_idents, errors),
         _ => {}
     }
 }
 
-/// True if `e` is a bare identifier declared with BF16 type in the current
-/// module scope.
-fn ident_is_bf16(e: &Expr, bf16_idents: &HashSet<String>) -> bool {
-    matches!(&e.kind, ExprKind::Ident(name) if bf16_idents.contains(name))
+/// Narrow float format of `e` when it is a bare identifier declared with a
+/// narrow float type in the current module scope.
+fn ident_narrow_fmt(e: &Expr, narrow_idents: &HashMap<String, FloatLitFmt>) -> Option<FloatLitFmt> {
+    match &e.kind {
+        ExprKind::Ident(name) => narrow_idents.get(name).copied(),
+        _ => None,
+    }
 }
 
 /// Walk a statement tree (comb/seq/latch bodies), applying
 /// [`coerce_bf16_lits_in_expr`] to every expression reachable from it
 /// (assignment RHS, condition exprs, nested if/for/match bodies).
-fn coerce_bf16_lits_in_stmt(s: &mut Stmt, bf16_idents: &HashSet<String>) {
+fn coerce_narrow_lits_in_stmt(
+    s: &mut Stmt,
+    narrow_idents: &HashMap<String, FloatLitFmt>,
+    errors: &mut Vec<CompileError>,
+) {
     match s {
-        Stmt::Assign(a) => coerce_bf16_lits_in_expr(&mut a.value, bf16_idents),
+        Stmt::Assign(a) => coerce_narrow_lits_in_expr(&mut a.value, narrow_idents, errors),
         Stmt::IfElse(ie) => {
-            coerce_bf16_lits_in_expr(&mut ie.cond, bf16_idents);
+            coerce_narrow_lits_in_expr(&mut ie.cond, narrow_idents, errors);
             for s in &mut ie.then_stmts {
-                coerce_bf16_lits_in_stmt(s, bf16_idents);
+                coerce_narrow_lits_in_stmt(s, narrow_idents, errors);
             }
             for s in &mut ie.else_stmts {
-                coerce_bf16_lits_in_stmt(s, bf16_idents);
+                coerce_narrow_lits_in_stmt(s, narrow_idents, errors);
             }
         }
         Stmt::For(fl) => {
             for s in &mut fl.body {
-                coerce_bf16_lits_in_stmt(s, bf16_idents);
+                coerce_narrow_lits_in_stmt(s, narrow_idents, errors);
             }
         }
         Stmt::Match(me) => {
-            coerce_bf16_lits_in_expr(&mut me.scrutinee, bf16_idents);
+            coerce_narrow_lits_in_expr(&mut me.scrutinee, narrow_idents, errors);
             for arm in &mut me.arms {
                 for s in &mut arm.body {
-                    coerce_bf16_lits_in_stmt(s, bf16_idents);
+                    coerce_narrow_lits_in_stmt(s, narrow_idents, errors);
                 }
             }
         }
