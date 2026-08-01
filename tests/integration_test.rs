@@ -9588,6 +9588,159 @@ fn test_pybind_struct_bindings_transitive_closure() {
     );
 }
 
+/// Closes arch-com#759: `arch sim --pybind` used to fail to *compile* for
+/// any struct with a `Vec<T,N>` field, because the generated binding did
+/// `.def_readwrite("<field>", &S::<field>)` on a raw C array member, and
+/// raw C arrays aren't assignable in C++ (pybind11 rejects it at compile
+/// time — "array type ... is not assignable"). Option B's std::array
+/// carrier (`cpp_field_decl` / `cpp_std_array_type` in
+/// `src/sim_codegen/mod.rs`) fixes this as a direct consequence: a
+/// `std::array<T,N>` field IS copy-assignable, and pybind11's
+/// `<pybind11/stl.h>` (already included by every generated `*_pybind.cpp`)
+/// binds it to/from a Python list automatically — no special-case pybind
+/// codegen was needed.
+///
+/// This is an end-to-end regression, not just a codegen-text check: it
+/// really runs `arch sim --pybind`, really compiles the resulting `.so`
+/// with the system's pybind11/Python, and really reads/writes the Vec
+/// field from Python through the compiled extension. Reproduces both of
+/// doc/proposal_vec_payload_interop.md §2.3's fixtures — a plain struct
+/// port (`PlainPortVecStruct.arch`, inlined here since the memo's copy was
+/// characterization-only and never committed) and the in-tree TLM
+/// `rsp_data` fixture (`tests/axi_dma_tlm/TlmIndexedBurstTarget.arch`, no
+/// new struct shape needed).
+#[test]
+fn test_pybind_vec_field_struct_compiles_and_field_access_works() {
+    if std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping --pybind Vec-field struct regression (#759): python3 not found");
+        return;
+    }
+    // `arch sim --pybind` shells out to `python3 -m pybind11 --includes` to
+    // locate headers; skip cleanly if pybind11 isn't installed rather than
+    // failing on an environment gap unrelated to the fix under test.
+    let pybind11_available = std::process::Command::new("python3")
+        .args(["-c", "import pybind11"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !pybind11_available {
+        eprintln!("skipping --pybind Vec-field struct regression (#759): pybind11 not importable");
+        return;
+    }
+
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let td = tempfile::tempdir().expect("tempdir");
+
+    // (a) Plain struct port — doc/proposal_vec_payload_interop.md §2.3's
+    // `PlainPortVecStruct.arch` repro shape.
+    let arch_src = td.path().join("PlainPortVecStruct.arch");
+    std::fs::write(
+        &arch_src,
+        "
+        struct BoundedVecResp32x4
+          data: Vec<UInt<32>, 4>;
+          len: UInt<3>;
+          resp: UInt<2>;
+        end struct BoundedVecResp32x4
+
+        module PlainPortVecStruct
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port sel: in UInt<2>;
+          port out_val: out BoundedVecResp32x4;
+
+          reg lane: Vec<BoundedVecResp32x4, 4> reset rst => 0;
+
+          comb
+            out_val = lane[sel];
+          end comb
+        end module PlainPortVecStruct
+        ",
+    )
+    .expect("write PlainPortVecStruct.arch fixture");
+
+    let outdir = td.path().join("out_plain");
+    std::fs::create_dir_all(&outdir).expect("mkdir out_plain");
+    let build = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("--pybind")
+        .arg(&arch_src)
+        .arg("--outdir")
+        .arg(&outdir)
+        .output()
+        .expect("run arch sim --pybind for plain struct port");
+    assert!(
+        build.status.success(),
+        "arch sim --pybind should compile a Vec-field struct (closes arch-com#759)\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let has_so = std::fs::read_dir(&outdir)
+        .expect("read outdir")
+        .filter_map(|e| e.ok())
+        .any(|e| e.path().extension().map(|e| e == "so").unwrap_or(false));
+    assert!(has_so, "expected a compiled pybind .so in {outdir:?}");
+
+    let py_script = format!(
+        "import sys\n\
+         sys.path.insert(0, {:?})\n\
+         import VPlainPortVecStruct_pybind as m\n\
+         s = m.BoundedVecResp32x4()\n\
+         s.data = [1, 2, 3, 4]\n\
+         s.len = 2\n\
+         s.resp = 1\n\
+         assert list(s.data) == [1, 2, 3, 4], list(s.data)\n\
+         assert s.len == 2\n\
+         assert s.resp == 1\n\
+         d = m.VPlainPortVecStruct()\n\
+         assert d is not None\n\
+         print('PYBIND_VEC_FIELD_OK')\n",
+        outdir.to_str().expect("utf8 outdir path")
+    );
+    let run = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(&py_script)
+        .output()
+        .expect("run python3 against the compiled pybind extension");
+    assert!(
+        run.status.success(),
+        "Python-side Vec-field struct access should work through the \
+         compiled extension\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("PYBIND_VEC_FIELD_OK"),
+        "expected PYBIND_VEC_FIELD_OK marker:\n{}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+
+    // (b) TLM rsp_data struct — reuse the in-tree fixture verbatim, no new
+    // struct shape (matches the memo's own touch-list recommendation).
+    let outdir2 = td.path().join("out_tlm");
+    std::fs::create_dir_all(&outdir2).expect("mkdir out_tlm");
+    let build2 = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("--pybind")
+        .arg("tests/axi_dma_tlm/TlmIndexedBurstTarget.arch")
+        .arg("--outdir")
+        .arg(&outdir2)
+        .output()
+        .expect("run arch sim --pybind for TLM rsp_data struct");
+    assert!(
+        build2.status.success(),
+        "arch sim --pybind should compile a TLM struct+Vec rsp_data payload \
+         (closes arch-com#759)\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build2.stdout),
+        String::from_utf8_lossy(&build2.stderr)
+    );
+}
+
 #[test]
 fn test_trace_skips_struct_typed_let_and_wire() {
     // Struct-typed `let` and `wire` decls must NOT appear in the VCD trace
@@ -11684,7 +11837,7 @@ fn test_thread_loop_vec_bounds_assertion_is_state_guarded() {
 }
 
 #[test]
-fn test_struct_vec_field_sim_mirror_uses_array_field() {
+fn test_struct_vec_field_sim_mirror_uses_std_array_field() {
     let source = "
         struct BoundedVecResp32x4
           data: Vec<UInt<32>, 4>;
@@ -11713,9 +11866,16 @@ fn test_struct_vec_field_sim_mirror_uses_array_field() {
         end module StructVecFieldsSmoke
     ";
     let out = compile_to_sim_h(source, false);
+    // Option B (arch-com#500 Gap 3 / #759): struct Vec fields carry as
+    // `std::array<T,N>` (harc-style carrier), not a raw C array — raw
+    // arrays aren't copy-assignable and break pybind11 `.def_readwrite`.
     assert!(
-        out.contains("uint32_t data[4];"),
-        "struct Vec field should emit as a C++ array:\n{out}"
+        out.contains("std::array<uint32_t, 4> data;"),
+        "struct Vec field should emit as a std::array carrier:\n{out}"
+    );
+    assert!(
+        out.contains("#include <array>"),
+        "VStructs.h should include <array> for the std::array carrier:\n{out}"
     );
     assert!(
         out.contains("out0  = _r.data[0];"),
@@ -11776,6 +11936,195 @@ fn test_tlm_struct_vec_response_sim_mirror_compiles_shape() {
     assert!(
         !out.contains("m_read_burst_rsp_data >>"),
         "struct response should not be emitted as a scalar trace expression:\n{out}"
+    );
+}
+
+/// Ratifies Option A/C of `doc/proposal_vec_payload_interop.md`: the
+/// struct+Vec SV-boundary bit layout ARCH already emits (declaration-first
+/// field = MSB, and within a `Vec<T,N>` field element `N-1` = local MSB /
+/// element `0` = local LSB) is now the documented, normative convention
+/// (`doc/ARCH_HDL_Specification.md` §3.1), matching harc-com spec.md's
+/// "HARC/ARCH Interop ABI". This test pins it two ways:
+///   1. The emitted `typedef struct packed { ... }` is byte-identical
+///      whether the struct backs a plain `out` port or a TLM `rsp_data`
+///      port — no divergent flatten path for TLM (memo §2.1).
+///   2. Feeding that exact typedef through a real SV elaborator
+///      (Verilator) with the memo's worked-example values lands every
+///      field/element at the exact bit range the memo verified against
+///      two independent toolchains: `flat[132:101]=data[3]`,
+///      `flat[100:69]=data[2]`, `flat[68:37]=data[1]`, `flat[36:5]=data[0]`,
+///      `flat[4:2]=len`, `flat[1:0]=resp`.
+#[test]
+fn test_struct_vec_field_sv_bit_layout_plain_and_tlm_pin() {
+    const STRUCT_DECL: &str = "
+        struct BoundedVecResp32x4
+          data: Vec<UInt<32>, 4>;
+          len: UInt<3>;
+          resp: UInt<2>;
+        end struct BoundedVecResp32x4
+    ";
+
+    // (a) Plain struct port — same struct type, no TLM involved.
+    let plain_source = format!(
+        "{STRUCT_DECL}
+        module PlainPortVecStruct
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port sel: in UInt<2>;
+          port out_val: out BoundedVecResp32x4;
+
+          reg lane: Vec<BoundedVecResp32x4, 4> reset rst => 0;
+
+          comb
+            out_val = lane[sel];
+          end comb
+        end module PlainPortVecStruct
+        "
+    );
+    let plain_sv = compile_to_sv(&plain_source);
+
+    // (b) TLM rsp_data port — reuse the in-tree fixture verbatim, no new
+    // struct shape (matches the memo's own touch-list recommendation).
+    let tlm_source = include_str!("axi_dma_tlm/TlmIndexedBurstTarget.arch");
+    let tlm_sv = compile_to_sv(tlm_source);
+
+    fn extract_typedef<'a>(sv: &'a str, struct_name: &str) -> &'a str {
+        let start = sv
+            .find("typedef struct packed {")
+            .unwrap_or_else(|| panic!("no struct typedef found in emitted SV:\n{sv}"));
+        let close_marker = format!("}} {struct_name};");
+        let close_rel = sv[start..]
+            .find(&close_marker)
+            .unwrap_or_else(|| panic!("no closing `{close_marker}` in emitted SV:\n{sv}"));
+        &sv[start..start + close_rel + close_marker.len()]
+    }
+
+    let plain_typedef = extract_typedef(&plain_sv, "BoundedVecResp32x4");
+    let tlm_typedef = extract_typedef(&tlm_sv, "BoundedVecResp32x4");
+    assert_eq!(
+        plain_typedef, tlm_typedef,
+        "struct+Vec typedef must be byte-identical whether the struct backs \
+         a plain port or a TLM rsp_data port — a divergent flatten path \
+         would silently break the ARCH<->HARC interop ABI:\nplain:\n{plain_typedef}\ntlm:\n{tlm_typedef}"
+    );
+    assert!(
+        plain_typedef.contains("logic [3:0] [31:0] data;"),
+        "Vec<UInt<32>,4> field must emit as a packed multi-dim array \
+         (element N-1 at the field's own MSB):\n{plain_typedef}"
+    );
+    assert!(
+        plain_sv.contains("output BoundedVecResp32x4 out_val"),
+        "plain struct port should use the struct type directly, not a \
+         flattened bit vector:\n{plain_sv}"
+    );
+    assert!(
+        tlm_sv.contains("BoundedVecResp32x4 s_read_burst_rsp_data"),
+        "TLM rsp_data port should use the same struct type directly:\n{tlm_sv}"
+    );
+
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping struct+Vec bit-layout Verilator probe: verilator not found");
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let probe_sv = td.path().join("struct_vec_layout_probe.sv");
+    // Mirrors doc/proposal_vec_payload_interop.md §2.1's `layout_probe.sv`
+    // experiment exactly (same struct shape, same assigned values, same
+    // expected FULL_FLAT hex), but built from the typedef ARCH's *current*
+    // codegen actually emits (extracted above) rather than a hand-copied
+    // literal, and with per-range `assert`-style checks instead of just a
+    // printed hex string, so a future codegen change that silently
+    // reorders fields or flips the Vec sub-layout fails this test instead
+    // of only being catchable by eyeballing a hex dump.
+    let probe_src = format!(
+        r#"{plain_typedef}
+
+module struct_vec_layout_probe;
+  BoundedVecResp32x4 x;
+  logic [132:0] flat;
+  initial begin
+    x.data[0] = 32'h1111_1111;
+    x.data[1] = 32'h2222_2222;
+    x.data[2] = 32'h3333_3333;
+    x.data[3] = 32'h4444_4444;
+    x.len     = 3'h5;
+    x.resp    = 2'h1;
+    flat = x;
+
+    if (flat[132:101] !== x.data[3]) begin
+      $display("FAIL data[3] range: got %h want %h", flat[132:101], x.data[3]);
+      $fatal(1);
+    end
+    if (flat[100:69] !== x.data[2]) begin
+      $display("FAIL data[2] range: got %h want %h", flat[100:69], x.data[2]);
+      $fatal(1);
+    end
+    if (flat[68:37] !== x.data[1]) begin
+      $display("FAIL data[1] range: got %h want %h", flat[68:37], x.data[1]);
+      $fatal(1);
+    end
+    if (flat[36:5] !== x.data[0]) begin
+      $display("FAIL data[0] range: got %h want %h", flat[36:5], x.data[0]);
+      $fatal(1);
+    end
+    if (flat[4:2] !== x.len) begin
+      $display("FAIL len range: got %h want %h", flat[4:2], x.len);
+      $fatal(1);
+    end
+    if (flat[1:0] !== x.resp) begin
+      $display("FAIL resp range: got %h want %h", flat[1:0], x.resp);
+      $fatal(1);
+    end
+    if (flat !== 133'h0888888886666666644444444222222235) begin
+      $display("FAIL full flat mismatch: got %h", flat);
+      $fatal(1);
+    end
+    $display("PASS struct_vec_layout_probe");
+    $finish;
+  end
+endmodule
+"#
+    );
+    std::fs::write(&probe_sv, probe_src).expect("write struct_vec_layout_probe.sv");
+
+    let obj_dir = td.path().join("obj_dir");
+    let verilate = std::process::Command::new("verilator")
+        .arg("--binary")
+        .arg("--sv")
+        .arg("-Wno-fatal")
+        .arg("--top-module")
+        .arg("struct_vec_layout_probe")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&probe_sv)
+        .output()
+        .expect("verilate struct_vec_layout_probe");
+    assert!(
+        verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr)
+    );
+
+    let exe = obj_dir.join("Vstruct_vec_layout_probe");
+    let run = std::process::Command::new(&exe)
+        .output()
+        .expect("run struct_vec_layout_probe");
+    assert!(
+        run.status.success(),
+        "struct+Vec bit-layout probe should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("PASS struct_vec_layout_probe"),
+        "expected PASS marker in Verilator stdout:\n{}",
+        String::from_utf8_lossy(&run.stdout)
     );
 }
 
@@ -13945,10 +14294,20 @@ fn test_axi_dma_tlm_burst_vec_bfm_connect_compiles() {
     );
 
     let sim = compile_to_sim_h(source, false);
+    // Option B (arch-com#500 Gap 3 / #759): the bus-as-wire struct's Vec
+    // payload field goes through the same `cpp_field_decl` path as ARCH
+    // `struct` fields, so it carries as `std::array<T,N>` too.
     assert!(
-        sim.contains("uint32_t read_burst_rsp_data[4];"),
-        "sim bus-as-wire struct should keep Vec payload fields as arrays:\n{sim}"
+        sim.contains("std::array<uint32_t, 4> read_burst_rsp_data;"),
+        "sim bus-as-wire struct should carry Vec payload fields as std::array:\n{sim}"
     );
+    assert!(
+        sim.contains("std::memset(read_burst_rsp_data.data(), 0, sizeof(read_burst_rsp_data))"),
+        "bus-as-wire struct ctor should zero the std::array via .data(), not decay-to-pointer:\n{sim}"
+    );
+    // Module-level Vec-typed TLM ports (not struct fields) are a separate,
+    // out-of-scope code path and must remain raw C arrays with flat lane
+    // aliases, unchanged by the std::array carrier work above.
     assert!(
         sim.contains("uint32_t mem_read_burst_rsp_data[4];")
             && sim.contains("uint32_t& mem_read_burst_rsp_data_0;")
