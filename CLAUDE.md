@@ -26,6 +26,15 @@ Better patterns:
 - Use `todo!()` or `unreachable!()` for *intentionally* unreachable code (with
   appropriate runtime panic semantics).
 
+### Proving a refactor changed nothing observable
+
+For a MOVE-ONLY refactor (e.g. splitting a large codegen file into sibling
+modules) that must not change emitted output, run
+`scripts/refactor_diff.sh <base-ref>` before opening the PR — it builds `arch`
+at both `<base-ref>` and HEAD and byte-diffs every emitted `.sv`/`.archi`/sim
+`.h`/`.cpp` file across the full regression corpus; zero diffs is the gate,
+not "tests still pass". See the script header for usage and caveats.
+
 ## Never invoke a stale compiler binary
 
 A long-lived `target/release/arch` only changes when someone runs `cargo build`.
