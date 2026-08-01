@@ -1241,7 +1241,7 @@ impl<'a> Codegen<'a> {
             for stmt in &cb.stmts {
                 if let Stmt::Assign(a) = stmt {
                     let val = self.emit_expr_str(&a.value);
-                    let tgt = self.emit_expr_str(&a.target);
+                    let tgt = self.emit_lvalue_str(&a.target);
                     self.line(&format!("assign {} = {};", tgt, val));
                 }
             }

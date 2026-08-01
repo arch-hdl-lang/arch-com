@@ -585,15 +585,8 @@ impl<'a> Codegen<'a> {
                                     &stage_regs,
                                     &port_names,
                                 );
-                                let target = if let ExprKind::Ident(name) = &a.target.kind {
-                                    if port_names.contains(name) {
-                                        name.clone()
-                                    } else {
-                                        format!("{}_{}", prefix, name)
-                                    }
-                                } else {
-                                    self.emit_expr_str(&a.target)
-                                };
+                                let target =
+                                    self.emit_pipeline_lhs_str(&a.target, &prefix, &port_names);
                                 self.line(&format!("assign {} = {};", target, val));
                             }
                         }
@@ -1017,7 +1010,30 @@ impl<'a> Codegen<'a> {
                     format!("{}_{}", current_prefix, name)
                 }
             }
-            _ => self.emit_expr_str(expr),
+            ExprKind::Index(base, idx) => {
+                let b = self.emit_pipeline_lhs_str(base, current_prefix, port_names);
+                let i = self.emit_expr_str(idx);
+                format!("{b}[{i}]")
+            }
+            ExprKind::BitSlice(base, hi, lo) => {
+                let b = self.emit_pipeline_lhs_str(base, current_prefix, port_names);
+                if let Some(width) = Self::try_indexed_part_select(hi, lo) {
+                    let l = self.emit_expr_str(lo);
+                    format!("{b}[{l} +: {width}]")
+                } else {
+                    let h = self.emit_expr_str(hi);
+                    let l = self.emit_expr_str(lo);
+                    format!("{b}[{h}:{l}]")
+                }
+            }
+            ExprKind::PartSelect(base, start, width, up) => {
+                let b = self.emit_pipeline_lhs_str(base, current_prefix, port_names);
+                let s = self.emit_expr_str(start);
+                let w = self.emit_expr_str(width);
+                let op = if *up { "+:" } else { "-:" };
+                format!("{b}[{s} {op} {w}]")
+            }
+            _ => self.emit_lvalue_str(expr),
         }
     }
 
@@ -1250,15 +1266,7 @@ impl<'a> Codegen<'a> {
                     stage_regs,
                     port_names,
                 );
-                let target = if let ExprKind::Ident(name) = &a.target.kind {
-                    if port_names.contains(name) {
-                        name.clone()
-                    } else {
-                        format!("{}_{}", current_prefix, name)
-                    }
-                } else {
-                    self.emit_expr_str(&a.target)
-                };
+                let target = self.emit_pipeline_lhs_str(&a.target, current_prefix, port_names);
                 self.line(&format!("{} = {};", target, val));
             }
             Stmt::IfElse(ie) => {
@@ -1478,6 +1486,73 @@ impl<'a> Codegen<'a> {
         self.line("end");
     }
 
+    fn emit_pipeline_stage_index_str(
+        &self,
+        base: &Expr,
+        idx: &Expr,
+        preserve_signed_element: bool,
+        current_prefix: &str,
+        current_stage_idx: usize,
+        stage_names: &[&str],
+        stage_regs: &[Vec<(String, String, String)>],
+        port_names: &std::collections::HashSet<String>,
+    ) -> String {
+        let b = self.emit_pipeline_stage_selection_base_str(
+            base,
+            current_prefix,
+            current_stage_idx,
+            stage_names,
+            stage_regs,
+            port_names,
+        );
+        let i = self.emit_pipeline_stage_expr_str(
+            idx,
+            current_prefix,
+            current_stage_idx,
+            stage_names,
+            stage_regs,
+            port_names,
+        );
+        let selected = format!("{b}[{i}]");
+        if preserve_signed_element && self.index_result_is_sint(base) {
+            format!("$signed({selected})")
+        } else {
+            selected
+        }
+    }
+
+    fn emit_pipeline_stage_selection_base_str(
+        &self,
+        expr: &Expr,
+        current_prefix: &str,
+        current_stage_idx: usize,
+        stage_names: &[&str],
+        stage_regs: &[Vec<(String, String, String)>],
+        port_names: &std::collections::HashSet<String>,
+    ) -> String {
+        if let ExprKind::Index(base, idx) = &expr.kind {
+            self.emit_pipeline_stage_index_str(
+                base,
+                idx,
+                false,
+                current_prefix,
+                current_stage_idx,
+                stage_names,
+                stage_regs,
+                port_names,
+            )
+        } else {
+            self.emit_pipeline_stage_expr_str(
+                expr,
+                current_prefix,
+                current_stage_idx,
+                stage_names,
+                stage_regs,
+                port_names,
+            )
+        }
+    }
+
     /// Emit an expression within a specific stage context (knows which stage it's in,
     /// so bare identifiers that are stage registers get prefixed).
     fn emit_pipeline_stage_expr_str(
@@ -1564,6 +1639,7 @@ impl<'a> Codegen<'a> {
                     BinOp::BitOr => "|",
                     BinOp::BitXor => "^",
                     BinOp::Shl => "<<",
+                    BinOp::Shr if self.expr_is_signed(lhs) => ">>>",
                     BinOp::Shr => ">>",
                     BinOp::Implies | BinOp::ImpliesNext => unreachable!(),
                 };
@@ -1652,27 +1728,18 @@ impl<'a> Codegen<'a> {
                     _ => format!("{b}.{}()", method.name),
                 }
             }
-            ExprKind::Index(base, idx) => {
-                let b = self.emit_pipeline_stage_expr_str(
-                    base,
-                    current_prefix,
-                    current_stage_idx,
-                    stage_names,
-                    stage_regs,
-                    port_names,
-                );
-                let i = self.emit_pipeline_stage_expr_str(
-                    idx,
-                    current_prefix,
-                    current_stage_idx,
-                    stage_names,
-                    stage_regs,
-                    port_names,
-                );
-                format!("{b}[{i}]")
-            }
+            ExprKind::Index(base, idx) => self.emit_pipeline_stage_index_str(
+                base,
+                idx,
+                true,
+                current_prefix,
+                current_stage_idx,
+                stage_names,
+                stage_regs,
+                port_names,
+            ),
             ExprKind::BitSlice(base, hi, lo) => {
-                let b = self.emit_pipeline_stage_expr_str(
+                let b = self.emit_pipeline_stage_selection_base_str(
                     base,
                     current_prefix,
                     current_stage_idx,
@@ -1690,7 +1757,7 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::PartSelect(base, start, width, up) => {
-                let b = self.emit_pipeline_stage_expr_str(
+                let b = self.emit_pipeline_stage_selection_base_str(
                     base,
                     current_prefix,
                     current_stage_idx,
@@ -1815,6 +1882,39 @@ impl<'a> Codegen<'a> {
     /// - `Stage.signal` → `stage_signal`
     /// - Bare signal in stage context → preserved (caller handles prefix)
     /// - Port names → kept as-is
+    fn emit_pipeline_index_str(
+        &self,
+        base: &Expr,
+        idx: &Expr,
+        preserve_signed_element: bool,
+        stage_names: &[&str],
+        stage_regs: &[Vec<(String, String, String)>],
+        port_names: &std::collections::HashSet<String>,
+    ) -> String {
+        let b = self.emit_pipeline_selection_base_str(base, stage_names, stage_regs, port_names);
+        let i = self.emit_pipeline_expr_str(idx, stage_names, stage_regs, port_names);
+        let selected = format!("{b}[{i}]");
+        if preserve_signed_element && self.index_result_is_sint(base) {
+            format!("$signed({selected})")
+        } else {
+            selected
+        }
+    }
+
+    fn emit_pipeline_selection_base_str(
+        &self,
+        expr: &Expr,
+        stage_names: &[&str],
+        stage_regs: &[Vec<(String, String, String)>],
+        port_names: &std::collections::HashSet<String>,
+    ) -> String {
+        if let ExprKind::Index(base, idx) = &expr.kind {
+            self.emit_pipeline_index_str(base, idx, false, stage_names, stage_regs, port_names)
+        } else {
+            self.emit_pipeline_expr_str(expr, stage_names, stage_regs, port_names)
+        }
+    }
+
     fn emit_pipeline_expr_str(
         &self,
         expr: &Expr,
@@ -1871,6 +1971,7 @@ impl<'a> Codegen<'a> {
                     BinOp::BitOr => "|",
                     BinOp::BitXor => "^",
                     BinOp::Shl => "<<",
+                    BinOp::Shr if self.expr_is_signed(lhs) => ">>>",
                     BinOp::Shr => ">>",
                     BinOp::Implies | BinOp::ImpliesNext => unreachable!(),
                 };
@@ -1946,12 +2047,15 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::Index(base, idx) => {
-                let b = self.emit_pipeline_expr_str(base, stage_names, stage_regs, port_names);
-                let i = self.emit_pipeline_expr_str(idx, stage_names, stage_regs, port_names);
-                format!("{b}[{i}]")
+                self.emit_pipeline_index_str(base, idx, true, stage_names, stage_regs, port_names)
             }
             ExprKind::BitSlice(base, hi, lo) => {
-                let b = self.emit_pipeline_expr_str(base, stage_names, stage_regs, port_names);
+                let b = self.emit_pipeline_selection_base_str(
+                    base,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
                 if let Some(width) = Self::try_indexed_part_select(hi, lo) {
                     let l = self.emit_expr_str(lo);
                     format!("{b}[{l} +: {width}]")
@@ -1962,7 +2066,12 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::PartSelect(base, start, width, up) => {
-                let b = self.emit_pipeline_expr_str(base, stage_names, stage_regs, port_names);
+                let b = self.emit_pipeline_selection_base_str(
+                    base,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
                 let s = self.emit_expr_str(start);
                 let w = self.emit_expr_str(width);
                 let op = if *up { "+:" } else { "-:" };
