@@ -1,0 +1,131 @@
+//! AXI4-Lite memory target used by native cocotbext-axi conformance tests.
+
+module AxiLiteMemory
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  port s_axil_awaddr: in UInt<32>;
+  port s_axil_awprot: in UInt<3>;
+  port s_axil_awvalid: in Bool;
+  port s_axil_awready: out Bool;
+
+  port s_axil_wdata: in UInt<32>;
+  port s_axil_wstrb: in UInt<4>;
+  port s_axil_wvalid: in Bool;
+  port s_axil_wready: out Bool;
+
+  port s_axil_bresp: out UInt<2>;
+  port s_axil_bvalid: out Bool;
+  port s_axil_bready: in Bool;
+
+  port s_axil_araddr: in UInt<32>;
+  port s_axil_arprot: in UInt<3>;
+  port s_axil_arvalid: in Bool;
+  port s_axil_arready: out Bool;
+
+  port s_axil_rdata: out UInt<32>;
+  port s_axil_rresp: out UInt<2>;
+  port s_axil_rvalid: out Bool;
+  port s_axil_rready: in Bool;
+
+  reg memory: Vec<UInt<32>, 256> reset rst => 0;
+  reg cycle_count: UInt<8> reset rst => 0;
+
+  reg aw_pending: Bool reset rst => false;
+  reg awaddr_hold: UInt<32> reset rst => 0;
+  reg w_pending: Bool reset rst => false;
+  reg wdata_hold: UInt<32> reset rst => 0;
+  reg wstrb_hold: UInt<4> reset rst => 0;
+
+  reg awready_r: Bool reset rst => false;
+  reg wready_r: Bool reset rst => false;
+  reg arready_r: Bool reset rst => false;
+  reg bvalid_r: Bool reset rst => false;
+  reg b_pending: Bool reset rst => false;
+  reg rvalid_r: Bool reset rst => false;
+  reg r_pending: Bool reset rst => false;
+  reg rdata_r: UInt<32> reset rst => 0;
+
+  let aw_allow: Bool = cycle_count[1:0] != 2'b01;
+  let w_allow: Bool = cycle_count[2:1] != 2'b10;
+  let ar_allow: Bool = cycle_count[3:2] != 2'b11;
+
+  let aw_fire: Bool = s_axil_awvalid and s_axil_awready;
+  let w_fire: Bool = s_axil_wvalid and s_axil_wready;
+  let ar_fire: Bool = s_axil_arvalid and s_axil_arready;
+  let write_ready: Bool = (aw_pending or aw_fire) and (w_pending or w_fire);
+  let write_addr: UInt<32> = aw_pending ? awaddr_hold : s_axil_awaddr;
+  let write_data: UInt<32> = w_pending ? wdata_hold : s_axil_wdata;
+  let write_strb: UInt<4> = w_pending ? wstrb_hold : s_axil_wstrb;
+  wire write_word: UInt<32>;
+
+  comb
+    s_axil_awready = awready_r;
+    s_axil_wready = wready_r;
+    s_axil_bresp = 0;
+    s_axil_bvalid = bvalid_r;
+
+    s_axil_arready = arready_r;
+    s_axil_rdata = rdata_r;
+    s_axil_rresp = 0;
+    s_axil_rvalid = rvalid_r;
+
+    write_word = memory[write_addr[9:2]];
+    if write_strb[0:0] == 1
+      write_word[7:0] = write_data[7:0];
+    end if
+    if write_strb[1:1] == 1
+      write_word[15:8] = write_data[15:8];
+    end if
+    if write_strb[2:2] == 1
+      write_word[23:16] = write_data[23:16];
+    end if
+    if write_strb[3:3] == 1
+      write_word[31:24] = write_data[31:24];
+    end if
+  end comb
+
+  seq on clk rising
+    cycle_count <= cycle_count +% 1;
+
+    if bvalid_r and s_axil_bready
+      b_pending <= false;
+    end if
+    if rvalid_r and s_axil_rready
+      r_pending <= false;
+    end if
+
+    if aw_fire
+      aw_pending <= true;
+      awaddr_hold <= s_axil_awaddr;
+    end if
+    if w_fire
+      w_pending <= true;
+      wdata_hold <= s_axil_wdata;
+      wstrb_hold <= s_axil_wstrb;
+    end if
+
+    if write_ready and (not b_pending)
+      memory[write_addr[9:2]] <= write_word;
+      aw_pending <= false;
+      w_pending <= false;
+      b_pending <= true;
+    end if
+
+    if ar_fire
+      rdata_r <= memory[s_axil_araddr[9:2]];
+      r_pending <= true;
+    end if
+  end seq
+
+  // The native scheduler resumes edge coroutines after post-edge settling.
+  // Present protocol outputs on the falling edge so they are stable across
+  // the following rising-edge handshake sampled by both DUT and BFM.
+  seq on clk falling
+    awready_r <= (not aw_pending) and (not b_pending) and aw_allow;
+    wready_r <= (not w_pending) and (not b_pending) and w_allow;
+    arready_r <= (not r_pending) and ar_allow;
+    bvalid_r <= b_pending;
+    rvalid_r <= r_pending;
+  end seq
+end module AxiLiteMemory

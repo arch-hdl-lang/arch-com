@@ -3,6 +3,8 @@ use miette::{IntoDiagnostic, NamedSource, Report, WrapErr};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod embedded_python;
+
 use arch::ast::{BinOp, Expr, ExprKind, Item, LitKind, ParamDecl, ParamKind, SourceFile, UnaryOp};
 use arch::codegen::Codegen;
 use arch::diagnostics::CompileError;
@@ -26,6 +28,28 @@ fn cxx_std_flag() -> String {
 /// clang shim, so the default works there.
 fn cxx_compiler() -> String {
     std::env::var("ARCH_CXX").unwrap_or_else(|_| "g++".to_string())
+}
+
+fn cocotb_python_dir(build_dir: &Path) -> miette::Result<PathBuf> {
+    if let Some(explicit) = std::env::var_os("ARCH_PYTHON_DIR") {
+        let explicit = PathBuf::from(explicit);
+        if embedded_python::is_complete_runtime(&explicit) {
+            return Ok(explicit);
+        }
+        return Err(miette::miette!(
+            "ARCH_PYTHON_DIR={} does not contain arch_cocotb/ and cocotb_shim/cocotb/",
+            explicit.display()
+        ));
+    }
+
+    embedded_python::materialize(build_dir)
+        .into_diagnostic()
+        .wrap_err_with(|| {
+            format!(
+                "failed to materialize the embedded cocotb runtime in {}",
+                build_dir.display()
+            )
+        })
 }
 
 #[derive(Parser)]
@@ -1903,6 +1927,19 @@ fn run_sim(
     )
 }
 
+/// Choose the first user construct after any thread-lowered helper modules.
+///
+/// `lower_threads` prepends helpers whose generated class names start with
+/// `V_`. Source constructs otherwise retain command-line order, where the
+/// first user construct is the simulator top. Selecting the last non-helper
+/// wrapper accidentally picked the final dependency in multi-file designs.
+fn pybind_user_top_index(wrappers: &[arch::sim_codegen::SimModel]) -> usize {
+    wrappers
+        .iter()
+        .position(|wrapper| !wrapper.class_name.starts_with("V_"))
+        .unwrap_or(0)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_sim_opts(
     arch_files: &[PathBuf],
@@ -1930,7 +1967,7 @@ fn run_sim_opts(
     // 1. Parse + type-check
     let all_files = resolve_use_imports(arch_files)?;
     let ms = MultiSource::from_files(&all_files)?;
-    let (mut ast, symbols, overload_map) = if param_overrides.is_empty() {
+    let (mut ast, _, _) = if param_overrides.is_empty() {
         run_check_multi_opts(
             &ms,
             thread_sim_parallel,
@@ -1945,7 +1982,16 @@ fn run_sim_opts(
         )?
     };
     lower_pipelined_calls_before_codegen(&mut ast, &ms)?;
-    let ast = ast;
+    let ast = arch::elaborate::specialize_fifo_instances_for_sim(ast);
+    let symbols = resolve::resolve(&ast).map_err(|errs| {
+        let err = errs.into_iter().next().unwrap();
+        ms.report_error(err)
+    })?;
+    let checker = TypeChecker::new(&symbols, &ast);
+    let (_, overload_map) = checker.check().map_err(|errs| {
+        let err = errs.into_iter().next().unwrap();
+        ms.report_error(err)
+    })?;
 
     // 2. Set up output directory
     let build_dir = outdir
@@ -2126,6 +2172,10 @@ fn run_sim_opts(
             eprintln!("warning: no pybind11 wrappers generated");
             return Ok(());
         }
+        // Keep every pybind build self-contained, including `--pybind`
+        // invocations without `--test`. The explicit override is primarily
+        // for developing the Python packages without rebuilding the compiler.
+        let python_dir = cocotb_python_dir(&build_dir)?;
 
         // Pick the "user-facing" wrapper as the testbench-default top.
         // `lower_threads` prepends generated `_threads` submodules to the
@@ -2136,13 +2186,10 @@ fn run_sim_opts(
         // with `AttributeError: No signal '<port>' on DUT`).
         // Heuristic: thread-lowered submodule class names start with
         // `V_`; user-module names start with `V<word>` (e.g. `Vibex_alu`).
-        // Prefer the LAST wrapper whose class name doesn't start with
-        // `V_`; fall back to wrapper[0] for designs without thread-
-        // submodule lowering (the existing default shape).
-        let user_top_idx = pybind_wrappers
-            .iter()
-            .rposition(|w| !w.class_name.starts_with("V_"))
-            .unwrap_or(0);
+        // Prefer the FIRST wrapper whose class name doesn't start with
+        // `V_`; source constructs retain command-line order after any
+        // prepended thread helpers.
+        let user_top_idx = pybind_user_top_index(&pybind_wrappers);
 
         // Apply --pybind-module-name if provided. Retarget only the
         // user-top wrapper (the user's intended top module); other
@@ -2246,9 +2293,9 @@ fn run_sim_opts(
         // built so legacy consumers that only check for one .so keep working.
         let _ = pybind_module_name; // retained for callers referencing the variable
         for (i, (wrapper, cpp_path)) in pybind_wrappers.iter().zip(pybind_cpps.iter()).enumerate() {
-            // The first wrapper honors --pybind-module-name; later wrappers
-            // keep their auto-derived names.
-            let class_name = if i == 0 {
+            // The selected user-top wrapper honors --pybind-module-name;
+            // dependency wrappers keep their auto-derived names.
+            let class_name = if i == user_top_idx {
                 effective_first_name.clone()
             } else {
                 wrapper.class_name.clone()
@@ -2287,37 +2334,19 @@ fn run_sim_opts(
         //      existing scripts with `if __name__ == "__main__": main()`
         //      blocks fire (backward-compat).
         //   2. After __main__ returns, if any `@cocotb.test()` functions are
-        //      in `arch_cocotb.decorators._test_registry`, runs them through
-        //      `arch_cocotb.runner.run_tests`. Previously the decorator only
-        //      registered the test and the launcher never iterated the
-        //      registry, so `@cocotb.test` functions were silent no-ops.
+        //      in `arch_cocotb.decorators._test_registry`, runs that registry
+        //      directly. The file must not be imported a second time: doing so
+        //      repeats module-level side effects and creates duplicate tests.
         if let Some(test_path) = test_file {
             eprintln!("Running test: {}", test_path.display());
 
-            // Resolve arch-com's python/ directory relative to the arch
-            // binary, not cwd. The binary lives at
-            // `<arch-com>/target/{debug,release}/arch`, so go up twice and
-            // look for a sibling `python/` directory. Fall back to
-            // `$ARCH_PYTHON_DIR` or the current cwd for development layouts.
-            let python_dir = std::env::current_exe()
-                .ok()
-                .and_then(|exe| {
-                    exe.parent()
-                        .and_then(|p| p.parent())
-                        .and_then(|p| p.parent())
-                        .map(|p| p.join("python"))
-                })
-                .filter(|p| p.is_dir())
-                .or_else(|| std::env::var("ARCH_PYTHON_DIR").ok().map(PathBuf::from))
-                .or_else(|| std::env::current_dir().ok().map(|cwd| cwd.join("python")))
-                .unwrap_or_else(|| PathBuf::from("python"));
-
             let shim_dir = python_dir.join("cocotb_shim");
-            let cocotb_dir = python_dir.to_str().unwrap_or(".");
-            let shim_str = shim_dir.to_str().unwrap_or(".");
-            let build_str = build_dir.to_str().unwrap_or(".");
-
-            let pythonpath = format!("{shim_str}:{cocotb_dir}:{build_str}");
+            let mut python_paths = vec![shim_dir, python_dir, build_dir.clone()];
+            if let Some(existing) = std::env::var_os("PYTHONPATH") {
+                python_paths.extend(std::env::split_paths(&existing));
+            }
+            let pythonpath = std::env::join_paths(python_paths)
+                .map_err(|err| miette::miette!("failed to construct PYTHONPATH: {err}"))?;
 
             let test_path_abs = test_path
                 .canonicalize()
@@ -2362,8 +2391,8 @@ if TEST_DIR and TEST_DIR not in sys.path:
 runpy.run_path(TEST_PATH, run_name="__main__")
 
 # 2. Auto-invoke any `@cocotb.test()` functions the user left in the
-#    registry. Silent no-op if arch_cocotb isn't importable or the
-#    registry is empty.
+#    registry. The test file has already executed, so consume the registry
+#    without importing it again.
 try:
     from arch_cocotb.decorators import _test_registry
 except Exception:
@@ -2379,8 +2408,8 @@ if model_class is None:
           f"cannot auto-run @cocotb.test functions", file=sys.stderr)
     sys.exit(1)
 
-from arch_cocotb.runner import run_tests
-ok = run_tests(model_class, TEST_MODULE)
+from arch_cocotb.runner import run_registered_tests
+ok = run_registered_tests(model_class)
 sys.exit(0 if ok else 1)
 "#,
                 test_path = test_path_abs.display(),
@@ -3799,4 +3828,28 @@ fn run_check_multi_opts_with_thread_map_and_params(
     }
 
     Ok((ast, symbols, overload_map))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pybind_user_top_index;
+    use arch::sim_codegen::SimModel;
+
+    fn wrapper(class_name: &str) -> SimModel {
+        SimModel {
+            class_name: class_name.to_string(),
+            header: String::new(),
+            impl_: String::new(),
+        }
+    }
+
+    #[test]
+    fn pybind_top_is_first_user_wrapper_after_thread_helpers() {
+        let wrappers = vec![
+            wrapper("V_Top_threads_pybind"),
+            wrapper("VTop_pybind"),
+            wrapper("VDependency_pybind"),
+        ];
+        assert_eq!(pybind_user_top_index(&wrappers), 1);
+    }
 }

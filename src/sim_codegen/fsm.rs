@@ -91,15 +91,22 @@ impl<'a> SimCodegen<'a> {
         if has_structs {
             h.push_str("#include \"VStructs.h\"\n");
         }
+        if self.source_has_functions() {
+            h.push_str("#include \"VFunctions.h\"\n");
+        }
         h.push('\n');
-        // Emit param constants as #define
+        // Emit header-local parameter macros. The implementation restores
+        // them after including the header so sibling FSM specializations
+        // cannot capture one another's values through transitive includes.
+        let mut fsm_param_macros: Vec<(String, u64)> = Vec::new();
         for p in &f.params {
             if matches!(p.kind, ParamKind::Const | ParamKind::WidthConst(..)) {
                 if let Some(ref def) = p.default {
                     let val = eval_const_expr_with_params(def, &f.common.params);
+                    fsm_param_macros.push((p.name.name.clone(), val));
                     h.push_str(&format!(
-                        "#ifndef {}\n#define {} {val}ULL\n#endif\n",
-                        p.name.name, p.name.name
+                        "#ifndef {}\n#define {} {val}ULL\n#define ARCH_SIM_{class}_DEFINED_{}\n#endif\n",
+                        p.name.name, p.name.name, p.name.name
                     ));
                 }
             }
@@ -314,6 +321,14 @@ impl<'a> SimCodegen<'a> {
 
         let mut cpp = String::new();
         cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
+        for (param_name, val) in &fsm_param_macros {
+            cpp.push_str(&format!(
+                "#ifndef {param_name}\n#define {param_name} {val}ULL\n#endif\n"
+            ));
+        }
+        if !fsm_param_macros.is_empty() {
+            cpp.push('\n');
+        }
 
         let clk_port = f
             .ports
@@ -730,6 +745,11 @@ impl<'a> SimCodegen<'a> {
         }
 
         h.push_str("};\n");
+        for (param_name, _) in &fsm_param_macros {
+            h.push_str(&format!(
+                "#ifdef ARCH_SIM_{class}_DEFINED_{param_name}\n#undef {param_name}\n#undef ARCH_SIM_{class}_DEFINED_{param_name}\n#endif\n"
+            ));
+        }
 
         SimModel {
             class_name: class,

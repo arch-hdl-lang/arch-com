@@ -1,0 +1,7 @@
+//! Arbitrary-width pybind round-trip probe.
+
+module WidePorts
+  port data_in: in UInt<130>;
+  port data_out: out UInt<130>;
+  let data_out = data_in;
+end module WidePorts

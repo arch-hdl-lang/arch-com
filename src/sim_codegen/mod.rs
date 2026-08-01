@@ -145,6 +145,18 @@ fn coverage_expr_label(prefix: &str, expr: &Expr) -> String {
 }
 
 impl<'a> SimCodegen<'a> {
+    fn source_has_functions(&self) -> bool {
+        self.source.items.iter().any(|i| match i {
+            Item::Function(_) => true,
+            Item::Package(p) => !p.functions.is_empty(),
+            Item::Module(m) => m
+                .body
+                .iter()
+                .any(|b| matches!(b, ModuleBodyItem::Function(_))),
+            _ => false,
+        })
+    }
+
     pub fn new(
         symbols: &'a SymbolTable,
         source: &'a SourceFile,
@@ -447,7 +459,7 @@ impl<'a> SimCodegen<'a> {
         // `port_0`, `port_1`, ..., `port_{N-1}` populate `bus_port_names`
         // so the bracket-dot expression path (`chans[i].sig`) resolves.
         let mut bus_port_names: HashSet<String> = HashSet::new();
-        let mut bus_flat: Vec<(String, TypeExpr)> = Vec::new();
+        let mut bus_flat: Vec<(String, Direction, TypeExpr)> = Vec::new();
         for p in &m.ports {
             if let Some(ref bi) = p.bus_info {
                 match bi.count.as_ref() {
@@ -461,7 +473,42 @@ impl<'a> SimCodegen<'a> {
                         }
                     }
                 }
-                bus_flat.extend(flatten_bus_port(&p.name.name, bi, self.symbols, &m.params));
+                bus_flat.extend(flatten_bus_port_with_dir(
+                    &p.name.name,
+                    bi,
+                    self.symbols,
+                    &m.params,
+                ));
+            }
+        }
+
+        // Inputs whose generated model has a --inputs-start-uninit valid bit.
+        // Vec inputs and Vec-of-bus inputs are not part of that checker's
+        // current per-lane scope, so do not emit marker methods for them.
+        let mut markable_inputs = HashSet::new();
+        if self.inputs_start_uninit {
+            for p in &m.ports {
+                if p.bus_info.is_none() {
+                    if p.direction == Direction::In
+                        && !matches!(
+                            p.ty,
+                            TypeExpr::Clock(_) | TypeExpr::Reset(_, _) | TypeExpr::Vec(_, _)
+                        )
+                    {
+                        markable_inputs.insert(p.name.name.clone());
+                    }
+                } else if p.bus_info.as_ref().is_some_and(|info| info.count.is_none()) {
+                    let bi = p.bus_info.as_ref().unwrap();
+                    for (name, direction, ty) in
+                        flatten_bus_port_with_dir(&p.name.name, bi, self.symbols, &m.params)
+                    {
+                        if direction == Direction::In
+                            && !matches!(ty, TypeExpr::Clock(_) | TypeExpr::Reset(_, _))
+                        {
+                            markable_inputs.insert(name);
+                        }
+                    }
+                }
             }
         }
 
@@ -510,6 +557,9 @@ impl<'a> SimCodegen<'a> {
                     "        .def_readwrite(\"{field}\", &{class}::{field})"
                 ));
             }
+            if markable_inputs.contains(field) {
+                bindings.push(self.emit_input_marker(&class, field));
+            }
             port_info.push((field.clone(), width, is_signed, is_input, false, false));
         }
 
@@ -534,7 +584,7 @@ impl<'a> SimCodegen<'a> {
         // `type_bits_te` would mis-classify a >64b signal as scalar and
         // emit a corrupted `def_readwrite` instead of the wide binding,
         // and the downstream `port_info` width would be wrong too.
-        for (flat_name, flat_ty) in &bus_flat {
+        for (flat_name, direction, flat_ty) in &bus_flat {
             let width = type_bits_te_with_params(flat_ty, &m.params);
             let is_signed = matches!(flat_ty, TypeExpr::SInt(_));
             if wide_names.contains(flat_name) {
@@ -544,7 +594,17 @@ impl<'a> SimCodegen<'a> {
                     "        .def_readwrite(\"{flat_name}\", &{class}::{flat_name})"
                 ));
             }
-            port_info.push((flat_name.clone(), width, is_signed, true, false, false));
+            if markable_inputs.contains(flat_name) {
+                bindings.push(self.emit_input_marker(&class, flat_name));
+            }
+            port_info.push((
+                flat_name.clone(),
+                width,
+                is_signed,
+                *direction == Direction::In,
+                false,
+                false,
+            ));
         }
 
         // Internal registers (exposed as readonly for testbench inspection)
@@ -643,6 +703,9 @@ auto {helper_name}(const T& self) {{
         bindings.push(format!(
             "        .def(\"run_cycles\", &arch_pybind_detail::run_cycles<{class}>)"
         ));
+        bindings.push(format!(
+            "        .def_static(\"_arch_supports_phased_eval\", []() {{ return arch_pybind_detail::supports_phased_eval<{class}>(); }})"
+        ));
 
         // _port_info static method
         let port_info_entries: Vec<String> = port_info
@@ -724,6 +787,31 @@ auto {helper_name}(const T& self) {{
 namespace py = pybind11;
 
 namespace arch_pybind_detail {{
+template <int WORDS>
+py::int_ wide_to_int(const VlWide<WORDS>& source, unsigned width) {{
+    py::object value = py::int_(0);
+    for (int i = WORDS - 1; i >= 0; --i) {{
+        value = value.attr("__lshift__")(32);
+        value = value.attr("__or__")(py::int_(source.data()[i]));
+    }}
+    py::object mask = py::int_(1).attr("__lshift__")(width);
+    mask = mask.attr("__sub__")(1);
+    return py::reinterpret_borrow<py::int_>(value.attr("__and__")(mask));
+}}
+
+template <int WORDS>
+void int_to_wide(VlWide<WORDS>& target, py::object source, unsigned width) {{
+    py::object value = py::module_::import("builtins").attr("int")(source);
+    py::object mask = py::int_(1).attr("__lshift__")(width);
+    mask = mask.attr("__sub__")(1);
+    value = value.attr("__and__")(mask);
+    for (int i = 0; i < WORDS; ++i) {{
+        py::object word = value.attr("__and__")(py::int_(0xffffffffULL));
+        target.data()[i] = word.cast<uint32_t>();
+        value = value.attr("__rshift__")(32);
+    }}
+}}
+
 template <typename T>
 void eval_comb(T& self) {{
     if constexpr (requires(T& t) {{ t.eval_comb(); }}) {{
@@ -740,6 +828,14 @@ void eval_posedge(T& self) {{
     }} else {{
         self.eval();
     }}
+}}
+
+template <typename T>
+constexpr bool supports_phased_eval() {{
+    return requires(T& t) {{
+        t.eval_comb();
+        t.eval_posedge();
+    }};
 }}
 
 template <typename T>
@@ -817,18 +913,20 @@ PYBIND11_MODULE({pybind_module}, m) {{
 
     /// Emit a lambda-based pybind11 binding for a VlWide field.
     fn emit_wide_binding(&self, class: &str, field: &str, width: u32) -> String {
-        let words = (width + 31) / 32;
         format!(
             r#"        .def_property("{field}",
-            []({class}& self) -> uint64_t {{
-                uint64_t v = 0;
-                for (int i = std::min({words}u, 2u) - 1; i >= 0; i--)
-                    v = (v << 32) | self.{field}.data()[i];
-                return v;
+            []({class}& self) {{
+                return arch_pybind_detail::wide_to_int(self.{field}, {width});
             }},
-            []({class}& self, uint64_t v) {{
-                self.{field} = VlWide<{words}>(v);
+            []({class}& self, py::object value) {{
+                arch_pybind_detail::int_to_wide(self.{field}, value, {width});
             }})"#,
+        )
+    }
+
+    fn emit_input_marker(&self, class: &str, field: &str) -> String {
+        format!(
+            "        .def(\"_mark_input_{field}\", []({class}& self) {{ self._{field}_vinit = true; }})"
         )
     }
 
@@ -1829,6 +1927,145 @@ fn subst_expr_sim(expr: &Expr, params: &HashMap<String, &Expr>) -> Expr {
         span: expr.span,
         parenthesized: expr.parenthesized,
     }
+}
+
+/// Return the named leaf of a scalar / Vec / nested-Vec type.
+///
+/// Bus wires keep parameter overrides separately in `WireDecl::bus_params`,
+/// so the `TypeExpr` itself remains `Named(Bus)` (possibly wrapped in Vecs).
+fn named_type_leaf(ty: &TypeExpr) -> Option<&Ident> {
+    match ty {
+        TypeExpr::Named(id) => Some(id),
+        TypeExpr::Vec(inner, _) => named_type_leaf(inner),
+        _ => None,
+    }
+}
+
+/// Resolve a bus's declared defaults plus use-site overrides into owned
+/// expressions. Overrides are evaluated against the enclosing module params;
+/// defaults are resolved in declaration order so a derived bus param such as
+/// `STRB_W = DATA_W / 8` follows an overridden `DATA_W`.
+fn resolved_bus_param_values(
+    info: &crate::resolve::BusInfo,
+    overrides: &[ParamAssign],
+    module_params: &[ParamDecl],
+) -> HashMap<String, Expr> {
+    let override_map: HashMap<&str, &Expr> = overrides
+        .iter()
+        .map(|pa| (pa.name.name.as_str(), &pa.value))
+        .collect();
+    let mut resolved: HashMap<String, Expr> = HashMap::new();
+
+    for param in &info.params {
+        let Some(source) = override_map
+            .get(param.name.name.as_str())
+            .copied()
+            .or(param.default.as_ref())
+        else {
+            continue;
+        };
+
+        // Bus-param defaults may reference earlier bus params. Use only the
+        // already-resolved values here; use-site overrides are expressions in
+        // the enclosing module namespace and are folded by the module-param
+        // evaluator below.
+        let refs: HashMap<String, &Expr> = resolved
+            .iter()
+            .map(|(name, value)| (name.clone(), value))
+            .collect();
+        let mut value = subst_expr_sim(source, &refs);
+        if let Some(v) = try_eval_const_expr_with_params(&value, module_params) {
+            value = Expr::new(ExprKind::Literal(LitKind::Dec(v)), value.span);
+        }
+        resolved.insert(param.name.name.clone(), value);
+    }
+
+    resolved
+}
+
+/// Effective, parameter-substituted signal list for a bus-typed wire.
+fn effective_bus_wire_signals(
+    w: &WireDecl,
+    symbols: &crate::resolve::SymbolTable,
+    module_params: &[ParamDecl],
+) -> Option<Vec<(String, Direction, TypeExpr)>> {
+    let bus_id = named_type_leaf(&w.ty)?;
+    let (crate::resolve::Symbol::Bus(info), _) = symbols.globals.get(&bus_id.name)? else {
+        return None;
+    };
+    let values = resolved_bus_param_values(info, &w.bus_params, module_params);
+    let refs: HashMap<String, &Expr> = values
+        .iter()
+        .map(|(name, value)| (name.clone(), value))
+        .collect();
+    Some(
+        info.effective_signals(&refs)
+            .into_iter()
+            .map(|(name, dir, ty)| (name, dir, subst_type_expr_sim(&ty, &refs)))
+            .collect(),
+    )
+}
+
+/// C++ array suffix for a bus wire's outer Vec dimensions.
+fn bus_wire_array_suffix(ty: &TypeExpr, params: &[ParamDecl]) -> String {
+    match ty {
+        TypeExpr::Vec(inner, count) => format!(
+            "[{}]{}",
+            eval_const_expr_with_params(count, params),
+            bus_wire_array_suffix(inner, params)
+        ),
+        _ => String::new(),
+    }
+}
+
+/// Emit a module-local concrete C++ type for a parameterized bus wire.
+///
+/// A single global `struct BusName` can only represent the bus defaults.
+/// Keeping each wire's concrete type local avoids collisions between
+/// `Bus<DATA_W=32>` and `Bus<DATA_W=112>` while preserving the existing
+/// default-bus struct ABI for unparameterized wires.
+fn emit_parameterized_bus_wire_decl(
+    out: &mut String,
+    w: &WireDecl,
+    fields: &[(String, Direction, TypeExpr)],
+    module_params: &[ParamDecl],
+) {
+    let type_name = format!("_arch_bus_{}_t", w.name.name);
+    out.push_str(&format!("  struct {type_name} {{\n"));
+    let mut field_inits = Vec::new();
+    let mut ctor_body = Vec::new();
+    for (field_name, _dir, field_ty) in fields {
+        if vec_array_info_with_params(field_ty, module_params).is_some() {
+            out.push_str(&format!(
+                "    {};\n",
+                cpp_field_decl(field_name, field_ty, module_params)
+            ));
+            ctor_body.push(format!(
+                "std::memset({field_name}, 0, sizeof({field_name}));"
+            ));
+        } else {
+            let cpp_ty = cpp_internal_type_with_params(field_ty, module_params);
+            out.push_str(&format!("    {cpp_ty} {field_name};\n"));
+            if matches!(field_ty, TypeExpr::Named(_)) {
+                field_inits.push(format!("{field_name}()"));
+            } else {
+                field_inits.push(format!("{field_name}(0)"));
+            }
+        }
+    }
+    let init = if field_inits.is_empty() {
+        String::new()
+    } else {
+        format!(" : {}", field_inits.join(", "))
+    };
+    let body = ctor_body.join(" ");
+    out.push_str(&format!("    {type_name}(){init} {{ {body} }}\n"));
+    out.push_str("  };\n");
+    out.push_str(&format!(
+        "  {type_name} _let_{}{};\n",
+        w.name.name,
+        bus_wire_array_suffix(&w.ty, module_params)
+    ));
 }
 
 /// Return flattened bus port signals with direction: Vec<(flat_name, Direction, TypeExpr)>.
@@ -2906,6 +3143,18 @@ fn base_ident_name(expr: &Expr) -> Option<&str> {
     }
 }
 
+/// Root identifier through one or more array indices.
+///
+/// Used for per-field type metadata on Vec/2D-Vec bus wires:
+/// `links[i][j].data` shares the `links.data` field definition.
+fn indexed_root_ident_name(expr: &Expr) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.as_str()),
+        ExprKind::Index(base, _) => indexed_root_ident_name(base),
+        _ => None,
+    }
+}
+
 /// Local "is this expression a compile-time constant we can fold?" test.
 /// Conservative: handles literals, `$clog2(const)`, and arithmetic over
 /// already-reducible subtrees. Does NOT try to resolve param identifiers —
@@ -3395,7 +3644,22 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
         }
         ExprKind::LatencyAt(inner, _) | ExprKind::SvaNext(_, inner) => infer_expr_width(inner, ctx),
         ExprKind::Literal(LitKind::Sized(w, _)) => *w,
-        ExprKind::Literal(_) => 32,
+        ExprKind::Literal(LitKind::ParamSized(name, _)) => ctx
+            .params
+            .iter()
+            .find(|param| param.name.name == *name)
+            .and_then(|param| param.default.as_ref())
+            .map(|default| eval_const_expr_with_params(default, ctx.params) as u32)
+            .unwrap_or(8),
+        ExprKind::Literal(LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v)) => {
+            if *v == 0 {
+                1
+            } else {
+                64 - v.leading_zeros()
+            }
+        }
+        ExprKind::Literal(LitKind::TypedFloat(fmt, _)) => fmt.width(),
+        ExprKind::Literal(LitKind::Float(_)) => 32,
         ExprKind::Bool(_) => 1,
         ExprKind::MethodCall(base, method, _) if method.name == "reverse" => {
             infer_expr_width(base, ctx)
@@ -3496,15 +3760,7 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
             //   - `ch_r[0].threshold`       — base is Index of Ident (Vec elem)
             // Both resolve to the same struct-field width regardless of which
             // element index is being accessed.
-            let base_name = match &base.kind {
-                ExprKind::Ident(name) => Some(name.as_str()),
-                ExprKind::Index(b, _) => match &b.kind {
-                    ExprKind::Ident(name) => Some(name.as_str()),
-                    _ => None,
-                },
-                _ => None,
-            };
-            if let Some(name) = base_name {
+            if let Some(name) = indexed_root_ident_name(base) {
                 let key = format!("{}.{}", name, field.name);
                 if let Some(&w) = ctx.widths.get(key.as_str()) {
                     return w;
@@ -3532,8 +3788,8 @@ fn infer_expr_signed(expr: &Expr, ctx: &Ctx) -> bool {
     match &expr.kind {
         ExprKind::Ident(name) => ctx.signed_names.contains(name.as_str()),
         ExprKind::FieldAccess(base, field) => {
-            if let ExprKind::Ident(base_name) = &base.kind {
-                let flat = if ctx.bus_ports.contains(base_name.as_str()) {
+            if let Some(base_name) = indexed_root_ident_name(base) {
+                let flat = if ctx.bus_ports.contains(base_name) {
                     format!("{}_{}", base_name, field.name)
                 } else {
                     format!("{}.{}", base_name, field.name)
@@ -3968,6 +4224,23 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 BinOp::Shr => ">>",
                 BinOp::Implies | BinOp::ImpliesNext => unreachable!(),
             };
+            // Wrapping add/sub must truncate to the operator's HDL result
+            // width at the expression boundary. C++ integer promotion would
+            // otherwise preserve borrow/carry bits in the wider storage type
+            // (for example, UInt<10> `sample -% 512` became 0xFExx instead of
+            // the required low ten bits), and those stray bits can cross a
+            // module boundary before a later explicit cast has a chance to
+            // remove them.
+            if matches!(op, BinOp::AddWrap | BinOp::SubWrap) {
+                let value = format!("({l} {op_str} {r})");
+                let bits = infer_expr_width(expr, ctx);
+                return if infer_expr_signed(expr, ctx) {
+                    cast_to_signed_bits(&value, bits)
+                } else {
+                    cast_to_bits(&value, bits)
+                };
+            }
+
             // Runtime divide-by-zero check for / and % when the divisor is
             // not a compile-time-reducible constant. Literal zero is already
             // rejected at typecheck; non-zero literals / param-folded consts
@@ -3998,7 +4271,11 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 // Bus port: itcm.cmd_valid → itcm_cmd_valid
                 if ctx.bus_ports.contains(base_name.as_str()) {
                     let flat = format!("{}_{}", base_name, field.name);
-                    return ctx.resolve_name(&flat, is_lhs);
+                    return if is_lhs {
+                        ctx.resolve_name(&flat, true)
+                    } else {
+                        ctx.read_signal(&flat)
+                    };
                 }
                 if ctx.inst_names.contains(base_name.as_str()) {
                     return format!("_inst_{}.{}", base_name, field.name);
@@ -4775,6 +5052,54 @@ fn assigned_base_ident(expr: &Expr) -> Option<&str> {
     }
 }
 
+/// Return the concrete C++ signal name for an assignment target when it is a
+/// scalar port. Bus fields are flattened in the native model, so
+/// `m_axis.tdata` names the public member `m_axis_tdata`.
+fn assigned_port_signal_name(expr: &Expr, ctx: &Ctx) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.clone()),
+        ExprKind::FieldAccess(base, field) => {
+            if let ExprKind::Ident(base_name) = &base.kind {
+                if ctx.bus_ports.contains(base_name.as_str()) {
+                    return Some(format!("{}_{}", base_name, field.name));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn emit_wide_port_assignment(
+    target_name: &str,
+    rhs: &str,
+    ctx: &Ctx,
+    out: &mut String,
+    indent: usize,
+) -> bool {
+    if !ctx.port_names.contains(target_name) || !ctx.wide_names.contains(target_name) {
+        return false;
+    }
+
+    let bits = ctx.widths.get(target_name).copied().unwrap_or(0);
+    let resolved_target = ctx.resolve_name(target_name, false);
+    if bits > 128 {
+        // >128 bits: both internal expressions and ports use VlWide<N>.
+        out.push_str(&format!("{}{} = {};\n", ind(indent), resolved_target, rhs));
+    } else {
+        // 65–128 bits: internal expressions use _arch_u128 while public
+        // Verilator-compatible ports use VlWide<ceil(W/32)>.
+        out.push_str(&format!(
+            "{}_arch_u128_to_vl({}, {}._data, {});\n",
+            ind(indent),
+            rhs,
+            resolved_target,
+            wide_words(bits)
+        ));
+    }
+    true
+}
+
 fn emit_vinit_mark_for_target(target: &Expr, ctx: &Ctx, out: &mut String, indent: usize) {
     let Some(vinit_regs) = ctx.vinit_regs else {
         return;
@@ -4912,37 +5237,25 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
             }
             let rhs = cpp_expr(&a.value, ctx);
             if is_seq {
-                let lhs = cpp_expr_lhs(&a.target, ctx);
-                out.push_str(&format!("{}{}  = {};\n", ind(indent), lhs, rhs));
+                // Bus fields have no port-reg shadow, so a wide flattened bus
+                // output still needs the public VlWide conversion when it is
+                // driven from an edge-sensitive block. Ordinary `port reg`
+                // identifiers retain their `_n_` shadow assignment.
+                let handled_wide_bus_port = matches!(a.target.kind, ExprKind::FieldAccess(..))
+                    && assigned_port_signal_name(&a.target, ctx).is_some_and(|name| {
+                        emit_wide_port_assignment(&name, &rhs, ctx, out, indent)
+                    });
+                if !handled_wide_bus_port {
+                    let lhs = cpp_expr_lhs(&a.target, ctx);
+                    out.push_str(&format!("{}{}  = {};\n", ind(indent), lhs, rhs));
+                }
                 emit_vinit_mark_for_target(&a.target, ctx, out, indent);
             } else {
-                // Comb: bare-ident-aware target name + wide-output-port conversion.
-                let target_name = if let ExprKind::Ident(name) = &a.target.kind {
-                    name.clone()
-                } else {
-                    cpp_expr(&a.target, ctx)
-                };
-                let resolved_target = ctx.resolve_name(&target_name, false);
-                if ctx.wide_names.contains(target_name.as_str()) {
-                    let bits = ctx.widths.get(target_name.as_str()).copied().unwrap_or(0);
-                    if bits > 128 {
-                        // >128 bits: both internal and port are VlWide<N> — direct assign.
-                        out.push_str(&format!("{}{} = {};\n", ind(indent), target_name, rhs));
-                    } else {
-                        // 65–128 bits: internal is _arch_u128, port is
-                        // VlWide<ceil(W/32)>. Pass the real word count so a
-                        // VlWide<3> (66–96 bit) port is not written out of
-                        // bounds (which clobbers the adjacent struct member).
-                        out.push_str(&format!(
-                            "{}  _arch_u128_to_vl({}, {}._data, {});\n",
-                            ind(indent),
-                            rhs,
-                            target_name,
-                            wide_words(bits)
-                        ));
-                    }
-                } else {
-                    out.push_str(&format!("{}{}  = {};\n", ind(indent), resolved_target, rhs));
+                let handled_wide_port = assigned_port_signal_name(&a.target, ctx)
+                    .is_some_and(|name| emit_wide_port_assignment(&name, &rhs, ctx, out, indent));
+                if !handled_wide_port {
+                    let lhs = cpp_expr_lhs(&a.target, ctx);
+                    out.push_str(&format!("{}{}  = {};\n", ind(indent), lhs, rhs));
                 }
             }
         }
@@ -6033,6 +6346,7 @@ impl<'a> SimCodegen<'a> {
         // simply undeclared. `#ifndef`-guarded so re-definitions in
         // per-module headers are harmless.
         let mut emitted_param_defines: HashSet<String> = HashSet::new();
+        let mut function_param_macros: Vec<(String, u64)> = Vec::new();
         for item in &self.source.items {
             let (params, _ctx_label): (&[ParamDecl], &str) = match item {
                 Item::Package(pkg) => (&pkg.params, "package"),
@@ -6046,9 +6360,10 @@ impl<'a> SimCodegen<'a> {
                 match &p.kind {
                     ParamKind::Const | ParamKind::WidthConst(..) | ParamKind::Logic(_) => {
                         if let Some(val) = eval_param_const_value(p, params) {
+                            function_param_macros.push((p.name.name.clone(), val));
                             h.push_str(&format!(
-                                "#ifndef {}\n#define {} {val}ULL\n#endif\n",
-                                p.name.name, p.name.name
+                                "#ifndef {}\n#define {} {val}ULL\n#define ARCH_SIM_VFUNCTIONS_DEFINED_{}\n#endif\n",
+                                p.name.name, p.name.name, p.name.name
                             ));
                         }
                     }
@@ -6324,6 +6639,16 @@ impl<'a> SimCodegen<'a> {
                 }
             }
             h.push_str("}\n\n");
+        }
+
+        // Keep the fallback parameter macros local to VFunctions.h. Without
+        // this cleanup, whichever module happened to contribute a parameter
+        // name first (for example ROW_MODE) silently changed the value seen
+        // by every subsequently included specialized module header.
+        for (name, _) in &function_param_macros {
+            h.push_str(&format!(
+                "#ifdef ARCH_SIM_VFUNCTIONS_DEFINED_{name}\n#undef {name}\n#undef ARCH_SIM_VFUNCTIONS_DEFINED_{name}\n#endif\n"
+            ));
         }
 
         SimModel {
@@ -6721,6 +7046,27 @@ impl<'a> SimCodegen<'a> {
             }
         }
 
+        // Parameterized bus wires are concrete per use site. Record each
+        // field under `wire.field` so expression-width inference, concat
+        // offsets, slices, signed arithmetic, and wide instance wiring all
+        // see the wire's overrides instead of the bus defaults.
+        for item in &m.body {
+            let ModuleBodyItem::WireDecl(w) = item else {
+                continue;
+            };
+            let Some(fields) = effective_bus_wire_signals(w, self.symbols, &m.params) else {
+                continue;
+            };
+            for (field_name, _dir, field_ty) in fields {
+                let path = format!("{}.{}", w.name.name, field_name);
+                let bits = type_bits_te_with_params(&field_ty, &m.params);
+                widths.insert(path.clone(), bits);
+                if type_is_signed_scalar(&field_ty) {
+                    signed_names.insert(path);
+                }
+            }
+        }
+
         // Populate widths with per-struct-field keys: "ctrl_r.mode" → 4, etc.
         // Required for concat-width inference when struct fields appear inside
         // a concat expression (the default `unwrap_or(8)` silently corrupts
@@ -7037,20 +7383,16 @@ impl<'a> SimCodegen<'a> {
         }
         // Bus-typed wires are emitted as C++ structs. If a bus field is Vec
         // typed (notably TLM response payloads), record the `<wire>.<field>`
-        // path so instance wiring copies the array element-by-element.
+        // path so instance wiring copies the array element-by-element. Use
+        // each wire's effective parameter map rather than the bus defaults.
         for item in &m.body {
             let ModuleBodyItem::WireDecl(w) = item else {
                 continue;
             };
-            let TypeExpr::Named(id) = &w.ty else {
+            let Some(fields) = effective_bus_wire_signals(w, self.symbols, &m.params) else {
                 continue;
             };
-            let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(&id.name)
-            else {
-                continue;
-            };
-            let pm = info.default_param_map();
-            for (sname, _sdir, sty) in info.effective_signals(&pm) {
+            for (sname, _sdir, sty) in fields {
                 if let TypeExpr::Vec(_, count_expr) = &sty {
                     let count = eval_const_expr_with_params(count_expr, &m.params);
                     if count > 0 {
@@ -7551,15 +7893,7 @@ impl<'a> SimCodegen<'a> {
         // Determine if there are any functions defined in the same source file.
         // Includes module-internal `function` items so the per-module header
         // pulls in VFunctions.h when those callees were emitted.
-        let has_functions = self.source.items.iter().any(|i| match i {
-            Item::Function(_) => true,
-            Item::Package(p) => !p.functions.is_empty(),
-            Item::Module(mm) => mm
-                .body
-                .iter()
-                .any(|b| matches!(b, ModuleBodyItem::Function(_))),
-            _ => false,
-        });
+        let has_functions = self.source_has_functions();
 
         // ── Header ───────────────────────────────────────────────────────────
         // Recurse into Vec<> so `reg foo: Vec<Entry, N>` and port types like
@@ -7590,14 +7924,18 @@ impl<'a> SimCodegen<'a> {
             h.push_str(&format!("#include \"V{}.h\"\n", inst.module_name.name));
         }
         h.push('\n');
-        // Emit param constants as #define (deduplicated via eval_param_const_value helper)
+        // Scope parameter macros to this generated header. Implementations
+        // re-establish the same values after the include; the cleanup keeps
+        // sibling specializations with identical parameter names isolated.
+        let mut module_param_macros: Vec<(String, u64)> = Vec::new();
         for p in &m.params {
             match &p.kind {
                 ParamKind::Const | ParamKind::WidthConst(..) | ParamKind::Logic(_) => {
                     if let Some(val) = eval_param_const_value(p, &m.params) {
+                        module_param_macros.push((p.name.name.clone(), val));
                         h.push_str(&format!(
-                            "#ifndef {}\n#define {} {val}ULL\n#endif\n",
-                            p.name.name, p.name.name
+                            "#ifndef {}\n#define {} {val}ULL\n#define ARCH_SIM_{class}_DEFINED_{}\n#endif\n",
+                            p.name.name, p.name.name, p.name.name
                         ));
                     }
                 }
@@ -7607,9 +7945,10 @@ impl<'a> SimCodegen<'a> {
                             if let Some(val) =
                                 resolve_enum_variant(&enum_map, enum_name, &variant.name)
                             {
+                                module_param_macros.push((p.name.name.clone(), val));
                                 h.push_str(&format!(
-                                    "#ifndef {}\n#define {} {val}ULL\n#endif\n",
-                                    p.name.name, p.name.name
+                                    "#ifndef {}\n#define {} {val}ULL\n#define ARCH_SIM_{class}_DEFINED_{}\n#endif\n",
+                                    p.name.name, p.name.name, p.name.name
                                 ));
                             }
                         }
@@ -8047,6 +8386,7 @@ impl<'a> SimCodegen<'a> {
         }
         for c in &all_clks {
             h.push_str(&format!("  bool _rising_{c};\n"));
+            h.push_str(&format!("  bool _falling_{c};\n"));
         }
         // --coverage Phase 6: per-(inst, output-port) prev-value
         // shadow for construct port toggle counters. Allocated only
@@ -8240,6 +8580,17 @@ impl<'a> SimCodegen<'a> {
                     h.push_str(&format!("  {ty} _let_{};\n", l.name.name));
                 }
                 ModuleBodyItem::WireDecl(w) => {
+                    // A parameterized bus wire needs a concrete field layout
+                    // for this use site. The global VStructs bus type carries
+                    // only defaults and cannot represent two distinct
+                    // specializations in the same module.
+                    if !w.bus_params.is_empty() {
+                        if let Some(fields) = effective_bus_wire_signals(w, self.symbols, &m.params)
+                        {
+                            emit_parameterized_bus_wire_decl(&mut h, w, &fields, &m.params);
+                            continue;
+                        }
+                    }
                     // 2D bus wire: `wire edges: Vec<Vec<B, N>, M>;` →
                     //   B _let_edges[M][N];
                     // Emitted *before* the generic vec_array_info path, which
@@ -8413,10 +8764,23 @@ impl<'a> SimCodegen<'a> {
         }
 
         h.push_str("};\n");
+        for (name, _) in &module_param_macros {
+            h.push_str(&format!(
+                "#ifdef ARCH_SIM_{class}_DEFINED_{name}\n#undef {name}\n#undef ARCH_SIM_{class}_DEFINED_{name}\n#endif\n"
+            ));
+        }
 
         // ── Implementation ────────────────────────────────────────────────────
         let mut cpp = String::new();
         cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
+        for (name, val) in &module_param_macros {
+            cpp.push_str(&format!(
+                "#ifndef {name}\n#define {name} {val}ULL\n#endif\n"
+            ));
+        }
+        if !module_param_macros.is_empty() {
+            cpp.push('\n');
+        }
 
         if self.coverage {
             cpp.push_str("__ARCH_COV_IMPL_DEFN__");
@@ -8576,12 +8940,16 @@ impl<'a> SimCodegen<'a> {
         // eval_posedge()
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
 
-        // Edge detection: detect rising edges and update _clk_prev for all clocks.
+        // Edge detection: detect both supported seq edges, then update the
+        // previous value once. Falling-edge blocks previously used the
+        // rising flag as well, so native sim silently clocked them on the
+        // wrong edge even though SV codegen emitted `negedge`.
         // This runs inside eval_posedge() so that:
         //   - Derived clocks from sub-instances are already settled before detection
         //   - Sub-instances correctly detect their own clock edges when called from parent
         for c in &all_clks {
             cpp.push_str(&format!("  _rising_{c} = ({c} && !_clk_prev_{c});\n"));
+            cpp.push_str(&format!("  _falling_{c} = (!{c} && _clk_prev_{c});\n"));
             cpp.push_str(&format!("  _clk_prev_{c} = {c};\n"));
         }
 
@@ -8842,16 +9210,20 @@ impl<'a> SimCodegen<'a> {
                     false
                 };
 
-                // Guard each seq block on its specific clock's rising edge.
+                // Guard each seq block on its declared clock and edge.
                 // For async reset: use `else if` so the seq body is skipped
                 // when reset was active — the reset arm already cleared the
                 // regs; executing the seq body (e.g. toggle) would overwrite.
-                let rising_gate = if async_reset_emitted {
-                    format!("  else if (_rising_{}) {{\n", rb.clock.name)
-                } else {
-                    format!("  if (_rising_{}) {{\n", rb.clock.name)
+                let edge_kind = match rb.clock_edge {
+                    ClockEdge::Rising => "rising",
+                    ClockEdge::Falling => "falling",
                 };
-                cpp.push_str(&rising_gate);
+                let edge_gate = if async_reset_emitted {
+                    format!("  else if (_{edge_kind}_{}) {{\n", rb.clock.name)
+                } else {
+                    format!("  if (_{edge_kind}_{}) {{\n", rb.clock.name)
+                };
+                cpp.push_str(&edge_gate);
                 let base_indent: usize = 2;
                 // --coverage phase 2: count seq-block entries (rising
                 // edges seen). One counter per top-level seq block;
@@ -9448,10 +9820,21 @@ impl<'a> SimCodegen<'a> {
                                     ));
                                     continue;
                                 }
-                                cpp.push_str(&format!(
-                                    "  _inst_{}.{} = {};\n",
-                                    inst.name.name, conn.port_name.name, resolved
-                                ));
+                                let bits = widths.get(src_name.as_str()).copied().unwrap_or(0);
+                                if bits > 128 {
+                                    cpp.push_str(&format!(
+                                        "  _inst_{}.{} = {};\n",
+                                        inst.name.name, conn.port_name.name, resolved
+                                    ));
+                                } else {
+                                    cpp.push_str(&format!(
+                                        "  _arch_u128_to_vl({}, _inst_{}.{}.data(), {});\n",
+                                        resolved,
+                                        inst.name.name,
+                                        conn.port_name.name,
+                                        wide_words(bits)
+                                    ));
+                                }
                                 continue;
                             }
                         }
@@ -9589,12 +9972,13 @@ impl<'a> SimCodegen<'a> {
                         }
                         let sig = cpp_expr(&conn.signal, &ctx_comb);
                         // Wide type (>64 bits): parent _arch_u128 → inst VlWide
-                        let _in_w = if let ExprKind::Ident(n) = &conn.signal.kind {
-                            widths.get(n.as_str()).copied().unwrap_or(0)
-                        } else {
-                            0
-                        };
-                        if _in_w > 64 {
+                        let _in_w = infer_expr_width(&conn.signal, &ctx_comb);
+                        if _in_w > 128 {
+                            cpp.push_str(&format!(
+                                "  _inst_{}.{} = {};\n",
+                                inst.name.name, conn.port_name.name, sig
+                            ));
+                        } else if _in_w > 64 {
                             cpp.push_str(&format!(
                                 "  _arch_u128_to_vl({}, _inst_{}.{}.data(), {});\n",
                                 sig,
@@ -9673,11 +10057,7 @@ impl<'a> SimCodegen<'a> {
                             }
                         }
                         let sig = cpp_expr(&conn.signal, &ctx_comb);
-                        let _out_w = if let ExprKind::Ident(n) = &conn.signal.kind {
-                            widths.get(n.as_str()).copied().unwrap_or(0)
-                        } else {
-                            0
-                        };
+                        let _out_w = infer_expr_width(&conn.signal, &ctx_comb);
                         if let ExprKind::Ident(sig_name) = &conn.signal.kind {
                             if let Some((count, elem_bits)) =
                                 child_vec_output_shape(inst, &conn.port_name.name)
@@ -9705,7 +10085,12 @@ impl<'a> SimCodegen<'a> {
                                 }
                             }
                         }
-                        if _out_w > 64 {
+                        if _out_w > 128 {
+                            cpp.push_str(&format!(
+                                "  {} = _inst_{}.{};\n",
+                                sig, inst.name.name, conn.port_name.name
+                            ));
+                        } else if _out_w > 64 {
                             cpp.push_str(&format!(
                                 "  {} = _arch_vl_to_u128(_inst_{}.{}.data(), {});\n",
                                 sig,
@@ -11047,7 +11432,9 @@ impl<'a> SimCodegen<'a> {
     /// Collects from both file-scope and inside `package` declarations.
     fn gen_structs_file(&self) -> SimModel {
         let mut h = String::new();
-        h.push_str("#pragma once\n#include <cstdint>\n#include <cstring>\n\n");
+        h.push_str(
+            "#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\n",
+        );
 
         // Gather all enums and structs, whether declared at file scope or inside packages.
         let mut enums: Vec<&EnumDecl> = Vec::new();

@@ -76,10 +76,18 @@ impl<'a> SimCodegen<'a> {
             }
             cpp_port_type_with_params(ty, &f.params)
         };
+        let resolve_port_type_expr = |ty: &TypeExpr| -> TypeExpr {
+            if let TypeExpr::Named(n) = ty {
+                if let Some(concrete) = type_param_map.get(&n.name) {
+                    return concrete.clone();
+                }
+            }
+            ty.clone()
+        };
 
         let mut h = String::new();
         h.push_str(
-            "#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\n",
+            "#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n#include \"VStructs.h\"\n\n",
         );
         h.push_str(&format!("class {class} {{\npublic:\n"));
         let port_names: HashSet<&str> = f.ports.iter().map(|p| p.name.name.as_str()).collect();
@@ -330,6 +338,22 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("}\n\n");
 
         // Trace methods
+        // The simple per-bit FIFO VCD emitter supports scalar ports only.
+        // Struct payloads have no single integer representation in native sim,
+        // and VlWide payloads need word-array emission; omit both rather than
+        // generating invalid `payload >> bit` C++.
+        let trace_ports: Vec<(&PortDecl, u32)> = f
+            .ports
+            .iter()
+            .filter_map(|p| {
+                let resolved = resolve_port_type_expr(&p.ty);
+                if ty_references_named(&resolved) {
+                    return None;
+                }
+                let width = type_width_with_params(&resolved, &f.params);
+                (width <= 64).then_some((p, width))
+            })
+            .collect();
         cpp.push_str(&format!(
             "void {class}::trace_open(const char* filename) {{\n"
         ));
@@ -341,8 +365,7 @@ impl<'a> SimCodegen<'a> {
             name
         ));
         let mut sig_idx = 0usize;
-        for p in &f.ports {
-            let w = type_width_with_params(&p.ty, &f.params);
+        for (p, w) in &trace_ports {
             let id = vcd_id(sig_idx);
             sig_idx += 1;
             let pname = &p.name.name;
@@ -357,12 +380,11 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("  if (!_trace_fp) return;\n");
         cpp.push_str("  fprintf(_trace_fp, \"#%lu\\n\", (unsigned long)time);\n");
         sig_idx = 0;
-        for p in &f.ports {
-            let w = type_width_with_params(&p.ty, &f.params);
+        for (p, w) in &trace_ports {
             let id = vcd_id(sig_idx);
             sig_idx += 1;
             let pname = &p.name.name;
-            if w == 1 {
+            if *w == 1 {
                 cpp.push_str(&format!(
                     "  fprintf(_trace_fp, \"%c{}\\n\", {pname} ? '1' : '0');\n",
                     id
