@@ -36,7 +36,7 @@ written back into the repo tree.
 
 ## Results (yosys 0.64, `abc -fast`, 2-input generic gates)
 
-Regenerated 2026-07-12 (proposal-phase-3 pass over this flow) after fixing a
+Regenerated 2026-07-12 (proposal-phase-3 pass over this flow); FP8 rows added 2026-08-01 (same flow, yosys 0.67+post) after fixing a
 yosys-version-drift bug in this script: yosys 0.64's `stat`/`ltp` text no
 longer matches the phrasing (`"Number of cells:"`) an older 0.33-era version
 of this script parsed, so every row below silently printed `?` until the
@@ -58,6 +58,18 @@ to confirm.
 | `bf16_sub` | 1,073 | 128 |
 | `bf16_fma` | 3,799 | 279 |
 | `f32_fma` | 8,927 | 301 |
+| `e4m3_to_f32` (widen) | 48 | 11 |
+| `e5m2_to_f32` (widen) | 46 | 11 |
+| `f32_to_e4m3` (narrow) | 457 | 66 |
+| `f32_to_e5m2` (narrow) | 408 | 68 |
+| `e4m3_mul` | 412 | 65 |
+| `e5m2_mul` | 390 | 61 |
+| `e4m3_add` | 518 | 86 |
+| `e4m3_sub` | 533 | 81 |
+| `e5m2_add` | 590 | 100 |
+| `e5m2_sub` | 602 | 100 |
+| `e4m3_fma` | 1,782 | 157 |
+| `e5m2_fma` | 1,854 | 194 |
 
 ### Reading it
 
