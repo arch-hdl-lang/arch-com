@@ -161,7 +161,56 @@ emit Bf16Fma 'module Bf16Fma
   comb y = fma(a, b, c); end comb
 end module Bf16Fma'
 
-ops=(Bf16ToF32 F32ToBf16 Bf16Mul F32Mul F32Add F32Sub Bf16Add Bf16Sub Bf16Fma F32Fma)
+emit E4m3Add 'module E4m3Add
+  port a: in FP8E4M3; port b: in FP8E4M3; port y: out FP8E4M3;
+  comb y = a + b; end comb
+end module E4m3Add'
+emit E4m3Sub 'module E4m3Sub
+  port a: in FP8E4M3; port b: in FP8E4M3; port y: out FP8E4M3;
+  comb y = a - b; end comb
+end module E4m3Sub'
+emit E4m3Mul 'module E4m3Mul
+  port a: in FP8E4M3; port b: in FP8E4M3; port y: out FP8E4M3;
+  comb y = a * b; end comb
+end module E4m3Mul'
+emit E4m3Fma 'module E4m3Fma
+  port a: in FP8E4M3; port b: in FP8E4M3; port c: in FP8E4M3; port y: out FP8E4M3;
+  comb y = fma(a, b, c); end comb
+end module E4m3Fma'
+emit E5m2Add 'module E5m2Add
+  port a: in FP8E5M2; port b: in FP8E5M2; port y: out FP8E5M2;
+  comb y = a + b; end comb
+end module E5m2Add'
+emit E5m2Sub 'module E5m2Sub
+  port a: in FP8E5M2; port b: in FP8E5M2; port y: out FP8E5M2;
+  comb y = a - b; end comb
+end module E5m2Sub'
+emit E5m2Mul 'module E5m2Mul
+  port a: in FP8E5M2; port b: in FP8E5M2; port y: out FP8E5M2;
+  comb y = a * b; end comb
+end module E5m2Mul'
+emit E5m2Fma 'module E5m2Fma
+  port a: in FP8E5M2; port b: in FP8E5M2; port c: in FP8E5M2; port y: out FP8E5M2;
+  comb y = fma(a, b, c); end comb
+end module E5m2Fma'
+emit E4m3ToF32 'module E4m3ToF32
+  port a: in FP8E4M3; port y: out FP32;
+  comb y = a.to_fp32(); end comb
+end module E4m3ToF32'
+emit F32ToE4m3 'module F32ToE4m3
+  port a: in FP32; port y: out FP8E4M3;
+  comb y = a.to_fp8e4m3(); end comb
+end module F32ToE4m3'
+emit E5m2ToF32 'module E5m2ToF32
+  port a: in FP8E5M2; port y: out FP32;
+  comb y = a.to_fp32(); end comb
+end module E5m2ToF32'
+emit F32ToE5m2 'module F32ToE5m2
+  port a: in FP32; port y: out FP8E5M2;
+  comb y = a.to_fp8e5m2(); end comb
+end module F32ToE5m2'
+
+ops=(Bf16ToF32 F32ToBf16 Bf16Mul F32Mul F32Add F32Sub Bf16Add Bf16Sub Bf16Fma F32Fma E4m3ToF32 F32ToE4m3 E5m2ToF32 F32ToE5m2 E4m3Mul E5m2Mul E4m3Add E4m3Sub E5m2Add E5m2Sub E4m3Fma E5m2Fma)
 
 for t in "${ops[@]}"; do
   "$ARCH_BIN" build "$outdir/$t.arch" -o "$outdir/$t.sv" >&2
