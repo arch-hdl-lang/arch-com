@@ -1225,3 +1225,169 @@ fn fp8_conversion_surface_v1_limits() {
         }
     }
 }
+
+/// FP8 SMT equivalence proofs, BOTH --fp-compat profiles. E5M2 is checked
+/// against the `(_ FloatingPoint 5 3)` theory (add/sub via the exact-wide
+/// (8,53) formulation — see fp_smt_proof.rs); E4M3 is OCP OFP8, checked
+/// against a hand-written two-region spec that the `e4m3_widen` miter
+/// grounds against the IR. `unsat` across FP8_ARITH proves every fp8
+/// binary op correctly rounded per its format under both profiles. Skips
+/// cleanly when `z3` is absent. The fma is NOT here — it is fused
+/// f32-accumulate by design, characterized exhaustively instead (see
+/// examples/fp8_fma_char.rs; E4M3 measured 0/2^24 mismatches, E5M2
+/// 18960/2^24 riscv, 15888/2^24 cuda).
+#[test]
+fn fp8_smt_proofs() {
+    fn z3_available() -> bool {
+        std::process::Command::new("z3")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    if !z3_available() {
+        eprintln!("skipping fp8_smt_proofs: z3 not in PATH");
+        return;
+    }
+    let ops: Vec<&str> = arch::fp_smt_proof::FP8_CMP
+        .iter()
+        .chain(arch::fp_smt_proof::FP8_CONV.iter())
+        .chain(arch::fp_smt_proof::FP8_ARITH.iter())
+        // e4m3_fma_cr: the fused f32-accumulate fma proved correctly rounded
+        // for E4M3 (~2 min/profile in z3). e5m2_fma_cr is expected-sat and
+        // stays out (see FP8_FMA_CR docs).
+        .chain(std::iter::once(&"e4m3_fma_cr"))
+        .copied()
+        .collect();
+    let td = tempfile::tempdir().expect("tempdir");
+    for profile in [arch::FpCompat::Riscv, arch::FpCompat::Cuda] {
+        for op in &ops {
+            let smt = arch::fp_smt_proof::equiv_proof(op, profile);
+            let path = td.path().join(format!("{op}_{profile:?}.smt2"));
+            std::fs::write(&path, smt).unwrap();
+            let out = std::process::Command::new("z3")
+                .arg("-T:900")
+                .arg(&path)
+                .output()
+                .unwrap_or_else(|e| panic!("failed to run z3 on {op}: {e}"));
+            let first = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            assert_eq!(
+                first, "unsat",
+                "fp8 SMT proof {op} ({profile:?}) did not discharge (got {first:?})"
+            );
+        }
+    }
+}
+
+/// FP8 SV-vs-sim cross-oracle sweep, both profiles. One TB source
+/// (tb_fp8_sweep.cpp) runs against BOTH backends — the native sim's
+/// hand-written C++ helpers and the IR-rendered synthesizable SV under
+/// Verilator — dumping every output over an exhaustive 2^16 binary-op sweep
+/// plus a 3*2^25 stratified narrowing sweep (every sign/exponent/high-
+/// mantissa pattern with three low-bit sticky variants). The dumps must be
+/// byte-identical: the two implementations are independent, so agreement
+/// over the full space pins the sim helpers to the proven RTL. (Full 2^32
+/// narrow sweep: ARCH_FP8_SWEEP_FULL=1, long phase.) Skips without
+/// Verilator.
+#[test]
+fn fp8_sv_vs_sim_sweep() {
+    fn verilator_available() -> bool {
+        std::process::Command::new("verilator")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    if !verilator_available() {
+        eprintln!("skipping fp8_sv_vs_sim_sweep: verilator not in PATH");
+        return;
+    }
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    for profile in ["riscv", "cuda"] {
+        let td = tempfile::tempdir().expect("tempdir");
+        let sim_run = td.path().join("sim_run");
+        let sv_run = td.path().join("sv_run");
+        std::fs::create_dir_all(&sim_run).unwrap();
+        std::fs::create_dir_all(&sv_run).unwrap();
+
+        // Native sim dump.
+        let out = arch()
+            .arg("sim")
+            .arg(format!("{manifest}/tests/fp_v1/Fp8Arith.arch"))
+            .arg("--tb")
+            .arg(format!("{manifest}/tests/fp_v1/tb_fp8_sweep.cpp"))
+            .arg(format!("--fp-compat={profile}"))
+            .arg("--outdir")
+            .arg(td.path().join("sim_build"))
+            .current_dir(&sim_run)
+            .output()
+            .expect("run arch sim");
+        assert!(
+            out.status.success()
+                && String::from_utf8_lossy(&out.stdout).contains("ARCH_FP8_SWEEP: DONE"),
+            "native sim sweep failed ({profile}):\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Built-SV dump under Verilator.
+        let sv = td.path().join("Fp8Arith.sv");
+        let out = arch()
+            .arg("build")
+            .arg(format!("{manifest}/tests/fp_v1/Fp8Arith.arch"))
+            .arg(format!("--fp-compat={profile}"))
+            .arg("-o")
+            .arg(&sv)
+            .output()
+            .expect("run arch build");
+        assert!(out.status.success(), "arch build failed ({profile})");
+        let obj = td.path().join("obj");
+        let vout = std::process::Command::new("verilator")
+            .args([
+                "--cc",
+                "--exe",
+                "--build",
+                "-Wno-fatal",
+                "--top-module",
+                "Fp8Arith",
+                "-o",
+                "vsweep",
+            ])
+            .arg("-Mdir")
+            .arg(&obj)
+            .arg(&sv)
+            .arg(format!("{manifest}/tests/fp_v1/tb_fp8_sweep.cpp"))
+            .output()
+            .expect("run verilator");
+        assert!(
+            vout.status.success(),
+            "verilator build failed ({profile}):\n{}",
+            String::from_utf8_lossy(&vout.stderr)
+        );
+        let run = std::process::Command::new(obj.join("vsweep"))
+            .current_dir(&sv_run)
+            .output()
+            .expect("run verilated sweep");
+        assert!(
+            run.status.success()
+                && String::from_utf8_lossy(&run.stdout).contains("ARCH_FP8_SWEEP: DONE"),
+            "verilated sweep failed ({profile})"
+        );
+
+        let a = std::fs::read(sim_run.join("fp8_sweep.bin")).expect("sim dump");
+        let b = std::fs::read(sv_run.join("fp8_sweep.bin")).expect("sv dump");
+        assert_eq!(a.len(), b.len(), "dump size mismatch ({profile})");
+        if a != b {
+            let i = a.iter().zip(&b).position(|(x, y)| x != y).unwrap();
+            panic!(
+                "fp8 SV-vs-sim divergence ({profile}) at byte {i}: sim=0x{:02X} sv=0x{:02X}",
+                a[i], b[i]
+            );
+        }
+    }
+}
