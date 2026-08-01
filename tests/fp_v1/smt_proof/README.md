@@ -200,3 +200,15 @@ Notes:
   `fp8_sv_vs_sim_sweep` byte-compares the native sim's C++ helpers against
   the Verilated SV over the exhaustive 2^16 binary-op space plus a 3·2^25
   stratified narrowing sweep, both profiles.
+
+### FP8 long-verification results (2026-08-01)
+
+- **Renderer miter: 48/48 `unsat`** (bitwuzla 0.9 / z3 fallback, 1800 s cap,
+  M-series 8-core) — the 24 fp8 rows plus a full regression of all 24
+  pre-existing f32/bf16 rows. fp8 fma splits: E4m3Fma 138 s, E5m2Fma 133 s
+  (vs 619 s F32Fma / 365 s Bf16Fma).
+- **Full 2^32 narrowing sweep** (`ARCH_FP8_SWEEP_FULL=1`): native sim and
+  Verilated SV report identical FNV-1a output hashes over all 4.3 G f32
+  inputs for both `f32→e4m3` and `f32→e5m2` — riscv `ce51cf2a0d9d99ab`,
+  cuda `e2b1a81a28dd99c3` — and the exhaustive 2^16 binary-op dumps are
+  byte-identical under both profiles.
