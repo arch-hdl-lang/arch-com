@@ -138,12 +138,30 @@ fn cr_fma(f: Fmt, p: Prof, a: u8, b: u8, c: u8) -> u8 {
     round8(f, p, exact)
 }
 
+/// Total order rank of a non-NaN fp8 byte: sign-magnitude → signed rank, so
+/// |rank(x) − rank(y)| is the ULP distance on the format's value grid. For
+/// E5M2 the encoding is IEEE-ordered with ±inf (0x7C) one step above max
+/// finite — counting overflow-boundary flips (0x7B vs 0x7C) as 1 ULP. Both
+/// zeros map to rank 0 (they compare equal in value).
+fn rank(h: u8) -> i32 {
+    let mag = (h & 0x7F) as i32;
+    if h & 0x80 != 0 {
+        -mag
+    } else {
+        mag
+    }
+}
+
 fn main() {
     for (fname, fmt) in [("E4M3", Fmt { e4m3: true }), ("E5M2", Fmt { e4m3: false })] {
         for (pname, prof) in [("riscv", Prof::Riscv), ("cuda", Prof::Cuda)] {
             let mut total = 0u64;
             let mut mismatch = 0u64;
             let mut first: Option<(u8, u8, u8, u8, u8)> = None;
+            // ULP-distance histogram over mismatches; index 0 counts cases
+            // where either side is NaN (not a distance) — expected 0, since
+            // both paths canonicalize NaN identically.
+            let mut hist = [0u64; 4]; // [nan-involved, 1, 2, >=3]
             for a in 0..=255u8 {
                 for b in 0..=255u8 {
                     for c in 0..=255u8 {
@@ -155,6 +173,12 @@ fn main() {
                             if first.is_none() {
                                 first = Some((a, b, c, r, g));
                             }
+                            if is_nan8(fmt, r) || is_nan8(fmt, g) {
+                                hist[0] += 1;
+                            } else {
+                                let d = (rank(r) - rank(g)).unsigned_abs();
+                                hist[(d.min(3)) as usize] += 1;
+                            }
                         }
                     }
                 }
@@ -163,6 +187,12 @@ fn main() {
             print!("{fname}/{pname}: {mismatch}/{total} mismatches ({pct:.4}%)");
             if let Some((a, b, c, r, g)) = first {
                 print!("  first: fma(0x{a:02X},0x{b:02X},0x{c:02X}) rtl=0x{r:02X} cr=0x{g:02X}");
+            }
+            if mismatch > 0 {
+                print!(
+                    "  ulp-hist: 1={} 2={} >=3={} nan-involved={}",
+                    hist[1], hist[2], hist[3], hist[0]
+                );
             }
             println!();
         }
