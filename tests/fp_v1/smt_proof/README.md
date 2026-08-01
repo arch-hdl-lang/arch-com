@@ -150,3 +150,65 @@ mul cross-checked with cvc5 `--fp-exp`). They are the plan's §8.1 primary targe
   hardware implements that. So `bf16_fma` is correct **for f32-accumulate
   semantics** (the f32 fma is machine-proved; the narrow matches PyTorch), and is
   verified end-to-end by §8.2 against the matching f32-accumulate reference.
+
+## FP8 (E4M3 / E5M2) — 2026-08-01
+
+Both OCP OFP8 formats are covered by the same generated-miter machinery
+(`fp8_smt_proofs`, both `--fp-compat` profiles, all `unsat` in z3 4.15):
+
+| op(s) | spec | input space |
+|---|---|---|
+| `e5m2_eq … e5m2_ge` | `fp.eq/lt/…` on `(_ FloatingPoint 5 3)` | 2^16 |
+| `e5m2_widen` / `e5m2_narrow` | exact widen / RNE round to `(5,3)` (+ cuda satfinite wrapper) | 2^8 / 2^32 |
+| `e5m2_mul` | `fp.mul` on `(5,3)` | 2^16 |
+| **`e5m2_add` / `e5m2_sub`** | exact result in `(_ FloatingPoint 8 53)`, ONE `(5,3)` rounding | 2^16 |
+| `e4m3_widen` | hand two-region OCP spec (IEEE `(4,4)` below exp 15 + 7 top-binade constants) | 2^8 |
+| `e4m3_eq … e4m3_ge` | IEEE compares on the (grounded) widened values | 2^16 |
+| `e4m3_narrow` + `e4m3_mul/add/sub` | two-region OCP round: `(_ FloatingPoint 8 4)` normals (≥480 overflows, profile result), scaled `fp.roundToIntegral` subnormals | 2^32 / 2^16 |
+| **`e4m3_fma_cr`** | exact fma in `(_ FloatingPoint 8 37)`, ONE OCP rounding | **2^24 — `unsat`, ~2 min/profile** |
+
+Notes:
+
+- **E4M3 is not an IEEE format** (no infinities; the top exponent is finite
+  except at an all-ones mantissa), so there is no direct SMT sort for it. The
+  hand-written two-region spec is grounded by the `e4m3_widen` miter (the IR
+  widen equals the spec over all 2^8 encodings); every other e4m3 proof then
+  decodes results through that proven widen.
+- **`e5m2_add`/`e5m2_sub` use the exact-wide formulation** — z3 4.15 returns
+  `unknown` on `fp.add` miters at `(5,3)` even with pinned operands (a
+  rewriter incompleteness; `fp.mul` and `to_fp` on the same sort discharge
+  fine, and bitwuzla is built without `--fpexp` so it cannot parse the sort
+  at all). Computing the exact sum in `(_ FloatingPoint 8 53)` and rounding
+  once into `(5,3)` is the same correctly-rounded spec and avoids `(5,3)`
+  `fp.add` entirely. This also means the E5M2 add/sub double rounding
+  (f32 first, then fp8) is **proved** innocuous — not assumed from a
+  `p ≥ 2q+2` margin, which is a fallacy for round-to-nearest (see the
+  bf16_fma note above).
+- **`e4m3_fma_cr` upgrades the E4M3 fma to proven correctly rounded**: the
+  fused f32-accumulate equals a true CR reference (exact fma in `(8,37)`,
+  one OCP rounding) over all 2^24 triples, both profiles. Confirmed
+  independently by the exhaustive characterization
+  (`examples/fp8_fma_char.rs`: 0 mismatches).
+- **`e5m2_fma_cr` is `sat`, as expected** — E5M2 fma keeps the fused-f32
+  convention and deviates from CR on 18960/2^24 inputs (0.113%, riscv) /
+  15888/2^24 (0.095%, cuda), always by 1 ULP. Witness
+  `fma(0x1E,0x7A,0x01)` = 288 + 2^-16: CR is 320, fused gives 256 (the f32
+  step ties-to-even onto exactly 288 — the e5m2 midpoint — losing the
+  sticky). Characterized, documented in §3.8, not asserted.
+- The renderer miter gains 24 fp8 rows (arith, fma via the alignment-gap
+  split with fp8-widen conversion, compares, conversions), and
+  `fp8_sv_vs_sim_sweep` byte-compares the native sim's C++ helpers against
+  the Verilated SV over the exhaustive 2^16 binary-op space plus a 3·2^25
+  stratified narrowing sweep, both profiles.
+
+### FP8 long-verification results (2026-08-01)
+
+- **Renderer miter: 48/48 `unsat`** (bitwuzla 0.9 / z3 fallback, 1800 s cap,
+  M-series 8-core) — the 24 fp8 rows plus a full regression of all 24
+  pre-existing f32/bf16 rows. fp8 fma splits: E4m3Fma 138 s, E5m2Fma 133 s
+  (vs 619 s F32Fma / 365 s Bf16Fma).
+- **Full 2^32 narrowing sweep** (`ARCH_FP8_SWEEP_FULL=1`): native sim and
+  Verilated SV report identical FNV-1a output hashes over all 4.3 G f32
+  inputs for both `f32→e4m3` and `f32→e5m2` — riscv `ce51cf2a0d9d99ab`,
+  cuda `e2b1a81a28dd99c3` — and the exhaustive 2^16 binary-op dumps are
+  byte-identical under both profiles.
