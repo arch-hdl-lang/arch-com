@@ -12255,7 +12255,26 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                         if t.tlm_target.is_some() || t.implement.is_some() {
                             continue;
                         }
-                        for dt in direct_tlm_threads(t, &port_buses, &port_methods) {
+                        let dts = direct_tlm_threads(t, &port_buses, &port_methods);
+                        // A `fork ... and ... join` direct-call group is
+                        // recognized here when `dts.len() > 1` (see
+                        // `direct_tlm_threads`). Grouping downstream keys
+                        // purely by `(port, method)`, so a group that mixes
+                        // `blocking` and `out_of_order` calls across
+                        // different methods can partially satisfy the
+                        // same-method cohort size check for whichever class
+                        // happens to repeat, while the minority-class
+                        // branch(es) are silently dropped instead of being
+                        // lowered. Reject mixed-class groups up front with a
+                        // clean diagnostic — see #500 Gap 1 and
+                        // doc/ARCH_HDL_Specification.md §22.2.2.
+                        if dts.len() > 1 {
+                            if let Some(e) = check_fork_join_uniform_tlm_class(&dts) {
+                                errors.push(e);
+                                continue;
+                            }
+                        }
+                        for dt in dts {
                             direct_groups
                                 .entry((dt.call.port.clone(), dt.call.method.clone()))
                                 .or_default()
@@ -12521,6 +12540,53 @@ fn direct_tlm_threads(
         }
         _ => Vec::new(),
     }
+}
+
+/// Human-readable class label for a TLM method's concurrency mode, used in
+/// the mixed-class fork-group diagnostic below. `blocking` methods print as
+/// `blocking`; `out_of_order tags N` methods print with the literal tag
+/// count when it resolves, otherwise just `out_of_order`.
+fn tlm_mode_label(meta: &TlmMethodMeta) -> String {
+    match &meta.out_of_order_tags {
+        Some(tags) => match literal_expr_u64(tags) {
+            Some(n) => format!("out_of_order tags {n}"),
+            None => "out_of_order".to_string(),
+        },
+        None => meta.mode.name.clone(),
+    }
+}
+
+/// Reject a direct-call `fork ... and ... join` TLM issue group (see
+/// `direct_tlm_threads`) that mixes `blocking` and `out_of_order tags N`
+/// calls. See doc/ARCH_HDL_Specification.md §22.2.2 and arch-com #500 Gap 1:
+/// the downstream `(port, method)` cohort grouping in
+/// `lower_tlm_initiator_calls` only recognizes a same-method cohort when at
+/// least two branches share one `(port, method)` key, so a mixed-class group
+/// can partially satisfy that check for whichever class happens to repeat
+/// while silently dropping the minority-class branch(es) instead of
+/// lowering them. Uniform-class groups (the only supported shape) return
+/// `None`.
+fn check_fork_join_uniform_tlm_class(dts: &[DirectTlmThread]) -> Option<CompileError> {
+    let first = dts.first()?;
+    let first_is_ooo = first.call.method_meta.out_of_order_tags.is_some();
+    for dt in &dts[1..] {
+        let is_ooo = dt.call.method_meta.out_of_order_tags.is_some();
+        if is_ooo != first_is_ooo {
+            return Some(CompileError::general(
+                &format!(
+                    "fork issue group mixes blocking and out_of_order calls (`{}.{}` is {}, `{}.{}` is {}); split into separate fork groups or make the classes uniform",
+                    first.call.port,
+                    first.call.method,
+                    tlm_mode_label(&first.call.method_meta),
+                    dt.call.port,
+                    dt.call.method,
+                    tlm_mode_label(&dt.call.method_meta),
+                ),
+                dt.thread.span,
+            ));
+        }
+    }
+    None
 }
 
 fn direct_tlm_assign_thread(
