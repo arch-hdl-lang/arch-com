@@ -2419,11 +2419,52 @@ fn cpp_internal_type_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> String 
     }
 }
 
+/// Declare a struct/bus-as-wire field. `Vec<T,N>` fields (including nested
+/// `Vec<Vec<T,M>,N>`) emit as `std::array<T,N>` — see `cpp_std_array_type`
+/// — rather than a raw C array; every other type is unaffected.
 fn cpp_field_decl(name: &str, ty: &TypeExpr, params: &[ParamDecl]) -> String {
-    if let Some((elem_ty, count)) = vec_array_info_with_params(ty, params) {
-        format!("{elem_ty} {name}[{count}]")
+    if let Some(arr_ty) = cpp_std_array_type(ty, params) {
+        format!("{arr_ty} {name}")
     } else {
         format!("{} {name}", cpp_internal_type_with_params(ty, params))
+    }
+}
+
+/// If `ty` is `Vec<T, N>` (possibly nested), return the C++
+/// `std::array<...>` type string for a Vec-typed **struct/bus field**
+/// (`cpp_field_decl`'s Vec branch — arch-com#500 Gap 3 / #759).
+///
+/// This is the "harc-style" carrier: `std::array` mirrors harc-com's
+/// `HarcWide<N>::words` convention (`runtime/harc_thread_rt.h`) of storing
+/// fixed-size hardware vectors as `std::array` rather than a raw C array.
+/// Unlike a raw C array, `std::array` is copy-assignable, and pybind11's
+/// `<pybind11/stl.h>` (already included by every generated `*_pybind.cpp`)
+/// binds it to/from a Python list automatically — that's what makes
+/// `.def_readwrite` on a `Vec<T,N>` struct field compile (it doesn't for a
+/// raw array: "array type ... is not assignable"). See
+/// `doc/proposal_vec_payload_interop.md` §2.3 / §4 and arch-com#759.
+///
+/// Nested Vecs (`Vec<Vec<T,M>,N>`) recurse outer-to-inner, matching the
+/// nesting direction of the old `T name[N][M]` C-array form:
+/// `std::array<std::array<T,M>,N>`.
+///
+/// Scope: this only changes the C++ *storage representation* of Vec-typed
+/// fields inside generated `struct`/bus-as-wire C++ types
+/// (`gen_structs_file`). It intentionally does NOT touch
+/// `vec_array_info_with_params` (still returns the C-array-style
+/// `"N][M"` count-string format used pervasively elsewhere for Vec-typed
+/// module ports/regs) — those are a separate, much larger surface not in
+/// scope here, and every element-indexed access pattern (`x.field[i]`)
+/// already reads and writes identically for `std::array` and a raw array
+/// via `operator[]`, so leaving them as C arrays is not a hazard.
+fn cpp_std_array_type(ty: &TypeExpr, params: &[ParamDecl]) -> Option<String> {
+    if let TypeExpr::Vec(elem, count_expr) = ty {
+        let n = eval_const_expr_with_params(count_expr, params);
+        let inner = cpp_std_array_type(elem, params)
+            .unwrap_or_else(|| cpp_internal_type_with_params(elem, params));
+        Some(format!("std::array<{inner}, {n}>"))
+    } else {
+        None
     }
 }
 
@@ -11047,7 +11088,7 @@ impl<'a> SimCodegen<'a> {
     /// Collects from both file-scope and inside `package` declarations.
     fn gen_structs_file(&self) -> SimModel {
         let mut h = String::new();
-        h.push_str("#pragma once\n#include <cstdint>\n#include <cstring>\n\n");
+        h.push_str("#pragma once\n#include <cstdint>\n#include <cstring>\n#include <array>\n\n");
 
         // Gather all enums and structs, whether declared at file scope or inside packages.
         let mut enums: Vec<&EnumDecl> = Vec::new();
@@ -11172,7 +11213,15 @@ impl<'a> SimCodegen<'a> {
             for (sname, _dir, sty) in &effective {
                 if vec_array_info_with_params(sty, &b.params).is_some() {
                     h.push_str(&format!("  {};\n", cpp_field_decl(sname, sty, &[])));
-                    ctor_body.push(format!("std::memset({}, 0, sizeof({}));", sname, sname));
+                    // `sname` is now a `std::array<...>` (see cpp_field_decl /
+                    // cpp_std_array_type), not a raw C array — it no longer
+                    // decays to a pointer, so `memset` needs `.data()` to
+                    // reach the underlying contiguous storage. Byte-identical
+                    // zero-fill to the old raw-array behavior.
+                    ctor_body.push(format!(
+                        "std::memset({}.data(), 0, sizeof({}));",
+                        sname, sname
+                    ));
                 } else {
                     let ty = cpp_internal_type_with_params(sty, &b.params);
                     h.push_str(&format!("  {} {};\n", ty, sname));
