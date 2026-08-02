@@ -8874,7 +8874,10 @@ fn partition_thread_body_impl(
                 // the same critical section simultaneously.  Reject at compile time.
                 let inner_resources = collect_locked_resources(body);
                 if !inner_resources.is_empty() {
-                    let names: Vec<&str> = inner_resources.iter().map(|s| s.as_str()).collect();
+                    // Sort for a deterministic diagnostic — HashSet iteration
+                    // order is not stable.
+                    let mut names: Vec<&str> = inner_resources.iter().map(|s| s.as_str()).collect();
+                    names.sort_unstable();
                     return Err(CompileError::general(
                         &format!(
                             "nested lock blocks are not supported (inner lock(s): {}); \
