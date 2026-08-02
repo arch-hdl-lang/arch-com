@@ -5638,13 +5638,43 @@ fn lower_module_threads(
     // Per-thread state-guarded comb assigns
     merged_comb.extend(all_thread_comb);
     if !merged_comb.is_empty() {
-        merged_body.insert(
-            0,
-            ModuleBodyItem::CombBlock(CombBlock {
-                stmts: merged_comb,
-                span: sp,
-            }),
-        );
+        // arch#709: emit the lock request wires from their own always_comb so
+        // the block's grant reads can't fabricate a grant -> req dependency
+        // edge and lint as a combinational loop. Falls back to the single
+        // merged block when the split isn't provably semantics-preserving.
+        let req_names: HashSet<String> = all_resources
+            .iter()
+            .flat_map(|res| (0..n_threads).map(move |ti| format!("_{}_req_{}", res, ti)))
+            .collect();
+        match split_lock_req_comb(&merged_comb, &req_names) {
+            Some((req_stmts, rest_stmts)) => {
+                if !rest_stmts.is_empty() {
+                    merged_body.insert(
+                        0,
+                        ModuleBodyItem::CombBlock(CombBlock {
+                            stmts: rest_stmts,
+                            span: sp,
+                        }),
+                    );
+                }
+                merged_body.insert(
+                    0,
+                    ModuleBodyItem::CombBlock(CombBlock {
+                        stmts: req_stmts,
+                        span: sp,
+                    }),
+                );
+            }
+            None => {
+                merged_body.insert(
+                    0,
+                    ModuleBodyItem::CombBlock(CombBlock {
+                        stmts: merged_comb,
+                        span: sp,
+                    }),
+                );
+            }
+        }
     }
 
     // Prepend parent-module function clones so thread-body calls inside
@@ -6955,6 +6985,225 @@ fn collect_comb_stmt_signals(stmts: &[Stmt]) -> (HashSet<String>, HashSet<String
 
     walk(stmts, &mut comb_driven, &mut all_read);
     (comb_driven, all_read)
+}
+
+/// arch#709: peel the `_<res>_req_<ti>` lock-request assignments out of the
+/// merged thread `always_comb` into a block of their own.
+///
+/// The merged block writes both the lock request wires and ordinary
+/// combinational outputs, and the latter are routinely gated on
+/// `_<res>_grant_<ti>` (that is what a `lock` body *is*). Verilator models an
+/// `always_comb` as a single dependency-graph vertex, so every read of the
+/// block feeds every write of it — fabricating a `grant -> req` edge that
+/// closes the arbiter's `req -> grant` path into a cycle and reports it as
+/// `UNOPTFLAT: Circular combinational logic` on the grant wires. The bit-level
+/// graph is acyclic (`req` is a function of the thread state registers alone),
+/// which is why `arch check`'s per-signal comb-loop detector is silent, but the
+/// emitted SV still lints as a combinational loop.
+///
+/// Splitting removes the false edge: the request block reads only state
+/// registers, and the remaining block's grant reads no longer reach a request
+/// wire. Where a request genuinely *is* derived from a grant, the guard travels
+/// with the request assignment into the new block and the edge — a real one —
+/// survives.
+///
+/// Returns `None` when the split is not known to be semantics-preserving, in
+/// which case the caller keeps the single merged block (today's output):
+///
+///   - a moved statement's guard or right-hand side reads a signal that the
+///     merged block itself drives. Within one block that read sees the value
+///     assigned so far in statement order; across two blocks it would see the
+///     other block's settled value instead.
+///   - a request assignment sits inside a statement kind this pass does not
+///     know how to duplicate structurally.
+///
+/// The partition is by assignment target, so the two blocks drive disjoint
+/// signal sets (no multiple-driver hazard) and statement order — hence
+/// last-write-wins — is preserved within each.
+fn split_lock_req_comb(
+    stmts: &[Stmt],
+    req_names: &HashSet<String>,
+) -> Option<(Vec<Stmt>, Vec<Stmt>)> {
+    if req_names.is_empty() {
+        return None;
+    }
+    let (driven, _) = collect_comb_stmt_signals(stmts);
+
+    // An expression is safe to re-evaluate in the split-off block iff it reads
+    // nothing the merged block drives.
+    fn expr_safe(e: &Expr, driven: &HashSet<String>) -> bool {
+        let mut reads = HashSet::new();
+        collect_expr_reads(e, &mut reads);
+        reads.is_disjoint(driven)
+    }
+
+    /// `Some((req_half, rest_half))`, or `None` to abandon the split.
+    fn split_stmt(
+        s: &Stmt,
+        req_names: &HashSet<String>,
+        driven: &HashSet<String>,
+    ) -> Option<(Option<Stmt>, Option<Stmt>)> {
+        match s {
+            Stmt::Assign(a) => {
+                let is_req = expr_root_name(&a.target)
+                    .map(|n| req_names.contains(&n))
+                    .unwrap_or(false);
+                if !is_req {
+                    return Some((None, Some(s.clone())));
+                }
+                // The target's own name is the signal being moved; only the
+                // reads inside its index/select expressions matter here.
+                let mut target_reads = HashSet::new();
+                collect_expr_index_reads(&a.target, &mut target_reads);
+                if !expr_safe(&a.value, driven) || !target_reads.is_disjoint(driven) {
+                    return None;
+                }
+                Some((Some(s.clone()), None))
+            }
+            Stmt::IfElse(ie) => {
+                let (then_req, then_rest) = split_list(&ie.then_stmts, req_names, driven)?;
+                let (else_req, else_rest) = split_list(&ie.else_stmts, req_names, driven)?;
+                let req_half = if then_req.is_empty() && else_req.is_empty() {
+                    None
+                } else {
+                    if !expr_safe(&ie.cond, driven) {
+                        return None;
+                    }
+                    Some(Stmt::IfElse(IfElse {
+                        cond: ie.cond.clone(),
+                        then_stmts: then_req,
+                        else_stmts: else_req,
+                        unique: ie.unique,
+                        span: ie.span,
+                    }))
+                };
+                let rest_half = if then_rest.is_empty() && else_rest.is_empty() {
+                    None
+                } else {
+                    Some(Stmt::IfElse(IfElse {
+                        cond: ie.cond.clone(),
+                        then_stmts: then_rest,
+                        else_stmts: else_rest,
+                        unique: ie.unique,
+                        span: ie.span,
+                    }))
+                };
+                Some((req_half, rest_half))
+            }
+            Stmt::Match(m) => {
+                let mut req_arms = Vec::new();
+                let mut rest_arms = Vec::new();
+                let mut any_req = false;
+                let mut any_rest = false;
+                for arm in &m.arms {
+                    let (arm_req, arm_rest) = split_list(&arm.body, req_names, driven)?;
+                    any_req |= !arm_req.is_empty();
+                    any_rest |= !arm_rest.is_empty();
+                    req_arms.push(MatchArm {
+                        pattern: arm.pattern.clone(),
+                        body: arm_req,
+                    });
+                    rest_arms.push(MatchArm {
+                        pattern: arm.pattern.clone(),
+                        body: arm_rest,
+                    });
+                }
+                let req_half = if any_req {
+                    if !expr_safe(&m.scrutinee, driven) {
+                        return None;
+                    }
+                    Some(Stmt::Match(MatchStmt {
+                        scrutinee: m.scrutinee.clone(),
+                        arms: req_arms,
+                        unique: m.unique,
+                        span: m.span,
+                    }))
+                } else {
+                    None
+                };
+                let rest_half = if any_rest {
+                    Some(Stmt::Match(MatchStmt {
+                        scrutinee: m.scrutinee.clone(),
+                        arms: rest_arms,
+                        unique: m.unique,
+                        span: m.span,
+                    }))
+                } else {
+                    None
+                };
+                Some((req_half, rest_half))
+            }
+            Stmt::For(f) => {
+                let (body_req, body_rest) = split_list(&f.body, req_names, driven)?;
+                let req_half = if body_req.is_empty() {
+                    None
+                } else {
+                    let range_safe = match &f.range {
+                        ForRange::Range(start, end) => {
+                            expr_safe(start, driven) && expr_safe(end, driven)
+                        }
+                        ForRange::ValueList(values) => values.iter().all(|v| expr_safe(v, driven)),
+                    };
+                    if !range_safe {
+                        return None;
+                    }
+                    Some(Stmt::For(ForLoop {
+                        var: f.var.clone(),
+                        range: f.range.clone(),
+                        body: body_req,
+                        span: f.span,
+                    }))
+                };
+                let rest_half = if body_rest.is_empty() {
+                    None
+                } else {
+                    Some(Stmt::For(ForLoop {
+                        var: f.var.clone(),
+                        range: f.range.clone(),
+                        body: body_rest,
+                        span: f.span,
+                    }))
+                };
+                Some((req_half, rest_half))
+            }
+            // Statement kinds the merged thread comb block never uses for lock
+            // requests. If one ever does contain a request assignment, abandon
+            // the split rather than guess at its duplication semantics.
+            other => {
+                let (driven_here, _) = collect_comb_stmt_signals(std::slice::from_ref(other));
+                if driven_here.is_disjoint(req_names) {
+                    Some((None, Some(other.clone())))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    fn split_list(
+        stmts: &[Stmt],
+        req_names: &HashSet<String>,
+        driven: &HashSet<String>,
+    ) -> Option<(Vec<Stmt>, Vec<Stmt>)> {
+        let mut req = Vec::new();
+        let mut rest = Vec::new();
+        for s in stmts {
+            let (r, o) = split_stmt(s, req_names, driven)?;
+            if let Some(r) = r {
+                req.push(r);
+            }
+            if let Some(o) = o {
+                rest.push(o);
+            }
+        }
+        Some((req, rest))
+    }
+
+    let (req_stmts, rest_stmts) = split_list(stmts, req_names, &driven)?;
+    if req_stmts.is_empty() {
+        return None;
+    }
+    Some((req_stmts, rest_stmts))
 }
 
 fn collect_thread_signals(

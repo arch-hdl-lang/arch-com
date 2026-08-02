@@ -18789,6 +18789,149 @@ fn test_tight_relock_release_event_is_registered_709() {
     );
 }
 
+/// Extract the body of each `always_comb` block in `sv`, in source order.
+fn always_comb_bodies(sv: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur: Option<String> = None;
+    let mut depth = 0usize;
+    for line in sv.lines() {
+        let t = line.trim();
+        if cur.is_none() {
+            if t == "always_comb begin" {
+                cur = Some(String::new());
+                depth = 1;
+            }
+            continue;
+        }
+        depth += t.matches("begin").count();
+        depth -= t.matches("end").count().min(depth);
+        if depth == 0 {
+            out.push(cur.take().unwrap());
+        } else {
+            cur.as_mut().unwrap().push_str(line);
+            cur.as_mut().unwrap().push('\n');
+        }
+    }
+    out
+}
+
+#[test]
+fn test_lock_request_comb_block_is_isolated_709() {
+    // arch#709: the merged thread `always_comb` used to write the lock request
+    // wires *and* the grant-gated lock-body outputs. Verilator treats an
+    // always block as one dependency-graph vertex, so that bundling fabricates
+    // a grant -> req edge, closing the arbiter's req -> grant path into a
+    // reported combinational loop (UNOPTFLAT) even though the bit-level graph
+    // is acyclic. The request wires must be emitted from a block of their own
+    // that reads no grant.
+    let source = r#"
+        module LockReqSplit709
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          port ready: in Bool;
+          port bus_valid: out Bool;
+          resource pool: mutex<round_robin>;
+
+          thread T0 on clk rising, rst high
+            lock pool
+              bus_valid = 1;
+              wait until ready;
+            end lock pool
+          end thread T0
+
+          thread T1 on clk rising, rst high
+            lock pool
+              bus_valid = 1;
+              wait until ready;
+            end lock pool
+          end thread T1
+        end module LockReqSplit709
+    "#;
+    let sv = compile_to_sv(source);
+    let blocks = always_comb_bodies(&sv);
+    let req_blocks: Vec<&String> = blocks
+        .iter()
+        .filter(|b| b.contains("_pool_req_0"))
+        .collect();
+    assert_eq!(
+        req_blocks.len(),
+        1,
+        "lock requests must be driven from exactly one always_comb:\n{sv}"
+    );
+    assert!(
+        !req_blocks[0].contains("_pool_grant_"),
+        "the lock-request always_comb must not read any grant wire \
+         (that read is what Verilator turns into a false grant -> req edge):\n{}",
+        req_blocks[0]
+    );
+    // The lock-body outputs are still grant-gated — in a different block.
+    assert!(
+        sv.contains("if (_pool_grant_0) begin"),
+        "lock-body outputs must still be gated on the grant:\n{sv}"
+    );
+    assert!(
+        comb_loop_warnings(source).is_empty(),
+        "lock lowering must not report a combinational SCC"
+    );
+}
+
+#[test]
+fn test_lock_lowering_is_unoptflat_clean_709() {
+    // The end-to-end gate for arch#709: Verilator must not report circular
+    // combinational logic for lock-using designs. `resource_lock.arch` (a
+    // `mutex<priority>` whose lock bodies drive a shared bus) and
+    // `semaphore_relock_rr.arch` (the tight re-lock idiom from the issue) both
+    // tripped UNOPTFLAT before the request block was split out.
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping lock UNOPTFLAT check: verilator not found");
+        return;
+    }
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    for (src, top) in [
+        ("tests/thread/resource_lock.arch", "SharedBus"),
+        ("tests/thread/semaphore_relock_rr.arch", "SemaphoreRelock"),
+        ("tests/thread/mutex_release_rr.arch", "MutexRel"),
+    ] {
+        let td = tempfile::tempdir().expect("tempdir");
+        let sv_out = td.path().join(format!("{top}.sv"));
+        let build = std::process::Command::new(arch_bin)
+            .arg("build")
+            .arg(src)
+            .arg("-o")
+            .arg(&sv_out)
+            .output()
+            .expect("build lock fixture SV");
+        assert!(
+            build.status.success(),
+            "arch build {src} should pass\nstderr:\n{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("-Wno-fatal")
+            .arg("--top-module")
+            .arg(top)
+            .arg("-Mdir")
+            .arg(td.path().join("obj_dir"))
+            .arg(&sv_out)
+            .output()
+            .expect("run verilator");
+        let log = format!(
+            "{}{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        assert!(
+            !log.contains("UNOPTFLAT"),
+            "{src} must lint free of circular combinational logic:\n{log}"
+        );
+    }
+}
+
 #[test]
 fn test_mutex_tight_relock_single_requester_no_bubble_709() {
     // Runtime regression for the timing contract: one requester should
