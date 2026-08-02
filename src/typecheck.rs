@@ -4737,20 +4737,12 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     Ty::BF16
                 };
-                // fp8 -> fp32 widens exactly; fp8 -> bf16 is deferred in v1
-                // (route via .to_fp32()).
+                // fp8 -> fp32 widens exactly; fp8 -> bf16 is also EXACT
+                // (≤4-bit significands fit bf16's 8, and both fp8 exponent
+                // ranges sit inside bf16's) — implemented as widen-to-f32
+                // then narrow, both steps exact.
                 if matches!(base_ty, Ty::FP8E4M3 | Ty::FP8E5M2) {
-                    if target == Ty::FP32 {
-                        return Ty::FP32;
-                    }
-                    self.errors.push(CompileError::general(
-                        &format!(
-                            ".to_bf16() on {} is not supported in v1 — convert via .to_fp32() first",
-                            base_ty.display()
-                        ),
-                        method.span,
-                    ));
-                    return Ty::Error;
+                    return target;
                 }
                 match &base_ty {
                     Ty::FP32 | Ty::BF16 | Ty::UInt(_) | Ty::SInt(_) | Ty::Bool => {
@@ -4782,9 +4774,13 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            // fp8 conversions: FP32 -> fp8 narrows (RNE, profile-dependent
-            // overflow); same-type is a no-op error like the other floats.
-            // BF16/integer sources are deferred in v1 (route via .to_fp32()).
+            // fp8 conversions: FP32/BF16/integer -> fp8. All routes go
+            // through f32 and are provably correctly rounded: BF16->f32 and
+            // fp8-relevant integers (far below 2^24) are exact in f32, so
+            // the final f32->fp8 RNE is the ONLY rounding. Profile-dependent
+            // overflow applies (riscv non-saturating / cuda satfinite).
+            // Cross-fp8 (e4m3 <-> e5m2) also composes exactly: the widen is
+            // exact, one narrow rounds.
             "to_fp8e4m3" | "to_fp8e5m2" => {
                 let target = if method.name == "to_fp8e4m3" {
                     Ty::FP8E4M3
@@ -4792,7 +4788,6 @@ impl<'a> TypeChecker<'a> {
                     Ty::FP8E5M2
                 };
                 match &base_ty {
-                    Ty::FP32 => target,
                     t if *t == target => {
                         self.errors.push(CompileError::general(
                             &format!(
@@ -4804,12 +4799,19 @@ impl<'a> TypeChecker<'a> {
                         ));
                         Ty::Error
                     }
+                    Ty::FP32
+                    | Ty::BF16
+                    | Ty::FP8E4M3
+                    | Ty::FP8E5M2
+                    | Ty::UInt(_)
+                    | Ty::SInt(_)
+                    | Ty::Bool => target,
                     Ty::Todo => Ty::Todo,
                     Ty::Error => Ty::Error,
                     _ => {
                         self.errors.push(CompileError::general(
                             &format!(
-                                ".{}() requires an FP32 operand in v1 (got {}) — convert via .to_fp32() first",
+                                ".{}() requires a float or integer operand, got {}",
                                 method.name,
                                 base_ty.display()
                             ),
@@ -4820,17 +4822,6 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             "to_uint" | "to_sint" => {
-                if matches!(base_ty, Ty::FP8E4M3 | Ty::FP8E5M2) {
-                    self.errors.push(CompileError::general(
-                        &format!(
-                            ".{}<N>() on {} is not supported in v1 — convert via .to_fp32() first",
-                            method.name,
-                            base_ty.display()
-                        ),
-                        method.span,
-                    ));
-                    return Ty::Error;
-                }
                 if !base_ty.is_float() && !matches!(base_ty, Ty::Todo | Ty::Error) {
                     self.errors.push(CompileError::general(
                         &format!(

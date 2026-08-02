@@ -1663,7 +1663,8 @@ pub(super) fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &
         "to_bf16" => match infer_expr_float(base, ctx) {
             Some(FpFmt::Fp32) => format!("_arch_f32_to_bf16({b})"),
             Some(FpFmt::Bf16) => b,
-            // fp8 -> bf16 is rejected by typecheck in v1; stay total via f32.
+            // fp8 -> bf16: exact widen then exact narrow (every fp8 value
+            // is exact in bf16).
             Some(FpFmt::E4m3) => format!("_arch_f32_to_bf16(_arch_e4m3_to_f32({b}))"),
             Some(FpFmt::E5m2) => format!("_arch_f32_to_bf16(_arch_e5m2_to_f32({b}))"),
             None => {
@@ -1677,17 +1678,31 @@ pub(super) fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &
         "to_fp8e4m3" => match infer_expr_float(base, ctx) {
             Some(FpFmt::Fp32) => format!("_arch_f32_to_e4m3({b})"),
             Some(FpFmt::E4m3) => b,
-            // Other sources rejected by typecheck in v1; stay total via f32.
+            // BF16 / cross-fp8: exact widen, one narrow — correctly rounded.
             Some(FpFmt::Bf16) => format!("_arch_f32_to_e4m3(_arch_bf16_to_f32({b}))"),
             Some(FpFmt::E5m2) => format!("_arch_f32_to_e4m3(_arch_e5m2_to_f32({b}))"),
-            None => format!("_arch_f32_to_e4m3(_arch_u_to_f32((uint64_t)({b})))"),
+            // Integers: exact in f32 across the fp8-relevant range, so the
+            // single fp8 rounding is correctly rounded.
+            None => {
+                if infer_expr_signed(base, ctx) {
+                    format!("_arch_f32_to_e4m3(_arch_i_to_f32((int64_t)({b})))")
+                } else {
+                    format!("_arch_f32_to_e4m3(_arch_u_to_f32((uint64_t)({b})))")
+                }
+            }
         },
         "to_fp8e5m2" => match infer_expr_float(base, ctx) {
             Some(FpFmt::Fp32) => format!("_arch_f32_to_e5m2({b})"),
             Some(FpFmt::E5m2) => b,
             Some(FpFmt::Bf16) => format!("_arch_f32_to_e5m2(_arch_bf16_to_f32({b}))"),
             Some(FpFmt::E4m3) => format!("_arch_f32_to_e5m2(_arch_e4m3_to_f32({b}))"),
-            None => format!("_arch_f32_to_e5m2(_arch_u_to_f32((uint64_t)({b})))"),
+            None => {
+                if infer_expr_signed(base, ctx) {
+                    format!("_arch_f32_to_e5m2(_arch_i_to_f32((int64_t)({b})))")
+                } else {
+                    format!("_arch_f32_to_e5m2(_arch_u_to_f32((uint64_t)({b})))")
+                }
+            }
         },
         "to_uint" | "to_sint" => {
             let bits = args.first().map(|w| eval_width_in(w, ctx)).unwrap_or(32);

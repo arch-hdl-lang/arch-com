@@ -1,0 +1,27 @@
+module Fp8Convert
+  port q4: in FP8E4M3;
+  port q5: in FP8E5M2;
+  port h: in BF16;
+  port i: in SInt<16>;
+  port u: in UInt<10>;
+  port q4_h: out BF16;
+  port q5_h: out BF16;
+  port h_q4: out FP8E4M3;
+  port i_q4: out FP8E4M3;
+  port u_q5: out FP8E5M2;
+  port q4_u: out UInt<8>;
+  port q4_s: out SInt<8>;
+  port q5_u: out UInt<16>;
+  port x45: out FP8E5M2;
+  port x54: out FP8E4M3;
+  comb q4_h = q4.to_bf16(); end comb
+  comb q5_h = q5.to_bf16(); end comb
+  comb h_q4 = h.to_fp8e4m3(); end comb
+  comb i_q4 = i.to_fp8e4m3(); end comb
+  comb u_q5 = u.to_fp8e5m2(); end comb
+  comb q4_u = q4.to_uint<8>(); end comb
+  comb q4_s = q4.to_sint<8>(); end comb
+  comb q5_u = q5.to_uint<16>(); end comb
+  comb x45 = q4.to_fp8e5m2(); end comb
+  comb x54 = q5.to_fp8e4m3(); end comb
+end module Fp8Convert
