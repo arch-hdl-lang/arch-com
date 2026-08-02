@@ -1704,3 +1704,32 @@ fn fp_formal_float_props() {
         "false float property must refute with a counterexample:\n{all}"
     );
 }
+
+/// Literals context-type against CONVERSION-RESULT operands too:
+/// `a.to_bf16() > 1.0` and `h.to_fp8e5m2() + 0.5` coerce the literal to
+/// the conversion's target format (closes the last literal-slot gap —
+/// previously these needed a typed intermediate wire).
+#[test]
+fn fp_literal_coerces_against_conversion_result() {
+    let src = "module LitConv\n  port a: in FP8E4M3;\n  port h: in BF16;\n  port o1: out Bool;\n  port o2: out FP8E5M2;\n  comb o1 = a.to_bf16() > 1.0; end comb\n  comb o2 = h.to_fp8e5m2() + 0.5; end comb\nend module LitConv\n";
+    let td = tempfile::tempdir().expect("tempdir");
+    let path = td.path().join("LitConv.arch");
+    std::fs::write(&path, src).unwrap();
+    let out = arch()
+        .arg("build")
+        .arg(&path)
+        .output()
+        .expect("run arch build");
+    assert!(
+        out.status.success(),
+        "literal-vs-conversion must build:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let sv = std::fs::read_to_string(td.path().join("LitConv.sv")).unwrap();
+    for needle in [
+        "arch_bf16_gt(arch_f32_to_bf16(arch_e4m3_to_f32(a)), 16'h3F80)",
+        "arch_e5m2_add(arch_f32_to_e5m2(arch_bf16_to_f32(h)), 8'h38)",
+    ] {
+        assert!(sv.contains(needle), "missing `{needle}`:\n{sv}");
+    }
+}
