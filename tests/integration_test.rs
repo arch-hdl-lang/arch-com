@@ -6601,6 +6601,202 @@ fn test_use_package_still_emits_sv_import() {
     );
 }
 
+#[test]
+fn test_duplicate_use_emits_one_package_import_per_module() {
+    let source = "
+        package PkgA
+          enum Op
+            ADD,
+            SUB,
+          end enum Op
+        end package PkgA
+
+        use PkgA;
+        use PkgA;
+
+        module M
+          port o: out Op;
+          comb
+            o = Op::ADD;
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    assert_eq!(
+        sv.matches("import PkgA::*;").count(),
+        1,
+        "duplicate `use` declarations must not duplicate the SV import:\n{sv}"
+    );
+}
+
+#[test]
+fn test_multifile_package_imports_stay_with_owning_source_file() {
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let td = tempfile::tempdir().expect("tempdir");
+    let pkg = td.path().join("Pkg.arch");
+    let consumer_a = td.path().join("ConsumerA.arch");
+    let consumer_b = td.path().join("ConsumerB.arch");
+    let unrelated = td.path().join("Unrelated.arch");
+    let param_consumer = td.path().join("ParamConsumer.arch");
+    let top = td.path().join("Top.arch");
+    std::fs::write(
+        &pkg,
+        r#"package Pkg
+  struct Payload
+    data: UInt<8>;
+  end struct Payload
+
+  function pass(value: UInt<8>) -> UInt<8>
+    return value;
+  end function pass
+end package Pkg
+"#,
+    )
+    .expect("write Pkg.arch");
+    std::fs::write(
+        &consumer_a,
+        r#"use Pkg;
+
+module ConsumerA
+  port payload: in Payload;
+  port data: out UInt<8>;
+  let data = payload.data;
+end module ConsumerA
+"#,
+    )
+    .expect("write ConsumerA.arch");
+    std::fs::write(
+        &consumer_b,
+        r#"use Pkg;
+
+module ConsumerB
+  port payload: in Payload;
+  port data: out UInt<8>;
+  let data = payload.data;
+end module ConsumerB
+"#,
+    )
+    .expect("write ConsumerB.arch");
+    std::fs::write(
+        &unrelated,
+        r#"module Unrelated
+  port input_data: in UInt<8>;
+  port output_data: out UInt<8>;
+  let output_data = input_data;
+end module Unrelated
+"#,
+    )
+    .expect("write Unrelated.arch");
+    std::fs::write(
+        &param_consumer,
+        r#"use Pkg;
+
+module ParamConsumer
+  param MODE: const = 0;
+  port input_data: in UInt<8>;
+  port output_data: out UInt<8>;
+  let output_data = pass(input_data);
+end module ParamConsumer
+"#,
+    )
+    .expect("write ParamConsumer.arch");
+    std::fs::write(
+        &top,
+        r#"module Top
+  port input_data: in UInt<8>;
+  port output_data: out UInt<8>;
+  wire mode0_data: UInt<8>;
+  wire mode1_data: UInt<8>;
+
+  inst mode0: ParamConsumer
+    param MODE = 0;
+    input_data <- input_data;
+    output_data -> mode0_data;
+  end inst mode0
+
+  inst mode1: ParamConsumer
+    param MODE = 1;
+    input_data <- input_data;
+    output_data -> mode1_data;
+  end inst mode1
+
+  let output_data = mode0_data ^ mode1_data;
+end module Top
+"#,
+    )
+    .expect("write Top.arch");
+
+    let files = [
+        &pkg,
+        &consumer_a,
+        &consumer_b,
+        &unrelated,
+        &param_consumer,
+        &top,
+    ];
+    let split = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("--no-inline-deps")
+        .args(files)
+        .current_dir(td.path())
+        .output()
+        .expect("run split multi-file build");
+    assert!(
+        split.status.success(),
+        "split multi-file build failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&split.stdout),
+        String::from_utf8_lossy(&split.stderr)
+    );
+
+    let consumer_a_sv =
+        std::fs::read_to_string(td.path().join("ConsumerA.sv")).expect("read ConsumerA.sv");
+    let consumer_b_sv =
+        std::fs::read_to_string(td.path().join("ConsumerB.sv")).expect("read ConsumerB.sv");
+    let unrelated_sv =
+        std::fs::read_to_string(td.path().join("Unrelated.sv")).expect("read Unrelated.sv");
+    let param_consumer_sv =
+        std::fs::read_to_string(td.path().join("ParamConsumer.sv")).expect("read ParamConsumer.sv");
+    let top_sv = std::fs::read_to_string(td.path().join("Top.sv")).expect("read Top.sv");
+    assert_eq!(consumer_a_sv.matches("import Pkg::*;").count(), 1);
+    assert_eq!(consumer_b_sv.matches("import Pkg::*;").count(), 1);
+    assert_eq!(unrelated_sv.matches("import Pkg::*;").count(), 0);
+    assert_eq!(param_consumer_sv.matches("import Pkg::*;").count(), 2);
+    assert!(
+        param_consumer_sv.contains("import Pkg::*;\nmodule ParamConsumer__MODE_0"),
+        "first specialization lost its source file's import:\n{param_consumer_sv}"
+    );
+    assert!(
+        param_consumer_sv.contains("import Pkg::*;\nmodule ParamConsumer__MODE_1"),
+        "second specialization lost its source file's import:\n{param_consumer_sv}"
+    );
+    assert_eq!(top_sv.matches("import Pkg::*;").count(), 0);
+
+    let combined_path = td.path().join("combined.sv");
+    let combined = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("--no-inline-deps")
+        .args(files)
+        .arg("-o")
+        .arg(&combined_path)
+        .current_dir(td.path())
+        .output()
+        .expect("run combined multi-file build");
+    assert!(
+        combined.status.success(),
+        "combined multi-file build failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&combined.stdout),
+        String::from_utf8_lossy(&combined.stderr)
+    );
+    let combined_sv = std::fs::read_to_string(&combined_path).expect("read combined.sv");
+    assert_eq!(combined_sv.matches("import Pkg::*;").count(), 4);
+    assert!(combined_sv.contains("import Pkg::*;\nmodule ConsumerA"));
+    assert!(combined_sv.contains("import Pkg::*;\nmodule ConsumerB"));
+    assert!(combined_sv.contains("import Pkg::*;\nmodule ParamConsumer__MODE_0"));
+    assert!(combined_sv.contains("import Pkg::*;\nmodule ParamConsumer__MODE_1"));
+    assert!(!combined_sv.contains("import Pkg::*;\nmodule Unrelated"));
+    assert!(!combined_sv.contains("import Pkg::*;\nmodule Top"));
+}
+
 /// `extern package` declares opaque types from an SV-side package.
 /// `use Pkg;` with an extern package emits `import Pkg::*;` and codegen
 /// drops the `Pkg::` qualifier from enum variant references.
