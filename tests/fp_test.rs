@@ -1518,7 +1518,7 @@ fn fp_float_typed_params_all_formats() {
 /// (2026-08-02 audit); thread was already correct and is locked here.
 #[test]
 fn fp_construct_positions_sim() {
-    let cases: [(&[&str], &str, &str); 4] = [
+    let cases: [(&[&str], &str, &str); 5] = [
         (&["FpFsm.arch"], "tb_fp_fsm.cpp", "FP_FSM: PASS"),
         (&["FpPipe.arch"], "tb_fp_pipe.cpp", "FP_PIPE: PASS"),
         (
@@ -1527,6 +1527,7 @@ fn fp_construct_positions_sim() {
             "FP_BUS: PASS",
         ),
         (&["FpThread.arch"], "tb_fp_thread.cpp", "FP_THREAD: PASS"),
+        (&["FpTlm.arch"], "tb_fp_tlm.cpp", "FP_TLM: PASS"),
     ];
     for (files, tb, expect) in cases {
         let td = tempfile::tempdir().expect("tempdir");

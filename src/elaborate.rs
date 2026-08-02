@@ -2266,6 +2266,23 @@ fn tlm_bus_field(bus: &str, field: &str, span: Span) -> Expr {
     )
 }
 
+/// Zero literal matching a synthesized reg's declared type: float types get
+/// a typed +0.0 (all-zero bits in FP32/BF16/FP8E4M3/FP8E5M2), everything
+/// else the integer 0.
+fn tlm_zero_for_type(ty: &TypeExpr, span: Span) -> Expr {
+    let fmt = match ty {
+        TypeExpr::FP32 => Some(FloatLitFmt::Fp32),
+        TypeExpr::BF16 => Some(FloatLitFmt::Bf16),
+        TypeExpr::FP8E4M3 => Some(FloatLitFmt::E4m3),
+        TypeExpr::FP8E5M2 => Some(FloatLitFmt::E5m2),
+        _ => None,
+    };
+    match fmt {
+        Some(f) => Expr::new(ExprKind::Literal(LitKind::TypedFloat(f, 0)), span),
+        None => Expr::new(ExprKind::Literal(LitKind::Dec(0)), span),
+    }
+}
+
 fn tlm_lit_dec(value: u64, span: Span) -> Expr {
     Expr::new(ExprKind::Literal(LitKind::Dec(value)), span)
 }
@@ -16283,10 +16300,11 @@ fn inline_lower_tlm_target_with_io(
             name: mk_ident(latch_name.clone()),
             ty: method_arg.1.clone(),
             init: None,
-            reset: RegReset::Inherit(
-                t.reset.clone(),
-                Expr::new(ExprKind::Literal(LitKind::Dec(0)), span),
-            ),
+            // Type-aware zero: float-typed method args need a float-kind
+            // reset literal (+0.0 encodes as all-zero bits in every format)
+            // or the integer-literal-in-float-slot guard rejects the
+            // synthesized reg.
+            reset: RegReset::Inherit(t.reset.clone(), tlm_zero_for_type(&method_arg.1, span)),
             guard: None,
             multicycle: None,
             span,
