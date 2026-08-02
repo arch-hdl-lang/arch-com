@@ -563,13 +563,37 @@ fn ident_narrow_fmt(e: &Expr, narrow_idents: &HashMap<String, FloatLitFmt>) -> O
 /// Walk a statement tree (comb/seq/latch bodies), applying
 /// [`coerce_bf16_lits_in_expr`] to every expression reachable from it
 /// (assignment RHS, condition exprs, nested if/for/match bodies).
+/// Coerce a direct-assignment RHS: a bare float literal takes the target's
+/// narrow format; ternary arms recurse (each arm is itself a direct value
+/// for the target). Anything else is left to the binop/compare walker.
+fn coerce_assign_rhs_lit(e: &mut Expr, fmt: FloatLitFmt, errors: &mut Vec<CompileError>) {
+    match &mut e.kind {
+        ExprKind::Literal(LitKind::Float(_)) => coerce_narrow_lit(e, fmt, errors),
+        ExprKind::Ternary(_, t, f) => {
+            coerce_assign_rhs_lit(t, fmt, errors);
+            coerce_assign_rhs_lit(f, fmt, errors);
+        }
+        _ => {}
+    }
+}
+
 fn coerce_narrow_lits_in_stmt(
     s: &mut Stmt,
     narrow_idents: &HashMap<String, FloatLitFmt>,
     errors: &mut Vec<CompileError>,
 ) {
     match s {
-        Stmt::Assign(a) => coerce_narrow_lits_in_expr(&mut a.value, narrow_idents, errors),
+        Stmt::Assign(a) => {
+            // Direct-assignment slot: a bare float literal (or ternary arm)
+            // assigned to a narrow-float target takes the TARGET's format —
+            // `h <= 0.5;`, `y[i] = 0.5;`, `s.f = 0.5;` all context-type,
+            // completing the literal-slot uniformity rule (let/init/reset/
+            // default/compare/binop already coerced).
+            if let Some(fmt) = ident_narrow_fmt(&a.target, narrow_idents) {
+                coerce_assign_rhs_lit(&mut a.value, fmt, errors);
+            }
+            coerce_narrow_lits_in_expr(&mut a.value, narrow_idents, errors)
+        }
         Stmt::IfElse(ie) => {
             coerce_narrow_lits_in_expr(&mut ie.cond, narrow_idents, errors);
             for s in &mut ie.then_stmts {

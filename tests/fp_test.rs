@@ -1582,3 +1582,53 @@ fn fp_construct_positions_build_dispatch() {
         }
     }
 }
+
+/// Direct-assignment literal slot: a bare float literal (or ternary arm)
+/// assigned to a narrow-float target context-types to the TARGET's format —
+/// `h <= 0.5`, `v[i] <= 1.5`, `s.f = 0.75`, `x <= c ? 2.5 : 0.25` — the
+/// last literal-slot family (let/init/reset/default/compare/binop already
+/// coerced). Overflowing literals stay compile errors in this slot too.
+#[test]
+fn fp_assign_literal_coercion() {
+    let src = "struct Duo\n  lo: BF16;\n  hi: FP8E4M3;\nend struct Duo\nmodule AsgLit\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync>;\n  port sel: in Bool;\n  port o: out BF16;\n  port o2: out FP8E4M3;\n  port o3: out BF16;\n  reg h: BF16 reset rst => 0.0;\n  reg v: Vec<FP8E4M3, 2> reset rst => 0.0;\n  wire s: Duo;\n  seq on clk rising\n    h <= 0.5;\n    v[0] <= 1.5;\n    v[1] <= sel ? 2.5 : 0.25;\n  end seq\n  comb\n    s.lo = 0.75;\n    s.hi = 3.0;\n  end comb\n  comb o = h; end comb\n  comb o2 = v[0]; end comb\n  comb o3 = s.lo; end comb\nend module AsgLit\n";
+    let td = tempfile::tempdir().expect("tempdir");
+    let path = td.path().join("AsgLit.arch");
+    std::fs::write(&path, src).unwrap();
+    let out = arch()
+        .arg("build")
+        .arg(&path)
+        .output()
+        .expect("run arch build");
+    assert!(
+        out.status.success(),
+        "assign-literal module must build:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let sv = std::fs::read_to_string(td.path().join("AsgLit.sv")).unwrap();
+    for needle in [
+        "h <= 16'h3F00",               // bf16(0.5) scalar reg
+        "v[0] <= 8'h3C",               // e4m3(1.5) Vec element
+        "v[1] <= sel ? 8'h42 : 8'h28", // ternary arms e4m3(2.5)/(0.25)
+        "s.lo = 16'h3F40",             // bf16(0.75) struct field (comb)
+        "s.hi = 8'h44",                // e4m3(3.0) struct field (comb)
+    ] {
+        assert!(sv.contains(needle), "missing `{needle}` in SV:\n{sv}");
+    }
+    // Overflow guard still fires in the assignment slot.
+    let bad = "module AsgOvf\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync>;\n  port o: out FP8E4M3;\n  reg r: FP8E4M3 reset rst => 0.0;\n  seq on clk rising\n    r <= 500.0;\n  end seq\n  comb o = r; end comb\nend module AsgOvf\n";
+    let bpath = td.path().join("AsgOvf.arch");
+    std::fs::write(&bpath, bad).unwrap();
+    let out = arch()
+        .arg("check")
+        .arg(&bpath)
+        .output()
+        .expect("run arch check");
+    assert!(
+        !out.status.success(),
+        "overflowing assign literal must be rejected"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("overflows"),
+        "error should name the overflow"
+    );
+}
