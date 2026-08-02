@@ -105,6 +105,17 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
             }
         })
         .collect();
+    let module_params: HashMap<String, Vec<ParamDecl>> = ast
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let Item::Module(m) = item {
+                Some((m.name.name.clone(), m.params.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
 
     // Step 2 + 3 — discover all instantiation variants, transitively.
     //
@@ -190,6 +201,7 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
                         variant_name,
                         &module_variants,
                         &module_defaults,
+                        &module_params,
                         &child_module_ports,
                     ) {
                         Ok(elaborated) => new_items.push(Item::Module(elaborated)),
@@ -654,6 +666,21 @@ fn record_inst(
     out: &mut HashMap<String, Vec<HashMap<String, i64>>>,
     enclosing_params: &HashMap<String, i64>,
 ) {
+    let overrides = evaluate_inst_overrides(inst, enclosing_params);
+    out.entry(inst.module_name.name.clone())
+        .or_default()
+        .push(overrides);
+}
+
+/// Evaluate every variant-relevant override at an instantiation site.
+///
+/// Variant discovery and later instance-name rewriting must use the exact same
+/// raw map. Otherwise they can disagree about which monomorphized child the
+/// instance selects and leave an unsuffixed module name that was never emitted.
+fn evaluate_inst_overrides(
+    inst: &InstDecl,
+    enclosing_params: &HashMap<String, i64>,
+) -> HashMap<String, i64> {
     let mut overrides = HashMap::new();
     for pa in &inst.param_assigns {
         // Evaluate the inst's param value against the enclosing module's
@@ -685,9 +712,7 @@ fn record_inst(
             }
         }
     }
-    out.entry(inst.module_name.name.clone())
-        .or_default()
-        .push(overrides);
+    overrides
 }
 
 // ── Step 3: compute variants ──────────────────────────────────────────────────
@@ -826,6 +851,7 @@ fn elaborate_module_variant(
     variant_name: String,
     module_variants: &HashMap<String, Vec<(HashMap<String, i64>, String)>>,
     module_defaults: &HashMap<String, HashMap<String, i64>>,
+    module_params: &HashMap<String, Vec<ParamDecl>>,
     child_module_ports: &HashMap<String, Vec<PortDecl>>,
 ) -> Result<ModuleDecl, Vec<CompileError>> {
     // Build the parent module's shape info BEFORE we move m.body — used
@@ -885,6 +911,7 @@ fn elaborate_module_variant(
                 inst,
                 module_variants,
                 module_defaults,
+                module_params,
                 &param_vals,
             )),
             other => other,
@@ -1009,6 +1036,7 @@ fn rewrite_inst(
     inst: InstDecl,
     module_variants: &HashMap<String, Vec<(HashMap<String, i64>, String)>>,
     module_defaults: &HashMap<String, HashMap<String, i64>>,
+    module_params: &HashMap<String, Vec<ParamDecl>>,
     enclosing_params: &HashMap<String, i64>,
 ) -> InstDecl {
     let variants = match module_variants.get(&inst.module_name.name) {
@@ -1016,35 +1044,20 @@ fn rewrite_inst(
         _ => return inst, // single variant → name unchanged
     };
 
-    // Compute effective params for this inst (regular + reset-override synthetic params).
-    // Param values must evaluate against the enclosing module's params so an
-    // expression like `param I = NUM_FOO - 1` resolves to a literal that
-    // matches one of the discovered variants. Same shape as the
-    // record_inst fix.
+    // Compute effective params exactly as variant discovery did: evaluate raw
+    // inst/reset overrides against the enclosing module, merge them with the
+    // child defaults, then re-evaluate derived child params. Omitting the last
+    // step makes a child with `DERIVED = BASE + 1` fail to match its own
+    // discovered variant when an inst overrides BASE.
     let defaults = module_defaults
         .get(&inst.module_name.name)
         .cloned()
         .unwrap_or_default();
+    let raw = evaluate_inst_overrides(&inst, enclosing_params);
     let mut effective = defaults;
-    for pa in &inst.param_assigns {
-        if let Some(v) = try_eval_i64(&pa.value, enclosing_params) {
-            effective.insert(pa.name.name.clone(), v);
-        }
-    }
-    for conn in &inst.connections {
-        if let ExprKind::Cast(_, ty) = &conn.signal.kind {
-            if let TypeExpr::Reset(kind, level) = ty.as_ref() {
-                let pname = &conn.port_name.name;
-                effective.insert(
-                    format!("__ro__{pname}__kind"),
-                    if kind == &ResetKind::Async { 1 } else { 0 },
-                );
-                effective.insert(
-                    format!("__ro__{pname}__level"),
-                    if level == &ResetLevel::Low { 1 } else { 0 },
-                );
-            }
-        }
+    effective.extend(raw.iter().map(|(name, value)| (name.clone(), *value)));
+    if let Some(params) = module_params.get(&inst.module_name.name) {
+        recompute_derived_params(params, &raw, &mut effective);
     }
 
     // Find matching variant
