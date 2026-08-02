@@ -2083,7 +2083,10 @@ impl<'a> SimCodegen<'a> {
         }
 
         // Private fields for sub-instance output wires
-        for sig_name in &inst_out {
+        // Sort for deterministic output — HashSet iteration order is not stable.
+        let mut sorted_inst_out: Vec<&String> = inst_out.iter().collect();
+        sorted_inst_out.sort();
+        for sig_name in sorted_inst_out {
             if !port_names.contains(sig_name) && !reg_names.contains(sig_name)
                 // Bus wires are handled via the struct-typed `_let_<name>`
                 // field emitted above; a fallback `uint32_t <name>;` here
@@ -2121,8 +2124,11 @@ impl<'a> SimCodegen<'a> {
         crate::sim_credit_channel::emit_header_fields(&cc_sites, &mut h);
 
         // Private fields for comb-block intermediate signals (not ports/regs/inst_out)
+        // Sort for deterministic output — HashSet iteration order is not stable.
         let comb_targets = collect_comb_targets(&m.body);
-        for sig_name in &comb_targets {
+        let mut sorted_comb_targets: Vec<&String> = comb_targets.iter().collect();
+        sorted_comb_targets.sort();
+        for sig_name in sorted_comb_targets {
             if !port_names.contains(sig_name)
                 && !reg_names.contains(sig_name)
                 && !inst_out.contains(sig_name)
@@ -2947,7 +2953,10 @@ impl<'a> SimCodegen<'a> {
 
             // Guard Check A: for each `reg ... guard <sig>`, warn if guard asserts
             // but the reg has never been written. Fires once per module per signal.
-            for (reg_name, guard_sig) in &guarded_regs {
+            // Sort for deterministic output — HashMap iteration order is not stable.
+            let mut sorted_guarded_regs: Vec<(&String, &String)> = guarded_regs.iter().collect();
+            sorted_guarded_regs.sort();
+            for (reg_name, guard_sig) in sorted_guarded_regs {
                 let guard_cpp = if reg_decls.iter().any(|r| r.name.name == *guard_sig)
                     || m.ports
                         .iter()
