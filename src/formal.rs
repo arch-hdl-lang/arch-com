@@ -30,6 +30,9 @@ pub struct FormalArgs {
     pub solver: String,
     pub emit_smt: Option<PathBuf>,
     pub timeout: u32,
+    /// Float special-value profile — selects the canonical-NaN constants in
+    /// the inlined float helper define-funs (same flag as build/sim).
+    pub fp_compat: crate::FpCompat,
 }
 
 #[derive(Debug, Clone)]
@@ -102,6 +105,7 @@ pub fn run(
 
     // 3. Build encoder state
     let mut ctx = FormalCtx::new(encode_module, symbols);
+    ctx.fp_compat = args.fp_compat;
     ctx.carried_credit_sites = carried_credit_sites;
     ctx.preprocess()?;
 
@@ -991,6 +995,30 @@ struct SignalInfo {
     signed: bool,
     /// "input", "reg", "wire", "output" — for declaration ordering.
     kind: SignalKind,
+    /// Float helper tag ("f32"/"bf16"/"e4m3"/"e5m2") when the signal's HDL
+    /// type is a float format. Drives operator dispatch to the inlined
+    /// `arch_{tag}_*` define-funs.
+    float: Option<&'static str>,
+}
+
+/// Float helper tag of a scalar TypeExpr, if any.
+fn float_tag_of(ty: &TypeExpr) -> Option<&'static str> {
+    match ty {
+        TypeExpr::FP32 => Some("f32"),
+        TypeExpr::BF16 => Some("bf16"),
+        TypeExpr::FP8E4M3 => Some("e4m3"),
+        TypeExpr::FP8E5M2 => Some("e5m2"),
+        _ => None,
+    }
+}
+
+/// Carrier width of a float helper tag.
+fn float_tag_width(tag: &str) -> u32 {
+    match tag {
+        "f32" => 32,
+        "bf16" => 16,
+        _ => 8,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1062,6 +1090,11 @@ struct FormalCtx<'a> {
     carried_credit_sites: Vec<CarriedCreditSite>,
     /// Synthesized derived signals whose formal value is `source != 0`.
     derived_nonzero: HashMap<String, String>,
+    /// Any float-typed signal registered → prepend the float helper
+    /// define-funs to every emitted query.
+    uses_float: bool,
+    /// Profile for the inlined helpers' canonical-NaN constants.
+    fp_compat: crate::FpCompat,
 }
 
 #[derive(Debug, Clone)]
@@ -1120,6 +1153,8 @@ impl<'a> FormalCtx<'a> {
             credit_sites: Vec::new(),
             carried_credit_sites: Vec::new(),
             derived_nonzero: HashMap::new(),
+            uses_float: false,
+            fp_compat: crate::FpCompat::Riscv,
         }
     }
 
@@ -1281,6 +1316,7 @@ impl<'a> FormalCtx<'a> {
                     width: sig.width,
                     signed: sig.signed,
                     kind: kind.clone(),
+                    float: None,
                 },
             );
             match kind {
@@ -1389,8 +1425,12 @@ impl<'a> FormalCtx<'a> {
                     width: w,
                     signed,
                     kind: kind.clone(),
+                    float: float_tag_of(&port.ty),
                 },
             );
+            if float_tag_of(&port.ty).is_some() {
+                self.uses_float = true;
+            }
             match kind {
                 SignalKind::Input => self.inputs.push(port.name.name.clone()),
                 SignalKind::Output => self.outputs.push(port.name.name.clone()),
@@ -1423,8 +1463,12 @@ impl<'a> FormalCtx<'a> {
                             width: w,
                             signed,
                             kind: SignalKind::Reg,
+                            float: float_tag_of(&r.ty),
                         },
                     );
+                    if float_tag_of(&r.ty).is_some() {
+                        self.uses_float = true;
+                    }
                     self.regs.push(r.name.name.clone());
                     match &r.reset {
                         RegReset::Inherit(_, val) | RegReset::Explicit(_, _, _, val) => {
@@ -1446,8 +1490,12 @@ impl<'a> FormalCtx<'a> {
                             width,
                             signed,
                             kind: SignalKind::Wire,
+                            float: float_tag_of(&w.ty),
                         },
                     );
+                    if float_tag_of(&w.ty).is_some() {
+                        self.uses_float = true;
+                    }
                     self.wires.push(w.name.name.clone());
                 }
                 ModuleBodyItem::LetBinding(lb) => {
@@ -1761,10 +1809,9 @@ impl<'a> FormalCtx<'a> {
         match ty {
             TypeExpr::UInt(_) | TypeExpr::SInt(_) | TypeExpr::Bool | TypeExpr::Bit
                 | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => Ok(()),
-            TypeExpr::FP32 | TypeExpr::BF16 | TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Err(CompileError::general(
-                "floating-point types (FP32/BF16/FP8E4M3/FP8E5M2) are not supported by `arch formal` v1",
-                span,
-            )),
+            // Floats are BV carriers; operator semantics come from the
+            // inlined proven define-funs (see emit_base).
+            TypeExpr::FP32 | TypeExpr::BF16 | TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Ok(()),
             TypeExpr::Vec(_, _) => Err(CompileError::general(
                 "Vec types are not supported by `arch formal` v1 — use scalars",
                 span,
@@ -1778,6 +1825,9 @@ impl<'a> FormalCtx<'a> {
 
     fn type_width_signed(&self, ty: &TypeExpr, span: Span) -> Result<(u32, bool), CompileError> {
         match ty {
+            TypeExpr::FP32 => Ok((32, false)),
+            TypeExpr::BF16 => Ok((16, false)),
+            TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Ok((8, false)),
             TypeExpr::UInt(w) => {
                 let width = fold_const_expr(w, &self.params).ok_or_else(|| {
                     CompileError::general(
@@ -1805,12 +1855,7 @@ impl<'a> FormalCtx<'a> {
             TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => {
                 Ok((1, false))
             }
-            TypeExpr::FP32
-            | TypeExpr::BF16
-            | TypeExpr::FP8E4M3
-            | TypeExpr::FP8E5M2
-            | TypeExpr::Vec(_, _)
-            | TypeExpr::Named(_) => Err(CompileError::general(
+            TypeExpr::Vec(_, _) | TypeExpr::Named(_) => Err(CompileError::general(
                 "type not supported by arch formal v1",
                 span,
             )),
@@ -1823,6 +1868,18 @@ impl<'a> FormalCtx<'a> {
         let mut out = String::new();
         out.push_str("; auto-generated by `arch formal`\n");
         out.push_str("(set-logic QF_BV)\n");
+        if self.uses_float {
+            // Float operator semantics: the SAME QF_BV define-funs the SV
+            // and the offline SMT proofs are rendered from (single-source
+            // IR, machine-proved correctly rounded — tests/fp_v1/smt_proof).
+            // User properties compose over proven operators; no FP theory
+            // is involved. NOTE: a property whose cone includes a float
+            // multiplier/fma at FP32 width can be SAT-hard; fp8/bf16 cones
+            // and add/compare cones are tractable.
+            out.push_str(&crate::fp_ir::render_smt(&crate::fp_ops::fp_functions(
+                self.fp_compat,
+            )));
+        }
         out.push_str("(set-option :produce-models true)\n\n");
 
         // Declare every non-reg signal at each cycle (inputs get free choice per cycle;
@@ -2224,6 +2281,48 @@ impl<'a> FormalCtx<'a> {
                     expr.span,
                 ))
             }
+            // Float builtins: fused multiply-add and NaN classification.
+            FunctionCall(name, args) if name == "fma" && args.len() == 3 => {
+                let tag = args
+                    .iter()
+                    .find_map(|a| self.expr_float_tag(a))
+                    .unwrap_or("f32");
+                let w = float_tag_width(tag);
+                let ea = coerce(self.encode_raw(&args[0], t)?, w, false);
+                let eb = coerce(self.encode_raw(&args[1], t)?, w, false);
+                let ec = coerce(self.encode_raw(&args[2], t)?, w, false);
+                Ok(SmtTerm {
+                    s: format!("(arch_fma_{tag} {} {} {})", ea.s, eb.s, ec.s),
+                    width: w,
+                    signed: false,
+                })
+            }
+            FunctionCall(name, args) if name == "is_nan" && args.len() == 1 => {
+                let tag = self.expr_float_tag(&args[0]).unwrap_or("f32");
+                let w = float_tag_width(tag);
+                let x = coerce(self.encode_raw(&args[0], t)?, w, false);
+                // Bit-field NaN tests (E4M3 is OCP: sole NaN encoding 0x7F).
+                let cond = match tag {
+                    "f32" => format!(
+                        "(and (= ((_ extract 30 23) {x}) #xff) (distinct ((_ extract 22 0) {x}) #b00000000000000000000000))",
+                        x = x.s
+                    ),
+                    "bf16" => format!(
+                        "(and (= ((_ extract 14 7) {x}) #xff) (distinct ((_ extract 6 0) {x}) #b0000000))",
+                        x = x.s
+                    ),
+                    "e4m3" => format!("(= ((_ extract 6 0) {x}) #b1111111)", x = x.s),
+                    _ => format!(
+                        "(and (= ((_ extract 6 2) {x}) #b11111) (distinct ((_ extract 1 0) {x}) #b00))",
+                        x = x.s
+                    ),
+                };
+                Ok(SmtTerm {
+                    s: format!("(ite {cond} #b1 #b0)"),
+                    width: 1,
+                    signed: false,
+                })
+            }
             FunctionCall(name, args) if (name == "rose" || name == "fell") && args.len() == 1 => {
                 // rose(a) ≡ a@t AND NOT a@(t-1); fell(a) ≡ NOT a@t AND a@(t-1).
                 // run_property's max_past_depth treats these as depth 1.
@@ -2334,6 +2433,50 @@ impl<'a> FormalCtx<'a> {
         ))
     }
 
+    /// Float helper tag of an expression, mirroring `encode_ident`'s
+    /// resolution (signals, inline-expanded lets) plus literal/derived
+    /// forms. Mixing formats is rejected upstream by typecheck.
+    fn expr_float_tag(&self, e: &Expr) -> Option<&'static str> {
+        use ExprKind::*;
+        match &e.kind {
+            Ident(name) => {
+                if let Some(info) = self.sigs.get(name) {
+                    return info.float;
+                }
+                if let Some(val) = self.let_bindings.get(name) {
+                    return self.expr_float_tag(val);
+                }
+                None
+            }
+            Literal(LitKind::Float(_)) => Some("f32"),
+            Literal(LitKind::TypedFloat(fmt, _)) => Some(match fmt {
+                crate::ast::FloatLitFmt::Fp32 => "f32",
+                crate::ast::FloatLitFmt::Bf16 => "bf16",
+                crate::ast::FloatLitFmt::E4m3 => "e4m3",
+                crate::ast::FloatLitFmt::E5m2 => "e5m2",
+            }),
+            Binary(op, l, r) => match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul => {
+                    self.expr_float_tag(l).or_else(|| self.expr_float_tag(r))
+                }
+                _ => None,
+            },
+            Ternary(_, th, el) => self.expr_float_tag(th).or_else(|| self.expr_float_tag(el)),
+            FunctionCall(name, args) if name == "fma" => {
+                args.first().and_then(|a| self.expr_float_tag(a))
+            }
+            MethodCall(_, m, _) => match m.name.as_str() {
+                "to_fp32" => Some("f32"),
+                "to_bf16" => Some("bf16"),
+                "to_fp8e4m3" => Some("e4m3"),
+                "to_fp8e5m2" => Some("e5m2"),
+                _ => None,
+            },
+            LatencyAt(inner, _) => self.expr_float_tag(inner),
+            _ => None,
+        }
+    }
+
     fn encode_binary(
         &self,
         op: BinOp,
@@ -2342,6 +2485,34 @@ impl<'a> FormalCtx<'a> {
         t: u32,
         span: Span,
     ) -> Result<SmtTerm, CompileError> {
+        // Float operands dispatch to the inlined proven define-funs — the
+        // formal mirror of the SV/sim operator dispatch.
+        if let Some(tag) = self.expr_float_tag(a).or_else(|| self.expr_float_tag(b)) {
+            let fop = match op {
+                BinOp::Add => Some(("add", false)),
+                BinOp::Sub => Some(("sub", false)),
+                BinOp::Mul => Some(("mul", false)),
+                BinOp::Eq => Some(("eq", true)),
+                BinOp::Neq => Some(("ne", true)),
+                BinOp::Lt => Some(("lt", true)),
+                BinOp::Gt => Some(("gt", true)),
+                BinOp::Lte => Some(("le", true)),
+                BinOp::Gte => Some(("ge", true)),
+                _ => None,
+            };
+            if let Some((fop, is_cmp)) = fop {
+                let w = float_tag_width(tag);
+                let ta = self.encode_raw(a, t)?;
+                let tb = self.encode_raw(b, t)?;
+                let la = coerce(ta, w, false);
+                let lb = coerce(tb, w, false);
+                return Ok(SmtTerm {
+                    s: format!("(arch_{tag}_{fop} {} {})", la.s, lb.s),
+                    width: if is_cmp { 1 } else { w },
+                    signed: false,
+                });
+            }
+        }
         let ta = self.encode_raw(a, t)?;
         let tb = self.encode_raw(b, t)?;
         match op {
@@ -2603,6 +2774,50 @@ impl<'a> FormalCtx<'a> {
         } else {
             fold_const_expr(&args[0], &self.params).map(|v| v as u32)
         };
+        // Float conversion surface — dispatch to the inlined helpers.
+        let recv_tag = self.expr_float_tag(recv);
+        match n {
+            "to_fp32" => {
+                return match recv_tag {
+                    Some("f32") | None => Ok(r),
+                    Some(tag) => Ok(SmtTerm {
+                        s: format!(
+                            "(arch_{tag}_to_f32 {})",
+                            coerce(r, float_tag_width(tag), false).s
+                        ),
+                        width: 32,
+                        signed: false,
+                    }),
+                };
+            }
+            "to_bf16" | "to_fp8e4m3" | "to_fp8e5m2" => {
+                let (helper, w) = match n {
+                    "to_bf16" => ("arch_f32_to_bf16", 16),
+                    "to_fp8e4m3" => ("arch_f32_to_e4m3", 8),
+                    _ => ("arch_f32_to_e5m2", 8),
+                };
+                return match recv_tag {
+                    Some("f32") => Ok(SmtTerm {
+                        s: format!("({helper} {})", coerce(r, 32, false).s),
+                        width: w,
+                        signed: false,
+                    }),
+                    _ => Err(CompileError::general(
+                        &format!(".{n}() in `arch formal` requires an FP32 receiver — convert via .to_fp32() first"),
+                        span,
+                    )),
+                };
+            }
+            "to_uint" | "to_sint" if recv_tag.is_some() => {
+                return Err(CompileError::general(
+                    &format!(
+                        "float .{n}<N>() is not supported by `arch formal` v2 — compare against float constants instead, or split the design at the conversion boundary"
+                    ),
+                    span,
+                ));
+            }
+            _ => {}
+        }
         match n {
             "trunc" => {
                 let w = target_w.ok_or_else(|| {

@@ -1644,9 +1644,8 @@ fn main() -> miette::Result<()> {
             auto_thread_asserts,
             fp_compat,
         } => {
-            // Validated for parity with build/sim; FP types are rejected by the
-            // formal backend in v1, so the profile has no effect here yet.
-            let _ = arch::FpCompat::parse(&fp_compat).map_err(|e| miette::miette!(e))?;
+            let fp_compat_parsed =
+                arch::FpCompat::parse(&fp_compat).map_err(|e| miette::miette!(e))?;
             let files_for_learn = files.clone();
             learn_wrap(&files_for_learn, move || {
                 let all_files = resolve_use_imports(&files)?;
@@ -1705,6 +1704,7 @@ fn main() -> miette::Result<()> {
                     solver: solver.clone(),
                     emit_smt: emit_smt.clone(),
                     timeout,
+                    fp_compat: fp_compat_parsed,
                 };
                 let report =
                     formal::run(&ast, &symbols, &args).map_err(|err| ms.report_error(err))?;
