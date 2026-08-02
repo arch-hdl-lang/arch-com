@@ -1,0 +1,13 @@
+// Deliberately FALSE float property — must REFUTE with a concrete
+// counterexample (locks solver-visibility of float compare semantics and
+// float counterexample rendering; z3 finds a=0xff, the E4M3 NaN).
+module FpFormalBad
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync>;
+  port a: in FP8E4M3;
+  port o: out Bool;
+  comb o = a > 1.0; end comb
+  // Deliberately FALSE: not every input exceeds 1.0 — must REFUTE with a
+  // counterexample, proving the float compare cone is solver-visible.
+  assert always_gt: a > 1.0;
+end module FpFormalBad

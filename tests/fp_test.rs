@@ -1633,3 +1633,66 @@ fn fp_assign_literal_coercion() {
         "error should name the overflow"
     );
 }
+
+/// Float properties in `arch formal` (v2): floats ride as BV carriers and
+/// operators dispatch to the same machine-proven QF_BV define-funs the SV
+/// and offline SMT proofs are rendered from — user properties compose over
+/// proven operators, no solver FP theory involved. Covers fp8+bf16 ops,
+/// compares, fma, is_nan, an exact-widen conversion, and a float reg reset.
+/// The Bad fixture locks refutation + float counterexamples. z3-gated.
+#[test]
+fn fp_formal_float_props() {
+    fn z3_available() -> bool {
+        std::process::Command::new("z3")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    if !z3_available() {
+        eprintln!("skipping fp_formal_float_props: z3 not in PATH");
+        return;
+    }
+    let out = arch()
+        .arg("formal")
+        .arg("tests/fp_v1/FpFormalProps.arch")
+        .arg("--solver")
+        .arg("z3")
+        .arg("--bound")
+        .arg("3")
+        .output()
+        .expect("run arch formal");
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success(),
+        "float formal props must all prove:\n{all}"
+    );
+    assert_eq!(
+        all.matches("PROVED").count(),
+        6,
+        "expected 6 PROVED properties:\n{all}"
+    );
+
+    let out = arch()
+        .arg("formal")
+        .arg("tests/fp_v1/FpFormalBad.arch")
+        .arg("--solver")
+        .arg("z3")
+        .arg("--bound")
+        .arg("2")
+        .output()
+        .expect("run arch formal");
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success() && all.contains("REFUTED"),
+        "false float property must refute with a counterexample:\n{all}"
+    );
+}
