@@ -1839,15 +1839,45 @@ impl GraphBuilder {
     /// LHS base names. Conditions count as reads of every then/else target.
     fn scan_assignments(&mut self, stmts: &[Stmt], path: &InstPath, bus_ports: &HashSet<String>) {
         let mut cond_stack: Vec<HashSet<String>> = Vec::new();
-        self.scan_assignments_inner(stmts, path, bus_ports, &mut cond_stack);
+        let mut written: HashSet<String> = HashSet::new();
+        self.scan_assignments_inner(stmts, path, bus_ports, &mut cond_stack, &mut written);
     }
 
+    /// `written` tracks, in the block's sequential (blocking-assignment)
+    /// order, which LHS base names are DEFINITELY assigned by some earlier
+    /// statement reached so far in this same comb-block scope. It is used
+    /// to distinguish two shapes that both read a signal on the RHS of its
+    /// own assignment:
+    ///
+    ///   * `x = x <op> t0;` where an EARLIER statement in the same block
+    ///     already assigned `x` (e.g. a sequential-fold reduction:
+    ///     `x = <identity>; x = x <op> t0; x = x <op> t1; …`, the SV shape
+    ///     `shared(or)`/`shared(and)` thread lowering emits into one
+    ///     `always_comb`). Blocking-assignment semantics mean this read
+    ///     sees the in-block value just established by the earlier write —
+    ///     NOT a dependency on `x`'s own value from outside/before this
+    ///     block. No graph edge (arch#709 follow-up false positive).
+    ///   * `x = x <op> y;` as the FIRST assignment to `x` in the block (or
+    ///     on a control-flow path where no earlier write is guaranteed —
+    ///     see the `IfElse`/`Match` handling below). This reads `x`'s
+    ///     pre-block value with nothing to break the cycle: a genuine
+    ///     combinational self-dependency. Still produces the edge.
+    ///
+    /// Promotion to "definitely written" across control flow must stay
+    /// conservative (favor still emitting the edge over silently dropping
+    /// a real one): a name is only promoted out of an `if`/`else` when
+    /// BOTH arms wrote it (a bare `if` with no `else` promotes nothing —
+    /// same as the empty-else case falling out of the intersection with
+    /// the untouched clone), and only out of a `match` when EVERY arm
+    /// wrote it. Writes inside a `for` body are treated as branch-local
+    /// (never promoted to the enclosing scope) for the same reason.
     fn scan_assignments_inner(
         &mut self,
         stmts: &[Stmt],
         path: &InstPath,
         bus_ports: &HashSet<String>,
         cond_stack: &mut Vec<HashSet<String>>,
+        written: &mut HashSet<String>,
     ) {
         for stmt in stmts {
             match stmt {
@@ -1860,11 +1890,17 @@ impl GraphBuilder {
                     collect_expr_idents_bus(&a.value, bus_ports, &mut rhs);
                     // RHS for index/bit-slice on LHS also contributes to deps.
                     collect_lhs_index_reads(&a.target, &mut rhs);
+                    let already_written = written.contains(&lhs);
                     let to = self.intern(NodeKey {
                         path: path.clone(),
-                        signal: lhs,
+                        signal: lhs.clone(),
                     });
                     for id in &rhs {
+                        // Self-read of a signal already assigned earlier in
+                        // this block: in-block value, not a feedback edge.
+                        if already_written && id.as_str() == lhs.as_str() {
+                            continue;
+                        }
                         let from = self.intern(NodeKey {
                             path: path.clone(),
                             signal: id.clone(),
@@ -1873,6 +1909,9 @@ impl GraphBuilder {
                     }
                     for conds in cond_stack.iter() {
                         for id in conds {
+                            if already_written && id.as_str() == lhs.as_str() {
+                                continue;
+                            }
                             let from = self.intern(NodeKey {
                                 path: path.clone(),
                                 signal: id.clone(),
@@ -1880,26 +1919,64 @@ impl GraphBuilder {
                             self.add_edge(from, to);
                         }
                     }
+                    written.insert(lhs);
                 }
                 Stmt::IfElse(ife) => {
                     let mut cond_ids = HashSet::new();
                     collect_expr_idents_bus(&ife.cond, bus_ports, &mut cond_ids);
                     cond_stack.push(cond_ids);
-                    self.scan_assignments_inner(&ife.then_stmts, path, bus_ports, cond_stack);
-                    self.scan_assignments_inner(&ife.else_stmts, path, bus_ports, cond_stack);
+                    let mut then_written = written.clone();
+                    self.scan_assignments_inner(
+                        &ife.then_stmts,
+                        path,
+                        bus_ports,
+                        cond_stack,
+                        &mut then_written,
+                    );
+                    let mut else_written = written.clone();
+                    self.scan_assignments_inner(
+                        &ife.else_stmts,
+                        path,
+                        bus_ports,
+                        cond_stack,
+                        &mut else_written,
+                    );
                     cond_stack.pop();
+                    // Only promote names written on BOTH arms — mutually
+                    // exclusive paths don't guarantee each other's writes.
+                    *written = then_written.intersection(&else_written).cloned().collect();
                 }
                 Stmt::Match(m) => {
                     let mut scrut_ids = HashSet::new();
                     collect_expr_idents_bus(&m.scrutinee, bus_ports, &mut scrut_ids);
                     cond_stack.push(scrut_ids);
+                    let mut arm_written: Option<HashSet<String>> = None;
                     for arm in &m.arms {
-                        self.scan_assignments_inner(&arm.body, path, bus_ports, cond_stack);
+                        let mut aw = written.clone();
+                        self.scan_assignments_inner(
+                            &arm.body, path, bus_ports, cond_stack, &mut aw,
+                        );
+                        arm_written = Some(match arm_written {
+                            Some(acc) => acc.intersection(&aw).cloned().collect(),
+                            None => aw,
+                        });
                     }
                     cond_stack.pop();
+                    if let Some(merged) = arm_written {
+                        *written = merged;
+                    }
                 }
                 Stmt::For(f) => {
-                    self.scan_assignments_inner(&f.body, path, bus_ports, cond_stack);
+                    // Loop trip count isn't evaluated here; treat the body as
+                    // branch-local so a write inside it never gets promoted.
+                    let mut body_written = written.clone();
+                    self.scan_assignments_inner(
+                        &f.body,
+                        path,
+                        bus_ports,
+                        cond_stack,
+                        &mut body_written,
+                    );
                 }
                 _ => {}
             }
