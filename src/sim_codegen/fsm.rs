@@ -333,6 +333,34 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("}\n\n");
 
         let fsm_reg_names: HashSet<String> = f.regs.iter().map(|r| r.name.name.clone()).collect();
+        // Float formats of fsm-scope signals (ports/regs/lets/wires): drives
+        // float-op dispatch inside state bodies. Without this, `total <=
+        // total + x` on FP32 fsm regs emitted INTEGER adds on the bit
+        // pattern (silently diverging from the correct SV backend).
+        let fsm_float_names: HashMap<String, FpFmt> = {
+            let mut m: HashMap<String, FpFmt> = HashMap::new();
+            for p in f.common.ports.iter() {
+                if let Some(fmt) = type_float_fmt(&p.ty) {
+                    m.insert(p.name.name.clone(), fmt);
+                }
+            }
+            for r in &f.regs {
+                if let Some(fmt) = type_float_fmt(&r.ty) {
+                    m.insert(r.name.name.clone(), fmt);
+                }
+            }
+            for l in &f.lets {
+                if let Some(fmt) = l.ty.as_ref().and_then(type_float_fmt) {
+                    m.insert(l.name.name.clone(), fmt);
+                }
+            }
+            for w in &f.wires {
+                if let Some(fmt) = type_float_fmt(&w.ty) {
+                    m.insert(w.name.name.clone(), fmt);
+                }
+            }
+            m
+        };
         let fsm_let_names: HashSet<String> = f
             .lets
             .iter()
@@ -383,6 +411,7 @@ impl<'a> SimCodegen<'a> {
                 &bus_port_names,
             )
             .with_vec_names(&fsm_vec_names)
+            .with_float_names(&fsm_float_names)
             .with_fsm_vec_port_regs(&fsm_vec_port_reg_names)
             .with_ident_subst(&fsm_ident_subst);
             c.fsm_mode = true;
@@ -462,6 +491,7 @@ impl<'a> SimCodegen<'a> {
                 &bus_port_names,
             )
             .with_vec_names(&fsm_vec_names)
+            .with_float_names(&fsm_float_names)
             .with_fsm_vec_port_regs(&fsm_vec_port_reg_names)
             .with_ident_subst(&fsm_ident_subst);
             c.posedge_lhs = true;

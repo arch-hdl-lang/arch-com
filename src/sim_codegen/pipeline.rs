@@ -11,6 +11,42 @@ use crate::ast::*;
 
 impl<'a> SimCodegen<'a> {
     pub(crate) fn gen_pipeline(&self, p: &PipelineDecl) -> SimModel {
+        // Float formats for this pipeline's scope: ports, stage decls, and
+        // cross-stage `Stage.reg` compound keys. Drives float-op dispatch
+        // in pipeline_sim_expr — without it, FP32 stage math emitted
+        // integer ops on the bit patterns.
+        {
+            let mut fm: HashMap<String, FpFmt> = HashMap::new();
+            for port in &p.common.ports {
+                if let Some(f) = type_float_fmt(&port.ty) {
+                    fm.insert(port.name.name.clone(), f);
+                }
+            }
+            for st in &p.stages {
+                for bi in &st.body {
+                    match bi {
+                        ModuleBodyItem::RegDecl(r) => {
+                            if let Some(f) = type_float_fmt(&r.ty) {
+                                fm.insert(r.name.name.clone(), f);
+                                fm.insert(format!("{}.{}", st.name.name, r.name.name), f);
+                            }
+                        }
+                        ModuleBodyItem::WireDecl(w) => {
+                            if let Some(f) = type_float_fmt(&w.ty) {
+                                fm.insert(w.name.name.clone(), f);
+                            }
+                        }
+                        ModuleBodyItem::LetBinding(l) => {
+                            if let Some(f) = l.ty.as_ref().and_then(type_float_fmt) {
+                                fm.insert(l.name.name.clone(), f);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            *self.pipeline_float_names.borrow_mut() = fm;
+        }
         let name = &p.name.name;
         let class = format!("V{name}");
         let _enum_map = build_enum_map(self.symbols);
@@ -1267,6 +1303,41 @@ impl<'a> SimCodegen<'a> {
         }
     }
 
+    /// Float format of a pipeline-scope expression (idents, `Stage.reg`
+    /// reads, float literals, and float arithmetic/fma over those).
+    fn pipeline_expr_float(&self, e: &Expr) -> Option<FpFmt> {
+        match &e.kind {
+            ExprKind::Ident(n) => self.pipeline_float_names.borrow().get(n.as_str()).copied(),
+            ExprKind::FieldAccess(base, f) => {
+                if let ExprKind::Ident(b) = &base.kind {
+                    self.pipeline_float_names
+                        .borrow()
+                        .get(&format!("{}.{}", b, f.name))
+                        .copied()
+                } else {
+                    None
+                }
+            }
+            ExprKind::Literal(LitKind::TypedFloat(fmtl, _)) => Some(match fmtl {
+                FloatLitFmt::Fp32 => FpFmt::Fp32,
+                FloatLitFmt::Bf16 => FpFmt::Bf16,
+                FloatLitFmt::E4m3 => FpFmt::E4m3,
+                FloatLitFmt::E5m2 => FpFmt::E5m2,
+            }),
+            ExprKind::Literal(LitKind::Float(_)) => Some(FpFmt::Fp32),
+            ExprKind::Binary(op, l, r) => match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul => self
+                    .pipeline_expr_float(l)
+                    .or_else(|| self.pipeline_expr_float(r)),
+                _ => None,
+            },
+            ExprKind::FunctionCall(name, args) if name == "fma" => {
+                args.first().and_then(|a| self.pipeline_expr_float(a))
+            }
+            _ => None,
+        }
+    }
+
     fn pipeline_sim_expr(
         &self,
         expr: &Expr,
@@ -1311,6 +1382,8 @@ impl<'a> SimCodegen<'a> {
             coverage: None,
             params,
             vinit_regs: None,
+            decl_types: None,
+            struct_defs: None,
         };
         match &expr.kind {
             ExprKind::FieldAccess(base, field) => {
@@ -1387,6 +1460,28 @@ impl<'a> SimCodegen<'a> {
                     self.pipeline_sim_expr(rhs, prefix, si, sn, sp, srn, pn, rn, ln, w, em, params);
                 if matches!(*op, BinOp::Implies | BinOp::ImpliesNext) {
                     return format!("(!{l} || {r})");
+                }
+                // Float operands dispatch to the _arch_fp helpers (mirrors
+                // the module-path binary dispatch in mod.rs).
+                if let Some(fmt) = self
+                    .pipeline_expr_float(lhs)
+                    .or_else(|| self.pipeline_expr_float(rhs))
+                {
+                    let fop = match op {
+                        BinOp::Add => Some("add"),
+                        BinOp::Sub => Some("sub"),
+                        BinOp::Mul => Some("mul"),
+                        BinOp::Eq => Some("eq"),
+                        BinOp::Neq => Some("ne"),
+                        BinOp::Lt => Some("lt"),
+                        BinOp::Gt => Some("gt"),
+                        BinOp::Lte => Some("le"),
+                        BinOp::Gte => Some("ge"),
+                        _ => None,
+                    };
+                    if let Some(fop) = fop {
+                        return format!("_arch_{}_{fop}({l}, {r})", fmt.helper_tag());
+                    }
                 }
                 let os = match op {
                     BinOp::Add | BinOp::AddWrap => "+",

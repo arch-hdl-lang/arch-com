@@ -1,0 +1,19 @@
+// Float ops inside a `thread` (lowered FSM): locks the already-correct
+// behavior in both backends (audited 2026-08-02; NBA last-write-wins
+// applies to same-state assignments, hence the waits).
+module FpThread
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync>;
+  port go: in Bool;
+  port x: in FP32;
+  port y: out FP32;
+  reg total: FP32 reset rst => 0.0;
+  thread main on clk rising, rst high
+    wait until go;
+    total <= total + x;
+    wait 1 cycle;
+    total <= total * x;
+    wait 1 cycle;
+  end thread main
+  comb y = total; end comb
+end module FpThread

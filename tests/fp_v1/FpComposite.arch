@@ -1,0 +1,68 @@
+// FP v2 composite coverage: floats inside Vec, struct fields, and
+// module-local functions — across FP32, BF16, and FP8 — exercising the
+// element/field float-format resolution in both backends (SV + native sim).
+// Before v2 these positions were rejected at typecheck; the hazard class
+// they guarded against (silent INTEGER arithmetic on float bit patterns)
+// is what the TB pins down.
+struct FpCplx
+  re: BF16;
+  im: BF16;
+end struct FpCplx
+
+module FpComposite
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync>;
+  port v: in Vec<FP32, 4>;
+  port s: in FP32;
+  port y: out Vec<FP32, 4>;
+  port dot: out FP32;
+  port a_re: in BF16;
+  port a_im: in BF16;
+  port b_re: in BF16;
+  port b_im: in BF16;
+  port p_re: out BF16;
+  port p_im: out BF16;
+  port q4: in FP8E4M3;
+  port q4n: out FP8E4M3;
+  port vmax: out Bool;
+
+  // Vec<FP32> elementwise scale + accumulate (reg of Vec-of-float with a
+  // float-literal reset, exercising the Vec reset coercion path).
+  reg acc: Vec<FP32, 2> reset rst => 0.0;
+  comb
+    for i in 0..3
+      y[i] = v[i] * s;
+    end for
+  end comb
+  seq on clk rising
+    acc[0] <= acc[0] + v[0];
+    acc[1] <= fma(v[1], s, acc[1]);
+  end seq
+  comb dot = acc[0] + acc[1]; end comb
+
+  // struct with BF16 fields, kept INTERNAL (struct-port ABI differs
+  // between Verilator and the native sim, so the TB drives scalar ports).
+  // Exercises field WRITES (comb assign to wire fields) and field READS
+  // (the product), plus a narrow-literal coercion on a field read.
+  wire a: FpCplx;
+  wire b: FpCplx;
+  comb
+    a.re = a_re;
+    a.im = a_im;
+    b.re = b_re;
+    b.im = b_im;
+  end comb
+  comb p_re = (a.re * b.re) - (a.im * b.im); end comb
+  comb p_im = (a.re * b.im) + (a.im * (b.re + 0.5)); end comb
+
+  // module-local function with fp8 params/locals/return.
+  function sat_dbl(x: FP8E4M3) -> FP8E4M3
+    let d: FP8E4M3 = x + x;
+    return d;
+  end function sat_dbl
+
+  comb q4n = sat_dbl(q4); end comb
+
+  // compare on a Vec element with a coerced literal.
+  comb vmax = v[3] > 2.5; end comb
+end module FpComposite

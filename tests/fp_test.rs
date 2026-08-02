@@ -233,17 +233,49 @@ fn fp_int_to_bf16_f32_routed_witness_sim() {
     );
 }
 
-/// v1 rejects floats in positions the float-op dispatch can't resolve:
-/// inside `Vec`, in `struct` fields, and in module-local `function`
-/// signatures — rather than silently emitting integer arithmetic.
+/// v2: floats are accepted in Vec elements, struct fields, and
+/// module-local function signatures — each position must CHECK clean and
+/// dispatch float ops (locked end-to-end by fp_composite_sim /
+/// fp_composite_verilator). Mixing float formats through a composite
+/// access is still rejected (no implicit conversion), as is an integer
+/// literal in a Vec-of-float reset slot.
 #[test]
-fn fp_unsupported_positions_rejected() {
-    let cases = [
-        ("vec", "module M\n  port a: in Vec<FP32, 4>;\n  port o: out FP32;\n  comb o = a[0]; end comb\nend module M\n"),
-        ("struct", "struct P\n  x: FP32;\nend struct P\nmodule M\n  port p: in P;\n  port o: out FP32;\n  comb o = p.x; end comb\nend module M\n"),
-        ("function", "module M\n  function f(x: FP32) -> FP32\n    return x;\n  end function f\n  port a: in FP32;\n  port o: out FP32;\n  comb o = f(a); end comb\nend module M\n"),
+fn fp_composite_positions_accepted_and_guarded() {
+    let ok_cases = [
+        ("vec", "module M\n  port a: in Vec<FP32, 4>;\n  port o: out FP32;\n  comb o = a[0] + a[1]; end comb\nend module M\n"),
+        ("struct", "struct P\n  x: FP32;\nend struct P\nmodule M\n  port p_x: in FP32;\n  port o: out FP32;\n  wire p: P;\n  comb p.x = p_x; end comb\n  comb o = p.x + p.x; end comb\nend module M\n"),
+        ("function", "module M\n  function f(x: FP32) -> FP32\n    let d: FP32 = x + x;\n    return d;\n  end function f\n  port a: in FP32;\n  port o: out FP32;\n  comb o = f(a); end comb\nend module M\n"),
     ];
-    for (label, src) in cases {
+    for (label, src) in ok_cases {
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = td.path().join("M.arch");
+        std::fs::write(&path, src).unwrap();
+        let out = arch()
+            .arg("check")
+            .arg(&path)
+            .output()
+            .expect("run arch check");
+        assert!(
+            out.status.success(),
+            "float in {label} position must be accepted in v2\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let bad_cases = [
+        (
+            "vec elem format mix",
+            "module M\n  port a: in Vec<FP32, 4>;\n  port h: in BF16;\n  port o: out FP32;\n  comb o = a[0] + h; end comb\nend module M\n",
+        ),
+        (
+            "vec float int reset",
+            "module M\n  port clk: in Clock<S>;\n  port rst: in Reset<Sync>;\n  port o: out FP32;\n  reg r: Vec<FP32, 2> reset rst => 1;\n  seq on clk rising\n    r[0] <= r[0];\n    r[1] <= r[1];\n  end seq\n  comb o = r[0]; end comb\nend module M\n",
+        ),
+        (
+            "fp8 reg int reset",
+            "module M\n  port clk: in Clock<S>;\n  port rst: in Reset<Sync>;\n  port o: out FP8E4M3;\n  reg r: FP8E4M3 reset rst => 1;\n  seq on clk rising\n    r <= r;\n  end seq\n  comb o = r; end comb\nend module M\n",
+        ),
+    ];
+    for (label, src) in bad_cases {
         let td = tempfile::tempdir().expect("tempdir");
         let path = td.path().join("M.arch");
         std::fs::write(&path, src).unwrap();
@@ -254,7 +286,7 @@ fn fp_unsupported_positions_rejected() {
             .expect("run arch check");
         assert!(
             !out.status.success(),
-            "float in {label} position must be rejected in v1\nsrc:\n{src}"
+            "{label} must be rejected\nsrc:\n{src}"
         );
     }
 }
@@ -1388,6 +1420,165 @@ fn fp8_sv_vs_sim_sweep() {
                 "fp8 SV-vs-sim divergence ({profile}) at byte {i}: sim=0x{:02X} sv=0x{:02X}",
                 a[i], b[i]
             );
+        }
+    }
+}
+
+/// FP v2 composite positions end-to-end (native sim): Vec<FP32> elementwise
+/// ops + reg-of-Vec accumulate, BF16 struct fields (writes + reads + a
+/// coerced field literal), an FP8 module-local function, and a Vec-element
+/// compare against a coerced literal. Exact-value checks: any dispatch
+/// regression to integer arithmetic trips loudly.
+#[test]
+fn fp_composite_sim() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = arch()
+        .arg("sim")
+        .arg("tests/fp_v1/FpComposite.arch")
+        .arg("--tb")
+        .arg("tests/fp_v1/tb_fp_composite.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("6 pass / 0 fail"),
+        "composite float sim failed:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The built SV dispatches composite float accesses to the helper
+/// functions (the pre-v2 hazard was silent integer ops on Vec elements /
+/// struct fields / function params).
+#[test]
+fn fp_composite_build_dispatch() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("FpComposite.arch");
+    std::fs::copy("tests/fp_v1/FpComposite.arch", &arch_path).unwrap();
+    let out = arch()
+        .arg("build")
+        .arg(&arch_path)
+        .output()
+        .expect("run arch build");
+    assert!(out.status.success(), "arch build failed");
+    let sv = std::fs::read_to_string(td.path().join("FpComposite.sv")).unwrap();
+    for needle in [
+        "arch_f32_mul(v[i], s)",           // Vec element dispatch
+        "arch_f32_add(acc[0], v[0])",      // Vec reg seq dispatch
+        "arch_bf16_mul(a.re, b.re)",       // struct field dispatch
+        "arch_bf16_add(b.re, 16'h3F00)",   // coerced field literal
+        "arch_e4m3_add(x, x)",             // fp8 inside a function body
+        "arch_f32_gt(v[3], 32'h40200000)", // Vec element compare + literal
+    ] {
+        assert!(
+            sv.contains(needle),
+            "missing dispatch `{needle}` in SV:\n{sv}"
+        );
+    }
+}
+
+/// Float-typed params for every format: a bare literal default is
+/// context-typed to the declared param format (FP32 was always fine; BF16/
+/// fp8 defaults previously stayed FP32-typed and mismatched on use), the
+/// SV emits the rounded bit pattern, and expressions dispatch float ops.
+#[test]
+fn fp_float_typed_params_all_formats() {
+    let src = "module ParamF\n  param GAIN: FP32 = 2.5;\n  param HBIAS: BF16 = 0.5;\n  param Q: FP8E4M3 = 1.5;\n  port a: in FP32;\n  port h: in BF16;\n  port q: in FP8E4M3;\n  port y: out FP32;\n  port yh: out BF16;\n  port yq: out FP8E4M3;\n  comb y = a * GAIN; end comb\n  comb yh = h + HBIAS; end comb\n  comb yq = q + Q; end comb\nend module ParamF\n";
+    let td = tempfile::tempdir().expect("tempdir");
+    let path = td.path().join("ParamF.arch");
+    std::fs::write(&path, src).unwrap();
+    let out = arch()
+        .arg("build")
+        .arg(&path)
+        .output()
+        .expect("run arch build");
+    assert!(
+        out.status.success(),
+        "float-typed params must build:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let sv = std::fs::read_to_string(td.path().join("ParamF.sv")).unwrap();
+    for needle in [
+        "parameter [31:0] GAIN = 32'h40200000",
+        "parameter [15:0] HBIAS = 16'h3F00",
+        "parameter [7:0] Q = 8'h3C",
+        "arch_bf16_add(h, HBIAS)",
+        "arch_e4m3_add(q, Q)",
+    ] {
+        assert!(sv.contains(needle), "missing `{needle}` in SV:\n{sv}");
+    }
+}
+
+/// Float dispatch inside the non-module constructs — fsm, pipeline
+/// (incl. cross-stage reads), bus float fields, and thread — on the native
+/// sim, with exact expected values. Pre-fix, fsm-sim / pipeline-both /
+/// bus-both silently emitted integer ops on the float bit patterns
+/// (2026-08-02 audit); thread was already correct and is locked here.
+#[test]
+fn fp_construct_positions_sim() {
+    let cases: [(&[&str], &str, &str); 4] = [
+        (&["FpFsm.arch"], "tb_fp_fsm.cpp", "FP_FSM: PASS"),
+        (&["FpPipe.arch"], "tb_fp_pipe.cpp", "FP_PIPE: PASS"),
+        (
+            &["FpStreamBus.arch", "FpBusMod.arch"],
+            "tb_fp_bus.cpp",
+            "FP_BUS: PASS",
+        ),
+        (&["FpThread.arch"], "tb_fp_thread.cpp", "FP_THREAD: PASS"),
+    ];
+    for (files, tb, expect) in cases {
+        let td = tempfile::tempdir().expect("tempdir");
+        let mut cmd = arch();
+        cmd.arg("sim");
+        for f in files {
+            cmd.arg(format!("tests/fp_v1/{f}"));
+        }
+        let out = cmd
+            .arg("--tb")
+            .arg(format!("tests/fp_v1/{tb}"))
+            .arg("--outdir")
+            .arg(td.path())
+            .output()
+            .expect("run arch sim");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains(expect),
+            "{tb}: expected `{expect}`\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// The built SV dispatches float ops in fsm / pipeline / bus contexts.
+#[test]
+fn fp_construct_positions_build_dispatch() {
+    let td = tempfile::tempdir().expect("tempdir");
+    for (files, top, needles) in [
+        (vec!["FpFsm.arch"], "FpFsm", vec!["arch_f32_add(total, x)"]),
+        (
+            vec!["FpPipe.arch"],
+            "FpPipe",
+            vec!["arch_f32_mul(a_in, b_in)", "arch_f32_add(mul_p, b_in)"],
+        ),
+        (
+            vec!["FpStreamBus.arch", "FpBusMod.arch"],
+            "FpBusMod",
+            vec!["arch_f32_add(s_data, s_data)"],
+        ),
+    ] {
+        let sv = td.path().join(format!("{top}.sv"));
+        let mut cmd = arch();
+        cmd.arg("build");
+        for f in &files {
+            cmd.arg(format!("tests/fp_v1/{f}"));
+        }
+        let out = cmd.arg("-o").arg(&sv).output().expect("run arch build");
+        assert!(out.status.success(), "{top} build failed");
+        let text = std::fs::read_to_string(&sv).unwrap();
+        for n in needles {
+            assert!(text.contains(n), "{top}: missing `{n}`:\n{text}");
         }
     }
 }

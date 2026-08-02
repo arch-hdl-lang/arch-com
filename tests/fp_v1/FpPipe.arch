@@ -1,0 +1,25 @@
+// Float stage regs in a `pipeline`, incl. a cross-stage `Mul.p` read.
+// Pre-fix hazard: BOTH backends' pipeline expression emitters lacked
+// float dispatch (integer mul/add on FP32 bit patterns).
+pipeline FpPipe
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync>;
+  port a_in: in FP32;
+  port b_in: in FP32;
+  port y_out: out FP32;
+  stage Mul
+    reg p: FP32 reset rst => 0.0;
+    seq on clk rising
+      p <= a_in * b_in;
+    end seq
+  end stage Mul
+  stage Acc
+    reg y: FP32 reset rst => 0.0;
+    seq on clk rising
+      y <= Mul.p + b_in;
+    end seq
+    comb
+      y_out = y;
+    end comb
+  end stage Acc
+end pipeline FpPipe

@@ -136,6 +136,11 @@ pub struct Codegen<'a> {
     comment_idx: usize,
     /// Functions collected from the current file; emitted inside each module body.
     pending_functions: Vec<FunctionDecl>,
+    /// Declared types of the function currently being emitted (params +
+    /// typed locals). Consulted ahead of the module scope by
+    /// `ident_decl_type`/`ident_float_fmt` so float-op dispatch works
+    /// inside `function` bodies; empty outside `emit_function`.
+    fn_local_types: std::collections::HashMap<String, TypeExpr>,
     /// Maps call-site span.start → overload index (for overloaded functions only).
     overload_map: std::collections::HashMap<usize, usize>,
     /// Bus port names in the current module → bus name (for FieldAccess rewriting).
@@ -251,6 +256,7 @@ impl<'a> Codegen<'a> {
             comments: Vec::new(),
             comment_idx: 0,
             pending_functions: Vec::new(),
+            fn_local_types: std::collections::HashMap::new(),
             overload_map,
             bus_ports: std::collections::HashMap::new(),
             vec_of_bus_port_count: std::collections::HashMap::new(),
@@ -721,7 +727,36 @@ impl<'a> Codegen<'a> {
         f.name.name.clone()
     }
 
+    /// Collect declared types visible inside a function body: params plus
+    /// every explicitly-typed `let`, recursively through if/for bodies.
+    fn collect_fn_local_types(f: &FunctionDecl) -> std::collections::HashMap<String, TypeExpr> {
+        fn walk(items: &[FunctionBodyItem], out: &mut std::collections::HashMap<String, TypeExpr>) {
+            for item in items {
+                match item {
+                    FunctionBodyItem::Let(l) => {
+                        if let Some(t) = &l.ty {
+                            out.insert(l.name.name.clone(), t.clone());
+                        }
+                    }
+                    FunctionBodyItem::IfElse(ie) => {
+                        walk(&ie.then_body, out);
+                        walk(&ie.else_body, out);
+                    }
+                    FunctionBodyItem::For(fl) => walk(&fl.body, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut out = std::collections::HashMap::new();
+        for a in &f.args {
+            out.insert(a.name.name.clone(), a.ty.clone());
+        }
+        walk(&f.body, &mut out);
+        out
+    }
+
     fn emit_function(&mut self, f: &FunctionDecl) {
+        self.fn_local_types = Self::collect_fn_local_types(f);
         let sv_name = self.sv_function_name(f);
         let ret_str = self.emit_type_str(&f.ret_ty);
         let args_str: Vec<String> = f
@@ -767,6 +802,7 @@ impl<'a> Codegen<'a> {
         self.indent -= 1;
         self.line("endfunction");
         self.line("");
+        self.fn_local_types.clear();
     }
 
     // ── `shared function` support ────────────────────────────────────
@@ -2059,13 +2095,216 @@ impl<'a> Codegen<'a> {
                 _ => None,
             },
             ExprKind::Ternary(_, t, e) => self.expr_float_fmt(t).or_else(|| self.expr_float_fmt(e)),
+            // Composite accesses: Vec element and struct field reads carry
+            // their declared element/field float type.
+            ExprKind::Index(..) | ExprKind::FieldAccess(..) => match self.expr_decl_type(expr) {
+                Some(TypeExpr::FP32) => Some("f32"),
+                Some(TypeExpr::BF16) => Some("bf16"),
+                Some(TypeExpr::FP8E4M3) => Some("e4m3"),
+                Some(TypeExpr::FP8E5M2) => Some("e5m2"),
+                _ => None,
+            },
             _ => None,
         }
     }
 
+    /// Declared TypeExpr of a scope identifier (ports, regs, typed lets,
+    /// wires) — the basis for composite float resolution (`Vec<FP32,N>[i]`,
+    /// `s.field`).
+    fn ident_decl_type(&self, name: &str) -> Option<TypeExpr> {
+        // Function-body scope shadows the module scope while emitting a
+        // `function` (params + typed locals).
+        if let Some(t) = self.fn_local_types.get(name) {
+            return Some(t.clone());
+        }
+        let Some(scope) = self.symbols.module_scopes.get(&self.current_construct) else {
+            // Pipelines (and other scope-less constructs) fall back to a
+            // direct AST walk.
+            return self.pipeline_ident_decl_type(name);
+        };
+        match scope.get(name).map(|(sym, _)| sym)? {
+            Symbol::Port(p) => Some(p.ty.clone()),
+            Symbol::Reg(r) => Some(r.ty.clone()),
+            Symbol::Let(_) => {
+                for item in &self.source.items {
+                    match item {
+                        Item::Module(m) if m.name.name == self.current_construct => {
+                            for bi in &m.body {
+                                match bi {
+                                    ModuleBodyItem::LetBinding(l) if l.name.name == name => {
+                                        return l.ty.clone();
+                                    }
+                                    ModuleBodyItem::WireDecl(w) if w.name.name == name => {
+                                        return Some(w.ty.clone());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        Item::Fsm(f) if f.name.name == self.current_construct => {
+                            for l in &f.lets {
+                                if l.name.name == name {
+                                    return l.ty.clone();
+                                }
+                            }
+                            for w in &f.wires {
+                                if w.name.name == name {
+                                    return Some(w.ty.clone());
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Pipeline-scope identifier types: pipelines have no `module_scopes`
+    /// entry, so resolve ports and stage-body decls straight from the AST.
+    fn pipeline_ident_decl_type(&self, name: &str) -> Option<TypeExpr> {
+        for item in &self.source.items {
+            let Item::Pipeline(p) = item else { continue };
+            if p.name.name != self.current_construct {
+                continue;
+            }
+            for port in &p.common.ports {
+                if port.name.name == name {
+                    return Some(port.ty.clone());
+                }
+            }
+            for stage in &p.stages {
+                for bi in &stage.body {
+                    match bi {
+                        ModuleBodyItem::RegDecl(r) if r.name.name == name => {
+                            return Some(r.ty.clone());
+                        }
+                        ModuleBodyItem::WireDecl(w) if w.name.name == name => {
+                            return Some(w.ty.clone());
+                        }
+                        ModuleBodyItem::LetBinding(l) if l.name.name == name => {
+                            return l.ty.clone();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Declared TypeExpr of an lvalue-shaped expression: identifiers,
+    /// Vec-element selects, and struct field accesses (recursively, so
+    /// `v[i].f` and `s.f[i]` both resolve). Used to give composite float
+    /// accesses a float format for operator dispatch.
+    fn expr_decl_type(&self, e: &Expr) -> Option<TypeExpr> {
+        match &e.kind {
+            ExprKind::Ident(name) => self.ident_decl_type(name),
+            ExprKind::Index(base, _) => match self.expr_decl_type(base)? {
+                TypeExpr::Vec(elem, _) => Some(*elem),
+                _ => None,
+            },
+            ExprKind::FieldAccess(base, field) => {
+                // Bus port signal (`m.data`): resolve through the bus def's
+                // signal types. Bus ports carry their bus in PortDecl
+                // bus_info (AST), not in the TypeExpr.
+                if let ExprKind::Ident(root) = &base.kind {
+                    if let Some(bus_name) = self.port_bus_name(root) {
+                        if let Some((Symbol::Bus(bi), _)) = self.symbols.globals.get(&bus_name) {
+                            for (sname, _dir, sty) in &bi.signals {
+                                if sname == &field.name {
+                                    return Some(sty.clone());
+                                }
+                            }
+                        }
+                        return None;
+                    }
+                    // Cross-stage pipeline reg reference (`Mul.p`).
+                    if let Some(t) = self.pipeline_stage_reg_type(root, &field.name) {
+                        return Some(t);
+                    }
+                }
+                let base_ty = self.expr_decl_type(base)?;
+                let TypeExpr::Named(sname) = base_ty else {
+                    return None;
+                };
+                if let Some((Symbol::Struct(si), _)) = self.symbols.globals.get(&sname.name) {
+                    for (fname, fty) in &si.fields {
+                        if fname == &field.name {
+                            return Some(fty.clone());
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Bus name of a bus-typed port in the current construct, if any.
+    fn port_bus_name(&self, port: &str) -> Option<String> {
+        for item in &self.source.items {
+            let ports = match item {
+                Item::Module(m) if m.name.name == self.current_construct => &m.ports,
+                Item::Fsm(f) if f.name.name == self.current_construct => &f.common.ports,
+                Item::Pipeline(p) if p.name.name == self.current_construct => &p.common.ports,
+                _ => continue,
+            };
+            for pd in ports {
+                if pd.name.name == port {
+                    return pd.bus_info.as_ref().map(|bi| bi.bus_name.name.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Type of `Stage.reg` when `Stage` is a stage of the current pipeline.
+    fn pipeline_stage_reg_type(&self, stage: &str, reg: &str) -> Option<TypeExpr> {
+        for item in &self.source.items {
+            let Item::Pipeline(p) = item else { continue };
+            if p.name.name != self.current_construct {
+                continue;
+            }
+            for st in &p.stages {
+                if st.name.name != stage {
+                    continue;
+                }
+                for bi in &st.body {
+                    if let ModuleBodyItem::RegDecl(r) = bi {
+                        if r.name.name == reg {
+                            return Some(r.ty.clone());
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Float format of an identifier declared in the current construct's scope.
     fn ident_float_fmt(&self, name: &str) -> Option<&'static str> {
-        if let Some(scope) = self.symbols.module_scopes.get(&self.current_construct) {
+        if let Some(t) = self.fn_local_types.get(name) {
+            return match t {
+                TypeExpr::FP32 => Some("f32"),
+                TypeExpr::BF16 => Some("bf16"),
+                TypeExpr::FP8E4M3 => Some("e4m3"),
+                TypeExpr::FP8E5M2 => Some("e5m2"),
+                _ => None,
+            };
+        }
+        let Some(scope) = self.symbols.module_scopes.get(&self.current_construct) else {
+            return match self.pipeline_ident_decl_type(name) {
+                Some(TypeExpr::FP32) => Some("f32"),
+                Some(TypeExpr::BF16) => Some("bf16"),
+                Some(TypeExpr::FP8E4M3) => Some("e4m3"),
+                Some(TypeExpr::FP8E5M2) => Some("e5m2"),
+                _ => None,
+            };
+        };
+        {
             if let Some((sym, _)) = scope.get(name) {
                 let ty = match sym {
                     Symbol::Port(p) => Some(&p.ty),
