@@ -1198,7 +1198,10 @@ pub struct WholeDesignAnalysis {
 /// 1. Identify top-level modules (modules not instantiated anywhere).
 /// 2. For each top-level, recursively flatten the instance hierarchy into
 ///    a directed node-and-edge set, where each node is `(inst_path, signal)`.
-/// 3. Run Tarjan's SCC.
+///    Each top gets its own graph — tops are mutually unconnected, so a
+///    namespace shared across them can only fabricate cycles out of
+///    same-named signals in unrelated modules.
+/// 3. Run Tarjan's SCC per top.
 /// 4. Tag each non-trivial SCC with the set of owning-parent paths;
 ///    classify as suppressed if any owning module has the pragma.
 pub fn analyze_whole_design(source: &SourceFile, symbols: &SymbolTable) -> WholeDesignAnalysis {
@@ -1220,60 +1223,78 @@ pub fn analyze_whole_design(source: &SourceFile, symbols: &SymbolTable) -> Whole
         }
     }
 
-    let top_levels: Vec<&ModuleDecl> = module_by_name
+    // Source declaration order, not `module_by_name` iteration order: the
+    // latter is a `HashMap`, so which top-level module got analyzed (and
+    // blamed) first was nondeterministic across runs.
+    let top_levels: Vec<&ModuleDecl> = source
+        .items
         .iter()
-        .filter(|(name, _)| inst_count.get(**name).copied().unwrap_or(0) == 0)
-        .map(|(_, m)| *m)
+        .filter_map(|it| match it {
+            Item::Module(m) if inst_count.get(m.name.name.as_str()).copied().unwrap_or(0) == 0 => {
+                Some(m)
+            }
+            _ => None,
+        })
         .collect();
 
-    // ── Step 2: build the flat graph ──────────────────────────────────────
-    let mut builder = GraphBuilder::default();
-    for top in &top_levels {
-        builder.expand_module(top, vec![], symbols, source);
-    }
-
-    // ── Step 3: Tarjan SCC ────────────────────────────────────────────────
-    let sccs_raw = tarjan_scc(&builder.adj, builder.next_id);
-
-    // ── Step 4: classify SCCs ─────────────────────────────────────────────
     let mut out_sccs: Vec<CombScc> = Vec::new();
     let mut suppressed = 0usize;
     let mut total = 0usize;
-    for scc in sccs_raw {
-        // Filter: size > 1 OR (size == 1 with self-loop)
-        let is_cycle = scc.len() > 1 || (scc.len() == 1 && builder.adj[scc[0]].contains(&scc[0]));
-        if !is_cycle {
-            continue;
-        }
-        total += 1;
 
-        let mut owning_paths: HashSet<InstPath> = HashSet::new();
-        let mut owning_modules: HashSet<String> = HashSet::new();
-        let mut nodes: Vec<NodeKey> = Vec::with_capacity(scc.len());
-        for nid in &scc {
-            let key = builder.node_by_id[*nid].clone();
-            owning_paths.insert(key.path.clone());
-            if let Some(mname) = builder.owning_module(&key.path) {
-                owning_modules.insert(mname);
+    // ── Steps 2-4, once per top-level module ──────────────────────────────
+    //
+    // Each top-level module gets its OWN graph. Every top used to be
+    // expanded into one shared builder at the same root path (`vec![]`), so
+    // all tops shared a single `(inst_path, signal)` namespace: `ModA`'s `p`
+    // and `ModB`'s `p` interned to the same node. Distinct top-level modules
+    // are by definition unconnected — no combinational path can run between
+    // them — so the only thing a shared namespace could produce was a
+    // fabricated cycle stitched out of same-named signals in unrelated
+    // modules (`arch check A.arch B.arch` warning where `A` alone and `B`
+    // alone are both clean), plus misattribution via `path_owner[vec![]]`,
+    // which the last-expanded top overwrote.
+    for top in &top_levels {
+        let mut builder = GraphBuilder::default();
+        builder.expand_module(top, vec![], symbols, source);
+        let sccs_raw = tarjan_scc(&builder.adj, builder.next_id);
+
+        for scc in sccs_raw {
+            // Filter: size > 1 OR (size == 1 with self-loop)
+            let is_cycle =
+                scc.len() > 1 || (scc.len() == 1 && builder.adj[scc[0]].contains(&scc[0]));
+            if !is_cycle {
+                continue;
             }
-            nodes.push(key);
+            total += 1;
+
+            let mut owning_paths: HashSet<InstPath> = HashSet::new();
+            let mut owning_modules: HashSet<String> = HashSet::new();
+            let mut nodes: Vec<NodeKey> = Vec::with_capacity(scc.len());
+            for nid in &scc {
+                let key = builder.node_by_id[*nid].clone();
+                owning_paths.insert(key.path.clone());
+                if let Some(mname) = builder.owning_module(&key.path) {
+                    owning_modules.insert(mname);
+                }
+                nodes.push(key);
+            }
+            // Suppression: any owning module has `pragma comb_loops_allowed;`.
+            let blessed = owning_modules.iter().any(|mn| {
+                module_by_name
+                    .get(mn.as_str())
+                    .map(|m| m.comb_loops_allowed)
+                    .unwrap_or(false)
+            });
+            if blessed {
+                suppressed += 1;
+                continue;
+            }
+            out_sccs.push(CombScc {
+                nodes,
+                owning_paths,
+                owning_modules,
+            });
         }
-        // Suppression: any owning module has `pragma comb_loops_allowed;`.
-        let blessed = owning_modules.iter().any(|mn| {
-            module_by_name
-                .get(mn.as_str())
-                .map(|m| m.comb_loops_allowed)
-                .unwrap_or(false)
-        });
-        if blessed {
-            suppressed += 1;
-            continue;
-        }
-        out_sccs.push(CombScc {
-            nodes,
-            owning_paths,
-            owning_modules,
-        });
     }
 
     WholeDesignAnalysis {
