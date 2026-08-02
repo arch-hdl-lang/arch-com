@@ -15987,6 +15987,221 @@ fn test_vec_of_const_param_emits_packed_and_indexes() {
 }
 
 #[test]
+fn test_vec_sint_index_reads_preserve_signedness() {
+    let source = r#"
+        module SignedVecOps
+          param coeffs: Vec<SInt<8>, 2> = {1, 2};
+          port values: in Vec<SInt<8>, 4>;
+          port nested: in Vec<Vec<SInt<8>, 2>, 2>;
+          port idx: in UInt<2>;
+          port outer: in UInt<1>;
+          port inner: in UInt<1>;
+          port coeff: in SInt<8>;
+          port product: out SInt<16>;
+          port less: out Bool;
+          port shifted: out SInt<8>;
+          port low_bit: out Bool;
+          port nested_value: out SInt<8>;
+          port param_value: out SInt<8>;
+          port copied: out Vec<SInt<8>, 4>;
+          port any_less: out Bool;
+
+          function pick(v: Vec<SInt<8>, 4>, i: UInt<2>) -> SInt<8>
+            return v[i];
+          end function pick
+
+          comb
+            product = values[idx] * coeff;
+            less = values[idx] < coeff;
+            shifted = values[idx] >> 1;
+            low_bit = values[idx][0];
+            nested_value = nested[outer][inner];
+            param_value = coeffs[0];
+            any_less = values.any(item < coeff);
+            for i in 0..3
+              copied[i] = values[i];
+            end for
+          end comb
+        end module SignedVecOps
+    "#;
+    let sv = compile_to_sv(source);
+
+    assert!(
+        sv.contains("$signed(values[idx]) * coeff"),
+        "multiplication must see a signed Vec element:\n{sv}"
+    );
+    assert!(
+        sv.contains("$signed(values[idx]) < coeff"),
+        "comparison must see a signed Vec element:\n{sv}"
+    );
+    assert!(
+        sv.contains("$signed(values[idx]) >>> 1"),
+        "right shift must be arithmetic for a signed Vec element:\n{sv}"
+    );
+    assert!(
+        sv.contains("values[idx][0]"),
+        "a further bit-select must remain legal uncast SV:\n{sv}"
+    );
+    assert!(
+        !sv.contains("$signed(values[idx])[0]"),
+        "a cast must not become the base of a bit-select:\n{sv}"
+    );
+    assert!(
+        sv.contains("$signed(nested[outer][inner])"),
+        "nested Vec indexing must preserve the final SInt element type:\n{sv}"
+    );
+    assert!(
+        sv.contains("$signed(coeffs[(0) * (8) +: (8)])"),
+        "signed Vec parameters need the same rvalue cast:\n{sv}"
+    );
+    assert!(
+        sv.contains("$signed(values[0]) < coeff") && sv.contains("$signed(values[3]) < coeff"),
+        "Vec predicate lowering must preserve item signedness:\n{sv}"
+    );
+    assert!(
+        sv.contains("function automatic logic signed [7:0] pick")
+            && sv.contains("return $signed(v[i]);"),
+        "function argument indexing must preserve signedness:\n{sv}"
+    );
+    assert!(
+        sv.contains("copied[i] = $signed(values[i]);"),
+        "indexed writes must remain plain lvalues while reads are cast:\n{sv}"
+    );
+    assert!(
+        !sv.contains("$signed(copied[i]) ="),
+        "rvalue casts must never be emitted on assignment targets:\n{sv}"
+    );
+}
+
+#[test]
+fn test_pipeline_vec_sint_index_reads_preserve_signedness() {
+    let source = r#"
+        domain D
+          freq_mhz: 100
+        end domain D
+
+        pipeline SignedVecPipe
+          port clk: in Clock<D>;
+          port rst: in Reset<Sync>;
+          port values: in Vec<SInt<8>, 4>;
+          port idx: in UInt<2>;
+          port coeff: in SInt<8>;
+          port product: out SInt<16>;
+
+          stage Execute stall when values[idx] < coeff
+            reg held: SInt<16> reset rst => 0;
+            seq on clk rising
+              held <= values[idx] * coeff;
+            end seq
+            comb
+              product = held;
+            end comb
+          end stage Execute
+        end pipeline SignedVecPipe
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("$signed(values[idx]) * coeff"),
+        "pipeline codegen must preserve signed Vec element semantics:\n{sv}"
+    );
+    assert!(
+        sv.contains("$signed(values[idx]) < coeff"),
+        "pipeline stall expressions must preserve signed Vec element semantics:\n{sv}"
+    );
+}
+
+#[test]
+fn test_vec_sint_index_verilator_behavior() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping signed Vec index regression: verilator not found");
+        return;
+    }
+
+    let source = r#"
+        module SignedVecRuntime
+          port values: in Vec<SInt<8>, 4>;
+          port idx: in UInt<2>;
+          port coeff: in SInt<8>;
+          port product: out SInt<16>;
+          port less: out Bool;
+          port shifted: out SInt<8>;
+          comb
+            product = values[idx] * coeff;
+            less = values[idx] < coeff;
+            shifted = values[idx] >> 1;
+          end comb
+        end module SignedVecRuntime
+    "#;
+    let generated = compile_to_sv(source);
+    let tb = r#"
+module tb;
+  logic signed [3:0][7:0] values;
+  logic [1:0] idx;
+  logic signed [7:0] coeff;
+  logic signed [15:0] product;
+  logic less;
+  logic signed [7:0] shifted;
+
+  SignedVecRuntime dut (.*);
+
+  initial begin
+    values = '0;
+    values[0] = -8'sd2;
+    idx = 0;
+    coeff = 8'sd3;
+    #1;
+    if (product !== -16'sd6)
+      $fatal(1, "signed Vec multiply was %0d, expected -6", product);
+    if (less !== 1'b1)
+      $fatal(1, "signed Vec comparison treated -2 as unsigned");
+    if (shifted !== -8'sd1)
+      $fatal(1, "signed Vec right shift was %0d, expected -1", shifted);
+    $finish;
+  end
+endmodule
+"#;
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_path = td.path().join("signed_vec_runtime.sv");
+    let obj_dir = td.path().join("obj_dir");
+    std::fs::write(&sv_path, format!("{generated}\n{tb}"))
+        .expect("write signed Vec Verilator fixture");
+
+    let verilate = std::process::Command::new("verilator")
+        .arg("--binary")
+        .arg("--timing")
+        .arg("--top-module")
+        .arg("tb")
+        .arg("-Wno-fatal")
+        .arg("-Wno-DECLFILENAME")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&sv_path)
+        .output()
+        .expect("build signed Vec Verilator fixture");
+    assert!(
+        verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr)
+    );
+
+    let run = std::process::Command::new(obj_dir.join("Vtb"))
+        .output()
+        .expect("run signed Vec Verilator fixture");
+    assert!(
+        run.status.success(),
+        "signed Vec Verilator behavior should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+#[test]
 fn test_uint_as_vec_cast_for_find_first() {
     // `as Vec<T, N>` is a typecheck-only view that lets Vec methods
     // (find_first, etc.) operate on a UInt directly without a manual

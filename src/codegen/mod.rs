@@ -178,6 +178,12 @@ pub struct Codegen<'a> {
     fp_compat: crate::FpCompat,
     /// Name of the construct currently being emitted (for symbol lookups).
     current_construct: String,
+    /// Function-local argument / let types for the function currently being
+    /// emitted. Most expression types can be recovered from the enclosing
+    /// construct AST, but function locals are not present in module_scopes.
+    /// Keeping this small overlay lets signed Vec element selection use the
+    /// same type-aware rvalue emission inside module/package functions.
+    local_expr_types: std::cell::RefCell<std::collections::HashMap<String, TypeExpr>>,
     /// Context-sensitive identifier substitutions.
     /// Used during Vec method predicate emission to rebind `item` and
     /// `index` to per-iteration expressions (e.g. `vec[3]`, `2'd3`).
@@ -263,6 +269,7 @@ impl<'a> Codegen<'a> {
             staged_emitted: std::cell::Cell::new(false),
             fp_compat: crate::FpCompat::default(),
             current_construct: String::new(),
+            local_expr_types: std::cell::RefCell::new(std::collections::HashMap::new()),
             ident_subst: std::collections::HashMap::new(),
             loop_var_subst: std::collections::HashMap::new(),
             vec_sizes: std::collections::HashMap::new(),
@@ -722,6 +729,35 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_function(&mut self, f: &FunctionDecl) {
+        fn collect_local_types(
+            items: &[FunctionBodyItem],
+            out: &mut std::collections::HashMap<String, TypeExpr>,
+        ) {
+            for item in items {
+                match item {
+                    FunctionBodyItem::Let(l) => {
+                        if let Some(ty) = &l.ty {
+                            out.insert(l.name.name.clone(), ty.clone());
+                        }
+                    }
+                    FunctionBodyItem::IfElse(ie) => {
+                        collect_local_types(&ie.then_body, out);
+                        collect_local_types(&ie.else_body, out);
+                    }
+                    FunctionBodyItem::For(fl) => collect_local_types(&fl.body, out),
+                    FunctionBodyItem::Return(_) | FunctionBodyItem::Assign(_) => {}
+                }
+            }
+        }
+
+        let saved_local_types = std::mem::take(self.local_expr_types.get_mut());
+        self.local_expr_types.get_mut().extend(
+            f.args
+                .iter()
+                .map(|arg| (arg.name.name.clone(), arg.ty.clone())),
+        );
+        collect_local_types(&f.body, self.local_expr_types.get_mut());
+
         let sv_name = self.sv_function_name(f);
         let ret_str = self.emit_type_str(&f.ret_ty);
         let args_str: Vec<String> = f
@@ -758,7 +794,7 @@ impl<'a> Codegen<'a> {
                     self.emit_function_for(fl);
                 }
                 FunctionBodyItem::Assign(a) => {
-                    let target = self.emit_expr_str(&a.target);
+                    let target = self.emit_lvalue_str(&a.target);
                     let val = self.emit_expr_str(&a.value);
                     self.line(&format!("{target} = {val};"));
                 }
@@ -767,6 +803,7 @@ impl<'a> Codegen<'a> {
         self.indent -= 1;
         self.line("endfunction");
         self.line("");
+        *self.local_expr_types.get_mut() = saved_local_types;
     }
 
     // ── `shared function` support ────────────────────────────────────
@@ -1243,7 +1280,7 @@ impl<'a> Codegen<'a> {
                 FunctionBodyItem::IfElse(ie) => self.emit_function_if(ie),
                 FunctionBodyItem::For(fl) => self.emit_function_for(fl),
                 FunctionBodyItem::Assign(a) => {
-                    let target = self.emit_expr_str(&a.target);
+                    let target = self.emit_lvalue_str(&a.target);
                     let val = self.emit_expr_str(&a.value);
                     self.line(&format!("{target} = {val};"));
                 }
@@ -1707,7 +1744,7 @@ impl<'a> Codegen<'a> {
                 if ctx == AssignCtx::Blocking {
                     if let ExprKind::ExprMatch(scrutinee, arms) = &a.value.kind {
                         let s = self.emit_expr_str(scrutinee);
-                        let target = self.emit_expr_str(&a.target);
+                        let target = self.emit_lvalue_str(&a.target);
                         self.line(&format!("case ({s})"));
                         self.indent += 1;
                         for arm in arms {
@@ -1733,7 +1770,7 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 let val = self.emit_expr_str(&a.value);
-                let tgt = self.emit_expr_str(&a.target);
+                let tgt = self.emit_lvalue_str(&a.target);
                 self.line(&format!("{} {} {};", tgt, ctx.op(), val));
             }
             Stmt::IfElse(ie) => {
@@ -2004,8 +2041,248 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    fn module_body_decl_type(body: &[ModuleBodyItem], name: &str) -> Option<TypeExpr> {
+        body.iter().find_map(|item| match item {
+            ModuleBodyItem::RegDecl(r) if r.name.name == name => Some(r.ty.clone()),
+            ModuleBodyItem::WireDecl(w) if w.name.name == name => Some(w.ty.clone()),
+            ModuleBodyItem::LetBinding(l) if l.name.name == name => l.ty.clone(),
+            _ => None,
+        })
+    }
+
+    fn param_declared_type(params: &[ParamDecl], name: &str) -> Option<TypeExpr> {
+        params.iter().find_map(|p| {
+            if p.name.name != name {
+                return None;
+            }
+            match &p.kind {
+                ParamKind::ConstVec(ty) | ParamKind::Logic(ty) => Some(ty.clone()),
+                ParamKind::Const
+                | ParamKind::WidthConst(..)
+                | ParamKind::Type(_)
+                | ParamKind::EnumConst(_) => None,
+            }
+        })
+    }
+
+    /// Recover the declared type of a name in the construct currently being
+    /// emitted. Codegen normally only needs strings, but SystemVerilog packed
+    /// array selections lose the signedness of anonymous element types. This
+    /// lookup supplies the source-level type needed to restore ARCH's
+    /// `Vec<SInt<W>, N>[i] -> SInt<W>` semantics on rvalue reads.
+    fn current_ident_type(&self, name: &str) -> Option<TypeExpr> {
+        if let Some(ty) = self.local_expr_types.borrow().get(name).cloned() {
+            return Some(ty);
+        }
+
+        for item in &self.source.items {
+            match item {
+                Item::Module(m) if m.name.name == self.current_construct => {
+                    if let Some(ty) = Self::param_declared_type(&m.params, name) {
+                        return Some(ty);
+                    }
+                    if let Some(p) = m.ports.iter().find(|p| p.name.name == name) {
+                        return Some(p.ty.clone());
+                    }
+                    return Self::module_body_decl_type(&m.body, name);
+                }
+                Item::Fsm(f) if f.name.name == self.current_construct => {
+                    if let Some(ty) = Self::param_declared_type(&f.params, name) {
+                        return Some(ty);
+                    }
+                    if let Some(p) = f.ports.iter().find(|p| p.name.name == name) {
+                        return Some(p.ty.clone());
+                    }
+                    if let Some(r) = f.regs.iter().find(|r| r.name.name == name) {
+                        return Some(r.ty.clone());
+                    }
+                    if let Some(w) = f.wires.iter().find(|w| w.name.name == name) {
+                        return Some(w.ty.clone());
+                    }
+                    return f
+                        .lets
+                        .iter()
+                        .find(|l| l.name.name == name)
+                        .and_then(|l| l.ty.clone());
+                }
+                Item::Pipeline(p) if p.name.name == self.current_construct => {
+                    if let Some(ty) = Self::param_declared_type(&p.params, name) {
+                        return Some(ty);
+                    }
+                    if let Some(port) = p.ports.iter().find(|port| port.name.name == name) {
+                        return Some(port.ty.clone());
+                    }
+                    let mut found: Option<TypeExpr> = None;
+                    for stage in &p.stages {
+                        if let Some(ty) = Self::module_body_decl_type(&stage.body, name) {
+                            if let Some(previous) = &found {
+                                // Bare stage-local names are legal in each
+                                // stage, so duplicates are common. Only use a
+                                // construct-wide lookup when every duplicate
+                                // has the same emitted type; explicit
+                                // `Stage.member` references are resolved by
+                                // pipeline_stage_member_type instead.
+                                if self.emit_type_and_array_suffix(previous)
+                                    != self.emit_type_and_array_suffix(&ty)
+                                {
+                                    return None;
+                                }
+                            } else {
+                                found = Some(ty);
+                            }
+                        }
+                    }
+                    return found;
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn pipeline_stage_member_type(&self, stage_name: &str, member: &str) -> Option<TypeExpr> {
+        self.source.items.iter().find_map(|item| {
+            let Item::Pipeline(p) = item else {
+                return None;
+            };
+            if p.name.name != self.current_construct {
+                return None;
+            }
+            p.stages
+                .iter()
+                .find(|stage| stage.name.name == stage_name)
+                .and_then(|stage| Self::module_body_decl_type(&stage.body, member))
+        })
+    }
+
+    /// Best-effort source TypeExpr recovery for codegen decisions. This is
+    /// deliberately conservative: returning None merely preserves the old
+    /// emission. The important cases are declared Vecs, nested indexing,
+    /// explicit Vec casts, struct fields, and pipeline stage references.
+    fn expr_type_for_codegen(&self, expr: &Expr) -> Option<TypeExpr> {
+        match &expr.kind {
+            ExprKind::Ident(name) | ExprKind::SynthIdent(name, _) => self.current_ident_type(name),
+            ExprKind::Cast(_, ty) => Some((**ty).clone()),
+            ExprKind::Index(base, _) => match self.expr_type_for_codegen(base)? {
+                TypeExpr::Vec(inner, _) => Some(*inner),
+                TypeExpr::UInt(_) | TypeExpr::SInt(_) | TypeExpr::Bool | TypeExpr::Bit => {
+                    Some(TypeExpr::Bool)
+                }
+                _ => None,
+            },
+            ExprKind::FieldAccess(base, field) => {
+                if let ExprKind::Ident(stage_name) = &base.kind {
+                    if let Some(ty) = self.pipeline_stage_member_type(stage_name, &field.name) {
+                        return Some(ty);
+                    }
+                }
+                let TypeExpr::Named(type_name) = self.expr_type_for_codegen(base)? else {
+                    return None;
+                };
+                let Some((Symbol::Struct(info), _)) = self.symbols.globals.get(&type_name.name)
+                else {
+                    return None;
+                };
+                info.fields
+                    .iter()
+                    .find(|(name, _)| name == &field.name)
+                    .map(|(_, ty)| ty.clone())
+            }
+            ExprKind::MethodCall(base, method, args) => match method.name.as_str() {
+                "sext" => args.first().cloned().map(|w| TypeExpr::SInt(Box::new(w))),
+                "trunc" | "resize" => {
+                    let width = args.first()?.clone();
+                    match self.expr_type_for_codegen(base)? {
+                        TypeExpr::SInt(_) => Some(TypeExpr::SInt(Box::new(width))),
+                        TypeExpr::UInt(_) | TypeExpr::Bool | TypeExpr::Bit => {
+                            Some(TypeExpr::UInt(Box::new(width)))
+                        }
+                        _ => None,
+                    }
+                }
+                "reverse" => self.expr_type_for_codegen(base),
+                _ => None,
+            },
+            ExprKind::Signed(inner) => match self.expr_type_for_codegen(inner)? {
+                TypeExpr::UInt(w) | TypeExpr::SInt(w) => Some(TypeExpr::SInt(w)),
+                TypeExpr::Bool | TypeExpr::Bit => Some(TypeExpr::SInt(Box::new(Expr::new(
+                    ExprKind::Literal(LitKind::Dec(1)),
+                    expr.span,
+                )))),
+                _ => None,
+            },
+            ExprKind::Unsigned(inner) => match self.expr_type_for_codegen(inner)? {
+                TypeExpr::UInt(w) | TypeExpr::SInt(w) => Some(TypeExpr::UInt(w)),
+                TypeExpr::Bool | TypeExpr::Bit => Some(TypeExpr::UInt(Box::new(Expr::new(
+                    ExprKind::Literal(LitKind::Dec(1)),
+                    expr.span,
+                )))),
+                _ => None,
+            },
+            ExprKind::Binary(_, lhs, _) => self.expr_type_for_codegen(lhs),
+            ExprKind::Ternary(_, then_expr, _) => self.expr_type_for_codegen(then_expr),
+            ExprKind::LatencyAt(inner, _) | ExprKind::SvaNext(_, inner) => {
+                self.expr_type_for_codegen(inner)
+            }
+            ExprKind::FunctionCall(name, _) => {
+                let Some((Symbol::Function(overloads), _)) = self.symbols.globals.get(name) else {
+                    return None;
+                };
+                let index = self
+                    .overload_map
+                    .get(&expr.span.start)
+                    .copied()
+                    .unwrap_or(0);
+                overloads.get(index).map(|f| f.ret_ty.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn index_result_is_sint(&self, base: &Expr) -> bool {
+        matches!(
+            self.expr_type_for_codegen(base),
+            Some(TypeExpr::Vec(inner, _)) if matches!(*inner, TypeExpr::SInt(_))
+        )
+    }
+
+    /// Emit an assignment target without rvalue-only signed casts. A blanket
+    /// `$signed(vec[i])` rewrite would otherwise turn indexed writes into an
+    /// illegal system-function lvalue.
+    fn emit_lvalue_str(&self, expr: &Expr) -> String {
+        match &expr.kind {
+            ExprKind::Index(base, idx) => {
+                let b = self.emit_lvalue_str(base);
+                let i = self.emit_expr_str(idx);
+                format!("{b}[{i}]")
+            }
+            ExprKind::BitSlice(base, hi, lo) => {
+                let b = self.emit_lvalue_str(base);
+                if let Some(width) = Self::try_indexed_part_select(hi, lo) {
+                    let l = self.emit_expr_str(lo);
+                    format!("{b}[{l} +: {width}]")
+                } else {
+                    let h = self.emit_expr_str(hi);
+                    let l = self.emit_expr_str(lo);
+                    format!("{b}[{h}:{l}]")
+                }
+            }
+            ExprKind::PartSelect(base, start, width, up) => {
+                let b = self.emit_lvalue_str(base);
+                let s = self.emit_expr_str(start);
+                let w = self.emit_expr_str(width);
+                let op = if *up { "+:" } else { "-:" };
+                format!("{b}[{s} {op} {w}]")
+            }
+            _ => self.emit_expr_str(expr),
+        }
+    }
+
     /// Check if an expression produces a signed (SInt) value.
     fn expr_is_signed(&self, expr: &Expr) -> bool {
+        if matches!(self.expr_type_for_codegen(expr), Some(TypeExpr::SInt(_))) {
+            return true;
+        }
         match &expr.kind {
             ExprKind::Cast(_, ty) => matches!(&**ty, TypeExpr::SInt(_)),
             ExprKind::Ident(name) => self.ident_is_sint(name),
@@ -5356,6 +5633,64 @@ impl<'a> Codegen<'a> {
         self.emit_expr_prec(expr, 0)
     }
 
+    /// Emit one index operation. `preserve_signed_element` is true for a
+    /// normal rvalue read and false when this expression is itself the base
+    /// of another bit/part/index select. Selections do not need signedness,
+    /// and suppressing the cast there avoids non-portable shapes such as
+    /// `$signed(vec[i])[bit]`.
+    fn emit_index_expr_str(
+        &self,
+        base: &Expr,
+        idx: &Expr,
+        preserve_signed_element: bool,
+    ) -> String {
+        if let (Some(v), Some(idx_v)) = (literal_expr_u64(base), literal_expr_u64(idx)) {
+            if idx_v < 64 {
+                return format!("1'd{}", (v >> idx_v) & 1);
+            }
+        }
+
+        let signed_element = preserve_signed_element && self.index_result_is_sint(base);
+
+        // Vec-of-const param `B[i]`: rewrite to packed part-select
+        // `B[i*W +: W]` since iverilog rejects unpacked-array params.
+        if let ExprKind::Ident(name) = &base.kind {
+            if let Some(elem_ty) = self.vec_params.get(name) {
+                let w = match elem_ty {
+                    TypeExpr::UInt(w) | TypeExpr::SInt(w) => self.emit_expr_str(w),
+                    _ => "1".to_string(),
+                };
+                let i = self.emit_expr_str(idx);
+                let selected = format!("{name}[({i}) * ({w}) +: ({w})]");
+                return if signed_element {
+                    format!("$signed({selected})")
+                } else {
+                    selected
+                };
+            }
+        }
+
+        let b = self.emit_selection_base_str(base);
+        let i = self.emit_expr_str(idx);
+        let selected = format!("{b}[{i}]");
+        if signed_element {
+            format!("$signed({selected})")
+        } else {
+            selected
+        }
+    }
+
+    /// Emit an expression used as the base of a subsequent selection. A
+    /// signed cast on the intermediate selection is semantically unnecessary
+    /// and can make otherwise-valid SV unparseable on Verilator/iverilog.
+    fn emit_selection_base_str(&self, expr: &Expr) -> String {
+        if let ExprKind::Index(base, idx) = &expr.kind {
+            self.emit_index_expr_str(base, idx, false)
+        } else {
+            self.emit_expr_str(expr)
+        }
+    }
+
     /// Bit-width of a `TypeExpr` resolved through the symbol table for
     /// named struct/enum types. Returns `None` if any width sub-expression
     /// is non-literal (parametric) or the named type is unresolved.
@@ -5512,6 +5847,19 @@ impl<'a> Codegen<'a> {
         };
         let n_usize = n as usize;
         let idx_w = crate::width::index_width(n as u64);
+        let element_ty = match self.expr_type_for_codegen(recv) {
+            Some(TypeExpr::Vec(inner, _)) => Some(*inner),
+            _ => None,
+        };
+        let signed_element = matches!(element_ty, Some(TypeExpr::SInt(_)));
+        let elem_at = |i: u32| {
+            let selected = format!("{recv_b}[{i}]");
+            if signed_element {
+                format!("$signed({selected})")
+            } else {
+                selected
+            }
+        };
 
         // Helper: emit an expression with `item` bound to recv[i] and
         // `index` bound to a sized literal. `ident_subst` is a field of
@@ -5521,13 +5869,18 @@ impl<'a> Codegen<'a> {
         let emit_at = |i: u32| -> String {
             let this = self as *const Codegen as *mut Codegen;
             // SAFETY: single-threaded emission; no aliasing.
-            unsafe {
-                (*this)
-                    .ident_subst
-                    .insert("item".to_string(), format!("{recv_b}[{i}]"));
-                (*this)
+            let (saved_item_subst, saved_index_subst) = unsafe {
+                let saved_item_subst = (*this).ident_subst.insert("item".to_string(), elem_at(i));
+                let saved_index_subst = (*this)
                     .ident_subst
                     .insert("index".to_string(), format!("{idx_w}'d{i}"));
+                (saved_item_subst, saved_index_subst)
+            };
+            let saved_item_type = self.local_expr_types.borrow_mut().remove("item");
+            if let Some(ty) = &element_ty {
+                self.local_expr_types
+                    .borrow_mut()
+                    .insert("item".to_string(), ty.clone());
             }
             let result = if let Some(pred) = args.first() {
                 self.emit_expr_str(pred)
@@ -5537,8 +5890,32 @@ impl<'a> Codegen<'a> {
                 String::new()
             };
             unsafe {
-                (*this).ident_subst.remove("item");
-                (*this).ident_subst.remove("index");
+                match saved_item_subst {
+                    Some(value) => {
+                        (*this).ident_subst.insert("item".to_string(), value);
+                    }
+                    None => {
+                        (*this).ident_subst.remove("item");
+                    }
+                }
+                match saved_index_subst {
+                    Some(value) => {
+                        (*this).ident_subst.insert("index".to_string(), value);
+                    }
+                    None => {
+                        (*this).ident_subst.remove("index");
+                    }
+                }
+            }
+            match saved_item_type {
+                Some(ty) => {
+                    self.local_expr_types
+                        .borrow_mut()
+                        .insert("item".to_string(), ty);
+                }
+                None => {
+                    self.local_expr_types.borrow_mut().remove("item");
+                }
             }
             result
         };
@@ -5579,7 +5956,7 @@ impl<'a> Codegen<'a> {
                     return "1'b0".to_string();
                 }
                 (0..n)
-                    .map(|i| format!("({recv_b}[{i}] == {x})"))
+                    .map(|i| format!("({} == {x})", elem_at(i)))
                     .collect::<Vec<_>>()
                     .join(" || ")
             }
@@ -5587,28 +5964,19 @@ impl<'a> Codegen<'a> {
                 if n_usize == 0 {
                     return "0".to_string();
                 }
-                (0..n)
-                    .map(|i| format!("{recv_b}[{i}]"))
-                    .collect::<Vec<_>>()
-                    .join(" | ")
+                (0..n).map(elem_at).collect::<Vec<_>>().join(" | ")
             }
             "reduce_and" => {
                 if n_usize == 0 {
                     return "0".to_string();
                 }
-                (0..n)
-                    .map(|i| format!("{recv_b}[{i}]"))
-                    .collect::<Vec<_>>()
-                    .join(" & ")
+                (0..n).map(elem_at).collect::<Vec<_>>().join(" & ")
             }
             "reduce_xor" => {
                 if n_usize == 0 {
                     return "0".to_string();
                 }
-                (0..n)
-                    .map(|i| format!("{recv_b}[{i}]"))
-                    .collect::<Vec<_>>()
-                    .join(" ^ ")
+                (0..n).map(elem_at).collect::<Vec<_>>().join(" ^ ")
             }
             "find_first" => {
                 // Record the index width so a matching typedef is emitted
@@ -6328,31 +6696,7 @@ impl<'a> Codegen<'a> {
                     }
                 }
             }
-            ExprKind::Index(base, idx) => {
-                if let (Some(v), Some(idx_v)) = (literal_expr_u64(base), literal_expr_u64(idx)) {
-                    if idx_v < 64 {
-                        return format!("1'd{}", (v >> idx_v) & 1);
-                    }
-                }
-                // Vec-of-const param `B[i]`: rewrite to packed part-select
-                // `B[i*W +: W]` since iverilog rejects unpacked-array params.
-                if let ExprKind::Ident(name) = &base.kind {
-                    if let Some(elem_ty) = self.vec_params.get(name) {
-                        let w = match elem_ty {
-                            TypeExpr::UInt(w) | TypeExpr::SInt(w) => self.emit_expr_str(w),
-                            _ => "1".to_string(),
-                        };
-                        let i = self.emit_expr_str(idx);
-                        // The packed param is declared `signed` for SInt
-                        // elements, so the part-select inherits signedness
-                        // without an explicit `$signed()` wrap.
-                        return format!("{name}[({i}) * ({w}) +: ({w})]");
-                    }
-                }
-                let b = self.emit_expr_str(base);
-                let i = self.emit_expr_str(idx);
-                format!("{b}[{i}]")
-            }
+            ExprKind::Index(base, idx) => self.emit_index_expr_str(base, idx, true),
             ExprKind::BitSlice(base, hi, lo) => {
                 if let (Some(v), Some(hi_v), Some(lo_v)) = (
                     literal_expr_u64(base),
@@ -6369,7 +6713,7 @@ impl<'a> Codegen<'a> {
                         return format!("{width}'d{}", (v >> lo_v) & mask);
                     }
                 }
-                let b = self.emit_expr_str(base);
+                let b = self.emit_selection_base_str(base);
                 // Parenthesize complex base expressions to avoid precedence issues.
                 // SynthIdent is a compiler-renamed bare identifier with the same
                 // semantics as Ident — no parens needed (Verilator rejects
@@ -6414,7 +6758,7 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::PartSelect(base, start, width, up) => {
-                let b = self.emit_expr_str(base);
+                let b = self.emit_selection_base_str(base);
                 let s = self.emit_expr_str(start);
                 let w = self.emit_expr_str(width);
                 let op = if *up { "+:" } else { "-:" };
