@@ -1217,45 +1217,53 @@ fn fp8_literal_overflow_rejected() {
     );
 }
 
-/// No implicit conversions between fp8 formats (or fp8 and bf16); the only
-/// v1 escape is .to_fp32(). Int conversions on fp8 are deferred to v2.
+/// No implicit conversions between float formats — mixing them in an
+/// operator stays a type error; the conversion surface (now total: any
+/// float/int source) requires explicit method calls.
 #[test]
-fn fp8_conversion_surface_v1_limits() {
-    let cases: [(&str, &str, &[&str]); 3] = [
-        (
-            "BadMix",
-            "module BadMix\n  port a: in FP8E4M3;\n  port b: in FP8E5M2;\n  port o: out FP8E4M3;\n  comb o = a + b; end comb\nend module BadMix\n",
-            &["FP8E4M3", "FP8E5M2"],
-        ),
-        (
-            "BadBf",
-            "module BadBf\n  port a: in FP8E4M3;\n  port o: out BF16;\n  comb o = a.to_bf16(); end comb\nend module BadBf\n",
-            &["not supported in v1", ".to_fp32()"],
-        ),
-        (
-            "BadInt",
-            "module BadInt\n  port a: in FP8E4M3;\n  port o: out UInt<8>;\n  comb o = a.to_uint<8>(); end comb\nend module BadInt\n",
-            &["not supported in v1", ".to_fp32()"],
-        ),
-    ];
-    for (name, src, needles) in cases {
-        let td = tempfile::tempdir().expect("tempdir");
-        let path = td.path().join(format!("{name}.arch"));
-        std::fs::write(&path, src).unwrap();
-        let out = arch()
-            .arg("check")
-            .arg(&path)
-            .output()
-            .expect("run arch check");
-        assert!(!out.status.success(), "{name} must be a type error");
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        for n in needles {
-            assert!(
-                stderr.contains(n),
-                "{name}: error should contain `{n}`; got:\n{stderr}"
-            );
-        }
-    }
+fn fp8_no_implicit_mixing() {
+    let src = "module BadMix\n  port a: in FP8E4M3;\n  port b: in FP8E5M2;\n  port o: out FP8E4M3;\n  comb o = a + b; end comb\nend module BadMix\n";
+    let td = tempfile::tempdir().expect("tempdir");
+    let path = td.path().join("BadMix.arch");
+    std::fs::write(&path, src).unwrap();
+    let out = arch()
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run arch check");
+    assert!(
+        !out.status.success(),
+        "mixing fp8 formats must be a type error"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("FP8E4M3") && stderr.contains("FP8E5M2"),
+        "error should name both formats; got:\n{stderr}"
+    );
+}
+
+/// The fp8 conversion matrix (v2): fp8<->bf16, fp8<->int, cross-fp8 — all
+/// f32-routed compositions of the proven helpers, each exact or singly
+/// rounded (documented CR argument in spec §3.8). Exact-value TB runs on
+/// the native sim; saturation/NaN/overflow corners included (riscv).
+#[test]
+fn fp8_conversion_matrix_sim() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = arch()
+        .arg("sim")
+        .arg("tests/fp_v1/Fp8Convert.arch")
+        .arg("--tb")
+        .arg("tests/fp_v1/tb_fp8_convert.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("16 pass / 0 fail"),
+        "fp8 conversion matrix failed:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// FP8 SMT equivalence proofs, BOTH --fp-compat profiles. E5M2 is checked

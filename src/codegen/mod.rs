@@ -6510,9 +6510,12 @@ impl<'a> Codegen<'a> {
                         match self.expr_float_fmt(base) {
                             Some("f32") => format!("{narrow}({b})"),
                             Some(t) if t == tgt => b,
-                            // Other sources (bf16, int) are rejected by
-                            // typecheck in v1; route via f32 to stay total.
+                            // BF16 / cross-fp8: exact widen, one narrow — CR.
                             Some("bf16") => format!("{narrow}(arch_bf16_to_f32({b}))"),
+                            Some("e4m3") => format!("{narrow}(arch_e4m3_to_f32({b}))"),
+                            Some("e5m2") => format!("{narrow}(arch_e5m2_to_f32({b}))"),
+                            // Integers: int -> f32 (exact for the fp8-relevant
+                            // range, far below 2^24) -> one fp8 rounding — CR.
                             _ => {
                                 if self.expr_is_signed(base) {
                                     format!("{narrow}(arch_i64_to_f32(64'($signed({b}))))")

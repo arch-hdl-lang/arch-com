@@ -2791,30 +2791,68 @@ impl<'a> FormalCtx<'a> {
                 };
             }
             "to_bf16" | "to_fp8e4m3" | "to_fp8e5m2" => {
-                let (helper, w) = match n {
-                    "to_bf16" => ("arch_f32_to_bf16", 16),
-                    "to_fp8e4m3" => ("arch_f32_to_e4m3", 8),
-                    _ => ("arch_f32_to_e5m2", 8),
+                let (helper, tgt, w) = match n {
+                    "to_bf16" => ("arch_f32_to_bf16", "bf16", 16),
+                    "to_fp8e4m3" => ("arch_f32_to_e4m3", "e4m3", 8),
+                    _ => ("arch_f32_to_e5m2", "e5m2", 8),
                 };
+                // Any float source composes through f32 (widen exact); the
+                // target's narrow is the single rounding.
                 return match recv_tag {
+                    Some(t) if t == tgt => Ok(r),
                     Some("f32") => Ok(SmtTerm {
                         s: format!("({helper} {})", coerce(r, 32, false).s),
                         width: w,
                         signed: false,
                     }),
-                    _ => Err(CompileError::general(
-                        &format!(".{n}() in `arch formal` requires an FP32 receiver — convert via .to_fp32() first"),
+                    Some(src) => Ok(SmtTerm {
+                        s: format!(
+                            "({helper} (arch_{src}_to_f32 {}))",
+                            coerce(r, float_tag_width(src), false).s
+                        ),
+                        width: w,
+                        signed: false,
+                    }),
+                    None => Err(CompileError::general(
+                        &format!(
+                            ".{n}() on an integer is not supported inside `arch formal` properties"
+                        ),
                         span,
                     )),
                 };
             }
             "to_uint" | "to_sint" if recv_tag.is_some() => {
-                return Err(CompileError::general(
-                    &format!(
-                        "float .{n}<N>() is not supported by `arch formal` v2 — compare against float constants instead, or split the design at the conversion boundary"
+                let tag = recv_tag.unwrap();
+                let w = target_w.ok_or_else(|| {
+                    CompileError::general(
+                        &format!(".{n}<N>() requires a constant width argument"),
+                        span,
+                    )
+                })?;
+                // Widen (exact) then the proven saturating f32->int helper;
+                // the helper returns 64 bits already clamped to N.
+                let f32s = if tag == "f32" {
+                    coerce(r, 32, false).s
+                } else {
+                    format!(
+                        "(arch_{tag}_to_f32 {})",
+                        coerce(r, float_tag_width(tag), false).s
+                    )
+                };
+                let conv = if n == "to_sint" {
+                    "arch_f32_to_sint"
+                } else {
+                    "arch_f32_to_uint"
+                };
+                return Ok(SmtTerm {
+                    s: format!(
+                        "((_ extract {} 0) ({conv} {f32s} {}))",
+                        w - 1,
+                        bv_lit(w as u64, 32)
                     ),
-                    span,
-                ));
+                    width: w,
+                    signed: n == "to_sint",
+                });
             }
             _ => {}
         }
