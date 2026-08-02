@@ -1540,6 +1540,30 @@ impl<'a> Codegen<'a> {
                     stage_regs,
                     port_names,
                 );
+                // Float operands dispatch to the emitted helper functions
+                // (mirrors the main emitter's Binary arm; resolution walks
+                // pipeline ports / stage regs / cross-stage refs).
+                if let Some(fmt) = self
+                    .expr_float_fmt(lhs)
+                    .or_else(|| self.expr_float_fmt(rhs))
+                {
+                    let fop = match op {
+                        BinOp::Add => Some("add"),
+                        BinOp::Sub => Some("sub"),
+                        BinOp::Mul => Some("mul"),
+                        BinOp::Eq => Some("eq"),
+                        BinOp::Neq => Some("ne"),
+                        BinOp::Lt => Some("lt"),
+                        BinOp::Gt => Some("gt"),
+                        BinOp::Lte => Some("le"),
+                        BinOp::Gte => Some("ge"),
+                        _ => None,
+                    };
+                    if let Some(fop) = fop {
+                        self.fp_helpers_used.set(true);
+                        return format!("arch_{fmt}_{fop}({l}, {r})");
+                    }
+                }
                 if *op == BinOp::Implies {
                     return format!("({l} |-> {r})");
                 }
@@ -1847,6 +1871,32 @@ impl<'a> Codegen<'a> {
             ExprKind::Binary(op, lhs, rhs) => {
                 let l = self.emit_pipeline_expr_str(lhs, stage_names, stage_regs, port_names);
                 let r = self.emit_pipeline_expr_str(rhs, stage_names, stage_regs, port_names);
+                // Float operands dispatch to the emitted helper functions —
+                // mirrors the main emitter's Binary arm. Resolution covers
+                // pipeline ports, stage regs, and cross-stage `Stage.reg`
+                // reads (expr_float_fmt falls back to the pipeline AST walk
+                // since pipelines have no module_scopes entry).
+                if let Some(fmt) = self
+                    .expr_float_fmt(lhs)
+                    .or_else(|| self.expr_float_fmt(rhs))
+                {
+                    let fop = match op {
+                        BinOp::Add => Some("add"),
+                        BinOp::Sub => Some("sub"),
+                        BinOp::Mul => Some("mul"),
+                        BinOp::Eq => Some("eq"),
+                        BinOp::Neq => Some("ne"),
+                        BinOp::Lt => Some("lt"),
+                        BinOp::Gt => Some("gt"),
+                        BinOp::Lte => Some("le"),
+                        BinOp::Gte => Some("ge"),
+                        _ => None,
+                    };
+                    if let Some(fop) = fop {
+                        self.fp_helpers_used.set(true);
+                        return format!("arch_{fmt}_{fop}({l}, {r})");
+                    }
+                }
                 if *op == BinOp::Implies {
                     return format!("({l} |-> {r})");
                 }

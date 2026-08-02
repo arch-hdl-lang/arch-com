@@ -522,19 +522,6 @@ impl<'a> TypeChecker<'a> {
         self.check_pascal_case(&s.name);
         for field in &s.fields {
             self.check_snake_case(&field.name);
-            // v1: floats are only supported as scalar module signals. A float
-            // inside a struct would reach codegen via FieldAccess, which the
-            // float-op dispatch does not yet resolve — reject rather than
-            // silently emit integer arithmetic on the bit pattern.
-            if type_expr_contains_float(&field.ty) {
-                self.errors.push(CompileError::general(
-                    &format!(
-                        "floating-point types (FP32/BF16/FP8E4M3/FP8E5M2) are not supported in struct fields in v1 (field `{}` of `{}`)",
-                        field.name.name, s.name.name
-                    ),
-                    field.name.span,
-                ));
-            }
         }
     }
 
@@ -574,47 +561,12 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // v1 float restriction: scalar FP32/BF16 signals are supported, but a
-        // float nested inside a Vec is not — `Vec<FP32,N>` element access
-        // (Index) is not yet resolved by the float-op dispatch, so it would
-        // silently emit integer arithmetic. Reject Vec-of-float on every
-        // declared signal type. (Scalar floats pass `is_float` but not the
-        // `Vec(...)` guard below.)
-        let mut float_decls: Vec<(&TypeExpr, Span, String)> = Vec::new();
-        for p in &m.ports {
-            float_decls.push((&p.ty, p.name.span, p.name.name.clone()));
-        }
-        for item in &m.body {
-            match item {
-                ModuleBodyItem::RegDecl(r) => {
-                    float_decls.push((&r.ty, r.name.span, r.name.name.clone()))
-                }
-                ModuleBodyItem::WireDecl(w) => {
-                    float_decls.push((&w.ty, w.name.span, w.name.name.clone()))
-                }
-                ModuleBodyItem::LetBinding(l) => {
-                    if let Some(t) = l.ty.as_ref() {
-                        float_decls.push((t, l.name.span, l.name.name.clone()));
-                    }
-                }
-                _ => {}
-            }
-        }
-        for (ty, span, name) in float_decls {
-            if matches!(ty, TypeExpr::Vec(..)) && type_expr_contains_float(ty) {
-                self.errors.push(CompileError::general(
-                    &format!("floating-point types (FP32/BF16/FP8E4M3/FP8E5M2) inside `Vec` are not supported in v1 (signal `{name}`)"),
-                    span,
-                ));
-            }
-        }
-
         // A float `reg`'s reset value must be a float literal, not an integer
         // literal (`reset rst => 1` would store the bit pattern 0x1, a tiny
         // subnormal — almost never the intent). Catch the common foot-gun.
         for item in &m.body {
             if let ModuleBodyItem::RegDecl(r) = item {
-                if matches!(r.ty, TypeExpr::FP32 | TypeExpr::BF16) {
+                if let Some(tn) = float_slot_type_name(&r.ty) {
                     let val = match &r.reset {
                         RegReset::Explicit(_, _, _, v) => Some(v),
                         RegReset::Inherit(_, v) => Some(v),
@@ -630,11 +582,6 @@ impl<'a> TypeChecker<'a> {
                                     | LitKind::Sized(_, _)
                             )
                         ) {
-                            let tn = if matches!(r.ty, TypeExpr::FP32) {
-                                "FP32"
-                            } else {
-                                "BF16"
-                            };
                             self.errors.push(CompileError::general(
                                 &format!("float `reg {}: {tn}` reset value must be a float literal (e.g. `=> 0.0`), not an integer literal", r.name.name),
                                 v.span,
@@ -654,14 +601,9 @@ impl<'a> TypeChecker<'a> {
             let mut int_lit_float_slots: Vec<(Span, &'static str, String)> = Vec::new();
             for item in &m.body {
                 if let ModuleBodyItem::RegDecl(r) = item {
-                    if matches!(r.ty, TypeExpr::FP32 | TypeExpr::BF16) {
+                    if let Some(tn) = float_slot_type_name(&r.ty) {
                         if let Some(v) = &r.init {
                             if is_bare_int_literal(v) {
-                                let tn = if matches!(r.ty, TypeExpr::FP32) {
-                                    "FP32"
-                                } else {
-                                    "BF16"
-                                };
                                 int_lit_float_slots.push((v.span, tn, r.name.name.clone()));
                             }
                         }
@@ -669,12 +611,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             for p in &m.ports {
-                if matches!(p.ty, TypeExpr::FP32 | TypeExpr::BF16) {
-                    let tn = if matches!(p.ty, TypeExpr::FP32) {
-                        "FP32"
-                    } else {
-                        "BF16"
-                    };
+                if let Some(tn) = float_slot_type_name(&p.ty) {
                     if let Some(ri) = &p.reg_info {
                         if let Some(v) = &ri.init {
                             if is_bare_int_literal(v) {
@@ -3871,7 +3808,13 @@ impl<'a> TypeChecker<'a> {
         let profile = match ta {
             Ty::FP32 => "FP32",
             Ty::BF16 => "BF16",
-            _ => unreachable!("is_float() already restricted ta to FP32/BF16"),
+            // No fp8 registry rows exist (single-cycle fp8 fma closes timing
+            // comfortably — see tests/fp_v1/synth/nangate45); route through
+            // the registry lookup so the user gets the enumerated-miss error
+            // instead of a panic.
+            Ty::FP8E4M3 => "FP8E4M3",
+            Ty::FP8E5M2 => "FP8E5M2",
+            _ => unreachable!("is_float() covers exactly the float Tys above"),
         };
         match crate::pipelined_ops::lookup(name, profile, stages) {
             Ok(_entry) => ta.clone(),
@@ -8514,24 +8457,6 @@ impl<'a> TypeChecker<'a> {
         for arg in &f.args {
             self.check_snake_case(&arg.name);
         }
-        // v1: floats are not supported in module-local functions — function
-        // params/locals are not added to the backend float-op dispatch scope,
-        // so a float `x + y` inside a function would silently emit integer
-        // arithmetic. Reject float signatures rather than miscompile.
-        for arg in &f.args {
-            if type_expr_contains_float(&arg.ty) {
-                self.errors.push(CompileError::general(
-                    &format!("floating-point types (FP32/BF16/FP8E4M3/FP8E5M2) are not supported in function parameters in v1 (parameter `{}` of `{}`)", arg.name.name, f.name.name),
-                    arg.name.span,
-                ));
-            }
-        }
-        if type_expr_contains_float(&f.ret_ty) {
-            self.errors.push(CompileError::general(
-                &format!("floating-point types (FP32/BF16/FP8E4M3/FP8E5M2) are not supported as a function return type in v1 (function `{}`)", f.name.name),
-                f.name.span,
-            ));
-        }
 
         // Build local type environment with args
         let mut local_types: HashMap<String, Ty> = HashMap::new();
@@ -9112,16 +9037,17 @@ fn eval_type_width_expr(e: &Expr) -> Option<u32> {
     }
 }
 
-/// Returns true if `actual` is assignable to `expected` without an explicit cast.
-/// In hardware, narrower unsigned values zero-extend to wider wires.
-/// True if a TypeExpr is, or contains (via Vec nesting), a float type.
-/// Used to reject FP32/BF16 in positions the v1 float-op dispatch can't
-/// resolve (Vec elements, struct fields, function signatures).
-fn type_expr_contains_float(ty: &TypeExpr) -> bool {
+/// Float-format name of a scalar float type, seeing through one Vec level
+/// (`Vec<FP32,N>` -> "FP32"): used by the integer-literal-in-float-slot
+/// foot-gun guards so they cover fp8 and Vec-of-float uniformly.
+fn float_slot_type_name(ty: &TypeExpr) -> Option<&'static str> {
     match ty {
-        TypeExpr::FP32 | TypeExpr::BF16 | TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => true,
-        TypeExpr::Vec(inner, _) => type_expr_contains_float(inner),
-        _ => false,
+        TypeExpr::FP32 => Some("FP32"),
+        TypeExpr::BF16 => Some("BF16"),
+        TypeExpr::FP8E4M3 => Some("FP8E4M3"),
+        TypeExpr::FP8E5M2 => Some("FP8E5M2"),
+        TypeExpr::Vec(elem, _) => float_slot_type_name(elem),
+        _ => None,
     }
 }
 
@@ -9137,6 +9063,8 @@ fn is_bare_int_literal(e: &Expr) -> bool {
     )
 }
 
+/// Returns true if `actual` is assignable to `expected` without an explicit cast.
+/// In hardware, narrower unsigned values zero-extend to wider wires.
 fn types_compatible(expected: &Ty, actual: &Ty) -> bool {
     match (expected, actual) {
         (Ty::UInt(em), Ty::UInt(am)) => am <= em,
