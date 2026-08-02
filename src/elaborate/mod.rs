@@ -970,6 +970,15 @@ fn coerce_narrow_lits_in_expr(
 fn ident_narrow_fmt(e: &Expr, narrow_idents: &HashMap<String, FloatLitFmt>) -> Option<FloatLitFmt> {
     match &e.kind {
         ExprKind::Ident(name) => narrow_idents.get(name).copied(),
+        // Conversion results carry their target format, so a literal
+        // compared/combined with one context-types the same way as a
+        // declared signal: `a.to_bf16() > 1.0`, `x.to_fp8e4m3() + 0.5`.
+        ExprKind::MethodCall(_, m, _) => match m.name.as_str() {
+            "to_bf16" => Some(FloatLitFmt::Bf16),
+            "to_fp8e4m3" => Some(FloatLitFmt::E4m3),
+            "to_fp8e5m2" => Some(FloatLitFmt::E5m2),
+            _ => None,
+        },
         // Vec element read: the map is keyed on the signal name with the
         // ELEMENT format (narrow_fmt_of_type sees through Vec), so `h[i]`
         // coerces literals exactly like the scalar `h` would.
