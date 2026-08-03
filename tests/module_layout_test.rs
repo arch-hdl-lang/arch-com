@@ -19,6 +19,11 @@
 //! (the generic thread -> FSM lowering family extracted from `elaborate::mod`)
 //! -- the same regression class applies to any future split, not just the two
 //! that existed when #770 hit.
+//!
+//! Extended again by the "P4 phase 2c" TLM carve-out to also guard
+//! `src/elaborate/tlm.rs` (the `tlm_method` lowering family -- bus-connect
+//! sugar, target-thread lowering, initiator-call cohort/arbiter/router/
+//! tag-lane synthesis -- extracted from `elaborate::mod`).
 
 use std::path::Path;
 
@@ -42,29 +47,33 @@ fn elaborate_is_not_flattened() {
     );
 }
 
-/// The `elaborate` directory module must have all three of its pieces: the
+/// The `elaborate` directory module must have all four of its pieces: the
 /// orchestrator (`mod.rs`), the extracted param/override/const-eval family
-/// (`params.rs`, PR #768, "P4 phase 2a"), and the extracted thread -> FSM
-/// lowering family (`threads.rs`, PR #771, "P4 phase 2b").
+/// (`params.rs`, PR #768, "P4 phase 2a"), the extracted thread -> FSM
+/// lowering family (`threads.rs`, PR #771, "P4 phase 2b"), and the extracted
+/// TLM (`tlm_method`) lowering family (`tlm.rs`, "P4 phase 2c").
 #[test]
 fn elaborate_directory_module_is_present() {
     for rel in [
         "src/elaborate/mod.rs",
         "src/elaborate/params.rs",
         "src/elaborate/threads.rs",
+        "src/elaborate/tlm.rs",
     ] {
         assert!(
             manifest_path(rel).is_file(),
             "{rel} is missing -- PR #768's elaborate::params split (param \
              resolution, override application, elaborate-side const-eval, \
-             derived-param variant rewriting) and PR #771's elaborate::threads \
+             derived-param variant rewriting), PR #771's elaborate::threads \
              split (lower_threads/lower_module_threads, partition_thread_body_*, \
-             lock/semaphore/arbiter synthesis, wait-state machinery) are both \
-             expected to live here. A missing file means a later change \
-             (typically a merge conflict resolution) silently re-flattened \
-             that split back into elaborate::mod -- see incident: PR #770, \
-             2026-08-02, which did exactly this to the two splits that existed \
-             at the time."
+             lock/semaphore/arbiter synthesis, wait-state machinery), and the \
+             elaborate::tlm split (lower_tlm_connects/lower_tlm_target_threads/ \
+             lower_tlm_initiator_calls, request-arbiter/response-router/tag-lane \
+             synthesis) are all expected to live here. A missing file means a \
+             later change (typically a merge conflict resolution) silently \
+             re-flattened that split back into elaborate::mod -- see incident: \
+             PR #770, 2026-08-02, which did exactly this to the splits that \
+             existed at the time."
         );
     }
 }
