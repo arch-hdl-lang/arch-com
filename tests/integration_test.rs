@@ -27214,14 +27214,22 @@ fn test_780_fixtures_have_no_comb_loop_false_positive() {
 }
 
 #[test]
-fn test_e203_ifu_real_comb_loop_still_flagged_post_780() {
-    // arch#781: a GENUINE cross-instance combinational loop between
-    // `e203_ifu_ifetch` and `e203_ifu_ift2icb` (Verilator's own UNOPTFLAT
-    // fires on the generated SV). Must remain flagged after the #780 fold-
-    // artifact filter — that filter is scoped to same-comb-block sequential
-    // collapsing only; cross-instance edges are always "not grounded" (see
-    // `GraphBuilder::add_edge`), so this SCC can never be misclassified as
-    // an artifact.
+fn test_e203_ifu_group_has_no_comb_loop_false_positive() {
+    // arch#781 was the GENUINE cross-instance combinational loop between
+    // `e203_ifu_ifetch` and `e203_ifu_ift2icb` that the #780 investigation
+    // found alongside the 7 false positives above (Verilator's own
+    // UNOPTFLAT fired on the generated SV — a real design bug, not a
+    // checker artifact). It has SINCE been independently fixed and closed
+    // by PR #785 (`6bb9e7d0`, "break ifu_req_ready<->ifu_rsp_ready comb
+    // loop in Ift2Icb"), landed on `main` while this PR was in flight — so
+    // the e203_ifu group is now expected to be fully clean too, same as
+    // the 7 fixtures above. This regression pin locks that in: the full
+    // corpus sweep after rebasing onto that fix shows ZERO remaining
+    // `combinational feedback` warnings anywhere in the tree (see PR body).
+    //
+    // (Cross-instance real-loop detection ITSELF remains covered
+    // independently by `test_comb_loop_across_two_instances_detected` —
+    // that synthetic case is unaffected by either #785 or this fix.)
     //
     // Shells out to the real `arch` CLI binary (rather than hand-
     // concatenating `include_str!` sources through the library entry
@@ -27246,9 +27254,9 @@ fn test_e203_ifu_real_comb_loop_still_flagged_post_780() {
         .expect("run arch check");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("combinational feedback cycle ("),
-        "expected the real e203_ifu cross-instance comb loop to still be \
-         detected after the #780 fold-artifact filter; stderr:\n{stderr}"
+        !stderr.contains("combinational feedback cycle ("),
+        "e203_ifu group should be comb-loop-clean post arch#785 (#781 \
+         fixed); got stderr:\n{stderr}"
     );
 }
 
