@@ -69,8 +69,30 @@ module e203_ifu_ift2icb
   reg rsp_err_r:   Bool      init 0 reset rst_n => 0;
   reg rsp_instr_r: UInt<32>  init 0 reset rst_n => 0;
 
-  // Backpressure
-  let stall_pipe: Bool = rsp_valid_r & ~ifu_rsp_ready;
+  // Backpressure.
+  //
+  // buf_full gates acceptance of new work (new ifu_req, new ICB cmd, new ICB
+  // rsp) purely by the REGISTERED occupancy of the 1-entry response buffer,
+  // never by the same-cycle value of ifu_rsp_ready (an input wired straight
+  // from the requester's own output, e203_ifu_ifetch.ifu_rsp_ready — which
+  // itself combinationally depends back on this module's ifu_req_ready).
+  // Gating ifu_req_ready on ifu_rsp_ready, as this used to via
+  // `rsp_valid_r & ~ifu_rsp_ready`, creates a same-cycle algebraic loop
+  // across the two modules (arch#781). The real E203 RTL never has this
+  // coupling: e203_ifu_ift2icb.v's request-ready is driven off an internal
+  // `sirv_gnrl_bypbuf` instantiated with the underlying FIFO's
+  // `CUT_READY=1`, whose own comment says plainly: "if CUT_READY is set,
+  // then the back-pressure ready signal will be cut off, and it can only
+  // pass 1 data every 2 cycles" — i.e. the original design deliberately
+  // trades same-cycle drain+refill cut-through for freedom from exactly
+  // this class of comb loop. buf_full/rsp_drain below reproduce that
+  // trade-off: accept-new-work is decided purely from registered state
+  // (buf_full), while rsp_drain (which does read ifu_rsp_ready) is used
+  // only inside the seq block below to decide the buffer's *next* state —
+  // a registered use, not a combinational one, so it does not reintroduce
+  // the loop.
+  let buf_full: Bool = rsp_valid_r;
+  let rsp_drain: Bool = rsp_valid_r & ifu_rsp_ready;
 
   // ── ITCM request path ──────────────────────────────────────────────────
   let itcm_cmd_fire: Bool = ifu2itcm_icb_cmd_valid & ifu2itcm_icb_cmd_ready;
@@ -86,18 +108,18 @@ module e203_ifu_ift2icb
 
   comb
     // Command routing
-    ifu2itcm_icb_cmd_valid = ifu_req_valid & is_itcm_region & ~stall_pipe;
+    ifu2itcm_icb_cmd_valid = ifu_req_valid & is_itcm_region & ~buf_full;
     ifu2itcm_icb_cmd_addr  = fetch_pc[15:0];
 
-    ifu2biu_icb_cmd_valid = ifu_req_valid & is_biu_region & ~stall_pipe;
+    ifu2biu_icb_cmd_valid = ifu_req_valid & is_biu_region & ~buf_full;
     ifu2biu_icb_cmd_addr  = fetch_pc;
 
     // Ready back to IFU
-    ifu_req_ready = (is_itcm_region ? ifu2itcm_icb_cmd_ready : ifu2biu_icb_cmd_ready) & ~stall_pipe;
+    ifu_req_ready = (is_itcm_region ? ifu2itcm_icb_cmd_ready : ifu2biu_icb_cmd_ready) & ~buf_full;
 
     // Response ready
-    ifu2itcm_icb_rsp_ready = ~stall_pipe;
-    ifu2biu_icb_rsp_ready  = ~stall_pipe;
+    ifu2itcm_icb_rsp_ready = ~buf_full;
+    ifu2biu_icb_rsp_ready  = ~buf_full;
 
     // IFU response
     ifu_rsp_valid = rsp_valid_r;
@@ -107,7 +129,7 @@ module e203_ifu_ift2icb
 
   // ── Response pipeline register ─────────────────────────────────────────
   seq on clk rising
-    if ~stall_pipe
+    if ~buf_full
       if itcm_active_r & ifu2itcm_icb_rsp_valid
         rsp_valid_r <= true;
         rsp_err_r   <= ifu2itcm_icb_rsp_err;
@@ -121,6 +143,10 @@ module e203_ifu_ift2icb
         rsp_err_r   <= false;
         rsp_instr_r <= 0;
       end if
+    elsif rsp_drain
+      rsp_valid_r <= false;
+      rsp_err_r   <= false;
+      rsp_instr_r <= 0;
     end if
 
     // Track which path was requested
