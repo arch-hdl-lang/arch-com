@@ -361,6 +361,11 @@ enum Command {
         /// §6.2): `riscv` (default) or `cuda`. Accepted for parity with `build`/`sim`.
         #[arg(long = "fp-compat", default_value = "riscv")]
         fp_compat: String,
+        /// Engine for `assert<bound_err>` numeric error-bound properties
+        /// (currently only `gappa`; requires the gappa binary in PATH or
+        /// $GAPPA_BIN).
+        #[arg(long = "error-engine", default_value = "gappa")]
+        error_engine: String,
     },
 }
 
@@ -1643,6 +1648,7 @@ fn main() -> miette::Result<()> {
             timeout,
             auto_thread_asserts,
             fp_compat,
+            error_engine,
         } => {
             let fp_compat_parsed =
                 arch::FpCompat::parse(&fp_compat).map_err(|e| miette::miette!(e))?;
@@ -1705,6 +1711,7 @@ fn main() -> miette::Result<()> {
                     emit_smt: emit_smt.clone(),
                     timeout,
                     fp_compat: fp_compat_parsed,
+                    error_engine: error_engine.clone(),
                 };
                 let report =
                     formal::run(&ast, &symbols, &args).map_err(|err| ms.report_error(err))?;

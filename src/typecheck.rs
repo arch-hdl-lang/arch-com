@@ -118,6 +118,9 @@ pub struct TypeChecker<'a> {
     /// constructs (`past(x, N)`, `a |=> b`) are only legal inside this
     /// scope; flagged as compile errors elsewhere.
     pub in_sva_context: bool,
+    /// Inside an `assert<bound_err>` property expression — the only place
+    /// the spec builtins `exact()`, `abs()`, `ulp()` are legal.
+    pub in_bound_err: bool,
     /// Per-module map of Vec-of-bus port names → element count. Populated
     /// at the start of check_module so check_stmt can expand indexed
     /// driver-tracking writes (`chans[i].sig = ...`) over all N copies
@@ -141,6 +144,7 @@ impl<'a> TypeChecker<'a> {
             warnings: Vec::new(),
             overload_map: HashMap::new(),
             in_sva_context: false,
+            in_bound_err: false,
             vec_of_bus_ports: HashMap::new(),
             active_params: Vec::new(),
         }
@@ -1296,8 +1300,12 @@ impl<'a> TypeChecker<'a> {
                     // Verify expr is Bool; require a Clock port. Resolve in
                     // SVA context so multi-cycle constructs (`past`, `|=>`)
                     // are legal inside this body and rejected elsewhere.
+                    // `assert<bound_err>` additionally unlocks the spec
+                    // builtins exact()/abs()/ulp().
                     self.in_sva_context = true;
+                    self.in_bound_err = a.engine == crate::ast::AssertEngine::BoundErr;
                     let ty = self.resolve_expr_type(&a.expr, &m.name.name, &local_types);
+                    self.in_bound_err = false;
                     self.in_sva_context = false;
                     if ty != Ty::Bool && ty != Ty::Error && ty != Ty::Todo {
                         self.errors.push(CompileError::general(
@@ -4270,6 +4278,37 @@ impl<'a> TypeChecker<'a> {
                 Ty::Bool
             }
             ExprKind::FunctionCall(name, call_args) => {
+                // Spec builtins for `assert<bound_err>` error-bound
+                // properties: `exact(x)` (the real-valued evaluation of
+                // x's cone), `abs(x)`, `ulp(x)`. Typed as their float
+                // argument; illegal outside bound_err properties.
+                if matches!(name.as_str(), "exact" | "abs" | "ulp") {
+                    if !self.in_bound_err {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "`{name}()` is a spec builtin, legal only inside `assert<bound_err>` properties"
+                            ),
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    if call_args.len() != 1 {
+                        self.errors.push(CompileError::general(
+                            &format!("`{name}(x)` takes 1 argument"),
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    let t = self.resolve_expr_type(&call_args[0], module_name, local_types);
+                    if !t.is_float() && !matches!(t, Ty::Todo | Ty::Error) {
+                        self.errors.push(CompileError::general(
+                            &format!("`{name}(x)` requires a float operand, got {}", t.display()),
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    return t;
+                }
                 // Built-in float intrinsics. `fma(a, b, c)` is a single-rounded
                 // fused multiply-add (a*b + c); all three operands must be the
                 // same float type, result is that type. `is_nan(x)` → Bool.
@@ -5123,7 +5162,9 @@ impl<'a> TypeChecker<'a> {
             let sym = op.to_string();
             match op {
                 BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => {
-                    if lt != rt {
+                    // Inside `assert<bound_err>` the comparison is over ℝ
+                    // (spec-level), so cross-format compares are fine.
+                    if lt != rt && !self.in_bound_err {
                         self.errors.push(CompileError::general(
                             &format!(
                                 "floating-point comparison `{sym}` requires matching types, got {} and {}",
@@ -5136,7 +5177,7 @@ impl<'a> TypeChecker<'a> {
                     return Ty::Bool;
                 }
                 BinOp::Add | BinOp::Sub | BinOp::Mul => {
-                    if lt != rt {
+                    if lt != rt && !self.in_bound_err {
                         self.errors.push(CompileError::general(
                             &format!(
                                 "type mismatch in floating-point `{sym}`: {} vs {} (no implicit float conversion; use .to_fp32()/.to_bf16())",

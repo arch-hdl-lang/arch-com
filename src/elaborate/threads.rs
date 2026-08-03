@@ -1943,6 +1943,7 @@ fn lower_module_threads(
                     let prop = mk_bin(BinOp::ImpliesNext, antecedent, consequent);
                     acc.push(AssertDecl {
                         kind: AssertKind::Assert,
+                        engine: crate::ast::AssertEngine::Solver,
                         name: Some(Ident::new(name, sp)),
                         expr: prop,
                         span: sp,

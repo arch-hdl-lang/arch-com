@@ -1733,3 +1733,99 @@ fn fp_literal_coerces_against_conversion_result() {
         assert!(sv.contains(needle), "missing `{needle}`:\n{sv}");
     }
 }
+
+/// `assume` + `assert<bound_err>` numeric error-bound properties. The
+/// error engine (gappa) proves absolute / relative / ULP bounds over
+/// range-constrained comb float cones — modeling the RTL faithfully
+/// (incl. the VR(f32) double-rounded narrow ops) against the real-valued
+/// spec — and `assume` also constrains the QF_BV solver path. Gated on
+/// BOTH z3 and gappa.
+#[test]
+fn fp_bound_err_props() {
+    fn have(bin: &str) -> bool {
+        std::process::Command::new("which")
+            .arg(bin)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    let gappa_ok = have("gappa")
+        || std::env::var_os("HOME")
+            .map(|h| std::path::Path::new(&h).join("bin/gappa").exists())
+            .unwrap_or(false);
+    if !have("z3") || !gappa_ok {
+        eprintln!("skipping fp_bound_err_props: z3/gappa not available");
+        return;
+    }
+    let out = arch()
+        .arg("formal")
+        .arg("tests/fp_v1/FpBoundErr.arch")
+        .arg("--solver")
+        .arg("z3")
+        .arg("--bound")
+        .arg("2")
+        .output()
+        .expect("run arch formal");
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success() && all.matches("PROVED").count() == 4,
+        "expected 4 PROVED (3 bounds + 1 assumed BV prop):\n{all}"
+    );
+    assert!(
+        all.contains("derived"),
+        "proved bounds should report the derived enclosure:\n{all}"
+    );
+
+    // Honesty: over [-1,1] the dot product cancels — the ULP-relative goal
+    // must come back INCONCLUSIVE (exit 2), never a false proof.
+    let out = arch()
+        .arg("formal")
+        .arg("tests/fp_v1/FpBoundErrCancel.arch")
+        .arg("--solver")
+        .arg("z3")
+        .arg("--bound")
+        .arg("2")
+        .output()
+        .expect("run arch formal");
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "cancelling ULP goal must be inconclusive:\n{all}"
+    );
+    assert!(
+        all.matches("PROVED").count() == 1 && all.contains("INCONCLUSIVE"),
+        "abs bound proves, ulp bound honestly refused:\n{all}"
+    );
+}
+
+/// The spec builtins are fenced: exact()/abs()/ulp() outside an
+/// `assert<bound_err>` property is a type error.
+#[test]
+fn fp_bound_err_builtins_fenced() {
+    let src = "module Fence\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync>;\n  port a: in FP32;\n  port o: out FP32;\n  comb o = exact(a); end comb\nend module Fence\n";
+    let td = tempfile::tempdir().expect("tempdir");
+    let path = td.path().join("Fence.arch");
+    std::fs::write(&path, src).unwrap();
+    let out = arch()
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run arch check");
+    assert!(
+        !out.status.success(),
+        "exact() outside bound_err must be rejected"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("spec builtin"),
+        "error should say it's a spec builtin"
+    );
+}

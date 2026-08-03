@@ -1251,7 +1251,7 @@ impl Parser {
                     // `default seq on <clk> rising|falling;`
                     self.parse_seq_default_decl()?;
                 }
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     body.push(ModuleBodyItem::Assert(self.parse_assert_decl()?));
                 }
                 Some(TokenKind::Function) => {
@@ -3617,12 +3617,34 @@ impl Parser {
                 self.advance();
                 AssertKind::Cover
             }
+            Some(TokenKind::Assume) => {
+                self.advance();
+                AssertKind::Assume
+            }
             _ => {
                 return Err(CompileError::general(
-                    "expected assert or cover",
+                    "expected assert, assume, or cover",
                     self.peek_span(),
                 ))
             }
+        };
+        // Optional engine tag: `assert<bound_err> name: expr;`
+        let engine = if kind == AssertKind::Assert && self.peek_kind() == Some(TokenKind::Lt) {
+            self.advance();
+            let tag = self.expect_ident()?;
+            if tag.name != "bound_err" {
+                return Err(CompileError::general(
+                    &format!(
+                        "unknown assert engine tag `{}` — the only supported tag is `bound_err`",
+                        tag.name
+                    ),
+                    tag.span,
+                ));
+            }
+            self.expect(TokenKind::Gt)?;
+            AssertEngine::BoundErr
+        } else {
+            AssertEngine::Solver
         };
 
         // Optional label: `name :` where `:` is not followed by another `:`
@@ -3641,6 +3663,7 @@ impl Parser {
         let end = self.expect(TokenKind::Semi)?.span;
         Ok(AssertDecl {
             kind,
+            engine,
             name,
             expr,
             span: start.merge(end),
@@ -3995,7 +4018,7 @@ impl Parser {
                     items.push(GenItem::TlmConnect(self.parse_tlm_connect()?));
                 }
                 Some(TokenKind::Thread) => items.push(GenItem::Thread(self.parse_thread_block()?)),
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     items.push(GenItem::Assert(self.parse_assert_decl()?));
                 }
                 Some(TokenKind::Seq) => {
@@ -4069,7 +4092,7 @@ impl Parser {
                     items.push(GenItem::TlmConnect(self.parse_tlm_connect()?));
                 }
                 Some(TokenKind::Thread) => items.push(GenItem::Thread(self.parse_thread_block()?)),
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     items.push(GenItem::Assert(self.parse_assert_decl()?));
                 }
                 Some(TokenKind::Wire) => items.push(GenItem::Wire(self.parse_wire_decl()?)),
@@ -5075,7 +5098,7 @@ impl Parser {
                 _ if self.check_contextual("state") => {
                     states.push(self.parse_state_body()?);
                 }
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
@@ -5256,7 +5279,7 @@ impl Parser {
                 Some(TokenKind::Stall) => stall_conds.push(self.parse_stall_decl()?),
                 Some(TokenKind::Flush) => flush_directives.push(self.parse_flush_decl()?),
                 Some(TokenKind::Forward) => forward_directives.push(self.parse_forward_decl()?),
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
@@ -5477,7 +5500,7 @@ impl Parser {
                 }
                 _ if self.check_param() => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
@@ -5824,7 +5847,7 @@ impl Parser {
                 Some(TokenKind::Init) => {
                     init = Some(self.parse_ram_init()?);
                 }
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
@@ -6093,7 +6116,7 @@ impl Parser {
         while !self.check_end_of(TokenKind::Cam) {
             match self.peek_kind() {
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
@@ -6214,7 +6237,7 @@ impl Parser {
         while !self.check_end_of(TokenKind::Counter) {
             match self.peek_kind() {
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
@@ -6366,7 +6389,7 @@ impl Parser {
                 Some(TokenKind::Hook) => {
                     hook = Some(self.parse_arbiter_hook()?);
                 }
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
@@ -6743,7 +6766,7 @@ impl Parser {
                     }
                     self.eat(TokenKind::Semi);
                 }
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
@@ -7121,7 +7144,7 @@ impl Parser {
                     }
                 }
                 Some(TokenKind::Op) => ops.push(self.parse_op_decl()?),
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
@@ -7225,7 +7248,7 @@ impl Parser {
                     self.eat(TokenKind::Semi);
                 }
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
-                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) | Some(TokenKind::Assume) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {

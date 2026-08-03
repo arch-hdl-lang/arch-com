@@ -2171,6 +2171,7 @@ fn subst_wire_decl(w: &WireDecl, var: &str, val: i64) -> WireDecl {
 fn subst_assert(a: &AssertDecl, var: &str, val: i64) -> AssertDecl {
     AssertDecl {
         kind: a.kind.clone(),
+        engine: a.engine,
         name: a.name.as_ref().map(|n| subst_ident(n, var, val)),
         expr: subst_expr(a.expr.clone(), var, val),
         span: a.span,
