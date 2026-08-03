@@ -4,7 +4,45 @@ Captured from the tech-debt review on `feature/regfile-latch-flops-config`. Six
 refactors, ordered by ROI / risk. Items 1–3 are pure cleanup (no design
 choices); items 4–6 want a design discussion before scheduling.
 
-## Status snapshot
+## Status update (2026-08-03)
+
+This doc went stale: items #1, #2, #3, and #5 (both phases) shipped the same
+week they were opened, but nobody came back to flip the status markers below
+or update the "Status snapshot" line counts, which still describe the
+2026-04-28 pre-refactor state. That staleness caused a real duplicate-work
+near-miss — an agent was tasked on 2026-08-03 to "execute Phase 3a: the
+CombStmt/Stmt merge" against this doc and against `project_refactor_plan.md`
+(same problem, same staleness) before discovering via `git log` that item #5
+had been done for over three months. Findings from that pass, folded into the
+per-item sections below:
+
+- **#1 DONE** — `src/width.rs` exists (`clog2`, `index_width`); landed via
+  PR #207 (`aa4e4713`, 2026-04-28).
+- **#2 DONE** — `src/codegen.rs` monolith is gone; `src/codegen/` now holds
+  14 per-construct files. First installment landed via commit `6bf689bb`
+  (2026-04-28); the doc's own follow-up list (counter/arbiter/ram/cam/fifo/
+  fsm/pipeline/linklist/module) is fully checked off in the current tree.
+- **#3 DONE** — `ConstructCommon::param_int` / `resolve_count_expr` exist in
+  `src/ast.rs` (~line 1893).
+- **#4 NOT independently verified this pass** — the named target functions
+  now live in their post-#2-split files (e.g. `emit_module` →
+  `src/codegen/module.rs`, `cpp_expr_inner` → `src/sim_codegen/expr_codegen.rs`)
+  but nobody re-measured whether they're under the 300-line success
+  criterion. Re-check line counts before treating this as blocking anything.
+- **#5 DONE (both phases)** — see the item below; full evidence and PR list
+  inline.
+- **#6 STARTED, NOT COMPLETE** — `pub trait Construct` exists in `src/ast.rs`
+  (~line 1513), explicitly labeled "Phase 1 (this PR) covers only the
+  always-applicable accessors... Future PRs will add pass methods
+  (`typecheck`, `emit_sv`, `emit_sim`, …) one at a time." `src/constructs/`
+  does not exist yet — constructs have not been migrated off the `Item::*`
+  match dispatch. Treat #6 as in-progress, not done.
+
+The line counts in "Status snapshot" below were not recomputed as part of
+this pass (out of scope for the #5 task that triggered this update) — treat
+every number in that paragraph as pre-refactor history, not current fact.
+
+## Status snapshot (as of 2026-04-28 — see status update above, now stale)
 
 `src/codegen.rs` 9.3k lines, `src/sim_codegen/mod.rs` 6.7k, `parser.rs` 5.7k,
 `elaborate.rs` 5.4k, `typecheck.rs` 5.2k. Six functions over 400 lines (largest:
@@ -128,10 +166,42 @@ arms. Tests green.
 
 ## #5 — Merge `Stmt` / `CombStmt` (`ThreadStmt` stays separate)
 
-**Phase 5a status (2026-04-28): DONE.** `ForLoop<S>`, `MatchArm<S>`, `MatchStmt<S>` are now generic; `CombStmt::For` carries `ForLoop<CombStmt>` and `CombStmt::MatchExpr` carries `MatchStmt<CombStmt>`. The cross-delegation in `check_comb_stmt` is gone — comb For / Match bodies now type-check under comb semantics. Caught a real regression: assigning to a `reg` from a comb-block for-loop now fails type-check (it used to slip through and only get caught by Verilator's "blocking assign to reg in always_comb" warning). Phase 5b (full enum collapse) is queued but not blocking.
+**STATUS (2026-08-03): DONE — both phases shipped 2026-04-28, same day this
+item was opened.** Confirmed via `git log`: `CombStmt` no longer exists as a
+type (zero references outside historical doc comments in `ast.rs`); `Stmt` is
+the single unified enum described in "Scope" below; `BlockKind` (typecheck)
+and `AssignCtx` (codegen) are both live and used exactly as specified.
+Shipped as four sequential PRs plus one same-day follow-up fix:
 
+- `fd44b8c2` / PR #202 (`refactor/stmt-bodies-generic`) — generalize
+  `ForLoop<S>` / `MatchArm<S>` / `MatchStmt<S>` (this is "Phase 5a" below).
+- `bd99ca16` / PR #203 (`refactor/stmt-merge-5b`) — drop the `CombStmt` enum
+  (Phase 5b part 1).
+- `f7b0ba5a` / PR #204 (`refactor/stmt-merge-5b-part2`) — unify the
+  codegen reg/comb walkers under `AssignCtx` (Phase 5b part 2).
+- `e58b7c28` / PR #205 (`refactor/stmt-merge-5b-part3`) — unify the
+  typecheck reg/comb walkers via `BlockKind` (Phase 5b part 3); this is
+  where `check_reg_stmt` / `check_comb_stmt` became thin wrappers around one
+  `check_stmt(..., block_kind: BlockKind, ...)`.
+  Read: `src/typecheck.rs` — `check_stmt`.
+- `aada8ccd` (Phase 5b part 4, same day, direct-to-main) — sim_codegen
+  comb match-arm full recurse + walker collapse.
 
-**Why.** `Stmt` (seq blocks) and `CombStmt` (comb blocks) share ~85% of their
+Net effect on `ast.rs`: `Stmt` carries `Assign(RegAssign)` where
+`RegAssign = Assign` and `CombAssign = Assign` are now both aliases for one
+struct; `IfElse = IfElseOf<Stmt>` (the doc comments' `CombIfElse` /
+`CombMatch` aliases named in "Scope" below were never actually introduced —
+the collapse went straight to the single names). `src/codegen/mod.rs` and
+`src/codegen/module.rs` use `AssignCtx::{Blocking, NonBlocking}` in one
+`emit_stmt` walker instead of parallel comb/seq emitters.
+
+**Known residual cleanup (not done, low priority, not code-behavior-affecting):**
+a handful of doc comments in `src/ast.rs` (`ForLoop`, `MatchStmt`, `IfElseOf`)
+still describe the pre-collapse `ForLoop<CombStmt>` / `MatchStmt<CombStmt>` /
+`CombIfElse` / `CombMatch` shapes as if those types exist. They don't anymore.
+Harmless (comments only) but worth a follow-up sweep.
+
+**Why (historical — the problem this solved).** `Stmt` (seq blocks) and `CombStmt` (comb blocks) share ~85% of their
 variants. The shared types `ForLoop` and `MatchArm` carry `body: Vec<Stmt>`,
 which forces `check_comb_stmt` to delegate to `check_reg_stmt` for for-loop and
 match-arm bodies — comb code gets type-checked as if it were seq code in
@@ -181,6 +251,12 @@ in shared types affects everything that constructs or walks `ForLoop` /
 `check_reg_stmt` for For/Match bodies. `Stmt` and `CombStmt` are either one
 type or thin aliases. 217/217 tests green.
 
+**MET.** `check_comb_stmt` / `check_reg_stmt` are both now thin
+`BlockKind`-parameterized wrappers around one `check_stmt`; `CombStmt` no
+longer exists as a type at all (stronger than the "thin alias" bar this
+criterion set). See the STATUS block at the top of this item for PR
+references.
+
 ---
 
 ## #6 — `trait Construct` to centralize the per-construct dispatch
@@ -220,12 +296,19 @@ of it after each later refactor.
 
 ## Recommended order
 
-1. (today) **#1 + #3** — clog2/width + param_int methods. ~6 hours combined.
-2. (this week) **#5a** — generalize `ForLoop<S>` / `MatchArm<S>` + `BlockKind`.
-3. (next week) **#2** — split codegen.rs.
-4. (after) **#5b** — collapse `CombStmt` into `Stmt`.
-5. (after) **#4** — split mega-functions one-PR-at-a-time.
-6. (later) **#6** — `trait Construct` redesign.
+1. ~~(today) **#1 + #3** — clog2/width + param_int methods.~~ **DONE 2026-04-28.**
+2. ~~(this week) **#5a** — generalize `ForLoop<S>` / `MatchArm<S>` + `BlockKind`.~~ **DONE 2026-04-28.**
+3. ~~(next week) **#2** — split codegen.rs.~~ **DONE 2026-04-28.**
+4. ~~(after) **#5b** — collapse `CombStmt` into `Stmt`.~~ **DONE 2026-04-28.**
+5. (after) **#4** — split mega-functions one-PR-at-a-time. Line counts not
+   re-verified since the #2 split moved these functions to new files —
+   re-measure before assuming this is still open.
+6. (in progress) **#6** — `trait Construct` redesign. Phase 1 (accessor
+   methods only) has landed on `Item` in `src/ast.rs`; per-pass method
+   migration (`typecheck`/`emit_sv`/`emit_sim`/`emit_formal`) and the
+   `src/constructs/` split have not started.
 
-Items 1–5 unblock #6 by reducing the per-construct surface. Items 1, 3, 5a
-touch shared types and should land before any new construct work.
+Items 1–5 shipped inside 24 hours of this doc's original authoring (all on
+2026-04-28) — this doc simply never got its status markers updated
+afterward, which is what the 2026-08-03 status update above is for. Only #4
+and #6 remain open work.
