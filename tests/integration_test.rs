@@ -26632,6 +26632,149 @@ fn test_comb_loop_fsm_output_default_expr_deps_included() {
     );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Pre-req for arch#709 follow-up (promotion of the whole-design comb-loop
+// warning to an error): a same-comb-block sequential-fold reduction
+// (`x = <identity>; x = x <op> t0; x = x <op> t1; …`, the exact shape the
+// `shared(or)`/`shared(and)` thread lowering emits into one `always_comb`)
+// is last-write-wins blocking-assignment dataflow, NOT hardware feedback —
+// `scan_assignments_inner` must not fabricate a self-edge for an in-block
+// read-after-write. A read-BEFORE-any-in-block-write of the same signal is
+// still a genuine self-dependency and must still be flagged.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_comb_loop_inblock_read_after_write_fold_not_flagged() {
+    // Minimal hand-written repro of the fold shape (identity default, then
+    // two guarded `x = x <op> in;` re-assignments to the SAME wire, nested
+    // in independent `if` blocks — exactly what the shared(or) thread
+    // lowering emits). No earlier version of this check should warn; this
+    // pins the fix.
+    let source = r#"
+        module M
+          port c0: in UInt<1>;
+          port c1: in UInt<1>;
+          port i0: in UInt<1>;
+          port i1: in UInt<1>;
+          port o: out UInt<1>;
+          wire x: UInt<1>;
+          comb
+            x = 0;
+            if c0
+              x = x or i0;
+            end if
+            if c1
+              x = x or i1;
+            end if
+            o = x;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        cycle_msgs.is_empty(),
+        "sequential in-block fold (x = 0; x = x or i0; x = x or i1;) is \
+         blocking-assignment dataflow, not feedback — must not warn; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_comb_loop_read_before_first_inblock_write_still_flagged() {
+    // Dual of the above: `x` is read on the RHS of its OWN first (and only)
+    // assignment in the block, with no earlier write establishing an
+    // in-block value. There is no register to break this dependency on
+    // itself — a genuine combinational self-loop that must still warn.
+    let source = r#"
+        module M
+          port i: in UInt<1>;
+          port o: out UInt<1>;
+          wire x: UInt<1>;
+          comb
+            x = x and i;
+            o = x;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        !cycle_msgs.is_empty(),
+        "x = x and i; with no earlier in-block write of x is a genuine \
+         self-loop and must still be flagged; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_comb_loop_mutually_exclusive_branch_write_not_promoted() {
+    // A write to `x` in ONE arm of an if/else must NOT be treated as
+    // "already written" for a self-read of `x` in the OTHER (mutually
+    // exclusive) arm — that read sees x's pre-block value on the path
+    // where the write-arm did not execute, which is a genuine self-loop.
+    // Guards against an unsound over-generalization of the fold fix.
+    let source = r#"
+        module M
+          port c: in UInt<1>;
+          port i: in UInt<1>;
+          port o: out UInt<1>;
+          wire x: UInt<1>;
+          comb
+            if c
+              x = i;
+            else
+              x = x and i;
+            end if
+            o = x;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        !cycle_msgs.is_empty(),
+        "else-arm reads x with no write on that path (the then-arm's write \
+         is on a mutually exclusive path) — must still be flagged; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_shared_reduction_fixtures_have_no_comb_loop_false_positive() {
+    // End-to-end regression on the two real fixtures that surfaced this
+    // false positive in the pre-#775 full-corpus warning sweep: threads
+    // driving a `shared(or)`/`shared(and)` port lower to a sequential fold
+    // inside one always_comb block in the synthesized `_threads` submodule
+    // ("_threads.r_ready -> _threads.r_ready" / "...all_ready -> ..."),
+    // which is not real hardware feedback.
+    for source in [
+        include_str!("thread/shared_reduction.arch"),
+        include_str!("thread/shared_and_reduction.arch"),
+    ] {
+        let ws = comb_loop_warnings(source);
+        let cycle_msgs: Vec<_> = ws
+            .iter()
+            .filter(|m| m.contains("combinational feedback cycle ("))
+            .collect();
+        assert!(
+            cycle_msgs.is_empty(),
+            "shared-reduction thread lowering must not fabricate a comb-loop \
+             warning from its in-block fold; got: {:?}",
+            ws
+        );
+    }
+}
+
 // ─── multicycle reg annotation (Phase A) ─────────────────────────────────────
 //
 // Parse + AST + SDC emission only. Phase B will add input-feeding-tree
