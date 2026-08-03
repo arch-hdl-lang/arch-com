@@ -1829,3 +1829,28 @@ fn fp_bound_err_builtins_fenced() {
         "error should say it's a spec builtin"
     );
 }
+
+/// Negative float literals context-type in narrow slots: `-1.5` parses as
+/// Neg(Float) and previously never coerced anywhere (typed let, reset,
+/// compares, range assumes all errored with "expected BF16, found FP32").
+#[test]
+fn fp_negative_literal_coercion() {
+    let src = "module NegLit\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync>;\n  port a: in FP8E4M3;\n  port o: out BF16;\n  port g: out Bool;\n  let x: BF16 = -1.5;\n  reg r: BF16 reset rst => -0.5;\n  seq on clk rising\n    r <= r;\n  end seq\n  comb o = x + r; end comb\n  comb g = a >= -1.0; end comb\nend module NegLit\n";
+    let td = tempfile::tempdir().expect("tempdir");
+    let path = td.path().join("NegLit.arch");
+    std::fs::write(&path, src).unwrap();
+    let out = arch()
+        .arg("build")
+        .arg(&path)
+        .output()
+        .expect("run arch build");
+    assert!(
+        out.status.success(),
+        "negative narrow literals must coerce:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let sv = std::fs::read_to_string(td.path().join("NegLit.sv")).unwrap();
+    for needle in ["16'hBFC0", "16'hBF00", "arch_e4m3_ge(a, 8'hB8)"] {
+        assert!(sv.contains(needle), "missing `{needle}`:\n{sv}");
+    }
+}

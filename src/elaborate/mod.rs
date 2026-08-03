@@ -907,6 +907,24 @@ fn coerce_narrow_reset(reset: &mut RegReset, fmt: FloatLitFmt, errors: &mut Vec<
 /// largest finite is a compile error (runtime overflow behavior depends on
 /// `--fp-compat`, so a source constant must not fold profile-dependently).
 fn coerce_narrow_lit(e: &mut Expr, fmt: FloatLitFmt, errors: &mut Vec<CompileError>) {
+    // Negative literals: `-1.5` parses as Neg(Float). Fold the sign into
+    // the value and coerce the whole node (the encoders carry the sign in
+    // the bit pattern), so `let x: BF16 = -1.5;`, `reset rst => -1.0`, and
+    // range assumes like `a >= -1.0` all context-type.
+    if let ExprKind::Unary(crate::ast::UnaryOp::Neg, inner) = &e.kind {
+        if let ExprKind::Literal(LitKind::Float(bits)) = &inner.kind {
+            let bits = *bits;
+            let mut folded = Expr::new(
+                ExprKind::Literal(LitKind::Float((-f64::from_bits(bits)).to_bits())),
+                e.span,
+            );
+            coerce_narrow_lit(&mut folded, fmt, errors);
+            if matches!(folded.kind, ExprKind::Literal(LitKind::TypedFloat(_, _))) {
+                *e = folded;
+            }
+            return;
+        }
+    }
     if let ExprKind::Literal(LitKind::Float(bits)) = &e.kind {
         let v = f64::from_bits(*bits);
         let rounded: Option<u64> = match fmt {
