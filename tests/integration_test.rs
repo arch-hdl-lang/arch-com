@@ -26775,6 +26775,478 @@ fn test_shared_reduction_fixtures_have_no_comb_loop_false_positive() {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #780: comb-graph granularity over-approximation.
+//
+// `scan_assignments_inner`'s base-name collapsing (bus-of-Vec field access
+// falling back to whole-port granularity, and `for`-loop bodies walked once
+// — textually — to represent every iteration) fabricated false 2-node
+// feedback cycles for several real, acyclic fixtures. The fix has two parts:
+//
+//   1. Class 1 (bus-of-Vec field granularity): `collect_expr_idents_bus` /
+//      `lhs_base_name_bus` now unwrap a `FieldAccess` base through `Index`
+//      wrappers (`peel_index_to_ident`), so `m[i].ready` resolves to the
+//      field-qualified node `m.ready` — same granularity as a bare bus
+//      port's `s.aw_ready` — instead of collapsing to the whole-Vec `m`.
+//
+//   2. Classes 2-6 (Vec-index / bit-slice / `for`-loop-iteration / cond_stack
+//      collapsing): `add_edge_grounded` + `GraphBuilder::is_fold_artifact`
+//      classify an SCC as a same-execution sequential-fold artifact — NOT a
+//      real cycle — when EVERY edge internal to it was added from a source
+//      identifier already assigned earlier in the same linear (program-
+//      order) walk of one comb block. Blocking-assignment code is
+//      inherently acyclic unless some identifier is read before EVER being
+//      established anywhere reachable in program order; a base-name-
+//      collapsed node can still *look* cyclic purely from conflating
+//      multiple sequential (re-)assignments, or several `for`-loop
+//      iterations walked once, into one graph node. This applies uniformly
+//      regardless of whether the false edge came from a direct RHS read
+//      (`gf_mul8`, `cvdp_prbs_gen`, `onebit_ecc`, `t_hamming_tx`) or a
+//      shared `if`-condition read (`prim_max_find`,
+//      `programmable_interrupt_controller`) — no per-class node-key
+//      refinement (Vec-element / bit-position keys) was needed once the
+//      fold-artifact filter is in place.
+//
+// Both mechanisms are edge-local or SCC-local refinements — never a change
+// to which edges represent genuine cross-instance / `let`-binding
+// dependencies (those are always "not grounded", see `add_edge` — so a real
+// cross-instance loop, e.g. the #781 E203 bug, is untouched) — and a
+// same-name read genuinely BEFORE any establishing write (the classic
+// `x = x + 1;`, or an overlapping bit-slice self-read like `x[3:0] = f(x[2])`
+// on first touch) still produces an ungrounded edge and stays flagged.
+//
+// Each class below is tested in BOTH directions: a reduced false-positive
+// shape (must NOT warn) and a true-cycle shape in the SAME family (must
+// still warn), followed by end-to-end coverage on the 7 real fixtures the
+// issue's full-corpus sweep found.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_vec_of_bus_field_through_index_not_flagged() {
+    // Class 1 false positive: a per-lane `Vec<Bus,N>` passthrough — each
+    // lane forwards `m[i]` straight to `o[i]` field-by-field (the
+    // Fx9MiniFabric shape). `m[i].ready`/`o[i].ready` etc. must resolve to
+    // field-qualified nodes (`m.ready`, `o.ready`, …), not collapse to the
+    // whole-Vec `m`/`o` — six genuinely distinct flattened SV signals, a
+    // straight-line dependency with no real feedback.
+    let source = r#"
+        bus BusVr
+          valid: out Bool;
+          ready: in  Bool;
+          data:  out UInt<8>;
+        end bus BusVr
+
+        module M
+          port m: target    Vec<BusVr, 2>;
+          port o: initiator Vec<BusVr, 2>;
+          comb
+            m[0].ready = o[0].ready;
+            o[0].valid = m[0].valid;
+            o[0].data  = m[0].data;
+            m[1].ready = o[1].ready;
+            o[1].valid = m[1].valid;
+            o[1].data  = m[1].data;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        cycle_msgs.is_empty(),
+        "Vec<Bus,N> per-lane field passthrough must not collapse to a \
+         whole-Vec false cycle; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_vec_of_bus_field_through_index_real_cycle_still_flagged() {
+    // Dual of the above: a GENUINE mutual dependency between two DIFFERENT
+    // bus-field nodes on the SAME lane (`m[0].ready` and `o[0].valid`,
+    // neither ever established beforehand) must still be flagged — field
+    // granularity must not blind the detector to a real cross-field loop.
+    let source = r#"
+        bus BusVr
+          valid: out Bool;
+          ready: in  Bool;
+        end bus BusVr
+
+        module M
+          port m: target    Vec<BusVr, 1>;
+          port o: initiator Vec<BusVr, 1>;
+          comb
+            m[0].ready = o[0].valid;
+            o[0].valid = m[0].ready;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        !cycle_msgs.is_empty(),
+        "m[0].ready <-> o[0].valid is a genuine, never-grounded mutual \
+         dependency and must still be flagged; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_for_loop_vec_index_fold_chain_not_flagged() {
+    // Class 2 false positive: the gf_mul8 shape — a `for`-loop unrolls to N
+    // combinational stages threading a running value through TWO Vec
+    // wires (`sh[i]` feeds `a[i+1]`, `a[i]` feeds `sh[i]`). Walked once
+    // (not per-iteration), this collapses to a naive `sh -> a -> sh`
+    // 2-node cycle; it is really a linear a[0]->sh[0]->a[1]->sh[1]->...
+    // chain with zero real feedback.
+    let source = r#"
+        module M
+          port a_in: in UInt<8>;
+          port o: out UInt<8>;
+          wire p: Vec<UInt<8>, 3>;
+          wire a: Vec<UInt<8>, 3>;
+          wire sh: Vec<UInt<8>, 2>;
+          comb
+            p[0] = 0;
+            a[0] = a_in;
+            for i in 0..1
+              p[i + 1] = p[i] ^ a[i];
+              sh[i]    = a[i];
+              a[i + 1] = sh[i];
+            end for
+            o = p[2];
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        cycle_msgs.is_empty(),
+        "sh[i]/a[i+1] running-fold chain through a for-loop must not \
+         fabricate a sh <-> a cycle; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_direct_rhs_mutual_read_before_write_still_flagged() {
+    // Dual of the above, minimal form (no for-loop needed): `p = q and i;
+    // q = p and i;` — `q` is read on the RHS of `p`'s assignment BEFORE `q`
+    // is EVER written anywhere in the block. This is the genuine 2-hop
+    // generalization of `x = x + 1;` (arch#780's grounded-edge filter must
+    // not suppress it: at least one internal edge of the {p,q} SCC — the
+    // q -> p edge — has an ungrounded source).
+    let source = r#"
+        module M
+          port i: in UInt<1>;
+          port o: out UInt<1>;
+          wire p: UInt<1>;
+          wire q: UInt<1>;
+          comb
+            p = q and i;
+            q = p and i;
+            o = q;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        !cycle_msgs.is_empty(),
+        "q is read while never-yet-written — a genuine self-referential \
+         2-hop loop — and must still be flagged; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_two_phase_bitslice_relay_through_for_loops_not_flagged() {
+    // Class 2/3 false positive: the onebit_ecc/t_hamming_tx shape — a
+    // `for`-loop FULLY establishes `x` bit-by-bit, a second (nested)
+    // `for`-loop reduces `x`'s bits into `y`, and a THIRD `for`-loop writes
+    // `y`'s bits back into (disjoint) positions of `x`. Naively this looks
+    // like `x -> y -> x`; it is really a one-way relay
+    // (a_in -> x_v1 -> y -> x_v2), acyclic. Exercises `ever_written`
+    // propagating out of a `for`-loop body so the SECOND loop sees `x` (and
+    // the third loop sees `y`) as already grounded.
+    let source = r#"
+        module M
+          port a_in: in UInt<4>;
+          port o: out UInt<4>;
+          wire x: UInt<4>;
+          wire y: UInt<2>;
+          comb
+            x = 0;
+            for i in 0..3
+              x[i:i] = a_in[i:i];
+            end for
+            for j in 0..1
+              y[j:j] = 0;
+              for k in 0..3
+                y[j:j] = y[j:j] ^ x[k:k];
+              end for
+            end for
+            for l in 0..1
+              x[l:l] = y[l:l];
+            end for
+            o = x;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        cycle_msgs.is_empty(),
+        "two-phase bit-slice relay (x fully established, then y computed \
+         from x, then written back to disjoint bits of x) must not \
+         fabricate an x <-> y cycle; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_for_loop_cond_stack_running_fold_not_flagged() {
+    // Class 5/6 false positive: the prim_max_find /
+    // programmable_interrupt_controller shape — a `for`-loop body has ONE
+    // `if` condition reading BOTH `m_val` and `m_has` (a running-max
+    // comparison), with a then-only body writing both. Both accumulators
+    // are grounded by an unconditional init BEFORE the loop, so the
+    // apparent `m_has <-> m_val` mutual dependency is a same-execution
+    // running fold across iterations, not real feedback.
+    let source = r#"
+        module M
+          port vals: in Vec<UInt<8>, 4>;
+          port valid: in UInt<4>;
+          port max_val: out UInt<8>;
+          port has_max: out Bool;
+          wire m_val: UInt<8>;
+          wire m_has: Bool;
+          comb
+            m_val = 0;
+            m_has = false;
+            for i in 0..3
+              if valid[i:i] == 1
+                if (~m_has) | (vals[i] > m_val)
+                  m_val = vals[i];
+                  m_has = true;
+                end if
+              end if
+            end for
+            max_val = m_val;
+            has_max = m_has;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        cycle_msgs.is_empty(),
+        "grounded running-max fold (m_val/m_has initialized before the \
+         loop) must not fabricate an m_has <-> m_val cycle; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_for_loop_cond_stack_ungrounded_fold_still_flagged() {
+    // Dual of the above: remove the pre-loop `m_val`/`m_has` initializers.
+    // The FIRST read of `m_has` (in the inner if's condition, feeding
+    // `m_val`'s write) now has no earlier establishing write anywhere — a
+    // genuine unresolved mutual dependency — and must still be flagged.
+    let source = r#"
+        module M
+          port vals: in Vec<UInt<8>, 4>;
+          port valid: in UInt<4>;
+          port max_val: out UInt<8>;
+          port has_max: out Bool;
+          wire m_val: UInt<8>;
+          wire m_has: Bool;
+          comb
+            for i in 0..3
+              if valid[i:i] == 1
+                if (~m_has) | (vals[i] > m_val)
+                  m_val = vals[i];
+                  m_has = true;
+                end if
+              end if
+            end for
+            max_val = m_val;
+            has_max = m_has;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        !cycle_msgs.is_empty(),
+        "without the pre-loop grounding init, m_has/m_val's mutual \
+         condition-read IS a genuine unresolved loop and must still be \
+         flagged; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_overlapping_bitslice_self_read_on_first_touch_still_flagged() {
+    // Acceptance-criteria regression pin: "write x[3:0], read x[2]" — a
+    // bit-slice write whose own condition reads an OVERLAPPING bit
+    // position of the SAME never-yet-written signal — is a genuine
+    // self-loop (equivalent to `x = x + 1;` on first touch) and must stay
+    // flagged. This exercises the pre-existing (`#783`, unmodified by
+    // #780) same-name self-check directly — arch#780 deliberately does
+    // NOT add bit-position-level node keys (would need full interval-
+    // overlap merging for wide ranges to stay sound — see
+    // `GraphBuilder::is_fold_artifact`'s doc comment); base-name collapse
+    // here is exactly what keeps this case correctly conservative.
+    let source = r#"
+        module M
+          port o: out UInt<4>;
+          wire x: UInt<4>;
+          comb
+            x[3:0] = (x[2:2] == 1) ? 4'hF : 4'h0;
+            o = x;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        !cycle_msgs.is_empty(),
+        "x[3:0] read via x[2:2] with no earlier establishing write is a \
+         genuine self-loop and must still be flagged; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_disjoint_bitslice_sequential_write_not_flagged() {
+    // Dual of the above: `x[7:4]` is derived from `x[3:0]` AFTER `x[3:0]`
+    // is already established — disjoint bit positions of the same coarse
+    // signal, sequential blocking-assignment fold (the pre-existing #783
+    // in-block read-after-write mechanism), not a cycle.
+    let source = r#"
+        module M
+          port a_in: in UInt<4>;
+          port o: out UInt<8>;
+          wire x: UInt<8>;
+          comb
+            x[3:0] = a_in;
+            x[7:4] = x[3:0];
+            o = x;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        cycle_msgs.is_empty(),
+        "x[7:4] built from the already-established x[3:0] must not warn; \
+         got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_780_fixtures_have_no_comb_loop_false_positive() {
+    // End-to-end regression on all 7 real fixtures the arch#780 full-corpus
+    // sweep found (cataloged in PR #783's promotion-blast-radius table):
+    // Fx9MiniFabric (Vec-of-Bus field, class 1), gf_mul8 (Vec-index fold,
+    // class 2), cvdp_prbs_gen (bit-slice fold, class 2/3), onebit_ecc +
+    // t_hamming_tx (nested-for bit-slice relay, class 2/3), prim_max_find +
+    // programmable_interrupt_controller (for-loop + cond_stack running
+    // fold, class 5/6). All confirmed 0 Verilator UNOPTFLAT warnings in the
+    // issue — real acyclic designs, not real feedback.
+    // Fx9MiniFabric.arch references the `BusVr` bus type declared in a
+    // sibling file (`backend_equiv/BusVr.arch`, "one construct per file"
+    // convention) — concatenate it, mirroring how `tools/run_arch_regression.py`
+    // and the CLI's directory-grouping compile the whole directory together.
+    let fx9_mini_fabric = format!(
+        "{}\n{}",
+        include_str!("backend_equiv/BusVr.arch"),
+        include_str!("backend_equiv/Fx9MiniFabric.arch"),
+    );
+    for source in [
+        fx9_mini_fabric.as_str(),
+        include_str!("cvdp/gf_mul8.arch"),
+        include_str!("cvdp/cvdp_prbs_gen.arch"),
+        include_str!("cvdp/onebit_ecc.arch"),
+        include_str!("cvdp/t_hamming_tx.arch"),
+        include_str!("cvdp/prim_max_find.arch"),
+        include_str!("cvdp/programmable_interrupt_controller.arch"),
+    ] {
+        let ws = comb_loop_warnings(source);
+        let cycle_msgs: Vec<_> = ws
+            .iter()
+            .filter(|m| m.contains("combinational feedback cycle ("))
+            .collect();
+        assert!(
+            cycle_msgs.is_empty(),
+            "arch#780 fixture must produce zero comb-loop warnings; got: {:?}",
+            ws
+        );
+    }
+}
+
+#[test]
+fn test_e203_ifu_real_comb_loop_still_flagged_post_780() {
+    // arch#781: a GENUINE cross-instance combinational loop between
+    // `e203_ifu_ifetch` and `e203_ifu_ift2icb` (Verilator's own UNOPTFLAT
+    // fires on the generated SV). Must remain flagged after the #780 fold-
+    // artifact filter — that filter is scoped to same-comb-block sequential
+    // collapsing only; cross-instance edges are always "not grounded" (see
+    // `GraphBuilder::add_edge`), so this SCC can never be misclassified as
+    // an artifact.
+    // Mirrors the CLI's multi-file handling (`arch check a.arch b.arch ...`):
+    // concatenate raw source text and parse once, so cross-file instance
+    // references (e203_ifu instantiating the sibling modules) resolve.
+    let combined = [
+        include_str!("e203/e203_ifu.arch"),
+        include_str!("e203/e203_ifu_ifetch.arch"),
+        include_str!("e203/e203_ifu_ift2icb.arch"),
+        include_str!("e203/e203_ifu_litebpu.arch"),
+        include_str!("e203/e203_ifu_litedec.arch"),
+        include_str!("e203/e203_ifu_minidec.arch"),
+        // e203_ifu_ifetch instantiates e203_ifu_minidec, which in turn
+        // instantiates this leaf decoder — transitively required.
+        include_str!("e203/e203_exu_decode.arch"),
+    ]
+    .join("\n");
+    let source = arch::elaborate::elaborate(parse_to_ast(&combined)).expect("elaborate error");
+    let symbols = arch::resolve::resolve(&source).expect("resolve error");
+    let analysis = arch::comb_graph::analyze_whole_design(&source, &symbols);
+    assert!(
+        analysis.total_sccs >= 1,
+        "expected the real e203_ifu cross-instance comb loop to still be \
+         detected after the #780 fold-artifact filter"
+    );
+}
+
 // ─── multicycle reg annotation (Phase A) ─────────────────────────────────────
 //
 // Parse + AST + SDC emission only. Phase B will add input-feeding-tree
