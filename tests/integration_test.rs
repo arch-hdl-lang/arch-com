@@ -27222,28 +27222,33 @@ fn test_e203_ifu_real_comb_loop_still_flagged_post_780() {
     // collapsing only; cross-instance edges are always "not grounded" (see
     // `GraphBuilder::add_edge`), so this SCC can never be misclassified as
     // an artifact.
-    // Mirrors the CLI's multi-file handling (`arch check a.arch b.arch ...`):
-    // concatenate raw source text and parse once, so cross-file instance
-    // references (e203_ifu instantiating the sibling modules) resolve.
-    let combined = [
-        include_str!("e203/e203_ifu.arch"),
-        include_str!("e203/e203_ifu_ifetch.arch"),
-        include_str!("e203/e203_ifu_ift2icb.arch"),
-        include_str!("e203/e203_ifu_litebpu.arch"),
-        include_str!("e203/e203_ifu_litedec.arch"),
-        include_str!("e203/e203_ifu_minidec.arch"),
-        // e203_ifu_ifetch instantiates e203_ifu_minidec, which in turn
-        // instantiates this leaf decoder — transitively required.
-        include_str!("e203/e203_exu_decode.arch"),
-    ]
-    .join("\n");
-    let source = arch::elaborate::elaborate(parse_to_ast(&combined)).expect("elaborate error");
-    let symbols = arch::resolve::resolve(&source).expect("resolve error");
-    let analysis = arch::comb_graph::analyze_whole_design(&source, &symbols);
+    //
+    // Shells out to the real `arch` CLI binary (rather than hand-
+    // concatenating `include_str!` sources through the library entry
+    // points) so this test exercises the EXACT same multi-file discovery
+    // path as the manual verification in the issue/PR: the CLI auto-
+    // discovers sibling `.arch` files in the same directory (here,
+    // `e203_exu_decode.arch`, instantiated transitively via
+    // `e203_ifu_minidec`) rather than requiring every transitive
+    // dependency to be listed explicitly.
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("check")
+        .args([
+            "tests/e203/e203_ifu.arch",
+            "tests/e203/e203_ifu_ifetch.arch",
+            "tests/e203/e203_ifu_ift2icb.arch",
+            "tests/e203/e203_ifu_litebpu.arch",
+            "tests/e203/e203_ifu_litedec.arch",
+            "tests/e203/e203_ifu_minidec.arch",
+        ])
+        .output()
+        .expect("run arch check");
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        analysis.total_sccs >= 1,
+        stderr.contains("combinational feedback cycle ("),
         "expected the real e203_ifu cross-instance comb loop to still be \
-         detected after the #780 fold-artifact filter"
+         detected after the #780 fold-artifact filter; stderr:\n{stderr}"
     );
 }
 
