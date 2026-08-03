@@ -3747,6 +3747,12 @@ impl<'a> Codegen<'a> {
         clk: &str,
         rst_active: Option<&str>,
     ) {
+        // `assert<bound_err>` properties are specification-only (their
+        // exact()/abs()/ulp() builtins have no SV form) — discharged by
+        // `arch formal --error-engine`, never emitted as SVA.
+        if a.engine == crate::ast::AssertEngine::BoundErr {
+            return;
+        }
         let expr_str = self.emit_expr_str(&a.expr);
         let label = a
             .name
@@ -3755,6 +3761,7 @@ impl<'a> Codegen<'a> {
             .unwrap_or_else(|| match a.kind {
                 AssertKind::Assert => "_assert_anon".to_string(),
                 AssertKind::Cover => "_cover_anon".to_string(),
+                AssertKind::Assume => "_assume_anon".to_string(),
             });
         let disable = rst_active
             .map(|r| format!(" disable iff ({r})"))
@@ -3771,6 +3778,11 @@ impl<'a> Codegen<'a> {
             AssertKind::Cover => {
                 self.line(&format!(
                     "{label}: cover property (@(posedge {clk}){disable} {expr_str});"
+                ));
+            }
+            AssertKind::Assume => {
+                self.line(&format!(
+                    "{label}: assume property (@(posedge {clk}){disable} {expr_str});"
                 ));
             }
         }

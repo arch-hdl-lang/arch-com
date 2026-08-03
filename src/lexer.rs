@@ -217,6 +217,8 @@ pub enum TokenKind {
     False,
     #[token("assert")]
     Assert,
+    #[token("assume")]
+    Assume,
     #[token("cover")]
     Cover,
     #[token("implies")]
@@ -449,6 +451,7 @@ impl fmt::Display for TokenKind {
             TokenKind::True => write!(f, "true"),
             TokenKind::False => write!(f, "false"),
             TokenKind::Assert => write!(f, "assert"),
+            TokenKind::Assume => write!(f, "assume"),
             TokenKind::Cover => write!(f, "cover"),
             TokenKind::Implies => write!(f, "implies"),
             TokenKind::Guard => write!(f, "guard"),

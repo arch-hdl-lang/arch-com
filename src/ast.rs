@@ -505,11 +505,28 @@ pub struct PipeRegDecl {
 pub enum AssertKind {
     Assert,
     Cover,
+    /// `assume Name: expr;` — input constraint. The QF_BV formal path
+    /// conjoins it as a hypothesis at every timestep; the error-bound
+    /// engine reads range-shaped assumes as interval hypotheses.
+    Assume,
+}
+
+/// Which engine discharges an `assert`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssertEngine {
+    /// Default: the QF_BV BMC solver path of `arch formal`.
+    Solver,
+    /// `assert<bound_err>` — numeric error bound vs the real-valued spec;
+    /// discharged by the configured error engine (Gappa first). The
+    /// property expression may use the spec builtins `exact()`, `abs()`,
+    /// `ulp()`, which are illegal outside this property class.
+    BoundErr,
 }
 
 #[derive(Debug, Clone)]
 pub struct AssertDecl {
     pub kind: AssertKind,
+    pub engine: AssertEngine,
     pub name: Option<Ident>, // optional label (e.g. `assert no_overflow: expr;`)
     pub expr: Expr,
     pub span: Span,

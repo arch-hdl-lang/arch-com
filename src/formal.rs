@@ -33,6 +33,8 @@ pub struct FormalArgs {
     /// Float special-value profile — selects the canonical-NaN constants in
     /// the inlined float helper define-funs (same flag as build/sim).
     pub fp_compat: crate::FpCompat,
+    /// Engine for `assert<bound_err>` properties. Currently only "gappa".
+    pub error_engine: String,
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +44,9 @@ pub enum PropertyStatus {
     Hit(u32),             // cycle
     NotReached(u32),      // bound
     Inconclusive(String), // reason
+    /// `assert<bound_err>` proved by the error engine; the string carries
+    /// the engine's derived enclosure for the error term (best bound).
+    ProvedEnclosure(String),
 }
 
 #[derive(Debug, Clone)]
@@ -62,7 +67,9 @@ impl FormalReport {
         let mut any_incon = false;
         for r in &self.results {
             match &r.status {
-                PropertyStatus::Proved(_) | PropertyStatus::Hit(_) => {}
+                PropertyStatus::Proved(_)
+                | PropertyStatus::Hit(_)
+                | PropertyStatus::ProvedEnclosure(_) => {}
                 PropertyStatus::Refuted(_) | PropertyStatus::NotReached(_) => any_bad = true,
                 PropertyStatus::Inconclusive(_) => any_incon = true,
             }
@@ -125,7 +132,11 @@ pub fn run(
     // 5. For each assert/cover, run one (push)/(check-sat)/(pop) scope
     let mut results = Vec::new();
     for prop in ctx.properties.clone().iter() {
-        let res = ctx.run_property(prop, &base, args)?;
+        let res = if prop.engine == crate::ast::AssertEngine::BoundErr {
+            ctx.run_bound_err(prop, args)?
+        } else {
+            ctx.run_property(prop, &base, args)?
+        };
         results.push(res);
     }
 
@@ -1041,6 +1052,7 @@ struct ResetInfo {
 struct PropertyDecl {
     name: String,
     kind: AssertKind,
+    engine: crate::ast::AssertEngine,
     expr: Expr,
     span: Span,
 }
@@ -1090,6 +1102,10 @@ struct FormalCtx<'a> {
     carried_credit_sites: Vec<CarriedCreditSite>,
     /// Synthesized derived signals whose formal value is `source != 0`.
     derived_nonzero: HashMap<String, String>,
+    /// `assume Name: expr;` input constraints — conjoined as hypotheses
+    /// at every timestep of the QF_BV unroll, and read as interval
+    /// hypotheses by the error-bound engine.
+    assumes: Vec<Expr>,
     /// Any float-typed signal registered → prepend the float helper
     /// define-funs to every emitted query.
     uses_float: bool,
@@ -1153,6 +1169,7 @@ impl<'a> FormalCtx<'a> {
             credit_sites: Vec::new(),
             carried_credit_sites: Vec::new(),
             derived_nonzero: HashMap::new(),
+            assumes: Vec::new(),
             uses_float: false,
             fp_compat: crate::FpCompat::Riscv,
         }
@@ -1503,6 +1520,10 @@ impl<'a> FormalCtx<'a> {
                         .insert(lb.name.name.clone(), lb.value.clone());
                 }
                 ModuleBodyItem::Assert(a) => {
+                    if a.kind == AssertKind::Assume {
+                        self.assumes.push(a.expr.clone());
+                        continue;
+                    }
                     let name = a
                         .name
                         .as_ref()
@@ -1511,6 +1532,7 @@ impl<'a> FormalCtx<'a> {
                     self.properties.push(PropertyDecl {
                         name,
                         kind: a.kind.clone(),
+                        engine: a.engine,
                         expr: a.expr.clone(),
                         span: a.span,
                     });
@@ -1974,6 +1996,19 @@ impl<'a> FormalCtx<'a> {
                     next
                 };
                 out.push_str(&format!("(assert (= {reg}_{} {next_gated}))\n", t + 1));
+            }
+            out.push('\n');
+        }
+
+        // `assume` clauses: conjoined as hypotheses at every timestep, so
+        // both assert and cover properties see only constrained inputs.
+        if !self.assumes.is_empty() {
+            out.push_str("; assume clauses\n");
+            for t in 0..=bound {
+                for a in &self.assumes {
+                    let enc = self.encode_expr(a, t, None)?;
+                    out.push_str(&format!("(assert {})\n", as_bool(&enc)));
+                }
             }
             out.push('\n');
         }
@@ -2931,6 +2966,336 @@ impl<'a> FormalCtx<'a> {
 
     // ── Property solving ─────────────────────────────────────────────────────
 
+    // ── assert<bound_err>: numeric error bounds via an external engine ──────
+    //
+    // The property compares a comb float signal against `exact(sig)` — the
+    // real-valued evaluation of the SAME dataflow with every rounding
+    // removed. We render the signal's cone twice into a Gappa script
+    // (rounded: each op wrapped in its format's rounding operator, modeling
+    // the RTL faithfully including the VR(f32) double-rounded narrow ops;
+    // exact: bare over ℝ), turn range-shaped `assume`s into interval
+    // hypotheses, and ask the engine to prove the bound. A second goal-free
+    // query reports the tightest enclosure the engine can derive for the
+    // error term. Soundness of modeling each op as ideal rounding is exactly
+    // the per-operator CR theorems (tests/fp_v1/smt_proof, proofs/).
+    fn run_bound_err(
+        &self,
+        prop: &PropertyDecl,
+        args: &FormalArgs,
+    ) -> Result<PropertyResult, CompileError> {
+        if args.error_engine != "gappa" {
+            return Err(CompileError::general(
+                &format!(
+                    "unknown --error-engine `{}` (supported: gappa)",
+                    args.error_engine
+                ),
+                prop.span,
+            ));
+        }
+        let mut goal =
+            parse_bound_goal(&prop.expr).map_err(|m| CompileError::general(&m, prop.span))?;
+        // The ulp() unit is the SIGNAL's format, not always f32.
+        if let BoundKind::Ulps(n, _) = goal.kind {
+            let tag = self
+                .sigs
+                .get(&goal.sig)
+                .and_then(|i| i.float)
+                .unwrap_or("f32");
+            goal.kind = BoundKind::Ulps(n, tag);
+        }
+
+        // Build definitions for the signal's cone, rounded + exact.
+        let mut defs: Vec<String> = Vec::new();
+        let mut done: HashSet<String> = HashSet::new();
+        let mut fmts_used: HashSet<&'static str> = HashSet::new();
+        self.emit_gappa_defs(&goal.sig, &mut defs, &mut done, &mut fmts_used, prop.span)?;
+
+        // Hypotheses from range-shaped assumes over the cone's free ports.
+        let mut hyps: Vec<String> = Vec::new();
+        let mut ranged: HashSet<String> = HashSet::new();
+        for a in &self.assumes {
+            collect_range_hyps(a, &mut hyps, &mut ranged);
+        }
+        // Every input port feeding the cone must be range-constrained —
+        // error bounds are range-dependent by nature.
+        let mut free_ports: HashSet<String> = HashSet::new();
+        self.collect_cone_ports(&goal.sig, &mut free_ports, &mut HashSet::new());
+        let missing: Vec<String> = free_ports.difference(&ranged).cloned().collect();
+        if !missing.is_empty() {
+            let mut m = missing;
+            m.sort();
+            return Err(CompileError::general(
+                &format!(
+                    "assert<bound_err> requires every input in the cone to be range-constrained by `assume` clauses (missing: {}) — e.g. `assume a_rng: (a >= -1.0) and (a <= 1.0);`",
+                    m.join(", ")
+                ),
+                prop.span,
+            ));
+        }
+
+        let mut header = String::new();
+        for f in ["f32", "bf16", "e4m3", "e5m2"] {
+            if fmts_used.contains(f) {
+                let (p, emin) = gappa_fmt_params(f);
+                header.push_str(&format!("@rnd_{f} = float<{p},{emin},ne>;\n"));
+            }
+        }
+        let defs_s = defs.join("\n");
+        let hyp_s = hyps.join(" /\\ ");
+        let goal_s = goal.render();
+        let script = format!("{header}\n{defs_s}\n\n{{ {hyp_s} -> {goal_s} }}\n");
+        let encl_script = format!(
+            "{header}\n{defs_s}\n\n{{ {hyp_s} -> {sig} - M_{sig} in ? }}\n",
+            sig = goal.sig
+        );
+
+        if std::env::var("GAPPA_DEBUG").is_ok() {
+            eprintln!("--- gappa script for {} ---\n{script}", prop.name);
+        }
+        let bin = gappa_binary();
+        let Some(bin) = bin else {
+            return Ok(PropertyResult {
+                name: prop.name.clone(),
+                kind: prop.kind.clone(),
+                status: PropertyStatus::Inconclusive(
+                    "gappa binary not found (install gappa or set GAPPA_BIN)".to_string(),
+                ),
+                counterexample: None,
+            });
+        };
+
+        let run = |input: &str| -> std::io::Result<(bool, String)> {
+            use std::io::Write as _;
+            use std::process::{Command, Stdio};
+            let mut child = Command::new(&bin)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()?;
+            child.stdin.as_mut().unwrap().write_all(input.as_bytes())?;
+            let out = child.wait_with_output()?;
+            Ok((
+                out.status.success(),
+                String::from_utf8_lossy(&out.stderr).to_string(),
+            ))
+        };
+
+        let (ok, err) = run(&script)
+            .map_err(|e| CompileError::general(&format!("failed to run gappa: {e}"), prop.span))?;
+        // Enclosure query (best-effort; gappa prints `... in [lo, hi]` on stderr).
+        let encl = run(&encl_script)
+            .ok()
+            .map(|(_, e)| {
+                e.lines()
+                    .find(|l| l.contains(" in ["))
+                    .map(|l| l.trim().to_string())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+
+        let status = if ok {
+            let detail = if encl.is_empty() {
+                "error bound proved".to_string()
+            } else {
+                format!("error bound proved; derived {encl}")
+            };
+            PropertyStatus::ProvedEnclosure(detail)
+        } else {
+            let mut why = err
+                .lines()
+                .find(|l| l.contains("error") || l.contains("Error") || l.contains("not satisfied"))
+                .unwrap_or("engine could not prove the bound")
+                .trim()
+                .to_string();
+            if !encl.is_empty() {
+                why.push_str(&format!(" (best derivable: {encl})"));
+            }
+            PropertyStatus::Inconclusive(why)
+        };
+        Ok(PropertyResult {
+            name: prop.name.clone(),
+            kind: prop.kind.clone(),
+            status,
+            counterexample: None,
+        })
+    }
+
+    /// Emit gappa definitions (rounded `name = ...;` and exact
+    /// `M_name = ...;`) for `sig` and its cone, post-order.
+    fn emit_gappa_defs(
+        &self,
+        sig: &str,
+        defs: &mut Vec<String>,
+        done: &mut HashSet<String>,
+        fmts: &mut HashSet<&'static str>,
+        span: Span,
+    ) -> Result<(), CompileError> {
+        if done.contains(sig) {
+            return Ok(());
+        }
+        done.insert(sig.to_string());
+        let def_expr = self.defining_expr(sig);
+        let Some(expr) = def_expr else {
+            // Free port — no definition (shared real variable).
+            return Ok(());
+        };
+        // Emit dependencies first.
+        let mut deps: HashSet<String> = HashSet::new();
+        collect_idents(&expr, &mut deps);
+        for d in &deps {
+            self.emit_gappa_defs(d, defs, done, fmts, span)?;
+        }
+        let rounded = self.gappa_expr(&expr, true, fmts, span)?;
+        let exact = self.gappa_expr(&expr, false, fmts, span)?;
+        defs.push(format!("{sig} = {rounded};"));
+        defs.push(format!("M_{sig} = {exact};"));
+        Ok(())
+    }
+
+    /// Defining expression of a comb-driven signal (comb assign target or
+    /// let binding). Ports/regs have none.
+    fn defining_expr(&self, name: &str) -> Option<Expr> {
+        if let Some(v) = self.let_bindings.get(name) {
+            return Some(v.clone());
+        }
+        for ca in &self.comb_assigns {
+            if ca.target == name && ca.guard.is_empty() {
+                return Some(ca.value.clone());
+            }
+        }
+        None
+    }
+
+    /// Free input ports of the cone (idents with no defining expression).
+    fn collect_cone_ports(&self, sig: &str, out: &mut HashSet<String>, seen: &mut HashSet<String>) {
+        if seen.contains(sig) {
+            return;
+        }
+        seen.insert(sig.to_string());
+        match self.defining_expr(sig) {
+            Some(e) => {
+                let mut ids = HashSet::new();
+                collect_idents(&e, &mut ids);
+                for i in ids {
+                    self.collect_cone_ports(&i, out, seen);
+                }
+            }
+            None => {
+                out.insert(sig.to_string());
+            }
+        }
+    }
+
+    /// Render an ARCH float expression to gappa. `rounded` selects the
+    /// implementation rendering (rounding operators per op, incl. the
+    /// VR(f32) double rounding of narrow-format arith) vs the real-valued
+    /// spec rendering (no roundings; conversions are identity over ℝ).
+    fn gappa_expr(
+        &self,
+        e: &Expr,
+        rounded: bool,
+        fmts: &mut HashSet<&'static str>,
+        span: Span,
+    ) -> Result<String, CompileError> {
+        use ExprKind::*;
+        match &e.kind {
+            Ident(n) => Ok(if rounded || self.defining_expr(n).is_none() {
+                n.clone()
+            } else {
+                format!("M_{n}")
+            }),
+            Literal(LitKind::Float(bits)) => Ok(gappa_real(f64::from_bits(*bits))),
+            Literal(LitKind::TypedFloat(fmt, bits)) => {
+                let v = match fmt {
+                    crate::ast::FloatLitFmt::Fp32 => f32::from_bits(*bits as u32) as f64,
+                    crate::ast::FloatLitFmt::Bf16 => {
+                        f32::from_bits((*bits as u32) << 16) as f64
+                    }
+                    crate::ast::FloatLitFmt::E4m3 => crate::fp_lit::e4m3_bits_to_f64(*bits as u8),
+                    crate::ast::FloatLitFmt::E5m2 => crate::fp_lit::e5m2_bits_to_f64(*bits as u8),
+                };
+                Ok(gappa_real(v))
+            }
+            Binary(op, a, b) => {
+                let tag = self
+                    .expr_float_tag(a)
+                    .or_else(|| self.expr_float_tag(b))
+                    .ok_or_else(|| {
+                        CompileError::general(
+                            "assert<bound_err> cones must be floating-point arithmetic",
+                            span,
+                        )
+                    })?;
+                let (osym, supported) = match op {
+                    BinOp::Add => ("+", true),
+                    BinOp::Sub => ("-", true),
+                    BinOp::Mul => ("*", true),
+                    _ => ("", false),
+                };
+                if !supported {
+                    return Err(CompileError::general(
+                        "assert<bound_err> cones support + - * fma and float conversions only",
+                        span,
+                    ));
+                }
+                let ga = self.gappa_expr(a, rounded, fmts, span)?;
+                let gb = self.gappa_expr(b, rounded, fmts, span)?;
+                let raw = format!("({ga} {osym} {gb})");
+                Ok(if rounded {
+                    wrap_impl_rounding(tag, &raw, fmts)
+                } else {
+                    raw
+                })
+            }
+            FunctionCall(name, cargs) if name == "fma" && cargs.len() == 3 => {
+                let tag = cargs
+                    .iter()
+                    .find_map(|a| self.expr_float_tag(a))
+                    .unwrap_or("f32");
+                let ga = self.gappa_expr(&cargs[0], rounded, fmts, span)?;
+                let gb = self.gappa_expr(&cargs[1], rounded, fmts, span)?;
+                let gc = self.gappa_expr(&cargs[2], rounded, fmts, span)?;
+                let raw = format!("({ga} * {gb} + {gc})");
+                Ok(if rounded {
+                    wrap_impl_rounding(tag, &raw, fmts)
+                } else {
+                    raw
+                })
+            }
+            MethodCall(base, m, _) => {
+                let gb_r = self.gappa_expr(base, rounded, fmts, span)?;
+                match m.name.as_str() {
+                    // Exact widen: identity over ℝ.
+                    "to_fp32" => Ok(gb_r),
+                    "to_bf16" | "to_fp8e4m3" | "to_fp8e5m2" => {
+                        let tgt = match m.name.as_str() {
+                            "to_bf16" => "bf16",
+                            "to_fp8e4m3" => "e4m3",
+                            _ => "e5m2",
+                        };
+                        if rounded {
+                            fmts.insert(tgt);
+                            Ok(format!("rnd_{tgt}({gb_r})"))
+                        } else {
+                            Ok(gb_r)
+                        }
+                    }
+                    other => Err(CompileError::general(
+                        &format!(
+                            "`.{other}()` is not supported inside assert<bound_err> cones"
+                        ),
+                        span,
+                    )),
+                }
+            }
+            LatencyAt(inner, _) => self.gappa_expr(inner, rounded, fmts, span),
+            _ => Err(CompileError::general(
+                "assert<bound_err> cones support + - * fma, float conversions, signals, and float literals only",
+                span,
+            )),
+        }
+    }
+
     fn run_property(
         &self,
         prop: &PropertyDecl,
@@ -3000,6 +3365,9 @@ impl<'a> FormalCtx<'a> {
         let matcher = match prop.kind {
             AssertKind::Assert => "#b0",
             AssertKind::Cover => "#b1",
+            AssertKind::Assume => {
+                unreachable!("assumes are hypotheses, filtered before run_property")
+            }
         };
         let disjuncts: Vec<String> = per_cycle
             .iter()
@@ -3055,12 +3423,14 @@ impl<'a> FormalCtx<'a> {
                 match prop.kind {
                     AssertKind::Assert => PropertyStatus::Refuted(failing_cycle),
                     AssertKind::Cover => PropertyStatus::Hit(failing_cycle),
+                    AssertKind::Assume => unreachable!("assumes filtered before run_property"),
                 }
                 .with_cex(cex)
             }
             "unsat" => match prop.kind {
                 AssertKind::Assert => PropertyStatus::Proved(args.bound).with_cex(None),
                 AssertKind::Cover => PropertyStatus::NotReached(args.bound).with_cex(None),
+                AssertKind::Assume => unreachable!("assumes filtered before run_property"),
             },
             _ => PropertyStatus::Inconclusive(
                 if sr.stdout.contains("timeout") || !sr.stderr.is_empty() {
@@ -3102,6 +3472,245 @@ struct SmtTerm {
     s: String,
     width: u32,
     signed: bool,
+}
+
+// ── assert<bound_err> free helpers ──────────────────────────────────────────
+
+/// Parsed goal shape: `abs(SIG - exact(SIG)) <= BOUND` where BOUND is a
+/// float literal, `LIT * ulp(exact(SIG))`, or `LIT * abs(exact(SIG))`.
+struct BoundGoal {
+    sig: String,
+    kind: BoundKind,
+}
+enum BoundKind {
+    Abs(f64),
+    /// N ulps, checked via the sound relative form N·2⁻ᵖ (conservative by
+    /// at most 2× — ulp(x) > 2⁻ᵖ·|x| for normal x).
+    Ulps(f64, &'static str),
+    Rel(f64),
+}
+impl BoundGoal {
+    fn render(&self) -> String {
+        match &self.kind {
+            BoundKind::Abs(c) => format!("|{s} - M_{s}| <= {}", gappa_real(*c), s = self.sig),
+            BoundKind::Ulps(n, tag) => {
+                let p = gappa_fmt_params(tag).0;
+                format!(
+                    "|{s} -/ M_{s}| <= {}",
+                    gappa_real(*n * (2.0f64).powi(-(p as i32))),
+                    s = self.sig
+                )
+            }
+            BoundKind::Rel(c) => {
+                format!("|{s} -/ M_{s}| <= {}", gappa_real(*c), s = self.sig)
+            }
+        }
+    }
+}
+
+fn lit_f64(e: &Expr) -> Option<f64> {
+    match &e.kind {
+        ExprKind::Unary(crate::ast::UnaryOp::Neg, inner) => lit_f64(inner).map(|v| -v),
+        ExprKind::Literal(LitKind::Float(b)) => Some(f64::from_bits(*b)),
+        ExprKind::Literal(LitKind::TypedFloat(fmt, b)) => Some(match fmt {
+            crate::ast::FloatLitFmt::Fp32 => f32::from_bits(*b as u32) as f64,
+            crate::ast::FloatLitFmt::Bf16 => f32::from_bits((*b as u32) << 16) as f64,
+            crate::ast::FloatLitFmt::E4m3 => crate::fp_lit::e4m3_bits_to_f64(*b as u8),
+            crate::ast::FloatLitFmt::E5m2 => crate::fp_lit::e5m2_bits_to_f64(*b as u8),
+        }),
+        ExprKind::Literal(LitKind::Dec(v)) => Some(*v as f64),
+        _ => None,
+    }
+}
+
+/// `abs(SIG - exact(SIG))` matcher → SIG name.
+fn match_err_term(e: &Expr) -> Option<String> {
+    let ExprKind::FunctionCall(n, args) = &e.kind else {
+        return None;
+    };
+    if n != "abs" || args.len() != 1 {
+        return None;
+    }
+    let ExprKind::Binary(BinOp::Sub, a, b) = &args[0].kind else {
+        return None;
+    };
+    let ExprKind::Ident(sig) = &a.kind else {
+        return None;
+    };
+    let ExprKind::FunctionCall(en, eargs) = &b.kind else {
+        return None;
+    };
+    if en != "exact" || eargs.len() != 1 {
+        return None;
+    }
+    let ExprKind::Ident(sig2) = &eargs[0].kind else {
+        return None;
+    };
+    if sig != sig2 {
+        return None;
+    }
+    Some(sig.clone())
+}
+
+fn parse_bound_goal(e: &Expr) -> Result<BoundGoal, String> {
+    const SHAPE: &str = "assert<bound_err> expects `abs(sig - exact(sig)) <= C`, `<= N * ulp(exact(sig))`, or `<= C * abs(exact(sig))`";
+    let ExprKind::Binary(op, lhs, rhs) = &e.kind else {
+        return Err(SHAPE.to_string());
+    };
+    if !matches!(op, BinOp::Lte | BinOp::Lt) {
+        return Err(SHAPE.to_string());
+    }
+    let sig = match_err_term(lhs).ok_or_else(|| SHAPE.to_string())?;
+    // RHS: literal | LIT * ulp(exact(sig)) | LIT * abs(exact(sig))
+    if let Some(c) = lit_f64(rhs) {
+        return Ok(BoundGoal {
+            sig,
+            kind: BoundKind::Abs(c),
+        });
+    }
+    if let ExprKind::Binary(BinOp::Mul, a, b) = &rhs.kind {
+        let c = lit_f64(a).ok_or_else(|| SHAPE.to_string())?;
+        if let ExprKind::FunctionCall(fname, fargs) = &b.kind {
+            if fargs.len() == 1 {
+                if let ExprKind::FunctionCall(en, eargs) = &fargs[0].kind {
+                    if en == "exact" && eargs.len() == 1 {
+                        if let ExprKind::Ident(s2) = &eargs[0].kind {
+                            if *s2 == sig {
+                                if fname == "ulp" {
+                                    // Format resolved by the caller from the
+                                    // signal; default f32, refined below.
+                                    return Ok(BoundGoal {
+                                        sig,
+                                        kind: BoundKind::Ulps(c, "f32"),
+                                    });
+                                }
+                                if fname == "abs" {
+                                    return Ok(BoundGoal {
+                                        sig,
+                                        kind: BoundKind::Rel(c),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Err(SHAPE.to_string())
+}
+
+/// Faithful implementation rounding for one op: f32 ops round once; the
+/// narrow formats round through f32 first (the VR(f32) datapath).
+fn wrap_impl_rounding(tag: &'static str, raw: &str, fmts: &mut HashSet<&'static str>) -> String {
+    fmts.insert("f32");
+    if tag == "f32" {
+        format!("rnd_f32{raw}")
+    } else {
+        fmts.insert(tag);
+        format!("rnd_{tag}(rnd_f32{raw})")
+    }
+}
+
+/// (precision, emin) per format for gappa's `float<p,emin,ne>`.
+fn gappa_fmt_params(tag: &str) -> (u32, i32) {
+    match tag {
+        "f32" => (24, -149),
+        "bf16" => (8, -133),
+        "e4m3" => (4, -9),
+        _ => (3, -16),
+    }
+}
+
+/// Exact real literal in gappa's `<mantissa>b<exponent>` notation.
+fn gappa_real(v: f64) -> String {
+    if v == 0.0 {
+        return "0".to_string();
+    }
+    let bits = v.to_bits();
+    let neg = bits >> 63 == 1;
+    let e = ((bits >> 52) & 0x7FF) as i64;
+    let m = bits & ((1u64 << 52) - 1);
+    let (mut mant, mut exp) = if e == 0 {
+        (m as i128, -1074i64)
+    } else {
+        ((m | (1 << 52)) as i128, e - 1075)
+    };
+    while mant != 0 && mant % 2 == 0 {
+        mant /= 2;
+        exp += 1;
+    }
+    let sign = if neg { "-" } else { "" };
+    if exp == 0 {
+        format!("{sign}{mant}")
+    } else {
+        format!("{sign}{mant}b{exp}")
+    }
+}
+
+/// Locate the gappa binary: PATH, then $GAPPA_BIN, then ~/bin/gappa.
+fn gappa_binary() -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("GAPPA_BIN") {
+        let pb = std::path::PathBuf::from(p);
+        if pb.exists() {
+            return Some(pb);
+        }
+    }
+    if let Ok(out) = std::process::Command::new("which").arg("gappa").output() {
+        if out.status.success() {
+            let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !p.is_empty() {
+                return Some(std::path::PathBuf::from(p));
+            }
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let pb = std::path::PathBuf::from(home).join("bin/gappa");
+        if pb.exists() {
+            return Some(pb);
+        }
+    }
+    None
+}
+
+/// Range-shaped assume mining: conjunctions of `x >= lit` / `x <= lit`
+/// (either operand order) become gappa interval hypotheses. Ports with
+/// BOTH bounds seen are recorded in `ranged`.
+fn collect_range_hyps(e: &Expr, hyps: &mut Vec<String>, ranged: &mut HashSet<String>) {
+    fn bounds(e: &Expr, lo: &mut HashMap<String, f64>, hi: &mut HashMap<String, f64>) {
+        match &e.kind {
+            ExprKind::Binary(BinOp::And, a, b) => {
+                bounds(a, lo, hi);
+                bounds(b, lo, hi);
+            }
+            ExprKind::Binary(op, a, b) => {
+                let (id, lit, ge) = match (&a.kind, &b.kind, op) {
+                    (ExprKind::Ident(n), _, BinOp::Gte) => (Some(n.clone()), lit_f64(b), true),
+                    (ExprKind::Ident(n), _, BinOp::Lte) => (Some(n.clone()), lit_f64(b), false),
+                    (_, ExprKind::Ident(n), BinOp::Gte) => (Some(n.clone()), lit_f64(a), false),
+                    (_, ExprKind::Ident(n), BinOp::Lte) => (Some(n.clone()), lit_f64(a), true),
+                    _ => (None, None, false),
+                };
+                if let (Some(id), Some(v)) = (id, lit) {
+                    if ge {
+                        lo.insert(id, v);
+                    } else {
+                        hi.insert(id, v);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut lo = HashMap::new();
+    let mut hi = HashMap::new();
+    bounds(e, &mut lo, &mut hi);
+    for (n, l) in &lo {
+        if let Some(h) = hi.get(n) {
+            hyps.push(format!("{n} in [{}, {}]", gappa_real(*l), gappa_real(*h)));
+            ranged.insert(n.clone());
+        }
+    }
 }
 
 fn bv_lit(value: u64, width: u32) -> String {
@@ -3301,6 +3910,11 @@ fn collect_idents(expr: &Expr, out: &mut HashSet<String>) {
             collect_idents(b, out);
         }
         Unary(_, a) => collect_idents(a, out),
+        FunctionCall(_, args) => {
+            for a in args {
+                collect_idents(a, out);
+            }
+        }
         Ternary(c, t, e) => {
             collect_idents(c, out);
             collect_idents(t, out);
@@ -3870,6 +4484,7 @@ fn render_report(results: &[PropertyResult]) {
             PropertyStatus::Hit(c) => ("HIT", format!("at cycle {c}")),
             PropertyStatus::NotReached(n) => ("NOT REACHED", format!("within bound {n}")),
             PropertyStatus::Inconclusive(why) => ("INCONCLUSIVE", why.clone()),
+            PropertyStatus::ProvedEnclosure(enc) => ("PROVED", enc.clone()),
         };
         eprintln!("[{:?}] {:<24} {}  — {}", r.kind, r.name, tag, detail);
         if let Some(cex) = &r.counterexample {
