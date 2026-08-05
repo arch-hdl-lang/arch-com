@@ -1854,3 +1854,58 @@ fn fp_negative_literal_coercion() {
         assert!(sv.contains(needle), "missing `{needle}`:\n{sv}");
     }
 }
+
+/// Certified no-saturation: with range assumes the E4M3 narrowing property
+/// `!is_nan(y_w)` PROVES (overflow unreachable — riscv maps overflow to
+/// NaN); with the assumes stripped it REFUTES. Locks the assume-constrained
+/// overflow-certification pattern end-to-end. z3-gated.
+#[test]
+fn fp_formal_no_saturation_certified() {
+    fn z3_available() -> bool {
+        std::process::Command::new("z3")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    if !z3_available() {
+        eprintln!("skipping fp_formal_no_saturation_certified: z3 not in PATH");
+        return;
+    }
+    let run = |src: &str| -> (bool, String) {
+        let td = tempfile::tempdir().expect("tempdir");
+        let path = td.path().join("M.arch");
+        std::fs::write(&path, src).unwrap();
+        let out = arch()
+            .arg("formal")
+            .arg(&path)
+            .arg("--solver")
+            .arg("z3")
+            .arg("--bound")
+            .arg("2")
+            .output()
+            .expect("run arch formal");
+        let all = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (out.status.success(), all)
+    };
+    let src = std::fs::read_to_string("tests/fp_v1/FpNoSat.arch").unwrap();
+    let (ok, all) = run(&src);
+    assert!(
+        ok && all.contains("PROVED"),
+        "constrained no-sat must prove:\n{all}"
+    );
+    let stripped: String = src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("assume"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (ok, all) = run(&stripped);
+    assert!(
+        !ok && all.contains("REFUTED"),
+        "unconstrained must refute:\n{all}"
+    );
+}

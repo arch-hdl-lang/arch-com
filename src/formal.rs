@@ -3369,10 +3369,8 @@ impl<'a> FormalCtx<'a> {
                 unreachable!("assumes are hypotheses, filtered before run_property")
             }
         };
-        let disjuncts: Vec<String> = per_cycle
-            .iter()
-            .enumerate()
-            .map(|(_i, p)| format!("(= {p} {matcher})"))
+        let disjuncts: Vec<String> = (0..per_cycle.len())
+            .map(|i| format!("(= __prop_{} {matcher})", min_t + i as u32))
             .collect();
         let assertion = if disjuncts.len() == 1 {
             disjuncts.into_iter().next().unwrap()
@@ -3380,13 +3378,23 @@ impl<'a> FormalCtx<'a> {
             format!("(or {})", disjuncts.join(" "))
         };
 
-        // Compose final SMT text
+        // Compose final SMT text. Each cycle's property bit is bound to a
+        // named constant `__prop_<t>` so the failing cycle can be read
+        // directly from the solver model — the numeric evaluator cannot
+        // evaluate float-helper applications, and guessing from inputs
+        // rendered the WRONG cycle's (arbitrary) values as counterexamples.
         let mut smt = String::with_capacity(base.len() + 256);
         smt.push_str(base);
         smt.push_str(&format!(
             "\n; ── property `{}` ({:?}) ──\n",
             prop.name, prop.kind
         ));
+        for (i, p) in per_cycle.iter().enumerate() {
+            let t = min_t + i as u32;
+            smt.push_str(&format!(
+                "(declare-fun __prop_{t} () (_ BitVec 1))\n(assert (= __prop_{t} {p}))\n"
+            ));
+        }
         smt.push_str(&format!("(assert {assertion})\n"));
         smt.push_str("(check-sat)\n");
         // We always emit get-model; the solver will ignore it on unsat/unknown for most tools.
@@ -4315,11 +4323,21 @@ fn find_first_failing_cycle(
     if min_t > max_t {
         return min_t.min(bound);
     }
+    // Primary: the named per-cycle property bits from the model.
     for t in min_t..=max_t {
-        let v = eval_expr_numeric(expr, t, ctx, assignments).unwrap_or(0);
-        let bit = v & 1;
-        if bit == target_bit {
-            return t;
+        if let Some(v) = assignments.get(&format!("__prop_{t}")) {
+            if (v & 1) == target_bit {
+                return t;
+            }
+        }
+    }
+    // Fallback (older models without the named bits): numeric evaluation —
+    // skip cycles the evaluator cannot decide instead of claiming them.
+    for t in min_t..=max_t {
+        if let Some(v) = eval_expr_numeric(expr, t, ctx, assignments) {
+            if (v & 1) == target_bit {
+                return t;
+            }
         }
     }
     max_t
