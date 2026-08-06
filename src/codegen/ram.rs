@@ -173,19 +173,35 @@ impl<'a> Codegen<'a> {
         // ── Memory array ─────────────────────────────────────────────────────
         self.line("logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];");
 
-        // Find the clock signal name
-        let clk_name = r
+        // RAMs normally have one shared clock. A true-dual RAM may instead
+        // declare two clocks. Prefer the documented `clk_<port-group>` naming
+        // convention (clk_a → port a), then fall back to declaration order.
+        // Preserve the one-clock form by using the first clock for both ports.
+        let clk_names: Vec<String> = r
             .ports
             .iter()
-            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone())
-            .unwrap_or_else(|| "clk".to_string());
+            .collect();
+        let clock_for_group = |group_idx: usize| {
+            let conventional_name = r
+                .port_groups
+                .get(group_idx)
+                .map(|pg| format!("clk_{}", pg.name.name));
+            conventional_name
+                .and_then(|name| clk_names.iter().find(|clk| **clk == name).cloned())
+                .or_else(|| clk_names.get(group_idx).cloned())
+                .or_else(|| clk_names.first().cloned())
+                .unwrap_or_else(|| "clk".to_string())
+        };
+        let clk_a = clock_for_group(0);
+        let clk_b = clock_for_group(1);
 
         match r.kind {
-            RamKind::Single => self.emit_ram_single(r, &clk_name, &data_width_ty),
-            RamKind::SimpleDual => self.emit_ram_simple_dual(r, &clk_name, &data_width_ty),
-            RamKind::TrueDual => self.emit_ram_true_dual(r, &clk_name, &data_width_ty),
-            RamKind::Rom => self.emit_ram_rom(r, &clk_name),
+            RamKind::Single => self.emit_ram_single(r, &clk_a, &data_width_ty),
+            RamKind::SimpleDual => self.emit_ram_simple_dual(r, &clk_a, &data_width_ty),
+            RamKind::TrueDual => self.emit_ram_true_dual(r, &clk_a, &clk_b, &data_width_ty),
+            RamKind::Rom => self.emit_ram_rom(r, &clk_a),
         }
 
         // ── Init block ───────────────────────────────────────────────────────
@@ -363,7 +379,6 @@ impl<'a> Codegen<'a> {
                     }
                     self.indent -= 1;
                     self.line("end");
-                    self.line(&format!("assign {pfx}_{} = {rdata_r};", os.name.name));
                     // latency 2 adds an extra output register stage
                     if r.latency == 2 {
                         let rdata_r2 = format!("{pfx}_{}_r2", os.name.name);
@@ -372,6 +387,8 @@ impl<'a> Codegen<'a> {
                             "always_ff @(posedge {clk}) {rdata_r2} <= {rdata_r};"
                         ));
                         self.line(&format!("assign {pfx}_{} = {rdata_r2};", os.name.name));
+                    } else {
+                        self.line(&format!("assign {pfx}_{} = {rdata_r};", os.name.name));
                     }
                 }
             }
@@ -469,7 +486,7 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn emit_ram_true_dual(&mut self, r: &RamDecl, clk: &str, _data_width_ty: &str) {
+    fn emit_ram_true_dual(&mut self, r: &RamDecl, clk_a: &str, clk_b: &str, _data_width_ty: &str) {
         // Both port groups can read and write
         let pa = &r.port_groups[0];
         let pb = &r.port_groups[1];
@@ -500,7 +517,14 @@ impl<'a> Codegen<'a> {
         let rdata_b_r = format!("{pfx_b}_{rdata_b}_r");
         match r.latency {
             0 => {
-                self.line(&format!("always_ff @(posedge {clk}) begin"));
+                // A true-dual-port memory must describe each physical port in
+                // its own clocked process. Vivado explicitly rejects two RAM
+                // writes from the same process and dissolves the array into
+                // flip-flops. Plain `always` is intentional here: SystemVerilog
+                // `always_ff` requires a variable to be written by only one
+                // process, while both physical RAM ports legitimately write
+                // the shared `mem` array.
+                self.line(&format!("always @(posedge {clk_a}) begin"));
                 self.indent += 1;
                 let cond_a = if has_en_a {
                     format!("{pfx_a}_en && {pfx_a}_wen")
@@ -511,6 +535,10 @@ impl<'a> Codegen<'a> {
                 self.indent += 1;
                 self.line(&format!("mem[{pfx_a}_addr] <= {pfx_a}_wdata;"));
                 self.indent -= 1;
+                self.indent -= 1;
+                self.line("end");
+                self.line(&format!("always @(posedge {clk_b}) begin"));
+                self.indent += 1;
                 let cond_b = if has_en_b {
                     format!("{pfx_b}_en && {pfx_b}_wen")
                 } else {
@@ -529,7 +557,7 @@ impl<'a> Codegen<'a> {
                 self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_a_r};"));
                 self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_b_r};"));
                 self.line("");
-                self.line(&format!("always_ff @(posedge {clk}) begin"));
+                self.line(&format!("always @(posedge {clk_a}) begin"));
                 self.indent += 1;
                 if has_en_a {
                     self.line(&format!("if ({pfx_a}_en) begin"));
@@ -547,6 +575,10 @@ impl<'a> Codegen<'a> {
                     self.indent -= 1;
                     self.line("end");
                 }
+                self.indent -= 1;
+                self.line("end");
+                self.line(&format!("always @(posedge {clk_b}) begin"));
+                self.indent += 1;
                 if has_en_b {
                     self.line(&format!("if ({pfx_b}_en) begin"));
                     self.indent += 1;
@@ -570,9 +602,13 @@ impl<'a> Codegen<'a> {
                     let rdata_b_r2 = format!("{pfx_b}_{rdata_b}_r2");
                     self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_a_r2};"));
                     self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_b_r2};"));
-                    self.line(&format!("always_ff @(posedge {clk}) begin"));
+                    self.line(&format!("always_ff @(posedge {clk_a}) begin"));
                     self.indent += 1;
                     self.line(&format!("{rdata_a_r2} <= {rdata_a_r};"));
+                    self.indent -= 1;
+                    self.line("end");
+                    self.line(&format!("always_ff @(posedge {clk_b}) begin"));
+                    self.indent += 1;
                     self.line(&format!("{rdata_b_r2} <= {rdata_b_r};"));
                     self.indent -= 1;
                     self.line("end");

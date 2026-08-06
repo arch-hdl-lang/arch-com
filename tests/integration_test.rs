@@ -756,6 +756,45 @@ fn test_sync_fifo() {
 }
 
 #[test]
+fn test_sync_fifo_latency1_emits_registered_fwft_bram_shape() {
+    let source = r#"
+fifo DeepQueue
+  latency 1;
+  param DEPTH: const = 1024;
+  param T: type = UInt<32>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+  port full: out Bool;
+  port empty: out Bool;
+end fifo DeepQueue
+"#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("logic [DATA_WIDTH-1:0] mem_data_r;"));
+    assert!(sv.contains("logic [DATA_WIDTH-1:0] bypass_data_r;"));
+    assert!(sv.contains("assign pop_data    = bypass_valid ? bypass_data_r : mem_data_r;"));
+    assert!(sv.contains("mem_data_r <= mem[rd_ptr_next[PTR_W-2:0]];"));
+    assert!(sv.contains("if (do_push)\n      mem[wr_ptr[PTR_W-2:0]] <= push_data;"));
+    assert!(
+        !sv.contains("assign pop_data    = mem["),
+        "latency-1 FIFO must not expose an asynchronous memory read:\n{sv}"
+    );
+    assert!(
+        !sv.contains("if (rst) begin\n      mem["),
+        "the BRAM memory process must not reset the payload array:\n{sv}"
+    );
+
+    let sim = compile_to_sim_h(source, false);
+    assert!(sim.contains("_pop_data_r"));
+    assert!(sim.contains("pop_data   = _pop_data_r;"));
+}
+
+#[test]
 fn test_async_fifo() {
     let source = include_str!("../examples/async_fifo.arch");
     let sv = compile_to_sv(source);
@@ -768,6 +807,135 @@ fn test_async_fifo() {
     assert!(sv.contains("posedge wr_clk"));
     assert!(sv.contains("posedge rd_clk"));
     insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn test_async_fifo_latency1_emits_dual_clock_bram_shape() {
+    let source = r#"
+domain WriteDomain
+  freq_mhz: 100
+end domain WriteDomain
+domain ReadDomain
+  freq_mhz: 80
+end domain ReadDomain
+
+fifo DeepCdc
+  latency 1;
+  param DEPTH: const = 1024;
+  param T: type = UInt<32>;
+  port wr_clk: in Clock<WriteDomain>;
+  port rd_clk: in Clock<ReadDomain>;
+  port rst: in Reset<Async>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+  port full: out Bool;
+  port empty: out Bool;
+end fifo DeepCdc
+"#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("always_ff @(posedge wr_clk) begin"));
+    assert!(sv.contains("mem[wr_ptr_bin[PTR_W-2:0]] <= push_data;"));
+    assert!(sv.contains("always_ff @(posedge rd_clk) begin"));
+    assert!(sv.contains("if (rd_mem_en) pop_data_r <= mem[rd_mem_addr];"));
+    assert!(
+        !sv.contains("assign pop_data  = mem["),
+        "latency-1 async FIFO must use a synchronous read port:\n{sv}"
+    );
+    assert!(
+        !sv.contains(
+            "always_ff @(posedge wr_clk or posedge rst) begin\n    if (push_valid && push_ready)"
+        ),
+        "the async reset process must not own the memory write:\n{sv}"
+    );
+
+    let sim = compile_to_sim_h(source, false);
+    assert!(sim.contains("_pop_data_valid"));
+    assert!(sim.contains("pop_valid  = _pop_data_valid;"));
+}
+
+#[test]
+fn test_fifo_latency_validation() {
+    let invalid_fifo = r#"
+fifo BadLatency
+  latency 2;
+  param DEPTH: const = 8;
+  param T: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+end fifo BadLatency
+"#;
+    let tokens = lexer::tokenize(invalid_fifo).expect("lex");
+    let mut parser = Parser::new(tokens, invalid_fifo);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let result = TypeChecker::new(&symbols, &ast).check();
+    assert!(result.is_err(), "fifo latency 2 must be rejected");
+    assert!(result
+        .err()
+        .unwrap()
+        .iter()
+        .any(|e| format!("{e:?}").contains("latency 2 is out of range")));
+
+    let invalid_lifo = invalid_fifo
+        .replacen("fifo BadLatency", "fifo BadLatency\n  kind lifo;", 1)
+        .replace("latency 2;", "latency 1;");
+    let tokens = lexer::tokenize(&invalid_lifo).expect("lex");
+    let mut parser = Parser::new(tokens, &invalid_lifo);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let result = TypeChecker::new(&symbols, &ast).check();
+    assert!(result.is_err(), "lifo latency 1 must be rejected");
+    assert!(result
+        .err()
+        .unwrap()
+        .iter()
+        .any(|e| format!("{e:?}").contains("supports only latency 0")));
+}
+
+#[test]
+fn test_fifo_latency1_runs_in_native_sim() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let td = tempfile::tempdir().expect("tempdir");
+    let cases = [
+        (
+            "sync",
+            manifest.join("tests/fifo_latency1_sync.arch"),
+            manifest.join("examples/sync_fifo_tb.cpp"),
+        ),
+        (
+            "async",
+            manifest.join("tests/fifo_latency1_async.arch"),
+            manifest.join("examples/async_fifo_tb.cpp"),
+        ),
+    ];
+
+    for (name, arch_path, tb_path) in cases {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+            .arg("sim")
+            .arg(&arch_path)
+            .arg("--tb")
+            .arg(&tb_path)
+            .arg("--outdir")
+            .arg(td.path().join(name))
+            .output()
+            .expect("run latency-1 FIFO native sim");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() && stdout.contains("ALL TESTS PASSED"),
+            "{name} latency-1 FIFO simulation failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+    }
 }
 
 /// Regression: a dual-clock (async) FIFO used as a SUB-INSTANCE must still
@@ -1083,6 +1251,40 @@ end ram NoEnSingle
 }
 
 #[test]
+fn test_single_ram_latency2_has_one_output_driver() {
+    let source = r#"
+ram SingleLat2
+  kind single;
+  latency 2;
+  write: no_change;
+  param DEPTH: const = 256;
+  port clk: in Clock<SysDomain>;
+  store
+    data: Vec<UInt<32>, DEPTH>;
+  end store
+  ports access
+    en:    in Bool;
+    wen:   in Bool;
+    addr:  in UInt<8>;
+    wdata: in UInt<32>;
+    rdata: out UInt<32>;
+  end ports access
+end ram SingleLat2
+"#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("assign access_rdata = access_rdata_r2;"));
+    assert!(
+        !sv.contains("assign access_rdata = access_rdata_r;"),
+        "latency-2 single-port RAM must not also drive rdata from the first-stage register:\n{sv}"
+    );
+    assert_eq!(
+        sv.matches("assign access_rdata =").count(),
+        1,
+        "latency-2 single-port RAM must have exactly one output driver:\n{sv}"
+    );
+}
+
+#[test]
 fn test_true_dual_ram_latency1_no_chip_enable() {
     // Regression (sibling of the simple_dual fix): a latency-1 true_dual RAM
     // whose ports omit `en` must NOT reference undeclared `a_en` / `b_en` in
@@ -1120,6 +1322,273 @@ end ram NoEnTdp
     assert!(sv.contains("if (b_wen)"));
     assert!(sv.contains("a_rdata_r <= mem[a_addr]"));
     assert!(sv.contains("b_rdata_r <= mem[b_addr]"));
+    assert_eq!(
+        sv.matches("always @(posedge clk)").count(),
+        2,
+        "each true-dual RAM port must have its own inference process:\n{sv}"
+    );
+    assert!(
+        !sv.contains("always_ff @(posedge clk) begin"),
+        "two physical RAM write ports cannot share an always_ff process:\n{sv}"
+    );
+}
+
+#[test]
+fn test_true_dual_ram_uses_independent_port_clocks_in_sv() {
+    let source = |latency: u32| {
+        format!(
+            r#"
+ram TwoClockTdp{latency}
+  kind true_dual;
+  latency {latency};
+  param DEPTH: const = 16;
+  param T: type = UInt<8>;
+  port clk_b: in Clock<PortBDomain>;
+  port clk_a: in Clock<PortADomain>;
+  store
+    data: Vec<T, DEPTH>;
+  end store
+  ports a
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports a
+  ports b
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports b
+end ram TwoClockTdp{latency}
+"#
+        )
+    };
+
+    for latency in 0..=2 {
+        let sv = compile_to_sv(&source(latency));
+        assert_eq!(
+            sv.matches("always @(posedge clk_a)").count(),
+            1,
+            "port A must have exactly one memory process on clk_a at latency {latency}:\n{sv}"
+        );
+        assert_eq!(
+            sv.matches("always @(posedge clk_b)").count(),
+            1,
+            "port B must have exactly one memory process on clk_b at latency {latency}:\n{sv}"
+        );
+        if latency == 2 {
+            assert_eq!(
+                sv.matches("always_ff @(posedge clk_a)").count(),
+                1,
+                "port A output register must use clk_a:\n{sv}"
+            );
+            assert_eq!(
+                sv.matches("always_ff @(posedge clk_b)").count(),
+                1,
+                "port B output register must use clk_b:\n{sv}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_true_dual_ram_rejects_unsupported_clock_counts() {
+    let source = |clocks: &str| {
+        format!(
+            r#"
+ram BadClockCount
+  kind true_dual;
+  latency 1;
+  param DEPTH: const = 16;
+  param T: type = UInt<8>;
+{clocks}
+  store
+    data: Vec<T, DEPTH>;
+  end store
+  ports a
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports a
+  ports b
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports b
+end ram BadClockCount
+"#
+        )
+    };
+
+    for (clocks, count) in [
+        ("", 0),
+        (
+            "  port clk_a: in Clock<A>;\n  port clk_b: in Clock<B>;\n  port clk_c: in Clock<C>;",
+            3,
+        ),
+    ] {
+        let errors = typecheck_errors(&source(clocks))
+            .expect_err("true-dual RAM must reject clock counts other than one or two");
+        assert!(
+            errors.iter().any(|error| error.contains(&format!(
+                "must have 1 shared clock or 2 per-port clocks, found {count}"
+            ))),
+            "missing true-dual clock-count diagnostic for {count} clocks:\n{}",
+            errors.join("\n")
+        );
+    }
+}
+
+#[test]
+fn test_two_clock_true_dual_ram_runs_in_native_sim() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_path = td.path().join("TwoClockTrueDualMem.arch");
+    let tb_path = td.path().join("tb_two_clock_true_dual.cpp");
+    std::fs::write(
+        &arch_path,
+        r#"
+//! ---
+//! tags: [ram, true_dual, dual_clock, native_sim]
+//! ---
+//!
+//! Regression fixture for independently clocked true-dual RAM simulation.
+
+/// 16x8 true-dual RAM with one clock per physical port.
+ram TwoClockTrueDualMem
+  kind true_dual;
+  latency 1;
+  init: zero;
+  param DEPTH: const = 16;
+  param T: type = UInt<8>;
+  port clk_b: in Clock<PortBDomain>;
+  port clk_a: in Clock<PortADomain>;
+  store
+    data: Vec<T, DEPTH>;
+  end store
+  ports a
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports a
+  ports b
+    en: in Bool;
+    wen: in Bool;
+    addr: in UInt<4>;
+    wdata: in T;
+    rdata: out T;
+  end ports b
+end ram TwoClockTrueDualMem
+"#,
+    )
+    .expect("write arch");
+    std::fs::write(
+        &tb_path,
+        r#"
+#include "VTwoClockTrueDualMem.h"
+#include <cstdio>
+
+static void tick_a(VTwoClockTrueDualMem& dut) {
+  dut.clk_a = 0;
+  dut.eval();
+  dut.clk_a = 1;
+  dut.eval();
+  dut.clk_a = 0;
+  dut.eval();
+}
+
+static void tick_b(VTwoClockTrueDualMem& dut) {
+  dut.clk_b = 0;
+  dut.eval();
+  dut.clk_b = 1;
+  dut.eval();
+  dut.clk_b = 0;
+  dut.eval();
+}
+
+int main() {
+  VTwoClockTrueDualMem dut;
+
+  // A clk_a edge must not perform a pending Port B write.
+  dut.a_en = 0;
+  dut.b_en = 1;
+  dut.b_wen = 1;
+  dut.b_addr = 5;
+  dut.b_wdata = 0x55;
+  tick_a(dut);
+  dut.b_wen = 0;
+  tick_b(dut);
+  if (dut.b_rdata != 0) {
+    std::printf("FAIL clk_a advanced port B: b=%u\n", (unsigned)dut.b_rdata);
+    return 1;
+  }
+
+  // A clk_b edge must not perform a pending Port A write.
+  dut.b_en = 0;
+  dut.a_en = 1;
+  dut.a_wen = 1;
+  dut.a_addr = 3;
+  dut.a_wdata = 0x2a;
+  tick_b(dut);
+  dut.a_wen = 0;
+  tick_a(dut);
+  if (dut.a_rdata != 0) {
+    std::printf("FAIL clk_b advanced port A: a=%u\n", (unsigned)dut.a_rdata);
+    return 1;
+  }
+
+  // Each port must still write and read normally on its own clock.
+  dut.a_wen = 1;
+  tick_a(dut);
+  dut.a_wen = 0;
+  tick_a(dut);
+  if (dut.a_rdata != 0x2a) {
+    std::printf("FAIL port A own-clock access: a=%u\n", (unsigned)dut.a_rdata);
+    return 1;
+  }
+
+  dut.a_en = 0;
+  dut.b_en = 1;
+  dut.b_wen = 1;
+  tick_b(dut);
+  dut.b_wen = 0;
+  tick_b(dut);
+  if (dut.b_rdata != 0x55) {
+    std::printf("FAIL port B own-clock access: b=%u\n", (unsigned)dut.b_rdata);
+    return 1;
+  }
+
+  std::printf("PASS two_clock_true_dual_ram_native_sim\n");
+  return 0;
+}
+"#,
+    )
+    .expect("write tb");
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("sim")
+        .arg("--debug")
+        .arg(&arch_path)
+        .arg("--tb")
+        .arg(&tb_path)
+        .arg("--outdir")
+        .arg(td.path().join("build"))
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && stdout.contains("PASS two_clock_true_dual_ram_native_sim"),
+        "two-clock true-dual RAM native sim should compile and run\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
 }
 
 #[test]

@@ -2278,7 +2278,7 @@ The optional `kind` keyword selects the buffering discipline (same syntax as `ra
 | `fifo` (default) | First-in, first-out (queue) | Circular buffer with read/write pointers |
 | `lifo` | Last-in, first-out (stack) | Memory with single stack pointer; push writes at sp, pop reads at sp-1 |
 
-> ◈ `kind lifo` is restricted to single-clock (synchronous) FIFOs. Dual-clock LIFO is a compile error --- stacks are inherently single-domain structures.
+> ◈ `kind lifo` is restricted to single-clock (synchronous) FIFOs and `latency 0`. Dual-clock or registered-output LIFO is a compile error --- stacks are inherently single-domain structures and the FIFO FWFT prefetch scheme does not define LIFO replacement semantics.
 
 **8.1 Single-Clock FIFO**
 
@@ -2386,7 +2386,7 @@ The optional `kind` keyword selects the buffering discipline (same syntax as `ra
 
 > ◈ The LIFO uses a single stack pointer `sp`. Push writes at `mem[sp]` and increments; pop decrements and reads `mem[sp-1]`. Simultaneous push+pop replaces the top of stack without changing the pointer. The same push/pop handshake protocol (valid/ready) is used for both FIFO and LIFO.
 
-**8.2b Output Latency and FWFT** *(planned)*
+**8.2b Output Latency and FWFT**
 
 The optional `latency` keyword controls how `pop_data` is driven:
 
@@ -2411,17 +2411,17 @@ fifo DeepQueue
 end fifo DeepQueue
 ```
 
-**`latency 0` behavior (current):**
+**`latency 0` behavior:**
 
 `pop_data` is driven by a combinational read from the memory array: `assign pop_data = mem[rd_ptr]`. Data is available on `pop_data` one cycle after a push to a previously empty FIFO (the `empty` flag clears on the next rising edge, exposing the combinational read). For large depths, this combinational read path through the memory array mux tree becomes a timing bottleneck.
 
 **`latency 1` behavior (FWFT prefetch):**
 
-The FIFO maintains an output register (`pop_data_r`). When the FIFO transitions from empty to non-empty, or after each successful pop, the FIFO automatically **prefetches** the next word: the read pointer advances and the memory output is captured into `pop_data_r` on the next clock edge.
+The FIFO maintains a registered head-data path and automatically **prefetches** the front word. The memory array is accessed only from reset-free synchronous clocked processes using portable simple-dual-port or dual-clock RAM inference shapes. A single-clock FIFO keeps the inferred RAM's output register dedicated to memory reads and uses a separate registered write-data bypass when a push creates or replaces the visible front word; subsequent pops schedule the next synchronous read. A dual-clock FIFO fills the output register after the synchronized write pointer shows that data is available in the read domain.
 
 From the consumer's perspective, the interface is identical: when `pop_valid` is high, `pop_data` holds valid data and asserting `pop_ready` consumes it. The difference is purely timing --- `pop_data` comes from a flop, not a memory read mux, giving a clean registered output suitable for deep FIFOs.
 
-This is the same pattern used by Xilinx FIFO Generator's "First Word Fall Through" mode and Altera's "show-ahead" mode.
+The emitted SystemVerilog is vendor-neutral: it does not instantiate Xilinx XPM/RAMB or Intel memory primitives. The synchronous memory-access shape is intentionally suitable for FPGA block-RAM inference; `latency 0` retains its combinational-read shape and therefore normally maps to distributed/LUT RAM instead.
 
 > ◈ The compiler does not auto-select latency --- the designer must choose explicitly. This follows ARCH's principle of no hidden behavior that affects timing.
 

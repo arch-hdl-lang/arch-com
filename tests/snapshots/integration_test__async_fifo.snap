@@ -64,12 +64,14 @@ module AsyncBridge #(
   assign full_r  = (wr_ptr_bin[PTR_W-1] != rd_ptr_bin_wr[PTR_W-1]) &&
                    (wr_ptr_bin[PTR_W-2:0] == rd_ptr_bin_wr[PTR_W-2:0]);
   assign push_ready = !full_r;
+  // Reset-free write port: required for RAM inference
+  always_ff @(posedge wr_clk) begin
+    if (push_valid && push_ready)
+      mem[wr_ptr_bin[PTR_W-2:0]] <= push_data;
+  end
   always_ff @(posedge wr_clk or posedge rst) begin
     if (rst) wr_ptr_bin <= '0;
-    else if (push_valid && push_ready) begin
-      mem[wr_ptr_bin[PTR_W-2:0]] <= push_data;
-      wr_ptr_bin <= wr_ptr_bin + 1;
-    end
+    else if (push_valid && push_ready) wr_ptr_bin <= wr_ptr_bin + 1'b1;
   end
   
   // Read domain: empty detection using synced wr_ptr
