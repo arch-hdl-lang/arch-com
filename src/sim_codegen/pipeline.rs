@@ -62,7 +62,9 @@ impl<'a> SimCodegen<'a> {
         struct StageReg {
             prefixed: String,
             ty: String,
-            reset_val: String,
+            init_val: String,
+            reset_val: Option<String>,
+            reset_cond: Option<String>,
             bits: u32,
             is_let: bool,
         }
@@ -78,13 +80,20 @@ impl<'a> SimCodegen<'a> {
                         let prefixed = format!("{}_{}", prefix, r.name.name);
                         let ty = cpp_internal_type_with_params(&r.ty, &p.common.params);
                         let bits = type_bits_te_with_params(&r.ty, &p.common.params);
-                        let reset_val =
-                            Self::pipeline_reset_value(&r.reset).unwrap_or("0".to_string());
+                        let init_val = r
+                            .init
+                            .as_ref()
+                            .map(Self::pipeline_literal_value)
+                            .unwrap_or_else(|| "0".to_string());
+                        let reset_val = Self::pipeline_reset_value(&r.reset);
+                        let reset_cond = Self::pipeline_reset_condition(&r.reset, &p.ports);
                         names_set.insert(r.name.name.clone());
                         all_regs.push(StageReg {
                             prefixed,
                             ty,
+                            init_val,
                             reset_val,
+                            reset_cond,
                             bits,
                             is_let: false,
                         });
@@ -109,7 +118,9 @@ impl<'a> SimCodegen<'a> {
                         all_regs.push(StageReg {
                             prefixed,
                             ty,
-                            reset_val: String::new(),
+                            init_val: String::new(),
+                            reset_val: None,
+                            reset_cond: None,
                             bits,
                             is_let: true,
                         });
@@ -355,7 +366,7 @@ impl<'a> SimCodegen<'a> {
         inits.push("_clk_prev(0)".to_string());
         for sr in &all_regs {
             if !sr.is_let {
-                inits.push(format!("_{}(0)", sr.prefixed));
+                inits.push(format!("_{}({})", sr.prefixed, sr.init_val));
             }
         }
         for prefix in &stage_prefixes {
@@ -430,16 +441,6 @@ impl<'a> SimCodegen<'a> {
 
         // reset()
         cpp.push_str(&format!("void {class}::_do_reset() {{\n"));
-        for sr in &all_regs {
-            if !sr.is_let {
-                let v = match sr.reset_val.as_str() {
-                    "false" | "1'b0" => "0",
-                    "true" | "1'b1" => "1",
-                    other => other,
-                };
-                cpp.push_str(&format!("  _{} = {v};\n", sr.prefixed));
-            }
-        }
         for prefix in &stage_prefixes {
             cpp.push_str(&format!("  _{}_valid_r = 0;\n", prefix));
         }
@@ -456,7 +457,6 @@ impl<'a> SimCodegen<'a> {
             "  bool _rising = ({clk_name} && !_clk_prev);\n  _clk_prev = {clk_name};\n"
         ));
         cpp.push_str("  if (_rising) {\n");
-        cpp.push_str(&format!("    if ({rst_cond}) {{ _do_reset(); }} else {{\n"));
 
         // Evaluate let bindings first (they are combinational and may be referenced in seq blocks)
         for (si, stage) in p.stages.iter().enumerate() {
@@ -665,7 +665,21 @@ impl<'a> SimCodegen<'a> {
             );
             cpp.push_str(&format!("      if ({cond}) {{ _{target}_valid_r = 0; }}\n"));
         }
-        cpp.push_str("    }\n  }\n}\n\n");
+        // Per-register reset semantics: normal stage updates occur on every
+        // rising edge, then each declared reset overrides only its register.
+        // `reset none` therefore continues updating during unrelated resets.
+        for sr in &all_regs {
+            let (Some(cond), Some(value)) = (&sr.reset_cond, &sr.reset_val) else {
+                continue;
+            };
+            cpp.push_str(&format!(
+                "    if ({cond}) {{ _{} = {value}; }}\n",
+                sr.prefixed
+            ));
+        }
+        // Generated valid/FSM state remains owned by the pipeline control reset.
+        cpp.push_str(&format!("    if ({rst_cond}) {{ _do_reset(); }}\n"));
+        cpp.push_str("  }\n}\n\n");
 
         // eval_comb()
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
@@ -1657,15 +1671,44 @@ impl<'a> SimCodegen<'a> {
         }
     }
 
+    fn pipeline_literal_value(expr: &Expr) -> String {
+        match &expr.kind {
+            ExprKind::Literal(LitKind::Dec(v))
+            | ExprKind::Literal(LitKind::Bin(v))
+            | ExprKind::Literal(LitKind::Sized(_, v))
+            | ExprKind::Literal(LitKind::ParamSized(_, v)) => v.to_string(),
+            ExprKind::Literal(LitKind::Hex(v)) | ExprKind::Literal(LitKind::TypedFloat(_, v)) => {
+                format!("0x{v:X}")
+            }
+            ExprKind::Bool(b) => {
+                if *b {
+                    "1".to_string()
+                } else {
+                    "0".to_string()
+                }
+            }
+            // Match the existing native module behavior for initializers that
+            // are not constructor-list constants.
+            _ => "0".to_string(),
+        }
+    }
+
     fn pipeline_reset_value(reset: &RegReset) -> Option<String> {
         match reset {
-            RegReset::Explicit(_, _, _, val) | RegReset::Inherit(_, val) => match &val.kind {
-                ExprKind::Literal(LitKind::Dec(v)) => Some(format!("{v}")),
-                ExprKind::Literal(LitKind::Hex(v)) => Some(format!("0x{v:X}")),
-                ExprKind::Bool(b) => Some(if *b { "1".to_string() } else { "0".to_string() }),
-                _ => Some("0".to_string()),
-            },
-            _ => Some("0".to_string()),
+            RegReset::Explicit(_, _, _, val) | RegReset::Inherit(_, val) => {
+                Some(Self::pipeline_literal_value(val))
+            }
+            RegReset::None => None,
         }
+    }
+
+    fn pipeline_reset_condition(reset: &RegReset, ports: &[PortDecl]) -> Option<String> {
+        resolve_reg_reset_info(reset, ports).map(|(signal, _is_async, is_low)| {
+            if is_low {
+                format!("(!{signal})")
+            } else {
+                signal
+            }
+        })
     }
 }

@@ -3483,6 +3483,46 @@ fn test_simple_pipeline() {
 }
 
 #[test]
+fn test_pipeline_preserves_per_register_init_and_reset_semantics() {
+    let source = include_str!("pipeline_init_reset.arch");
+
+    let sv = compile_to_sv(source);
+
+    // `init` alone controls declaration initialization. A reset value must
+    // never be repurposed as an FPGA power-up initializer.
+    assert!(sv.contains("logic [7:0] capture_reset_only;"));
+    assert!(sv.contains("logic [7:0] capture_no_reset;"));
+    assert!(sv.contains("logic [7:0] capture_init_only = 5;"));
+    assert!(sv.contains("logic [7:0] capture_init_and_reset = 7;"));
+    assert!(!sv.contains("capture_reset_only = 3;"));
+    assert!(!sv.contains("capture_no_reset = 0;"));
+    assert!(!sv.contains("capture_init_and_reset = 9;"));
+
+    // Each register keeps its own reset declaration. Reset-free data remains
+    // in the clock-only process, while active-low async reset gets its own
+    // sensitivity list and value.
+    assert!(sv.contains("always_ff @(posedge clk) begin"));
+    assert!(sv.contains("if (rst_sync) begin"));
+    assert!(sv.contains("capture_reset_only <= 3;"));
+    assert!(sv.contains("always_ff @(posedge clk or negedge rst_async_n) begin"));
+    assert!(sv.contains("if ((!rst_async_n)) begin"));
+    assert!(sv.contains("capture_init_and_reset <= 9;"));
+    assert!(!sv.contains("capture_no_reset <= 0;"));
+    assert!(!sv.contains("capture_init_only <= 5;"));
+
+    // Native simulation mirrors the same declaration-init/reset split.
+    let sim = compile_to_sim_h(source, false);
+    assert!(sim.contains("_capture_reset_only(0)"));
+    assert!(sim.contains("_capture_no_reset(0)"));
+    assert!(sim.contains("_capture_init_only(5)"));
+    assert!(sim.contains("_capture_init_and_reset(7)"));
+    assert!(sim.contains("if (rst_sync) { _capture_reset_only = 3; }"));
+    assert!(sim.contains("if ((!rst_async_n)) { _capture_init_and_reset = 9; }"));
+    assert!(!sim.contains("if (rst_sync) { _capture_no_reset ="));
+    assert!(!sim.contains("if (rst_sync) { _capture_init_only ="));
+}
+
+#[test]
 fn test_pipeline_comb_only_stage_error() {
     let source = r#"
 domain SysDomain

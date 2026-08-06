@@ -1,6 +1,5 @@
 ---
 source: tests/integration_test.rs
-assertion_line: 1972
 expression: sv
 ---
 // domain SysDomain
@@ -45,8 +44,8 @@ module WorkerPipe (
   logic process_valid_r;
   
   // ── Stage data registers ──
-  logic capture_seen = 1'b0;
-  logic process_result = 1'b0;
+  logic capture_seen;
+  logic process_result;
   logic process_worker_done;
   
   // ── Wait-stage FSM registers ──
@@ -61,25 +60,21 @@ module WorkerPipe (
   
   assign process_fsm_busy = (process_fsm_state != '0);
   
-  // ── Stage register updates ──
+  // ── Pipeline control register updates ──
   always_ff @(posedge clk) begin
     if ((!rst)) begin
       capture_valid_r <= 1'b0;
-      capture_seen <= 1'b0;
       process_valid_r <= 1'b0;
       process_fsm_state <= '0;
-      process_result <= 1'b0;
     end else begin
       if (!capture_stall) begin
         capture_valid_r <= 1'b1;
-        capture_seen <= go;
       end
       // Wait-stage FSM: process
       unique case (process_fsm_state)
         1'd0: begin
           if (capture_valid_r) begin
             if (process_worker_done) begin
-              process_result <= 1'b1;
               process_valid_r <= capture_valid_r;
             end else begin
               process_fsm_state <= 1'd1;
@@ -88,7 +83,6 @@ module WorkerPipe (
         end
         1'd1: begin
           if (process_worker_done) begin
-            process_result <= 1'b1;
             process_fsm_state <= '0;
             process_valid_r <= 1'b1;
           end
@@ -97,6 +91,35 @@ module WorkerPipe (
           process_fsm_state <= '0;
         end
       endcase
+    end
+  end
+  
+  // ── Synchronous/reset-free stage data updates ──
+  always_ff @(posedge clk) begin
+    if (!capture_stall) begin
+      capture_seen <= go;
+    end
+    // Wait-stage FSM: process
+    unique case (process_fsm_state)
+      1'd0: begin
+        if (capture_valid_r) begin
+          if (process_worker_done) begin
+            process_result <= 1'b1;
+          end else begin
+          end
+        end
+      end
+      1'd1: begin
+        if (process_worker_done) begin
+          process_result <= 1'b1;
+        end
+      end
+      default: begin
+      end
+    endcase
+    if ((!rst)) begin
+      capture_seen <= 1'b0;
+      process_result <= 1'b0;
     end
   end
   

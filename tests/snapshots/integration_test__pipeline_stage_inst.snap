@@ -36,20 +36,26 @@ module AluPipe #(
   logic [XLEN-1:0] fetch_b_r = 0;
   logic [XLEN-1:0] execute_alu_out = 0;
   
-  // ── Stage register updates ──
+  // ── Pipeline control register updates ──
   always_ff @(posedge clk) begin
     if (rst) begin
       fetch_valid_r <= 1'b0;
-      fetch_a_r <= 0;
-      fetch_b_r <= 0;
       execute_valid_r <= 1'b0;
-      execute_alu_out <= 0;
     end else begin
       fetch_valid_r <= 1'b1;
-      fetch_a_r <= op_a;
-      fetch_b_r <= op_b;
       execute_valid_r <= fetch_valid_r;
-      execute_alu_out <= XLEN'((fetch_a_r + fetch_b_r));
+    end
+  end
+  
+  // ── Synchronous/reset-free stage data updates ──
+  always_ff @(posedge clk) begin
+    fetch_a_r <= op_a;
+    fetch_b_r <= op_b;
+    execute_alu_out <= XLEN'((fetch_a_r + fetch_b_r));
+    if (rst) begin
+      fetch_a_r <= 0;
+      fetch_b_r <= 0;
+      execute_alu_out <= 0;
     end
   end
   

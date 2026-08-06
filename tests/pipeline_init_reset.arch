@@ -1,0 +1,29 @@
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+pipeline PipelineInitReset
+  port clk: in Clock<SysDomain>;
+  port rst_sync: in Reset<Sync>;
+  port rst_async_n: in Reset<Async, Low>;
+  port data_in: in UInt<8>;
+  port data_out: out UInt<8>;
+
+  stage Capture
+    reg reset_only: UInt<8> reset rst_sync => 3;
+    reg no_reset: UInt<8> reset none;
+    reg init_only: UInt<8> init 5 reset none;
+    reg init_and_reset: UInt<8> init 7 reset rst_async_n => 9;
+
+    seq on clk rising
+      reset_only <= data_in;
+      no_reset <= data_in;
+      init_only <= data_in;
+      init_and_reset <= data_in;
+    end seq
+
+    comb
+      data_out = reset_only ^ no_reset ^ init_only ^ init_and_reset;
+    end comb
+  end stage Capture
+end pipeline PipelineInitReset

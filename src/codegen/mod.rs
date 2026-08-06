@@ -1926,13 +1926,32 @@ impl<'a> Codegen<'a> {
     /// Returns `None` when the filtered statement has nothing to emit
     /// (all its assigns were dropped). Container statements (IfElse, For,
     /// Match, Init, DoUntil) survive only if they have at least one
-    /// surviving inner assign. Log/WaitUntil pass through unchanged when
-    /// the parent's `Some(_)` branch survives — they are conservatively
-    /// kept where their parent body is non-empty.
+    /// surviving inner statement. Non-assignment statements are dropped;
+    /// callers that need to retain pipeline logging use the sibling helper.
     pub(crate) fn filter_stmt_by_assigned_set(
         stmt: &Stmt,
         target_set: &std::collections::BTreeSet<String>,
         keep_in_set: bool,
+    ) -> Option<Stmt> {
+        Self::filter_stmt_by_assigned_set_impl(stmt, target_set, keep_in_set, false)
+    }
+
+    /// Pipeline process partitioning uses the same assignment filter, but
+    /// keeps `log` statements in the single control process so splitting data
+    /// registers by reset group does not duplicate or silently discard them.
+    pub(crate) fn filter_stmt_by_assigned_set_keeping_logs(
+        stmt: &Stmt,
+        target_set: &std::collections::BTreeSet<String>,
+        keep_in_set: bool,
+    ) -> Option<Stmt> {
+        Self::filter_stmt_by_assigned_set_impl(stmt, target_set, keep_in_set, true)
+    }
+
+    fn filter_stmt_by_assigned_set_impl(
+        stmt: &Stmt,
+        target_set: &std::collections::BTreeSet<String>,
+        keep_in_set: bool,
+        keep_logs: bool,
     ) -> Option<Stmt> {
         match stmt {
             Stmt::Assign(a) => {
@@ -1948,12 +1967,26 @@ impl<'a> Codegen<'a> {
                 let then_filt: Vec<Stmt> = ie
                     .then_stmts
                     .iter()
-                    .filter_map(|s| Self::filter_stmt_by_assigned_set(s, target_set, keep_in_set))
+                    .filter_map(|s| {
+                        Self::filter_stmt_by_assigned_set_impl(
+                            s,
+                            target_set,
+                            keep_in_set,
+                            keep_logs,
+                        )
+                    })
                     .collect();
                 let else_filt: Vec<Stmt> = ie
                     .else_stmts
                     .iter()
-                    .filter_map(|s| Self::filter_stmt_by_assigned_set(s, target_set, keep_in_set))
+                    .filter_map(|s| {
+                        Self::filter_stmt_by_assigned_set_impl(
+                            s,
+                            target_set,
+                            keep_in_set,
+                            keep_logs,
+                        )
+                    })
                     .collect();
                 if then_filt.is_empty() && else_filt.is_empty() {
                     None
@@ -1972,7 +2005,12 @@ impl<'a> Codegen<'a> {
                         .body
                         .iter()
                         .filter_map(|s| {
-                            Self::filter_stmt_by_assigned_set(s, target_set, keep_in_set)
+                            Self::filter_stmt_by_assigned_set_impl(
+                                s,
+                                target_set,
+                                keep_in_set,
+                                keep_logs,
+                            )
                         })
                         .collect();
                     if !arm.body.is_empty() {
@@ -1989,7 +2027,14 @@ impl<'a> Codegen<'a> {
                 let body_filt: Vec<Stmt> = f
                     .body
                     .iter()
-                    .filter_map(|s| Self::filter_stmt_by_assigned_set(s, target_set, keep_in_set))
+                    .filter_map(|s| {
+                        Self::filter_stmt_by_assigned_set_impl(
+                            s,
+                            target_set,
+                            keep_in_set,
+                            keep_logs,
+                        )
+                    })
                     .collect();
                 if body_filt.is_empty() {
                     None
@@ -2003,7 +2048,14 @@ impl<'a> Codegen<'a> {
                 let body_filt: Vec<Stmt> = ib
                     .body
                     .iter()
-                    .filter_map(|s| Self::filter_stmt_by_assigned_set(s, target_set, keep_in_set))
+                    .filter_map(|s| {
+                        Self::filter_stmt_by_assigned_set_impl(
+                            s,
+                            target_set,
+                            keep_in_set,
+                            keep_logs,
+                        )
+                    })
                     .collect();
                 if body_filt.is_empty() {
                     None
@@ -2016,7 +2068,14 @@ impl<'a> Codegen<'a> {
             Stmt::DoUntil { body, cond, span } => {
                 let body_filt: Vec<Stmt> = body
                     .iter()
-                    .filter_map(|s| Self::filter_stmt_by_assigned_set(s, target_set, keep_in_set))
+                    .filter_map(|s| {
+                        Self::filter_stmt_by_assigned_set_impl(
+                            s,
+                            target_set,
+                            keep_in_set,
+                            keep_logs,
+                        )
+                    })
                     .collect();
                 if body_filt.is_empty() {
                     None
@@ -2028,14 +2087,7 @@ impl<'a> Codegen<'a> {
                     })
                 }
             }
-            // Log + WaitUntil don't have assignments themselves; if they
-            // appear at the top level of a partition, they only survive
-            // when at least one inner assign survives — but at top-level
-            // they can be dropped (no inner). The recursive walk handles
-            // them only by keeping their parent container; standalone
-            // top-level Log/WaitUntil get dropped. (In practice these
-            // sit inside For/IfElse/Match bodies and the parent's empty-
-            // body check decides their fate.)
+            Stmt::Log(_) if keep_logs => Some(stmt.clone()),
             Stmt::Log(_) | Stmt::WaitUntil(_, _) => None,
         }
     }
