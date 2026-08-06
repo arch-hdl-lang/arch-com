@@ -135,6 +135,12 @@
       ]
     },
     {
+      "name": "e203__e203_ifu_ifetch",
+      "files": [
+        "tests/e203/e203_ifu_ifetch.arch"
+      ]
+    },
+    {
       "name": "e203__e203_itcm_icb_bus",
       "files": [
         "tests/e203/e203_itcm_icb_bus.arch"

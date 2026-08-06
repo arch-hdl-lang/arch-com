@@ -83,6 +83,17 @@
       ]
     },
     {
+      "name": "e203__e203_ifu_ifetch",
+      "arch_files": [
+        "tests/e203/e203_ifu_ifetch.arch",
+        "tests/e203/e203_ifu_minidec.arch",
+        "tests/e203/e203_ifu_litebpu.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_ifu_ifetch_tb.cpp"
+      ]
+    },
+    {
       "name": "axi_dma_tlm__TlmConnectOneToOne",
       "arch_files": [
         "tests/axi_dma_tlm/TlmConnectOneToOne.arch"
