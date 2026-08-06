@@ -1,0 +1,16 @@
+// General vacuity guard (not float-specific): contradictory `assume`
+// clauses make the constrained state space EMPTY, so a negated-property
+// miter is trivially unsatisfiable and WOULD report a false PROVED.
+// `arch formal` must detect the unsatisfiable assumptions and report
+// VACUOUS (a hard failure, exit 1). `bogus` refutes without the assumes
+// (a can be <= 100).
+module VacuousAssumes
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port o: out Bool;
+  comb o = a > 100; end comb
+  assume hi: a >= 200;
+  assume lo: a <= 50;
+  assert bogus: a > 100;
+end module VacuousAssumes

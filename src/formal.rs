@@ -47,6 +47,11 @@ pub enum PropertyStatus {
     /// `assert<bound_err>` proved by the error engine; the string carries
     /// the engine's derived enclosure for the error term (best bound).
     ProvedEnclosure(String),
+    /// A proof that holds only because its premise is never exercised — a
+    /// soundness trap, not a pass. Two causes, distinguished by the string:
+    /// jointly-unsatisfiable `assume` clauses (empty state space), or an
+    /// implication whose antecedent is unreachable (trigger never fires).
+    Vacuous(String),
 }
 
 #[derive(Debug, Clone)]
@@ -70,7 +75,9 @@ impl FormalReport {
                 PropertyStatus::Proved(_)
                 | PropertyStatus::Hit(_)
                 | PropertyStatus::ProvedEnclosure(_) => {}
-                PropertyStatus::Refuted(_) | PropertyStatus::NotReached(_) => any_bad = true,
+                PropertyStatus::Refuted(_)
+                | PropertyStatus::NotReached(_)
+                | PropertyStatus::Vacuous(_) => any_bad = true,
                 PropertyStatus::Inconclusive(_) => any_incon = true,
             }
         }
@@ -129,9 +136,38 @@ pub fn run(
         })?;
     }
 
+    // 4b. Vacuity guard. `assume` clauses are conjoined into `base`, so if
+    // `base` is itself UNSAT the constrained state space is empty and EVERY
+    // assert/cover would return `unsat` on its negated-property miter —
+    // reporting a vacuous PROVED. Detect it with one satisfiability check on
+    // the constrained transition system (no property) and, if unsatisfiable,
+    // mark all solver-path properties Vacuous instead of trusting the proof.
+    // Only meaningful when there are assumes (an unconstrained system is
+    // trivially satisfiable). bound_err properties encode their own
+    // hypotheses separately and are checked there.
+    let vacuous = if !ctx.assumes.is_empty() {
+        let probe = format!("{base}(check-sat)\n");
+        let sr = invoke_solver(&args.solver, &probe, args.timeout)
+            .map_err(|e| CompileError::general(&format!("solver error: {e}"), module.span))?;
+        sr.stdout.split_ascii_whitespace().next() == Some("unsat")
+    } else {
+        false
+    };
+
     // 5. For each assert/cover, run one (push)/(check-sat)/(pop) scope
     let mut results = Vec::new();
     for prop in ctx.properties.clone().iter() {
+        if vacuous && prop.engine != crate::ast::AssertEngine::BoundErr {
+            results.push(PropertyResult {
+                name: prop.name.clone(),
+                kind: prop.kind.clone(),
+                status: PropertyStatus::Vacuous(
+                    "`assume` clauses are jointly unsatisfiable — the constrained state space is empty, so every property proves vacuously".to_string(),
+                ),
+                counterexample: None,
+            });
+            continue;
+        }
         let res = if prop.engine == crate::ast::AssertEngine::BoundErr {
             ctx.run_bound_err(prop, args)?
         } else {
@@ -3296,6 +3332,41 @@ impl<'a> FormalCtx<'a> {
         }
     }
 
+    /// True if the implication antecedent `a` cannot be satisfied at any
+    /// cycle in `[min_t, max_t]` of the constrained unroll — i.e. the
+    /// trigger never fires, so an `a |-> b` / `a |=> b` proof is vacuous.
+    /// One extra solver query on `base` (which already carries all `assume`
+    /// constraints) asserting the disjunction of `a@t` over the window.
+    fn antecedent_unreachable(
+        &self,
+        antecedent: &Expr,
+        base: &str,
+        min_t: u32,
+        max_t: u32,
+        args: &FormalArgs,
+    ) -> Result<bool, CompileError> {
+        let mut smt = String::with_capacity(base.len() + 128);
+        smt.push_str(base);
+        smt.push_str("\n; ── antecedent reachability (vacuity) ──\n");
+        let mut terms = Vec::new();
+        for t in min_t..=max_t {
+            let enc = self.encode_expr(antecedent, t, Some((1, false)))?;
+            terms.push(format!("(= {} #b1)", as_bv1_bool(&enc)));
+        }
+        let disj = if terms.len() == 1 {
+            terms.into_iter().next().unwrap()
+        } else {
+            format!("(or {})", terms.join(" "))
+        };
+        smt.push_str(&format!("(assert {disj})\n(check-sat)\n"));
+        let sr = invoke_solver(&args.solver, &smt, args.timeout)
+            .map_err(|e| CompileError::general(&format!("solver error: {e}"), antecedent.span))?;
+        // unsat ⇒ the antecedent is never satisfiable ⇒ vacuous. On a
+        // `sat`/`unknown` we conservatively treat the trigger as reachable
+        // (do NOT flag vacuity on an inconclusive reachability check).
+        Ok(sr.stdout.split_ascii_whitespace().next() == Some("unsat"))
+    }
+
     fn run_property(
         &self,
         prop: &PropertyDecl,
@@ -3436,7 +3507,26 @@ impl<'a> FormalCtx<'a> {
                 .with_cex(cex)
             }
             "unsat" => match prop.kind {
-                AssertKind::Assert => PropertyStatus::Proved(args.bound).with_cex(None),
+                AssertKind::Assert => {
+                    // Antecedent-reachability (vacuity) check: an implication
+                    // `a |-> b` / `a |=> b` proves vacuously whenever the
+                    // antecedent `a` is unreachable in the constrained state
+                    // space — the consequent is never tested. A genuine proof
+                    // requires the trigger to fire at least once. If it never
+                    // can, this is a vacuous pass, not a real one.
+                    if let Some(antecedent) = implication_antecedent(&prop.expr) {
+                        if self.antecedent_unreachable(antecedent, base, min_t, max_t, args)? {
+                            PropertyStatus::Vacuous(
+                                "implication antecedent is unreachable — the trigger never fires, so the consequent is never tested".to_string(),
+                            )
+                            .with_cex(None)
+                        } else {
+                            PropertyStatus::Proved(args.bound).with_cex(None)
+                        }
+                    } else {
+                        PropertyStatus::Proved(args.bound).with_cex(None)
+                    }
+                }
                 AssertKind::Cover => PropertyStatus::NotReached(args.bound).with_cex(None),
                 AssertKind::Assume => unreachable!("assumes filtered before run_property"),
             },
@@ -4305,6 +4395,19 @@ fn max_cycle_offsets(e: &Expr) -> (u32, u32) {
 
 // ── Counterexample rendering ────────────────────────────────────────────────
 
+/// Antecedent of a top-level implication property (`a |-> b` or `a |=> b`),
+/// if the expression is one. Used for vacuity (antecedent-reachability)
+/// checking: an implication whose antecedent is unreachable proves
+/// vacuously — the consequent is never exercised.
+fn implication_antecedent(expr: &Expr) -> Option<&Expr> {
+    match &expr.kind {
+        ExprKind::Binary(BinOp::Implies, a, _) | ExprKind::Binary(BinOp::ImpliesNext, a, _) => {
+            Some(a)
+        }
+        _ => None,
+    }
+}
+
 fn find_first_failing_cycle(
     kind: &AssertKind,
     expr: &Expr,
@@ -4503,6 +4606,7 @@ fn render_report(results: &[PropertyResult]) {
             PropertyStatus::NotReached(n) => ("NOT REACHED", format!("within bound {n}")),
             PropertyStatus::Inconclusive(why) => ("INCONCLUSIVE", why.clone()),
             PropertyStatus::ProvedEnclosure(enc) => ("PROVED", enc.clone()),
+            PropertyStatus::Vacuous(why) => ("VACUOUS", why.clone()),
         };
         eprintln!("[{:?}] {:<24} {}  — {}", r.kind, r.name, tag, detail);
         if let Some(cex) = &r.counterexample {

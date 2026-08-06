@@ -1,0 +1,10 @@
+// Companion: a reachable antecedent with a true consequent proves
+// normally — the reachability check must not false-flag it.
+module ReachableImplication
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port o: out Bool;
+  comb o = a >= 200; end comb
+  assert good: (a >= 200) |-> (a >= 100);
+end module ReachableImplication
