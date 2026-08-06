@@ -7061,6 +7061,28 @@ fn warnings_from(source: &str) -> Vec<String> {
     warnings.into_iter().map(|w| w.message).collect()
 }
 
+/// Like `warnings_from`, but for sources where `check()` is expected to
+/// FAIL (severity promotion, 2026-08: whole-design comb-SCC diagnostic is
+/// now a `CompileError`, not a `CompileWarning`). Panics if `check()`
+/// unexpectedly succeeds — callers use this specifically to assert the
+/// fatal path, mirroring `warnings_from`'s shape so existing message-text
+/// assertions (cycle nodes, module list, etc.) carry over unchanged.
+fn errors_from(source: &str) -> Vec<String> {
+    let tokens = arch::lexer::tokenize(source).expect("lexer error");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve error");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    match checker.check() {
+        Ok(_) => panic!(
+            "expected type check to FAIL with a comb-loop error (severity \
+             promotion, 2026-08), but it succeeded"
+        ),
+        Err(errs) => errs.into_iter().map(|e| e.to_string()).collect(),
+    }
+}
+
 #[test]
 fn test_handshake_tier15_unguarded_payload_warns() {
     let source = "
@@ -24867,7 +24889,9 @@ fn test_thread_state_names_distinguish_wait_until_vs_wait_cycles() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Issue #246: whole-design combinational feedback-loop detection (MVP).
+// Issue #246: whole-design combinational feedback-loop detection (MVP;
+// promoted warning -> error 2026-08, see `errors_from`/`comb_loop_errors`
+// below).
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn comb_loop_warnings(source: &str) -> Vec<String> {
@@ -24877,11 +24901,21 @@ fn comb_loop_warnings(source: &str) -> Vec<String> {
         .collect()
 }
 
+/// `comb_loop_warnings`'s counterpart for sources with a genuine unblessed
+/// SCC: `check()` now fails, so this reads the message text out of the
+/// `Err` list instead of the (now unreachable in that case) `Ok` warnings.
+fn comb_loop_errors(source: &str) -> Vec<String> {
+    errors_from(source)
+        .into_iter()
+        .filter(|m| m.contains("combinational feedback cycle") || m.starts_with("arch check:"))
+        .collect()
+}
+
 #[test]
 fn test_comb_loop_within_module_detected() {
     // Self-driving comb cycle inside a single module: a depends on b,
     // b depends on a. The whole-design check should surface it as a
-    // warning.
+    // compile error (severity promotion, 2026-08 — was a warning).
     let source = r#"
         module M
           port i: in UInt<1>;
@@ -24895,11 +24929,11 @@ fn test_comb_loop_within_module_detected() {
           end comb
         end module M
     "#;
-    let ws = comb_loop_warnings(source);
+    let ws = comb_loop_errors(source);
     assert!(
         ws.iter()
             .any(|m| m.contains("combinational feedback cycle")),
-        "expected a comb-loop warning, got: {:?}",
+        "expected a comb-loop error, got: {:?}",
         ws
     );
 }
@@ -24908,7 +24942,8 @@ fn test_comb_loop_within_module_detected() {
 fn test_comb_loop_across_two_instances_detected() {
     // Cross-instance loop: A.out -> B.in -> B.out -> A.in.
     // The current per-module analyzer silently absorbs this as
-    // settle_depth=2; the new whole-design analyzer should warn.
+    // settle_depth=2; the whole-design analyzer must flag it as a
+    // compile error (severity promotion, 2026-08 — was a warning).
     let source = r#"
         module Cell
           port i: in UInt<1>;
@@ -24939,11 +24974,11 @@ fn test_comb_loop_across_two_instances_detected() {
           end comb
         end module Top
     "#;
-    let ws = comb_loop_warnings(source);
+    let ws = comb_loop_errors(source);
     assert!(
         ws.iter()
             .any(|m| m.contains("combinational feedback cycle")),
-        "expected a comb-loop warning, got: {:?}",
+        "expected a comb-loop error, got: {:?}",
         ws
     );
 }
@@ -25099,8 +25134,9 @@ fn test_sibling_top_modules_sharing_signal_names_is_not_a_cycle() {
 fn test_comb_loop_attributed_to_the_owning_top_module() {
     // The cycle lives in `Loop2`, which is declared SECOND. `path_owner`
     // was keyed on the shared root path `vec![]`, so whichever top was
-    // expanded last overwrote the entry and the warning named the wrong
-    // module — here it blamed the acyclic `Filler`.
+    // expanded last overwrote the entry and the diagnostic named the wrong
+    // module — here it blamed the acyclic `Filler`. (Severity promotion,
+    // 2026-08: this is now a compile error, not a warning.)
     let source = r#"
         module Filler
           port x: in UInt<8>;
@@ -25122,7 +25158,7 @@ fn test_comb_loop_attributed_to_the_owning_top_module() {
           end comb
         end module Loop2
     "#;
-    let ws = comb_loop_warnings(source);
+    let ws = comb_loop_errors(source);
     let cycle_msgs: Vec<_> = ws
         .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
@@ -25130,7 +25166,7 @@ fn test_comb_loop_attributed_to_the_owning_top_module() {
     assert_eq!(
         cycle_msgs.len(),
         1,
-        "expected exactly one cycle warning, got: {:?}",
+        "expected exactly one cycle error, got: {:?}",
         ws
     );
     assert!(
@@ -25206,12 +25242,17 @@ fn test_interface_module_treated_as_opaque() {
     }
     let symbols = arch::resolve::resolve(&ast).expect("resolve error");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
-    let (warnings, _) = checker.check().expect("type check error");
-    let ws: Vec<String> = warnings.into_iter().map(|w| w.message).collect();
+    // Severity promotion, 2026-08: the whole-design comb-SCC diagnostic is
+    // now a compile error, so `check()` fails instead of returning Ok with
+    // a warning attached.
+    let errs = checker
+        .check()
+        .expect_err("expected type check to fail with a comb-loop error");
+    let ws: Vec<String> = errs.into_iter().map(|e| e.to_string()).collect();
     assert!(
         ws.iter()
             .any(|m| m.contains("combinational feedback cycle")),
-        "expected opaque-interface module to participate in a detected cycle; warnings: {:?}",
+        "expected opaque-interface module to participate in a detected cycle; errors: {:?}",
         ws
     );
 }
@@ -25899,8 +25940,9 @@ fn test_archi_comb_dep_empty_marks_output_pure() {
 fn test_archi_comb_dep_absent_falls_back_to_opaque() {
     // A stub WITHOUT the annotation must keep today's opaque "every
     // output depends on every input" behavior. Two such stubs cross-
-    // wired should fire the cycle warning (regression guard for the
-    // pre-annotation behavior).
+    // wired should fire the cycle diagnostic (regression guard for the
+    // pre-annotation behavior). Severity promotion, 2026-08: this is now
+    // a compile error, not a warning.
     let source = r#"
         module Stub
           port i: in  UInt<1>;
@@ -25948,8 +25990,10 @@ fn test_archi_comb_dep_absent_falls_back_to_opaque() {
     }
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
-    let (warnings, _) = checker.check().expect("type check");
-    let ws: Vec<String> = warnings.into_iter().map(|w| w.message).collect();
+    let errs = checker
+        .check()
+        .expect_err("expected type check to fail with a comb-loop error");
+    let ws: Vec<String> = errs.into_iter().map(|e| e.to_string()).collect();
     assert!(
         ws.iter()
             .any(|m| m.contains("combinational feedback cycle")),
@@ -26121,7 +26165,7 @@ fn test_comb_loop_bodied_real_cycle_still_detected() {
           end comb
         end module Top
     "#;
-    let ws = comb_loop_warnings(source);
+    let ws = comb_loop_errors(source);
     let cycle_msgs: Vec<_> = ws
         .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
@@ -26129,7 +26173,7 @@ fn test_comb_loop_bodied_real_cycle_still_detected() {
     assert!(
         !cycle_msgs.is_empty(),
         "real cycle (u1.out_a ← w2; u2.out_b ← w1) must still fire; \
-         warnings: {:?}",
+         errors: {:?}",
         ws
     );
 }
@@ -26403,7 +26447,7 @@ fn test_comb_loop_fsm_real_cycle_still_detected() {
           end comb
         end module Top
     "#;
-    let ws = comb_loop_warnings(source);
+    let ws = comb_loop_errors(source);
     let cycle_msgs: Vec<_> = ws
         .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
@@ -26411,7 +26455,7 @@ fn test_comb_loop_fsm_real_cycle_still_detected() {
     assert!(
         !cycle_msgs.is_empty(),
         "real cycle (u1.out_a ← w2; u2.out_b ← w1) through fsm \
-         must still fire; warnings: {:?}",
+         must still fire; errors: {:?}",
         ws
     );
 }
@@ -26515,7 +26559,7 @@ fn test_comb_loop_fsm_default_comb_deps_included() {
     "#;
     // The cross-wire w1 → in_z → out_a → w1 is a legitimate cycle.
     // Per-output FSM walker must include in_z in out_a's dep set.
-    let ws = comb_loop_warnings(source);
+    let ws = comb_loop_errors(source);
     let cycle_msgs: Vec<_> = ws
         .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
@@ -26523,7 +26567,7 @@ fn test_comb_loop_fsm_default_comb_deps_included() {
     assert!(
         !cycle_msgs.is_empty(),
         "default_comb reads in_z driving out_a; w1 → in_z → out_a → w1 \
-         must fire as a comb cycle; warnings: {:?}",
+         must fire as a comb cycle; errors: {:?}",
         ws
     );
 }
@@ -26572,7 +26616,7 @@ fn test_comb_loop_fsm_output_default_expr_deps_included() {
           end comb
         end module Top
     "#;
-    let ws = comb_loop_warnings(source);
+    let ws = comb_loop_errors(source);
     let cycle_msgs: Vec<_> = ws
         .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
@@ -26580,11 +26624,13 @@ fn test_comb_loop_fsm_output_default_expr_deps_included() {
     assert!(
         !cycle_msgs.is_empty(),
         "out_a's default expression reads in_y; w1 → in_y → out_a → w1 \
-         must fire as a comb cycle; warnings: {:?}",
+         must fire as a comb cycle; errors: {:?}",
         ws
     );
 
     // And the dual: with cross-wire through in_a (NOT a dep), no cycle.
+    // Acyclic, so `check()` still succeeds — the warning-based helper is
+    // correct here and stays unchanged.
     let source2 = r#"
         fsm Cell
           port clk: in Clock<SysDomain>;
@@ -26688,7 +26734,8 @@ fn test_comb_loop_read_before_first_inblock_write_still_flagged() {
     // Dual of the above: `x` is read on the RHS of its OWN first (and only)
     // assignment in the block, with no earlier write establishing an
     // in-block value. There is no register to break this dependency on
-    // itself — a genuine combinational self-loop that must still warn.
+    // itself — a genuine combinational self-loop that must still be
+    // flagged (compile error, severity promotion 2026-08 — was a warning).
     let source = r#"
         module M
           port i: in UInt<1>;
@@ -26700,7 +26747,7 @@ fn test_comb_loop_read_before_first_inblock_write_still_flagged() {
           end comb
         end module M
     "#;
-    let ws = comb_loop_warnings(source);
+    let ws = comb_loop_errors(source);
     let cycle_msgs: Vec<_> = ws
         .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
@@ -26736,7 +26783,7 @@ fn test_comb_loop_mutually_exclusive_branch_write_not_promoted() {
           end comb
         end module M
     "#;
-    let ws = comb_loop_warnings(source);
+    let ws = comb_loop_errors(source);
     let cycle_msgs: Vec<_> = ws
         .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
@@ -26883,7 +26930,7 @@ fn test_vec_of_bus_field_through_index_real_cycle_still_flagged() {
           end comb
         end module M
     "#;
-    let ws = comb_loop_warnings(source);
+    let ws = comb_loop_errors(source);
     let cycle_msgs: Vec<_> = ws
         .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
@@ -26957,7 +27004,7 @@ fn test_direct_rhs_mutual_read_before_write_still_flagged() {
           end comb
         end module M
     "#;
-    let ws = comb_loop_warnings(source);
+    let ws = comb_loop_errors(source);
     let cycle_msgs: Vec<_> = ws
         .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
@@ -27092,7 +27139,7 @@ fn test_for_loop_cond_stack_ungrounded_fold_still_flagged() {
           end comb
         end module M
     "#;
-    let ws = comb_loop_warnings(source);
+    let ws = comb_loop_errors(source);
     let cycle_msgs: Vec<_> = ws
         .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
@@ -27128,7 +27175,7 @@ fn test_overlapping_bitslice_self_read_on_first_touch_still_flagged() {
           end comb
         end module M
     "#;
-    let ws = comb_loop_warnings(source);
+    let ws = comb_loop_errors(source);
     let cycle_msgs: Vec<_> = ws
         .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
@@ -27272,10 +27319,21 @@ fn test_cross_instance_comb_loop_780_still_flagged_and_verilator_confirms_real()
     // combinational feedback loop. `arch check` must still flag it (the
     // #780 fold-artifact filter is scoped to same-comb-block sequential
     // collapsing only; cross-instance edges are always "not grounded",
-    // see `GraphBuilder::add_edge`), and — independently of `arch check`'s
-    // own opinion — `verilator --lint-only --assert` on the generated SV
-    // must fire `UNOPTFLAT` on the same wires, confirming this is a real
-    // hardware loop and not merely a self-consistent checker artifact.
+    // see `GraphBuilder::add_edge`).
+    //
+    // Severity change (2026-08): the whole-design comb-SCC diagnostic was
+    // promoted from warning to error once the prerequisite false-positive
+    // fixes (#783, #785, #789) drove the corpus blast radius to zero real
+    // designs. `arch check` now EXITS NONZERO on this fixture instead of
+    // succeeding with a warning on stderr. `arch build` fails the same way
+    // (typecheck runs before codegen), so no SV is ever emitted for this
+    // fixture anymore — the old second half of this test, which built the
+    // SV and independently cross-checked Verilator's `UNOPTFLAT` lint on
+    // it, is no longer reachable and has been dropped. The Verilator
+    // cross-check served its purpose during the warning era (proving the
+    // diagnostic wasn't merely a self-consistent checker artifact); now
+    // that the same condition is a hard compile error, the compiler
+    // refusing to build the design at all is the stronger guarantee.
     let arch_bin = env!("CARGO_BIN_EXE_arch");
     let src = "tests/regression/issues/cross_instance_comb_loop_780/CrossInstanceLoop.arch";
 
@@ -27286,23 +27344,17 @@ fn test_cross_instance_comb_loop_780_still_flagged_and_verilator_confirms_real()
         .expect("run arch check");
     let check_stderr = String::from_utf8_lossy(&check.stderr);
     assert!(
+        !check.status.success(),
+        "expected the synthetic cross-instance loop to fail `arch check` \
+         now that the diagnostic is an error, not a warning; stderr:\n{check_stderr}"
+    );
+    assert!(
         check_stderr.contains("combinational feedback cycle ("),
         "expected the synthetic cross-instance loop to still be flagged \
          after the #780 fold-artifact filter; stderr:\n{check_stderr}"
     );
 
-    if std::process::Command::new("verilator")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        eprintln!(
-            "skipping Verilator UNOPTFLAT cross-check for \
-             CrossInstanceLoop: verilator not found"
-        );
-        return;
-    }
-
+    // `arch build` must fail the same way — same typecheck pass runs first.
     let td = tempfile::tempdir().expect("tempdir");
     let sv_out = td.path().join("CrossInstanceLoop.sv");
     let build = std::process::Command::new(arch_bin)
@@ -27311,30 +27363,17 @@ fn test_cross_instance_comb_loop_780_still_flagged_and_verilator_confirms_real()
         .arg("-o")
         .arg(&sv_out)
         .output()
-        .expect("build CrossInstanceLoop SV");
+        .expect("run arch build");
+    let build_stderr = String::from_utf8_lossy(&build.stderr);
     assert!(
-        build.status.success(),
-        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        !build.status.success(),
+        "expected `arch build` to also fail on the unblessed comb loop\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&build.stdout),
-        String::from_utf8_lossy(&build.stderr)
+        build_stderr
     );
-
-    let lint = std::process::Command::new("verilator")
-        .arg("--lint-only")
-        .arg("--assert")
-        .arg("-Wno-fatal")
-        .arg("-Wno-DECLFILENAME")
-        .arg("--top-module")
-        .arg("CrossInstanceLoop")
-        .arg(&sv_out)
-        .output()
-        .expect("verilate CrossInstanceLoop");
-    let lint_stderr = String::from_utf8_lossy(&lint.stderr);
     assert!(
-        lint_stderr.contains("UNOPTFLAT"),
-        "expected Verilator UNOPTFLAT on the genuine cross-instance loop \
-         (confirming this is a real hardware cycle, not just an arch \
-         check self-consistency artifact); stderr:\n{lint_stderr}"
+        build_stderr.contains("combinational feedback cycle ("),
+        "expected `arch build`'s failure to be the comb-loop error; stderr:\n{build_stderr}"
     );
 }
 
@@ -32481,7 +32520,19 @@ fn test_comb_graph_cycles_with_parent_intermediates_need_four_settle_passes() {
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
     let symbols = resolve::resolve(&ast).expect("resolve error");
     let checker = TypeChecker::new(&symbols, &ast);
-    let _ = checker.check().expect("type check error");
+    // NOTE: this fixture's A<->B cross-instance cycle (wa/wb) is a genuine
+    // whole-design comb-SCC, so `checker.check()` now returns `Err` here
+    // (severity promotion, 2026-08 — see `test_comb_loop_across_two_
+    // instances_detected` for the dedicated detection-assertion coverage
+    // of exactly this shape). That's unrelated to what THIS test actually
+    // exercises: `analyze_module`'s settle_depth calculation below, run
+    // directly against `ast`/`symbols` and independent of
+    // `TypeChecker::check`'s Ok/Err. The result was already discarded
+    // (`let _ = ...`) before this change — it was only ever a
+    // well-typedness smoke gate, not an assertion under test — so it's
+    // left unconsumed rather than `.expect()`-ing an outcome this test
+    // doesn't care about.
+    let _ = checker.check();
     let top = ast
         .items
         .iter()

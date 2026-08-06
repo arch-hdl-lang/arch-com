@@ -1817,6 +1817,45 @@ end module M
 
 `pragma cdc_safe;` is the long-standing CDC opt-out and incidentally suppresses the structural cross-clock RDC rule (phase 1) because the two checks overlap. `pragma rdc_safe;` is the dedicated RDC opt-out — it suppresses *every* RDC phase, including 2a–2d which `cdc_safe` does not touch. Either pragma alone is enough to silence phase 1; both can coexist on the same module. Use these only when the design has been externally analysed (Synopsys SpyGlass, Cadence Conformal) and the violations are provably safe in the surrounding integration. Unknown pragma names error at parse time, so a typo on `rdc_safe` is caught before compile.
 
+**5.4a Whole-Design Combinational Feedback Loops**
+
+Beyond the per-module comb-loop check that computes a bounded simulation settle depth, the compiler runs a separate whole-design analysis: it builds one directed combinational-dependency graph spanning the *entire* elaborated design — starting from every top-level module (one never instantiated anywhere) and flattening the full instance hierarchy — and runs Tarjan's strongly-connected-components algorithm over it. Nodes are keyed by `(inst_path, signal)`, so the same signal name at different points in the hierarchy is never conflated. Any SCC with more than one node, or a single node with a self-loop, is a genuine combinational feedback cycle: a signal whose value depends — combinationally, with no register anywhere on the path — on itself.
+
+**This is a compile error.** `arch check`, `arch build`, `arch sim`, and `arch formal` all fail with a nonzero exit and report the cycle (the participating signals, in dependency order, and the modules that own them):
+
+```
+error: whole-design combinational feedback cycle (2 nodes) involving modules [Top]; cycle: w1 -> w2 -> w1
+```
+
+A combinational cycle has no well-defined steady-state value in general (it depends on gate delays, which ARCH's zero-delay semantics do not model) and synthesis tools flag the equivalent SV as `UNOPTFLAT`. There is no correct simulation or synthesis result to fall back to, so — like `Vec`/bit-select bounds violations and const-expression divide-by-zero — this is a hard error, not a lint.
+
+*(Severity history: this diagnostic shipped in 2026 as a warning while the checker's false-positive rate on real designs was being driven down — same-comb-block read-after-write folding, cross-instance port bugs, and range/element/for-loop granularity all produced spurious cycles early on. Once a full-corpus sweep showed zero remaining false positives on real designs, it was promoted to an error.)*
+
+**Escape hatch for intentional cycles: `pragma comb_loops_allowed;`**
+
+Some designs contain a combinational cycle on purpose — most commonly a caller that has already proven (by construction, or by external timing/formal analysis) that the loop settles within the available combinational budget, or a construct deliberately modeled with an idealized zero-delay feedback path. Bless the owning module:
+
+```
+module M
+  pragma comb_loops_allowed;
+  ...
+end module M
+```
+
+Any SCC that passes through an instance owned by a module carrying this pragma is suppressed — it does not fail the build, and does not appear as a per-cycle diagnostic. `arch check` still emits one informational summary line reporting the totals:
+
+```
+arch check: 1 comb SCC(s) found; 1 suppressed by pragma; 0 unblessed (warnings)
+```
+
+Suppression is whole-module, not per-signal-pair — there is no equivalent of `pragma comb_loop a, b;` scoped to a specific signal pair; blessing a module blesses every cycle that touches any of its instances. Use it sparingly and only once the cycle has been independently verified safe (e.g. via `arch formal`, or an external STA/lint pass) — a design that legitimately needs the pragma is rare, and the pragma is a documented escape hatch, not a general-purpose suppression for diagnosing false positives (a false positive should be filed as a compiler bug instead).
+
+**Scope and known limitations:**
+
+- **Interface-only (`.archi`) stub modules are treated as opaque:** every output is assumed to depend on every input except registered (`port reg` / `pipe_reg`) outputs, which are correctly excluded since a register breaks the combinational path. This is a safe over-approximation — it can produce a cycle report when the real (unseen) module body is actually pipelined — but never misses a real cycle.
+- **Non-`module`/non-`fsm` constructs** (`fifo`, `ram`, `arbiter`, etc.) use a per-output dependency map where available (arbiters, for example, correctly model that the grant/`ready` outputs depend combinationally on the request `valid` inputs); constructs without a precise per-output map fall back to the same conservative port-set over-approximation as interface stubs.
+- **No per-signal-pair blessing.** The pragma is module-scoped only, as described above.
+
 **5.5 Tristate and Bidirectional I/O** *(planned)*
 
 Inside a chip, all signals are unidirectional. Tristate (high-impedance) behavior only exists at the **pad ring** — the boundary between the chip and the outside world. Common examples include I2C (open-drain SDA/SCL), bidirectional data buses, and GPIO pins.

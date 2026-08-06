@@ -1,6 +1,6 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-07-27
+> Last updated: 2026-08-06
 > Compiler version: 0.71.0
 >
 > **0.71.0 release highlights:**
@@ -8,6 +8,8 @@
 > - **`--staged-ops`: staged SV emission for pipelined operators** (#720, proposal phase 3.5) — `arch build --staged-ops` emits pipelined operators (e.g. `fma<pipelined, N>`) as a per-stage registered pipeline instead of the default combinational cascade, letting downstream synthesis meet timing without manual retiming. Unsupported staging shapes such as falling-edge clocks, conditional call sites, and arity/schedule mismatches fall back to the cascade lowering with a warning. Nested latency-bearing pipelined calls are rejected during type checking because treating the inner call as combinational would discard its latency (#732). Default emission (no flag) is unchanged.
 > - **`arch sim --debug` covers all non-module constructs** (#725) — port-change logging under `--debug` now fires for `fsm`, `pipeline`, `fifo`, `ram`, `arbiter`, `thread`, and `bus`-bearing constructs, not just plain `module`s, so I/O tracing works uniformly across the construct set.
 > - **Formal FP verification — end-to-end value semantics + renderer faithfulness** (#722, #723, #728, #729) — `arch_fma_f32` is proved in Lean to be the round-to-nearest-even of the exact real product-sum `a·b+c` (R1–R3), and SMT renderer-faithfulness miters prove the emitted SystemVerilog is bit-equivalent to `render_smt` for all FP operators including both FMAs and the integer conversions (24/24 unsat). The RTL and the formally-checked model render from one in-Rust IR, so they cannot drift.
+>
+> **2026-08-06:** Whole-design combinational feedback-loop detection (issue #246) promoted from warning to **error** — `arch check`/`build`/`sim`/`formal` now all fail with a nonzero exit when an unblessed comb-SCC is found, instead of succeeding with a warning. The diagnostic shipped as a warning while its false-positive rate on real designs was being driven down (#783 in-block read-after-write folding, #785 the one genuine real-design loop found in the E203 IFU corpus — a port bug, independently fixed, not a checker artifact — and #789 range/element/for-loop granularity); a fresh full-corpus sweep immediately before the flip showed zero remaining false positives on real designs, with only a dedicated synthetic regression fixture (`tests/regression/issues/cross_instance_comb_loop_780/`) still triggering it. The `pragma comb_loops_allowed;` escape hatch for intentionally cyclic designs is unchanged and stays non-fatal. See `doc/ARCH_HDL_Specification.md` §5.4a for the full write-up (newly added — this diagnostic and its pragma had no dedicated spec section before this change).
 >
 > **0.70.8 release highlights:**
 > - **Typed FP parameters and constant evaluation** (#693, #694, #700) — module-scope FP wires and typed FP local parameters now resolve consistently in SystemVerilog and native simulation, including compile-time integer-to-FP conversion. This enables parameterized BF16-to-fixed conversion such as `local param SCALE_FP: FP32 = SCALE_INT.to_fp32();`.

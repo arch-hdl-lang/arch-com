@@ -209,16 +209,22 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Issue #246 MVP: warn on every comb-feedback SCC found in the
-    /// whole-design instance-flat graph. Blessed-by-pragma SCCs are
-    /// silently suppressed.
+    /// Issue #246 MVP promoted to a hard error (2026-08): every unblessed
+    /// comb-feedback SCC found in the whole-design instance-flat graph is
+    /// now a `CompileError`, so `arch check`/`build`/`sim`/`formal` fail
+    /// with a nonzero exit. Blessed-by-pragma SCCs (`pragma
+    /// comb_loops_allowed;` on an owning module) remain the documented
+    /// escape hatch for intentional cycles and stay non-fatal — they are
+    /// silently suppressed here exactly as before (see
+    /// `comb_graph::analyze_whole_design`, which never adds a suppressed
+    /// SCC to `analysis.sccs` in the first place).
     fn check_whole_design_comb_loops(&mut self) {
         let analysis = crate::comb_graph::analyze_whole_design(self.source, self.symbols);
         if analysis.sccs.is_empty() && analysis.total_sccs == 0 {
             return;
         }
         for scc in &analysis.sccs {
-            // Pick a span for the warning: the span of the first owning
+            // Pick a span for the error: the span of the first owning
             // module in the SCC (top-level module if vec![]). Fall back
             // to the first item's span.
             let span: Span = scc
@@ -256,10 +262,18 @@ impl<'a> TypeChecker<'a> {
                 path_str.join(" -> "),
                 if path_str.is_empty() { String::new() } else { format!(" -> {}", path_str[0]) },
             );
-            self.warnings.push(CompileWarning { message: msg, span });
+            self.errors.push(CompileError::general(&msg, span));
         }
-        // Summary line emitted as a single warning so it shows up in the
-        // standard warning stream.
+        // Summary line: still non-fatal (a plain warning) when every SCC
+        // found was suppressed by the pragma — that's the "blessed, stay
+        // quiet" path. Once at least one SCC is unblessed the compile is
+        // already failing (per-SCC errors above), so the summary is
+        // pushed alongside them as an error too; note `TypeChecker::check`
+        // returns `Err(self.errors)` and drops `self.warnings` entirely in
+        // that branch, and only the *first* error in the Vec is surfaced
+        // by the CLI (arch#750, batch diagnostics), so this summary
+        // typically won't be the line printed to the user — it's kept for
+        // callers that inspect the full error list.
         if analysis.total_sccs > 0 {
             let span = self
                 .source
@@ -268,15 +282,24 @@ impl<'a> TypeChecker<'a> {
                 .map(|it| it.span())
                 .unwrap_or(Span { start: 0, end: 0 });
             let summary = format!(
-                "arch check: {} comb SCC(s) found; {} suppressed by pragma; {} unblessed (warnings)",
+                "arch check: {} comb SCC(s) found; {} suppressed by pragma; {} unblessed ({})",
                 analysis.total_sccs,
                 analysis.suppressed,
                 analysis.sccs.len(),
+                if analysis.sccs.is_empty() {
+                    "warnings"
+                } else {
+                    "errors"
+                },
             );
-            self.warnings.push(CompileWarning {
-                message: summary,
-                span,
-            });
+            if analysis.sccs.is_empty() {
+                self.warnings.push(CompileWarning {
+                    message: summary,
+                    span,
+                });
+            } else {
+                self.errors.push(CompileError::general(&summary, span));
+            }
         }
     }
 
