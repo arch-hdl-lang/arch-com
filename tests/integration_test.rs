@@ -26750,6 +26750,91 @@ fn test_comb_loop_mutually_exclusive_branch_write_not_promoted() {
 }
 
 #[test]
+fn test_cond_only_grounded_fold_not_flagged_and_verilator_confirms_acyclic() {
+    // arch#780, NEGATIVE direction: a self-fold (`p = q +% p;`) whose ONLY
+    // prior establishment of `p` is a CONDITIONAL, single-arm write
+    // (`if c: p = 8; end if`) read AFTER the `if` must NOT be flagged. The
+    // grounding here flows solely through `ever_written`'s UNION across the
+    // if/else arms (src/comb_graph.rs); it is the one #780 shape that
+    // distinguishes union grounding from intersection — every other
+    // "not flagged" fold fixture grounds its accumulator with an
+    // UNCONDITIONAL init (`x = 0;`) that would survive an intersection
+    // merge too. This is the load-bearing companion to
+    // `test_comb_loop_mutually_exclusive_branch_write_not_promoted` (which
+    // pins the read-INSIDE-a-branch case as still flagged): here the read
+    // is AFTER the branch, where the union-merged grounding legitimately
+    // applies. If `ever_written` were ever "hardened" to intersect across
+    // arms, `p` would stop being grounded and this acyclic fold would
+    // regress to a FALSE POSITIVE — this test is the tripwire.
+    //
+    // Independently attested (not just an `arch check` self-opinion): the
+    // generated SV draws zero `UNOPTFLAT` from Verilator, because a
+    // blocking-assigned-before-read variable inside one `always_comb` is a
+    // local sequential value, not a module-net self-dependency — exactly
+    // the semantics the fold-artifact filter models.
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let src = "tests/regression/issues/cond_fold_grounded_780/CondFoldGrounded.arch";
+
+    let check = std::process::Command::new(arch_bin)
+        .arg("check")
+        .arg(src)
+        .output()
+        .expect("run arch check");
+    let check_stderr = String::from_utf8_lossy(&check.stderr);
+    assert!(
+        !check_stderr.contains("combinational feedback cycle ("),
+        "conditional-only grounded fold must NOT be flagged as a comb \
+         cycle (union grounding); stderr:\n{check_stderr}"
+    );
+
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!(
+            "skipping Verilator acyclic cross-check for \
+             CondFoldGrounded: verilator not found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("CondFoldGrounded.sv");
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg(src)
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build CondFoldGrounded SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let lint = std::process::Command::new("verilator")
+        .arg("--lint-only")
+        .arg("--assert")
+        .arg("-Wno-fatal")
+        .arg("-Wno-DECLFILENAME")
+        .arg("--top-module")
+        .arg("CondFoldGrounded")
+        .arg(&sv_out)
+        .output()
+        .expect("verilate CondFoldGrounded");
+    let lint_stderr = String::from_utf8_lossy(&lint.stderr);
+    assert!(
+        !lint_stderr.contains("UNOPTFLAT"),
+        "Verilator must NOT report UNOPTFLAT — this fold is genuinely \
+         acyclic, confirming `arch check`'s silence is correct and not a \
+         missed real loop; stderr:\n{lint_stderr}"
+    );
+}
+
+#[test]
 fn test_shared_reduction_fixtures_have_no_comb_loop_false_positive() {
     // End-to-end regression on the two real fixtures that surfaced this
     // false positive in the pre-#775 full-corpus warning sweep: threads
