@@ -27260,6 +27260,84 @@ fn test_e203_ifu_group_has_no_comb_loop_false_positive() {
     );
 }
 
+#[test]
+fn test_cross_instance_comb_loop_780_still_flagged_and_verilator_confirms_real() {
+    // Dedicated, independently-attested real-cycle anchor for arch#780
+    // (the e203_ifu fixture that used to serve this role was itself fixed
+    // and closed as #781 by an unrelated PR — see the test above — so it
+    // no longer demonstrates a real cycle). `CrossInstanceLoop` (in
+    // tests/regression/issues/cross_instance_comb_loop_780/) instantiates
+    // two child modules whose comb outputs feed each other's inputs with
+    // no register anywhere on the path — a genuine cross-instance
+    // combinational feedback loop. `arch check` must still flag it (the
+    // #780 fold-artifact filter is scoped to same-comb-block sequential
+    // collapsing only; cross-instance edges are always "not grounded",
+    // see `GraphBuilder::add_edge`), and — independently of `arch check`'s
+    // own opinion — `verilator --lint-only --assert` on the generated SV
+    // must fire `UNOPTFLAT` on the same wires, confirming this is a real
+    // hardware loop and not merely a self-consistent checker artifact.
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let src = "tests/regression/issues/cross_instance_comb_loop_780/CrossInstanceLoop.arch";
+
+    let check = std::process::Command::new(arch_bin)
+        .arg("check")
+        .arg(src)
+        .output()
+        .expect("run arch check");
+    let check_stderr = String::from_utf8_lossy(&check.stderr);
+    assert!(
+        check_stderr.contains("combinational feedback cycle ("),
+        "expected the synthetic cross-instance loop to still be flagged \
+         after the #780 fold-artifact filter; stderr:\n{check_stderr}"
+    );
+
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!(
+            "skipping Verilator UNOPTFLAT cross-check for \
+             CrossInstanceLoop: verilator not found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("CrossInstanceLoop.sv");
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg(src)
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build CrossInstanceLoop SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let lint = std::process::Command::new("verilator")
+        .arg("--lint-only")
+        .arg("--assert")
+        .arg("-Wno-fatal")
+        .arg("-Wno-DECLFILENAME")
+        .arg("--top-module")
+        .arg("CrossInstanceLoop")
+        .arg(&sv_out)
+        .output()
+        .expect("verilate CrossInstanceLoop");
+    let lint_stderr = String::from_utf8_lossy(&lint.stderr);
+    assert!(
+        lint_stderr.contains("UNOPTFLAT"),
+        "expected Verilator UNOPTFLAT on the genuine cross-instance loop \
+         (confirming this is a real hardware cycle, not just an arch \
+         check self-consistency artifact); stderr:\n{lint_stderr}"
+    );
+}
+
 // ─── multicycle reg annotation (Phase A) ─────────────────────────────────────
 //
 // Parse + AST + SDC emission only. Phase B will add input-feeding-tree
