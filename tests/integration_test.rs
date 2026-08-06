@@ -23995,6 +23995,59 @@ fn test_emit_bound_asserts_elides_for_loop_iterator_index() {
 }
 
 #[test]
+fn test_emit_bound_asserts_elides_loop_iterator_in_guard() {
+    // Regression: the sibling elision above only covers an index that IS a
+    // bare loop iterator. The iterator also reaches the predicate through an
+    // enclosing `if` inside the loop body, whose condition is folded in as
+    // the `|->` antecedent. Here the indexed access is `mem[addr]` — `addr`
+    // is not an iterator, so the site was emitted — but the guard carried
+    // `wem[i +: 1]`, producing a module-scope assertion referencing `i`:
+    //
+    //   _auto_bound_vec_0: assert property (@(posedge clk) disable iff (!rst_n)
+    //     (((cs & we) && (wem[i +: 1])) |-> (int'(addr) < (8192))))
+    //
+    // Verilator rejected the file with "Can't find definition of variable:
+    // 'i'", so `arch build` emitted SV that would not elaborate at all.
+    //
+    // Origin: tests/e203 SRAM fixtures (e203_itcm_ram, e203_dtcm_ram,
+    // e203_srams), all three of which failed Verilator lint this way.
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        module M
+          port clk:   in Clock<SysDomain>;
+          port rst_n: in Reset<Async, Low>;
+          port we:    in Bool;
+          port addr:  in UInt<2>;
+          port wem:   in UInt<4>;
+          port din:   in UInt<8>;
+          reg mem: Vec<UInt<8>, 4> reset rst_n => 8'd0;
+          seq on clk rising
+            for i in 0..3
+              if wem[i:i]
+                mem[addr] <= din;
+              end if
+            end for
+          end seq
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    assert!(
+        !sv.contains("_auto_bound_"),
+        "a bound assertion whose guard references for-loop iterator `i` must be \
+         skipped — it cannot be hoisted to module scope:\n{sv}"
+    );
+    // The iterator must not leak into module scope by any route.
+    for line in sv.lines().filter(|l| l.contains("assert property")) {
+        assert!(
+            !line.contains("wem[i"),
+            "loop iterator leaked into a module-scope assertion: {line}"
+        );
+    }
+}
+
+#[test]
 fn test_codegen_vec_uint1_collapses_inner_zero_dim() {
     // Regression: pre-fix, `Vec<UInt<1>, N>` ports emitted as
     // `logic [N-1:0] [0:0] x` (multi-dim packed). When such a port

@@ -5292,6 +5292,50 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// True when `predicate` mentions a for-loop iterator as a standalone SV
+    /// identifier, which makes it unhoistable to module scope.
+    ///
+    /// `collect_bound_expr` already elides a site whose *index* is a bare
+    /// iterator, but the iterator also reaches the predicate two other ways:
+    /// through an enclosing `if` inside the loop body, whose condition is
+    /// folded in as the `|->` antecedent, and through a compound index such
+    /// as `mem[i + 1]`. In both cases the emitted concurrent assertion sits
+    /// outside the generated `for` block, where the iterator does not exist,
+    /// and Verilator rejects the whole file with "Can't find definition of
+    /// variable: 'i'" — the SV `arch build` produced would not elaborate.
+    ///
+    /// Skipping the site is the conservative choice: an unguarded variant
+    /// would assert on cycles the access is not taken, which is a false
+    /// failure. The `arch sim` runtime check still covers these accesses,
+    /// exactly as it does for the comb/let sites that are not mirrored either.
+    fn predicate_uses_loop_iter(
+        predicate: &str,
+        loop_iters: &std::collections::HashSet<String>,
+    ) -> bool {
+        if loop_iters.is_empty() {
+            return false;
+        }
+        let bytes = predicate.as_bytes();
+        let is_ident_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+        loop_iters.iter().any(|iter| {
+            if iter.is_empty() {
+                return false;
+            }
+            let mut from = 0usize;
+            while let Some(offset) = predicate[from..].find(iter.as_str()) {
+                let start = from + offset;
+                let end = start + iter.len();
+                let boundary_before = start == 0 || !is_ident_byte(bytes[start - 1]);
+                let boundary_after = end == bytes.len() || !is_ident_byte(bytes[end]);
+                if boundary_before && boundary_after {
+                    return true;
+                }
+                from = start + 1;
+            }
+            false
+        })
+    }
+
     /// Recursively collect bound-assertion sites from an expression. At each
     /// Index / PartSelect with a non-literal index whose base is an ident of
     /// known size, push a predicate. Also catches `/` and `%` with non-const
@@ -5333,6 +5377,9 @@ impl<'a> Codegen<'a> {
                     sites: &mut Vec<(String, String)>,
                     seen: &mut std::collections::HashSet<String>| {
             let predicate = Self::guard_bound_predicate(predicate, guard);
+            if Self::predicate_uses_loop_iter(&predicate, loop_iters) {
+                return;
+            }
             if seen.insert(predicate.clone()) {
                 sites.push((predicate, tag.to_string()));
             }
@@ -5422,7 +5469,9 @@ impl<'a> Codegen<'a> {
                     let rhs_s = self.emit_expr_str(b);
                     let tag = if *op == BinOp::Div { "div0" } else { "mod0" };
                     let pred = Self::guard_bound_predicate(format!("({rhs_s}) != 0"), guard);
-                    if seen.insert(pred.clone()) {
+                    if !Self::predicate_uses_loop_iter(&pred, loop_iters)
+                        && seen.insert(pred.clone())
+                    {
                         sites.push((pred, tag.to_string()));
                     }
                 }
