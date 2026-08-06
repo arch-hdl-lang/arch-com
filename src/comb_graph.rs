@@ -1165,7 +1165,7 @@ pub fn analyze_module(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Whole-design comb-loop analysis (issue #246, MVP)
+// Whole-design comb-loop analysis (issue #246; promoted warning -> error 2026-08)
 //
 // Builds ONE directed combinational-dependency graph that spans the entire
 // elaborated design starting from each top-level module (modules that are
@@ -1174,8 +1174,11 @@ pub fn analyze_module(
 //
 // Tarjan's SCC is then run over the graph and any SCC with size > 1 (or a
 // single-node SCC with a self-loop) is reported as a combinational feedback
-// cycle. SCCs that pass through any instance OWNED by a module with
-// `pragma comb_loops_allowed;` are suppressed.
+// cycle — a hard compile error (`arch check`/`build`/`sim`/`formal` all fail
+// with a nonzero exit). SCCs that pass through any instance OWNED by a
+// module with `pragma comb_loops_allowed;` are suppressed and stay
+// non-fatal; that pragma is the documented escape hatch for intentional
+// cycles (see `doc/ARCH_HDL_Specification.md`).
 //
 // Limitations of this MVP (deferred to a follow-up PR):
 //   - Extern / interface-only modules (`.archi` stubs) are treated as
