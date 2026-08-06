@@ -598,3 +598,66 @@ fn formal_sva_phase2_refutes() {
     assert_eq!(code, 1, "expected exit 1 (REFUTED); got {code}\n{out}");
     assert!(out.contains("REFUTED"), "expected REFUTED:\n{out}");
 }
+
+#[test]
+fn formal_vacuity_guard_rejects_contradictory_assumes() {
+    if !z3_available() {
+        eprintln!("skipping: z3 not in PATH");
+        return;
+    }
+    // Contradictory assumes → VACUOUS (exit 1), never a false PROVED. This
+    // is a general arch-formal soundness guard, exercised here on an
+    // integer-only design to make its flow-level scope explicit.
+    let (code, out) = run_formal("tests/formal/vacuous_assumes.arch", &["--bound", "2"]);
+    assert!(out.contains("VACUOUS"), "expected VACUOUS:\n{out}");
+    assert!(!out.contains("PROVED"), "must not report PROVED:\n{out}");
+    assert_eq!(
+        code, 1,
+        "vacuous proof must be a hard failure (exit 1); got {code}\n{out}"
+    );
+
+    // A satisfiable assume must still prove normally — no false vacuity.
+    let (code, out) = run_formal("tests/formal/satisfiable_assumes.arch", &["--bound", "2"]);
+    assert_eq!(
+        code, 0,
+        "satisfiable-assume proof should pass; got {code}\n{out}"
+    );
+    assert!(out.contains("PROVED"), "expected PROVED:\n{out}");
+    assert!(
+        !out.contains("VACUOUS"),
+        "satisfiable assume must not be flagged vacuous:\n{out}"
+    );
+}
+
+#[test]
+fn formal_vacuity_guard_rejects_unreachable_antecedent() {
+    if !z3_available() {
+        eprintln!("skipping: z3 not in PATH");
+        return;
+    }
+    // Implication with an unreachable antecedent proves vacuously — flagged
+    // VACUOUS (exit 1), even though it needs no `assume` and its consequent
+    // is false. This is a distinct vacuity class from unsatisfiable assumes.
+    let (code, out) = run_formal("tests/formal/vacuous_implication.arch", &["--bound", "2"]);
+    assert!(out.contains("VACUOUS"), "expected VACUOUS:\n{out}");
+    assert!(
+        out.contains("antecedent is unreachable"),
+        "reason should name the cause:\n{out}"
+    );
+    assert!(!out.contains("PROVED"), "must not report PROVED:\n{out}");
+    assert_eq!(
+        code, 1,
+        "vacuous implication must be a hard failure (exit 1); got {code}\n{out}"
+    );
+
+    // Reachable antecedent + true consequent proves normally.
+    let (code, out) = run_formal("tests/formal/reachable_implication.arch", &["--bound", "2"]);
+    assert_eq!(
+        code, 0,
+        "reachable-antecedent proof should pass; got {code}\n{out}"
+    );
+    assert!(
+        out.contains("PROVED") && !out.contains("VACUOUS"),
+        "expected clean PROVED:\n{out}"
+    );
+}

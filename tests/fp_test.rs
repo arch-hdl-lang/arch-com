@@ -1909,3 +1909,46 @@ fn fp_formal_no_saturation_certified() {
         "unconstrained must refute:\n{all}"
     );
 }
+
+/// Vacuity guard (soundness): contradictory `assume` clauses empty the
+/// constrained state space, so a negated-property miter is trivially unsat
+/// and WOULD report false PROVED. arch formal must detect the unsatisfiable
+/// assumptions and report VACUOUS (exit 1), never a pass. Regression for the
+/// pre-existing hole found while writing the paper's property-layer section.
+#[test]
+fn fp_formal_vacuity_guard() {
+    fn z3_available() -> bool {
+        std::process::Command::new("z3")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    if !z3_available() {
+        eprintln!("skipping fp_formal_vacuity_guard: z3 not in PATH");
+        return;
+    }
+    let out = arch()
+        .arg("formal")
+        .arg("tests/fp_v1/FpVacuous.arch")
+        .arg("--solver")
+        .arg("z3")
+        .arg("--bound")
+        .arg("2")
+        .output()
+        .expect("run arch formal");
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        all.contains("VACUOUS") && !all.contains("PROVED"),
+        "contradictory assumes must report VACUOUS, not PROVED:\n{all}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "vacuous proof must be a hard failure (exit 1):\n{all}"
+    );
+}

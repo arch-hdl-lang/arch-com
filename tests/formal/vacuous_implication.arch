@@ -1,0 +1,14 @@
+// Antecedent-reachability vacuity: an implication `a |-> b` proves
+// VACUOUSLY when the antecedent `a` is unreachable — the consequent is
+// never tested (note the consequent `a < 0` is FALSE, yet the property
+// would "prove" without the guard). This vacuity needs no `assume` and is
+// distinct from the unsatisfiable-assumptions case. `a > 300` is
+// unreachable for UInt<8>. Must report VACUOUS (exit 1).
+module VacuousImplication
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port o: out Bool;
+  comb o = a > 100; end comb
+  assert vac: (a > 300) |-> (a < 100);
+end module VacuousImplication
