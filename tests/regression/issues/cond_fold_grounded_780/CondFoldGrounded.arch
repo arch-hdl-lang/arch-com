@@ -1,0 +1,39 @@
+// arch#780 regression anchor (NEGATIVE / not-a-loop direction): a signal
+// whose ONLY prior establishment is a CONDITIONAL, single-arm write —
+// union-merged out of the `if` into `ever_written` — and which is then
+// read after the `if` in a blocking self-fold (`p = q +% p;`) must NOT be
+// flagged as a combinational feedback cycle.
+//
+// This pins the "union, not intersection" claim in `ever_written`'s doc
+// comment (src/comb_graph.rs): every other #780 "not flagged" fixture
+// grounds its fold accumulator with an UNCONDITIONAL init before the read
+// (`x = 0;` / `m_val = 0;`), which survives an intersection merge too;
+// only THIS shape distinguishes union grounding from intersection. If
+// `ever_written` were ever "hardened" to intersect across arms, `p` would
+// stop being grounded here and this acyclic fold would regress to a false
+// positive.
+//
+// Independently attested as NOT a real loop (matching `arch check`'s
+// silence) via Verilator: `verilator --lint-only` on the generated SV
+// emits zero `UNOPTFLAT` — because a blocking-assigned-before-read
+// variable inside one `always_comb` is a local sequential value, not a
+// module-net self-dependency. See
+// test_cond_only_grounded_fold_not_flagged_and_verilator_confirms_acyclic
+// in tests/integration_test.rs.
+module CondFoldGrounded
+  port c: in Bool;
+  port qin: in UInt<8>;
+  port pout: out UInt<8>;
+
+  wire p: UInt<8>;
+  wire q: UInt<8>;
+
+  comb
+    q = qin;
+    if c
+      p = 8;
+    end if
+    p = q +% p;
+    pout = p;
+  end comb
+end module CondFoldGrounded
