@@ -1645,7 +1645,25 @@ impl<'a> Codegen<'a> {
                     "sext" => {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
-                            format!("{{{{({w}-$bits({b})){{{b}[$bits({b})-1]}}}}, {b}}}")
+                            // `.sext()` treats the receiver's own MSB as the
+                            // sign bit regardless of the receiver's declared
+                            // signedness, so a `signed(...)`/`unsigned(...)`/
+                            // `as T` wrapper is inert here — unwrap it rather
+                            // than emitting `$bits($signed(...))` (Icarus does
+                            // not reliably accept a system-function call
+                            // nested inside `$bits`, arch#650) or indexing
+                            // straight into the cast result (same issue's
+                            // "indexed cast" pattern).
+                            let recv = Self::unwrap_reinterpret_cast(base);
+                            let rb = self.emit_pipeline_stage_expr_str(
+                                recv,
+                                current_prefix,
+                                current_stage_idx,
+                                stage_names,
+                                stage_regs,
+                                port_names,
+                            );
+                            format!("{{{{({w}-$bits({rb})){{{rb}[$bits({rb})-1]}}}}, {rb}}}")
                         } else {
                             b
                         }
@@ -1677,8 +1695,20 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::Index(base, idx) => {
+                // Icarus portability (arch#650): unwrap a redundant
+                // `signed(...)`/`unsigned(...)`/`as T` wrapper before
+                // indexing — same-width bit reinterpretation, so
+                // `unsigned(e)[i]` reads the identical bit as `e[i]`, and
+                // Icarus rejects the indexed-cast form even though Verilator
+                // accepts it. (The arithmetic-base case mod.rs's main
+                // `Index` emitter hoists to a named temp is left as prior
+                // bare-emission behavior here — a pipeline stage-forwarding
+                // expression's width can't be reliably resolved through this
+                // stage-substitution recursion the way `infer_sv_width_str`
+                // resolves it for ordinary module code.)
+                let unwrapped = Self::unwrap_reinterpret_cast(base);
                 let b = self.emit_pipeline_stage_expr_str(
-                    base,
+                    unwrapped,
                     current_prefix,
                     current_stage_idx,
                     stage_names,
@@ -1964,7 +1994,21 @@ impl<'a> Codegen<'a> {
                     "sext" => {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
-                            format!("{{{{({w}-$bits({b})){{{b}[$bits({b})-1]}}}}, {b}}}")
+                            // See the matching comment in
+                            // `emit_pipeline_stage_expr_str` (arch#650):
+                            // `.sext()` is indifferent to a
+                            // `signed(...)`/`unsigned(...)`/`as T` wrapper on
+                            // its receiver, and unwrapping it avoids both the
+                            // `$bits($signed(...))` and indexed-cast forms
+                            // Icarus does not reliably accept.
+                            let recv = Self::unwrap_reinterpret_cast(base);
+                            let rb = self.emit_pipeline_expr_str(
+                                recv,
+                                stage_names,
+                                stage_regs,
+                                port_names,
+                            );
+                            format!("{{{{({w}-$bits({rb})){{{rb}[$bits({rb})-1]}}}}, {rb}}}")
                         } else {
                             b
                         }
@@ -1996,7 +2040,10 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::Index(base, idx) => {
-                let b = self.emit_pipeline_expr_str(base, stage_names, stage_regs, port_names);
+                // Icarus portability (arch#650) — see the matching comment in
+                // `emit_pipeline_stage_expr_str`.
+                let unwrapped = Self::unwrap_reinterpret_cast(base);
+                let b = self.emit_pipeline_expr_str(unwrapped, stage_names, stage_regs, port_names);
                 let i = self.emit_pipeline_expr_str(idx, stage_names, stage_regs, port_names);
                 format!("{b}[{i}]")
             }
