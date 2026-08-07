@@ -33251,3 +33251,559 @@ end module SharedBus
         }
     }
 }
+
+// ---------------------------------------------------------------------
+// arch#650 — Icarus-portable emission for indexed casts and sliced
+// arithmetic.
+//
+// `unsigned(x)[i]` / `signed(x)[i]` / `x.sext<N>()` are all *portable*
+// bases per typecheck's `is_portable_bit_slice_base` (spec §3.2.1) — but
+// only for the `[hi:lo]` / `[start +: w]` forms typecheck actually gates.
+// The single-bit `Index` form (`expr[i]`) also serves ordinary `Vec`
+// element access (portable for any base), so typecheck never restricts
+// it — meaning codegen alone was responsible for the emitted SV being
+// Icarus-clean, and it wasn't: `unsigned(x)[i]` emitted bare
+// `$unsigned(x)[i]` (Icarus rejects an indexed system-function-call
+// result even though Verilator accepts it), and an arithmetic base like
+// `(a - b)[i]` — with no base handling at all in the `Index` arm — used
+// to concatenate straight to `a - b[i]`, silently reparsing as
+// `a - (b[i])`: a precedence miscompile, not merely nonportable SV.
+// `.sext()` on a cast receiver (`signed(raw).sext<16>()`) hit a related
+// but separate bug: its own codegen computed the receiver's width via
+// `$bits($signed(raw))`, and Icarus does not reliably accept a
+// system-function call nested inside `$bits`.
+// ---------------------------------------------------------------------
+
+#[test]
+fn test_index_unsigned_cast_base_unwraps() {
+    // `unsigned(...)`/`signed(...)` never change width — they're pure bit
+    // reinterpretations — so indexing the cast reads the identical bit as
+    // indexing the inner expression. Unwrap instead of emitting
+    // `$unsigned(a)[b]`, which Icarus rejects (Verilator accepts it).
+    let source = r#"
+module IdxUnsignedCast
+  port a: in UInt<8>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = unsigned(a)[b];
+end module IdxUnsignedCast
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign y = a[b];"),
+        "expected unwrapped `a[b]`, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("$unsigned(a)["),
+        "must not index a cast result directly (Icarus rejects it), got:\n{sv}"
+    );
+}
+
+#[test]
+fn test_index_signed_cast_base_unwraps() {
+    let source = r#"
+module IdxSignedCast
+  port a: in SInt<8>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = signed(a)[b];
+end module IdxSignedCast
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign y = a[b];"),
+        "expected unwrapped `a[b]`, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("$signed(a)["),
+        "must not index a cast result directly (Icarus rejects it), got:\n{sv}"
+    );
+}
+
+#[test]
+fn test_index_as_cast_base_unwraps() {
+    // `(a as SInt<8>)[b]` — an explicit `as T` cast is also a same-width
+    // reinterpretation (typecheck rejects `as` casts that change width),
+    // so it unwraps the same way as `signed(...)`/`unsigned(...)`.
+    let source = r#"
+module IdxAsCast
+  port a: in UInt<8>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = (a as SInt<8>)[b];
+end module IdxAsCast
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign y = a[b];"),
+        "expected unwrapped `a[b]`, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("$signed(a)["),
+        "must not index a cast result directly (Icarus rejects it), got:\n{sv}"
+    );
+}
+
+#[test]
+fn test_index_arithmetic_base_hoists_to_named_temp() {
+    // `(a - b)[i]` — an arithmetic base can't be unwrapped (it's a real
+    // computation, not a reinterpretation), and can't be parenthesized
+    // either (`(a - b)[i]` is illegal SV on both Verilator and Icarus —
+    // bit-select doesn't compose with a parenthesized non-selectable
+    // expression, spec §3.2.1). Must hoist to a named module-scope temp
+    // instead — the same "bind to a let" fix the spec recommends at the
+    // ARCH source level for `BitSlice`/`PartSelect`.
+    let source = r#"
+module IdxArithHoist
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port i: in UInt<3>;
+  port y: out Bool;
+  let y = (a - b)[i];
+end module IdxArithHoist
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("logic [") && sv.contains("arch_idx_base_0;"),
+        "expected a declared hoist temp, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign arch_idx_base_0 = a - b;"),
+        "expected the hoist temp assigned the arithmetic value, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign y = arch_idx_base_0[i];"),
+        "expected the index applied to the hoist temp, got:\n{sv}"
+    );
+    // The pre-fix shape: no base handling at all, so `(a - b)[i]` was
+    // literally concatenated to `a - b[i]` — a silent precedence
+    // miscompile (subtracts a single bit of `b` from all of `a`, instead
+    // of indexing a bit out of `a - b`). Must never come back.
+    assert!(
+        !sv.contains("a - b[i]"),
+        "must not regress to the precedence-miscompiled bare form, got:\n{sv}"
+    );
+    // Hoist temp names must not start with `_`: Icarus 12.0 segfaults
+    // elaborating `logic [$bits(...)-1:0] _name;` when `_name` has a
+    // leading underscore (reproduced in isolation while implementing this
+    // fix) — every other synthesized name in this file uses that
+    // convention, but this one deliberately does not.
+    assert!(
+        !sv.contains("_arch_idx_base_0"),
+        "hoist temp must not be underscore-prefixed (Icarus segfault), got:\n{sv}"
+    );
+}
+
+#[test]
+fn test_index_arithmetic_base_referencing_loop_var_skips_hoist() {
+    // Guard case: when the arithmetic base references a live runtime
+    // `for`-loop variable, a module-scope hoist temp can't see it (and
+    // Icarus doesn't support `logic` declarations inside `always_*`
+    // blocks either — see `emit_for_loop_sv`'s `ValueList` comment). The
+    // hoist must be skipped rather than emit a temp whose initializer
+    // references an out-of-scope identifier. This is a known, narrower
+    // residual gap (falls back to the prior bare-emission shape) rather
+    // than a fix — the test pins that the compiler still produces valid,
+    // self-consistent SV (no dangling reference to the loop variable
+    // outside its loop) instead of a broken hoist.
+    let source = r#"
+module IdxArithLoopVar
+  port a: in Vec<UInt<8>, 4>;
+  port b: in UInt<8>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port y: out Vec<Bool, 4>;
+  reg y_r: Vec<Bool, 4> reset rst => 0;
+  seq on clk rising
+    for i in 0..3
+      y_r[i] <= (a[i] - b)[i];
+    end for
+  end seq
+  comb y = y_r; end comb
+end module IdxArithLoopVar
+"#;
+    let sv = compile_to_sv(source);
+    // No hoist temp should reference `i` from outside the for-loop body —
+    // i.e. no top-level (module-scope) `assign arch_idx_base_N = ...i...;`
+    // line sitting outside a `for (int i = ...` block.
+    let mut inside_for = 0usize;
+    for line in sv.lines() {
+        let t = line.trim_start();
+        if t.starts_with("for (int i = ") {
+            inside_for += 1;
+        }
+        if t == "end" && inside_for > 0 {
+            inside_for -= 1;
+        }
+        if inside_for == 0 && t.starts_with("assign arch_idx_base_") && t.contains('i') {
+            panic!("hoisted temp assignment references `i` outside the for-loop scope: `{t}`\nfull SV:\n{sv}");
+        }
+    }
+}
+
+#[test]
+fn test_sext_of_signed_cast_avoids_nested_bits_and_indexed_cast() {
+    // `signed(raw).sext<16>()` — arch#650's "nested" mitigation example
+    // (`unsigned(signed(raw).sext<N>())` in the issue, minus the outer
+    // `unsigned` which isn't needed to reproduce this half of the bug).
+    // `.sext()` is indifferent to a `signed`/`unsigned`/`as T` wrapper on
+    // its receiver (it always treats the receiver's own MSB as the sign
+    // bit), so the wrapper must be unwrapped rather than carried into
+    // `$bits(...)` (nesting a system-function call, which Icarus does not
+    // reliably accept) or indexed directly (`$signed(raw)[...]`, the same
+    // "indexed cast" pattern the issue flags).
+    let source = r#"
+module SextOfSignedCast
+  port raw: in UInt<8>;
+  port y: out SInt<16>;
+  let y = signed(raw).sext<16>();
+end module SextOfSignedCast
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        !sv.contains("$bits($signed"),
+        "must not nest a system-function call inside $bits (Icarus rejects it), got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("$signed(raw)["),
+        "must not index a cast result directly (Icarus rejects it), got:\n{sv}"
+    );
+    assert!(
+        sv.contains("raw[8-1]") || sv.contains("raw[7]"),
+        "expected the sign-bit index on the unwrapped receiver, got:\n{sv}"
+    );
+}
+
+/// Dual-simulator behavioral check for the arithmetic-index hoist
+/// (arch#650): the miscompiled pre-fix shape (`a - b[i]`) and the fixed
+/// shape (`(a - b)[i]` via a hoisted temp) both *compile* under Verilator
+/// (and, before the fix, even under Icarus — the bug was silent, not a
+/// rejection) — only a real simulation run distinguishes right from
+/// wrong. Confirms both Verilator and Icarus agree with ARCH's own
+/// semantics: `y = (a - b)[i]`, not `y = a - b[i]`. Skips gracefully if
+/// either simulator isn't installed (matching this file's existing
+/// Verilator-smoke-test convention).
+#[test]
+fn test_index_arithmetic_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#650 arithmetic-index dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("IdxArithHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/IdxArithHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build IdxArithHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    // Test vectors: (a, b, i, expected y = bit `i` of (a - b), 8-bit wrap).
+    let cases: [(u32, u32, u32, u32); 3] = [(5, 3, 1, 1), (200, 7, 0, 1), (10, 10, 0, 0)];
+
+    if has_iverilog {
+        let vvp_out = td.path().join("idx_arith.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_idx_arith_hoist.sv")
+            .output()
+            .expect("iverilog compile IdxArithHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#650 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog IdxArithHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm (a - b)[i] semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_arith");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("IdxArithHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_idx_arith_hoist_verilator.cpp")
+            .output()
+            .expect("verilate IdxArithHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VIdxArithHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator IdxArithHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm (a - b)[i] semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    // Keep the vectors above in sync with the fixture testbenches (used
+    // for readability of intent in this test; the actual checks run
+    // inside the .sv/.cpp fixtures).
+    let _ = cases;
+}
+
+/// Follow-on discovery while implementing arch#650: `.trunc()`/`.zext()`/
+/// `.resize()` (SV size-cast) and `.sext()`/plain `{a, b}`/`{N{a}}` (SV
+/// concat/replication) are *also* rejected by Icarus when directly
+/// indexed — `N'(x)[i]` and `{...}[i]` are both "Syntax error in
+/// continuous assignment" on Icarus 12.0, confirmed with standalone
+/// hand-written `.sv` (not just ARCH-generated) repros. These are the
+/// same "indexed casts"/"bit-selects...directly on conversion/method-call
+/// results" failure class the issue names, just reached through more of
+/// ARCH's conversion surface than the `unsigned`/`signed` examples in the
+/// issue body. Must hoist the same way the arithmetic case does.
+#[test]
+fn test_index_method_call_cast_bases_hoist() {
+    let cases: [(&str, &str); 3] = [
+        (
+            r#"
+module IdxTruncHoist
+  port a: in UInt<8>;
+  port b: in UInt<2>;
+  port y: out Bool;
+  let y = a.trunc<4>()[b];
+end module IdxTruncHoist
+"#,
+            "assign arch_idx_base_0 = 4'(a);",
+        ),
+        (
+            r#"
+module IdxZextHoist
+  port a: in UInt<4>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = a.zext<8>()[b];
+end module IdxZextHoist
+"#,
+            "assign arch_idx_base_0 = 8'($unsigned(a));",
+        ),
+        (
+            r#"
+module IdxResizeHoist
+  port a: in UInt<8>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = a.resize<8>()[b];
+end module IdxResizeHoist
+"#,
+            "assign arch_idx_base_0 = 8'(a);",
+        ),
+    ];
+    for (source, expected_assign) in cases {
+        let sv = compile_to_sv(source);
+        assert!(
+            sv.contains(expected_assign),
+            "expected hoisted assign `{expected_assign}`, got:\n{sv}"
+        );
+        assert!(
+            sv.contains("assign y = arch_idx_base_0[b];"),
+            "expected the index applied to the hoist temp, got:\n{sv}"
+        );
+    }
+}
+
+#[test]
+fn test_index_concat_and_repeat_literal_bases_hoist() {
+    // `{a, c}[b]` / `{2{a}}[b]` — Concat/Repeat are portable `BitSlice`/
+    // `PartSelect` bases (spec §3.2.1, unaffected by this fix) but not
+    // safe as a bare single-bit `Index` base on Icarus (confirmed with a
+    // standalone hand-written `.sv` repro, independent of ARCH codegen).
+    let concat_source = r#"
+module IdxConcatLiteral
+  port a: in UInt<4>;
+  port c: in UInt<4>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = {a, c}[b];
+end module IdxConcatLiteral
+"#;
+    let sv = compile_to_sv(concat_source);
+    assert!(
+        sv.contains("assign arch_idx_base_0 = {a, c};"),
+        "expected hoisted concat, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign y = arch_idx_base_0[b];"),
+        "expected the index applied to the hoist temp, got:\n{sv}"
+    );
+
+    let repeat_source = r#"
+module IdxRepeatLiteral
+  port a: in UInt<4>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = {2{a}}[b];
+end module IdxRepeatLiteral
+"#;
+    let sv = compile_to_sv(repeat_source);
+    assert!(
+        sv.contains("assign arch_idx_base_0 = {2{a}};"),
+        "expected hoisted repeat, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign y = arch_idx_base_0[b];"),
+        "expected the index applied to the hoist temp, got:\n{sv}"
+    );
+}
+
+/// Icarus-acceptance check (not just string-shape) for the newly
+/// discovered method-call-cast and concat/repeat hoist cases above.
+/// Skips gracefully if iverilog isn't installed.
+#[test]
+fn test_index_method_call_and_concat_bases_iverilog_accepts() {
+    if std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping arch#650 method-call/concat index iverilog check: iverilog not found");
+        return;
+    }
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let cases: [(&str, &str, &str); 5] = [
+        (
+            "IdxTruncHoist2",
+            r#"
+module IdxTruncHoist2
+  port a: in UInt<8>;
+  port b: in UInt<2>;
+  port y: out Bool;
+  let y = a.trunc<4>()[b];
+end module IdxTruncHoist2
+"#,
+            "IdxTruncHoist2",
+        ),
+        (
+            "IdxZextHoist2",
+            r#"
+module IdxZextHoist2
+  port a: in UInt<4>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = a.zext<8>()[b];
+end module IdxZextHoist2
+"#,
+            "IdxZextHoist2",
+        ),
+        (
+            "IdxSextPlainHoist",
+            r#"
+module IdxSextPlainHoist
+  port a: in SInt<4>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = a.sext<8>()[b];
+end module IdxSextPlainHoist
+"#,
+            "IdxSextPlainHoist",
+        ),
+        (
+            "IdxConcatLiteral2",
+            r#"
+module IdxConcatLiteral2
+  port a: in UInt<4>;
+  port c: in UInt<4>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = {a, c}[b];
+end module IdxConcatLiteral2
+"#,
+            "IdxConcatLiteral2",
+        ),
+        (
+            "IdxRepeatLiteral2",
+            r#"
+module IdxRepeatLiteral2
+  port a: in UInt<4>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = {2{a}}[b];
+end module IdxRepeatLiteral2
+"#,
+            "IdxRepeatLiteral2",
+        ),
+    ];
+    let td = tempfile::tempdir().expect("tempdir");
+    for (name, source, top) in cases {
+        let arch_path = td.path().join(format!("{name}.arch"));
+        std::fs::write(&arch_path, source).expect("write fixture");
+        let sv_out = td.path().join(format!("{name}.sv"));
+        let build = std::process::Command::new(arch_bin)
+            .arg("build")
+            .arg(&arch_path)
+            .arg("-o")
+            .arg(&sv_out)
+            .output()
+            .expect("arch build");
+        assert!(
+            build.status.success(),
+            "arch build should pass for {name}\nstderr:\n{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let vvp_out = td.path().join(format!("{name}.vvp"));
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .output()
+            .expect("iverilog compile");
+        assert!(
+            compile.status.success(),
+            "iverilog should accept {top} (arch#650 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+    }
+}

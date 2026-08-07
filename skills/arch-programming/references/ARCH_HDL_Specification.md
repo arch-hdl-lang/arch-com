@@ -480,6 +480,8 @@ For same-width modular arithmetic specifically, prefer the wrapping operators (`
 
 > *⚑ The portable-base set applies uniformly to both `[hi:lo]` bit-slice and `[start +: w]`/`[start -: w]` variable part-select — they share the same `is_portable_bit_slice_base` check in the type checker. A replication base (`{N{a}}[hi:lo]`) is portable and emitted bare (no enclosing parens); Verilator/iverilog accept `{N{a}}[hi:lo]` but reject the parenthesized `({N{a}})[hi:lo]`, so codegen never wraps a `Repeat` base.*
 
+**Single-bit index (`expr[i]`, no colon) is a separate form and is not restricted by `is_portable_bit_slice_base`** — it also serves plain `Vec` element access (`v[i]`), which is portable for any `v`, so `arch check` places no base restriction on it. `unsigned(x)[i]`, `signed(x)[i]`, `(x as T)[i]`, and `(a - b)[i]` all type-check. The compiler still guarantees portable *emission* for this form, but does so in the SystemVerilog backend rather than by rejecting anything at `arch check`: a `signed`/`unsigned`/`as T` wrapper around the indexed value is a same-width bit reinterpretation, so it is dropped rather than indexed (`unsigned(x)[i]` emits as `x[i]`); any other non-atomic base (arithmetic, logical, ...) is bound to a compiler-generated named temporary and the index applies to that temporary instead — the same "bind to a named `let`" strategy documented above for `BitSlice`/`PartSelect`, applied automatically. You do not need to work around this by hand.
+
 **3.3 Struct and Enum Types**
 
 +--------------------------------------------------------------------+

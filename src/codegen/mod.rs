@@ -237,6 +237,36 @@ pub struct Codegen<'a> {
     /// affects SDC output — the SV `always_ff` for a multicycle reg is
     /// byte-identical to a plain reg.
     multicycle_regs: Vec<MulticycleReg>,
+    /// Icarus-portability (arch#650): pending `logic [W-1:0] name;` /
+    /// `assign name = <expr>;` line pairs synthesized by the `Index`
+    /// (`expr[i]`) emitter when its base is not a "portable" SV
+    /// bit-select base (the same allowlist `is_portable_bit_slice_base`
+    /// enforces for `[hi:lo]`/`[start +: w]`, spec §3.2.1) — e.g. an
+    /// arithmetic expression `(a - b)[i]`. Drained by `line()` so the
+    /// hoisted temp's declaration+assignment land immediately before the
+    /// statement that reads it, in module scope. `RefCell` because the
+    /// `Index` arm lives inside `&self` expression emission; the actual
+    /// `self.out` mutation only ever happens later from `line()`'s `&mut
+    /// self`, so this needs no unsafe code (contrast `ident_subst`'s
+    /// unsafe interior mutation in `emit_vec_method`).
+    index_hoist_lines: std::cell::RefCell<Vec<String>>,
+    /// Monotonic counter for `index_hoist_lines` temp names
+    /// (`arch_idx_base_<n>`). Never reset per-module — names only need
+    /// to be unique within the emitted file, and a file-wide counter is
+    /// simplest and avoids any cross-module collision risk.
+    index_hoist_counter: std::cell::Cell<u32>,
+    /// Names of `for i in <range> ... end for` loop variables whose SV
+    /// `for` loop body is currently being emitted (module.rs / mod.rs
+    /// `emit_for_loop_sv`). A hoisted `Index`-base temp is declared at
+    /// module scope (see `index_hoist_lines` above) — Icarus doesn't
+    /// support `logic` declarations inside `always_*` blocks (see the
+    /// existing comment in `emit_for_loop_sv`'s `ValueList` arm), and a
+    /// loop-local `int` iterator isn't visible at module scope either
+    /// way. So when a hoist candidate's base expression references an
+    /// active loop variable, the hoist is skipped (falls back to prior
+    /// bare-emission behavior) rather than emitting SV that references
+    /// an out-of-scope identifier.
+    runtime_for_loop_vars: std::collections::HashSet<String>,
 }
 
 /// One `multicycle <N>` reg discovered during SV emission. Captures
@@ -289,6 +319,9 @@ impl<'a> Codegen<'a> {
             find_first_widths: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             shared_call_sites: std::collections::HashMap::new(),
             multicycle_regs: Vec::new(),
+            index_hoist_lines: std::cell::RefCell::new(Vec::new()),
+            index_hoist_counter: std::cell::Cell::new(0),
+            runtime_for_loop_vars: std::collections::HashSet::new(),
         }
     }
 
@@ -535,6 +568,27 @@ impl<'a> Codegen<'a> {
     }
 
     fn line(&mut self, s: &str) {
+        // Drain any Icarus-portability index-hoist temporaries synthesized
+        // while building `s` (see `index_hoist_lines`), so their
+        // declaration + assignment land immediately before the statement
+        // that reads them — same indent, module scope. Empty in the
+        // overwhelming common case (no hoist was needed), so this is a
+        // no-op borrow-and-check for ordinary lines.
+        let pending: Vec<String> = {
+            let mut hoists = self.index_hoist_lines.borrow_mut();
+            if hoists.is_empty() {
+                Vec::new()
+            } else {
+                std::mem::take(&mut *hoists)
+            }
+        };
+        for p in &pending {
+            for _ in 0..self.indent {
+                self.out.push_str("  ");
+            }
+            self.out.push_str(p);
+            self.out.push('\n');
+        }
         for _ in 0..self.indent {
             self.out.push_str("  ");
         }
@@ -1561,8 +1615,15 @@ impl<'a> Codegen<'a> {
                     "for (int {var} = {start}; {var} <= {end}; {var}++) begin"
                 ));
                 self.indent += 1;
+                // `var` is a real SV loop-local `int`, not visible at module
+                // scope — the Index-hoist temp (arch#650) can't reference it,
+                // so record it as active for the body's duration.
+                let newly_inserted = self.runtime_for_loop_vars.insert(var.clone());
                 for s in &f.body {
                     emit_body_stmt(self, s);
+                }
+                if newly_inserted {
+                    self.runtime_for_loop_vars.remove(var);
                 }
                 self.indent -= 1;
                 self.line("end");
@@ -1576,8 +1637,12 @@ impl<'a> Codegen<'a> {
                         "for (int {var} = {val}; {var} == {val}; {var}++) begin"
                     ));
                     self.indent += 1;
+                    let newly_inserted = self.runtime_for_loop_vars.insert(var.clone());
                     for s in &f.body {
                         emit_body_stmt(self, s);
+                    }
+                    if newly_inserted {
+                        self.runtime_for_loop_vars.remove(var);
                     }
                     self.indent -= 1;
                     self.line("end");
@@ -6021,9 +6086,27 @@ impl<'a> Codegen<'a> {
                     .map(|w| self.emit_expr_str(w))
                     .unwrap_or_else(|| format!("$bits({})", self.emit_expr_str(expr)))
             }
+            // `.reverse()` bit-reverses within fixed-size chunks — same
+            // total width as the receiver. Recurse into the receiver
+            // rather than falling to `$bits({<<N{e}})`: Icarus does not
+            // reliably accept a streaming-concat operator as the argument
+            // to `$bits(...)` (arch#650, discovered indexing a `.reverse()`
+            // result — same root cause class as the `$bits($signed(...))`
+            // case above, different SV shape).
+            ExprKind::MethodCall(recv, method, _) if method.name == "reverse" => {
+                self.infer_sv_width_str(recv)
+            }
             ExprKind::Cast(_, ty) => self
                 .type_expr_data_width(ty)
                 .unwrap_or_else(|| format!("$bits({})", self.emit_expr_str(expr))),
+            // `signed(e)`/`unsigned(e)` are pure bit reinterpretations
+            // (never change width) — recurse into `e` rather than falling
+            // to `$bits($signed(e))`/`$bits($unsigned(e))`. Icarus does not
+            // reliably accept `$bits(...)` wrapping a nested system-function
+            // call (arch#650); this also gives a tighter (often literal)
+            // width than the runtime-computed fallback whenever `e`'s width
+            // is statically known.
+            ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => self.infer_sv_width_str(inner),
             // Vec element access: width comes from the inner element type
             ExprKind::Index(base, _) => {
                 if let ExprKind::Ident(name) = &base.kind {
@@ -6077,6 +6160,130 @@ impl<'a> Codegen<'a> {
         } else {
             w.to_string()
         }
+    }
+
+    /// Peel `signed(...)` / `unsigned(...)` / `(... as T)` wrappers, returning
+    /// the innermost non-cast expression. All three are pure bit
+    /// reinterpretations in ARCH: `Signed`/`Unsigned` never change width, and
+    /// `Cast` is typecheck-rejected when source and target widths are both
+    /// known and differ (see `TypeChecker::resolve_expr_type`'s `Cast` arm).
+    /// So the innermost expression carries the identical bit pattern as the
+    /// wrapped form — callers that only need a single bit (`Index`'s base)
+    /// can safely use it in place of the cast. Used by arch#650's
+    /// indexed-cast portability fix; see `ExprKind::Index`.
+    fn unwrap_reinterpret_cast(mut e: &Expr) -> &Expr {
+        loop {
+            match &e.kind {
+                ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => e = inner,
+                ExprKind::Cast(inner, _) => e = inner,
+                _ => return e,
+            }
+        }
+    }
+
+    /// True when `base` is one of the SV forms that compose directly with a
+    /// trailing single-bit `[i]` index on Icarus. Starts from the same set
+    /// typecheck's `is_portable_bit_slice_base` allows as a `BitSlice`/
+    /// `PartSelect` base (spec §3.2.1: identifier, literal, indexed access,
+    /// field access, concat, replication, function/method-call result) —
+    /// reused here because `Index` (`expr[i]`) also serves ordinary `Vec`
+    /// element access (portable for any base), so typecheck does not gate
+    /// it the way it gates `BitSlice`/`PartSelect`. But the two forms are
+    /// *not* portable-equivalent on Icarus: empirically (Icarus 12.0),
+    /// `{a, b}[i]`, `{2{a}}[i]`, and `{<<1{a}}[i]` are all rejected the same
+    /// way an indexed cast is, even though the corresponding `[hi:lo]`
+    /// range form is accepted bare (arch#653/#656/#659) — so `Concat`/
+    /// `Repeat` are *not* atomic here despite being portable `BitSlice`
+    /// bases. (This file's `BitSlice` arm is unchanged — that shipped,
+    /// tested behavior is out of this fix's scope; see arch#650's PR body
+    /// for the follow-up filed to track it.)
+    fn is_atomic_index_base(base: &Expr) -> bool {
+        match &base.kind {
+            ExprKind::Ident(_)
+            | ExprKind::SynthIdent(_, _)
+            | ExprKind::Literal(_)
+            | ExprKind::Index(_, _)
+            | ExprKind::FieldAccess(_, _)
+            | ExprKind::FunctionCall(_, _) => true,
+            // `trunc`/`zext`/`resize` lower to an SV size-cast (`N'(...)`);
+            // `sext`/`reverse` lower to a replication/concat/streaming-
+            // concat (`{...}`). Both shapes are rejected by Icarus when
+            // directly indexed (`N'(x)[i]`, `{...}[i]`) — the same
+            // "indexed cast/conversion" and brace-index issues above,
+            // just reached via a method call instead of a bare literal
+            // concat/repeat. Everything else (any/all/count/contains/
+            // reduce_*/find_first, to_fp32/to_bf16/to_fp8*/to_uint/
+            // to_sint, or a generic pass-through `.method()`) keeps the
+            // prior atomic classification — those don't produce a `{...}`
+            // or `N'(...)` wrapper around the receiver.
+            ExprKind::MethodCall(_, method, _) => !matches!(
+                method.name.as_str(),
+                "trunc" | "zext" | "resize" | "sext" | "reverse"
+            ),
+            _ => false,
+        }
+    }
+
+    /// True if `e` contains a bare `Ident` whose name is in `names`.
+    /// Conservative and shallow-recursive (walks every expression kind that
+    /// can appear inside an arithmetic/logical sub-expression) — used only to
+    /// decide whether an `Index`-hoist temp (module scope) would reference an
+    /// out-of-scope runtime `for`-loop variable; false positives just mean a
+    /// missed portability fix (falls back to prior behavior), never a
+    /// miscompile.
+    fn expr_references_any(e: &Expr, names: &std::collections::HashSet<String>) -> bool {
+        match &e.kind {
+            ExprKind::Ident(n) => names.contains(n),
+            ExprKind::Binary(_, a, b) => {
+                Self::expr_references_any(a, names) || Self::expr_references_any(b, names)
+            }
+            ExprKind::Unary(_, a) => Self::expr_references_any(a, names),
+            ExprKind::Ternary(c, t, f) => {
+                Self::expr_references_any(c, names)
+                    || Self::expr_references_any(t, names)
+                    || Self::expr_references_any(f, names)
+            }
+            ExprKind::Index(base, idx) => {
+                Self::expr_references_any(base, names) || Self::expr_references_any(idx, names)
+            }
+            ExprKind::BitSlice(base, hi, lo) => {
+                Self::expr_references_any(base, names)
+                    || Self::expr_references_any(hi, names)
+                    || Self::expr_references_any(lo, names)
+            }
+            ExprKind::PartSelect(base, start, width, _) => {
+                Self::expr_references_any(base, names)
+                    || Self::expr_references_any(start, names)
+                    || Self::expr_references_any(width, names)
+            }
+            ExprKind::FieldAccess(base, _) => Self::expr_references_any(base, names),
+            ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => {
+                Self::expr_references_any(inner, names)
+            }
+            ExprKind::Cast(inner, _) => Self::expr_references_any(inner, names),
+            ExprKind::MethodCall(base, _, args) => {
+                Self::expr_references_any(base, names)
+                    || args.iter().any(|a| Self::expr_references_any(a, names))
+            }
+            ExprKind::FunctionCall(_, args) => {
+                args.iter().any(|a| Self::expr_references_any(a, names))
+            }
+            ExprKind::Concat(parts) => parts.iter().any(|p| Self::expr_references_any(p, names)),
+            ExprKind::Repeat(count, value) => {
+                Self::expr_references_any(count, names) || Self::expr_references_any(value, names)
+            }
+            _ => false,
+        }
+    }
+
+    /// Fresh id for an `Index`-hoist temp name (`arch_idx_base_<n>`, see
+    /// `index_hoist_lines`). Monotonic for the whole file — uniqueness
+    /// within one module is all that's required, and a file-wide counter is
+    /// simplest and rules out any cross-module collision.
+    fn next_index_hoist_id(&self) -> u32 {
+        let id = self.index_hoist_counter.get();
+        self.index_hoist_counter.set(id + 1);
+        id
     }
 
     /// Emit an expression, wrapping in parens only when its precedence is
@@ -6434,8 +6641,26 @@ impl<'a> Codegen<'a> {
                     "sext" => {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
-                            // Sign-extension: replicate the MSB into the upper bits.
-                            format!("{{{{({w}-$bits({b})){{{b}[$bits({b})-1]}}}}, {b}}}")
+                            // Sign-extension: replicate the MSB into the upper
+                            // bits. `.sext()` always treats the receiver's own
+                            // MSB as the sign bit regardless of the receiver's
+                            // declared signedness, so a `signed(...)`/
+                            // `unsigned(...)`/`as T` wrapper around the
+                            // receiver (e.g. `signed(raw).sext<16>()`,
+                            // arch#650's "nested" mitigation example) is inert
+                            // here — same bits either way. Unwrap it: besides
+                            // being redundant, indexing straight into a cast
+                            // result (`$signed(raw)[...]`) is exactly the
+                            // "indexed cast" pattern arch#650 flags as
+                            // Icarus-hostile, and `$bits($signed(raw))` (the
+                            // prior width computation) nests a system-function
+                            // call inside `$bits`, which Icarus also does not
+                            // reliably accept.
+                            let recv = Self::unwrap_reinterpret_cast(base);
+                            let rb = self.emit_expr_str(recv);
+                            let sw = self.infer_sv_width_str(recv);
+                            let swp = Self::paren_width(&sw);
+                            format!("{{{{({w}-{swp}){{{rb}[{swp}-1]}}}}, {rb}}}")
                         } else {
                             b
                         }
@@ -6622,9 +6847,75 @@ impl<'a> Codegen<'a> {
                         return format!("{name}[({i}) * ({w}) +: ({w})]");
                     }
                 }
-                let b = self.emit_expr_str(base);
+                // Icarus portability (arch#650): unlike `BitSlice`/`PartSelect`,
+                // typecheck's `is_portable_bit_slice_base` does not gate the
+                // single-bit `Index` form — it also serves plain `Vec`-element
+                // access (`v[i]`), which is portable for *any* `v`. So
+                // `unsigned(x)[i]`, `signed(x)[i]`, `(x as T)[i]`, and
+                // `(a - b)[i]` all pass `arch check` today, and previously hit
+                // this arm's unconditional bare `{b}[{i}]` emission.
+                //
+                // `unsigned(...)`/`signed(...)`/`as T` casts are pure bit
+                // reinterpretations — typecheck requires same-width casts, so
+                // indexing the cast reads the identical bit as indexing the
+                // cast's inner expression. Unwrap them rather than emitting
+                // e.g. `$unsigned(x)[i]`: Verilator accepts an indexed
+                // system-function-call result, but Icarus rejects it.
+                let unwrapped = Self::unwrap_reinterpret_cast(base);
+                if Self::is_atomic_index_base(unwrapped) {
+                    let b = self.emit_expr_str(unwrapped);
+                    let i = self.emit_expr_str(idx);
+                    return format!("{b}[{i}]");
+                }
+                // Remaining case: a real computation (arithmetic, logical,
+                // ternary, ...) as the base — e.g. `(a - b)[i]`. Parenthesizing
+                // doesn't help (`(a - b)[i]` is illegal SV on both Verilator
+                // and Icarus — bit-select doesn't compose with a parenthesized
+                // non-selectable expression, same rule spec §3.2.1 documents
+                // for `BitSlice`/`PartSelect`); emitting it bare is worse than
+                // nonportable — with no base handling at all, this arm used to
+                // literally concatenate `base` and `[idx]` as text, so
+                // `(a - b)[i]` silently became `a - b[i]`, reparsed as
+                // `a - (b[i])` — a precedence miscompile, not merely
+                // non-portable SV. Hoist to a module-scope named temp instead,
+                // the same "bind to a let" fix the spec recommends at the
+                // source level for BitSlice/PartSelect.
+                //
+                // Skipped (falls through to the old bare emission) when the
+                // base references a live runtime `for`-loop variable: the
+                // hoisted temp is declared at module scope, which can't see a
+                // loop-local `int` (and Icarus doesn't support declarations
+                // inside `always_*` blocks either — see `emit_for_loop_sv`).
+                if !self.runtime_for_loop_vars.is_empty()
+                    && Self::expr_references_any(unwrapped, &self.runtime_for_loop_vars)
+                {
+                    let b = self.emit_expr_str(unwrapped);
+                    let i = self.emit_expr_str(idx);
+                    return format!("{b}[{i}]");
+                }
+                // Deliberately NOT underscore-prefixed (unlike most other
+                // compiler-synthesized names in this file, e.g.
+                // `__shared_*_out`, `_auto_bound_*`): Icarus Verilog 12.0
+                // segfaults elaborating `logic [$bits(...)-1:0] <name>;`
+                // when `<name>` starts with `_` — reproduced in isolation
+                // (crashes for `_tmp`/`_x`/`_0`/..., but not for the
+                // identical declaration renamed to e.g. `tmp`). The width
+                // computed by `infer_sv_width_str` below routinely falls
+                // back to `$bits(<expr>)` for a non-const-foldable
+                // arithmetic base, so this hoist temp hits that combination
+                // whenever it's needed — avoid the crash outright rather
+                // than depend on which fallback width shape happens to be
+                // "safe" today.
+                let tmp = format!("arch_idx_base_{}", self.next_index_hoist_id());
+                let w = Self::paren_width(&self.infer_sv_width_str(unwrapped));
+                let rhs = self.emit_expr_str(unwrapped);
+                {
+                    let mut hoists = self.index_hoist_lines.borrow_mut();
+                    hoists.push(format!("logic [{w}-1:0] {tmp};"));
+                    hoists.push(format!("assign {tmp} = {rhs};"));
+                }
                 let i = self.emit_expr_str(idx);
-                format!("{b}[{i}]")
+                format!("{tmp}[{i}]")
             }
             ExprKind::BitSlice(base, hi, lo) => {
                 if let (Some(v), Some(hi_v), Some(lo_v)) = (

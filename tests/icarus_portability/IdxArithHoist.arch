@@ -1,0 +1,14 @@
+// arch#650 regression fixture: single-bit index of an arithmetic base
+// (`(a - b)[i]`). Pre-fix, codegen had no base handling for the `Index`
+// form at all, so this literally emitted `a - b[i]` — reparsed by SV as
+// `a - (b[i])`, a silent precedence miscompile, not merely nonportable
+// SV. Post-fix, `(a - b)` is hoisted to a named module-scope temp and
+// `[i]` applies to the temp. See tests/integration_test.rs's
+// `test_index_arithmetic_hoist_behavioral_equivalence_verilator_and_iverilog`.
+module IdxArithHoist
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port i: in UInt<3>;
+  port y: out Bool;
+  let y = (a - b)[i];
+end module IdxArithHoist
