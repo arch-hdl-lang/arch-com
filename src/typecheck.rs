@@ -7009,9 +7009,26 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // Ram port groups: `ports rd_port ... end ports rd_port` → `rd_port_addr`.
+        let mut ram_port_groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        if let Some(Item::Ram(r)) = self.find_item_by_name(&inst.module_name.name) {
+            if r.is_interface && r.port_groups.is_empty() {
+                return;
+            }
+            for pg in &r.port_groups {
+                let sigs: Vec<String> = pg.signals.iter().map(|s| s.name.name.clone()).collect();
+                ram_port_groups.insert(pg.name.name.clone(), sigs);
+            }
+        }
+
         // Candidate pool for did_you_mean: base names + flattened bus signals (scalar, non-permissive).
         let mut candidates_set: BTreeSet<String> = base_names.clone();
         candidates_set.extend(linklist_op_ports.iter().cloned());
+        for (base, signals) in &ram_port_groups {
+            for sig in signals {
+                candidates_set.insert(format!("{}_{}", base, sig));
+            }
+        }
         for (base, (signals, permissive)) in &bus_map {
             if *permissive {
                 continue;
@@ -7150,6 +7167,17 @@ impl<'a> TypeChecker<'a> {
                                     is_valid = true;
                                     break;
                                 }
+                            }
+                        }
+                    }
+                }
+                // Ram port groups: `rd_port_addr`.
+                if !is_valid {
+                    for (base, signals) in &ram_port_groups {
+                        if let Some(suffix) = cname.strip_prefix(&format!("{}_", base)) {
+                            if signals.contains(&suffix.to_string()) {
+                                is_valid = true;
+                                break;
                             }
                         }
                     }
