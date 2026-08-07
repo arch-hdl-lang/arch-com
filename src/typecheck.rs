@@ -9082,6 +9082,452 @@ fn check_precedence_in_item(item: &Item, errors: &mut Vec<CompileError>) {
     }
 }
 
+// ── Naming-convention lint (issue #648, opt-in via `--lint-naming`) ───────────
+//
+// Spec §2.1's naming table is documented as "recommended, not
+// compiler-enforced" and a standing maintainer decision keeps it that way —
+// this pass is purely opt-in, warning-only, and never runs unless the CLI
+// flag is passed. Absent the flag, `arch check`/`arch build` behavior and
+// emitted output are completely unchanged (this function is never called).
+//
+// Casing classification is pure string logic — no type information needed —
+// so, like `check_precedence`, this walks the *parsed* `SourceFile` before
+// elaboration. That timing isn't just a performance shortcut: it structurally
+// avoids ever seeing a compiler-synthesized identifier (thread-lowering's
+// `_threads` submodules, `__ri0`-style internal regs, credit-channel dispatch
+// wires, generate-expanded `w_0`/`w_1` suffixes, ...), because none of those
+// exist yet at this stage — they're all inserted by passes in `elaborate.rs`
+// that run *after* this one. The single exception is the parser's own
+// `_destructure` placeholder name on struct-destructuring `let` bindings
+// (`LetBinding::destructure_fields`) — that placeholder is synthesized by
+// `parser.rs` itself and so *is* present pre-elaboration; it's explicitly
+// skipped in `check_let_binding_naming` below (its real user-written names
+// live in `destructure_fields`, which are checked individually instead).
+
+/// PascalCase: `FetchUnit`, `AluOp`, `AXIBridge` (acronym prefix),
+/// `Axi4Bridge` (digit mid-word). First char uppercase; every char
+/// alphanumeric (no separators).
+fn is_pascal_case(name: &str) -> bool {
+    matches!(name.chars().next(), Some(c) if c.is_ascii_uppercase())
+        && name.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+/// snake_case: `pc_next`, `req_valid`, `fifo2_ptr` (digit mid-word). First
+/// char lowercase; every char lowercase/digit/underscore.
+fn is_snake_case(name: &str) -> bool {
+    matches!(name.chars().next(), Some(c) if c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// UPPER_SNAKE: `XLEN`, `CACHE_DEPTH`. First char uppercase; every char
+/// uppercase/digit/underscore.
+fn is_upper_snake(name: &str) -> bool {
+    matches!(name.chars().next(), Some(c) if c.is_ascii_uppercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Best-effort PascalCase rewrite, used only for the diagnostic's suggested
+/// name. Underscore-joined input (`MODULE_FOO`) is split on `_` and each
+/// part is title-cased unless it looks like an acronym (all-caps/digits,
+/// kept verbatim). No-underscore input (`moduleFoo`) is left alone except
+/// for capitalizing the first character, which preserves intentional
+/// internal capitalization (`moduleFoo` -> `ModuleFoo`, not `Modulefoo`).
+fn suggest_pascal_case(name: &str) -> String {
+    if name.contains('_') {
+        name.split('_')
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                if part.chars().all(|c| !c.is_ascii_lowercase()) {
+                    part.to_string()
+                } else {
+                    capitalize_first(part)
+                }
+            })
+            .collect()
+    } else {
+        capitalize_first(name)
+    }
+}
+
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_ascii_uppercase().to_string() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Best-effort snake_case rewrite: inserts `_` at lower->upper and
+/// upper-run->upper+lower boundaries (so `AXIBridge` -> `axi_bridge`, not
+/// `a_x_i_bridge`), lowercases everything, and collapses/trims `_` runs.
+fn suggest_snake_case(name: &str) -> String {
+    let chars: Vec<char> = name.chars().collect();
+    let mut out = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        if c == '_' {
+            if !out.is_empty() && !out.ends_with('_') {
+                out.push('_');
+            }
+            continue;
+        }
+        if c.is_ascii_uppercase() {
+            let prev = if i > 0 { Some(chars[i - 1]) } else { None };
+            let next = chars.get(i + 1).copied();
+            let boundary = match prev {
+                Some(p) => {
+                    p.is_ascii_lowercase()
+                        || p.is_ascii_digit()
+                        || (p.is_ascii_uppercase() && next.is_some_and(|n| n.is_ascii_lowercase()))
+                }
+                None => false,
+            };
+            if boundary && !out.is_empty() && !out.ends_with('_') {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out.trim_matches('_').to_string()
+}
+
+/// Best-effort UPPER_SNAKE rewrite: same word-boundary logic as
+/// `suggest_snake_case`, upper-cased.
+fn suggest_upper_snake(name: &str) -> String {
+    suggest_snake_case(name).to_ascii_uppercase()
+}
+
+fn naming_warning(
+    warnings: &mut Vec<CompileWarning>,
+    category: &str,
+    ident: &Ident,
+    convention: &str,
+    suggestion: String,
+) {
+    warnings.push(CompileWarning {
+        message: format!(
+            "{category} `{}` should be {convention} (e.g. `{suggestion}`) — see naming conventions",
+            ident.name
+        ),
+        span: ident.span,
+    });
+}
+
+fn check_pascal_naming(warnings: &mut Vec<CompileWarning>, category: &str, ident: &Ident) {
+    if !is_pascal_case(&ident.name) {
+        naming_warning(
+            warnings,
+            category,
+            ident,
+            "PascalCase",
+            suggest_pascal_case(&ident.name),
+        );
+    }
+}
+
+fn check_snake_naming(warnings: &mut Vec<CompileWarning>, category: &str, ident: &Ident) {
+    if !is_snake_case(&ident.name) {
+        naming_warning(
+            warnings,
+            category,
+            ident,
+            "snake_case",
+            suggest_snake_case(&ident.name),
+        );
+    }
+}
+
+fn check_upper_snake_naming(warnings: &mut Vec<CompileWarning>, category: &str, ident: &Ident) {
+    if !is_upper_snake(&ident.name) {
+        naming_warning(
+            warnings,
+            category,
+            ident,
+            "UPPER_SNAKE",
+            suggest_upper_snake(&ident.name),
+        );
+    }
+}
+
+fn check_params_naming(warnings: &mut Vec<CompileWarning>, params: &[ParamDecl]) {
+    for p in params {
+        check_upper_snake_naming(warnings, "param", &p.name);
+    }
+}
+
+fn check_ports_naming(warnings: &mut Vec<CompileWarning>, ports: &[PortDecl]) {
+    for p in ports {
+        check_snake_naming(warnings, "port", &p.name);
+    }
+}
+
+/// `let` bindings: the ordinary single-name form is checked directly; the
+/// struct-destructuring form (`let {a, b, c} = expr;`) carries a
+/// parser-synthesized `_destructure` placeholder in `name` (see the module
+/// comment above) — skip that and check the real user-written names in
+/// `destructure_fields` instead.
+fn check_let_binding_naming(warnings: &mut Vec<CompileWarning>, l: &LetBinding) {
+    if l.destructure_fields.is_empty() {
+        check_snake_naming(warnings, "let binding", &l.name);
+    } else {
+        for f in &l.destructure_fields {
+            check_snake_naming(warnings, "let binding", f);
+        }
+    }
+}
+
+fn check_function_naming(warnings: &mut Vec<CompileWarning>, f: &FunctionDecl) {
+    for a in &f.args {
+        check_snake_naming(warnings, "function arg", &a.name);
+    }
+    check_function_body_naming(warnings, &f.body);
+}
+
+fn check_function_body_naming(warnings: &mut Vec<CompileWarning>, body: &[FunctionBodyItem]) {
+    for item in body {
+        match item {
+            FunctionBodyItem::Let(l) => check_let_binding_naming(warnings, l),
+            FunctionBodyItem::IfElse(ie) => {
+                check_function_body_naming(warnings, &ie.then_body);
+                check_function_body_naming(warnings, &ie.else_body);
+            }
+            FunctionBodyItem::For(fl) => check_function_body_naming(warnings, &fl.body),
+            FunctionBodyItem::Return(_) | FunctionBodyItem::Assign(_) => {}
+        }
+    }
+}
+
+fn check_gen_items_naming(warnings: &mut Vec<CompileWarning>, items: &[GenItem]) {
+    for item in items {
+        match item {
+            GenItem::Port(p) => check_snake_naming(warnings, "port", &p.name),
+            GenItem::Wire(w) => check_snake_naming(warnings, "wire", &w.name),
+            GenItem::Inst(_)
+            | GenItem::TlmConnect(_)
+            | GenItem::Thread(_)
+            | GenItem::Assert(_)
+            | GenItem::Seq(_)
+            | GenItem::Comb(_) => {}
+        }
+    }
+}
+
+fn check_generate_naming(warnings: &mut Vec<CompileWarning>, g: &GenerateDecl) {
+    match g {
+        GenerateDecl::For(gf) => check_gen_items_naming(warnings, &gf.items),
+        GenerateDecl::If(gi) => {
+            check_gen_items_naming(warnings, &gi.then_items);
+            check_gen_items_naming(warnings, &gi.else_items);
+        }
+    }
+}
+
+/// Walk a module (or pipeline stage) body for reg/wire/let naming —
+/// shared by `Item::Module` and `PipelineDecl`'s per-stage bodies, both of
+/// which are `Vec<ModuleBodyItem>`.
+fn check_module_body_naming(warnings: &mut Vec<CompileWarning>, body: &[ModuleBodyItem]) {
+    for item in body {
+        match item {
+            ModuleBodyItem::RegDecl(r) => check_snake_naming(warnings, "reg", &r.name),
+            ModuleBodyItem::WireDecl(w) => check_snake_naming(warnings, "wire", &w.name),
+            ModuleBodyItem::PipeRegDecl(p) => check_snake_naming(warnings, "reg", &p.name),
+            ModuleBodyItem::LetBinding(l) => check_let_binding_naming(warnings, l),
+            ModuleBodyItem::Function(f) => check_function_naming(warnings, f),
+            ModuleBodyItem::Generate(g) => check_generate_naming(warnings, g),
+            ModuleBodyItem::RegBlock(_)
+            | ModuleBodyItem::LatchBlock(_)
+            | ModuleBodyItem::CombBlock(_)
+            | ModuleBodyItem::Inst(_)
+            | ModuleBodyItem::Thread(_)
+            | ModuleBodyItem::Resource(_)
+            | ModuleBodyItem::Assert(_)
+            | ModuleBodyItem::TlmConnect(_)
+            | ModuleBodyItem::TypeAlias(_) => {}
+        }
+    }
+}
+
+/// Walk one top-level `Item` for naming-convention violations. See the
+/// module comment above for scope/timing rationale.
+///
+/// Construct-name (PascalCase) coverage matches issue #648's enumerated
+/// list exactly: module, fsm, fifo, ram, cam, counter, arbiter, regfile,
+/// pipeline, linklist, bus, synchronizer, clkgate, struct, enum, package,
+/// domain. `function` and `template` aren't in that list (no documented
+/// casing convention for either), so their own names aren't checked here —
+/// but their params/ports/args are still real `param`/`port`/signal
+/// declarations, so those nested categories are still checked.
+///
+/// `.archi` interface stubs (`is_interface == true`) are skipped entirely:
+/// they're compiler-emitted mirrors of a construct already declared (and
+/// already linted) in its originating `.arch` file, so linting the stub too
+/// would just double-report the same violation.
+fn check_naming_in_item(item: &Item, warnings: &mut Vec<CompileWarning>) {
+    match item {
+        Item::Domain(d) => check_pascal_naming(warnings, "domain", &d.name),
+        Item::Struct(s) => check_pascal_naming(warnings, "struct", &s.name),
+        Item::Enum(e) => check_pascal_naming(warnings, "enum", &e.name),
+        Item::Module(m) => {
+            if m.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "module", &m.name);
+            check_params_naming(warnings, &m.params);
+            check_ports_naming(warnings, &m.ports);
+            check_module_body_naming(warnings, &m.body);
+        }
+        Item::Fsm(f) => {
+            if f.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "fsm", &f.name);
+            check_params_naming(warnings, &f.params);
+            check_ports_naming(warnings, &f.ports);
+            for r in &f.regs {
+                check_snake_naming(warnings, "reg", &r.name);
+            }
+            for w in &f.wires {
+                check_snake_naming(warnings, "wire", &w.name);
+            }
+            for l in &f.lets {
+                check_let_binding_naming(warnings, l);
+            }
+        }
+        Item::Fifo(x) => {
+            if x.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "fifo", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+        }
+        Item::Ram(x) => {
+            if x.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "ram", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+            for pg in &x.port_groups {
+                check_ports_naming(warnings, &pg.signals);
+            }
+        }
+        Item::Cam(x) => {
+            if x.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "cam", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+        }
+        Item::Counter(x) => {
+            if x.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "counter", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+        }
+        Item::Arbiter(x) => {
+            if x.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "arbiter", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+            for pa in &x.port_arrays {
+                check_ports_naming(warnings, &pa.signals);
+            }
+        }
+        Item::Regfile(x) => {
+            if x.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "regfile", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+            if let Some(rp) = &x.read_ports {
+                check_ports_naming(warnings, &rp.signals);
+            }
+            if let Some(wp) = &x.write_ports {
+                check_ports_naming(warnings, &wp.signals);
+            }
+        }
+        Item::Pipeline(x) => {
+            if x.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "pipeline", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+            for stage in &x.stages {
+                check_module_body_naming(warnings, &stage.body);
+            }
+        }
+        Item::Linklist(x) => {
+            if x.is_interface {
+                return;
+            }
+            check_pascal_naming(warnings, "linklist", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+        }
+        Item::Function(f) => check_function_naming(warnings, f),
+        Item::Template(t) => {
+            check_params_naming(warnings, &t.params);
+            check_ports_naming(warnings, &t.ports);
+            for pa in &t.port_arrays {
+                check_ports_naming(warnings, &pa.signals);
+            }
+        }
+        Item::Synchronizer(x) => {
+            check_pascal_naming(warnings, "synchronizer", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+        }
+        Item::Clkgate(x) => {
+            check_pascal_naming(warnings, "clkgate", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.ports);
+        }
+        Item::Bus(x) => {
+            check_pascal_naming(warnings, "bus", &x.name);
+            check_params_naming(warnings, &x.params);
+            check_ports_naming(warnings, &x.signals);
+            for g in &x.generates {
+                check_ports_naming(warnings, &g.then_signals);
+                check_ports_naming(warnings, &g.else_signals);
+            }
+            for cc in &x.credit_channels {
+                check_params_naming(warnings, &cc.params);
+            }
+        }
+        Item::Package(x) => {
+            check_pascal_naming(warnings, "package", &x.name);
+            check_params_naming(warnings, &x.params);
+        }
+        Item::Use(_) | Item::ExternPackage(_) => {}
+    }
+}
+
+/// Run the naming-convention lint (issue #648) on a parsed `SourceFile`,
+/// pre-elaboration. Opt-in only — callers gate this behind `--lint-naming`;
+/// it is never invoked otherwise. Warning-only: naming conventions remain
+/// "recommended, not compiler-enforced" per spec §2.1, so this never
+/// produces a hard error regardless of how many violations are found.
+pub fn check_naming(source: &SourceFile) -> Vec<CompileWarning> {
+    let mut warnings = Vec::new();
+    for item in &source.items {
+        check_naming_in_item(item, &mut warnings);
+    }
+    warnings
+}
+
 /// Evaluate a simple literal type-width expression (e.g. the `8` in `UInt<8>`).
 /// Returns `None` for non-literal expressions (params, arithmetic, etc.).
 fn eval_type_width_expr(e: &Expr) -> Option<u32> {
