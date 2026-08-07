@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diagnostics::{span_to_source_span, CompileError, CompileWarning};
@@ -1126,6 +1126,7 @@ impl<'a> TypeChecker<'a> {
                     for gi in items {
                         if let crate::ast::GenItem::Inst(inst) = gi {
                             self.check_inst_param_constraints(inst);
+                            self.validate_inst_ports(inst);
                             // Look up the instantiated module's bus ports so we can
                             // mark per-bus-signal flat names for bus-typed inst-outputs
                             // (`inst_port -> outer_vec[loop_var]`), mirroring
@@ -1219,6 +1220,14 @@ impl<'a> TypeChecker<'a> {
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
+                    if let crate::ast::GenerateDecl::If(gi) = gen {
+                        for gi in &gi.else_items {
+                            if let crate::ast::GenItem::Inst(inst) = gi {
+                                self.check_inst_param_constraints(inst);
+                                self.validate_inst_ports(inst);
                             }
                         }
                     }
@@ -1775,6 +1784,9 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+
+        // Validate connections → ports (reverse direction) before driven marking.
+        self.validate_inst_ports(inst);
 
         // Base names of the child's Vec-of-bus ports (`port mm: ...
         // Vec<Bus, N>`). The parser flattens a per-element connection
@@ -6825,7 +6837,7 @@ impl<'a> TypeChecker<'a> {
     /// Find the top-level construct item declaring `name` (module, fsm,
     /// fifo, ram, arbiter, pipeline, bus, ...). Used by the instantiation-
     /// site `where` check to look up the target's `ParamDecl` list.
-    fn find_item_by_name(&self, name: &str) -> Option<&Item> {
+    fn find_item_by_name(&self, name: &str) -> Option<&'a Item> {
         self.source.items.iter().find(|item| match item {
             Item::Module(m) => m.name.name == name,
             Item::Fsm(f) => f.name.name == name,
@@ -6843,6 +6855,314 @@ impl<'a> TypeChecker<'a> {
             Item::Template(t) => t.name.name == name,
             _ => false,
         })
+    }
+
+    fn child_ports(&self, child_name: &str) -> Option<&'a [PortDecl]> {
+        let item = self.find_item_by_name(child_name)?;
+        match item {
+            Item::Module(m) => Some(&m.ports),
+            Item::Fsm(f) => Some(&f.ports),
+            Item::Pipeline(p) => Some(&p.ports),
+            Item::Fifo(f) => Some(&f.ports),
+            Item::Ram(r) => Some(&r.ports),
+            Item::Cam(c) => Some(&c.ports),
+            Item::Counter(c) => Some(&c.ports),
+            Item::Arbiter(a) => Some(&a.ports),
+            Item::Regfile(r) => Some(&r.ports),
+            Item::Linklist(l) => Some(&l.ports),
+            _ => None,
+        }
+    }
+
+    fn levenshtein(a: &str, b: &str) -> usize {
+        let a_chars: Vec<char> = a.chars().collect();
+        let b_chars: Vec<char> = b.chars().collect();
+        let n = a_chars.len();
+        let m = b_chars.len();
+        let mut dp = vec![vec![0; m + 1]; n + 1];
+        for i in 0..=n {
+            dp[i][0] = i;
+        }
+        for j in 0..=m {
+            dp[0][j] = j;
+        }
+        for i in 1..=n {
+            for j in 1..=m {
+                let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
+                dp[i][j] = (dp[i - 1][j] + 1)
+                    .min(dp[i][j - 1] + 1)
+                    .min(dp[i - 1][j - 1] + cost);
+            }
+        }
+        dp[n][m]
+    }
+
+    fn did_you_mean(target: &str, candidates: &[String]) -> Option<String> {
+        candidates
+            .iter()
+            .map(|c| (Self::levenshtein(target, c), c))
+            .filter(|(d, _)| *d > 0 && *d <= 3)
+            .min_by_key(|(d, c)| (*d, (*c).clone()))
+            .map(|(_, c)| c.clone())
+    }
+
+    fn validate_inst_ports(&mut self, inst: &InstDecl) {
+        let Some(ports) = self.child_ports(&inst.module_name.name) else {
+            return;
+        };
+
+        // Build lookups.
+        let base_names: BTreeSet<String> = ports.iter().map(|p| p.name.name.clone()).collect();
+
+        let mut bus_map: BTreeMap<String, (Vec<String>, bool)> = BTreeMap::new();
+        for p in ports {
+            if let Some(bi) = &p.bus_info {
+                let bus_name = &bi.bus_name.name;
+                if let Some((Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
+                    let mut param_map = info.default_param_map();
+                    for pa in &bi.params {
+                        param_map.insert(pa.name.name.clone(), &pa.value);
+                    }
+                    let eff = info.effective_signals(&param_map);
+                    let signals: Vec<String> = eff.into_iter().map(|(s, _, _)| s).collect();
+                    let permissive = !info.handshakes.is_empty()
+                        || !info.credit_channels.is_empty()
+                        || !info.tlm_methods.is_empty()
+                        || signals.is_empty();
+                    bus_map.insert(p.name.name.clone(), (signals, permissive));
+                } else {
+                    bus_map.insert(p.name.name.clone(), (Vec::new(), true));
+                }
+            }
+        }
+
+        let mut vec_scalar_bases: BTreeMap<String, Option<u32>> = BTreeMap::new();
+        for p in ports {
+            if p.bus_info.is_none() {
+                if let TypeExpr::Vec(_, size_expr) = &p.ty {
+                    let count = self
+                        .eval_const_expr(size_expr, &HashMap::new())
+                        .map(|v| v as u32);
+                    vec_scalar_bases.insert(p.name.name.clone(), count);
+                }
+            }
+        }
+
+        let mut vob_bases: BTreeMap<String, (Option<u32>, Vec<String>, bool)> = BTreeMap::new();
+        for p in ports {
+            if let Some(bi) = &p.bus_info {
+                if let Some(count_expr) = &bi.count {
+                    let count = self
+                        .eval_const_expr(count_expr, &HashMap::new())
+                        .map(|v| v as u32);
+                    let (signals, permissive) = bus_map
+                        .get(&p.name.name)
+                        .cloned()
+                        .unwrap_or((Vec::new(), true));
+                    vob_bases.insert(p.name.name.clone(), (count, signals, permissive));
+                }
+            }
+        }
+
+        // Port-array bases for Arbiter / Regfile `ports[N]` style: `request[N] valid/ready` → `request0_valid`.
+        // These are not `Vec` nor `Bus` but `PortArrayDecl`.
+        let mut port_array_bases: BTreeMap<String, (Option<u32>, Vec<String>)> = BTreeMap::new();
+        if let Some(item) = self.find_item_by_name(&inst.module_name.name) {
+            match item {
+                Item::Arbiter(a) => {
+                    for pa in &a.port_arrays {
+                        let count = self
+                            .eval_const_expr(&pa.count_expr, &HashMap::new())
+                            .map(|v| v as u32);
+                        let sigs: Vec<String> = pa.signals.iter().map(|s| s.name.name.clone()).collect();
+                        port_array_bases.insert(pa.name.name.clone(), (count, sigs));
+                    }
+                }
+                Item::Regfile(r) => {
+                    for pa_opt in [&r.read_ports, &r.write_ports] {
+                        if let Some(pa) = pa_opt {
+                            let count = self
+                                .eval_const_expr(&pa.count_expr, &HashMap::new())
+                                .map(|v| v as u32);
+                            let sigs: Vec<String> = pa.signals.iter().map(|s| s.name.name.clone()).collect();
+                            port_array_bases.insert(pa.name.name.clone(), (count, sigs));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Linklist op ports: `op insert_tail { port req_valid }` → `insert_tail_req_valid`.
+        let mut linklist_op_ports: BTreeSet<String> = BTreeSet::new();
+        if let Some(Item::Linklist(l)) = self.find_item_by_name(&inst.module_name.name) {
+            for op in &l.ops {
+                for p in &op.ports {
+                    linklist_op_ports.insert(format!("{}_{}", op.name.name, p.name.name));
+                }
+            }
+        }
+
+        // Candidate pool for did_you_mean: base names + flattened bus signals (scalar, non-permissive).
+        let mut candidates_set: BTreeSet<String> = base_names.clone();
+        candidates_set.extend(linklist_op_ports.iter().cloned());
+        for (base, (signals, permissive)) in &bus_map {
+            if *permissive {
+                continue;
+            }
+            if vob_bases.contains_key(base) {
+                continue;
+            }
+            for sig in signals {
+                candidates_set.insert(format!("{}_{}", base, sig));
+            }
+        }
+        let candidates: Vec<String> = candidates_set.into_iter().collect();
+
+        for conn in &inst.connections {
+            let cname = conn.port_name.name.as_str();
+            let mut is_valid = false;
+            if base_names.contains(cname) || linklist_op_ports.contains(cname) {
+                is_valid = true;
+            } else {
+                // Scalar bus per-field.
+                for (base, (signals, permissive)) in &bus_map {
+                    if vob_bases.contains_key(base) {
+                        continue;
+                    }
+                    if let Some(suffix) = cname.strip_prefix(&format!("{}_", base)) {
+                        if *permissive {
+                            is_valid = true;
+                            break;
+                        } else if signals.contains(&suffix.to_string()) {
+                            is_valid = true;
+                            break;
+                        }
+                    }
+                }
+                // Vec scalar per-element.
+                if !is_valid {
+                    for (base, count_opt) in &vec_scalar_bases {
+                        if let Some(suffix) = cname.strip_prefix(&format!("{}_", base)) {
+                            if suffix.parse::<u32>().is_ok() {
+                                if let Some(n) = count_opt {
+                                    if let Ok(idx) = suffix.parse::<u32>() {
+                                        if idx < *n {
+                                            is_valid = true;
+                                            break;
+                                        } else {
+                                            // Out-of-bounds idx still considered valid here;
+                                            // bounds are checked elsewhere. Treat as valid to avoid duplicate error.
+                                            is_valid = true;
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    is_valid = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                // Vec<Bus>.
+                if !is_valid {
+                    for (base, (_count_opt, signals, permissive)) in &vob_bases {
+                        if let Some(rest) = cname.strip_prefix(&format!("{}_", base)) {
+                            if rest.parse::<u32>().is_ok() {
+                                // base_<idx>
+                                is_valid = true;
+                                break;
+                            } else {
+                                let mut parts = rest.splitn(2, '_');
+                                let idxp = parts.next().unwrap();
+                                if let Some(sigp) = parts.next() {
+                                    if idxp.parse::<u32>().is_ok()
+                                        && (*permissive || signals.contains(&sigp.to_string()))
+                                    {
+                                        is_valid = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        // Also handle `base{idx}_{signal}` without underscore before idx (e.g., chans0_valid from `chans[0].valid`).
+                        if cname.starts_with(base) {
+                            let rest2 = &cname[base.len()..];
+                            if !rest2.is_empty() && rest2.chars().next().unwrap().is_ascii_digit() {
+                                if let Some(und_pos) = rest2.find('_') {
+                                    let (idx_part, sig_part_with_und) = rest2.split_at(und_pos);
+                                    let sig_part = &sig_part_with_und[1..];
+                                    if idx_part.parse::<u32>().is_ok()
+                                        && (*permissive || signals.contains(&sig_part.to_string()))
+                                    {
+                                        is_valid = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Port-array bases (Arbiter / Regfile `ports[N]`): `request0_valid` and `request_valid` whole-vector.
+                if !is_valid {
+                    for (base, (_count_opt, signals)) in &port_array_bases {
+                        // Whole-vector per-signal: `request_valid` (base + "_" + signal) – valid for any count.
+                        if let Some(suffix) = cname.strip_prefix(&format!("{}_", base)) {
+                            if signals.contains(&suffix.to_string()) {
+                                is_valid = true;
+                                break;
+                            }
+                        }
+                        // Indexed form: `request0_valid` (base + idx + "_" + signal)
+                        if cname.starts_with(base) {
+                            let rest = &cname[base.len()..];
+                            if !rest.is_empty() && rest.chars().next().unwrap().is_ascii_digit() {
+                                if let Some(und_pos) = rest.find('_') {
+                                    let (idx_part, sig_part_with_und) = rest.split_at(und_pos);
+                                    let sig_part = &sig_part_with_und[1..];
+                                    if idx_part.parse::<u32>().is_ok() && signals.contains(&sig_part.to_string()) {
+                                        is_valid = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Vec<Bus> per-signal whole-vector: `mm_valid` (base + "_" + signal) for packed vector.
+                if !is_valid {
+                    for (base, (_count_opt, signals, permissive)) in &vob_bases {
+                        if let Some(suffix) = cname.strip_prefix(&format!("{}_", base)) {
+                            if *permissive || signals.contains(&suffix.to_string()) {
+                                // This covers `mm_valid`, `mm_data` etc. It also matches `mm_0`? But `mm_0` suffix is numeric, not a signal, so not in signals and not permissive (signals not empty) → not valid here, but already handled above as base_<idx>.
+                                // So only per-signal whole-vector will be true.
+                                // Need to ensure suffix is a signal, not numeric idx.
+                                if signals.contains(&suffix.to_string()) || *permissive {
+                                    is_valid = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !is_valid {
+                let span = if conn.port_name.span.start != 0 || conn.port_name.span.end != 0 {
+                    conn.port_name.span
+                } else {
+                    conn.span
+                };
+                let mut msg = format!(
+                    "inst `{}` connects `{}`, which is not a port of `{}`",
+                    inst.name.name, conn.port_name.name, inst.module_name.name
+                );
+                if let Some(sugg) = Self::did_you_mean(cname, &candidates) {
+                    msg.push_str(&format!(" (did you mean `{}`?)", sugg));
+                }
+                self.errors.push(CompileError::general(&msg, span));
+            }
+        }
     }
 
     /// Instantiation-site `where` clause check (issue #600). Evaluates

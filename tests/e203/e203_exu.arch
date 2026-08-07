@@ -159,37 +159,13 @@ module e203_exu
   wire dec_rs2_idx: UInt<5>;
   wire dec_rd_idx:  UInt<5>;
   wire dec_imm:     UInt<32>;
-  wire dec_alu:     Bool;
   wire dec_bjp:     Bool;
-  wire dec_agu:     Bool;
-  wire dec_alu_add: Bool;
-  wire dec_alu_sub: Bool;
-  wire dec_alu_xor: Bool;
-  wire dec_alu_sll: Bool;
-  wire dec_alu_srl: Bool;
-  wire dec_alu_sra: Bool;
-  wire dec_alu_or:  Bool;
-  wire dec_alu_and: Bool;
-  wire dec_alu_slt: Bool;
-  wire dec_alu_sltu: Bool;
-  wire dec_alu_lui: Bool;
-  wire dec_beq:     Bool;
-  wire dec_bne:     Bool;
-  wire dec_blt:     Bool;
-  wire dec_bge:     Bool;
-  wire dec_bltu:    Bool;
-  wire dec_bgeu:    Bool;
-  wire dec_jump:    Bool;
   wire dec_mul:     Bool;
-  wire dec_mulh:    Bool;
   wire dec_mulhsu:  Bool;
-  wire dec_mulhu:   Bool;
   wire dec_div:     Bool;
   wire dec_divu:    Bool;
   wire dec_rem:     Bool;
   wire dec_remu:    Bool;
-  wire dec_load:    Bool;
-  wire dec_store:   Bool;
   wire dec_rs1_en:  Bool;
   wire dec_rs2_en:  Bool;
   wire dec_rd_en:   Bool;
@@ -460,30 +436,6 @@ module e203_exu
     dec_jalr_rs1idx -> dec_jalr_rs1idx;
     dec_bjp_imm  -> dec_bjp_imm;
     // Simplified control outputs
-    o_alu        -> dec_alu;
-    o_agu        -> dec_agu;
-    o_alu_add    -> dec_alu_add;
-    o_alu_sub    -> dec_alu_sub;
-    o_alu_xor    -> dec_alu_xor;
-    o_alu_sll    -> dec_alu_sll;
-    o_alu_srl    -> dec_alu_srl;
-    o_alu_sra    -> dec_alu_sra;
-    o_alu_or     -> dec_alu_or;
-    o_alu_and    -> dec_alu_and;
-    o_alu_slt    -> dec_alu_slt;
-    o_alu_sltu   -> dec_alu_sltu;
-    o_alu_lui    -> dec_alu_lui;
-    o_beq        -> dec_beq;
-    o_bne        -> dec_bne;
-    o_blt        -> dec_blt;
-    o_bge        -> dec_bge;
-    o_bltu       -> dec_bltu;
-    o_bgeu       -> dec_bgeu;
-    o_jump       -> dec_jump;
-    o_mulh       -> dec_mulh;
-    o_mulhu      -> dec_mulhu;
-    o_load       -> dec_load;
-    o_store      -> dec_store;
   end inst dec
 
   // ════════════════════════════════════════════════════════════════════
