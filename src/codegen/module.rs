@@ -1005,30 +1005,41 @@ impl<'a> Codegen<'a> {
         // Emit guard-contract SVA: for each `reg ... guard <sig>`, prove that
         // whenever `<sig>` is high, the reg has been written at least once.
         // Uses a shadow `_<reg>_written` set on any seq-block commit (over-approx).
-        self.emit_guard_contracts(&m_clone);
+        //
+        // Guarded by `--no-auto-asserts` (issue #649) — all of the
+        // following emit only compiler-generated SVA, never user RTL, so
+        // they are safe to skip wholesale.
+        if !self.suppress_auto_sva {
+            self.emit_guard_contracts(&m_clone);
 
-        // Emit bounds-check SVA for runtime-indexed Vec / bit-select /
-        // part-select accesses in seq/latch blocks. Mirrors arch sim's
-        // _ARCH_BCHK so iverilog/Verilator/formal tools see the invariant.
-        self.emit_bound_asserts(&m_clone);
+            // Emit bounds-check SVA for runtime-indexed Vec / bit-select /
+            // part-select accesses in seq/latch blocks. Mirrors arch sim's
+            // _ARCH_BCHK so iverilog/Verilator/formal tools see the invariant.
+            self.emit_bound_asserts(&m_clone);
 
-        // Emit per-variant handshake protocol SVA for each bus port whose
-        // bus definition contains one or more `handshake` channels.
-        self.emit_handshake_asserts(&m_clone);
+            // Emit per-variant handshake protocol SVA for each bus port whose
+            // bus definition contains one or more `handshake` channels.
+            self.emit_handshake_asserts(&m_clone);
+        }
 
         // Emit the synthesized credit counter + can_send wire for each
         // `send`-role credit_channel bus port on the module (PR #3b-ii).
+        // Not gated — this is functional RTL (a real counter register),
+        // not an assertion.
         self.emit_credit_channel_state(&m_clone);
 
         // Emit the target-side FIFO for each credit_channel bus port on
-        // the module where this side is the receiver (PR #3b-iii).
+        // the module where this side is the receiver (PR #3b-iii). Also
+        // functional RTL, not gated.
         self.emit_credit_channel_receiver_state(&m_clone);
 
-        // Emit the Tier-2 credit_channel protocol assertions (PR #4).
-        self.emit_credit_channel_asserts(&m_clone);
+        if !self.suppress_auto_sva {
+            // Emit the Tier-2 credit_channel protocol assertions (PR #4).
+            self.emit_credit_channel_asserts(&m_clone);
 
-        // Emit TLM method request/response stability assertions.
-        self.emit_tlm_method_asserts(&m_clone);
+            // Emit TLM method request/response stability assertions.
+            self.emit_tlm_method_asserts(&m_clone);
+        }
 
         // Emit log file descriptors: initial $fopen / final $fclose
         let log_files = Self::collect_log_files(&m_clone.body);

@@ -384,8 +384,11 @@ impl<'a> Codegen<'a> {
             self.line("end");
         }
 
-        // Auto-generated FSM safety assertions and coverage
-        {
+        // Auto-generated FSM safety assertions and coverage. Suppressed
+        // under `--no-auto-asserts` (issue #649) — compiler-generated
+        // SVA only, the user-written `assert`/`cover` block below is
+        // unaffected.
+        if !self.suppress_auto_sva {
             let clk_port = f.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)));
             let clk = clk_port
                 .map(|p| p.name.name.clone())

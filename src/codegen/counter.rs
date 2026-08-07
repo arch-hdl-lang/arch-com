@@ -264,8 +264,10 @@ impl<'a> Codegen<'a> {
             self.line("assign at_min = (count_r == '0);");
         }
 
-        // Auto-generated safety assertions for counter invariants
-        {
+        // Auto-generated safety assertions for counter invariants.
+        // Suppressed under `--no-auto-asserts` (issue #649) — the
+        // user-written `assert`/`cover` block below is unaffected.
+        if !self.suppress_auto_sva {
             self.line("");
             self.line("// synopsys translate_off");
             if let Some(mp) = &max_port {

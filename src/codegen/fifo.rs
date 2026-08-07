@@ -87,8 +87,10 @@ impl<'a> Codegen<'a> {
             self.emit_fifo_sync_body(f, &port_names, has_overflow_param);
         }
 
-        // Auto-generated safety assertions for FIFO invariants
-        {
+        // Auto-generated safety assertions for FIFO invariants.
+        // Suppressed under `--no-auto-asserts` (issue #649) — the
+        // user-written `assert`/`cover` block below is unaffected.
+        if !self.suppress_auto_sva {
             let clk_names: Vec<String> = f
                 .ports
                 .iter()

@@ -132,9 +132,34 @@ enum Command {
         /// Input .arch file(s)
         #[arg(required = true)]
         files: Vec<PathBuf>,
-        /// Output .sv file
+        /// Output .sv file. Pass the literal value `auto` (`-o auto`) to
+        /// derive the output stem from each top-level construct's declared
+        /// name instead of the source filename — one `.sv` per construct,
+        /// written next to the first input file (issue #251). The
+        /// construct's name is used verbatim (no case conversion): ARCH
+        /// naming convention already recommends snake_case construct
+        /// names, so `module ibex_alu` in `IbexAlu.arch` writes
+        /// `ibex_alu.sv`. A construct not following the convention (e.g.
+        /// `module AXIBridge`) writes exactly `AXIBridge.sv` — `-o auto`
+        /// does not re-case names for you. Not yet supported together with
+        /// the `--emit-thread-*` / `--emit-construct-proof-*` family.
         #[arg(short, long)]
         o: Option<PathBuf>,
+        /// Suppress every compiler-generated `assert property` /
+        /// `cover property` in the emitted SV: bounds (`_auto_bound_*`),
+        /// divide-by-zero (`_auto_div0_*`), FSM legal-state / reachability
+        /// / transition coverage, FIFO overflow/underflow, counter range,
+        /// `reg ... guard` contracts, and bus handshake / credit_channel /
+        /// TLM-method protocol SVA. Also suppresses `--auto-thread-asserts`
+        /// output regardless of that flag's own value. User-written
+        /// `assert`/`cover` items declared in module/fsm/fifo/... bodies
+        /// are NOT affected — this narrower scope was chosen because the
+        /// issue (#649) only asks to suppress *generated* SVA; see the PR
+        /// description for the reasoning. Useful for Icarus-targeted flows
+        /// that reject SVA syntax even under `-gno-assertions`. Emitted
+        /// synthesizable RTL is unchanged either way.
+        #[arg(long)]
+        no_auto_asserts: bool,
         /// Emit a static HTML thread lowering map. Bare flag writes
         /// `<sv-output-stem>.thread.html`; `--emit-thread-map=PATH` writes
         /// the explicit path. The optional value requires `=`.
@@ -1232,11 +1257,20 @@ fn main() -> miette::Result<()> {
             auto_thread_asserts,
             lint_naming,
             no_inline_deps,
+            no_auto_asserts,
             fp_compat,
             staged_ops,
         } => {
             let fp_compat = arch::FpCompat::parse(&fp_compat).map_err(|e| miette::miette!(e))?;
             let lint_naming = resolve_lint_naming_flag(lint_naming)?;
+            // `-o auto` (issue #251): the literal value `auto` opts into
+            // per-construct output named after each construct's declared
+            // name, instead of a literal output path.
+            let out_is_auto = matches!(o.as_deref().and_then(|p| p.to_str()), Some("auto"));
+            // `--no-auto-asserts` (issue #649) also suppresses
+            // `--auto-thread-asserts` output, regardless of that flag's
+            // own value — the new flag is the stronger, more general knob.
+            let effective_auto_thread_asserts = auto_thread_asserts && !no_auto_asserts;
             let files_for_learn = files.clone();
             learn_wrap(&files_for_learn, move || {
                 if matches!(emit_thread_map, Some(Some(_))) && files.len() > 1 && o.is_none() {
@@ -1277,6 +1311,20 @@ fn main() -> miette::Result<()> {
                     emit_construct_proof_lean.is_some() || check_construct_proof_lean;
                 let need_construct_proof_smt =
                     emit_construct_proof_smt.is_some() || check_construct_proof_smt;
+                if out_is_auto
+                    && (emit_thread_map.is_some()
+                        || emit_thread_proof.is_some()
+                        || need_thread_proof_lean
+                        || need_construct_proof_lean
+                        || need_construct_proof_smt)
+                {
+                    return Err(miette::miette!(
+                        "-o auto is not yet supported together with --emit-thread-map / \
+                         --emit-thread-proof / --emit-thread-proof-lean / \
+                         --emit-construct-proof-lean / --emit-construct-proof-smt; pass an \
+                         explicit -o PATH for those flows"
+                    ));
+                }
                 let all_files = resolve_use_imports(&files)?;
                 let ms = MultiSource::from_files(&all_files)?;
                 let collect_thread_metadata = emit_thread_map.is_some()
@@ -1290,7 +1338,7 @@ fn main() -> miette::Result<()> {
                 let (mut ast, symbols, overload_map) = run_check_multi_opts_with_thread_map(
                     &ms,
                     false,
-                    auto_thread_asserts,
+                    effective_auto_thread_asserts,
                     lint_naming,
                     thread_map_store.clone(),
                 )?;
@@ -1312,7 +1360,143 @@ fn main() -> miette::Result<()> {
                     std::collections::HashSet::new()
                 };
 
-                if files.len() == 1 || o.is_some() {
+                if out_is_auto {
+                    // `-o auto` (issue #251): one `.sv` per top-level HDL
+                    // construct (module/fsm/fifo/ram/cam/counter/arbiter/
+                    // regfile/pipeline/linklist/synchronizer/clkgate),
+                    // named after the construct's declared name — used
+                    // verbatim, no case conversion (see the `-o` help
+                    // text). Type/const/function-only items (domain/
+                    // struct/enum/package/function/template/bus/use/
+                    // extern package) aren't constructs of their own, so
+                    // each is folded into *every* per-construct output —
+                    // this mirrors today's single-combined-output
+                    // behavior (where they already sit alongside every
+                    // module in the one file) and keeps each `-o auto`
+                    // output independently compilable. Trade-off: if two
+                    // constructs share a struct/enum/package and both
+                    // outputs are compiled together in one downstream
+                    // invocation, that type/package is declared twice —
+                    // acceptable for the swap-in-one-file-at-a-time
+                    // workflow this feature targets (see doc). A
+                    // thread-lowering helper module (`_<Name>_threads`)
+                    // is bundled with its public module, never split out
+                    // on its own — `generate_items`'s helper/public
+                    // blank-line trim relies on the two being adjacent in
+                    // the same call.
+                    fn is_primary_construct(item: &Item) -> bool {
+                        matches!(
+                            item,
+                            Item::Module(_)
+                                | Item::Fsm(_)
+                                | Item::Fifo(_)
+                                | Item::Ram(_)
+                                | Item::Cam(_)
+                                | Item::Counter(_)
+                                | Item::Arbiter(_)
+                                | Item::Regfile(_)
+                                | Item::Pipeline(_)
+                                | Item::Linklist(_)
+                                | Item::Synchronizer(_)
+                                | Item::Clkgate(_)
+                        )
+                    }
+                    fn is_threads_helper(item: &Item, next: Option<&Item>) -> bool {
+                        let Item::Module(m) = item else {
+                            return false;
+                        };
+                        let Some(Item::Module(next_m)) = next else {
+                            return false;
+                        };
+                        m.name.name == format!("_{}_threads", next_m.name.name)
+                    }
+
+                    let filtered: Vec<Item> = ast
+                        .items
+                        .iter()
+                        .filter(|item| {
+                            if !no_inline_deps {
+                                return true;
+                            }
+                            let s = item.span().start;
+                            ms.segments.iter().any(|(seg_start, seg_end, fname, _)| {
+                                s >= *seg_start && s < *seg_end && original_names.contains(fname)
+                            })
+                        })
+                        .cloned()
+                        .collect();
+
+                    let mut aux_items: Vec<Item> = Vec::new();
+                    for (i, item) in filtered.iter().enumerate() {
+                        if is_primary_construct(item)
+                            || is_threads_helper(item, filtered.get(i + 1))
+                        {
+                            continue;
+                        }
+                        aux_items.push(item.clone());
+                    }
+
+                    let mut groups: Vec<(String, Vec<Item>)> = Vec::new();
+                    let mut i = 0;
+                    while i < filtered.len() {
+                        let item = &filtered[i];
+                        if is_threads_helper(item, filtered.get(i + 1)) {
+                            let public = &filtered[i + 1];
+                            let mut group = aux_items.clone();
+                            group.push(item.clone());
+                            group.push(public.clone());
+                            groups.push((public.as_construct().name().name.clone(), group));
+                            i += 2;
+                        } else if is_primary_construct(item) {
+                            let mut group = aux_items.clone();
+                            group.push(item.clone());
+                            groups.push((item.as_construct().name().name.clone(), group));
+                            i += 1;
+                        } else {
+                            i += 1;
+                        }
+                    }
+
+                    if groups.is_empty() {
+                        return Err(miette::miette!(
+                            "-o auto: no emittable top-level construct (module/fsm/fifo/ram/\
+                             cam/counter/arbiter/regfile/pipeline/linklist/synchronizer/\
+                             clkgate) found in the input"
+                        ));
+                    }
+
+                    let mut seen_stems = std::collections::HashSet::new();
+                    for (stem, _) in &groups {
+                        if !seen_stems.insert(stem.clone()) {
+                            return Err(miette::miette!(
+                                "-o auto: two top-level constructs are both named `{stem}` — \
+                                 outputs would collide at `{stem}.sv`; rename one of them or \
+                                 pass an explicit -o PATH"
+                            ));
+                        }
+                    }
+
+                    let out_dir = files[0]
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .to_path_buf();
+
+                    for (stem, group) in &groups {
+                        let mut codegen = Codegen::new(&symbols, &ast, overload_map.clone())
+                            .with_fp_compat(fp_compat)
+                            .with_suppress_auto_sva(no_auto_asserts);
+                        codegen.set_staged_sites(staged_sites.clone());
+                        let sv = codegen.generate_items(group);
+                        let out_path = out_dir.join(format!("{stem}.sv"));
+                        fs::write(&out_path, &sv).into_diagnostic()?;
+                        eprintln!("Wrote {}", out_path.display());
+                        if let Some(sdc_text) = codegen.emit_sdc(&out_path.to_string_lossy()) {
+                            let sdc_path = out_path.with_extension("sdc");
+                            fs::write(&sdc_path, &sdc_text).into_diagnostic()?;
+                            eprintln!("Wrote {}", sdc_path.display());
+                        }
+                    }
+                } else if files.len() == 1 || o.is_some() {
                     // Single file or explicit -o: emit one combined SV file
                     let (sv, sdc) = if no_inline_deps {
                         // Only items from the original input files
@@ -1331,7 +1515,8 @@ fn main() -> miette::Result<()> {
                             .collect();
                         let mut codegen = Codegen::new(&symbols, &ast, overload_map)
                             .with_comments(comments)
-                            .with_fp_compat(fp_compat);
+                            .with_fp_compat(fp_compat)
+                            .with_suppress_auto_sva(no_auto_asserts);
                         codegen.set_staged_sites(staged_sites.clone());
                         let sv = codegen.generate_items(&file_items);
                         let out_path_hint =
@@ -1341,7 +1526,8 @@ fn main() -> miette::Result<()> {
                     } else {
                         let mut codegen = Codegen::new(&symbols, &ast, overload_map)
                             .with_comments(comments)
-                            .with_fp_compat(fp_compat);
+                            .with_fp_compat(fp_compat)
+                            .with_suppress_auto_sva(no_auto_asserts);
                         codegen.set_staged_sites(staged_sites.clone());
                         let sv = codegen.generate();
                         let out_path_hint =
@@ -1567,7 +1753,8 @@ fn main() -> miette::Result<()> {
 
                         let mut codegen = Codegen::new(&symbols, &ast, overload_map.clone())
                             .with_comments(file_comments)
-                            .with_fp_compat(fp_compat);
+                            .with_fp_compat(fp_compat)
+                            .with_suppress_auto_sva(no_auto_asserts);
                         codegen.set_staged_sites(staged_sites.clone());
                         let sv = codegen.generate_items(&file_items);
 

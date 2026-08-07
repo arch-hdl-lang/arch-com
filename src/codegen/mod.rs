@@ -181,6 +181,17 @@ pub struct Codegen<'a> {
     /// Floating-point special-value profile (doc/archive/plan_fp_types.md §6.2).
     /// Selects the emitted NaN-canonicalization / NaN→int constants.
     fp_compat: crate::FpCompat,
+    /// `arch build --no-auto-asserts` (issue #649): when set, every
+    /// compiler-generated `assert property` / `cover property` is skipped
+    /// — bounds (`_auto_bound_*`), divide-by-zero (`_auto_div0_*`), FSM
+    /// legal-state/reachability/transition, FIFO overflow/underflow,
+    /// counter range, guard-contract, handshake/credit-channel/TLM protocol
+    /// SVA. User-written `assert`/`cover` items (module/fsm/fifo/... body)
+    /// are unaffected — narrower reading of the issue, called out in the
+    /// PR description. Thread-lowering asserts are already off by default
+    /// (`--auto-thread-asserts` opts in) and are additionally gated by this
+    /// flag at the CLI layer so `--no-auto-asserts` wins if both are passed.
+    suppress_auto_sva: bool,
     /// Name of the construct currently being emitted (for symbol lookups).
     current_construct: String,
     /// Context-sensitive identifier substitutions.
@@ -268,6 +279,7 @@ impl<'a> Codegen<'a> {
             staged_sites: Vec::new(),
             staged_emitted: std::cell::Cell::new(false),
             fp_compat: crate::FpCompat::default(),
+            suppress_auto_sva: false,
             current_construct: String::new(),
             ident_subst: std::collections::HashMap::new(),
             loop_var_subst: std::collections::HashMap::new(),
@@ -410,6 +422,13 @@ impl<'a> Codegen<'a> {
     /// `arch build --staged-ops`).
     pub fn set_staged_sites(&mut self, sites: Vec<crate::pipelined_ops::StagedSite>) {
         self.staged_sites = sites;
+    }
+
+    /// `arch build --no-auto-asserts` (issue #649). Default `false`
+    /// (unchanged behavior — all generated SVA emitted as before).
+    pub fn with_suppress_auto_sva(mut self, suppress: bool) -> Self {
+        self.suppress_auto_sva = suppress;
+        self
     }
 
     pub fn generate(&mut self) -> String {
