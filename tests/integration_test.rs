@@ -236,13 +236,20 @@ end module SliceArithmeticExpr
 }
 
 #[test]
-fn test_repeat_base_bit_slice_emits_bare_no_parens() {
-    // arch#653 item 2: a replication `{N{a}}` as a bit-slice base is classified
-    // portable by typecheck's `is_portable_bit_slice_base`, but codegen used to
-    // wrap it in parens — `({2{a}})[3:0]` — which Verilator/iverilog reject as a
-    // syntax error (the guardrail's own Icarus-portability goal defeated). Repeat
-    // is the same grammar class as Concat, so the bare form `{2{a}}[3:0]` is
-    // legal SV and must be emitted without the enclosing parens.
+fn test_repeat_base_bit_slice_hoists_to_named_temp() {
+    // Supersedes the old `test_repeat_base_bit_slice_emits_bare_no_parens`
+    // (arch#653 item 2 / PR #656). That test pinned bare emission —
+    // `{2{a}}[3:0]`, no enclosing parens — because parenthesizing produces
+    // `({2{a}})[3:0]`, which Verilator rejects. PR #656's verification
+    // table only ever ran Verilator 5.048, though; arch#807 found (while
+    // verifying arch#650 against a *real* iverilog binary) that Icarus
+    // Verilog 12.0 rejects `{2{a}}[3:0]` bare too — the "bare form is
+    // portable" half of the claim was never actually checked against
+    // iverilog. Neither bare nor parenthesized SV shape is legal on
+    // Icarus, so codegen now hoists the `Repeat` base to a named
+    // module-scope temp instead — the same fix arch#650 uses for a
+    // non-atomic `Index` base, and the same "bind to a named `let`"
+    // strategy spec §3.2.1 already recommends at the source level.
     let source = r#"
 module RepeatSlice
   port a: in UInt<4>;
@@ -252,12 +259,103 @@ end module RepeatSlice
 "#;
     let sv = compile_to_sv(source);
     assert!(
-        sv.contains("assign y = {2{a}}[3:0];"),
-        "expected bare repeat-slice, got:\n{sv}"
+        sv.contains("logic [8-1:0] arch_idx_base_0;"),
+        "expected a declared 8-bit hoist temp ({{2{{a}}}} on a 4-bit `a`), got:\n{sv}"
     );
     assert!(
-        !sv.contains("({2{a}})[3:0]"),
-        "repeat-slice base must not be parenthesized (Verilator syntax error), got:\n{sv}"
+        sv.contains("assign arch_idx_base_0 = {2{a}};"),
+        "expected the hoist temp assigned the replication value, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign y = arch_idx_base_0[3:0];"),
+        "expected the bit-slice applied to the hoist temp, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("{2{a}}[3:0]") && !sv.contains("({2{a}})[3:0]"),
+        "must not regress to either the old bare or parenthesized \
+         Repeat-base shape (both are illegal SV on Icarus 12.0), got:\n{sv}"
+    );
+}
+
+#[test]
+fn test_concat_base_bit_slice_hoists_to_named_temp() {
+    // arch#807: a `Concat` base (`{a, c}[hi:lo]`) is the same finding as
+    // the `Repeat` case above — portable per `is_portable_bit_slice_base`
+    // and previously emitted bare, but Icarus 12.0 rejects `{a, c}[5:2]`
+    // with a syntax error regardless of parenthesization. Hoist to a named
+    // temp, same as `Repeat`.
+    let source = r#"
+module ConcatSlice
+  port a: in UInt<4>;
+  port c: in UInt<4>;
+  port y: out UInt<4>;
+  let y = {a, c}[5:2];
+end module ConcatSlice
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("logic [8-1:0] arch_idx_base_0;"),
+        "expected a declared 8-bit hoist temp ({{a, c}} on two 4-bit ports), got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign arch_idx_base_0 = {a, c};"),
+        "expected the hoist temp assigned the concatenation value, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign y = arch_idx_base_0[5:2];"),
+        "expected the bit-slice applied to the hoist temp, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("{a, c}[5:2]") && !sv.contains("({a, c})[5:2]"),
+        "must not regress to either the old bare or parenthesized \
+         Concat-base shape (both are illegal SV on Icarus 12.0), got:\n{sv}"
+    );
+}
+
+#[test]
+fn test_concat_repeat_base_part_select_hoists_to_named_temp() {
+    // arch#807, `PartSelect` (`[start +: w]`) half: unlike `BitSlice`,
+    // codegen's `PartSelect` arm had *no* base-kind handling at all before
+    // this fix — it always emitted the base bare, for every base kind.
+    // That happened to already be wrong for `Concat`/`Repeat` on Icarus
+    // (same rejection as `BitSlice`), just undetected because no prior
+    // issue tested `[start +: w]` specifically against a real iverilog
+    // binary. Hoist the same way `BitSlice` does.
+    let concat_source = r#"
+module ConcatPartSelect
+  port a: in UInt<4>;
+  port c: in UInt<4>;
+  port y: out UInt<4>;
+  let y = {a, c}[2 +: 4];
+end module ConcatPartSelect
+"#;
+    let sv = compile_to_sv(concat_source);
+    assert!(
+        sv.contains("logic [8-1:0] arch_idx_base_0;")
+            && sv.contains("assign arch_idx_base_0 = {a, c};"),
+        "expected a declared+assigned hoist temp for the Concat base, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign y = arch_idx_base_0[2 +: 4];"),
+        "expected the part-select applied to the hoist temp, got:\n{sv}"
+    );
+
+    let repeat_source = r#"
+module RepeatPartSelect
+  port a: in UInt<4>;
+  port y: out UInt<4>;
+  let y = {2{a}}[2 +: 4];
+end module RepeatPartSelect
+"#;
+    let sv = compile_to_sv(repeat_source);
+    assert!(
+        sv.contains("logic [8-1:0] arch_idx_base_0;")
+            && sv.contains("assign arch_idx_base_0 = {2{a}};"),
+        "expected a declared+assigned hoist temp for the Repeat base, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign y = arch_idx_base_0[2 +: 4];"),
+        "expected the part-select applied to the hoist temp, got:\n{sv}"
     );
 }
 
@@ -33804,6 +33902,213 @@ end module IdxRepeatLiteral2
             "iverilog should accept {top} (arch#650 regression)\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&compile.stdout),
             String::from_utf8_lossy(&compile.stderr)
+        );
+    }
+}
+
+// ---------------------------------------------------------------------
+// arch#807 — Concat/Repeat `BitSlice`/`PartSelect` base is not actually
+// Icarus-portable (found verifying arch#650 against a real iverilog
+// binary; the shipped arch#653/#656/#659 claim and spec §3.2.1 footnote
+// were only ever checked against Verilator 5.048).
+// ---------------------------------------------------------------------
+
+/// Icarus-acceptance check (compile only) for the four `Concat`/`Repeat`
+/// x `BitSlice`/`PartSelect` combinations, using real `arch build` output.
+/// Skips gracefully if iverilog isn't installed (matches this file's
+/// existing Verilator/iverilog-smoke-test convention).
+#[test]
+fn test_concat_repeat_slice_bases_iverilog_accepts() {
+    if std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping arch#807 Concat/Repeat slice-base iverilog check: iverilog not found");
+        return;
+    }
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let cases: [(&str, &str); 4] = [
+        (
+            "ConcatBitSlice807",
+            r#"
+module ConcatBitSlice807
+  port a: in UInt<4>;
+  port c: in UInt<4>;
+  port y: out UInt<4>;
+  let y = {a, c}[5:2];
+end module ConcatBitSlice807
+"#,
+        ),
+        (
+            "ConcatPartSelect807",
+            r#"
+module ConcatPartSelect807
+  port a: in UInt<4>;
+  port c: in UInt<4>;
+  port y: out UInt<4>;
+  let y = {a, c}[2 +: 4];
+end module ConcatPartSelect807
+"#,
+        ),
+        (
+            "RepeatBitSlice807",
+            r#"
+module RepeatBitSlice807
+  port a: in UInt<4>;
+  port y: out UInt<4>;
+  let y = {2{a}}[5:2];
+end module RepeatBitSlice807
+"#,
+        ),
+        (
+            "RepeatPartSelect807",
+            r#"
+module RepeatPartSelect807
+  port a: in UInt<4>;
+  port y: out UInt<4>;
+  let y = {2{a}}[2 +: 4];
+end module RepeatPartSelect807
+"#,
+        ),
+    ];
+    let td = tempfile::tempdir().expect("tempdir");
+    for (name, source) in cases {
+        let arch_path = td.path().join(format!("{name}.arch"));
+        std::fs::write(&arch_path, source).expect("write fixture");
+        let sv_out = td.path().join(format!("{name}.sv"));
+        let build = std::process::Command::new(arch_bin)
+            .arg("build")
+            .arg(&arch_path)
+            .arg("-o")
+            .arg(&sv_out)
+            .output()
+            .expect("arch build");
+        assert!(
+            build.status.success(),
+            "arch build should pass for {name}\nstderr:\n{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let vvp_out = td.path().join(format!("{name}.vvp"));
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .output()
+            .expect("iverilog compile");
+        assert!(
+            compile.status.success(),
+            "iverilog should accept {name} (arch#807 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+    }
+}
+
+/// Dual-simulator behavioral check (arch#807): the hoisted-temp emission
+/// must not just *compile* on both simulators, it must agree with ARCH's
+/// own semantics on actual values, for all four Concat/Repeat x
+/// BitSlice/PartSelect combinations. Skips gracefully if neither simulator
+/// is installed.
+#[test]
+fn test_concat_repeat_slice_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#807 Concat/Repeat slice-base dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("ConcatRepeatSliceHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/ConcatRepeatSliceHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build ConcatRepeatSliceHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("concat_repeat_slice.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_concat_repeat_slice_hoist.sv")
+            .output()
+            .expect("iverilog compile ConcatRepeatSliceHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#807 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog ConcatRepeatSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm Concat/Repeat slice-base semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_concat_repeat_slice");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("ConcatRepeatSliceHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_concat_repeat_slice_hoist_verilator.cpp")
+            .output()
+            .expect("verilate ConcatRepeatSliceHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VConcatRepeatSliceHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator ConcatRepeatSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm Concat/Repeat slice-base semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
         );
     }
 }
