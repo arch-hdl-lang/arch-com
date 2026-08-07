@@ -6888,7 +6888,11 @@ impl<'a> TypeChecker<'a> {
         }
         for i in 1..=n {
             for j in 1..=m {
-                let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
+                let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                    0
+                } else {
+                    1
+                };
                 dp[i][j] = (dp[i - 1][j] + 1)
                     .min(dp[i][j - 1] + 1)
                     .min(dp[i - 1][j - 1] + cost);
@@ -6974,7 +6978,8 @@ impl<'a> TypeChecker<'a> {
                         let count = self
                             .eval_const_expr(&pa.count_expr, &HashMap::new())
                             .map(|v| v as u32);
-                        let sigs: Vec<String> = pa.signals.iter().map(|s| s.name.name.clone()).collect();
+                        let sigs: Vec<String> =
+                            pa.signals.iter().map(|s| s.name.name.clone()).collect();
                         port_array_bases.insert(pa.name.name.clone(), (count, sigs));
                     }
                 }
@@ -6984,7 +6989,8 @@ impl<'a> TypeChecker<'a> {
                             let count = self
                                 .eval_const_expr(&pa.count_expr, &HashMap::new())
                                 .map(|v| v as u32);
-                            let sigs: Vec<String> = pa.signals.iter().map(|s| s.name.name.clone()).collect();
+                            let sigs: Vec<String> =
+                                pa.signals.iter().map(|s| s.name.name.clone()).collect();
                             port_array_bases.insert(pa.name.name.clone(), (count, sigs));
                         }
                     }
@@ -7121,7 +7127,9 @@ impl<'a> TypeChecker<'a> {
                                 if let Some(und_pos) = rest.find('_') {
                                     let (idx_part, sig_part_with_und) = rest.split_at(und_pos);
                                     let sig_part = &sig_part_with_und[1..];
-                                    if idx_part.parse::<u32>().is_ok() && signals.contains(&sig_part.to_string()) {
+                                    if idx_part.parse::<u32>().is_ok()
+                                        && signals.contains(&sig_part.to_string())
+                                    {
                                         is_valid = true;
                                         break;
                                     }

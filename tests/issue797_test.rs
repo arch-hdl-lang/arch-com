@@ -52,9 +52,20 @@ fn unknown_scalar_port_is_error() {
         end module Top
     "#;
     let errs = errors_from_source(src);
-    assert!(errs.iter().any(|e| e.contains("this_port_does_not_exist") && e.contains("not a port of")), "bad pin not reported: {:?}", errs);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("this_port_does_not_exist") && e.contains("not a port of")),
+        "bad pin not reported: {:?}",
+        errs
+    );
     // No suggestion for distant name (distance 24 >3)
-    assert!(!errs.iter().any(|e| e.contains("this_port_does_not_exist") && e.contains("did you mean")), "should not suggest for distant name: {:?}", errs);
+    assert!(
+        !errs
+            .iter()
+            .any(|e| e.contains("this_port_does_not_exist") && e.contains("did you mean")),
+        "should not suggest for distant name: {:?}",
+        errs
+    );
 }
 
 #[test]
@@ -110,7 +121,11 @@ fn did_you_mean_is_deterministic() {
     assert_eq!(errs1, errs2, "determinism failed");
     let all = errs1.join("\n");
     // abe distance 1 to both abc and abd, should pick lexicographically smallest abc
-    assert!(all.contains("did you mean `abc`"), "expected deterministic suggestion abc, got: {:?}", errs1);
+    assert!(
+        all.contains("did you mean `abc`"),
+        "expected deterministic suggestion abc, got: {:?}",
+        errs1
+    );
 }
 
 #[test]
@@ -135,7 +150,11 @@ fn multiple_unknown_ports_all_reported() {
     "#;
     let errs = errors_from_source(src);
     // Should have 3 bad pins + 1 unconnected d (since d not connected) = 4, but at least 3 bad
-    assert!(errs.iter().filter(|e| e.contains("not a port of")).count() == 3, "expected 3 bad pin errors, got: {:?}", errs);
+    assert!(
+        errs.iter().filter(|e| e.contains("not a port of")).count() == 3,
+        "expected 3 bad pin errors, got: {:?}",
+        errs
+    );
 }
 
 #[test]
@@ -161,7 +180,12 @@ fn bus_per_field_typo_is_error() {
         end module ParentB
     "#;
     let errs = errors_from_source(src);
-    assert!(errs.iter().any(|e| e.contains("p_fake") && e.contains("not a port of")), "bus fake not reported: {:?}", errs);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("p_fake") && e.contains("not a port of")),
+        "bus fake not reported: {:?}",
+        errs
+    );
 }
 
 #[test]
@@ -195,8 +219,15 @@ fn bus_handshake_per_field_still_valid() {
     // This should not error for valid fields.
     let errs = errors_from_source(src);
     // Filter out unrelated errors (like unconnected warnings are not errors)
-    let not_port_errs: Vec<_> = errs.iter().filter(|e| e.contains("not a port of")).collect();
-    assert!(not_port_errs.is_empty(), "handshake valid fields should not error, got: {:?}", errs);
+    let not_port_errs: Vec<_> = errs
+        .iter()
+        .filter(|e| e.contains("not a port of"))
+        .collect();
+    assert!(
+        not_port_errs.is_empty(),
+        "handshake valid fields should not error, got: {:?}",
+        errs
+    );
 }
 
 #[test]
@@ -275,7 +306,12 @@ fn vec_bus_per_element_signal_with_underscores() {
         end module TopVec2
     "#;
     let errs = errors_from_source(src_bad);
-    assert!(errs.iter().any(|e| e.contains("mm_0_cmd_fake") && e.contains("not a port of")), "vec bus signal typo not reported: {:?}", errs);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("mm_0_cmd_fake") && e.contains("not a port of")),
+        "vec bus signal typo not reported: {:?}",
+        errs
+    );
 }
 
 #[test]
@@ -339,7 +375,12 @@ fn generate_for_inst_unknown_port() {
         end module Top
     "#;
     let errs = errors_from_source(src);
-    assert!(errs.iter().any(|e| e.contains("bad") && e.contains("not a port of")), "generate bad pin not reported: {:?}", errs);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("bad") && e.contains("not a port of")),
+        "generate bad pin not reported: {:?}",
+        errs
+    );
 }
 
 #[test]
@@ -405,7 +446,11 @@ fn unresolvable_child_kind_is_skipped_not_flagged() {
     // Our child_ports for synchronizer returns None (since not in match), so bogus should NOT be flagged as not-a-port
     // It may still be flagged as undefined? But our logic skips, so zero not-a-port errors
     let not_port = errs.iter().filter(|e| e.contains("not a port of")).count();
-    assert_eq!(not_port, 0, "synchronizer bogus should be skipped, got: {:?}", errs);
+    assert_eq!(
+        not_port, 0,
+        "synchronizer bogus should be skipped, got: {:?}",
+        errs
+    );
 }
 
 #[test]
