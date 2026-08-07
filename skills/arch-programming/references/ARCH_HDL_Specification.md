@@ -8599,6 +8599,10 @@ The compiler emits warnings (non-fatal, printed before "OK: no errors") for the 
   **Documentation**                 arch doc                                     HTML reference from /// doc comments
 
   **Code graph index**              arch graph index \<paths...\>                 Compiler-native JSONL graph for downstream tooling; query with arch graph query/callers/impact/context and render with arch graph html
+
+  **Output naming**                 arch build \-o auto                          Derive each output .sv stem from its top-level construct's declared name (verbatim, no case conversion) instead of the source filename — one .sv per construct
+
+  **Suppress generated SVA**        arch build \--no-auto-asserts                Omit compiler-generated assert/cover property (bounds, div-by-zero, FSM, FIFO, guard, handshake/credit\_channel/TLM, and \--auto-thread-asserts); user-written assert/cover is unaffected
   ------------------------------------------------------------------------------------------------------------------------------
 
 **28. Complete Example: 3-Stage RISC-V Integer Pipeline**

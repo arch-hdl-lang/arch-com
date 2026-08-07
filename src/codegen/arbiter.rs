@@ -379,7 +379,11 @@ impl<'a> Codegen<'a> {
         // emission byte-for-byte for those arbiters. The blank-line
         // separator lives inside the emitter so it is also elided when
         // every channel's variant has no Tier-2 v1 property to emit.
-        self.emit_arbiter_handshake_asserts(a);
+        // Compiler-generated SVA — suppressed under `--no-auto-asserts`
+        // (issue #649).
+        if !self.suppress_auto_sva {
+            self.emit_arbiter_handshake_asserts(a);
+        }
 
         self.indent -= 1;
         self.line("");
