@@ -42,6 +42,17 @@ enum Command {
         /// Input .arch file(s)
         #[arg(required = true)]
         files: Vec<PathBuf>,
+        /// Opt-in naming-convention lint (issue #648): PascalCase for
+        /// construct names, snake_case for ports/regs/wires/lets/function
+        /// args, UPPER_SNAKE for params. Warning-only — never fails the
+        /// build (spec §2.1: naming conventions are recommended, not
+        /// compiler-enforced). Bare `--lint-naming` or `--lint-naming=warn`
+        /// enable it; `--lint-naming=off` (or omitting the flag) disables
+        /// it. `--lint-naming=error` is intentionally rejected — there is
+        /// no hard-error mode. Suppress per-file with a
+        /// `// arch-lint-naming: off` source-line pragma.
+        #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
+        lint_naming: Option<String>,
     },
     /// Rebuild the learning retrieval index over ~/.arch/learn/events.jsonl
     LearnIndex,
@@ -184,6 +195,11 @@ enum Command {
         /// `--assert` to get free spec-derived coverage.
         #[arg(long)]
         auto_thread_asserts: bool,
+        /// Opt-in naming-convention lint (issue #648) — see `arch check
+        /// --help` for the full rule set. Warning-only; never fails the
+        /// build.
+        #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
+        lint_naming: Option<String>,
         /// Only emit constructs from the original input .arch files, not
         /// from dependency files auto-discovered via `inst` / `use`.
         /// Avoids MODDUP when sub-modules are also built as standalone
@@ -495,6 +511,23 @@ impl MultiSource {
         }
 
         Ok(MultiSource { segments, combined })
+    }
+
+    /// Filenames whose source contains a `// arch-lint-naming: off` line
+    /// (exact match after trimming whitespace). Used to suppress
+    /// `--lint-naming` diagnostics for a single file — see issue #648's
+    /// acceptance criteria. Purely a raw-text scan over each segment's
+    /// original source, independent of parsing/AST, so it can't itself
+    /// introduce a naming-lint false positive or affect any other pass.
+    fn naming_lint_suppressed_files(&self) -> std::collections::HashSet<String> {
+        self.segments
+            .iter()
+            .filter(|(_, _, _, src)| {
+                src.lines()
+                    .any(|line| line.trim() == "// arch-lint-naming: off")
+            })
+            .map(|(_, _, name, _)| name.clone())
+            .collect()
     }
 
     /// Find which file a byte offset belongs to and return (filename, file_source, local_offset).
@@ -866,17 +899,43 @@ where
     result
 }
 
+/// Resolve the `--lint-naming[=warn|off]` CLI value into an enabled/disabled
+/// bool. `None` (flag absent) and `Some("off")` both mean disabled — the
+/// lint is opt-in, so both spellings of "don't run it" collapse to the same
+/// behavior. `error` is intentionally rejected: the naming lint has no
+/// hard-error mode (spec §2.1 — naming conventions are recommended, not
+/// compiler-enforced), so `--lint-naming=error` would silently imply a
+/// severity this lint can never produce.
+fn resolve_lint_naming_flag(value: Option<String>) -> miette::Result<bool> {
+    match value.as_deref() {
+        None | Some("off") => Ok(false),
+        Some("warn") => Ok(true),
+        Some(other) => Err(miette::miette!(
+            "--lint-naming: expected `warn` or `off`, got `{other}` — this lint is warning-only \
+             in v1 (see issue #648 Non-goals); there is no error-severity mode"
+        )),
+    }
+}
+
 fn main() -> miette::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Check { files } => learn_wrap(&files, || {
-            let all_files = resolve_use_imports(&files)?;
-            let ms = MultiSource::from_files(&all_files)?;
-            run_check_multi(&ms)?;
-            eprintln!("OK: no errors");
-            Ok(())
-        }),
+        Command::Check { files, lint_naming } => {
+            let lint_naming = resolve_lint_naming_flag(lint_naming)?;
+            learn_wrap(&files, || {
+                let all_files = resolve_use_imports(&files)?;
+                let ms = MultiSource::from_files(&all_files)?;
+                run_check_multi_opts(
+                    &ms,
+                    /*skip_lower_threads=*/ false,
+                    /*auto_thread_asserts=*/ false,
+                    lint_naming,
+                )?;
+                eprintln!("OK: no errors");
+                Ok(())
+            })
+        }
         Command::LearnIndex => {
             let n = arch::learn::build_index().into_diagnostic()?;
             eprintln!("Indexed {} events.", n);
@@ -1171,11 +1230,13 @@ fn main() -> miette::Result<()> {
             check_construct_proof_smt,
             construct_proof_smt_solver,
             auto_thread_asserts,
+            lint_naming,
             no_inline_deps,
             fp_compat,
             staged_ops,
         } => {
             let fp_compat = arch::FpCompat::parse(&fp_compat).map_err(|e| miette::miette!(e))?;
+            let lint_naming = resolve_lint_naming_flag(lint_naming)?;
             let files_for_learn = files.clone();
             learn_wrap(&files_for_learn, move || {
                 if matches!(emit_thread_map, Some(Some(_))) && files.len() > 1 && o.is_none() {
@@ -1230,6 +1291,7 @@ fn main() -> miette::Result<()> {
                     &ms,
                     false,
                     auto_thread_asserts,
+                    lint_naming,
                     thread_map_store.clone(),
                 )?;
                 let staged_sites =
@@ -1677,6 +1739,7 @@ fn main() -> miette::Result<()> {
                     &ms,
                     false,
                     auto_thread_asserts,
+                    /*lint_naming=*/ false,
                     thread_map_store.clone(),
                 )?;
                 if need_thread_proof_lean {
@@ -1942,12 +2005,14 @@ fn run_sim_opts(
             &ms,
             thread_sim_parallel,
             /*auto_thread_asserts=*/ false,
+            /*lint_naming=*/ false,
         )?
     } else {
         run_check_multi_opts_with_param_overrides(
             &ms,
             thread_sim_parallel,
             /*auto_thread_asserts=*/ false,
+            /*lint_naming=*/ false,
             param_overrides,
         )?
     };
@@ -3520,6 +3585,7 @@ fn run_check_multi(
 )> {
     run_check_multi_opts(
         ms, /*skip_lower_threads=*/ false, /*auto_thread_asserts=*/ false,
+        /*lint_naming=*/ false,
     )
 }
 
@@ -3527,6 +3593,7 @@ fn run_check_multi_opts(
     ms: &MultiSource,
     skip_lower_threads: bool,
     auto_thread_asserts: bool,
+    lint_naming: bool,
 ) -> miette::Result<(
     arch::ast::SourceFile,
     resolve::SymbolTable,
@@ -3536,6 +3603,7 @@ fn run_check_multi_opts(
         ms,
         skip_lower_threads,
         auto_thread_asserts,
+        lint_naming,
         None,
         None,
     )
@@ -3545,6 +3613,7 @@ fn run_check_multi_opts_with_thread_map(
     ms: &MultiSource,
     skip_lower_threads: bool,
     auto_thread_asserts: bool,
+    lint_naming: bool,
     thread_map: Option<std::rc::Rc<std::cell::RefCell<arch::thread_map::ThreadMap>>>,
 ) -> miette::Result<(
     arch::ast::SourceFile,
@@ -3555,6 +3624,7 @@ fn run_check_multi_opts_with_thread_map(
         ms,
         skip_lower_threads,
         auto_thread_asserts,
+        lint_naming,
         thread_map,
         None,
     )
@@ -3564,6 +3634,7 @@ fn run_check_multi_opts_with_param_overrides(
     ms: &MultiSource,
     skip_lower_threads: bool,
     auto_thread_asserts: bool,
+    lint_naming: bool,
     param_overrides: &std::collections::HashMap<String, u64>,
 ) -> miette::Result<(
     arch::ast::SourceFile,
@@ -3574,6 +3645,7 @@ fn run_check_multi_opts_with_param_overrides(
         ms,
         skip_lower_threads,
         auto_thread_asserts,
+        lint_naming,
         None,
         Some(param_overrides),
     )
@@ -3583,6 +3655,7 @@ fn run_check_multi_opts_with_thread_map_and_params(
     ms: &MultiSource,
     skip_lower_threads: bool,
     auto_thread_asserts: bool,
+    lint_naming: bool,
     thread_map: Option<std::rc::Rc<std::cell::RefCell<arch::thread_map::ThreadMap>>>,
     param_overrides: Option<&std::collections::HashMap<String, u64>>,
 ) -> miette::Result<(
@@ -3663,6 +3736,31 @@ fn run_check_multi_opts_with_thread_map_and_params(
         let err = prec_errors.into_iter().next().unwrap();
         return Err(ms.report_error(err));
     }
+
+    // Naming-convention lint (issue #648), opt-in via `--lint-naming`. Runs
+    // on the same pre-elaboration `parsed_ast` as `check_precedence` above,
+    // for the same reason: compiler-synthesized identifiers (thread
+    // lowering, generate expansion, credit-channel dispatch, ...) don't
+    // exist yet at this stage, so there's nothing to spuriously flag. This
+    // whole block is a no-op unless `lint_naming` is set — absent the flag,
+    // `naming_warnings` stays empty and `arch check`/`arch build` behavior
+    // and emitted output are unaffected. Collected here (rather than
+    // returned as an error) and merged into `warnings` below, since a
+    // naming violation must never fail the build (spec §2.1: naming
+    // conventions are recommended, not compiler-enforced).
+    let naming_warnings = if lint_naming {
+        let mut w = arch::typecheck::check_naming(&parsed_ast);
+        let suppressed = ms.naming_lint_suppressed_files();
+        if !suppressed.is_empty() {
+            w.retain(|warn| {
+                let (filename, _, _) = ms.locate(warn.span.start);
+                !suppressed.contains(filename)
+            });
+        }
+        w
+    } else {
+        Vec::new()
+    };
 
     if let Some(overrides) = param_overrides {
         apply_top_param_overrides(&mut parsed_ast, overrides)?;
@@ -3799,6 +3897,7 @@ fn run_check_multi_opts_with_thread_map_and_params(
         ms.report_error(err)
     })?;
     warnings.extend(pipe_reg_warnings);
+    warnings.extend(naming_warnings);
 
     for w in &warnings {
         let (filename, _, local_offset) = ms.locate(w.span.start);
