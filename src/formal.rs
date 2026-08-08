@@ -724,8 +724,11 @@ fn validate_sub_for_formal(sub: &ModuleDecl) -> Result<(), CompileError> {
         // Bus ports are accepted when carrying credit_channels (PR-hf4
         // item 5). Other bus contents (handshake / tlm_method / plain
         // signals) still need their own modelling and aren't supported
-        // in this slice — `flatten_for_formal` checks the bus's content
-        // when it processes the inst.
+        // in this slice. NOTE: nothing validates the bus's non-credit
+        // content up front — `flatten_for_formal` only walks
+        // `bus_info.credit_channels`. Unsupported usage is caught at the
+        // point of use instead: reads in `encode_raw`'s FieldAccess arm,
+        // writes in `check_assign_targets_registered()`.
         if p.bus_info.is_some() {
             continue;
         }
@@ -1169,6 +1172,10 @@ struct CombAssignFlat {
     target: String,   // flat name (e.g. "y" or "out[2]"); v1 supports ident targets only
     guard: Vec<Expr>, // stack of conditions (ANDed)
     value: Expr,
+    /// Span of the originating assignment statement. Used by
+    /// `check_assign_targets_registered` to point at an unsupported write,
+    /// and by `emit_base`'s internal-error backstop.
+    span: Span,
 }
 
 /// One credit_channel instance, attached to a specific bus port on the
@@ -1398,10 +1405,12 @@ impl<'a> FormalCtx<'a> {
             self.reg_reset.insert(name, value);
         }
         for eq in model.comb_equations {
+            let span = eq.value.span;
             self.comb_assigns.push(CombAssignFlat {
                 target: eq.target,
                 guard: Vec::new(),
                 value: eq.value,
+                span,
             });
         }
         for eq in model.next_equations {
@@ -1473,10 +1482,14 @@ impl<'a> FormalCtx<'a> {
         // Ports (declare inputs/outputs + widths)
         for port in &self.module.ports {
             // Bus ports: the bus's individual signals aren't in the AST as
-            // scalar ports; we register them per-credit_channel below in
+            // scalar ports; we register them per-credit_channel in
             // `register_credit_channel_state()`. Skip generic scalar-only
-            // handling. (Non-credit_channel bus usage is still unsupported
-            // in formal v1 — the encoder will fail later on any reference.)
+            // handling. Non-credit_channel bus usage stays unsupported in
+            // formal v1, and both directions are refused explicitly: reads
+            // in `encode_raw`'s FieldAccess arm, writes in
+            // `check_assign_targets_registered()` at the end of preprocess.
+            // (Before that pass existed, a write panicked in `emit_base` on
+            // `self.sigs[tgt]` — issue #818.)
             if port.bus_info.is_some() {
                 continue;
             }
@@ -1646,6 +1659,14 @@ impl<'a> FormalCtx<'a> {
             }
         }
 
+        // Reject assignment targets that no pass registered as a modelled
+        // signal (issue #818 — today that means plain, non-credit_channel
+        // bus fields). Must run after the body loop, since a `comb` block
+        // may textually precede the `wire` decl it drives; and before
+        // `comb_topo_order`, whose HashSet iteration would make the choice
+        // of reported offender nondeterministic.
+        self.check_assign_targets_registered()?;
+
         // Build comb-block topological order over wires + output ports
         self.comb_order = self.comb_topo_order()?;
 
@@ -1653,6 +1674,99 @@ impl<'a> FormalCtx<'a> {
         self.check_let_cycles()?;
 
         Ok(())
+    }
+
+    /// Reject `comb`/`seq` assignment targets that no earlier pass registered
+    /// as a modelled signal.
+    ///
+    /// Runs at the END of `preprocess`, so every `sigs` insert has already
+    /// happened: credit_channel lifted state, ports, and `reg`/`wire` decls.
+    /// Checking at push time in `walk_comb_stmt` would be source-order
+    /// fragile — module body items are walked in ONE pass, and a `comb`
+    /// block may legally precede the `wire` decl it drives.
+    ///
+    /// Why an error rather than a silent skip: an unregistered target is
+    /// never declared (`emit_base`'s declaration loops iterate
+    /// `inputs`/`outputs`/`regs`/`wires`) and can never be read either
+    /// (`encode_raw`'s FieldAccess arm rejects reads of unregistered flat
+    /// names), so dropping the equation would not corrupt the query — it
+    /// would silently shrink the *design under proof* and still print
+    /// PROVED. `arch formal` v1's contract is to error clearly on
+    /// unsupported constructs, and the read path already does.
+    ///
+    /// `let` bindings are deliberately exempt: `encode_ident` inlines a
+    /// let's value at every reference site, so an undeclared let needs no
+    /// declaration-site equation. `flatten_for_formal` relies on this —
+    /// sub-module locals become `<inst>_<name>` let bindings that are not
+    /// in `sigs` — which is why `emit_base` skips them behind
+    /// `self.sigs.get(tgt)`.
+    fn check_assign_targets_registered(&self) -> Result<(), CompileError> {
+        // (target, span, block-kind) for every unmodelled write.
+        let mut offenders: Vec<(&str, Span, &'static str)> = Vec::new();
+
+        for ca in &self.comb_assigns {
+            if !self.sigs.contains_key(&ca.target) && !self.let_bindings.contains_key(&ca.target) {
+                offenders.push((ca.target.as_str(), ca.span, "comb"));
+            }
+        }
+        for (target, writes) in &self.reg_writes {
+            if self.sigs.contains_key(target) || self.let_bindings.contains_key(target) {
+                continue;
+            }
+            let span = writes
+                .first()
+                .map(|(_, v)| v.span)
+                .unwrap_or(self.module.span);
+            offenders.push((target.as_str(), span, "seq"));
+        }
+
+        // `reg_writes` is a HashMap, so sort for a deterministic choice of
+        // reported offender: earliest source position wins, name breaks ties.
+        offenders.sort_by_key(|(name, sp, _)| (sp.start, sp.end, *name));
+        match offenders.first() {
+            None => Ok(()),
+            Some(&(target, span, block)) => {
+                Err(self.unregistered_target_error(target, span, block))
+            }
+        }
+    }
+
+    /// Diagnostic for an assignment target that is not a modelled signal.
+    /// Writes to a bus port get a scope-specific message naming the port and
+    /// field; anything else gets a generic "not a declared signal".
+    fn unregistered_target_error(
+        &self,
+        target: &str,
+        span: Span,
+        block: &'static str,
+    ) -> CompileError {
+        for p in &self.module.ports {
+            if p.bus_info.is_none() {
+                continue;
+            }
+            let port = &p.name.name;
+            let Some(field) = target.strip_prefix(&format!("{port}_")) else {
+                continue;
+            };
+            return CompileError::general(
+                &format!(
+                    "assignment to bus signal `{port}.{field}` is not supported by \
+                     `arch formal` v1 — only `credit_channel` signals on a bus port are \
+                     modelled (`<port>.<channel>.send(..)` / `.no_send()` / `.pop()` / \
+                     `.no_pop()`); plain bus signals, handshake groups and `tlm_method` \
+                     bundles are not encoded yet"
+                ),
+                span,
+            );
+        }
+        CompileError::general(
+            &format!(
+                "`{block}` block assigns to `{target}`, which is not a signal \
+                 `arch formal` v1 models — expected a `wire`, a `reg`, or an output \
+                 port declared in this module"
+            ),
+            span,
+        )
     }
 
     /// Walk a reg-block Stmt, collecting (path_cond_expr, rhs) per reg into `reg_writes`.
@@ -1752,6 +1866,7 @@ impl<'a> FormalCtx<'a> {
                     target: name,
                     guard: path.to_vec(),
                     value: a.value.clone(),
+                    span: a.span,
                 });
             }
             Stmt::IfElse(ie) => {
@@ -2015,7 +2130,23 @@ impl<'a> FormalCtx<'a> {
                 if assigns.is_empty() {
                     continue;
                 }
-                let info = &self.sigs[tgt];
+                // Backstop: `check_assign_targets_registered` rejects
+                // unregistered targets during preprocess, so reaching here
+                // means that pass missed a case. Fail with a report-this
+                // error rather than panicking on the index, and never skip
+                // silently — a dropped equation would quietly shrink the
+                // design under proof.
+                let Some(info) = self.sigs.get(tgt) else {
+                    return Err(CompileError::general(
+                        &format!(
+                            "internal error: comb target `{tgt}` reached SMT emission without \
+                             being registered as a signal — `check_assign_targets_registered` \
+                             should have rejected this during preprocess. Please report this \
+                             design as an `arch formal` bug."
+                        ),
+                        assigns[0].span,
+                    ));
+                };
                 // Build nested ite from the guard chain. Last unguarded write wins as default.
                 let rhs = self.build_comb_ite(&assigns, t, info.width, info.signed)?;
                 out.push_str(&format!("(assert (= {tgt}_{t} {rhs}))\n"));
@@ -5618,6 +5749,67 @@ end module ReplayFp
         assert_eq!(
             ctx.replay_check(prop, &m, 0, 1, 0, &fns),
             ReplayVerdict::Inconclusive
+        );
+    }
+
+    /// Issue #818: the assignment-target validation must run at the END of
+    /// `preprocess`, not at push time in `walk_comb_stmt`. Module body items
+    /// are walked in ONE source-order pass, so a `comb` block may legally
+    /// precede the `wire` decl it drives (verified with `arch check`) — a
+    /// push-time check would reject this valid design.
+    #[test]
+    fn preprocess_accepts_comb_block_before_wire_decl() {
+        const SRC: &str = r#"
+module CombBeforeWire
+  port a: in UInt<8>;
+  port o: out UInt<8>;
+  comb
+    w = a;
+    o = w;
+  end comb
+  wire w: UInt<8>;
+end module CombBeforeWire
+"#;
+        let (ast, symbols) = parse_and_resolve(SRC);
+        let module = select_top(&ast, None).expect("select_top");
+        let mut ctx = FormalCtx::new(module, &symbols);
+        ctx.preprocess()
+            .expect("a comb block preceding its wire decl must preprocess cleanly");
+    }
+
+    /// A comb write to a plain (non-credit_channel) bus field is refused
+    /// with a scope message naming the port and field — not a panic
+    /// (issue #818), and not a silent skip.
+    #[test]
+    fn preprocess_rejects_plain_bus_field_write() {
+        const SRC: &str = r#"
+bus PlainBus
+  valid: out Bool;
+  data:  out UInt<8>;
+end bus PlainBus
+
+module PlainBusWrite
+  port s: target PlainBus;
+  port m: initiator PlainBus;
+  comb
+    m.valid = s.valid;
+  end comb
+end module PlainBusWrite
+"#;
+        let (ast, symbols) = parse_and_resolve(SRC);
+        let module = select_top(&ast, None).expect("select_top");
+        let mut ctx = FormalCtx::new(module, &symbols);
+        let err = ctx
+            .preprocess()
+            .expect_err("plain bus field write must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("assignment to bus signal `m.valid`"),
+            "should name the port and field: {msg}"
+        );
+        assert!(
+            msg.contains("is not supported by `arch formal` v1"),
+            "should name the v1 scope: {msg}"
         );
     }
 
