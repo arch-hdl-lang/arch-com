@@ -7593,8 +7593,12 @@ impl<'a> TypeChecker<'a> {
         }
         // ROM validation
         if r.kind == crate::ast::RamKind::Rom {
-            // ROM must have init
-            if r.init.is_none() {
+            // ROM must have init — but the contents are implementation data,
+            // not interface. An `.archi` stub deliberately omits them (a
+            // `file(...)` path would not even resolve from the consumer's
+            // directory), so requiring one here made every rom unusable
+            // through separate compilation.
+            if r.init.is_none() && !r.common.is_interface {
                 self.errors.push(CompileError::general(
                     &format!("rom `{}` must have an init clause", r.name.name),
                     r.name.span,
@@ -7900,17 +7904,21 @@ impl<'a> TypeChecker<'a> {
         }
         // Validate hook for custom policy
         if let ArbiterPolicy::Custom(ref fn_ident) = a.policy {
-            if a.hook.is_none() {
-                self.errors.push(CompileError::general(
-                    &format!(
-                        "custom policy `{}` requires a `hook grant_select` declaration",
-                        fn_ident.name
-                    ),
-                    fn_ident.span,
-                ));
+            // The hook binds a policy function defined alongside the arbiter
+            // body; an `.archi` stub carries neither, and emitting the hook
+            // would only move the failure to "unknown function".
+            let Some(hook) = a.hook.as_ref() else {
+                if !a.common.is_interface {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "custom policy `{}` requires a `hook grant_select` declaration",
+                            fn_ident.name
+                        ),
+                        fn_ident.span,
+                    ));
+                }
                 return;
-            }
-            let hook = a.hook.as_ref().unwrap();
+            };
             // Verify the hook's bound function name matches the policy name
             if hook.fn_name.name != fn_ident.name {
                 self.errors.push(CompileError::general(
@@ -8176,6 +8184,15 @@ impl<'a> TypeChecker<'a> {
 
     pub(crate) fn check_pipeline(&mut self, p: &PipelineDecl) {
         self.check_pascal_case(&p.name);
+
+        // An `.archi` stub has no stages, so the body-driven checks below
+        // (every output driven, every stage registered) would reject a
+        // perfectly good interface. Same short-circuit as `check_module` and
+        // `check_fsm`; the port signature is still recorded for parent-side
+        // instantiation checking.
+        if p.common.is_interface {
+            return;
+        }
 
         for param in &p.params {
             self.check_upper_snake(&param.name);
