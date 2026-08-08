@@ -721,3 +721,38 @@ fn formal_replay_confirms_genuine_refutations() {
         "kill-switch must disable all replay output:\n{merged}"
     );
 }
+
+/// Issue #818: a write to a plain (non-credit_channel) bus signal used to
+/// panic in `emit_base` on `self.sigs[tgt]` (exit 101). It must now be a
+/// clean "unsupported in v1" compile error.
+///
+/// Deliberately NOT z3-gated: `preprocess` rejects the design before any
+/// solver is invoked, so this runs everywhere.
+#[test]
+fn formal_plain_bus_field_write_errors_cleanly() {
+    let (code, out) = run_formal("tests/formal/bus_field_unsupported.arch", &["--bound", "4"]);
+    assert_ne!(code, 101, "arch formal must not panic (issue #818):\n{out}");
+    assert!(
+        !out.contains("panicked") && !out.contains("no entry found for key"),
+        "expected a clean diagnostic, not a panic:\n{out}"
+    );
+    assert_eq!(
+        code, 1,
+        "expected exit 1 (compile error); got {code}\n{out}"
+    );
+    // miette word-wraps the message, so normalize whitespace before
+    // matching rather than depending on the wrap points.
+    let flat: String = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("assignment to bus signal `m.valid`"),
+        "error should name the FIRST offending write in source order:\n{out}"
+    );
+    assert!(
+        flat.contains("is not supported by `arch formal` v1"),
+        "error should name the v1 scope:\n{out}"
+    );
+    assert!(
+        flat.contains("only `credit_channel` signals on a bus port are modelled"),
+        "error should say what IS supported:\n{out}"
+    );
+}
