@@ -1223,9 +1223,13 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     }
-                    if let crate::ast::GenerateDecl::If(gi) = gen {
-                        for gi in &gi.else_items {
-                            if let crate::ast::GenItem::Inst(inst) = gi {
+                    // The loop above walks the taken branch's items; a
+                    // `generate if` also carries an else-branch that no check
+                    // previously reached, so instances there escaped both the
+                    // `where`-constraint check and port validation.
+                    if let crate::ast::GenerateDecl::If(gen_if) = gen {
+                        for else_item in &gen_if.else_items {
+                            if let crate::ast::GenItem::Inst(inst) = else_item {
                                 self.check_inst_param_constraints(inst);
                                 self.validate_inst_ports(inst);
                             }
@@ -6879,34 +6883,32 @@ impl<'a> TypeChecker<'a> {
         let b_chars: Vec<char> = b.chars().collect();
         let n = a_chars.len();
         let m = b_chars.len();
-        let mut dp = vec![vec![0; m + 1]; n + 1];
-        for i in 0..=n {
-            dp[i][0] = i;
-        }
-        for j in 0..=m {
-            dp[0][j] = j;
-        }
+        // Two rolling rows rather than the full (n+1)x(m+1) matrix.
+        let mut prev: Vec<usize> = (0..=m).collect();
+        let mut cur = vec![0usize; m + 1];
         for i in 1..=n {
+            cur[0] = i;
             for j in 1..=m {
-                let cost = if a_chars[i - 1] == b_chars[j - 1] {
-                    0
-                } else {
-                    1
-                };
-                dp[i][j] = (dp[i - 1][j] + 1)
-                    .min(dp[i][j - 1] + 1)
-                    .min(dp[i - 1][j - 1] + cost);
+                let cost = usize::from(a_chars[i - 1] != b_chars[j - 1]);
+                cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
             }
+            std::mem::swap(&mut prev, &mut cur);
         }
-        dp[n][m]
+        prev[m]
     }
 
+    /// Closest candidate within edit distance 3, or None.
+    ///
+    /// Ties resolve to the lexicographically smallest candidate so the rendered
+    /// diagnostic is byte-identical across runs — `candidates` is built from
+    /// `BTreeSet`s for the same reason. See #756 for the class of bug this
+    /// avoids.
     fn did_you_mean(target: &str, candidates: &[String]) -> Option<String> {
         candidates
             .iter()
             .map(|c| (Self::levenshtein(target, c), c))
             .filter(|(d, _)| *d > 0 && *d <= 3)
-            .min_by_key(|(d, c)| (*d, (*c).clone()))
+            .min_by(|(da, ca), (db, cb)| da.cmp(db).then_with(|| ca.cmp(cb)))
             .map(|(_, c)| c.clone())
     }
 
@@ -7053,132 +7055,84 @@ impl<'a> TypeChecker<'a> {
                     if vob_bases.contains_key(base) {
                         continue;
                     }
-                    if let Some(suffix) = cname.strip_prefix(&format!("{}_", base)) {
-                        if *permissive {
-                            is_valid = true;
-                            break;
-                        } else if signals.contains(&suffix.to_string()) {
+                    if let Some(suffix) = strip_base_prefix(cname, base) {
+                        if *permissive || signals.iter().any(|s| s == suffix) {
                             is_valid = true;
                             break;
                         }
                     }
                 }
-                // Vec scalar per-element.
+                // Vec scalar per-element: `data_0` for `port data: Vec<T, N>`.
+                // When N is a compile-time constant the index is bounds-checked
+                // here — `data_9` into a `Vec<T, 4>` names no port, and nothing
+                // downstream catches it (verified: it reaches Verilator as a
+                // bogus pin). When N is not const-evaluable, accept any numeric
+                // index rather than risk a false positive.
                 if !is_valid {
                     for (base, count_opt) in &vec_scalar_bases {
-                        if let Some(suffix) = cname.strip_prefix(&format!("{}_", base)) {
-                            if suffix.parse::<u32>().is_ok() {
-                                if let Some(n) = count_opt {
-                                    if let Ok(idx) = suffix.parse::<u32>() {
-                                        if idx < *n {
-                                            is_valid = true;
-                                            break;
-                                        } else {
-                                            // Out-of-bounds idx still considered valid here;
-                                            // bounds are checked elsewhere. Treat as valid to avoid duplicate error.
-                                            is_valid = true;
-                                            break;
-                                        }
-                                    }
-                                } else {
-                                    is_valid = true;
-                                    break;
-                                }
-                            }
+                        let Some(suffix) = strip_base_prefix(cname, base) else {
+                            continue;
+                        };
+                        let Ok(idx) = suffix.parse::<u32>() else {
+                            continue;
+                        };
+                        if (*count_opt).is_none_or(|n| idx < n) {
+                            is_valid = true;
+                            break;
                         }
                     }
                 }
-                // Vec<Bus>.
+                // Vec<Bus>, in all three flattened shapes:
+                //   `mm_0`            whole element
+                //   `mm_0_cmd_valid`  element + signal
+                //   `mm_cmd_valid`    whole vector, one signal
                 if !is_valid {
                     for (base, (_count_opt, signals, permissive)) in &vob_bases {
-                        if let Some(rest) = cname.strip_prefix(&format!("{}_", base)) {
-                            if rest.parse::<u32>().is_ok() {
-                                // base_<idx>
+                        let known = |sig: &str| *permissive || signals.iter().any(|s| s == sig);
+                        if let Some(rest) = strip_base_prefix(cname, base) {
+                            if rest.parse::<u32>().is_ok()
+                                || split_idx_signal(rest).is_some_and(|(_, sig)| known(sig))
+                                || known(rest)
+                            {
                                 is_valid = true;
                                 break;
-                            } else {
-                                let mut parts = rest.splitn(2, '_');
-                                let idxp = parts.next().unwrap();
-                                if let Some(sigp) = parts.next() {
-                                    if idxp.parse::<u32>().is_ok()
-                                        && (*permissive || signals.contains(&sigp.to_string()))
-                                    {
-                                        is_valid = true;
-                                        break;
-                                    }
-                                }
                             }
                         }
-                        // Also handle `base{idx}_{signal}` without underscore before idx (e.g., chans0_valid from `chans[0].valid`).
-                        if cname.starts_with(base) {
-                            let rest2 = &cname[base.len()..];
-                            if !rest2.is_empty() && rest2.chars().next().unwrap().is_ascii_digit() {
-                                if let Some(und_pos) = rest2.find('_') {
-                                    let (idx_part, sig_part_with_und) = rest2.split_at(und_pos);
-                                    let sig_part = &sig_part_with_und[1..];
-                                    if idx_part.parse::<u32>().is_ok()
-                                        && (*permissive || signals.contains(&sig_part.to_string()))
-                                    {
-                                        is_valid = true;
-                                        break;
-                                    }
-                                }
+                        // `mm0_cmd_valid` — no underscore before the index, as
+                        // produced by `chans[0].valid`.
+                        if let Some((_, sig)) = cname.strip_prefix(base).and_then(split_idx_signal)
+                        {
+                            if known(sig) {
+                                is_valid = true;
+                                break;
                             }
                         }
                     }
                 }
-                // Port-array bases (Arbiter / Regfile `ports[N]`): `request0_valid` and `request_valid` whole-vector.
+                // Arbiter / Regfile `ports[N]` groups: `request_valid` (whole
+                // vector) and `request0_valid` (indexed).
                 if !is_valid {
                     for (base, (_count_opt, signals)) in &port_array_bases {
-                        // Whole-vector per-signal: `request_valid` (base + "_" + signal) – valid for any count.
-                        if let Some(suffix) = cname.strip_prefix(&format!("{}_", base)) {
-                            if signals.contains(&suffix.to_string()) {
-                                is_valid = true;
-                                break;
-                            }
-                        }
-                        // Indexed form: `request0_valid` (base + idx + "_" + signal)
-                        if cname.starts_with(base) {
-                            let rest = &cname[base.len()..];
-                            if !rest.is_empty() && rest.chars().next().unwrap().is_ascii_digit() {
-                                if let Some(und_pos) = rest.find('_') {
-                                    let (idx_part, sig_part_with_und) = rest.split_at(und_pos);
-                                    let sig_part = &sig_part_with_und[1..];
-                                    if idx_part.parse::<u32>().is_ok()
-                                        && signals.contains(&sig_part.to_string())
-                                    {
-                                        is_valid = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                // Vec<Bus> per-signal whole-vector: `mm_valid` (base + "_" + signal) for packed vector.
-                if !is_valid {
-                    for (base, (_count_opt, signals, permissive)) in &vob_bases {
-                        if let Some(suffix) = cname.strip_prefix(&format!("{}_", base)) {
-                            if *permissive || signals.contains(&suffix.to_string()) {
-                                // This covers `mm_valid`, `mm_data` etc. It also matches `mm_0`? But `mm_0` suffix is numeric, not a signal, so not in signals and not permissive (signals not empty) → not valid here, but already handled above as base_<idx>.
-                                // So only per-signal whole-vector will be true.
-                                // Need to ensure suffix is a signal, not numeric idx.
-                                if signals.contains(&suffix.to_string()) || *permissive {
-                                    is_valid = true;
-                                    break;
-                                }
-                            }
+                        let known = |sig: &str| signals.iter().any(|s| s == sig);
+                        if strip_base_prefix(cname, base).is_some_and(known)
+                            || cname
+                                .strip_prefix(base)
+                                .and_then(split_idx_signal)
+                                .is_some_and(|(_, sig)| known(sig))
+                        {
+                            is_valid = true;
+                            break;
                         }
                     }
                 }
                 // Ram port groups: `rd_port_addr`.
                 if !is_valid {
                     for (base, signals) in &ram_port_groups {
-                        if let Some(suffix) = cname.strip_prefix(&format!("{}_", base)) {
-                            if signals.contains(&suffix.to_string()) {
-                                is_valid = true;
-                                break;
-                            }
+                        if strip_base_prefix(cname, base)
+                            .is_some_and(|sig| signals.iter().any(|s| s == sig))
+                        {
+                            is_valid = true;
+                            break;
                         }
                     }
                 }
@@ -9911,6 +9865,23 @@ fn float_slot_type_name(ty: &TypeExpr) -> Option<&'static str> {
 /// True if `e` is a bare integer literal (`Dec`/`Hex`/`Bin`/`Sized`) — used to
 /// reject the "integer literal into a float slot" foot-gun consistently
 /// across `reset` (arch#620/#623), `init` and port `default` (arch#622/#624).
+/// `cname.strip_prefix(&format!("{base}_"))` without building the prefix.
+///
+/// `validate_inst_ports` runs this per (connection x candidate base) across
+/// several passes, and children like `e203_biu` carry 124 ports, so the
+/// throwaway `String` per comparison is worth avoiding.
+fn strip_base_prefix<'s>(cname: &'s str, base: &str) -> Option<&'s str> {
+    cname.strip_prefix(base)?.strip_prefix('_')
+}
+
+/// Split `"<idx>_<signal>"` into its parts, for the flattened per-element bus
+/// shapes (`chans_0_valid` -> `("0", "valid")`). Signal names contain
+/// underscores of their own, so the split is limited to the first one.
+fn split_idx_signal(rest: &str) -> Option<(u32, &str)> {
+    let (idx, signal) = rest.split_once('_')?;
+    Some((idx.parse::<u32>().ok()?, signal))
+}
+
 fn is_bare_int_literal(e: &Expr) -> bool {
     matches!(
         &e.kind,

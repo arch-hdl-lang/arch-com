@@ -1,8 +1,11 @@
+//! Coverage for #797 — `inst` connections must name a real port of the child.
+
 use arch::elaborate;
 use arch::lexer;
 use arch::parser::Parser;
 use arch::resolve;
 use arch::typecheck::TypeChecker;
+use std::process::Command;
 
 fn errors_from_source(source: &str) -> Vec<String> {
     let tokens = lexer::tokenize(source).expect("lex");
@@ -454,26 +457,100 @@ fn unresolvable_child_kind_is_skipped_not_flagged() {
 }
 
 #[test]
-fn archi_child_via_same_dir() {
-    // ARCH_LIB_PATH case is covered by CLI test, but same-dir .archi is also via SourceFile inclusion when both files passed together.
-    // This test ensures a parent that misspells a child port from a child defined in same SourceFile is caught (basic).
-    // The full ARCH_LIB_PATH test requires filesystem + env var, tested via CLI; here we just ensure child_ports works for in-source child.
+fn vec_data_element_index_out_of_range_is_error() {
+    // `data_9` on a `Vec<UInt<8>, 4>` names no port. Nothing downstream catches
+    // it — before this check it reached Verilator as a bogus pin — so the
+    // element index is bounds-checked here whenever the count is const.
     let src = r#"
         module Leaf
-          port d: in UInt<8>;
-          port q: out UInt<8>;
-          comb q = d; end comb
+          port data: out Vec<UInt<8>, 4>;
+          comb
+            for i in 0..3
+              data[i] = 0;
+            end for
+          end comb
         end module Leaf
         module Top
-          port a: in UInt<8>;
           port y: out UInt<8>;
           wire w: UInt<8>;
           inst c: Leaf
-            dd <- a;
-            q -> w;
+            data_9 -> w;
           end inst c
           comb y = w; end comb
         end module Top
     "#;
-    check_err_contains(src, &["dd", "did you mean `d`"]);
+    check_err_contains(src, &["data_9", "not a port of"]);
+}
+
+/// The `.archi` separate-compilation path, end to end through the CLI.
+///
+/// `.archi` discovery lives in `src/main.rs`, so an in-process test cannot
+/// reach it — it would silently exercise the in-source lookup instead and
+/// prove nothing. This drives the real binary with a stub that is reachable
+/// *only* via `ARCH_LIB_PATH`, which is the route the e203 corpus depends on.
+#[test]
+fn archi_child_via_arch_lib_path_unknown_port() {
+    let tmp = std::env::temp_dir().join("arch_issue797_archi");
+    let lib = tmp.join("lib");
+    let work = tmp.join("work");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&lib).expect("mkdir lib");
+    std::fs::create_dir_all(&work).expect("mkdir work");
+
+    std::fs::write(
+        lib.join("Leaf.archi"),
+        "module Leaf\n  port d: in UInt<8>;\n  port q: out UInt<8>;\nend module Leaf\n",
+    )
+    .expect("write stub");
+
+    // Every real port stays connected and the bogus pin is added alongside, so
+    // the unknown-port error is the *only* diagnostic. Misspelling `d` outright
+    // would also raise "input port `d` is not connected", and the CLI currently
+    // displays just the first error (#750), masking what this test is for.
+    let parent = |extra: &str| {
+        format!(
+            "module Top\n  port a: in UInt<8>;\n  port y: out UInt<8>;\n  wire w: UInt<8>;\n\
+             \x20 inst c: Leaf\n    d <- a;\n    q -> w;\n{extra}  end inst c\n\
+             \x20 comb\n    y = w;\n  end comb\nend module Top\n"
+        )
+    };
+
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_arch"))
+            .current_dir(&work)
+            .env("ARCH_LIB_PATH", &lib)
+            .args(["check", "Top.arch"])
+            .output()
+            .expect("failed to run `arch check`")
+    };
+
+    // Bogus pin against the ARCH_LIB_PATH-only stub.
+    std::fs::write(work.join("Top.arch"), parent("    dd <- a;\n")).expect("write parent");
+    let out = run();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "expected a check failure, got success: {combined}"
+    );
+    assert!(
+        combined.contains("is not a port of `Leaf`") && combined.contains("did you mean `d`"),
+        "expected the unknown-port error with a suggestion, got: {combined}"
+    );
+
+    // Negative twin: the same stub with no bogus pin must pass, so the test
+    // cannot succeed merely because every `.archi` child errors.
+    std::fs::write(work.join("Top.arch"), parent("")).expect("write parent");
+    let out = run();
+    assert!(
+        out.status.success(),
+        "correctly-spelled pin should check clean, got: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
 }
