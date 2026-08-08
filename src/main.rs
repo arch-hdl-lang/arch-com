@@ -2893,6 +2893,46 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
             }
         }
 
+        // An explicit `use` names the file that provides a construct, so it
+        // must win over the name-based `inst` discovery below. Seed the
+        // defined-name set from the `use` targets before that discovery runs;
+        // otherwise a construct reachable by both routes is pulled in twice
+        // and the build dies with `duplicate definition`.
+        //
+        // This is the only way to disambiguate when two files in a directory
+        // define the same construct: without it, discovery silently resolves
+        // `inst c: X` to whichever file happens to be called `X.arch`, and
+        // `use` cannot override that choice.
+        for dep in &deps {
+            let Ok(dep_src) = fs::read_to_string(dep) else {
+                continue;
+            };
+            let Ok(dep_tokens) = lexer::tokenize(&dep_src) else {
+                continue;
+            };
+            let mut dep_parser = parser::Parser::new(dep_tokens, &dep_src);
+            let Ok(dep_parsed) = dep_parser.parse_source_file() else {
+                continue;
+            };
+            for item in &dep_parsed.items {
+                match item {
+                    Item::Domain(_)
+                    | Item::Struct(_)
+                    | Item::Enum(_)
+                    | Item::Function(_)
+                    | Item::Package(_)
+                    | Item::Use(_)
+                    | Item::ExternPackage(_) => {}
+                    Item::Bus(b) => {
+                        all_defined_buses.insert(b.name.name.clone());
+                    }
+                    instantiable => {
+                        all_defined_modules.insert(instantiable.as_construct().name().name.clone());
+                    }
+                }
+            }
+        }
+
         // Track every construct name defined across all input files, so the
         // `.archi` auto-discovery below does NOT pull in a (possibly stale)
         // interface stub for a construct that is ALREADY defined in-source —
