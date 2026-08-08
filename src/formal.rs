@@ -52,6 +52,14 @@ pub enum PropertyStatus {
     /// jointly-unsatisfiable `assume` clauses (empty state space), or an
     /// implication whose antecedent is unreachable (trigger never fires).
     Vacuous(String),
+    /// The sat-side dual of `Vacuous`: the solver claimed a violation (or
+    /// cover hit), but independent replay of the returned model — the same
+    /// property expression evaluated concretely, floats via the fp_ir
+    /// interpreter over the identical operator definitions the query
+    /// embedded — shows the property is NOT violated at any cycle. That
+    /// contradiction means the BMC query generation itself is unsound: an
+    /// internal compiler bug, not a design error.
+    EncodingUnsound(String),
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +76,7 @@ pub struct FormalReport {
 
 impl FormalReport {
     pub fn exit_code(&self) -> i32 {
+        let mut any_unsound = false;
         let mut any_bad = false;
         let mut any_incon = false;
         for r in &self.results {
@@ -79,9 +88,15 @@ impl FormalReport {
                 | PropertyStatus::NotReached(_)
                 | PropertyStatus::Vacuous(_) => any_bad = true,
                 PropertyStatus::Inconclusive(_) => any_incon = true,
+                // Highest precedence and a dedicated code: a compiler bug is
+                // categorically different from a design bug (1), so CI can
+                // hard-fail on 3 while design-verification flows tolerate 1.
+                PropertyStatus::EncodingUnsound(_) => any_unsound = true,
             }
         }
-        if any_bad {
+        if any_unsound {
+            3
+        } else if any_bad {
             1
         } else if any_incon {
             2
@@ -3492,19 +3507,86 @@ impl<'a> FormalCtx<'a> {
                     &assignments,
                     args.bound,
                 );
-                let cex = render_counterexample(
-                    &prop.name,
-                    failing_cycle,
-                    self,
-                    &assignments,
-                    args.bound,
-                );
-                match prop.kind {
-                    AssertKind::Assert => PropertyStatus::Refuted(failing_cycle),
-                    AssertKind::Cover => PropertyStatus::Hit(failing_cycle),
-                    AssertKind::Assume => unreachable!("assumes filtered before run_property"),
+                // Counterexample replay — the sat-side dual of the vacuity
+                // guard below. Independently re-evaluate the property on the
+                // solver's model (floats via the fp_ir interpreter, over the
+                // identical operator definitions the query embedded) to
+                // confirm the claimed violation is real. Conservative: only a
+                // confident contradiction (every cycle decidable, none
+                // violating) flags; anything undecidable retains the solver's
+                // verdict. Kill-switch: ARCH_FORMAL_NO_REPLAY=1.
+                let replay = if std::env::var_os("ARCH_FORMAL_NO_REPLAY").is_some() {
+                    None
+                } else {
+                    let fns = crate::fp_ops::fp_functions(self.fp_compat);
+                    Some(self.replay_check(prop, &assignments, min_t, max_t, lhs_future, &fns))
+                };
+                match replay {
+                    Some(ReplayVerdict::Contradicted) => PropertyStatus::EncodingUnsound(
+                        "internal compiler bug: the solver reported this property as violated, \
+                         but independent replay of its model shows no violation at any cycle — \
+                         the BMC query generation is unsound. This is not a design error; \
+                         please report it (attach the --emit-smt output)"
+                            .to_string(),
+                    )
+                    .with_cex(
+                        render_counterexample(
+                            &prop.name,
+                            failing_cycle,
+                            self,
+                            &assignments,
+                            args.bound,
+                        )
+                        .map(|c| {
+                            format!(
+                                "{c}\n  replay: property evaluates un-violated at every cycle \
+                                 in [{min_t}, {max_t}] on this model"
+                            )
+                        }),
+                    ),
+                    Some(ReplayVerdict::Confirmed(c)) => {
+                        // Replay's earliest independently-confirmed cycle wins
+                        // over the solver-bit guess (defense-in-depth against
+                        // the #792 wrong-cycle class).
+                        let cex =
+                            render_counterexample(&prop.name, c, self, &assignments, args.bound);
+                        match prop.kind {
+                            AssertKind::Assert => PropertyStatus::Refuted(c),
+                            AssertKind::Cover => PropertyStatus::Hit(c),
+                            AssertKind::Assume => {
+                                unreachable!("assumes filtered before run_property")
+                            }
+                        }
+                        .with_cex(cex)
+                    }
+                    Some(ReplayVerdict::Inconclusive) | None => {
+                        let cex = render_counterexample(
+                            &prop.name,
+                            failing_cycle,
+                            self,
+                            &assignments,
+                            args.bound,
+                        )
+                        .map(|c| {
+                            if replay.is_some() {
+                                format!(
+                                    "{c}\n  note: independent replay could not decide this \
+                                     property on the model; solver verdict retained"
+                                )
+                            } else {
+                                c
+                            }
+                        });
+                        match prop.kind {
+                            AssertKind::Assert => PropertyStatus::Refuted(failing_cycle),
+                            AssertKind::Cover => PropertyStatus::Hit(failing_cycle),
+                            AssertKind::Assume => {
+                                unreachable!("assumes filtered before run_property")
+                            }
+                        }
+                        .with_cex(cex)
+                    }
                 }
-                .with_cex(cex)
             }
             "unsat" => match prop.kind {
                 AssertKind::Assert => {
@@ -4593,6 +4675,744 @@ fn eval_expr_numeric(
     }
 }
 
+// ── Counterexample replay ────────────────────────────────────────────────────
+//
+// The sat-side dual of the vacuity guard: when the solver claims a violation
+// (REFUTED) or cover hit, independently re-evaluate the property on the
+// returned model to confirm the claim. A confident contradiction — every
+// cycle decidable, none violating — means the BMC query generation itself is
+// unsound (`PropertyStatus::EncodingUnsound`, exit 3).
+//
+// This is a deliberately PARALLEL implementation of the encoder's semantics,
+// not a shared helper: a shared dispatch would mirror an encoder bug into the
+// replay and mask the contradiction. Drift is safe by construction — any
+// form replay does not recognize returns `None`, which can only weaken the
+// verdict to inconclusive, never fabricate a flag.
+//
+// Unlike `eval_expr_numeric` (a heuristic cycle-finder that computes on bare
+// u64s), replay must be width- and signedness-exact against the SMT encoding:
+// `bvnot`/`bvneg`/widening arithmetic/signed compares all depend on operand
+// width, and a width divergence here could produce a false contradiction.
+// `NumVal` therefore mirrors `SmtTerm` (value, width, signedness), and every
+// arm below mirrors the corresponding `encode_*` arm's width rules. Float
+// operations evaluate through `fp_ir::eval_bv` against the same
+// `fp_ops::fp_functions` table the query inlined — the identical operator
+// definitions, so no cross-model equivalence assumption.
+
+/// A width- and signedness-tracked concrete value — the replay mirror of
+/// `SmtTerm`. The value lives in the low `width` bits of `v`; anything the
+/// replay cannot represent (width > 64) is `None` at the call site.
+#[derive(Debug, Clone, Copy)]
+struct NumVal {
+    v: u64,
+    width: u32,
+    signed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ReplayVerdict {
+    /// Earliest cycle at which replay independently confirms the violation
+    /// (assert) or hit (cover).
+    Confirmed(u32),
+    /// Every cycle in range was decidable and none shows the violation —
+    /// the solver's claim is wrong. Internal compiler bug.
+    Contradicted,
+    /// At least one cycle was undecidable and none confirmed. The solver's
+    /// verdict is retained; replay must never flag from uncertainty.
+    Inconclusive,
+}
+
+fn nv_mask(w: u32) -> u64 {
+    if w >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << w) - 1
+    }
+}
+
+fn nv(v: u64, width: u32, signed: bool) -> NumVal {
+    NumVal {
+        v: v & nv_mask(width),
+        width,
+        signed,
+    }
+}
+
+/// Reinterpret the masked `width`-bit value as a signed integer.
+fn nv_as_i64(x: &NumVal) -> i64 {
+    if x.width >= 64 || (x.v >> (x.width - 1)) & 1 == 0 {
+        x.v as i64
+    } else {
+        (x.v | !nv_mask(x.width)) as i64
+    }
+}
+
+/// The replay mirror of `coerce`: resize to `(width, signed)` via
+/// sign/zero-extension (by the SOURCE's signedness, as `coerce` does) or
+/// low-bit extraction. `None` when the target width is unrepresentable.
+fn nv_coerce(x: NumVal, width: u32, signed: bool) -> Option<NumVal> {
+    if width == 0 || width > 64 {
+        return None;
+    }
+    Some(if x.width == width {
+        NumVal { signed, ..x }
+    } else if x.width < width {
+        let v = if x.signed { nv_as_i64(&x) as u64 } else { x.v };
+        nv(v, width, signed)
+    } else {
+        nv(x.v, width, signed)
+    })
+}
+
+impl FormalCtx<'_> {
+    /// Property truth value at cycle `t`, mirroring `run_property`'s
+    /// per-cycle encoding: top-level `a |=> b` samples the RHS at
+    /// `t + 1 + lhs_future`; everything else is the expression coerced to
+    /// 1 bit (i.e. bit 0), exactly as `encode_expr(_, _, Some((1, false)))`.
+    fn replay_prop_at(
+        &self,
+        expr: &Expr,
+        t: u32,
+        lhs_future: u32,
+        m: &HashMap<String, u64>,
+        fns: &[crate::fp_ir::FpFn],
+    ) -> Option<bool> {
+        if let ExprKind::Binary(BinOp::ImpliesNext, lhs, rhs) = &expr.kind {
+            let la = self.replay_raw(lhs, t, m, fns)?;
+            let lb = self.replay_raw(rhs, t + 1 + lhs_future, m, fns)?;
+            Some((la.v & 1) == 0 || (lb.v & 1) == 1)
+        } else {
+            let v = self.replay_raw(expr, t, m, fns)?;
+            Some((v.v & 1) == 1)
+        }
+    }
+
+    /// Scan the property over the same cycle range the query asserted and
+    /// classify the solver's sat claim. See `ReplayVerdict`.
+    fn replay_check(
+        &self,
+        prop: &PropertyDecl,
+        m: &HashMap<String, u64>,
+        min_t: u32,
+        max_t: u32,
+        lhs_future: u32,
+        fns: &[crate::fp_ir::FpFn],
+    ) -> ReplayVerdict {
+        // Assert: violation ⇔ property false. Cover: hit ⇔ property true.
+        let violation_truth = matches!(prop.kind, AssertKind::Cover);
+        let mut all_decided = true;
+        let mut confirmed = None;
+        for t in min_t..=max_t {
+            match self.replay_prop_at(&prop.expr, t, lhs_future, m, fns) {
+                Some(b) => {
+                    if b == violation_truth && confirmed.is_none() {
+                        confirmed = Some(t);
+                    }
+                }
+                None => all_decided = false,
+            }
+        }
+        match (confirmed, all_decided) {
+            (Some(c), _) => ReplayVerdict::Confirmed(c),
+            (None, true) => ReplayVerdict::Contradicted,
+            (None, false) => ReplayVerdict::Inconclusive,
+        }
+    }
+
+    /// Evaluate a float operator application through the fp_ir interpreter:
+    /// operands are already-evaluated concrete bit patterns, wrapped as
+    /// constants in a single `Call` node against the operator table.
+    fn replay_fp_call(
+        &self,
+        name: &str,
+        args: &[NumVal],
+        ret_w: u32,
+        fns: &[crate::fp_ir::FpFn],
+    ) -> Option<NumVal> {
+        let bv_args: Vec<crate::fp_ir::Bv> = args
+            .iter()
+            .map(|a| crate::fp_ir::cst(a.v as u128, a.width))
+            .collect();
+        let node = crate::fp_ir::call(name, &bv_args, ret_w);
+        let v = crate::fp_ir::eval_bv(&node, &HashMap::new(), fns)?;
+        if ret_w > 64 {
+            return None;
+        }
+        Some(nv(v as u64, ret_w, false))
+    }
+
+    /// The replay mirror of `encode_raw`. Every arm reproduces the
+    /// corresponding encoder arm's width/signedness rules; any form outside
+    /// the mirrored surface returns `None` (inconclusive), never a guess.
+    fn replay_raw(
+        &self,
+        e: &Expr,
+        t: u32,
+        m: &HashMap<String, u64>,
+        fns: &[crate::fp_ir::FpFn],
+    ) -> Option<NumVal> {
+        use ExprKind::*;
+        match &e.kind {
+            LatencyAt(inner, _) => self.replay_raw(inner, t, m, fns),
+            SvaNext(n, inner) => self.replay_raw(inner, t + *n, m, fns),
+            Bool(b) => Some(nv(*b as u64, 1, false)),
+            Literal(l) => self.replay_literal(l),
+            Ident(name) => self.replay_ident(name, t, m, fns),
+            SynthIdent(name, _) => {
+                if self.sigs.contains_key(name) {
+                    return self.replay_ident(name, t, m, fns);
+                }
+                self.replay_derived_nonzero(name, t, m)
+            }
+            Binary(op, a, b) => self.replay_binary(*op, a, b, t, m, fns),
+            Unary(op, a) => {
+                let ta = self.replay_raw(a, t, m, fns)?;
+                Some(match op {
+                    UnaryOp::Not => nv((ta.v == 0) as u64, 1, false),
+                    UnaryOp::BitNot => nv(!ta.v, ta.width, ta.signed),
+                    UnaryOp::Neg => nv(ta.v.wrapping_neg(), ta.width, true),
+                    UnaryOp::RedAnd => nv((ta.v == nv_mask(ta.width)) as u64, 1, false),
+                    UnaryOp::RedOr => nv((ta.v != 0) as u64, 1, false),
+                    UnaryOp::RedXor => nv((ta.v.count_ones() & 1) as u64, 1, false),
+                })
+            }
+            Ternary(c, then_e, else_e) => {
+                // Mirror the encoder's totality: both branches must be
+                // decidable (their widths shape the result), even though
+                // only one value is selected.
+                let ct = self.replay_raw(c, t, m, fns)?;
+                let tt = self.replay_raw(then_e, t, m, fns)?;
+                let et = self.replay_raw(else_e, t, m, fns)?;
+                let w = tt.width.max(et.width);
+                let signed = tt.signed || et.signed;
+                let th = nv_coerce(tt, w, signed)?;
+                let el = nv_coerce(et, w, signed)?;
+                Some(if ct.v != 0 { th } else { el })
+            }
+            MethodCall(recv, method, args) => self.replay_method(recv, method, args, t, m, fns),
+            BitSlice(base, hi, lo) => {
+                let b = self.replay_raw(base, t, m, fns)?;
+                let hi_v = fold_const_expr(hi, &self.params)?;
+                let lo_v = fold_const_expr(lo, &self.params)?;
+                if hi_v < lo_v || hi_v >= b.width as u64 {
+                    return None;
+                }
+                let w = (hi_v - lo_v + 1) as u32;
+                Some(nv(b.v >> lo_v, w, b.signed))
+            }
+            PartSelect(base, start, width, is_plus) => {
+                let b = self.replay_raw(base, t, m, fns)?;
+                let s_v = fold_const_expr(start, &self.params)?;
+                let w_v = fold_const_expr(width, &self.params)?;
+                if w_v == 0 {
+                    return None;
+                }
+                let (hi, lo) = if *is_plus {
+                    (s_v + w_v - 1, s_v)
+                } else {
+                    (s_v, s_v.checked_sub(w_v - 1)?)
+                };
+                if hi < lo || hi >= b.width as u64 {
+                    return None;
+                }
+                Some(nv(b.v >> lo, w_v as u32, b.signed))
+            }
+            Concat(es) => {
+                let parts: Option<Vec<NumVal>> =
+                    es.iter().map(|p| self.replay_raw(p, t, m, fns)).collect();
+                let parts = parts?;
+                let total: u32 = parts.iter().map(|p| p.width).sum();
+                if total > 64 {
+                    return None;
+                }
+                let mut v = 0u64;
+                for p in &parts {
+                    v = (v << p.width) | p.v;
+                }
+                Some(nv(v, total, false))
+            }
+            Repeat(n, x) => {
+                let n_v = fold_const_expr(n, &self.params)?;
+                if n_v == 0 {
+                    return None;
+                }
+                let xt = self.replay_raw(x, t, m, fns)?;
+                let total = xt.width.checked_mul(n_v as u32)?;
+                if total > 64 {
+                    return None;
+                }
+                let mut v = 0u64;
+                for _ in 0..n_v {
+                    v = (v << xt.width) | xt.v;
+                }
+                Some(nv(v, total, false))
+            }
+            Signed(inner) => {
+                let ti = self.replay_raw(inner, t, m, fns)?;
+                Some(NumVal { signed: true, ..ti })
+            }
+            Unsigned(inner) => {
+                let ti = self.replay_raw(inner, t, m, fns)?;
+                Some(NumVal {
+                    signed: false,
+                    ..ti
+                })
+            }
+            Clog2(inner) => {
+                let v = fold_const_expr(inner, &self.params)?;
+                let r = if v <= 1 {
+                    1
+                } else {
+                    64 - (v - 1).leading_zeros() as u64
+                };
+                Some(nv(r, 32, false))
+            }
+            Onehot(idx) => {
+                let idx_t = self.replay_raw(idx, t, m, fns)?;
+                let amt = nv_coerce(idx_t, 32, false)?.v;
+                let v = if amt >= 64 { 0 } else { 1u64 << amt };
+                Some(nv(v, 32, false))
+            }
+            EnumVariant(en, v) => {
+                let key = format!("{}::{}", en.name, v.name);
+                let (val, w) = self.enum_variants.get(&key)?;
+                Some(nv(*val, *w, false))
+            }
+            FieldAccess(base, field) => {
+                if let Ident(port) = &base.kind {
+                    let flat = format!("{port}_{}", field.name);
+                    if self.sigs.contains_key(&flat) {
+                        return self.replay_ident(&flat, t, m, fns);
+                    }
+                }
+                None
+            }
+            FunctionCall(name, args) if name == "fma" && args.len() == 3 => {
+                let tag = args
+                    .iter()
+                    .find_map(|a| self.expr_float_tag(a))
+                    .unwrap_or("f32");
+                let w = float_tag_width(tag);
+                let ea = nv_coerce(self.replay_raw(&args[0], t, m, fns)?, w, false)?;
+                let eb = nv_coerce(self.replay_raw(&args[1], t, m, fns)?, w, false)?;
+                let ec = nv_coerce(self.replay_raw(&args[2], t, m, fns)?, w, false)?;
+                self.replay_fp_call(&format!("arch_fma_{tag}"), &[ea, eb, ec], w, fns)
+            }
+            FunctionCall(name, args) if name == "is_nan" && args.len() == 1 => {
+                let tag = self.expr_float_tag(&args[0]).unwrap_or("f32");
+                let w = float_tag_width(tag);
+                let x = nv_coerce(self.replay_raw(&args[0], t, m, fns)?, w, false)?.v;
+                // Bit-field NaN tests, mirroring the encoder's inline SMT
+                // (E4M3 is OCP: sole NaN encoding 0x7F).
+                let is_nan = match tag {
+                    "f32" => (x >> 23) & 0xFF == 0xFF && x & 0x7F_FFFF != 0,
+                    "bf16" => (x >> 7) & 0xFF == 0xFF && x & 0x7F != 0,
+                    "e4m3" => x & 0x7F == 0x7F,
+                    _ => (x >> 2) & 0x1F == 0x1F && x & 0b11 != 0,
+                };
+                Some(nv(is_nan as u64, 1, false))
+            }
+            FunctionCall(name, args) if name == "past" && args.len() == 2 => {
+                let n = match &args[1].kind {
+                    Literal(LitKind::Dec(n)) | Literal(LitKind::Sized(_, n)) => *n as u32,
+                    _ => return None,
+                };
+                if t < n {
+                    return None;
+                }
+                self.replay_raw(&args[0], t - n, m, fns)
+            }
+            FunctionCall(name, args) if (name == "rose" || name == "fell") && args.len() == 1 => {
+                if t < 1 {
+                    return None;
+                }
+                let now = self.replay_raw(&args[0], t, m, fns)?;
+                let prev = self.replay_raw(&args[0], t - 1, m, fns)?;
+                let (now_b, prev_b) = (now.v != 0, prev.v != 0);
+                let v = if name == "rose" {
+                    now_b && !prev_b
+                } else {
+                    !now_b && prev_b
+                };
+                Some(nv(v as u64, 1, false))
+            }
+            // Everything else — struct literals, casts, indexing, unknown
+            // calls, match forms, todo!, pipelined ops — is outside the
+            // mirrored surface: inconclusive, never a guess.
+            _ => None,
+        }
+    }
+
+    /// Mirror of `lit_to_term` plus the float-literal forms.
+    fn replay_literal(&self, l: &LitKind) -> Option<NumVal> {
+        Some(match l {
+            LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v) => {
+                let w = if *v == 0 { 1 } else { 64 - v.leading_zeros() };
+                nv(*v, w, false)
+            }
+            LitKind::Sized(w, v) => {
+                if *w > 64 {
+                    return None;
+                }
+                nv(*v, *w, false)
+            }
+            LitKind::ParamSized(name, v) => {
+                let w = *self.params.get(name)? as u32;
+                if w > 64 {
+                    return None;
+                }
+                nv(*v, w, false)
+            }
+            LitKind::Float(bits) => {
+                let f = (f64::from_bits(*bits)) as f32;
+                nv(f.to_bits() as u64, 32, false)
+            }
+            LitKind::TypedFloat(fmt, bits) => nv(*bits, fmt.width(), false),
+        })
+    }
+
+    /// Mirror of `encode_ident`: const params (32-bit), inline-expanded let
+    /// bindings, then signals read from the model at `<name>_<t>`.
+    fn replay_ident(
+        &self,
+        name: &str,
+        t: u32,
+        m: &HashMap<String, u64>,
+        fns: &[crate::fp_ir::FpFn],
+    ) -> Option<NumVal> {
+        if let Some(val) = self.params.get(name) {
+            return Some(nv(*val, 32, false));
+        }
+        if let Some(val) = self.let_bindings.get(name) {
+            return self.replay_raw(val, t, m, fns);
+        }
+        if let Some(info) = self.sigs.get(name) {
+            // parse_model stores u64s — a wider signal's value would be
+            // truncated, so refuse rather than compute on garbage.
+            if info.width > 64 {
+                return None;
+            }
+            let v = *m.get(&format!("{name}_{t}"))?;
+            return Some(nv(v, info.width, info.signed));
+        }
+        self.replay_derived_nonzero(name, t, m)
+    }
+
+    /// Mirror of the derived credit_channel resolution shared by
+    /// `encode_ident` and the SynthIdent path: `<stem>_can_send` ≡
+    /// `<stem>_credit != 0`, `<stem>_valid` ≡ `<stem>_occ != 0`.
+    fn replay_derived_nonzero(
+        &self,
+        name: &str,
+        t: u32,
+        m: &HashMap<String, u64>,
+    ) -> Option<NumVal> {
+        if let Some(reg) = self.derived_nonzero.get(name) {
+            if self.sigs.get(reg).is_some() {
+                let v = *m.get(&format!("{reg}_{t}"))?;
+                return Some(nv((v != 0) as u64, 1, false));
+            }
+        }
+        if let Some(stem) = name
+            .strip_suffix("_can_send")
+            .or_else(|| name.strip_suffix("_valid"))
+        {
+            let suffix = if name.ends_with("_can_send") {
+                "_credit"
+            } else {
+                "_occ"
+            };
+            let reg = format!("{stem}{suffix}");
+            if self.sigs.get(&reg).is_some() {
+                let v = *m.get(&format!("{reg}_{t}"))?;
+                return Some(nv((v != 0) as u64, 1, false));
+            }
+        }
+        None
+    }
+
+    /// Mirror of `encode_binary`: float operands dispatch to the operator
+    /// table via the fp_ir interpreter; integer forms reproduce the
+    /// encoder's IEEE-1800 width rules exactly.
+    fn replay_binary(
+        &self,
+        op: BinOp,
+        a: &Expr,
+        b: &Expr,
+        t: u32,
+        m: &HashMap<String, u64>,
+        fns: &[crate::fp_ir::FpFn],
+    ) -> Option<NumVal> {
+        if let Some(tag) = self.expr_float_tag(a).or_else(|| self.expr_float_tag(b)) {
+            let fop = match op {
+                BinOp::Add => Some(("add", false)),
+                BinOp::Sub => Some(("sub", false)),
+                BinOp::Mul => Some(("mul", false)),
+                BinOp::Eq => Some(("eq", true)),
+                BinOp::Neq => Some(("ne", true)),
+                BinOp::Lt => Some(("lt", true)),
+                BinOp::Gt => Some(("gt", true)),
+                BinOp::Lte => Some(("le", true)),
+                BinOp::Gte => Some(("ge", true)),
+                _ => None,
+            };
+            if let Some((fop, is_cmp)) = fop {
+                let w = float_tag_width(tag);
+                let la = nv_coerce(self.replay_raw(a, t, m, fns)?, w, false)?;
+                let lb = nv_coerce(self.replay_raw(b, t, m, fns)?, w, false)?;
+                let ret_w = if is_cmp { 1 } else { w };
+                return self.replay_fp_call(&format!("arch_{tag}_{fop}"), &[la, lb], ret_w, fns);
+            }
+        }
+        let ta = self.replay_raw(a, t, m, fns)?;
+        let tb = self.replay_raw(b, t, m, fns)?;
+        match op {
+            BinOp::Add | BinOp::Sub => {
+                let out_w = ta.width.max(tb.width) + 1;
+                let signed = ta.signed || tb.signed;
+                let la = nv_coerce(ta, out_w, signed)?;
+                let lb = nv_coerce(tb, out_w, signed)?;
+                let v = if op == BinOp::Add {
+                    la.v.wrapping_add(lb.v)
+                } else {
+                    la.v.wrapping_sub(lb.v)
+                };
+                Some(nv(v, out_w, signed))
+            }
+            BinOp::Mul => {
+                let out_w = ta.width.checked_add(tb.width)?;
+                let signed = ta.signed || tb.signed;
+                let la = nv_coerce(ta, out_w, signed)?;
+                let lb = nv_coerce(tb, out_w, signed)?;
+                Some(nv(la.v.wrapping_mul(lb.v), out_w, signed))
+            }
+            BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap => {
+                let common = ta.width.max(tb.width);
+                let signed = ta.signed || tb.signed;
+                let la = nv_coerce(ta, common, signed)?;
+                let lb = nv_coerce(tb, common, signed)?;
+                let v = match op {
+                    BinOp::AddWrap => la.v.wrapping_add(lb.v),
+                    BinOp::SubWrap => la.v.wrapping_sub(lb.v),
+                    BinOp::MulWrap => la.v.wrapping_mul(lb.v),
+                    _ => unreachable!(),
+                };
+                Some(nv(v, common, signed))
+            }
+            BinOp::Div | BinOp::Mod => {
+                let common = ta.width.max(tb.width);
+                let signed = ta.signed || tb.signed;
+                let la = nv_coerce(ta, common, signed)?;
+                let lb = nv_coerce(tb, common, signed)?;
+                // SMT-LIB defines bvudiv/bvsdiv-by-zero, but a counterexample
+                // hinging on that convention is pathological — refuse rather
+                // than risk a convention mismatch.
+                if lb.v == 0 {
+                    return None;
+                }
+                let v = if signed {
+                    let (x, y) = (nv_as_i64(&la), nv_as_i64(&lb));
+                    if op == BinOp::Div {
+                        x.wrapping_div(y) as u64
+                    } else {
+                        x.wrapping_rem(y) as u64
+                    }
+                } else if op == BinOp::Div {
+                    la.v / lb.v
+                } else {
+                    la.v % lb.v
+                };
+                Some(nv(v, common, signed))
+            }
+            BinOp::Eq | BinOp::Neq => {
+                let common = ta.width.max(tb.width);
+                let signed = ta.signed || tb.signed;
+                let la = nv_coerce(ta, common, signed)?;
+                let lb = nv_coerce(tb, common, signed)?;
+                let eq = la.v == lb.v;
+                Some(nv(
+                    (if op == BinOp::Eq { eq } else { !eq }) as u64,
+                    1,
+                    false,
+                ))
+            }
+            BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => {
+                let common = ta.width.max(tb.width);
+                let signed = ta.signed || tb.signed;
+                let la = nv_coerce(ta, common, signed)?;
+                let lb = nv_coerce(tb, common, signed)?;
+                let r = if signed {
+                    let (x, y) = (nv_as_i64(&la), nv_as_i64(&lb));
+                    match op {
+                        BinOp::Lt => x < y,
+                        BinOp::Gt => x > y,
+                        BinOp::Lte => x <= y,
+                        BinOp::Gte => x >= y,
+                        _ => unreachable!(),
+                    }
+                } else {
+                    match op {
+                        BinOp::Lt => la.v < lb.v,
+                        BinOp::Gt => la.v > lb.v,
+                        BinOp::Lte => la.v <= lb.v,
+                        BinOp::Gte => la.v >= lb.v,
+                        _ => unreachable!(),
+                    }
+                };
+                Some(nv(r as u64, 1, false))
+            }
+            BinOp::And | BinOp::Or => {
+                let (ba, bb) = (ta.v != 0, tb.v != 0);
+                let v = if op == BinOp::And { ba && bb } else { ba || bb };
+                Some(nv(v as u64, 1, false))
+            }
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
+                let common = ta.width.max(tb.width);
+                let signed = ta.signed || tb.signed;
+                let la = nv_coerce(ta, common, signed)?;
+                let lb = nv_coerce(tb, common, signed)?;
+                let v = match op {
+                    BinOp::BitAnd => la.v & lb.v,
+                    BinOp::BitOr => la.v | lb.v,
+                    BinOp::BitXor => la.v ^ lb.v,
+                    _ => unreachable!(),
+                };
+                Some(nv(v, common, signed))
+            }
+            BinOp::Shl => {
+                let w = ta.width;
+                let amt = nv_coerce(tb, w, false)?.v;
+                let v = if amt >= 64 { 0 } else { ta.v << amt };
+                Some(nv(v, w, ta.signed))
+            }
+            BinOp::Shr => {
+                let w = ta.width;
+                let amt = nv_coerce(tb, w, false)?.v;
+                let v = if ta.signed {
+                    // bvashr: sign-fill; amounts ≥ width leave all sign bits.
+                    (nv_as_i64(&ta) >> amt.min(63)) as u64
+                } else if amt >= 64 {
+                    0
+                } else {
+                    ta.v >> amt
+                };
+                Some(nv(v, w, ta.signed))
+            }
+            BinOp::Implies => Some(nv((ta.v == 0 || tb.v != 0) as u64, 1, false)),
+            // Nested `|=>` is rejected by the encoder; top-level `|=>` is
+            // handled in replay_prop_at.
+            BinOp::ImpliesNext => None,
+        }
+    }
+
+    /// Mirror of `encode_method`: float conversions through the operator
+    /// table, integer width methods per the encoder's rules.
+    fn replay_method(
+        &self,
+        recv: &Expr,
+        method: &Ident,
+        args: &[Expr],
+        t: u32,
+        m: &HashMap<String, u64>,
+        fns: &[crate::fp_ir::FpFn],
+    ) -> Option<NumVal> {
+        let r = self.replay_raw(recv, t, m, fns)?;
+        let n = method.name.as_str();
+        let target_w = if args.is_empty() {
+            None
+        } else {
+            fold_const_expr(&args[0], &self.params).map(|v| v as u32)
+        };
+        let recv_tag = self.expr_float_tag(recv);
+        match n {
+            "to_fp32" => {
+                return match recv_tag {
+                    Some("f32") => Some(r),
+                    Some(tag) => {
+                        let x = nv_coerce(r, float_tag_width(tag), false)?;
+                        self.replay_fp_call(&format!("arch_{tag}_to_f32"), &[x], 32, fns)
+                    }
+                    // The encoder passes an integer receiver through
+                    // unconverted; that shape is suspicious, so replay
+                    // declines to mirror it rather than bless it.
+                    None => None,
+                };
+            }
+            "to_bf16" | "to_fp8e4m3" | "to_fp8e5m2" => {
+                let (helper, tgt, w) = match n {
+                    "to_bf16" => ("arch_f32_to_bf16", "bf16", 16),
+                    "to_fp8e4m3" => ("arch_f32_to_e4m3", "e4m3", 8),
+                    _ => ("arch_f32_to_e5m2", "e5m2", 8),
+                };
+                return match recv_tag {
+                    Some(src) if src == tgt => Some(r),
+                    Some("f32") => {
+                        let x = nv_coerce(r, 32, false)?;
+                        self.replay_fp_call(helper, &[x], w, fns)
+                    }
+                    Some(src) => {
+                        let x = nv_coerce(r, float_tag_width(src), false)?;
+                        let widened =
+                            self.replay_fp_call(&format!("arch_{src}_to_f32"), &[x], 32, fns)?;
+                        self.replay_fp_call(helper, &[widened], w, fns)
+                    }
+                    None => None,
+                };
+            }
+            "to_uint" | "to_sint" if recv_tag.is_some() => {
+                let tag = recv_tag.unwrap();
+                let w = target_w?;
+                if w == 0 || w > 64 {
+                    return None;
+                }
+                let f32s = if tag == "f32" {
+                    nv_coerce(r, 32, false)?
+                } else {
+                    let x = nv_coerce(r, float_tag_width(tag), false)?;
+                    self.replay_fp_call(&format!("arch_{tag}_to_f32"), &[x], 32, fns)?
+                };
+                let conv = if n == "to_sint" {
+                    "arch_f32_to_sint"
+                } else {
+                    "arch_f32_to_uint"
+                };
+                let full = self.replay_fp_call(conv, &[f32s, nv(w as u64, 32, false)], 64, fns)?;
+                return Some(nv(full.v, w, n == "to_sint"));
+            }
+            _ => {}
+        }
+        match n {
+            "trunc" => {
+                let w = target_w?;
+                if w == 0 || w > r.width {
+                    return None;
+                }
+                Some(nv(r.v, w, r.signed))
+            }
+            "zext" => {
+                let w = target_w?;
+                if w < r.width || w > 64 {
+                    return None;
+                }
+                Some(nv(r.v, w, false))
+            }
+            "sext" => {
+                let w = target_w?;
+                if w < r.width || w > 64 {
+                    return None;
+                }
+                Some(nv(nv_as_i64(&r) as u64, w, true))
+            }
+            "resize" => {
+                let w = target_w?;
+                let signed = r.signed;
+                nv_coerce(r, w, signed)
+            }
+            _ => None,
+        }
+    }
+}
+
 // ── User-visible report ──────────────────────────────────────────────────────
 
 fn render_report(results: &[PropertyResult]) {
@@ -4607,6 +5427,9 @@ fn render_report(results: &[PropertyResult]) {
             PropertyStatus::Inconclusive(why) => ("INCONCLUSIVE", why.clone()),
             PropertyStatus::ProvedEnclosure(enc) => ("PROVED", enc.clone()),
             PropertyStatus::Vacuous(why) => ("VACUOUS", why.clone()),
+            PropertyStatus::EncodingUnsound(why) => {
+                ("ENCODING UNSOUND (compiler bug)", why.clone())
+            }
         };
         eprintln!("[{:?}] {:<24} {}  — {}", r.kind, r.name, tag, detail);
         if let Some(cex) = &r.counterexample {
@@ -4616,4 +5439,232 @@ fn render_report(results: &[PropertyResult]) {
         }
     }
     eprintln!();
+}
+
+#[cfg(test)]
+mod tests {
+    //! Counterexample-replay unit tests. These drive `replay_check` directly
+    //! on hand-built solver models, which is the only way to exercise the
+    //! CONTRADICTED verdict: no .arch fixture can make the real encoder
+    //! produce an unsound query, so the z3-gated integration tests only
+    //! cover the CONFIRMED path (every genuine REFUTED must stay REFUTED).
+    use super::*;
+
+    fn parse_and_resolve(src: &str) -> (crate::ast::SourceFile, SymbolTable) {
+        let tokens = crate::lexer::tokenize(src).expect("lexer error");
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let parsed = p.parse_source_file().expect("parse error");
+        let ast = crate::elaborate::elaborate(parsed).expect("elaborate error");
+        let symbols = crate::resolve::resolve(&ast).expect("resolve error");
+        (ast, symbols)
+    }
+
+    fn build_ctx<'a>(ast: &'a crate::ast::SourceFile, symbols: &'a SymbolTable) -> FormalCtx<'a> {
+        let module = select_top(ast, None).expect("select_top");
+        let mut ctx = FormalCtx::new(module, symbols);
+        ctx.preprocess().expect("preprocess");
+        ctx
+    }
+
+    fn model(entries: &[(&str, u64)]) -> HashMap<String, u64> {
+        entries.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    }
+
+    const INT_SRC: &str = r#"
+module ReplayInt
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port x: in UInt<8>;
+  port o: out Bool;
+  comb o = x < 100; end comb
+  assert ok: x < 100;
+end module ReplayInt
+"#;
+
+    #[test]
+    fn replay_confirms_integer_violation_at_earliest_cycle() {
+        let (ast, symbols) = parse_and_resolve(INT_SRC);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        // Violated at cycle 0 (x=200 ≥ 100).
+        let m = model(&[("x_0", 200), ("x_1", 5), ("x_2", 5)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 2, 0, &fns),
+            ReplayVerdict::Confirmed(0)
+        );
+        // Violated only at cycle 2 — replay reports the EARLIEST confirmed
+        // cycle (the #792 wrong-cycle relocation path).
+        let m = model(&[("x_0", 5), ("x_1", 5), ("x_2", 200)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 2, 0, &fns),
+            ReplayVerdict::Confirmed(2)
+        );
+    }
+
+    #[test]
+    fn replay_contradicts_nonviolating_model() {
+        // The key negative test: a model that does NOT violate the property
+        // while the solver claimed sat. Every cycle decidable, none
+        // violating → Contradicted → EncodingUnsound at the caller. This is
+        // the stand-in for injecting an encoder bug, which no fixture can do.
+        let (ast, symbols) = parse_and_resolve(INT_SRC);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        let m = model(&[("x_0", 5), ("x_1", 6), ("x_2", 7)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 2, 0, &fns),
+            ReplayVerdict::Contradicted
+        );
+    }
+
+    #[test]
+    fn replay_conservative_on_undecidable_cycle() {
+        // Cycle 1's value is missing from the model: that cycle is
+        // undecidable, so even though no cycle confirms a violation the
+        // verdict must be Inconclusive — NEVER Contradicted from uncertainty.
+        let (ast, symbols) = parse_and_resolve(INT_SRC);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        let m = model(&[("x_0", 5), ("x_2", 7)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 2, 0, &fns),
+            ReplayVerdict::Inconclusive
+        );
+        // ...but a missing cycle does not mask a confirmed violation
+        // elsewhere.
+        let m = model(&[("x_0", 200), ("x_2", 7)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 2, 0, &fns),
+            ReplayVerdict::Confirmed(0)
+        );
+    }
+
+    #[test]
+    fn replay_is_width_exact_for_bitnot() {
+        // Regression pin for the width hazard that rules out a bare-u64
+        // evaluator: `~x` on UInt<8> is an 8-bit bvnot in the query
+        // (~5 = 250), while 64-bit `!5` is a huge value. A width-naive
+        // replay would judge the property false and CONFIRM a phantom
+        // violation; the width-exact replay must CONTRADICT.
+        let src = r#"
+module ReplayNot
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port x: in UInt<8>;
+  port o: out Bool;
+  comb o = (~x) == 250; end comb
+  assert inv: (~x) == 250;
+end module ReplayNot
+"#;
+        let (ast, symbols) = parse_and_resolve(src);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        let m = model(&[("x_0", 5), ("x_1", 5)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 1, 0, &fns),
+            ReplayVerdict::Contradicted,
+            "8-bit ~5 is 250: the property holds, so a sat claim contradicts"
+        );
+    }
+
+    #[test]
+    fn replay_evaluates_float_ops_through_fp_ir() {
+        let src = r#"
+module ReplayFp
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in FP32;
+  port b: in FP32;
+  port o: out Bool;
+  comb o = (a + b) < 3.0; end comb
+  assert lim: (a + b) < 3.0;
+end module ReplayFp
+"#;
+        let (ast, symbols) = parse_and_resolve(src);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        let bits = |f: f32| f.to_bits() as u64;
+        // 2.0 + 2.5 = 4.5 ≥ 3.0 at cycle 1: violated there, satisfied at
+        // cycle 0 (1.0 + 1.0 = 2.0 < 3.0).
+        let m = model(&[
+            ("a_0", bits(1.0)),
+            ("b_0", bits(1.0)),
+            ("a_1", bits(2.0)),
+            ("b_1", bits(2.5)),
+        ]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 1, 0, &fns),
+            ReplayVerdict::Confirmed(1)
+        );
+        // No violation anywhere → Contradicted.
+        let m = model(&[
+            ("a_0", bits(1.0)),
+            ("b_0", bits(1.0)),
+            ("a_1", bits(0.5)),
+            ("b_1", bits(0.25)),
+        ]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 1, 0, &fns),
+            ReplayVerdict::Contradicted
+        );
+        // A missing float operand makes that cycle undecidable →
+        // Inconclusive, not Contradicted (conservatism on the float path).
+        let m = model(&[("a_0", bits(1.0)), ("b_0", bits(1.0)), ("a_1", bits(0.5))]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 1, 0, &fns),
+            ReplayVerdict::Inconclusive
+        );
+    }
+
+    #[test]
+    fn replay_handles_implies_next_sampling() {
+        // Top-level `a |=> b`: RHS samples at t+1. Model where the
+        // implication is violated exactly at t=0 (a_0=1 but b_1=0).
+        let src = r#"
+module ReplayImpl
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in Bool;
+  port b: in Bool;
+  port o: out Bool;
+  comb o = a; end comb
+  assert follows: a |=> b;
+end module ReplayImpl
+"#;
+        let (ast, symbols) = parse_and_resolve(src);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        let m = model(&[
+            ("a_0", 1),
+            ("b_0", 0),
+            ("a_1", 0),
+            ("b_1", 0),
+            ("a_2", 0),
+            ("b_2", 1),
+        ]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 1, 0, &fns),
+            ReplayVerdict::Confirmed(0)
+        );
+        // a never fires → implication vacuously true everywhere →
+        // a sat claim would contradict.
+        let m = model(&[
+            ("a_0", 0),
+            ("b_0", 0),
+            ("a_1", 0),
+            ("b_1", 0),
+            ("a_2", 0),
+            ("b_2", 0),
+        ]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 1, 0, &fns),
+            ReplayVerdict::Contradicted
+        );
+    }
 }

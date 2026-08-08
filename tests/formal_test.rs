@@ -661,3 +661,63 @@ fn formal_vacuity_guard_rejects_unreachable_antecedent() {
         "expected clean PROVED:\n{out}"
     );
 }
+
+#[test]
+fn formal_replay_confirms_genuine_refutations() {
+    if !z3_available() {
+        eprintln!("skipping: z3 not in PATH");
+        return;
+    }
+    // Counterexample replay (the sat-side dual of the vacuity guard) runs on
+    // every REFUTED result. On a genuine violation it must CONFIRM: the
+    // report stays a plain REFUTED (exit 1) with no inconclusive note and no
+    // ENCODING UNSOUND flag. The CONTRADICTED verdict can only be exercised
+    // by unit tests (src/formal.rs) — no fixture can make the real encoder
+    // emit an unsound query.
+    for (fixture, bound) in [
+        ("tests/formal/sva_phase2_refutes.arch", "8"),
+        ("tests/formal/replay_float_refutes.arch", "2"),
+    ] {
+        let (code, out) = run_formal(fixture, &["--bound", bound]);
+        assert_eq!(
+            code, 1,
+            "{fixture}: expected exit 1 (REFUTED); got {code}\n{out}"
+        );
+        assert!(
+            out.contains("REFUTED"),
+            "{fixture}: expected REFUTED:\n{out}"
+        );
+        assert!(
+            !out.contains("ENCODING UNSOUND"),
+            "{fixture}: replay must not false-flag a genuine refutation:\n{out}"
+        );
+        assert!(
+            !out.contains("replay could not decide"),
+            "{fixture}: replay should CONFIRM (decidable property), not go inconclusive:\n{out}"
+        );
+    }
+
+    // Kill-switch: ARCH_FORMAL_NO_REPLAY=1 skips replay entirely — same
+    // REFUTED verdict, pre-replay behavior.
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_arch"));
+    cmd.arg("formal")
+        .arg("tests/formal/replay_float_refutes.arch")
+        .args(["--bound", "2"])
+        .env("ARCH_FORMAL_NO_REPLAY", "1");
+    let out = cmd.output().expect("failed to spawn arch");
+    let merged = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let code = out.status.code().unwrap_or(-1);
+    assert_eq!(
+        code, 1,
+        "kill-switch run should still REFUTE; got {code}\n{merged}"
+    );
+    assert!(merged.contains("REFUTED"), "expected REFUTED:\n{merged}");
+    assert!(
+        !merged.contains("ENCODING UNSOUND") && !merged.contains("replay"),
+        "kill-switch must disable all replay output:\n{merged}"
+    );
+}
