@@ -6912,6 +6912,24 @@ impl<'a> TypeChecker<'a> {
             .map(|(_, c)| c.clone())
     }
 
+    /// `cname.strip_prefix(&format!("{base}_"))` without building the prefix.
+    ///
+    /// `validate_inst_ports` runs this per (connection x candidate base) across
+    /// several passes, and children like `e203_biu` carry 124 ports, so the
+    /// throwaway `String` per comparison is worth avoiding.
+    fn strip_base_prefix<'s>(cname: &'s str, base: &str) -> Option<&'s str> {
+        cname.strip_prefix(base)?.strip_prefix('_')
+    }
+
+    /// Split `"<idx>_<signal>"` for the flattened per-element bus shapes:
+    /// `chans_0_valid` -> `(0, "valid")`. Signal names contain underscores of
+    /// their own, so only the first one splits. The index is returned so
+    /// callers can bounds-check it against the element count.
+    fn split_idx_signal(rest: &str) -> Option<(u32, &str)> {
+        let (idx, signal) = rest.split_once('_')?;
+        Some((idx.parse::<u32>().ok()?, signal))
+    }
+
     fn validate_inst_ports(&mut self, inst: &InstDecl) {
         let Some(ports) = self.child_ports(&inst.module_name.name) else {
             return;
@@ -7014,6 +7032,15 @@ impl<'a> TypeChecker<'a> {
         // Ram port groups: `ports rd_port ... end ports rd_port` → `rd_port_addr`.
         let mut ram_port_groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
         if let Some(Item::Ram(r)) = self.find_item_by_name(&inst.module_name.name) {
+            // A `.archi` ram stub loses its `ports` groups — `arch build` does
+            // not round-trip them — so every group pin (`rd_addr`, `rd_en`, …)
+            // would look unknown. Skipping the whole instance is deliberate:
+            // narrowing this to "leave ram_port_groups empty" would stack one
+            // bogus error per group pin.
+            //
+            // Unreachable without an existing error, since a ram with no port
+            // groups is already rejected outright ("ram `X` has no port
+            // groups"); this only keeps that diagnostic from being buried.
             if r.is_interface && r.port_groups.is_empty() {
                 return;
             }
@@ -7055,7 +7082,7 @@ impl<'a> TypeChecker<'a> {
                     if vob_bases.contains_key(base) {
                         continue;
                     }
-                    if let Some(suffix) = strip_base_prefix(cname, base) {
+                    if let Some(suffix) = Self::strip_base_prefix(cname, base) {
                         if *permissive || signals.iter().any(|s| s == suffix) {
                             is_valid = true;
                             break;
@@ -7070,7 +7097,7 @@ impl<'a> TypeChecker<'a> {
                 // index rather than risk a false positive.
                 if !is_valid {
                     for (base, count_opt) in &vec_scalar_bases {
-                        let Some(suffix) = strip_base_prefix(cname, base) else {
+                        let Some(suffix) = Self::strip_base_prefix(cname, base) else {
                             continue;
                         };
                         let Ok(idx) = suffix.parse::<u32>() else {
@@ -7086,26 +7113,31 @@ impl<'a> TypeChecker<'a> {
                 //   `mm_0`            whole element
                 //   `mm_0_cmd_valid`  element + signal
                 //   `mm_cmd_valid`    whole vector, one signal
+                // Element indices are bounds-checked on the same terms as the
+                // scalar-Vec case above: strict when the count is const,
+                // permissive otherwise.
                 if !is_valid {
-                    for (base, (_count_opt, signals, permissive)) in &vob_bases {
+                    for (base, (count_opt, signals, permissive)) in &vob_bases {
                         let known = |sig: &str| *permissive || signals.iter().any(|s| s == sig);
-                        if let Some(rest) = strip_base_prefix(cname, base) {
-                            if rest.parse::<u32>().is_ok()
-                                || split_idx_signal(rest).is_some_and(|(_, sig)| known(sig))
-                                || known(rest)
-                            {
+                        let in_range = |idx: u32| count_opt.is_none_or(|n| idx < n);
+                        if let Some(rest) = Self::strip_base_prefix(cname, base) {
+                            let whole_element = rest.parse::<u32>().is_ok_and(in_range);
+                            let element_signal = Self::split_idx_signal(rest)
+                                .is_some_and(|(idx, sig)| in_range(idx) && known(sig));
+                            if whole_element || element_signal || known(rest) {
                                 is_valid = true;
                                 break;
                             }
                         }
                         // `mm0_cmd_valid` — no underscore before the index, as
                         // produced by `chans[0].valid`.
-                        if let Some((_, sig)) = cname.strip_prefix(base).and_then(split_idx_signal)
+                        if cname
+                            .strip_prefix(base)
+                            .and_then(Self::split_idx_signal)
+                            .is_some_and(|(idx, sig)| in_range(idx) && known(sig))
                         {
-                            if known(sig) {
-                                is_valid = true;
-                                break;
-                            }
+                            is_valid = true;
+                            break;
                         }
                     }
                 }
@@ -7114,10 +7146,10 @@ impl<'a> TypeChecker<'a> {
                 if !is_valid {
                     for (base, (_count_opt, signals)) in &port_array_bases {
                         let known = |sig: &str| signals.iter().any(|s| s == sig);
-                        if strip_base_prefix(cname, base).is_some_and(known)
+                        if Self::strip_base_prefix(cname, base).is_some_and(known)
                             || cname
                                 .strip_prefix(base)
-                                .and_then(split_idx_signal)
+                                .and_then(Self::split_idx_signal)
                                 .is_some_and(|(_, sig)| known(sig))
                         {
                             is_valid = true;
@@ -7128,7 +7160,7 @@ impl<'a> TypeChecker<'a> {
                 // Ram port groups: `rd_port_addr`.
                 if !is_valid {
                     for (base, signals) in &ram_port_groups {
-                        if strip_base_prefix(cname, base)
+                        if Self::strip_base_prefix(cname, base)
                             .is_some_and(|sig| signals.iter().any(|s| s == sig))
                         {
                             is_valid = true;
@@ -9865,23 +9897,6 @@ fn float_slot_type_name(ty: &TypeExpr) -> Option<&'static str> {
 /// True if `e` is a bare integer literal (`Dec`/`Hex`/`Bin`/`Sized`) — used to
 /// reject the "integer literal into a float slot" foot-gun consistently
 /// across `reset` (arch#620/#623), `init` and port `default` (arch#622/#624).
-/// `cname.strip_prefix(&format!("{base}_"))` without building the prefix.
-///
-/// `validate_inst_ports` runs this per (connection x candidate base) across
-/// several passes, and children like `e203_biu` carry 124 ports, so the
-/// throwaway `String` per comparison is worth avoiding.
-fn strip_base_prefix<'s>(cname: &'s str, base: &str) -> Option<&'s str> {
-    cname.strip_prefix(base)?.strip_prefix('_')
-}
-
-/// Split `"<idx>_<signal>"` into its parts, for the flattened per-element bus
-/// shapes (`chans_0_valid` -> `("0", "valid")`). Signal names contain
-/// underscores of their own, so the split is limited to the first one.
-fn split_idx_signal(rest: &str) -> Option<(u32, &str)> {
-    let (idx, signal) = rest.split_once('_')?;
-    Some((idx.parse::<u32>().ok()?, signal))
-}
-
 fn is_bare_int_literal(e: &Expr) -> bool {
     matches!(
         &e.kind,

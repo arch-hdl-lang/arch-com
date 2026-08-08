@@ -482,6 +482,33 @@ fn vec_data_element_index_out_of_range_is_error() {
     check_err_contains(src, &["data_9", "not a port of"]);
 }
 
+#[test]
+fn vec_bus_element_index_out_of_range_is_error() {
+    // Same rule as the scalar-Vec case: `mm_9` on a `Vec<MyBus, 2>` names no
+    // port. Kept in step with `vec_data_element_index_out_of_range_is_error` so
+    // the two Vec flavours cannot drift apart.
+    let src = r#"
+        bus MyBus
+          valid: out Bool;
+          data: out UInt<8>;
+        end bus MyBus
+        module ChildVec
+          port mm: target Vec<MyBus, 2>;
+          comb
+            mm[0].valid = true; mm[0].data = 8'h00;
+            mm[1].valid = true; mm[1].data = 8'h01;
+          end comb
+        end module ChildVec
+        module TopVec
+          wire w: MyBus;
+          inst c: ChildVec
+            mm_9 <- w;
+          end inst c
+        end module TopVec
+    "#;
+    check_err_contains(src, &["mm_9", "not a port of"]);
+}
+
 /// The `.archi` separate-compilation path, end to end through the CLI.
 ///
 /// `.archi` discovery lives in `src/main.rs`, so an in-process test cannot
@@ -490,7 +517,9 @@ fn vec_data_element_index_out_of_range_is_error() {
 /// *only* via `ARCH_LIB_PATH`, which is the route the e203 corpus depends on.
 #[test]
 fn archi_child_via_arch_lib_path_unknown_port() {
-    let tmp = std::env::temp_dir().join("arch_issue797_archi");
+    // Per-process directory: the path is otherwise global, and concurrent
+    // `cargo test` runs on one machine would race on the create/remove.
+    let tmp = std::env::temp_dir().join(format!("arch_issue797_archi_{}", std::process::id()));
     let lib = tmp.join("lib");
     let work = tmp.join("work");
     let _ = std::fs::remove_dir_all(&tmp);
