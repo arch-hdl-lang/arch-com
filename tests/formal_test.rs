@@ -793,3 +793,21 @@ fn formal_plain_bus_field_write_errors_cleanly() {
         "error should say what IS supported:\n{out}"
     );
 }
+
+/// E8M0 in `arch formal`: the scale type is not a float, so every
+/// float-shaped path must recognise it explicitly. This property is a
+/// semantic cross-check — it only holds if `is_nan(s)` tests the 0xFF code
+/// AND `s.to_fp32()` widens to a genuine NaN there and to a finite scale
+/// everywhere else. Three separate dispatch bugs were caught by it:
+/// the FP helper preamble not being requested, `to_fp32` returning the raw
+/// 8 bits, and `is_nan` falling through to the f32 bit test.
+#[test]
+fn formal_e8m0_nan_scale_proves() {
+    if !z3_available() {
+        eprintln!("skipping: z3 not in PATH");
+        return;
+    }
+    let (code, out) = run_formal("tests/formal/e8m0_nan_scale.arch", &["--bound", "2"]);
+    assert_eq!(code, 0, "expected exit 0 (PROVED); got {code}\n{out}");
+    assert!(out.contains("PROVED"), "expected PROVED:\n{out}");
+}

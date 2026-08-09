@@ -1127,6 +1127,13 @@ pub enum TypeExpr {
     FP6E2M3,
     /// OCP MX FP6 (1+3+2). Storage-only: no Inf, no NaN, max finite 28.0.
     FP6E3M2,
+    /// OCP MX E8M0 — the block SCALE type, not a float.
+    ///
+    /// 8 bits of unsigned biased exponent (bias 127) representing 2^(e-127).
+    /// It has NO sign, NO mantissa, NO infinity, and — the easy thing to get
+    /// wrong — **NO zero**: `0x00` is the MINIMUM SCALE 2^-127, not zero.
+    /// `0xFF` is NaN, which at block level marks the whole block NaN.
+    E8M0,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

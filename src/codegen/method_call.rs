@@ -172,6 +172,15 @@ impl<'a> Codegen<'a> {
             // Float conversions → emitted helper functions. Main host only:
             // the pipeline emitters have always let these fall through to
             // the generic default below (see `MethodCallHost`).
+            // `.to_e8m0()` extracts the binary exponent as an MX block
+            // scale. Any float widens to f32 first; FP32 goes straight in.
+            "to_e8m0" if host == MethodCallHost::Main => {
+                self.fp_helpers_used.set(true);
+                match self.expr_float_fmt(base) {
+                    Some("f32") | None => format!("arch_f32_to_e8m0({b})"),
+                    Some(t) => format!("arch_f32_to_e8m0(arch_{t}_to_f32({b}))"),
+                }
+            }
             "to_fp32" if host == MethodCallHost::Main => {
                 self.fp_helpers_used.set(true);
                 match self.expr_float_fmt(base) {
@@ -182,6 +191,13 @@ impl<'a> Codegen<'a> {
                     Some("e2m3") => format!("arch_e2m3_to_f32({b})"),
                     Some("e3m2") => format!("arch_e3m2_to_f32({b})"),
                     Some("f32") => b,
+                    // E8M0 is a SCALE type, not a float format, so it has no
+                    // float tag; dispatch on the declared type or it falls
+                    // into the integer path below and widens the raw
+                    // exponent code as an unsigned integer.
+                    None if matches!(self.expr_decl_type(base), Some(TypeExpr::E8M0)) => {
+                        format!("arch_e8m0_to_f32({b})")
+                    }
                     _ => {
                         // int -> f32 (RNE) via the synthesizable helper.
                         if self.expr_is_signed(base) {

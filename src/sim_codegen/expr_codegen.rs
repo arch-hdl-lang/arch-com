@@ -1393,8 +1393,13 @@ pub(super) fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             format!("_arch_fma_{}({a}, {b}, {c})", fmt.helper_tag())
         }
         ExprKind::FunctionCall(name, args) if name == "is_nan" && args.len() == 1 => {
-            let fmt = infer_expr_float(&args[0], ctx).unwrap_or(FpFmt::Fp32);
             let a = cpp_expr(&args[0], ctx);
+            // E8M0 is a scale type, not a float, so it has no FpFmt and
+            // would otherwise take the f32 helper on an 8-bit value.
+            if matches!(sim_expr_decl_type(&args[0], ctx), Some(TypeExpr::E8M0)) {
+                return format!("_arch_e8m0_isnan({a})");
+            }
+            let fmt = infer_expr_float(&args[0], ctx).unwrap_or(FpFmt::Fp32);
             format!("_arch_{}_isnan({a})", fmt.helper_tag())
         }
         ExprKind::FunctionCall(name, args) => {
@@ -1653,6 +1658,10 @@ pub(super) fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &
             lower_vec_method_cpp(&b, base, method, args, ctx)
         }
         // Float conversions → `_arch_fp.h` helpers.
+        "to_e8m0" => match infer_expr_float(base, ctx) {
+            Some(FpFmt::Fp32) | None => format!("_arch_f32_to_e8m0({b})"),
+            Some(f) => format!("_arch_f32_to_e8m0(_arch_{}_to_f32({b}))", f.helper_tag()),
+        },
         "to_fp32" => match infer_expr_float(base, ctx) {
             Some(FpFmt::Bf16) => format!("_arch_bf16_to_f32({b})"),
             Some(FpFmt::E4m3) => format!("_arch_e4m3_to_f32({b})"),
@@ -1661,6 +1670,11 @@ pub(super) fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &
             Some(FpFmt::E2m3) => format!("_arch_e2m3_to_f32({b})"),
             Some(FpFmt::E3m2) => format!("_arch_e3m2_to_f32({b})"),
             Some(FpFmt::Fp32) => b, // no-op (typecheck rejects, but stay total)
+            // E8M0 carries no float tag (it is a scale type), so route it
+            // by declared type.
+            None if matches!(sim_expr_decl_type(base, ctx), Some(TypeExpr::E8M0)) => {
+                format!("_arch_e8m0_to_f32({b})")
+            }
             None => {
                 if infer_expr_signed(base, ctx) {
                     format!("_arch_i_to_f32((int64_t)({b}))")

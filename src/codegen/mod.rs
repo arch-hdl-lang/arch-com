@@ -2173,6 +2173,9 @@ impl<'a> Codegen<'a> {
                 "to_fp4e2m1" => Some("e2m1"),
                 "to_fp6e2m3" => Some("e2m3"),
                 "to_fp6e3m2" => Some("e3m2"),
+                // NOTE: `to_e8m0` is deliberately absent — E8M0 is a scale
+                // type, not a float format, so it must not enter float
+                // operator dispatch.
                 _ => None,
             },
             ExprKind::FunctionCall(name, args) if name == "fma" => {
@@ -2733,6 +2736,7 @@ impl<'a> Codegen<'a> {
             TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Some("8".to_string()),
             TypeExpr::FP4E2M1 => Some("4".to_string()),
             TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Some("6".to_string()),
+            TypeExpr::E8M0 => Some("8".to_string()),
             TypeExpr::Vec(inner, size) => {
                 let iw = self.type_expr_data_width(inner)?;
                 let n = self.emit_expr_str(size);
@@ -5739,6 +5743,7 @@ impl<'a> Codegen<'a> {
             TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Some(8),
             TypeExpr::FP4E2M1 => Some(4),
             TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Some(6),
+            TypeExpr::E8M0 => Some(8),
             TypeExpr::Vec(inner, size) => {
                 let iw = self.type_expr_width(inner)?;
                 let n = eval(size)?;
@@ -7312,6 +7317,14 @@ impl<'a> Codegen<'a> {
                 if name == "is_nan" && args.len() == 1 {
                     // exponent all-ones and mantissa nonzero.
                     let a = &arg_strs[0];
+                    // E8M0 is a SCALE type, not a float, so it carries no
+                    // float tag and would otherwise fall through to the f32
+                    // test — reading bits [30:23] of an 8-bit signal, which
+                    // SV zero-fills into a silent constant false. Its NaN is
+                    // the single code 0xFF.
+                    if matches!(self.expr_decl_type(&args[0]), Some(TypeExpr::E8M0)) {
+                        return format!("({a} == 8'hFF)");
+                    }
                     // The NaN test is DERIVED from the format table rather
                     // than tabulated per tag. The old hand-written match
                     // ended in `_ =>` returning the f32 test — at f32's bit
@@ -7423,6 +7436,7 @@ impl<'a> Codegen<'a> {
             TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => "logic [7:0]".to_string(),
             TypeExpr::FP4E2M1 => "logic [3:0]".to_string(),
             TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => "logic [5:0]".to_string(),
+            TypeExpr::E8M0 => "logic [7:0]".to_string(),
             TypeExpr::Clock(_) => "logic".to_string(),
             TypeExpr::Reset(_, _) => "logic".to_string(),
             TypeExpr::Vec(_, _) => {

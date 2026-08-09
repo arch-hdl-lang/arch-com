@@ -162,6 +162,7 @@ UInt<N>  SInt<N>  Bool  Bit
 FP32  BF16                                    // IEEE-754 binary32 / bfloat16 (v1; see §2a)
 FP8E4M3  FP8E5M2                              // OCP OFP8 8-bit floats (v1; see §2a)
 FP4E2M1  FP6E2M3  FP6E3M2                     // OCP MX sub-8-bit elements: STORAGE-ONLY (conversions + literals; no + - * / compares / is_nan)
+E8M0                                          // MX block SCALE (2^(e-127)): NOT a float; no zero (0x00 = min scale), 0xFF = NaN; no arithmetic
 Clock<Domain>  Reset<Sync|Async, High|Low>   // polarity defaults High
 Vec<T,N>
 struct S  { f: T; }
@@ -252,6 +253,7 @@ let nan: Bool = is_nan(a);  // qNaN/sNaN test → Bool
 x.to_fp32()      // BF16/FP8E4M3/FP8E5M2/FP4E2M1→FP32 (exact widen) or SInt/UInt→FP32 (RNE)
 x.to_fp4e2m1()   // →FP4E2M1 (RNE, saturating; no inf/NaN exists in the format)
 x.to_fp6e2m3()  x.to_fp6e3m2()   // →FP6 (same storage-only rules)
+s.to_fp32()      // E8M0→FP32 scale value 2^(e-127);  x.to_e8m0() → floor to power of two
 x.to_bf16()      // FP32→BF16 (RNE); fp8→BF16 (exact); int→BF16 (f32-routed)
 x.to_fp8e4m3()   // FP32/BF16/FP8E5M2/int→FP8E4M3 (CR; overflow per --fp-compat)
 x.to_fp8e5m2()   // FP32/BF16/FP8E4M3/int→FP8E5M2 (CR; overflow per --fp-compat)

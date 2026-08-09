@@ -141,7 +141,8 @@ pub(super) fn cpp_port_type_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> 
         | TypeExpr::FP8E5M2
         | TypeExpr::FP4E2M1
         | TypeExpr::FP6E2M3
-        | TypeExpr::FP6E3M2 => "uint8_t".to_string(),
+        | TypeExpr::FP6E3M2
+        | TypeExpr::E8M0 => "uint8_t".to_string(),
         TypeExpr::Named(n) => n.name.clone(),
         TypeExpr::Vec(_, _) => "uint32_t".to_string(),
     }
@@ -207,7 +208,8 @@ pub(super) fn cpp_internal_type_with_params(ty: &TypeExpr, params: &[ParamDecl])
         | TypeExpr::FP8E5M2
         | TypeExpr::FP4E2M1
         | TypeExpr::FP6E2M3
-        | TypeExpr::FP6E3M2 => "uint8_t".to_string(),
+        | TypeExpr::FP6E3M2
+        | TypeExpr::E8M0 => "uint8_t".to_string(),
         TypeExpr::Named(n) => n.name.clone(),
         TypeExpr::Vec(_, _) => "uint32_t".to_string(),
     }
@@ -333,6 +335,7 @@ pub(super) fn type_width_of(ty: &TypeExpr) -> u32 {
         TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => 8,
         TypeExpr::FP4E2M1 => 4,
         TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => 6,
+        TypeExpr::E8M0 => 8,
         TypeExpr::Vec(..) | TypeExpr::Named(_) => 0,
     }
 }

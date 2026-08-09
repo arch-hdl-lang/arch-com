@@ -1157,6 +1157,10 @@ struct SignalInfo {
     /// type is a float format. Drives operator dispatch to the inlined
     /// `arch_{tag}_*` define-funs.
     float: Option<&'static str>,
+    /// True for the E8M0 block-scale type, which is NOT a float format (no
+    /// sign, no mantissa, no zero) and therefore has `float: None` — but
+    /// does have a NaN code, so `is_nan` needs to find it somehow.
+    is_e8m0: bool,
 }
 
 /// Float helper tag of a scalar TypeExpr, if any.
@@ -1502,6 +1506,7 @@ impl<'a> FormalCtx<'a> {
                     signed: sig.signed,
                     kind: kind.clone(),
                     float: None,
+                    is_e8m0: false,
                 },
             );
             match kind {
@@ -1617,9 +1622,12 @@ impl<'a> FormalCtx<'a> {
                     signed,
                     kind: kind.clone(),
                     float: float_tag_of(&port.ty),
+                    is_e8m0: matches!(port.ty, TypeExpr::E8M0),
                 },
             );
-            if float_tag_of(&port.ty).is_some() {
+            if float_tag_of(&port.ty).is_some() || matches!(port.ty, TypeExpr::E8M0) {
+                // E8M0 is not a float, but its conversions live in the same
+                // inlined helper preamble, so it must request it too.
                 self.uses_float = true;
             }
             match kind {
@@ -1655,9 +1663,10 @@ impl<'a> FormalCtx<'a> {
                             signed,
                             kind: SignalKind::Reg,
                             float: float_tag_of(&r.ty),
+                            is_e8m0: matches!(r.ty, TypeExpr::E8M0),
                         },
                     );
-                    if float_tag_of(&r.ty).is_some() {
+                    if float_tag_of(&r.ty).is_some() || matches!(r.ty, TypeExpr::E8M0) {
                         self.uses_float = true;
                     }
                     self.regs.push(r.name.name.clone());
@@ -1682,9 +1691,10 @@ impl<'a> FormalCtx<'a> {
                             signed,
                             kind: SignalKind::Wire,
                             float: float_tag_of(&w.ty),
+                            is_e8m0: matches!(w.ty, TypeExpr::E8M0),
                         },
                     );
-                    if float_tag_of(&w.ty).is_some() {
+                    if float_tag_of(&w.ty).is_some() || matches!(w.ty, TypeExpr::E8M0) {
                         self.uses_float = true;
                     }
                     self.wires.push(w.name.name.clone());
@@ -2143,7 +2153,8 @@ impl<'a> FormalCtx<'a> {
             | TypeExpr::FP8E5M2
             | TypeExpr::FP4E2M1
             | TypeExpr::FP6E2M3
-            | TypeExpr::FP6E3M2 => Ok(()),
+            | TypeExpr::FP6E3M2
+            | TypeExpr::E8M0 => Ok(()),
             TypeExpr::Vec(_, _) => Err(CompileError::general(
                 "Vec types are not supported by `arch formal` v1 — use scalars",
                 span,
@@ -2162,6 +2173,7 @@ impl<'a> FormalCtx<'a> {
             TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Ok((8, false)),
             TypeExpr::FP4E2M1 => Ok((4, false)),
             TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Ok((6, false)),
+            TypeExpr::E8M0 => Ok((8, false)),
             TypeExpr::UInt(w) => {
                 let width = fold_const_expr(w, &self.params).ok_or_else(|| {
                     CompileError::general(
@@ -2661,6 +2673,17 @@ impl<'a> FormalCtx<'a> {
                 })
             }
             FunctionCall(name, args) if name == "is_nan" && args.len() == 1 => {
+                // E8M0 carries no float tag (it is a scale type); its NaN is
+                // the single code 0xFF. Without this it would take the f32
+                // test at f32's bit offsets on an 8-bit value.
+                if self.expr_is_e8m0(&args[0]) {
+                    let x = coerce(self.encode_raw(&args[0], t)?, 8, false);
+                    return Ok(SmtTerm {
+                        s: format!("(ite (= {} #xff) #b1 #b0)", x.s),
+                        width: 1,
+                        signed: false,
+                    });
+                }
                 let tag = self.expr_float_tag(&args[0]).unwrap_or("f32");
                 let w = float_tag_width(tag);
                 let x = coerce(self.encode_raw(&args[0], t)?, w, false);
@@ -2786,6 +2809,18 @@ impl<'a> FormalCtx<'a> {
             &format!("unknown identifier `{name}` in arch formal encoding"),
             span,
         ))
+    }
+
+    /// Is this expression an E8M0 scale value? E8M0 is deliberately not a
+    /// float format, so `expr_float_tag` returns `None` for it and every
+    /// float-shaped code path must ask this instead.
+    fn expr_is_e8m0(&self, e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Ident(n) => self.sigs.get(n).map(|i| i.is_e8m0).unwrap_or(false),
+            ExprKind::MethodCall(_, m, _) => m.name == "to_e8m0",
+            ExprKind::LatencyAt(inner, _) => self.expr_is_e8m0(inner),
+            _ => false,
+        }
     }
 
     /// Float helper tag of an expression, mirroring `encode_ident`'s
@@ -3135,7 +3170,32 @@ impl<'a> FormalCtx<'a> {
         // Float conversion surface — dispatch to the inlined helpers.
         let recv_tag = self.expr_float_tag(recv);
         match n {
+            "to_e8m0" => {
+                // Any float widens to f32 first; FP32 goes straight in.
+                let f32s = match recv_tag {
+                    Some("f32") | None => coerce(r, 32, false).s,
+                    Some(tag) => format!(
+                        "(arch_{tag}_to_f32 {})",
+                        coerce(r, float_tag_width(tag), false).s
+                    ),
+                };
+                return Ok(SmtTerm {
+                    s: format!("(arch_f32_to_e8m0 {f32s})"),
+                    width: 8,
+                    signed: false,
+                });
+            }
             "to_fp32" => {
+                // E8M0 carries no float tag, so it would otherwise fall into
+                // the `None` identity arm and return its raw 8 bits instead
+                // of the scale VALUE 2^(e-127).
+                if self.expr_is_e8m0(recv) {
+                    return Ok(SmtTerm {
+                        s: format!("(arch_e8m0_to_f32 {})", coerce(r, 8, false).s),
+                        width: 32,
+                        signed: false,
+                    });
+                }
                 return match recv_tag {
                     Some("f32") | None => Ok(r),
                     Some(tag) => Ok(SmtTerm {
