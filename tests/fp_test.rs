@@ -2111,3 +2111,110 @@ fn fp4_overflowing_literal_is_a_compile_error() {
     );
     assert!(ok, "1.5 is exactly representable in E2M1:\n{out}");
 }
+
+// ── FP6 E2M3 / E3M2 — storage-only, same contract as FP4E2M1 ────────────
+
+/// The FP6 conversion surface works, and SV lowers to the proven helpers
+/// rather than the integer path.
+#[test]
+fn fp6_conversion_surface_checks_and_builds() {
+    let out = arch()
+        .arg("check")
+        .arg("tests/fp_v1/Fp6Convert.arch")
+        .output()
+        .expect("run arch check");
+    assert!(
+        out.status.success(),
+        "Fp6Convert.arch should check\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    let dir = std::env::temp_dir().join("arch_fp6_build");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let sv_path = dir.join("Fp6Convert.sv");
+    let out = arch()
+        .arg("build")
+        .arg("tests/fp_v1/Fp6Convert.arch")
+        .arg("-o")
+        .arg(&sv_path)
+        .output()
+        .expect("run arch build");
+    assert!(out.status.success(), "build failed: {out:?}");
+    let sv = std::fs::read_to_string(&sv_path).expect("emitted SV");
+    for helper in [
+        "arch_e2m3_to_f32(",
+        "arch_e3m2_to_f32(",
+        "arch_f32_to_e2m3(",
+        "arch_f32_to_e3m2(",
+    ] {
+        assert!(sv.contains(helper), "SV must use {helper}:\n{sv}");
+    }
+    assert!(
+        !sv.contains("to_fp6e2m3()") && !sv.contains("to_fp6e3m2()"),
+        "ARCH method syntax must not leak into SV:\n{sv}"
+    );
+    assert!(sv.contains("logic [5:0]"), "FP6 is a 6-bit carrier:\n{sv}");
+}
+
+/// Arithmetic and `is_nan` are rejected for both FP6 formats, with the same
+/// storage-only reasoning as FP4E2M1.
+#[test]
+fn fp6_arithmetic_and_is_nan_are_rejected() {
+    for ty in ["FP6E2M3", "FP6E3M2"] {
+        let (ok, out) = check_src(
+            &format!("fp6_arith_{ty}"),
+            &format!(
+                "module A\n  port a: in {ty};\n  port b: in {ty};\n  \
+                 port y: out {ty};\n  comb y = a + b; end comb\nend module A\n"
+            ),
+        );
+        assert!(!ok, "{ty}: `+` must be rejected:\n{out}");
+        assert!(
+            out.contains("storage-only float format"),
+            "{ty}: message should name the storage-only rule:\n{out}"
+        );
+
+        let (ok, out) = check_src(
+            &format!("fp6_isnan_{ty}"),
+            &format!(
+                "module A\n  port a: in {ty};\n  port y: out Bool;\n  \
+                 comb y = is_nan(a); end comb\nend module A\n"
+            ),
+        );
+        assert!(!ok, "{ty}: is_nan must be rejected:\n{out}");
+        assert!(
+            out.contains("no NaN encoding"),
+            "{ty}: reason must be the missing encoding:\n{out}"
+        );
+    }
+}
+
+/// Overflowing literals are compile errors at each format's own bound —
+/// the generic IEEE rounder would have produced a silently wrong finite.
+#[test]
+fn fp6_overflowing_literals_are_compile_errors() {
+    // E2M3 max 7.5 (RNE midpoint 7.75); E3M2 max 28.0 (midpoint 30.0).
+    for (ty, ok_lit, bad_lit) in [("FP6E2M3", "7.5", "8.0"), ("FP6E3M2", "28.0", "32.0")] {
+        let (ok, out) = check_src(
+            &format!("fp6_lit_bad_{ty}"),
+            &format!(
+                "module A\n  port y: out {ty};\n  comb y = {bad_lit}; end comb\nend module A\n"
+            ),
+        );
+        assert!(!ok, "{ty}: {bad_lit} overflows:\n{out}");
+        assert!(
+            out.contains(ty),
+            "{ty}: diagnostic should name the format:\n{out}"
+        );
+
+        let (ok, out) = check_src(
+            &format!("fp6_lit_ok_{ty}"),
+            &format!(
+                "module A\n  port y: out {ty};\n  comb y = {ok_lit}; end comb\nend module A\n"
+            ),
+        );
+        assert!(ok, "{ty}: {ok_lit} is exactly representable:\n{out}");
+    }
+}

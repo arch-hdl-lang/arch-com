@@ -315,6 +315,10 @@ The Arch type system enforces four independent safety dimensions simultaneously.
 
   **FP4E2M1**          4 bits               OCP MX FP4 E2M1 (2-bit exponent, 1-bit mantissa; **no inf, no NaN**, max finite 6.0). **Storage-only**: conversions and literals only — no arithmetic, compares or `is_nan`. See §3.9.
 
+  **FP6E2M3**          6 bits               OCP MX FP6 E2M3 (2-bit exponent, 3-bit mantissa; **no inf, no NaN**, max finite 7.5). **Storage-only**. See §3.9.
+
+  **FP6E3M2**          6 bits               OCP MX FP6 E3M2 (3-bit exponent, 2-bit mantissa; **no inf, no NaN**, max finite 28.0). **Storage-only**. See §3.9.
+
   **Clock\<D\>**       1 bit                Carries clock-domain tag D. Cannot appear in arithmetic.
 
   **Reset\<Sync, High\|Low\>**    1 bit                Synchronous reset --- deasserted on the clock edge. Polarity defaults High.
@@ -744,9 +748,17 @@ let gt: Bool = a > b;         // ordered compare → Bool
 let nan: Bool = is_nan(a);
 ```
 
-**3.9 FP4E2M1 --- a storage-only block-element format**
+**3.9 FP4E2M1 / FP6E2M3 / FP6E3M2 --- storage-only block-element formats**
 
-`FP4E2M1` is the OCP Microscaling (MX) FP4 element type: 1 sign + 2 exponent (bias 1) + 1 mantissa bit, emitted as `logic[3:0]`. It has **no infinity and no NaN encoding** — every one of its 16 codes is a finite value, and the complete value set is ±{0, 0.5, 1, 1.5, 2, 3, 4, 6}, with one subnormal (0.5) and max finite 6.0.
+ARCH provides the three sub-8-bit OCP Microscaling (MX) element types. All share one contract, described here in terms of `FP4E2M1`; `FP6E2M3` and `FP6E3M2` differ only in their field split and bounds.
+
+| Type | S/E/M | Bias | Max finite | Min subnormal | SV |
+|---|---|---|---|---|---|
+| `FP4E2M1` | 1/2/1 | 1 | 6.0 | 0.5 | `logic[3:0]` |
+| `FP6E2M3` | 1/2/3 | 1 | 7.5 | 0.125 | `logic[5:0]` |
+| `FP6E3M2` | 1/3/2 | 3 | 28.0 | 0.0625 | `logic[5:0]` |
+
+`FP4E2M1` is the OCP MX FP4 element type: 1 sign + 2 exponent (bias 1) + 1 mantissa bit, emitted as `logic[3:0]`. It has **no infinity and no NaN encoding** — every one of its 16 codes is a finite value, and the complete value set is ±{0, 0.5, 1, 1.5, 2, 3, 4, 6}, with one subnormal (0.5) and max finite 6.0.
 
 Unlike every other float type in ARCH, `FP4E2M1` is **storage-only**: it carries values and converts, but has *no operator surface at all*. `a + b`, ordered compares and `is_nan(a)` are compile errors.
 
@@ -758,7 +770,7 @@ The idiom is widen → compute → narrow once:
 
 ```arch
 let av: FP32 = a.to_fp32();          // exact: a 2-bit significand always fits
-comb y = (av * s).to_fp4e2m1(); end comb
+comb y = (av * s).to_fp4e2m1(); end comb   // or .to_fp6e2m3() / .to_fp6e3m2()
 ```
 
 **Conversions.** `.to_fp32()` widens exactly. `.to_fp4e2m1()` narrows with round-to-nearest-ties-to-even and **saturates** on overflow. Saturation is profile-independent here, unlike fp8 where `--fp-compat` selects between a NaN/inf result and `satfinite`: E2M1 has neither a NaN nor an infinity to produce, so saturation is the only representable behavior. Cross-format conversions compose through `FP32`, each step exact or singly rounded.

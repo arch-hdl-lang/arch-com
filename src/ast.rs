@@ -1123,6 +1123,10 @@ pub enum TypeExpr {
     /// Element type of MXFP4/NVFP4 blocks; no shipping ISA exposes scalar
     /// arithmetic on it, so it carries conversions and literals only.
     FP4E2M1,
+    /// OCP MX FP6 (1+2+3). Storage-only: no Inf, no NaN, max finite 7.5.
+    FP6E2M3,
+    /// OCP MX FP6 (1+3+2). Storage-only: no Inf, no NaN, max finite 28.0.
+    FP6E3M2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1294,6 +1298,8 @@ pub enum FloatLitFmt {
     E4m3,
     E5m2,
     E2m1,
+    E2m3,
+    E3m2,
 }
 
 impl FloatLitFmt {
@@ -1305,6 +1311,8 @@ impl FloatLitFmt {
             FloatLitFmt::E4m3 => (4, 3),
             FloatLitFmt::E5m2 => (5, 2),
             FloatLitFmt::E2m1 => (2, 1),
+            FloatLitFmt::E2m3 => (2, 3),
+            FloatLitFmt::E3m2 => (3, 2),
         }
     }
 
@@ -1316,6 +1324,8 @@ impl FloatLitFmt {
             FloatLitFmt::E4m3 => 8,
             FloatLitFmt::E5m2 => 8,
             FloatLitFmt::E2m1 => 4,
+            FloatLitFmt::E2m3 => 6,
+            FloatLitFmt::E3m2 => 6,
         }
     }
 }
