@@ -572,13 +572,45 @@ impl MultiSource {
 
     /// Build a miette Report for an error, using the correct file source.
     fn report_error(&self, err: CompileError) -> Report {
-        let offset = err.span_offset();
-        let (filename, file_source, local_offset) = self.locate(offset);
-        let relocated_err = err.relocate(local_offset);
-        Report::new(relocated_err).with_source_code(NamedSource::new(
-            filename.to_string(),
-            file_source.to_string(),
-        ))
+        self.report_errors(vec![err])
+    }
+
+    /// Build one report carrying every error a pass accumulated (#750).
+    ///
+    /// The passes have always collected a `Vec<CompileError>`; the reporting
+    /// boundary used to keep element 0 and drop the rest, so a file with N
+    /// independent errors cost N compile-and-fix round trips. Each error is
+    /// relocated against its own file — a batch can span several inputs, and a
+    /// `Report` holds a single `source_code`, so the snippet travels with the
+    /// error rather than with the batch.
+    fn report_errors(&self, mut errs: Vec<CompileError>) -> Report {
+        // One error renders exactly as it always did — no "1 error" wrapper
+        // around a single diagnostic, which is still the common case.
+        if errs.len() <= 1 {
+            let err = errs.pop().unwrap_or(CompileError::UnexpectedEof);
+            let offset = err.span_offset();
+            let (filename, file_source, local_offset) = self.locate(offset);
+            return Report::new(err.relocate(local_offset)).with_source_code(NamedSource::new(
+                filename.to_string(),
+                file_source.to_string(),
+            ));
+        }
+        let sourced: Vec<(usize, arch::diagnostics::SourcedError)> = errs
+            .into_iter()
+            .map(|err| {
+                let offset = err.span_offset();
+                let (filename, file_source, local_offset) = self.locate(offset);
+                (
+                    offset,
+                    arch::diagnostics::SourcedError::new(
+                        err.relocate(local_offset),
+                        filename,
+                        file_source,
+                    ),
+                )
+            })
+            .collect();
+        Report::new(arch::diagnostics::CompileErrors::new(sourced))
     }
 }
 
@@ -3960,8 +3992,7 @@ fn run_check_multi_opts_with_thread_map_and_params(
     // reductions from thread lowering etc. don't trigger spurious warnings)
     let prec_errors = arch::typecheck::check_precedence(&parsed_ast);
     if !prec_errors.is_empty() {
-        let err = prec_errors.into_iter().next().unwrap();
-        return Err(ms.report_error(err));
+        return Err(ms.report_errors(prec_errors));
     }
 
     // Naming-convention lint (issue #648), opt-in via `--lint-naming`. Runs
@@ -3996,31 +4027,20 @@ fn run_check_multi_opts_with_thread_map_and_params(
     // Resolve module-scope `type Name = ...;` aliases by inlining them at
     // every use site. Runs before elaboration so downstream passes see
     // aliases as if hand-inlined.
-    let parsed_ast = arch::type_alias::resolve_type_aliases(parsed_ast).map_err(|errs| {
-        let err = errs.into_iter().next().unwrap();
-        ms.report_error(err)
-    })?;
+    let parsed_ast = arch::type_alias::resolve_type_aliases(parsed_ast)
+        .map_err(|errs| ms.report_errors(errs))?;
 
     // Elaborate (expand generate blocks)
-    let ast = elaborate::elaborate(parsed_ast).map_err(|errs| {
-        let err = errs.into_iter().next().unwrap();
-        ms.report_error(err)
-    })?;
+    let ast = elaborate::elaborate(parsed_ast).map_err(|errs| ms.report_errors(errs))?;
 
     // Rewrite TLM target threads (`thread port.method(args) ...`) into
     // regular threads that drive the req/rsp handshake. Must run before
     // the generic lower_threads, which rejects TLM-bound threads.
-    let ast = elaborate::lower_tlm_target_threads(ast).map_err(|errs| {
-        let err = errs.into_iter().next().unwrap();
-        ms.report_error(err)
-    })?;
+    let ast = elaborate::lower_tlm_target_threads(ast).map_err(|errs| ms.report_errors(errs))?;
 
     // Expand initiator-side TLM call sites (`x <= m.method(args);`) in
     // thread bodies into the issue + wait-response state pair.
-    let ast = elaborate::lower_tlm_initiator_calls(ast).map_err(|errs| {
-        let err = errs.into_iter().next().unwrap();
-        ms.report_error(err)
-    })?;
+    let ast = elaborate::lower_tlm_initiator_calls(ast).map_err(|errs| ms.report_errors(errs))?;
 
     // Dead-skid combinational-feedback lint (issue #245). Runs on the
     // pre-thread-lowering AST so `ModuleBodyItem::Thread` is still present and
@@ -4067,10 +4087,7 @@ fn run_check_multi_opts_with_thread_map_and_params(
             auto_asserts: auto_thread_asserts,
             thread_map,
         };
-        elaborate::lower_threads_with_opts(ast, &opts).map_err(|errs| {
-            let err = errs.into_iter().next().unwrap();
-            ms.report_error(err)
-        })?
+        elaborate::lower_threads_with_opts(ast, &opts).map_err(|errs| ms.report_errors(errs))?
     };
 
     // Overlay the collected dead-skid hazards onto the thread map (issue #245)
@@ -4099,30 +4116,20 @@ fn run_check_multi_opts_with_thread_map_and_params(
     }
 
     // Lower `pipe_reg<T, N>` ports with N > 1 into an N-stage cascade.
-    let (ast, pipe_reg_warnings) = elaborate::lower_pipe_reg_ports(ast).map_err(|errs| {
-        let err = errs.into_iter().next().unwrap();
-        ms.report_error(err)
-    })?;
+    let (ast, pipe_reg_warnings) =
+        elaborate::lower_pipe_reg_ports(ast).map_err(|errs| ms.report_errors(errs))?;
 
     // Rewrite `port.ch.valid` / `.data` / `.can_send` to SynthIdent so they
     // reference the codegen-emitted SV wires (credit_channel method dispatch).
-    let ast = elaborate::lower_credit_channel_dispatch(ast).map_err(|errs| {
-        let err = errs.into_iter().next().unwrap();
-        ms.report_error(err)
-    })?;
+    let ast =
+        elaborate::lower_credit_channel_dispatch(ast).map_err(|errs| ms.report_errors(errs))?;
 
     // Resolve
-    let symbols = resolve::resolve(&ast).map_err(|errs| {
-        let err = errs.into_iter().next().unwrap();
-        ms.report_error(err)
-    })?;
+    let symbols = resolve::resolve(&ast).map_err(|errs| ms.report_errors(errs))?;
 
     // Type check
     let checker = TypeChecker::new(&symbols, &ast);
-    let (mut warnings, overload_map) = checker.check().map_err(|errs| {
-        let err = errs.into_iter().next().unwrap();
-        ms.report_error(err)
-    })?;
+    let (mut warnings, overload_map) = checker.check().map_err(|errs| ms.report_errors(errs))?;
     warnings.extend(pipe_reg_warnings);
     warnings.extend(naming_warnings);
 

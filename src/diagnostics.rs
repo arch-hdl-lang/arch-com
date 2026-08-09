@@ -258,3 +258,116 @@ impl CompileError {
         }
     }
 }
+
+/// One `CompileError` bound to the source it came from.
+///
+/// A batch can span several input files (`arch check a.arch b.arch`), and a
+/// `miette::Report` carries a single `source_code`, so the snippet has to
+/// travel with the individual error rather than with the batch. Every other
+/// `Diagnostic` method forwards to the inner error, so rendering of a single
+/// error is byte-identical to what it was before batching.
+#[derive(Debug)]
+pub struct SourcedError {
+    inner: CompileError,
+    source: miette::NamedSource<String>,
+}
+
+impl SourcedError {
+    pub fn new(inner: CompileError, filename: &str, source: &str) -> Self {
+        Self {
+            inner,
+            source: miette::NamedSource::new(filename, source.to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for SourcedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.inner, f)
+    }
+}
+
+impl std::error::Error for SourcedError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        std::error::Error::source(&self.inner)
+    }
+}
+
+impl Diagnostic for SourcedError {
+    fn source_code(&self) -> Option<&dyn miette::SourceCode> {
+        Some(&self.source)
+    }
+    fn code<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
+        self.inner.code()
+    }
+    fn severity(&self) -> Option<miette::Severity> {
+        self.inner.severity()
+    }
+    fn help<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
+        self.inner.help()
+    }
+    fn url<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
+        self.inner.url()
+    }
+    fn labels(&self) -> Option<Box<dyn Iterator<Item = miette::LabeledSpan> + '_>> {
+        self.inner.labels()
+    }
+    fn related<'a>(&'a self) -> Option<Box<dyn Iterator<Item = &'a dyn Diagnostic> + 'a>> {
+        self.inner.related()
+    }
+    fn diagnostic_source(&self) -> Option<&dyn Diagnostic> {
+        self.inner.diagnostic_source()
+    }
+}
+
+/// Every error from one compiler pass, rendered as a single report.
+///
+/// The passes already accumulate into a `Vec<CompileError>`; before this they
+/// were truncated to the first element at the reporting boundary, so a file
+/// with N independent errors cost N compile-and-fix round trips. `miette`
+/// renders `#[related]` entries with their own spans and snippets, so the
+/// per-error output is unchanged — there are just N of them now.
+#[derive(Debug, Error, Diagnostic)]
+#[error("{}", summary(.related.len(), *.truncated))]
+pub struct CompileErrors {
+    #[related]
+    pub related: Vec<SourcedError>,
+    /// Errors dropped past `MAX_REPORTED`, mentioned in the summary line so a
+    /// truncated batch never looks complete.
+    pub truncated: usize,
+}
+
+/// Upper bound on errors rendered at once. A pathological file can accumulate
+/// thousands; past a screenful the list stops being actionable and just buries
+/// the first few, which are the ones worth fixing.
+pub const MAX_REPORTED: usize = 50;
+
+fn summary(shown: usize, truncated: usize) -> String {
+    let plural = if shown == 1 { "" } else { "s" };
+    if truncated == 0 {
+        format!("{shown} error{plural}")
+    } else {
+        format!("{shown} error{plural} shown, {truncated} more not listed")
+    }
+}
+
+impl CompileErrors {
+    /// Sort by source position and cap at [`MAX_REPORTED`].
+    ///
+    /// Source order matters as much as completeness: passes push errors in
+    /// visit order, which is neither source order nor stable, so without this
+    /// the list would jump around the file and could differ between runs.
+    pub fn new(mut errors: Vec<(usize, SourcedError)>) -> Self {
+        errors.sort_by_key(|(offset, _)| *offset);
+        let total = errors.len();
+        let truncated = total.saturating_sub(MAX_REPORTED);
+        Self {
+            related: errors
+                .into_iter()
+                .take(MAX_REPORTED)
+                .map(|(_, e)| e)
+                .collect(),
+            truncated,
+        }
+    }
+}
