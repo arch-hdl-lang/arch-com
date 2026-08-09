@@ -1171,11 +1171,25 @@ fn float_tag_of(ty: &TypeExpr) -> Option<&'static str> {
 }
 
 /// Carrier width of a float helper tag.
+/// Carrier width of a float dispatch tag.
+///
+/// Backed by the canonical format table rather than a hand-written match:
+/// the old version ended in `_ => 8`, which is correct only while every
+/// format narrower than `bf16` happens to be 8 bits. A 4- or 6-bit format
+/// would have silently taken 8 here and mis-coerced every SMT term built
+/// from it.
+///
+/// The `unreachable!` cannot fire for a tag produced by `float_tag_of` /
+/// `expr_float_tag`, both of which draw from the same table; it exists so a
+/// future format that is added to one and not the other fails loudly instead
+/// of computing on a wrong width.
 fn float_tag_width(tag: &str) -> u32 {
-    match tag {
-        "f32" => 32,
-        "bf16" => 16,
-        _ => 8,
+    match crate::fp_format::width_of_tag(tag) {
+        Some(w) => w,
+        None => unreachable!(
+            "float dispatch tag `{tag}` has no row in fp_format::FORMATS — \
+             add the format to the table"
+        ),
     }
 }
 

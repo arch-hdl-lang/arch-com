@@ -938,10 +938,13 @@ fn coerce_narrow_lit(e: &mut Expr, fmt: FloatLitFmt, errors: &mut Vec<CompileErr
                 e.kind = ExprKind::Literal(LitKind::TypedFloat(fmt, bits8));
             }
             None => {
-                let (name, max) = match fmt {
-                    FloatLitFmt::E4m3 => ("FP8E4M3", 448.0),
-                    _ => ("FP8E5M2", 57344.0),
-                };
+                // Name and bound come from the canonical format table. The
+                // previous hand-written match was `E4m3 => (…448), _ => (…E5M2,
+                // 57344)`, so ANY format other than E4M3 was reported as
+                // FP8E5M2 with E5M2's bound — silently wrong the moment a
+                // third narrow format exists.
+                let desc = crate::fp_format::by_lit_fmt(fmt);
+                let (name, max) = (desc.type_name, desc.max_finite);
                 errors.push(CompileError::general(
                     &format!(
                         "float literal {v} overflows {name} (largest finite value is {max}) — \

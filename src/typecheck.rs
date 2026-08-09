@@ -31,8 +31,36 @@ pub enum Ty {
 
 impl Ty {
     /// True for the floating-point types (FP32, BF16).
+    /// Is this a floating-point *carrier*? True for every float format,
+    /// including (in future) storage-only ones. Gates conversions, width
+    /// rules and assignability — everything that works on the bit pattern
+    /// regardless of whether operators exist.
     pub fn is_float(&self) -> bool {
         matches!(self, Ty::FP32 | Ty::BF16 | Ty::FP8E4M3 | Ty::FP8E5M2)
+    }
+
+    /// Does this float carry an arithmetic surface (`+ - *`, `fma`,
+    /// compares)?
+    ///
+    /// Split out from [`Ty::is_float`] because the two are about to diverge:
+    /// the sub-8-bit OCP formats (E2M1/E2M3/E3M2) are storage-only — no
+    /// shipping ISA exposes scalar arithmetic on them, and E2M1 has no NaN
+    /// encoding at all. They must be *carriers* (conversions, literals) while
+    /// rejecting `a + b` at the type checker with a clean span, rather than
+    /// interpolating an `arch_e2m1_add` that no backend defines and failing
+    /// late in Verilator / z3 / g++.
+    ///
+    /// Every format shipped today is arithmetic-capable, so this is
+    /// currently equivalent to `is_float()` — deliberately inert until the
+    /// first storage-only format lands.
+    pub fn is_float_arith(&self) -> bool {
+        match self {
+            Ty::FP32 => crate::fp_format::by_id(crate::fp_format::FpFormatId::Fp32).arith,
+            Ty::BF16 => crate::fp_format::by_id(crate::fp_format::FpFormatId::Bf16).arith,
+            Ty::FP8E4M3 => crate::fp_format::by_id(crate::fp_format::FpFormatId::E4m3).arith,
+            Ty::FP8E5M2 => crate::fp_format::by_id(crate::fp_format::FpFormatId::E5m2).arith,
+            _ => false,
+        }
     }
 }
 
@@ -4365,7 +4393,11 @@ impl<'a> TypeChecker<'a> {
                     if ta == Ty::Error || tb == Ty::Error || tc == Ty::Error {
                         return Ty::Error;
                     }
-                    if !ta.is_float() || tb != ta || tc != ta {
+                    // `is_float_arith`, not `is_float`: a storage-only float
+                    // is a carrier with no operators, so `fma` on one must be
+                    // a clean type error rather than a dangling
+                    // `arch_<tag>_fma` reference discovered by a backend.
+                    if !ta.is_float_arith() || tb != ta || tc != ta {
                         self.errors.push(CompileError::general(
                             &format!("`fma` requires three operands of the same float type, got {}, {}, {}",
                                 ta.display(), tb.display(), tc.display()),
@@ -4388,7 +4420,10 @@ impl<'a> TypeChecker<'a> {
                         return Ty::Error;
                     }
                     let tx = self.resolve_expr_type(&call_args[0], module_name, local_types);
-                    if tx != Ty::Error && !tx.is_float() {
+                    // `is_float_arith` gates this too: a format with no NaN
+                    // encoding (OCP E2M1/E2M3/E3M2) cannot answer `is_nan`
+                    // meaningfully, and a constant `false` would mislead.
+                    if tx != Ty::Error && !tx.is_float_arith() {
                         self.errors.push(CompileError::general(
                             &format!("`is_nan(x)` requires a float operand, got {}", tx.display()),
                             call_args[0].span,
@@ -5221,6 +5256,24 @@ impl<'a> TypeChecker<'a> {
                             &format!(
                                 "type mismatch in floating-point `{sym}`: {} vs {} (no implicit float conversion; use .to_fp32()/.to_bf16())",
                                 lt.display(), rt.display()
+                            ),
+                            _span,
+                        ));
+                        return Ty::Error;
+                    }
+                    // Storage-only formats are carriers with no operators.
+                    // Refuse here, with a span, rather than letting each
+                    // backend interpolate an `arch_<tag>_add` that nothing
+                    // defines — those failures surface in Verilator / z3 /
+                    // g++ with no source location at all.
+                    let carrier = if lt.is_float() { &lt } else { &rt };
+                    if !carrier.is_float_arith() {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "operator `{sym}` is not supported on {} — it is a storage-only \
+                                 float format (conversions and literals only). Convert with \
+                                 `.to_fp32()`, compute, then convert back",
+                                carrier.display()
                             ),
                             _span,
                         ));

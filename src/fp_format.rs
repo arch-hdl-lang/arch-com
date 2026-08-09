@@ -1,0 +1,333 @@
+//! Single source of truth for every floating-point format the compiler knows.
+//!
+//! Before this table, each format's facts — carrier width, exponent/mantissa
+//! split, whether Inf/NaN exist, max finite magnitude, the operator-dispatch
+//! tag, the user-facing type name — were re-derived by hand at roughly forty
+//! sites across typecheck, elaborate, SV codegen, sim codegen and formal. Two
+//! of those hand-written maps ended in a wildcard that is correct *only*
+//! because exactly two 8-bit formats exist today:
+//!
+//! ```ignore
+//! fn float_tag_width(tag: &str) -> u32 {
+//!     match tag { "f32" => 32, "bf16" => 16, _ => 8 }   // a 4-bit format gets 8
+//! }
+//! let (name, max) = match fmt {
+//!     FloatLitFmt::E4m3 => ("FP8E4M3", 448.0),
+//!     _ => ("FP8E5M2", 57344.0),          // any new format misreports as E5M2
+//! };
+//! ```
+//!
+//! Both fail *silently* — wrong widths and wrong diagnostics, not crashes.
+//! Routing them through [`FORMATS`] makes a new format a single table row.
+//!
+//! **Why the tags stay `&'static str`:** operator names are built by
+//! interpolation (`arch_{tag}_add`) across three backends, so the tag must be
+//! a string at the point of use. A `&str` cannot be matched exhaustively,
+//! which is exactly how the wildcards above came to exist. The table closes
+//! that hole from the other side: [`FpFormatId`] *is* exhaustively matchable,
+//! every string lookup ([`by_tag`]) returns an `Option` rather than guessing,
+//! and `fp_format_table_is_consistent` cross-checks the table against every
+//! independent vocabulary in the compiler, so a format added to one and not
+//! the other fails the build's tests rather than miscompiling.
+
+use crate::ast::{FloatLitFmt, TypeExpr};
+
+/// Canonical identifier for a floating-point format. Exhaustively matchable,
+/// unlike the `&'static str` dispatch tags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FpFormatId {
+    Fp32,
+    Bf16,
+    E4m3,
+    E5m2,
+}
+
+/// Everything the compiler needs to know about one floating-point format.
+#[derive(Debug, Clone, Copy)]
+pub struct FpFormat {
+    pub id: FpFormatId,
+    /// Operator-dispatch tag: the `{tag}` in `arch_{tag}_add`, `arch_fma_{tag}`.
+    pub tag: &'static str,
+    /// User-facing type name, as written in source and in diagnostics.
+    pub type_name: &'static str,
+    /// Carrier width in bits.
+    pub width: u32,
+    pub exp_bits: u32,
+    pub mant_bits: u32,
+    /// Does the encoding reserve an infinity? (OCP E4M3 does not.)
+    pub has_inf: bool,
+    /// Does the encoding reserve any NaN? Sub-8-bit OCP formats do not, which
+    /// is why `is_nan` must be a compile error there rather than a constant
+    /// `false`.
+    pub has_nan: bool,
+    /// Largest finite magnitude, used for literal-overflow diagnostics.
+    pub max_finite: f64,
+    /// Does this format carry a full arithmetic surface (`+ - *`, `fma`,
+    /// compares)? A storage-only format is a carrier for conversions and
+    /// literals but has no operators — see `Ty::is_float_arith`.
+    pub arith: bool,
+}
+
+/// Every known format. **Adding a format means adding a row here**; the
+/// consistency test then forces the other vocabularies to keep up.
+pub const FORMATS: &[FpFormat] = &[
+    FpFormat {
+        id: FpFormatId::Fp32,
+        tag: "f32",
+        type_name: "FP32",
+        width: 32,
+        exp_bits: 8,
+        mant_bits: 23,
+        has_inf: true,
+        has_nan: true,
+        max_finite: 3.402_823_466_385_288_6e38,
+        arith: true,
+    },
+    FpFormat {
+        id: FpFormatId::Bf16,
+        tag: "bf16",
+        type_name: "BF16",
+        width: 16,
+        exp_bits: 8,
+        mant_bits: 7,
+        has_inf: true,
+        has_nan: true,
+        max_finite: 3.389_531_389_251_535_5e38,
+        arith: true,
+    },
+    FpFormat {
+        // OCP OFP8 E4M3: no infinities, sole NaN encoding 0x7F, max 448.
+        id: FpFormatId::E4m3,
+        tag: "e4m3",
+        type_name: "FP8E4M3",
+        width: 8,
+        exp_bits: 4,
+        mant_bits: 3,
+        has_inf: false,
+        has_nan: true,
+        max_finite: 448.0,
+        arith: true,
+    },
+    FpFormat {
+        // IEEE-style (5,3): ±inf 0x7C, max finite 57344.
+        id: FpFormatId::E5m2,
+        tag: "e5m2",
+        type_name: "FP8E5M2",
+        width: 8,
+        exp_bits: 5,
+        mant_bits: 2,
+        has_inf: true,
+        has_nan: true,
+        max_finite: 57344.0,
+        arith: true,
+    },
+];
+
+/// Descriptor for a canonical id. Total by construction.
+pub fn by_id(id: FpFormatId) -> &'static FpFormat {
+    match FORMATS.iter().find(|f| f.id == id) {
+        Some(f) => f,
+        // Unreachable while `fp_format_table_is_consistent` passes, which
+        // asserts every variant has a row.
+        None => unreachable!("FORMATS is missing a row for {id:?}"),
+    }
+}
+
+/// Descriptor for an operator-dispatch tag. Returns `None` for an unknown
+/// tag rather than guessing — the guess is what made the old
+/// `float_tag_width` silently wrong for any format narrower than 8 bits.
+pub fn by_tag(tag: &str) -> Option<&'static FpFormat> {
+    FORMATS.iter().find(|f| f.tag == tag)
+}
+
+/// Descriptor for a literal format.
+pub fn by_lit_fmt(fmt: FloatLitFmt) -> &'static FpFormat {
+    by_id(match fmt {
+        FloatLitFmt::Fp32 => FpFormatId::Fp32,
+        FloatLitFmt::Bf16 => FpFormatId::Bf16,
+        FloatLitFmt::E4m3 => FpFormatId::E4m3,
+        FloatLitFmt::E5m2 => FpFormatId::E5m2,
+    })
+}
+
+/// Descriptor for a surface type, if it is a float at all.
+pub fn by_type_expr(ty: &TypeExpr) -> Option<&'static FpFormat> {
+    let id = match ty {
+        TypeExpr::FP32 => FpFormatId::Fp32,
+        TypeExpr::BF16 => FpFormatId::Bf16,
+        TypeExpr::FP8E4M3 => FpFormatId::E4m3,
+        TypeExpr::FP8E5M2 => FpFormatId::E5m2,
+        _ => return None,
+    };
+    Some(by_id(id))
+}
+
+/// Carrier width for a dispatch tag; `None` for an unknown tag.
+pub fn width_of_tag(tag: &str) -> Option<u32> {
+    by_tag(tag).map(|f| f.width)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The table is only a single source of truth if it AGREES with every
+    /// vocabulary that still derives these facts independently. This test is
+    /// the mechanism that makes a half-added format fail loudly instead of
+    /// miscompiling: add a row here without teaching `FloatLitFmt`, or vice
+    /// versa, and this fails.
+    #[test]
+    fn fp_format_table_is_consistent() {
+        // 1. Every canonical id has exactly one row.
+        for id in [
+            FpFormatId::Fp32,
+            FpFormatId::Bf16,
+            FpFormatId::E4m3,
+            FpFormatId::E5m2,
+        ] {
+            let rows = FORMATS.iter().filter(|f| f.id == id).count();
+            assert_eq!(rows, 1, "expected exactly one row for {id:?}, got {rows}");
+        }
+
+        // 2. Tags and type names are unique — they are lookup keys.
+        for f in FORMATS {
+            assert_eq!(
+                FORMATS.iter().filter(|g| g.tag == f.tag).count(),
+                1,
+                "duplicate tag {}",
+                f.tag
+            );
+            assert_eq!(
+                FORMATS
+                    .iter()
+                    .filter(|g| g.type_name == f.type_name)
+                    .count(),
+                1,
+                "duplicate type_name {}",
+                f.type_name
+            );
+        }
+
+        // 3. Width == 1 sign + exp + mantissa, for every row.
+        for f in FORMATS {
+            assert_eq!(
+                f.width,
+                1 + f.exp_bits + f.mant_bits,
+                "{}: width {} != 1+{}+{}",
+                f.tag,
+                f.width,
+                f.exp_bits,
+                f.mant_bits
+            );
+        }
+
+        // 4. Agreement with `FloatLitFmt`, which carries its own copies.
+        for fmt in [
+            FloatLitFmt::Fp32,
+            FloatLitFmt::Bf16,
+            FloatLitFmt::E4m3,
+            FloatLitFmt::E5m2,
+        ] {
+            let f = by_lit_fmt(fmt);
+            assert_eq!(f.width, fmt.width(), "{}: width disagrees", f.tag);
+            assert_eq!(
+                (f.exp_bits, f.mant_bits),
+                fmt.exp_mant_bits(),
+                "{}: exp/mant disagrees",
+                f.tag
+            );
+        }
+
+        // 5. Agreement with the surface types.
+        for (ty, tag) in [
+            (TypeExpr::FP32, "f32"),
+            (TypeExpr::BF16, "bf16"),
+            (TypeExpr::FP8E4M3, "e4m3"),
+            (TypeExpr::FP8E5M2, "e5m2"),
+        ] {
+            let f = by_type_expr(&ty).expect("surface float type must have a row");
+            assert_eq!(f.tag, tag);
+        }
+        assert!(
+            by_type_expr(&TypeExpr::Bool).is_none(),
+            "non-float type must not resolve to a format"
+        );
+
+        // 6. Tag lookup is total over known tags and honest about the rest.
+        for f in FORMATS {
+            assert_eq!(width_of_tag(f.tag), Some(f.width));
+        }
+        assert_eq!(
+            width_of_tag("e2m1"),
+            None,
+            "an unknown tag must be None, never a guessed width — guessing is \
+             what made the old float_tag_width silently wrong"
+        );
+    }
+
+    /// Phase 0 must be INERT for the four formats that ship today: the table
+    /// has to reproduce the hand-written maps it replaced, bit for bit.
+    /// These are the previous implementations, transcribed, so a table edit
+    /// that would have changed compiler output fails here.
+    #[test]
+    fn fp_format_reproduces_the_maps_it_replaced() {
+        // Old `formal::float_tag_width`:
+        //     match tag { "f32" => 32, "bf16" => 16, _ => 8 }
+        let old_tag_width = |tag: &str| -> u32 {
+            match tag {
+                "f32" => 32,
+                "bf16" => 16,
+                _ => 8,
+            }
+        };
+        for f in FORMATS {
+            assert_eq!(
+                width_of_tag(f.tag),
+                Some(old_tag_width(f.tag)),
+                "{}: table width must match the map it replaced",
+                f.tag
+            );
+        }
+
+        // Old `elaborate` literal-overflow table:
+        //     match fmt { E4m3 => ("FP8E4M3", 448.0), _ => ("FP8E5M2", 57344.0) }
+        // Only E4m3/E5m2 could reach it (fp32/bf16 literal encoders never
+        // return None), so only those two are pinned as behavior.
+        for (fmt, name, max) in [
+            (FloatLitFmt::E4m3, "FP8E4M3", 448.0_f64),
+            (FloatLitFmt::E5m2, "FP8E5M2", 57344.0_f64),
+        ] {
+            let d = by_lit_fmt(fmt);
+            assert_eq!(d.type_name, name, "overflow diagnostic name changed");
+            assert_eq!(d.max_finite, max, "overflow diagnostic bound changed");
+        }
+
+        // Old `Ty::is_float` and the new `Ty::is_float_arith` must agree
+        // while every shipped format is arithmetic-capable — that is what
+        // makes routing the `+ - *` / `fma` / `is_nan` gates through the new
+        // predicate a no-op today.
+        assert!(
+            FORMATS.iter().all(|f| f.arith),
+            "a storage-only format landed without updating the gates that \
+             assume is_float() == is_float_arith()"
+        );
+    }
+
+    /// Pins the facts that drive user-visible diagnostics, so a typo in the
+    /// table shows up here rather than in an error message.
+    #[test]
+    fn fp_format_specials_and_maxima() {
+        let e4m3 = by_id(FpFormatId::E4m3);
+        assert!(!e4m3.has_inf, "OCP E4M3 has no infinity");
+        assert!(e4m3.has_nan, "OCP E4M3 has the sole NaN 0x7F");
+        assert_eq!(e4m3.max_finite, 448.0);
+
+        let e5m2 = by_id(FpFormatId::E5m2);
+        assert!(e5m2.has_inf && e5m2.has_nan);
+        assert_eq!(e5m2.max_finite, 57344.0);
+
+        // Every format shipped today carries a full operator surface; the
+        // flag exists for the storage-only sub-8-bit formats to come.
+        assert!(FORMATS.iter().all(|f| f.arith));
+    }
+}
