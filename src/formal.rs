@@ -363,6 +363,62 @@ fn flatten_for_formal(
                         _ => {}
                     }
                 }
+                // `port reg o: out T` (and its `out pipe_reg<T,1>` spelling)
+                // is a PortDecl, not a RegDecl body item, so the body walk
+                // below never sees it and no register is emitted for it.
+                // Left alone, the sub's `o <= ...` would be port-mapped
+                // straight onto the parent signal, land in `reg_writes`
+                // under a name that is not in `self.regs`, and be silently
+                // DROPPED by emit_base — leaving the parent signal declared
+                // but unconstrained, i.e. a free variable that admits
+                // spurious counterexamples (issue #821).
+                //
+                // Model it the way the RTL actually behaves: a register
+                // local to the instance, driving the parent signal
+                // combinationally. Treating the port name as a local makes
+                // every reference inside the sub (reads and the seq write)
+                // resolve to `<inst>_<port>`.
+                let mut carried_port_regs: Vec<(&PortDecl, String)> = Vec::new();
+                for p in &sub.ports {
+                    let Some(ri) = &p.reg_info else { continue };
+                    if ri.latency != 1 {
+                        return Err(CompileError::general(
+                            &format!(
+                                "hierarchical formal: inst `{}` port `{}` declares `pipe_reg<_, {}>`; \
+                                 `arch formal` v1 models only single-cycle port registers (latency 1). \
+                                 Refactor the sub-module to expose an explicit `reg` chain.",
+                                inst.name.name, p.name.name, ri.latency,
+                            ),
+                            inst.span,
+                        ));
+                    }
+                    let Some(parent_expr) = port_map.get(&p.name.name) else {
+                        continue;
+                    };
+                    let ExprKind::Ident(parent_name) = &parent_expr.kind else {
+                        return Err(CompileError::general(
+                            &format!(
+                                "hierarchical formal: inst `{}.{}` is a registered output port and \
+                                 must connect to a simple identifier in v1 (got a complex \
+                                 expression); refactor the parent to a named wire",
+                                inst.name.name, p.name.name,
+                            ),
+                            inst.span,
+                        ));
+                    };
+                    locals.insert(p.name.name.clone());
+                    carried_port_regs.push((p, parent_name.clone()));
+                }
+                // `subst_expr_for_formal` consults `port_map` BEFORE `locals`,
+                // so a carried port reg must be dropped from the port map or
+                // every reference to it — including the `seq` write that is
+                // the whole point — would still be rewritten to the parent
+                // signal and dropped. Removing it lets the `locals` path
+                // rewrite `o` to `<inst>_o`; the parent connection is driven
+                // instead by the `let` emitted alongside the RegDecl below.
+                for (p, _) in &carried_port_regs {
+                    port_map.remove(&p.name.name);
+                }
 
                 let prefix = format!("{}_", inst.name.name);
                 let new_body_start = new_body.len();
@@ -472,6 +528,43 @@ fn flatten_for_formal(
                         }
                         _ => unreachable!("validate_sub_for_formal rejects other items"),
                     }
+                }
+
+                // Emit the carried `port reg`s collected above: one prefixed
+                // RegDecl each, plus a let binding so the parent-side signal
+                // observes the registered value. `reg <inst>_<port>` +
+                // `let <parent> = <inst>_<port>` is exactly what `port reg`
+                // means in the RTL (always_ff drives it; the connection
+                // observes it). See the #821 note above.
+                for (p, parent_name) in carried_port_regs {
+                    let ri = p.reg_info.as_ref().expect("collected with reg_info");
+                    let new_init = ri
+                        .init
+                        .as_ref()
+                        .map(|e| subst_expr_for_formal(e, &port_map, &locals, &prefix));
+                    let new_reset =
+                        subst_reg_reset_for_formal(&ri.reset, &port_map, &locals, &prefix);
+                    let reg_name = format!("{prefix}{}", p.name.name);
+                    new_body.push(ModuleBodyItem::RegDecl(RegDecl {
+                        name: Ident::new(reg_name.clone(), p.name.span),
+                        ty: p.ty.clone(),
+                        init: new_init,
+                        reset: new_reset,
+                        guard: ri.guard.clone(),
+                        multicycle: None,
+                        span: p.span,
+                    }));
+                    new_body.push(ModuleBodyItem::LetBinding(LetBinding {
+                        name: Ident::new(parent_name, p.name.span),
+                        ty: Some(p.ty.clone()),
+                        value: Expr {
+                            kind: ExprKind::Ident(reg_name),
+                            span: p.span,
+                            parenthesized: false,
+                        },
+                        span: p.span,
+                        destructure_fields: Vec::new(),
+                    }));
                 }
 
                 // Rewrite SynthIdent strings in items appended for this
@@ -1709,15 +1802,28 @@ impl<'a> FormalCtx<'a> {
                 offenders.push((ca.target.as_str(), ca.span, "comb"));
             }
         }
+        // A `seq` write must land on something `emit_base` will actually
+        // emit a transition for, and that loop iterates `self.regs` — NOT
+        // `self.sigs`. A target that is in `sigs` but is not a register is
+        // therefore silently DROPPED, and because it *is* declared it
+        // becomes an unconstrained free variable, admitting spurious
+        // counterexamples. That is the #821 failure mode, and it is strictly
+        // worse than a refusal, so check membership in `regs` here rather
+        // than settling for `sigs`.
         for (target, writes) in &self.reg_writes {
-            if self.sigs.contains_key(target) || self.let_bindings.contains_key(target) {
+            if self.regs.iter().any(|r| r == target) {
                 continue;
             }
             let span = writes
                 .first()
                 .map(|(_, v)| v.span)
                 .unwrap_or(self.module.span);
-            offenders.push((target.as_str(), span, "seq"));
+            let kind = if self.sigs.contains_key(target) || self.let_bindings.contains_key(target) {
+                "seq-nonreg"
+            } else {
+                "seq"
+            };
+            offenders.push((target.as_str(), span, kind));
         }
 
         // `reg_writes` is a HashMap, so sort for a deterministic choice of
@@ -1755,6 +1861,21 @@ impl<'a> FormalCtx<'a> {
                      modelled (`<port>.<channel>.send(..)` / `.no_send()` / `.pop()` / \
                      `.no_pop()`); plain bus signals, handshake groups and `tlm_method` \
                      bundles are not encoded yet"
+                ),
+                span,
+            );
+        }
+        if block == "seq-nonreg" {
+            // In `sigs` but not a register: `emit_base` would emit no
+            // transition for it, so the write vanishes and the (declared)
+            // signal is left unconstrained — a free variable that admits
+            // spurious counterexamples. Refuse instead (issue #821).
+            return CompileError::general(
+                &format!(
+                    "`seq` block assigns to `{target}`, which `arch formal` v1 does not \
+                     model as a register — the write would be silently dropped and \
+                     `{target}` left unconstrained, which can produce a spurious \
+                     counterexample. Declare `{target}` as a `reg`, or drive it from one"
                 ),
                 span,
             );
