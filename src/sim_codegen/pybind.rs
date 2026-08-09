@@ -656,6 +656,7 @@ PYBIND11_MODULE({pybind_module}, m) {{
             TypeExpr::FP32 => 32,
             TypeExpr::BF16 => 16,
             TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => 8,
+            TypeExpr::FP4E2M1 => 4,
             TypeExpr::Named(_) => 32,
             TypeExpr::Vec(_, _) => 32,
         }
@@ -1041,6 +1042,36 @@ static inline uint8_t _arch_f32_to_fp8(uint32_t x, int eb, int mb, int ocp,
     // Subnormal result: keep is in min-subnormal ULPs; keep==2^mb encodes
     // naturally as the minimum normal (exponent field 1, mantissa 0).
     return (uint8_t)(sgn | (uint32_t)keep);
+}
+// ── OCP MX FP4 E2M1 (storage-only) ──
+// No Inf, no NaN, max finite 6.0. The shared _arch_f32_to_fp8 cannot be
+// reused: it packs the sign at bit 7, while E2M1's sign is bit 3. Written
+// as a direct nearest-ties-to-even search over the eight magnitudes, which
+// mirrors fp_lit::f64_to_e2m1_bits exactly.
+//
+// Runtime overflow SATURATES for both --fp-compat profiles, unlike fp8
+// where the profiles differ: E2M1 has neither a NaN nor an infinity to
+// produce, so saturation is the only representable behavior. (Overflowing
+// LITERALS are still a compile error - a source constant must not depend
+// on runtime saturation.)
+static const float _ARCH_E2M1_MAG[8] = {0.0f,0.5f,1.0f,1.5f,2.0f,3.0f,4.0f,6.0f};
+static inline float _arch_e2m1f(uint8_t b){
+  float m = _ARCH_E2M1_MAG[b & 7u];
+  return (b & 8u) ? -m : m;
+}
+static inline uint32_t _arch_e2m1_to_f32(uint8_t b){ return _arch_b32f(_arch_e2m1f(b)); }
+static inline uint8_t _arch_f32_to_e2m1(uint32_t x){
+  float f = _arch_f32b(x);
+  uint8_t sgn = (uint8_t)((x>>31) ? 8u : 0u);
+  if (std::isnan(f)) return (uint8_t)(sgn|7u);
+  float a = fabsf(f);
+  if (a >= 7.0f) return (uint8_t)(sgn|7u);
+  int best = 0; float best_err = 1e30f;
+  for (int i = 0; i < 8; i++) {
+    float e = fabsf(a - _ARCH_E2M1_MAG[i]);
+    if (e < best_err || (e == best_err && (i & 1) == 0)) { best = i; best_err = e; }
+  }
+  return (uint8_t)(sgn | (uint8_t)best);
 }
 static inline uint8_t _arch_f32_to_e5m2(uint32_t x){ return _arch_f32_to_fp8(x,5,2,0,0x7Cu,1,0x7Eu); }
 static inline uint8_t _arch_f32_to_e4m3(uint32_t x){ return _arch_f32_to_fp8(x,4,3,1,0x7Fu,0,0x7Fu); }

@@ -212,6 +212,7 @@ pub(super) fn try_eval_fp_const_expr_with_params_seen(
                 }
                 crate::ast::FloatLitFmt::E4m3 => Some(crate::fp_lit::e4m3_bits_to_f64(*bits as u8)),
                 crate::ast::FloatLitFmt::E5m2 => Some(crate::fp_lit::e5m2_bits_to_f64(*bits as u8)),
+                crate::ast::FloatLitFmt::E2m1 => Some(crate::fp_lit::e2m1_bits_to_f64(*bits as u8)),
             }
         }
         ExprKind::Ident(name) => {

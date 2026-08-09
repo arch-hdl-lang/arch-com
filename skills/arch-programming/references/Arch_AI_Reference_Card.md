@@ -161,6 +161,7 @@ Range `for` = runtime SV loop; value-list `for` = compile-time unroll; `generate
 UInt<N>  SInt<N>  Bool  Bit
 FP32  BF16                                    // IEEE-754 binary32 / bfloat16 (v1; see §2a)
 FP8E4M3  FP8E5M2                              // OCP OFP8 8-bit floats (v1; see §2a)
+FP4E2M1                                       // OCP MX FP4 element: STORAGE-ONLY (conversions + literals; no + - * / compares / is_nan)
 Clock<Domain>  Reset<Sync|Async, High|Low>   // polarity defaults High
 Vec<T,N>
 struct S  { f: T; }
@@ -248,7 +249,8 @@ let nan: Bool = is_nan(a);  // qNaN/sNaN test → Bool
 **No implicit conversion** — mixing float formats (`FP32`/`BF16`/`FP8E4M3`/`FP8E5M2`), or float↔int, is a compile error. Convert explicitly:
 
 ```
-x.to_fp32()      // BF16/FP8E4M3/FP8E5M2→FP32 (exact widen) or SInt/UInt→FP32 (RNE)
+x.to_fp32()      // BF16/FP8E4M3/FP8E5M2/FP4E2M1→FP32 (exact widen) or SInt/UInt→FP32 (RNE)
+x.to_fp4e2m1()   // →FP4E2M1 (RNE, saturating; no inf/NaN exists in the format)
 x.to_bf16()      // FP32→BF16 (RNE); fp8→BF16 (exact); int→BF16 (f32-routed)
 x.to_fp8e4m3()   // FP32/BF16/FP8E5M2/int→FP8E4M3 (CR; overflow per --fp-compat)
 x.to_fp8e5m2()   // FP32/BF16/FP8E4M3/int→FP8E5M2 (CR; overflow per --fp-compat)

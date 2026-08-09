@@ -281,6 +281,8 @@ pub enum TokenKind {
     FP8E4M3,
     #[token("FP8E5M2")]
     FP8E5M2,
+    #[token("FP4E2M1")]
+    FP4E2M1,
 
     // Operators and punctuation
     #[token("+:")]
@@ -519,6 +521,7 @@ impl fmt::Display for TokenKind {
             TokenKind::BF16 => write!(f, "BF16"),
             TokenKind::FP8E4M3 => write!(f, "FP8E4M3"),
             TokenKind::FP8E5M2 => write!(f, "FP8E5M2"),
+            TokenKind::FP4E2M1 => write!(f, "FP4E2M1"),
             TokenKind::Plus => write!(f, "+"),
             TokenKind::Minus => write!(f, "-"),
             TokenKind::Star => write!(f, "*"),

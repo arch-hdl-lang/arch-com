@@ -629,6 +629,7 @@ pub(super) enum FpFmt {
     Bf16,
     E4m3,
     E5m2,
+    E2m1,
 }
 
 impl FpFmt {
@@ -639,6 +640,7 @@ impl FpFmt {
             FpFmt::Bf16 => "bf16",
             FpFmt::E4m3 => "e4m3",
             FpFmt::E5m2 => "e5m2",
+            FpFmt::E2m1 => "e2m1",
         }
     }
 }
@@ -1651,6 +1653,7 @@ pub(super) fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &
             Some(FpFmt::Bf16) => format!("_arch_bf16_to_f32({b})"),
             Some(FpFmt::E4m3) => format!("_arch_e4m3_to_f32({b})"),
             Some(FpFmt::E5m2) => format!("_arch_e5m2_to_f32({b})"),
+            Some(FpFmt::E2m1) => format!("_arch_e2m1_to_f32({b})"),
             Some(FpFmt::Fp32) => b, // no-op (typecheck rejects, but stay total)
             None => {
                 if infer_expr_signed(base, ctx) {
@@ -1667,6 +1670,7 @@ pub(super) fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &
             // is exact in bf16).
             Some(FpFmt::E4m3) => format!("_arch_f32_to_bf16(_arch_e4m3_to_f32({b}))"),
             Some(FpFmt::E5m2) => format!("_arch_f32_to_bf16(_arch_e5m2_to_f32({b}))"),
+            Some(FpFmt::E2m1) => format!("_arch_f32_to_bf16(_arch_e2m1_to_f32({b}))"),
             None => {
                 if infer_expr_signed(base, ctx) {
                     format!("_arch_i_to_bf16((int64_t)({b}))")
@@ -1681,6 +1685,7 @@ pub(super) fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &
             // BF16 / cross-fp8: exact widen, one narrow — correctly rounded.
             Some(FpFmt::Bf16) => format!("_arch_f32_to_e4m3(_arch_bf16_to_f32({b}))"),
             Some(FpFmt::E5m2) => format!("_arch_f32_to_e4m3(_arch_e5m2_to_f32({b}))"),
+            Some(FpFmt::E2m1) => format!("_arch_f32_to_e4m3(_arch_e2m1_to_f32({b}))"),
             // Integers: exact in f32 across the fp8-relevant range, so the
             // single fp8 rounding is correctly rounded.
             None => {
@@ -1696,6 +1701,7 @@ pub(super) fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &
             Some(FpFmt::E5m2) => b,
             Some(FpFmt::Bf16) => format!("_arch_f32_to_e5m2(_arch_bf16_to_f32({b}))"),
             Some(FpFmt::E4m3) => format!("_arch_f32_to_e5m2(_arch_e4m3_to_f32({b}))"),
+            Some(FpFmt::E2m1) => format!("_arch_f32_to_e5m2(_arch_e2m1_to_f32({b}))"),
             None => {
                 if infer_expr_signed(base, ctx) {
                     format!("_arch_f32_to_e5m2(_arch_i_to_f32((int64_t)({b})))")

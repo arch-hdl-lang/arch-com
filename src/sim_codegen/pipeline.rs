@@ -1323,6 +1323,7 @@ impl<'a> SimCodegen<'a> {
                 FloatLitFmt::Bf16 => FpFmt::Bf16,
                 FloatLitFmt::E4m3 => FpFmt::E4m3,
                 FloatLitFmt::E5m2 => FpFmt::E5m2,
+                FloatLitFmt::E2m1 => FpFmt::E2m1,
             }),
             ExprKind::Literal(LitKind::Float(_)) => Some(FpFmt::Fp32),
             ExprKind::Binary(op, l, r) => match op {

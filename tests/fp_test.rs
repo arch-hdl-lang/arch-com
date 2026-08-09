@@ -1952,3 +1952,162 @@ fn fp_formal_vacuity_guard() {
         "vacuous proof must be a hard failure (exit 1):\n{all}"
     );
 }
+
+// ── FP4E2M1 (OCP MX FP4) — storage-only ──────────────────────────────────
+//
+// The contract is as much about what is REJECTED as what works: E2M1 is a
+// carrier for conversions and literals, with no operator surface at all.
+
+/// Helper: run `arch check` on inline source, returning combined output and
+/// whether it succeeded.
+fn check_src(name: &str, src: &str) -> (bool, String) {
+    let dir = std::env::temp_dir().join("arch_fp4_tests");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let path = dir.join(format!("{name}.arch"));
+    std::fs::write(&path, src).expect("write fixture");
+    let out = arch().arg("check").arg(&path).output().expect("run check");
+    let merged = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // miette word-wraps diagnostics AND prefixes continuation lines with a
+    // box-drawing gutter, so a phrase can straddle a break as
+    // "storage-only float | format". Strip the gutter glyphs first, then
+    // collapse whitespace, before any substring matching.
+    let stripped: String = merged
+        .chars()
+        .map(|c| {
+            if "│┃|╭╰─▲·".contains(c) {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    let flat = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
+    (out.status.success(), flat)
+}
+
+/// The conversion surface works end-to-end: widen, narrow, compute-in-FP32,
+/// and a context-typed literal.
+#[test]
+fn fp4_conversion_surface_checks_and_builds() {
+    let out = arch()
+        .arg("check")
+        .arg("tests/fp_v1/Fp4Convert.arch")
+        .output()
+        .expect("run arch check");
+    assert!(
+        out.status.success(),
+        "Fp4Convert.arch should check\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    // SV must lower conversions to the proven helpers — NOT to the integer
+    // path. Before the E2M1 conversion arms existed, `a.to_fp32()` emitted
+    // `arch_u64_to_f32(...)`, reinterpreting the 4-bit float as an integer,
+    // and `.to_fp4e2m1()` leaked ARCH syntax into the SV verbatim.
+    let dir = std::env::temp_dir().join("arch_fp4_build");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let sv_path = dir.join("Fp4Convert.sv");
+    let out = arch()
+        .arg("build")
+        .arg("tests/fp_v1/Fp4Convert.arch")
+        .arg("-o")
+        .arg(&sv_path)
+        .output()
+        .expect("run arch build");
+    assert!(
+        out.status.success(),
+        "build failed:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let sv = std::fs::read_to_string(&sv_path).expect("emitted SV");
+    assert!(
+        sv.contains("arch_e2m1_to_f32("),
+        "widen must use the proven helper:\n{sv}"
+    );
+    assert!(
+        sv.contains("arch_f32_to_e2m1("),
+        "narrow must use the proven helper:\n{sv}"
+    );
+    assert!(
+        !sv.contains("to_fp4e2m1()"),
+        "ARCH method syntax must not leak into SV:\n{sv}"
+    );
+    assert!(
+        !sv.contains("arch_u64_to_f32(64'($unsigned(a)))"),
+        "a float must never be widened through the INTEGER path:\n{sv}"
+    );
+    assert!(sv.contains("logic [3:0]"), "E2M1 is a 4-bit carrier:\n{sv}");
+}
+
+/// Arithmetic is a clean, spanned type error — not a dangling
+/// `arch_e2m1_add` discovered later by Verilator / z3 / g++.
+#[test]
+fn fp4_arithmetic_is_rejected_at_typecheck() {
+    for (name, op) in [("add", "a + b"), ("sub", "a - b"), ("mul", "a * b")] {
+        let (ok, out) = check_src(
+            &format!("fp4_arith_{name}"),
+            &format!(
+                "module A\n  port a: in FP4E2M1;\n  port b: in FP4E2M1;\n  \
+                 port y: out FP4E2M1;\n  comb y = {op}; end comb\nend module A\n"
+            ),
+        );
+        assert!(!ok, "`{op}` on FP4E2M1 must be rejected:\n{out}");
+        assert!(
+            out.contains("storage-only float format"),
+            "`{op}`: message should name the storage-only rule:\n{out}"
+        );
+        assert!(
+            !out.contains("arch_e2m1_add"),
+            "must fail at typecheck, not by emitting a missing operator:\n{out}"
+        );
+    }
+}
+
+/// `is_nan` is refused with an accurate reason. E2M1 has no NaN encoding, so
+/// answering a constant `false` would mislead — and calling it "not a float"
+/// would be wrong, since it is one.
+#[test]
+fn fp4_is_nan_is_rejected_as_unrepresentable_not_as_non_float() {
+    let (ok, out) = check_src(
+        "fp4_isnan",
+        "module A\n  port a: in FP4E2M1;\n  port y: out Bool;\n  \
+         comb y = is_nan(a); end comb\nend module A\n",
+    );
+    assert!(!ok, "is_nan on FP4E2M1 must be rejected:\n{out}");
+    assert!(
+        out.contains("no NaN encoding"),
+        "reason must be the missing encoding, not 'requires a float':\n{out}"
+    );
+    assert!(
+        !out.contains("requires a float operand"),
+        "FP4E2M1 IS a float — that message would be wrong:\n{out}"
+    );
+}
+
+/// An overflowing literal is a compile error, never a silently wrong finite
+/// constant. The generic IEEE rounder would have packed `S.11.0` = 4.0.
+#[test]
+fn fp4_overflowing_literal_is_a_compile_error() {
+    let (ok, out) = check_src(
+        "fp4_lit_overflow",
+        "module A\n  port y: out FP4E2M1;\n  comb y = 8.0; end comb\nend module A\n",
+    );
+    assert!(!ok, "8.0 overflows FP4E2M1 (max 6.0):\n{out}");
+    assert!(
+        out.contains("FP4E2M1") && out.contains("6"),
+        "diagnostic should name the format and its bound:\n{out}"
+    );
+    // In-range literals still work.
+    let (ok, out) = check_src(
+        "fp4_lit_ok",
+        "module A\n  port y: out FP4E2M1;\n  comb y = 1.5; end comb\nend module A\n",
+    );
+    assert!(ok, "1.5 is exactly representable in E2M1:\n{out}");
+}

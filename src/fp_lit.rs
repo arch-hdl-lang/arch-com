@@ -262,6 +262,61 @@ pub fn e4m3_bits_to_f64(h: u8) -> f64 {
     sign * (8.0 + f) * f64::powi(2.0, e as i32 - 10)
 }
 
+/// The eight E2M1 magnitudes, indexed by the 3-bit magnitude encoding.
+///
+/// OCP MX FP4 (1 sign + 2 exp + 1 mantissa, bias 1) has **no Inf and no NaN**
+/// — the top binade is entirely finite — and exactly one subnormal (0.5).
+const E2M1_MAGNITUDES: [f64; 8] = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0];
+
+/// Exact value of an E2M1 encoding (low 4 bits significant).
+pub fn e2m1_bits_to_f64(b: u8) -> f64 {
+    let mag = E2M1_MAGNITUDES[(b & 0x7) as usize];
+    if b & 0x8 != 0 {
+        -mag
+    } else {
+        mag
+    }
+}
+
+/// Round `x` to E2M1, or `None` if it overflows the format.
+///
+/// Written as an exhaustive nearest-with-ties-to-even search over the eight
+/// magnitudes rather than via [`round_f64_to_narrow`], deliberately. The
+/// generic routine is an IEEE template: it treats an all-ones exponent as
+/// overflow-to-infinity, but E2M1's all-ones binade holds the finite values
+/// 4.0 and 6.0. Applied here it packs `S.11.0` for an overflowing input,
+/// which decodes to **4.0** — a silently wrong constant, the same trap
+/// documented for `f64_to_e4m3_bits` at 448. At eight magnitudes the direct
+/// search is both simpler and exhaustively checkable.
+///
+/// Overflow boundary follows the E4M3 precedent (max 448, next-would-be 512,
+/// so `>= 480` overflows): E2M1's max is 6.0 and the next would-be value is
+/// 8.0, so `|x| >= 7.0` overflows and anything below rounds to 6.0.
+/// Overflowing float literals are a compile error, matching fp8.
+pub fn f64_to_e2m1_bits(x: f64) -> Option<u8> {
+    // E2M1 cannot represent NaN or infinity at all.
+    if x.is_nan() || x.is_infinite() {
+        return None;
+    }
+    let sign: u8 = if x.is_sign_negative() { 0x8 } else { 0x0 };
+    let a = x.abs();
+    if a >= 7.0 {
+        return None;
+    }
+    // Nearest magnitude; ties go to the even ENCODING (low bit clear),
+    // which is IEEE round-ties-to-even on the mantissa bit.
+    let mut best = 0usize;
+    let mut best_err = f64::INFINITY;
+    for (i, &m) in E2M1_MAGNITUDES.iter().enumerate() {
+        let err = (a - m).abs();
+        if err < best_err || (err == best_err && i % 2 == 0) {
+            best = i;
+            best_err = err;
+        }
+    }
+    Some(sign | best as u8)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,5 +577,62 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 100_000, "sample too small: {checked}");
+    }
+}
+
+#[cfg(test)]
+mod e2m1_tests {
+    use super::*;
+
+    /// Every encoding round-trips, and the value set is exactly the OCP one.
+    #[test]
+    fn e2m1_round_trips_all_sixteen_encodings() {
+        let want = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0];
+        for enc in 0u8..8 {
+            assert_eq!(e2m1_bits_to_f64(enc), want[enc as usize]);
+            assert_eq!(e2m1_bits_to_f64(enc | 0x8), -want[enc as usize]);
+            // Exact values must encode back to themselves.
+            assert_eq!(f64_to_e2m1_bits(want[enc as usize]), Some(enc));
+        }
+        // -0.0 keeps its sign.
+        assert_eq!(f64_to_e2m1_bits(-0.0), Some(0x8));
+    }
+
+    /// The trap this encoder exists to avoid: the generic IEEE template
+    /// packs `S.11.0` (= 4.0) for an overflowing value. Overflow must be
+    /// `None` — a compile error — never a silently wrong finite constant.
+    #[test]
+    fn e2m1_overflow_is_none_not_a_wrong_finite() {
+        assert_eq!(f64_to_e2m1_bits(7.0), None, "at the RNE midpoint");
+        assert_eq!(f64_to_e2m1_bits(8.0), None);
+        assert_eq!(f64_to_e2m1_bits(1e30), None);
+        assert_eq!(f64_to_e2m1_bits(-7.0), None);
+        assert_eq!(f64_to_e2m1_bits(f64::INFINITY), None);
+        assert_eq!(f64_to_e2m1_bits(f64::NAN), None, "E2M1 has no NaN");
+        // Just below the boundary still rounds to max finite, not overflow.
+        assert_eq!(f64_to_e2m1_bits(6.9), Some(0x7));
+        assert_ne!(
+            f64_to_e2m1_bits(8.0),
+            Some(0x6),
+            "must not silently produce 4.0 the way the generic template would"
+        );
+    }
+
+    /// Round-to-nearest, ties-to-even on the mantissa bit.
+    #[test]
+    fn e2m1_rounds_to_nearest_ties_to_even() {
+        assert_eq!(f64_to_e2m1_bits(0.2), Some(0x0)); // -> 0.0
+        assert_eq!(f64_to_e2m1_bits(0.3), Some(0x1)); // -> 0.5
+        assert_eq!(f64_to_e2m1_bits(1.2), Some(0x2)); // -> 1.0
+        assert_eq!(f64_to_e2m1_bits(1.4), Some(0x3)); // -> 1.5
+                                                      // 5.0 is EQUIDISTANT between 4.0 and 6.0 -> ties-to-even -> 4.0.
+        assert_eq!(f64_to_e2m1_bits(5.0), Some(0x6));
+        // Exact ties land on the even encoding.
+        assert_eq!(f64_to_e2m1_bits(0.25), Some(0x0), "tie 0/0.5 -> 0.0");
+        assert_eq!(f64_to_e2m1_bits(2.5), Some(0x4), "tie 2/3 -> 2.0");
+        assert_eq!(f64_to_e2m1_bits(3.5), Some(0x6), "tie 3/4 -> 4.0");
+        // Sign is independent of magnitude selection.
+        assert_eq!(f64_to_e2m1_bits(-2.5), Some(0xC));
+        assert_eq!(f64_to_e2m1_bits(-5.0), Some(0xE));
     }
 }

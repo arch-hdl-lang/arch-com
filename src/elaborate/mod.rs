@@ -730,6 +730,7 @@ fn narrow_fmt_of_type(ty: &TypeExpr) -> Option<FloatLitFmt> {
         TypeExpr::BF16 => Some(FloatLitFmt::Bf16),
         TypeExpr::FP8E4M3 => Some(FloatLitFmt::E4m3),
         TypeExpr::FP8E5M2 => Some(FloatLitFmt::E5m2),
+        TypeExpr::FP4E2M1 => Some(FloatLitFmt::E2m1),
         // Vec-of-narrow-float: a literal in this signal's reset/init slot
         // (or an element assignment) targets the ELEMENT format — without
         // this, `reg h: Vec<BF16,2> reset rst => 0.5;` kept the literal as
@@ -932,6 +933,7 @@ fn coerce_narrow_lit(e: &mut Expr, fmt: FloatLitFmt, errors: &mut Vec<CompileErr
             FloatLitFmt::Fp32 => Some(crate::fp_lit::f64_to_fp32_bits(v) as u64),
             FloatLitFmt::E4m3 => crate::fp_lit::f64_to_e4m3_bits(v).map(|b| b as u64),
             FloatLitFmt::E5m2 => crate::fp_lit::f64_to_e5m2_bits(v).map(|b| b as u64),
+            FloatLitFmt::E2m1 => crate::fp_lit::f64_to_e2m1_bits(v).map(|b| b as u64),
         };
         match rounded {
             Some(bits8) => {

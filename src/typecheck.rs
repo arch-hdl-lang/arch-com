@@ -19,6 +19,7 @@ pub enum Ty {
     FP8E4M3,
     /// FP8 E5M2 (1+5+2 = 8 bits): IEEE-style (5,3) with infinities.
     FP8E5M2,
+    FP4E2M1,
     Clock(String),                // domain name
     Reset(ResetKind, ResetLevel), // always concrete (Param resolved during elaboration)
     Vec(Box<Ty>, u32),
@@ -36,7 +37,10 @@ impl Ty {
     /// rules and assignability — everything that works on the bit pattern
     /// regardless of whether operators exist.
     pub fn is_float(&self) -> bool {
-        matches!(self, Ty::FP32 | Ty::BF16 | Ty::FP8E4M3 | Ty::FP8E5M2)
+        matches!(
+            self,
+            Ty::FP32 | Ty::BF16 | Ty::FP8E4M3 | Ty::FP8E5M2 | Ty::FP4E2M1
+        )
     }
 
     /// Does this float carry an arithmetic surface (`+ - *`, `fma`,
@@ -59,6 +63,7 @@ impl Ty {
             Ty::BF16 => crate::fp_format::by_id(crate::fp_format::FpFormatId::Bf16).arith,
             Ty::FP8E4M3 => crate::fp_format::by_id(crate::fp_format::FpFormatId::E4m3).arith,
             Ty::FP8E5M2 => crate::fp_format::by_id(crate::fp_format::FpFormatId::E5m2).arith,
+            Ty::FP4E2M1 => crate::fp_format::by_id(crate::fp_format::FpFormatId::E2m1).arith,
             _ => false,
         }
     }
@@ -95,6 +100,7 @@ impl Ty {
             Ty::FP32 => Some(32),
             Ty::BF16 => Some(16),
             Ty::FP8E4M3 | Ty::FP8E5M2 => Some(8),
+            Ty::FP4E2M1 => Some(4),
             Ty::Enum(_, w) => Some(*w),
             Ty::Vec(inner, count) => inner.width().map(|w| w * count),
             Ty::Struct(_) | Ty::Bus(_) => None,
@@ -112,6 +118,7 @@ impl Ty {
             Ty::BF16 => "BF16".to_string(),
             Ty::FP8E4M3 => "FP8E4M3".to_string(),
             Ty::FP8E5M2 => "FP8E5M2".to_string(),
+            Ty::FP4E2M1 => "FP4E2M1".to_string(),
             Ty::Clock(d) => format!("Clock<{d}>"),
             Ty::Reset(k, l) => format!(
                 "Reset<{}, {}>",
@@ -2808,6 +2815,7 @@ impl<'a> TypeChecker<'a> {
             Ty::FP32 => Some(32),
             Ty::BF16 => Some(16),
             Ty::FP8E4M3 | Ty::FP8E5M2 => Some(8),
+            Ty::FP4E2M1 => Some(4),
             Ty::Enum(_, w) => Some(*w),
             Ty::Vec(inner, count) => self.type_total_width(inner).map(|w| w * count),
             Ty::Struct(name) => {
@@ -2837,6 +2845,7 @@ impl<'a> TypeChecker<'a> {
             TypeExpr::FP32 => Some(32),
             TypeExpr::BF16 => Some(16),
             TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Some(8),
+            TypeExpr::FP4E2M1 => Some(4),
             TypeExpr::Vec(inner, size) => {
                 let iw = self.type_expr_width(inner)?;
                 let n = eval_type_width_expr(size)?;
@@ -3630,6 +3639,7 @@ impl<'a> TypeChecker<'a> {
             TypeExpr::BF16 => Ty::BF16,
             TypeExpr::FP8E4M3 => Ty::FP8E4M3,
             TypeExpr::FP8E5M2 => Ty::FP8E5M2,
+            TypeExpr::FP4E2M1 => Ty::FP4E2M1,
             TypeExpr::Clock(domain) => Ty::Clock(domain.name.clone()),
             TypeExpr::Reset(kind, level) => Ty::Reset(*kind, *level),
             TypeExpr::Vec(inner, size_expr) => {
@@ -3889,6 +3899,7 @@ impl<'a> TypeChecker<'a> {
             // instead of a panic.
             Ty::FP8E4M3 => "FP8E4M3",
             Ty::FP8E5M2 => "FP8E5M2",
+            Ty::FP4E2M1 => "FP4E2M1",
             _ => unreachable!("is_float() covers exactly the float Tys above"),
         };
         match crate::pipelined_ops::lookup(name, profile, stages) {
@@ -4058,6 +4069,7 @@ impl<'a> TypeChecker<'a> {
                 // (arch#622/#624) — take that type directly.
                 LitKind::TypedFloat(FloatLitFmt::Fp32, _) => Ty::FP32,
                 LitKind::TypedFloat(FloatLitFmt::Bf16, _) => Ty::BF16,
+                LitKind::TypedFloat(FloatLitFmt::E2m1, _) => Ty::FP4E2M1,
                 LitKind::TypedFloat(FloatLitFmt::E4m3, _) => Ty::FP8E4M3,
                 LitKind::TypedFloat(FloatLitFmt::E5m2, _) => Ty::FP8E5M2,
             },
@@ -4424,10 +4436,23 @@ impl<'a> TypeChecker<'a> {
                     // encoding (OCP E2M1/E2M3/E3M2) cannot answer `is_nan`
                     // meaningfully, and a constant `false` would mislead.
                     if tx != Ty::Error && !tx.is_float_arith() {
-                        self.errors.push(CompileError::general(
-                            &format!("`is_nan(x)` requires a float operand, got {}", tx.display()),
-                            call_args[0].span,
-                        ));
+                        // Distinguish "not a float" from "a float with no NaN
+                        // encoding". Reporting E2M1 as a non-float would be
+                        // actively misleading — it IS a float; the concept of
+                        // NaN simply does not exist in it, which is why a
+                        // constant `false` would be the wrong answer too.
+                        let msg = if tx.is_float() {
+                            format!(
+                                "`is_nan(x)` is not available on {} — the format has no NaN \
+                                 encoding, so the question has no answer. Convert with \
+                                 `.to_fp32()` if you need to test a widened value",
+                                tx.display()
+                            )
+                        } else {
+                            format!("`is_nan(x)` requires a float operand, got {}", tx.display())
+                        };
+                        self.errors
+                            .push(CompileError::general(&msg, call_args[0].span));
                         return Ty::Error;
                     }
                     return Ty::Bool;
@@ -4854,7 +4879,10 @@ impl<'a> TypeChecker<'a> {
                 // (≤4-bit significands fit bf16's 8, and both fp8 exponent
                 // ranges sit inside bf16's) — implemented as widen-to-f32
                 // then narrow, both steps exact.
-                if matches!(base_ty, Ty::FP8E4M3 | Ty::FP8E5M2) {
+                // FP4E2M1 joins the same family: widening to f32 is exact
+                // (a 2-bit significand fits trivially), and E2M1 -> bf16 is
+                // exact for the same reason the fp8 cases are.
+                if matches!(base_ty, Ty::FP8E4M3 | Ty::FP8E5M2 | Ty::FP4E2M1) {
                     return target;
                 }
                 match &base_ty {
@@ -4894,11 +4922,11 @@ impl<'a> TypeChecker<'a> {
             // overflow applies (riscv non-saturating / cuda satfinite).
             // Cross-fp8 (e4m3 <-> e5m2) also composes exactly: the widen is
             // exact, one narrow rounds.
-            "to_fp8e4m3" | "to_fp8e5m2" => {
-                let target = if method.name == "to_fp8e4m3" {
-                    Ty::FP8E4M3
-                } else {
-                    Ty::FP8E5M2
+            "to_fp8e4m3" | "to_fp8e5m2" | "to_fp4e2m1" => {
+                let target = match method.name.as_str() {
+                    "to_fp8e4m3" => Ty::FP8E4M3,
+                    "to_fp4e2m1" => Ty::FP4E2M1,
+                    _ => Ty::FP8E5M2,
                 };
                 match &base_ty {
                     t if *t == target => {
@@ -4916,6 +4944,7 @@ impl<'a> TypeChecker<'a> {
                     | Ty::BF16
                     | Ty::FP8E4M3
                     | Ty::FP8E5M2
+                    | Ty::FP4E2M1
                     | Ty::UInt(_)
                     | Ty::SInt(_)
                     | Ty::Bool => target,

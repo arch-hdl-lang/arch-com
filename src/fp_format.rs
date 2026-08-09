@@ -40,6 +40,7 @@ pub enum FpFormatId {
     Bf16,
     E4m3,
     E5m2,
+    E2m1,
 }
 
 /// How a format encodes NaN.
@@ -147,6 +148,25 @@ pub const FORMATS: &[FpFormat] = &[
         nan_rule: NanRule::IeeeExpAllOnes,
         arith: true,
     },
+    FpFormat {
+        // OCP MX FP4 E2M1: no Inf, NO NaN, max finite 6.0, one subnormal
+        // (0.5). Storage-only — see `arith`.
+        id: FpFormatId::E2m1,
+        tag: "e2m1",
+        type_name: "FP4E2M1",
+        width: 4,
+        exp_bits: 2,
+        mant_bits: 1,
+        has_inf: false,
+        has_nan: false,
+        max_finite: 6.0,
+        nan_rule: NanRule::NoNan,
+        // No shipping GPU/accelerator ISA exposes scalar E2M1 arithmetic;
+        // PTX states e2m1 "must be used in a packed format" and that
+        // alternate formats "cannot be used as fundamental types". It is a
+        // block element, so it carries conversions and literals only.
+        arith: false,
+    },
 ];
 
 impl FpFormat {
@@ -203,6 +223,7 @@ pub fn by_lit_fmt(fmt: FloatLitFmt) -> &'static FpFormat {
         FloatLitFmt::Bf16 => FpFormatId::Bf16,
         FloatLitFmt::E4m3 => FpFormatId::E4m3,
         FloatLitFmt::E5m2 => FpFormatId::E5m2,
+        FloatLitFmt::E2m1 => FpFormatId::E2m1,
     })
 }
 
@@ -213,6 +234,7 @@ pub fn by_type_expr(ty: &TypeExpr) -> Option<&'static FpFormat> {
         TypeExpr::BF16 => FpFormatId::Bf16,
         TypeExpr::FP8E4M3 => FpFormatId::E4m3,
         TypeExpr::FP8E5M2 => FpFormatId::E5m2,
+        TypeExpr::FP4E2M1 => FpFormatId::E2m1,
         _ => return None,
     };
     Some(by_id(id))
@@ -240,6 +262,7 @@ mod tests {
             FpFormatId::Bf16,
             FpFormatId::E4m3,
             FpFormatId::E5m2,
+            FpFormatId::E2m1,
         ] {
             let rows = FORMATS.iter().filter(|f| f.id == id).count();
             assert_eq!(rows, 1, "expected exactly one row for {id:?}, got {rows}");
@@ -283,6 +306,7 @@ mod tests {
             FloatLitFmt::Bf16,
             FloatLitFmt::E4m3,
             FloatLitFmt::E5m2,
+            FloatLitFmt::E2m1,
         ] {
             let f = by_lit_fmt(fmt);
             assert_eq!(f.width, fmt.width(), "{}: width disagrees", f.tag);
@@ -300,6 +324,7 @@ mod tests {
             (TypeExpr::BF16, "bf16"),
             (TypeExpr::FP8E4M3, "e4m3"),
             (TypeExpr::FP8E5M2, "e5m2"),
+            (TypeExpr::FP4E2M1, "e2m1"),
         ] {
             let f = by_type_expr(&ty).expect("surface float type must have a row");
             assert_eq!(f.tag, tag);
@@ -314,7 +339,7 @@ mod tests {
             assert_eq!(width_of_tag(f.tag), Some(f.width));
         }
         assert_eq!(
-            width_of_tag("e2m1"),
+            width_of_tag("nosuchfmt"),
             None,
             "an unknown tag must be None, never a guessed width — guessing is \
              what made the old float_tag_width silently wrong"
@@ -336,14 +361,20 @@ mod tests {
                 _ => 8,
             }
         };
-        for f in FORMATS {
+        // Only the four formats that existed when the maps were written.
+        // A format added AFTER them is precisely what the old wildcards got
+        // wrong, so it must NOT agree — see the E2M1 assertion below.
+        for tag in ["f32", "bf16", "e4m3", "e5m2"] {
             assert_eq!(
-                width_of_tag(f.tag),
-                Some(old_tag_width(f.tag)),
-                "{}: table width must match the map it replaced",
-                f.tag
+                width_of_tag(tag),
+                Some(old_tag_width(tag)),
+                "{tag}: table width must match the map it replaced"
             );
         }
+        // The whole point of the table: the old `_ => 8` wildcard would have
+        // given E2M1 an 8-bit carrier. It is 4.
+        assert_eq!(width_of_tag("e2m1"), Some(4));
+        assert_eq!(old_tag_width("e2m1"), 8, "the bug this table removed");
 
         // Old `elaborate` literal-overflow table:
         //     match fmt { E4m3 => ("FP8E4M3", 448.0), _ => ("FP8E5M2", 57344.0) }
@@ -362,10 +393,11 @@ mod tests {
         // while every shipped format is arithmetic-capable — that is what
         // makes routing the `+ - *` / `fma` / `is_nan` gates through the new
         // predicate a no-op today.
+        // is_float() and is_float_arith() now genuinely differ, which is
+        // what makes `a + b` on E2M1 a clean type error.
         assert!(
-            FORMATS.iter().all(|f| f.arith),
-            "a storage-only format landed without updating the gates that \
-             assume is_float() == is_float_arith()"
+            FORMATS.iter().any(|f| !f.arith),
+            "the storage-only path is unexercised"
         );
     }
 
@@ -382,8 +414,15 @@ mod tests {
         assert!(e5m2.has_inf && e5m2.has_nan);
         assert_eq!(e5m2.max_finite, 57344.0);
 
-        // Every format shipped today carries a full operator surface; the
-        // flag exists for the storage-only sub-8-bit formats to come.
-        assert!(FORMATS.iter().all(|f| f.arith));
+        // FP4E2M1 is the first storage-only format: a carrier for
+        // conversions and literals with no operator surface at all.
+        let e2m1 = by_id(FpFormatId::E2m1);
+        assert!(!e2m1.arith, "E2M1 is storage-only");
+        assert!(!e2m1.has_nan, "E2M1 has no NaN encoding");
+        assert!(!e2m1.has_inf, "E2M1 has no infinity");
+        assert_eq!(e2m1.max_finite, 6.0);
+        assert_eq!(e2m1.nan_rule, NanRule::NoNan);
+        // Every 8-bit-or-wider format still carries full arithmetic.
+        assert!(FORMATS.iter().filter(|f| f.width >= 8).all(|f| f.arith));
     }
 }
