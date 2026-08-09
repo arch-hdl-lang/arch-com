@@ -1689,91 +1689,30 @@ impl<'a> Codegen<'a> {
                     UnaryOp::RedXor => format!("(^{o})"),
                 }
             }
-            ExprKind::MethodCall(base, method, args) => {
-                let b = self.emit_pipeline_stage_expr_str(
-                    base,
-                    current_prefix,
-                    current_stage_idx,
-                    stage_names,
-                    stage_regs,
-                    port_names,
-                );
-                match method.name.as_str() {
-                    "trunc" | "zext" => {
-                        if let Some(width) = args.first() {
-                            let w = self.emit_expr_str(width);
-                            let wp = Self::paren_width(&w);
-                            format!("{wp}'({b})")
-                        } else {
-                            b
-                        }
-                    }
-                    "sext" => {
-                        if let Some(width) = args.first() {
-                            let w = self.emit_expr_str(width);
-                            // `.sext()` treats the receiver's own MSB as the
-                            // sign bit regardless of the receiver's declared
-                            // signedness, so a `signed(...)`/`unsigned(...)`/
-                            // `as T` wrapper is inert here — unwrap it rather
-                            // than emitting `$bits($signed(...))` (Icarus does
-                            // not reliably accept a system-function call
-                            // nested inside `$bits`, arch#650) or indexing
-                            // straight into the cast result (same issue's
-                            // "indexed cast" pattern).
-                            let recv = Self::unwrap_reinterpret_cast(base);
-                            let rb = self.emit_pipeline_stage_expr_str(
-                                recv,
-                                current_prefix,
-                                current_stage_idx,
-                                stage_names,
-                                stage_regs,
-                                port_names,
-                            );
-                            format!("{{{{({w}-$bits({rb})){{{rb}[$bits({rb})-1]}}}}, {rb}}}")
-                        } else {
-                            b
-                        }
-                    }
-                    "resize" => {
-                        if let Some(width) = args.first() {
-                            let w = self.emit_expr_str(width);
-                            let wp = Self::paren_width(&w);
-                            // Bare size cast, no `$signed`/`$unsigned` wrapper —
-                            // the wrapper self-determines its argument (LRM
-                            // §11.6.1, §20.5), truncating e.g. `a * b` to
-                            // operand width BEFORE the cast widens. Must match
-                            // the canonical emission in mod.rs ("resize").
-                            format!("{wp}'({b})")
-                        } else {
-                            b
-                        }
-                    }
-                    "reverse" => {
-                        if let Some(chunk) = args.first() {
-                            // arch#808: prefer the Icarus-portable
-                            // chunked-concat lowering; receivers whose
-                            // width can't be resolved from the pipeline
-                            // AST keep the streaming form.
-                            if let Some(s) = self.try_emit_pipeline_reverse_chunked(
-                                base,
-                                chunk,
-                                &b,
-                                Some(current_stage_idx),
-                            ) {
-                                s
-                            } else {
-                                let c = self.emit_expr_str(chunk);
-                                format!("{{<<{c}{{{b}}}}}")
-                            }
-                        } else {
-                            b
-                        }
-                    }
-                    "any" | "all" | "count" | "contains" | "reduce_or" | "reduce_and"
-                    | "reduce_xor" | "find_first" => self.emit_vec_method(&b, base, method, args),
-                    _ => format!("{b}.{}()", method.name),
-                }
-            }
+            ExprKind::MethodCall(base, method, args) => self.emit_method_call_str(
+                base,
+                method,
+                args,
+                MethodCallHost::Pipeline,
+                &|e: &Expr| {
+                    self.emit_pipeline_stage_expr_str(
+                        e,
+                        current_prefix,
+                        current_stage_idx,
+                        stage_names,
+                        stage_regs,
+                        port_names,
+                    )
+                },
+                &|recv: &Expr, chunk: &Expr, emitted: &str| {
+                    self.try_emit_pipeline_reverse_chunked(
+                        recv,
+                        chunk,
+                        emitted,
+                        Some(current_stage_idx),
+                    )
+                },
+            ),
             ExprKind::Index(base, idx) => {
                 // Icarus portability (arch#650): unwrap a redundant
                 // `signed(...)`/`unsigned(...)`/`as T` wrapper before
@@ -2059,79 +1998,18 @@ impl<'a> Codegen<'a> {
                     UnaryOp::RedXor => format!("(^{o})"),
                 }
             }
-            ExprKind::MethodCall(base, method, args) => {
-                let b = self.emit_pipeline_expr_str(base, stage_names, stage_regs, port_names);
-                match method.name.as_str() {
-                    "trunc" | "zext" => {
-                        if let Some(width) = args.first() {
-                            let w = self.emit_expr_str(width);
-                            let wp = Self::paren_width(&w);
-                            format!("{wp}'({b})")
-                        } else {
-                            b
-                        }
-                    }
-                    "sext" => {
-                        if let Some(width) = args.first() {
-                            let w = self.emit_expr_str(width);
-                            // See the matching comment in
-                            // `emit_pipeline_stage_expr_str` (arch#650):
-                            // `.sext()` is indifferent to a
-                            // `signed(...)`/`unsigned(...)`/`as T` wrapper on
-                            // its receiver, and unwrapping it avoids both the
-                            // `$bits($signed(...))` and indexed-cast forms
-                            // Icarus does not reliably accept.
-                            let recv = Self::unwrap_reinterpret_cast(base);
-                            let rb = self.emit_pipeline_expr_str(
-                                recv,
-                                stage_names,
-                                stage_regs,
-                                port_names,
-                            );
-                            format!("{{{{({w}-$bits({rb})){{{rb}[$bits({rb})-1]}}}}, {rb}}}")
-                        } else {
-                            b
-                        }
-                    }
-                    "resize" => {
-                        if let Some(width) = args.first() {
-                            let w = self.emit_expr_str(width);
-                            let wp = Self::paren_width(&w);
-                            // Bare size cast, no `$signed`/`$unsigned` wrapper —
-                            // the wrapper self-determines its argument (LRM
-                            // §11.6.1, §20.5), truncating e.g. `a * b` to
-                            // operand width BEFORE the cast widens. Must match
-                            // the canonical emission in mod.rs ("resize").
-                            format!("{wp}'({b})")
-                        } else {
-                            b
-                        }
-                    }
-                    "reverse" => {
-                        if let Some(chunk) = args.first() {
-                            // arch#808: prefer the Icarus-portable
-                            // chunked-concat lowering; receivers whose
-                            // width can't be resolved from the pipeline
-                            // AST keep the streaming form. This emitter
-                            // has no current stage — ports (and explicit
-                            // `Stage.field` references) only.
-                            if let Some(s) =
-                                self.try_emit_pipeline_reverse_chunked(base, chunk, &b, None)
-                            {
-                                s
-                            } else {
-                                let c = self.emit_expr_str(chunk);
-                                format!("{{<<{c}{{{b}}}}}")
-                            }
-                        } else {
-                            b
-                        }
-                    }
-                    "any" | "all" | "count" | "contains" | "reduce_or" | "reduce_and"
-                    | "reduce_xor" | "find_first" => self.emit_vec_method(&b, base, method, args),
-                    _ => format!("{b}.{}()", method.name),
-                }
-            }
+            ExprKind::MethodCall(base, method, args) => self.emit_method_call_str(
+                base,
+                method,
+                args,
+                MethodCallHost::Pipeline,
+                &|e: &Expr| self.emit_pipeline_expr_str(e, stage_names, stage_regs, port_names),
+                // This emitter has no current stage — ports (and explicit
+                // `Stage.field` references) only.
+                &|recv: &Expr, chunk: &Expr, emitted: &str| {
+                    self.try_emit_pipeline_reverse_chunked(recv, chunk, emitted, None)
+                },
+            ),
             ExprKind::Index(base, idx) => {
                 // Icarus portability (arch#650) — see the matching comment in
                 // `emit_pipeline_stage_expr_str`.
