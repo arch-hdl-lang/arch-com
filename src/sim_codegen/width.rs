@@ -449,11 +449,14 @@ pub(super) fn type_is_signed_scalar(ty: &TypeExpr) -> bool {
 
 /// Floating-point format of a scalar TypeExpr, if any.
 pub(super) fn type_float_fmt(ty: &TypeExpr) -> Option<FpFmt> {
-    match ty {
-        TypeExpr::FP32 => Some(FpFmt::Fp32),
-        TypeExpr::BF16 => Some(FpFmt::Bf16),
-        TypeExpr::FP8E4M3 => Some(FpFmt::E4m3),
-        TypeExpr::FP8E5M2 => Some(FpFmt::E5m2),
-        _ => None,
-    }
+    // Membership comes from the canonical table so a float type cannot be
+    // a float everywhere except here; the FpFmt mapping stays explicit
+    // because FpFmt is the sim backend's own vocabulary.
+    let id = crate::fp_format::by_type_expr(ty)?.id;
+    Some(match id {
+        crate::fp_format::FpFormatId::Fp32 => FpFmt::Fp32,
+        crate::fp_format::FpFormatId::Bf16 => FpFmt::Bf16,
+        crate::fp_format::FpFormatId::E4m3 => FpFmt::E4m3,
+        crate::fp_format::FpFormatId::E5m2 => FpFmt::E5m2,
+    })
 }

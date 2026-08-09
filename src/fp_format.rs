@@ -42,6 +42,26 @@ pub enum FpFormatId {
     E5m2,
 }
 
+/// How a format encodes NaN.
+///
+/// This cannot be derived from the exponent/mantissa split alone: OCP E4M3
+/// spends its would-be Inf/NaN space on finite values and reserves exactly
+/// one NaN code, so it needs a different bit test from the IEEE-shaped
+/// formats. Hand-written per-backend NaN tables got this right for the four
+/// shipped formats but fell back to an IEEE test (at the *wrong* field
+/// offsets) for anything else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NanRule {
+    /// IEEE-shaped: exponent field all ones AND mantissa nonzero.
+    IeeeExpAllOnes,
+    /// OCP-shaped: a single NaN code with every magnitude bit set
+    /// (`S.1111.111` for E4M3). Sign is not part of the test.
+    OcpAllMagnitudeOnes,
+    /// No NaN encoding exists (OCP E2M1 / E2M3 / E3M2). `is_nan` on such a
+    /// format must be a compile error, never a constant `false`.
+    NoNan,
+}
+
 /// Everything the compiler needs to know about one floating-point format.
 #[derive(Debug, Clone, Copy)]
 pub struct FpFormat {
@@ -62,6 +82,8 @@ pub struct FpFormat {
     pub has_nan: bool,
     /// Largest finite magnitude, used for literal-overflow diagnostics.
     pub max_finite: f64,
+    /// How this format encodes NaN — drives every backend's `is_nan` test.
+    pub nan_rule: NanRule,
     /// Does this format carry a full arithmetic surface (`+ - *`, `fma`,
     /// compares)? A storage-only format is a carrier for conversions and
     /// literals but has no operators — see `Ty::is_float_arith`.
@@ -81,6 +103,7 @@ pub const FORMATS: &[FpFormat] = &[
         has_inf: true,
         has_nan: true,
         max_finite: 3.402_823_466_385_288_6e38,
+        nan_rule: NanRule::IeeeExpAllOnes,
         arith: true,
     },
     FpFormat {
@@ -93,6 +116,7 @@ pub const FORMATS: &[FpFormat] = &[
         has_inf: true,
         has_nan: true,
         max_finite: 3.389_531_389_251_535_5e38,
+        nan_rule: NanRule::IeeeExpAllOnes,
         arith: true,
     },
     FpFormat {
@@ -106,6 +130,7 @@ pub const FORMATS: &[FpFormat] = &[
         has_inf: false,
         has_nan: true,
         max_finite: 448.0,
+        nan_rule: NanRule::OcpAllMagnitudeOnes,
         arith: true,
     },
     FpFormat {
@@ -119,9 +144,40 @@ pub const FORMATS: &[FpFormat] = &[
         has_inf: true,
         has_nan: true,
         max_finite: 57344.0,
+        nan_rule: NanRule::IeeeExpAllOnes,
         arith: true,
     },
 ];
+
+impl FpFormat {
+    /// `(hi, lo)` bit indices of the exponent field.
+    ///
+    /// Derived, not tabulated, so it cannot drift from `width`/`mant_bits`:
+    /// f32 → (30, 23), bf16 → (14, 7), e4m3 → (6, 3), e5m2 → (6, 2).
+    pub fn exp_field(&self) -> (u32, u32) {
+        (self.width - 2, self.mant_bits)
+    }
+
+    /// `(hi, lo)` bit indices of the mantissa field, or `None` for a format
+    /// with no mantissa (an exponent-only scale type such as E8M0).
+    pub fn mant_field(&self) -> Option<(u32, u32)> {
+        if self.mant_bits == 0 {
+            None
+        } else {
+            Some((self.mant_bits - 1, 0))
+        }
+    }
+
+    /// `(hi, lo)` bit indices of the magnitude — everything but the sign.
+    pub fn magnitude_field(&self) -> (u32, u32) {
+        (self.width - 2, 0)
+    }
+
+    /// Width of the magnitude field in bits.
+    pub fn magnitude_bits(&self) -> u32 {
+        self.width - 1
+    }
+}
 
 /// Descriptor for a canonical id. Total by construction.
 pub fn by_id(id: FpFormatId) -> &'static FpFormat {
