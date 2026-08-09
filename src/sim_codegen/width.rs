@@ -137,7 +137,7 @@ pub(super) fn cpp_port_type_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> 
         // `_arch_fp.h` helpers, never C++ float operators on the storage.
         TypeExpr::FP32 => "uint32_t".to_string(),
         TypeExpr::BF16 => "uint16_t".to_string(),
-        TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => "uint8_t".to_string(),
+        TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 | TypeExpr::FP4E2M1 => "uint8_t".to_string(),
         TypeExpr::Named(n) => n.name.clone(),
         TypeExpr::Vec(_, _) => "uint32_t".to_string(),
     }
@@ -199,7 +199,7 @@ pub(super) fn cpp_internal_type_with_params(ty: &TypeExpr, params: &[ParamDecl])
         }
         TypeExpr::FP32 => "uint32_t".to_string(),
         TypeExpr::BF16 => "uint16_t".to_string(),
-        TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => "uint8_t".to_string(),
+        TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 | TypeExpr::FP4E2M1 => "uint8_t".to_string(),
         TypeExpr::Named(n) => n.name.clone(),
         TypeExpr::Vec(_, _) => "uint32_t".to_string(),
     }
@@ -323,6 +323,7 @@ pub(super) fn type_width_of(ty: &TypeExpr) -> u32 {
         TypeExpr::FP32 => 32,
         TypeExpr::BF16 => 16,
         TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => 8,
+        TypeExpr::FP4E2M1 => 4,
         TypeExpr::Vec(..) | TypeExpr::Named(_) => 0,
     }
 }
@@ -439,6 +440,7 @@ pub(super) fn type_bits_te_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> u
         TypeExpr::FP32 => 32,
         TypeExpr::BF16 => 16,
         TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => 8,
+        TypeExpr::FP4E2M1 => 4,
         _ => 32,
     }
 }
@@ -458,5 +460,6 @@ pub(super) fn type_float_fmt(ty: &TypeExpr) -> Option<FpFmt> {
         crate::fp_format::FpFormatId::Bf16 => FpFmt::Bf16,
         crate::fp_format::FpFormatId::E4m3 => FpFmt::E4m3,
         crate::fp_format::FpFormatId::E5m2 => FpFmt::E5m2,
+        crate::fp_format::FpFormatId::E2m1 => FpFmt::E2m1,
     })
 }

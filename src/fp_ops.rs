@@ -297,7 +297,24 @@ fn nan8_e5m2(p: FpCompat) -> u128 {
 /// value is still finite except at an all-ones mantissa) vs the IEEE rule
 /// (any result reaching the top exponent value overflows). `ovf_res` is the
 /// profile-dependent overflow result.
-fn fp8_round(eb: u32, mb: u32, ocp_top: bool, sign: &Bv, sig: &Bv, e0: &Bv, ovf_res: &Bv) -> Bv {
+/// How a narrow format spends its top exponent value — the only part of the
+/// rounder that differs between the formats it serves.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum TopBinade {
+    /// IEEE: the all-ones exponent is Inf/NaN, so reaching it is overflow.
+    Ieee,
+    /// OCP OFP8 E4M3: the all-ones exponent is finite EXCEPT for the
+    /// all-ones mantissa, which is the sole NaN. Overflow needs the
+    /// rounded magnitude to reach that slot.
+    OcpNanTop,
+    /// OCP FP4/FP6: no Inf and no NaN at all — the top binade is entirely
+    /// finite, so only exceeding it is overflow. Without this arm a 4-bit
+    /// format would take the IEEE rule and treat its two largest finite
+    /// values (4.0 and 6.0 for E2M1) as overflow.
+    AllFinite,
+}
+
+fn fp8_round(eb: u32, mb: u32, top: TopBinade, sign: &Bv, sig: &Bv, e0: &Bv, ovf_res: &Bv) -> Bv {
     let w = sig.width();
     let w2 = w + 2;
     let zsig = zext(sig, w2);
@@ -342,7 +359,7 @@ fn fp8_round(eb: u32, mb: u32, ocp_top: bool, sign: &Bv, sig: &Bv, e0: &Bv, ovf_
     let carry = is1(&extract(&kept, mb + 1, mb + 1));
     let biased_n = ite(&carry, &add(&biased, &cst(1, 16)), &biased);
     let kept_n = ite(&carry, &lshr(&kept, &cst(1, 16)), &kept);
-    let overflow = if ocp_top {
+    let overflow = if top == TopBinade::OcpNanTop {
         // OFP8: exponent value 15 is finite except with an all-ones mantissa
         // (that slot is NaN => rounded magnitude >= 480 overflows).
         or(
@@ -352,6 +369,9 @@ fn fp8_round(eb: u32, mb: u32, ocp_top: bool, sign: &Bv, sig: &Bv, e0: &Bv, ovf_
                 &eq(&extract(&kept_n, mb - 1, 0), &cst((1u128 << mb) - 1, mb)),
             ),
         )
+    } else if top == TopBinade::AllFinite {
+        // Every exponent value is finite; only going past the top overflows.
+        sge(&biased_n, &cst(max_expf + 1, 16))
     } else {
         sge(&biased_n, &cst(max_expf, 16))
     };
@@ -442,7 +462,7 @@ fn f32_to_e5m2(p: FpCompat) -> FpFn {
         FpCompat::Riscv => (inf8.clone(), inf8.clone()),
         FpCompat::Cuda => (max8.clone(), max8.clone()),
     };
-    let rounded = fp8_round(5, 2, false, s, &d.mant, &d.eunb, &ovf_res);
+    let rounded = fp8_round(5, 2, TopBinade::Ieee, s, &d.mant, &d.eunb, &ovf_res);
     let zero = concat(s, &cst(0, 7));
     let body = ite(
         &d.is_nan,
@@ -450,6 +470,63 @@ fn f32_to_e5m2(p: FpCompat) -> FpFn {
         &ite(&d.is_inf, &inf_res, &ite(&d.is_zero, &zero, &rounded)),
     );
     FpFn::new("arch_f32_to_e5m2", &[("x", 32)], 8, body)
+}
+
+// ── OCP MX FP4 E2M1 (storage-only) ───────────────────────────────────────
+// 1 sign + 2 exp (bias 1) + 1 mantissa. NO Inf, NO NaN — every one of the
+// 16 encodings is a finite value, and the whole set is
+// ±{0, 0.5, 1, 1.5, 2, 3, 4, 6}. Only widen/narrow are defined: no shipping
+// ISA exposes scalar E2M1 arithmetic (PTX: e2m1 "must be used in a packed
+// format"), so `Ty::is_float_arith` rejects operators at the type checker
+// and no arch_e2m1_{add,mul,...} exists to dispatch to.
+
+fn e2m1_to_f32() -> FpFn {
+    let h = var("h", 4);
+    let s = extract(&h, 3, 3);
+    let e = extract(&h, 2, 1);
+    let f = extract(&h, 0, 0);
+    let e_z = eq(&e, &cst(0, 2));
+    // value = sig2 * 2^e0, with sig2 = (e==0 ? 0f : 1f) as a 2-bit integer:
+    //   normal    (e>=1): (2+f) * 2^(e-2)
+    //   subnormal (e==0):     f * 2^-1
+    // Verified against all eight magnitudes.
+    let sig2 = ite(&e_z, &concat(&cst(0, 1), &f), &concat(&cst(1, 1), &f));
+    // normround's internals extract f32 fields and use 16-bit shift
+    // constants, so the significand must be widened the same way the fp8
+    // widens do (48 bits, value-preserving).
+    let sig48 = zext(&sig2, 48);
+    let e0 = ite(
+        &e_z,
+        &cst((1u128 << 16) - 1, 16), // -1
+        &sub(&zext(&e, 16), &cst(2, 16)),
+    );
+    let widened = normround(&s, &sig48, &e0); // exact: 2-bit significand
+    let zero32 = concat(&s, &cst(0, 31));
+    // No e_top arms: the top binade is finite, so there is nothing to
+    // special-case. Only ±0 needs its own answer.
+    let body = ite(&eq(&sig2, &cst(0, 2)), &zero32, &widened);
+    FpFn::new("arch_e2m1_to_f32", &[("h", 4)], 32, body)
+}
+
+fn f32_to_e2m1(p: FpCompat) -> FpFn {
+    let x = var("x", 32);
+    let d = decode(&x);
+    let s = &d.sign;
+    let max4 = concat(s, &cst(0x7, 3)); // ±6.0, the largest finite
+                                        // E2M1 has no NaN and no Inf to produce, so BOTH --fp-compat profiles
+                                        // saturate. This is the one place the profiles cannot differ: the
+                                        // encoding space simply has nowhere else to go. `p` is accepted for
+                                        // signature symmetry with the fp8 narrows and to keep the call site
+                                        // uniform.
+    let _ = p;
+    let rounded = fp8_round(2, 1, TopBinade::AllFinite, s, &d.mant, &d.eunb, &max4);
+    let zero = concat(s, &cst(0, 3));
+    let body = ite(
+        &or(&d.is_nan, &d.is_inf),
+        &max4,
+        &ite(&d.is_zero, &zero, &rounded),
+    );
+    FpFn::new("arch_f32_to_e2m1", &[("x", 32)], 4, body)
 }
 
 fn f32_to_e4m3(p: FpCompat) -> FpFn {
@@ -462,7 +539,7 @@ fn f32_to_e4m3(p: FpCompat) -> FpFn {
         FpCompat::Riscv => (nan8.clone(), nan8.clone()),
         FpCompat::Cuda => (max8.clone(), max8.clone()),
     };
-    let rounded = fp8_round(4, 3, true, s, &d.mant, &d.eunb, &ovf_res);
+    let rounded = fp8_round(4, 3, TopBinade::OcpNanTop, s, &d.mant, &d.eunb, &ovf_res);
     let zero = concat(s, &cst(0, 7));
     let body = ite(
         &d.is_nan,
@@ -1049,6 +1126,9 @@ pub fn fp_functions(p: FpCompat) -> Vec<FpFn> {
     v.push(f32_to_e5m2(p));
     v.push(e4m3_to_f32(p));
     v.push(f32_to_e4m3(p));
+    // Storage-only: widen/narrow only, no arithmetic wrappers.
+    v.push(e2m1_to_f32());
+    v.push(f32_to_e2m1(p));
     for (tag, widen, narrow) in [
         ("e5m2", "arch_e5m2_to_f32", "arch_f32_to_e5m2"),
         ("e4m3", "arch_e4m3_to_f32", "arch_f32_to_e4m3"),
@@ -1293,4 +1373,86 @@ pub fn lean_extra_functions(p: FpCompat) -> Vec<FpFn> {
         // exact-wide reference FMA, for the sticky-fold equivalence theorem
         fma_f32_ref(p),
     ]
+}
+
+#[cfg(test)]
+mod e2m1_ir_tests {
+    use super::*;
+    use crate::fp_ir::{cst, eval_bv};
+    use std::collections::HashMap;
+
+    fn call1(fns: &[FpFn], name: &str, arg: u128, aw: u32, rw: u32) -> u128 {
+        let node = crate::fp_ir::call(name, &[cst(arg, aw)], rw);
+        eval_bv(&node, &HashMap::new(), fns).expect("E2M1 helpers must be decidable")
+    }
+
+    /// The IR widen must agree with `fp_lit`'s reference decoder on every
+    /// one of the 16 encodings. These are two independent implementations —
+    /// a bit-vector DAG rendered to SV/SMT, and a table in Rust — so
+    /// agreement is real evidence rather than a tautology.
+    #[test]
+    fn e2m1_widen_matches_the_reference_on_all_16_encodings() {
+        let fns = fp_functions(crate::FpCompat::default());
+        for enc in 0u128..16 {
+            let got = call1(&fns, "arch_e2m1_to_f32", enc, 4, 32) as u32;
+            let want = crate::fp_lit::e2m1_bits_to_f64(enc as u8) as f32;
+            assert_eq!(
+                f32::from_bits(got),
+                want,
+                "widen({enc:#X}): IR gave {} want {want}",
+                f32::from_bits(got)
+            );
+            // -0.0 must keep its sign bit, not collapse to +0.0.
+            if enc == 0x8 {
+                assert_eq!(got, 0x8000_0000, "-0.0 must stay negative");
+            }
+        }
+    }
+
+    /// Narrowing is exhaustive over the value set plus the boundaries that
+    /// the all-finite overflow rule governs. With the IEEE rule instead,
+    /// 4.0 and 6.0 — E2M1's two largest FINITE values — would be treated as
+    /// overflow, which is exactly what `TopBinade::AllFinite` prevents.
+    #[test]
+    fn e2m1_narrow_saturates_and_keeps_the_top_binade_finite() {
+        let fns = fp_functions(crate::FpCompat::default());
+        let nar = |v: f32| call1(&fns, "arch_f32_to_e2m1", v.to_bits() as u128, 32, 4) as u8;
+        // Every representable value narrows to itself.
+        for enc in 0u8..16 {
+            let v = crate::fp_lit::e2m1_bits_to_f64(enc) as f32;
+            assert_eq!(nar(v), enc, "narrow({v}) should be {enc:#X}");
+        }
+        // The top binade is FINITE — the whole point of AllFinite.
+        assert_eq!(nar(4.0), 0x6);
+        assert_eq!(nar(6.0), 0x7);
+        // Round-to-nearest, ties-to-even, matching fp_lit.
+        assert_eq!(nar(2.5), 0x4, "tie 2/3 -> 2.0");
+        assert_eq!(nar(3.5), 0x6, "tie 3/4 -> 4.0");
+        assert_eq!(nar(0.25), 0x0, "tie 0/0.5 -> 0.0");
+        // 5.0 is EQUIDISTANT between 4.0 and 6.0; ties-to-even picks the
+        // even mantissa bit, i.e. 4.0. (An early draft of this test
+        // asserted 6.0 "nearer than 4" — it is not.)
+        assert_eq!(nar(5.0), 0x6);
+        // Runtime overflow SATURATES (no Inf/NaN exists to produce).
+        assert_eq!(nar(1e30), 0x7);
+        assert_eq!(nar(-1e30), 0xF);
+        assert_eq!(nar(f32::INFINITY), 0x7);
+        assert_eq!(nar(f32::NEG_INFINITY), 0xF);
+        assert_eq!(nar(f32::NAN), 0x7, "no NaN encoding: saturate");
+        // Underflow flushes to a signed zero.
+        assert_eq!(nar(1e-30), 0x0);
+        assert_eq!(nar(-1e-30), 0x8);
+    }
+
+    /// widen∘narrow is the identity on every encoding — the property a
+    /// block format depends on when it round-trips element data.
+    #[test]
+    fn e2m1_round_trips_through_f32() {
+        let fns = fp_functions(crate::FpCompat::default());
+        for enc in 0u128..16 {
+            let f32b = call1(&fns, "arch_e2m1_to_f32", enc, 4, 32);
+            let back = call1(&fns, "arch_f32_to_e2m1", f32b, 32, 4);
+            assert_eq!(back, enc, "round-trip failed for {enc:#X}");
+        }
+    }
 }

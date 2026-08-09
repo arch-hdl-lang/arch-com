@@ -2030,7 +2030,8 @@ impl Builder {
             | TypeExpr::FP32
             | TypeExpr::BF16
             | TypeExpr::FP8E4M3
-            | TypeExpr::FP8E5M2 => {}
+            | TypeExpr::FP8E5M2
+            | TypeExpr::FP4E2M1 => {}
             TypeExpr::Vec(inner, n) => {
                 self.walk_type(owner, scope, inner, span);
                 let rel = self.rel_for_span(n.span);

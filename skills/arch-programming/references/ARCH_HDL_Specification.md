@@ -313,6 +313,8 @@ The Arch type system enforces four independent safety dimensions simultaneously.
 
   **FP8E5M2**          8 bits               OCP OFP8 E5M2 (5-bit exponent, 2-bit mantissa; IEEE-style ±inf and NaN class, max finite 57344). Same op surface as FP32. See §3.8.
 
+  **FP4E2M1**          4 bits               OCP MX FP4 E2M1 (2-bit exponent, 1-bit mantissa; **no inf, no NaN**, max finite 6.0). **Storage-only**: conversions and literals only — no arithmetic, compares or `is_nan`. See §3.9.
+
   **Clock\<D\>**       1 bit                Carries clock-domain tag D. Cannot appear in arithmetic.
 
   **Reset\<Sync, High\|Low\>**    1 bit                Synchronous reset --- deasserted on the clock edge. Polarity defaults High.
@@ -742,7 +744,29 @@ let gt: Bool = a > b;         // ordered compare → Bool
 let nan: Bool = is_nan(a);
 ```
 
-**No implicit conversion.** Mixing distinct float formats (`FP32`, `BF16`, `FP8E4M3`, `FP8E5M2`), or float and integer, in an operator is a compile error; convert explicitly:
+**3.9 FP4E2M1 --- a storage-only block-element format**
+
+`FP4E2M1` is the OCP Microscaling (MX) FP4 element type: 1 sign + 2 exponent (bias 1) + 1 mantissa bit, emitted as `logic[3:0]`. It has **no infinity and no NaN encoding** — every one of its 16 codes is a finite value, and the complete value set is ±{0, 0.5, 1, 1.5, 2, 3, 4, 6}, with one subnormal (0.5) and max finite 6.0.
+
+Unlike every other float type in ARCH, `FP4E2M1` is **storage-only**: it carries values and converts, but has *no operator surface at all*. `a + b`, ordered compares and `is_nan(a)` are compile errors.
+
+That is not a v1 shortcut — it reflects the format. No shipping GPU or accelerator ISA exposes scalar E2M1 arithmetic: NVIDIA PTX states that `e2m1` values *"must be used in a packed format"* and that alternate data formats *"cannot be used as fundamental types"*, and across the whole ISA `e2m1` appears only as a `cvt` source/destination and as a block-scaled matrix operand. AMD's path has the same shape. E2M1 is a **block element**, not a scalar arithmetic type, and it becomes useful when paired with a shared scale (see the block-format proposal, `doc/proposal_mx_block_formats.md`).
+
+`is_nan` is refused rather than answered `false`, because the format cannot represent the concept — a constant answer would imply the question was meaningful.
+
+The idiom is widen → compute → narrow once:
+
+```arch
+let av: FP32 = a.to_fp32();          // exact: a 2-bit significand always fits
+comb y = (av * s).to_fp4e2m1(); end comb
+```
+
+**Conversions.** `.to_fp32()` widens exactly. `.to_fp4e2m1()` narrows with round-to-nearest-ties-to-even and **saturates** on overflow. Saturation is profile-independent here, unlike fp8 where `--fp-compat` selects between a NaN/inf result and `satfinite`: E2M1 has neither a NaN nor an infinity to produce, so saturation is the only representable behavior. Cross-format conversions compose through `FP32`, each step exact or singly rounded.
+
+**Literals.** A float literal in an `FP4E2M1` slot is rounded at compile time; one that **overflows is a compile error** (matching fp8), never a silently clamped constant. The bound is `|x| >= 7.0` — the round-to-nearest midpoint between max finite 6.0 and the next would-be value 8.0.
+
+
+**No implicit conversion.** Mixing distinct float formats (`FP32`, `BF16`, `FP8E4M3`, `FP8E5M2`, `FP4E2M1`), or float and integer, in an operator is a compile error; convert explicitly:
 
   - `x.to_fp32()` — `BF16`→`FP32` (exact widen) or `SInt<N>`/`UInt<N>`→`FP32` (RNE).
   - `x.to_bf16()` — `FP32`→`BF16` (round-to-nearest-even).

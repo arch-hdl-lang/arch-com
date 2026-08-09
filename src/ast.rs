@@ -1119,6 +1119,10 @@ pub enum TypeExpr {
     /// FP8 E5M2 (1 sign + 5 exp + 2 mant = 8 bits): IEEE-style (5,3)
     /// instantiation with infinities and a NaN class, max finite 57344.
     FP8E5M2,
+    /// OCP MX FP4 (1+2+1). Storage-only: no Inf, no NaN, max finite 6.0.
+    /// Element type of MXFP4/NVFP4 blocks; no shipping ISA exposes scalar
+    /// arithmetic on it, so it carries conversions and literals only.
+    FP4E2M1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1289,6 +1293,7 @@ pub enum FloatLitFmt {
     Bf16,
     E4m3,
     E5m2,
+    E2m1,
 }
 
 impl FloatLitFmt {
@@ -1299,6 +1304,7 @@ impl FloatLitFmt {
             FloatLitFmt::Bf16 => (8, 7),
             FloatLitFmt::E4m3 => (4, 3),
             FloatLitFmt::E5m2 => (5, 2),
+            FloatLitFmt::E2m1 => (2, 1),
         }
     }
 
@@ -1309,6 +1315,7 @@ impl FloatLitFmt {
             FloatLitFmt::Bf16 => 16,
             FloatLitFmt::E4m3 => 8,
             FloatLitFmt::E5m2 => 8,
+            FloatLitFmt::E2m1 => 4,
         }
     }
 }
