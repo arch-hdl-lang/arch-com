@@ -5173,6 +5173,11 @@ impl FormalCtx<'_> {
                 let parts: Option<Vec<NumVal>> =
                     es.iter().map(|p| self.replay_raw(p, t, m, fns)).collect();
                 let parts = parts?;
+                // Mirror the encoder: a singleton {a} passes the sole part
+                // through unchanged, keeping its signedness.
+                if parts.len() == 1 {
+                    return parts.into_iter().next();
+                }
                 let total: u32 = parts.iter().map(|p| p.width).sum();
                 if total > 64 {
                     return None;
@@ -5189,6 +5194,11 @@ impl FormalCtx<'_> {
                     return None;
                 }
                 let xt = self.replay_raw(x, t, m, fns)?;
+                // Mirror the encoder: {1{x}} passes the operand through
+                // unchanged, keeping its signedness.
+                if n_v == 1 {
+                    return Some(xt);
+                }
                 let total = xt.width.checked_mul(n_v as u32)?;
                 if total > 64 {
                     return None;
@@ -5820,6 +5830,65 @@ end module ReplayNot
             ctx.replay_check(prop, &m, 0, 1, 0, &fns),
             ReplayVerdict::Contradicted,
             "8-bit ~5 is 250: the property holds, so a sat claim contradicts"
+        );
+    }
+
+    #[test]
+    fn replay_preserves_signedness_through_singleton_concat_and_repeat() {
+        // The encoder passes a singleton {a} / {1{x}} through unchanged,
+        // keeping the operand's signed flag; the replay mirror used to fall
+        // into the general concat/repeat arms and force `signed: false`.
+        // With x=200, `{1{signed(x)}} > 1` is a bvsgt in the query
+        // (-56 > 1, false → violated → Confirmed), but a signedness-lossy
+        // replay does 200 > 1 unsigned (true → property holds) and
+        // manufactures a false Contradicted → EncodingUnsound.
+        let src = r#"
+module ReplaySignRep
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port x: in UInt<8>;
+  port o: out Bool;
+  comb o = {1{signed(x)}} > 1; end comb
+  assert pos: {1{signed(x)}} > 1;
+end module ReplaySignRep
+"#;
+        let (ast, symbols) = parse_and_resolve(src);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        let m = model(&[("x_0", 200), ("x_1", 200)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 1, 0, &fns),
+            ReplayVerdict::Confirmed(0),
+            "signed(200) as SInt<8> is -56: the signed compare is violated"
+        );
+        // And the property genuinely holds for a positive value — replay
+        // must agree with the encoder there too (Contradicted on a bogus
+        // sat claim), still through the signed compare.
+        let m = model(&[("x_0", 5), ("x_1", 5)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 1, 0, &fns),
+            ReplayVerdict::Contradicted
+        );
+
+        // Same divergence through the singleton-Concat shape {signed(x)}.
+        let src = r#"
+module ReplaySignCat
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port x: in UInt<8>;
+  port o: out Bool;
+  comb o = {signed(x)} > 1; end comb
+  assert pos: {signed(x)} > 1;
+end module ReplaySignCat
+"#;
+        let (ast, symbols) = parse_and_resolve(src);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        let m = model(&[("x_0", 200), ("x_1", 200)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 1, 0, &fns),
+            ReplayVerdict::Confirmed(0)
         );
     }
 
