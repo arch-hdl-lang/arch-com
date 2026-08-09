@@ -239,7 +239,7 @@ pub struct Codegen<'a> {
     /// affects SDC output — the SV `always_ff` for a multicycle reg is
     /// byte-identical to a plain reg.
     multicycle_regs: Vec<MulticycleReg>,
-    /// Icarus-portability (arch#650, extended by arch#807): pending
+    /// SV-frontend portability (arch#650, extended by arch#807/#810): pending
     /// `logic [W-1:0] name;` / `assign name = <expr>;` line pairs
     /// synthesized by two call sites when a base expression is not
     /// portable to emit bare/parenthesized on Icarus:
@@ -247,10 +247,12 @@ pub struct Codegen<'a> {
     ///   "portable" SV bit-select base (the same allowlist
     ///   `is_portable_bit_slice_base` enforces for `[hi:lo]`/`[start +:
     ///   w]`, spec §3.2.1) — e.g. an arithmetic expression `(a - b)[i]`.
-    /// - `hoist_concat_repeat_slice_base`, used by the `BitSlice`/
-    ///   `PartSelect` emitters for a `Concat`/`Repeat` base — portable per
+    /// - `hoist_slice_base`, used by the `BitSlice`/`PartSelect` emitters
+    ///   for a `Concat`/`Repeat` base (arch#807) or a
+    ///   `FunctionCall`/`MethodCall` base (arch#810) — all portable per
     ///   `is_portable_bit_slice_base` but rejected by Icarus 12.0 bare or
-    ///   parenthesized (arch#807).
+    ///   parenthesized, and the `MethodCall` size-cast shape
+    ///   (`8'(x)[hi:lo]`) rejected by Verilator too.
     /// Drained by `line()` so the hoisted temp's declaration+assignment
     /// land immediately before the statement that reads it, in module
     /// scope. `RefCell` because both call sites live inside `&self`
@@ -6345,30 +6347,57 @@ impl<'a> Codegen<'a> {
         id
     }
 
-    /// Icarus-portability (arch#807): a `Concat`/`Repeat` `BitSlice`/
-    /// `PartSelect` base (`{a,c}[hi:lo]`, `{N{a}}[start +: w]`, ...) is
-    /// classified portable by typecheck's `is_portable_bit_slice_base`
-    /// (spec §3.2.1), and Verilator accepts the bare form — but Icarus
-    /// 12.0 rejects it outright, bare *or* parenthesized. Issue #807 found
-    /// this empirically: PR #656's own repro (`{2{a}}[3:0]`) fails
-    /// `iverilog -g2012` with a syntax error, and the same holds for a
-    /// plain `Concat` base and for both the `[hi:lo]` and `[start +: w]`
-    /// forms. The spec text claiming iverilog acceptance was never
-    /// verified against a real iverilog binary when PR #656 shipped it —
-    /// only Verilator 5.048 was tested.
+    /// Portability hoist for a non-atomic `BitSlice`/`PartSelect` base
+    /// (`{a,c}[hi:lo]`, `{N{a}}[start +: w]`, `f(x)[hi:lo]`,
+    /// `x.trunc<N>()[hi:lo]`, ...). All of these base kinds are classified
+    /// portable by typecheck's `is_portable_bit_slice_base` (spec §3.2.1)
+    /// and were emitted bare — but no SV frontend actually accepts the
+    /// bare form for any of them:
     ///
-    /// Fix: hoist the `Concat`/`Repeat` base to a named module-scope temp,
-    /// the same "bind to a named `let`" strategy the spec already
-    /// recommends at the source level for non-portable bases, and the same
-    /// mechanism arch#650 uses for a non-atomic single-bit `Index` base.
+    /// - **`Concat`/`Repeat`** (arch#807): Icarus 12.0 rejects
+    ///   `{a,c}[hi:lo]`/`{N{a}}[hi:lo]` outright, bare *or* parenthesized;
+    ///   Verilator accepts. PR #656's own repro (`{2{a}}[3:0]`) fails
+    ///   `iverilog -g2012` with a syntax error. The spec text claiming
+    ///   iverilog acceptance was never verified against a real iverilog
+    ///   binary when PR #656 shipped it — only Verilator 5.048 was tested.
+    /// - **`FunctionCall`** (arch#810): Icarus 12.0 rejects
+    ///   `f(x)[hi:lo]`; Verilator accepts.
+    /// - **`MethodCall`** (arch#810): rejected by *both* frontends. The
+    ///   width-cast methods lower to an SV size cast — `x.trunc<8>()`
+    ///   emits `8'(x)`, `x.zext<16>()` emits `16'($unsigned(x))` — and
+    ///   neither Icarus 12.0 nor Verilator 5.048 accepts a select applied
+    ///   to a size cast (`%Error: syntax error, unexpected '['`). So this
+    ///   arm is not a portability nicety: without the hoist, `arch build`
+    ///   emits SystemVerilog that the project's primary simulator refuses
+    ///   to compile. `.reverse<C>()` is covered by the same arm — since
+    ///   PR #834 lowers it to a chunked ordinary concatenation, its result
+    ///   used as a slice base reintroduced exactly the bare-`{...}[hi:lo]`
+    ///   shape arch#807 fixed, because this guard keys on the *ARCH*
+    ///   `ExprKind`, not on the emitted SV shape.
+    ///
+    /// Fix: hoist the base to a named module-scope temp, the same "bind to
+    /// a named `let`" strategy the spec already recommends at the source
+    /// level for non-portable bases, and the same mechanism arch#650 uses
+    /// for a non-atomic single-bit `Index` base. The hoisted form was
+    /// verified to compile clean on both Icarus 12.0 and Verilator 5.048
+    /// for all three shapes.
+    ///
     /// Returns `None` (caller falls back to its prior bare-emission
-    /// behavior) for any other base kind, or when the base references a
-    /// live runtime `for`-loop variable — a module-scope temp can't see a
-    /// loop-local index, and Icarus doesn't support `logic` declarations
-    /// inside `always_*` blocks either (same reasoning as the `Index`
-    /// hoist's loop-var skip).
-    fn hoist_concat_repeat_slice_base(&self, base: &Expr) -> Option<String> {
-        if !matches!(base.kind, ExprKind::Concat(_) | ExprKind::Repeat(_, _)) {
+    /// behavior) for a base that *is* directly selectable
+    /// (`Ident`/`SynthIdent`/`Index`/`FieldAccess`, plus `Literal`, which
+    /// the `BitSlice` emitter const-folds before reaching here), or when
+    /// the base references a live runtime `for`-loop variable — a
+    /// module-scope temp can't see a loop-local index, and Icarus doesn't
+    /// support `logic` declarations inside `always_*` blocks either (same
+    /// reasoning as the `Index` hoist's loop-var skip).
+    fn hoist_slice_base(&self, base: &Expr) -> Option<String> {
+        if !matches!(
+            base.kind,
+            ExprKind::Concat(_)
+                | ExprKind::Repeat(_, _)
+                | ExprKind::FunctionCall(_, _)
+                | ExprKind::MethodCall(_, _, _)
+        ) {
             return None;
         }
         if !self.runtime_for_loop_vars.is_empty()
@@ -7083,13 +7112,14 @@ impl<'a> Codegen<'a> {
                         return format!("{width}'d{}", (v >> lo_v) & mask);
                     }
                 }
-                // Icarus-portability (arch#807): a `Concat`/`Repeat` base
-                // must be hoisted to a named module-scope temp rather than
-                // emitted bare — see `hoist_concat_repeat_slice_base` for
-                // why (Icarus 12.0 rejects `{a,c}[hi:lo]`/`{N{a}}[hi:lo]`
-                // outright, bare or parenthesized, contra the spec's old
-                // §3.2.1 claim that iverilog accepts the bare form).
-                let b = if let Some(tmp) = self.hoist_concat_repeat_slice_base(base) {
+                // Portability (arch#807, arch#810): a `Concat`/`Repeat`/
+                // `FunctionCall`/`MethodCall` base must be hoisted to a
+                // named module-scope temp rather than emitted bare — see
+                // `hoist_slice_base` for why (Icarus 12.0 rejects all four
+                // bare, contra the spec's old §3.2.1 claim that iverilog
+                // accepts them; Verilator additionally rejects the
+                // `MethodCall` size-cast shape `8'(x)[hi:lo]`).
+                let b = if let Some(tmp) = self.hoist_slice_base(base) {
                     tmp
                 } else {
                     let b = self.emit_expr_str(base);
@@ -7097,16 +7127,14 @@ impl<'a> Codegen<'a> {
                     // SynthIdent is a compiler-renamed bare identifier with the same
                     // semantics as Ident — no parens needed (Verilator rejects
                     // `(__name)[hi:lo]` as a syntax error).
-                    // FunctionCall / MethodCall result bit-select is
-                    // accepted bare; `(func())[hi:lo]` is rejected by
-                    // Verilator because bit-select doesn't compose with the
-                    // parenthesized expression — but `func()[hi:lo]` is
-                    // valid (function-call result is an "lvalue-like" form
-                    // per the SV grammar). NOTE: this has only been
-                    // verified against Verilator, not iverilog — see
-                    // arch#807's follow-on finding, filed separately, that
-                    // Icarus also rejects a `FunctionCall`/`MethodCall`
-                    // bit-slice base.
+                    // `FunctionCall`/`MethodCall` normally never reach here
+                    // — `hoist_slice_base` above claims them — but they do
+                    // when the base references a live runtime `for`-loop
+                    // variable and the hoist bails. Bare is still the best
+                    // available fallback there: `(func())[hi:lo]` is
+                    // rejected by *both* frontends (a select doesn't
+                    // compose with a parenthesized expression), whereas
+                    // `func()[hi:lo]` at least compiles on Verilator.
                     if matches!(
                         base.kind,
                         ExprKind::Ident(_)
@@ -7133,11 +7161,13 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::PartSelect(base, start, width, up) => {
-                // Icarus-portability (arch#807): same Concat/Repeat hoist as
-                // BitSlice above — `{a,c}[start +: w]`/`{N{a}}[start +: w]`
-                // is rejected by Icarus 12.0 (bare or parenthesized) despite
-                // being a portable `is_portable_bit_slice_base` base.
-                let b = if let Some(tmp) = self.hoist_concat_repeat_slice_base(base) {
+                // Portability (arch#807, arch#810): same hoist as BitSlice
+                // above — `{a,c}[start +: w]`, `{N{a}}[start +: w]`,
+                // `f(x)[start +: w]` are rejected by Icarus 12.0 (bare or
+                // parenthesized) and `8'(x)[start +: w]` by Verilator too,
+                // despite all being portable `is_portable_bit_slice_base`
+                // bases.
+                let b = if let Some(tmp) = self.hoist_slice_base(base) {
                     tmp
                 } else {
                     self.emit_expr_str(base)

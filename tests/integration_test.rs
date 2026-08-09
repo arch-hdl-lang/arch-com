@@ -34426,3 +34426,173 @@ fn test_concat_repeat_slice_hoist_behavioral_equivalence_verilator_and_iverilog(
         );
     }
 }
+
+// ---------------------------------------------------------------------
+// arch#810 — `FunctionCall`/`MethodCall` `BitSlice`/`PartSelect` base is
+// not portable either (found while building arch#807's empirical test
+// matrix). Same failure class as arch#807, different base kinds: both are
+// on typecheck's `is_portable_bit_slice_base` allowlist (spec §3.2.1) and
+// were emitted bare, but Icarus 12.0 rejects `f(x)[hi:lo]` and *both*
+// frontends reject the `MethodCall` size-cast shape `8'(x)[hi:lo]`
+// (`x.trunc<8>()`), so this one produced SV that Verilator refused to
+// compile at all.
+// ---------------------------------------------------------------------
+
+/// Emitted-shape check (no simulator required, so it runs on the PR gate
+/// where neither Verilator nor iverilog is installed): every
+/// `FunctionCall`/`MethodCall` slice base must be bound to an
+/// `arch_idx_base_<n>` temp and sliced through that temp, never emitted
+/// bare. `.reverse<C>()` is included because PR #834 lowers it to an
+/// ordinary chunked concatenation — its result as a slice base
+/// reintroduced the exact bare `{...}[hi:lo]` shape arch#807 fixed, since
+/// the hoist guard keys on the ARCH `ExprKind`, not the emitted SV shape.
+#[test]
+fn test_call_slice_bases_hoist() {
+    let cases: [(&str, &str, &str); 5] = [
+        (
+            "function Ident8(v: UInt<8>) -> UInt<8>\n  return v;\nend function Ident8\n\nmodule FuncBitSliceHoist\n  port a: in UInt<8>;\n  port y: out UInt<4>;\n  let y = Ident8(a)[5:2];\nend module FuncBitSliceHoist\n",
+            "assign arch_idx_base_0 = Ident8(a);",
+            "arch_idx_base_0[5:2]",
+        ),
+        (
+            "function Ident8(v: UInt<8>) -> UInt<8>\n  return v;\nend function Ident8\n\nmodule FuncPartSelectHoist\n  port a: in UInt<8>;\n  port y: out UInt<4>;\n  let y = Ident8(a)[2 +: 4];\nend module FuncPartSelectHoist\n",
+            "assign arch_idx_base_0 = Ident8(a);",
+            "arch_idx_base_0[2 +: 4]",
+        ),
+        (
+            "module TruncBitSliceHoist\n  port w: in UInt<16>;\n  port y: out UInt<4>;\n  let y = w.trunc<8>()[5:2];\nend module TruncBitSliceHoist\n",
+            "assign arch_idx_base_0 = 8'(w);",
+            "arch_idx_base_0[5:2]",
+        ),
+        (
+            "module ZextPartSelectHoist\n  port b: in UInt<4>;\n  port y: out UInt<4>;\n  let y = b.zext<8>()[2 +: 4];\nend module ZextPartSelectHoist\n",
+            "assign arch_idx_base_0 = 8'($unsigned(b));",
+            "arch_idx_base_0[2 +: 4]",
+        ),
+        (
+            "module ReverseBitSliceHoist\n  port a: in UInt<8>;\n  port y: out UInt<4>;\n  let y = a.reverse<1>()[5:2];\nend module ReverseBitSliceHoist\n",
+            "assign arch_idx_base_0 = {a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]};",
+            "arch_idx_base_0[5:2]",
+        ),
+    ];
+    for (source, expected_assign, expected_use) in cases {
+        let sv = compile_to_sv(source);
+        assert!(
+            sv.contains(expected_assign),
+            "expected hoisted assign `{expected_assign}`, got:\n{sv}"
+        );
+        assert!(
+            sv.contains(expected_use),
+            "expected slice through hoist temp `{expected_use}`, got:\n{sv}"
+        );
+    }
+}
+
+/// Dual-simulator behavioral check (arch#810): the hoisted-temp emission
+/// must not just *compile* on both simulators, it must agree with ARCH's
+/// own semantics on actual values, across `FunctionCall`, the size-cast
+/// `MethodCall`s (`.trunc`/`.zext`) and the concat-lowered `.reverse`, in
+/// both the `[hi:lo]` and `[start +: w]` forms. Skips gracefully if
+/// neither simulator is installed.
+#[test]
+fn test_call_slice_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#810 call slice-base dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("CallSliceHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/CallSliceHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build CallSliceHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("call_slice.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_call_slice_hoist.sv")
+            .output()
+            .expect("iverilog compile CallSliceHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#810 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog CallSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm call slice-base semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_call_slice");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("CallSliceHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_call_slice_hoist_verilator.cpp")
+            .output()
+            .expect("verilate CallSliceHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass (arch#810 regression: `8'(x)[hi:lo]` \
+             was rejected by Verilator too, not just Icarus)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VCallSliceHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator CallSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm call slice-base semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
