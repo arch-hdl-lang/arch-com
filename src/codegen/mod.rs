@@ -2169,6 +2169,8 @@ impl<'a> Codegen<'a> {
                 "to_fp8e4m3" => Some("e4m3"),
                 "to_fp8e5m2" => Some("e5m2"),
                 "to_fp4e2m1" => Some("e2m1"),
+                "to_fp6e2m3" => Some("e2m3"),
+                "to_fp6e3m2" => Some("e3m2"),
                 _ => None,
             },
             ExprKind::FunctionCall(name, args) if name == "fma" => {
@@ -2728,6 +2730,7 @@ impl<'a> Codegen<'a> {
             TypeExpr::BF16 => Some("16".to_string()),
             TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Some("8".to_string()),
             TypeExpr::FP4E2M1 => Some("4".to_string()),
+            TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Some("6".to_string()),
             TypeExpr::Vec(inner, size) => {
                 let iw = self.type_expr_data_width(inner)?;
                 let n = self.emit_expr_str(size);
@@ -5733,6 +5736,7 @@ impl<'a> Codegen<'a> {
             TypeExpr::BF16 => Some(16),
             TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Some(8),
             TypeExpr::FP4E2M1 => Some(4),
+            TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Some(6),
             TypeExpr::Vec(inner, size) => {
                 let iw = self.type_expr_width(inner)?;
                 let n = eval(size)?;
@@ -6700,6 +6704,7 @@ impl<'a> Codegen<'a> {
                     FloatLitFmt::Bf16 => format!("16'h{bits:04X}"),
                     FloatLitFmt::E4m3 | FloatLitFmt::E5m2 => format!("8'h{bits:02X}"),
                     FloatLitFmt::E2m1 => format!("4'h{bits:01X}"),
+                    FloatLitFmt::E2m3 | FloatLitFmt::E3m2 => format!("6'h{bits:02X}"),
                 },
             },
             ExprKind::Bool(true) => "1'b1".to_string(),
@@ -7041,6 +7046,8 @@ impl<'a> Codegen<'a> {
                             Some("e4m3") => format!("arch_e4m3_to_f32({b})"),
                             Some("e5m2") => format!("arch_e5m2_to_f32({b})"),
                             Some("e2m1") => format!("arch_e2m1_to_f32({b})"),
+                            Some("e2m3") => format!("arch_e2m3_to_f32({b})"),
+                            Some("e3m2") => format!("arch_e3m2_to_f32({b})"),
                             Some("f32") => b,
                             _ => {
                                 // int -> f32 (RNE) via the synthesizable helper.
@@ -7062,6 +7069,8 @@ impl<'a> Codegen<'a> {
                             Some("e4m3") => format!("arch_f32_to_bf16(arch_e4m3_to_f32({b}))"),
                             Some("e5m2") => format!("arch_f32_to_bf16(arch_e5m2_to_f32({b}))"),
                             Some("e2m1") => format!("arch_f32_to_bf16(arch_e2m1_to_f32({b}))"),
+                            Some("e2m3") => format!("arch_f32_to_bf16(arch_e2m3_to_f32({b}))"),
+                            Some("e3m2") => format!("arch_f32_to_bf16(arch_e3m2_to_f32({b}))"),
                             _ => {
                                 // int -> f32 (RNE) -> bf16 (RNE). DECLARED semantics
                                 // (issue #629, resolved as f32-routed / VR(f32)):
@@ -7086,11 +7095,13 @@ impl<'a> Codegen<'a> {
                             }
                         }
                     }
-                    "to_fp8e4m3" | "to_fp8e5m2" | "to_fp4e2m1" => {
+                    "to_fp8e4m3" | "to_fp8e5m2" | "to_fp4e2m1" | "to_fp6e2m3" | "to_fp6e3m2" => {
                         self.fp_helpers_used.set(true);
                         let (narrow, tgt) = match method.name.as_str() {
                             "to_fp8e4m3" => ("arch_f32_to_e4m3", "e4m3"),
                             "to_fp4e2m1" => ("arch_f32_to_e2m1", "e2m1"),
+                            "to_fp6e2m3" => ("arch_f32_to_e2m3", "e2m3"),
+                            "to_fp6e3m2" => ("arch_f32_to_e3m2", "e3m2"),
                             _ => ("arch_f32_to_e5m2", "e5m2"),
                         };
                         match self.expr_float_fmt(base) {
@@ -7101,6 +7112,8 @@ impl<'a> Codegen<'a> {
                             Some("e4m3") => format!("{narrow}(arch_e4m3_to_f32({b}))"),
                             Some("e5m2") => format!("{narrow}(arch_e5m2_to_f32({b}))"),
                             Some("e2m1") => format!("{narrow}(arch_e2m1_to_f32({b}))"),
+                            Some("e2m3") => format!("{narrow}(arch_e2m3_to_f32({b}))"),
+                            Some("e3m2") => format!("{narrow}(arch_e3m2_to_f32({b}))"),
                             // Integers: int -> f32 (exact for the fp8-relevant
                             // range, far below 2^24) -> one fp8 rounding — CR.
                             _ => {
@@ -7603,6 +7616,7 @@ impl<'a> Codegen<'a> {
             TypeExpr::BF16 => "logic [15:0]".to_string(),
             TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => "logic [7:0]".to_string(),
             TypeExpr::FP4E2M1 => "logic [3:0]".to_string(),
+            TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => "logic [5:0]".to_string(),
             TypeExpr::Clock(_) => "logic".to_string(),
             TypeExpr::Reset(_, _) => "logic".to_string(),
             TypeExpr::Vec(_, _) => {

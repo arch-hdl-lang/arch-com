@@ -578,6 +578,8 @@ fn type_str(ty: &TypeExpr) -> String {
         TypeExpr::FP8E4M3 => "FP8E4M3".to_string(),
         TypeExpr::FP8E5M2 => "FP8E5M2".to_string(),
         TypeExpr::FP4E2M1 => "FP4E2M1".to_string(),
+        TypeExpr::FP6E2M3 => "FP6E2M3".to_string(),
+        TypeExpr::FP6E3M2 => "FP6E3M2".to_string(),
         TypeExpr::Clock(domain) => format!("Clock<{}>", domain.name),
         TypeExpr::Reset(kind, level) => {
             let k = match kind {
@@ -625,6 +627,8 @@ pub(crate) fn expr_str(expr: &Expr) -> String {
                     FloatLitFmt::E4m3 => crate::fp_lit::e4m3_bits_to_f64(*bits as u8),
                     FloatLitFmt::E5m2 => crate::fp_lit::e5m2_bits_to_f64(*bits as u8),
                     FloatLitFmt::E2m1 => crate::fp_lit::e2m1_bits_to_f64(*bits as u8),
+                    FloatLitFmt::E2m3 => crate::fp_lit::e2m3_bits_to_f64(*bits as u8),
+                    FloatLitFmt::E3m2 => crate::fp_lit::e3m2_bits_to_f64(*bits as u8),
                 };
                 if v.fract() == 0.0 {
                     format!("{v:.1}")

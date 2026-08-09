@@ -2141,7 +2141,9 @@ impl<'a> FormalCtx<'a> {
             | TypeExpr::BF16
             | TypeExpr::FP8E4M3
             | TypeExpr::FP8E5M2
-            | TypeExpr::FP4E2M1 => Ok(()),
+            | TypeExpr::FP4E2M1
+            | TypeExpr::FP6E2M3
+            | TypeExpr::FP6E3M2 => Ok(()),
             TypeExpr::Vec(_, _) => Err(CompileError::general(
                 "Vec types are not supported by `arch formal` v1 — use scalars",
                 span,
@@ -2159,6 +2161,7 @@ impl<'a> FormalCtx<'a> {
             TypeExpr::BF16 => Ok((16, false)),
             TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Ok((8, false)),
             TypeExpr::FP4E2M1 => Ok((4, false)),
+            TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Ok((6, false)),
             TypeExpr::UInt(w) => {
                 let width = fold_const_expr(w, &self.params).ok_or_else(|| {
                     CompileError::general(
@@ -2807,6 +2810,8 @@ impl<'a> FormalCtx<'a> {
                 crate::ast::FloatLitFmt::E4m3 => "e4m3",
                 crate::ast::FloatLitFmt::E5m2 => "e5m2",
                 crate::ast::FloatLitFmt::E2m1 => "e2m1",
+                crate::ast::FloatLitFmt::E2m3 => "e2m3",
+                crate::ast::FloatLitFmt::E3m2 => "e3m2",
             }),
             Binary(op, l, r) => match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul => {
@@ -3532,6 +3537,8 @@ impl<'a> FormalCtx<'a> {
                     crate::ast::FloatLitFmt::E4m3 => crate::fp_lit::e4m3_bits_to_f64(*bits as u8),
                     crate::ast::FloatLitFmt::E5m2 => crate::fp_lit::e5m2_bits_to_f64(*bits as u8),
                     crate::ast::FloatLitFmt::E2m1 => crate::fp_lit::e2m1_bits_to_f64(*bits as u8),
+                    crate::ast::FloatLitFmt::E2m3 => crate::fp_lit::e2m3_bits_to_f64(*bits as u8),
+                    crate::ast::FloatLitFmt::E3m2 => crate::fp_lit::e3m2_bits_to_f64(*bits as u8),
                 };
                 Ok(gappa_real(v))
             }
@@ -3966,6 +3973,8 @@ fn lit_f64(e: &Expr) -> Option<f64> {
             crate::ast::FloatLitFmt::E4m3 => crate::fp_lit::e4m3_bits_to_f64(*b as u8),
             crate::ast::FloatLitFmt::E5m2 => crate::fp_lit::e5m2_bits_to_f64(*b as u8),
             crate::ast::FloatLitFmt::E2m1 => crate::fp_lit::e2m1_bits_to_f64(*b as u8),
+            crate::ast::FloatLitFmt::E2m3 => crate::fp_lit::e2m3_bits_to_f64(*b as u8),
+            crate::ast::FloatLitFmt::E3m2 => crate::fp_lit::e3m2_bits_to_f64(*b as u8),
         }),
         ExprKind::Literal(LitKind::Dec(v)) => Some(*v as f64),
         _ => None,

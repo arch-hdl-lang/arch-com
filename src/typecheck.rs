@@ -20,6 +20,8 @@ pub enum Ty {
     /// FP8 E5M2 (1+5+2 = 8 bits): IEEE-style (5,3) with infinities.
     FP8E5M2,
     FP4E2M1,
+    FP6E2M3,
+    FP6E3M2,
     Clock(String),                // domain name
     Reset(ResetKind, ResetLevel), // always concrete (Param resolved during elaboration)
     Vec(Box<Ty>, u32),
@@ -39,7 +41,13 @@ impl Ty {
     pub fn is_float(&self) -> bool {
         matches!(
             self,
-            Ty::FP32 | Ty::BF16 | Ty::FP8E4M3 | Ty::FP8E5M2 | Ty::FP4E2M1
+            Ty::FP32
+                | Ty::BF16
+                | Ty::FP8E4M3
+                | Ty::FP8E5M2
+                | Ty::FP4E2M1
+                | Ty::FP6E2M3
+                | Ty::FP6E3M2
         )
     }
 
@@ -64,6 +72,8 @@ impl Ty {
             Ty::FP8E4M3 => crate::fp_format::by_id(crate::fp_format::FpFormatId::E4m3).arith,
             Ty::FP8E5M2 => crate::fp_format::by_id(crate::fp_format::FpFormatId::E5m2).arith,
             Ty::FP4E2M1 => crate::fp_format::by_id(crate::fp_format::FpFormatId::E2m1).arith,
+            Ty::FP6E2M3 => crate::fp_format::by_id(crate::fp_format::FpFormatId::E2m3).arith,
+            Ty::FP6E3M2 => crate::fp_format::by_id(crate::fp_format::FpFormatId::E3m2).arith,
             _ => false,
         }
     }
@@ -101,6 +111,7 @@ impl Ty {
             Ty::BF16 => Some(16),
             Ty::FP8E4M3 | Ty::FP8E5M2 => Some(8),
             Ty::FP4E2M1 => Some(4),
+            Ty::FP6E2M3 | Ty::FP6E3M2 => Some(6),
             Ty::Enum(_, w) => Some(*w),
             Ty::Vec(inner, count) => inner.width().map(|w| w * count),
             Ty::Struct(_) | Ty::Bus(_) => None,
@@ -119,6 +130,8 @@ impl Ty {
             Ty::FP8E4M3 => "FP8E4M3".to_string(),
             Ty::FP8E5M2 => "FP8E5M2".to_string(),
             Ty::FP4E2M1 => "FP4E2M1".to_string(),
+            Ty::FP6E2M3 => "FP6E2M3".to_string(),
+            Ty::FP6E3M2 => "FP6E3M2".to_string(),
             Ty::Clock(d) => format!("Clock<{d}>"),
             Ty::Reset(k, l) => format!(
                 "Reset<{}, {}>",
@@ -2816,6 +2829,7 @@ impl<'a> TypeChecker<'a> {
             Ty::BF16 => Some(16),
             Ty::FP8E4M3 | Ty::FP8E5M2 => Some(8),
             Ty::FP4E2M1 => Some(4),
+            Ty::FP6E2M3 | Ty::FP6E3M2 => Some(6),
             Ty::Enum(_, w) => Some(*w),
             Ty::Vec(inner, count) => self.type_total_width(inner).map(|w| w * count),
             Ty::Struct(name) => {
@@ -2846,6 +2860,7 @@ impl<'a> TypeChecker<'a> {
             TypeExpr::BF16 => Some(16),
             TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Some(8),
             TypeExpr::FP4E2M1 => Some(4),
+            TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Some(6),
             TypeExpr::Vec(inner, size) => {
                 let iw = self.type_expr_width(inner)?;
                 let n = eval_type_width_expr(size)?;
@@ -3640,6 +3655,8 @@ impl<'a> TypeChecker<'a> {
             TypeExpr::FP8E4M3 => Ty::FP8E4M3,
             TypeExpr::FP8E5M2 => Ty::FP8E5M2,
             TypeExpr::FP4E2M1 => Ty::FP4E2M1,
+            TypeExpr::FP6E2M3 => Ty::FP6E2M3,
+            TypeExpr::FP6E3M2 => Ty::FP6E3M2,
             TypeExpr::Clock(domain) => Ty::Clock(domain.name.clone()),
             TypeExpr::Reset(kind, level) => Ty::Reset(*kind, *level),
             TypeExpr::Vec(inner, size_expr) => {
@@ -3900,6 +3917,8 @@ impl<'a> TypeChecker<'a> {
             Ty::FP8E4M3 => "FP8E4M3",
             Ty::FP8E5M2 => "FP8E5M2",
             Ty::FP4E2M1 => "FP4E2M1",
+            Ty::FP6E2M3 => "FP6E2M3",
+            Ty::FP6E3M2 => "FP6E3M2",
             _ => unreachable!("is_float() covers exactly the float Tys above"),
         };
         match crate::pipelined_ops::lookup(name, profile, stages) {
@@ -4070,6 +4089,8 @@ impl<'a> TypeChecker<'a> {
                 LitKind::TypedFloat(FloatLitFmt::Fp32, _) => Ty::FP32,
                 LitKind::TypedFloat(FloatLitFmt::Bf16, _) => Ty::BF16,
                 LitKind::TypedFloat(FloatLitFmt::E2m1, _) => Ty::FP4E2M1,
+                LitKind::TypedFloat(FloatLitFmt::E2m3, _) => Ty::FP6E2M3,
+                LitKind::TypedFloat(FloatLitFmt::E3m2, _) => Ty::FP6E3M2,
                 LitKind::TypedFloat(FloatLitFmt::E4m3, _) => Ty::FP8E4M3,
                 LitKind::TypedFloat(FloatLitFmt::E5m2, _) => Ty::FP8E5M2,
             },
@@ -4882,7 +4903,10 @@ impl<'a> TypeChecker<'a> {
                 // FP4E2M1 joins the same family: widening to f32 is exact
                 // (a 2-bit significand fits trivially), and E2M1 -> bf16 is
                 // exact for the same reason the fp8 cases are.
-                if matches!(base_ty, Ty::FP8E4M3 | Ty::FP8E5M2 | Ty::FP4E2M1) {
+                if matches!(
+                    base_ty,
+                    Ty::FP8E4M3 | Ty::FP8E5M2 | Ty::FP4E2M1 | Ty::FP6E2M3 | Ty::FP6E3M2
+                ) {
                     return target;
                 }
                 match &base_ty {
@@ -4922,10 +4946,12 @@ impl<'a> TypeChecker<'a> {
             // overflow applies (riscv non-saturating / cuda satfinite).
             // Cross-fp8 (e4m3 <-> e5m2) also composes exactly: the widen is
             // exact, one narrow rounds.
-            "to_fp8e4m3" | "to_fp8e5m2" | "to_fp4e2m1" => {
+            "to_fp8e4m3" | "to_fp8e5m2" | "to_fp4e2m1" | "to_fp6e2m3" | "to_fp6e3m2" => {
                 let target = match method.name.as_str() {
                     "to_fp8e4m3" => Ty::FP8E4M3,
                     "to_fp4e2m1" => Ty::FP4E2M1,
+                    "to_fp6e2m3" => Ty::FP6E2M3,
+                    "to_fp6e3m2" => Ty::FP6E3M2,
                     _ => Ty::FP8E5M2,
                 };
                 match &base_ty {
@@ -4945,6 +4971,8 @@ impl<'a> TypeChecker<'a> {
                     | Ty::FP8E4M3
                     | Ty::FP8E5M2
                     | Ty::FP4E2M1
+                    | Ty::FP6E2M3
+                    | Ty::FP6E3M2
                     | Ty::UInt(_)
                     | Ty::SInt(_)
                     | Ty::Bool => target,

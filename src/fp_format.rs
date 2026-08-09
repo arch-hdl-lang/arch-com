@@ -41,6 +41,8 @@ pub enum FpFormatId {
     E4m3,
     E5m2,
     E2m1,
+    E2m3,
+    E3m2,
 }
 
 /// How a format encodes NaN.
@@ -167,6 +169,34 @@ pub const FORMATS: &[FpFormat] = &[
         // block element, so it carries conversions and literals only.
         arith: false,
     },
+    FpFormat {
+        // OCP MX FP6 E2M3: no Inf, no NaN, max finite 7.5. Storage-only.
+        id: FpFormatId::E2m3,
+        tag: "e2m3",
+        type_name: "FP6E2M3",
+        width: 6,
+        exp_bits: 2,
+        mant_bits: 3,
+        has_inf: false,
+        has_nan: false,
+        max_finite: 7.5,
+        nan_rule: NanRule::NoNan,
+        arith: false,
+    },
+    FpFormat {
+        // OCP MX FP6 E3M2: no Inf, no NaN, max finite 28.0. Storage-only.
+        id: FpFormatId::E3m2,
+        tag: "e3m2",
+        type_name: "FP6E3M2",
+        width: 6,
+        exp_bits: 3,
+        mant_bits: 2,
+        has_inf: false,
+        has_nan: false,
+        max_finite: 28.0,
+        nan_rule: NanRule::NoNan,
+        arith: false,
+    },
 ];
 
 impl FpFormat {
@@ -224,6 +254,8 @@ pub fn by_lit_fmt(fmt: FloatLitFmt) -> &'static FpFormat {
         FloatLitFmt::E4m3 => FpFormatId::E4m3,
         FloatLitFmt::E5m2 => FpFormatId::E5m2,
         FloatLitFmt::E2m1 => FpFormatId::E2m1,
+        FloatLitFmt::E2m3 => FpFormatId::E2m3,
+        FloatLitFmt::E3m2 => FpFormatId::E3m2,
     })
 }
 
@@ -235,6 +267,8 @@ pub fn by_type_expr(ty: &TypeExpr) -> Option<&'static FpFormat> {
         TypeExpr::FP8E4M3 => FpFormatId::E4m3,
         TypeExpr::FP8E5M2 => FpFormatId::E5m2,
         TypeExpr::FP4E2M1 => FpFormatId::E2m1,
+        TypeExpr::FP6E2M3 => FpFormatId::E2m3,
+        TypeExpr::FP6E3M2 => FpFormatId::E3m2,
         _ => return None,
     };
     Some(by_id(id))
@@ -263,6 +297,8 @@ mod tests {
             FpFormatId::E4m3,
             FpFormatId::E5m2,
             FpFormatId::E2m1,
+            FpFormatId::E2m3,
+            FpFormatId::E3m2,
         ] {
             let rows = FORMATS.iter().filter(|f| f.id == id).count();
             assert_eq!(rows, 1, "expected exactly one row for {id:?}, got {rows}");
@@ -307,6 +343,8 @@ mod tests {
             FloatLitFmt::E4m3,
             FloatLitFmt::E5m2,
             FloatLitFmt::E2m1,
+            FloatLitFmt::E2m3,
+            FloatLitFmt::E3m2,
         ] {
             let f = by_lit_fmt(fmt);
             assert_eq!(f.width, fmt.width(), "{}: width disagrees", f.tag);
@@ -325,6 +363,8 @@ mod tests {
             (TypeExpr::FP8E4M3, "e4m3"),
             (TypeExpr::FP8E5M2, "e5m2"),
             (TypeExpr::FP4E2M1, "e2m1"),
+            (TypeExpr::FP6E2M3, "e2m3"),
+            (TypeExpr::FP6E3M2, "e3m2"),
         ] {
             let f = by_type_expr(&ty).expect("surface float type must have a row");
             assert_eq!(f.tag, tag);

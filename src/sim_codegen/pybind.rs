@@ -657,6 +657,7 @@ PYBIND11_MODULE({pybind_module}, m) {{
             TypeExpr::BF16 => 16,
             TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => 8,
             TypeExpr::FP4E2M1 => 4,
+            TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => 6,
             TypeExpr::Named(_) => 32,
             TypeExpr::Vec(_, _) => 32,
         }
@@ -1073,6 +1074,43 @@ static inline uint8_t _arch_f32_to_e2m1(uint32_t x){
   }
   return (uint8_t)(sgn | (uint8_t)best);
 }
+// ── OCP MX FP6 E2M3 / E3M2 (storage-only) ──
+// Same shape as E2M1: all-finite, so overflow saturates under BOTH
+// --fp-compat profiles. Generic over the field split; mirrors
+// fp_lit::f64_to_all_finite_bits exactly.
+static inline float _arch_fp6_mag(int idx, int eb, int mb){
+  int bias = (1 << (eb - 1)) - 1;
+  int mant_n = 1 << mb;
+  int e = idx / mant_n, m = idx % mant_n;
+  if (e == 0) return (float)(ldexp(1.0, 1 - bias) * ((double)m / mant_n));
+  return (float)(ldexp(1.0, e - bias) * (1.0 + (double)m / mant_n));
+}
+static inline float _arch_fp6f(uint8_t b, int eb, int mb){
+  int sign_bit = 1 << (eb + mb);
+  float m = _arch_fp6_mag(b & (sign_bit - 1), eb, mb);
+  return (b & sign_bit) ? -m : m;
+}
+static inline uint8_t _arch_f32_to_fp6(uint32_t x, int eb, int mb){
+  int sign_bit = 1 << (eb + mb);
+  int n = sign_bit;
+  float f = _arch_f32b(x);
+  uint8_t sgn = (uint8_t)((x>>31) ? sign_bit : 0);
+  float maxf = _arch_fp6_mag(n - 1, eb, mb);
+  float top_ulp = maxf - _arch_fp6_mag(n - 2, eb, mb);
+  if (std::isnan(f)) return (uint8_t)(sgn | (n - 1));
+  float a = fabsf(f);
+  if (a >= maxf + top_ulp / 2.0f) return (uint8_t)(sgn | (n - 1));
+  int best = 0; float best_err = 1e30f;
+  for (int i = 0; i < n; i++) {
+    float e = fabsf(a - _arch_fp6_mag(i, eb, mb));
+    if (e < best_err || (e == best_err && (i & 1) == 0)) { best = i; best_err = e; }
+  }
+  return (uint8_t)(sgn | (uint8_t)best);
+}
+static inline uint32_t _arch_e2m3_to_f32(uint8_t b){ return _arch_b32f(_arch_fp6f(b,2,3)); }
+static inline uint32_t _arch_e3m2_to_f32(uint8_t b){ return _arch_b32f(_arch_fp6f(b,3,2)); }
+static inline uint8_t _arch_f32_to_e2m3(uint32_t x){ return _arch_f32_to_fp6(x,2,3); }
+static inline uint8_t _arch_f32_to_e3m2(uint32_t x){ return _arch_f32_to_fp6(x,3,2); }
 static inline uint8_t _arch_f32_to_e5m2(uint32_t x){ return _arch_f32_to_fp8(x,5,2,0,0x7Cu,1,0x7Eu); }
 static inline uint8_t _arch_f32_to_e4m3(uint32_t x){ return _arch_f32_to_fp8(x,4,3,1,0x7Fu,0,0x7Fu); }
 static inline uint8_t _arch_e5m2_add(uint8_t a,uint8_t b){ return _arch_f32_to_e5m2(_arch_b32f(_arch_e5m2f(a)+_arch_e5m2f(b))); }

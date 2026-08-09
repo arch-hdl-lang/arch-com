@@ -529,6 +529,54 @@ fn f32_to_e2m1(p: FpCompat) -> FpFn {
     FpFn::new("arch_f32_to_e2m1", &[("x", 32)], 4, body)
 }
 
+// ── OCP MX FP6 E2M3 / E3M2 (storage-only) ────────────────────────────────
+// Same shape as FP4 E2M1: all-finite (no Inf, no NaN), conversions only.
+// Generic over the field split, since nothing here is format-specific once
+// TopBinade::AllFinite exists.
+
+fn fp6_to_f32(name: &str, eb: u32, mb: u32) -> FpFn {
+    let w = 1 + eb + mb;
+    let h = var("h", w);
+    let s = extract(&h, w - 1, w - 1);
+    let e = extract(&h, w - 2, mb);
+    let f = extract(&h, mb - 1, 0);
+    let e_z = eq(&e, &cst(0, eb));
+    let bias: u128 = (1u128 << (eb - 1)) - 1;
+    // value = sig * 2^e0 with sig = (e==0 ? 0f : 1f), an (mb+1)-bit integer:
+    //   normal    (e>=1): (2^mb + f) * 2^(e - bias - mb)
+    //   subnormal (e==0):          f * 2^(1 - bias - mb)
+    let sig = ite(&e_z, &concat(&cst(0, 1), &f), &concat(&cst(1, 1), &f));
+    let sig48 = zext(&sig, 48);
+    let sub_e0 = (1u128 << 16) - (bias + mb as u128 - 1); // 1 - bias - mb
+    let e0 = ite(
+        &e_z,
+        &cst(sub_e0, 16),
+        &sub(&zext(&e, 16), &cst(bias + mb as u128, 16)),
+    );
+    let widened = normround(&s, &sig48, &e0); // exact: <=4-bit significand
+    let zero32 = concat(&s, &cst(0, 31));
+    let body = ite(&eq(&sig, &cst(0, mb + 1)), &zero32, &widened);
+    FpFn::new(name, &[("h", w)], 32, body)
+}
+
+fn f32_to_fp6(name: &str, eb: u32, mb: u32) -> FpFn {
+    let w = 1 + eb + mb;
+    let x = var("x", 32);
+    let d = decode(&x);
+    let s = &d.sign;
+    let maxmag = (1u128 << (w - 1)) - 1;
+    let max6 = concat(s, &cst(maxmag, w - 1));
+    // No NaN and no Inf exist, so both --fp-compat profiles saturate.
+    let rounded = fp8_round(eb, mb, TopBinade::AllFinite, s, &d.mant, &d.eunb, &max6);
+    let zero = concat(s, &cst(0, w - 1));
+    let body = ite(
+        &or(&d.is_nan, &d.is_inf),
+        &max6,
+        &ite(&d.is_zero, &zero, &rounded),
+    );
+    FpFn::new(name, &[("x", 32)], w, body)
+}
+
 fn f32_to_e4m3(p: FpCompat) -> FpFn {
     let x = var("x", 32);
     let d = decode(&x);
@@ -1129,6 +1177,10 @@ pub fn fp_functions(p: FpCompat) -> Vec<FpFn> {
     // Storage-only: widen/narrow only, no arithmetic wrappers.
     v.push(e2m1_to_f32());
     v.push(f32_to_e2m1(p));
+    v.push(fp6_to_f32("arch_e2m3_to_f32", 2, 3));
+    v.push(f32_to_fp6("arch_f32_to_e2m3", 2, 3));
+    v.push(fp6_to_f32("arch_e3m2_to_f32", 3, 2));
+    v.push(f32_to_fp6("arch_f32_to_e3m2", 3, 2));
     for (tag, widen, narrow) in [
         ("e5m2", "arch_e5m2_to_f32", "arch_f32_to_e5m2"),
         ("e4m3", "arch_e4m3_to_f32", "arch_f32_to_e4m3"),
@@ -1454,5 +1506,77 @@ mod e2m1_ir_tests {
             let back = call1(&fns, "arch_f32_to_e2m1", f32b, 32, 4);
             assert_eq!(back, enc, "round-trip failed for {enc:#X}");
         }
+    }
+}
+
+#[cfg(test)]
+mod fp6_ir_tests {
+    use super::*;
+    use crate::fp_ir::{cst, eval_bv};
+    use std::collections::HashMap;
+
+    fn call1(fns: &[FpFn], name: &str, arg: u128, aw: u32, rw: u32) -> u128 {
+        let node = crate::fp_ir::call(name, &[cst(arg, aw)], rw);
+        eval_bv(&node, &HashMap::new(), fns).expect("FP6 helpers must be decidable")
+    }
+
+    /// Both FP6 formats: the IR widen must agree with `fp_lit`'s independent
+    /// reference on every one of the 64 encodings, and widen∘narrow must be
+    /// the identity. Two separate implementations — a bit-vector DAG and a
+    /// Rust table — so agreement is evidence, not tautology.
+    #[test]
+    fn fp6_ir_matches_reference_and_round_trips() {
+        let fns = fp_functions(crate::FpCompat::default());
+        for (widen, narrow, dec, max_enc) in [
+            (
+                "arch_e2m3_to_f32",
+                "arch_f32_to_e2m3",
+                crate::fp_lit::e2m3_bits_to_f64 as fn(u8) -> f64,
+                0x3Fu128,
+            ),
+            (
+                "arch_e3m2_to_f32",
+                "arch_f32_to_e3m2",
+                crate::fp_lit::e3m2_bits_to_f64 as fn(u8) -> f64,
+                0x3F,
+            ),
+        ] {
+            for enc in 0..=max_enc {
+                let got = call1(&fns, widen, enc, 6, 32) as u32;
+                let want = dec(enc as u8) as f32;
+                assert_eq!(
+                    f32::from_bits(got),
+                    want,
+                    "{widen}({enc:#X}) = {} want {want}",
+                    f32::from_bits(got)
+                );
+                // widen -> narrow is the identity.
+                let back = call1(&fns, narrow, got as u128, 32, 6);
+                assert_eq!(back, enc, "{narrow} round-trip failed for {enc:#X}");
+            }
+            // -0.0 keeps its sign through the widen.
+            assert_eq!(call1(&fns, widen, 0x20, 6, 32), 0x8000_0000);
+        }
+    }
+
+    /// The top binade is FINITE in both formats — under the IEEE rule its
+    /// largest values would be treated as overflow. Runtime narrowing
+    /// saturates, since neither format has a NaN or an infinity.
+    #[test]
+    fn fp6_top_binade_is_finite_and_overflow_saturates() {
+        let fns = fp_functions(crate::FpCompat::default());
+        let nar = |n: &str, v: f32| call1(&fns, n, v.to_bits() as u128, 32, 6) as u8;
+        // E2M3 max 7.5, E3M2 max 28.0 — both must narrow to the max code.
+        assert_eq!(nar("arch_f32_to_e2m3", 7.5), 0x1F);
+        assert_eq!(nar("arch_f32_to_e3m2", 28.0), 0x1F);
+        // Saturation, not Inf/NaN.
+        assert_eq!(nar("arch_f32_to_e2m3", 1e30), 0x1F);
+        assert_eq!(nar("arch_f32_to_e3m2", 1e30), 0x1F);
+        assert_eq!(nar("arch_f32_to_e2m3", f32::INFINITY), 0x1F);
+        assert_eq!(nar("arch_f32_to_e2m3", f32::NAN), 0x1F);
+        assert_eq!(nar("arch_f32_to_e3m2", -1e30), 0x3F, "sign preserved");
+        // Underflow flushes to a signed zero.
+        assert_eq!(nar("arch_f32_to_e2m3", 1e-30), 0x00);
+        assert_eq!(nar("arch_f32_to_e2m3", -1e-30), 0x20);
     }
 }
