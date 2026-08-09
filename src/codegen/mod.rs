@@ -6371,13 +6371,9 @@ impl<'a> Codegen<'a> {
     /// conservatively.
     fn current_construct_params(&self) -> Option<&[ParamDecl]> {
         self.source.items.iter().find_map(|item| match item {
-            Item::Module(m) if m.name.name == self.current_construct => {
-                Some(m.params.as_slice())
-            }
+            Item::Module(m) if m.name.name == self.current_construct => Some(m.params.as_slice()),
             Item::Fsm(f) if f.name.name == self.current_construct => Some(f.params.as_slice()),
-            Item::Pipeline(p) if p.name.name == self.current_construct => {
-                Some(p.params.as_slice())
-            }
+            Item::Pipeline(p) if p.name.name == self.current_construct => Some(p.params.as_slice()),
             _ => None,
         })
     }
@@ -6405,31 +6401,27 @@ impl<'a> Codegen<'a> {
         match scope.get(name)? {
             (Symbol::Port(p), _) => Some(p.ty.clone()),
             (Symbol::Reg(r), _) => Some(r.ty.clone()),
-            (Symbol::Let(_), _) => {
-                self.source.items.iter().find_map(|item| match item {
-                    Item::Module(m) if m.name.name == self.current_construct => {
-                        m.body.iter().find_map(|bi| match bi {
-                            ModuleBodyItem::LetBinding(l) if l.name.name == name => l.ty.clone(),
-                            ModuleBodyItem::WireDecl(wd) if wd.name.name == name => {
-                                Some(wd.ty.clone())
-                            }
-                            _ => None,
-                        })
-                    }
-                    Item::Fsm(f) if f.name.name == self.current_construct => f
-                        .lets
-                        .iter()
-                        .find(|l| l.name.name == name)
-                        .and_then(|l| l.ty.clone())
-                        .or_else(|| {
-                            f.wires
-                                .iter()
-                                .find(|w| w.name.name == name)
-                                .map(|w| w.ty.clone())
-                        }),
-                    _ => None,
-                })
-            }
+            (Symbol::Let(_), _) => self.source.items.iter().find_map(|item| match item {
+                Item::Module(m) if m.name.name == self.current_construct => {
+                    m.body.iter().find_map(|bi| match bi {
+                        ModuleBodyItem::LetBinding(l) if l.name.name == name => l.ty.clone(),
+                        ModuleBodyItem::WireDecl(wd) if wd.name.name == name => Some(wd.ty.clone()),
+                        _ => None,
+                    })
+                }
+                Item::Fsm(f) if f.name.name == self.current_construct => f
+                    .lets
+                    .iter()
+                    .find(|l| l.name.name == name)
+                    .and_then(|l| l.ty.clone())
+                    .or_else(|| {
+                        f.wires
+                            .iter()
+                            .find(|w| w.name.name == name)
+                            .map(|w| w.ty.clone())
+                    }),
+                _ => None,
+            }),
             _ => None,
         }
     }

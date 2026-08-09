@@ -385,7 +385,10 @@ end module RevBit
         sv.contains("assign y = {a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]};"),
         "expected per-bit reversed concat, got:\n{sv}"
     );
-    assert!(!sv.contains("{<<"), "streaming operator must not appear:\n{sv}");
+    assert!(
+        !sv.contains("{<<"),
+        "streaming operator must not appear:\n{sv}"
+    );
 }
 
 #[test]
@@ -402,7 +405,10 @@ end module RevChunk
         sv.contains("assign y = {a[0 +: 4], a[4 +: 4]};"),
         "expected reversed 4-bit chunk part-selects, got:\n{sv}"
     );
-    assert!(!sv.contains("{<<"), "streaming operator must not appear:\n{sv}");
+    assert!(
+        !sv.contains("{<<"),
+        "streaming operator must not appear:\n{sv}"
+    );
 }
 
 #[test]
@@ -422,7 +428,10 @@ end module RevFull
         sv.contains("assign y = {a};"),
         "expected singleton-concat identity, got:\n{sv}"
     );
-    assert!(!sv.contains("{<<"), "streaming operator must not appear:\n{sv}");
+    assert!(
+        !sv.contains("{<<"),
+        "streaming operator must not appear:\n{sv}"
+    );
 }
 
 #[test]
@@ -443,7 +452,10 @@ end module RevParam
         sv.contains("assign y = {p[0 +: 2], p[2 +: 2], p[4 +: 2], p[6 +: 2]};"),
         "expected param-width receiver chunked, got:\n{sv}"
     );
-    assert!(!sv.contains("{<<"), "streaming operator must not appear:\n{sv}");
+    assert!(
+        !sv.contains("{<<"),
+        "streaming operator must not appear:\n{sv}"
+    );
 }
 
 #[test]
@@ -473,7 +485,10 @@ end module RevXor
         ),
         "expected chunk part-selects on the hoist temp, got:\n{sv}"
     );
-    assert!(!sv.contains("{<<"), "streaming operator must not appear:\n{sv}");
+    assert!(
+        !sv.contains("{<<"),
+        "streaming operator must not appear:\n{sv}"
+    );
 }
 
 #[test]
@@ -521,7 +536,10 @@ end pipeline RevPipe
         ),
         "expected cross-stage reg receiver bit-reversed, got:\n{sv}"
     );
-    assert!(!sv.contains("{<<"), "streaming operator must not appear:\n{sv}");
+    assert!(
+        !sv.contains("{<<"),
+        "streaming operator must not appear:\n{sv}"
+    );
 }
 
 #[test]
