@@ -337,42 +337,6 @@ pub(crate) fn emit_enum(e: &EnumDecl) -> String {
     out
 }
 
-pub(crate) fn emit_package_interface(p: &PackageDecl) -> String {
-    let name = &p.name.name;
-    let mut out = format!("package {name}\n");
-    // Params
-    emit_params(&mut out, &p.params);
-    // Enums
-    for e in &p.enums {
-        out.push_str(&indent(&emit_enum(e)));
-    }
-    // Structs
-    for s in &p.structs {
-        out.push_str(&indent(&emit_struct(s)));
-    }
-    // Function signatures (no body)
-    for f in &p.functions {
-        let fname = &f.name.name;
-        let params: Vec<String> = f
-            .args
-            .iter()
-            .map(|fp| format!("{}: {}", fp.name.name, type_str(&fp.ty)))
-            .collect();
-        out.push_str(&format!(
-            "  function {fname}({}) -> {};\n",
-            params.join(", "),
-            type_str(&f.ret_ty)
-        ));
-    }
-    out.push_str(&format!("end package {name}\n"));
-    out
-}
-
-/// Indent each line by 2 spaces (for nesting structs/enums inside packages).
-fn indent(s: &str) -> String {
-    s.lines().map(|l| format!("  {l}\n")).collect()
-}
-
 pub(crate) fn emit_params(s: &mut String, params: &[ParamDecl]) {
     for p in params {
         let local = if p.is_local { "local " } else { "" };

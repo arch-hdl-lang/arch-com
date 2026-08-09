@@ -75,19 +75,6 @@ fn roundtrip_failures(source: &Path, work: &Path) -> Vec<String> {
     failures
 }
 
-/// Sources whose stubs are known not to round-trip yet, with the issue that
-/// tracks each. Listing them keeps the sweep green without hiding them.
-fn known_bad(source: &Path) -> Option<&'static str> {
-    let name = source.file_name()?.to_string_lossy().to_string();
-    match name.as_str() {
-        // A `package` stub emits bodyless `function f(...) -> T;` signatures,
-        // which the parser rejects. Fixing it needs either a function-body
-        // pretty-printer or a parser that accepts signatures in `.archi`.
-        "TestPkg.arch" => Some("#819"),
-        _ => None,
-    }
-}
-
 #[test]
 fn every_emitted_archi_stub_reparses() {
     let root = repo_root();
@@ -106,22 +93,16 @@ fn every_emitted_archi_stub_reparses() {
     );
 
     let mut failures = Vec::new();
-    let mut skipped = 0usize;
     for (idx, source) in sources.iter().enumerate() {
-        if known_bad(source).is_some() {
-            skipped += 1;
-            continue;
-        }
         failures.extend(roundtrip_failures(source, &tmp.join(idx.to_string())));
     }
     let _ = std::fs::remove_dir_all(&tmp);
 
     assert!(
         failures.is_empty(),
-        "{} emitted .archi stub(s) do not re-check ({} known-bad skipped).\n\
+        "{} emitted .archi stub(s) do not re-check.\n\
          An interface stub must be a valid input to the compiler that wrote it.\n{}",
         failures.len(),
-        skipped,
         failures.join("\n")
     );
 }
@@ -142,4 +123,64 @@ fn collect_arch_sources(dir: &Path, out: &mut Vec<PathBuf>) {
             out.push(path);
         }
     }
+}
+
+/// A `package` has no `.archi` form, and emitting one was worse than emitting
+/// nothing: the file could not be consumed by any code path (#819).
+///
+/// `use` resolves only `<name>.arch`, and the `.archi`-aware `inst` / bus
+/// lookups key on the *construct* filename rather than the package's, so a
+/// `TestPkg.archi` was written and never read. A package also cannot declare a
+/// module — the parser accepts only param / domain / enum / struct / bus /
+/// function — so it never takes part in the module-name resolution `.archi`
+/// exists for.
+#[test]
+fn packages_emit_no_archi_but_still_emit_sv_and_resolve() {
+    let root = repo_root();
+    let tmp = std::env::temp_dir().join(format!("arch_pkg_no_archi_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("mkdir");
+    for f in ["TestPkg.arch", "pkg_user.arch"] {
+        std::fs::copy(root.join("examples").join(f), tmp.join(f)).expect("copy fixture");
+    }
+
+    let out = Command::new(arch())
+        .current_dir(&tmp)
+        .args(["build", "TestPkg.arch", "-o", "TestPkg.sv"])
+        .output()
+        .expect("run arch build");
+    assert!(out.status.success(), "package build failed");
+
+    let stubs: Vec<String> = std::fs::read_dir(&tmp)
+        .expect("read dir")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "archi"))
+        .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+        .collect();
+    assert!(
+        stubs.is_empty(),
+        "a package must not emit an .archi, got {stubs:?}"
+    );
+
+    // The SV package is still emitted — this removes the interface stub only.
+    let sv = std::fs::read_to_string(tmp.join("TestPkg.sv")).expect("read sv");
+    assert!(
+        sv.contains("package TestPkg"),
+        "SV package body should still be emitted:\n{sv}"
+    );
+
+    // And a consumer still resolves the package through its `.arch`.
+    let out = Command::new(arch())
+        .current_dir(&tmp)
+        .args(["check", "pkg_user.arch"])
+        .output()
+        .expect("run arch check");
+    assert!(
+        out.status.success(),
+        "package consumer should still check clean: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
 }

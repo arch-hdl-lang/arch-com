@@ -9268,6 +9268,8 @@ end module SubModule
 
 The `.archi` file is valid ARCH syntax and can be parsed by the compiler directly. It is named by **module name** (not source filename), so `fifo_async_r2w_sync.arch` (which defines `synchronizer r2w_sync`) generates `r2w_sync.archi`.
 
+**Packages emit no `.archi`.** A `package` declares types, buses and functions — never an instantiable construct — so it never takes part in the construct-name resolution `.archi` exists for, and nothing would read one: `use` resolves only `<name>.arch`, and the `.archi` lookups in §30.2 are keyed on the *construct* name rather than the enclosing package's. A consumer of a package therefore needs its `.arch`, reached with `use <Package>;`. (A bus declared inside a package is still discoverable by its own name per §30.2, since that search keys on the bus.)
+
 **30.2 Dependency Discovery**
 
 When the compiler encounters `inst sub: SubModule` and `SubModule` is not defined in the input files, it automatically searches for:
@@ -9277,6 +9279,8 @@ When the compiler encounters `inst sub: SubModule` and `SubModule` is not define
 3. `SubModule.arch` or `SubModule.archi` in directories listed in `ARCH_LIB_PATH` (colon-separated)
 
 The same discovery applies to **bus port types**. A port declaration `port m: initiator BusName` or `port m: target BusName` whose `BusName` is not defined in the input files triggers the identical search for `BusName.arch` / `BusName.archi` (input directory, then `ARCH_LIB_PATH`, then the stdlib). This means `arch check ModuleWithBusPort.arch` resolves the bus on its own — there is no need to also pass the bus source. An explicit `use BusName;` takes precedence: when the bus is named in a `use`, that declaration drives resolution and the fallback bus scan is skipped, so a stale build-emitted `BusName.archi` in the source directory cannot shadow it. Emitted bus `.archi` files are round-trippable — bus members are written as bare `name: dir Type;`, matching the `bus` body grammar.
+
+**`use` takes precedence for `inst` targets too.** Discovery above is keyed on the filename, so when two files in a directory define the same construct it would otherwise resolve to whichever one is named after it — silently, and possibly not the intended one. Naming the provider with `use <file>;` suppresses the filename lookup for the constructs that file supplies, which is the way to disambiguate when a name is defined more than once.
 
 This enables separate compilation workflows:
 
