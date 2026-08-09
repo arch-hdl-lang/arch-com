@@ -1761,10 +1761,14 @@ impl_construct_direct!(
     iface = crate::interface::emit_bus_interface,
     check = check_bus
 );
+// No `iface`: a package has no `.archi` form. Nothing can consume one —
+// `use` resolves only `<name>.arch`, and the `.archi`-aware `inst` / bus
+// lookups key on the *construct* filename, never the package's. A package
+// also cannot declare a module, so it never participates in the module-name
+// resolution `.archi` exists for. See #819.
 impl_construct_direct!(
     PackageDecl,
     "package",
-    iface = crate::interface::emit_package_interface,
     check = check_package,
     emit_sv = emit_package
 );
