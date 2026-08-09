@@ -2218,3 +2218,139 @@ fn fp6_overflowing_literals_are_compile_errors() {
         assert!(ok, "{ty}: {ok_lit} is exactly representable:\n{out}");
     }
 }
+
+// ── E8M0 — the MX block scale type (not a float) ────────────────────────
+
+/// The scale surface works, and each backend lowers to the E8M0 helpers
+/// rather than falling through to the f32 ones.
+#[test]
+fn e8m0_scale_surface_checks_and_builds() {
+    let out = arch()
+        .arg("check")
+        .arg("tests/fp_v1/E8m0Scale.arch")
+        .output()
+        .expect("run arch check");
+    assert!(
+        out.status.success(),
+        "E8m0Scale.arch should check\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    let dir = std::env::temp_dir().join("arch_e8m0_build");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let sv_path = dir.join("E8m0Scale.sv");
+    let out = arch()
+        .arg("build")
+        .arg("tests/fp_v1/E8m0Scale.arch")
+        .arg("-o")
+        .arg(&sv_path)
+        .output()
+        .expect("run arch build");
+    assert!(out.status.success(), "build failed: {out:?}");
+    let sv = std::fs::read_to_string(&sv_path).expect("emitted SV");
+    // Assert on the MODULE BODY, never the whole file: the helper
+    // DEFINITIONS live in the preamble, so `sv.contains("arch_e8m0_to_f32(")`
+    // matches even when the call site lowered wrongly. An earlier version of
+    // this test was vacuous for exactly that reason and let a regression
+    // through — the body was emitting `arch_u64_to_f32(...)`, widening the
+    // scale code as an INTEGER.
+    let body = &sv[sv.find("module E8m0Scale").expect("module in SV")..];
+    assert!(
+        body.contains("arch_e8m0_to_f32(s)"),
+        "widen must lower to the E8M0 helper, not the integer path:\n{body}"
+    );
+    assert!(
+        body.contains("arch_f32_to_e8m0(x)"),
+        "narrow must lower to the E8M0 helper:\n{body}"
+    );
+    assert!(
+        !body.contains("arch_u64_to_f32") && !body.contains("arch_i64_to_f32"),
+        "a scale must never be widened through the INTEGER path:\n{body}"
+    );
+    assert!(
+        !body.contains(".to_e8m0()"),
+        "ARCH method syntax must not leak into SV:\n{body}"
+    );
+    assert!(
+        sv.contains("logic [7:0]"),
+        "E8M0 is an 8-bit carrier:\n{sv}"
+    );
+
+    // The NaN test must be the E8M0 one. Before this was wired, `is_nan(s)`
+    // fell through to the f32 test and emitted `s[30:23] == 8'hFF` on an
+    // EIGHT-BIT signal — which SV zero-fills into a silent constant false
+    // rather than an error.
+    assert!(
+        sv.contains("== 8'hFF)"),
+        "is_nan must test the 0xFF code:\n{sv}"
+    );
+    // Scope this to the MODULE BODY: the f32 helper functions in the
+    // preamble legitimately contain [30:23].
+    let body = &sv[sv.find("module E8m0Scale").expect("module in SV")..];
+    assert!(
+        !body.contains("[30:23]"),
+        "must not use the f32 NaN test on an 8-bit scale:\n{body}"
+    );
+}
+
+/// E8M0 is not a float: arithmetic is rejected. `is_nan` IS allowed,
+/// because the format does have a NaN code.
+#[test]
+fn e8m0_is_not_a_float_but_has_a_nan_code() {
+    let (ok, out) = check_src(
+        "e8m0_arith",
+        "module A\n  port a: in E8M0;\n  port b: in E8M0;\n  port y: out E8M0;\n  \
+         comb y = a + b; end comb\nend module A\n",
+    );
+    assert!(!ok, "arithmetic on a scale type must be rejected:\n{out}");
+
+    // is_nan is meaningful here (0xFF) and must be accepted.
+    let (ok, out) = check_src(
+        "e8m0_isnan",
+        "module A\n  port a: in E8M0;\n  port y: out Bool;\n  \
+         comb y = is_nan(a); end comb\nend module A\n",
+    );
+    assert!(ok, "is_nan on E8M0 is meaningful (0xFF):\n{out}");
+}
+
+/// The E8M0 widen produces the profile's canonical NaN for the 0xFF code.
+/// An early version hardcoded the riscv pattern, which leaked
+/// `32'h7FC00000` into cuda builds and broke `fp_compat_build_profiles`.
+#[test]
+fn e8m0_nan_follows_the_fp_compat_profile() {
+    let dir = std::env::temp_dir().join("arch_e8m0_profiles");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    for (profile, want, forbid) in [
+        ("riscv", "32'h7FC00000", "32'h7FFFFFFF"),
+        ("cuda", "32'h7FFFFFFF", "32'h7FC00000"),
+    ] {
+        let sv_path = dir.join(format!("E8m0Scale_{profile}.sv"));
+        let out = arch()
+            .arg("build")
+            .arg("tests/fp_v1/E8m0Scale.arch")
+            .arg("--fp-compat")
+            .arg(profile)
+            .arg("-o")
+            .arg(&sv_path)
+            .output()
+            .expect("run arch build");
+        assert!(out.status.success(), "{profile} build failed: {out:?}");
+        let sv = std::fs::read_to_string(&sv_path).expect("emitted SV");
+        // The E8M0 widen helper must carry the profile's NaN.
+        let widen = sv
+            .find("function automatic logic [31:0] arch_e8m0_to_f32")
+            .expect("arch_e8m0_to_f32 must be emitted");
+        let body = &sv[widen..widen + 600.min(sv.len() - widen)];
+        assert!(
+            body.contains(want),
+            "{profile}: arch_e8m0_to_f32 should use {want}:\n{body}"
+        );
+        assert!(
+            !body.contains(forbid),
+            "{profile}: arch_e8m0_to_f32 must not use {forbid}:\n{body}"
+        );
+    }
+}

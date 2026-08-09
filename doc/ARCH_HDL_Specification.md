@@ -319,6 +319,8 @@ The Arch type system enforces four independent safety dimensions simultaneously.
 
   **FP6E3M2**          6 bits               OCP MX FP6 E3M2 (3-bit exponent, 2-bit mantissa; **no inf, no NaN**, max finite 28.0). **Storage-only**. See §3.9.
 
+  **E8M0**             8 bits               OCP MX block **scale** type — an unsigned biased exponent (bias 127) denoting 2^(e-127). **Not a float**: no sign, no mantissa, no infinity, and **no zero** (`0x00` is the minimum scale 2^-127). `0xFF` is NaN. See §3.10.
+
   **Clock\<D\>**       1 bit                Carries clock-domain tag D. Cannot appear in arithmetic.
 
   **Reset\<Sync, High\|Low\>**    1 bit                Synchronous reset --- deasserted on the clock edge. Polarity defaults High.
@@ -772,6 +774,30 @@ The idiom is widen → compute → narrow once:
 let av: FP32 = a.to_fp32();          // exact: a 2-bit significand always fits
 comb y = (av * s).to_fp4e2m1(); end comb   // or .to_fp6e2m3() / .to_fp6e3m2()
 ```
+
+**3.10 E8M0 --- the MX block scale type**
+
+`E8M0` is the shared-scale type of the OCP MX block formats: 8 bits of unsigned biased exponent (bias 127) denoting the value 2^(e-127), emitted as `logic[7:0]`.
+
+It is deliberately **not a float**, and the differences are not cosmetic:
+
+- **No sign and no mantissa** --- it is an exponent, not a significand.
+- **No infinity.**
+- **No zero.** This is the easiest thing to get wrong: `0x00` is **not** zero, it is the *minimum scale* 2^-127. A block of all-zero values is expressed by its elements, not by its scale.
+- **`0xFF` is NaN**, and at block level a NaN scale marks the entire block NaN regardless of the element encodings.
+
+Consequently `E8M0` supports **no arithmetic at all** --- `a + b` on two scales would add exponent *codes*, which denotes nothing. Convert to `FP32` to compute:
+
+```arch
+let scale: FP32 = s.to_fp32();     // the VALUE 2^(e-127), exact for every code
+comb y = scale * x; end comb
+```
+
+**Conversions.** `.to_fp32()` yields the scale value; it is exact for all 255 finite codes (E8M0 and FP32 share the bias, so codes 1..254 map straight onto the FP32 exponent field, and `0x00` = 2^-127 lands on an FP32 subnormal). `.to_e8m0()` extracts a float's binary exponent, **flooring to a power of two** as a scale must, with the MX-reference clamping: underflow (zero or subnormal) to the minimum scale `0x00`, and non-finite input to NaN `0xFF`.
+
+**`is_nan`** *is* available on `E8M0` --- unlike the sub-8-bit element formats, it genuinely has a NaN encoding, and testing for it is how a consumer detects a NaN block.
+
+
 
 **Conversions.** `.to_fp32()` widens exactly. `.to_fp4e2m1()` narrows with round-to-nearest-ties-to-even and **saturates** on overflow. Saturation is profile-independent here, unlike fp8 where `--fp-compat` selects between a NaN/inf result and `satfinite`: E2M1 has neither a NaN nor an infinity to produce, so saturation is the only representable behavior. Cross-format conversions compose through `FP32`, each step exact or singly rounded.
 

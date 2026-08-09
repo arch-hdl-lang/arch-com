@@ -658,6 +658,7 @@ PYBIND11_MODULE({pybind_module}, m) {{
             TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => 8,
             TypeExpr::FP4E2M1 => 4,
             TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => 6,
+            TypeExpr::E8M0 => 8,
             TypeExpr::Named(_) => 32,
             TypeExpr::Vec(_, _) => 32,
         }
@@ -1111,6 +1112,22 @@ static inline uint32_t _arch_e2m3_to_f32(uint8_t b){ return _arch_b32f(_arch_fp6
 static inline uint32_t _arch_e3m2_to_f32(uint8_t b){ return _arch_b32f(_arch_fp6f(b,3,2)); }
 static inline uint8_t _arch_f32_to_e2m3(uint32_t x){ return _arch_f32_to_fp6(x,2,3); }
 static inline uint8_t _arch_f32_to_e3m2(uint32_t x){ return _arch_f32_to_fp6(x,3,2); }
+// ── OCP MX E8M0 — the block SCALE type ──
+// 2^(e-127); NO sign, NO mantissa, NO zero (0x00 IS the minimum scale
+// 2^-127), 0xFF = NaN. Shares FP32's bias, so codes 1..254 map to the f32
+// exponent field directly.
+static inline uint32_t _arch_e8m0_to_f32(uint8_t e){
+  if (e == 0xFFu) return 0x7FC00000u;          // NaN
+  if (e == 0x00u) return 0x00400000u;          // 2^-127 (f32 subnormal)
+  return ((uint32_t)e) << 23;                  // 2^(e-127)
+}
+static inline uint8_t _arch_e8m0_isnan(uint8_t e){ return (e == 0xFFu) ? 1 : 0; }
+static inline uint8_t _arch_f32_to_e8m0(uint32_t x){
+  uint32_t ef = (x >> 23) & 0xFFu;
+  if (ef == 0xFFu) return 0xFFu;               // inf/NaN -> NaN scale
+  if (ef == 0u)    return 0x00u;               // zero/subnormal -> min scale
+  return (uint8_t)ef;
+}
 static inline uint8_t _arch_f32_to_e5m2(uint32_t x){ return _arch_f32_to_fp8(x,5,2,0,0x7Cu,1,0x7Eu); }
 static inline uint8_t _arch_f32_to_e4m3(uint32_t x){ return _arch_f32_to_fp8(x,4,3,1,0x7Fu,0,0x7Fu); }
 static inline uint8_t _arch_e5m2_add(uint8_t a,uint8_t b){ return _arch_f32_to_e5m2(_arch_b32f(_arch_e5m2f(a)+_arch_e5m2f(b))); }

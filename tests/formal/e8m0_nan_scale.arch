@@ -1,0 +1,10 @@
+module E8m0Formal
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port s: in E8M0;
+  port o: out Bool;
+  comb o = is_nan(s); end comb
+  // A NaN scale is exactly the code 0xFF, so this is a tautology the
+  // solver must discharge through the E8M0 bit test, not the f32 one.
+  assert nan_iff_ff: is_nan(s) == (s.to_fp32() != s.to_fp32());
+end module E8m0Formal

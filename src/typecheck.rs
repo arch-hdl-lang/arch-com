@@ -22,6 +22,8 @@ pub enum Ty {
     FP4E2M1,
     FP6E2M3,
     FP6E3M2,
+    /// The MX block scale type. Deliberately NOT a float: see `is_float`.
+    E8M0,
     Clock(String),                // domain name
     Reset(ResetKind, ResetLevel), // always concrete (Param resolved during elaboration)
     Vec(Box<Ty>, u32),
@@ -112,6 +114,7 @@ impl Ty {
             Ty::FP8E4M3 | Ty::FP8E5M2 => Some(8),
             Ty::FP4E2M1 => Some(4),
             Ty::FP6E2M3 | Ty::FP6E3M2 => Some(6),
+            Ty::E8M0 => Some(8),
             Ty::Enum(_, w) => Some(*w),
             Ty::Vec(inner, count) => inner.width().map(|w| w * count),
             Ty::Struct(_) | Ty::Bus(_) => None,
@@ -132,6 +135,7 @@ impl Ty {
             Ty::FP4E2M1 => "FP4E2M1".to_string(),
             Ty::FP6E2M3 => "FP6E2M3".to_string(),
             Ty::FP6E3M2 => "FP6E3M2".to_string(),
+            Ty::E8M0 => "E8M0".to_string(),
             Ty::Clock(d) => format!("Clock<{d}>"),
             Ty::Reset(k, l) => format!(
                 "Reset<{}, {}>",
@@ -2830,6 +2834,7 @@ impl<'a> TypeChecker<'a> {
             Ty::FP8E4M3 | Ty::FP8E5M2 => Some(8),
             Ty::FP4E2M1 => Some(4),
             Ty::FP6E2M3 | Ty::FP6E3M2 => Some(6),
+            Ty::E8M0 => Some(8),
             Ty::Enum(_, w) => Some(*w),
             Ty::Vec(inner, count) => self.type_total_width(inner).map(|w| w * count),
             Ty::Struct(name) => {
@@ -2861,6 +2866,7 @@ impl<'a> TypeChecker<'a> {
             TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Some(8),
             TypeExpr::FP4E2M1 => Some(4),
             TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Some(6),
+            TypeExpr::E8M0 => Some(8),
             TypeExpr::Vec(inner, size) => {
                 let iw = self.type_expr_width(inner)?;
                 let n = eval_type_width_expr(size)?;
@@ -3657,6 +3663,7 @@ impl<'a> TypeChecker<'a> {
             TypeExpr::FP4E2M1 => Ty::FP4E2M1,
             TypeExpr::FP6E2M3 => Ty::FP6E2M3,
             TypeExpr::FP6E3M2 => Ty::FP6E3M2,
+            TypeExpr::E8M0 => Ty::E8M0,
             TypeExpr::Clock(domain) => Ty::Clock(domain.name.clone()),
             TypeExpr::Reset(kind, level) => Ty::Reset(*kind, *level),
             TypeExpr::Vec(inner, size_expr) => {
@@ -3919,6 +3926,7 @@ impl<'a> TypeChecker<'a> {
             Ty::FP4E2M1 => "FP4E2M1",
             Ty::FP6E2M3 => "FP6E2M3",
             Ty::FP6E3M2 => "FP6E3M2",
+            Ty::E8M0 => "E8M0",
             _ => unreachable!("is_float() covers exactly the float Tys above"),
         };
         match crate::pipelined_ops::lookup(name, profile, stages) {
@@ -4456,7 +4464,10 @@ impl<'a> TypeChecker<'a> {
                     // `is_float_arith` gates this too: a format with no NaN
                     // encoding (OCP E2M1/E2M3/E3M2) cannot answer `is_nan`
                     // meaningfully, and a constant `false` would mislead.
-                    if tx != Ty::Error && !tx.is_float_arith() {
+                    // E8M0 is not a float, but it DOES have a NaN code
+                    // (0xFF), which is exactly how MX marks a NaN block.
+                    // Allow the question there.
+                    if tx != Ty::Error && !tx.is_float_arith() && tx != Ty::E8M0 {
                         // Distinguish "not a float" from "a float with no NaN
                         // encoding". Reporting E2M1 as a non-float would be
                         // actively misleading — it IS a float; the concept of
@@ -4903,9 +4914,11 @@ impl<'a> TypeChecker<'a> {
                 // FP4E2M1 joins the same family: widening to f32 is exact
                 // (a 2-bit significand fits trivially), and E2M1 -> bf16 is
                 // exact for the same reason the fp8 cases are.
+                // E8M0 joins this family: `.to_fp32()` yields the SCALE
+                // VALUE 2^(e-127), exact for every code.
                 if matches!(
                     base_ty,
-                    Ty::FP8E4M3 | Ty::FP8E5M2 | Ty::FP4E2M1 | Ty::FP6E2M3 | Ty::FP6E3M2
+                    Ty::FP8E4M3 | Ty::FP8E5M2 | Ty::FP4E2M1 | Ty::FP6E2M3 | Ty::FP6E3M2 | Ty::E8M0
                 ) {
                     return target;
                 }
@@ -4946,6 +4959,33 @@ impl<'a> TypeChecker<'a> {
             // overflow applies (riscv non-saturating / cuda satfinite).
             // Cross-fp8 (e4m3 <-> e5m2) also composes exactly: the widen is
             // exact, one narrow rounds.
+            // `.to_e8m0()` extracts the binary exponent as an MX block
+            // scale. Not part of the float-narrowing family above: E8M0 is
+            // a scale type, so this floors to a power of two rather than
+            // rounding a significand.
+            "to_e8m0" => match &base_ty {
+                Ty::E8M0 => {
+                    self.errors.push(CompileError::general(
+                        ".to_e8m0() on an E8M0 value is a no-op — remove the cast",
+                        method.span,
+                    ));
+                    Ty::Error
+                }
+                t if t.is_float() => Ty::E8M0,
+                Ty::Todo => Ty::Todo,
+                Ty::Error => Ty::Error,
+                _ => {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            ".to_e8m0() requires a float operand, got {} — an MX \
+                                 block scale is the binary exponent of a float value",
+                            base_ty.display()
+                        ),
+                        method.span,
+                    ));
+                    Ty::Error
+                }
+            },
             "to_fp8e4m3" | "to_fp8e5m2" | "to_fp4e2m1" | "to_fp6e2m3" | "to_fp6e3m2" => {
                 let target = match method.name.as_str() {
                     "to_fp8e4m3" => Ty::FP8E4M3,
@@ -5287,6 +5327,24 @@ impl<'a> TypeChecker<'a> {
         // Floating-point operands: comparisons → Bool; `+ - *` → the same float
         // type (no widening). The two operands must be the identical float type;
         // there is no implicit float conversion (use `.to_fp32()`/`.to_bf16()`).
+        // E8M0 is a SCALE type, not a number you compute with. It is not a
+        // float, so without this it would fall through to the INTEGER
+        // arithmetic arms below and silently add exponent CODES — e.g.
+        // 2^3 + 2^5 becoming "code 130", which denotes nothing. Convert to
+        // FP32 to compute.
+        if matches!(lt, Ty::E8M0) || matches!(rt, Ty::E8M0) {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "operator `{}` is not supported on E8M0 — it is an MX block \
+                     SCALE type (an exponent code), not an arithmetic type. Use \
+                     `.to_fp32()` to obtain the scale value 2^(e-127) and compute \
+                     on that",
+                    op
+                ),
+                _span,
+            ));
+            return Ty::Error;
+        }
         if lt.is_float() || rt.is_float() {
             // Render the real operator (`/`, `%`, `<<`, …) for the diagnostics
             // below, including the unsupported-op arm — never a `<op>` placeholder.

@@ -577,6 +577,49 @@ fn f32_to_fp6(name: &str, eb: u32, mb: u32) -> FpFn {
     FpFn::new(name, &[("x", 32)], w, body)
 }
 
+// ── OCP MX E8M0 — the block SCALE type ───────────────────────────────────
+// 8 bits of unsigned biased exponent (bias 127) denoting 2^(e-127). NO
+// sign, NO mantissa, NO infinity, and NO ZERO: 0x00 is the MINIMUM SCALE
+// 2^-127, not zero. 0xFF is NaN (at block level, a NaN block).
+//
+// E8M0 deliberately does NOT go through fp8_round / normround: those assume
+// a sign bit and a mantissa field, and `mb = 0` underflows their extracts.
+// It does not need them — E8M0 shares FP32's bias, so for codes 1..=254 the
+// f32 bit pattern is exactly `e << 23`, and the reverse is just the f32
+// exponent field. Both directions are pure bit surgery.
+
+fn e8m0_to_f32(p: FpCompat) -> FpFn {
+    let e = var("e", 8);
+    let is_nan = eq(&e, &cst(0xFF, 8));
+    let is_min = eq(&e, &cst(0, 8));
+    // e in 1..=254: value 2^(e-127) == f32 with exponent field e, mant 0.
+    let normal = concat(&cst(0, 1), &concat(&e, &cst(0, 23)));
+    // e == 0: 2^-127, below f32's min normal (2^-126) but exactly
+    // representable as the subnormal with mantissa bit 22 set.
+    let min_scale = cst(0x0040_0000, 32);
+    let body = ite(
+        &is_nan,
+        // Canonical NaN follows --fp-compat, like every other widen.
+        // Hardcoding riscv here leaked 32'h7FC00000 into cuda builds.
+        &cst(nan32(p), 32),
+        &ite(&is_min, &min_scale, &normal),
+    );
+    FpFn::new("arch_e8m0_to_f32", &[("e", 8)], 32, body)
+}
+
+fn f32_to_e8m0() -> FpFn {
+    let x = var("x", 32);
+    let ef = extract(&x, 30, 23); // f32 exponent field — same bias as E8M0
+    let is_special = eq(&ef, &cst(0xFF, 8)); // inf or NaN
+    let is_sub = eq(&ef, &cst(0, 8)); // zero or subnormal
+                                      // Clamping follows the MX reference (microxcaling): underflow to the
+                                      // minimum scale 0x00, overflow/non-finite to NaN 0xFF. E8M0 cannot
+                                      // represent zero, so a zero input becomes the minimum scale — the
+                                      // closest thing the format has.
+    let body = ite(&is_special, &cst(0xFF, 8), &ite(&is_sub, &cst(0, 8), &ef));
+    FpFn::new("arch_f32_to_e8m0", &[("x", 32)], 8, body)
+}
+
 fn f32_to_e4m3(p: FpCompat) -> FpFn {
     let x = var("x", 32);
     let d = decode(&x);
@@ -1179,6 +1222,8 @@ pub fn fp_functions(p: FpCompat) -> Vec<FpFn> {
     v.push(f32_to_e2m1(p));
     v.push(fp6_to_f32("arch_e2m3_to_f32", 2, 3));
     v.push(f32_to_fp6("arch_f32_to_e2m3", 2, 3));
+    v.push(e8m0_to_f32(p));
+    v.push(f32_to_e8m0());
     v.push(fp6_to_f32("arch_e3m2_to_f32", 3, 2));
     v.push(f32_to_fp6("arch_f32_to_e3m2", 3, 2));
     for (tag, widen, narrow) in [
@@ -1578,5 +1623,83 @@ mod fp6_ir_tests {
         // Underflow flushes to a signed zero.
         assert_eq!(nar("arch_f32_to_e2m3", 1e-30), 0x00);
         assert_eq!(nar("arch_f32_to_e2m3", -1e-30), 0x20);
+    }
+}
+
+#[cfg(test)]
+mod e8m0_ir_tests {
+    use super::*;
+    use crate::fp_ir::{cst, eval_bv};
+    use std::collections::HashMap;
+
+    fn call1(fns: &[FpFn], name: &str, arg: u128, aw: u32, rw: u32) -> u128 {
+        let node = crate::fp_ir::call(name, &[cst(arg, aw)], rw);
+        eval_bv(&node, &HashMap::new(), fns).expect("E8M0 helpers must be decidable")
+    }
+
+    /// Every one of the 256 E8M0 codes widens to exactly 2^(e-127), with
+    /// 0xFF as NaN. Checked against `f64::powi`, an entirely separate
+    /// computation from the bit surgery the IR performs.
+    #[test]
+    fn e8m0_widen_is_two_to_the_e_minus_127() {
+        let fns = fp_functions(crate::FpCompat::default());
+        for e in 0u128..=254 {
+            let got = f32::from_bits(call1(&fns, "arch_e8m0_to_f32", e, 8, 32) as u32);
+            let want = 2f64.powi(e as i32 - 127) as f32;
+            assert_eq!(got, want, "e8m0 {e:#04X} should be 2^{}", e as i32 - 127);
+        }
+        // 0x00 is the MINIMUM SCALE 2^-127 — emphatically not zero.
+        let min = f32::from_bits(call1(&fns, "arch_e8m0_to_f32", 0, 8, 32) as u32);
+        assert_eq!(min, 2f32.powi(-127));
+        assert_ne!(min, 0.0, "E8M0 has NO zero encoding");
+        // 0x7F is the identity scale, 0xFE the maximum.
+        assert_eq!(
+            f32::from_bits(call1(&fns, "arch_e8m0_to_f32", 0x7F, 8, 32) as u32),
+            1.0
+        );
+        assert_eq!(
+            f32::from_bits(call1(&fns, "arch_e8m0_to_f32", 0xFE, 8, 32) as u32),
+            2f32.powi(127)
+        );
+        // 0xFF is NaN.
+        assert!(f32::from_bits(call1(&fns, "arch_e8m0_to_f32", 0xFF, 8, 32) as u32).is_nan());
+    }
+
+    /// Narrowing extracts the f32 exponent, with MX-reference clamping:
+    /// underflow to the minimum scale, non-finite to NaN.
+    #[test]
+    fn e8m0_narrow_extracts_the_exponent_and_clamps() {
+        let fns = fp_functions(crate::FpCompat::default());
+        let nar = |v: f32| call1(&fns, "arch_f32_to_e8m0", v.to_bits() as u128, 32, 8) as u8;
+        assert_eq!(nar(1.0), 0x7F);
+        assert_eq!(nar(2.0), 0x80);
+        assert_eq!(nar(0.5), 0x7E);
+        assert_eq!(nar(2f32.powi(127)), 0xFE);
+        // Floors to the power of two, as a scale must.
+        assert_eq!(nar(1.5), 0x7F, "1.5 -> 2^0");
+        assert_eq!(nar(3.0), 0x80, "3.0 -> 2^1");
+        // Sign is irrelevant: E8M0 has none.
+        assert_eq!(nar(-1.0), 0x7F);
+        assert_eq!(nar(-3.0), 0x80);
+        // Underflow clamps to the MINIMUM SCALE, not to a zero that does
+        // not exist in this format.
+        assert_eq!(nar(0.0), 0x00);
+        assert_eq!(nar(-0.0), 0x00);
+        assert_eq!(nar(1e-45), 0x00, "f32 subnormal clamps down");
+        // Non-finite becomes the NaN code.
+        assert_eq!(nar(f32::INFINITY), 0xFF);
+        assert_eq!(nar(f32::NEG_INFINITY), 0xFF);
+        assert_eq!(nar(f32::NAN), 0xFF);
+    }
+
+    /// Round-trip over the representable scale range.
+    #[test]
+    fn e8m0_round_trips_every_scale() {
+        let fns = fp_functions(crate::FpCompat::default());
+        for e in 0u128..=254 {
+            let f32b = call1(&fns, "arch_e8m0_to_f32", e, 8, 32);
+            let back = call1(&fns, "arch_f32_to_e8m0", f32b, 32, 8);
+            assert_eq!(back, e, "round-trip failed for scale {e:#04X}");
+        }
     }
 }
