@@ -172,7 +172,7 @@ analysis, doc comments) remain directly under `doc/`.
 | Reduction `&x \|x ^x` | ✅ Unary prefix on `UInt<N>`/`SInt<N>`; result is `Bool`; emits SV `&expr`, `\|expr`, `^expr` |
 | Field access `.field` | ✅ |
 | Array index `[i]` | ✅ |
-| `.trunc<N>()` / `.zext<N>()` / `.sext<N>()` / `expr[hi:lo]` bit-slice / `.reverse(N)` | ✅ | `.reverse(N)` reverses in N-bit chunks; emits SV `{<<N{expr}}`; type checker enforces width divisible by N |
+| `.trunc<N>()` / `.zext<N>()` / `.sext<N>()` / `expr[hi:lo]` bit-slice / `.reverse(N)` | ✅ | `.reverse(N)` reverses in N-bit chunks; emits an ordinary reversed-chunk concat (`{x[0 +: N], x[N +: N], …}`) — the SV streaming operator `{<<N{x}}` is rejected by Icarus in any context (arch#808); type checker enforces width divisible by N |
 | `signed(expr)` / `unsigned(expr)` | ✅ | Same-width reinterpret cast: `signed(UInt<8>)` → `SInt<8>`, `unsigned(SInt<8>)` → `UInt<8>`; emits `$signed()`/`$unsigned()` in SV; eliminates `.sext<N>()` when entering signed arithmetic chains |
 | `as` cast | ✅ | Width-checked: source and target must have same total bit width; emits SV `Type'(expr)`; struct-to-struct casts supported for same-width packed structs |
 | Struct literals | ✅ |

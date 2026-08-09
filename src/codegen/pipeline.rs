@@ -7,6 +7,72 @@
 use super::*;
 
 impl<'a> Codegen<'a> {
+    /// arch#808 (pipeline emitters): declared type of a `.reverse()`
+    /// receiver signal inside the current pipeline — the hinted stage's
+    /// regs/lets first (stage-scoped emitter), then ports. Pipelines
+    /// have no `module_scopes` entry (resolve.rs builds those for
+    /// modules and fsms only), so this resolves through the pipeline's
+    /// own AST instead.
+    fn pipeline_ident_type(p: &PipelineDecl, name: &str, stage: Option<usize>) -> Option<TypeExpr> {
+        if let Some(si) = stage {
+            if let Some(ty) = Self::pipeline_stage_signal_type(p.stages.get(si)?, name) {
+                return Some(ty);
+            }
+        }
+        p.ports
+            .iter()
+            .find(|pt| pt.name.name == name)
+            .map(|pt| pt.ty.clone())
+    }
+
+    /// Declared type of a reg / typed let inside one pipeline stage.
+    fn pipeline_stage_signal_type(stage: &StageDecl, name: &str) -> Option<TypeExpr> {
+        stage.body.iter().find_map(|item| match item {
+            ModuleBodyItem::RegDecl(r) if r.name.name == name => Some(r.ty.clone()),
+            ModuleBodyItem::LetBinding(l) if l.name.name == name => l.ty.clone(),
+            _ => None,
+        })
+    }
+
+    /// arch#808 portable `.reverse()` lowering for the two pipeline
+    /// expression emitters — see `emit_reverse_chunks` (mod.rs) for the
+    /// equivalence argument. `emitted_base` is the receiver as already
+    /// emitted by the calling emitter (stage-name rewriting applied);
+    /// only plain signal references (Ident / stage FieldAccess) are
+    /// attempted, so it is always a part-selectable identifier. `None`
+    /// keeps the streaming-concat form (pre-arch#808 behavior,
+    /// Verilator-only).
+    fn try_emit_pipeline_reverse_chunked(
+        &self,
+        base: &Expr,
+        chunk: &Expr,
+        emitted_base: &str,
+        stage: Option<usize>,
+    ) -> Option<String> {
+        let p = self.source.items.iter().find_map(|item| match item {
+            Item::Pipeline(p) if p.name.name == self.current_construct => Some(p),
+            _ => None,
+        })?;
+        let params: &[ParamDecl] = &p.params;
+        let c = self.eval_const_u32(chunk, params)?;
+        let ty = match &base.kind {
+            ExprKind::Ident(n) => Self::pipeline_ident_type(p, n, stage)?,
+            ExprKind::FieldAccess(sb, field) => {
+                let ExprKind::Ident(stage_name) = &sb.kind else {
+                    return None;
+                };
+                let st = p.stages.iter().find(|s| s.name.name == *stage_name)?;
+                Self::pipeline_stage_signal_type(st, &field.name)?
+            }
+            _ => return None,
+        };
+        let w = self.type_expr_width_const(&ty, params)?;
+        if c == 0 || w == 0 || w % c != 0 {
+            return None;
+        }
+        Some(Self::emit_reverse_chunks(emitted_base, w, c))
+    }
+
     fn emit_pipeline_inst(
         &mut self,
         inst: &InstDecl,
@@ -1683,8 +1749,21 @@ impl<'a> Codegen<'a> {
                     }
                     "reverse" => {
                         if let Some(chunk) = args.first() {
-                            let c = self.emit_expr_str(chunk);
-                            format!("{{<<{c}{{{b}}}}}")
+                            // arch#808: prefer the Icarus-portable
+                            // chunked-concat lowering; receivers whose
+                            // width can't be resolved from the pipeline
+                            // AST keep the streaming form.
+                            if let Some(s) = self.try_emit_pipeline_reverse_chunked(
+                                base,
+                                chunk,
+                                &b,
+                                Some(current_stage_idx),
+                            ) {
+                                s
+                            } else {
+                                let c = self.emit_expr_str(chunk);
+                                format!("{{<<{c}{{{b}}}}}")
+                            }
                         } else {
                             b
                         }
@@ -2028,8 +2107,20 @@ impl<'a> Codegen<'a> {
                     }
                     "reverse" => {
                         if let Some(chunk) = args.first() {
-                            let c = self.emit_expr_str(chunk);
-                            format!("{{<<{c}{{{b}}}}}")
+                            // arch#808: prefer the Icarus-portable
+                            // chunked-concat lowering; receivers whose
+                            // width can't be resolved from the pipeline
+                            // AST keep the streaming form. This emitter
+                            // has no current stage — ports (and explicit
+                            // `Stage.field` references) only.
+                            if let Some(s) =
+                                self.try_emit_pipeline_reverse_chunked(base, chunk, &b, None)
+                            {
+                                s
+                            } else {
+                                let c = self.emit_expr_str(chunk);
+                                format!("{{<<{c}{{{b}}}}}")
+                            }
                         } else {
                             b
                         }
