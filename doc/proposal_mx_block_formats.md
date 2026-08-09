@@ -1,7 +1,8 @@
-# Proposal: MX / NVFP4 block-scaled formats (`MXVec<Elem, N, Scale>`)
+# Proposal: MX / NVFP4 block-scaled formats (`ScaledVec<Elem, N, Scale>`)
 
-**Status:** design proposal — needs maintainer sign-off before implementation.
-This is a language-surface change (new types, new operations).
+**Status:** **APPROVED** (maintainer sign-off recorded in §9, 2026-08-09).
+Ready to implement, starting at Phase 0. This is a language-surface change
+(new types, new operations).
 
 **Sources:** OCP Microscaling Formats (MX) Specification v1.0 (2023-09-07);
 OCP OFP8 v1.0 (incorporated by reference); NVIDIA PTX ISA 9.3 (normative for
@@ -98,7 +99,7 @@ a convenience.**
 ## 3. Proposed type surface
 
 ```arch
-MXVec<Elem, N, Scale>
+ScaledVec<Elem, N, Scale>
 ```
 
 - `Elem` — a storage-only narrow float (`FP4E2M1`, `FP6E2M3`, `FP6E3M2`) or an
@@ -110,10 +111,10 @@ MXVec<Elem, N, Scale>
 Spelled-out aliases for the named formats:
 
 ```arch
-type MXFP4  = MXVec<FP4E2M1, 32, E8M0>;
-type MXFP6  = MXVec<FP6E3M2, 32, E8M0>;   // or FP6E2M3
-type MXFP8  = MXVec<FP8E4M3, 32, E8M0>;
-type NVFP4  = MXVec<FP4E2M1, 16, UE4M3>;  // + per-tensor FP32, see §7
+type MXFP4  = ScaledVec<FP4E2M1, 32, E8M0>;
+type MXFP6  = ScaledVec<FP6E3M2, 32, E8M0>;   // or FP6E2M3
+type MXFP8  = ScaledVec<FP8E4M3, 32, E8M0>;
+type NVFP4  = ScaledVec<FP4E2M1, 16, UE4M3>;  // + per-tensor FP32, see §7
 ```
 
 **`UE4M3` is a new format, not our `FP8E4M3`.** PTX: *"a 7-bit unsigned
@@ -121,15 +122,15 @@ floating-point format … NaN value is limited to `0x7f` … MSB bit padded with
 zero."* Unsigned, 7 significant bits, no Inf, NaN at `0x7F` not `0xFF`. Reusing
 `FP8E4M3` here would be a real bug.
 
-`MXVec<E, 16, E8M0>` is legal in the MX *framework* (block size is a free
+`ScaledVec<E, 16, E8M0>` is legal in the MX *framework* (block size is a free
 parameter; only the named formats pin k=32) — it simply may not be called MXFP4.
 
 ### 3.1 Operations — deliberately minimal
 
 ```arch
-mx_quantize<scale_policy, rounding>(v: Vec<FP32, N>) -> MXVec<E, N, S>
-mx_dequantize(b: MXVec<E, N, S>)                     -> Vec<FP32, N>
-mx_dot(a: MXVec<E, N, S>, b: MXVec<E, N, S>)         -> FP32
+scaled_quantize<scale_policy, rounding>(v: Vec<FP32, N>) -> ScaledVec<E, N, S>
+scaled_dequantize(b: ScaledVec<E, N, S>)                     -> Vec<FP32, N>
+scaled_dot(a: ScaledVec<E, N, S>, b: ScaledVec<E, N, S>)         -> FP32
 ```
 
 - `scale_policy ∈ { floor_pow2 (default, = OCP §6.3), ceil_pow2 (= NVIDIA), exact }`
@@ -139,7 +140,7 @@ mx_dot(a: MXVec<E, N, S>, b: MXVec<E, N, S>)         -> FP32
   is deliberately **not** offered — for E2M1/E2M3/E3M2 there is no NaN encoding
   to produce, so saturate is the only representable behavior.
 
-**No `+`, `-`, `*`, or comparison on `MXVec`.** There is no spec meaning for
+**No `+`, `-`, `*`, or comparison on `ScaledVec`.** There is no spec meaning for
 them, no hardware, and inventing semantics here would be exactly the kind of
 unforced divergence the FP work has avoided so far.
 
@@ -251,7 +252,7 @@ exhaustiveness.
 
 ## 6. Lowering
 
-**SV.** Packed `logic [w+N*d-1:0]`, or split scale/element ports. `mx_dot`
+**SV.** Packed `logic [w+N*d-1:0]`, or split scale/element ports. `scaled_dot`
 lowers to widen-each-element → FP32 multiply → defined-order accumulate →
 scale-apply, reusing the existing proven `arch_*_to_f32` helpers.
 
@@ -259,7 +260,7 @@ scale-apply, reusing the existing proven `arch_*_to_f32` helpers.
 representation (`vec_array_info_with_params`). Must register in all six
 `float_names` builders and both `decl_types` resolvers.
 
-**Formal.** `MXVec` is a flat bit-vector, so it fits the existing
+**Formal.** `ScaledVec` is a flat bit-vector, so it fits the existing
 `(_ BitVec W)`-per-signal model better than `Vec` does. Element select is an
 `extract`. Needs `check_scalar_type` and `type_width_signed` arms.
 
@@ -273,7 +274,7 @@ representation (`vec_array_info_with_params`). Must register in all six
    be proven *exhaustively* rather than sampled.
 2. **`f32 → E2M1` narrowing is exhaustively provable by SMT** over all 2³² FP32
    inputs, as the existing `_narrow` miters already do for fp8.
-3. **Round-trip properties**: `mx_dequantize(mx_quantize(v))` error bounds; scale
+3. **Round-trip properties**: `scaled_dequantize(scaled_quantize(v))` error bounds; scale
    selection optimality; saturation counts per policy.
 4. **`bound_err` quantization analysis (the differentiator).** The gappa path
    from #788 can bound *quantization error of a whole block* — including the
@@ -296,8 +297,8 @@ narrow miters only, no arith/fma/cmp).
 |---|---|---|
 | **0** | Format descriptor table; fix the silent wildcards; make dispatch total; split `is_float()` | No behavior change; existing tests green |
 | **1** | `E8M0` scale type + storage-only `FP4E2M1`; exhaustive SMT + literal encoders | Exhaustive narrow/widen miters unsat |
-| **2** | `MXVec<Elem,N,Scale>` type, layout, `mx_quantize`/`mx_dequantize` with policy+rounding params | Round-trip tests; SV↔sim byte-identical |
-| **3** | `mx_dot` with defined accumulation order + proof vs the spec's factored form | SMT equivalence |
+| **2** | `ScaledVec<Elem,N,Scale>` type, layout, `scaled_quantize`/`scaled_dequantize` with policy+rounding params | Round-trip tests; SV↔sim byte-identical |
+| **3** | `scaled_dot` with defined accumulation order + proof vs the spec's factored form | SMT equivalence |
 | **4** | `FP6E2M3`/`FP6E3M2`, MXFP6/MXFP8 aliases, `bound_err` quantization analysis | gappa bounds recorded |
 | **5** | NVFP4: `UE4M3` scale + two-level (per-tensor FP32) scaling | vs TransformerEngine vectors |
 
@@ -315,31 +316,39 @@ a dedicated top-binade path.
 
 ---
 
-## 9. Decisions needed from the maintainer
+## 9. Decisions — SETTLED (maintainer sign-off 2026-08-09)
 
-Spec silences and genuine forks — each must be chosen consciously:
+Each item below is a spec silence or a genuine fork. All are now decided; the
+implementation must follow these and document them in the spec section that
+lands with Phase 2.
 
-1. **Default scale policy**: `floor_pow2` (OCP §6.3 `should`) or `ceil_pow2`
-   (NVIDIA, avoids routine saturation)? *Recommendation: `floor_pow2` default,
-   both offered.*
-2. **Scale for an all-zero block** — spec silent (`log₂(0)`). *Recommendation:
-   clamp to `0x00` = 2⁻¹²⁷, matching microxcaling.*
-3. **Shared-exponent clamping** on under/overflow of E8M0's range.
-   *Recommendation: underflow → `0x00`, overflow → `0xFF` (NaN), per microxcaling.*
-4. **Element field when `X = 0xFF`** — out of scope per spec. *Recommendation:
-   preserve on store, ignore on load; document.*
-5. **`X·Pᵢ` outside FP32 range** — implementation-defined and *reachable*
-   (MXFP4 max ≈ 1.02e39 > FP32 max). *Recommendation: saturate to ±FP32 max.*
-6. **Stored scale is the encode or the decode scale?** *Recommendation: decode
-   (multiply on read), matching MX's `vᵢ = X·Pᵢ`.*
-7. **Dot accumulator**: FP32 (§6.2 `should`) sequential, or a wider internal
-   accumulator? *Recommendation: FP32, defined left-to-right order, proven.*
-8. **Layout**: packed canonical + split form as proposed in §3.2?
-9. **MXINT8**: in scope at all? If yes, does `0x80` decode to −2 or is it illegal?
-   *Recommendation: defer — it is an integer format and shares none of the float
-   machinery.*
-10. **Naming**: `MXVec` vs `Block<…>` vs `ScaledVec`. `MXVec` ties the type to
-    the OCP brand, which may age poorly if NVFP4-style variants dominate.
+| # | Decision | Resolution |
+|---|---|---|
+| 1 | Default scale policy | **`floor_pow2`** (OCP §6.3), with `ceil_pow2` and `exact` also offered |
+| 2 | Scale for an all-zero block | **`0x00`** (= 2⁻¹²⁷), matching microxcaling |
+| 3 | Shared-exponent clamping | underflow → **`0x00`**; overflow → **`0xFF`** (NaN) |
+| 4 | Element field when `X = 0xFF` | **preserve on store, ignore on load**; documented |
+| 5 | `X·Pᵢ` outside FP32 range | **saturate to ±FP32 max** |
+| 6 | Stored scale | **decode scale** (multiply on read), matching `vᵢ = X·Pᵢ` |
+| 7 | Dot accumulator | **FP32, defined left-to-right order**, and proven |
+| 8 | Layout | **packed canonical + split form**, per §3.2 |
+| 9 | MXINT8 | **deferred** — integer format, shares none of the float machinery |
+| 10 | Type name | **`ScaledVec`** (not `MXVec`) — brand-neutral |
+
+**Consequence of #10 (inferred, easily overridden):** the operations are named
+`scaled_quantize` / `scaled_dequantize` / `scaled_dot` for consistency with the
+neutral type name. The *format aliases* keep their real-world brand names —
+`MXFP4`, `MXFP6`, `MXFP8`, `NVFP4` — because those name specific published
+formats rather than the generic mechanism.
+
+**Consequence of #7:** left-to-right FP32 accumulation is *not* associative, so
+the defined order is part of the contract and the proof obligation in §7.5 is
+against that specific order, not against a mathematical sum.
+
+**Consequence of #1 + #5:** with `floor_pow2` default, element saturation is
+routine (§2.2), and `saturate` is the only representable overflow behavior for
+E2M1/E2M3/E3M2 anyway. Users wanting NVIDIA-equivalent numerics select
+`ceil_pow2` explicitly.
 
 ---
 
