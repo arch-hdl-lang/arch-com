@@ -722,6 +722,43 @@ fn formal_replay_confirms_genuine_refutations() {
     );
 }
 
+/// Issue #821: a sub-module `port reg` output was silently dropped during
+/// flattening, leaving the parent wire declared but unconstrained — a free
+/// variable that produced a SPURIOUS REFUTED on a trivially-true property.
+///
+/// The pair matters more than either half: a fix that modelled the carried
+/// register as a constant, or that declared it without landing the `seq`
+/// write, would make the "proves" case pass while silently breaking the
+/// "refutes" case. Both directions are asserted.
+#[test]
+fn formal_hier_port_reg_is_modelled_not_dropped() {
+    if !z3_available() {
+        eprintln!("skipping: z3 not in PATH");
+        return;
+    }
+    // `o` holds 0 (reset) or 7, so `w <= 7` is true and must PROVE.
+    let (code, out) = run_formal(
+        "tests/formal/hier_port_reg_proves.arch",
+        &["--top", "HierPortReg", "--bound", "4"],
+    );
+    assert_eq!(code, 0, "expected exit 0 (PROVED); got {code}\n{out}");
+    assert!(out.contains("PROVED"), "expected PROVED:\n{out}");
+
+    // The register genuinely reaches 7, so `w <= 6` is false and must
+    // REFUTE — at cycle 1, since cycle 0 is held at the reset value 0.
+    // This is the half that catches a fix which merely flips the verdict.
+    let (code, out) = run_formal(
+        "tests/formal/hier_port_reg_refutes.arch",
+        &["--top", "HierPortRegBad", "--bound", "4"],
+    );
+    assert_eq!(code, 1, "expected exit 1 (REFUTED); got {code}\n{out}");
+    assert!(out.contains("REFUTED"), "expected REFUTED:\n{out}");
+    assert!(
+        out.contains("at cycle 1"),
+        "expected the violation at cycle 1 (cycle 0 is reset-held):\n{out}"
+    );
+}
+
 /// Issue #818: a write to a plain (non-credit_channel) bus signal used to
 /// panic in `emit_base` on `self.sigs[tgt]` (exit 101). It must now be a
 /// clean "unsupported in v1" compile error.
