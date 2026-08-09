@@ -1160,17 +1160,20 @@ struct SignalInfo {
 }
 
 /// Float helper tag of a scalar TypeExpr, if any.
+/// Float dispatch tag of a surface type, or `None` if it is not a float.
+///
+/// Reads the canonical table, which closes a silent-failure chain: this
+/// used to be a hand-written match ending in `_ => None`, so a float type
+/// missing from it resolved to `None`, which left `SignalInfo::float` unset,
+/// which made `expr_float_tag` return `None`, which the call sites turned
+/// into `f32` via `unwrap_or("f32")`. A new format would then have been
+/// encoded as FP32 — right through to the solver — with nothing anywhere
+/// reporting a problem. Sourcing the tag from the table means a format that
+/// exists at all resolves correctly.
 fn float_tag_of(ty: &TypeExpr) -> Option<&'static str> {
-    match ty {
-        TypeExpr::FP32 => Some("f32"),
-        TypeExpr::BF16 => Some("bf16"),
-        TypeExpr::FP8E4M3 => Some("e4m3"),
-        TypeExpr::FP8E5M2 => Some("e5m2"),
-        _ => None,
-    }
+    crate::fp_format::by_type_expr(ty).map(|f| f.tag)
 }
 
-/// Carrier width of a float helper tag.
 /// Carrier width of a float dispatch tag.
 ///
 /// Backed by the canonical format table rather than a hand-written match:
@@ -2653,22 +2656,14 @@ impl<'a> FormalCtx<'a> {
                 let tag = self.expr_float_tag(&args[0]).unwrap_or("f32");
                 let w = float_tag_width(tag);
                 let x = coerce(self.encode_raw(&args[0], t)?, w, false);
-                // Bit-field NaN tests (E4M3 is OCP: sole NaN encoding 0x7F).
-                let cond = match tag {
-                    "f32" => format!(
-                        "(and (= ((_ extract 30 23) {x}) #xff) (distinct ((_ extract 22 0) {x}) #b00000000000000000000000))",
-                        x = x.s
-                    ),
-                    "bf16" => format!(
-                        "(and (= ((_ extract 14 7) {x}) #xff) (distinct ((_ extract 6 0) {x}) #b0000000))",
-                        x = x.s
-                    ),
-                    "e4m3" => format!("(= ((_ extract 6 0) {x}) #b1111111)", x = x.s),
-                    _ => format!(
-                        "(and (= ((_ extract 6 2) {x}) #b11111) (distinct ((_ extract 1 0) {x}) #b00))",
-                        x = x.s
-                    ),
-                };
+                // Bit-field NaN test, DERIVED from the format table. The old
+                // hand-written match ended in `_ =>` returning the *e5m2*
+                // test at e5m2's offsets, so any unnamed format was probed
+                // at the wrong bits. Deriving it makes a new format a table
+                // row rather than a fifth arm here.
+                let d = crate::fp_format::by_tag(tag)
+                    .unwrap_or_else(|| crate::fp_format::by_id(crate::fp_format::FpFormatId::Fp32));
+                let cond = nan_test_smt(d, &x.s);
                 Ok(SmtTerm {
                     s: format!("(ite {cond} #b1 #b0)"),
                     width: 1,
@@ -4185,6 +4180,56 @@ fn bv_zero(width: u32) -> String {
     bv_lit(0, width)
 }
 
+/// SMT bit-field NaN test for `x`, derived from the format descriptor.
+///
+/// Factored out of `encode_raw` so it is unit-testable: `--emit-smt` writes
+/// only the base (declarations + transitions), and per-property queries are
+/// built inside `run_property` and piped straight to the solver, so
+/// `scripts/refactor_diff.sh` cannot see this string. The test in this
+/// module pins it against the hand-written originals instead.
+fn nan_test_smt(d: &'static crate::fp_format::FpFormat, x: &str) -> String {
+    use crate::fp_format::NanRule;
+    // These field literals are written in the `#b…` binary form the
+    // hand-written tests used. `bv_lit` would emit `#xff` for widths
+    // divisible by 4 but `(_ bv0 23)` otherwise — semantically the same
+    // value, different text. Matching the original spelling exactly keeps
+    // this refactor provably inert; the solver would accept either.
+    let ones_bin = |w: u32| format!("#b{}", "1".repeat(w as usize));
+    let zeros_bin = |w: u32| format!("#b{}", "0".repeat(w as usize));
+    // The exponent field kept its hex spelling where `bv_lit` produced one.
+    let exp_ones = if d.exp_bits % 4 == 0 {
+        bv_all_ones(d.exp_bits)
+    } else {
+        ones_bin(d.exp_bits)
+    };
+    match d.nan_rule {
+        NanRule::IeeeExpAllOnes => {
+            let (eh, el) = d.exp_field();
+            let (mh, ml) = d
+                .mant_field()
+                .expect("IEEE-shaped format must have a mantissa");
+            format!(
+                "(and (= ((_ extract {eh} {el}) {x}) {exp_ones}) (distinct ((_ extract {mh} {ml}) {x}) {}))",
+                zeros_bin(d.mant_bits),
+            )
+        }
+        NanRule::OcpAllMagnitudeOnes => {
+            let (gh, gl) = d.magnitude_field();
+            format!(
+                "(= ((_ extract {gh} {gl}) {x}) {})",
+                ones_bin(d.magnitude_bits()),
+            )
+        }
+        // Unreachable: typecheck rejects `is_nan` on a format with no NaN
+        // encoding (`Ty::is_float_arith`).
+        NanRule::NoNan => unreachable!(
+            "is_nan on `{}`, which has no NaN encoding — typecheck should have \
+             rejected this",
+            d.type_name
+        ),
+    }
+}
+
 fn bv_all_ones(width: u32) -> String {
     if width <= 64 {
         let v = if width == 64 {
@@ -5278,13 +5323,36 @@ impl FormalCtx<'_> {
                 let tag = self.expr_float_tag(&args[0]).unwrap_or("f32");
                 let w = float_tag_width(tag);
                 let x = nv_coerce(self.replay_raw(&args[0], t, m, fns)?, w, false)?.v;
-                // Bit-field NaN tests, mirroring the encoder's inline SMT
-                // (E4M3 is OCP: sole NaN encoding 0x7F).
-                let is_nan = match tag {
-                    "f32" => (x >> 23) & 0xFF == 0xFF && x & 0x7F_FFFF != 0,
-                    "bf16" => (x >> 7) & 0xFF == 0xFF && x & 0x7F != 0,
-                    "e4m3" => x & 0x7F == 0x7F,
-                    _ => (x >> 2) & 0x1F == 0x1F && x & 0b11 != 0,
+                // Bit-field NaN test. The FIELD EXTENTS and the rule come
+                // from the format table — those are format facts, already
+                // shared with the encoder the same way carrier widths are
+                // (see `float_tag_width`) — but the arithmetic below stays
+                // replay's own, deliberately not a call into the encoder's
+                // `nan_test_smt`.
+                //
+                // This narrows replay's independence slightly and it is a
+                // conscious trade: the previous `_ =>` arm fell back to the
+                // e5m2 test, so a new format would have been probed at
+                // e5m2's offsets — silently wrong on BOTH sides, which is
+                // worse than sharing a table row. Independence still covers
+                // what it is for: operator dispatch and semantics.
+                let d = crate::fp_format::by_tag(tag)
+                    .unwrap_or_else(|| crate::fp_format::by_id(crate::fp_format::FpFormatId::Fp32));
+                let is_nan = match d.nan_rule {
+                    crate::fp_format::NanRule::IeeeExpAllOnes => {
+                        let (_, el) = d.exp_field();
+                        let exp_mask = (1u64 << d.exp_bits) - 1;
+                        let mant_mask = (1u64 << d.mant_bits) - 1;
+                        (x >> el) & exp_mask == exp_mask && x & mant_mask != 0
+                    }
+                    crate::fp_format::NanRule::OcpAllMagnitudeOnes => {
+                        let mag_mask = (1u64 << d.magnitude_bits()) - 1;
+                        x & mag_mask == mag_mask
+                    }
+                    // Typecheck rejects `is_nan` on a format with no NaN
+                    // encoding; replay stays conservative and declines
+                    // rather than inventing an answer.
+                    crate::fp_format::NanRule::NoNan => return None,
                 };
                 Some(nv(is_nan as u64, 1, false))
             }
@@ -5954,6 +6022,102 @@ end module ReplayFp
             ctx.replay_check(prop, &m, 0, 1, 0, &fns),
             ReplayVerdict::Inconclusive
         );
+    }
+
+    /// The SMT `is_nan` test is now derived from the format table rather
+    /// than hand-tabulated per tag. `refactor_diff.sh` cannot cover it —
+    /// `--emit-smt` writes only the base, and per-property queries go
+    /// straight to the solver — so pin the derived strings against the
+    /// hand-written originals here, verbatim.
+    ///
+    /// The originals' fallthrough is the reason this matters: the old match
+    /// ended in `_ =>` returning the *e5m2* test, so any format it did not
+    /// name was probed at e5m2's bit offsets.
+    #[test]
+    fn nan_test_smt_reproduces_the_handwritten_tests() {
+        use crate::fp_format::{by_tag, FpFormatId};
+        let cases: [(&str, &str); 4] = [
+            (
+                "f32",
+                "(and (= ((_ extract 30 23) X) #xff) (distinct ((_ extract 22 0) X) #b00000000000000000000000))",
+            ),
+            (
+                "bf16",
+                "(and (= ((_ extract 14 7) X) #xff) (distinct ((_ extract 6 0) X) #b0000000))",
+            ),
+            ("e4m3", "(= ((_ extract 6 0) X) #b1111111)"),
+            (
+                "e5m2",
+                "(and (= ((_ extract 6 2) X) #b11111) (distinct ((_ extract 1 0) X) #b00))",
+            ),
+        ];
+        for (tag, want) in cases {
+            let d = by_tag(tag).expect("known tag must have a table row");
+            assert_eq!(
+                nan_test_smt(d, "X"),
+                want,
+                "{tag}: derived NaN test must match the hand-written original"
+            );
+        }
+        // The derivation is driven by the rule, not by the tag string.
+        assert_eq!(
+            by_tag("e4m3").unwrap().nan_rule,
+            crate::fp_format::NanRule::OcpAllMagnitudeOnes,
+            "OCP E4M3 is not IEEE-shaped: its sole NaN is all-magnitude-ones"
+        );
+        assert_eq!(
+            crate::fp_format::by_id(FpFormatId::E5m2).nan_rule,
+            crate::fp_format::NanRule::IeeeExpAllOnes
+        );
+    }
+
+    /// Replay computes `is_nan` with its own arithmetic rather than calling
+    /// `nan_test_smt`, so the two can drift. They share only the format
+    /// table's rule and field extents. Pin them against hand-picked
+    /// encodings — every canonical NaN, and the near-misses that a wrong
+    /// field offset would misclassify.
+    #[test]
+    fn replay_is_nan_agrees_with_the_format_rules() {
+        use crate::fp_format::{by_tag, NanRule};
+        // (tag, value, expected is_nan)
+        let cases: &[(&str, u64, bool)] = &[
+            // f32: exp all ones + nonzero mantissa.
+            ("f32", 0x7FC0_0000, true),  // canonical qNaN
+            ("f32", 0x7F80_0000, false), // +inf: exp ones, mantissa zero
+            ("f32", 0xFF80_0001, true),  // -sNaN
+            ("f32", 0x3F80_0000, false), // 1.0
+            // bf16: same shape, 8-bit exponent at [14:7].
+            ("bf16", 0x7FC0, true),
+            ("bf16", 0x7F80, false), // +inf
+            ("bf16", 0x3F80, false), // 1.0
+            // e4m3 (OCP): the SOLE NaN is all magnitude bits set.
+            ("e4m3", 0x7F, true),
+            ("e4m3", 0xFF, true),  // sign is not part of the test
+            ("e4m3", 0x7E, false), // 448.0, the max finite — NOT NaN
+            ("e4m3", 0x78, false),
+            // e5m2: IEEE-shaped, exp [6:2].
+            ("e5m2", 0x7D, true),
+            ("e5m2", 0x7C, false), // +inf
+            ("e5m2", 0xFF, true),
+            ("e5m2", 0x7B, false), // max finite
+        ];
+        for &(tag, x, want) in cases {
+            let d = by_tag(tag).expect("known tag");
+            let got = match d.nan_rule {
+                NanRule::IeeeExpAllOnes => {
+                    let (_, el) = d.exp_field();
+                    let exp_mask = (1u64 << d.exp_bits) - 1;
+                    let mant_mask = (1u64 << d.mant_bits) - 1;
+                    (x >> el) & exp_mask == exp_mask && x & mant_mask != 0
+                }
+                NanRule::OcpAllMagnitudeOnes => {
+                    let mag_mask = (1u64 << d.magnitude_bits()) - 1;
+                    x & mag_mask == mag_mask
+                }
+                NanRule::NoNan => false,
+            };
+            assert_eq!(got, want, "{tag}: is_nan({x:#X}) should be {want}");
+        }
     }
 
     /// Issue #818: the assignment-target validation must run at the END of

@@ -2156,13 +2156,7 @@ impl<'a> Codegen<'a> {
     /// `arch_f32_*` / `arch_bf16_*` SystemVerilog helper functions.
     fn expr_float_fmt(&self, expr: &Expr) -> Option<&'static str> {
         match &expr.kind {
-            ExprKind::Cast(_, ty) => match &**ty {
-                TypeExpr::FP32 => Some("f32"),
-                TypeExpr::BF16 => Some("bf16"),
-                TypeExpr::FP8E4M3 => Some("e4m3"),
-                TypeExpr::FP8E5M2 => Some("e5m2"),
-                _ => None,
-            },
+            ExprKind::Cast(_, ty) => crate::fp_format::by_type_expr(&**ty).map(|f| f.tag),
             ExprKind::Ident(name) => self.ident_float_fmt(name),
             ExprKind::Literal(LitKind::Float(_)) => Some("f32"),
             ExprKind::Literal(LitKind::TypedFloat(FloatLitFmt::Fp32, _)) => Some("f32"),
@@ -2378,13 +2372,7 @@ impl<'a> Codegen<'a> {
     /// Float format of an identifier declared in the current construct's scope.
     fn ident_float_fmt(&self, name: &str) -> Option<&'static str> {
         if let Some(t) = self.fn_local_types.get(name) {
-            return match t {
-                TypeExpr::FP32 => Some("f32"),
-                TypeExpr::BF16 => Some("bf16"),
-                TypeExpr::FP8E4M3 => Some("e4m3"),
-                TypeExpr::FP8E5M2 => Some("e5m2"),
-                _ => None,
-            };
+            return crate::fp_format::by_type_expr(t).map(|f| f.tag);
         }
         let Some(scope) = self.symbols.module_scopes.get(&self.current_construct) else {
             return match self.pipeline_ident_decl_type(name) {
@@ -2403,13 +2391,7 @@ impl<'a> Codegen<'a> {
                     _ => None,
                 };
                 if let Some(ty) = ty {
-                    return match ty {
-                        TypeExpr::FP32 => Some("f32"),
-                        TypeExpr::BF16 => Some("bf16"),
-                        TypeExpr::FP8E4M3 => Some("e4m3"),
-                        TypeExpr::FP8E5M2 => Some("e5m2"),
-                        _ => None,
-                    };
+                    return crate::fp_format::by_type_expr(ty).map(|f| f.tag);
                 }
                 if matches!(sym, Symbol::Let(_)) {
                     return self.let_binding_float_fmt(name);
@@ -2429,13 +2411,9 @@ impl<'a> Codegen<'a> {
                     for p in &m.params {
                         if p.name.name == name {
                             match &p.kind {
-                                ParamKind::Logic(ty) | ParamKind::Type(ty) => match ty {
-                                    TypeExpr::FP32 => return Some("f32"),
-                                    TypeExpr::BF16 => return Some("bf16"),
-                                    TypeExpr::FP8E4M3 => return Some("e4m3"),
-                                    TypeExpr::FP8E5M2 => return Some("e5m2"),
-                                    _ => return None,
-                                },
+                                ParamKind::Logic(ty) | ParamKind::Type(ty) => {
+                                    return crate::fp_format::by_type_expr(ty).map(|f| f.tag)
+                                }
                                 _ => return None,
                             }
                         }
@@ -2445,13 +2423,9 @@ impl<'a> Codegen<'a> {
                     for p in &f.params {
                         if p.name.name == name {
                             match &p.kind {
-                                ParamKind::Logic(ty) | ParamKind::Type(ty) => match ty {
-                                    TypeExpr::FP32 => return Some("f32"),
-                                    TypeExpr::BF16 => return Some("bf16"),
-                                    TypeExpr::FP8E4M3 => return Some("e4m3"),
-                                    TypeExpr::FP8E5M2 => return Some("e5m2"),
-                                    _ => return None,
-                                },
+                                ParamKind::Logic(ty) | ParamKind::Type(ty) => {
+                                    return crate::fp_format::by_type_expr(ty).map(|f| f.tag)
+                                }
                                 _ => return None,
                             }
                         }
@@ -2461,13 +2435,9 @@ impl<'a> Codegen<'a> {
                     for p in &pkg.params {
                         if p.name.name == name {
                             match &p.kind {
-                                ParamKind::Logic(ty) | ParamKind::Type(ty) => match ty {
-                                    TypeExpr::FP32 => return Some("f32"),
-                                    TypeExpr::BF16 => return Some("bf16"),
-                                    TypeExpr::FP8E4M3 => return Some("e4m3"),
-                                    TypeExpr::FP8E5M2 => return Some("e5m2"),
-                                    _ => return None,
-                                },
+                                ParamKind::Logic(ty) | ParamKind::Type(ty) => {
+                                    return crate::fp_format::by_type_expr(ty).map(|f| f.tag)
+                                }
                                 _ => return None,
                             }
                         }
@@ -2481,13 +2451,7 @@ impl<'a> Codegen<'a> {
 
     /// Float format of a `let`/`wire` binding by AST lookup (modules + fsms).
     fn let_binding_float_fmt(&self, name: &str) -> Option<&'static str> {
-        let fmt_of = |t: &TypeExpr| match t {
-            TypeExpr::FP32 => Some("f32"),
-            TypeExpr::BF16 => Some("bf16"),
-            TypeExpr::FP8E4M3 => Some("e4m3"),
-            TypeExpr::FP8E5M2 => Some("e5m2"),
-            _ => None,
-        };
+        let fmt_of = |t: &TypeExpr| crate::fp_format::by_type_expr(t).map(|f| f.tag);
         for item in &self.source.items {
             match item {
                 Item::Module(m) if m.name.name == self.current_construct => {
@@ -7241,12 +7205,41 @@ impl<'a> Codegen<'a> {
                 if name == "is_nan" && args.len() == 1 {
                     // exponent all-ones and mantissa nonzero.
                     let a = &arg_strs[0];
-                    return match self.expr_float_fmt(&args[0]) {
-                        Some("bf16") => format!("(({a}[14:7] == 8'hFF) && ({a}[6:0] != 7'b0))"),
-                        // OCP E4M3: the sole NaN encoding is S.1111.111.
-                        Some("e4m3") => format!("({a}[6:0] == 7'h7F)"),
-                        Some("e5m2") => format!("(({a}[6:2] == 5'h1F) && ({a}[1:0] != 2'b0))"),
-                        _ => format!("(({a}[30:23] == 8'hFF) && ({a}[22:0] != 23'b0))"),
+                    // The NaN test is DERIVED from the format table rather
+                    // than tabulated per tag. The old hand-written match
+                    // ended in `_ =>` returning the f32 test — at f32's bit
+                    // offsets — so any format it did not name was silently
+                    // probed at the wrong bits. Deriving it means a new
+                    // format is a table row, not a fifth arm here.
+                    let tag = self.expr_float_fmt(&args[0]).unwrap_or("f32");
+                    let d = crate::fp_format::by_tag(tag).unwrap_or_else(|| {
+                        crate::fp_format::by_id(crate::fp_format::FpFormatId::Fp32)
+                    });
+                    return match d.nan_rule {
+                        crate::fp_format::NanRule::IeeeExpAllOnes => {
+                            let (eh, el) = d.exp_field();
+                            let (mh, ml) = d
+                                .mant_field()
+                                .expect("IEEE-shaped format must have a mantissa");
+                            let exp_ones = (1u64 << d.exp_bits) - 1;
+                            format!(
+                                "(({a}[{eh}:{el}] == {}'h{exp_ones:X}) && ({a}[{mh}:{ml}] != {}'b0))",
+                                d.exp_bits, d.mant_bits
+                            )
+                        }
+                        crate::fp_format::NanRule::OcpAllMagnitudeOnes => {
+                            let (gh, gl) = d.magnitude_field();
+                            let mag_bits = d.magnitude_bits();
+                            let mag_ones = (1u64 << mag_bits) - 1;
+                            format!("({a}[{gh}:{gl}] == {mag_bits}'h{mag_ones:X})")
+                        }
+                        // Unreachable: typecheck rejects `is_nan` on a format
+                        // with no NaN encoding (`Ty::is_float_arith`).
+                        crate::fp_format::NanRule::NoNan => unreachable!(
+                            "is_nan on `{}`, which has no NaN encoding — typecheck \
+                             should have rejected this",
+                            d.type_name
+                        ),
                     };
                 }
                 // Resolve mangled name if this is an overloaded function.

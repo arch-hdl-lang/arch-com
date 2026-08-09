@@ -9954,11 +9954,16 @@ fn eval_type_width_expr(e: &Expr) -> Option<u32> {
 /// (`Vec<FP32,N>` -> "FP32"): used by the integer-literal-in-float-slot
 /// foot-gun guards so they cover fp8 and Vec-of-float uniformly.
 fn float_slot_type_name(ty: &TypeExpr) -> Option<&'static str> {
+    // Scalar names come from the canonical table. A float type missing from
+    // a hand-written list here would silently disable this guard, letting an
+    // integer literal land in a float slot and be stored as integer bits —
+    // the arch#620/#623 miscompile class. The Vec arm stays local: seeing
+    // through one level of composite is this function's own rule, not a
+    // property of any format.
+    if let Some(f) = crate::fp_format::by_type_expr(ty) {
+        return Some(f.type_name);
+    }
     match ty {
-        TypeExpr::FP32 => Some("FP32"),
-        TypeExpr::BF16 => Some("BF16"),
-        TypeExpr::FP8E4M3 => Some("FP8E4M3"),
-        TypeExpr::FP8E5M2 => Some("FP8E5M2"),
         TypeExpr::Vec(elem, _) => float_slot_type_name(elem),
         _ => None,
     }
