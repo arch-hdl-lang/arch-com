@@ -1738,11 +1738,12 @@ impl<'a> Codegen<'a> {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
                             let wp = Self::paren_width(&w);
-                            if self.expr_is_signed(base) {
-                                format!("{wp}'($signed({b}))")
-                            } else {
-                                format!("{wp}'($unsigned({b}))")
-                            }
+                            // Bare size cast, no `$signed`/`$unsigned` wrapper —
+                            // the wrapper self-determines its argument (LRM
+                            // §11.6.1, §20.5), truncating e.g. `a * b` to
+                            // operand width BEFORE the cast widens. Must match
+                            // the canonical emission in mod.rs ("resize").
+                            format!("{wp}'({b})")
                         } else {
                             b
                         }
@@ -2096,11 +2097,12 @@ impl<'a> Codegen<'a> {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
                             let wp = Self::paren_width(&w);
-                            if self.expr_is_signed(base) {
-                                format!("{wp}'($signed({b}))")
-                            } else {
-                                format!("{wp}'($unsigned({b}))")
-                            }
+                            // Bare size cast, no `$signed`/`$unsigned` wrapper —
+                            // the wrapper self-determines its argument (LRM
+                            // §11.6.1, §20.5), truncating e.g. `a * b` to
+                            // operand width BEFORE the cast widens. Must match
+                            // the canonical emission in mod.rs ("resize").
+                            format!("{wp}'({b})")
                         } else {
                             b
                         }

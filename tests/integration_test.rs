@@ -4128,6 +4128,84 @@ end pipeline SextPipe
     );
 }
 
+/// `.resize<N>()` in a pipeline stage expression must emit a bare `N'(expr)`
+/// size cast, never `N'($unsigned(expr))` / `N'($signed(expr))`: the wrapper
+/// evaluates its argument in self-determined context (LRM §11.6.1, §20.5),
+/// truncating a multiply to operand width BEFORE the cast widens — silently
+/// dropping the product's upper bits (native sim keeps them, so the SV
+/// diverged). Mirrors the canonical emission in codegen/mod.rs.
+#[test]
+fn test_pipeline_stage_resize_of_mul_is_bare_size_cast() {
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline ResizeMulPipe
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<16>;
+  port b: in UInt<16>;
+  port y: out UInt<32>;
+  stage S
+    reg prod: UInt<32> reset rst => 0;
+    seq on clk rising
+      prod <= (a * b).resize<32>();
+    end seq
+    comb
+      y = prod;
+    end comb
+  end stage S
+end pipeline ResizeMulPipe
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("32'((a * b))"),
+        "pipeline stage .resize<32>() of a multiply must emit a bare size cast:\n{sv}"
+    );
+    assert!(
+        !sv.contains("$unsigned") && !sv.contains("$signed"),
+        "pipeline .resize must not wrap in $signed/$unsigned (self-determined \
+         context truncates the product before the cast widens):\n{sv}"
+    );
+}
+
+/// Same guarantee for the pipeline's module-level expression emitter, which
+/// handles `stall when` / `flush` / `forward` conditions.
+#[test]
+fn test_pipeline_stall_cond_resize_of_mul_is_bare_size_cast() {
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline StallResizePipe
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<16>;
+  port b: in UInt<16>;
+  port y: out UInt<32>;
+  stage S
+    stall when ((a * b).resize<32>() > 100)
+    reg prod: UInt<32> reset rst => 0;
+    seq on clk rising
+      prod <= (a * b).resize<32>();
+    end seq
+    comb
+      y = prod;
+    end comb
+  end stage S
+end pipeline StallResizePipe
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign s_stall = (32'((a * b)) > 100);"),
+        "stall-when .resize<32>() of a multiply must emit a bare size cast:\n{sv}"
+    );
+    assert!(
+        !sv.contains("$unsigned") && !sv.contains("$signed"),
+        "pipeline .resize must not wrap in $signed/$unsigned:\n{sv}"
+    );
+}
+
 #[test]
 fn test_pipeline_comb_match_emits_case() {
     let source = r#"
