@@ -6365,6 +6365,241 @@ impl<'a> Codegen<'a> {
         Some(tmp)
     }
 
+    /// Params of the construct currently being emitted (module / fsm /
+    /// pipeline), for `eval_const_u32` width resolution. `None` when the
+    /// current construct can't be found by name — callers fall back
+    /// conservatively.
+    fn current_construct_params(&self) -> Option<&[ParamDecl]> {
+        self.source.items.iter().find_map(|item| match item {
+            Item::Module(m) if m.name.name == self.current_construct => {
+                Some(m.params.as_slice())
+            }
+            Item::Fsm(f) if f.name.name == self.current_construct => Some(f.params.as_slice()),
+            Item::Pipeline(p) if p.name.name == self.current_construct => {
+                Some(p.params.as_slice())
+            }
+            _ => None,
+        })
+    }
+
+    /// Numeric bit-width of a `TypeExpr`, const-evaluating the width
+    /// sub-expression through `params` (unlike `type_expr_width`, which
+    /// only folds literals). Covers just the shapes a `.reverse()`
+    /// receiver can legally have (typecheck restricts it to
+    /// UInt/SInt/Bool) — everything else is `None`.
+    fn type_expr_width_const(&self, ty: &TypeExpr, params: &[ParamDecl]) -> Option<u32> {
+        match ty {
+            TypeExpr::UInt(w) | TypeExpr::SInt(w) => self.eval_const_u32(w, params),
+            TypeExpr::Bool | TypeExpr::Bit => Some(1),
+            _ => None,
+        }
+    }
+
+    /// Declared `TypeExpr` of a plain identifier in the current
+    /// module/fsm scope (ports, regs, typed lets, wires). Pipelines have
+    /// no `module_scopes` entry (resolve.rs builds those for modules and
+    /// fsms only) — the pipeline emitters resolve through the pipeline's
+    /// own AST via `pipeline_ident_type` instead.
+    fn construct_ident_type(&self, name: &str) -> Option<TypeExpr> {
+        let scope = self.symbols.module_scopes.get(&self.current_construct)?;
+        match scope.get(name)? {
+            (Symbol::Port(p), _) => Some(p.ty.clone()),
+            (Symbol::Reg(r), _) => Some(r.ty.clone()),
+            (Symbol::Let(_), _) => {
+                self.source.items.iter().find_map(|item| match item {
+                    Item::Module(m) if m.name.name == self.current_construct => {
+                        m.body.iter().find_map(|bi| match bi {
+                            ModuleBodyItem::LetBinding(l) if l.name.name == name => l.ty.clone(),
+                            ModuleBodyItem::WireDecl(wd) if wd.name.name == name => {
+                                Some(wd.ty.clone())
+                            }
+                            _ => None,
+                        })
+                    }
+                    Item::Fsm(f) if f.name.name == self.current_construct => f
+                        .lets
+                        .iter()
+                        .find(|l| l.name.name == name)
+                        .and_then(|l| l.ty.clone())
+                        .or_else(|| {
+                            f.wires
+                                .iter()
+                                .find(|w| w.name.name == name)
+                                .map(|w| w.ty.clone())
+                        }),
+                    _ => None,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Numeric bit-width of a `.reverse()` receiver — `None` when it
+    /// can't be proven here (the caller then falls back to the
+    /// streaming-concat emission, i.e. the pre-arch#808 Verilator-only
+    /// behavior). `lookup_ident` abstracts over module/fsm scope lookup
+    /// vs the pipeline emitters' stage-aware lookup.
+    fn reverse_recv_width_u32(
+        &self,
+        recv: &Expr,
+        params: &[ParamDecl],
+        lookup_ident: &dyn Fn(&str) -> Option<TypeExpr>,
+    ) -> Option<u32> {
+        match &recv.kind {
+            ExprKind::Ident(n) => self.type_expr_width_const(&lookup_ident(n)?, params),
+            ExprKind::SynthIdent(_, ty) => self.type_expr_width_const(ty, params),
+            ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => {
+                self.reverse_recv_width_u32(inner, params, lookup_ident)
+            }
+            ExprKind::Cast(_, ty) => self.type_expr_width_const(ty, params),
+            ExprKind::Literal(LitKind::Sized(w, _)) => Some(*w as u32),
+            // Unsized literals: minimum bit width from the value, never 0
+            // bits — same rule as `infer_sv_width_str`.
+            ExprKind::Literal(LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v)) => {
+                Some(if *v == 0 { 1 } else { 64 - v.leading_zeros() })
+            }
+            ExprKind::MethodCall(inner, method, margs) => match method.name.as_str() {
+                "trunc" | "zext" | "sext" | "resize" => self.eval_const_u32(margs.first()?, params),
+                "reverse" => self.reverse_recv_width_u32(inner, params, lookup_ident),
+                _ => None,
+            },
+            ExprKind::BitSlice(_, hi, lo) => {
+                let h = self.eval_const_u32(hi, params)?;
+                let l = self.eval_const_u32(lo, params)?;
+                (h >= l).then(|| h - l + 1)
+            }
+            ExprKind::PartSelect(_, _, w, _) => self.eval_const_u32(w, params),
+            // `v[i].reverse<C>()` — the element width of an
+            // identifier-typed `Vec` receiver.
+            ExprKind::Index(base, _) => match &base.kind {
+                ExprKind::Ident(n) => match lookup_ident(n)? {
+                    TypeExpr::Vec(inner, _) => self.type_expr_width_const(&inner, params),
+                    _ => None,
+                },
+                _ => None,
+            },
+            // Operator result widths — these MUST mirror typecheck's
+            // `resolve_expr_type` rules (IEEE 1800 §11.6) exactly: the
+            // width computed here sizes both the hoist temp and the
+            // chunk part-selects, so a divergence from the checked type
+            // would be a silent miscompile, not merely a portability
+            // miss. Anything uncertain returns `None` (streaming-concat
+            // fallback).
+            ExprKind::Binary(op, l, r) => {
+                let lw = self.reverse_recv_width_u32(l, params, lookup_ident);
+                let rw = self.reverse_recv_width_u32(r, params, lookup_ident);
+                match op {
+                    BinOp::Eq
+                    | BinOp::Neq
+                    | BinOp::Lt
+                    | BinOp::Gt
+                    | BinOp::Lte
+                    | BinOp::Gte
+                    | BinOp::And
+                    | BinOp::Or
+                    | BinOp::Implies
+                    | BinOp::ImpliesNext => Some(1),
+                    BinOp::Add | BinOp::Sub => Some(lw?.max(rw?) + 1),
+                    BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap => Some(lw?.max(rw?)),
+                    BinOp::Mul => Some(lw? + rw?),
+                    BinOp::Div | BinOp::Mod => lw,
+                    BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => Some(lw?.max(rw?)),
+                    BinOp::Shl | BinOp::Shr => lw,
+                }
+            }
+            ExprKind::Unary(op, operand) => match op {
+                UnaryOp::Not | UnaryOp::RedAnd | UnaryOp::RedOr | UnaryOp::RedXor => Some(1),
+                UnaryOp::BitNot => self.reverse_recv_width_u32(operand, params, lookup_ident),
+                // typecheck: `-UInt<w>` → `SInt<w+1>`, `-SInt<w>` → `SInt<w>`
+                // — receiver signedness isn't tracked here, so bail.
+                UnaryOp::Neg => None,
+            },
+            // typecheck takes the then-branch type.
+            ExprKind::Ternary(_, then_e, _) => {
+                self.reverse_recv_width_u32(then_e, params, lookup_ident)
+            }
+            ExprKind::Concat(parts) => parts.iter().try_fold(0u32, |acc, p| {
+                Some(acc + self.reverse_recv_width_u32(p, params, lookup_ident)?)
+            }),
+            ExprKind::Repeat(count, value) => Some(
+                self.eval_const_u32(count, params)?
+                    * self.reverse_recv_width_u32(value, params, lookup_ident)?,
+            ),
+            _ => None,
+        }
+    }
+
+    /// arch#808: portable lowering for `.reverse<C>()`. Icarus Verilog
+    /// (12.0) rejects the SV streaming-concat operator `{<<C{x}}` in
+    /// every context, so when the receiver width `w` is known, emit an
+    /// ordinary concatenation of the receiver's C-bit chunks in reversed
+    /// order — bit-identical to `{<<C{x}}` (the receiver's lowest chunk
+    /// lands most-significant; verified exhaustively against Verilator
+    /// for chunks 1/2/4 over all 8-bit inputs) and accepted by both
+    /// simulators. `w == c` (single chunk) is the identity — still
+    /// emitted as a singleton concat `{x}` so the result stays an
+    /// unsigned self-determined vector, exactly like the streaming form.
+    fn emit_reverse_chunks(sel: &str, w: u32, c: u32) -> String {
+        if w == c {
+            return format!("{{{sel}}}");
+        }
+        let parts: Vec<String> = (0..w / c)
+            .map(|i| {
+                if c == 1 {
+                    format!("{sel}[{i}]")
+                } else {
+                    format!("{sel}[{} +: {c}]", i * c)
+                }
+            })
+            .collect();
+        format!("{{{}}}", parts.join(", "))
+    }
+
+    /// Attempt the arch#808 portable `.reverse<chunk>()` lowering in the
+    /// main (module/fsm) expression emitter. `None` — the caller keeps
+    /// the streaming-concat emission — when the chunk or receiver width
+    /// can't be const-resolved here, the divisibility doesn't hold
+    /// (typecheck rejects both upstream), or the receiver needs a hoist
+    /// temp but references a live runtime `for`-loop variable
+    /// (module-scope temps can't see loop-locals; same guard as the
+    /// `Index`/`BitSlice` hoists).
+    fn try_emit_reverse_chunked(&self, base: &Expr, chunk: &Expr) -> Option<String> {
+        let params = self.current_construct_params()?;
+        let c = self.eval_const_u32(chunk, params)?;
+        let unwrapped = Self::unwrap_reinterpret_cast(base);
+        let w =
+            self.reverse_recv_width_u32(unwrapped, params, &|n| self.construct_ident_type(n))?;
+        if c == 0 || w == 0 || w % c != 0 {
+            return None;
+        }
+        let sel = match &unwrapped.kind {
+            // Directly part-selectable SV shapes — the same family the
+            // `Index` emitter treats as atomic (minus literals, which
+            // can't take a select at all).
+            ExprKind::Ident(_)
+            | ExprKind::SynthIdent(_, _)
+            | ExprKind::Index(_, _)
+            | ExprKind::FieldAccess(_, _) => self.emit_expr_str(unwrapped),
+            // Anything else (a computation, literal, cast, or `{...}`
+            // shape) can't take a part-select — hoist it to a named
+            // module-scope temp, the same mechanism arch#650/#807 use.
+            _ => {
+                if !self.runtime_for_loop_vars.is_empty()
+                    && Self::expr_references_any(unwrapped, &self.runtime_for_loop_vars)
+                {
+                    return None;
+                }
+                let tmp = format!("arch_idx_base_{}", self.next_index_hoist_id());
+                let rhs = self.emit_expr_str(unwrapped);
+                let mut hoists = self.index_hoist_lines.borrow_mut();
+                hoists.push(format!("logic [{w}-1:0] {tmp};"));
+                hoists.push(format!("assign {tmp} = {rhs};"));
+                tmp
+            }
+        };
+        Some(Self::emit_reverse_chunks(&sel, w, c))
+    }
+
     /// Emit an expression, wrapping in parens only when its precedence is
     /// below `parent_prec` (i.e. the context requires tighter binding).
     fn emit_expr_prec(&self, expr: &Expr, parent_prec: u8) -> String {
@@ -6771,8 +7006,18 @@ impl<'a> Codegen<'a> {
                     // as_clock removed — use `as Clock<Domain>` cast syntax // identity — 1-bit logic used as clock
                     "reverse" => {
                         if let Some(chunk) = args.first() {
-                            let c = self.emit_expr_str(chunk);
-                            format!("{{<<{c}{{{b}}}}}")
+                            // arch#808: Icarus rejects `{<<N{x}}` in every
+                            // context; prefer the portable chunked-concat
+                            // lowering whenever the receiver width resolves
+                            // (typecheck guarantees const chunk + width, so
+                            // the streaming fallback should be unreachable
+                            // for checked input — kept for safety).
+                            if let Some(s) = self.try_emit_reverse_chunked(base, chunk) {
+                                s
+                            } else {
+                                let c = self.emit_expr_str(chunk);
+                                format!("{{<<{c}{{{b}}}}}")
+                            }
                         } else {
                             b
                         }

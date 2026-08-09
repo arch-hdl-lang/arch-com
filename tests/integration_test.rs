@@ -359,6 +359,171 @@ end module RepeatPartSelect
     );
 }
 
+// ── arch#808: `.reverse<C>()` portable chunked-concat lowering ──────────────
+//
+// Icarus Verilog (12.0) rejects the SV streaming-concat operator
+// (`{<<C{x}}`) in every context — `assign y = {<<1{a}};` alone is a syntax
+// error — while Verilator accepts it. Typecheck guarantees the chunk size
+// and receiver width are compile-time constants with width % chunk == 0, so
+// codegen lowers `.reverse<C>()` to an ordinary concatenation of the
+// receiver's C-bit chunks in reversed order (the receiver's lowest chunk
+// lands most-significant — verified bit-identical to `{<<C{x}}` against
+// Verilator across all 256 8-bit inputs for chunks 1/2/4/8). These tests
+// pin every emission shape; none of them may contain a streaming operator.
+
+#[test]
+fn test_reverse_bit_emits_chunked_concat() {
+    let source = r#"
+module RevBit
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+  let y = a.reverse<1>();
+end module RevBit
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign y = {a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]};"),
+        "expected per-bit reversed concat, got:\n{sv}"
+    );
+    assert!(!sv.contains("{<<"), "streaming operator must not appear:\n{sv}");
+}
+
+#[test]
+fn test_reverse_chunked_emits_part_selects() {
+    let source = r#"
+module RevChunk
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+  let y = a.reverse<4>();
+end module RevChunk
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign y = {a[0 +: 4], a[4 +: 4]};"),
+        "expected reversed 4-bit chunk part-selects, got:\n{sv}"
+    );
+    assert!(!sv.contains("{<<"), "streaming operator must not appear:\n{sv}");
+}
+
+#[test]
+fn test_reverse_full_width_emits_singleton_concat() {
+    // Chunk == full width is the identity; emitted as a singleton concat
+    // `{a}` (not bare `a`) so the result stays an unsigned self-determined
+    // vector, exactly like the streaming form it replaces.
+    let source = r#"
+module RevFull
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+  let y = a.reverse<8>();
+end module RevFull
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign y = {a};"),
+        "expected singleton-concat identity, got:\n{sv}"
+    );
+    assert!(!sv.contains("{<<"), "streaming operator must not appear:\n{sv}");
+}
+
+#[test]
+fn test_reverse_param_width_receiver_resolves() {
+    // The receiver's declared width is a const param — codegen must
+    // const-resolve it (same rules typecheck used to admit the call) and
+    // still emit the portable form, not fall back to the streaming operator.
+    let source = r#"
+module RevParam
+  param W: const = 8;
+  port p: in UInt<W>;
+  port y: out UInt<8>;
+  let y = p.reverse<2>();
+end module RevParam
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign y = {p[0 +: 2], p[2 +: 2], p[4 +: 2], p[6 +: 2]};"),
+        "expected param-width receiver chunked, got:\n{sv}"
+    );
+    assert!(!sv.contains("{<<"), "streaming operator must not appear:\n{sv}");
+}
+
+#[test]
+fn test_reverse_computed_receiver_hoists_to_named_temp() {
+    // A computation receiver can't take a part-select — it is hoisted to a
+    // named module-scope temp (same mechanism as the arch#650/#807 hoists),
+    // then chunk-selected. Width of `a ^ b` mirrors typecheck's
+    // max-width rule.
+    let source = r#"
+module RevXor
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port y: out UInt<8>;
+  let y = (a ^ b).reverse<2>();
+end module RevXor
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("logic [8-1:0] arch_idx_base_0;")
+            && sv.contains("assign arch_idx_base_0 = a ^ b;"),
+        "expected an 8-bit hoist temp for the xor receiver, got:\n{sv}"
+    );
+    assert!(
+        sv.contains(
+            "assign y = {arch_idx_base_0[0 +: 2], arch_idx_base_0[2 +: 2], \
+             arch_idx_base_0[4 +: 2], arch_idx_base_0[6 +: 2]};"
+        ),
+        "expected chunk part-selects on the hoist temp, got:\n{sv}"
+    );
+    assert!(!sv.contains("{<<"), "streaming operator must not appear:\n{sv}");
+}
+
+#[test]
+fn test_reverse_in_pipeline_stage_emits_chunked_concat() {
+    // The two pipeline expression emitters have their own `.reverse()`
+    // arms (pipelines get no `module_scopes` entry, so widths resolve
+    // through the pipeline AST: ports + stage regs/lets). Covers both a
+    // port receiver and a cross-stage `Stage.field` receiver.
+    let source = r#"
+domain SysDomain
+end domain SysDomain
+
+pipeline RevPipe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port din: in UInt<8>;
+  port dout: out UInt<8>;
+
+  stage S1
+    reg r1: UInt<8> init 0 reset rst => 0;
+    seq on clk rising
+      r1 <= din.reverse<2>();
+    end seq
+  end stage S1
+
+  stage S2
+    reg r2: UInt<8> init 0 reset rst => 0;
+    seq on clk rising
+      r2 <= S1.r1.reverse<1>();
+    end seq
+    comb
+      dout = r2;
+    end comb
+  end stage S2
+end pipeline RevPipe
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("{din[0 +: 2], din[2 +: 2], din[4 +: 2], din[6 +: 2]}"),
+        "expected port receiver chunked in stage seq, got:\n{sv}"
+    );
+    assert!(
+        sv.contains(
+            "{s1_r1[0], s1_r1[1], s1_r1[2], s1_r1[3], s1_r1[4], s1_r1[5], s1_r1[6], s1_r1[7]}"
+        ),
+        "expected cross-stage reg receiver bit-reversed, got:\n{sv}"
+    );
+    assert!(!sv.contains("{<<"), "streaming operator must not appear:\n{sv}");
+}
+
 #[test]
 fn test_part_select_additive_base_rejected() {
     // arch#653 item 1: `ExprKind::PartSelect` (`[start +: w]` / `[start -: w]`)
