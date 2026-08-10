@@ -594,6 +594,12 @@ fn type_str(ty: &TypeExpr) -> String {
             format!("Reset<{k}{l}>")
         }
         TypeExpr::Vec(elem, count) => format!("Vec<{}, {}>", type_str(elem), expr_str(count)),
+        TypeExpr::ScaledVec(elem, count, scale) => format!(
+            "ScaledVec<{}, {}, {}>",
+            type_str(elem),
+            expr_str(count),
+            type_str(scale)
+        ),
         TypeExpr::Named(n) => n.name.clone(),
     }
 }

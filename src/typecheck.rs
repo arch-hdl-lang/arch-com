@@ -27,6 +27,13 @@ pub enum Ty {
     Clock(String),                // domain name
     Reset(ResetKind, ResetLevel), // always concrete (Param resolved during elaboration)
     Vec(Box<Ty>, u32),
+    /// `ScaledVec<Elem, N, Scale>` — element type, block size, scale type.
+    ///
+    /// NOT an aggregate: this is one packed word of `scale_w + N*elem_w` bits
+    /// (proposal §3.2). It carries no arithmetic, no comparison, and no
+    /// indexing — OCP MX defines exactly one operation on blocks, so anything
+    /// else would be invented semantics.
+    ScaledVec(Box<Ty>, u32, Box<Ty>),
     Struct(String),
     Enum(String, u32), // name, bit width
     Bus(String),       // bus type name
@@ -117,6 +124,10 @@ impl Ty {
             Ty::E8M0 => Some(8),
             Ty::Enum(_, w) => Some(*w),
             Ty::Vec(inner, count) => inner.width().map(|w| w * count),
+            // Packed block: scale in the high bits, N elements below.
+            Ty::ScaledVec(elem, n, scale) => {
+                Some(n.checked_mul(elem.width()?)?.checked_add(scale.width()?)?)
+            }
             Ty::Struct(_) | Ty::Bus(_) => None,
             Ty::Clock(_) | Ty::Reset(_, _) => Some(1),
             Ty::Todo | Ty::Error => None,
@@ -149,6 +160,9 @@ impl Ty {
                 },
             ),
             Ty::Vec(inner, n) => format!("Vec<{}, {n}>", inner.display()),
+            Ty::ScaledVec(elem, n, scale) => {
+                format!("ScaledVec<{}, {n}, {}>", elem.display(), scale.display())
+            }
             Ty::Struct(name) => name.clone(),
             Ty::Enum(name, _) => name.clone(),
             Ty::Bus(name) => format!("bus {name}"),
@@ -637,6 +651,15 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
+            }
+            // `split` is a ScaledVec-only layout modifier. Checked here rather
+            // than in the parser because type aliases resolve after parsing —
+            // `port s: in split MXFP4;` is still `Named` at parse time.
+            if p.split && !matches!(p.ty, TypeExpr::ScaledVec(..)) {
+                self.errors.push(CompileError::general(
+                    "`split` is only valid on `ScaledVec<Elem, N, Scale>` ports",
+                    p.span,
+                ));
             }
         }
 
@@ -2837,6 +2860,10 @@ impl<'a> TypeChecker<'a> {
             Ty::E8M0 => Some(8),
             Ty::Enum(_, w) => Some(*w),
             Ty::Vec(inner, count) => self.type_total_width(inner).map(|w| w * count),
+            Ty::ScaledVec(elem, n, scale) => Some(
+                n.checked_mul(self.type_total_width(elem)?)?
+                    .checked_add(self.type_total_width(scale)?)?,
+            ),
             Ty::Struct(name) => {
                 if let Some((crate::resolve::Symbol::Struct(info), _)) =
                     self.symbols.globals.get(name)
@@ -2871,6 +2898,10 @@ impl<'a> TypeChecker<'a> {
                 let iw = self.type_expr_width(inner)?;
                 let n = eval_type_width_expr(size)?;
                 Some(iw * n)
+            }
+            TypeExpr::ScaledVec(elem, size, scale) => {
+                let n = eval_type_width_expr(size)?;
+                crate::fp_format::scaled_vec_width(elem, n, scale)
             }
             TypeExpr::Named(ident) => {
                 if let Some((crate::resolve::Symbol::Struct(info), _)) =
@@ -3674,6 +3705,14 @@ impl<'a> TypeChecker<'a> {
                     Ty::Error
                 }
             }
+            TypeExpr::ScaledVec(elem, size_expr, scale) => {
+                let elem_ty = self.resolve_type_expr(elem, _module_name, local_types);
+                let scale_ty = self.resolve_type_expr(scale, _module_name, local_types);
+                match self.eval_const_expr(size_expr, local_types) {
+                    Some(n) => Ty::ScaledVec(Box::new(elem_ty), n as u32, Box::new(scale_ty)),
+                    None => Ty::Error,
+                }
+            }
             TypeExpr::Named(ident) => {
                 if let Some((sym, _)) = self.symbols.globals.get(&ident.name) {
                     match sym {
@@ -4197,6 +4236,22 @@ impl<'a> TypeChecker<'a> {
                     // Bit-select of a UInt/SInt produces a single bit; treat as Bool
                     // so it can be used directly in boolean expressions.
                     Ty::UInt(_) | Ty::SInt(_) => Ty::Bool,
+                    // A block is not an array. Without this arm the `_` below
+                    // would silently hand back UInt<1> — a wrong answer, not a
+                    // diagnostic. Indexing is deliberately absent: an element
+                    // read only has meaning as `X * P_i`, so the scale must be
+                    // applied, and `scaled_dequantize` is where that happens.
+                    Ty::ScaledVec(..) => {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "cannot index a `{}` — a block is one packed value, not an array. \
+                                 Use `scaled_dequantize(b)[i]` to read element `i` as FP32.",
+                                base_ty.display()
+                            ),
+                            base.span,
+                        ));
+                        Ty::Error
+                    }
                     // Propagate errors — don't silently produce UInt<1> for unresolved base types.
                     Ty::Error | Ty::Todo => Ty::Error,
                     _ => Ty::UInt(1),
@@ -5291,6 +5346,31 @@ impl<'a> TypeChecker<'a> {
             return Ty::Todo;
         }
         if *lt == Ty::Error || *rt == Ty::Error {
+            return Ty::Error;
+        }
+
+        // A block is not a number. OCP MX §6 defines exactly ONE operation on
+        // blocks — the dot product — and no add, multiply, or compare. Without
+        // this guard `a + b` would fall through to the INTEGER arms below and
+        // silently add two packed {scale, elements} words, which denotes
+        // nothing at all: it would carry element overflow into the scale field.
+        if matches!(lt, Ty::ScaledVec(..)) || matches!(rt, Ty::ScaledVec(..)) {
+            let blk = if matches!(lt, Ty::ScaledVec(..)) {
+                lt
+            } else {
+                rt
+            };
+            self.errors.push(CompileError::general(
+                &format!(
+                    "operator `{}` is not supported on {} — a block-scaled vector has no \
+                     arithmetic in the OCP MX spec (only the block dot product). Use \
+                     `scaled_dequantize(...)` to obtain `Vec<FP32, N>`, compute there, \
+                     and `scaled_quantize(...)` to come back",
+                    op,
+                    blk.display()
+                ),
+                _span,
+            ));
             return Ty::Error;
         }
 

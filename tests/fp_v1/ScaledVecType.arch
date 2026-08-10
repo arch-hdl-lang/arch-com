@@ -1,0 +1,54 @@
+// `ScaledVec<Elem, N, Scale>` — the OCP MX / NVFP4 block-scaled vector.
+//
+// A block is ONE packed word `{ scale, P[N-1], …, P[0] }`, not an array:
+// MXFP4 is 8 + 32*4 = 136 bits. It deliberately carries no arithmetic, no
+// comparison and no element indexing — OCP MX §6 defines exactly one
+// operation on blocks (the dot product), so anything else would be invented
+// semantics. Elements are read via `scaled_dequantize(b)[i]` (phase 2b).
+//
+// The `Scale` slot is a parameter because the two ecosystems genuinely
+// differ: MX uses E8M0, NVFP4 uses UE4M3 (phase 5).
+
+// The named formats are a shared vocabulary, so they are declared ONCE in a
+// package. Package aliases publish file-wide, exactly like a package's structs
+// and enums — no module needs to redeclare them.
+package MxFormats
+  type MXFP4 = ScaledVec<FP4E2M1, 32, E8M0>;
+  type MXFP6 = ScaledVec<FP6E3M2, 32, E8M0>;
+  type MXFP8 = ScaledVec<FP8E4M3, 32, E8M0>;
+end package MxFormats
+
+module ScaledVecType
+  // Packed canonical layout: one 136-bit port.
+  port a: in MXFP4;
+  port y: out MXFP4;
+
+  // A block of FP8 elements: 8 + 32*8 = 264 bits.
+  port big: in MXFP8;
+  port big_out: out MXFP8;
+
+  // `split` form: emits TWO SV ports, `s_scale` [7:0] and `s_elems` [127:0],
+  // instead of one packed word — what a real datapath wants, since the scale
+  // feeds the exponent path and the elements feed the mantissa path.
+  port s: in split MXFP4;
+  port s_out: out split MXFP4;
+
+  // A block is a value: it can be moved around and registered even though it
+  // has no arithmetic.
+  comb
+    y       = a;
+    big_out = big;
+    s_out   = s;
+  end comb
+end module ScaledVecType
+
+// A second module in the same file: it uses the package vocabulary without
+// redeclaring anything, which is the whole point.
+module ScaledVecUser
+  port blk: in MXFP6;          // 8 + 32*6 = 200 bits
+  port out_blk: out MXFP6;
+
+  comb
+    out_blk = blk;
+  end comb
+end module ScaledVecUser

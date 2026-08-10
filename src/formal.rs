@@ -2155,6 +2155,9 @@ impl<'a> FormalCtx<'a> {
             | TypeExpr::FP6E2M3
             | TypeExpr::FP6E3M2
             | TypeExpr::E8M0 => Ok(()),
+            // A block is ONE packed bit-vector, not an aggregate, so it fits
+            // the `(_ BitVec W)`-per-signal model directly — unlike Vec.
+            TypeExpr::ScaledVec(..) => Ok(()),
             TypeExpr::Vec(_, _) => Err(CompileError::general(
                 "Vec types are not supported by `arch formal` v1 — use scalars",
                 span,
@@ -2174,6 +2177,21 @@ impl<'a> FormalCtx<'a> {
             TypeExpr::FP4E2M1 => Ok((4, false)),
             TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Ok((6, false)),
             TypeExpr::E8M0 => Ok((8, false)),
+            TypeExpr::ScaledVec(elem, n, scale) => {
+                let n = fold_const_expr(n, &self.params).ok_or_else(|| {
+                    CompileError::general(
+                        "could not fold ScaledVec block size N to a compile-time constant",
+                        span,
+                    )
+                })? as u32;
+                let w = crate::fp_format::scaled_vec_width(elem, n, scale).ok_or_else(|| {
+                    CompileError::general(
+                        "ScaledVec element/scale type is not a valid block member",
+                        span,
+                    )
+                })?;
+                Ok((w, false))
+            }
             TypeExpr::UInt(w) => {
                 let width = fold_const_expr(w, &self.params).ok_or_else(|| {
                     CompileError::general(

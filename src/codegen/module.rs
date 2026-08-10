@@ -298,6 +298,26 @@ impl<'a> Codegen<'a> {
                             dir, base_ty, p.name.name, suffix, init_str
                         ));
                     }
+                } else if let (TypeExpr::ScaledVec(..), true) = (&p.ty, p.split) {
+                    // `split` block port: two SV ports instead of one packed
+                    // word, flattened `<name>_scale` / `<name>_elems` the way
+                    // bus ports already flatten. The scale feeds the exponent
+                    // path and the elements feed the mantissa path, so a real
+                    // datapath never wants them concatenated (proposal §3.2).
+                    let sw = self.scaled_vec_scale_width(&p.ty);
+                    let elems_w = self.scaled_vec_elems_width(&p.ty);
+                    port_lines.push(format!(
+                        "{} logic [{}] {}_scale",
+                        dir,
+                        Self::fold_width_str(&sw),
+                        p.name.name
+                    ));
+                    port_lines.push(format!(
+                        "{} logic [{}] {}_elems",
+                        dir,
+                        Self::fold_width_str(&elems_w),
+                        p.name.name
+                    ));
                 } else {
                     let ty_str = self.emit_port_type_str(&p.ty);
                     let init_str = p
@@ -320,6 +340,54 @@ impl<'a> Codegen<'a> {
         self.line("");
 
         self.indent += 1;
+
+        // `split` ScaledVec ports are a BOUNDARY shape only: the SV module has
+        // `<p>_scale` / `<p>_elems`, but everything inside still refers to the
+        // block by its single ARCH name. Bridge the two here so the body is
+        // emission-identical to the packed form — otherwise every internal use
+        // would reference a name that does not exist in the SV.
+        let split_ports: Vec<&crate::ast::PortDecl> = m
+            .ports
+            .iter()
+            .filter(|p| p.split && matches!(p.ty, TypeExpr::ScaledVec(..)))
+            .collect();
+        if !split_ports.is_empty() {
+            self.line("// `split` block ports: SV boundary is {scale, elems}; the body");
+            self.line("// sees one packed block value.");
+            for p in &split_ports {
+                let n = &p.name.name;
+                let w = self
+                    .type_expr_width(&p.ty)
+                    .map(|w| format!("{}:0", w.saturating_sub(1)))
+                    .unwrap_or_else(|| {
+                        Self::fold_width_str(
+                            &self
+                                .type_expr_data_width(&p.ty)
+                                .unwrap_or_else(|| "0".to_string()),
+                        )
+                    });
+                match p.direction {
+                    Direction::In => {
+                        self.line(&format!("logic [{w}] {n};"));
+                        self.line(&format!("assign {n} = {{{n}_scale, {n}_elems}};"));
+                    }
+                    Direction::Out => {
+                        let elems_w = self.scaled_vec_elems_width(&p.ty);
+                        self.line(&format!("logic [{w}] {n};"));
+                        self.line(&format!(
+                            "assign {n}_elems = {n}[{}];",
+                            Self::fold_width_str(&elems_w)
+                        ));
+                        self.line(&format!(
+                            "assign {n}_scale = {n}[{}+:{}];",
+                            elems_w,
+                            self.scaled_vec_scale_width(&p.ty)
+                        ));
+                    }
+                }
+            }
+            self.line("");
+        }
 
         // Emit any functions defined in the same file as local `function automatic` declarations.
         self.emit_pending_functions();

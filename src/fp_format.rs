@@ -279,6 +279,34 @@ pub fn width_of_tag(tag: &str) -> Option<u32> {
     by_tag(tag).map(|f| f.width)
 }
 
+/// Storage width of a type usable as a `ScaledVec` element or scale.
+///
+/// This is `by_type_expr` plus `E8M0`, which is deliberately **not** a float
+/// (no sign, no mantissa, no zero) and therefore has no row in the table —
+/// but is the MX block scale, so it must be measurable here.
+pub fn block_member_width(ty: &TypeExpr) -> Option<u32> {
+    match ty {
+        TypeExpr::E8M0 => Some(8),
+        other => by_type_expr(other).map(|f| f.width),
+    }
+}
+
+/// Packed width of `ScaledVec<Elem, N, Scale>` = `scale_w + N * elem_w`.
+///
+/// The canonical layout is `{ scale[w-1:0], P[N-1], …, P[1], P[0] }` — scale
+/// in the high bits, element 0 in the low bits, matching ARCH's existing `Vec`
+/// convention (proposal §3.2, decision #8). MXFP4 (`FP4E2M1`, 32, `E8M0`) is
+/// therefore 8 + 32*4 = 136 bits.
+///
+/// `n` is the already-const-evaluated block size: every pass owns its own
+/// constant folder, so callers evaluate `N` and pass the number in. Returns
+/// `None` if either member type cannot live in a block, or on overflow.
+pub fn scaled_vec_width(elem: &TypeExpr, n: u32, scale: &TypeExpr) -> Option<u32> {
+    let elem_w = block_member_width(elem)?;
+    let scale_w = block_member_width(scale)?;
+    n.checked_mul(elem_w)?.checked_add(scale_w)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

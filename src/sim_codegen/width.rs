@@ -42,7 +42,11 @@ pub(super) fn type_width_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> u32
         TypeExpr::Vec(elem, count) => {
             type_width_with_params(elem, params) * eval_width_with_params(count, params)
         }
-        _ => 32,
+        TypeExpr::ScaledVec(elem, n, scale) => scaled_vec_bits(elem, n, scale, params),
+        // Floats and E8M0 via the canonical table — see the note in
+        // `type_bits_te_with_params`. This one feeds VCD signal widths, so a
+        // wrong answer here shows up as a mis-sized waveform, not a crash.
+        _ => crate::fp_format::block_member_width(ty).unwrap_or(32),
     }
 }
 
@@ -143,6 +147,16 @@ pub(super) fn cpp_port_type_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> 
         | TypeExpr::FP6E2M3
         | TypeExpr::FP6E3M2
         | TypeExpr::E8M0 => "uint8_t".to_string(),
+        // A block is one packed word (MXFP4 = 8 + 32*4 = 136 bits), so it
+        // lands in VlWide for every realistic N rather than a scalar bucket.
+        TypeExpr::ScaledVec(elem, n, scale) => {
+            let b = scaled_vec_bits(elem, n, scale, params);
+            if is_wide_bits(b) {
+                format!("VlWide<{}>", wide_words(b))
+            } else {
+                cpp_uint(b).to_string()
+            }
+        }
         TypeExpr::Named(n) => n.name.clone(),
         TypeExpr::Vec(_, _) => "uint32_t".to_string(),
     }
@@ -210,6 +224,16 @@ pub(super) fn cpp_internal_type_with_params(ty: &TypeExpr, params: &[ParamDecl])
         | TypeExpr::FP6E2M3
         | TypeExpr::FP6E3M2
         | TypeExpr::E8M0 => "uint8_t".to_string(),
+        TypeExpr::ScaledVec(elem, n, scale) => {
+            let b = scaled_vec_bits(elem, n, scale, params);
+            if b > 128 {
+                format!("VlWide<{}>", wide_words(b))
+            } else if b > 64 {
+                "_arch_u128".to_string()
+            } else {
+                cpp_uint(b).to_string()
+            }
+        }
         TypeExpr::Named(n) => n.name.clone(),
         TypeExpr::Vec(_, _) => "uint32_t".to_string(),
     }
@@ -358,8 +382,22 @@ pub(super) fn type_width_of(ty: &TypeExpr) -> u32 {
         TypeExpr::FP4E2M1 => 4,
         TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => 6,
         TypeExpr::E8M0 => 8,
+        TypeExpr::ScaledVec(elem, n, scale) => scaled_vec_bits(elem, n, scale, &[]),
         TypeExpr::Vec(..) | TypeExpr::Named(_) => 0,
     }
+}
+
+/// Packed bit-width of a `ScaledVec<Elem, N, Scale>`, or 0 if `N` is not
+/// param-resolvable. Mirrors [`crate::fp_format::scaled_vec_width`]; the split
+/// exists only because the sim emitters need param-aware `N` evaluation.
+pub(super) fn scaled_vec_bits(
+    elem: &TypeExpr,
+    n: &crate::ast::Expr,
+    scale: &TypeExpr,
+    params: &[ParamDecl],
+) -> u32 {
+    let n = eval_width_with_params(n, params);
+    crate::fp_format::scaled_vec_width(elem, n, scale).unwrap_or(0)
 }
 
 /// Smallest C++ signed integer type that fits `bits` (up to 64).
@@ -471,11 +509,13 @@ pub(super) fn type_bits_te_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> u
     match ty {
         TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width_with_params(w, params),
         TypeExpr::Bool | TypeExpr::Bit => 1,
-        TypeExpr::FP32 => 32,
-        TypeExpr::BF16 => 16,
-        TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => 8,
-        TypeExpr::FP4E2M1 => 4,
-        _ => 32,
+        TypeExpr::ScaledVec(elem, n, scale) => scaled_vec_bits(elem, n, scale, params),
+        // Every float format and the E8M0 scale come from the canonical
+        // table. Enumerating them by hand here is how FP6E2M3 / FP6E3M2 /
+        // E8M0 ended up silently reporting 32 bits: they were added to the
+        // table but never to this hand-written list, and the `_ => 32` arm
+        // swallowed them without a compile error.
+        _ => crate::fp_format::block_member_width(ty).unwrap_or(32),
     }
 }
 

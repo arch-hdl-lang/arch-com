@@ -2476,3 +2476,133 @@ fn e8m0_nan_follows_the_fp_compat_profile() {
         );
     }
 }
+
+/// `ScaledVec<Elem,N,Scale>` — the block-scaled type (phase 2a: type, layout,
+/// `split` boundary; the quantize/dequantize operations are phase 2b).
+///
+/// Pins the three things that would be silently wrong rather than loud:
+/// the packed width, the two rejections, and the `split` glue. Every SV
+/// assertion is scoped to the MODULE BODY — `sv.contains(...)` over the whole
+/// file also matches the FP preamble, which makes such a check vacuous.
+#[test]
+fn scaled_vec_type_layout_and_rejections() {
+    let out = arch()
+        .arg("check")
+        .arg("tests/fp_v1/ScaledVecType.arch")
+        .output()
+        .expect("run arch check");
+    assert!(
+        out.status.success(),
+        "ScaledVecType.arch should check\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    let dir = std::env::temp_dir().join("arch_scaledvec_build");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let sv_path = dir.join("ScaledVecType.sv");
+    let out = arch()
+        .arg("build")
+        .arg("tests/fp_v1/ScaledVecType.arch")
+        .arg("-o")
+        .arg(&sv_path)
+        .output()
+        .expect("run arch build");
+    assert!(
+        out.status.success(),
+        "build failed:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let sv = std::fs::read_to_string(&sv_path).expect("emitted SV");
+    let body = sv
+        .split_once("module ScaledVecType")
+        .expect("ScaledVecType in SV")
+        .1
+        .split_once("endmodule")
+        .expect("endmodule")
+        .0
+        .to_string();
+
+    // Packed layout: scale_w + N*elem_w, folded to a literal range.
+    // MXFP4 = 8 + 32*4 = 136, MXFP8 = 8 + 32*8 = 264.
+    assert!(
+        body.contains("input logic [135:0] a"),
+        "MXFP4 must be one packed 136-bit port:\n{body}"
+    );
+    assert!(
+        body.contains("input logic [263:0] big"),
+        "MXFP8 must be one packed 264-bit port:\n{body}"
+    );
+    // A second module consuming the SAME package alias, with no redeclaration.
+    assert!(
+        sv.contains("input logic [199:0] blk"),
+        "MXFP6 (8 + 32*6 = 200) via a package alias:\n{sv}"
+    );
+
+    // `split` is a boundary shape: two SV ports plus glue, while the body
+    // still refers to the block by its single name.
+    assert!(
+        body.contains("input logic [7:0] s_scale") && body.contains("input logic [127:0] s_elems"),
+        "split port must emit <name>_scale and <name>_elems:\n{body}"
+    );
+    assert!(
+        body.contains("assign s = {s_scale, s_elems};"),
+        "split input needs re-assembly glue:\n{body}"
+    );
+    assert!(
+        body.contains("assign s_out_elems = s_out[127:0];")
+            && body.contains("assign s_out_scale = s_out[128+:8];"),
+        "split output needs part-select glue:\n{body}"
+    );
+
+    // Both rejections must fire with a diagnostic, not a silent wrong type:
+    // `a[0]` would otherwise fall through to UInt<1>, and `a + b` to INTEGER
+    // arithmetic over two packed {scale, elements} words.
+    let neg = dir.join("Neg.arch");
+    std::fs::write(
+        &neg,
+        "package P\n  type MXFP4 = ScaledVec<FP4E2M1, 32, E8M0>;\nend package P\n\
+         module Neg\n  port a: in MXFP4;\n  port b: in MXFP4;\n  port y: out MXFP4;\n\
+         port e: out FP32;\n  comb\n    y = a + b;\n    e = a[0];\n  end comb\n\
+         end module Neg\n",
+    )
+    .expect("write Neg.arch");
+    let out = arch().arg("check").arg(&neg).output().expect("run check");
+    assert!(!out.status.success(), "Neg.arch must be rejected");
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        err.contains("no arithmetic"),
+        "`a + b` on blocks must be refused with a reason:\n{err}"
+    );
+    assert!(
+        err.contains("scaled_dequantize"),
+        "indexing must point at scaled_dequantize:\n{err}"
+    );
+}
+
+/// The block survives the native sim as one packed value at both widths.
+#[test]
+fn scaled_vec_sim_round_trip() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = arch()
+        .arg("sim")
+        .arg("tests/fp_v1/ScaledVecType.arch")
+        .arg("--tb")
+        .arg("tests/fp_v1/tb_scaled_vec.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("0 fail"),
+        "ScaledVec sim round-trip failed:\nstdout:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
