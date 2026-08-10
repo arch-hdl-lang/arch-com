@@ -619,6 +619,20 @@ pub(super) fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
                             if w > 0 {
                                 return w;
                             }
+                        } else if matches!(elem_ty, TypeExpr::UInt(_) | TypeExpr::SInt(_)) {
+                            // A declared scalar element whose width won't
+                            // const-fold means the total/count fallback below
+                            // is a guess, not a resolution — say so instead
+                            // of silently degrading (aggregate elements — 2D
+                            // Vec, struct — fall through without noise; the
+                            // fallback is the intended path for those).
+                            eprintln!(
+                                "warning: sim codegen: element width of Vec \
+                                 '{base_name}' could not be resolved from its \
+                                 declared type; falling back to packed-width/\
+                                 count inference — concat / shift positions \
+                                 derived from this may be incorrect"
+                            );
                         }
                     }
                     // Fallback: total width / element count. Correct for the
