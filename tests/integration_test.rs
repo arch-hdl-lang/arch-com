@@ -35098,3 +35098,408 @@ fn test_pipe_slice_hoist_behavioral_equivalence_verilator_and_iverilog() {
         );
     }
 }
+
+// ---------------------------------------------------------------------
+// arch#852 — a top-level `function` was emitted into the SV of a `module`
+// that called it but not into any other construct's, because only
+// `emit_module` ran the emission step. SystemVerilog has no free
+// functions, so `arch build` emitted a call to a function that was nowhere
+// declared: `arch check` and `arch build` both passed and every frontend
+// then rejected the output. Reported for `pipeline`; the `assert`/`cover`
+// surface every construct shares means `fsm` / `fifo` / `ram` / `cam` /
+// `counter` / `regfile` / `linklist` all had it too.
+// ---------------------------------------------------------------------
+
+/// Emitted-shape check (no simulator required, so it runs on the PR gate
+/// where neither Verilator nor iverilog is installed): a top-level
+/// `function` must be emitted as a local `function automatic` inside the
+/// module of every construct that can call it, not just `module`.
+#[test]
+fn test_top_level_function_emitted_into_every_construct() {
+    const PRELUDE: &str = r#"
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+
+        function Ident8(v: UInt<8>) -> UInt<8>
+          return v;
+        end function Ident8
+    "#;
+    // (construct keyword, construct source). `pipeline` and `fsm` call the
+    // function from a real statement body; the remaining constructs have no
+    // statement bodies, so they call it through the `assert`/`cover`
+    // surface that every construct shares (emitted into its module as SVA).
+    let cases: [(&str, &str); 8] = [
+        // The reported case (arch#852): a stage `seq` block.
+        (
+            "pipeline",
+            r#"
+            pipeline FnPipe
+              port clk: in Clock<SysDomain>;
+              port rst: in Reset<Sync>;
+              port a: in UInt<8>;
+              port y: out UInt<8>;
+              stage S0
+                reg r: UInt<8> reset rst => 0;
+                seq on clk rising
+                  r <= Ident8(a);
+                end seq
+                comb
+                  y = r;
+                end comb
+              end stage S0
+            end pipeline FnPipe
+            "#,
+        ),
+        (
+            "fsm",
+            r#"
+            fsm FnFsm
+              port clk: in Clock<SysDomain>;
+              port rst: in Reset<Sync, High>;
+              port a: in UInt<8>;
+              port y: out UInt<8> default 0;
+              reg r: UInt<8> reset rst => 0;
+              state [Idle, Run]
+              default state Idle;
+              state Idle
+                comb
+                  y = r;
+                end comb
+                seq on clk rising
+                  r <= Ident8(a);
+                end seq
+                -> Run when a == 8'd1;
+              end state Idle
+              state Run
+                comb
+                  y = Ident8(r);
+                end comb
+                -> Idle when true;
+              end state Run
+            end fsm FnFsm
+            "#,
+        ),
+        (
+            "fifo",
+            r#"
+            fifo FnFifo
+              param DEPTH: const = 4;
+              param T: type = UInt<8>;
+              port clk: in Clock<SysDomain>;
+              port rst: in Reset<Sync, High>;
+              port push_valid: in Bool;
+              port push_ready: out Bool;
+              port push_data: in T;
+              port pop_valid: out Bool;
+              port pop_ready: in Bool;
+              port pop_data: out T;
+              assert data_ident: Ident8(push_data) == push_data;
+            end fifo FnFifo
+            "#,
+        ),
+        (
+            "ram",
+            r#"
+            ram FnRam
+              kind single;
+              latency 1;
+              param DEPTH: const = 8;
+              param T: type = UInt<8>;
+              port clk: in Clock<SysDomain>;
+              ports p
+                addr: in UInt<3>;
+                en: in Bool;
+                wen: in Bool;
+                wdata: in T;
+                rdata: out T;
+              end ports p
+              assert fn_decl_reachable: Ident8(8'd1) == 8'd1;
+            end ram FnRam
+            "#,
+        ),
+        (
+            "cam",
+            r#"
+            cam FnCam
+              param DEPTH: const = 32;
+              param KEY_W: const = 10;
+              port clk: in Clock<SysDomain>;
+              port rst: in Reset<Sync, High>;
+              port write_valid: in Bool;
+              port write_idx: in UInt<5>;
+              port write_key: in UInt<10>;
+              port write_set: in Bool;
+              port search_key: in UInt<10>;
+              port search_mask: out UInt<32>;
+              port search_any: out Bool;
+              port search_first: out UInt<5>;
+              assert fn_decl_reachable: Ident8(8'd1) == 8'd1;
+            end cam FnCam
+            "#,
+        ),
+        (
+            "counter",
+            r#"
+            counter FnCounter
+              kind wrap;
+              direction: up;
+              init: 0;
+              port clk: in Clock<SysDomain>;
+              port rst: in Reset<Sync>;
+              port inc: in Bool;
+              port clear: in Bool;
+              port max: in UInt<8>;
+              port value: out UInt<8>;
+              port at_max: out Bool;
+              assert fn_decl_reachable: Ident8(8'd1) == 8'd1;
+            end counter FnCounter
+            "#,
+        ),
+        (
+            "regfile",
+            r#"
+            regfile FnRegfile
+              param NREGS: const = 4;
+              param T: type = UInt<8>;
+              port clk: in Clock<SysDomain>;
+              port rst: in Reset<Sync>;
+              ports[1] read
+                addr: in UInt<2>;
+                data: out UInt<8>;
+              end ports read
+              ports[1] write
+                en: in Bool;
+                addr: in UInt<2>;
+                data: in UInt<8>;
+              end ports write
+              assert fn_decl_reachable: Ident8(8'd1) == 8'd1;
+            end regfile FnRegfile
+            "#,
+        ),
+        (
+            "linklist",
+            r#"
+            linklist FnLinklist
+              param DEPTH: const = 8;
+              param DATA: type = UInt<8>;
+              port clk: in Clock<SysDomain>;
+              port rst: in Reset<Sync>;
+              kind singly;
+              op alloc
+                latency: 1;
+                port req_valid: in Bool;
+                port req_ready: out Bool;
+                port resp_valid: out Bool;
+                port resp_handle: out UInt<3>;
+              end op alloc
+              assert fn_decl_reachable: Ident8(8'd1) == 8'd1;
+            end linklist FnLinklist
+            "#,
+        ),
+    ];
+    for (keyword, construct) in cases {
+        let sv = compile_to_sv(&format!("{PRELUDE}{construct}"));
+        assert!(
+            sv.contains("function automatic logic [7:0] Ident8(input logic [7:0] v);")
+                && sv.contains("endfunction"),
+            "arch#852: a top-level `function` called from a `{keyword}` must be \
+             emitted as a local `function automatic` in its SV module (SV has \
+             no free functions), got:\n{sv}"
+        );
+    }
+}
+
+/// `arbiter` emitted only the `policy <FnName>` hook function, so the fix
+/// (emit the whole set, as `emit_module` does) must not lose the hook. The
+/// call in the grant logic is the thing that has to stay declared.
+#[test]
+fn test_arbiter_custom_policy_hook_function_still_emitted() {
+    let source = r#"
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+
+        function PickLowest(req_mask: UInt<4>, last_grant: UInt<4>) -> UInt<4>
+          let pick_neg: UInt<5> = (req_mask ^ 0xF).zext<5>() + 1;
+          return req_mask & pick_neg.trunc<4>();
+        end function PickLowest
+
+        arbiter FnArbiter
+          policy PickLowest;
+          param NUM_REQ: const = 4;
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          ports[NUM_REQ] request
+            valid: in Bool;
+            ready: out Bool;
+          end ports request
+          port grant_valid: out Bool;
+          port grant_requester: out UInt<2>;
+          hook grant_select(req_mask: UInt<4>, last_grant: UInt<4>) -> UInt<4>
+            = PickLowest(req_mask, last_grant);
+        end arbiter FnArbiter
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("function automatic logic [3:0] PickLowest("),
+        "the custom-policy hook function must stay declared in the arbiter's \
+         SV module, got:\n{sv}"
+    );
+}
+
+/// arch#852 (second half): the pipeline stage emitter had no `FunctionCall`
+/// arm, so a call fell through to the module-level `emit_expr_str`, which
+/// does not apply the `<stage>_<signal>` prefix rewriting — `Ident8(r1)`
+/// referenced a name that does not exist in the emitted SV. Invisible
+/// before the function itself was emitted (the SV failed on the missing
+/// declaration first), so it is fixed and tested here.
+#[test]
+fn test_pipeline_function_call_args_get_stage_prefix() {
+    let source = "domain SysDomain\n  freq_mhz: 100\nend domain SysDomain\n\n\
+        function Ident8(v: UInt<8>) -> UInt<8>\n  return v;\nend function Ident8\n\n\
+        pipeline FnArgPipe\n\
+        \x20 port clk: in Clock<SysDomain>;\n\
+        \x20 port rst: in Reset<Sync>;\n\
+        \x20 port a: in UInt<8>;\n\
+        \x20 port y: out UInt<8>;\n\
+        \x20 stage S0\n\
+        \x20   reg r1: UInt<8> reset rst => 0;\n\
+        \x20   reg r2: UInt<8> reset rst => 0;\n\
+        \x20   seq on clk rising\n\
+        \x20     r1 <= a;\n\
+        \x20     r2 <= Ident8(r1);\n\
+        \x20   end seq\n\
+        \x20   comb\n\
+        \x20     y = Ident8(r2);\n\
+        \x20   end comb\n\
+        \x20 end stage S0\n\
+        end pipeline FnArgPipe\n";
+    let sv = compile_to_sv(source);
+    for expected in ["Ident8(s0_r1)", "Ident8(s0_r2)"] {
+        assert!(
+            sv.contains(expected),
+            "expected stage-prefixed call argument `{expected}`, got:\n{sv}"
+        );
+    }
+    for unexpected in ["Ident8(r1)", "Ident8(r2)"] {
+        assert!(
+            !sv.contains(unexpected),
+            "call argument `{unexpected}` names a signal that does not exist \
+             in the emitted SV (missing stage prefix), got:\n{sv}"
+        );
+    }
+}
+
+/// Dual-simulator behavioral check (arch#852): a `pipeline` calling a
+/// top-level `function` must not just *compile* on both simulators, it must
+/// agree with ARCH's own semantics on actual values, in all three positions
+/// a pipeline emits expressions into (`always_ff`, module-scope `assign`,
+/// `always_comb`), both as a direct call and as a hoisted `BitSlice` base
+/// (the shape whose `logic [$bits(Ident8(a))-1:0]` segfaulted Icarus while
+/// the function was undeclared). Skips gracefully if neither simulator is
+/// installed.
+#[test]
+fn test_pipe_fn_call_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#852 pipeline function-call dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("PipeFnCall.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/PipeFnCall.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build PipeFnCall SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("pipe_fn.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_pipe_fn_call.sv")
+            .output()
+            .expect("iverilog compile PipeFnCall");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#852 regression: the called \
+             function was not declared anywhere in the emitted SV, and the \
+             `$bits(Ident8(a))` hoist width segfaulted Icarus)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog PipeFnCall");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm pipeline function-call semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_pipe_fn");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("PipeFnCall")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_pipe_fn_call_verilator.cpp")
+            .output()
+            .expect("verilate PipeFnCall");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass (arch#852 regression: `Can't find \
+             definition of task/function`)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VPipeFnCall");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator PipeFnCall");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm pipeline function-call semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}

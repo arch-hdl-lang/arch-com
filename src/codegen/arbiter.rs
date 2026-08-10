@@ -89,16 +89,14 @@ impl<'a> Codegen<'a> {
         self.line("");
         self.indent += 1;
 
-        // Emit hook function inside arbiter module if custom policy
-        if let ArbiterPolicy::Custom(ref fn_ident) = a.policy {
-            let fns = std::mem::take(&mut self.pending_functions);
-            for f in &fns {
-                if f.name.name == fn_ident.name {
-                    self.emit_function(f);
-                }
-            }
-            self.pending_functions = fns;
-        }
+        // Emit any functions defined in the same file as local `function
+        // automatic` declarations. A `policy <FnName>` arbiter calls its
+        // hook function from the grant logic; an `assert`/`cover` on any
+        // arbiter may call one too. Emitting the whole set (instead of just
+        // the hook, as this did before arch#852) matches every other
+        // construct emitter — SV has no free functions, so each module
+        // carries its own copies.
+        self.emit_pending_functions();
 
         // ── Detect request/grant signal names from port arrays ─────────────────
         // The first port array is assumed to be the request ports.

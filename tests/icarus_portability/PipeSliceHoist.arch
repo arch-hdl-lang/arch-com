@@ -15,11 +15,10 @@
 // temp: a variable declaration is legal only at the top of a procedural
 // block, so the temps must land ahead of the block, at module scope.
 //
-// The fourth hoisted base kind, `FunctionCall`, is covered by the
-// simulator-free shape test only: a top-level `function` is not emitted
-// into a `pipeline`'s SV module at all (unrelated pre-existing gap — the
-// same source compiles fine inside a `module`), so a `pipeline` calling one
-// cannot be simulated by either frontend regardless of this fix.
+// The fourth hoisted base kind, `FunctionCall`, lives in PipeFnCall.arch:
+// a top-level `function` was not emitted into a `pipeline`'s SV module at
+// all (arch#852), so when this fixture was written a `pipeline` calling one
+// could not be simulated by either frontend regardless of this fix.
 //
 // Every output is driven from a stage register (a `pipeline` output may not
 // be a combinational path from an input), so all outputs share a 1-cycle
