@@ -253,4 +253,31 @@ Notes:
   the same window `e4m3_narrow` documents. Pushing it to `4 * min_normal`
   leaves the window and is killed on all three formats, which is what makes the
   survival evidence of the window rather than of a gap.
-- The renderer miter gains 6 rows (widen + narrow per format).
+### E8M0 — the block scale
+
+E8M0 is not a float and not all-finite: no sign, no mantissa, no infinity, and
+**no zero** — `0x00` is the minimum scale 2^-127, `0xFF` is NaN. Nothing about
+it rounds, so it has no round spec. It gets an equivalence miter anyway, because
+it is the format where every bug found while landing it was a float-shaped path
+silently taking the f32 branch.
+
+| op | spec | input space |
+|---|---|---|
+| `e8m0_widen` | anchor `w(0x7F)=1.0` + step `w(e+1)=2*w(e)` + `w(0xFF)` NaN + all scales positive & finite | **2^8 — exhaustive** |
+| `e8m0_narrow` | `w(rr) <= |x| < 2*w(rr)` (floor power of two) + MX clamps | 2^32 |
+
+- **Characterized, not transcribed.** The widen spec never mentions an exponent
+  field — it states the defining multiplicative property, so a layout error has
+  nothing to agree with. Anchor plus step determines all 255 scales by induction
+  in both directions. A 255-entry constant table would have been the obvious
+  alternative and a worse one: transcription at that length invites exactly the
+  errors the spec exists to catch.
+- **The step pins the no-zero subtlety for free.** `w(0x01) = 2 * w(0x00)` is
+  only satisfiable if `w(0x00)` really is 2^-127 — an f32 *subnormal* — rather
+  than the zero every other format would put there. Confirmed by three direct
+  queries: `w(0x00)` equals `#x00400000`, is not zero, and is subnormal.
+- **9 mutants, 9 killed**: moving the anchor, the step stride, the doubling
+  factor, the NaN code, or the sign of the scales; and on the narrow, either
+  clamp or either side of the floor bound.
+
+- The renderer miter gains 8 rows (widen + narrow for all four MX formats).

@@ -99,6 +99,8 @@ ops=(
   "F32ToE2m3|arch_f32_to_e2m3|a|FP32|FP6E2M3|y = a.to_fp6e2m3()"
   "E3m2ToF32|arch_e3m2_to_f32|a|FP6E3M2|FP32|y = a.to_fp32()"
   "F32ToE3m2|arch_f32_to_e3m2|a|FP32|FP6E3M2|y = a.to_fp6e3m2()"
+  "E8m0ToF32|arch_e8m0_to_f32|a|E8M0|FP32|y = a.to_fp32()"
+  "F32ToE8m0|arch_f32_to_e8m0|a|FP32|E8M0|y = a.to_e8m0()"
 )
 
 echo "# module            verdict   z3 time (s)"

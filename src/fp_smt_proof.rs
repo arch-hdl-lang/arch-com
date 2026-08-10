@@ -119,6 +119,29 @@ pub const MX_CONV: &[&str] = &[
     "e3m2_narrow",
 ];
 
+/// OCP MX E8M0 — the block scale type. Not a float and not all-finite: it has
+/// no sign, no mantissa, no infinity, and **no zero** (`0x00` is the minimum
+/// scale 2^-127); `0xFF` is NaN.
+///
+/// Nothing here rounds, so there is no round spec to write — but there is still
+/// an equivalence to prove, and it is the one worth proving: every bug found
+/// while landing E8M0 was a float-shaped path silently taking the f32 branch,
+/// and each was caught by the widen disagreeing with the NaN test.
+///
+/// The spec deliberately avoids restating the bit layout. `e8m0_widen` pins the
+/// **defining multiplicative property** instead — code 127 is 1.0, consecutive
+/// codes differ by a factor of 2, code 255 is NaN, every other code is positive
+/// and finite. Anchor plus step determines the function on all 255 scales by
+/// induction in both directions, and it does so without ever mentioning an
+/// exponent field, so a layout error has nothing to agree with. It also pins
+/// the awkward case for free: the step from `0x00` to `0x01` only holds if
+/// `0x00` really is 2^-127 (an f32 *subnormal*) rather than a zero.
+///
+/// `e8m0_narrow` is characterized the same way — `w(rr) <= |x| < 2*w(rr)`, i.e.
+/// the result is the floor power of two — with the MX reference's clamps
+/// (non-finite to `0xFF`, zero/subnormal to the minimum scale `0x00`).
+pub const MX_SCALE_CONV: &[&str] = &["e8m0_widen", "e8m0_narrow"];
+
 /// An OCP all-finite storage format, described by constants transcribed from
 /// the OCP spec's value tables rather than recomputed from `(eb, mb)`.
 ///
@@ -639,6 +662,35 @@ pub fn equiv_proof(op: &str, profile: FpCompat) -> String {
                 other => panic!("unknown e4m3 proof op {other}"),
             }
         }
+        // ── OCP MX E8M0 block scale: characterized, not transcribed ──
+        "e8m0_widen" => s.push_str(
+            "(declare-fun e () (_ BitVec 8))\n\
+             (define-fun w ((k (_ BitVec 8))) F ((_ to_fp 8 24) (arch_e8m0_to_f32 k)))\n\
+             (define-fun one () F ((_ to_fp 8 24) RNE 1.0))\n\
+             (define-fun two () F ((_ to_fp 8 24) RNE 2.0))\n\
+             (assert (not (and\n\
+               (= (w #x7F) one)\n\
+               (=> (bvule e (_ bv253 8))\n\
+                   (= (w (bvadd e (_ bv1 8))) (fp.mul RNE (w e) two)))\n\
+               (fp.isNaN (w #xFF))\n\
+               (=> (bvule e (_ bv254 8))\n\
+                   (and (fp.isPositive (w e))\n\
+                        (not (fp.isInfinite (w e)))\n\
+                        (not (fp.isNaN (w e))))))))\n(check-sat)\n",
+        ),
+        "e8m0_narrow" => s.push_str(
+            "(declare-fun x () (_ BitVec 32))\n\
+             (define-fun fx () F ((_ to_fp 8 24) x))\n\
+             (define-fun ax () F (fp.abs fx))\n\
+             (define-fun rr () (_ BitVec 8) (arch_f32_to_e8m0 x))\n\
+             (define-fun wr () F ((_ to_fp 8 24) (arch_e8m0_to_f32 rr)))\n\
+             (define-fun two () F ((_ to_fp 8 24) RNE 2.0))\n\
+             (define-fun minnorm () F ((_ to_fp 8 24) #x00800000))\n\
+             (assert (not (ite (or (fp.isNaN fx) (fp.isInfinite fx)) (= rr #xFF)\n\
+                           (ite (fp.lt ax minnorm) (= rr #x00)\n\
+                           (and (fp.leq wr ax)\n\
+                                (fp.gt (fp.mul RNE wr two) ax))))))\n(check-sat)\n",
+        ),
         // ── OCP MX all-finite storage formats: FP4 E2M1, FP6 E2M3/E3M2 ──
         _ if all_finite_fmt(op).is_some() => {
             let f = all_finite_fmt(op).expect("guarded above");

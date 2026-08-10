@@ -1324,8 +1324,9 @@ fn fp8_smt_proofs() {
     }
 }
 
-/// OCP MX sub-8-bit storage-format SMT proofs (FP4 E2M1, FP6 E2M3 / E3M2),
-/// BOTH `--fp-compat` profiles.
+/// OCP MX sub-8-bit SMT proofs — the three all-finite storage formats (FP4
+/// E2M1, FP6 E2M3 / E3M2) plus the E8M0 block scale — BOTH `--fp-compat`
+/// profiles.
 ///
 /// These formats are all-finite — no Inf, no NaN — so there is no SMT sort for
 /// them and each conversion is checked against a hand-written spec (see
@@ -1351,6 +1352,13 @@ fn fp8_smt_proofs() {
 /// same spacing as the min-normal binade, so any split inside
 /// `[min_normal, 2*min_normal)` is a correct spec. Pushing it to
 /// `4 * min_normal` leaves that window and is killed on all three formats.
+///
+/// E8M0 does not round, so it has no round spec — but it is the format whose
+/// every landing bug was a float-shaped path silently taking the f32 branch, so
+/// it gets the equivalence miter anyway (`MX_SCALE_CONV`), characterized rather
+/// than transcribed. All 9 of its mutants are killed, and three direct queries
+/// confirm the subtlety that has no analogue in any other format: code `0x00`
+/// is the 2^-127 f32 *subnormal*, not a zero.
 #[test]
 fn mx_storage_smt_proofs() {
     fn z3_available() -> bool {
@@ -1366,7 +1374,10 @@ fn mx_storage_smt_proofs() {
     }
     let td = tempfile::tempdir().expect("tempdir");
     for profile in [arch::FpCompat::Riscv, arch::FpCompat::Cuda] {
-        for op in arch::fp_smt_proof::MX_CONV {
+        for op in arch::fp_smt_proof::MX_CONV
+            .iter()
+            .chain(arch::fp_smt_proof::MX_SCALE_CONV.iter())
+        {
             let smt = arch::fp_smt_proof::equiv_proof(op, profile);
             let path = td.path().join(format!("{op}_{profile:?}.smt2"));
             std::fs::write(&path, smt).unwrap();
