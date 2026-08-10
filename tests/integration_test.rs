@@ -34884,3 +34884,217 @@ fn test_seq_slice_hoist_behavioral_equivalence_verilator_and_iverilog() {
         );
     }
 }
+
+// ---------------------------------------------------------------------
+// arch#845 — the `pipeline` construct has its own expression emitters, and
+// they never called the `BitSlice`/`PartSelect` base hoist. So arch#807's
+// `Concat`/`Repeat` fix (PR #811) and arch#810's `FunctionCall`/
+// `MethodCall` fix (PR #844) were both inert inside a pipeline stage: the
+// base was still emitted bare, e.g. `s0_cap <= 8'(w)[5:2];`, which
+// Verilator *and* Icarus reject outright.
+//
+// A pipeline emits expressions into three positions, and all three are
+// covered below. Two of them are procedural blocks (`always_ff` for the
+// stage updates, `always_comb` for a branching stage `comb`), where the
+// hoisted temp — a variable declaration plus a continuous `assign`, i.e. a
+// module item — must land *ahead* of the block: a variable declaration is
+// legal only at the top of a procedural block, and the pipeline interleaves
+// the reading statements with other `<=`/`=` statements.
+// ---------------------------------------------------------------------
+
+/// Emitted-shape check (no simulator required, so it runs on the PR gate
+/// where neither Verilator nor iverilog is installed): inside a pipeline,
+/// every `Concat`/`Repeat`/`FunctionCall`/`MethodCall` slice base must be
+/// bound to an `arch_idx_base_<n>` temp and sliced through that temp, with
+/// the temp declared at module scope — before the procedural block that
+/// reads it, when there is one.
+#[test]
+fn test_pipeline_slice_bases_hoist() {
+    // (source, hoisted assign, slice through the temp, block the temp must
+    //  precede — `None` for a module-scope `assign` position)
+    let cases: [(&str, &str, &str, Option<&str>); 6] = [
+        // stage `seq` -> the stage-update `always_ff`. This is the issue's
+        // own repro: `8'(w)[5:2]` is rejected by both frontends.
+        (
+            "pipeline PipeTruncSeq\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync>;\n  port w: in UInt<16>;\n  port y: out UInt<4>;\n  stage S0\n    reg cap: UInt<4> reset rst => 0;\n    seq on clk rising\n      cap <= w.trunc<8>()[5:2];\n    end seq\n    comb\n      y = cap;\n    end comb\n  end stage S0\nend pipeline PipeTruncSeq\n",
+            "assign arch_idx_base_0 = 8'(w);",
+            "arch_idx_base_0[5:2]",
+            Some("always_ff"),
+        ),
+        (
+            "pipeline PipeConcatSeq\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync>;\n  port a: in UInt<8>;\n  port b: in UInt<4>;\n  port y: out UInt<4>;\n  stage S0\n    reg cap: UInt<4> reset rst => 0;\n    seq on clk rising\n      cap <= {a, b}[7:4];\n    end seq\n    comb\n      y = cap;\n    end comb\n  end stage S0\nend pipeline PipeConcatSeq\n",
+            "assign arch_idx_base_0 = {a, b};",
+            "arch_idx_base_0[7:4]",
+            Some("always_ff"),
+        ),
+        (
+            "pipeline PipeRepeatSeq\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync>;\n  port b: in UInt<4>;\n  port y: out UInt<4>;\n  stage S0\n    reg cap: UInt<4> reset rst => 0;\n    seq on clk rising\n      cap <= {3{b}}[8 +: 4];\n    end seq\n    comb\n      y = cap;\n    end comb\n  end stage S0\nend pipeline PipeRepeatSeq\n",
+            "assign arch_idx_base_0 = {3{b}};",
+            "arch_idx_base_0[8 +: 4]",
+            Some("always_ff"),
+        ),
+        // stage `let` -> a module-scope `assign`; no block to precede.
+        // `.reverse<C>()` lowers to a chunked concatenation (PR #834), so
+        // its result as a slice base is the bare-`{...}[hi:lo]` shape
+        // arch#807 fixed — the guard keys on the ARCH `ExprKind`, not the
+        // emitted SV shape.
+        (
+            "pipeline PipeRevLet\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync>;\n  port a: in UInt<8>;\n  port y: out UInt<4>;\n  stage S0\n    let f: UInt<4> = a.reverse<1>()[7:4];\n    reg cap: UInt<4> reset rst => 0;\n    seq on clk rising\n      cap <= f;\n    end seq\n    comb\n      y = cap;\n    end comb\n  end stage S0\nend pipeline PipeRevLet\n",
+            "assign arch_idx_base_0 = {a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]};",
+            "assign s0_f = arch_idx_base_0[7:4];",
+            None,
+        ),
+        // `FunctionCall` base. Shape-only: a top-level `function` is not
+        // emitted into a `pipeline`'s SV module at all (unrelated
+        // pre-existing gap), so this form can't be simulated — hence its
+        // absence from the dual-simulator fixture.
+        (
+            "function Ident8(v: UInt<8>) -> UInt<8>\n  return v;\nend function Ident8\n\npipeline PipeFuncLet\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync>;\n  port a: in UInt<8>;\n  port y: out UInt<4>;\n  stage S0\n    let f: UInt<4> = Ident8(a)[5:2];\n    reg cap: UInt<4> reset rst => 0;\n    seq on clk rising\n      cap <= f;\n    end seq\n    comb\n      y = cap;\n    end comb\n  end stage S0\nend pipeline PipeFuncLet\n",
+            "assign arch_idx_base_0 = Ident8(a);",
+            "assign s0_f = arch_idx_base_0[5:2];",
+            None,
+        ),
+        // branching stage `comb` -> an `always_comb`.
+        (
+            "pipeline PipeMuxComb\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync>;\n  port a: in UInt<8>;\n  port sel: in Bool;\n  port y: out UInt<4>;\n  stage S0\n    reg sel_r: Bool reset rst => false;\n    reg m: UInt<8> reset rst => 0;\n    seq on clk rising\n      sel_r <= sel;\n      m <= a;\n    end seq\n    comb\n      if sel_r\n        y = m.trunc<6>()[5:2];\n      else\n        y = 0;\n      end if\n    end comb\n  end stage S0\nend pipeline PipeMuxComb\n",
+            "assign arch_idx_base_0 = 6'(s0_m);",
+            "arch_idx_base_0[5:2]",
+            Some("always_comb"),
+        ),
+    ];
+    for (source, expected_assign, expected_use, precedes) in cases {
+        let sv = compile_to_sv(source);
+        assert!(
+            sv.contains(expected_assign),
+            "expected hoisted assign `{expected_assign}`, got:\n{sv}"
+        );
+        assert!(
+            sv.contains(expected_use),
+            "expected slice through hoist temp `{expected_use}`, got:\n{sv}"
+        );
+        if let Some(block) = precedes {
+            let decl = sv
+                .find("] arch_idx_base_0;")
+                .unwrap_or_else(|| panic!("no `arch_idx_base_0` declaration, got:\n{sv}"));
+            let blk = sv
+                .find(block)
+                .unwrap_or_else(|| panic!("no `{block}` in emitted SV, got:\n{sv}"));
+            assert!(
+                decl < blk,
+                "hoisted temp must be declared at module scope, before the \
+                 `{block}` that reads it (a variable declaration is legal only \
+                 at the top of a procedural block), got:\n{sv}"
+            );
+        }
+    }
+}
+
+/// Dual-simulator behavioral check (arch#845): the pipeline hoist must not
+/// just *compile* on both simulators, it must agree with ARCH's own
+/// semantics on actual values, across `Concat`/`Repeat` and the size-cast
+/// (`.trunc`/`.zext`) and concat-lowered (`.reverse`) `MethodCall`s, in both
+/// the `[hi:lo]` and `[start +: w]` forms, and in all three positions a
+/// pipeline emits expressions into (`always_ff`, module-scope `assign`,
+/// `always_comb`). Skips gracefully if neither simulator is installed.
+#[test]
+fn test_pipe_slice_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#845 pipeline slice-base dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("PipeSliceHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/PipeSliceHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build PipeSliceHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("pipe_slice.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_pipe_slice_hoist.sv")
+            .output()
+            .expect("iverilog compile PipeSliceHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#845 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog PipeSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm pipeline slice-base semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_pipe_slice");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("PipeSliceHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_pipe_slice_hoist_verilator.cpp")
+            .output()
+            .expect("verilate PipeSliceHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass (arch#845 regression: the pipeline \
+             emitters sliced `8'(w)` bare, which Verilator rejects)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VPipeSliceHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator PipeSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm pipeline slice-base semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}

@@ -34,6 +34,44 @@ impl<'a> Codegen<'a> {
         })
     }
 
+    /// The `PipelineDecl` currently being emitted, if any. Pipelines have
+    /// no `module_scopes` entry (resolve.rs builds those for modules and
+    /// fsms only), so the pipeline emitters resolve names through the AST.
+    fn current_pipeline(&self) -> Option<&PipelineDecl> {
+        self.source.items.iter().find_map(|item| match item {
+            Item::Pipeline(p) if p.name.name == self.current_construct => Some(p),
+            _ => None,
+        })
+    }
+
+    /// arch#845: declared width of a plain signal reference *inside a
+    /// pipeline*, as a decimal string — the `signal_width` callback
+    /// `hoist_slice_base_in` / `infer_sv_width_str_in` consult before
+    /// falling back to `$bits(...)`.
+    ///
+    /// Resolves the same two shapes `try_emit_pipeline_reverse_chunked`
+    /// does (a bare identifier against the hinted stage then the ports, and
+    /// an explicit `Stage.signal` cross-stage read), through the pipeline's
+    /// own AST. `None` for anything else — the caller then emits
+    /// `$bits(<stage-rewritten text>)`, which is correct in the emitted
+    /// scope, just less tight.
+    fn pipeline_signal_width_str(&self, e: &Expr, stage: Option<usize>) -> Option<String> {
+        let p = self.current_pipeline()?;
+        let ty = match &e.kind {
+            ExprKind::Ident(n) => Self::pipeline_ident_type(p, n, stage)?,
+            ExprKind::FieldAccess(base, field) => {
+                let ExprKind::Ident(stage_name) = &base.kind else {
+                    return None;
+                };
+                let st = p.stages.iter().find(|s| s.name.name == *stage_name)?;
+                Self::pipeline_stage_signal_type(st, &field.name)?
+            }
+            _ => return None,
+        };
+        self.type_expr_width_const(&ty, &p.params)
+            .map(|w| w.to_string())
+    }
+
     /// arch#808 portable `.reverse()` lowering for the two pipeline
     /// expression emitters — see `emit_reverse_chunks` (mod.rs) for the
     /// equivalence argument. `emitted_base` is the receiver as already
@@ -49,10 +87,7 @@ impl<'a> Codegen<'a> {
         emitted_base: &str,
         stage: Option<usize>,
     ) -> Option<String> {
-        let p = self.source.items.iter().find_map(|item| match item {
-            Item::Pipeline(p) if p.name.name == self.current_construct => Some(p),
-            _ => None,
-        })?;
+        let p = self.current_pipeline()?;
         let params: &[ParamDecl] = &p.params;
         let c = self.eval_const_u32(chunk, params)?;
         let ty = match &base.kind {
@@ -492,6 +527,10 @@ impl<'a> Codegen<'a> {
         let rst_cond = Self::rst_condition(&rst_name, is_low);
 
         // ── always_ff block ──────────────────────────────────────────────────
+        // arch#845/#846: slice-base hoist temps produced anywhere in this
+        // block are module items. Nothing to do here — the opener goes out
+        // through `line()`, so `HoistScope::Procedural` splices them to
+        // module scope, immediately above it.
         self.line("// ── Stage register updates ──");
         self.line(&format!("always_ff @({ff_sens}) begin"));
         self.indent += 1;
@@ -665,6 +704,9 @@ impl<'a> Codegen<'a> {
                         }
                     } else {
                         // Use always_comb for blocks with if/else or match
+                        // (arch#845/#846: hoist temps produced in here are
+                        // spliced to module scope by `HoistScope::Procedural`,
+                        // same as the stage-update `always_ff` above).
                         self.line("always_comb begin");
                         self.indent += 1;
                         for stmt in &cb.stmts {
@@ -1544,6 +1586,67 @@ impl<'a> Codegen<'a> {
         self.line("end");
     }
 
+    /// arch#845: emit the *base* of a `BitSlice`/`PartSelect` inside a
+    /// pipeline stage, hoisting it to an `arch_idx_base_<n>` temp when the
+    /// base is one of the kinds no SV frontend accepts a select on
+    /// (`Concat`/`Repeat` — arch#807; `FunctionCall`/`MethodCall` —
+    /// arch#810). Before this, the pipeline emitters sliced the base bare,
+    /// so both of those fixes were inert inside a `pipeline` and
+    /// `arch build` emitted e.g. `s0_cap <= 8'(w)[5:2];`, which Verilator
+    /// *and* Icarus reject outright.
+    ///
+    /// The hoist itself is `hoist_slice_base_in` (mod.rs) — shared with the
+    /// module/fsm emitters, including the runtime-`for`-loop-variable bail
+    /// — parameterized here with this emitter's stage-prefix rewriting so
+    /// the temp's RHS and width name signals that exist in the emitted SV.
+    /// `None` (a directly selectable base, or the loop-var bail) falls back
+    /// to the prior bare emission.
+    ///
+    /// *Placement* of the temp needs nothing pipeline-specific: `line()`'s
+    /// `HoistScope` (arch#846) keys on the SV block being emitted, not on
+    /// which emitter queued the temp, so a temp queued from inside the
+    /// stage-update `always_ff` or a stage `comb`'s `always_comb` is
+    /// spliced out to module scope automatically.
+    fn emit_pipeline_slice_base_str(
+        &self,
+        base: &Expr,
+        current_prefix: &str,
+        current_stage_idx: usize,
+        stage_names: &[&str],
+        stage_regs: &[Vec<(String, String, String)>],
+        port_names: &std::collections::HashSet<String>,
+    ) -> String {
+        let emit = |e: &Expr| {
+            self.emit_pipeline_stage_expr_str(
+                e,
+                current_prefix,
+                current_stage_idx,
+                stage_names,
+                stage_regs,
+                port_names,
+            )
+        };
+        let signal_width = |e: &Expr| self.pipeline_signal_width_str(e, Some(current_stage_idx));
+        self.hoist_slice_base_in(base, &emit, &signal_width)
+            .unwrap_or_else(|| emit(base))
+    }
+
+    /// arch#845: `emit_pipeline_slice_base_str` for the stage-agnostic
+    /// emitter — same hoist, no current-stage hint (ports and explicit
+    /// `Stage.field` reads only).
+    fn emit_pipeline_top_slice_base_str(
+        &self,
+        base: &Expr,
+        stage_names: &[&str],
+        stage_regs: &[Vec<(String, String, String)>],
+        port_names: &std::collections::HashSet<String>,
+    ) -> String {
+        let emit = |e: &Expr| self.emit_pipeline_expr_str(e, stage_names, stage_regs, port_names);
+        let signal_width = |e: &Expr| self.pipeline_signal_width_str(e, None);
+        self.hoist_slice_base_in(base, &emit, &signal_width)
+            .unwrap_or_else(|| emit(base))
+    }
+
     /// Emit an expression within a specific stage context (knows which stage it's in,
     /// so bare identifiers that are stage registers get prefixed).
     fn emit_pipeline_stage_expr_str(
@@ -1745,7 +1848,7 @@ impl<'a> Codegen<'a> {
                 format!("{b}[{i}]")
             }
             ExprKind::BitSlice(base, hi, lo) => {
-                let b = self.emit_pipeline_stage_expr_str(
+                let b = self.emit_pipeline_slice_base_str(
                     base,
                     current_prefix,
                     current_stage_idx,
@@ -1763,7 +1866,7 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::PartSelect(base, start, width, up) => {
-                let b = self.emit_pipeline_stage_expr_str(
+                let b = self.emit_pipeline_slice_base_str(
                     base,
                     current_prefix,
                     current_stage_idx,
@@ -2019,7 +2122,12 @@ impl<'a> Codegen<'a> {
                 format!("{b}[{i}]")
             }
             ExprKind::BitSlice(base, hi, lo) => {
-                let b = self.emit_pipeline_expr_str(base, stage_names, stage_regs, port_names);
+                let b = self.emit_pipeline_top_slice_base_str(
+                    base,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
                 if let Some(width) = Self::try_indexed_part_select(hi, lo) {
                     let l = self.emit_expr_str(lo);
                     format!("{b}[{l} +: {width}]")
@@ -2030,7 +2138,12 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::PartSelect(base, start, width, up) => {
-                let b = self.emit_pipeline_expr_str(base, stage_names, stage_regs, port_names);
+                let b = self.emit_pipeline_top_slice_base_str(
+                    base,
+                    stage_names,
+                    stage_regs,
+                    port_names,
+                );
                 let s = self.emit_expr_str(start);
                 let w = self.emit_expr_str(width);
                 let op = if *up { "+:" } else { "-:" };
