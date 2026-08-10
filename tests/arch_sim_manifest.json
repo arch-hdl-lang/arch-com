@@ -236,6 +236,15 @@
       "tb_files": [
         "tests/e203/e203_clint_timer_tb.cpp"
       ]
+    },
+    {
+      "name": "e203__e203_icb_arbt",
+      "arch_files": [
+        "tests/e203/e203_icb_arbt.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_icb_arbt_tb.cpp"
+      ]
     }
   ]
 }

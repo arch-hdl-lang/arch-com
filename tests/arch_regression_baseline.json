@@ -1175,6 +1175,12 @@
       "files": [
         "tests/e203/e203_clint_timer.arch"
       ]
+    },
+    {
+      "name": "e203__e203_icb_arbt",
+      "files": [
+        "tests/e203/e203_icb_arbt.arch"
+      ]
     }
   ]
 }
