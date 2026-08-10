@@ -1145,6 +1145,12 @@
       "files": [
         "tests/e203/e203_gpio.arch"
       ]
+    },
+    {
+      "name": "e203__e203_uart",
+      "files": [
+        "tests/e203/e203_uart.arch"
+      ]
     }
   ]
 }

@@ -191,6 +191,15 @@
       "tb_files": [
         "tests/e203/e203_gpio_tb.cpp"
       ]
+    },
+    {
+      "name": "e203__e203_uart",
+      "arch_files": [
+        "tests/e203/e203_uart.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_uart_tb.cpp"
+      ]
     }
   ]
 }
