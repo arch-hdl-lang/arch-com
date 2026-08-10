@@ -1163,6 +1163,12 @@
       "files": [
         "tests/e203/e203_ppi.arch"
       ]
+    },
+    {
+      "name": "e203__e203_debug_module",
+      "files": [
+        "tests/e203/e203_debug_module.arch"
+      ]
     }
   ]
 }
