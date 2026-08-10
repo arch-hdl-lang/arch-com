@@ -506,12 +506,25 @@ impl<'a> SimCodegen<'a> {
             // Bus ports contribute compound "port.signal" keys with each
             // signal's declared type, so float bus fields (`s.data + ...`)
             // dispatch float ops instead of integer ops on the bit pattern.
+            // Bus params are substituted (defaults overridden by the
+            // port-site binding, same recipe as flatten_bus_port_with_dir):
+            // the raw declaration types carry bus-param idents that are
+            // meaningless at module scope, which silently degraded any
+            // width resolved through decl_types — e.g. a Vec<UInt<W>,N>
+            // signal's element width (arch#858).
             if let Some(bi) = &p.bus_info {
                 if let Some((crate::resolve::Symbol::Bus(bd), _)) =
                     self.symbols.globals.get(&bi.bus_name.name)
                 {
-                    for (sig, _dir, sty) in &bd.signals {
-                        decl_types.insert(format!("{}.{}", p.name.name, sig), sty.clone());
+                    let mut bus_param_map = bd.default_param_map();
+                    for pa in &bi.params {
+                        bus_param_map.insert(pa.name.name.clone(), &pa.value);
+                    }
+                    for (sig, _dir, sty) in &bd.effective_signals(&bus_param_map) {
+                        decl_types.insert(
+                            format!("{}.{}", p.name.name, sig),
+                            subst_type_expr_sim(sty, &bus_param_map),
+                        );
                     }
                 }
             }

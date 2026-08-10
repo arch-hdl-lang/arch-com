@@ -83,6 +83,15 @@
       ]
     },
     {
+      "name": "sim_bus_vec_elem_width",
+      "arch_files": [
+        "tests/sim_bus_vec_elem_width.arch"
+      ],
+      "tb_files": [
+        "tests/sim_bus_vec_elem_width_tb.cpp"
+      ]
+    },
+    {
       "name": "sim_vec_elem_width_regression",
       "arch_files": [
         "tests/sim_vec_elem_width_regression.arch"

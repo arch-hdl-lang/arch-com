@@ -45,6 +45,42 @@ fn vec_elem_width_concat_and_bitsel_sim() {
     );
 }
 
+/// Vec-typed BUS field: the element width must resolve through the
+/// port-site bus-param binding (`VecStream<W=16>` → 16-bit elements).
+/// Pre-fix, decl_types stored the raw declaration type `Vec<UInt<W>,4>`
+/// whose bus-param ident is meaningless at module scope, so the width
+/// silently degraded and `{s.data[1], s.data[0]}` shifted the high
+/// element out of the 32-bit result entirely.
+#[test]
+fn bus_vec_field_elem_width_sim() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = arch()
+        .arg("sim")
+        .arg("tests/sim_bus_vec_elem_width.arch")
+        .arg("--tb")
+        .arg("tests/sim_bus_vec_elem_width_tb.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "arch sim should pass for sim_bus_vec_elem_width\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    assert!(
+        stdout.contains("2 pass / 0 fail"),
+        "expected both bus-field checks to pass; got:\n{stdout}"
+    );
+    // The width resolved through the substituted binding — the
+    // unresolvable-element-width warning must NOT fire.
+    assert!(
+        !stderr.contains("could not be resolved"),
+        "element width should resolve via the bus-param binding, not warn:\n{stderr}"
+    );
+}
+
 /// Codegen shape: the runtime bit-select on a Vec<UInt<64>,8> element
 /// must emit an `_ARCH_BCHK` bound of 64 (the declared element width),
 /// not widths[name]/count = 4, and the 128-bit concat must shift the

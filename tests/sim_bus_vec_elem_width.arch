@@ -1,0 +1,21 @@
+// arch#858 follow-up: Vec-typed BUS field element widths must resolve
+// through the port-site param binding. decl_types used to store the raw
+// bus signal declaration types, so `Vec<UInt<W>, 4>` kept the bus-param
+// ident `W` — meaningless at module scope — and the element width
+// silently degraded (here: concat shifted s.data[1] by 32 instead of
+// 16, pushing it out of the 32-bit result entirely). The types are now
+// substituted with the same recipe as flatten_bus_port_with_dir, and
+// an unresolvable scalar element width warns instead of guessing.
+
+bus VecStream
+  param W: const = 8;
+  data:  in Vec<UInt<W>, 4>;
+  valid: in Bool;
+end bus VecStream
+
+module sim_bus_vec_elem_width
+  port s: initiator VecStream<W=16>;
+  port cat: out UInt<32>;
+
+  let cat = {s.data[1], s.data[0]};
+end module sim_bus_vec_elem_width
