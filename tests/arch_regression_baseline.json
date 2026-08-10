@@ -1169,6 +1169,12 @@
       "files": [
         "tests/e203/e203_debug_module.arch"
       ]
+    },
+    {
+      "name": "e203__e203_clint_timer",
+      "files": [
+        "tests/e203/e203_clint_timer.arch"
+      ]
     }
   ]
 }
