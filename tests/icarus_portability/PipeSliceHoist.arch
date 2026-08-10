@@ -1,0 +1,120 @@
+// arch#845 regression fixture: `BitSlice`/`PartSelect` bases that must be
+// hoisted to a named module-scope temp — `Concat`/`Repeat` (arch#807),
+// `MethodCall` (arch#810) — used inside a `pipeline`.
+//
+// The `pipeline` construct has its own expression emitters, and they never
+// called the hoist, so both earlier fixes were inert here: `arch build`
+// emitted e.g. `capture_cap_trunc <= 8'(w)[5:2];`, which Verilator *and*
+// Icarus reject outright.
+//
+// Covers all three positions a pipeline emits an expression into:
+//   - stage `seq` block      -> the stage-update `always_ff`   (Capture)
+//   - stage `let` binding    -> a module-scope `assign`        (Fold)
+//   - branching stage `comb` -> an `always_comb`               (Mux)
+// The first and third additionally pin the *placement* of the hoisted
+// temp: a variable declaration is legal only at the top of a procedural
+// block, so the temps must land ahead of the block, at module scope.
+//
+// The fourth hoisted base kind, `FunctionCall`, is covered by the
+// simulator-free shape test only: a top-level `function` is not emitted
+// into a `pipeline`'s SV module at all (unrelated pre-existing gap — the
+// same source compiles fine inside a `module`), so a `pipeline` calling one
+// cannot be simulated by either frontend regardless of this fix.
+//
+// Every output is driven from a stage register (a `pipeline` output may not
+// be a combinational path from an input), so all outputs share a 1-cycle
+// latency. See tests/integration_test.rs's
+// `test_pipe_slice_hoist_behavioral_equivalence_verilator_and_iverilog`.
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+pipeline PipeSliceHoist
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port b: in UInt<4>;
+  port w: in UInt<16>;
+  port sel: in Bool;
+
+  // Sliced inside the stage-update `always_ff`.
+  port y_trunc_seq: out UInt<4>;
+  port y_zext_seq: out UInt<4>;
+  port y_concat_seq: out UInt<4>;
+  port y_repeat_seq: out UInt<4>;
+  port y_rev_seq: out UInt<4>;
+
+  // Sliced in a module-scope `assign` (stage `let`).
+  port y_trunc_let: out UInt<4>;
+  port y_concat_let: out UInt<4>;
+  port y_rev_let: out UInt<4>;
+
+  // Sliced inside an `always_comb` (branching stage `comb`).
+  port y_mux_comb: out UInt<4>;
+
+  stage Capture
+    reg cap_trunc: UInt<4> reset rst => 0;
+    reg cap_zext: UInt<4> reset rst => 0;
+    reg cap_concat: UInt<4> reset rst => 0;
+    reg cap_repeat: UInt<4> reset rst => 0;
+    reg cap_rev: UInt<4> reset rst => 0;
+
+    seq on clk rising
+      cap_trunc <= w.trunc<8>()[5:2];
+      cap_zext <= b.zext<8>()[2 +: 4];
+      cap_concat <= {a, b}[7:4];
+      cap_repeat <= {3{b}}[8 +: 4];
+      cap_rev <= a.reverse<1>()[2 +: 4];
+    end seq
+
+    comb
+      y_trunc_seq = cap_trunc;
+      y_zext_seq = cap_zext;
+      y_concat_seq = cap_concat;
+      y_repeat_seq = cap_repeat;
+      y_rev_seq = cap_rev;
+    end comb
+  end stage Capture
+
+  stage Fold
+    let f_trunc: UInt<4> = w.trunc<8>()[3 +: 4];
+    let f_concat: UInt<4> = {b, a}[9:6];
+    let f_rev: UInt<4> = a.reverse<1>()[7:4];
+
+    reg fold_trunc: UInt<4> reset rst => 0;
+    reg fold_concat: UInt<4> reset rst => 0;
+    reg fold_rev: UInt<4> reset rst => 0;
+
+    seq on clk rising
+      fold_trunc <= f_trunc;
+      fold_concat <= f_concat;
+      fold_rev <= f_rev;
+    end seq
+
+    comb
+      y_trunc_let = fold_trunc;
+      y_concat_let = fold_concat;
+      y_rev_let = fold_rev;
+    end comb
+  end stage Fold
+
+  stage Mux
+    reg sel_r: Bool reset rst => false;
+    reg m_hi: UInt<4> reset rst => 0;
+    reg m_lo: UInt<4> reset rst => 0;
+
+    seq on clk rising
+      sel_r <= sel;
+      m_hi <= a.trunc<4>();
+      m_lo <= b;
+    end seq
+
+    comb
+      if sel_r
+        y_mux_comb = {m_hi, m_lo}[5:2];
+      else
+        y_mux_comb = m_lo.zext<8>()[5:2];
+      end if
+    end comb
+  end stage Mux
+end pipeline PipeSliceHoist

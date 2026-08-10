@@ -252,10 +252,16 @@ pub struct Codegen<'a> {
     ///   `FunctionCall`/`MethodCall` base (arch#810) — all portable per
     ///   `is_portable_bit_slice_base` but rejected by Icarus 12.0 bare or
     ///   parenthesized, and the `MethodCall` size-cast shape
-    ///   (`8'(x)[hi:lo]`) rejected by Verilator too.
+    ///   (`8'(x)[hi:lo]`) rejected by Verilator too. `codegen/pipeline.rs`
+    ///   reaches the same hoist through `hoist_slice_base_in` (arch#845),
+    ///   supplying its own stage-prefix-rewriting emitter.
     /// Drained by `line()` so the hoisted temp's declaration+assignment
     /// land in a *legal* position for the scope currently being emitted —
-    /// see `hoist_scope` for the three cases. `RefCell` because both call
+    /// see `hoist_scope` for the three cases. That placement is scope-based,
+    /// not caller-based, so `codegen/pipeline.rs` needs nothing of its own:
+    /// its stage-update `always_ff` and its `always_comb` openers go through
+    /// `line()` like any other, and `HoistScope::Procedural` splices their
+    /// temps out to module scope automatically. `RefCell` because both call
     /// sites live inside `&self` expression emission; the actual
     /// `self.out` mutation only ever happens later from `line()`'s
     /// `&mut self`, so this needs no unsafe code (contrast `ident_subst`'s
@@ -6320,7 +6326,43 @@ impl<'a> Codegen<'a> {
 
     /// Infer the SV bit-width of an expression as a string constant expression.
     /// Used to emit the width cast for wrapping arithmetic operators (+%, -%, *%).
+    ///
+    /// Ordinary (module/fsm) emission scope: expressions render through
+    /// `emit_expr_str` and bare identifiers resolve through `module_scopes`.
+    /// See `infer_sv_width_str_in` for the pipeline-scoped variant.
     fn infer_sv_width_str(&self, expr: &Expr) -> String {
+        self.infer_sv_width_str_in(expr, &|e| self.emit_expr_str(e), &|_| None)
+    }
+
+    /// `infer_sv_width_str` parameterized on the *emission scope* the width
+    /// will be used in (arch#845).
+    ///
+    /// The pipeline emitters rewrite identifiers as they go — a stage reg
+    /// `cap` renders as `s0_cap`, a cross-stage `S0.cap` read as `s0_cap` —
+    /// and pipelines have no `module_scopes` entry at all (resolve.rs builds
+    /// those for modules and fsms only). So both halves of this function are
+    /// wrong for a pipeline under the default scope: the `Ident` arm can't
+    /// resolve anything, and every `$bits(...)` fallback would name an
+    /// identifier that does not exist in the emitted SV.
+    ///
+    /// - `emit` renders a sub-expression as SV text in the caller's scope.
+    ///   It is used *only* inside `$bits(...)` fallbacks; width
+    ///   sub-expressions of a type (`UInt<W>`'s `W`, `.trunc<N>()`'s `N`)
+    ///   stay on `emit_expr_str` — those are constant/param expressions,
+    ///   never stage-rewritten signal references.
+    /// - `signal_width` optionally resolves a *plain signal reference* to
+    ///   its declared width, consulted just before each `$bits(...)`
+    ///   fallback. `|_| None` keeps the fallback (the module/fsm scope
+    ///   already resolves identifiers inline in the `Ident` arm).
+    fn infer_sv_width_str_in(
+        &self,
+        expr: &Expr,
+        emit: &dyn Fn(&Expr) -> String,
+        signal_width: &dyn Fn(&Expr) -> Option<String>,
+    ) -> String {
+        // Declared width if the caller's scope can resolve this reference,
+        // else a `$bits(...)` of the expression as *that scope* renders it.
+        let bits = |e: &Expr| signal_width(e).unwrap_or_else(|| format!("$bits({})", emit(e)));
         match &expr.kind {
             ExprKind::Ident(name) => {
                 // Inside a `function` body (`fn_local_types` is non-empty
@@ -6383,7 +6425,7 @@ impl<'a> Codegen<'a> {
                         }
                     }
                 }
-                format!("$bits({})", self.emit_expr_str(expr))
+                bits(expr)
             }
             // Unsized literals: compute minimum bit width from value (never 0 bits)
             ExprKind::Literal(LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v)) => {
@@ -6401,7 +6443,7 @@ impl<'a> Codegen<'a> {
             {
                 args.first()
                     .map(|w| self.emit_expr_str(w))
-                    .unwrap_or_else(|| format!("$bits({})", self.emit_expr_str(expr)))
+                    .unwrap_or_else(|| bits(expr))
             }
             // `.reverse()` bit-reverses within fixed-size chunks — same
             // total width as the receiver. Recurse into the receiver
@@ -6411,11 +6453,9 @@ impl<'a> Codegen<'a> {
             // result — same root cause class as the `$bits($signed(...))`
             // case above, different SV shape).
             ExprKind::MethodCall(recv, method, _) if method.name == "reverse" => {
-                self.infer_sv_width_str(recv)
+                self.infer_sv_width_str_in(recv, emit, signal_width)
             }
-            ExprKind::Cast(_, ty) => self
-                .type_expr_data_width(ty)
-                .unwrap_or_else(|| format!("$bits({})", self.emit_expr_str(expr))),
+            ExprKind::Cast(_, ty) => self.type_expr_data_width(ty).unwrap_or_else(|| bits(expr)),
             // `signed(e)`/`unsigned(e)` are pure bit reinterpretations
             // (never change width) — recurse into `e` rather than falling
             // to `$bits($signed(e))`/`$bits($unsigned(e))`. Icarus does not
@@ -6423,7 +6463,9 @@ impl<'a> Codegen<'a> {
             // call (arch#650); this also gives a tighter (often literal)
             // width than the runtime-computed fallback whenever `e`'s width
             // is statically known.
-            ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => self.infer_sv_width_str(inner),
+            ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => {
+                self.infer_sv_width_str_in(inner, emit, signal_width)
+            }
             // Vec element access: width comes from the inner element type
             ExprKind::Index(base, _) => {
                 if let ExprKind::Ident(name) = &base.kind {
@@ -6453,12 +6495,12 @@ impl<'a> Codegen<'a> {
                         }
                     }
                 }
-                format!("$bits({})", self.emit_expr_str(expr))
+                bits(expr)
             }
             // Chained wrapping ops: result width = max(lhs width, rhs width)
             ExprKind::Binary(BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap, lhs, rhs) => {
-                let lw = self.infer_sv_width_str(lhs);
-                let rw = self.infer_sv_width_str(rhs);
+                let lw = self.infer_sv_width_str_in(lhs, emit, signal_width);
+                let rw = self.infer_sv_width_str_in(rhs, emit, signal_width);
                 if lw == rw {
                     lw
                 } else {
@@ -6473,8 +6515,10 @@ impl<'a> Codegen<'a> {
             // gap as the `$bits($signed(...))` nesting issue arch#650
             // documents elsewhere in this function).
             ExprKind::Concat(parts) => {
-                let widths: Vec<String> =
-                    parts.iter().map(|p| self.infer_sv_width_str(p)).collect();
+                let widths: Vec<String> = parts
+                    .iter()
+                    .map(|p| self.infer_sv_width_str_in(p, emit, signal_width))
+                    .collect();
                 match widths
                     .iter()
                     .map(|w| w.parse::<u64>().ok())
@@ -6485,7 +6529,7 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::Repeat(count, value) => {
-                let vw = self.infer_sv_width_str(value);
+                let vw = self.infer_sv_width_str_in(value, emit, signal_width);
                 match (literal_expr_u64(count), vw.parse::<u64>().ok()) {
                     (Some(n), Some(w)) => (n * w).to_string(),
                     (Some(n), None) => format!("{n} * {}", Self::paren_width(&vw)),
@@ -6495,7 +6539,7 @@ impl<'a> Codegen<'a> {
                     }
                 }
             }
-            _ => format!("$bits({})", self.emit_expr_str(expr)),
+            _ => bits(expr),
         }
     }
 
@@ -6624,7 +6668,7 @@ impl<'a> Codegen<'a> {
     }
 
     /// Fresh id for an `Index`-hoist temp name (`arch_idx_base_<n>`, see
-    /// `index_hoist_lines`). Monotonic for the whole file — uniqueness
+    /// `index_hoist_temps`). Monotonic for the whole file — uniqueness
     /// within one module is all that's required, and a file-wide counter is
     /// simplest and rules out any cross-module collision.
     fn next_index_hoist_id(&self) -> u32 {
@@ -6687,6 +6731,35 @@ impl<'a> Codegen<'a> {
     /// support `logic` declarations inside `always_*` blocks either (same
     /// reasoning as the `Index` hoist's loop-var skip).
     fn hoist_slice_base(&self, base: &Expr) -> Option<String> {
+        self.hoist_slice_base_in(base, &|e| self.emit_expr_str(e), &|_| None)
+    }
+
+    /// `hoist_slice_base` parameterized on the emission scope (arch#845).
+    ///
+    /// The `pipeline` construct has its own expression emitters, which
+    /// rewrite identifiers as they render (a stage reg `cap` becomes
+    /// `s0_cap`, a cross-stage `S0.cap` read becomes `s0_cap`). Reusing
+    /// `hoist_slice_base` there would emit a temp whose RHS — and whose
+    /// `$bits(...)` width fallback — named the *un-prefixed* AST
+    /// identifiers, i.e. signals that don't exist in the emitted SV. So the
+    /// pipeline emitters pass their own `emit`/`signal_width` pair instead
+    /// of getting a second copy of the hoist. See `infer_sv_width_str_in`
+    /// for what each callback is responsible for.
+    ///
+    /// Everything else — which base kinds are claimed, the runtime
+    /// `for`-loop-variable bail, the shared `arch_idx_base_<n>` counter and
+    /// the `index_hoist_temps` queue — is identical for every scope, so it
+    /// lives here and only here. Note that *where* the queued temp is
+    /// finally written is decided later, by `line()`'s `HoistScope`
+    /// (arch#846), keyed on the SV block being emitted rather than on which
+    /// emitter queued it — so a pipeline's `always_ff`/`always_comb` gets
+    /// the module-scope splice with no pipeline-specific machinery.
+    fn hoist_slice_base_in(
+        &self,
+        base: &Expr,
+        emit: &dyn Fn(&Expr) -> String,
+        signal_width: &dyn Fn(&Expr) -> Option<String>,
+    ) -> Option<String> {
         if !matches!(
             base.kind,
             ExprKind::Concat(_)
@@ -6702,8 +6775,8 @@ impl<'a> Codegen<'a> {
             return None;
         }
         let tmp = format!("arch_idx_base_{}", self.next_index_hoist_id());
-        let w = Self::paren_width(&self.infer_sv_width_str(base));
-        let rhs = self.emit_expr_str(base);
+        let w = Self::paren_width(&self.infer_sv_width_str_in(base, emit, signal_width));
+        let rhs = emit(base);
         self.push_hoist_temp(w, tmp.clone(), rhs);
         Some(tmp)
     }
