@@ -5363,6 +5363,26 @@ impl<'a> TypeChecker<'a> {
                         ));
                         return Ty::Error;
                     }
+                    // Storage-only formats are carriers with no operators —
+                    // spec §3.9. Refuse a compare here, with a span, rather
+                    // than letting each backend interpolate an `arch_<tag>_lt`
+                    // / `arch_<tag>_eq` that nothing defines — those failures
+                    // surface in Verilator / z3 / g++ with no source location.
+                    // (E8M0 is already caught by the gate above, so this arm
+                    // only reaches genuine storage-only floats here.)
+                    let carrier = if lt.is_float() { &lt } else { &rt };
+                    if !carrier.is_float_arith() {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "operator `{sym}` is not supported on {} — it is a storage-only \
+                                 float format (conversions and literals only). Convert with \
+                                 `.to_fp32()`, compute, then convert back",
+                                carrier.display()
+                            ),
+                            _span,
+                        ));
+                        return Ty::Error;
+                    }
                     return Ty::Bool;
                 }
                 BinOp::Add | BinOp::Sub | BinOp::Mul => {
