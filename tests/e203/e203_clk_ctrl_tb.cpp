@@ -1,82 +1,170 @@
-#include "VClkCtrl.h"
-#include <cstdio>
-static int fail_count = 0, test_count = 0;
-#define CHECK(cond, msg) do { test_count++; if (!(cond)) { printf("FAIL: %s\n", msg); fail_count++; } else { printf("PASS: %s\n", msg); } } while(0)
+// ARCH sim testbench for e203_clk_ctrl — per-subsystem clock gating built
+// from latch-based ICG cells (e203_clkgate). Tests: gated-off clocks staying
+// low, enabled clocks following clk in both phases, the always-on clk_aon,
+// per-subsystem independence of the six gates, core_cgstop force-off,
+// latch-based glitch-free behavior (enable changes during the high phase do
+// not propagate until after a low phase), test_mode bypass, and the
+// itcm_ls/dtcm_ls light-sleep equations.
+//
+// NOTE: this replaces a stale tb (VClkCtrl.h, ifu_gate_en/clk_ifu port names)
+// that targeted the pre-2026-04 PascalCase fixture generation. The current
+// construct is `e203_clk_ctrl` with core_*_active inputs, clk_core_* outputs
+// and an e203_clkgate ICG submodule, so the sim class is Ve203_clk_ctrl.
+//
+// Run with:
+//   arch sim tests/e203/e203_clk_ctrl.arch tests/e203/e203_clkgate.arch \
+//            --tb tests/e203/e203_clk_ctrl_tb.cpp
 
-static void tick(VClkCtrl &d) { d.clk = 0; d.eval(); d.clk = 1; d.eval(); }
+#include "Ve203_clk_ctrl.h"
+#include <cstdio>
+#include <cstdint>
+
+static int fail_count = 0;
+
+#define CHECK(cond, fmt, ...) do { \
+    if (!(cond)) { \
+        printf("  FAIL: " fmt "\n", ##__VA_ARGS__); \
+        fail_count++; \
+    } \
+} while(0)
+
+static Ve203_clk_ctrl* dut;
+
+static void reset() {
+    dut->clk = 0;
+    dut->rst_n = 0;
+    dut->test_mode = 0;
+    dut->core_cgstop = 0;
+    dut->core_ifu_active = 0;
+    dut->core_exu_active = 0;
+    dut->core_lsu_active = 0;
+    dut->core_biu_active = 0;
+    dut->itcm_active = 0;
+    dut->dtcm_active = 0;
+    dut->core_wfi = 0;
+    for (int i = 0; i < 3; i++) {
+        dut->clk = 0; dut->eval();
+        dut->clk = 1; dut->eval();
+    }
+    dut->clk = 0;
+    dut->rst_n = 1;
+    dut->eval();
+}
+
+// One full clock cycle: low phase (latches ICG enables), then high phase.
+static void cycle() {
+    dut->clk = 0; dut->eval();
+    dut->clk = 1; dut->eval();
+}
 
 int main() {
-  VClkCtrl d;
-  d.clk = 0; d.rst_n = 0;
-  d.test_en = 0;
-  d.ifu_gate_en = 0; d.exu_gate_en = 0;
-  d.lsu_gate_en = 0; d.biu_gate_en = 0;
+    dut = new Ve203_clk_ctrl;
 
-  // Reset
-  for (int i = 0; i < 3; i++) tick(d);
-  d.rst_n = 1;
-  tick(d);
+    // ── Test 1: All inactive — every gated clock stays low ───────────
+    printf("Test 1: All gated off\n");
+    reset();
+    cycle();                    // latch the all-zero enables, clk high
+    CHECK(dut->clk_core_ifu == 0, "clk_core_ifu should be gated low, got %d", dut->clk_core_ifu);
+    CHECK(dut->clk_core_exu == 0, "clk_core_exu should be gated low, got %d", dut->clk_core_exu);
+    CHECK(dut->clk_core_lsu == 0, "clk_core_lsu should be gated low, got %d", dut->clk_core_lsu);
+    CHECK(dut->clk_core_biu == 0, "clk_core_biu should be gated low, got %d", dut->clk_core_biu);
+    CHECK(dut->clk_itcm == 0, "clk_itcm should be gated low, got %d", dut->clk_itcm);
+    CHECK(dut->clk_dtcm == 0, "clk_dtcm should be gated low, got %d", dut->clk_dtcm);
+    CHECK(dut->clk_aon == 1, "clk_aon is ungated and must follow clk=1, got %d", dut->clk_aon);
+    dut->clk = 0; dut->eval();
+    CHECK(dut->clk_aon == 0, "clk_aon must follow clk=0, got %d", dut->clk_aon);
 
-  // Test 1: All gates disabled — gated clocks should be 0
-  d.eval();
-  CHECK(d.clk_ifu == 0 || d.clk_ifu == d.clk, "IFU clock gated when disabled");
-  CHECK(d.ifu_clk_active == 0, "IFU clk_active = 0 when gate disabled");
-  CHECK(d.exu_clk_active == 0, "EXU clk_active = 0 when gate disabled");
+    // ── Test 2: Enabled clock follows clk in both phases ─────────────
+    printf("Test 2: IFU clock enabled\n");
+    reset();
+    dut->core_ifu_active = 1;
+    cycle();                    // low phase latches enable, then clk=1
+    CHECK(dut->clk_core_ifu == 1, "clk_core_ifu should follow clk high when active, got %d",
+          dut->clk_core_ifu);
+    CHECK(dut->clk_core_exu == 0, "clk_core_exu must stay gated (independent), got %d",
+          dut->clk_core_exu);
+    dut->clk = 0; dut->eval();
+    CHECK(dut->clk_core_ifu == 0, "clk_core_ifu should follow clk low, got %d", dut->clk_core_ifu);
 
-  // Test 2: Enable IFU clock gate
-  d.ifu_gate_en = 1;
-  // With latch-based ICG: enable latches on clk low, output = clk & en_latched
-  d.clk = 0; d.eval(); // latch enable
-  d.clk = 1; d.eval(); // clk_out should go high
-  CHECK(d.clk_ifu == 1, "IFU clock passes through when enabled (clk=1)");
-  CHECK(d.ifu_clk_active == 1, "IFU clk_active = 1 when gate enabled");
+    // ── Test 3: Each gate is driven by its own active flag ───────────
+    printf("Test 3: Per-subsystem independence\n");
+    reset();
+    dut->core_exu_active = 1;
+    dut->itcm_active = 1;
+    cycle();
+    CHECK(dut->clk_core_exu == 1, "clk_core_exu should be running, got %d", dut->clk_core_exu);
+    CHECK(dut->clk_itcm == 1, "clk_itcm should be running, got %d", dut->clk_itcm);
+    CHECK(dut->clk_core_ifu == 0 && dut->clk_core_lsu == 0 && dut->clk_core_biu == 0 &&
+          dut->clk_dtcm == 0, "unenabled clocks must stay low");
 
-  // Test 3: IFU clock low phase
-  d.clk = 0; d.eval();
-  CHECK(d.clk_ifu == 0, "IFU clock low when clk=0");
+    // ── Test 4: core_cgstop forces all gated clocks off ──────────────
+    printf("Test 4: core_cgstop\n");
+    reset();
+    dut->core_ifu_active = 1;
+    dut->core_exu_active = 1;
+    dut->core_lsu_active = 1;
+    dut->core_biu_active = 1;
+    dut->itcm_active = 1;
+    dut->dtcm_active = 1;
+    dut->core_cgstop = 1;
+    cycle();
+    CHECK(dut->clk_core_ifu == 0 && dut->clk_core_exu == 0 && dut->clk_core_lsu == 0 &&
+          dut->clk_core_biu == 0 && dut->clk_itcm == 0 && dut->clk_dtcm == 0,
+          "cgstop must gate every subsystem clock off");
+    CHECK(dut->clk_aon == 1, "clk_aon is not affected by cgstop, got %d", dut->clk_aon);
+    dut->core_cgstop = 0;
+    cycle();
+    CHECK(dut->clk_core_ifu == 1, "clocks should resume once cgstop clears, got %d",
+          dut->clk_core_ifu);
 
-  // Test 4: EXU still gated
-  CHECK(d.clk_exu == 0, "EXU clock still gated");
-  CHECK(d.exu_clk_active == 0, "EXU clk_active still 0");
+    // ── Test 5: Latch-based ICG is glitch-free ───────────────────────
+    printf("Test 5: Glitch-free latching\n");
+    reset();
+    cycle();                    // clk high, ifu enable latched at 0
+    dut->core_ifu_active = 1;   // raise enable DURING the high phase
+    dut->eval();
+    CHECK(dut->clk_core_ifu == 0, "enable raised mid-high must not propagate this phase, got %d",
+          dut->clk_core_ifu);
+    cycle();                    // next low phase latches 1, then clk high
+    CHECK(dut->clk_core_ifu == 1, "enable should propagate after the low phase, got %d",
+          dut->clk_core_ifu);
+    // Symmetrically: dropping the enable mid-high keeps the clock on.
+    dut->core_ifu_active = 0;
+    dut->eval();
+    CHECK(dut->clk_core_ifu == 1, "enable dropped mid-high must hold through this phase, got %d",
+          dut->clk_core_ifu);
+    cycle();
+    CHECK(dut->clk_core_ifu == 0, "clock should stop after the low phase latches 0, got %d",
+          dut->clk_core_ifu);
 
-  // Test 5: Enable all gates
-  d.ifu_gate_en = 1; d.exu_gate_en = 1;
-  d.lsu_gate_en = 1; d.biu_gate_en = 1;
-  d.clk = 0; d.eval(); // latch all enables
-  d.clk = 1; d.eval(); // all outputs high
-  CHECK(d.clk_ifu == 1, "All enabled: IFU clk high");
-  CHECK(d.clk_exu == 1, "All enabled: EXU clk high");
-  CHECK(d.clk_lsu == 1, "All enabled: LSU clk high");
-  CHECK(d.clk_biu == 1, "All enabled: BIU clk high");
+    // ── Test 6: test_mode bypasses the gating ────────────────────────
+    printf("Test 6: test_mode bypass\n");
+    reset();
+    dut->test_mode = 1;         // all active flags are 0
+    cycle();
+    CHECK(dut->clk_core_ifu == 1 && dut->clk_core_exu == 1 && dut->clk_core_lsu == 1 &&
+          dut->clk_core_biu == 1 && dut->clk_itcm == 1 && dut->clk_dtcm == 1,
+          "test_mode must force every gated clock to follow clk");
+    dut->test_mode = 0;
+    cycle();
+    CHECK(dut->clk_core_ifu == 0, "clocks should gate again once test_mode drops, got %d",
+          dut->clk_core_ifu);
 
-  // Test 6: Disable BIU mid-high — latch holds until clk goes low
-  d.biu_gate_en = 0;
-  d.eval(); // still clk=1, latch holds old value
-  CHECK(d.clk_biu == 1, "BIU latch holds enable during clk=1");
+    // ── Test 7: TCM light-sleep equations ────────────────────────────
+    printf("Test 7: Light-sleep\n");
+    reset();
+    dut->core_wfi = 0;
+    dut->eval();
+    CHECK(dut->itcm_ls == 0 && dut->dtcm_ls == 0, "no light-sleep without WFI");
+    dut->core_wfi = 1;
+    dut->eval();
+    CHECK(dut->itcm_ls == 1, "itcm_ls should assert when inactive and WFI, got %d", dut->itcm_ls);
+    CHECK(dut->dtcm_ls == 1, "dtcm_ls should assert when inactive and WFI, got %d", dut->dtcm_ls);
+    dut->itcm_active = 1;
+    dut->eval();
+    CHECK(dut->itcm_ls == 0, "itcm_ls must clear while the ITCM is active, got %d", dut->itcm_ls);
+    CHECK(dut->dtcm_ls == 1, "dtcm_ls should stay asserted (DTCM inactive), got %d", dut->dtcm_ls);
 
-  // Test 7: After clk goes low, latch captures new disable
-  d.clk = 0; d.eval(); // latch captures biu_gate_en=0
-  d.clk = 1; d.eval(); // clk_biu should now be 0
-  CHECK(d.clk_biu == 0, "BIU gated after disable + clk cycle");
-
-  // Test 8: test_en overrides gate
-  d.ifu_gate_en = 0; d.exu_gate_en = 0;
-  d.lsu_gate_en = 0; d.biu_gate_en = 0;
-  d.test_en = 1;
-  d.clk = 0; d.eval(); // latch test_en
-  d.clk = 1; d.eval();
-  CHECK(d.clk_ifu == 1, "test_en overrides: IFU clk active");
-  CHECK(d.clk_exu == 1, "test_en overrides: EXU clk active");
-  CHECK(d.clk_lsu == 1, "test_en overrides: LSU clk active");
-  CHECK(d.clk_biu == 1, "test_en overrides: BIU clk active");
-  CHECK(d.ifu_clk_active == 1, "test_en: IFU clk_active = 1");
-
-  // Test 9: Disable test_en, verify clocks stop
-  d.test_en = 0;
-  d.clk = 0; d.eval();
-  d.clk = 1; d.eval();
-  CHECK(d.clk_ifu == 0, "No test_en, no gate: IFU clock stopped");
-
-  printf("\n=== ClkCtrl: %d/%d passed ===\n", test_count - fail_count, test_count);
-  return fail_count ? 1 : 0;
+    printf("\n=== e203_clk_ctrl: %d failure(s) ===\n", fail_count);
+    return fail_count ? 1 : 0;
 }

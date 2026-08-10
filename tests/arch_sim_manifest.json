@@ -182,6 +182,133 @@
       "tb_files": [
         "tests/axi_dma_tlm/tb_tlm_one_to_many_resp.cpp"
       ]
+    },
+    {
+      "name": "e203__e203_gpio",
+      "arch_files": [
+        "tests/e203/e203_gpio.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_gpio_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_uart",
+      "arch_files": [
+        "tests/e203/e203_uart.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_uart_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_spi",
+      "arch_files": [
+        "tests/e203/e203_spi.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_spi_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_ppi",
+      "arch_files": [
+        "tests/e203/e203_ppi.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_ppi_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_debug_module",
+      "arch_files": [
+        "tests/e203/e203_debug_module.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_debug_module_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_clint_timer",
+      "arch_files": [
+        "tests/e203/e203_clint_timer.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_clint_timer_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_icb_arbt",
+      "arch_files": [
+        "tests/e203/e203_icb_arbt.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_icb_arbt_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_icb2apb",
+      "arch_files": [
+        "tests/e203/e203_icb2apb.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_icb2apb_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_sram_ctrl",
+      "arch_files": [
+        "tests/e203/e203_sram_ctrl.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_sram_ctrl_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_fio",
+      "arch_files": [
+        "tests/e203/e203_fio.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_fio_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_irq_ctrl",
+      "arch_files": [
+        "tests/e203/e203_irq_ctrl.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_irq_ctrl_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_clk_ctrl",
+      "arch_files": [
+        "tests/e203/e203_clk_ctrl.arch",
+        "tests/e203/e203_clkgate.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_clk_ctrl_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_itcm",
+      "arch_files": [
+        "tests/e203/e203_itcm.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_itcm_tb.cpp"
+      ]
+    },
+    {
+      "name": "e203__e203_dtcm",
+      "arch_files": [
+        "tests/e203/e203_dtcm.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_dtcm_tb.cpp"
+      ]
     }
   ]
 }
