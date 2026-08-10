@@ -1898,6 +1898,57 @@ pub(super) fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &
                 }
             }
         },
+        // Sub-8-bit MX narrows mirror the fp8 arms: widen any source float to
+        // f32 (exact for every fp8/bf16/sub-8b value and every fp-relevant
+        // integer, all below 2^24), then one correctly-rounded narrow.
+        "to_fp4e2m1" => match infer_expr_float(base, ctx) {
+            Some(FpFmt::Fp32) => format!("_arch_f32_to_e2m1({b})"),
+            Some(FpFmt::E2m1) => b,
+            Some(FpFmt::Bf16) => format!("_arch_f32_to_e2m1(_arch_bf16_to_f32({b}))"),
+            Some(FpFmt::E4m3) => format!("_arch_f32_to_e2m1(_arch_e4m3_to_f32({b}))"),
+            Some(FpFmt::E5m2) => format!("_arch_f32_to_e2m1(_arch_e5m2_to_f32({b}))"),
+            Some(FpFmt::E2m3) => format!("_arch_f32_to_e2m1(_arch_e2m3_to_f32({b}))"),
+            Some(FpFmt::E3m2) => format!("_arch_f32_to_e2m1(_arch_e3m2_to_f32({b}))"),
+            None => {
+                if infer_expr_signed(base, ctx) {
+                    format!("_arch_f32_to_e2m1(_arch_i_to_f32((int64_t)({b})))")
+                } else {
+                    format!("_arch_f32_to_e2m1(_arch_u_to_f32((uint64_t)({b})))")
+                }
+            }
+        },
+        "to_fp6e2m3" => match infer_expr_float(base, ctx) {
+            Some(FpFmt::Fp32) => format!("_arch_f32_to_e2m3({b})"),
+            Some(FpFmt::E2m3) => b,
+            Some(FpFmt::Bf16) => format!("_arch_f32_to_e2m3(_arch_bf16_to_f32({b}))"),
+            Some(FpFmt::E4m3) => format!("_arch_f32_to_e2m3(_arch_e4m3_to_f32({b}))"),
+            Some(FpFmt::E5m2) => format!("_arch_f32_to_e2m3(_arch_e5m2_to_f32({b}))"),
+            Some(FpFmt::E2m1) => format!("_arch_f32_to_e2m3(_arch_e2m1_to_f32({b}))"),
+            Some(FpFmt::E3m2) => format!("_arch_f32_to_e2m3(_arch_e3m2_to_f32({b}))"),
+            None => {
+                if infer_expr_signed(base, ctx) {
+                    format!("_arch_f32_to_e2m3(_arch_i_to_f32((int64_t)({b})))")
+                } else {
+                    format!("_arch_f32_to_e2m3(_arch_u_to_f32((uint64_t)({b})))")
+                }
+            }
+        },
+        "to_fp6e3m2" => match infer_expr_float(base, ctx) {
+            Some(FpFmt::Fp32) => format!("_arch_f32_to_e3m2({b})"),
+            Some(FpFmt::E3m2) => b,
+            Some(FpFmt::Bf16) => format!("_arch_f32_to_e3m2(_arch_bf16_to_f32({b}))"),
+            Some(FpFmt::E4m3) => format!("_arch_f32_to_e3m2(_arch_e4m3_to_f32({b}))"),
+            Some(FpFmt::E5m2) => format!("_arch_f32_to_e3m2(_arch_e5m2_to_f32({b}))"),
+            Some(FpFmt::E2m1) => format!("_arch_f32_to_e3m2(_arch_e2m1_to_f32({b}))"),
+            Some(FpFmt::E2m3) => format!("_arch_f32_to_e3m2(_arch_e2m3_to_f32({b}))"),
+            None => {
+                if infer_expr_signed(base, ctx) {
+                    format!("_arch_f32_to_e3m2(_arch_i_to_f32((int64_t)({b})))")
+                } else {
+                    format!("_arch_f32_to_e3m2(_arch_u_to_f32((uint64_t)({b})))")
+                }
+            }
+        },
         "to_uint" | "to_sint" => {
             let bits = args.first().map(|w| eval_width_in(w, ctx)).unwrap_or(32);
             let signed = method.name == "to_sint";
