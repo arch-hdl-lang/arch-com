@@ -1426,6 +1426,12 @@
       "files": [
         "tests/sim_bitnot_compound_regression.arch"
       ]
+    },
+    {
+      "name": "sim_fp_narrow_mx_regression",
+      "files": [
+        "tests/sim_fp_narrow_mx_regression.arch"
+      ]
     }
   ]
 }

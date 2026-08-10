@@ -632,6 +632,15 @@
       "tb_files": [
         "tests/sim_bitnot_compound_regression_tb.cpp"
       ]
+    },
+    {
+      "name": "sim_fp_narrow_mx_regression",
+      "arch_files": [
+        "tests/sim_fp_narrow_mx_regression.arch"
+      ],
+      "tb_files": [
+        "tests/sim_fp_narrow_mx_regression_tb.cpp"
+      ]
     }
   ]
 }
