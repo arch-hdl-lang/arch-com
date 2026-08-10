@@ -2144,6 +2144,36 @@ fn fp4_arithmetic_is_rejected_at_typecheck() {
             "must fail at typecheck, not by emitting a missing operator:\n{out}"
         );
     }
+
+    // Ordered / equality comparisons are storage-only errors too (spec §3.9).
+    // Before the fix these passed `arch check` and then emitted calls to
+    // undefined SV helpers (`arch_e2m1_lt`, `arch_e2m1_eq`). The output of a
+    // compare is Bool, so use a Bool port here.
+    for (name, op, helper) in [
+        ("lt", "a < b", "arch_e2m1_lt"),
+        ("gt", "a > b", "arch_e2m1_gt"),
+        ("lte", "a <= b", "arch_e2m1_le"),
+        ("gte", "a >= b", "arch_e2m1_ge"),
+        ("eq", "a == b", "arch_e2m1_eq"),
+        ("neq", "a != b", "arch_e2m1_ne"),
+    ] {
+        let (ok, out) = check_src(
+            &format!("fp4_cmp_{name}"),
+            &format!(
+                "module A\n  port a: in FP4E2M1;\n  port b: in FP4E2M1;\n  \
+                 port y: out Bool;\n  comb y = {op}; end comb\nend module A\n"
+            ),
+        );
+        assert!(!ok, "`{op}` on FP4E2M1 must be rejected:\n{out}");
+        assert!(
+            out.contains("storage-only float format"),
+            "`{op}`: message should name the storage-only rule:\n{out}"
+        );
+        assert!(
+            !out.contains(helper),
+            "must fail at typecheck, not by emitting a missing operator `{helper}`:\n{out}"
+        );
+    }
 }
 
 /// `is_nan` is refused with an accurate reason. E2M1 has no NaN encoding, so
@@ -2264,6 +2294,22 @@ fn fp6_arithmetic_and_is_nan_are_rejected() {
             out.contains("no NaN encoding"),
             "{ty}: reason must be the missing encoding:\n{out}"
         );
+
+        // Ordered / equality comparisons are storage-only errors too (§3.9).
+        for op in ["a < b", "a == b"] {
+            let (ok, out) = check_src(
+                &format!("fp6_cmp_{ty}_{}", op.replace(' ', "")),
+                &format!(
+                    "module A\n  port a: in {ty};\n  port b: in {ty};\n  \
+                     port y: out Bool;\n  comb y = {op}; end comb\nend module A\n"
+                ),
+            );
+            assert!(!ok, "{ty}: `{op}` must be rejected:\n{out}");
+            assert!(
+                out.contains("storage-only float format"),
+                "{ty}: `{op}` message should name the storage-only rule:\n{out}"
+            );
+        }
     }
 }
 
