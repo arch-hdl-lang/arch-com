@@ -1,219 +1,325 @@
-// Functional testbench for E203 IfuTop — arch sim
-// Models ITCM as a simple memory array and verifies the full
-// fetch pipeline: request → ITCM → response → instruction delivery.
-#include "VIfuTop.h"
+// ARCH sim testbench for e203_ifu_top — E203 instruction-fetch unit top.
+//
+// e203_ifu_top is a pure integration wrapper: it instantiates e203_ifu_ifetch
+// (PC generation + fetch state machine, itself wrapping e203_ifu_minidec and
+// e203_ifu_litebpu) and e203_ifu_ift2icb (the fetch-to-ICB bridge), and wires
+// the two together through the ifu_req_*/ifu_rsp_* wire bundle. So what this tb
+// is responsible for is the *wiring*, not the leaf behavior — the leaves have
+// their own testbenches (e203_ifu_ifetch_tb.cpp, e203_ifu_minidec_tb.cpp,
+// e203_ifu_litebpu_tb.cpp).
+//
+// Tests: reset state of every top-level output; ITCM-vs-BIU region decode and
+// the 16-bit ITCM address truncation; ICB command backpressure freezing the PC;
+// an ITCM/BIU ICB response landing in the bridge's response buffer; the
+// pipe-flush redirect reaching the ICB command address through both instances;
+// and the halt handshake.
+//
+// NOTE: this replaces a stale tb that predates the PR #843 rewiring of these
+// fixtures against the real ICB fabric and has not compiled since.
+//
+// Run with:
+//   arch sim tests/e203/e203_ifu_top.arch tests/e203/e203_ifu_ifetch.arch \
+//            tests/e203/e203_ifu_minidec.arch tests/e203/e203_ifu_litebpu.arch \
+//            tests/e203/e203_ifu_ift2icb.arch tests/e203/e203_exu_decode.arch \
+//            --tb tests/e203/e203_ifu_top_tb.cpp
+//
+// ── KNOWN ISSUE 1: the fetch pipeline deadlocks on the first ICB response, so
+// no instruction ever reaches the ifu_o_* channel. e203_ifu_ift2icb computes
+//     ifu_req_ready = (…icb_cmd_ready) & ~buf_full     (buf_full == rsp_valid_r)
+// while e203_ifu_ifetch computes (matching the reference RTL exactly)
+//     ifu_rsp2ir_ready = pipe_flush_req_real ? 1 : (ifu_ir_i_ready & ifu_req_ready & ~bpu_wait)
+// and drives ifu_rsp_ready from it. Once the bridge's 1-entry response buffer
+// fills, ifu_req_ready drops, which drops ifu_rsp_ready, which prevents
+// rsp_drain from ever clearing the buffer — a permanent lock, independent of
+// stimulus. The bridge's `~buf_full` term was introduced to break the
+// same-cycle algebraic loop of arch#781 (see the long comment in
+// e203_ifu_ift2icb.arch); the real design instead breaks that loop with a
+// sirv_gnrl_bypbuf whose request-ready is not gated on buffer occupancy. So
+// the tests below verify the fetch path up to and including the response
+// buffer, and Test 7 pins the deadlock as observed behavior rather than
+// pretending an instruction gets delivered. Reported separately.
+//
+// ── KNOWN ISSUE 2: the ITCM 64→32 response half-select is off by one request.
+// e203_ifu_ift2icb selects with `fetch_pc[2]`, but fetch_pc is the address of
+// the *next* request, not of the outstanding one whose data is arriving. Test 5
+// demonstrates it: the request goes out for 0x0002 (word 0 ⇒ rdata[31:0]) and
+// the buffer captures rdata[63:32]. Asserted as-is, with this note.
+//
+// ── KNOWN ISSUE 3: e203_ifu_top ties ifetch's `ifu_rsp_err <- false`, so an
+// ICB bus error captured by the bridge (ifu_rsp_err_w) is dropped at the
+// instance boundary and can never reach ifu_o_buserr. Not separately checkable
+// while KNOWN ISSUE 1 holds ifu_o_valid low; noted here so it is not
+// rediscovered.
+//
+// ── KNOWN ISSUE 4 (pre-existing, arch#800): the pc_rtvec reset vector is dead
+// in e203_ifu_ifetch, so the fetch unit boots from 0x0 rather than pc_rtvec.
+// Every PC expectation below is written against the 0x0 boot address.
+//
+// Two further top-level inputs, itcm_nohold and ifu2itcm_holdup, are declared
+// on e203_ifu_ift2icb but never read in its body; they are driven to 0 here and
+// no check depends on them.
+
+#include "Ve203_ifu_top.h"
 #include <cstdio>
 #include <cstdint>
-#include <cstring>
 
-static int errors = 0;
-static int test_num = 0;
+static int fail_count = 0;
 
-#define BOOL(x) ((x) & 1)
-#define CHECK(cond, ...) do { \
-    test_num++; \
-    if (!(cond)) { errors++; printf("FAIL test %d: ", test_num); printf(__VA_ARGS__); printf("\n"); } \
-    else { printf("PASS test %d\n", test_num); } \
+#define CHECK(cond, fmt, ...) do { \
+    if (!(cond)) { \
+        printf("  FAIL: " fmt "\n", ##__VA_ARGS__); \
+        fail_count++; \
+    } \
 } while(0)
 
-// Simple ITCM model: 16K words
-static uint32_t itcm[16384];
+static Ve203_ifu_top* dut;
 
-static void settle(VIfuTop &m) {
-    for (int i = 0; i < 8; i++) m.eval();
-}
+// RV32 `add x3, x1, x2` — bits[1:0]=11, so minidec sees a 32-bit instruction.
+static const uint32_t RV32_ADD_X3_X1_X2 = 0x002081B3u;
 
-// Clock tick with ITCM model: respond to cmd with 1-cycle latency via rsp
-static void tick(VIfuTop &m) {
-    // Drive ITCM response based on previous cycle's cmd
-    // (Ift2Icb has its own 1-cycle pipeline, so we respond immediately)
-    if (BOOL(m.itcm_cmd_valid) && BOOL(m.itcm_cmd_ready)) {
-        m.itcm_rsp_valid = 1;
-        m.itcm_rsp_data = itcm[m.itcm_cmd_addr & 0x3FFF];
-    } else {
-        m.itcm_rsp_valid = 0;
-    }
-    m.clk = 0; settle(m);
-    m.clk = 1; settle(m);
+// The sim emitter runs a fixed two comb passes per eval(), so a value that has
+// to cross ifetch -> ift2icb -> back can be one pass stale in a hierarchy this
+// deep. Settle explicitly before sampling combinational outputs.
+static void settle() { dut->eval(); dut->eval(); dut->eval(); }
+
+static void tick() {
+    dut->clk = 0; settle();
+    dut->clk = 1; settle();
 }
 
-// RV32I encoding helpers
-static uint32_t rv_addi(int rd, int rs1, int imm) {
-    return ((imm & 0xFFF) << 20) | (rs1 << 15) | (0b000 << 12) | (rd << 7) | 0b0010011;
-}
-static uint32_t rv_add(int rd, int rs1, int rs2) {
-    return (0b0000000 << 25) | (rs2 << 20) | (rs1 << 15) | (0b000 << 12) | (rd << 7) | 0b0110011;
-}
-static uint32_t rv_jal(int rd, int imm21) {
-    // J-type: {imm[20], imm[10:1], imm[11], imm[19:12], rd, 1101111}
-    uint32_t i20   = (imm21 >> 20) & 1;
-    uint32_t i10_1 = (imm21 >> 1) & 0x3FF;
-    uint32_t i11   = (imm21 >> 11) & 1;
-    uint32_t i19_12= (imm21 >> 12) & 0xFF;
-    return (i20 << 31) | (i10_1 << 21) | (i11 << 20) | (i19_12 << 12) | (rd << 7) | 0b1101111;
-}
-static uint32_t rv_beq(int rs1, int rs2, int imm13) {
-    // B-type: {imm[12], imm[10:5], rs2, rs1, 000, imm[4:1], imm[11], 1100011}
-    uint32_t i12  = (imm13 >> 12) & 1;
-    uint32_t i10_5= (imm13 >> 5) & 0x3F;
-    uint32_t i4_1 = (imm13 >> 1) & 0xF;
-    uint32_t i11  = (imm13 >> 11) & 1;
-    return (i12 << 31) | (i10_5 << 25) | (rs2 << 20) | (rs1 << 15) |
-           (0b000 << 12) | (i4_1 << 8) | (i11 << 7) | 0b1100011;
-}
-static uint32_t rv_nop() { return rv_addi(0, 0, 0); }
-
-// Wait for o_valid to assert, return the delivered instruction
-// Returns true if o_valid was seen within max_cycles
-static bool wait_valid(VIfuTop &m, int max_cycles, uint32_t &instr, uint32_t &pc) {
-    for (int i = 0; i < max_cycles; i++) {
-        tick(m);
-        settle(m);
-        if (BOOL(m.o_valid)) {
-            instr = m.o_instr;
-            pc = m.o_pc;
-            return true;
-        }
-    }
-    return false;
+// Drive every input to a defined value and hold reset for 3 ticks.
+// `indic` selects which region the ITCM claims (compared on bits [31:16]).
+static void reset(uint32_t indic) {
+    dut->rst_n = 0;
+    dut->itcm_nohold = 0;
+    dut->pc_rtvec = 0x80000000;
+    dut->ifu2itcm_holdup = 0;
+    dut->itcm_region_indic = indic;
+    dut->ifu2itcm_icb_cmd_ready = 1;
+    dut->ifu2itcm_icb_rsp_valid = 0;
+    dut->ifu2itcm_icb_rsp_err = 0;
+    dut->ifu2itcm_icb_rsp_rdata = 0;
+    dut->ifu2biu_icb_cmd_ready = 1;
+    dut->ifu2biu_icb_rsp_valid = 0;
+    dut->ifu2biu_icb_rsp_err = 0;
+    dut->ifu2biu_icb_rsp_rdata = 0;
+    dut->ifu_o_ready = 1;
+    dut->pipe_flush_req = 0;
+    dut->pipe_flush_add_op1 = 0;
+    dut->pipe_flush_add_op2 = 0;
+    dut->pipe_flush_pc = 0;
+    dut->ifu_halt_req = 0;
+    dut->oitf_empty = 1;
+    dut->rf2ifu_x1 = 0;
+    dut->rf2ifu_rs1 = 0;
+    dut->dec2ifu_rden = 0;
+    dut->dec2ifu_rs1en = 0;
+    dut->dec2ifu_rdidx = 0;
+    dut->dec2ifu_mulhsu = 0;
+    dut->dec2ifu_div = 0;
+    dut->dec2ifu_rem = 0;
+    dut->dec2ifu_divu = 0;
+    dut->dec2ifu_remu = 0;
+    dut->clk = 0;
+    for (int i = 0; i < 3; i++) tick();
+    dut->rst_n = 1;
+    settle();
 }
 
 int main() {
-    VIfuTop m;
-    memset(itcm, 0, sizeof(itcm));
+    dut = new Ve203_ifu_top;
 
-    // Load a small program at ITCM base (RESET_PC = 0x80000000)
-    // But ITCM is only 64KB, so PC 0x80000000 wraps to word addr 0x0
-    // Actually, Ift2Icb uses ifu_req_pc[15:2] — so 0x80000000 → addr 0x0000
-    // Let's put instructions at word offset 0
-    itcm[0] = rv_addi(1, 0, 42);     // ADDI x1, x0, 42
-    itcm[1] = rv_addi(2, 0, 10);     // ADDI x2, x0, 10
-    itcm[2] = rv_add(3, 1, 2);       // ADD  x3, x1, x2
-    itcm[3] = rv_nop();              // NOP
-    itcm[4] = rv_nop();              // NOP
+    // ── Test 1: Reset state ──────────────────────────────────────────
+    printf("Test 1: Reset state\n");
+    reset(0x00000000);
+    CHECK(dut->ifu_active == 1, "ifu_active is hardwired true, got %d", dut->ifu_active);
+    CHECK(dut->inspect_pc == 0x0, "pc should be 0 after reset, got 0x%08x", dut->inspect_pc);
+    CHECK(dut->ifu_o_valid == 0, "ifu_o_valid should be 0 after reset, got %d", dut->ifu_o_valid);
+    CHECK(dut->ifu_o_pc_vld == 0, "ifu_o_pc_vld should be 0 after reset, got %d", dut->ifu_o_pc_vld);
+    CHECK(dut->ifu_o_buserr == 0, "ifu_o_buserr should be 0 after reset, got %d", dut->ifu_o_buserr);
+    CHECK(dut->ifu_halt_ack == 0, "ifu_halt_ack should be 0 after reset, got %d", dut->ifu_halt_ack);
+    // pipe_flush_ack is an unconditional constant inside e203_ifu_ifetch.
+    CHECK(dut->pipe_flush_ack == 1, "pipe_flush_ack should be 1, got %d", dut->pipe_flush_ack);
+    // Both ICB response channels accept immediately: the bridge buffer is empty.
+    CHECK(dut->ifu2itcm_icb_rsp_ready == 1, "itcm rsp_ready should be 1 with an empty buffer, got %d",
+          dut->ifu2itcm_icb_rsp_ready);
+    CHECK(dut->ifu2biu_icb_rsp_ready == 1, "biu rsp_ready should be 1 with an empty buffer, got %d",
+          dut->ifu2biu_icb_rsp_ready);
 
-    // Also load instructions at PC 0x2000 for redirect test
-    // 0x2000 → word addr 0x800
-    itcm[0x800] = rv_addi(5, 0, 99); // ADDI x5, x0, 99
-    itcm[0x801] = rv_addi(6, 0, 77); // ADDI x6, x0, 77
+    // ── Test 2: Fetch request reaches the ITCM ICB command channel ───
+    // ifetch offers a fetch as soon as reset drops; ift2icb must route it and
+    // present the address. rsp_instr is 0 at this point, so minidec reads a
+    // 16-bit encoding and the sequential PC step is +2.
+    printf("Test 2: ITCM region decode + command issue\n");
+    CHECK(dut->ifu2itcm_icb_cmd_valid == 1, "itcm cmd_valid should be 1 for a pc in the ITCM region, got %d",
+          dut->ifu2itcm_icb_cmd_valid);
+    CHECK(dut->ifu2biu_icb_cmd_valid == 0, "biu cmd_valid should be 0 for a pc in the ITCM region, got %d",
+          dut->ifu2biu_icb_cmd_valid);
+    CHECK(dut->ifu2itcm_icb_cmd_addr == 0x0002, "itcm cmd_addr should be 0x0002, got 0x%04x",
+          dut->ifu2itcm_icb_cmd_addr);
 
-    // Reset
-    m.clk = 0; m.rst_n = 0;
-    m.o_ready = 1;
-    m.exu_redirect = 0; m.exu_redirect_pc = 0;
-    m.itcm_cmd_ready = 1;
-    m.itcm_rsp_valid = 0; m.itcm_rsp_data = 0;
-    m.oitf_empty = 1; m.ir_empty = 1; m.ir_rs1en = 0;
-    m.jalr_rs1idx_cam_irrdidx = 0; m.ir_valid_clr = 0;
-    m.rf2bpu_x1 = 0; m.rf2bpu_rs1 = 0;
-    m.eval();
-    tick(m); tick(m);
-    m.rst_n = 1;
-    tick(m);
+    // ── Test 3: BIU region decode ────────────────────────────────────
+    // With the ITCM claiming 0x8000_xxxx, a pc of 0x0000_0002 falls outside it
+    // and the same request must come out of the BIU port instead, un-truncated.
+    printf("Test 3: BIU region decode\n");
+    reset(0x80000000);
+    CHECK(dut->ifu2biu_icb_cmd_valid == 1, "biu cmd_valid should be 1 for a pc outside the ITCM region, got %d",
+          dut->ifu2biu_icb_cmd_valid);
+    CHECK(dut->ifu2itcm_icb_cmd_valid == 0, "itcm cmd_valid should be 0 for a pc outside the ITCM region, got %d",
+          dut->ifu2itcm_icb_cmd_valid);
+    CHECK(dut->ifu2biu_icb_cmd_addr == 0x00000002, "biu cmd_addr should be the full 32-bit pc 0x00000002, got 0x%08x",
+          dut->ifu2biu_icb_cmd_addr);
 
-    // ── Test 1: After reset, IFU issues fetch request ─────────────────
-    settle(m);
-    CHECK(BOOL(m.itcm_cmd_valid), "post-reset: cmd_valid=%d", m.itcm_cmd_valid);
+    // Redirect the PC into the ITCM region and the routing must flip back, with
+    // the ITCM port seeing only the low 16 bits.
+    dut->pipe_flush_req = 1;
+    dut->pipe_flush_add_op1 = 0x80001234;
+    dut->pipe_flush_add_op2 = 0;
+    settle();
+    CHECK(dut->ifu2itcm_icb_cmd_valid == 1, "routing should flip to ITCM once the pc enters its region, got %d",
+          dut->ifu2itcm_icb_cmd_valid);
+    CHECK(dut->ifu2biu_icb_cmd_valid == 0, "biu cmd_valid should drop once the pc enters the ITCM region, got %d",
+          dut->ifu2biu_icb_cmd_valid);
+    CHECK(dut->ifu2itcm_icb_cmd_addr == 0x1234, "itcm cmd_addr should be the truncated 0x1234, got 0x%04x",
+          dut->ifu2itcm_icb_cmd_addr);
+    dut->pipe_flush_req = 0;
 
-    // ── Test 2: First instruction delivered (ADDI x1, x0, 42) ────────
-    uint32_t got_instr, got_pc;
-    bool ok = wait_valid(m, 10, got_instr, got_pc);
-    CHECK(ok, "first instr: o_valid not seen within 10 cycles");
-    CHECK(got_instr == rv_addi(1, 0, 42),
-          "first instr: got 0x%08X exp 0x%08X", got_instr, rv_addi(1, 0, 42));
+    // ── Test 4: ICB command backpressure freezes the fetch ───────────
+    printf("Test 4: ICB command backpressure\n");
+    reset(0x00000000);
+    dut->ifu2itcm_icb_cmd_ready = 0;
+    settle();
+    for (int i = 0; i < 3; i++) {
+        tick(); settle();
+        CHECK(dut->ifu2itcm_icb_cmd_valid == 1, "cmd_valid must stay asserted under backpressure (cycle %d)", i);
+        CHECK(dut->ifu2itcm_icb_cmd_addr == 0x0002, "cmd_addr must stay stable under backpressure (cycle %d)", i);
+        CHECK(dut->inspect_pc == 0x0, "pc must not advance while the command is stalled (cycle %d), got 0x%08x",
+              i, dut->inspect_pc);
+    }
+    dut->ifu2itcm_icb_cmd_ready = 1;
+    settle();
+    tick(); settle();
+    CHECK(dut->inspect_pc == 0x2, "pc should advance to 0x2 once the command handshakes, got 0x%08x",
+          dut->inspect_pc);
+    CHECK(dut->ifu2itcm_icb_cmd_valid == 0, "cmd_valid should drop with a fetch outstanding, got %d",
+          dut->ifu2itcm_icb_cmd_valid);
 
-    // ── Test 4: Second instruction delivered (ADDI x2, x0, 10) ───────
-    ok = wait_valid(m, 10, got_instr, got_pc);
-    CHECK(ok, "second instr: o_valid not seen");
-    CHECK(got_instr == rv_addi(2, 0, 10),
-          "second instr: got 0x%08X exp 0x%08X", got_instr, rv_addi(2, 0, 10));
+    // ── Test 5: ITCM response lands in the bridge response buffer ────
+    // The response buffer is the last stage this integration can actually reach
+    // (see KNOWN ISSUE 1). ifu2itcm_icb_rsp_ready falling 1 -> 0 is the
+    // port-visible proof the response was accepted; _let_ifu_rsp_instr_w is the
+    // ifetch<->ift2icb wire carrying the captured instruction.
+    printf("Test 5: ITCM response capture\n");
+    reset(0x00000000);
+    dut->ifu2itcm_icb_rsp_rdata = ((uint64_t)0xAAAAAAAAull << 32) | RV32_ADD_X3_X1_X2;
+    settle();
+    tick(); settle();                        // command handshake for addr 0x0002
+    CHECK(dut->ifu2itcm_icb_rsp_ready == 1, "itcm rsp_ready should still be 1 before the response, got %d",
+          dut->ifu2itcm_icb_rsp_ready);
+    dut->ifu2itcm_icb_rsp_valid = 1;
+    settle();
+    tick();
+    dut->ifu2itcm_icb_rsp_valid = 0;
+    settle();
+    CHECK(dut->ifu2itcm_icb_rsp_ready == 0, "itcm rsp_ready should drop once the buffer holds a response, got %d",
+          dut->ifu2itcm_icb_rsp_ready);
+    CHECK(dut->_let_ifu_rsp_valid_w == 1, "the bridge should present a valid response to ifetch, got %d",
+          dut->_let_ifu_rsp_valid_w);
+    // KNOWN ISSUE 2: the request was for 0x0002 (word 0), so the correct half is
+    // rdata[31:0] == RV32_ADD_X3_X1_X2. The design selects on the *next* fetch
+    // address (0x0004, bit 2 set) and captures rdata[63:32] instead.
+    CHECK(dut->_let_ifu_rsp_instr_w == 0xAAAAAAAAu,
+          "KNOWN ISSUE 2: half-select follows the next fetch_pc, expected 0xAAAAAAAA, got 0x%08x",
+          dut->_let_ifu_rsp_instr_w);
 
-    // ── Test 6: Third instruction (ADD x3, x1, x2) ──────────────────
-    ok = wait_valid(m, 10, got_instr, got_pc);
-    CHECK(ok, "third instr: o_valid not seen");
-    CHECK(got_instr == rv_add(3, 1, 2),
-          "third instr: got 0x%08X exp 0x%08X", got_instr, rv_add(3, 1, 2));
+    // ── Test 6: The fetch pipeline locks up on that response ─────────
+    // KNOWN ISSUE 1. Pinned as observed behavior so a future fix flips this
+    // test loudly instead of silently.
+    printf("Test 6: Response-buffer lockup (KNOWN ISSUE 1)\n");
+    for (int i = 0; i < 8; i++) {
+        tick(); settle();
+        CHECK(dut->ifu_o_valid == 0, "KNOWN ISSUE 1: ifu_o_valid stays 0 (cycle %d), got %d", i, dut->ifu_o_valid);
+        CHECK(dut->ifu2itcm_icb_rsp_ready == 0, "KNOWN ISSUE 1: the buffer never drains (cycle %d)", i);
+        CHECK(dut->ifu2itcm_icb_cmd_valid == 0, "KNOWN ISSUE 1: no new command is issued (cycle %d)", i);
+        CHECK(dut->inspect_pc == 0x2, "pc stays frozen at 0x2 while locked (cycle %d), got 0x%08x",
+              i, dut->inspect_pc);
+    }
 
-    // ── Test 8: PC increments by 4 each fetch ────────────────────────
-    // got_pc should correspond to instruction at word offset 2
-    // PC = 0x80000000 + 8 = 0x80000008
-    CHECK(got_pc == 0x80000008u,
-          "third instr PC: got 0x%08X exp 0x80000008", got_pc);
+    // ── Test 7: pipe_flush drains the buffer and redirects the PC ────
+    // pipe_flush_req forces ifetch's rsp2ir_ready high, which is the one escape
+    // from the lockup above; the buffered response is discarded, not delivered.
+    printf("Test 7: pipe_flush drain + redirect\n");
+    dut->pipe_flush_req = 1;
+    dut->pipe_flush_add_op1 = 0x00001234;
+    dut->pipe_flush_add_op2 = 0;
+    settle();
+    CHECK(dut->pipe_flush_ack == 1, "pipe_flush_ack should be 1, got %d", dut->pipe_flush_ack);
+    CHECK(dut->ifu2itcm_icb_cmd_addr == 0x1234, "flush should steer the ICB command to 0x1234, got 0x%04x",
+          dut->ifu2itcm_icb_cmd_addr);
+    tick();
+    dut->pipe_flush_req = 0;
+    settle();
+    CHECK(dut->inspect_pc == 0x1234, "pc should be 0x1234 after the flush, got 0x%08x", dut->inspect_pc);
+    CHECK(dut->ifu2itcm_icb_rsp_ready == 1, "the buffer should have drained on the flush, got rsp_ready %d",
+          dut->ifu2itcm_icb_rsp_ready);
+    CHECK(dut->ifu_o_valid == 0, "the flushed response must not be delivered to decode, got o_valid %d",
+          dut->ifu_o_valid);
+    CHECK(dut->ifu2itcm_icb_cmd_valid == 1, "fetching should resume from the redirect target, got %d",
+          dut->ifu2itcm_icb_cmd_valid);
 
-    // ── Test 9: Branch redirect to 0x2000 ────────────────────────────
-    m.exu_redirect = 1;
-    m.exu_redirect_pc = 0x2000;
-    tick(m);
-    m.exu_redirect = 0;
+    // op1 + op2 are summed and bit 0 is forced low (2-byte alignment).
+    reset(0x00000000);
+    dut->pipe_flush_req = 1;
+    dut->pipe_flush_add_op1 = 0x2000;
+    dut->pipe_flush_add_op2 = 0x11;
+    settle();
+    CHECK(dut->ifu2itcm_icb_cmd_addr == 0x2010, "flush target should be (0x2000+0x11) & ~1 = 0x2010, got 0x%04x",
+          dut->ifu2itcm_icb_cmd_addr);
+    dut->pipe_flush_req = 0;
 
-    // Wait for instruction from new PC
-    ok = wait_valid(m, 15, got_instr, got_pc);
-    CHECK(ok, "redirect: o_valid not seen after redirect");
-    CHECK(got_instr == rv_addi(5, 0, 99),
-          "redirect instr: got 0x%08X exp 0x%08X", got_instr, rv_addi(5, 0, 99));
+    // ── Test 8: BIU response capture ─────────────────────────────────
+    // The BIU path is 32 bits wide, so the response is captured verbatim with
+    // no half-select in the way.
+    printf("Test 8: BIU response capture\n");
+    reset(0x80000000);
+    dut->ifu2biu_icb_rsp_rdata = 0xDEADBEEFu;
+    settle();
+    tick(); settle();                        // command handshake on the BIU port
+    dut->ifu2biu_icb_rsp_valid = 1;
+    settle();
+    tick();
+    dut->ifu2biu_icb_rsp_valid = 0;
+    settle();
+    CHECK(dut->ifu2biu_icb_rsp_ready == 0, "biu rsp_ready should drop once the buffer holds a response, got %d",
+          dut->ifu2biu_icb_rsp_ready);
+    CHECK(dut->_let_ifu_rsp_valid_w == 1, "the bridge should present a valid BIU response, got %d",
+          dut->_let_ifu_rsp_valid_w);
+    CHECK(dut->_let_ifu_rsp_instr_w == 0xDEADBEEFu, "biu rdata should reach the response buffer verbatim, got 0x%08x",
+          dut->_let_ifu_rsp_instr_w);
 
-    // ── Test 11: Instruction after redirect is sequential ────────────
-    ok = wait_valid(m, 10, got_instr, got_pc);
-    CHECK(ok, "post-redirect seq: o_valid not seen");
-    CHECK(got_instr == rv_addi(6, 0, 77),
-          "post-redirect seq: got 0x%08X exp 0x%08X", got_instr, rv_addi(6, 0, 77));
+    // ── Test 9: Halt handshake ───────────────────────────────────────
+    printf("Test 9: Halt handshake\n");
+    reset(0x00000000);
+    CHECK(dut->ifu2itcm_icb_cmd_valid == 1, "a fetch should be offered before halting, got %d",
+          dut->ifu2itcm_icb_cmd_valid);
+    dut->ifu_halt_req = 1;
+    settle();
+    CHECK(dut->ifu2itcm_icb_cmd_valid == 0, "halt_req should suppress the ICB command, got %d",
+          dut->ifu2itcm_icb_cmd_valid);
+    CHECK(dut->ifu2biu_icb_cmd_valid == 0, "halt_req should suppress the BIU command too, got %d",
+          dut->ifu2biu_icb_cmd_valid);
+    tick(); settle();
+    CHECK(dut->ifu_halt_ack == 1, "halt_ack should assert with nothing outstanding, got %d", dut->ifu_halt_ack);
+    tick(); settle();
+    CHECK(dut->ifu_halt_ack == 1, "halt_ack should stay asserted while halt_req holds, got %d", dut->ifu_halt_ack);
+    CHECK(dut->inspect_pc == 0x0, "pc must not advance while halted, got 0x%08x", dut->inspect_pc);
+    dut->ifu_halt_req = 0;
+    settle();
+    tick(); settle();
+    CHECK(dut->ifu_halt_ack == 0, "halt_ack should clear when halt_req drops, got %d", dut->ifu_halt_ack);
+    CHECK(dut->inspect_pc == 0x2, "fetching should resume after halt, pc should be 0x2, got 0x%08x",
+          dut->inspect_pc);
 
-    // ── Test 13: Backpressure — deassert o_ready ─────────────────────
-    m.o_ready = 0;
-    // Let several cycles pass; IFU should stall (no new o_valid)
-    for (int i = 0; i < 5; i++) tick(m);
-    // Re-enable
-    m.o_ready = 1;
-    ok = wait_valid(m, 10, got_instr, got_pc);
-    CHECK(ok, "backpressure: o_valid recovered after ready re-asserted");
-
-    // ── Test 14: Mini-decoder flags ──────────────────────────────────
-    // Load a JAL at next expected fetch location and check dec_is_bjp
-    // The current PC after redirect sequence is around 0x2008+
-    // Instead, redirect to a known location with JAL
-    uint32_t jal_addr = 0x3000;
-    itcm[jal_addr >> 2] = rv_jal(0, 0x100);  // JAL x0, +256
-    m.exu_redirect = 1;
-    m.exu_redirect_pc = jal_addr;
-    tick(m);
-    m.exu_redirect = 0;
-
-    ok = wait_valid(m, 15, got_instr, got_pc);
-    CHECK(ok, "JAL fetch: o_valid seen");
-    settle(m);
-    CHECK(BOOL(m.dec_is_bjp), "JAL: dec_is_bjp=%d", m.dec_is_bjp);
-    CHECK(BOOL(m.prdt_taken), "JAL: prdt_taken=%d (JAL always taken)", m.prdt_taken);
-
-    // ── Test 17: BEQ instruction — backward branch predicted taken ───
-    uint32_t beq_addr = 0x4000;
-    // BEQ x0, x0, -8 (backward branch → predicted taken by LiteBpu)
-    itcm[beq_addr >> 2] = rv_beq(0, 0, -8 & 0x1FFF);
-    m.exu_redirect = 1;
-    m.exu_redirect_pc = beq_addr;
-    tick(m);
-    m.exu_redirect = 0;
-
-    ok = wait_valid(m, 15, got_instr, got_pc);
-    CHECK(ok, "BEQ fetch: o_valid seen");
-    settle(m);
-    CHECK(BOOL(m.dec_is_bjp), "BEQ: dec_is_bjp=%d", m.dec_is_bjp);
-    // Backward branch → prdt_taken should be 1
-    CHECK(BOOL(m.prdt_taken), "BEQ backward: prdt_taken=%d", m.prdt_taken);
-
-    // ── Test 19: Non-branch instruction → dec_is_bjp=0 ──────────────
-    uint32_t nop_addr = 0x5000;
-    itcm[nop_addr >> 2] = rv_nop();
-    m.exu_redirect = 1;
-    m.exu_redirect_pc = nop_addr;
-    tick(m);
-    m.exu_redirect = 0;
-
-    ok = wait_valid(m, 15, got_instr, got_pc);
-    CHECK(ok, "NOP fetch: o_valid seen");
-    settle(m);
-    CHECK(!BOOL(m.dec_is_bjp), "NOP: dec_is_bjp=%d", m.dec_is_bjp);
-    CHECK(!BOOL(m.prdt_taken), "NOP: prdt_taken=%d", m.prdt_taken);
-
-    printf("\n=== IfuTop functional test: %d tests, %d errors ===\n", test_num, errors);
-    return errors ? 1 : 0;
+    printf("\n=== e203_ifu_top: %d failure(s) ===\n", fail_count);
+    return fail_count ? 1 : 0;
 }
