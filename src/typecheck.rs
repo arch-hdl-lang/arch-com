@@ -4203,13 +4203,12 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             ExprKind::BitSlice(base, hi, lo) => {
-                if !Self::is_portable_bit_slice_base(base) {
-                    self.errors.push(CompileError::general(
-                        "cannot bit-slice this expression directly; SystemVerilog backends cannot portably emit `(expr)[hi:lo]`. For same-width modular arithmetic, use wrapping operators such as `+%` or `-%`; otherwise assign the expression to a typed `let`/wire first and slice the named value.",
-                        base.span,
-                    ));
-                    return Ty::Error;
-                }
+                // No base-kind restriction (arch#813 P1). Any base that
+                // SystemVerilog can't select from directly is bound to a
+                // compiler-generated temp by codegen's `hoist_slice_base`,
+                // including one that reads a runtime `for`-loop iterator
+                // (arch#861) — so there is nothing left for the type
+                // checker to refuse. See spec §3.2.1.
                 let base_ty = self.resolve_expr_type(base, module_name, local_types);
                 let hi_val = self.eval_const_expr(hi, local_types);
                 let lo_val = self.eval_const_expr(lo, local_types);
@@ -4225,14 +4224,8 @@ impl<'a> TypeChecker<'a> {
                     _ => Ty::Error,
                 }
             }
-            ExprKind::PartSelect(base, _start, width, _up) => {
-                if !Self::is_portable_bit_slice_base(base) {
-                    self.errors.push(CompileError::general(
-                        "cannot part-select this expression directly; SystemVerilog backends cannot portably emit `(expr)[start +: width]` (or `-:`). For same-width modular arithmetic, use wrapping operators such as `+%` or `-%`; otherwise assign the expression to a typed `let`/wire first and part-select the named value.",
-                        base.span,
-                    ));
-                    return Ty::Error;
-                }
+            ExprKind::PartSelect(_base, _start, width, _up) => {
+                // No base-kind restriction — see the `BitSlice` arm above.
                 // width is const; result type is UInt<width>
                 match self.eval_const_expr(width, local_types) {
                     Some(w) if w > 0 => Ty::UInt(w as u32),
@@ -4637,29 +4630,6 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
-    }
-
-    /// Bases that SystemVerilog backends (Verilator/iverilog) accept as the
-    /// target of a bit-slice `[hi:lo]` or part-select `[start +: w]` without
-    /// needing to be bound to a named `let` first. `BitSlice`, `PartSelect`,
-    /// `Bool`, and `EnumVariant` were removed from this list — chained
-    /// bit-select (`(a[7:4])[1:0]`) and slicing/part-selecting a literal
-    /// bool/enum-variant produce SV that Verilator/iverilog reject even when
-    /// parenthesized, so those bases must be rejected here rather than
-    /// allowed through to codegen. See issue #653.
-    fn is_portable_bit_slice_base(base: &Expr) -> bool {
-        matches!(
-            base.kind,
-            ExprKind::Ident(_)
-                | ExprKind::SynthIdent(_, _)
-                | ExprKind::Literal(_)
-                | ExprKind::Index(_, _)
-                | ExprKind::FieldAccess(_, _)
-                | ExprKind::Concat(_)
-                | ExprKind::Repeat(_, _)
-                | ExprKind::FunctionCall(_, _)
-                | ExprKind::MethodCall(_, _, _)
-        )
     }
 
     /// Find the port-site `<P=expr>` bus-param overrides for a bus field

@@ -6690,6 +6690,37 @@ impl<'a> Codegen<'a> {
     /// bases. (This file's `BitSlice` arm is unchanged — that shipped,
     /// tested behavior is out of this fix's scope; see arch#650's PR body
     /// for the follow-up filed to track it.)
+    /// The only bases SystemVerilog lets a `[hi:lo]` bit-slice or
+    /// `[start +: w]` part-select apply to directly. Everything else is
+    /// bound to a named temp by `hoist_slice_base` (arch#813 P1).
+    ///
+    /// This replaced typecheck's `is_portable_bit_slice_base` allowlist,
+    /// which named the base kinds `arch check` would *accept* and had been
+    /// wrong in both directions: too permissive for `Concat`/`Repeat`
+    /// (arch#807), `FunctionCall`/`MethodCall` (arch#810) and `Literal`
+    /// (`8'hff[i +: 2]`, rejected by both frontends), and too restrictive
+    /// for `BitSlice`/`PartSelect`/`Bool`/`EnumVariant`, which arch#653
+    /// turned into a permanent user-visible language restriction to work
+    /// around a codegen limitation. Stating the rule the other way round —
+    /// what SV can select from, everything else hoisted — makes a new
+    /// `ExprKind` safe by default instead of silently non-portable until
+    /// someone runs the right simulator.
+    ///
+    /// Deliberately *not* shared with `is_atomic_index_base`: the
+    /// single-bit `Index` form has a different accepted set (a
+    /// `FunctionCall` result can be indexed but not sliced) and its own
+    /// history. Keeping them separate keeps each honest about what was
+    /// actually measured.
+    fn is_bare_selectable_slice_base(base: &Expr) -> bool {
+        matches!(
+            base.kind,
+            ExprKind::Ident(_)
+                | ExprKind::SynthIdent(_, _)
+                | ExprKind::Index(_, _)
+                | ExprKind::FieldAccess(_, _)
+        )
+    }
+
     fn is_atomic_index_base(base: &Expr) -> bool {
         match &base.kind {
             ExprKind::Ident(_)
@@ -6881,13 +6912,7 @@ impl<'a> Codegen<'a> {
         emit: &dyn Fn(&Expr) -> String,
         signal_width: &dyn Fn(&Expr) -> Option<String>,
     ) -> Option<String> {
-        if !matches!(
-            base.kind,
-            ExprKind::Concat(_)
-                | ExprKind::Repeat(_, _)
-                | ExprKind::FunctionCall(_, _)
-                | ExprKind::MethodCall(_, _, _)
-        ) {
+        if Self::is_bare_selectable_slice_base(base) {
             return None;
         }
         let in_loop = self.base_references_live_loop_var(base);

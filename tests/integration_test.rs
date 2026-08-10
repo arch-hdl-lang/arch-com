@@ -198,7 +198,13 @@ end module Placeholder
 // ── Operators ─────────────────────────────────────────────────────────────────
 
 #[test]
-fn test_bit_slice_arithmetic_expression_errors_with_wrapping_hint() {
+fn test_bit_slice_arithmetic_base_hoists_to_named_temp() {
+    // Was `test_bit_slice_arithmetic_expression_errors_with_wrapping_hint`,
+    // which pinned the arch#653 rejection. arch#813 P1 retired the
+    // `is_portable_bit_slice_base` allowlist: an arithmetic base is no
+    // longer a compile error, it is bound to a named temp and sliced
+    // through that — the same automatic hoist the single-bit `Index` form
+    // has used since arch#650. Both frontends accept the result.
     let source = r#"
 module SliceArithmeticExpr
   port a: in SInt<4>;
@@ -208,21 +214,19 @@ module SliceArithmeticExpr
   let y = signed((a + one_s)[3:0]);
 end module SliceArithmeticExpr
 "#;
-    let tokens = lexer::tokenize(source).expect("lexer error");
-    let mut parser = Parser::new(tokens, source);
-    let parsed_ast = parser.parse_source_file().expect("parse error");
-    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
-    let symbols = resolve::resolve(&ast).expect("resolve error");
-    let checker = TypeChecker::new(&symbols, &ast);
-    let errors = checker
-        .check()
-        .expect_err("arithmetic expression bit-slice should error");
-    let rendered = format!("{errors:?}");
-    assert!(rendered.contains("cannot bit-slice this expression directly"));
-    assert!(rendered.contains("+%"));
-    assert!(rendered.contains("-%"));
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign arch_idx_base_0 = a + one_s;"),
+        "expected the arithmetic base bound to a temp, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("arch_idx_base_0[3:0]"),
+        "expected the slice to go through the temp, got:\n{sv}"
+    );
 
-    let fixed = r#"
+    // The wrapping-operator form remains the idiomatic spelling for
+    // same-width modular arithmetic and still emits with no temp at all.
+    let wrapping = r#"
 module SliceArithmeticExpr
   port a: in SInt<4>;
   port y: out SInt<4>;
@@ -231,8 +235,9 @@ module SliceArithmeticExpr
   let y = a +% one_s;
 end module SliceArithmeticExpr
 "#;
-    let sv = compile_to_sv(fixed);
+    let sv = compile_to_sv(wrapping);
     assert!(sv.contains("assign y = 4'(a + one_s);"), "got:\n{sv}");
+    assert!(!sv.contains("arch_idx_base"), "no hoist needed, got:\n{sv}");
 }
 
 #[test]
@@ -543,60 +548,47 @@ end pipeline RevPipe
 }
 
 #[test]
-fn test_part_select_additive_base_rejected() {
-    // arch#653 item 1: `ExprKind::PartSelect` (`[start +: w]` / `[start -: w]`)
-    // was not guarded at typecheck, so a low-precedence base like `a + b`
-    // silently emitted precedence-wrong SV (`a + b[s +: 4]`). Must now be
-    // rejected the same way BitSlice already is, for both `+:` and `-:`.
-    let plus_source = r#"
-module PsAddPlus
+fn test_part_select_additive_base_hoists_to_named_temp() {
+    // Was `test_part_select_additive_base_rejected` (arch#653 item 1).
+    // The original defect was that `(a + b)[s +: 4]` emitted
+    // precedence-wrong SV (`a + b[s +: 4]`); arch#653 fixed that by
+    // rejecting it, arch#813 P1 fixes it by hoisting instead. Both `+:`
+    // and `-:` covered.
+    for (name, src, op) in [
+        ("PsAddPlus", "(a + b)[s +: 4]", "[s +: 4]"),
+        ("PsAddMinus", "(a + b)[s -: 4]", "[s -: 4]"),
+    ] {
+        let source = format!(
+            r#"
+module {name}
   port a: in UInt<8>;
   port b: in UInt<8>;
   port s: in UInt<3>;
   port y: out UInt<4>;
-  let y = (a + b)[s +: 4];
-end module PsAddPlus
-"#;
-    let tokens = lexer::tokenize(plus_source).expect("lexer error");
-    let mut parser = Parser::new(tokens, plus_source);
-    let parsed_ast = parser.parse_source_file().expect("parse error");
-    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
-    let symbols = resolve::resolve(&ast).expect("resolve error");
-    let checker = TypeChecker::new(&symbols, &ast);
-    let errors = checker
-        .check()
-        .expect_err("part-select on additive base (+:) should error");
-    let rendered = format!("{errors:?}");
-    assert!(rendered.contains("cannot part-select this expression directly"));
-    assert!(rendered.contains("+%"));
-    assert!(rendered.contains("-%"));
-
-    let minus_source = r#"
-module PsAddMinus
-  port a: in UInt<8>;
-  port b: in UInt<8>;
-  port s: in UInt<3>;
-  port y: out UInt<4>;
-  let y = (a + b)[s -: 4];
-end module PsAddMinus
-"#;
-    let tokens = lexer::tokenize(minus_source).expect("lexer error");
-    let mut parser = Parser::new(tokens, minus_source);
-    let parsed_ast = parser.parse_source_file().expect("parse error");
-    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
-    let symbols = resolve::resolve(&ast).expect("resolve error");
-    let checker = TypeChecker::new(&symbols, &ast);
-    let errors = checker
-        .check()
-        .expect_err("part-select on additive base (-:) should error");
-    let rendered = format!("{errors:?}");
-    assert!(rendered.contains("cannot part-select this expression directly"));
+  let y = {src};
+end module {name}
+"#
+        );
+        let sv = compile_to_sv(&source);
+        assert!(
+            sv.contains("assign arch_idx_base_0 = a + b;"),
+            "{name}: expected additive base bound to a temp, got:\n{sv}"
+        );
+        assert!(
+            sv.contains(&format!("arch_idx_base_0{op}")),
+            "{name}: expected the part-select to go through the temp, got:\n{sv}"
+        );
+        assert!(
+            !sv.contains(&format!("a + b{op}")),
+            "{name}: precedence-wrong bare emission returned, got:\n{sv}"
+        );
+    }
 }
 
 #[test]
-fn test_part_select_shift_base_rejected() {
-    // Same guardrail, shift-expression base — another low-precedence
-    // operator class that would otherwise silently miscompile.
+fn test_part_select_shift_base_hoists_to_named_temp() {
+    // Was `test_part_select_shift_base_rejected`. Same arch#813 P1
+    // change: a shift base is hoisted rather than refused.
     let source = r#"
 module PsShift
   port a: in UInt<8>;
@@ -605,17 +597,15 @@ module PsShift
   let y = (a >> 1)[s +: 2];
 end module PsShift
 "#;
-    let tokens = lexer::tokenize(source).expect("lexer error");
-    let mut parser = Parser::new(tokens, source);
-    let parsed_ast = parser.parse_source_file().expect("parse error");
-    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
-    let symbols = resolve::resolve(&ast).expect("resolve error");
-    let checker = TypeChecker::new(&symbols, &ast);
-    let errors = checker
-        .check()
-        .expect_err("part-select on shift base should error");
-    let rendered = format!("{errors:?}");
-    assert!(rendered.contains("cannot part-select this expression directly"));
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign arch_idx_base_0 = a >> 1;"),
+        "expected shift base bound to a temp, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("arch_idx_base_0[s +: 2]"),
+        "expected the part-select to go through the temp, got:\n{sv}"
+    );
 }
 
 #[test]
@@ -648,11 +638,10 @@ end module PsPortableBases
 }
 
 #[test]
-fn test_chained_bit_slice_rejected() {
-    // arch#653 item 2: `BitSlice` was previously in `is_portable_bit_slice_base`,
-    // so a chained bit-select `a[7:4][1:0]` typechecked, but codegen wraps the
-    // inner slice in parens (`(a[7:4])[1:0]`) which Verilator/iverilog reject —
-    // chained bit-select isn't legal SV even bare. Now rejected at typecheck.
+fn test_chained_bit_slice_hoists_to_named_temp() {
+    // Was `test_chained_bit_slice_rejected`. `a[7:4][1:0]` is ordinary,
+    // unambiguous ARCH; arch#653 refused it because `(a[7:4])[1:0]` is
+    // illegal SV, arch#813 P1 binds the inner slice to a temp instead.
     let source = r#"
 module ChainedSlice
   port a: in UInt<8>;
@@ -660,22 +649,25 @@ module ChainedSlice
   let y = a[7:4][1:0];
 end module ChainedSlice
 "#;
-    let tokens = lexer::tokenize(source).expect("lexer error");
-    let mut parser = Parser::new(tokens, source);
-    let parsed_ast = parser.parse_source_file().expect("parse error");
-    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
-    let symbols = resolve::resolve(&ast).expect("resolve error");
-    let checker = TypeChecker::new(&symbols, &ast);
-    let errors = checker.check().expect_err("chained bit-slice should error");
-    let rendered = format!("{errors:?}");
-    assert!(rendered.contains("cannot bit-slice this expression directly"));
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign arch_idx_base_0 = a[7:4];"),
+        "expected the inner slice bound to a temp, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("arch_idx_base_0[1:0]"),
+        "expected the outer slice through the temp, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("a[7:4][1:0]"),
+        "chained slice emitted bare, got:\n{sv}"
+    );
 }
 
 #[test]
-fn test_slice_on_part_select_base_rejected() {
-    // `PartSelect` was also previously in `is_portable_bit_slice_base`, so a
-    // bit-slice of a part-select result (`a[s +: 4][1:0]`) typechecked, but
-    // codegen paren's the base (`(a[s +: 4])[1:0]`) which is not legal SV.
+fn test_slice_on_part_select_base_hoists_to_named_temp() {
+    // Was `test_slice_on_part_select_base_rejected`. Bit-slice of a
+    // part-select result — the `PartSelect` mirror of the chained case.
     let source = r#"
 module SliceOfPartSelect
   port a: in UInt<8>;
@@ -684,17 +676,15 @@ module SliceOfPartSelect
   let y = a[s +: 4][1:0];
 end module SliceOfPartSelect
 "#;
-    let tokens = lexer::tokenize(source).expect("lexer error");
-    let mut parser = Parser::new(tokens, source);
-    let parsed_ast = parser.parse_source_file().expect("parse error");
-    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
-    let symbols = resolve::resolve(&ast).expect("resolve error");
-    let checker = TypeChecker::new(&symbols, &ast);
-    let errors = checker
-        .check()
-        .expect_err("bit-slice on part-select base should error");
-    let rendered = format!("{errors:?}");
-    assert!(rendered.contains("cannot bit-slice this expression directly"));
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign arch_idx_base_0 = a[s +: 4];"),
+        "expected the part-select bound to a temp, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("arch_idx_base_0[1:0]"),
+        "expected the outer slice through the temp, got:\n{sv}"
+    );
 }
 
 #[test]
@@ -35801,4 +35791,139 @@ fn test_loop_var_slice_hoist_behavioral_equivalence_verilator_and_iverilog() {
             String::from_utf8_lossy(&run.stderr)
         );
     }
+}
+
+// ---------------------------------------------------------------------
+// arch#813 P1 — `is_portable_bit_slice_base` retired. The type checker no
+// longer refuses any bit-slice/part-select base; codegen binds whatever SV
+// can't select from directly to a named temp. The six tests that pinned
+// the old rejection messages became the positive hoist tests above.
+// ---------------------------------------------------------------------
+
+/// Dual-simulator behavioral check for the base kinds that used to be a
+/// compile error. Skips gracefully if neither simulator is installed.
+#[test]
+fn test_universal_slice_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#813 P1 universal slice-hoist dual-sim check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("UniversalSliceHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/UniversalSliceHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build UniversalSliceHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass — these bases are no longer rejected\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("universal_slice.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_universal_slice_hoist.sv")
+            .output()
+            .expect("iverilog compile UniversalSliceHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#813 P1)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog UniversalSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm hoisted-base semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_universal_slice");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("UniversalSliceHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_universal_slice_hoist_verilator.cpp")
+            .output()
+            .expect("verilate UniversalSliceHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VUniversalSliceHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator UniversalSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm hoisted-base semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+/// A literal base was *on* the retired allowlist and emitted bare, but
+/// `8'hff[s +: 2]` is rejected by both Icarus 12.0 and Verilator 5.048 —
+/// a sixth instance of the bug class, fixed as a side effect of P1.
+#[test]
+fn test_literal_part_select_base_hoists_to_named_temp() {
+    let sv = compile_to_sv(
+        r#"
+module LitPartSelect813
+  port s: in UInt<3>;
+  port y: out UInt<2>;
+  let y = 0xFF[s +: 2];
+end module LitPartSelect813
+"#,
+    );
+    assert!(
+        sv.contains("arch_idx_base_0"),
+        "literal part-select base should hoist, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("'hFF[s +: 2]"),
+        "literal base emitted bare, got:\n{sv}"
+    );
 }
