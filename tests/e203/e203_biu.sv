@@ -1,10 +1,24 @@
-// E203 HBirdv2 Bus Interface Unit
-// Priority arbiter (LSU > IFU), outstanding transaction tracking,
-// address-based splitter to downstream targets (PPI/CLINT/PLIC/FIO/MEM),
-// IFU-to-peripheral error detection with zero-cycle error response.
-//
-// Verify: submodule-audit applied. Implements sirv_gnrl_icb_arbt +
-// sirv_gnrl_icb_buffer + sirv_gnrl_icb_splt behavior inline.
+// domain SysDomain
+//   freq_mhz: 100
+
+// domain SysDomain
+//   freq_mhz: 100
+
+// domain SysDomain
+//   freq_mhz: 100
+
+// domain SysDomain
+//   freq_mhz: 100
+
+// domain SysDomain
+//   freq_mhz: 100
+
+// domain SysDomain
+//   freq_mhz: 100
+
+// domain SysDomain
+//   freq_mhz: 100
+
 module e203_biu (
   input logic clk,
   input logic rst_n,
@@ -132,62 +146,56 @@ module e203_biu (
   input logic [31:0] mem_icb_rsp_rdata
 );
 
-  // ── LSU to BIU ──────────────────────────────────────────────────────
-  // ── IFU to BIU ──────────────────────────────────────────────────────
-  // ── PPI downstream ──────────────────────────────────────────────────
-  // ── CLINT downstream ────────────────────────────────────────────────
-  // ── PLIC downstream ─────────────────────────────────────────────────
-  // ── FIO downstream ──────────────────────────────────────────────────
-  // ── MEM downstream ──────────────────────────────────────────────────
-  // ── Arbitration: LSU priority over IFU ──────────────────────────────
-  // Both requestors have ICB command buses. LSU wins if both request.
   logic lsu_win;
-  assign lsu_win = lsu2biu_icb_cmd_valid;
   logic ifu_req;
-  assign ifu_req = ifu2biu_icb_cmd_valid;
   logic arb_valid;
-  assign arb_valid = lsu_win | ifu_req;
-  // Mux command from winning initiator
   logic [31:0] arb_addr;
-  assign arb_addr = lsu_win ? lsu2biu_icb_cmd_addr : ifu2biu_icb_cmd_addr;
   logic arb_read;
-  assign arb_read = lsu_win ? lsu2biu_icb_cmd_read : ifu2biu_icb_cmd_read;
   logic [31:0] arb_wdata;
-  assign arb_wdata = lsu_win ? lsu2biu_icb_cmd_wdata : ifu2biu_icb_cmd_wdata;
   logic [3:0] arb_wmask;
-  assign arb_wmask = lsu_win ? lsu2biu_icb_cmd_wmask : ifu2biu_icb_cmd_wmask;
   logic [1:0] arb_burst;
-  assign arb_burst = lsu_win ? lsu2biu_icb_cmd_burst : ifu2biu_icb_cmd_burst;
   logic [1:0] arb_beat;
-  assign arb_beat = lsu_win ? lsu2biu_icb_cmd_beat : ifu2biu_icb_cmd_beat;
   logic arb_lock;
-  assign arb_lock = lsu_win ? lsu2biu_icb_cmd_lock : ifu2biu_icb_cmd_lock;
   logic arb_excl;
-  assign arb_excl = lsu_win ? lsu2biu_icb_cmd_excl : ifu2biu_icb_cmd_excl;
   logic [1:0] arb_size;
-  assign arb_size = lsu_win ? lsu2biu_icb_cmd_size : ifu2biu_icb_cmd_size;
-  // ── Address decode (upper 16 bits match region indicator) ────────────
   logic is_ppi;
-  assign is_ppi = ppi_icb_enable & (arb_addr[31:16] == ppi_region_indic[31:16]);
   logic is_clint;
-  assign is_clint = clint_icb_enable & (arb_addr[31:16] == clint_region_indic[31:16]);
   logic is_plic;
-  assign is_plic = plic_icb_enable & (arb_addr[31:16] == plic_region_indic[31:16]);
   logic is_fio;
-  assign is_fio = fio_icb_enable & (arb_addr[31:16] == fio_region_indic[31:16]);
   logic is_mem;
-  assign is_mem = mem_icb_enable & ~is_ppi & ~is_clint & ~is_plic & ~is_fio;
-  // ── IFU error: IFU accessing peripheral space ───────────────────────
   logic ifu_access;
-  assign ifu_access = ~lsu_win & arb_valid;
   logic ifu_to_peri;
-  assign ifu_to_peri = ifu_access & ~is_mem;
-  // ── Downstream ready mux ────────────────────────────────────────────
   logic arb_cmd_ready;
+  logic cmd_accept;
+  logic downstream_cmd_ready;
+  logic out_flag_set;
+  logic out_flag_clr;
+  logic can_accept;
+  logic rsp_valid_from_target;
+  logic rsp_err_from_target;
+  logic rsp_excl_ok_from_target;
+  logic [31:0] rsp_rdata_from_target;
+  logic rsp_ready_from_initiator;
+  assign lsu_win = lsu2biu_icb_cmd_valid;
+  assign ifu_req = ifu2biu_icb_cmd_valid;
+  assign arb_valid = lsu_win | ifu_req;
+  assign arb_addr = lsu_win ? lsu2biu_icb_cmd_addr : ifu2biu_icb_cmd_addr;
+  assign arb_read = lsu_win ? lsu2biu_icb_cmd_read : ifu2biu_icb_cmd_read;
+  assign arb_wdata = lsu_win ? lsu2biu_icb_cmd_wdata : ifu2biu_icb_cmd_wdata;
+  assign arb_wmask = lsu_win ? lsu2biu_icb_cmd_wmask : ifu2biu_icb_cmd_wmask;
+  assign arb_burst = lsu_win ? lsu2biu_icb_cmd_burst : ifu2biu_icb_cmd_burst;
+  assign arb_beat = lsu_win ? lsu2biu_icb_cmd_beat : ifu2biu_icb_cmd_beat;
+  assign arb_lock = lsu_win ? lsu2biu_icb_cmd_lock : ifu2biu_icb_cmd_lock;
+  assign arb_excl = lsu_win ? lsu2biu_icb_cmd_excl : ifu2biu_icb_cmd_excl;
+  assign arb_size = lsu_win ? lsu2biu_icb_cmd_size : ifu2biu_icb_cmd_size;
+  assign is_ppi = ppi_icb_enable & (arb_addr[31:16] == ppi_region_indic[31:16]);
+  assign is_clint = clint_icb_enable & (arb_addr[31:16] == clint_region_indic[31:16]);
+  assign is_plic = plic_icb_enable & (arb_addr[31:16] == plic_region_indic[31:16]);
+  assign is_fio = fio_icb_enable & (arb_addr[31:16] == fio_region_indic[31:16]);
+  assign is_mem = mem_icb_enable & ~is_ppi & ~is_clint & ~is_plic & ~is_fio;
+  assign ifu_access = ~lsu_win & arb_valid;
+  assign ifu_to_peri = ifu_access & ~is_mem;
   assign arb_cmd_ready = (is_ppi & ppi_icb_cmd_ready) | (is_clint & clint_icb_cmd_ready) | (is_plic & plic_icb_cmd_ready) | (is_fio & fio_icb_cmd_ready) | (is_mem & mem_icb_cmd_ready);
-  // ── Command pipeline register (CMD_DP=1) ────────────────────────────
-  // The arbiter accepts a command, which is registered before going to
-  // the splitter/downstream. This matches sirv_gnrl_icb_buffer behavior.
   logic cmd_valid_r;
   logic [31:0] cmd_addr_r;
   logic cmd_read_r;
@@ -204,9 +212,17 @@ module e203_biu (
   logic tgt_plic_r;
   logic tgt_fio_r;
   logic tgt_mem_r;
-  // Command acceptance: when arbiter wins AND downstream ready
-  logic cmd_accept;
   assign cmd_accept = arb_valid & arb_cmd_ready & ~ifu_to_peri;
+  assign downstream_cmd_ready = (tgt_ppi_r & ppi_icb_cmd_ready) | (tgt_clint_r & clint_icb_cmd_ready) | (tgt_plic_r & plic_icb_cmd_ready) | (tgt_fio_r & fio_icb_cmd_ready) | (tgt_mem_r & mem_icb_cmd_ready);
+  logic out_flag_r;
+  assign out_flag_set = cmd_accept;
+  assign out_flag_clr = rsp_valid_from_target & rsp_ready_from_initiator;
+  assign can_accept = ~cmd_valid_r | downstream_cmd_ready;
+  assign rsp_valid_from_target = (tgt_ppi_r & ppi_icb_rsp_valid) | (tgt_clint_r & clint_icb_rsp_valid) | (tgt_plic_r & plic_icb_rsp_valid) | (tgt_fio_r & fio_icb_rsp_valid) | (tgt_mem_r & mem_icb_rsp_valid);
+  assign rsp_err_from_target = (tgt_ppi_r & ppi_icb_rsp_err) | (tgt_clint_r & clint_icb_rsp_err) | (tgt_plic_r & plic_icb_rsp_err) | (tgt_fio_r & fio_icb_rsp_err) | (tgt_mem_r & mem_icb_rsp_err);
+  assign rsp_excl_ok_from_target = (tgt_ppi_r & ppi_icb_rsp_excl_ok) | (tgt_clint_r & clint_icb_rsp_excl_ok) | (tgt_plic_r & plic_icb_rsp_excl_ok) | (tgt_fio_r & fio_icb_rsp_excl_ok) | (tgt_mem_r & mem_icb_rsp_excl_ok);
+  assign rsp_rdata_from_target = tgt_ppi_r ? ppi_icb_rsp_rdata : tgt_clint_r ? clint_icb_rsp_rdata : tgt_plic_r ? plic_icb_rsp_rdata : tgt_fio_r ? fio_icb_rsp_rdata : mem_icb_rsp_rdata;
+  assign rsp_ready_from_initiator = tgt_lsu_r ? lsu2biu_icb_rsp_ready : ifu2biu_icb_rsp_ready;
   always_ff @(posedge clk or negedge rst_n) begin
     if ((!rst_n)) begin
       cmd_addr_r <= 0;
@@ -244,20 +260,10 @@ module e203_biu (
         tgt_fio_r <= is_fio;
         tgt_mem_r <= is_mem;
       end else if (cmd_valid_r & downstream_cmd_ready) begin
-        // Clear valid when command is consumed by downstream handshake
         cmd_valid_r <= 1'b0;
       end
     end
   end
-  // ── Downstream ready for pipelined command ──────────────────────────
-  logic downstream_cmd_ready;
-  assign downstream_cmd_ready = (tgt_ppi_r & ppi_icb_cmd_ready) | (tgt_clint_r & clint_icb_cmd_ready) | (tgt_plic_r & plic_icb_cmd_ready) | (tgt_fio_r & fio_icb_cmd_ready) | (tgt_mem_r & mem_icb_cmd_ready);
-  // ── Outstanding response tracking (OUTS_NUM=1) ──────────────────────
-  logic out_flag_r;
-  logic out_flag_set;
-  assign out_flag_set = cmd_accept;
-  logic out_flag_clr;
-  assign out_flag_clr = rsp_valid_from_target & rsp_ready_from_initiator;
   always_ff @(posedge clk or negedge rst_n) begin
     if ((!rst_n)) begin
       out_flag_r <= 1'b0;
@@ -269,30 +275,8 @@ module e203_biu (
       end
     end
   end
-  // ── Inititator ready: gated by pipeline vacancy ─────────────────────
-  // FIFO_CUT_READY=1: ready is registered (cut). We can accept when
-  // there's no outstanding pipelined command OR it's being consumed.
-  logic can_accept;
-  assign can_accept = ~cmd_valid_r | downstream_cmd_ready;
-  // ── Response from selected target ────────────────────────────────────
-  logic rsp_valid_from_target;
-  assign rsp_valid_from_target = (sel_ppi_r & ppi_icb_rsp_valid) | (sel_clint_r & clint_icb_rsp_valid) | (sel_plic_r & plic_icb_rsp_valid) | (sel_fio_r & fio_icb_rsp_valid) | (sel_mem_r & mem_icb_rsp_valid);
-  logic rsp_err_from_target;
-  assign rsp_err_from_target = (sel_ppi_r & ppi_icb_rsp_err) | (sel_clint_r & clint_icb_rsp_err) | (sel_plic_r & plic_icb_rsp_err) | (sel_fio_r & fio_icb_rsp_err) | (sel_mem_r & mem_icb_rsp_err);
-  logic rsp_excl_ok_from_target;
-  assign rsp_excl_ok_from_target = (sel_ppi_r & ppi_icb_rsp_excl_ok) | (sel_clint_r & clint_icb_rsp_excl_ok) | (sel_plic_r & plic_icb_rsp_excl_ok) | (sel_fio_r & fio_icb_rsp_excl_ok) | (sel_mem_r & mem_icb_rsp_excl_ok);
-  logic [31:0] rsp_rdata_from_target;
-  assign rsp_rdata_from_target = sel_ppi_r ? ppi_icb_rsp_rdata : sel_clint_r ? clint_icb_rsp_rdata : sel_plic_r ? plic_icb_rsp_rdata : sel_fio_r ? fio_icb_rsp_rdata : mem_icb_rsp_rdata;
-  // ── Response ready from selected initiator ──────────────────────────
-  logic rsp_ready_from_initiator;
-  assign rsp_ready_from_initiator = tgt_lsu_r ? lsu2biu_icb_rsp_ready : ifu2biu_icb_rsp_ready;
-  // ── IFU error response (zero-cycle: rsp_valid tracks cmd_valid) ─────
-  // When IFU accesses peripheral space, generate immediate error response.
-  // The request is NOT forwarded to any downstream target.
-  // ── Combinational outputs ────────────────────────────────────────────
   always_comb begin
     biu_active = cmd_valid_r | out_flag_r | arb_valid;
-    // ── Arbiter ready back to initiators (gated by pipeline vacancy) ──
     if (lsu_win) begin
       lsu2biu_icb_cmd_ready = can_accept & arb_cmd_ready & ~ifu_to_peri;
       ifu2biu_icb_cmd_ready = 1'b0;
@@ -300,7 +284,6 @@ module e203_biu (
       lsu2biu_icb_cmd_ready = 1'b0;
       ifu2biu_icb_cmd_ready = can_accept & arb_cmd_ready & ~ifu_to_peri;
     end
-    // ── Commands to downstream from pipelined register ────────────────
     ppi_icb_cmd_valid = cmd_valid_r & tgt_ppi_r;
     ppi_icb_cmd_addr = tgt_ppi_r ? cmd_addr_r : 0;
     ppi_icb_cmd_read = tgt_ppi_r ? cmd_read_r : 1'b0;
@@ -351,15 +334,12 @@ module e203_biu (
     mem_icb_cmd_lock = tgt_mem_r ? cmd_lock_r : 1'b0;
     mem_icb_cmd_excl = tgt_mem_r ? cmd_excl_r : 1'b0;
     mem_icb_cmd_size = tgt_mem_r ? cmd_size_r : 0;
-    // ── Response ready to selected downstream ─────────────────────────
     ppi_icb_rsp_ready = tgt_ppi_r & rsp_ready_from_initiator;
     clint_icb_rsp_ready = tgt_clint_r & rsp_ready_from_initiator;
     plic_icb_rsp_ready = tgt_plic_r & rsp_ready_from_initiator;
     fio_icb_rsp_ready = tgt_fio_r & rsp_ready_from_initiator;
     mem_icb_rsp_ready = tgt_mem_r & rsp_ready_from_initiator;
-    // Response to LSU/IFU: mux from selected target, or IFU error
     if (ifu_to_peri) begin
-      // IFU error: zero-cycle error response to IFU
       lsu2biu_icb_rsp_valid = 1'b0;
       lsu2biu_icb_rsp_err = 1'b0;
       lsu2biu_icb_rsp_excl_ok = 1'b0;
