@@ -272,6 +272,15 @@
       "tb_files": [
         "tests/e203/e203_fio_tb.cpp"
       ]
+    },
+    {
+      "name": "e203__e203_irq_ctrl",
+      "arch_files": [
+        "tests/e203/e203_irq_ctrl.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_irq_ctrl_tb.cpp"
+      ]
     }
   ]
 }

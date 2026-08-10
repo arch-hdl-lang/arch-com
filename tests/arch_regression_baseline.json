@@ -1199,6 +1199,12 @@
       "files": [
         "tests/e203/e203_fio.arch"
       ]
+    },
+    {
+      "name": "e203__e203_irq_ctrl",
+      "files": [
+        "tests/e203/e203_irq_ctrl.arch"
+      ]
     }
   ]
 }
