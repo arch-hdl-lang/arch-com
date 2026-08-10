@@ -87,6 +87,172 @@ pub const FP8_ARITH: &[&str] = &[
 ///   `examples/fp8_fma_char.rs`). Not asserted by tests.
 pub const FP8_FMA_CR: &[&str] = &["e5m2_fma_cr", "e4m3_fma_cr"];
 
+/// OCP MX sub-8-bit storage formats — conversions only (no arithmetic exists
+/// to prove: `Ty::is_float_arith` rejects operators on these types).
+///
+/// None of the three is an IEEE format — all three are **all-finite**: no Inf,
+/// no NaN, every encoding is a value. So each gets a hand-written spec in the
+/// same two-region shape as E4M3, with two differences that follow from
+/// all-finiteness:
+///
+/// - the widen has **no NaN arm at all** (E4M3's spec needs one for `S.1111.111`);
+/// - the narrow **saturates under both `--fp-compat` profiles**, because the
+///   encoding space has nowhere else to go. That is not a modelling choice —
+///   it is the one place the profiles provably cannot differ, and these miters
+///   are what pins it.
+///
+/// The widen exploits the same encoding coincidence E4M3 does: below the
+/// all-ones exponent an all-finite format is bit-for-bit IEEE `(eb, mb+1)`
+/// (same bias, same subnormal rule), so only the finite top binade needs
+/// explicit constants. The narrow rounds via `(_ FloatingPoint 8 mb+1)` — the
+/// format's *normal* grid at unbounded-for-f32 exponent range — with a scaled
+/// `fp.roundToIntegral` for the subnormal region and a saturate-above rule.
+///
+/// At 4 bits this is unusually strong: `e2m1_widen` is exhaustive over all 16
+/// encodings and `e2m1_narrow` over all 2^32 FP32 inputs.
+pub const MX_CONV: &[&str] = &[
+    "e2m1_widen",
+    "e2m1_narrow",
+    "e2m3_widen",
+    "e2m3_narrow",
+    "e3m2_widen",
+    "e3m2_narrow",
+];
+
+/// An OCP all-finite storage format, described by constants transcribed from
+/// the OCP spec's value tables rather than recomputed from `(eb, mb)`.
+///
+/// That transcription is the point. A spec derived by the same arithmetic the
+/// IR uses would agree with a wrong IR; these are the published numbers, so a
+/// sign/bias/shift error in `fp8_round` has nothing to hide behind.
+struct AllFinite {
+    /// Encoding width in bits (`1 + eb + mb`).
+    w: u32,
+    eb: u32,
+    mb: u32,
+    widen_fn: &'static str,
+    narrow_fn: &'static str,
+    /// Smallest positive normal, `2^(1-bias)`.
+    min_normal: &'static str,
+    /// Reciprocal of the subnormal grid spacing `2^(1-bias-mb)`. The grid runs
+    /// through the min-normal binade (same spacing there), so splitting the two
+    /// regions at `min_normal` is sound.
+    sub_scale: &'static str,
+    /// First point ABOVE the top binade on the `(8, mb+1)` grid. Reaching it is
+    /// overflow — and with no Inf in the format, overflow means saturation.
+    over: &'static str,
+    /// The finite top binade in magnitude order, one constant per mantissa
+    /// code: the OCP table verbatim.
+    topmag: &'static [&'static str],
+}
+
+fn all_finite_fmt(op: &str) -> Option<AllFinite> {
+    // ±{0, 0.5, 1, 1.5, 2, 3, 4, 6} — the entire FP4 E2M1 value set.
+    let e2m1 = AllFinite {
+        w: 4,
+        eb: 2,
+        mb: 1,
+        widen_fn: "arch_e2m1_to_f32",
+        narrow_fn: "arch_f32_to_e2m1",
+        min_normal: "1.0",
+        sub_scale: "2.0",
+        over: "8.0",
+        topmag: &["4.0", "6.0"],
+    };
+    let e2m3 = AllFinite {
+        w: 6,
+        eb: 2,
+        mb: 3,
+        widen_fn: "arch_e2m3_to_f32",
+        narrow_fn: "arch_f32_to_e2m3",
+        min_normal: "1.0",
+        sub_scale: "8.0",
+        over: "8.0",
+        topmag: &["4.0", "4.5", "5.0", "5.5", "6.0", "6.5", "7.0", "7.5"],
+    };
+    let e3m2 = AllFinite {
+        w: 6,
+        eb: 3,
+        mb: 2,
+        widen_fn: "arch_e3m2_to_f32",
+        narrow_fn: "arch_f32_to_e3m2",
+        min_normal: "0.25",
+        sub_scale: "16.0",
+        over: "32.0",
+        topmag: &["16.0", "20.0", "24.0", "28.0"],
+    };
+    match op {
+        _ if op.starts_with("e2m1_") => Some(e2m1),
+        _ if op.starts_with("e2m3_") => Some(e2m3),
+        _ if op.starts_with("e3m2_") => Some(e3m2),
+        _ => None,
+    }
+}
+
+/// Widen + narrow miters for one all-finite storage format.
+fn all_finite_proof(op: &str, f: &AllFinite) -> String {
+    let AllFinite { w, eb, mb, .. } = *f;
+    let ones = |n: u32| "1".repeat(n as usize);
+    // `topmag`: the OCP top-binade table as a mantissa-indexed ite chain.
+    let mut top = format!("((_ to_fp 8 24) RNE {})", f.topmag[f.topmag.len() - 1]);
+    for (m, v) in f.topmag.iter().enumerate().rev().skip(1) {
+        top = format!(
+            "(ite (= mf #b{:0width$b}) ((_ to_fp 8 24) RNE {v}) {top})",
+            m,
+            width = mb as usize
+        );
+    }
+    match op {
+        _ if op.ends_with("_widen") => format!(
+            "(declare-fun h () (_ BitVec {w}))\n\
+             (define-fun rr () (_ BitVec 32) ({} h))\n\
+             (define-fun sneg () Bool (= ((_ extract {} {}) h) #b1))\n\
+             (define-fun ef () (_ BitVec {eb}) ((_ extract {} {mb}) h))\n\
+             (define-fun mf () (_ BitVec {mb}) ((_ extract {} 0) h))\n\
+             (define-fun topmag () F {top})\n\
+             (define-fun spec () F (ite (= ef #b{})\n\
+                                       (ite sneg (fp.neg topmag) topmag)\n\
+                                       ((_ to_fp 8 24) RNE ((_ to_fp {eb} {}) h))))\n\
+             (assert (not (= ((_ to_fp 8 24) rr) spec)))\n(check-sat)\n",
+            f.widen_fn,
+            w - 1,
+            w - 1,
+            w - 2,
+            mb - 1,
+            ones(eb),
+            mb + 1
+        ),
+        _ if op.ends_with("_narrow") => format!(
+            "(declare-fun x () (_ BitVec 32))\n\
+             (define-fun v () F ((_ to_fp 8 24) x))\n\
+             (define-fun rr () (_ BitVec {w}) ({} x))\n\
+             (define-fun cS () F ((_ to_fp 8 24) RNE {}))\n\
+             (define-fun minn () F ((_ to_fp 8 24) RNE {}))\n\
+             (define-fun rN () (_ FloatingPoint 8 {sb}) ((_ to_fp 8 {sb}) RNE v))\n\
+             (define-fun rNf () F ((_ to_fp 8 24) RNE rN))\n\
+             (define-fun subv () F (fp.div RNE (fp.roundToIntegral RNE (fp.mul RNE v cS)) cS))\n\
+             (define-fun is_sub () Bool (fp.lt (fp.abs v) minn))\n\
+             (define-fun specv () F (ite is_sub subv rNf))\n\
+             (define-fun ovf () Bool (and (not is_sub)\n\
+                                     (or (fp.isInfinite rN)\n\
+                                         (fp.geq (fp.abs rN) ((_ to_fp 8 {sb}) RNE {})))))\n\
+             (define-fun sat () (_ BitVec {w})\n\
+               (ite (= ((_ extract 31 31) x) #b1) #b1{mag} #b0{mag}))\n\
+             (assert (not (ite (fp.isNaN v) (= rr sat)\n\
+                           (ite ovf (= rr sat)\n\
+                           (= ((_ to_fp 8 24) ({} rr)) specv)))))\n(check-sat)\n",
+            f.narrow_fn,
+            f.sub_scale,
+            f.min_normal,
+            f.over,
+            f.widen_fn,
+            sb = mb + 1,
+            mag = ones(w - 1),
+        ),
+        other => panic!("unknown all-finite proof op {other}"),
+    }
+}
+
 fn nan32_hex(p: FpCompat) -> &'static str {
     match p {
         FpCompat::Riscv => "#x7FC00000",
@@ -472,6 +638,11 @@ pub fn equiv_proof(op: &str, profile: FpCompat) -> String {
                 )),
                 other => panic!("unknown e4m3 proof op {other}"),
             }
+        }
+        // ── OCP MX all-finite storage formats: FP4 E2M1, FP6 E2M3/E3M2 ──
+        _ if all_finite_fmt(op).is_some() => {
+            let f = all_finite_fmt(op).expect("guarded above");
+            s.push_str(&all_finite_proof(op, &f));
         }
         other => panic!("unknown proof op {other}"),
     }

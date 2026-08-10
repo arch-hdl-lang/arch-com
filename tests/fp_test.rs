@@ -1324,6 +1324,71 @@ fn fp8_smt_proofs() {
     }
 }
 
+/// OCP MX sub-8-bit storage-format SMT proofs (FP4 E2M1, FP6 E2M3 / E3M2),
+/// BOTH `--fp-compat` profiles.
+///
+/// These formats are all-finite — no Inf, no NaN — so there is no SMT sort for
+/// them and each conversion is checked against a hand-written spec (see
+/// `fp_smt_proof::MX_CONV`). Two things make this cheap and strong:
+///
+/// - the widen miters are **exhaustive over every encoding** (2^4 for FP4, 2^6
+///   for FP6), and they *ground* the narrow miters, which decode their result
+///   through the same widen;
+/// - the narrow miters are **exhaustive over all 2^32 FP32 inputs**, and z3
+///   discharges each in well under a second.
+///
+/// Running both profiles is not redundant here. Both `f32_to_e2m1` and
+/// `f32_to_fp6` claim the profiles *cannot* differ — with no Inf and no NaN in
+/// the encoding space there is nowhere for an overflow to go but the max
+/// finite. These miters are what pins that claim: the same saturating spec is
+/// asserted under each profile.
+///
+/// Mutation-tested when written (2026-08-10, z3 4.15.4): corrupting a
+/// top-binade constant, the overflow threshold, the subnormal grid spacing, or
+/// either rounding mode flips every affected miter to `sat`. Moving the
+/// subnormal/normal split point to `2 * min_normal` does NOT — that is an
+/// equivalent mutant, and a deliberate one: the fixed subnormal grid has the
+/// same spacing as the min-normal binade, so any split inside
+/// `[min_normal, 2*min_normal)` is a correct spec. Pushing it to
+/// `4 * min_normal` leaves that window and is killed on all three formats.
+#[test]
+fn mx_storage_smt_proofs() {
+    fn z3_available() -> bool {
+        std::process::Command::new("z3")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    if !z3_available() {
+        eprintln!("skipping mx_storage_smt_proofs: z3 not in PATH");
+        return;
+    }
+    let td = tempfile::tempdir().expect("tempdir");
+    for profile in [arch::FpCompat::Riscv, arch::FpCompat::Cuda] {
+        for op in arch::fp_smt_proof::MX_CONV {
+            let smt = arch::fp_smt_proof::equiv_proof(op, profile);
+            let path = td.path().join(format!("{op}_{profile:?}.smt2"));
+            std::fs::write(&path, smt).unwrap();
+            let out = std::process::Command::new("z3")
+                .arg("-T:900")
+                .arg(&path)
+                .output()
+                .unwrap_or_else(|e| panic!("failed to run z3 on {op}: {e}"));
+            let first = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            assert_eq!(
+                first, "unsat",
+                "MX storage SMT proof {op} ({profile:?}) did not discharge (got {first:?})"
+            );
+        }
+    }
+}
+
 /// FP8 SV-vs-sim cross-oracle sweep, both profiles. One TB source
 /// (tb_fp8_sweep.cpp) runs against BOTH backends — the native sim's
 /// hand-written C++ helpers and the IR-rendered synthesizable SV under

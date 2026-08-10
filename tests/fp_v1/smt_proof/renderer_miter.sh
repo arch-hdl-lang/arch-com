@@ -91,6 +91,14 @@ ops=(
   "E5m2Ge|arch_e5m2_ge|a b|FP8E5M2|Bool|y = a >= b"
   "E5m2ToF32|arch_e5m2_to_f32|a|FP8E5M2|FP32|y = a.to_fp32()"
   "F32ToE5m2|arch_f32_to_e5m2|a|FP32|FP8E5M2|y = a.to_fp8e5m2()"
+  # OCP MX sub-8-bit storage formats: conversions only (no scalar arithmetic
+  # exists on them, so there is no add/mul/cmp row to write).
+  "E2m1ToF32|arch_e2m1_to_f32|a|FP4E2M1|FP32|y = a.to_fp32()"
+  "F32ToE2m1|arch_f32_to_e2m1|a|FP32|FP4E2M1|y = a.to_fp4e2m1()"
+  "E2m3ToF32|arch_e2m3_to_f32|a|FP6E2M3|FP32|y = a.to_fp32()"
+  "F32ToE2m3|arch_f32_to_e2m3|a|FP32|FP6E2M3|y = a.to_fp6e2m3()"
+  "E3m2ToF32|arch_e3m2_to_f32|a|FP6E3M2|FP32|y = a.to_fp32()"
+  "F32ToE3m2|arch_f32_to_e3m2|a|FP32|FP6E3M2|y = a.to_fp6e3m2()"
 )
 
 echo "# module            verdict   z3 time (s)"

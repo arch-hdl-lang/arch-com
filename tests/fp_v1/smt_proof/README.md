@@ -212,3 +212,45 @@ Notes:
   inputs for both `f32→e4m3` and `f32→e5m2` — riscv `ce51cf2a0d9d99ab`,
   cuda `e2b1a81a28dd99c3` — and the exhaustive 2^16 binary-op dumps are
   byte-identical under both profiles.
+
+## OCP MX sub-8-bit storage formats (FP4 E2M1, FP6 E2M3 / E3M2) — 2026-08-10
+
+These three are **all-finite**: no infinities, no NaN, every encoding is a
+value. ARCH models them as carriers — arithmetic and `is_nan` are compile
+errors, and a value must be widened to FP32 to compute — so the only operators
+to prove are the two conversions per format (`mx_storage_smt_proofs`, both
+`--fp-compat` profiles, all `unsat` in z3 4.15).
+
+| op(s) | spec | input space |
+|---|---|---|
+| `e2m1_widen` | IEEE `(2,2)` below exp 3 + 2 top-binade constants (4.0, 6.0) | **2^4 — exhaustive** |
+| `e2m1_narrow` | 2-region round: `(_ FloatingPoint 8 2)` normals (≥8.0 saturates), 0.5-grid `fp.roundToIntegral` subnormals | 2^32 |
+| `e2m3_widen` | IEEE `(2,4)` below exp 3 + 8 top-binade constants (4.0 … 7.5) | **2^6 — exhaustive** |
+| `e2m3_narrow` | as above at `(_ FloatingPoint 8 4)` / ≥8.0 / 0.125-grid | 2^32 |
+| `e3m2_widen` | IEEE `(3,3)` below exp 7 + 4 top-binade constants (16, 20, 24, 28) | **2^6 — exhaustive** |
+| `e3m2_narrow` | as above at `(_ FloatingPoint 8 3)` / ≥32.0 / 0.0625-grid | 2^32 |
+
+Notes:
+
+- **The top-binade constants are transcribed from the OCP value tables, not
+  recomputed from `(eb, mb)`.** A spec derived by the same arithmetic the IR
+  uses would agree with a wrong IR; the published numbers give a sign, bias or
+  shift error nothing to hide behind. Same structure as `e4m3_widen`, minus its
+  NaN arm — all-finite formats have no encoding to except.
+- **Both profiles are asserted, and that is not redundant.** `f32_to_e2m1` and
+  `f32_to_fp6` claim the two `--fp-compat` profiles *cannot* differ: with no
+  Inf and no NaN in the encoding space, an overflow has nowhere to go but the
+  max finite. These miters pin that claim rather than assuming it — the same
+  saturating spec is asserted under each profile.
+- **Mutation-tested when written** (z3 4.15.4, 18 mutants). Corrupting a
+  top-binade constant, deleting the top-binade arm entirely, moving the
+  overflow threshold, changing the subnormal grid spacing, or switching either
+  rounding mode to RTZ flips every affected miter to `sat` — 15 killed.
+- The 3 survivors are **equivalent mutants, and predicted**: moving the
+  subnormal/normal split point from `min_normal` to `2 * min_normal` leaves the
+  spec correct, because the fixed subnormal grid has the same spacing as the
+  min-normal binade. Any split inside `[min_normal, 2*min_normal)` is sound —
+  the same window `e4m3_narrow` documents. Pushing it to `4 * min_normal`
+  leaves the window and is killed on all three formats, which is what makes the
+  survival evidence of the window rather than of a gap.
+- The renderer miter gains 6 rows (widen + narrow per format).
