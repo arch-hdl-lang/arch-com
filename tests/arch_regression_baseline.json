@@ -1205,6 +1205,13 @@
       "files": [
         "tests/e203/e203_irq_ctrl.arch"
       ]
+    },
+    {
+      "name": "e203__e203_clk_ctrl",
+      "files": [
+        "tests/e203/e203_clk_ctrl.arch",
+        "tests/e203/e203_clkgate.arch"
+      ]
     }
   ]
 }

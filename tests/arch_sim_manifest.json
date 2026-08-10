@@ -281,6 +281,16 @@
       "tb_files": [
         "tests/e203/e203_irq_ctrl_tb.cpp"
       ]
+    },
+    {
+      "name": "e203__e203_clk_ctrl",
+      "arch_files": [
+        "tests/e203/e203_clk_ctrl.arch",
+        "tests/e203/e203_clkgate.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_clk_ctrl_tb.cpp"
+      ]
     }
   ]
 }
