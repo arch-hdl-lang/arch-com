@@ -46,24 +46,6 @@ pub(super) fn assigned_base_ident(expr: &Expr) -> Option<&str> {
     }
 }
 
-/// Width of a bit-slice-assignment base. `infer_expr_width`'s Index arm
-/// divides the widths-map entry by the element count, but `build_widths`
-/// registers Vec-typed regs/ports with the scalar default (32), so a
-/// Vec-element base (`mem[addr][hi:lo]`) computes to 0 and the RMW arm
-/// never fires (arch#847). Resolve the element width from the declared
-/// Vec type instead.
-fn slice_lhs_base_width(base: &Expr, ctx: &Ctx) -> u32 {
-    if let ExprKind::Index(inner, _) = &base.kind {
-        if let ExprKind::Ident(name) = &inner.kind {
-            if let Some(TypeExpr::Vec(elem, _)) = ctx.decl_types.and_then(|m| m.get(name.as_str()))
-            {
-                return type_bits_te_with_params(elem, ctx.params);
-            }
-        }
-    }
-    infer_expr_width(base, ctx)
-}
-
 pub(super) fn emit_vinit_mark_for_target(
     target: &Expr,
     ctx: &Ctx,
@@ -179,7 +161,11 @@ pub(super) fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize,
             // arch#847): the shift is emitted symbolically and the mask
             // comes from the structural slice width.
             if let ExprKind::BitSlice(base, hi_e, lo_e) = &a.target.kind {
-                let base_w = slice_lhs_base_width(base, ctx);
+                // A Vec-element base (`mem[addr][hi:lo]`, arch#847) resolves
+                // through infer_expr_width's Index arm, which reads the
+                // declared element type since arch#858 (the former local
+                // decl_types workaround here folded into that shared path).
+                let base_w = infer_expr_width(base, ctx);
                 if base_w > 0 && base_w <= 64 {
                     let resolved_base = match &base.kind {
                         ExprKind::Ident(base_name) => ctx.resolve_name(base_name, is_seq),

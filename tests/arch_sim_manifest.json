@@ -83,6 +83,15 @@
       ]
     },
     {
+      "name": "sim_vec_elem_width_regression",
+      "arch_files": [
+        "tests/sim_vec_elem_width_regression.arch"
+      ],
+      "tb_files": [
+        "tests/sim_vec_elem_width_regression_tb.cpp"
+      ]
+    },
+    {
       "name": "thread__basic_thread",
       "arch_files": [
         "tests/thread/basic_thread.arch"

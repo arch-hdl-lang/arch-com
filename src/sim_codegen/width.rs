@@ -325,6 +325,25 @@ pub(super) fn cpp_uint(bits: u32) -> &'static str {
     }
 }
 
+/// Bit-width of a *scalar* TypeExpr, param-aware. Returns `None` for
+/// aggregate / non-value types (Vec, Named, Clock, Reset) instead of
+/// inventing a default, so callers can fall back explicitly. Unlike
+/// `type_bits_te_with_params` (whose `_ => 32` arm is exactly the trap
+/// arch#858 fell into for Vec), a `None` here can never be mistaken for
+/// a real width.
+pub(super) fn scalar_type_bits_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> Option<u32> {
+    match ty {
+        TypeExpr::UInt(w) | TypeExpr::SInt(w) => Some(eval_width_with_params(w, params)),
+        TypeExpr::Bool | TypeExpr::Bit => Some(1),
+        TypeExpr::FP32 => Some(32),
+        TypeExpr::BF16 => Some(16),
+        TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 | TypeExpr::E8M0 => Some(8),
+        TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Some(6),
+        TypeExpr::FP4E2M1 => Some(4),
+        TypeExpr::Vec(..) | TypeExpr::Named(_) | TypeExpr::Clock(_) | TypeExpr::Reset(..) => None,
+    }
+}
+
 /// Return the bit-width of a TypeExpr, or 0 if indeterminate (e.g. Vec with param size).
 pub(super) fn type_width_of(ty: &TypeExpr) -> u32 {
     match ty {

@@ -608,7 +608,24 @@ pub(super) fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
                     .vec_names
                     .map_or(false, |s| s.contains(base_name.as_str()))
                 {
-                    // Vec element width: total port/reg/field width / element count.
+                    // Preferred: element width from the declared `Vec<T, N>`
+                    // type, param-aware. The total/count fallback below is
+                    // wrong for declared Vecs — `build_widths` registers
+                    // Vec-typed regs/ports at the scalar default 32, not the
+                    // packed total, so `Vec<UInt<32>,4>[i]` computed 8 and
+                    // any count > 32 computed 0 (arch#858).
+                    if let Some(elem_ty) = sim_expr_decl_type(expr, ctx) {
+                        if let Some(w) = scalar_type_bits_with_params(&elem_ty, ctx.params) {
+                            if w > 0 {
+                                return w;
+                            }
+                        }
+                    }
+                    // Fallback: total width / element count. Correct for the
+                    // names whose widths-map entry IS a packed total —
+                    // inst-output Vec wires (registered as elem_bits * count
+                    // in mod.rs) — and for ctxs built without decl_types
+                    // (e.g. pipeline stage bodies).
                     let total = ctx.widths.get(base_name.as_str()).copied().unwrap_or(0);
                     let count = ctx
                         .vec_sizes

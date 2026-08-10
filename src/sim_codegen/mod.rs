@@ -3228,14 +3228,32 @@ impl<'a> SimCodegen<'a> {
                 if l.ty.is_none() {
                     // ty=None: assignment to existing port or wire
                     let name = &l.name.name;
-                    let target = if port_names.contains(name) {
-                        // Output port — public field, plain name
-                        name.clone()
+                    if port_names.contains(name) {
+                        // Output port — public field, plain name. Wide ports
+                        // need the same 65–128-bit conversion stmt_codegen's
+                        // comb arm applies: expression-context RHS is
+                        // _arch_u128, the port is VlWide<ceil(W/32)>, and a
+                        // bare assignment truncates through uint64_t
+                        // (`let y = {a, b};` with y: out UInt<128> dropped
+                        // the high word pair — found while fixing arch#858).
+                        if wide_names.contains(name.as_str()) {
+                            let bits = widths.get(name.as_str()).copied().unwrap_or(0);
+                            if bits > 128 {
+                                // >128 bits: both sides are VlWide<N> — direct assign.
+                                cpp.push_str(&format!("  {name} = {val};\n"));
+                            } else {
+                                cpp.push_str(&format!(
+                                    "  _arch_u128_to_vl({val}, {name}._data, {});\n",
+                                    wide_words(bits)
+                                ));
+                            }
+                        } else {
+                            cpp.push_str(&format!("  {name} = {val};\n"));
+                        }
                     } else {
                         // Wire — private field with _let_ prefix
-                        format!("_let_{name}")
-                    };
-                    cpp.push_str(&format!("  {target} = {val};\n"));
+                        cpp.push_str(&format!("  _let_{name} = {val};\n"));
+                    }
                 } else {
                     cpp.push_str(&format!("  _let_{} = {};\n", l.name.name, val));
                 }
