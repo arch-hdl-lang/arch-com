@@ -209,6 +209,15 @@
       "tb_files": [
         "tests/e203/e203_spi_tb.cpp"
       ]
+    },
+    {
+      "name": "e203__e203_ppi",
+      "arch_files": [
+        "tests/e203/e203_ppi.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_ppi_tb.cpp"
+      ]
     }
   ]
 }
