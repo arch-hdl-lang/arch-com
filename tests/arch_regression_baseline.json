@@ -1187,6 +1187,12 @@
       "files": [
         "tests/e203/e203_icb2apb.arch"
       ]
+    },
+    {
+      "name": "e203__e203_sram_ctrl",
+      "files": [
+        "tests/e203/e203_sram_ctrl.arch"
+      ]
     }
   ]
 }

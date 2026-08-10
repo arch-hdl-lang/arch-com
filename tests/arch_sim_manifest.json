@@ -254,6 +254,15 @@
       "tb_files": [
         "tests/e203/e203_icb2apb_tb.cpp"
       ]
+    },
+    {
+      "name": "e203__e203_sram_ctrl",
+      "arch_files": [
+        "tests/e203/e203_sram_ctrl.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_sram_ctrl_tb.cpp"
+      ]
     }
   ]
 }
