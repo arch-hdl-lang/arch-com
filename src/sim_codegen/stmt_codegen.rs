@@ -46,6 +46,24 @@ pub(super) fn assigned_base_ident(expr: &Expr) -> Option<&str> {
     }
 }
 
+/// Width of a bit-slice-assignment base. `infer_expr_width`'s Index arm
+/// divides the widths-map entry by the element count, but `build_widths`
+/// registers Vec-typed regs/ports with the scalar default (32), so a
+/// Vec-element base (`mem[addr][hi:lo]`) computes to 0 and the RMW arm
+/// never fires (arch#847). Resolve the element width from the declared
+/// Vec type instead.
+fn slice_lhs_base_width(base: &Expr, ctx: &Ctx) -> u32 {
+    if let ExprKind::Index(inner, _) = &base.kind {
+        if let ExprKind::Ident(name) = &inner.kind {
+            if let Some(TypeExpr::Vec(elem, _)) = ctx.decl_types.and_then(|m| m.get(name.as_str()))
+            {
+                return type_bits_te_with_params(elem, ctx.params);
+            }
+        }
+    }
+    infer_expr_width(base, ctx)
+}
+
 pub(super) fn emit_vinit_mark_for_target(
     target: &Expr,
     ctx: &Ctx,
@@ -151,14 +169,17 @@ pub(super) fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize,
                     }
                 }
             }
-            // Bit-slice LHS: name[hi:lo] = val. Lower to mask-and-OR rather
-            // than the read-side `((name >> lo) & mask)` (an rvalue — gcc /
-            // clang reject as "expression is not assignable"). Only the
+            // Bit-slice LHS: name[hi:lo] = val (or name[idx][hi:lo] for a
+            // Vec-element base). Lower to mask-and-OR (read-modify-write)
+            // rather than the read-side `((name >> lo) & mask)` (an rvalue —
+            // gcc/clang reject as "expression is not assignable"). Only the
             // narrow scalar and Vec-element base cases are handled here;
             // wider-than-64 bases keep the generic path and would need their
-            // own arms.
+            // own arms. Slice bounds may be runtime expressions (loop vars,
+            // arch#847): the shift is emitted symbolically and the mask
+            // comes from the structural slice width.
             if let ExprKind::BitSlice(base, hi_e, lo_e) = &a.target.kind {
-                let base_w = infer_expr_width(base, ctx);
+                let base_w = slice_lhs_base_width(base, ctx);
                 if base_w > 0 && base_w <= 64 {
                     let resolved_base = match &base.kind {
                         ExprKind::Ident(base_name) => ctx.resolve_name(base_name, is_seq),
@@ -166,19 +187,46 @@ pub(super) fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize,
                         _ => String::new(),
                     };
                     if !resolved_base.is_empty() {
-                        let hi = eval_width_in(hi_e, ctx);
-                        let lo = eval_width_in(lo_e, ctx);
-                        let width = hi - lo + 1;
-                        let val_mask: u64 = if width >= 64 {
-                            u64::MAX
-                        } else {
-                            (1u64 << width) - 1
+                        let lo_str = match try_eval_const_expr_with_params(lo_e, ctx.params) {
+                            Some(v) => v.to_string(),
+                            None => format!("({})", cpp_expr(lo_e, ctx)),
                         };
+                        // Runtime-bound slices can't be verified by typecheck —
+                        // abort on an out-of-range MSB like every other
+                        // runtime access.
+                        let hi_is_const =
+                            try_eval_const_expr_with_params(hi_e, ctx.params).is_some();
+                        if !hi_is_const {
+                            let hi_cpp = cpp_expr(hi_e, ctx);
+                            let loc = assigned_base_ident(&a.target).unwrap_or("<slice>");
+                            out.push_str(&format!(
+                                "{}_ARCH_BCHK(({hi_cpp}), {base_w}, \"{loc}[hi:lo]\");\n",
+                                ind(indent)
+                            ));
+                        }
                         let rhs = cpp_expr(&a.value, ctx);
-                        out.push_str(&format!(
-                            "{}{resolved_base} = ({resolved_base} & ~(uint64_t(0x{val_mask:X}ULL) << {lo})) | ((uint64_t(({rhs}) & 0x{val_mask:X}ULL)) << {lo});\n",
-                            ind(indent)
-                        ));
+                        match try_slice_const_width(hi_e, lo_e, ctx) {
+                            Some(width) => {
+                                let val_mask: u64 = if width >= 64 {
+                                    u64::MAX
+                                } else {
+                                    (1u64 << width) - 1
+                                };
+                                out.push_str(&format!(
+                                    "{}{resolved_base} = ({resolved_base} & ~(uint64_t(0x{val_mask:X}ULL) << {lo_str})) | ((uint64_t(({rhs}) & 0x{val_mask:X}ULL)) << {lo_str});\n",
+                                    ind(indent)
+                                ));
+                            }
+                            None => {
+                                // Width itself depends on a runtime value:
+                                // compute the mask at runtime.
+                                let hi_cpp = cpp_expr(hi_e, ctx);
+                                out.push_str(&format!(
+                                    "{}{resolved_base} = ({resolved_base} & ~(_arch_slice_mask(({hi_cpp}), {lo_str}) << {lo_str})) | ((uint64_t({rhs}) & _arch_slice_mask(({hi_cpp}), {lo_str})) << {lo_str});\n",
+                                    ind(indent)
+                                ));
+                            }
+                        }
                         if is_seq {
                             emit_vinit_mark_for_target(&a.target, ctx, out, indent);
                         }

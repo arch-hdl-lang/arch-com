@@ -845,6 +845,14 @@ static inline uint64_t _arch_vw_bits(const uint32_t* data, uint32_t hi, uint32_t
     return v & mask;
 }
 
+/// Mask covering bits [hi:lo] of a <=64-bit value. Used by runtime-bound
+/// bit-slices (arch#847) when the slice width itself is not compile-time
+/// derivable.
+static inline uint64_t _arch_slice_mask(uint64_t hi, uint64_t lo) {
+    uint64_t w = hi - lo + 1;
+    return (w >= 64) ? ~0ULL : ((1ULL << w) - 1ULL);
+}
+
 /// Ceiling log2 helper.
 static inline uint32_t _arch_clog2(uint64_t v) {
     if (v <= 1) return 1;

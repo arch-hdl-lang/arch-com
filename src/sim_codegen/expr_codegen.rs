@@ -42,6 +42,126 @@ pub(super) fn cast_to_signed_bits(expr: &str, bits: u32) -> String {
     }
 }
 
+/// Structural equality over the small expression grammar that appears in
+/// bit-slice bounds (idents, integer literals, arithmetic over them).
+/// Conservative: false on anything unrecognized.
+fn slice_bound_expr_eq(a: &Expr, b: &Expr) -> bool {
+    fn lit_u64(l: &LitKind) -> Option<u64> {
+        match l {
+            LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v) => Some(*v),
+            LitKind::Sized(_, v) | LitKind::ParamSized(_, v) => Some(*v),
+            LitKind::Float(_) | LitKind::TypedFloat(_, _) => None,
+        }
+    }
+    match (&a.kind, &b.kind) {
+        (ExprKind::Ident(x), ExprKind::Ident(y)) => x == y,
+        (ExprKind::Literal(x), ExprKind::Literal(y)) => {
+            matches!((lit_u64(x), lit_u64(y)), (Some(u), Some(v)) if u == v)
+        }
+        (ExprKind::Binary(o1, l1, r1), ExprKind::Binary(o2, l2, r2)) => {
+            o1 == o2 && slice_bound_expr_eq(l1, l2) && slice_bound_expr_eq(r1, r2)
+        }
+        (ExprKind::Unary(o1, e1), ExprKind::Unary(o2, e2)) => {
+            o1 == o2 && slice_bound_expr_eq(e1, e2)
+        }
+        (ExprKind::Clog2(x), ExprKind::Clog2(y)) => slice_bound_expr_eq(x, y),
+        _ => false,
+    }
+}
+
+/// Constant width of a `[hi:lo]` slice when derivable (arch#847):
+/// - both bounds const-fold (params included) → `hi - lo + 1`
+/// - `hi` ≡ `lo` structurally → 1 (e.g. `wem[i:i]` in a `for`)
+/// - `hi` = `lo + k` / `k + lo` with `k` const → `k + 1`
+///   (e.g. `din[i*8+7 : i*8]`)
+/// - `lo` = `hi - k` with `k` const → `k + 1`
+/// Returns None when the width genuinely depends on a runtime value
+/// (e.g. `d[i:0]`) — callers fall back to a runtime mask.
+pub(super) fn try_slice_const_width(hi: &Expr, lo: &Expr, ctx: &Ctx) -> Option<u32> {
+    if let (Some(h), Some(l)) = (
+        try_eval_const_expr_with_params(hi, ctx.params),
+        try_eval_const_expr_with_params(lo, ctx.params),
+    ) {
+        return h.checked_sub(l).map(|d| d as u32 + 1);
+    }
+    if slice_bound_expr_eq(hi, lo) {
+        return Some(1);
+    }
+    if let ExprKind::Binary(BinOp::Add, a, b) = &hi.kind {
+        if slice_bound_expr_eq(a, lo) {
+            if let Some(k) = try_eval_const_expr_with_params(b, ctx.params) {
+                return Some(k as u32 + 1);
+            }
+        }
+        if slice_bound_expr_eq(b, lo) {
+            if let Some(k) = try_eval_const_expr_with_params(a, ctx.params) {
+                return Some(k as u32 + 1);
+            }
+        }
+    }
+    if let ExprKind::Binary(BinOp::Sub, a, b) = &lo.kind {
+        if slice_bound_expr_eq(a, hi) {
+            if let Some(k) = try_eval_const_expr_with_params(b, ctx.params) {
+                return Some(k as u32 + 1);
+            }
+        }
+    }
+    None
+}
+
+/// Emit a bit-slice read whose bounds are not compile-time foldable
+/// (e.g. loop-variable slices `wem[i:i]`, `din[i*8+7:i*8]` inside a
+/// `for`). The shift amount is the runtime lo expression; the mask comes
+/// from the structural slice width when derivable, else the runtime
+/// `_arch_slice_mask` helper. arch#847: the old path const-folded these
+/// through `eval_width_in`, whose 32-default emitted a fixed `>> 32`
+/// with a 1-bit mask.
+fn runtime_bit_slice(b: &str, base: &Expr, hi: &Expr, lo: &Expr, ctx: &Ctx) -> String {
+    let hi_cpp = cpp_expr(hi, ctx);
+    let lo_cpp = cpp_expr(lo, ctx);
+    let width = try_slice_const_width(hi, lo, ctx);
+    let base_w = infer_expr_width(base, ctx);
+    // Runtime bounds check on the MSB — typecheck can only verify
+    // compile-time bounds, mirroring the variable part-select policy.
+    let bchk = if base_w > 0 {
+        let loc = base_ident_name(base).unwrap_or("<slice>");
+        format!("_ARCH_BCHK(({hi_cpp}), {base_w}, \"{loc}[hi:lo]\"), ")
+    } else {
+        String::new()
+    };
+    let core = if base_w > 128 {
+        format!("_arch_vw_bits({b}.data(), ({hi_cpp}), ({lo_cpp}))")
+    } else if base_w > 64 {
+        match width {
+            Some(w) => {
+                let mask = if w >= 64 { u64::MAX } else { (1u64 << w) - 1 };
+                format!(
+                    "({})(((_arch_u128)({b}) >> ({lo_cpp})) & (_arch_u128)0x{mask:X}ULL)",
+                    cpp_uint(w)
+                )
+            }
+            None => format!(
+                "(uint64_t)(((_arch_u128)({b}) >> ({lo_cpp})) & (_arch_u128)_arch_slice_mask(({hi_cpp}), ({lo_cpp})))"
+            ),
+        }
+    } else {
+        match width {
+            Some(w) => {
+                let mask = if w >= 64 { u64::MAX } else { (1u64 << w) - 1 };
+                format!("((({b}) >> ({lo_cpp})) & 0x{mask:X}ULL)")
+            }
+            None => {
+                format!("((({b}) >> ({lo_cpp})) & _arch_slice_mask(({hi_cpp}), ({lo_cpp})))")
+            }
+        }
+    };
+    if bchk.is_empty() {
+        core
+    } else {
+        format!("({bchk}{core})")
+    }
+}
+
 /// Bit-range extraction from a narrow value: `(expr >> lo) & mask`.
 pub(super) fn bit_range(expr: &str, hi: u32, lo: u32) -> String {
     let width = hi - lo + 1;
@@ -460,9 +580,14 @@ pub(super) fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
             }
         }
         ExprKind::BitSlice(_, hi, lo) => {
-            let h = eval_width_in(hi, ctx);
-            let l = eval_width_in(lo, ctx);
-            h - l + 1
+            // Structural width first (handles runtime bounds like
+            // `din[i*8+7:i*8]` → 8 — arch#847); legacy 32-default
+            // fallback for shapes it can't classify.
+            try_slice_const_width(hi, lo, ctx).unwrap_or_else(|| {
+                let h = eval_width_in(hi, ctx);
+                let l = eval_width_in(lo, ctx);
+                h - l + 1
+            })
         }
         ExprKind::PartSelect(_, _, width, _) => eval_width_in(width, ctx),
         ExprKind::Cast(_, ty) => match ty.as_ref() {
@@ -1210,8 +1335,14 @@ pub(super) fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
 
         ExprKind::BitSlice(base, hi, lo) => {
             let b = cpp_expr(base, ctx);
-            let h = eval_width_in(hi, ctx);
-            let l = eval_width_in(lo, ctx);
+            let (Some(h), Some(l)) = (
+                try_eval_const_expr_with_params(hi, ctx.params),
+                try_eval_const_expr_with_params(lo, ctx.params),
+            ) else {
+                // Runtime bounds (loop-var slices) — arch#847.
+                return runtime_bit_slice(&b, base, hi, lo, ctx);
+            };
+            let (h, l) = (h as u32, l as u32);
             let base_w = infer_expr_width(base, ctx);
             // Static slice: hi/lo are compile-time. Bounds checked by typecheck.
             if base_w > 128 {
