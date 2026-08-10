@@ -1151,6 +1151,12 @@
       "files": [
         "tests/e203/e203_uart.arch"
       ]
+    },
+    {
+      "name": "e203__e203_spi",
+      "files": [
+        "tests/e203/e203_spi.arch"
+      ]
     }
   ]
 }

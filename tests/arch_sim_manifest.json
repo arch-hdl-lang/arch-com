@@ -200,6 +200,15 @@
       "tb_files": [
         "tests/e203/e203_uart_tb.cpp"
       ]
+    },
+    {
+      "name": "e203__e203_spi",
+      "arch_files": [
+        "tests/e203/e203_spi.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_spi_tb.cpp"
+      ]
     }
   ]
 }
