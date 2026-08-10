@@ -245,6 +245,15 @@
       "tb_files": [
         "tests/e203/e203_icb_arbt_tb.cpp"
       ]
+    },
+    {
+      "name": "e203__e203_icb2apb",
+      "arch_files": [
+        "tests/e203/e203_icb2apb.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_icb2apb_tb.cpp"
+      ]
     }
   ]
 }
