@@ -83,6 +83,24 @@
       ]
     },
     {
+      "name": "sim_wide_runtime_slice_u128",
+      "arch_files": [
+        "tests/sim_wide_runtime_slice_u128.arch"
+      ],
+      "tb_files": [
+        "tests/sim_wide_runtime_slice_u128_tb.cpp"
+      ]
+    },
+    {
+      "name": "sim_wide_runtime_slice_vlwide",
+      "arch_files": [
+        "tests/sim_wide_runtime_slice_vlwide.arch"
+      ],
+      "tb_files": [
+        "tests/sim_wide_runtime_slice_vlwide_tb.cpp"
+      ]
+    },
+    {
       "name": "sim_bus_vec_elem_width",
       "arch_files": [
         "tests/sim_bus_vec_elem_width.arch"
