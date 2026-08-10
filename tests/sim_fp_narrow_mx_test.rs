@@ -42,7 +42,8 @@ fn sim_fp32_to_mx_narrows_roundtrip() {
     let model = td.path().join("Vsim_fp_narrow_mx_regression.cpp");
     let cpp = std::fs::read_to_string(&model).expect("read sim model");
     assert!(
-        cpp.contains("_arch_f32_to_e2m1(") && cpp.contains("_arch_f32_to_e2m3(")
+        cpp.contains("_arch_f32_to_e2m1(")
+            && cpp.contains("_arch_f32_to_e2m3(")
             && cpp.contains("_arch_f32_to_e3m2("),
         "narrows must lower to the _arch_f32_to_* helpers:\n{cpp}"
     );
