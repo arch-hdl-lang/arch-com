@@ -216,6 +216,40 @@ def discover_units(
     return units, skipped
 
 
+def manifest_units(
+    sim_manifest: dict[str, "SimManifestEntry"],
+    discovered: list[Unit],
+    copied_tests: Path,
+    original_tests: Path,
+    patterns: list[str],
+) -> list[Unit]:
+    """Manifest entries whose name matches no discovered unit become their own
+    units. Discovery names depend on directory grouping (a grouped directory is
+    one unit named after the directory; per-file fallback names units after each
+    file), so a registered TB must not silently stop running when a directory's
+    group check starts or stops passing."""
+    existing = {unit.name for unit in discovered}
+    extra: list[Unit] = []
+    for name, entry in sorted(sim_manifest.items()):
+        if name in existing or not entry.arch_files:
+            continue
+        rels = []
+        for path in entry.arch_files:
+            try:
+                rels.append(path.relative_to(copied_tests))
+            except ValueError:
+                rels = []
+                break
+        if not rels:
+            continue  # entry points outside the scanned tests tree
+        if patterns and not any(matches_any(rel, patterns) for rel in rels):
+            continue
+        files = tuple(sorted(entry.arch_files))
+        orig = tuple(original_tests / rel for rel in sorted(rels))
+        extra.append(Unit(name, files, orig))
+    return extra
+
+
 def write_sim_smoke_tb(sim_dir: Path) -> Path | None:
     headers = sorted(
         p for p in sim_dir.glob("V*.h")
@@ -597,6 +631,7 @@ def main() -> int:
         logs_root,
         args.no_group_dirs,
     )
+    units.extend(manifest_units(sim_manifest, units, copied_tests, original_tests, args.pattern))
     if args.limit is not None:
         units = units[: args.limit]
     if args.baseline:
