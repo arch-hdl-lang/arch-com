@@ -212,3 +212,72 @@ Notes:
   inputs for both `f32→e4m3` and `f32→e5m2` — riscv `ce51cf2a0d9d99ab`,
   cuda `e2b1a81a28dd99c3` — and the exhaustive 2^16 binary-op dumps are
   byte-identical under both profiles.
+
+## OCP MX sub-8-bit storage formats (FP4 E2M1, FP6 E2M3 / E3M2) — 2026-08-10
+
+These three are **all-finite**: no infinities, no NaN, every encoding is a
+value. ARCH models them as carriers — arithmetic and `is_nan` are compile
+errors, and a value must be widened to FP32 to compute — so the only operators
+to prove are the two conversions per format (`mx_storage_smt_proofs`, both
+`--fp-compat` profiles, all `unsat` in z3 4.15).
+
+| op(s) | spec | input space |
+|---|---|---|
+| `e2m1_widen` | IEEE `(2,2)` below exp 3 + 2 top-binade constants (4.0, 6.0) | **2^4 — exhaustive** |
+| `e2m1_narrow` | 2-region round: `(_ FloatingPoint 8 2)` normals (≥8.0 saturates), 0.5-grid `fp.roundToIntegral` subnormals | 2^32 |
+| `e2m3_widen` | IEEE `(2,4)` below exp 3 + 8 top-binade constants (4.0 … 7.5) | **2^6 — exhaustive** |
+| `e2m3_narrow` | as above at `(_ FloatingPoint 8 4)` / ≥8.0 / 0.125-grid | 2^32 |
+| `e3m2_widen` | IEEE `(3,3)` below exp 7 + 4 top-binade constants (16, 20, 24, 28) | **2^6 — exhaustive** |
+| `e3m2_narrow` | as above at `(_ FloatingPoint 8 3)` / ≥32.0 / 0.0625-grid | 2^32 |
+
+Notes:
+
+- **The top-binade constants are transcribed from the OCP value tables, not
+  recomputed from `(eb, mb)`.** A spec derived by the same arithmetic the IR
+  uses would agree with a wrong IR; the published numbers give a sign, bias or
+  shift error nothing to hide behind. Same structure as `e4m3_widen`, minus its
+  NaN arm — all-finite formats have no encoding to except.
+- **Both profiles are asserted, and that is not redundant.** `f32_to_e2m1` and
+  `f32_to_fp6` claim the two `--fp-compat` profiles *cannot* differ: with no
+  Inf and no NaN in the encoding space, an overflow has nowhere to go but the
+  max finite. These miters pin that claim rather than assuming it — the same
+  saturating spec is asserted under each profile.
+- **Mutation-tested when written** (z3 4.15.4, 18 mutants). Corrupting a
+  top-binade constant, deleting the top-binade arm entirely, moving the
+  overflow threshold, changing the subnormal grid spacing, or switching either
+  rounding mode to RTZ flips every affected miter to `sat` — 15 killed.
+- The 3 survivors are **equivalent mutants, and predicted**: moving the
+  subnormal/normal split point from `min_normal` to `2 * min_normal` leaves the
+  spec correct, because the fixed subnormal grid has the same spacing as the
+  min-normal binade. Any split inside `[min_normal, 2*min_normal)` is sound —
+  the same window `e4m3_narrow` documents. Pushing it to `4 * min_normal`
+  leaves the window and is killed on all three formats, which is what makes the
+  survival evidence of the window rather than of a gap.
+### E8M0 — the block scale
+
+E8M0 is not a float and not all-finite: no sign, no mantissa, no infinity, and
+**no zero** — `0x00` is the minimum scale 2^-127, `0xFF` is NaN. Nothing about
+it rounds, so it has no round spec. It gets an equivalence miter anyway, because
+it is the format where every bug found while landing it was a float-shaped path
+silently taking the f32 branch.
+
+| op | spec | input space |
+|---|---|---|
+| `e8m0_widen` | anchor `w(0x7F)=1.0` + step `w(e+1)=2*w(e)` + `w(0xFF)` NaN + all scales positive & finite | **2^8 — exhaustive** |
+| `e8m0_narrow` | `w(rr) <= |x| < 2*w(rr)` (floor power of two) + MX clamps | 2^32 |
+
+- **Characterized, not transcribed.** The widen spec never mentions an exponent
+  field — it states the defining multiplicative property, so a layout error has
+  nothing to agree with. Anchor plus step determines all 255 scales by induction
+  in both directions. A 255-entry constant table would have been the obvious
+  alternative and a worse one: transcription at that length invites exactly the
+  errors the spec exists to catch.
+- **The step pins the no-zero subtlety for free.** `w(0x01) = 2 * w(0x00)` is
+  only satisfiable if `w(0x00)` really is 2^-127 — an f32 *subnormal* — rather
+  than the zero every other format would put there. Confirmed by three direct
+  queries: `w(0x00)` equals `#x00400000`, is not zero, and is subnormal.
+- **9 mutants, 9 killed**: moving the anchor, the step stride, the doubling
+  factor, the NaN code, or the sign of the scales; and on the narrow, either
+  clamp or either side of the floor bound.
+
+- The renderer miter gains 8 rows (widen + narrow for all four MX formats).
