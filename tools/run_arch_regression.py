@@ -79,10 +79,35 @@ class SimManifestEntry:
     arch_files: tuple[Path, ...]
     tb_files: tuple[Path, ...]
     args: tuple[str, ...] = ()
+    # Extra environment for this entry's `arch sim` step only, merged over the
+    # runner's own environment. Used to hold back the C++ optimizer on very
+    # large hierarchies: `arch sim` defaults to ARCH_OPT="-O2 -flto", and on a
+    # design the size of e203_soc_top (35 generated modules) link-time
+    # optimization costs ~5 minutes of compile for a functional testbench that
+    # runs in milliseconds. Setting ARCH_OPT=-O0 there takes the step from
+    # ~314s to ~6s.
+    env: tuple[tuple[str, str], ...] = ()
 
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def _as_text(data: "str | bytes | None") -> str:
+    """Normalize captured output to str.
+
+    subprocess.TimeoutExpired carries the partial output as *bytes* even when
+    the call was made with text=True (CPython does not decode it on the timeout
+    path), so the timeout branch below must not assume str. Passing bytes to
+    Path.write_text raises TypeError, which the per-unit guard in main() then
+    reports as an opaque "error at runner" with no indication that the step
+    actually timed out.
+    """
+    if data is None:
+        return ""
+    if isinstance(data, bytes):
+        return data.decode("utf-8", errors="replace")
+    return data
 
 
 def run_cmd(
@@ -91,8 +116,13 @@ def run_cmd(
     timeout: float | None,
     log_dir: Path,
     step_name: str,
+    env: dict[str, str] | None = None,
 ) -> StepResult:
     start = time.monotonic()
+    run_env = None
+    if env:
+        run_env = dict(os.environ)
+        run_env.update(env)
     try:
         proc = subprocess.run(
             command,
@@ -101,14 +131,15 @@ def run_cmd(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout,
+            env=run_env,
         )
         status = "pass" if proc.returncode == 0 else "fail"
-        stdout = proc.stdout
-        stderr = proc.stderr
+        stdout = _as_text(proc.stdout)
+        stderr = _as_text(proc.stderr)
     except subprocess.TimeoutExpired as exc:
         status = "timeout"
-        stdout = exc.stdout or ""
-        stderr = exc.stderr or ""
+        stdout = _as_text(exc.stdout)
+        stderr = _as_text(exc.stderr)
     seconds = time.monotonic() - start
 
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -450,7 +481,8 @@ def load_sim_manifest(path: Path | None, root: Path, scratch_root: Path) -> dict
         arch_files = tuple(resolve_scratch_path(root, scratch_root, str(p)) for p in item.get("arch_files", []))
         tb_files = tuple(resolve_scratch_path(root, scratch_root, str(p)) for p in item.get("tb_files", []))
         args = tuple(str(arg) for arg in item.get("args", []))
-        manifest[name] = SimManifestEntry(name, arch_files, tb_files, args)
+        env = tuple((str(k), str(v)) for k, v in sorted(item.get("env", {}).items()))
+        manifest[name] = SimManifestEntry(name, arch_files, tb_files, args, env)
     return manifest
 
 
@@ -547,7 +579,8 @@ def run_unit(
                 ]
             else:
                 sim_cmd = [str(arch_bin), "sim", *files, "--outdir", str(sim_dir)]
-            sim = run_cmd(sim_cmd, root, timeout, log_dir, "arch_sim")
+            sim_env = dict(manifest_entry.env) if manifest_entry is not None else None
+            sim = run_cmd(sim_cmd, root, timeout, log_dir, "arch_sim", sim_env)
             steps.append(sim)
             if sim.status != "pass":
                 return UnitResult(unit.name, [str(p) for p in unit.original_files], "fail", time.monotonic() - start, steps)
