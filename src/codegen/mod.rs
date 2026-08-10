@@ -267,6 +267,19 @@ pub struct Codegen<'a> {
     /// `&mut self`, so this needs no unsafe code (contrast `ident_subst`'s
     /// unsafe interior mutation in `emit_vec_method`).
     index_hoist_temps: std::cell::RefCell<Vec<HoistTemp>>,
+    /// Byte offset in `out` just past the innermost runtime `for`-loop
+    /// body's `begin` line, plus the indent to declare at. `None` outside a
+    /// loop body.
+    ///
+    /// A hoist temp whose RHS reads the loop iterator (arch#861) can be
+    /// declared neither at module scope (the iterator is a loop-local
+    /// `int`, invisible there — and its `$bits(...)` width expression reads
+    /// the iterator too) nor immediately before the reading statement (a
+    /// declaration may not follow a statement inside `begin`/`end`; that is
+    /// the arch#846 hard error). It goes at the *top of the loop body*,
+    /// which both Icarus 12.0 and Verilator 5.048 accept and where the
+    /// iterator is in scope.
+    loop_body_anchor: Option<(usize, usize)>,
     /// Monotonic counter for `index_hoist_temps` temp names
     /// (`arch_idx_base_<n>`). Never reset per-module — names only need
     /// to be unique within the emitted file, and a file-wide counter is
@@ -313,6 +326,14 @@ struct HoistTemp {
     name: String,
     /// Emitted SV for the base expression the temp stands in for.
     rhs: String,
+    /// The RHS references a live runtime `for`-loop iterator, so the value
+    /// must be computed *inside* the loop body where that iterator is in
+    /// scope — only the declaration may move to module scope, and the
+    /// assignment has to be a blocking one (arch#861). Same split
+    /// `HoistScope::Function` applies for function arguments, but decided
+    /// per-temp rather than per-scope: one `always_*` block can mix
+    /// loop-var temps with ordinary ones.
+    in_loop: bool,
 }
 
 impl HoistTemp {
@@ -409,6 +430,7 @@ impl<'a> Codegen<'a> {
             shared_call_sites: std::collections::HashMap::new(),
             multicycle_regs: Vec::new(),
             index_hoist_temps: std::cell::RefCell::new(Vec::new()),
+            loop_body_anchor: None,
             index_hoist_counter: std::cell::Cell::new(0),
             hoist_scope: HoistScope::Module,
             runtime_for_loop_vars: std::collections::HashSet::new(),
@@ -709,9 +731,32 @@ impl<'a> Codegen<'a> {
             buf.push_str(s);
             buf.push('\n');
         }
+        // arch#861: a temp reading the loop iterator declares at the top of
+        // the loop body and is assigned in place, whatever the enclosing
+        // scope. Split it out first — one `always_*` block can mix these
+        // with ordinary temps, and the two go to different places. Done
+        // before the `hoist_scope` match because the destination is the
+        // loop body, not the block.
+        let (in_loop, pending): (Vec<&HoistTemp>, Vec<&HoistTemp>) = pending
+            .iter()
+            .partition(|t| t.in_loop && self.loop_body_anchor.is_some());
+        if let Some((at, indent)) = self.loop_body_anchor {
+            if !in_loop.is_empty() {
+                let mut text = String::new();
+                for t in &in_loop {
+                    push_at(&mut text, indent, &t.decl_line());
+                }
+                self.out.insert_str(at, &text);
+                let grew = text.len();
+                self.loop_body_anchor = Some((at + grew, indent));
+                // A splice at the loop-body top sits *after* an enclosing
+                // block's opener, so `Procedural`'s module-scope anchor is
+                // unaffected; the reverse is not true and is fixed up below.
+            }
+        }
         match self.hoist_scope {
             HoistScope::Module => {
-                for t in pending {
+                for t in &pending {
                     let decl = t.decl_line();
                     let asg = t.continuous_assign_line();
                     self.raw_line(&decl);
@@ -725,16 +770,25 @@ impl<'a> Codegen<'a> {
                 // after the first, preserving generation order (an outer
                 // hoist's RHS can reference an inner one).
                 let mut text = String::new();
-                for t in pending {
+                for t in &pending {
                     push_at(&mut text, indent, &t.decl_line());
                     push_at(&mut text, indent, &t.continuous_assign_line());
                 }
                 self.out.insert_str(at, &text);
+                let grew = text.len();
                 self.hoist_scope = HoistScope::Procedural {
-                    at: at + text.len(),
+                    at: at + grew,
                     indent,
                     depth,
                 };
+                // This splice landed *before* the loop-body anchor, so
+                // shift it by what was inserted or the next in-loop
+                // declaration lands mid-statement.
+                if let Some((loop_at, loop_indent)) = self.loop_body_anchor {
+                    if loop_at >= at {
+                        self.loop_body_anchor = Some((loop_at + grew, loop_indent));
+                    }
+                }
             }
             HoistScope::Function { at, indent } => {
                 // Only the declaration moves (to the top of the function
@@ -743,19 +797,34 @@ impl<'a> Codegen<'a> {
                 // continuous `assign` to an automatic-lifetime variable is
                 // illegal.
                 let mut text = String::new();
-                for t in pending {
+                for t in &pending {
                     push_at(&mut text, indent, &t.decl_line());
                 }
                 self.out.insert_str(at, &text);
+                let grew = text.len();
                 self.hoist_scope = HoistScope::Function {
-                    at: at + text.len(),
+                    at: at + grew,
                     indent,
                 };
-                for t in pending {
+                if let Some((loop_at, loop_indent)) = self.loop_body_anchor {
+                    if loop_at >= at {
+                        self.loop_body_anchor = Some((loop_at + grew, loop_indent));
+                    }
+                }
+                for t in &pending {
                     let asg = t.blocking_assign_line();
                     self.raw_line(&asg);
                 }
             }
+        }
+        // arch#861 in-loop temps: declaration was spliced to the loop-body
+        // top above; the value is computed here, inline, where the iterator
+        // is in scope. Emitted after the scope match so the assignment
+        // follows any temp this same drain moved to module scope (an
+        // in-loop RHS may read one).
+        for t in &in_loop {
+            let asg = t.blocking_assign_line();
+            self.raw_line(&asg);
         }
     }
 
@@ -1925,12 +1994,16 @@ impl<'a> Codegen<'a> {
                 ));
                 self.indent += 1;
                 // `var` is a real SV loop-local `int`, not visible at module
-                // scope — the Index-hoist temp (arch#650) can't reference it,
-                // so record it as active for the body's duration.
+                // scope — a hoist temp reading it must declare inside this
+                // body (arch#861), so record both the iterator name and the
+                // body's top-of-block offset for the body's duration.
                 let newly_inserted = self.runtime_for_loop_vars.insert(var.clone());
+                let prev_anchor = self.loop_body_anchor;
+                self.loop_body_anchor = Some((self.out.len(), self.indent));
                 for s in &f.body {
                     emit_body_stmt(self, s);
                 }
+                self.loop_body_anchor = prev_anchor;
                 if newly_inserted {
                     self.runtime_for_loop_vars.remove(var);
                 }
@@ -1947,9 +2020,12 @@ impl<'a> Codegen<'a> {
                     ));
                     self.indent += 1;
                     let newly_inserted = self.runtime_for_loop_vars.insert(var.clone());
+                    let prev_anchor = self.loop_body_anchor;
+                    self.loop_body_anchor = Some((self.out.len(), self.indent));
                     for s in &f.body {
                         emit_body_stmt(self, s);
                     }
+                    self.loop_body_anchor = prev_anchor;
                     if newly_inserted {
                         self.runtime_for_loop_vars.remove(var);
                     }
@@ -6708,9 +6784,28 @@ impl<'a> Codegen<'a> {
     /// which is also dependency order: a nested hoist is created while the
     /// outer hoist's RHS is being emitted, so it lands ahead of it.
     fn push_hoist_temp(&self, width: String, name: String, rhs: String) {
-        self.index_hoist_temps
-            .borrow_mut()
-            .push(HoistTemp { width, name, rhs });
+        self.push_hoist_temp_in_loop(width, name, rhs, false);
+    }
+
+    /// `push_hoist_temp` for a temp whose RHS references a live runtime
+    /// `for`-loop iterator — see `HoistTemp::in_loop` (arch#861).
+    fn push_hoist_temp_in_loop(&self, width: String, name: String, rhs: String, in_loop: bool) {
+        self.index_hoist_temps.borrow_mut().push(HoistTemp {
+            width,
+            name,
+            rhs,
+            in_loop,
+        });
+    }
+
+    /// Does `expr` reference a `for`-loop iterator whose SV loop body is
+    /// currently being emitted? Such a base cannot be bound by a
+    /// module-scope continuous `assign` (the iterator does not exist
+    /// there), so its temp is flagged `in_loop` and the assignment stays
+    /// inside the loop (arch#861).
+    fn base_references_live_loop_var(&self, base: &Expr) -> bool {
+        !self.runtime_for_loop_vars.is_empty()
+            && Self::expr_references_any(base, &self.runtime_for_loop_vars)
     }
 
     /// Portability hoist for a non-atomic `BitSlice`/`PartSelect` base
@@ -6795,15 +6890,11 @@ impl<'a> Codegen<'a> {
         ) {
             return None;
         }
-        if !self.runtime_for_loop_vars.is_empty()
-            && Self::expr_references_any(base, &self.runtime_for_loop_vars)
-        {
-            return None;
-        }
+        let in_loop = self.base_references_live_loop_var(base);
         let tmp = format!("arch_idx_base_{}", self.next_index_hoist_id());
         let w = Self::paren_width(&self.infer_sv_width_str_in(base, emit, signal_width));
         let rhs = emit(base);
-        self.push_hoist_temp(w, tmp.clone(), rhs);
+        self.push_hoist_temp_in_loop(w, tmp.clone(), rhs, in_loop);
         Some(tmp)
     }
 
@@ -7018,14 +7109,10 @@ impl<'a> Codegen<'a> {
             // shape) can't take a part-select — hoist it to a named
             // module-scope temp, the same mechanism arch#650/#807 use.
             _ => {
-                if !self.runtime_for_loop_vars.is_empty()
-                    && Self::expr_references_any(unwrapped, &self.runtime_for_loop_vars)
-                {
-                    return None;
-                }
+                let in_loop = self.base_references_live_loop_var(unwrapped);
                 let tmp = format!("arch_idx_base_{}", self.next_index_hoist_id());
                 let rhs = self.emit_expr_str(unwrapped);
-                self.push_hoist_temp(w.to_string(), tmp.clone(), rhs);
+                self.push_hoist_temp_in_loop(w.to_string(), tmp.clone(), rhs, in_loop);
                 tmp
             }
         };
@@ -7449,18 +7536,25 @@ impl<'a> Codegen<'a> {
                 // the same "bind to a let" fix the spec recommends at the
                 // source level for BitSlice/PartSelect.
                 //
-                // Skipped (falls through to the old bare emission) when the
-                // base references a live runtime `for`-loop variable: the
-                // hoisted temp is declared at module scope, which can't see a
-                // loop-local `int` (and Icarus doesn't support declarations
-                // inside `always_*` blocks either — see `emit_for_loop_sv`).
-                if !self.runtime_for_loop_vars.is_empty()
-                    && Self::expr_references_any(unwrapped, &self.runtime_for_loop_vars)
-                {
-                    let b = self.emit_expr_str(unwrapped);
-                    let i = self.emit_expr_str(idx);
-                    return format!("{b}[{i}]");
-                }
+                // This hoist is unconditional. It used to be skipped when
+                // the base referenced a live runtime `for`-loop variable,
+                // on the grounds that a module-scope temp can't see a
+                // loop-local `int` — but "skipped" meant falling back to
+                // exactly the bare text concatenation described above, so
+                // the loop-var case kept emitting the precedence
+                // miscompile this arm exists to prevent: `(a + v[i])[3]`
+                // became `a + v[i][3]`, which Verilator compiles silently
+                // and evaluates as `a + (v[i][3])` (arch#861).
+                //
+                // The premise was also only half true. The *declaration*
+                // must indeed leave the loop, but the *assignment* must
+                // stay in it — so the temp is flagged `in_loop` and
+                // `place_hoist_temps` splits it: declaration spliced to
+                // module scope, value computed inside the loop body as a
+                // blocking assignment, where the iterator is in scope.
+                // Same split `HoistScope::Function` already uses for a
+                // base referencing function arguments (arch#846).
+                let in_loop = self.base_references_live_loop_var(unwrapped);
                 // Deliberately NOT underscore-prefixed (unlike most other
                 // compiler-synthesized names in this file, e.g.
                 // `__shared_*_out`, `_auto_bound_*`): Icarus Verilog 12.0
@@ -7477,7 +7571,7 @@ impl<'a> Codegen<'a> {
                 let tmp = format!("arch_idx_base_{}", self.next_index_hoist_id());
                 let w = Self::paren_width(&self.infer_sv_width_str(unwrapped));
                 let rhs = self.emit_expr_str(unwrapped);
-                self.push_hoist_temp(w, tmp.clone(), rhs);
+                self.push_hoist_temp_in_loop(w, tmp.clone(), rhs, in_loop);
                 let i = self.emit_expr_str(idx);
                 format!("{tmp}[{i}]")
             }

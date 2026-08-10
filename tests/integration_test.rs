@@ -35503,3 +35503,217 @@ fn test_pipe_fn_call_behavioral_equivalence_verilator_and_iverilog() {
         );
     }
 }
+
+// ---------------------------------------------------------------------
+// arch#861 — a non-atomic base referencing a live runtime `for`-loop
+// iterator used to skip the hoist entirely and fall back to concatenating
+// base and `[idx]` as raw text, dropping the parens. `(a + v[i])[3]`
+// became `a + v[i][3]`, which Verilator compiles *silently* and evaluates
+// as `a + (v[i][3])` — a wrong-values miscompile, not a portability gap.
+// The fix declares such a temp at the top of the loop body (where the
+// iterator is in scope, and where a declaration is still legal) and
+// assigns it there.
+// ---------------------------------------------------------------------
+
+/// Emitted-shape check (no simulator required, so it runs on the PR gate).
+/// The bare `a + v[i][3]` shape must be gone, the temp must be declared
+/// *inside* the loop body rather than at module scope (module scope cannot
+/// see the iterator — neither the RHS nor the `$bits(...)` width could
+/// resolve there), and the assignment must be a blocking one.
+#[test]
+fn test_loop_var_index_base_hoists_into_loop_body() {
+    let sv = compile_to_sv(
+        r#"
+module LoopVarHoist861
+  port a: in UInt<8>;
+  port v: in Vec<UInt<8>, 4>;
+  port y: out UInt<4>;
+  wire w: Vec<Bool, 4>;
+  comb
+    for i in 0..3
+      w[i] = (a + v[i])[3];
+    end for
+    y = w;
+  end comb
+end module LoopVarHoist861
+"#,
+    );
+    assert!(
+        !sv.contains("a + v[i][3]"),
+        "arch#861 regression: parens dropped, emitted the precedence miscompile:\n{sv}"
+    );
+    assert!(
+        sv.contains("arch_idx_base_0 = a + v[i];"),
+        "expected a blocking assignment inside the loop body, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("w[i] = arch_idx_base_0[3];"),
+        "expected the select to go through the hoist temp, got:\n{sv}"
+    );
+    // The declaration must sit between the loop's `begin` and the first
+    // statement of the body — not at module scope, and not after a
+    // statement (which is the arch#846 hard syntax error).
+    let for_open = sv
+        .find("for (int i = 0; i <= 3; i++) begin")
+        .expect("loop opener");
+    let decl = sv
+        .find("logic [($bits(a + v[i]))-1:0] arch_idx_base_0;")
+        .unwrap_or_else(|| panic!("hoist temp declaration missing:\n{sv}"));
+    let first_stmt = sv.find("arch_idx_base_0 = a + v[i];").expect("assignment");
+    assert!(
+        decl > for_open && decl < first_stmt,
+        "declaration must be at the top of the loop body (after `begin`, before the \
+         first statement), got decl={decl} for_open={for_open} first_stmt={first_stmt}:\n{sv}"
+    );
+}
+
+/// The same hoist must fire for `BitSlice`/`PartSelect` bases (handled by
+/// `hoist_slice_base`, not the `Index` arm) when they reference the
+/// iterator.
+#[test]
+fn test_loop_var_slice_bases_hoist_into_loop_body() {
+    let sv = compile_to_sv(
+        r#"
+module LoopVarSlice861
+  port a: in UInt<8>;
+  port v: in Vec<UInt<8>, 4>;
+  port yb: out Vec<UInt<4>, 4>;
+  port yp: out Vec<UInt<4>, 4>;
+  port ym: out Vec<UInt<4>, 4>;
+  comb
+    for i in 0..3
+      yb[i] = {a, v[i]}[5:2];
+      yp[i] = {a, v[i]}[2 +: 4];
+      ym[i] = v[i].trunc<4>()[3:0];
+    end for
+  end comb
+end module LoopVarSlice861
+"#,
+    );
+    for expected in [
+        "arch_idx_base_0 = {a, v[i]};",
+        "yb[i] = arch_idx_base_0[5:2];",
+        "arch_idx_base_1 = {a, v[i]};",
+        "yp[i] = arch_idx_base_1[2 +: 4];",
+        "arch_idx_base_2 = 4'(v[i]);",
+        "ym[i] = arch_idx_base_2[3:0];",
+    ] {
+        assert!(
+            sv.contains(expected),
+            "expected `{expected}` in emitted SV, got:\n{sv}"
+        );
+    }
+    // No bare base survived next to a select.
+    assert!(
+        !sv.contains("{a, v[i]}[5:2]") && !sv.contains("4'(v[i])[3:0]"),
+        "a slice base was emitted bare:\n{sv}"
+    );
+}
+
+/// Dual-simulator behavioral check (arch#861). Compiling is not enough
+/// here: the pre-fix emission *compiled clean on Verilator* and returned
+/// the wrong value, so this asserts values, with vectors chosen to
+/// separate the correct result from the miscompiled one. Skips gracefully
+/// if neither simulator is installed.
+#[test]
+fn test_loop_var_slice_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#861 loop-var slice-base dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("LoopVarSliceHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/LoopVarSliceHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build LoopVarSliceHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("loop_var_slice.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_loop_var_slice_hoist.sv")
+            .output()
+            .expect("iverilog compile LoopVarSliceHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#861 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog LoopVarSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm loop-var hoist values\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_loop_var_slice");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("LoopVarSliceHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_loop_var_slice_hoist_verilator.cpp")
+            .output()
+            .expect("verilate LoopVarSliceHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VLoopVarSliceHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator LoopVarSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm loop-var hoist values — the pre-fix emission \
+             compiled clean here and returned the wrong value\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
