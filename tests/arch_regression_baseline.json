@@ -1139,6 +1139,12 @@
       "files": [
         "tests/verilog_eval/Prob153_gshare.arch"
       ]
+    },
+    {
+      "name": "e203__e203_gpio",
+      "files": [
+        "tests/e203/e203_gpio.arch"
+      ]
     }
   ]
 }

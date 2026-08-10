@@ -182,6 +182,15 @@
       "tb_files": [
         "tests/axi_dma_tlm/tb_tlm_one_to_many_resp.cpp"
       ]
+    },
+    {
+      "name": "e203__e203_gpio",
+      "arch_files": [
+        "tests/e203/e203_gpio.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_gpio_tb.cpp"
+      ]
     }
   ]
 }
