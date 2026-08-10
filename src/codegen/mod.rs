@@ -254,30 +254,102 @@ pub struct Codegen<'a> {
     ///   parenthesized, and the `MethodCall` size-cast shape
     ///   (`8'(x)[hi:lo]`) rejected by Verilator too.
     /// Drained by `line()` so the hoisted temp's declaration+assignment
-    /// land immediately before the statement that reads it, in module
-    /// scope. `RefCell` because both call sites live inside `&self`
-    /// expression emission; the actual `self.out` mutation only ever
-    /// happens later from `line()`'s `&mut self`, so this needs no unsafe
-    /// code (contrast `ident_subst`'s unsafe interior mutation in
-    /// `emit_vec_method`).
-    index_hoist_lines: std::cell::RefCell<Vec<String>>,
-    /// Monotonic counter for `index_hoist_lines` temp names
+    /// land in a *legal* position for the scope currently being emitted —
+    /// see `hoist_scope` for the three cases. `RefCell` because both call
+    /// sites live inside `&self` expression emission; the actual
+    /// `self.out` mutation only ever happens later from `line()`'s
+    /// `&mut self`, so this needs no unsafe code (contrast `ident_subst`'s
+    /// unsafe interior mutation in `emit_vec_method`).
+    index_hoist_temps: std::cell::RefCell<Vec<HoistTemp>>,
+    /// Monotonic counter for `index_hoist_temps` temp names
     /// (`arch_idx_base_<n>`). Never reset per-module — names only need
     /// to be unique within the emitted file, and a file-wide counter is
     /// simplest and avoids any cross-module collision risk.
     index_hoist_counter: std::cell::Cell<u32>,
+    /// Which SV scope `line()` is currently emitting into, so a drained
+    /// `index_hoist_temps` entry can be placed somewhere the language
+    /// actually allows it (arch#846). Maintained by `line()` itself
+    /// (`track_hoist_scope`) plus an explicit push/pop around function
+    /// bodies in `emit_function`.
+    hoist_scope: HoistScope,
     /// Names of `for i in <range> ... end for` loop variables whose SV
     /// `for` loop body is currently being emitted (module.rs / mod.rs
-    /// `emit_for_loop_sv`). A hoisted `Index`-base temp is declared at
-    /// module scope (see `index_hoist_lines` above) — Icarus doesn't
-    /// support `logic` declarations inside `always_*` blocks (see the
-    /// existing comment in `emit_for_loop_sv`'s `ValueList` arm), and a
-    /// loop-local `int` iterator isn't visible at module scope either
-    /// way. So when a hoist candidate's base expression references an
-    /// active loop variable, the hoist is skipped (falls back to prior
-    /// bare-emission behavior) rather than emitting SV that references
-    /// an out-of-scope identifier.
+    /// `emit_for_loop_sv`). A hoisted `Index`-base temp's continuous
+    /// `assign` is emitted at module scope (see `hoist_scope` above),
+    /// which cannot see a loop-local `int` iterator. So when a hoist
+    /// candidate's base expression references an active loop variable,
+    /// the hoist is skipped (falls back to prior bare-emission behavior)
+    /// rather than emitting SV that references an out-of-scope
+    /// identifier. arch#846 did NOT relax this: relocating the `assign`
+    /// out of the enclosing `always_*` block is exactly what makes the
+    /// iterator invisible, so the bail is still required for every
+    /// non-function scope. (A function body is the one scope where the
+    /// assignment stays in place — see `HoistScope::Function` — and the
+    /// bail is harmless there because `emit_function_for` does not
+    /// register its iterator in this set to begin with.)
     runtime_for_loop_vars: std::collections::HashSet<String>,
+}
+
+/// One pending portability hoist temp (see `Codegen::index_hoist_temps`).
+///
+/// Kept as its three parts rather than as pre-rendered SV lines because
+/// the legal rendering differs by scope: module/`generate` and `always_*`
+/// scopes want `logic [W-1:0] n;` + a continuous `assign n = rhs;`, while
+/// a `function automatic` body wants the declaration hoisted to the top of
+/// the body and a *blocking* `n = rhs;` left in place (a continuous assign
+/// to an automatic-lifetime variable is illegal SV — rejected outright by
+/// both Icarus 12.0 and Verilator 5.048).
+#[derive(Debug, Clone)]
+struct HoistTemp {
+    /// Width expression, already paren-normalized (e.g. `8`, `($bits(x))`).
+    width: String,
+    /// Temp identifier (`arch_idx_base_<n>`).
+    name: String,
+    /// Emitted SV for the base expression the temp stands in for.
+    rhs: String,
+}
+
+impl HoistTemp {
+    fn decl_line(&self) -> String {
+        format!("logic [{}-1:0] {};", self.width, self.name)
+    }
+    fn continuous_assign_line(&self) -> String {
+        format!("assign {} = {};", self.name, self.rhs)
+    }
+    fn blocking_assign_line(&self) -> String {
+        format!("{} = {};", self.name, self.rhs)
+    }
+}
+
+/// Where `line()` is currently emitting, for the purposes of placing a
+/// drained `HoistTemp` (arch#846).
+#[derive(Debug, Clone, Copy)]
+enum HoistScope {
+    /// Module body or a `generate` block — both a `logic` declaration and
+    /// a continuous `assign` are legal right where the reading statement
+    /// goes, so the temp is emitted inline immediately before it.
+    Module,
+    /// Inside an `always_ff` / `always_comb` / `always_latch` / `initial` /
+    /// `final` block. Neither a declaration nor a continuous `assign` is
+    /// legal there (a mid-block declaration is a hard syntax error on both
+    /// frontends once a statement precedes it, and `assign` inside a
+    /// procedural block is a *procedural continuous assignment*, which
+    /// Icarus rejects as unsynthesizable). Both lines are spliced into
+    /// `out` at `at` — the byte offset of the block's opening line, i.e.
+    /// module scope — indented to `indent`. `depth` tracks `begin`/`end`
+    /// nesting so the scope pops when the block closes.
+    Procedural {
+        at: usize,
+        indent: usize,
+        depth: i32,
+    },
+    /// Inside a `function automatic ... endfunction` body. Module scope is
+    /// *wrong* here (the base expression may reference function
+    /// arguments/locals, which don't exist outside the body), so only the
+    /// declaration moves — spliced to `at`, the offset just past the
+    /// function header, which is where SV requires body declarations — and
+    /// the assignment stays inline as a blocking assignment.
+    Function { at: usize, indent: usize },
 }
 
 /// One `multicycle <N>` reg discovered during SV emission. Captures
@@ -330,8 +402,9 @@ impl<'a> Codegen<'a> {
             find_first_widths: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             shared_call_sites: std::collections::HashMap::new(),
             multicycle_regs: Vec::new(),
-            index_hoist_lines: std::cell::RefCell::new(Vec::new()),
+            index_hoist_temps: std::cell::RefCell::new(Vec::new()),
             index_hoist_counter: std::cell::Cell::new(0),
+            hoist_scope: HoistScope::Module,
             runtime_for_loop_vars: std::collections::HashSet::new(),
         }
     }
@@ -488,6 +561,9 @@ impl<'a> Codegen<'a> {
     pub fn generate_items(&mut self, items: &[Item]) -> String {
         self.out.clear();
         self.comment_idx = 0;
+        // `HoistScope`'s splice offsets index into `out`; clearing it
+        // invalidates them, and emission always restarts at module scope.
+        self.hoist_scope = HoistScope::Module;
         self.collect_multicycle_regs(items);
         // Pre-collect all functions so they can be emitted inside each module.
         self.pending_functions = items
@@ -579,32 +655,211 @@ impl<'a> Codegen<'a> {
     }
 
     fn line(&mut self, s: &str) {
-        // Drain any Icarus-portability index-hoist temporaries synthesized
-        // while building `s` (see `index_hoist_lines`), so their
-        // declaration + assignment land immediately before the statement
-        // that reads them — same indent, module scope. Empty in the
-        // overwhelming common case (no hoist was needed), so this is a
-        // no-op borrow-and-check for ordinary lines.
-        let pending: Vec<String> = {
-            let mut hoists = self.index_hoist_lines.borrow_mut();
+        // Drain any SV-portability index-hoist temporaries synthesized
+        // while building `s` (see `index_hoist_temps`), placing them
+        // wherever the enclosing SV scope actually permits a declaration
+        // and an assignment (see `HoistScope`). Empty in the overwhelming
+        // common case (no hoist was needed), so this is a no-op
+        // borrow-and-check for ordinary lines.
+        let pending: Vec<HoistTemp> = {
+            let mut hoists = self.index_hoist_temps.borrow_mut();
             if hoists.is_empty() {
                 Vec::new()
             } else {
                 std::mem::take(&mut *hoists)
             }
         };
-        for p in &pending {
-            for _ in 0..self.indent {
-                self.out.push_str("  ");
-            }
-            self.out.push_str(p);
-            self.out.push('\n');
+        if !pending.is_empty() {
+            self.place_hoist_temps(&pending);
         }
+        let line_start = self.out.len();
         for _ in 0..self.indent {
             self.out.push_str("  ");
         }
         self.out.push_str(s);
         self.out.push('\n');
+        self.track_hoist_scope(s, line_start);
+    }
+
+    /// Append one already-rendered line at the current indent, without
+    /// any hoist drain or scope tracking (`line()`'s inner half). Used to
+    /// emit hoist temps themselves — they can never contain a `begin`, an
+    /// `always_*` opener, or a further hoist.
+    fn raw_line(&mut self, s: &str) {
+        for _ in 0..self.indent {
+            self.out.push_str("  ");
+        }
+        self.out.push_str(s);
+        self.out.push('\n');
+    }
+
+    /// Render `pending` hoist temps into the right place for the scope
+    /// `line()` is currently emitting into (arch#846).
+    fn place_hoist_temps(&mut self, pending: &[HoistTemp]) {
+        fn push_at(buf: &mut String, indent: usize, s: &str) {
+            for _ in 0..indent {
+                buf.push_str("  ");
+            }
+            buf.push_str(s);
+            buf.push('\n');
+        }
+        match self.hoist_scope {
+            HoistScope::Module => {
+                for t in pending {
+                    let decl = t.decl_line();
+                    let asg = t.continuous_assign_line();
+                    self.raw_line(&decl);
+                    self.raw_line(&asg);
+                }
+            }
+            HoistScope::Procedural { at, indent, depth } => {
+                // Splice declaration + continuous assign out to module
+                // scope, immediately above the `always_*` opener. `at` is
+                // advanced so a second hoist from the same block lands
+                // after the first, preserving generation order (an outer
+                // hoist's RHS can reference an inner one).
+                let mut text = String::new();
+                for t in pending {
+                    push_at(&mut text, indent, &t.decl_line());
+                    push_at(&mut text, indent, &t.continuous_assign_line());
+                }
+                self.out.insert_str(at, &text);
+                self.hoist_scope = HoistScope::Procedural {
+                    at: at + text.len(),
+                    indent,
+                    depth,
+                };
+            }
+            HoistScope::Function { at, indent } => {
+                // Only the declaration moves (to the top of the function
+                // body, where SV requires declarations); the value must be
+                // computed in place, and as a blocking assignment because a
+                // continuous `assign` to an automatic-lifetime variable is
+                // illegal.
+                let mut text = String::new();
+                for t in pending {
+                    push_at(&mut text, indent, &t.decl_line());
+                }
+                self.out.insert_str(at, &text);
+                self.hoist_scope = HoistScope::Function {
+                    at: at + text.len(),
+                    indent,
+                };
+                for t in pending {
+                    let asg = t.blocking_assign_line();
+                    self.raw_line(&asg);
+                }
+            }
+        }
+    }
+
+    /// Update `hoist_scope` after `line()` emitted `s` starting at byte
+    /// offset `line_start` in `out`.
+    ///
+    /// Only `Module` <-> `Procedural` is tracked here; `Function` is
+    /// entered and left explicitly by `emit_function`, and a function body
+    /// can never contain an `always_*` block, so it is left alone.
+    fn track_hoist_scope(&mut self, s: &str, line_start: usize) {
+        if matches!(self.hoist_scope, HoistScope::Function { .. }) {
+            return;
+        }
+        let code = Self::strip_sv_comments_and_strings(s);
+        let delta = Self::begin_end_delta(&code);
+        match self.hoist_scope {
+            HoistScope::Module => {
+                // A procedural block that opens without a `begin` is a
+                // single-statement `always_* <stmt>;` — nothing follows it
+                // inside the block, and any hoist for that statement was
+                // already drained (at module scope) before this line.
+                if delta > 0 && Self::opens_procedural_block(&code) {
+                    self.hoist_scope = HoistScope::Procedural {
+                        at: line_start,
+                        indent: self.indent,
+                        depth: delta,
+                    };
+                }
+            }
+            HoistScope::Procedural { at, indent, depth } => {
+                let d = depth + delta;
+                self.hoist_scope = if d <= 0 {
+                    HoistScope::Module
+                } else {
+                    HoistScope::Procedural {
+                        at,
+                        indent,
+                        depth: d,
+                    }
+                };
+            }
+            HoistScope::Function { .. } => unreachable!("filtered above"),
+        }
+    }
+
+    /// Blank out `"..."` string literals and `// ...` trailing comments so
+    /// `begin`/`end` counting can't be thrown off by prose inside an
+    /// `$error`/`$fatal` message or a generated comment.
+    fn strip_sv_comments_and_strings(s: &str) -> String {
+        let bytes = s.as_bytes();
+        let mut out = String::with_capacity(s.len());
+        let mut i = 0;
+        let mut in_str = false;
+        while i < bytes.len() {
+            let c = bytes[i] as char;
+            if in_str {
+                if c == '\\' && i + 1 < bytes.len() {
+                    i += 2;
+                    continue;
+                }
+                if c == '"' {
+                    in_str = false;
+                }
+                out.push(' ');
+                i += 1;
+                continue;
+            }
+            if c == '"' {
+                in_str = true;
+                out.push(' ');
+                i += 1;
+                continue;
+            }
+            if c == '/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                break;
+            }
+            out.push(c);
+            i += 1;
+        }
+        out
+    }
+
+    /// `+1` per `begin` keyword, `-1` per `end` keyword, matching whole
+    /// identifiers only — so `endcase`/`endfunction`/`endgenerate`/
+    /// `endmodule` and any identifier merely *containing* "end" are not
+    /// miscounted, and `end else begin` nets out to zero.
+    fn begin_end_delta(code: &str) -> i32 {
+        let mut delta = 0;
+        for tok in code.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$')) {
+            match tok {
+                "begin" => delta += 1,
+                "end" => delta -= 1,
+                _ => {}
+            }
+        }
+        delta
+    }
+
+    /// Does `code` open an SV procedural block? Keyed on the first token,
+    /// which is how every emitter in `src/codegen/` writes these.
+    fn opens_procedural_block(code: &str) -> bool {
+        let first = code
+            .trim_start()
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .next()
+            .unwrap_or("");
+        matches!(
+            first,
+            "always" | "always_ff" | "always_comb" | "always_latch" | "initial" | "final"
+        )
     }
 
     /// Emit one inst-site param override `.NAME(...)`. Handles two cases:
@@ -855,6 +1110,16 @@ impl<'a> Codegen<'a> {
             args_str.join(", ")
         ));
         self.indent += 1;
+        // Hoist temps synthesized inside this body get their declaration
+        // spliced here — just past the header, the only place SV allows a
+        // body declaration — while the assignment stays in place (arch#846).
+        // Module scope would be wrong: the RHS may reference `f`'s
+        // arguments or locals.
+        let saved_scope = self.hoist_scope;
+        self.hoist_scope = HoistScope::Function {
+            at: self.out.len(),
+            indent: self.indent,
+        };
         for item in &f.body {
             match item {
                 FunctionBodyItem::Let(l) => {
@@ -883,6 +1148,7 @@ impl<'a> Codegen<'a> {
                 }
             }
         }
+        self.hoist_scope = saved_scope;
         self.indent -= 1;
         self.line("endfunction");
         self.line("");
@@ -6057,6 +6323,21 @@ impl<'a> Codegen<'a> {
     fn infer_sv_width_str(&self, expr: &Expr) -> String {
         match &expr.kind {
             ExprKind::Ident(name) => {
+                // Inside a `function` body (`fn_local_types` is non-empty
+                // only there), arguments and `let` locals are not in
+                // `module_scopes` — resolve them here first. Falling
+                // through to `$bits(<name>)` is not merely verbose in that
+                // scope, it is *wrong*: Icarus 12.0 computes a bogus width
+                // for `$bits(<function argument>)` used in a declaration,
+                // so a hoist temp sized that way reads back all-X
+                // (arch#846).
+                if let Some(te) = self.fn_local_types.get(name.as_str()) {
+                    match te {
+                        TypeExpr::UInt(w) | TypeExpr::SInt(w) => return self.emit_expr_str(w),
+                        TypeExpr::Bool | TypeExpr::Bit => return "1".to_string(),
+                        _ => {}
+                    }
+                }
                 if let Some(scope) = self.symbols.module_scopes.get(&self.current_construct) {
                     if let Some((sym, _)) = scope.get(name.as_str()) {
                         let te_opt: Option<&TypeExpr> = match sym {
@@ -6352,6 +6633,16 @@ impl<'a> Codegen<'a> {
         id
     }
 
+    /// Queue one hoist temp for the next `line()` to place (see
+    /// `index_hoist_temps` / `HoistScope`). Pushed in generation order,
+    /// which is also dependency order: a nested hoist is created while the
+    /// outer hoist's RHS is being emitted, so it lands ahead of it.
+    fn push_hoist_temp(&self, width: String, name: String, rhs: String) {
+        self.index_hoist_temps
+            .borrow_mut()
+            .push(HoistTemp { width, name, rhs });
+    }
+
     /// Portability hoist for a non-atomic `BitSlice`/`PartSelect` base
     /// (`{a,c}[hi:lo]`, `{N{a}}[start +: w]`, `f(x)[hi:lo]`,
     /// `x.trunc<N>()[hi:lo]`, ...). All of these base kinds are classified
@@ -6413,11 +6704,7 @@ impl<'a> Codegen<'a> {
         let tmp = format!("arch_idx_base_{}", self.next_index_hoist_id());
         let w = Self::paren_width(&self.infer_sv_width_str(base));
         let rhs = self.emit_expr_str(base);
-        {
-            let mut hoists = self.index_hoist_lines.borrow_mut();
-            hoists.push(format!("logic [{w}-1:0] {tmp};"));
-            hoists.push(format!("assign {tmp} = {rhs};"));
-        }
+        self.push_hoist_temp(w, tmp.clone(), rhs);
         Some(tmp)
     }
 
@@ -6639,9 +6926,7 @@ impl<'a> Codegen<'a> {
                 }
                 let tmp = format!("arch_idx_base_{}", self.next_index_hoist_id());
                 let rhs = self.emit_expr_str(unwrapped);
-                let mut hoists = self.index_hoist_lines.borrow_mut();
-                hoists.push(format!("logic [{w}-1:0] {tmp};"));
-                hoists.push(format!("assign {tmp} = {rhs};"));
+                self.push_hoist_temp(w.to_string(), tmp.clone(), rhs);
                 tmp
             }
         };
@@ -7093,11 +7378,7 @@ impl<'a> Codegen<'a> {
                 let tmp = format!("arch_idx_base_{}", self.next_index_hoist_id());
                 let w = Self::paren_width(&self.infer_sv_width_str(unwrapped));
                 let rhs = self.emit_expr_str(unwrapped);
-                {
-                    let mut hoists = self.index_hoist_lines.borrow_mut();
-                    hoists.push(format!("logic [{w}-1:0] {tmp};"));
-                    hoists.push(format!("assign {tmp} = {rhs};"));
-                }
+                self.push_hoist_temp(w, tmp.clone(), rhs);
                 let i = self.emit_expr_str(idx);
                 format!("{tmp}[{i}]")
             }

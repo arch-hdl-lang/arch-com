@@ -34596,3 +34596,291 @@ fn test_call_slice_hoist_behavioral_equivalence_verilator_and_iverilog() {
         );
     }
 }
+
+// ---------------------------------------------------------------------
+// arch#846 — a hoist temp synthesized from *inside* a procedural scope
+// had its `logic` declaration and `assign` drained at whatever scope
+// `line()` happened to be emitting, so they landed inside the enclosing
+// `always_ff`/`always_comb` (a procedural continuous assignment, which
+// Icarus refuses to synthesize — and a hard syntax error on BOTH
+// frontends as soon as a second hoist put the declaration after a
+// statement) or inside a `function automatic` body (a continuous assign
+// to an automatic-lifetime variable, rejected outright by both).
+// ---------------------------------------------------------------------
+
+/// Lines of the `begin`/`end` block opened by the first line whose
+/// trimmed text starts with `opener`, excluding the opener line itself.
+/// Deliberately simple `begin`/`end` word counting — it matches what the
+/// emitter produces (`endcase`/`endfunction` are distinct tokens).
+fn arch846_block_body<'a>(sv: &'a str, opener: &str) -> Vec<&'a str> {
+    let lines: Vec<&str> = sv.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with(opener))
+        .unwrap_or_else(|| panic!("no `{opener}` block in:\n{sv}"));
+    let word_delta = |l: &str| -> i32 {
+        l.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .map(|t| match t {
+                "begin" => 1,
+                "end" => -1,
+                _ => 0,
+            })
+            .sum()
+    };
+    let mut depth = word_delta(lines[start]);
+    assert!(depth > 0, "`{opener}` block did not open a begin:\n{sv}");
+    let mut body = Vec::new();
+    for l in &lines[start + 1..] {
+        depth += word_delta(l);
+        if depth <= 0 {
+            break;
+        }
+        body.push(*l);
+    }
+    body
+}
+
+/// Emitted-shape check (no simulator required, so it runs on the PR gate
+/// where neither Verilator nor iverilog is installed): a hoist temp fed
+/// by an expression inside a `seq` block must be declared and
+/// continuously assigned at module scope, *above* the `always_ff`, never
+/// inside it. Covers all three hoist paths — `Concat` and `MethodCall`
+/// bases go through `hoist_slice_base`, an arithmetic base goes through
+/// the `Index` emitter.
+#[test]
+fn test_seq_hoist_temps_land_at_module_scope() {
+    let cases: [(&str, &str); 3] = [
+        (
+            "module SeqConcatHoist\n  port clk: in Clock<SysDomain>;\n  port rst: in Reset<Sync>;\n  port w: in UInt<16>;\n  port y: out UInt<4>;\n  reg r: UInt<4> reset rst => 0;\n  seq on clk rising\n    r <= {w, w}[5:2];\n  end seq\n  comb\n    y = r;\n  end comb\nend module SeqConcatHoist\n",
+            "assign arch_idx_base_0 = {w, w};",
+        ),
+        (
+            "module SeqTruncHoist\n  port clk: in Clock<SysDomain>;\n  port rst: in Reset<Sync>;\n  port w: in UInt<16>;\n  port y: out UInt<4>;\n  reg r: UInt<4> reset rst => 0;\n  seq on clk rising\n    r <= w.trunc<8>()[5:2];\n  end seq\n  comb\n    y = r;\n  end comb\nend module SeqTruncHoist\n",
+            "assign arch_idx_base_0 = 8'(w);",
+        ),
+        (
+            "module SeqIdxHoist\n  port clk: in Clock<SysDomain>;\n  port rst: in Reset<Sync>;\n  port w: in UInt<16>;\n  port y: out Bit;\n  reg r: Bit reset rst => 0;\n  seq on clk rising\n    r <= (w - 1)[3];\n  end seq\n  comb\n    y = r;\n  end comb\nend module SeqIdxHoist\n",
+            "assign arch_idx_base_0 = w - 1;",
+        ),
+    ];
+    for (source, expected_assign) in cases {
+        let sv = compile_to_sv(source);
+        assert!(
+            sv.contains(expected_assign),
+            "expected hoisted assign `{expected_assign}`, got:\n{sv}"
+        );
+        assert!(
+            sv.contains("arch_idx_base_0;"),
+            "expected a hoist temp declaration, got:\n{sv}"
+        );
+        // The declaration + assign must precede the `always_ff` ...
+        let decl_at = sv.find("arch_idx_base_0;").expect("decl");
+        let assign_at = sv.find(expected_assign).expect("assign");
+        let ff_at = sv.find("always_ff").expect("always_ff");
+        assert!(
+            decl_at < ff_at && assign_at < ff_at,
+            "hoist temp must be declared/assigned above the always_ff (arch#846), got:\n{sv}"
+        );
+        // ... and must not appear anywhere inside it.
+        for l in arch846_block_body(&sv, "always_ff") {
+            assert!(
+                !l.trim_start().starts_with("logic ") && !l.trim_start().starts_with("assign "),
+                "no declaration or continuous assign may sit inside an always_ff \
+                 (arch#846), found `{}` in:\n{sv}",
+                l.trim()
+            );
+        }
+    }
+}
+
+/// Same placement rule for an `always_comb`, with the hoist one
+/// `begin`/`end` deeper than the block opener (inside an `if` arm) — the
+/// splice point is the block's opening line, not the reading statement's.
+#[test]
+fn test_comb_block_hoist_temps_land_at_module_scope() {
+    let source = "module CombIfHoist\n  port a: in UInt<8>;\n  port sel: in Bool;\n  port y: out UInt<4>;\n  wire cw: UInt<4>;\n  comb\n    if sel\n      cw = {a, a}[9:6];\n    else\n      cw = 0;\n    end if\n  end comb\n  comb\n    y = cw;\n  end comb\nend module CombIfHoist\n";
+    let sv = compile_to_sv(source);
+    let assign = "assign arch_idx_base_0 = {a, a};";
+    assert!(
+        sv.contains(assign),
+        "expected hoisted assign `{assign}`, got:\n{sv}"
+    );
+    let assign_at = sv.find(assign).expect("assign");
+    let comb_at = sv.find("always_comb").expect("always_comb");
+    assert!(
+        assign_at < comb_at,
+        "hoist temp must be assigned above the always_comb (arch#846), got:\n{sv}"
+    );
+    for l in arch846_block_body(&sv, "always_comb") {
+        assert!(
+            !l.trim_start().starts_with("logic ") && !l.trim_start().starts_with("assign "),
+            "no declaration or continuous assign may sit inside an always_comb \
+             (arch#846), found `{}` in:\n{sv}",
+            l.trim()
+        );
+    }
+}
+
+/// A `function automatic` body is the one scope where module scope would
+/// be *wrong* (the base may reference the function's own arguments), so
+/// only the declaration moves — to the top of the body, the sole place SV
+/// permits it — and the assignment stays put as a *blocking* assignment.
+/// A continuous `assign` to an automatic-lifetime variable is illegal and
+/// is rejected by both Icarus 12.0 and Verilator 5.048.
+///
+/// The declaration width must also be a concrete number: Icarus computes
+/// a bogus width for `$bits(<function argument>)` in a declaration, which
+/// made the temp read back all-X.
+#[test]
+fn test_function_body_hoist_declares_locally_and_assigns_blocking() {
+    let source = "function PickHi(x: UInt<8>, q: UInt<8>) -> UInt<4>\n  return {x, q}[9:6];\nend function PickHi\n\nmodule FnBodyHoist\n  port a: in UInt<8>;\n  port y: out UInt<4>;\n  let y = PickHi(a, a);\nend module FnBodyHoist\n";
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("logic [16-1:0] arch_idx_base_0;"),
+        "function-body hoist temp needs a concrete (non-`$bits(<arg>)`) width, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("arch_idx_base_0 = {x, q};"),
+        "expected a blocking assignment in the function body, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("assign arch_idx_base_0"),
+        "a continuous assign to an automatic-lifetime variable is illegal SV \
+         (arch#846), got:\n{sv}"
+    );
+    // The declaration must sit between the header and the assignment.
+    let hdr_at = sv.find("function automatic").expect("function header");
+    let decl_at = sv.find("logic [16-1:0] arch_idx_base_0;").expect("decl");
+    let asg_at = sv
+        .find("arch_idx_base_0 = {x, q};")
+        .expect("blocking assign");
+    let endfn_at = sv.find("endfunction").expect("endfunction");
+    assert!(
+        hdr_at < decl_at && decl_at < asg_at && asg_at < endfn_at,
+        "declaration must precede the assignment inside the function body, got:\n{sv}"
+    );
+}
+
+/// Dual-simulator behavioral check (arch#846): relocating the temp must
+/// not change what the design computes — in particular a module-scope
+/// continuous `assign` must still present the right value at the clock
+/// edge for a `seq` context. The fixture puts three hoists in one
+/// `always_ff` (the shape that was a hard syntax error on both frontends,
+/// not merely an Icarus warning), one inside an `always_comb` `if` arm,
+/// and one inside a `function` body. Skips gracefully if neither
+/// simulator is installed.
+#[test]
+fn test_seq_slice_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#846 procedural-scope hoist dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("SeqSliceHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/SeqSliceHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build SeqSliceHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("seq_slice.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_seq_slice_hoist.sv")
+            .output()
+            .expect("iverilog compile SeqSliceHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#846 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        // The reported symptom *is* this diagnostic — the old output still
+        // "compiled" in the single-hoist case, so its absence is the
+        // assertion, not the exit status.
+        let diag = format!(
+            "{}{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        assert!(
+            !diag.contains("procedural assign") && !diag.contains("procedural continuous"),
+            "iverilog must not see a procedural continuous assignment (arch#846):\n{diag}"
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog SeqSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm procedural-scope hoist semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_seq_slice");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("SeqSliceHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_seq_slice_hoist_verilator.cpp")
+            .output()
+            .expect("verilate SeqSliceHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass (arch#846 regression: a declaration \
+             after a statement inside always_ff is a syntax error on Verilator \
+             too)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VSeqSliceHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator SeqSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm procedural-scope hoist semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
