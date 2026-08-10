@@ -263,6 +263,15 @@
       "tb_files": [
         "tests/e203/e203_sram_ctrl_tb.cpp"
       ]
+    },
+    {
+      "name": "e203__e203_fio",
+      "arch_files": [
+        "tests/e203/e203_fio.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_fio_tb.cpp"
+      ]
     }
   ]
 }
