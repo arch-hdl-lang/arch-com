@@ -1218,6 +1218,12 @@
       "files": [
         "tests/e203/e203_itcm.arch"
       ]
+    },
+    {
+      "name": "e203__e203_dtcm",
+      "files": [
+        "tests/e203/e203_dtcm.arch"
+      ]
     }
   ]
 }

@@ -300,6 +300,15 @@
       "tb_files": [
         "tests/e203/e203_itcm_tb.cpp"
       ]
+    },
+    {
+      "name": "e203__e203_dtcm",
+      "arch_files": [
+        "tests/e203/e203_dtcm.arch"
+      ],
+      "tb_files": [
+        "tests/e203/e203_dtcm_tb.cpp"
+      ]
     }
   ]
 }
