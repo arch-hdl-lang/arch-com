@@ -710,6 +710,13 @@ pub(super) fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
         ExprKind::Unary(UnaryOp::RedAnd, _)
         | ExprKind::Unary(UnaryOp::RedOr, _)
         | ExprKind::Unary(UnaryOp::RedXor, _) => 1,
+        // `~` and unary `-` preserve the operand's width. Without these arms
+        // they fell through to the default below, so a nested `~(~(a & b))`
+        // on 1-bit operands reported a wide result and cpp_unary skipped the
+        // 0/1 clamp on the outer `~`, yielding 254/255.
+        ExprKind::Unary(UnaryOp::BitNot, inner) | ExprKind::Unary(UnaryOp::Neg, inner) => {
+            infer_expr_width(inner, ctx)
+        }
         ExprKind::Ternary(_, then_expr, _) => infer_expr_width(then_expr, ctx),
         ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => infer_expr_width(inner, ctx),
         ExprKind::FieldAccess(base, field) => {
@@ -1674,11 +1681,13 @@ pub(super) fn cpp_unary(op: &UnaryOp, operand: &Expr, ctx: &Ctx) -> String {
     match op {
         UnaryOp::Not => format!("(!{o})"),
         UnaryOp::BitNot => {
-            // Use logical ! (clamped to 0/1) only for 1-bit/Bool signals.
-            // For wider types use bitwise ~.
+            // Use logical ! (clamped to 0/1) only for 1-bit/Bool operands.
+            // For wider types use bitwise ~. Compound 1-bit expressions
+            // (e.g. `~(a & b)` on Bools) must clamp too — an unmasked C `~`
+            // on the uint8_t carrier yields 254/255, not 1/0.
             let is_one_bit = match &operand.kind {
                 ExprKind::Ident(name) => ctx.widths.get(name.as_str()).copied().unwrap_or(32) == 1,
-                _ => false,
+                _ => infer_expr_width(operand, ctx) == 1,
             };
             if is_one_bit {
                 format!("(uint8_t)(!({o}))")
