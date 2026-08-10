@@ -198,6 +198,11 @@ impl<'a> Codegen<'a> {
 
         self.indent += 1;
 
+        // Emit any functions defined in the same file as local `function
+        // automatic` declarations (arch#852) — a stage `seq`/`comb`/`let`
+        // may call one, and SV has no free functions.
+        self.emit_pending_functions();
+
         // Collect port names for name resolution
         let port_names: std::collections::HashSet<String> =
             p.ports.iter().map(|pt| pt.name.name.clone()).collect();
@@ -1816,6 +1821,27 @@ impl<'a> Codegen<'a> {
                     )
                 },
             ),
+            // arch#852: without this arm the call fell through to
+            // `emit_expr_str`, which does not know this emitter's stage
+            // prefixes — `Ident8(r)` came out referencing the bare source
+            // name instead of `<stage>_r`, i.e. a signal that does not
+            // exist in the emitted SV. Shows up only once the function
+            // itself is emitted; before that the SV failed on the missing
+            // declaration first. The other sub-expression-bearing kinds
+            // still reaching the `_ =>` fall-through below have the same
+            // bug — tracked by arch#854.
+            ExprKind::FunctionCall(name, args) => {
+                self.emit_function_call_str_in(expr, name, args, &|e: &Expr| {
+                    self.emit_pipeline_stage_expr_str(
+                        e,
+                        current_prefix,
+                        current_stage_idx,
+                        stage_names,
+                        stage_regs,
+                        port_names,
+                    )
+                })
+            }
             ExprKind::Index(base, idx) => {
                 // Icarus portability (arch#650): unwrap a redundant
                 // `signed(...)`/`unsigned(...)`/`as T` wrapper before
@@ -2113,6 +2139,14 @@ impl<'a> Codegen<'a> {
                     self.try_emit_pipeline_reverse_chunked(recv, chunk, emitted, None)
                 },
             ),
+            // arch#852, stage-agnostic mirror: arguments here can be ports
+            // or explicit `Stage.field` reads, and the latter needs this
+            // emitter's `<stage>_<field>` rewrite.
+            ExprKind::FunctionCall(name, args) => {
+                self.emit_function_call_str_in(expr, name, args, &|e: &Expr| {
+                    self.emit_pipeline_expr_str(e, stage_names, stage_regs, port_names)
+                })
+            }
             ExprKind::Index(base, idx) => {
                 // Icarus portability (arch#650) — see the matching comment in
                 // `emit_pipeline_stage_expr_str`.

@@ -123,6 +123,12 @@ impl<'a> Codegen<'a> {
         self.line("");
         self.indent += 1;
 
+        // Emit any functions defined in the same file as local `function
+        // automatic` declarations (arch#852) — a state's `comb`/`seq` body,
+        // a transition guard or an `assert` may call one, and SV has no
+        // free functions.
+        self.emit_pending_functions();
+
         // ── State type ───────────────────────────────────────────────────────
         self.line(&format!(
             "typedef enum logic [{}:0] {{",

@@ -1100,6 +1100,32 @@ impl<'a> Codegen<'a> {
         out
     }
 
+    /// Emit every top-level (`Item::Function`) and `package` function
+    /// collected into `pending_functions` as a local `function automatic`
+    /// declaration inside the construct currently being emitted.
+    ///
+    /// SystemVerilog has no free functions: a `function automatic` must
+    /// live inside a module (or package/`$unit`), so ARCH copies the whole
+    /// set into each emitted module. Every construct that can emit a call
+    /// to a user function must therefore run this at the top of its module
+    /// body — which for a long time only `emit_module` did, so a `pipeline`
+    /// / `fsm` / `fifo` / … that called one emitted SV referencing an
+    /// undeclared function and no frontend would accept it (arch#852).
+    /// Emitting the full set (rather than only the ones this construct
+    /// references) matches `emit_module`'s long-standing behavior; an
+    /// unused `function automatic` is legal, unused SV.
+    ///
+    /// `pending_functions` is taken and restored because `emit_function`
+    /// needs `&mut self` and the same set is re-emitted into every
+    /// following construct in the file.
+    pub(crate) fn emit_pending_functions(&mut self) {
+        let fns = std::mem::take(&mut self.pending_functions);
+        for f in &fns {
+            self.emit_function(f);
+        }
+        self.pending_functions = fns;
+    }
+
     fn emit_function(&mut self, f: &FunctionDecl) {
         self.fn_local_types = Self::collect_fn_local_types(f);
         let sv_name = self.sv_function_name(f);
@@ -7674,105 +7700,125 @@ impl<'a> Codegen<'a> {
                 format!("{s} inside {{{}}}", member_strs.join(", "))
             }
             ExprKind::FunctionCall(name, args) => {
-                // `shared function` rewrite: if this call site was
-                // collected by the pre-pass, return the shared output
-                // wire instead of the inline `FN(args)` form. The
-                // harness `assign __shared_FN_out = FN(...)` emitted at
-                // module scope is the single textual call site that
-                // carries the operand mux.
-                if let Some(out_wire) = self.shared_call_sites.get(&expr.span.start) {
-                    return out_wire.clone();
-                }
-                let arg_strs: Vec<String> = args.iter().map(|a| self.emit_expr_str(a)).collect();
-                // Built-in SVA: past/rose/fell → SV $past/$rose/$fell
-                if name == "past" || name == "rose" || name == "fell" {
-                    return format!("${name}({})", arg_strs.join(", "));
-                }
-                // Float intrinsics → emitted helper functions.
-                if name == "fma" && args.len() == 3 {
-                    self.fp_helpers_used.set(true);
-                    let fmt = self
-                        .expr_float_fmt(&args[0])
-                        .or_else(|| self.expr_float_fmt(&args[1]))
-                        .or_else(|| self.expr_float_fmt(&args[2]))
-                        .unwrap_or("f32");
-                    return format!("arch_fma_{fmt}({})", arg_strs.join(", "));
-                }
-                if name == "is_nan" && args.len() == 1 {
-                    // exponent all-ones and mantissa nonzero.
-                    let a = &arg_strs[0];
-                    // E8M0 is a SCALE type, not a float, so it carries no
-                    // float tag and would otherwise fall through to the f32
-                    // test — reading bits [30:23] of an 8-bit signal, which
-                    // SV zero-fills into a silent constant false. Its NaN is
-                    // the single code 0xFF.
-                    if matches!(self.expr_decl_type(&args[0]), Some(TypeExpr::E8M0)) {
-                        return format!("({a} == 8'hFF)");
-                    }
-                    // The NaN test is DERIVED from the format table rather
-                    // than tabulated per tag. The old hand-written match
-                    // ended in `_ =>` returning the f32 test — at f32's bit
-                    // offsets — so any format it did not name was silently
-                    // probed at the wrong bits. Deriving it means a new
-                    // format is a table row, not a fifth arm here.
-                    let tag = self.expr_float_fmt(&args[0]).unwrap_or("f32");
-                    let d = crate::fp_format::by_tag(tag).unwrap_or_else(|| {
-                        crate::fp_format::by_id(crate::fp_format::FpFormatId::Fp32)
-                    });
-                    return match d.nan_rule {
-                        crate::fp_format::NanRule::IeeeExpAllOnes => {
-                            let (eh, el) = d.exp_field();
-                            let (mh, ml) = d
-                                .mant_field()
-                                .expect("IEEE-shaped format must have a mantissa");
-                            let exp_ones = (1u64 << d.exp_bits) - 1;
-                            format!(
-                                "(({a}[{eh}:{el}] == {}'h{exp_ones:X}) && ({a}[{mh}:{ml}] != {}'b0))",
-                                d.exp_bits, d.mant_bits
-                            )
-                        }
-                        crate::fp_format::NanRule::OcpAllMagnitudeOnes => {
-                            let (gh, gl) = d.magnitude_field();
-                            let mag_bits = d.magnitude_bits();
-                            let mag_ones = (1u64 << mag_bits) - 1;
-                            format!("({a}[{gh}:{gl}] == {mag_bits}'h{mag_ones:X})")
-                        }
-                        // Unreachable: typecheck rejects `is_nan` on a format
-                        // with no NaN encoding (`Ty::is_float_arith`).
-                        crate::fp_format::NanRule::NoNan => unreachable!(
-                            "is_nan on `{}`, which has no NaN encoding — typecheck \
-                             should have rejected this",
-                            d.type_name
-                        ),
-                    };
-                }
-                // Resolve mangled name if this is an overloaded function.
-                let sv_name = if let Some((Symbol::Function(overloads), _)) =
-                    self.symbols.globals.get(name)
-                {
-                    if overloads.len() > 1 {
-                        let idx = self
-                            .overload_map
-                            .get(&expr.span.start)
-                            .copied()
-                            .unwrap_or(0);
-                        let ov = &overloads[idx];
-                        let suffix: String = ov
-                            .arg_types
-                            .iter()
-                            .map(|t| Self::type_mangle_tag(t))
-                            .collect::<Vec<_>>()
-                            .join("_");
-                        format!("{name}_{suffix}")
-                    } else {
-                        name.clone()
-                    }
-                } else {
-                    name.clone()
-                };
-                format!("{sv_name}({})", arg_strs.join(", "))
+                self.emit_function_call_str_in(expr, name, args, &|a| self.emit_expr_str(a))
             }
         }
+    }
+
+    /// Emit a `FunctionCall` — the `shared function` output-wire rewrite,
+    /// the SVA (`past`/`rose`/`fell`) and float (`fma`/`is_nan`) intrinsics,
+    /// and overload name mangling — with each argument rendered by
+    /// `emit_arg`.
+    ///
+    /// Parameterized on the argument emitter so a context with its own
+    /// identifier rewriting reuses all of the above instead of forking it:
+    /// the `pipeline` emitters prefix a stage signal `r` as `<stage>_r`, and
+    /// before arch#852 their fall-through to `emit_expr_str` emitted the
+    /// bare source name, so `Ident8(r)` referenced a signal that does not
+    /// exist in the emitted SV. Mirrors `hoist_slice_base_in`'s `emit`
+    /// parameter (arch#845).
+    fn emit_function_call_str_in(
+        &self,
+        expr: &Expr,
+        name: &str,
+        args: &[Expr],
+        emit_arg: &dyn Fn(&Expr) -> String,
+    ) -> String {
+        // `shared function` rewrite: if this call site was
+        // collected by the pre-pass, return the shared output
+        // wire instead of the inline `FN(args)` form. The
+        // harness `assign __shared_FN_out = FN(...)` emitted at
+        // module scope is the single textual call site that
+        // carries the operand mux.
+        if let Some(out_wire) = self.shared_call_sites.get(&expr.span.start) {
+            return out_wire.clone();
+        }
+        let arg_strs: Vec<String> = args.iter().map(emit_arg).collect();
+        // Built-in SVA: past/rose/fell → SV $past/$rose/$fell
+        if name == "past" || name == "rose" || name == "fell" {
+            return format!("${name}({})", arg_strs.join(", "));
+        }
+        // Float intrinsics → emitted helper functions.
+        if name == "fma" && args.len() == 3 {
+            self.fp_helpers_used.set(true);
+            let fmt = self
+                .expr_float_fmt(&args[0])
+                .or_else(|| self.expr_float_fmt(&args[1]))
+                .or_else(|| self.expr_float_fmt(&args[2]))
+                .unwrap_or("f32");
+            return format!("arch_fma_{fmt}({})", arg_strs.join(", "));
+        }
+        if name == "is_nan" && args.len() == 1 {
+            // exponent all-ones and mantissa nonzero.
+            let a = &arg_strs[0];
+            // E8M0 is a SCALE type, not a float, so it carries no
+            // float tag and would otherwise fall through to the f32
+            // test — reading bits [30:23] of an 8-bit signal, which
+            // SV zero-fills into a silent constant false. Its NaN is
+            // the single code 0xFF.
+            if matches!(self.expr_decl_type(&args[0]), Some(TypeExpr::E8M0)) {
+                return format!("({a} == 8'hFF)");
+            }
+            // The NaN test is DERIVED from the format table rather
+            // than tabulated per tag. The old hand-written match
+            // ended in `_ =>` returning the f32 test — at f32's bit
+            // offsets — so any format it did not name was silently
+            // probed at the wrong bits. Deriving it means a new
+            // format is a table row, not a fifth arm here.
+            let tag = self.expr_float_fmt(&args[0]).unwrap_or("f32");
+            let d = crate::fp_format::by_tag(tag)
+                .unwrap_or_else(|| crate::fp_format::by_id(crate::fp_format::FpFormatId::Fp32));
+            return match d.nan_rule {
+                crate::fp_format::NanRule::IeeeExpAllOnes => {
+                    let (eh, el) = d.exp_field();
+                    let (mh, ml) = d
+                        .mant_field()
+                        .expect("IEEE-shaped format must have a mantissa");
+                    let exp_ones = (1u64 << d.exp_bits) - 1;
+                    format!(
+                        "(({a}[{eh}:{el}] == {}'h{exp_ones:X}) && ({a}[{mh}:{ml}] != {}'b0))",
+                        d.exp_bits, d.mant_bits
+                    )
+                }
+                crate::fp_format::NanRule::OcpAllMagnitudeOnes => {
+                    let (gh, gl) = d.magnitude_field();
+                    let mag_bits = d.magnitude_bits();
+                    let mag_ones = (1u64 << mag_bits) - 1;
+                    format!("({a}[{gh}:{gl}] == {mag_bits}'h{mag_ones:X})")
+                }
+                // Unreachable: typecheck rejects `is_nan` on a format
+                // with no NaN encoding (`Ty::is_float_arith`).
+                crate::fp_format::NanRule::NoNan => unreachable!(
+                    "is_nan on `{}`, which has no NaN encoding — typecheck \
+                         should have rejected this",
+                    d.type_name
+                ),
+            };
+        }
+        // Resolve mangled name if this is an overloaded function.
+        let sv_name = if let Some((Symbol::Function(overloads), _)) = self.symbols.globals.get(name)
+        {
+            if overloads.len() > 1 {
+                let idx = self
+                    .overload_map
+                    .get(&expr.span.start)
+                    .copied()
+                    .unwrap_or(0);
+                let ov = &overloads[idx];
+                let suffix: String = ov
+                    .arg_types
+                    .iter()
+                    .map(|t| Self::type_mangle_tag(t))
+                    .collect::<Vec<_>>()
+                    .join("_");
+                format!("{name}_{suffix}")
+            } else {
+                name.to_string()
+            }
+        } else {
+            name.to_string()
+        };
+        format!("{sv_name}({})", arg_strs.join(", "))
     }
 
     /// Convert a width expression to a Verilog range string `[N:0]`.
