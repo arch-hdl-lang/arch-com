@@ -754,12 +754,16 @@ struct VlWide {
     uint32_t _data[WORDS];
     VlWide()                    { memset(_data, 0, sizeof(_data)); }
     VlWide(const VlWide& o)     { memcpy(_data, o._data, sizeof(_data)); }
-    /// Construct from a 64-bit integer (zero-extends into MSB words).
-    explicit VlWide(uint64_t v) { memset(_data, 0, sizeof(_data));
-        _data[0] = (uint32_t)v; if (WORDS > 1) _data[1] = (uint32_t)(v >> 32); }
+    /// Construct from an integer (zero-extends into MSB words). The parameter
+    /// is 128-bit so a >64-bit input (unsigned __int128) fills words 0..3
+    /// instead of narrowing through a uint64_t overload and silently dropping
+    /// bits 64+ (arch#868); a uint64_t or literal argument promotes cleanly,
+    /// so there is a single integer overload and no ambiguity.
+    explicit VlWide(unsigned __int128 v) { memset(_data, 0, sizeof(_data));
+        for (int i = 0; i < WORDS && i < 4; i++) _data[i] = (uint32_t)(v >> (32 * i)); }
     VlWide& operator=(const VlWide& o) { memcpy(_data, o._data, sizeof(_data)); return *this; }
-    VlWide& operator=(uint64_t v)      { memset(_data, 0, sizeof(_data));
-        _data[0] = (uint32_t)v; if (WORDS > 1) _data[1] = (uint32_t)(v >> 32); return *this; }
+    VlWide& operator=(unsigned __int128 v) { memset(_data, 0, sizeof(_data));
+        for (int i = 0; i < WORDS && i < 4; i++) _data[i] = (uint32_t)(v >> (32 * i)); return *this; }
     uint32_t*       data()       { return _data; }
     const uint32_t* data() const { return _data; }
 
@@ -851,6 +855,39 @@ static inline uint64_t _arch_vw_bits(const uint32_t* data, uint32_t hi, uint32_t
 static inline uint64_t _arch_slice_mask(uint64_t hi, uint64_t lo) {
     uint64_t w = hi - lo + 1;
     return (w >= 64) ? ~0ULL : ((1ULL << w) - 1ULL);
+}
+
+/// 128-bit sibling of `_arch_slice_mask`: mask covering bits [hi:lo] of a
+/// value up to 128 bits wide. Used by runtime-bound bit-slices (arch#868)
+/// whose derivable width is not known but whose base exceeds 64 bits, so a
+/// 64-bit mask would silently zero slice bits 64+.
+static inline _arch_u128 _arch_slice_mask128(uint64_t hi, uint64_t lo) {
+    uint64_t w = hi - lo + 1;
+    return (w >= 128) ? ~(_arch_u128)0 : (((_arch_u128)1 << w) - 1);
+}
+
+/// 128-bit sibling of `_arch_vw_bits`: extract up to 128 bits [hi:lo] from a
+/// VlWide `_data` array into an `_arch_u128`. Used by runtime-bound bit-slices
+/// (arch#868) from a >128-bit base whose derivable width exceeds 64 bits —
+/// `_arch_vw_bits` caps the width at 64 and returns `uint64_t`, silently
+/// truncating such a result.
+///
+/// Words are shifted into place individually (the first by a right shift of
+/// `b0`, the rest by a positive left shift) so no `_arch_u128` shift ever
+/// reaches 128 (which would be UB): for width <= 128 the largest left shift
+/// is `32*(wtop-w0) - b0 < 128`. Reads are bounded to `[w0 .. wtop]`, the
+/// exact source words spanning the (capped) window, so no read runs past the
+/// meaningful payload.
+static inline _arch_u128 _arch_vw_bits128(const uint32_t* data, uint32_t hi, uint32_t lo) {
+    uint32_t width = hi - lo + 1; if (width > 128) width = 128;
+    uint32_t w0 = lo >> 5, b0 = lo & 31;
+    uint32_t wtop = (lo + width - 1) >> 5;
+    _arch_u128 v = (_arch_u128)data[w0] >> b0;
+    for (uint32_t wi = w0 + 1; wi <= wtop; wi++) {
+        v |= (_arch_u128)data[wi] << (32 * (wi - w0) - b0);
+    }
+    _arch_u128 mask = (width >= 128) ? ~(_arch_u128)0 : (((_arch_u128)1 << width) - 1);
+    return v & mask;
 }
 
 /// Ceiling log2 helper.

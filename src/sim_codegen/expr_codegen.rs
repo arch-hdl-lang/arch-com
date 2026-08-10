@@ -130,9 +130,29 @@ fn runtime_bit_slice(b: &str, base: &Expr, hi: &Expr, lo: &Expr, ctx: &Ctx) -> S
         String::new()
     };
     let core = if base_w > 128 {
-        format!("_arch_vw_bits({b}.data(), ({hi_cpp}), ({lo_cpp}))")
+        // VlWide base. `_arch_vw_bits` caps its width at 64 and returns a
+        // `uint64_t`; for a derivable slice width > 64 (and for an unknown
+        // width, conservatively) use the 128-bit reader so bits 64+ survive
+        // (arch#868).
+        match width {
+            Some(w) if w <= 64 => {
+                format!("_arch_vw_bits({b}.data(), ({hi_cpp}), ({lo_cpp}))")
+            }
+            _ => format!("_arch_vw_bits128({b}.data(), ({hi_cpp}), ({lo_cpp}))"),
+        }
     } else if base_w > 64 {
         match width {
+            // arch#868: a slice width > 64 needs a full 128-bit mask and a
+            // 128-bit result; the old `u64::MAX` mask + `cpp_uint` (uint64_t)
+            // silently zeroed slice bits 64+.
+            Some(w) if w > 64 => {
+                let mask = if w >= 128 {
+                    "~(_arch_u128)0".to_string()
+                } else {
+                    format!("(((_arch_u128)1 << {w}) - 1)")
+                };
+                format!("((_arch_u128)((((_arch_u128)({b})) >> ({lo_cpp})) & {mask}))")
+            }
             Some(w) => {
                 let mask = if w >= 64 { u64::MAX } else { (1u64 << w) - 1 };
                 format!(
@@ -141,7 +161,7 @@ fn runtime_bit_slice(b: &str, base: &Expr, hi: &Expr, lo: &Expr, ctx: &Ctx) -> S
                 )
             }
             None => format!(
-                "(uint64_t)(((_arch_u128)({b}) >> ({lo_cpp})) & (_arch_u128)_arch_slice_mask(({hi_cpp}), ({lo_cpp})))"
+                "(_arch_u128)(((_arch_u128)({b}) >> ({lo_cpp})) & _arch_slice_mask128(({hi_cpp}), ({lo_cpp})))"
             ),
         }
     } else {
