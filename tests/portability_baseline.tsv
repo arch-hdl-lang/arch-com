@@ -13,6 +13,8 @@ examples/cdc_inst_safe.arch	iverilog	FAIL	SV:65: error: synced_data Unable to as
 examples/cdc_inst_safe.arch	verilator	FAIL	%Error-BLKANDNBLK: SV:51:15: Unsupported: Blocking and non-blocking assignments to potentially overlapping bits of same packed variable: 'TopSafe.synced_data'
 examples/cdc_inst_violation.arch	-	BUILD_FAIL	Error:   × CDC violation at instance `cons`: signal `counter_a` (domain `DomainA`)
 examples/clk_div_counter.arch	-	BUILD_FAIL	Error:   × undefined module: `ClkDiv2`
+examples/clk_div_counter.arch	iverilog	FAIL	SV:14: error: Unknown module type: ClkDiv2
+examples/clk_div_counter.arch	verilator	FAIL	%Error-MODMISSING: SV:14:3: Cannot find file containing module: 'ClkDiv2'
 examples/clk_divider.arch	iverilog	OK	-
 examples/clk_divider.arch	verilator	OK	-
 examples/clk_out_test.arch	iverilog	OK	-
@@ -135,7 +137,7 @@ examples/nic400/Nic400SparseAddrDecode.arch	iverilog	OK	-
 examples/nic400/Nic400SparseAddrDecode.arch	verilator	OK	-
 examples/nic400/Nic400SparseDemo.arch	iverilog	OK	-
 examples/nic400/Nic400SparseDemo.arch	verilator	OK	-
-examples/nic400/Nic400System.arch	-	BUILD_FAIL	Error:   × 8 errors
+examples/nic400/Nic400System.arch	-	BUILD_FAIL	Error:   × 7 errors
 examples/nic400/Nic400WidthAdapter.arch	iverilog	FAIL	SV:1422: syntax error
 examples/nic400/Nic400WidthAdapter.arch	verilator	OK	-
 examples/nic400/PkgNic400.arch	-	NO_MODULE	-
@@ -145,7 +147,7 @@ examples/noc_chain/noc_chain.arch	iverilog	OK	-
 examples/noc_chain/noc_chain.arch	verilator	OK	-
 examples/param_reset.arch	iverilog	OK	-
 examples/param_reset.arch	verilator	OK	-
-examples/part_select_tb.arch	-	BUILD_FAIL	Error:   × Lexer error in /private/tmp/claude-501/-Users-shuqingzhao-github-arch-
+examples/part_select_tb.arch	-	BUILD_FAIL	Error:   × Lexer error in examples/part_select_tb.arch
 examples/part_select_test.arch	iverilog	OK	-
 examples/part_select_test.arch	verilator	OK	-
 examples/pipe_reg_test.arch	iverilog	OK	-
@@ -207,6 +209,8 @@ tests/aes/aes_inv_sbox.arch	verilator	OK	-
 tests/aes/aes_key_expand_128.arch	iverilog	OK	-
 tests/aes/aes_key_expand_128.arch	verilator	OK	-
 tests/aes/aes_key_expand_mod.arch	-	BUILD_FAIL	Error:   × 5 errors
+tests/aes/aes_key_expand_mod.arch	iverilog	FAIL	SV:27: error: Unknown module type: AesSbox
+tests/aes/aes_key_expand_mod.arch	verilator	FAIL	%Error-MODMISSING: SV:27:3: Cannot find file containing module: 'AesSbox'
 tests/aes/aes_rcon.arch	iverilog	OK	-
 tests/aes/aes_rcon.arch	verilator	OK	-
 tests/aes/aes_rcon_mod.arch	iverilog	OK	-
@@ -361,7 +365,7 @@ tests/backend_equiv/VrTap.arch	iverilog	OK	-
 tests/backend_equiv/VrTap.arch	verilator	OK	-
 tests/backend_equiv/VrTapScalar.arch	iverilog	OK	-
 tests/backend_equiv/VrTapScalar.arch	verilator	OK	-
-tests/buf_mgr/buf_mgr.arch	-	BUILD_FAIL	Error:   × 7 errors
+tests/buf_mgr/buf_mgr.arch	-	BUILD_FAIL	Error:   × 2 errors
 tests/buf_mgr/data_mem.arch	iverilog	OK	-
 tests/buf_mgr/data_mem.arch	verilator	OK	-
 tests/buf_mgr/domain.arch	-	NO_MODULE	-
@@ -372,6 +376,8 @@ tests/buf_mgr/next_ptr_mem.arch	verilator	OK	-
 tests/buf_mgr/setup_counter.arch	iverilog	OK	-
 tests/buf_mgr/setup_counter.arch	verilator	OK	-
 tests/buf_mgr_sm/buf_mgr_sm.arch	-	BUILD_FAIL	Error:   × 3 errors
+tests/buf_mgr_sm/buf_mgr_sm.arch	iverilog	FAIL	SV:144: error: free_slot_rd_data Unable to assign to unresolved wires.
+tests/buf_mgr_sm/buf_mgr_sm.arch	verilator	OK	-
 tests/buf_mgr_sm/data_mem_sm.arch	iverilog	OK	-
 tests/buf_mgr_sm/data_mem_sm.arch	verilator	OK	-
 tests/buf_mgr_sm/domain.arch	-	NO_MODULE	-
@@ -1145,6 +1151,10 @@ tests/fp_v1/IntToBf16.arch	iverilog	OK	-
 tests/fp_v1/IntToBf16.arch	verilator	OK	-
 tests/fp_v1/NanProf.arch	iverilog	OK	-
 tests/fp_v1/NanProf.arch	verilator	OK	-
+tests/fp_v1/ScaledQuant.arch	iverilog	OK	-
+tests/fp_v1/ScaledQuant.arch	verilator	OK	-
+tests/fp_v1/ScaledVecType.arch	iverilog	OK	-
+tests/fp_v1/ScaledVecType.arch	verilator	OK	-
 tests/fpt26_tlm/Fpt26RuntimeLoopTlm.arch	iverilog	OK	-
 tests/fpt26_tlm/Fpt26RuntimeLoopTlm.arch	verilator	OK	-
 tests/icarus_portability/CallSliceHoist.arch	iverilog	OK	-
@@ -1161,6 +1171,8 @@ tests/icarus_portability/PipeSliceHoist.arch	iverilog	OK	-
 tests/icarus_portability/PipeSliceHoist.arch	verilator	OK	-
 tests/icarus_portability/SeqSliceHoist.arch	iverilog	OK	-
 tests/icarus_portability/SeqSliceHoist.arch	verilator	OK	-
+tests/icarus_portability/UniversalSliceHoist.arch	iverilog	OK	-
+tests/icarus_portability/UniversalSliceHoist.arch	verilator	OK	-
 tests/if_wait_for_in_then.arch	iverilog	OK	-
 tests/if_wait_for_in_then.arch	verilator	OK	-
 tests/inst_vec_port_regression.arch	iverilog	OK	-
@@ -1337,14 +1349,22 @@ tests/sdc/sd_tx_fifo.arch	iverilog	OK	-
 tests/sdc/sd_tx_fifo.arch	verilator	OK	-
 tests/sdc/sdc_controller.arch	iverilog	OK	-
 tests/sdc/sdc_controller.arch	verilator	OK	-
+tests/sim_bitnot_compound_regression.arch	iverilog	FAIL	SV:37: syntax error
+tests/sim_bitnot_compound_regression.arch	verilator	OK	-
 tests/sim_bool_not_regression.arch	iverilog	OK	-
 tests/sim_bool_not_regression.arch	verilator	OK	-
 tests/sim_bus_vec_elem_width.arch	iverilog	OK	-
 tests/sim_bus_vec_elem_width.arch	verilator	OK	-
+tests/sim_fp_narrow_mx_regression.arch	iverilog	OK	-
+tests/sim_fp_narrow_mx_regression.arch	verilator	OK	-
 tests/sim_ranged_slice_regression.arch	iverilog	FAIL	SV:42: error: A reference to a wire or reg (`addr') is not allowed in a constant expression.
 tests/sim_ranged_slice_regression.arch	verilator	OK	-
 tests/sim_vec_elem_width_regression.arch	iverilog	OK	-
 tests/sim_vec_elem_width_regression.arch	verilator	OK	-
+tests/sim_wide_runtime_slice_u128.arch	iverilog	OK	-
+tests/sim_wide_runtime_slice_u128.arch	verilator	OK	-
+tests/sim_wide_runtime_slice_vlwide.arch	iverilog	OK	-
+tests/sim_wide_runtime_slice_vlwide.arch	verilator	OK	-
 tests/thread/basic_thread.arch	iverilog	OK	-
 tests/thread/basic_thread.arch	verilator	OK	-
 tests/thread/fork_join.arch	iverilog	OK	-

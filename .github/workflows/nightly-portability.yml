@@ -13,6 +13,15 @@ name: nightly-portability
 # and re-bless the baseline (see the script's --bless docs in its header) so
 # a fix can't silently rot back into an unrecorded pass.
 #
+# Runtime note (arch#813 P3): the sweep now runs a deterministic `.archi`
+# prepass before measuring, which roughly 5x's it — the corpus previously
+# scored differently at `-j 8` and `-j 4` because `arch build` resolves a
+# dependency from a sibling `.archi` an earlier build emitted, so verdicts
+# depended on scheduling. The timeout is 60 min to absorb that; a PR-gate
+# variant was built and measured at ~10-15 min on a shared runner, and
+# deliberately not adopted — see arch#813 — so this nightly tier remains
+# the only place the portability claim is measured.
+#
 # `test.yml` (the PR-gate) deliberately installs no external SV frontends —
 # that keeps the required check fast and free of tool-version drift, and
 # that policy is sound. This nightly tier is the place that measures the
@@ -34,7 +43,7 @@ jobs:
   portability-sweep:
     name: multi-frontend SV portability sweep
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
