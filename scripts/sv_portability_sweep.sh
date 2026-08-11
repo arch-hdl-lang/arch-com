@@ -147,6 +147,20 @@ run_one() {
     [[ -z "$reason" ]] && reason="$(grep -m1 -i 'error' "$blog" 2>/dev/null)"
     [[ -z "$reason" ]] && reason="$(head -n1 "$blog" 2>/dev/null)"
     [[ -z "$reason" ]] && reason="(no output)"
+    # Rewrite the throwaway corpus-copy path back to the repo-relative one.
+    # `arch` reports the path it was handed, which lives under the per-run
+    # scratch dir, so leaving it in makes the baseline row differ on every
+    # run and every machine: `--bless` churns it and `git diff` on the
+    # baseline is unreadable. (The verdict diff compares column 3 only, so
+    # this could never fabricate a REGRESSION — it is reproducibility of
+    # the checked-in artifact, not gate correctness.)
+    #
+    # Matched by shape (`<anything>/corpus/`) rather than by substituting
+    # "$OUT_DIR": the two spellings need not agree. On macOS `/tmp` is a
+    # symlink to `/private/tmp`, so a caller-supplied `--out-dir /tmp/x`
+    # comes back from the compiler as `/private/tmp/x/...` and a literal
+    # "$OUT_DIR" replacement silently misses.
+    reason="$(printf '%s' "$reason" | sed -E 's#(^|[[:space:]])/[^[:space:]]*/corpus/#\1#g')"
     reason="$(printf '%s' "$reason" | tr '\t\n' '  ' | cut -c1-200)"
     printf '%s\t-\tBUILD_FAIL\t%s\n' "$orig" "$reason" >> "$rows"
     return 0
@@ -189,13 +203,34 @@ if [[ "${1:-}" == "__one" ]]; then
   exit 0
 fi
 
+# Prepass worker: build only, for the `.archi` side effect. No rows, no
+# frontend checks, failures ignored — a file that can't build yet may build
+# on a later round once a dependency's interface exists. See the prepass
+# block in main() for why this is needed at all.
+if [[ "${1:-}" == "__prepass" ]]; then
+  shift
+  "$ARCH_BIN" build "$1" -o /dev/null --no-auto-asserts >/dev/null 2>&1 || true
+  exit 0
+fi
+
 # ------------------------------------------------------------ diff_baseline
 # Compares $2 (this run's TSV) against $1 (baseline TSV) by (file,frontend)
 # key. Prints REGRESSION/IMPROVEMENT/CHANGED/SKIPPED lines to stderr and a
-# SUMMARY line; returns 1 if anything but SKIPPED drifted, else 0. New keys
-# (file/frontend pairs absent from the baseline — corpus growth) and removed
-# keys (present in baseline, absent this run) are reported but never fail
-# the diff — only a *change* in verdict for a key both runs share does.
+# SUMMARY line; returns 1 if anything but SKIPPED drifted, else 0.
+#
+# New keys (file/frontend pairs absent from the baseline — corpus growth)
+# never fail: a fixture added by this branch has nothing to be compared to.
+#
+# A *vanished* key is only benign when the file left the corpus. If the file
+# is still swept but no longer has that (file,frontend) row, its row SHAPE
+# changed, which is how a build regression looks: a design that emitted a
+# module and was checked per frontend (`f OK` x N rows) now fails to build
+# and produces a single `f - BUILD_FAIL` row instead. Keying purely on
+# (file,frontend) counted that as `removed` + `new` and passed green, so
+# `arch build` breaking a corpus design was invisible to this gate. Such a
+# key is now classified REGRESSION (baseline OK) or CHANGED (baseline not
+# OK) and fails, while a key whose file genuinely left the corpus is still
+# just reported.
 diff_baseline() {
   local baseline="$1" current="$2"
   awk -F'\t' '
@@ -210,6 +245,10 @@ diff_baseline() {
       key=$1 FS $2
       cur[key]=$3
       seen[key]=1
+      curfile[$1]=1
+      # A per-frontend row (frontend column != "-") means `arch build`
+      # succeeded for this file this run.
+      if ($2 != "-") filebuilt[$1]=1
     }
     END {
       regress=0; improve=0; changed=0; skipped=0; new=0; removed=0
@@ -231,7 +270,27 @@ diff_baseline() {
         }
       }
       for (k in base) {
-        if (!(k in seen)) removed++
+        if (k in seen) continue
+        f = substr(k, 1, index(k, FS) - 1)
+        if (!(f in curfile)) { removed++; continue }
+        # File still swept, but this (file,frontend) row is gone: its row
+        # SHAPE changed. Which direction depends on what replaced it —
+        # `filebuilt` is set when the file produced any per-frontend row
+        # this run, i.e. `arch build` succeeded and a frontend judged it.
+        if (base[k] == "OK") {
+          printf "REGRESSION\t%s\t%s -> (row gone; file no longer builds)\n", k, base[k] > "/dev/stderr"
+          regress++
+        } else if (f in filebuilt) {
+          # e.g. BUILD_FAIL -> per-frontend rows: the design started
+          # building. Genuinely good news, but it still fails the diff so
+          # a human re-blesses deliberately rather than the baseline
+          # drifting on its own.
+          printf "IMPROVEMENT\t%s\t%s -> (row gone; file now builds)\n", k, base[k] > "/dev/stderr"
+          improve++
+        } else {
+          printf "CHANGED\t%s\t%s -> (row gone; file now has a different row shape)\n", k, base[k] > "/dev/stderr"
+          changed++
+        }
       }
       printf "SUMMARY\tregressions=%d improvements=%d changed=%d skipped=%d new=%d removed=%d\n", \
         regress, improve, changed, skipped, new, removed > "/dev/stderr"
@@ -369,6 +428,27 @@ main() {
     cp -R "$root" "$OUT_DIR/corpus/$root"
   done
 
+  # Drop `.archi` files the copy inherited from the working tree unless git
+  # tracks them. `.archi` is gitignored, so a developer tree accumulates
+  # them from every earlier `arch build` — 153 of them in the tree this was
+  # first measured on — while a CI checkout has only the handful that are
+  # committed. Since a stale `.archi` is exactly what auto-discovery
+  # consumes, leaving them in makes local results disagree with CI and makes
+  # neither reproducible. The prepass below regenerates whatever is really
+  # needed, deterministically.
+  if git -C . rev-parse --git-dir >/dev/null 2>&1; then
+    local tracked_archi
+    tracked_archi="$(git -C . ls-files '*.archi' 2>/dev/null || true)"
+    while IFS= read -r stale; do
+      [[ -z "$stale" ]] && continue
+      local rel="${stale#"$OUT_DIR"/corpus/}"
+      case $'\n'"$tracked_archi"$'\n' in
+        *$'\n'"$rel"$'\n'*) ;;   # committed fixture — keep
+        *) rm -f "$stale" ;;
+      esac
+    done < <(find "$OUT_DIR/corpus" -name '*.archi' -print)
+  fi
+
   find "$OUT_DIR/corpus" -name '*.arch' -print | LC_ALL=C sort -u > "$OUT_DIR/files.list"
   local nfiles
   nfiles="$(wc -l < "$OUT_DIR/files.list" | tr -d ' ')"
@@ -389,6 +469,42 @@ main() {
 
   export ARCH_BIN OUT_DIR
   export ARCH_SWEEP_UNAVAILABLE="$unavailable"
+
+  # ---------------------------------------------------------------- prepass
+  # Populate `.archi` interface files before measuring anything.
+  #
+  # `arch build` auto-discovers an undefined `inst` target from a sibling
+  # `<Name>.archi`, and emits those stubs as a side effect of building. In
+  # one shared corpus tree that makes a design's verdict depend on how many
+  # of its dependencies happened to be built first: `tests/aes/
+  # aes_key_expand_mod.arch` reports `undefined module: AesSbox` when built
+  # before `aes_sbox.arch`, gets one dependency further once `AesSbox.archi`
+  # exists, and eventually builds outright. Scheduling therefore decided the
+  # verdict — measured divergence between `-j 8` locally and `-j 4` on CI —
+  # which would make any gate built on this sweep flap (arch#887's second
+  # defect).
+  #
+  # So: build everything first, discarding results, and repeat until the set
+  # of emitted `.archi` stops growing (a dependency chain resolves one level
+  # per pass). Every file in the measured pass then sees the same interface
+  # set no matter what order or `-j` the runner picked. Capped at 4 rounds
+  # so a pathological corpus can't spin; the cap is reported when hit,
+  # because silently measuring a not-yet-converged tree is the failure mode
+  # this whole block exists to prevent.
+  local round prev_count archi_count
+  prev_count=-1
+  for round in 1 2 3 4; do
+    archi_count="$(find "$OUT_DIR/corpus" -name '*.archi' | wc -l | tr -d ' ')"
+    [[ "$archi_count" -eq "$prev_count" ]] && break
+    prev_count="$archi_count"
+    echo "sv-portability-sweep: prepass $round (interfaces: $archi_count)" >&2
+    xargs -P "$JOBS" -n 1 "$SCRIPT_PATH" __prepass < "$OUT_DIR/files.list"
+  done
+  archi_count="$(find "$OUT_DIR/corpus" -name '*.archi' | wc -l | tr -d ' ')"
+  if [[ "$archi_count" -ne "$prev_count" ]]; then
+    echo "sv-portability-sweep: WARNING interface set still growing after 4 prepasses ($prev_count -> $archi_count); verdicts may not be order-stable" >&2
+  fi
+  rm -f "$OUT_DIR"/rows/*.tsv 2>/dev/null || true
 
   echo "sv-portability-sweep: sweeping $nfiles file(s) from [${ROOTS[*]}] -> $OUT_DIR (jobs=$JOBS)" >&2
   # -n 1 (one stdin line appended per invocation), deliberately NOT -I{} —
