@@ -291,6 +291,32 @@ pub fn block_member_width(ty: &TypeExpr) -> Option<u32> {
     }
 }
 
+/// May `ty` be a `ScaledVec` ELEMENT? The MX element formats plus the two
+/// OFP8s — the formats a block is actually defined over.
+///
+/// `FP32` / `BF16` are excluded deliberately: a "block" of 32-bit elements has
+/// no shared-scale meaning, and admitting one produced a silently accepted
+/// 1032-bit type.
+pub fn is_block_element(ty: &TypeExpr) -> bool {
+    matches!(
+        ty,
+        TypeExpr::FP4E2M1
+            | TypeExpr::FP6E2M3
+            | TypeExpr::FP6E3M2
+            | TypeExpr::FP8E4M3
+            | TypeExpr::FP8E5M2
+    )
+}
+
+/// May `ty` be a `ScaledVec` SCALE? `E8M0` today; `UE4M3` joins it with NVFP4.
+///
+/// Notably NOT `FP8E4M3` — NVFP4's `UE4M3` is a different format (unsigned,
+/// 7 significant bits, NaN `0x7F`), so reusing our E4M3 here would be a real
+/// bug rather than an approximation.
+pub fn is_block_scale(ty: &TypeExpr) -> bool {
+    matches!(ty, TypeExpr::E8M0)
+}
+
 /// Packed width of `ScaledVec<Elem, N, Scale>` = `scale_w + N * elem_w`.
 ///
 /// The canonical layout is `{ scale[w-1:0], P[N-1], …, P[1], P[0] }` — scale
@@ -302,6 +328,14 @@ pub fn block_member_width(ty: &TypeExpr) -> Option<u32> {
 /// constant folder, so callers evaluate `N` and pass the number in. Returns
 /// `None` if either member type cannot live in a block, or on overflow.
 pub fn scaled_vec_width(elem: &TypeExpr, n: u32, scale: &TypeExpr) -> Option<u32> {
+    // Gate on the SAME predicates the type checker enforces. When this was
+    // merely "is it measurable", `ScaledVec<UInt<8>,4,E8M0>` measured fine in
+    // the SV emitter (40 bits, via its own recursive width walk) while this
+    // returned None and the sim's `unwrap_or(0)` turned it into a `uint8_t` —
+    // a 40-bit port against an 8-bit variable. One predicate, no divergence.
+    if !is_block_element(elem) || !is_block_scale(scale) {
+        return None;
+    }
     let elem_w = block_member_width(elem)?;
     let scale_w = block_member_width(scale)?;
     n.checked_mul(elem_w)?.checked_add(scale_w)

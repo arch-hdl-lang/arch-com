@@ -2606,3 +2606,110 @@ fn scaled_vec_sim_round_trip() {
         String::from_utf8_lossy(&out.stderr),
     );
 }
+
+/// `ScaledVec` member types are constrained, and `==` / `!=` are available.
+///
+/// Both halves were review findings on the original phase-2a PR:
+///
+/// 1. Unvalidated members let `ScaledVec<UInt<8>, 4, E8M0>` type-check clean
+///    and then emit a **40-bit SV port against an 8-bit sim variable** — the
+///    SV width walk accepted an integer element while the sim's shared helper
+///    rejected it and silently `unwrap_or(0)`'d. Rejecting the type removes
+///    the disagreement at its source.
+/// 2. The original blanket operator ban included `==`, which made the formal
+///    support unreachable: no property could mention a block.
+#[test]
+fn scaled_vec_member_constraints_and_equality() {
+    let dir = std::env::temp_dir().join("arch_scaledvec_review");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+
+    let check = |src: &str, name: &str| -> String {
+        let p = dir.join(name);
+        std::fs::write(&p, src).expect("write");
+        let out = arch().arg("check").arg(&p).output().expect("run check");
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    };
+
+    // The exact type that produced the SV/sim width divergence.
+    let err = check(
+        "module M\n  port c: in ScaledVec<UInt<8>, 4, E8M0>;\n\
+         port y: out ScaledVec<UInt<8>, 4, E8M0>;\n  comb y = c; end comb\nend module M\n",
+        "int_elem.arch",
+    );
+    assert!(
+        err.contains("element must be a block element format"),
+        "integer element must be rejected:\n{err}"
+    );
+
+    // FP32 as an element would be a 1032-bit "block".
+    let err = check(
+        "module M\n  port c: in ScaledVec<FP32, 32, E8M0>;\n  port y: out FP32;\n\
+         comb y = 0.0; end comb\nend module M\n",
+        "wide_elem.arch",
+    );
+    assert!(
+        err.contains("element must be a block element format"),
+        "FP32 element must be rejected:\n{err}"
+    );
+
+    // FP8E4M3 is NOT a stand-in for NVFP4's UE4M3.
+    let err = check(
+        "module M\n  port c: in ScaledVec<FP4E2M1, 32, FP8E4M3>;\n  port y: out FP32;\n\
+         comb y = 0.0; end comb\nend module M\n",
+        "bad_scale.arch",
+    );
+    assert!(
+        err.contains("scale must be `E8M0`"),
+        "non-E8M0 scale must be rejected:\n{err}"
+    );
+
+    // N = 0 is a bare scale, not a block.
+    let err = check(
+        "module M\n  port c: in ScaledVec<FP4E2M1, 0, E8M0>;\n  port y: out FP32;\n\
+         comb y = 0.0; end comb\nend module M\n",
+        "zero_n.arch",
+    );
+    assert!(
+        err.contains("block size N must be at least 1"),
+        "N=0 must be rejected:\n{err}"
+    );
+
+    // `==` / `!=` are allowed (encoding compare); ordered compares are not.
+    let ok = check(
+        "module M\n  port a: in ScaledVec<FP4E2M1, 32, E8M0>;\n\
+         port b: in ScaledVec<FP4E2M1, 32, E8M0>;\n  port e: out Bool;\n  port n: out Bool;\n\
+         comb\n    e = a == b;\n    n = a != b;\n  end comb\nend module M\n",
+        "eq_ok.arch",
+    );
+    assert!(
+        ok.contains("OK: no errors"),
+        "`==`/`!=` on blocks must be allowed:\n{ok}"
+    );
+    let err = check(
+        "module M\n  port a: in ScaledVec<FP4E2M1, 32, E8M0>;\n\
+         port b: in ScaledVec<FP4E2M1, 32, E8M0>;\n  port y: out Bool;\n\
+         comb y = a < b; end comb\nend module M\n",
+        "lt_bad.arch",
+    );
+    assert!(
+        err.contains("no arithmetic or ordering"),
+        "ordered compare must stay rejected:\n{err}"
+    );
+
+    // Mismatched block types do not silently compare.
+    let err = check(
+        "module M\n  port a: in ScaledVec<FP4E2M1, 32, E8M0>;\n\
+         port b: in ScaledVec<FP8E4M3, 32, E8M0>;\n  port y: out Bool;\n\
+         comb y = a == b; end comb\nend module M\n",
+        "eq_mismatch.arch",
+    );
+    assert!(
+        err.contains("requires matching types"),
+        "cross-format block compare must be rejected:\n{err}"
+    );
+}

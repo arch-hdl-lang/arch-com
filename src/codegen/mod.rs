@@ -3121,7 +3121,17 @@ impl<'a> Codegen<'a> {
             // Packed block: `scale_w + N*elem_w`. Folded to a literal when `N`
             // is constant (the common case — MXFP4 becomes a plain `136`);
             // falls back to an expression so a param-sized `N` survives.
+            //
+            // The member types are gated by the same predicates the type
+            // checker uses. Falling back to the generic recursive width walk
+            // here is what let `ScaledVec<UInt<8>,4,E8M0>` emit a 40-bit port
+            // while the sim emitted a `uint8_t`.
             TypeExpr::ScaledVec(elem, size, scale) => {
+                if !crate::fp_format::is_block_element(elem)
+                    || !crate::fp_format::is_block_scale(scale)
+                {
+                    return None;
+                }
                 if let Some(w) = self.type_expr_width(ty) {
                     return Some(w.to_string());
                 }

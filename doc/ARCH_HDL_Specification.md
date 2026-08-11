@@ -1028,12 +1028,20 @@ ScaledVec<Elem, N, Scale>
 ```
 
 `N` narrow elements sharing one scale --- the unit of meaning in the OCP
-Microscaling (MX) formats. `Elem` is a storage-only element format
-(`FP4E2M1`, `FP6E2M3`, `FP6E3M2`) or an `FP8E4M3` / `FP8E5M2`; `N` is a
-const expression; `Scale` is `E8M0`. The scale is a **parameter, not a fixed
-type**, because the two ecosystems genuinely differ --- MX uses `E8M0`,
-NVFP4 uses a `UE4M3` that is *not* our `FP8E4M3` (unsigned, 7 significant
-bits, NaN `0x7F`). `UE4M3` and NVFP4 are not yet implemented.
+Microscaling (MX) formats. The scale is a **parameter, not a fixed type**,
+because the two ecosystems genuinely differ --- MX uses `E8M0`, NVFP4 uses a
+`UE4M3` that is *not* our `FP8E4M3` (unsigned, 7 significant bits, NaN
+`0x7F`). `UE4M3` and NVFP4 are not yet implemented.
+
+The three arguments are constrained:
+
+  - **`Elem`** must be `FP4E2M1`, `FP6E2M3`, `FP6E3M2`, `FP8E4M3` or
+    `FP8E5M2`. `FP32`/`BF16` and integer types are rejected --- a shared
+    scale has no meaning over wider or integer elements.
+  - **`N`** is a const expression `>= 1`. A block with no elements is just a
+    bare scale.
+  - **`Scale`** must be `E8M0`. `FP8E4M3` is **not** an accepted stand-in for
+    NVFP4's `UE4M3`; they are different formats.
 
 **A block is one packed word, not an array.** Layout is
 `{ scale[w-1:0], P[N-1], …, P[1], P[0] }` --- scale in the high bits,
@@ -1041,15 +1049,34 @@ element `0` in the low bits, matching the `Vec` convention above. Width is
 `scale_w + N × elem_w`, so `ScaledVec<FP4E2M1, 32, E8M0>` is
 8 + 128 = **136 bits**.
 
-**No arithmetic, no comparison, no indexing.** OCP MX §6 defines exactly one
+**No arithmetic, no ordering, no indexing.** OCP MX §6 defines exactly one
 operation on blocks --- the dot product `X^A · X^B · Σᵢ(Pᵢ^A × Pᵢ^B)` --- and
-no add, multiply or compare. ARCH therefore refuses all of them at the type
+no add, multiply or ordered compare. ARCH refuses all of them at the type
 checker rather than inventing semantics:
 
 ```arch
 y = a + b;    // error: no arithmetic on a block-scaled vector
+y = a < b;    // error: an encoding order is not a value order
 e = a[0];     // error: a block is one packed value, not an array
 ```
+
+**`==` and `!=` are available, as an ENCODING compare.** They lower to a
+plain SV `==` on the packed word --- a bit compare, exactly as for `Vec` and
+struct. This is what makes formal properties and testbench checks about
+blocks writable at all.
+
+Read the result carefully, because it differs from `Vec<UInt<N>, K>`, where
+bit equality *is* value equality:
+
+  - equal bits **always** mean equal values;
+  - unequal bits do **not** mean unequal values.
+
+The same numbers can be encoded with a different (scale, element) split ---
+scale `2^1` with element `1.0` denotes the same value as scale `2^0` with
+element `2.0` --- and a NaN block (`scale = 0xFF`) ignores its element bits
+on load, so two semantically identical NaN blocks can differ bitwise. `==` is
+therefore sound but **not complete** as a value test; for a value comparison,
+`scaled_dequantize` both operands and compare the `FP32` results.
 
 An element read only has meaning as `X × Pᵢ`, so reading one goes through the
 whole-block conversion: `scaled_dequantize(b)[i]`. Refusing `a[0]` is

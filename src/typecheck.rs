@@ -661,6 +661,20 @@ impl<'a> TypeChecker<'a> {
                     p.span,
                 ));
             }
+            self.check_scaled_vec_members(&p.ty, p.span);
+        }
+        // Same check for every other declaration that can name a block type.
+        for item in &m.body {
+            match item {
+                ModuleBodyItem::RegDecl(r) => self.check_scaled_vec_members(&r.ty, r.name.span),
+                ModuleBodyItem::WireDecl(w) => self.check_scaled_vec_members(&w.ty, w.name.span),
+                ModuleBodyItem::LetBinding(l) => {
+                    if let Some(ty) = &l.ty {
+                        self.check_scaled_vec_members(ty, l.name.span);
+                    }
+                }
+                _ => {}
+            }
         }
 
         // A float `reg`'s reset value must be a float literal, not an integer
@@ -2880,6 +2894,41 @@ impl<'a> TypeChecker<'a> {
             }
             Ty::Bus(_) => None, // bus is not a single-width type
             Ty::Todo | Ty::Error => None,
+        }
+    }
+
+    /// A `ScaledVec`'s element and scale must be types a block is actually
+    /// defined over. Unchecked, `ScaledVec<UInt<8>, 4, E8M0>` type-checked
+    /// clean and then emitted a 40-bit SV port against an 8-bit sim variable,
+    /// because the two width paths disagreed about whether an integer element
+    /// was legal. Rejecting it here removes the disagreement at the source.
+    fn check_scaled_vec_members(&mut self, ty: &TypeExpr, span: Span) {
+        let TypeExpr::ScaledVec(elem, n, scale) = ty else {
+            return;
+        };
+        if !crate::fp_format::is_block_element(elem) {
+            self.errors.push(CompileError::general(
+                "`ScaledVec` element must be a block element format \
+                 (`FP4E2M1`, `FP6E2M3`, `FP6E3M2`, `FP8E4M3`, `FP8E5M2`) — a \
+                 shared scale has no meaning over wider or integer elements",
+                span,
+            ));
+        }
+        if !crate::fp_format::is_block_scale(scale) {
+            self.errors.push(CompileError::general(
+                "`ScaledVec` scale must be `E8M0` — the MX block scale type. \
+                 (NVFP4's `UE4M3` is a distinct format, not yet implemented; \
+                 `FP8E4M3` is NOT a substitute for it)",
+                span,
+            ));
+        }
+        let empty: HashMap<String, Ty> = HashMap::new();
+        if let Some(0) = self.eval_const_expr(n, &empty) {
+            self.errors.push(CompileError::general(
+                "`ScaledVec` block size N must be at least 1 — a block with no \
+                 elements is just a bare scale",
+                span,
+            ));
         }
     }
 
@@ -5355,15 +5404,46 @@ impl<'a> TypeChecker<'a> {
         // silently add two packed {scale, elements} words, which denotes
         // nothing at all: it would carry element overflow into the scale field.
         if matches!(lt, Ty::ScaledVec(..)) || matches!(rt, Ty::ScaledVec(..)) {
+            // `==` / `!=` ARE allowed: they are a bit compare on the packed
+            // storage word, exactly as they already are for `Vec` and struct
+            // (both lower to a plain SV `==`). Without them no formal property
+            // or testbench check could mention a block at all.
+            //
+            // NOTE the semantics, which differ from `Vec<UInt<N>,K>`: this is
+            // ENCODING equality, not value equality. Equal bits always mean
+            // equal values, but unequal bits do NOT mean unequal values — the
+            // same numbers can be encoded with a different (scale, element)
+            // split, and a NaN block (scale 0xFF) ignores its element bits on
+            // load per the spec's decision #4.
+            if matches!(op, BinOp::Eq | BinOp::Neq) {
+                if lt != rt {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "block comparison `{}` requires matching types, got {} and {}",
+                            op,
+                            lt.display(),
+                            rt.display()
+                        ),
+                        _span,
+                    ));
+                    return Ty::Error;
+                }
+                return Ty::Bool;
+            }
             let blk = if matches!(lt, Ty::ScaledVec(..)) {
                 lt
             } else {
                 rt
             };
+            // Everything else — arithmetic and ORDERED compares. Ordered
+            // compares are refused for the same reason as arithmetic: `<` on
+            // packed {scale, elements} words compares encodings, and an
+            // encoding order is not a value order.
             self.errors.push(CompileError::general(
                 &format!(
                     "operator `{}` is not supported on {} — a block-scaled vector has no \
-                     arithmetic in the OCP MX spec (only the block dot product). Use \
+                     arithmetic or ordering in the OCP MX spec (only the block dot \
+                     product); `==` / `!=` are available as an encoding compare. Use \
                      `scaled_dequantize(...)` to obtain `Vec<FP32, N>`, compute there, \
                      and `scaled_quantize(...)` to come back",
                     op,
