@@ -321,7 +321,7 @@ The Arch type system enforces four independent safety dimensions simultaneously.
 
   **E8M0**             8 bits               OCP MX block **scale** type — an unsigned biased exponent (bias 127) denoting 2^(e-127). **Not a float**: no sign, no mantissa, no infinity, and **no zero** (`0x00` is the minimum scale 2^-127). `0xFF` is NaN. See §3.10.
 
-  **ScaledVec\<E,N,S\>**  \|S\| + N × \|E\|    Block-scaled vector — N narrow elements sharing one scale, packed as `{scale, P[N-1..0]}` (MXFP4 = 136 bits). **No arithmetic, no ordered compares, no indexing** — OCP MX defines only the block dot product; `==`/`!=` are an *encoding* compare. Convert with `scaled_quantize<Fmt>` / `scaled_dequantize`. See §3.11.
+  **ScaledVec\<E,N,S\>**  \|S\| + N × \|E\|    Block-scaled vector — N narrow elements sharing one scale, packed as `{scale, P[N-1..0]}` (MXFP4 = 136 bits). **No arithmetic, no ordered compares, no indexing** — OCP MX defines only the block dot product; `==`/`!=` are an *encoding* compare. Convert with `scaled_quantize<Fmt>` / `scaled_dequantize`; `scaled_dot(a,b)` is the block dot product. See §3.11.
 
   **Clock\<D\>**       1 bit                Carries clock-domain tag D. Cannot appear in arithmetic.
 
@@ -1050,9 +1050,9 @@ element `0` in the low bits, matching the `Vec` convention above. Width is
 8 + 128 = **136 bits**.
 
 **No arithmetic, no ordering, no indexing.** OCP MX §6 defines exactly one
-operation on blocks --- the dot product `X^A · X^B · Σᵢ(Pᵢ^A × Pᵢ^B)` --- and
-no add, multiply or ordered compare. ARCH refuses all of them at the type
-checker rather than inventing semantics:
+operation on blocks --- the dot product `X^A · X^B · Σᵢ(Pᵢ^A × Pᵢ^B)`, exposed
+as `scaled_dot` (§3.11.2) --- and no add, multiply or ordered compare. ARCH
+refuses all of them at the type checker rather than inventing semantics:
 
 ```arch
 y = a + b;    // error: no arithmetic on a block-scaled vector
@@ -1177,10 +1177,54 @@ comb
 end comb
 ```
 
+**3.11.2 `scaled_dot` --- the block dot product**
+
+```arch
+scaled_dot(a, b)      // two blocks of the SAME type -> FP32
+```
+
+The one operation OCP MX §6.2 defines normatively. Both operands must have the
+same `ScaledVec` type; a dot across different element formats or block sizes
+has no spec meaning and is a compile error. The result is `FP32` --- the spec
+leaves accumulator precision implementation-defined and ARCH picks `FP32`.
+
+The value is the spec's factored form:
+
+> `X^A · X^B · Σᵢ (Pᵢ^A × Pᵢ^B)`
+
+**Every element-pair product is exact**, so all rounding in a block dot happens
+in the summation and none in the multiplies. This is not an approximation
+argument: the widest element significand is `FP8E4M3`'s 4 bits, needing at most
+8 of `FP32`'s 24, and the widest exponent span is `FP8E5M2`'s `2⁻³² … 2³¹·⁶`,
+comfortably inside `FP32`'s normals. It is machine-checked exhaustively for all
+five element formats (`fp_smt_proof::MX_DOT`), jointly with `arch_f32_mul`
+returning that exact product.
+
+**Accumulation order is defined, not left open.** `FP32` addition is not
+associative, so an unstated order would be an unstated result. ARCH sums
+**balanced pairwise**: each round adds adjacent values, a lone trailing value
+passes through untouched, repeat until one remains. This is `⌈log₂ N⌉` deep
+rather than `N` --- what a dot-product datapath synthesizes to anyway --- and
+pairwise summation's error grows as `O(log N)` against a serial accumulator's
+`O(N)`. A lone value is *carried*, never padded with a zero: adding `0.0` is
+not a no-op in `FP32` (it turns `-0.0` into `+0.0`).
+
+**The two scales are applied one at a time**, as `(Σ ⊗ X^A) ⊗ X^B`, not as a
+pre-formed `X^A · X^B`. Each scale is a power of two, so each multiply is
+exact absent overflow --- but the two E8M0 scales span `2⁻¹²⁷ … 2¹²⁷`, so their
+*product* spans `2⁻²⁵⁴ … 2²⁵⁴` and can overflow to infinity or flush to zero
+even when the final result is perfectly representable. Applying them
+separately has a strictly wider exact domain.
+
+A NaN scale (`0xFF`) on either operand makes the result NaN, which falls out of
+the scale multiply rather than needing a rule. An all-zero block dots to `+0`,
+not NaN --- E8M0 has no zero, so the minimum-scale path multiplies a zero sum
+by the finite `2⁻¹²⁷`.
+
 **Not yet implemented:** `rtz` / `rna` rounding (they need their own element
 rounders in each backend, with their own overflow rules --- arch#890), the `exact` scale
 policy and `stochastic` rounding (see §3.11 for why both are deferred),
-`scaled_dot`, and the `UE4M3` scale.
+and the `UE4M3` scale.
 
 **3.12 Package-scope type aliases**
 

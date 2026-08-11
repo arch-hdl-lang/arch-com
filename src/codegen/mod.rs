@@ -6150,25 +6150,6 @@ impl<'a> Codegen<'a> {
     ///
     /// Mirrors `typecheck::TypeChecker::type_expr_width`. Kept private to
     /// codegen for now — promote to a shared util if a third caller appears.
-    /// Resolve a `ScaledVec<Elem, N, Scale>` surface type to the block shape
-    /// the helper emitters are keyed on.
-    ///
-    /// `None` — never a guess — when `N` does not fold to a literal or a
-    /// member type is not a legal block member. Both callers turn that into a
-    /// panic rather than a fallback: typecheck has already accepted the type,
-    /// so a `None` is a compiler bug, and inventing a shape here is precisely
-    /// how phase 2a shipped a 40-bit SV port against an 8-bit sim variable.
-    fn block_shape_of_type(&self, ty: &TypeExpr) -> Option<crate::fp_block::BlockShape> {
-        let TypeExpr::ScaledVec(elem, size, scale) = ty else {
-            return None;
-        };
-        let n = match &size.kind {
-            ExprKind::Literal(LitKind::Dec(n)) | ExprKind::Literal(LitKind::Hex(n)) => *n as u32,
-            _ => return None,
-        };
-        crate::fp_block::shape_of(elem, n, scale)
-    }
-
     fn type_expr_width(&self, ty: &TypeExpr) -> Option<u32> {
         let eval = |e: &Expr| match &e.kind {
             ExprKind::Literal(LitKind::Dec(n)) | ExprKind::Literal(LitKind::Hex(n)) => {
@@ -7240,7 +7221,7 @@ impl<'a> Codegen<'a> {
             // comes from the EXPRESSION's own format argument, not from the
             // assignment target, so nothing here has to be inferred.
             ExprKind::ScaledQuantize(value, fmt, policy, round) => {
-                let shape = self.block_shape_of_type(fmt).unwrap_or_else(|| {
+                let shape = crate::fp_block::shape_of_type(fmt).unwrap_or_else(|| {
                     panic!(
                         "scaled_quantize format has no resolvable block shape — \
                          typecheck accepts only `ScaledVec` formats, so this means the \
@@ -7950,7 +7931,7 @@ impl<'a> Codegen<'a> {
             let shape = self
                 .expr_decl_type(&args[0])
                 .as_ref()
-                .and_then(|t| self.block_shape_of_type(t))
+                .and_then(|t| crate::fp_block::shape_of_type(t))
                 .unwrap_or_else(|| {
                     panic!(
                         "scaled_dequantize operand has no resolvable block shape — \
@@ -7962,6 +7943,26 @@ impl<'a> Codegen<'a> {
             self.fp_helpers_used.set(true);
             self.block_helpers.borrow_mut().insert(h);
             return format!("{}({})", h.sv_name(), arg_strs[0]);
+        }
+        // `scaled_dot(a, b)` → the generated block helper. Unlike quantize /
+        // dequantize this returns a scalar FP32, so it stays an ordinary
+        // expression on both backends rather than needing a statement form.
+        if name == "scaled_dot" && args.len() == 2 {
+            let shape = self
+                .expr_decl_type(&args[0])
+                .as_ref()
+                .and_then(|t| crate::fp_block::shape_of_type(t))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "scaled_dot operand has no resolvable block shape — typecheck accepts \
+                         only matching `ScaledVec` operands, so this means the block size did \
+                         not fold to a literal (arch#884 phase 3)"
+                    )
+                });
+            let h = crate::fp_block::BlockHelper::Dot { shape };
+            self.fp_helpers_used.set(true);
+            self.block_helpers.borrow_mut().insert(h);
+            return format!("{}({}, {})", h.sv_name(), arg_strs[0], arg_strs[1]);
         }
         // Built-in SVA: past/rose/fell → SV $past/$rose/$fell
         if name == "past" || name == "rose" || name == "fell" {

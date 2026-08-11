@@ -1359,6 +1359,22 @@ fn fp8_smt_proofs() {
 /// than transcribed. All 9 of its mutants are killed, and three direct queries
 /// confirm the subtlety that has no analogue in any other format: code `0x00`
 /// is the 2^-127 f32 *subnormal*, not a zero.
+///
+/// `MX_DOT` is the phase-3 gate for `scaled_dot`: every element-pair product
+/// is exact in FP32, so **all rounding in a block dot is in the accumulation
+/// and none in the multiplies**. Each query proves that jointly with
+/// `arch_f32_mul` returning the product — normally out of reach, since general
+/// FP32 multiplier equivalence is SAT-hard, but tractable here because both
+/// operands are confined to a widened 4-to-8-bit grid. All five `unsat` in
+/// under 3 s.
+///
+/// Mutation-tested when written (2026-08-11, z3 4.15.4). Both halves bite:
+/// swapping `arch_f32_mul` for `arch_f32_add` is `sat` (the operator conjunct
+/// constrains), and replacing the widened element operands with unrestricted
+/// FP32 is `sat` *with the operator conjunct removed* (the exactness conjunct
+/// is not vacuous — it holds because of the operand grid, not by
+/// construction). Weakening mutations were considered and rejected as invalid:
+/// a spec that asserts less cannot produce `sat`.
 #[test]
 fn mx_storage_smt_proofs() {
     fn z3_available() -> bool {
@@ -1377,6 +1393,7 @@ fn mx_storage_smt_proofs() {
         for op in arch::fp_smt_proof::MX_CONV
             .iter()
             .chain(arch::fp_smt_proof::MX_SCALE_CONV.iter())
+            .chain(arch::fp_smt_proof::MX_DOT.iter())
         {
             let smt = arch::fp_smt_proof::equiv_proof(op, profile);
             let path = td.path().join(format!("{op}_{profile:?}.smt2"));
@@ -1724,6 +1741,14 @@ fn fp_assign_literal_coercion() {
 /// proven operators, no solver FP theory involved. Covers fp8+bf16 ops,
 /// compares, fma, is_nan, an exact-widen conversion, and a float reg reset.
 /// The Bad fixture locks refutation + float counterexamples. z3-gated.
+///
+/// Both invocations pass an explicit `--timeout` rather than relying on the
+/// 60 s default. The default is tuned for an interactive run on an idle
+/// machine; these queries use ~37 s of it, and the margin disappears when the
+/// test binary is running its other z3-backed tests in parallel — which is
+/// how this became a latent flake (arch#841) and how adding the `MX_DOT`
+/// miters surfaced it. Raising the cap here costs nothing when the queries
+/// converge, which is the normal case.
 #[test]
 fn fp_formal_float_props() {
     fn z3_available() -> bool {
@@ -1742,6 +1767,8 @@ fn fp_formal_float_props() {
         .arg("tests/fp_v1/FpFormalProps.arch")
         .arg("--solver")
         .arg("z3")
+        .arg("--timeout")
+        .arg("300")
         .arg("--bound")
         .arg("3")
         .output()
@@ -1766,6 +1793,8 @@ fn fp_formal_float_props() {
         .arg("tests/fp_v1/FpFormalBad.arch")
         .arg("--solver")
         .arg("z3")
+        .arg("--timeout")
+        .arg("300")
         .arg("--bound")
         .arg("2")
         .output()
@@ -2782,6 +2811,32 @@ fn fp_scaled_quant_round_trip_sim() {
         inf.get("q4f").map(|s| s.split(' ').nth(1).unwrap_or("")),
         Some("000000ff"),
         "an Inf input must also set the block scale to NaN:\n{stdout}"
+    );
+
+    // `scaled_dot` (phase 3). The `pow2` block is exactly representable in
+    // FP8E4M3, so `dot8` must be the EXACT sum of squares of the inputs:
+    // 1+4+16+0.25+64+0.0625+0+4 = 89.3125 = 0x42B2A000. Anything else means
+    // either the products or the scale application lost information, and both
+    // are supposed to be exact here.
+    assert_eq!(
+        pow2.get("dot").map(|s| s.split(' ').nth(2).unwrap_or("")),
+        Some("42b2a000"),
+        "an exactly-representable block must dot to the exact sum of squares:\n{stdout}"
+    );
+    // A dot with a NaN scale is NaN — the scale multiply poisons it, so this
+    // needs no separate rule.
+    assert!(
+        nan.get("dot")
+            .map_or(false, |l| l.split(' ').all(|w| w == "7fc00000")),
+        "every dot involving a NaN-scaled block is NaN:\n{stdout}"
+    );
+    // An all-zero block dots to +0, NOT to NaN: E8M0 has no zero, so the
+    // minimum-scale path multiplies a zero sum by the finite 2^-127.
+    assert!(
+        zeros
+            .get("dot")
+            .map_or(false, |l| l.split(' ').all(|w| w == "00000000")),
+        "an all-zero block must dot to +0:\n{stdout}"
     );
 
     // `floor_pow2` vs `ceil_pow2`: identical when the block maximum is

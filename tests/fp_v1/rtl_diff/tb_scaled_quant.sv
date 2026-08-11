@@ -22,11 +22,13 @@ module tb;
   logic [71:0]      q8;
   logic [23:0]      q4s;
   logic [7:0][31:0] back4, back6, back8;
+  logic [31:0]      dot4, dot6, dot8, dot4x;
 
   ScaledQuant dut (
     .v(v), .v4(v4),
     .q4_floor(q4_floor), .q4_ceil(q4_ceil), .q6(q6), .q8(q8), .q4s(q4s),
-    .back4(back4), .back6(back6), .back8(back8)
+    .back4(back4), .back6(back6), .back8(back8),
+    .dot4(dot4), .dot6(dot6), .dot8(dot8), .dot4x(dot4x)
   );
 
   string       names [NC];
@@ -110,6 +112,7 @@ module tb;
       show_vec("b4 ", back4, 8);
       show_vec("b6 ", back6, 8);
       show_vec("b8 ", back8, 8);
+      $display("dot %h %h %h %h", dot4, dot6, dot8, dot4x);
     end
     $finish;
   end

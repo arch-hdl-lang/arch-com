@@ -4615,6 +4615,54 @@ impl<'a> TypeChecker<'a> {
                         }
                     };
                 }
+                // `scaled_dot(a, b) -> FP32` — the block dot product, the one
+                // operation OCP MX §6.2 defines normatively. Needs no type
+                // annotation: both operand types are fully known, and the
+                // result is always FP32 (the spec's accumulate precision is
+                // implementation-defined and ARCH picks FP32).
+                if name == "scaled_dot" {
+                    if call_args.len() != 2 {
+                        self.errors.push(CompileError::general(
+                            "`scaled_dot(a, b)` takes exactly 2 arguments (two blocks)",
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    let at = self.resolve_expr_type(&call_args[0], module_name, local_types);
+                    let bt = self.resolve_expr_type(&call_args[1], module_name, local_types);
+                    if matches!(at, Ty::Todo | Ty::Error) || matches!(bt, Ty::Todo | Ty::Error) {
+                        return Ty::Error;
+                    }
+                    for (t, e) in [(&at, &call_args[0]), (&bt, &call_args[1])] {
+                        if !matches!(t, Ty::ScaledVec(..)) {
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "`scaled_dot(a, b)` requires `ScaledVec` operands, got {}",
+                                    t.display()
+                                ),
+                                e.span,
+                            ));
+                            return Ty::Error;
+                        }
+                    }
+                    // Both blocks must be the SAME type. A dot over mismatched
+                    // element formats or block sizes has no spec meaning, and
+                    // silently widening one side would invent semantics — the
+                    // same reason `+` on blocks is refused outright.
+                    if at != bt {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "`scaled_dot` requires matching block types: left is {}, \
+                                 right is {}",
+                                at.display(),
+                                bt.display()
+                            ),
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    return Ty::FP32;
+                }
                 // A bare `scaled_quantize(v)` reaches the generic call path
                 // because the parser only builds `ExprKind::ScaledQuantize`
                 // when `<` follows the name. That form has no meaning: the
