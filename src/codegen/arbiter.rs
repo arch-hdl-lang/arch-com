@@ -591,26 +591,19 @@ impl<'a> Codegen<'a> {
         self.line("end");
         self.line("");
 
-        // Build function call arguments from hook bindings
+        // Build function call arguments from hook bindings. `check_arbiter`
+        // (typecheck.rs) has already verified every arg is either
+        // `req_mask`/`last_grant` — the two internal signals substituted
+        // below — or the name of a real arbiter port/param, so every other
+        // name is already the correct SV identifier and is emitted as-is.
         let hook = a.hook.as_ref().unwrap();
         let args: Vec<String> = hook
             .fn_args
             .iter()
-            .map(|arg| {
-                let name = &arg.name;
-                // Map hook formal param names to actual SV signals
-                let hook_param = hook.params.iter().find(|p| p.name.name == *name);
-                if hook_param.is_some() {
-                    // This is a hook formal param — map known names to SV signals
-                    match name.as_str() {
-                        "req_mask" => req_valid.to_string(),
-                        "last_grant" => "last_grant_r".to_string(),
-                        _ => name.clone(),
-                    }
-                } else {
-                    // Must be a port or param name on the arbiter — use as-is
-                    name.clone()
-                }
+            .map(|arg| match arg.name.as_str() {
+                "req_mask" => req_valid.to_string(),
+                "last_grant" => "last_grant_r".to_string(),
+                _ => arg.name.clone(),
             })
             .collect();
         let args_str = args.join(", ");

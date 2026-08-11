@@ -8448,14 +8448,46 @@ impl<'a> TypeChecker<'a> {
                     ));
                 }
             }
+            // Codegen only ever substitutes two hook-parameter names with a
+            // real signal: `req_mask` -> the requester valid vector, and
+            // `last_grant` -> the fairness state register (see
+            // `emit_arbiter_custom` in codegen/arbiter.rs). Any other
+            // argument in the `= FnName(...)` binding is emitted into the
+            // generated SV *verbatim* as a bare identifier, so it must
+            // already be the name of a real signal — an arbiter port or
+            // param — not the hook's own declared parameter name. The hook
+            // parameter list is only the expected signature; echoing one of
+            // its (non-req_mask/last_grant) names back in the binding
+            // produces an identifier with no SV declaration anywhere
+            // (arch#827 P4.3: `examples/arbiter_custom_hook.arch` did
+            // exactly this with a hook-only `qos_in` instead of its actual
+            // `qos` port — undetected by `arch check`, a Verilator/iverilog
+            // "can't find definition" downstream).
             for arg in &hook.fn_args {
-                if !hook_param_names.contains(&arg.name.as_str())
-                    && !port_names.contains(&arg.name.as_str())
-                    && !param_names.contains(&arg.name.as_str())
+                let is_reserved_internal = arg.name == "req_mask" || arg.name == "last_grant";
+                if is_reserved_internal
+                    || port_names.contains(&arg.name.as_str())
+                    || param_names.contains(&arg.name.as_str())
                 {
+                    continue;
+                }
+                if hook_param_names.contains(&arg.name.as_str()) {
                     self.errors.push(CompileError::general(
                         &format!(
-                            "hook argument `{}` is not a hook parameter, port, or param",
+                            "hook argument `{}` names a hook parameter, not a signal — hook \
+                             parameters other than `req_mask`/`last_grant` only declare the \
+                             expected signature and have no SV net of their own. Pass the \
+                             arbiter port or param that supplies the value instead (its own \
+                             name, not the hook parameter name).",
+                            arg.name
+                        ),
+                        arg.span,
+                    ));
+                } else {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "hook argument `{}` is not `req_mask`, `last_grant`, or a declared \
+                             arbiter port/param",
                             arg.name
                         ),
                         arg.span,
