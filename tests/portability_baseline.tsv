@@ -12,9 +12,7 @@ examples/bus_basic.arch	-	BUILD_FAIL	Error:   × 9 errors
 examples/cdc_inst_safe.arch	iverilog	FAIL	SV:65: error: synced_data Unable to assign to unresolved wires.
 examples/cdc_inst_safe.arch	verilator	FAIL	%Error-BLKANDNBLK: SV:51:15: Unsupported: Blocking and non-blocking assignments to potentially overlapping bits of same packed variable: 'TopSafe.synced_data'
 examples/cdc_inst_violation.arch	-	BUILD_FAIL	Error:   × CDC violation at instance `cons`: signal `counter_a` (domain `DomainA`)
-examples/clk_div_counter.arch	-	BUILD_FAIL	Error:   × undefined module: `ClkDiv2`
-examples/clk_div_counter.arch	iverilog	FAIL	SV:14: error: Unknown module type: ClkDiv2
-examples/clk_div_counter.arch	verilator	FAIL	%Error-MODMISSING: SV:14:3: Cannot find file containing module: 'ClkDiv2'
+examples/clk_div_counter.arch	-	BUILD_FAIL	Error:   × inst `div` connects `rst_n`, which is not a port of `ClkDiv2` (did you
 examples/clk_divider.arch	iverilog	OK	-
 examples/clk_divider.arch	verilator	OK	-
 examples/clk_out_test.arch	iverilog	OK	-
@@ -208,7 +206,6 @@ tests/aes/aes_inv_sbox.arch	iverilog	OK	-
 tests/aes/aes_inv_sbox.arch	verilator	OK	-
 tests/aes/aes_key_expand_128.arch	iverilog	OK	-
 tests/aes/aes_key_expand_128.arch	verilator	OK	-
-tests/aes/aes_key_expand_mod.arch	-	BUILD_FAIL	Error:   × 5 errors
 tests/aes/aes_key_expand_mod.arch	iverilog	FAIL	SV:27: error: Unknown module type: AesSbox
 tests/aes/aes_key_expand_mod.arch	verilator	FAIL	%Error-MODMISSING: SV:27:3: Cannot find file containing module: 'AesSbox'
 tests/aes/aes_rcon.arch	iverilog	OK	-
@@ -375,7 +372,6 @@ tests/buf_mgr/next_ptr_mem.arch	iverilog	OK	-
 tests/buf_mgr/next_ptr_mem.arch	verilator	OK	-
 tests/buf_mgr/setup_counter.arch	iverilog	OK	-
 tests/buf_mgr/setup_counter.arch	verilator	OK	-
-tests/buf_mgr_sm/buf_mgr_sm.arch	-	BUILD_FAIL	Error:   × 3 errors
 tests/buf_mgr_sm/buf_mgr_sm.arch	iverilog	FAIL	SV:144: error: free_slot_rd_data Unable to assign to unresolved wires.
 tests/buf_mgr_sm/buf_mgr_sm.arch	verilator	OK	-
 tests/buf_mgr_sm/data_mem_sm.arch	iverilog	OK	-
@@ -1149,6 +1145,8 @@ tests/fp_v1/FpVacuous.arch	iverilog	OK	-
 tests/fp_v1/FpVacuous.arch	verilator	OK	-
 tests/fp_v1/IntToBf16.arch	iverilog	OK	-
 tests/fp_v1/IntToBf16.arch	verilator	OK	-
+tests/fp_v1/MxQuantBound.arch	iverilog	OK	-
+tests/fp_v1/MxQuantBound.arch	verilator	OK	-
 tests/fp_v1/NanProf.arch	iverilog	OK	-
 tests/fp_v1/NanProf.arch	verilator	OK	-
 tests/fp_v1/ScaledQuant.arch	iverilog	OK	-
@@ -1157,6 +1155,8 @@ tests/fp_v1/ScaledVecType.arch	iverilog	OK	-
 tests/fp_v1/ScaledVecType.arch	verilator	OK	-
 tests/fpt26_tlm/Fpt26RuntimeLoopTlm.arch	iverilog	OK	-
 tests/fpt26_tlm/Fpt26RuntimeLoopTlm.arch	verilator	OK	-
+tests/icarus_portability/AdjacentUnary.arch	iverilog	OK	-
+tests/icarus_portability/AdjacentUnary.arch	verilator	OK	-
 tests/icarus_portability/CallSliceHoist.arch	iverilog	OK	-
 tests/icarus_portability/CallSliceHoist.arch	verilator	OK	-
 tests/icarus_portability/ConcatRepeatSliceHoist.arch	iverilog	OK	-
