@@ -158,8 +158,8 @@ examples/reduction_ops.arch	iverilog	OK	-
 examples/reduction_ops.arch	verilator	OK	-
 examples/reset_asserted.arch	iverilog	OK	-
 examples/reset_asserted.arch	verilator	OK	-
-examples/reset_init_on.arch	iverilog	FAIL	SV:19: syntax error
-examples/reset_init_on.arch	verilator	FAIL	%Error: SV:19:21: syntax error, unexpected table
+examples/reset_init_on.arch	iverilog	OK	-
+examples/reset_init_on.arch	verilator	OK	-
 examples/reset_low.arch	iverilog	OK	-
 examples/reset_low.arch	verilator	OK	-
 examples/rom_lut.arch	iverilog	OK	-

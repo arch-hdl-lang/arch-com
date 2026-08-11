@@ -37,6 +37,8 @@ keyword Name
 end keyword Name
 ```
 
+**Identifiers:** casing (PascalCase modules, snake_case signals, UPPER_SNAKE params) is a recommendation, not enforced. One naming rule *is* a hard error: an identifier must not collide with an IEEE 1800-2017 SystemVerilog reserved word (`always`, `case`, `logic`, `priority`, `table`, `wire`, ... ~240 total) — every declared name is emitted verbatim as the SV identifier of the same spelling, so `reg table: ...` fails `arch check` with `'table' is a reserved SystemVerilog keyword`. Rename it (`table_`, `s_table`, `lut`, ...).
+
 **Signal assignment:**
 
 ```

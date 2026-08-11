@@ -7218,10 +7218,88 @@ impl<'a> TypeChecker<'a> {
     }
 
     // Naming convention checks removed — style is a convention (LLM defaults
-    // to snake_case), not a compiler-enforced rule.
-    pub(crate) fn check_pascal_case(&mut self, _ident: &Ident) {}
-    pub(crate) fn check_snake_case(&mut self, _ident: &Ident) {}
-    pub(crate) fn check_upper_snake(&mut self, _ident: &Ident) {}
+    // to snake_case), not a compiler-enforced rule. All three still funnel
+    // through `check_not_sv_reserved`, which is *not* a style check: every
+    // declared ARCH name reaches one of these three calls (module/construct
+    // names -> pascal, ports/signals/insts -> snake, params -> upper_snake),
+    // so this is the one place that sees the full set of names the compiler
+    // is about to emit verbatim as SV identifiers.
+    pub(crate) fn check_pascal_case(&mut self, ident: &Ident) {
+        self.check_not_sv_reserved(ident);
+    }
+    pub(crate) fn check_snake_case(&mut self, ident: &Ident) {
+        self.check_not_sv_reserved(ident);
+    }
+    pub(crate) fn check_upper_snake(&mut self, ident: &Ident) {
+        self.check_not_sv_reserved(ident);
+    }
+
+    /// Reject an ARCH identifier that collides with an IEEE 1800-2017
+    /// SystemVerilog reserved word. ARCH performs no renaming pass — a
+    /// declared name is emitted as an SV identifier of the same spelling —
+    /// so an SV keyword used as an ARCH name produces SV that no frontend
+    /// can parse, regardless of how well-typed the ARCH source is. Mirrors
+    /// `Parser::expect_ident`'s ARCH-keyword-collision diagnostic
+    /// (parser.rs) in both severity (hard error) and message shape, but
+    /// necessarily lives here instead: ARCH's own keywords get a dedicated
+    /// lexer `TokenKind` and so never reach `expect_ident`'s `Ident` arm at
+    /// all, while SV keywords are ordinary ARCH `Ident` tokens — some of
+    /// which are legitimately used ARCH *value* tokens in non-declaration
+    /// position (e.g. `policy priority;`, where `priority` is an SV
+    /// keyword but is matched and discarded, never stored as a declared
+    /// name). Gating on the naming-convention call sites — which by
+    /// construction only ever see identifiers already stored as a
+    /// declared name in the AST — keeps the check scoped to names that
+    /// actually reach codegen, without flagging value-position tokens.
+    /// (arch#827 P4.2: `reg table: ...` in `examples/reset_init_on.arch`
+    /// reached codegen untouched and emitted `logic [3:0][7:0] table;`,
+    /// rejected by both Verilator and Icarus — `table`/`endtable` are the
+    /// SV user-defined-primitive keywords.)
+    pub(crate) fn check_not_sv_reserved(&mut self, ident: &Ident) {
+        if is_sv_reserved_word(&ident.name) {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "'{}' is a reserved SystemVerilog keyword (IEEE 1800-2017) and cannot be \
+                     used as an identifier here — ARCH emits it verbatim as an SV identifier. \
+                     Rename it (e.g. '{}_', 's_{}', or 'my_{}').",
+                    ident.name, ident.name, ident.name, ident.name
+                ),
+                ident.span,
+            ));
+        }
+    }
+
+    /// Same check as `check_not_sv_reserved`, but for a `ports[N] array_name
+    /// ... sig: dir Type; ... end ports array_name` sub-signal (arbiter/
+    /// regfile/RAM/template port groups). The sub-signal's own name is
+    /// never emitted as a standalone SV identifier — codegen always
+    /// flattens it with the array's own name first (`{array}_{signal}`,
+    /// e.g. `emit_arbiter`/`emit_regfile`/`emit_ram`: `request` + `release`
+    /// -> `request_release`), so checking the bare sub-name against the SV
+    /// reserved-word list produces false positives on names that are
+    /// perfectly safe once flattened. Concretely: `synthesize_lock_arbiter`
+    /// (elaborate/threads.rs) generates a `release` sub-signal for every
+    /// `mutex`/`semaphore` lowering — bare `release` collides with SV's
+    /// `release` keyword, but the emitted `request_release` does not, and
+    /// all 29 lock/mutex/semaphore fixtures in the corpus already sit at
+    /// iverilog+verilator `OK` in `tests/portability_baseline.tsv` (arch#827
+    /// P4.2 sweep caught this as 29 false-positive regressions before this
+    /// flattened-name check replaced the bare one).
+    pub(crate) fn check_array_signal_not_sv_reserved(&mut self, array_name: &Ident, sig: &Ident) {
+        let flattened = format!("{}_{}", array_name.name, sig.name);
+        if is_sv_reserved_word(&flattened) {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "'{}' (ports[] signal `{}` in array `{}`) is a reserved SystemVerilog \
+                     keyword (IEEE 1800-2017) once flattened to its emitted SV name — ARCH \
+                     emits it verbatim as an SV identifier. Rename the array or the signal \
+                     (e.g. '{}_evt', 's_{}', or 'my_{}').",
+                    flattened, sig.name, array_name.name, sig.name, sig.name, sig.name
+                ),
+                sig.span,
+            ));
+        }
+    }
 
     /// Check that a WidthConst param's default value fits in the declared width.
     pub(crate) fn check_width_const_overflow(&mut self, p: &ParamDecl) {
@@ -8033,7 +8111,7 @@ impl<'a> TypeChecker<'a> {
         for pg in &r.port_groups {
             self.check_snake_case(&pg.name);
             for s in &pg.signals {
-                self.check_snake_case(&s.name);
+                self.check_array_signal_not_sv_reserved(&pg.name, &s.name);
             }
         }
         // Require at least one port group
@@ -8377,7 +8455,7 @@ impl<'a> TypeChecker<'a> {
         for pa in &a.port_arrays {
             self.check_snake_case(&pa.name);
             for s in &pa.signals {
-                self.check_snake_case(&s.name);
+                self.check_array_signal_not_sv_reserved(&pa.name, &s.name);
             }
         }
         // Validate latency
@@ -8484,13 +8562,13 @@ impl<'a> TypeChecker<'a> {
         if let Some(rp) = &r.read_ports {
             self.check_snake_case(&rp.name);
             for s in &rp.signals {
-                self.check_snake_case(&s.name);
+                self.check_array_signal_not_sv_reserved(&rp.name, &s.name);
             }
         }
         if let Some(wp) = &r.write_ports {
             self.check_snake_case(&wp.name);
             for s in &wp.signals {
-                self.check_snake_case(&s.name);
+                self.check_array_signal_not_sv_reserved(&wp.name, &s.name);
             }
         }
     }
@@ -9092,7 +9170,7 @@ impl<'a> TypeChecker<'a> {
         for pa in &t.port_arrays {
             self.check_snake_case(&pa.name);
             for s in &pa.signals {
-                self.check_snake_case(&s.name);
+                self.check_array_signal_not_sv_reserved(&pa.name, &s.name);
             }
         }
         for h in &t.hooks {
@@ -9924,6 +10002,270 @@ fn check_precedence_in_item(item: &Item, errors: &mut Vec<CompileError>) {
         }
         _ => {}
     }
+}
+
+/// IEEE 1800-2017 SystemVerilog reserved words (LRM Annex B, "Keywords").
+/// Used by `check_not_sv_reserved` to hard-reject an ARCH identifier that
+/// collides with one — unlike the naming-convention *lint* just below
+/// (opt-in, warning-only, casing-only), this check is unconditional and
+/// severity-matches the ARCH-keyword-collision error in
+/// `Parser::expect_ident`: ARCH performs no renaming pass, so a name on
+/// this list reaching codegen is not a style problem, it is SV that no
+/// frontend can parse. Only currently-reserved keywords are listed (not
+/// Annex C's "reserved for future use" set, which no shipping frontend
+/// actually rejects today).
+fn is_sv_reserved_word(name: &str) -> bool {
+    matches!(
+        name,
+        "accept_on"
+            | "alias"
+            | "always"
+            | "always_comb"
+            | "always_ff"
+            | "always_latch"
+            | "and"
+            | "assert"
+            | "assign"
+            | "assume"
+            | "automatic"
+            | "before"
+            | "begin"
+            | "bind"
+            | "bins"
+            | "binsof"
+            | "bit"
+            | "break"
+            | "buf"
+            | "bufif0"
+            | "bufif1"
+            | "byte"
+            | "case"
+            | "casex"
+            | "casez"
+            | "cell"
+            | "chandle"
+            | "checker"
+            | "class"
+            | "clocking"
+            | "cmos"
+            | "config"
+            | "const"
+            | "constraint"
+            | "context"
+            | "continue"
+            | "cover"
+            | "covergroup"
+            | "coverpoint"
+            | "cross"
+            | "deassign"
+            | "default"
+            | "defparam"
+            | "design"
+            | "disable"
+            | "dist"
+            | "do"
+            | "edge"
+            | "else"
+            | "end"
+            | "endcase"
+            | "endchecker"
+            | "endclass"
+            | "endclocking"
+            | "endconfig"
+            | "endfunction"
+            | "endgenerate"
+            | "endgroup"
+            | "endinterface"
+            | "endmodule"
+            | "endpackage"
+            | "endprimitive"
+            | "endprogram"
+            | "endproperty"
+            | "endspecify"
+            | "endsequence"
+            | "endtable"
+            | "endtask"
+            | "enum"
+            | "event"
+            | "eventually"
+            | "expect"
+            | "export"
+            | "extends"
+            | "extern"
+            | "final"
+            | "first_match"
+            | "for"
+            | "force"
+            | "foreach"
+            | "forever"
+            | "fork"
+            | "forkjoin"
+            | "function"
+            | "generate"
+            | "genvar"
+            | "global"
+            | "highz0"
+            | "highz1"
+            | "if"
+            | "iff"
+            | "ifnone"
+            | "ignore_bins"
+            | "illegal_bins"
+            | "implements"
+            | "implies"
+            | "import"
+            | "incdir"
+            | "include"
+            | "initial"
+            | "inout"
+            | "input"
+            | "inside"
+            | "instance"
+            | "int"
+            | "integer"
+            | "interconnect"
+            | "interface"
+            | "intersect"
+            | "join"
+            | "join_any"
+            | "join_none"
+            | "large"
+            | "let"
+            | "liblist"
+            | "library"
+            | "local"
+            | "localparam"
+            | "logic"
+            | "longint"
+            | "macromodule"
+            | "matches"
+            | "medium"
+            | "modport"
+            | "module"
+            | "nand"
+            | "negedge"
+            | "nettype"
+            | "new"
+            | "nexttime"
+            | "nmos"
+            | "nor"
+            | "noshowcancelled"
+            | "not"
+            | "notif0"
+            | "notif1"
+            | "null"
+            | "or"
+            | "output"
+            | "package"
+            | "packed"
+            | "parameter"
+            | "pmos"
+            | "posedge"
+            | "primitive"
+            | "priority"
+            | "program"
+            | "property"
+            | "protected"
+            | "pull0"
+            | "pull1"
+            | "pulldown"
+            | "pullup"
+            | "pulsestyle_ondetect"
+            | "pulsestyle_onevent"
+            | "pure"
+            | "rand"
+            | "randc"
+            | "randcase"
+            | "randsequence"
+            | "rcmos"
+            | "real"
+            | "realtime"
+            | "ref"
+            | "reg"
+            | "reject_on"
+            | "release"
+            | "repeat"
+            | "restrict"
+            | "return"
+            | "rnmos"
+            | "rpmos"
+            | "rtran"
+            | "rtranif0"
+            | "rtranif1"
+            | "s_always"
+            | "s_eventually"
+            | "s_nexttime"
+            | "s_until"
+            | "s_until_with"
+            | "scalared"
+            | "sequence"
+            | "shortint"
+            | "shortreal"
+            | "showcancelled"
+            | "signed"
+            | "small"
+            | "soft"
+            | "solve"
+            | "specify"
+            | "specparam"
+            | "static"
+            | "string"
+            | "strong"
+            | "strong0"
+            | "strong1"
+            | "struct"
+            | "super"
+            | "supply0"
+            | "supply1"
+            | "sync_accept_on"
+            | "sync_reject_on"
+            | "table"
+            | "tagged"
+            | "task"
+            | "this"
+            | "throughout"
+            | "time"
+            | "timeprecision"
+            | "timeunit"
+            | "tran"
+            | "tranif0"
+            | "tranif1"
+            | "tri"
+            | "tri0"
+            | "tri1"
+            | "triand"
+            | "trior"
+            | "trireg"
+            | "type"
+            | "typedef"
+            | "union"
+            | "unique"
+            | "unique0"
+            | "unsigned"
+            | "until"
+            | "until_with"
+            | "untyped"
+            | "use"
+            | "uwire"
+            | "var"
+            | "vectored"
+            | "virtual"
+            | "void"
+            | "wait"
+            | "wait_order"
+            | "wand"
+            | "weak"
+            | "weak0"
+            | "weak1"
+            | "while"
+            | "wildcard"
+            | "wire"
+            | "with"
+            | "within"
+            | "wor"
+            | "xnor"
+            | "xor"
+    )
 }
 
 // ── Naming-convention lint (issue #648, opt-in via `--lint-naming`) ───────────
