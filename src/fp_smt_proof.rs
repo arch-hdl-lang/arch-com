@@ -142,6 +142,28 @@ pub const MX_CONV: &[&str] = &[
 /// (non-finite to `0xFF`, zero/subnormal to the minimum scale `0x00`).
 pub const MX_SCALE_CONV: &[&str] = &["e8m0_widen", "e8m0_narrow"];
 
+/// NVFP4 `UE4M3` — the NVIDIA block scale. Characterized, not transcribed,
+/// for the same reason E8M0 is: restating the bit layout would let a layout
+/// error agree with itself.
+///
+/// `ue4m3_widen` pins the facts that *define* the format and separate it from
+/// its two neighbours — an anchor (code `0x38` is 1.0), strict monotonicity
+/// over the non-NaN codes, the sole NaN at `0x7F` (E4M3's is sign-agnostic
+/// all-magnitude-ones), non-negativity, and **a zero at `0x00`** (E8M0's
+/// `0x00` is the minimum scale 2^-127, emphatically not zero). Anchor plus
+/// monotonicity plus the endpoints determines the map on all 127 finite
+/// codes without ever mentioning an exponent field.
+///
+/// It also pins that the padding bit is **masked, not trusted**: `w(u)` must
+/// equal `w(u | 0x80)`. Without the mask a stray high bit is read as an E4M3
+/// SIGN and silently negates the scale.
+///
+/// `ue4m3_narrow` pins sign-independence (a scale is non-negative, so the
+/// narrow takes the magnitude — matching `arch_f32_to_e8m0`, which ignores
+/// the sign bit), that the padding bit always comes out clear, and NaN
+/// mapping. Its *rounding* is E4M3's, already proven by `e4m3_narrow`.
+pub const NVFP4_SCALE_CONV: &[&str] = &["ue4m3_widen", "ue4m3_narrow"];
+
 /// **The phase-3 gate for `scaled_dot`** (OCP MX §6.2): every element-pair
 /// product in a block dot is *exact* in FP32.
 ///
@@ -452,6 +474,39 @@ pub fn equiv_proof(op: &str, profile: FpCompat) -> String {
                  (check-sat)\n"
             ));
         }
+        // ── NVFP4 UE4M3 block scale: characterized, not transcribed ──
+        "ue4m3_widen" => s.push_str(
+            "(declare-fun u () (_ BitVec 8))\n\
+             (define-fun w ((k (_ BitVec 8))) F ((_ to_fp 8 24) (arch_ue4m3_to_f32 k)))\n\
+             (define-fun one () F ((_ to_fp 8 24) RNE 1.0))\n\
+             (define-fun mag () (_ BitVec 8) (bvand u #x7F))\n\
+             (assert (not (and\n\
+               (= (w #x38) one)\n\
+               (fp.isZero (w #x00))\n\
+               (fp.isNaN (w #x7F))\n\
+               (= (w u) (w (bvor u #x80)))\n\
+               (=> (bvult mag #x7F)\n\
+                   (and (not (fp.isNegative (w u)))\n\
+                        (not (fp.isInfinite (w u)))\n\
+                        (not (fp.isNaN (w u)))))\n\
+               (=> (bvult mag #x7E)\n\
+                   (fp.lt (w mag) (w (bvadd mag #x01)))))))\n(check-sat)\n",
+        ),
+        "ue4m3_narrow" => s.push_str(&format!(
+            "(declare-fun x () (_ BitVec 32))\n\
+             (define-fun fx () F ((_ to_fp 8 24) x))\n\
+             (define-fun rr () (_ BitVec 8) (arch_f32_to_ue4m3 x))\n\
+             (define-fun neg () (_ BitVec 32) (bvxor x #x80000000))\n\
+             (assert (not (and\n\
+               ; the padding bit is always clear\n\
+               (= (bvand rr #x80) #x00)\n\
+               ; a scale is non-negative: sign of the input is irrelevant\n\
+               (= rr (arch_f32_to_ue4m3 neg))\n\
+               ; NaN in, the sole NaN code out\n\
+               (=> (fp.isNaN fx) (= rr #x7F))\n\
+               ; and it agrees with the proven E4M3 narrow on the magnitude\n\
+               (= rr (arch_f32_to_e4m3 (concat #b0 ((_ extract 30 0) x)))))))\n(check-sat)\n"
+        )),
         _ if op.starts_with("bf16_") => {
             let bpre = "(declare-fun a () (_ BitVec 16))\n(declare-fun b () (_ BitVec 16))\n\
                         (define-fun ga () (_ FloatingPoint 8 8) ((_ to_fp 8 8) a))\n\

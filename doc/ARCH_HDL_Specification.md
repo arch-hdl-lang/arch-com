@@ -323,6 +323,8 @@ The Arch type system enforces four independent safety dimensions simultaneously.
 
   **ScaledVec\<E,N,S\>**  \|S\| + N × \|E\|    Block-scaled vector — N narrow elements sharing one scale, packed as `{scale, P[N-1..0]}` (MXFP4 = 136 bits). **No arithmetic, no ordered compares, no indexing** — OCP MX defines only the block dot product; `==`/`!=` are an *encoding* compare. Convert with `scaled_quantize<Fmt>` / `scaled_dequantize`; `scaled_dot(a,b)` is the block dot product. See §3.11.
 
+  **UE4M3**            8 bits               NVFP4 block **scale** type — 7-bit unsigned float, MSB padded zero, sole NaN `0x7F`. **Not a float**, and **not `FP8E4M3`** (that one is signed with a sign-agnostic NaN). Unlike `E8M0` it HAS a zero and is NOT a power of two. See §3.10a.
+
   **Clock\<D\>**       1 bit                Carries clock-domain tag D. Cannot appear in arithmetic.
 
   **Reset\<Sync, High\|Low\>**    1 bit                Synchronous reset --- deasserted on the clock edge. Polarity defaults High.
@@ -804,6 +806,39 @@ comb y = scale * x; end comb
 
 **`is_nan`** *is* available on `E8M0` --- unlike the sub-8-bit element formats, it genuinely has a NaN encoding, and testing for it is how a consumer detects a NaN block.
 
+**3.10a UE4M3 --- the NVFP4 block scale type**
+
+`UE4M3` is the shared-scale type of NVIDIA's NVFP4 block format. Per PTX it is
+*a 7-bit unsigned floating-point format, MSB padded with zero, whose NaN value
+is limited to `0x7f`*: an 8-bit carrier whose bit 7 is always zero, with bits
+`[6:0]` holding a 4-bit exponent (bias 7) and a 3-bit mantissa.
+
+**It is not `FP8E4M3`**, and using that type as a stand-in is a real bug, not
+an approximation: `FP8E4M3` is signed, and its NaN is sign-agnostic
+(`S.1111.111`) rather than the single code `0x7F`. It is, however,
+*numerically* `FP8E4M3` restricted to sign 0 --- every one of its 128 codes
+denotes the same value as the `FP8E4M3` code with the same bits --- which is
+why its conversions reuse the proven E4M3 helpers rather than adding a second
+rounder.
+
+Two differences from `E8M0` matter downstream:
+
+  - **`UE4M3` has a zero** (`0x00`). `E8M0`'s `0x00` is the *minimum scale*
+    2^-127.
+  - **Its value is not a power of two** (it has a mantissa). Dividing by an
+    `E8M0` scale is exact; dividing by a `UE4M3` scale is not.
+
+Like `E8M0` it is a **scale, not a float**: no arithmetic, no ordered
+compares. `.to_fp32()` yields the scale value, `.to_ue4m3()` narrows a float
+to a scale, and `is_nan` tests the single code `0x7F`. Because a scale is
+non-negative, `.to_ue4m3()` takes the **magnitude** of its operand (as
+`.to_e8m0()` does) and always clears the padding bit.
+
+`UE4M3` is a scalar type today. Using it as a `ScaledVec` scale is not yet
+supported --- see §3.11 --- because the block operations depend on the scale
+being a power of two.
+
+
 
 
 **Conversions.** `.to_fp32()` widens exactly. `.to_fp4e2m1()` narrows with round-to-nearest-ties-to-even and **saturates** on overflow. Saturation is profile-independent here, unlike fp8 where `--fp-compat` selects between a NaN/inf result and `satfinite`: E2M1 has neither a NaN nor an infinity to produce, so saturation is the only representable behavior. Cross-format conversions compose through `FP32`, each step exact or singly rounded.
@@ -1041,8 +1076,11 @@ The three arguments are constrained:
     scale has no meaning over wider or integer elements.
   - **`N`** is a const expression `>= 1`. A block with no elements is just a
     bare scale.
-  - **`Scale`** must be `E8M0`. `FP8E4M3` is **not** an accepted stand-in for
-    NVFP4's `UE4M3`; they are different formats.
+  - **`Scale`** must be `E8M0`. `UE4M3` (§3.10a) exists as a scalar type but
+    is not yet accepted here: unlike `E8M0` its value is not a power of two,
+    so dividing by it is inexact and the block operations' single-rounding
+    property (§3.11.1) does not hold. `FP8E4M3` is **not** a stand-in for
+    either.
 
 **A block is one packed word, not an array.** Layout is
 `{ scale[w-1:0], P[N-1], …, P[1], P[0] }` --- scale in the high bits,

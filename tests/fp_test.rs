@@ -1368,6 +1368,14 @@ fn fp8_smt_proofs() {
 /// operands are confined to a widened 4-to-8-bit grid. All five `unsat` in
 /// under 3 s.
 ///
+/// `NVFP4_SCALE_CONV` characterizes `UE4M3` the same way E8M0 is
+/// characterized — anchor, monotonicity, endpoints — plus the two facts that
+/// separate it from its neighbours: it HAS a zero at `0x00` (E8M0's `0x00` is
+/// the minimum scale) and its sole NaN is `0x7F` (E4M3's is sign-agnostic).
+/// All 8 of its mutants are killed, including corrupting the anchor code, the
+/// zero code, the NaN code, the monotonicity direction, the padding-bit mask,
+/// and dropping the magnitude mask from the narrow.
+///
 /// Mutation-tested when written (2026-08-11, z3 4.15.4). Both halves bite:
 /// swapping `arch_f32_mul` for `arch_f32_add` is `sat` (the operator conjunct
 /// constrains), and replacing the widened element operands with unrestricted
@@ -1394,6 +1402,7 @@ fn mx_storage_smt_proofs() {
             .iter()
             .chain(arch::fp_smt_proof::MX_SCALE_CONV.iter())
             .chain(arch::fp_smt_proof::MX_DOT.iter())
+            .chain(arch::fp_smt_proof::NVFP4_SCALE_CONV.iter())
         {
             let smt = arch::fp_smt_proof::equiv_proof(op, profile);
             let path = td.path().join(format!("{op}_{profile:?}.smt2"));
@@ -3241,5 +3250,144 @@ end module SatProbe
     assert!(
         all.contains("y_abs") && all.contains("INCONCLUSIVE"),
         "a bound over a range that overflows FP8E4M3 must not be PROVED:\n{all}"
+    );
+}
+
+// ── NVFP4 UE4M3 scale type (phase 5) ───────────────────────────────────────
+
+/// The whole `UE4M3` surface in the native sim, checked by the property that
+/// caught four of the five earlier scale-type bugs (#837): the bit test and
+/// the widen must agree on what NaN is —
+/// `is_nan(s) == (s.to_fp32() != s.to_fp32())`. A scale type carries no float
+/// dispatch tag, so every float-shaped path is a chance to silently take the
+/// f32 or integer branch, and only an agreement property catches that.
+///
+/// Also checks no code widens negative (a scale is unsigned) and that all 127
+/// finite codes round-trip through `.to_ue4m3()`.
+#[test]
+fn fp_ue4m3_scale_surface_sim() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = arch()
+        .arg("sim")
+        .arg("tests/fp_v1/Ue4m3Scale.arch")
+        .arg("--tb")
+        .arg("tests/fp_v1/tb_ue4m3.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("ALL PASS"),
+        "UE4M3 scale surface must pass:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// arch#904 regression, in BOTH backends.
+///
+/// `.to_fp32()` on a chained scale conversion used to lower as an integer
+/// widen — reinterpreting the 8-bit scale CODE as a whole number — because
+/// both backends routed by the receiver's *declared* type and a method call
+/// has none. Both backends were wrong in the same way, so the SV↔sim
+/// differential harness could not see it; only reading the emitted text can.
+#[test]
+fn fp_chained_scale_conversion_decodes_the_scale() {
+    let src = r#"module ScaleChain
+  port v: in FP32;
+  port a: out FP32;
+  port b: out FP32;
+  comb
+    a = v.to_e8m0().to_fp32();
+    b = v.to_ue4m3().to_fp32();
+  end comb
+end module ScaleChain
+"#;
+    let td = tempfile::tempdir().expect("tempdir");
+    let path = td.path().join("ScaleChain.arch");
+    std::fs::write(&path, src).unwrap();
+
+    // ── built SV ──
+    let sv = td.path().join("ScaleChain.sv");
+    let out = arch()
+        .arg("build")
+        .arg(&path)
+        .arg("-o")
+        .arg(&sv)
+        .output()
+        .expect("run arch build");
+    assert!(out.status.success(), "arch build failed");
+    let text = std::fs::read_to_string(&sv).unwrap();
+    let body = text
+        .split("module ScaleChain")
+        .nth(1)
+        .expect("emitted SV must contain the module");
+    assert!(
+        body.contains("arch_e8m0_to_f32(arch_f32_to_e8m0("),
+        "chained E8M0 must decode the scale, not widen an integer:\n{body}"
+    );
+    assert!(
+        body.contains("arch_ue4m3_to_f32(arch_f32_to_ue4m3("),
+        "chained UE4M3 must decode the scale, not widen an integer:\n{body}"
+    );
+    for wrong in ["arch_u64_to_f32", "arch_i64_to_f32"] {
+        assert!(
+            !body.contains(wrong),
+            "a scale code must never reach the integer widen `{wrong}`:\n{body}"
+        );
+    }
+
+    // ── sim ──
+    let tb = td.path().join("tb.cpp");
+    std::fs::write(
+        &tb,
+        r#"#include "VScaleChain.h"
+#include <cstdio>
+#include <cstring>
+static VScaleChain dut;
+int main() {
+  float one = 1.0f; uint32_t b; memcpy(&b, &one, 4);
+  dut.v = b; dut.eval();
+  float a, c; memcpy(&a, &dut.a, 4); memcpy(&c, &dut.b, 4);
+  // 1.0 -> E8M0 code 127 -> 2^0 = 1.0. The bug returned 127.0.
+  printf("%s\n", (a == 1.0f && c == 1.0f) ? "ALL PASS" : "FAIL");
+  printf("a=%g c=%g\n", a, c);
+  return 0;
+}
+"#,
+    )
+    .unwrap();
+    let out = arch()
+        .arg("sim")
+        .arg(&path)
+        .arg("--tb")
+        .arg(&tb)
+        .arg("--outdir")
+        .arg(td.path().join("sim"))
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ALL PASS"),
+        "chained scale conversion must decode to the scale VALUE in sim \
+         (1.0 -> code 127 -> 1.0, not 127.0):\n{stdout}"
+    );
+}
+
+/// `UE4M3` is a scalar type today; using it as a block scale is refused with
+/// a message that says why (its value is not a power of two) and where the
+/// work is tracked.
+#[test]
+fn fp_ue4m3_not_yet_a_block_scale() {
+    let src = r#"module Nvfp4Blk
+  port b: in ScaledVec<FP4E2M1, 16, UE4M3>;
+  port o: out ScaledVec<FP4E2M1, 16, UE4M3>;
+  comb o = b; end comb
+end module Nvfp4Blk
+"#;
+    let err = check_err(src, "Nvfp4Blk.arch");
+    assert!(
+        err.contains("not yet usable as a block scale") && err.contains("905"),
+        "the refusal must name the follow-up:\n{err}"
     );
 }

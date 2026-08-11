@@ -581,6 +581,7 @@ fn type_str(ty: &TypeExpr) -> String {
         TypeExpr::FP6E2M3 => "FP6E2M3".to_string(),
         TypeExpr::FP6E3M2 => "FP6E3M2".to_string(),
         TypeExpr::E8M0 => "E8M0".to_string(),
+        TypeExpr::UE4M3 => "UE4M3".to_string(),
         TypeExpr::Clock(domain) => format!("Clock<{}>", domain.name),
         TypeExpr::Reset(kind, level) => {
             let k = match kind {

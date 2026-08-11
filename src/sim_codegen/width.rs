@@ -146,7 +146,8 @@ pub(super) fn cpp_port_type_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> 
         | TypeExpr::FP4E2M1
         | TypeExpr::FP6E2M3
         | TypeExpr::FP6E3M2
-        | TypeExpr::E8M0 => "uint8_t".to_string(),
+        | TypeExpr::E8M0
+        | TypeExpr::UE4M3 => "uint8_t".to_string(),
         // A block is one packed word (MXFP4 = 8 + 32*4 = 136 bits), so it
         // lands in VlWide for every realistic N rather than a scalar bucket.
         TypeExpr::ScaledVec(elem, n, scale) => {
@@ -223,7 +224,8 @@ pub(super) fn cpp_internal_type_with_params(ty: &TypeExpr, params: &[ParamDecl])
         | TypeExpr::FP4E2M1
         | TypeExpr::FP6E2M3
         | TypeExpr::FP6E3M2
-        | TypeExpr::E8M0 => "uint8_t".to_string(),
+        | TypeExpr::E8M0
+        | TypeExpr::UE4M3 => "uint8_t".to_string(),
         TypeExpr::ScaledVec(elem, n, scale) => {
             let b = scaled_vec_bits(elem, n, scale, params);
             if b > 128 {
@@ -364,7 +366,7 @@ pub(super) fn scalar_type_bits_with_params(ty: &TypeExpr, params: &[ParamDecl]) 
         TypeExpr::Bool | TypeExpr::Bit => Some(1),
         TypeExpr::FP32 => Some(32),
         TypeExpr::BF16 => Some(16),
-        TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 | TypeExpr::E8M0 => Some(8),
+        TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 | TypeExpr::E8M0 | TypeExpr::UE4M3 => Some(8),
         TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Some(6),
         TypeExpr::FP4E2M1 => Some(4),
         // A block IS a scalar here: one packed word, not an aggregate. `None`
@@ -388,7 +390,7 @@ pub(super) fn type_width_of(ty: &TypeExpr) -> u32 {
         TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => 8,
         TypeExpr::FP4E2M1 => 4,
         TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => 6,
-        TypeExpr::E8M0 => 8,
+        TypeExpr::E8M0 | TypeExpr::UE4M3 => 8,
         TypeExpr::ScaledVec(elem, n, scale) => scaled_vec_bits(elem, n, scale, &[]),
         TypeExpr::Vec(..) | TypeExpr::Named(_) => 0,
     }

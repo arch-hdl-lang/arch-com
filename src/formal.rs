@@ -2154,7 +2154,8 @@ impl<'a> FormalCtx<'a> {
             | TypeExpr::FP4E2M1
             | TypeExpr::FP6E2M3
             | TypeExpr::FP6E3M2
-            | TypeExpr::E8M0 => Ok(()),
+            | TypeExpr::E8M0
+            | TypeExpr::UE4M3 => Ok(()),
             // A block is ONE packed bit-vector, not an aggregate, so it fits
             // the `(_ BitVec W)`-per-signal model directly — unlike Vec.
             TypeExpr::ScaledVec(..) => Ok(()),
@@ -2176,7 +2177,7 @@ impl<'a> FormalCtx<'a> {
             TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Ok((8, false)),
             TypeExpr::FP4E2M1 => Ok((4, false)),
             TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Ok((6, false)),
-            TypeExpr::E8M0 => Ok((8, false)),
+            TypeExpr::E8M0 | TypeExpr::UE4M3 => Ok((8, false)),
             TypeExpr::ScaledVec(elem, n, scale) => {
                 let n = fold_const_expr(n, &self.params).ok_or_else(|| {
                     CompileError::general(
