@@ -302,9 +302,10 @@ diff_baseline() {
 # ------------------------------------------------------------ bless_baseline
 # Merges $2 (this run's TSV) over $1 (baseline path, created empty if it
 # doesn't exist yet). For every (file,frontend) key this run actually
-# produced a non-SKIPPED verdict for, the fresh row wins; every other
-# baseline row (untouched files, or a frontend SKIPPED this run) survives
-# unchanged. Writes the merged, sorted result back to $1.
+# produced a non-SKIPPED verdict for, the fresh row wins; a baseline row
+# for an untouched file, or for a frontend SKIPPED this run, survives
+# unchanged. A baseline row for a file this run DID measure but no longer
+# has that key for is dropped — its row shape changed (arch#901). Writes the merged, sorted result back to $1.
 bless_baseline() {
   local baseline="$1" current="$2" before after
   mkdir -p "$(dirname "$baseline")"
@@ -325,11 +326,28 @@ bless_baseline() {
         if ($3 != "SKIPPED") {
           cur_line[key]=$0
           cur_seen[key]=1
+          cur_file[$1]=1
+        } else {
+          # Frontend not installed this run — its baseline row must
+          # survive untouched, so remember not to prune on its behalf.
+          skipped_key[key]=1
         }
       }
       END {
         for (k in base_line) {
-          print (k in cur_seen) ? cur_line[k] : base_line[k]
+          if (k in cur_seen) { print cur_line[k]; continue }
+          split(k, kp, FS)
+          # This run measured the file but produced no row for this key,
+          # so the row SHAPE changed. A design that fails to build emits
+          # one `file<TAB>-<TAB>BUILD_FAIL` row; one that builds emits a
+          # row per frontend. Merging without pruning kept BOTH shapes, so
+          # every later run reported the stale row as drift and the sweep
+          # could never go green again (arch#901).
+          #
+          # Not pruned when the frontend was SKIPPED this run: a partial
+          # local run must never delete CI-only coverage.
+          if ((kp[1] in cur_file) && !(k in skipped_key)) continue
+          print base_line[k]
         }
         for (k in cur_line) {
           if (!(k in base_line)) print cur_line[k]
@@ -340,6 +358,24 @@ bless_baseline() {
   mv "$baseline.tmp" "$baseline"
   after="$(wc -l < "$baseline" | tr -d ' ')"
   echo "sv-portability-sweep: blessed $baseline ($before -> $after rows) from $current" >&2
+
+  # Self-check (arch#901): a file must never hold BOTH a frontend-independent
+  # row (frontend "-", i.e. BUILD_FAIL/NO_MODULE) and per-frontend rows —
+  # those describe mutually exclusive outcomes, and the pair is exactly what
+  # a merge-without-prune used to leave behind. Such a baseline can never
+  # diff clean again, so catch it at the moment it would be written rather
+  # than the next time someone wonders why the sweep is permanently red.
+  local contradictory
+  contradictory="$(awk -F'\t' '
+    NR>1 { if ($2 == "-") dash[$1]=1; else fe[$1]=1 }
+    END { for (f in dash) if (f in fe) print f }
+  ' "$baseline")"
+  if [[ -n "$contradictory" ]]; then
+    echo "sv-portability-sweep: ERROR baseline has both a '-' row and per-frontend rows for:" >&2
+    printf '  %s\n' $contradictory >&2
+    echo "sv-portability-sweep: this baseline can never diff clean — see arch#901" >&2
+    return 1
+  fi
 }
 
 # ------------------------------------------------------------------- main --
