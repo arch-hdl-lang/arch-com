@@ -454,48 +454,46 @@ let rd: UInt<5> = instr[11:7];        // bit-slice, constant range
 let field: UInt<8> = data[idx +: 8];  // variable part-select, runtime start
 ```
 
-**Both forms require a portable base expression.** Not every Arch expression can legally be the target of `[hi:lo]` or `[start +: w]`/`[start -: w]` — SystemVerilog's bit-select/part-select grammar does not compose with arbitrary parenthesized expressions, and this holds for Verilator, Icarus (iverilog), and Yosys alike. A base is portable when it is one of:
+**Any expression may be the base.** `arch check` places no restriction on what a `[hi:lo]` bit-slice or `[start +: w]`/`[start -: w]` part-select applies to. SystemVerilog itself is far more restrictive — its select grammar composes only with an identifier, an indexed access, or a field access, and not with a parenthesized expression of any kind — so the compiler closes that gap in the backend rather than pushing it onto you:
 
-- an identifier (`a`, a signal or port name)
-- an integer literal
-- an indexed access (`v[i]`, e.g. a `Vec` element)
-- a field access (`s.field`)
-- a concatenation (`{a, b}`)
-- a replication (`{N{a}}`)
-- a function-call or method-call result (`f(x)`, `x.method()`)
+- a base SV can select from directly (`a`, `v[i]`, `s.field`) is emitted as-is;
+- **any other base is bound to a compiler-generated named temporary**, and the slice applies to that temporary.
 
-Anything else — an arithmetic or logical expression (`a + b`), a shift (`a >> 1`), a ternary, **or a bit-slice/part-select result itself** (chained slicing, e.g. `a[7:4][1:0]`) — is **rejected at `arch check`**:
+You do not need to work around this by hand. All of the following compile:
 
 ```
 port a: in UInt<8>;
 port b: in UInt<8>;
 port s: in UInt<3>;
+port c: in Bool;
 
-let y = (a + b)[s +: 4];   // ✗ COMPILE ERROR: cannot part-select this
-                            //   expression directly
-let z = a[7:4][1:0];       // ✗ COMPILE ERROR: cannot bit-slice this
-                            //   expression directly (chained slice)
+let w = (a + b)[s +: 4];    // ✓ arithmetic base
+let x = a[7:4][1:0];        // ✓ chained slice
+let y = (a >> 1)[3:0];      // ✓ shift base
+let z = (c ? a : b)[3:0];   // ✓ ternary base
 ```
 
-The parenthesized form is not a workaround — `(a + b)[s +: 4]` and `(a[7:4])[1:0]` are themselves illegal SystemVerilog (Verilator and iverilog both reject bit-select/part-select applied to a parenthesized non-selectable expression), so silently emitting parens would just move the syntax error from `arch check` to `arch build`'s output. The compiler instead rejects the construct up front and points at the fix: bind the expression to a named `let`/wire first, then slice or part-select the named value.
+`(a + b)[s +: 4]` emits as:
 
+```systemverilog
+logic [($bits(a + b))-1:0] arch_idx_base_0;
+assign arch_idx_base_0 = a + b;
+assign w = arch_idx_base_0[s +: 4];
 ```
-let sum: UInt<9> = a + b;
-let y = sum[s +: 4];        // ✓ portable base — sum is an identifier
-```
 
-For same-width modular arithmetic specifically, prefer the wrapping operators (`+%`, `-%`, `*%`) over a slice of an arithmetic result — `a +% b` already produces a same-width value with no truncation boilerplate needed.
+This is the same automatic hoist the single-bit `Index` form (`expr[i]`) has always used, now applied uniformly to `[hi:lo]` and `[start +: w]`/`[start -: w]`.
 
-> *⚑ The portable-base set applies uniformly to both `[hi:lo]` bit-slice and `[start +: w]`/`[start -: w]` variable part-select — they share the same `is_portable_bit_slice_base` check in the type checker. Four of the base kinds above — a concatenation (`{a, b}[hi:lo]`), a replication (`{N{a}}[hi:lo]`), a function-call result (`f(x)[hi:lo]`) and a method-call result (`x.trunc<8>()[hi:lo]`) — still type-check at `arch check`; they remain portable *ARCH source*, and you do not need to bind them to a named `let` by hand. What changed is the SV the compiler emits for them: earlier releases emitted the base bare (`{N{a}}[hi:lo]`, `f(x)[hi:lo]`, no enclosing parens) on the claim that "Verilator/iverilog accept the bare form but reject the parenthesized one." That claim was verified against Verilator 5.048 only (PR #656) and never against a real `iverilog` binary. Two follow-up investigations against real binaries found it wrong for all four:*
->
-> - *arch#807 — Icarus Verilog 12.0 rejects `{a, b}[hi:lo]`/`{N{a}}[hi:lo]` outright, bare or parenthesized, for both `[hi:lo]` and `[start +: w]`/`[start -: w]`.*
-> - *arch#810 — Icarus 12.0 likewise rejects `f(x)[hi:lo]`. The method-call case is worse still: the width-cast methods lower to an SV size cast (`x.trunc<8>()` emits `8'(x)`, `x.zext<16>()` emits `16'($unsigned(x))`), and **neither** Icarus 12.0 **nor** Verilator 5.048 accepts a select applied to a size cast — so that form previously produced SV that no supported frontend would compile.*
->
-> *The compiler now binds any `Concat`/`Repeat`/`FunctionCall`/`MethodCall` `BitSlice`/`PartSelect` base to a compiler-generated named temporary and applies the slice/part-select to that temporary instead — the same automatic-hoist strategy documented below for the single-bit `Index` form. This has been verified dual-simulator: Verilator 5.048 (build + behavioral run) and Icarus Verilog 12.0 (`iverilog -g2012` + `vvp`) both compile and agree on simulated values for `{a, b}[hi:lo]`, `{a, b}[start +: w]`, `{N{a}}[hi:lo]`, `{N{a}}[start +: w]`, `f(x)[hi:lo]`, `f(x)[start +: w]`, `x.trunc<8>()[hi:lo]`, `x.zext<8>()[start +: w]`, and `x.reverse<1>()[hi:lo]`.*
->
-> *The hoist applies uniformly to every construct, including inside a `pipeline` stage's `seq`, `let`, and `comb` bodies (arch#845 — the `pipeline` construct has its own SV expression emitters, and until it was fixed they emitted the base bare, so both findings above were live there after being fixed everywhere else).*
+For same-width modular arithmetic specifically, prefer the wrapping operators (`+%`, `-%`, `*%`) over a slice of an arithmetic result — `a +% b` already produces a same-width value with no truncation boilerplate and no temporary.
 
-**Single-bit index (`expr[i]`, no colon) is a separate form and is not restricted by `is_portable_bit_slice_base`** — it also serves plain `Vec` element access (`v[i]`), which is portable for any `v`, so `arch check` places no base restriction on it. `unsigned(x)[i]`, `signed(x)[i]`, `(x as T)[i]`, and `(a - b)[i]` all type-check. The compiler still guarantees portable *emission* for this form, but does so in the SystemVerilog backend rather than by rejecting anything at `arch check`: a `signed`/`unsigned`/`as T` wrapper around the indexed value is a same-width bit reinterpretation, so it is dropped rather than indexed (`unsigned(x)[i]` emits as `x[i]`); any other non-atomic base (arithmetic, logical, ...) is bound to a compiler-generated named temporary and the index applies to that temporary instead — the same "bind to a named `let`" strategy documented above for `BitSlice`/`PartSelect`, applied automatically. You do not need to work around this by hand.
+> *⚑ **Changed in arch#813 P1 — this replaces a normative restriction.** Earlier releases enforced a "portable base" allowlist in the type checker (`is_portable_bit_slice_base`): bases outside it were a compile error telling you to bind the expression to a `let` first. That rule was retired, and the change is monotone — every program that was valid before is still valid, and some previously-rejected ones now compile.*
+>
+> *The allowlist was wrong in both directions, which is why it went. **Too permissive**: `Concat`/`Repeat` (arch#807), `FunctionCall`/`MethodCall` (arch#810) and integer literals (`8'hff[s +: 2]`) were all classified portable and emitted bare, yet Icarus 12.0 rejects every one of them, and Verilator rejects the method-call size-cast and literal forms too. **Too restrictive**: arch#653 removed `BitSlice`/`PartSelect`/`Bool`/`EnumVariant` from it, converting a codegen limitation into a permanent user-visible language restriction — the compiler refused `a[7:4][1:0]` while cheerfully auto-hoisting the identical base for `a[7:4][1]`. Stating the rule the other way round (what SV can select from directly; hoist everything else) makes a newly added expression kind safe by default instead of silently non-portable until someone runs the right simulator.*
+>
+> *A base that reads a runtime `for`-loop iterator is hoisted too, with the temporary declared at the top of the loop body rather than at module scope, where the iterator would not be in scope (arch#861). The hoist applies uniformly to every construct, including inside a `pipeline` stage's `seq`, `let`, and `comb` bodies (arch#845), inside `always_*` blocks and `function` bodies (arch#846), and to `function` calls in any construct (arch#852).*
+>
+> *Verified dual-simulator — Verilator 5.048 and Icarus Verilog 12.0 (`iverilog -g2012` + `vvp`) both compile and agree on simulated values for arithmetic, chained-slice, shift, ternary, literal, concat, replication, function-call, size-cast and `.reverse()` bases, in both the `[hi:lo]` and `[start +: w]` forms.*
+
+**Single-bit index (`expr[i]`, no colon) is a separate form** — it also serves plain `Vec` element access (`v[i]`), and like the slice forms it places no base restriction on `arch check`. `unsigned(x)[i]`, `signed(x)[i]`, `(x as T)[i]`, and `(a - b)[i]` all type-check. The compiler still guarantees portable *emission* for this form, but does so in the SystemVerilog backend rather than by rejecting anything at `arch check`: a `signed`/`unsigned`/`as T` wrapper around the indexed value is a same-width bit reinterpretation, so it is dropped rather than indexed (`unsigned(x)[i]` emits as `x[i]`); any other non-atomic base (arithmetic, logical, ...) is bound to a compiler-generated named temporary and the index applies to that temporary instead — the same "bind to a named `let`" strategy documented above for `BitSlice`/`PartSelect`, applied automatically. You do not need to work around this by hand.
 
 **3.3 Struct and Enum Types**
 
