@@ -15,16 +15,14 @@
 //   arch sim tests/e203/e203_ifu_ifetch.arch tests/e203/e203_ifu_minidec.arch \
 //            tests/e203/e203_ifu_litebpu.arch --tb tests/e203/e203_ifu_ifetch_tb.cpp
 //
-// KNOWN ISSUE — the pc_rtvec reset vector is currently dead in this fixture, so
-// no check below asserts on it. `reset_flag_r` is declared `reset rst_n =>
-// false` and assigned `<= false`, so it is false in every cycle; the reference
-// design uses sirv_gnrl_dffrs (a DFF that *sets* on reset), and the ARCH
-// comment on the register says as much ("resets to 1, captures 0"). Because
-// `reset_req_set = (~reset_req_r) & reset_flag_r` can therefore never fire,
-// `ifu_reset_req` is never true and the `ifu_reset_req ? pc_rtvec : pc_r` arm
-// of the PC mux is unreachable. The core boots from 0x0 instead of pc_rtvec.
-// Fixing that is a design change to the fixture, not test hygiene, so it is
-// reported separately rather than baked into this tb as expected behavior.
+// BOOT BEHAVIOUR — `pc_rtvec` is the reset vector. `reset_flag_r` resets to
+// true (mirroring the reference `sirv_gnrl_dffrs`, a DFF that *sets* on
+// reset), which arms `reset_req_r`; that both holds fetch off while reset is
+// asserted and selects `pc_rtvec` for the first fetch. Arming costs one cycle
+// after release, so `reset()` below ticks once and the first offered fetch is
+// the reset vector, not `pc_r + incr`. Test 2 covers this directly.
+// Before arch#800 the register reset to false, so both effects were dead and
+// the core booted from 0x0 whatever `pc_rtvec` was driven to.
 
 #include "Ve203_ifu_ifetch.h"
 #include <cstdio>
@@ -41,6 +39,11 @@ static int fail_count = 0;
 
 static Ve203_ifu_ifetch* dut;
 
+// Reset vector used by `reset()`. Zero keeps the sequential-fetch tests below
+// on the same PCs they used before the reset vector worked; Test 2 drives a
+// non-zero vector explicitly to prove it is honoured.
+static const uint32_t BOOT_PC = 0x00000000u;
+
 // RV32 `add x3, x1, x2` — rs1=1, rs2=2, bits[1:0]=11 so minidec sees rv32.
 static const uint32_t RV32_ADD_X3_X1_X2 = 0x002081B3u;
 // RVC `c.li x10, 0` — bits[1:0]=01, so minidec sees a 16-bit instruction.
@@ -53,7 +56,7 @@ static void tick() {
 
 static void reset() {
     dut->rst_n = 0;
-    dut->pc_rtvec = 0x80000000;
+    dut->pc_rtvec = BOOT_PC;
     dut->ifu_req_ready = 1;
     dut->ifu_rsp_valid = 0;
     dut->ifu_rsp_err = 0;
@@ -77,6 +80,11 @@ static void reset() {
     dut->dec2ifu_remu = 0;
     for (int i = 0; i < 3; i++) tick();
     dut->rst_n = 1;
+    dut->eval();
+    // Arming `reset_req_r` costs one cycle after release; the fetch offered
+    // after it is the reset vector, so the first request every test sees is
+    // BOOT_PC rather than pc_r + incr.
+    tick();
     dut->eval();
 }
 
@@ -111,19 +119,25 @@ int main() {
     // A fetch is offered immediately: nothing is outstanding and halt is low.
     CHECK(dut->ifu_req_valid == 1, "req_valid should be 1 after reset, got %d", dut->ifu_req_valid);
 
-    // ── Test 2: Sequential RV32 fetch advances PC by 4 ───────────────
-    printf("Test 2: Sequential RV32 fetch\n");
+    // ── Test 2: Boot fetch targets the reset vector, then PC += 4 ────
+    printf("Test 2: Boot fetch at the reset vector, then sequential RV32\n");
     reset();
     dut->ifu_rsp_instr = RV32_ADD_X3_X1_X2;
     dut->eval();
-    CHECK(dut->ifu_req_seq == 1, "req_seq should be 1 for a sequential fetch, got %d", dut->ifu_req_seq);
+    // The first fetch after reset is the reset vector, so it is *not*
+    // sequential — `ifu_req_seq` excludes it via `~ifu_reset_req`. Before
+    // arch#800 this fetch did not exist and the unit started at pc_r + incr.
+    CHECK(dut->ifu_req_seq == 0, "the boot fetch should be non-sequential, got req_seq %d", dut->ifu_req_seq);
     CHECK(dut->ifu_req_seq_rv32 == 1, "req_seq_rv32 should be 1 for an RV32 instr, got %d", dut->ifu_req_seq_rv32);
-    CHECK(dut->ifu_req_pc == 0x4, "first req_pc should be 0x4 (pc 0 + 4), got 0x%08x", dut->ifu_req_pc);
-    CHECK(dut->ifu_req_last_pc == 0x0, "req_last_pc should be the current pc 0x0, got 0x%08x", dut->ifu_req_last_pc);
-    tick();                       // request handshake
+    CHECK(dut->ifu_req_pc == BOOT_PC, "boot req_pc should be the reset vector 0x%08x, got 0x%08x",
+          BOOT_PC, dut->ifu_req_pc);
+    tick();                       // boot request handshake
     dut->eval();
-    CHECK(dut->inspect_pc == 0x4, "pc should advance to 0x4, got 0x%08x", dut->inspect_pc);
-    CHECK(dut->ifu_req_pc == 0x8, "next req_pc should be 0x8, got 0x%08x", dut->ifu_req_pc);
+    CHECK(dut->inspect_pc == BOOT_PC, "pc should land on the reset vector 0x%08x, got 0x%08x",
+          BOOT_PC, dut->inspect_pc);
+    CHECK(dut->ifu_req_seq == 1, "the fetch after boot should be sequential, got req_seq %d", dut->ifu_req_seq);
+    CHECK(dut->ifu_req_pc == BOOT_PC + 4, "next req_pc should be 0x%08x (RV32 +4), got 0x%08x",
+          BOOT_PC + 4, dut->ifu_req_pc);
 
     // ── Test 3: Single outstanding request ───────────────────────────
     // After a request handshake the unit must not offer another fetch until
@@ -133,7 +147,7 @@ int main() {
     for (int i = 0; i < 3; i++) {
         tick(); dut->eval();
         CHECK(dut->ifu_req_valid == 0, "req_valid must stay 0 with no response (cycle %d)", i);
-        CHECK(dut->inspect_pc == 0x4, "pc must not advance while stalled, got 0x%08x", dut->inspect_pc);
+        CHECK(dut->inspect_pc == BOOT_PC, "pc must not advance while stalled, got 0x%08x", dut->inspect_pc);
     }
 
     // ── Test 4: Response delivers the instruction to decode ──────────
@@ -147,7 +161,7 @@ int main() {
     CHECK(dut->ifu_o_valid == 1, "o_valid should be 1 after a response, got %d", dut->ifu_o_valid);
     CHECK(dut->ifu_o_ir == RV32_ADD_X3_X1_X2, "o_ir should be 0x%08x, got 0x%08x",
           RV32_ADD_X3_X1_X2, dut->ifu_o_ir);
-    CHECK(dut->ifu_o_pc == 0x4, "o_pc should be the fetched pc 0x4, got 0x%08x", dut->ifu_o_pc);
+    CHECK(dut->ifu_o_pc == BOOT_PC, "o_pc should be the fetched pc 0x%08x, got 0x%08x", BOOT_PC, dut->ifu_o_pc);
     CHECK(dut->ifu_o_pc_vld == 1, "o_pc_vld should be 1, got %d", dut->ifu_o_pc_vld);
     CHECK(dut->ifu_o_rs1idx == 1, "o_rs1idx should be 1 (add x3,x1,x2), got %d", dut->ifu_o_rs1idx);
     CHECK(dut->ifu_o_rs2idx == 2, "o_rs2idx should be 2 (add x3,x1,x2), got %d", dut->ifu_o_rs2idx);
@@ -177,9 +191,15 @@ int main() {
     dut->ifu_rsp_instr = RVC_LI_X10_0;
     dut->eval();
     CHECK(dut->ifu_req_seq_rv32 == 0, "req_seq_rv32 should be 0 for a 16-bit instr, got %d", dut->ifu_req_seq_rv32);
-    CHECK(dut->ifu_req_pc == 0x2, "RVC req_pc should be 0x2 (pc 0 + 2), got 0x%08x", dut->ifu_req_pc);
-    tick(); dut->eval();
-    CHECK(dut->inspect_pc == 0x2, "pc should advance by 2 for RVC, got 0x%08x", dut->inspect_pc);
+    // The boot fetch goes to the reset vector regardless of instruction width;
+    // the 2-byte increment shows on the fetch after it.
+    CHECK(dut->ifu_req_pc == BOOT_PC, "boot req_pc should be the reset vector 0x%08x, got 0x%08x",
+          BOOT_PC, dut->ifu_req_pc);
+    tick(); dut->eval();           // boot request handshake
+    CHECK(dut->inspect_pc == BOOT_PC, "pc should land on the reset vector 0x%08x, got 0x%08x",
+          BOOT_PC, dut->inspect_pc);
+    CHECK(dut->ifu_req_pc == BOOT_PC + 2, "RVC next req_pc should be 0x%08x (pc + 2), got 0x%08x",
+          BOOT_PC + 2, dut->ifu_req_pc);
 
     // ── Test 7: Bus error is captured with the instruction ───────────
     printf("Test 7: Bus error capture\n");
@@ -239,6 +259,33 @@ int main() {
     dut->eval();
     tick(); dut->eval();
     CHECK(dut->ifu_halt_ack == 0, "halt_ack should clear when halt_req drops, got %d", dut->ifu_halt_ack);
+
+    // ── Test 10: A non-zero reset vector is honoured ─────────────────
+    // The regression this file exists to hold: before arch#800 `pc_rtvec` was
+    // dead — `reset_flag_r` reset to false, so `reset_req_r` never armed and
+    // the boot fetch came from pc_r + incr no matter what the vector said.
+    // Driving a vector far from 0 makes that unmistakable.
+    printf("Test 10: Non-zero reset vector\n");
+    reset();
+    dut->pc_rtvec = 0x80000000;
+    // Present an RV32 instruction so the post-boot increment is 4; the width
+    // comes from whatever minidec sees on ifu_rsp_instr, and 0 decodes as RVC.
+    dut->ifu_rsp_instr = RV32_ADD_X3_X1_X2;
+    dut->rst_n = 0;
+    for (int i = 0; i < 3; i++) tick();
+    dut->rst_n = 1;
+    dut->eval();
+    CHECK(dut->ifu_req_valid == 0, "fetch should be held off until the reset request arms, got %d",
+          dut->ifu_req_valid);
+    tick();
+    dut->eval();
+    CHECK(dut->ifu_req_valid == 1, "a boot fetch should be offered once armed, got %d", dut->ifu_req_valid);
+    CHECK(dut->ifu_req_pc == 0x80000000u, "boot req_pc should be pc_rtvec 0x80000000, got 0x%08x",
+          dut->ifu_req_pc);
+    tick();
+    dut->eval();
+    CHECK(dut->inspect_pc == 0x80000000u, "pc should land on the reset vector, got 0x%08x", dut->inspect_pc);
+    CHECK(dut->ifu_req_pc == 0x80000004u, "next req_pc should be 0x80000004, got 0x%08x", dut->ifu_req_pc);
 
     printf("\n=== e203_ifu_ifetch: %d failure(s) ===\n", fail_count);
     return fail_count ? 1 : 0;
