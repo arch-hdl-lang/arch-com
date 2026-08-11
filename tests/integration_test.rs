@@ -35927,3 +35927,103 @@ end module LitPartSelect813
         "literal base emitted bare, got:\n{sv}"
     );
 }
+
+// ---------------------------------------------------------------------
+// arch#887 — `arch build` was not idempotent. It emits a `<Bus>.archi`
+// stub next to the input for every bus a design references; a second
+// build in the same directory auto-discovered that stub *in addition to*
+// the real definition and reported `duplicate definition`.
+//
+// `resolve` already drops an interface stub superseded by a real
+// definition in the same unit — but `Item::is_interface()` returned false
+// for `Item::Bus`, so a bus stub was indistinguishable from a real bus
+// and the drop never fired. `BusDecl` now carries its own `is_interface`
+// flag (it has no `ConstructCommon` to hang one on).
+// ---------------------------------------------------------------------
+
+/// Building the same design twice in the same directory must succeed both
+/// times and emit byte-identical SV.
+///
+/// The bus must come from a *library* path while the design lives
+/// elsewhere: that is the shape that broke. `arch build` writes the
+/// discovered bus's stub (`LibBus.archi`) next to the **design**, so a
+/// second build finds the real `bus` via `ARCH_LIB_PATH` *and* the stub in
+/// the input directory — two items, same name. Passing both files
+/// explicitly on one command line does NOT reproduce it (verified: an
+/// earlier version of this test did that and passed against the unfixed
+/// compiler).
+#[test]
+fn test_arch_build_is_idempotent_with_emitted_bus_archi() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let lib = td.path().join("lib");
+    let design = td.path().join("design");
+    std::fs::create_dir_all(&lib).expect("mkdir lib");
+    std::fs::create_dir_all(&design).expect("mkdir design");
+
+    std::fs::write(
+        lib.join("LibBus.arch"),
+        r#"
+bus LibBus
+  valid: out Bool;
+  data:  out UInt<8>;
+end bus LibBus
+"#,
+    )
+    .expect("write bus");
+    std::fs::write(
+        design.join("BusUser.arch"),
+        r#"
+module BusUser
+  port out_bus: initiator LibBus;
+  port v: in Bool;
+  port d: in UInt<8>;
+  comb
+    out_bus.valid = v;
+    out_bus.data = d;
+  end comb
+end module BusUser
+"#,
+    )
+    .expect("write design");
+
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let mut outputs = Vec::new();
+    for pass in 1..=3 {
+        let out = design.join(format!("BusUser_{pass}.sv"));
+        let res = std::process::Command::new(arch_bin)
+            .arg("build")
+            .arg(design.join("BusUser.arch"))
+            .arg("-o")
+            .arg(&out)
+            .arg("--no-auto-asserts")
+            .env("ARCH_LIB_PATH", &lib)
+            .output()
+            .expect("run arch build");
+        let stderr = String::from_utf8_lossy(&res.stderr);
+        assert!(
+            res.status.success(),
+            "arch#887: build pass {pass} failed — a re-build must not trip over the \
+             `.archi` the previous build emitted\nstdout:\n{}\nstderr:\n{stderr}",
+            String::from_utf8_lossy(&res.stdout)
+        );
+        assert!(
+            !stderr.contains("duplicate definition"),
+            "arch#887: build pass {pass} reported a duplicate definition:\n{stderr}"
+        );
+        outputs.push(std::fs::read_to_string(&out).expect("read emitted SV"));
+    }
+    // Confirms the test exercises the path it claims to rather than
+    // passing vacuously: the stub really was emitted next to the design.
+    assert!(
+        design.join("LibBus.archi").exists(),
+        "expected arch build to emit LibBus.archi next to the design"
+    );
+    assert_eq!(
+        outputs[0], outputs[1],
+        "arch#887: rebuild changed the emitted SV"
+    );
+    assert_eq!(
+        outputs[1], outputs[2],
+        "arch#887: third build changed the emitted SV"
+    );
+}

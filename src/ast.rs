@@ -96,6 +96,13 @@ pub struct BusDecl {
     /// the method surface here; elaboration/codegen materialize the flattened
     /// request/response wires and thread lowering. See doc/archive/plan_tlm_method.md.
     pub tlm_methods: Vec<TlmMethodMeta>,
+    /// True when this `bus` was loaded from a `.archi` interface stub
+    /// rather than from real source. `arch build` emits a stub for every
+    /// bus a design references, so a rebuild in the same directory
+    /// re-discovers it alongside the real definition; `resolve` drops the
+    /// stub when a real definition of the same name is in the unit, but
+    /// only if it can *tell* it is a stub (arch#887).
+    pub is_interface: bool,
     pub span: Span,
 }
 
@@ -1505,10 +1512,15 @@ impl Item {
             Item::Regfile(r) => r.common.is_interface,
             Item::Pipeline(p) => p.common.is_interface,
             Item::Linklist(l) => l.common.is_interface,
+            // `bus` has no `ConstructCommon`, but it *does* cross
+            // `.archi` boundaries — `arch build` emits a stub for every
+            // bus a design references — so it carries its own flag
+            // (arch#887).
+            Item::Bus(b) => b.is_interface,
             // The remaining variants (Domain, Struct, Enum, Function,
-            // Template, Synchronizer, Clkgate, Bus, Package, Use)
-            // either don't get instantiated across `.archi` boundaries
-            // or aren't `ConstructCommon`-bearing. No is_interface for
+            // Template, Synchronizer, Clkgate, Package, Use) either
+            // don't get instantiated across `.archi` boundaries or
+            // aren't `ConstructCommon`-bearing. No is_interface for
             // them today; extend if/when a new case appears.
             _ => false,
         }
@@ -1558,6 +1570,12 @@ impl Item {
             }
             Item::Linklist(l) => {
                 l.common.is_interface = val;
+                true
+            }
+            // See `is_interface`: `bus` crosses `.archi` boundaries and
+            // carries its own flag rather than a `ConstructCommon` one.
+            Item::Bus(b) => {
+                b.is_interface = val;
                 true
             }
             _ => false,
