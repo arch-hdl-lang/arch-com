@@ -36027,3 +36027,161 @@ end module BusUser
         "arch#887: third build changed the emitted SV"
     );
 }
+
+// ---------------------------------------------------------------------
+// arch#892 — adjacent prefix operators were emitted juxtaposed. Unary is
+// one precedence level, so `emit_expr_prec(operand, 14)` never
+// parenthesized a nested unary, and every same-operator pair is then
+// either a syntax error or a *different token*: `~~`/`!!`/`^^`/`- -` are
+// rejected by Icarus 12.0, and `--`/`&&`/`||` are rejected by BOTH
+// frontends because they lex as decrement / logical-AND / logical-OR.
+// ---------------------------------------------------------------------
+
+/// Emitted-shape check (no simulator required, so it runs on the PR gate).
+#[test]
+fn test_adjacent_unary_operators_are_parenthesized() {
+    let sv = compile_to_sv(
+        r#"
+module AdjUnary892
+  port a: in UInt<4>;
+  port p: in Bool;
+  port y_notnot: out UInt<4>;
+  port y_lognot: out Bool;
+  port y_redand: out Bool;
+  port y_redor:  out Bool;
+  port y_redxor: out Bool;
+  comb
+    y_notnot = ~(~a);
+    y_lognot = not (not p);
+    y_redand = &(&a);
+    y_redor  = |(|a);
+    y_redxor = ^(^a);
+  end comb
+end module AdjUnary892
+"#,
+    );
+    for good in [
+        "assign y_notnot = ~(~a);",
+        "assign y_lognot = !(!p);",
+        "assign y_redand = &(&a);",
+        "assign y_redor = |(|a);",
+        "assign y_redxor = ^(^a);",
+    ] {
+        assert!(sv.contains(good), "expected `{good}`, got:\n{sv}");
+    }
+    // The juxtaposed forms must not appear anywhere. `&&`/`||` would not
+    // merely fail to parse — they lex as binary operators.
+    for bad in ["~~", "!!", "&&", "||", "^^"] {
+        assert!(
+            !sv.contains(bad),
+            "arch#892 regression: emitted juxtaposed `{bad}`:\n{sv}"
+        );
+    }
+}
+
+/// Dual-simulator behavioral check (arch#892): the parenthesized emission
+/// must compile on both frontends *and* preserve values. Skips gracefully
+/// if neither simulator is installed.
+#[test]
+fn test_adjacent_unary_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#892 adjacent-unary dual-sim check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("AdjacentUnary.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/AdjacentUnary.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .arg("--no-auto-asserts")
+        .output()
+        .expect("build AdjacentUnary SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("adjacent_unary.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_adjacent_unary.sv")
+            .output()
+            .expect("iverilog compile AdjacentUnary");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#892 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog AdjacentUnary");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm adjacent-unary semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_adjacent_unary");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("AdjacentUnary")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_adjacent_unary_verilator.cpp")
+            .output()
+            .expect("verilate AdjacentUnary");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass — `--`/`&&`/`||` are rejected by Verilator \
+             too, not just Icarus\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VAdjacentUnary");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator AdjacentUnary");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm adjacent-unary semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
