@@ -34,7 +34,10 @@ use crate::ast::{FloatLitFmt, TypeExpr};
 
 /// Canonical identifier for a floating-point format. Exhaustively matchable,
 /// unlike the `&'static str` dispatch tags.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// `Ord` is derived so a backend can hold a `BTreeSet` of the block helpers it
+// needs and emit them in a stable order — deterministic output is a CI gate
+// (`scripts/refactor_diff.sh`), not a nicety.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FpFormatId {
     Fp32,
     Bf16,

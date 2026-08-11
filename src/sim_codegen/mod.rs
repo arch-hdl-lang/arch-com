@@ -421,6 +421,15 @@ impl<'a> SimCodegen<'a> {
         let cov_handle: Option<&std::cell::RefCell<CoverageRegistry>> =
             if self.coverage { Some(&cov_reg) } else { None };
 
+        // `ScaledVec` block helpers referenced by this module's comb/seq
+        // bodies. Collected while emitting statements, then emitted as
+        // definitions ahead of the class methods (the `__ARCH_BLOCK_HELPERS__`
+        // placeholder below) — the set is not known until the bodies are
+        // walked, exactly like the coverage counter array above.
+        let block_helpers: std::cell::RefCell<
+            std::collections::BTreeSet<crate::fp_block::BlockHelper>,
+        > = std::cell::RefCell::new(std::collections::BTreeSet::new());
+
         // Collect bus port names and flattened signals (with direction for debug)
         let mut bus_port_names: HashSet<String> = HashSet::new();
         let mut bus_flat: Vec<(String, TypeExpr)> = Vec::new();
@@ -2280,6 +2289,8 @@ impl<'a> SimCodegen<'a> {
         // ── Implementation ────────────────────────────────────────────────────
         let mut cpp = String::new();
         cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
+        // Patched after the bodies are emitted — see `block_helpers` above.
+        cpp.push_str("__ARCH_BLOCK_HELPERS__");
 
         if self.coverage {
             cpp.push_str("__ARCH_COV_IMPL_DEFN__");
@@ -2553,6 +2564,7 @@ impl<'a> SimCodegen<'a> {
             .with_vec_sizes(&vec_sizes)
             .posedge()
             .with_coverage(cov_handle)
+            .with_block_helpers(Some(&block_helpers))
             .with_let_values(&let_values)
             .with_params(&m.params)
             .with_vinit_regs(&vinit_regs);
@@ -3110,6 +3122,7 @@ impl<'a> SimCodegen<'a> {
         .with_vec_2d_names(&vec_2d_names)
         .with_vec_sizes(&vec_sizes)
         .with_coverage(cov_handle)
+        .with_block_helpers(Some(&block_helpers))
         .with_let_values(&let_values)
         .with_params(&m.params)
         .with_vec_of_bus(
@@ -3202,6 +3215,7 @@ impl<'a> SimCodegen<'a> {
                                         vinit_regs: ctx_comb.vinit_regs,
                                         decl_types: ctx_comb.decl_types,
                                         struct_defs: ctx_comb.struct_defs,
+                                        block_helpers: ctx_comb.block_helpers,
                                     };
                                     hits.push(cpp_expr(&margs[0], &sub_ctx));
                                 }
@@ -3973,6 +3987,29 @@ impl<'a> SimCodegen<'a> {
         };
         h = h.replace("__ARCH_COV_HEADER_DECL__", &header_decl);
         cpp = cpp.replace("__ARCH_COV_IMPL_DEFN__", &impl_defn);
+
+        // `ScaledVec` block helpers. `static inline` at file scope, so a
+        // helper shared by several modules is defined once per translation
+        // unit with no ODR conflict — the same treatment the FP runtime gets.
+        let block_defs = {
+            let used = block_helpers.borrow();
+            if used.is_empty() {
+                String::new()
+            } else {
+                let mut s = String::from(
+                    "// ── ScaledVec block helpers — generated from src/fp_block.rs, which\n\
+                     // emits this C++ and the matching `arch build` SystemVerilog from ONE\n\
+                     // descriptor. Do not edit by hand. ──\n",
+                );
+                s.push_str(crate::fp_block::CPP_PRELUDE);
+                for helper in used.iter() {
+                    s.push_str(&crate::fp_block::cpp_definition(*helper));
+                    s.push('\n');
+                }
+                s
+            }
+        };
+        cpp = cpp.replace("__ARCH_BLOCK_HELPERS__", &block_defs);
 
         // --coverage: per-class atexit dumper. Registered via a static
         // initializer so a normal exit (return from main) flushes the

@@ -1161,6 +1161,28 @@ pub enum TypeExpr {
     ScaledVec(Box<TypeExpr>, Box<Expr>, Box<TypeExpr>),
 }
 
+/// Shared-scale selection policy for `scaled_quantize` (proposal §3.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ScalePolicy {
+    /// OCP §6.3: largest power of two <= amax. The default (decision #1).
+    FloorPow2,
+    /// NVIDIA: round the scale UP instead, trading the top element codes
+    /// for fewer saturations.
+    CeilPow2,
+}
+
+/// Element rounding mode for `scaled_quantize`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RoundMode {
+    /// Round to nearest, ties to even. The default, and the only mode OCP
+    /// requires to be available.
+    Rne,
+    /// Round toward zero.
+    Rtz,
+    /// Round to nearest, ties away from zero.
+    Rna,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResetKind {
     Sync,
@@ -1252,6 +1274,15 @@ pub enum ExprKind {
     /// Motivation section (`acc@6 <= fma(a,b,c)` silently NOT being
     /// retimed) cannot be written by accident.
     PipelinedCall(String, Vec<Expr>, u32),
+    /// `scaled_quantize<Fmt, policy, rounding>(v)` — quantize a
+    /// `Vec<FP32, N>` into a block of the EXPLICITLY named format.
+    ///
+    /// The format is spelled at the call site rather than inferred: a
+    /// `Vec<FP32,N>` argument says nothing about the element format or the
+    /// scale, so `MXFP4` and `MXFP8` are equally valid outputs and there is
+    /// nothing to infer from. Carrying a `TypeExpr` inside an expression is
+    /// why this needs its own variant — it is the first expression that can.
+    ScaledQuantize(Box<Expr>, Box<TypeExpr>, ScalePolicy, RoundMode),
     /// SVA delay-shift: `##N expr`. Inside an `assert`/`cover` body, shifts
     /// the cycle of `expr` forward by `N` (i.e. evaluates `expr` at cycle
     /// `t + N` when the surrounding property is checked at cycle `t`).

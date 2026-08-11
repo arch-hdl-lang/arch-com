@@ -2713,3 +2713,312 @@ fn scaled_vec_member_constraints_and_equality() {
         "cross-format block compare must be rejected:\n{err}"
     );
 }
+
+// ── ScaledVec phase 2b: scaled_quantize / scaled_dequantize (arch#884) ──────
+
+/// Round-trip through a block in the native sim.
+///
+/// `arch sim` alone cannot tell a wrong-but-consistent lowering from a right
+/// one, so this test asserts the *values*: `pow2` inputs must survive
+/// unchanged (the shared scale is exact and every element is representable),
+/// while the sub-ULP inputs must quantize to zero rather than wrap.
+#[test]
+fn fp_scaled_quant_round_trip_sim() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let out = arch()
+        .arg("sim")
+        .arg("tests/fp_v1/ScaledQuant.arch")
+        .arg("--tb")
+        .arg("tests/fp_v1/tb_scaled_quant.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "block quantize sim failed:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let t = transcript(&stdout);
+
+    // `pow2`: max is 8.0, so the E8M0 scale is exact and every input is a
+    // representable E2M1 multiple of it — except 0.25 and 0.125 relative to
+    // the scale, which are exact ties and round to even (zero).
+    let pow2 = case_block(&t, "pow2");
+    assert_eq!(
+        pow2.get("b8 ").map(String::as_str),
+        Some("3f800000 c0000000 40800000 3f000000 41000000 be800000 00000000 40000000"),
+        "FP8E4M3 has the range to carry this block exactly:\n{stdout}"
+    );
+
+    // An all-zero block takes the MINIMUM scale 0x00, never the NaN scale —
+    // E8M0 has no zero encoding, which is the trap this pins.
+    let zeros = case_block(&t, "zeros");
+    let q4f = zeros.get("q4f").expect("q4f line");
+    assert!(
+        q4f.ends_with("00000000"),
+        "all-zero block must use scale 0x00, not 0xFF; got `{q4f}`\n{stdout}"
+    );
+
+    // A NaN anywhere forces the NaN scale 0xFF (high byte of the 40-bit
+    // block = word 1), and dequantizing then yields NaN in every lane.
+    let nan = case_block(&t, "nan");
+    assert_eq!(
+        nan.get("q4f").map(|s| s.split(' ').nth(1).unwrap_or("")),
+        Some("000000ff"),
+        "a NaN input must set the block scale to NaN:\n{stdout}"
+    );
+    assert!(
+        nan.get("b4 ")
+            .map_or(false, |l| l.split(' ').all(|w| w == "7fc00000")),
+        "with a NaN scale every dequantized lane is NaN:\n{stdout}"
+    );
+
+    // Inf takes the same path: `arch_f32_to_e8m0` maps every non-finite to
+    // 0xFF, so an Inf block is indistinguishable from a NaN block.
+    let inf = case_block(&t, "inf");
+    assert_eq!(
+        inf.get("q4f").map(|s| s.split(' ').nth(1).unwrap_or("")),
+        Some("000000ff"),
+        "an Inf input must also set the block scale to NaN:\n{stdout}"
+    );
+
+    // `floor_pow2` vs `ceil_pow2`: identical when the block maximum is
+    // already a power of two, different when it is not. A policy selector
+    // that changed nothing would pass every other assertion here.
+    let nonpow2 = case_block(&t, "nonpow2");
+    assert_eq!(
+        pow2.get("q4f"),
+        pow2.get("q4c"),
+        "on a power-of-two maximum the two scale policies must agree:\n{stdout}"
+    );
+    assert_ne!(
+        nonpow2.get("q4f"),
+        nonpow2.get("q4c"),
+        "on a non-power-of-two maximum the two scale policies must differ:\n{stdout}"
+    );
+}
+
+/// **The phase-2 gate (§8).** `arch build` and `arch sim` emit the block
+/// conversion from one descriptor (`src/fp_block.rs`), rendered once as
+/// SystemVerilog and once as C++. This runs the SAME design and the SAME
+/// vectors through both — Verilator on the emitted `.sv`, the native sim on
+/// the emitted C++ — and byte-compares the transcripts.
+///
+/// A structural test cannot replace this: the two renderings could agree on
+/// every constant and callee and still disagree on a value, because the
+/// languages differ in part-select semantics, integer promotion and shift
+/// behaviour. Skips cleanly when Verilator is not installed.
+#[test]
+fn fp_scaled_quant_sv_matches_sim() {
+    fn verilator_available() -> bool {
+        std::process::Command::new("verilator")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    if !verilator_available() {
+        eprintln!("skipping fp_scaled_quant_sv_matches_sim: verilator not in PATH");
+        return;
+    }
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let td = tempfile::tempdir().expect("tempdir");
+
+    // ── sim side ──
+    let sim = arch()
+        .arg("sim")
+        .arg(format!("{manifest}/tests/fp_v1/ScaledQuant.arch"))
+        .arg("--tb")
+        .arg(format!("{manifest}/tests/fp_v1/tb_scaled_quant.cpp"))
+        .arg("--outdir")
+        .arg(td.path().join("sim"))
+        .output()
+        .expect("run arch sim");
+    assert!(
+        sim.status.success(),
+        "arch sim failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&sim.stdout),
+        String::from_utf8_lossy(&sim.stderr)
+    );
+    let sim_txt = transcript(&String::from_utf8_lossy(&sim.stdout));
+
+    // ── built-SV side ──
+    let sv = td.path().join("ScaledQuant.sv");
+    let build = arch()
+        .arg("build")
+        .arg(format!("{manifest}/tests/fp_v1/ScaledQuant.arch"))
+        .arg("-o")
+        .arg(&sv)
+        .output()
+        .expect("run arch build");
+    assert!(
+        build.status.success(),
+        "arch build failed:\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let obj = td.path().join("obj");
+    let tb = format!("{manifest}/tests/fp_v1/rtl_diff/tb_scaled_quant.sv");
+    let vout = std::process::Command::new("verilator")
+        .args([
+            "--binary",
+            "--timing",
+            "-Wno-WIDTH",
+            "-Wno-UNOPTFLAT",
+            "-Wno-WIDTHTRUNC",
+            "-Wno-WIDTHEXPAND",
+            "-Wno-UNUSEDSIGNAL",
+            "-Wno-MULTITOP",
+            "-Wno-DECLFILENAME",
+            "-Wno-TIMESCALEMOD",
+            "--top-module",
+            "tb",
+            "-o",
+            "sim_sq",
+        ])
+        .arg("-Mdir")
+        .arg(&obj)
+        .arg(&sv)
+        .arg(&tb)
+        .output()
+        .expect("run verilator");
+    assert!(
+        vout.status.success(),
+        "verilator build failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&vout.stdout),
+        String::from_utf8_lossy(&vout.stderr)
+    );
+    let run = std::process::Command::new(obj.join("sim_sq"))
+        .output()
+        .expect("run verilated sim");
+    let sv_txt = transcript(&String::from_utf8_lossy(&run.stdout));
+
+    assert!(
+        !sim_txt.is_empty() && sim_txt.lines().count() > 40,
+        "sim transcript is suspiciously short — a passing comparison of two \
+         empty transcripts would be vacuous:\n{sim_txt}"
+    );
+    if sim_txt != sv_txt {
+        // Report the first differing line rather than two 80-line blobs.
+        let first = sim_txt
+            .lines()
+            .zip(sv_txt.lines())
+            .enumerate()
+            .find(|(_, (a, b))| a != b)
+            .map(|(i, (a, b))| format!("line {}:\n  sim: {a}\n  sv : {b}", i + 1))
+            .unwrap_or_else(|| "transcripts differ in length".to_string());
+        panic!(
+            "arch build and arch sim disagree on the block conversion.\n{first}\n\n\
+             --- sim ---\n{sim_txt}\n--- sv ---\n{sv_txt}"
+        );
+    }
+}
+
+/// `scaled_quantize` needs its output format spelled — it cannot be inferred
+/// from a `Vec<FP32,N>`, since every block format takes FP32 inputs.
+#[test]
+fn fp_scaled_quant_bare_call_errors() {
+    let src = r#"module BareQ
+  port v: in Vec<FP32, 4>;
+  port o: out ScaledVec<FP4E2M1, 4, E8M0>;
+  comb o = scaled_quantize(v); end comb
+end module BareQ
+"#;
+    let err = check_err(src, "BareQ.arch");
+    assert!(
+        err.contains("needs its output format named"),
+        "a bare `scaled_quantize(v)` must say the format is required:\n{err}"
+    );
+}
+
+/// `rtz`/`rna` parse (the surface is forward-compatible) but are refused with
+/// the actual reason, not a generic "unsupported".
+#[test]
+fn fp_scaled_quant_non_rne_rounding_errors() {
+    let src = r#"module RtzQ
+  port v: in Vec<FP32, 4>;
+  port o: out ScaledVec<FP4E2M1, 4, E8M0>;
+  comb o = scaled_quantize<ScaledVec<FP4E2M1, 4, E8M0>, floor_pow2, rtz>(v); end comb
+end module RtzQ
+"#;
+    let err = check_err(src, "RtzQ.arch");
+    assert!(
+        err.contains("only `rne` rounding") && err.contains("890"),
+        "non-RNE rounding must be refused with the follow-up issue:\n{err}"
+    );
+}
+
+/// Quantizing into a block whose N differs from the operand length is silent
+/// data loss, so it is a type error.
+#[test]
+fn fp_scaled_quant_block_size_mismatch_errors() {
+    let src = r#"module SizeQ
+  port v: in Vec<FP32, 8>;
+  port o: out ScaledVec<FP4E2M1, 4, E8M0>;
+  comb o = scaled_quantize<ScaledVec<FP4E2M1, 4, E8M0>>(v); end comb
+end module SizeQ
+"#;
+    let err = check_err(src, "SizeQ.arch");
+    assert!(
+        err.contains("block size mismatch"),
+        "N mismatch must be rejected:\n{err}"
+    );
+}
+
+/// Run `arch check` on `src` and return the combined diagnostics, asserting
+/// the check failed.
+fn check_err(src: &str, file: &str) -> String {
+    let td = tempfile::tempdir().expect("tempdir");
+    let path = td.path().join(file);
+    std::fs::write(&path, src).unwrap();
+    let out = arch()
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run arch check");
+    assert!(
+        !out.status.success(),
+        "expected `arch check` to fail on {file}"
+    );
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+/// Strip the simulator's own epilogue (Verilator prints a `- ...` report
+/// block after `$finish`) so the two backends' transcripts are comparable.
+fn transcript(stdout: &str) -> String {
+    stdout
+        .lines()
+        .take_while(|l| !l.starts_with("- "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Index a transcript by case name: `== <name>` starts a block, and each
+/// following line is `<signal> <words...>`.
+fn case_block<'a>(t: &'a str, name: &str) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let mut in_case = false;
+    for line in t.lines() {
+        if let Some(n) = line.strip_prefix("== ") {
+            if in_case {
+                break;
+            }
+            in_case = n == name;
+            continue;
+        }
+        if in_case {
+            let (sig, words) = line.split_at(3);
+            out.insert(sig.to_string(), words.trim_start().to_string());
+        }
+    }
+    assert!(
+        !out.is_empty(),
+        "case `{name}` not found in transcript:\n{t}"
+    );
+    out
+}

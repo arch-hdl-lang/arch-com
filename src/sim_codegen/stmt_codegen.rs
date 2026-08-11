@@ -26,6 +26,97 @@ pub(super) enum SimAssignKind {
     Comb,
 }
 
+/// Resolve a `ScaledVec<Elem, N, Scale>` TypeExpr to the block shape the
+/// helper emitters are keyed on. `None` — never a guess — when `N` does not
+/// fold to a literal or a member type is not a legal block member; the caller
+/// turns that into a panic, because typecheck has already accepted the type.
+fn block_shape_of_type(ty: &TypeExpr) -> Option<crate::fp_block::BlockShape> {
+    let TypeExpr::ScaledVec(elem, size, scale) = ty else {
+        return None;
+    };
+    let n = match &size.kind {
+        ExprKind::Literal(LitKind::Dec(n)) | ExprKind::Literal(LitKind::Hex(n)) => *n as u32,
+        _ => return None,
+    };
+    crate::fp_block::shape_of(elem, n, scale)
+}
+
+/// Record `h` as needed by this module and return its C++ name.
+fn use_block_helper(h: crate::fp_block::BlockHelper, ctx: &Ctx) -> String {
+    match ctx.block_helpers {
+        Some(reg) => {
+            reg.borrow_mut().insert(h);
+        }
+        // A context that never registered a collector cannot emit the
+        // definition, so a call would compile to an undeclared identifier.
+        // Fail loudly at compile time rather than at the user's C++ build.
+        None => panic!(
+            "`{}` is needed here but this sim context has no block-helper \
+             registry, so its definition would never be emitted (arch#884). \
+             The construct emitting this statement must thread \
+             `Ctx::with_block_helpers` through.",
+            h.cpp_name()
+        ),
+    }
+    h.cpp_name()
+}
+
+/// Emit `dst = scaled_quantize<Fmt,...>(v)` or `dst = scaled_dequantize(b)`
+/// as a call statement. Returns `Some(())` when this statement was one of
+/// those and has been emitted, `None` to fall through to normal assignment.
+fn emit_scaled_block_assign(
+    a: &crate::ast::RegAssign,
+    ctx: &Ctx,
+    out: &mut String,
+    indent: usize,
+) -> Option<()> {
+    match &a.value.kind {
+        ExprKind::ScaledQuantize(v, fmt, policy, round) => {
+            let shape = block_shape_of_type(fmt.as_ref()).unwrap_or_else(|| {
+                panic!(
+                    "scaled_quantize format has no resolvable block shape — typecheck \
+                     accepts only `ScaledVec` formats, so this means the block size did \
+                     not fold to a literal (arch#884)"
+                )
+            });
+            let name = use_block_helper(
+                crate::fp_block::BlockHelper::Quantize {
+                    shape,
+                    policy: *policy,
+                    round: *round,
+                },
+                ctx,
+            );
+            let src = cpp_expr(v.as_ref(), ctx);
+            let dst = cpp_expr_lhs(&a.target, ctx);
+            out.push_str(&format!("{}{name}({src}, {dst});\n", ind(indent)));
+            Some(())
+        }
+        ExprKind::FunctionCall(fname, args) if fname == "scaled_dequantize" && args.len() == 1 => {
+            let shape = ctx
+                .decl_types
+                .and_then(|m| match &args[0].kind {
+                    ExprKind::Ident(n) => m.get(n.as_str()),
+                    _ => None,
+                })
+                .and_then(block_shape_of_type)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "scaled_dequantize operand has no resolvable block shape — typecheck \
+                         accepts only `ScaledVec` operands, so this means the operand is not a \
+                         plain signal name or its block size did not fold to a literal (arch#884)"
+                    )
+                });
+            let name = use_block_helper(crate::fp_block::BlockHelper::Dequantize { shape }, ctx);
+            let src = cpp_expr(&args[0], ctx);
+            let dst = cpp_expr_lhs(&a.target, ctx);
+            out.push_str(&format!("{}{name}({src}, {dst});\n", ind(indent)));
+            Some(())
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn emit_stmts(
     stmts: &[Stmt],
     ctx: &Ctx,
@@ -67,6 +158,21 @@ pub(super) fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize,
     let is_seq = k == SimAssignKind::Seq;
     match stmt {
         Stmt::Assign(a) => {
+            // `ScaledVec` block ops. Emitted as a STATEMENT, not an
+            // expression: both sides are aggregates in the sim (a block wider
+            // than 64 bits is a `VlWide`, a `Vec<FP32,N>` is a C array), so
+            // the generated helper takes the destination by reference. The SV
+            // backend can use a plain function return because a packed array
+            // and a packed vector are assignment-compatible there; C++ has no
+            // such equivalence, which is why the two backends differ in shape
+            // here and nowhere else.
+            if let Some(call) = emit_scaled_block_assign(a, ctx, out, indent) {
+                let _ = call;
+                if is_seq {
+                    emit_vinit_mark_for_target(&a.target, ctx, out, indent);
+                }
+                return;
+            }
             // Whole-Vec assignment: C arrays are not assignable in C++, so
             // lower `dst <= src_vec;` / `dst = src_vec;` to an element copy.
             // This is hit by TLM Vec payloads, e.g. `data <= m.read4(...)`

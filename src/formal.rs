@@ -2449,6 +2449,11 @@ impl<'a> FormalCtx<'a> {
             // Latency annotation is transparent to SMT: at timepoint t,
             // `q@0` is the same as `q` at t. Non-@0 reads are rejected by
             // typecheck before reaching formal emission.
+            ScaledQuantize(..) => Err(CompileError::general(
+                "`scaled_quantize` is not yet supported by `arch formal` \
+                 (arch#884 phase 2b)",
+                expr.span,
+            )),
             LatencyAt(inner, _) => self.encode_raw(inner, t),
             // `fma<pipelined, N>(...)` — the retimed staged datapath (and
             // its sequential-equivalence proof obligation vs. the trusted

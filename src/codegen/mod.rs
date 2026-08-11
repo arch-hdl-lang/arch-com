@@ -174,6 +174,11 @@ pub struct Codegen<'a> {
     /// Set when any FP32/BF16 operation was emitted, so the `arch_f32_*` /
     /// `arch_bf16_*` SystemVerilog helper package is prepended to the output.
     fp_helpers_used: std::cell::Cell<bool>,
+    /// `ScaledVec` block helpers referenced by this design, one per distinct
+    /// (op, element, N, scale, policy, rounding). A `BTreeSet` so the emitted
+    /// prefix is byte-stable run to run — `scripts/refactor_diff.sh` diffs
+    /// emitted SV, so a `HashSet` here would show up as spurious churn.
+    block_helpers: std::cell::RefCell<std::collections::BTreeSet<crate::fp_block::BlockHelper>>,
     /// Staged pipelined-operator sites (`arch build --staged-ops`,
     /// proposal phase 3.5) — see `pipelined_ops::StagedSite`. Empty in
     /// cascade mode. `staged_emitted` records that at least one instance
@@ -416,6 +421,7 @@ impl<'a> Codegen<'a> {
             bus_wires: std::collections::HashMap::new(),
             reset_ports: std::collections::HashMap::new(),
             fp_helpers_used: std::cell::Cell::new(false),
+            block_helpers: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             staged_sites: Vec::new(),
             staged_emitted: std::cell::Cell::new(false),
             fp_compat: crate::FpCompat::default(),
@@ -657,6 +663,24 @@ impl<'a> Codegen<'a> {
             self.out = prefix;
         }
 
+        // Prepend the `ScaledVec` block helpers, then the FP helpers they
+        // call. Order matters: SV requires a function to be declared before
+        // use at `$unit` scope, and the block helpers call `arch_f32_mul` and
+        // friends, so the FP block must end up FIRST in the file. Prepending
+        // the blocks before the FP helpers achieves that.
+        if !self.block_helpers.borrow().is_empty() {
+            let mut prefix = String::from(
+                "// ── ScaledVec block helpers — generated from src/fp_block.rs, which\n\
+                 // emits this SystemVerilog and the matching arch-sim C++ from ONE\n\
+                 // descriptor. Do not edit by hand. ──\n",
+            );
+            for h in self.block_helpers.borrow().iter() {
+                prefix.push_str(&crate::fp_block::sv_definition(*h));
+                prefix.push('\n');
+            }
+            prefix.push_str(&self.out);
+            self.out = prefix;
+        }
         // Prepend the floating-point helper functions if any FP op was emitted.
         if self.fp_helpers_used.get() {
             let mut prefix = fp::fp_sv_helpers(self.fp_compat);
@@ -6126,6 +6150,25 @@ impl<'a> Codegen<'a> {
     ///
     /// Mirrors `typecheck::TypeChecker::type_expr_width`. Kept private to
     /// codegen for now — promote to a shared util if a third caller appears.
+    /// Resolve a `ScaledVec<Elem, N, Scale>` surface type to the block shape
+    /// the helper emitters are keyed on.
+    ///
+    /// `None` — never a guess — when `N` does not fold to a literal or a
+    /// member type is not a legal block member. Both callers turn that into a
+    /// panic rather than a fallback: typecheck has already accepted the type,
+    /// so a `None` is a compiler bug, and inventing a shape here is precisely
+    /// how phase 2a shipped a 40-bit SV port against an 8-bit sim variable.
+    fn block_shape_of_type(&self, ty: &TypeExpr) -> Option<crate::fp_block::BlockShape> {
+        let TypeExpr::ScaledVec(elem, size, scale) = ty else {
+            return None;
+        };
+        let n = match &size.kind {
+            ExprKind::Literal(LitKind::Dec(n)) | ExprKind::Literal(LitKind::Hex(n)) => *n as u32,
+            _ => return None,
+        };
+        crate::fp_block::shape_of(elem, n, scale)
+    }
+
     fn type_expr_width(&self, ty: &TypeExpr) -> Option<u32> {
         let eval = |e: &Expr| match &e.kind {
             ExprKind::Literal(LitKind::Dec(n)) | ExprKind::Literal(LitKind::Hex(n)) => {
@@ -7193,6 +7236,26 @@ impl<'a> Codegen<'a> {
             // as a loud backstop rather than silently falling back to a
             // comb cone, which would misrepresent an un-retimed operator
             // as pipelined.
+            // `scaled_quantize<Fmt, policy, rounding>(v)` — the block shape
+            // comes from the EXPRESSION's own format argument, not from the
+            // assignment target, so nothing here has to be inferred.
+            ExprKind::ScaledQuantize(value, fmt, policy, round) => {
+                let shape = self.block_shape_of_type(fmt).unwrap_or_else(|| {
+                    panic!(
+                        "scaled_quantize format has no resolvable block shape — \
+                         typecheck accepts only `ScaledVec` formats, so this means the \
+                         block size did not fold to a literal (arch#884)"
+                    )
+                });
+                let h = crate::fp_block::BlockHelper::Quantize {
+                    shape,
+                    policy: *policy,
+                    round: *round,
+                };
+                self.fp_helpers_used.set(true);
+                self.block_helpers.borrow_mut().insert(h);
+                format!("{}({})", h.sv_name(), self.emit_expr_str(value))
+            }
             ExprKind::PipelinedCall(name, _, stages) => unreachable!(
                 "codegen reached `{name}<pipelined, {stages}>(...)` — this should have been \
                  lowered by pipelined_ops::lower_pipelined_calls before codegen started"
@@ -7878,6 +7941,28 @@ impl<'a> Codegen<'a> {
             return out_wire.clone();
         }
         let arg_strs: Vec<String> = args.iter().map(emit_arg).collect();
+        // `scaled_dequantize(b)` → the generated block helper. The shape comes
+        // from the OPERAND's declared type; typecheck has already refused a
+        // non-block operand, so a `None` here means the block's `N` did not
+        // fold to a literal, which is a real limitation and must not be
+        // guessed at.
+        if name == "scaled_dequantize" && args.len() == 1 {
+            let shape = self
+                .expr_decl_type(&args[0])
+                .as_ref()
+                .and_then(|t| self.block_shape_of_type(t))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "scaled_dequantize operand has no resolvable block shape — \
+                         typecheck accepts only `ScaledVec` operands, so this means the \
+                         block size did not fold to a literal (arch#884)"
+                    )
+                });
+            let h = crate::fp_block::BlockHelper::Dequantize { shape };
+            self.fp_helpers_used.set(true);
+            self.block_helpers.borrow_mut().insert(h);
+            return format!("{}({})", h.sv_name(), arg_strs[0]);
+        }
         // Built-in SVA: past/rose/fell → SV $past/$rose/$fell
         if name == "past" || name == "rose" || name == "fell" {
             return format!("${name}({})", arg_strs.join(", "));
