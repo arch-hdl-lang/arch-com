@@ -1,0 +1,97 @@
+// MX block-quantization error bounds, machine-checked by the gappa error
+// engine (phase 4 of the MX design; arch#788's `assert<bound_err>` path).
+//
+// A block's round-trip error is a per-ELEMENT question once the shared scale
+// X is fixed, and it is scale-invariant: writing u = v/X (exact, since X is a
+// power of two), the round trip is `X * widen(narrow(u))` and the error in
+// units of X is `|narrow(u) - u|`. So each property below bounds one element
+// of a block, in units of its block's scale, with the `assume` range encoding
+// which scale policy chose X:
+//
+//   floor_pow2 (OCP §6.3)  =>  the block maximum lands in [2^emax, 2^(emax+1))
+//   ceil_pow2  (NVIDIA)    =>  the block maximum lands in (2^(emax-1), 2^emax]
+//
+// where emax is the element format's top binade exponent (2 for E2M1, 4 for
+// E3M2, 8 for E4M3).
+//
+// WHAT THE CERTIFIED NUMBERS SHOW. The two policies do NOT differ in rounding
+// accuracy: ceil_pow2's bound is half of floor_pow2's *in units of its own
+// scale*, but its scale is twice as large, so the two bounds are the SAME
+// error in real terms. What actually separates them is saturation —
+// floor_pow2 admits block maxima above the element format's largest
+// representable value (6.0 for E2M1) and those elements clamp, while
+// ceil_pow2 structurally cannot reach that region. `sat_*` below locks that:
+// extending the floor range across the saturation point makes the bound
+// unprovable rather than silently wrong (arch#898).
+
+module MxQuantBound
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync>;
+
+  port u4c: in FP32;
+  port u4f: in FP32;
+  port u6c: in FP32;
+  port u6f: in FP32;
+  port u8c: in FP32;
+  port u8f: in FP32;
+  port sat: in FP32;
+
+  port y4c: out FP32;
+  port y4f: out FP32;
+  port y6c: out FP32;
+  port y6f: out FP32;
+  port y8c: out FP32;
+  port y8f: out FP32;
+  port ysat: out FP32;
+
+  wire q4c: FP32;
+  wire q4f: FP32;
+  wire q6c: FP32;
+  wire q6f: FP32;
+  wire q8c: FP32;
+  wire q8f: FP32;
+  wire qsat: FP32;
+
+  // One element's quantize -> dequantize round trip, in units of the scale.
+  comb q4c = u4c.to_fp4e2m1().to_fp32(); end comb
+  comb q4f = u4f.to_fp4e2m1().to_fp32(); end comb
+  comb q6c = u6c.to_fp6e3m2().to_fp32(); end comb
+  comb q6f = u6f.to_fp6e3m2().to_fp32(); end comb
+  comb q8c = u8c.to_fp8e4m3().to_fp32(); end comb
+  comb q8f = u8f.to_fp8e4m3().to_fp32(); end comb
+  comb qsat = sat.to_fp4e2m1().to_fp32(); end comb
+
+  comb y4c = q4c; end comb
+  comb y4f = q4f; end comb
+  comb y6c = q6c; end comb
+  comb y6f = q6f; end comb
+  comb y8c = q8c; end comb
+  comb y8f = q8f; end comb
+  comb ysat = qsat; end comb
+
+  // E2M1: emax 2, max finite 6.0
+  assume u4c_rng: (u4c >= 2.0) and (u4c <= 4.0);
+  assume u4f_rng: (u4f >= 4.0) and (u4f <= 6.0);
+  // E3M2: emax 4, max finite 28.0
+  assume u6c_rng: (u6c >= 8.0) and (u6c <= 16.0);
+  assume u6f_rng: (u6f >= 16.0) and (u6f <= 28.0);
+  // E4M3: emax 8, max finite 448.0
+  assume u8c_rng: (u8c >= 128.0) and (u8c <= 256.0);
+  assume u8f_rng: (u8f >= 256.0) and (u8f <= 448.0);
+  // floor_pow2's FULL range reaches past 6.0, where E2M1 saturates.
+  assume sat_rng: (sat >= 4.0) and (sat <= 7.9);
+
+  // Half the grid spacing of the binade each policy lands in. Note the pairs:
+  // ceil's bound is half of floor's, but ceil's scale is twice as large, so
+  // these are the same real error.
+  assert<bound_err> e2m1_ceil:  abs(q4c - exact(q4c)) <= 0.5;
+  assert<bound_err> e2m1_floor: abs(q4f - exact(q4f)) <= 1.0;
+  assert<bound_err> e3m2_ceil:  abs(q6c - exact(q6c)) <= 1.0;
+  assert<bound_err> e3m2_floor: abs(q6f - exact(q6f)) <= 2.0;
+  assert<bound_err> e4m3_ceil:  abs(q8c - exact(q8c)) <= 8.0;
+  assert<bound_err> e4m3_floor: abs(q8f - exact(q8f)) <= 16.0;
+
+  // Must NOT prove: the range crosses E2M1's 6.0 saturation point, where a
+  // rounding-error model does not describe the hardware.
+  assert<bound_err> e2m1_sat: abs(qsat - exact(qsat)) <= 1.0;
+end module MxQuantBound
