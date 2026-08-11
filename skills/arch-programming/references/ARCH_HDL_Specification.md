@@ -887,7 +887,8 @@ Rules and honest limits:
 - ULP goals are checked via the sound relative form `N·2⁻ᵖ` (for normal values `ulp(x) > 2⁻ᵖ·|x|`), conservative by at most 2×.
 - Cones are feedforward comb arithmetic: `+ - *`, `fma`, float conversions, signals, float literals. Registers, ternaries, and comparisons inside the cone are rejected (bounded unrolling of accumulators is future work).
 - Relative/ULP goals over ranges that permit **cancellation** are legitimately unprovable (relative error is unbounded near zero) — the engine reports INCONCLUSIVE with the best derivable absolute enclosure, never a false proof.
-- NaN/Inf/overflow are outside the real-valued analysis; the bit-level property classes above cover them.
+- **A narrowing conversion in the cone must be provably in range.** The engine models each format as `float<precision, min_exponent>`, which bounds precision and the smallest exponent but has **no largest** one — so left to itself it reasons about an idealized format of unbounded range and never sees overflow. Real narrow formats saturate (`FP4`/`FP6`, and fp8 under `--fp-compat=cuda`) or produce NaN/Inf (fp8 under `riscv`), where the error is nothing like a rounding error. Each narrow therefore carries a side condition `|input| ≤ max_finite`, discharged by the engine alongside the goal; a cone whose assumed ranges reach past that point reports INCONCLUSIVE naming the format and its limit, never a proof. (Before this was enforced, a cone narrowing `[1000, 2000]` to `FP8E4M3` — largest finite 448 — proved a bound of 64 while the hardware returned NaN.)
+- NaN/Inf are outside the real-valued analysis; the bit-level property classes above cover them.
 
 **Compatibility profile.** `arch build|sim --fp-compat=riscv|cuda` (default `riscv`) selects the special-value corners. Both profiles share an identical RNE arithmetic core and differ only in the canonical NaN bit patterns (`0x7FC00000`/`0x7FC0` vs `0x7FFFFFFF`/`0x7FFF`; for fp8 see the FP8 paragraph above), the NaN→int result (type-max vs `0`), and the fp8 narrowing-overflow behavior (non-saturating vs `satfinite` — see the FP8 paragraph above).
 
@@ -1220,6 +1221,47 @@ A NaN scale (`0xFF`) on either operand makes the result NaN, which falls out of
 the scale multiply rather than needing a rule. An all-zero block dots to `+0`,
 not NaN --- E8M0 has no zero, so the minimum-scale path multiplies a zero sum
 by the finite `2⁻¹²⁷`.
+
+**3.11.3 Quantization error bounds**
+
+Block quantization error is a per-element question once the shared scale `X`
+is fixed, and it is scale-invariant: writing `u = v/X` (exact, since `X` is a
+power of two), the round trip is `X · widen(narrow(u))` and the error in units
+of `X` is `|narrow(u) − u|`. `assert<bound_err>` (§3.8) discharges that
+directly, with the `assume` range on `u` encoding which binade the scale
+policy put the block maximum in:
+
+| policy | block maximum lands in |
+|---|---|
+| `floor_pow2` (OCP §6.3) | `[2^emax, 2^(emax+1))` |
+| `ceil_pow2` (NVIDIA) | `(2^(emax−1), 2^emax]` |
+
+where `emax` is the element format's top binade exponent. Machine-checked
+bounds, in units of the block's shared scale — each is half the grid spacing
+of the binade the policy lands in (`tests/fp_v1/MxQuantBound.arch`):
+
+| element | `emax` | max finite | `ceil_pow2` | `floor_pow2` |
+|---|---|---|---|---|
+| `FP4E2M1` | 2 | 6.0 | 0.5 | 1.0 |
+| `FP6E3M2` | 4 | 28.0 | 1.0 | 2.0 |
+| `FP8E4M3` | 8 | 448.0 | 8.0 | 16.0 |
+
+**Read the two columns carefully: they are the same error.** `ceil_pow2`'s
+bound is half of `floor_pow2`'s in units of *its own* scale, but its scale is
+twice as large, so both policies have the same worst-case rounding error in
+real terms. Choosing `ceil_pow2` does not buy accuracy.
+
+What actually separates them is **saturation**. `floor_pow2` normalizes the
+block maximum into `[2^emax, 2^(emax+1))`, and the format's largest
+representable value — `(2 − 2^−mant) · 2^emax` — sits strictly inside that
+interval, so any element above it clamps. `ceil_pow2` lands one binade lower
+and structurally cannot reach it. That is why saturation is routine under
+`floor_pow2` rather than a corner case, and it is the real trade-off: the top
+element codes go unused under `ceil_pow2` in exchange for never clamping.
+
+The bound is only claimed where no element saturates; extending a
+`floor_pow2` range across the saturation point makes it INCONCLUSIVE rather
+than silently wrong (§3.8, in-range side condition).
 
 **Not yet implemented:** `rtz` / `rna` rounding (they need their own element
 rounders in each backend, with their own overflow rules --- arch#890), the `exact` scale

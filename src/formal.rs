@@ -2886,6 +2886,15 @@ impl<'a> FormalCtx<'a> {
                 "to_bf16" => Some("bf16"),
                 "to_fp8e4m3" => Some("e4m3"),
                 "to_fp8e5m2" => Some("e5m2"),
+                // The sub-8-bit OCP MX storage formats. Their TYPES were
+                // already accepted by formal (`check_scalar_type`), and their
+                // narrows are the same proven `arch_f32_to_*` helpers every
+                // other backend calls — only these two dispatch tables were
+                // never extended when the formats landed, so a property
+                // mentioning `.to_fp4e2m1()` was refused outright.
+                "to_fp4e2m1" => Some("e2m1"),
+                "to_fp6e2m3" => Some("e2m3"),
+                "to_fp6e3m2" => Some("e3m2"),
                 _ => None,
             },
             LatencyAt(inner, _) => self.expr_float_tag(inner),
@@ -3231,12 +3240,13 @@ impl<'a> FormalCtx<'a> {
                     }),
                 };
             }
-            "to_bf16" | "to_fp8e4m3" | "to_fp8e5m2" => {
-                let (helper, tgt, w) = match n {
-                    "to_bf16" => ("arch_f32_to_bf16", "bf16", 16),
-                    "to_fp8e4m3" => ("arch_f32_to_e4m3", "e4m3", 8),
-                    _ => ("arch_f32_to_e5m2", "e5m2", 8),
-                };
+            "to_bf16" | "to_fp8e4m3" | "to_fp8e5m2" | "to_fp4e2m1" | "to_fp6e2m3"
+            | "to_fp6e3m2" => {
+                // Widths come from the format table, never a literal: `8` was
+                // right for both fp8s and is wrong for FP4 (4) and FP6 (6),
+                // which is precisely the wildcard shape the table removed.
+                let (helper, tgt) = narrow_target(n);
+                let w = float_tag_width(tgt);
                 // Any float source composes through f32 (widen exact); the
                 // target's narrow is the single rounding.
                 return match recv_tag {
@@ -3413,8 +3423,8 @@ impl<'a> FormalCtx<'a> {
         // Build definitions for the signal's cone, rounded + exact.
         let mut defs: Vec<String> = Vec::new();
         let mut done: HashSet<String> = HashSet::new();
-        let mut fmts_used: HashSet<&'static str> = HashSet::new();
-        self.emit_gappa_defs(&goal.sig, &mut defs, &mut done, &mut fmts_used, prop.span)?;
+        let mut gctx = GappaCtx::default();
+        self.emit_gappa_defs(&goal.sig, &mut defs, &mut done, &mut gctx, prop.span)?;
 
         // Hypotheses from range-shaped assumes over the cone's free ports.
         let mut hyps: Vec<String> = Vec::new();
@@ -3439,12 +3449,17 @@ impl<'a> FormalCtx<'a> {
             ));
         }
 
+        // Iterate the formats the cone actually used, not a hardcoded list —
+        // the old list silently dropped the `@rnd_` definition for any format
+        // outside it, which gappa would then reject as an unknown identifier
+        // (or, worse, the cone would never reach here at all). Sorted so the
+        // emitted script is byte-stable.
         let mut header = String::new();
-        for f in ["f32", "bf16", "e4m3", "e5m2"] {
-            if fmts_used.contains(f) {
-                let (p, emin) = gappa_fmt_params(f);
-                header.push_str(&format!("@rnd_{f} = float<{p},{emin},ne>;\n"));
-            }
+        let mut used: Vec<&str> = gctx.fmts.iter().copied().collect();
+        used.sort_unstable();
+        for f in used {
+            let (p, emin) = gappa_fmt_params(f);
+            header.push_str(&format!("@rnd_{f} = float<{p},{emin},ne>;\n"));
         }
         let defs_s = defs.join("\n");
         let hyp_s = hyps.join(" /\\ ");
@@ -3485,6 +3500,54 @@ impl<'a> FormalCtx<'a> {
                 String::from_utf8_lossy(&out.stderr).to_string(),
             ))
         };
+
+        // ── Soundness side-conditions: no narrow in the cone may overflow ──
+        //
+        // Gappa's `float<p,emin,ne>` bounds precision and the smallest
+        // exponent, but has no largest one — it reasons about an idealized
+        // format of unbounded range and so never models overflow. The real
+        // hardware saturates (FP4/FP6, and fp8 under `--fp-compat=cuda`) or
+        // produces NaN/Inf (fp8 under riscv), and in both cases the error is
+        // nothing like the rounding error gappa computed.
+        //
+        // Before arch#898 this was simply assumed, and a cone narrowing
+        // `[1000, 2000]` to FP8E4M3 (max finite 448) reported PROVED for a
+        // bound of 64 while `arch sim` returned NaN. Each narrow now carries
+        // an explicit obligation `|input| <= max_finite`, and a bound is only
+        // reported PROVED if every one of them is discharged.
+        //
+        // This matters most where MX quantization analysis is headed: under
+        // `floor_pow2` the block maximum normalizes ABOVE the element
+        // format's largest representable value, so saturation is routine
+        // rather than exceptional.
+        for (tag, input) in &gctx.narrows {
+            let d = crate::fp_format::by_tag(tag).unwrap_or_else(|| {
+                unreachable!("narrow target `{tag}` has no row in fp_format::FORMATS")
+            });
+            let max = gappa_real(d.max_finite);
+            let rng_script = format!("{header}\n{defs_s}\n\n{{ {hyp_s} -> |{input}| <= {max} }}\n");
+            if std::env::var("GAPPA_DEBUG").is_ok() {
+                eprintln!(
+                    "--- gappa range obligation for {} ---\n{rng_script}",
+                    prop.name
+                );
+            }
+            let in_range = run(&rng_script).map(|(ok, _)| ok).unwrap_or(false);
+            if !in_range {
+                return Ok(PropertyResult {
+                    name: prop.name.clone(),
+                    kind: prop.kind.clone(),
+                    status: PropertyStatus::Inconclusive(format!(
+                        "cannot show the narrow to {} stays in range (|input| <= {}, its \
+                         largest finite value) — gappa models an unbounded exponent range, \
+                         so a bound proved past that point would not describe the \
+                         saturating hardware. Tighten the `assume` ranges on the cone inputs.",
+                        d.type_name, d.max_finite
+                    )),
+                    counterexample: None,
+                });
+            }
+        }
 
         let (ok, err) = run(&script)
             .map_err(|e| CompileError::general(&format!("failed to run gappa: {e}"), prop.span))?;
@@ -3533,7 +3596,7 @@ impl<'a> FormalCtx<'a> {
         sig: &str,
         defs: &mut Vec<String>,
         done: &mut HashSet<String>,
-        fmts: &mut HashSet<&'static str>,
+        gctx: &mut GappaCtx,
         span: Span,
     ) -> Result<(), CompileError> {
         if done.contains(sig) {
@@ -3549,10 +3612,10 @@ impl<'a> FormalCtx<'a> {
         let mut deps: HashSet<String> = HashSet::new();
         collect_idents(&expr, &mut deps);
         for d in &deps {
-            self.emit_gappa_defs(d, defs, done, fmts, span)?;
+            self.emit_gappa_defs(d, defs, done, gctx, span)?;
         }
-        let rounded = self.gappa_expr(&expr, true, fmts, span)?;
-        let exact = self.gappa_expr(&expr, false, fmts, span)?;
+        let rounded = self.gappa_expr(&expr, true, gctx, span)?;
+        let exact = self.gappa_expr(&expr, false, gctx, span)?;
         defs.push(format!("{sig} = {rounded};"));
         defs.push(format!("M_{sig} = {exact};"));
         Ok(())
@@ -3600,7 +3663,7 @@ impl<'a> FormalCtx<'a> {
         &self,
         e: &Expr,
         rounded: bool,
-        fmts: &mut HashSet<&'static str>,
+        gctx: &mut GappaCtx,
         span: Span,
     ) -> Result<String, CompileError> {
         use ExprKind::*;
@@ -3647,11 +3710,11 @@ impl<'a> FormalCtx<'a> {
                         span,
                     ));
                 }
-                let ga = self.gappa_expr(a, rounded, fmts, span)?;
-                let gb = self.gappa_expr(b, rounded, fmts, span)?;
+                let ga = self.gappa_expr(a, rounded, gctx, span)?;
+                let gb = self.gappa_expr(b, rounded, gctx, span)?;
                 let raw = format!("({ga} {osym} {gb})");
                 Ok(if rounded {
-                    wrap_impl_rounding(tag, &raw, fmts)
+                    wrap_impl_rounding(tag, &raw, gctx)
                 } else {
                     raw
                 })
@@ -3661,29 +3724,35 @@ impl<'a> FormalCtx<'a> {
                     .iter()
                     .find_map(|a| self.expr_float_tag(a))
                     .unwrap_or("f32");
-                let ga = self.gappa_expr(&cargs[0], rounded, fmts, span)?;
-                let gb = self.gappa_expr(&cargs[1], rounded, fmts, span)?;
-                let gc = self.gappa_expr(&cargs[2], rounded, fmts, span)?;
+                let ga = self.gappa_expr(&cargs[0], rounded, gctx, span)?;
+                let gb = self.gappa_expr(&cargs[1], rounded, gctx, span)?;
+                let gc = self.gappa_expr(&cargs[2], rounded, gctx, span)?;
                 let raw = format!("({ga} * {gb} + {gc})");
                 Ok(if rounded {
-                    wrap_impl_rounding(tag, &raw, fmts)
+                    wrap_impl_rounding(tag, &raw, gctx)
                 } else {
                     raw
                 })
             }
             MethodCall(base, m, _) => {
-                let gb_r = self.gappa_expr(base, rounded, fmts, span)?;
+                let gb_r = self.gappa_expr(base, rounded, gctx, span)?;
                 match m.name.as_str() {
                     // Exact widen: identity over ℝ.
                     "to_fp32" => Ok(gb_r),
-                    "to_bf16" | "to_fp8e4m3" | "to_fp8e5m2" => {
-                        let tgt = match m.name.as_str() {
-                            "to_bf16" => "bf16",
-                            "to_fp8e4m3" => "e4m3",
-                            _ => "e5m2",
-                        };
+                    "to_bf16" | "to_fp8e4m3" | "to_fp8e5m2" | "to_fp4e2m1"
+                    | "to_fp6e2m3" | "to_fp6e3m2" => {
+                        let (_, tgt) = narrow_target(m.name.as_str());
                         if rounded {
-                            fmts.insert(tgt);
+                            gctx.fmts.insert(tgt);
+                            // Gappa's `float<p,emin,ne>` has a minimum but NO
+                            // MAXIMUM: it models an idealized format with an
+                            // unbounded exponent above, so it never sees
+                            // overflow, saturation, or a NaN/Inf result. Its
+                            // bound is therefore valid only where this narrow
+                            // does not overflow — record that as a proof
+                            // obligation to discharge separately rather than
+                            // assuming it (arch#898).
+                            gctx.narrows.push((tgt, gb_r.clone()));
                             Ok(format!("rnd_{tgt}({gb_r})"))
                         } else {
                             Ok(gb_r)
@@ -3697,7 +3766,7 @@ impl<'a> FormalCtx<'a> {
                     )),
                 }
             }
-            LatencyAt(inner, _) => self.gappa_expr(inner, rounded, fmts, span),
+            LatencyAt(inner, _) => self.gappa_expr(inner, rounded, gctx, span),
             _ => Err(CompileError::general(
                 "assert<bound_err> cones support + - * fma, float conversions, signals, and float literals only",
                 span,
@@ -4155,24 +4224,66 @@ fn parse_bound_goal(e: &Expr) -> Result<BoundGoal, String> {
 
 /// Faithful implementation rounding for one op: f32 ops round once; the
 /// narrow formats round through f32 first (the VR(f32) datapath).
-fn wrap_impl_rounding(tag: &'static str, raw: &str, fmts: &mut HashSet<&'static str>) -> String {
-    fmts.insert("f32");
+fn wrap_impl_rounding(tag: &'static str, raw: &str, gctx: &mut GappaCtx) -> String {
+    gctx.fmts.insert("f32");
     if tag == "f32" {
         format!("rnd_f32{raw}")
     } else {
-        fmts.insert(tag);
+        gctx.fmts.insert(tag);
         format!("rnd_{tag}(rnd_f32{raw})")
     }
 }
 
-/// (precision, emin) per format for gappa's `float<p,emin,ne>`.
-fn gappa_fmt_params(tag: &str) -> (u32, i32) {
-    match tag {
-        "f32" => (24, -149),
-        "bf16" => (8, -133),
-        "e4m3" => (4, -9),
-        _ => (3, -16),
+/// `.to_<fmt>()` → (narrowing helper, dispatch tag). One table for all three
+/// places formal dispatches conversions — the SMT encoder, the gappa cone
+/// renderer and counterexample replay — because keeping three copies in step
+/// is how the sub-8-bit formats came to be accepted by `check_scalar_type`
+/// while every one of these tables still rejected them.
+fn narrow_target(m: &str) -> (&'static str, &'static str) {
+    match m {
+        "to_bf16" => ("arch_f32_to_bf16", "bf16"),
+        "to_fp8e4m3" => ("arch_f32_to_e4m3", "e4m3"),
+        "to_fp8e5m2" => ("arch_f32_to_e5m2", "e5m2"),
+        "to_fp4e2m1" => ("arch_f32_to_e2m1", "e2m1"),
+        "to_fp6e2m3" => ("arch_f32_to_e2m3", "e2m3"),
+        "to_fp6e3m2" => ("arch_f32_to_e3m2", "e3m2"),
+        other => unreachable!("narrow_target called on non-narrowing method `{other}`"),
     }
+}
+
+/// What a `bound_err` cone accumulated while being rendered to gappa.
+///
+/// `fmts` drives the `@rnd_*` header. `narrows` is the soundness half: one
+/// entry per narrowing conversion in the cone, holding the target format and
+/// the gappa expression flowing into it, so that "this narrow does not
+/// overflow" can be **discharged** rather than assumed (arch#898).
+#[derive(Default)]
+struct GappaCtx {
+    fmts: HashSet<&'static str>,
+    narrows: Vec<(&'static str, String)>,
+}
+
+/// (precision, emin) per format for gappa's `float<p,emin,ne>`, DERIVED from
+/// the format table rather than tabulated here.
+///
+/// The previous hand-written map ended in `_ => (3, -16)`, so any format
+/// without an explicit arm silently borrowed E5M2's parameters — the
+/// silent-wildcard class of arch#829/#858, except that here the consequence
+/// is a *certified numeric bound computed for the wrong format*, which is
+/// worse than a crash. `gappa_fmt_params_reproduce_the_hand_table` pins that
+/// this derivation reproduces all four original entries exactly.
+///
+/// `p` is the significand width including the implicit bit; `emin` is the
+/// exponent of the smallest subnormal, `(1 - bias) - mant_bits`.
+fn gappa_fmt_params(tag: &str) -> (u32, i32) {
+    let d = crate::fp_format::by_tag(tag).unwrap_or_else(|| {
+        unreachable!(
+            "float dispatch tag `{tag}` has no row in fp_format::FORMATS — \
+             add the format to the table"
+        )
+    });
+    let bias = (1i32 << (d.exp_bits - 1)) - 1;
+    (d.mant_bits + 1, (1 - bias) - d.mant_bits as i32)
 }
 
 /// Exact real literal in gappa's `<mantissa>b<exponent>` notation.
@@ -5794,12 +5905,13 @@ impl FormalCtx<'_> {
                     None => None,
                 };
             }
-            "to_bf16" | "to_fp8e4m3" | "to_fp8e5m2" => {
-                let (helper, tgt, w) = match n {
-                    "to_bf16" => ("arch_f32_to_bf16", "bf16", 16),
-                    "to_fp8e4m3" => ("arch_f32_to_e4m3", "e4m3", 8),
-                    _ => ("arch_f32_to_e5m2", "e5m2", 8),
-                };
+            "to_bf16" | "to_fp8e4m3" | "to_fp8e5m2" | "to_fp4e2m1" | "to_fp6e2m3"
+            | "to_fp6e3m2" => {
+                // Widths come from the format table, never a literal: `8` was
+                // right for both fp8s and is wrong for FP4 (4) and FP6 (6),
+                // which is precisely the wildcard shape the table removed.
+                let (helper, tgt) = narrow_target(n);
+                let w = float_tag_width(tgt);
                 return match recv_tag {
                     Some(src) if src == tgt => Some(r),
                     Some("f32") => {
@@ -5905,6 +6017,69 @@ mod tests {
     //! produce an unsound query, so the z3-gated integration tests only
     //! cover the CONFIRMED path (every genuine REFUTED must stay REFUTED).
     use super::*;
+
+    /// `gappa_fmt_params` is now derived from `fp_format::FORMATS`. It
+    /// replaced a hand-written map whose `_ => (3, -16)` wildcard handed
+    /// E5M2's parameters to any format without an explicit arm — and the
+    /// consequence there is not a crash but a *certified numeric bound
+    /// computed for the wrong format*. Pin that the derivation reproduces
+    /// every original entry, and that the formats it newly reaches get the
+    /// values their encodings actually imply.
+    #[test]
+    fn gappa_fmt_params_reproduce_the_hand_table() {
+        // The four entries the hand-written map had, verbatim.
+        for (tag, want) in [
+            ("f32", (24u32, -149i32)),
+            ("bf16", (8, -133)),
+            ("e4m3", (4, -9)),
+            ("e5m2", (3, -16)),
+        ] {
+            assert_eq!(gappa_fmt_params(tag), want, "{tag} must be unchanged");
+        }
+        // The sub-8-bit formats the wildcard would have silently given
+        // E5M2's (3, -16). Smallest subnormal is `(1 - bias) - mant_bits`:
+        // E2M1 bias 1, mant 1 -> 2^-1; E2M3 bias 1, mant 3 -> 2^-3;
+        // E3M2 bias 3, mant 2 -> 2^-4.
+        for (tag, want) in [
+            ("e2m1", (2u32, -1i32)),
+            ("e2m3", (4, -3)),
+            ("e3m2", (3, -4)),
+        ] {
+            assert_ne!(
+                gappa_fmt_params(tag),
+                (3, -16),
+                "{tag} must not inherit E5M2's parameters"
+            );
+            assert_eq!(gappa_fmt_params(tag), want);
+        }
+    }
+
+    /// Every narrowing method formal dispatches must resolve to a helper and
+    /// a tag that the format table knows. A method added to one of the three
+    /// dispatch sites but not to this table is a compile error rather than a
+    /// silent refusal, which is how the sub-8-bit formats stayed unreachable
+    /// from `arch formal` after they shipped everywhere else.
+    #[test]
+    fn narrow_target_covers_every_narrowing_method() {
+        for m in [
+            "to_bf16",
+            "to_fp8e4m3",
+            "to_fp8e5m2",
+            "to_fp4e2m1",
+            "to_fp6e2m3",
+            "to_fp6e3m2",
+        ] {
+            let (helper, tag) = narrow_target(m);
+            assert!(helper.starts_with("arch_f32_to_"), "{m}: {helper}");
+            assert!(
+                crate::fp_format::by_tag(tag).is_some(),
+                "{m}: tag `{tag}` has no format row"
+            );
+            // The helper name and the tag must agree, or a conversion
+            // silently narrows to a different format than it reports.
+            assert_eq!(helper, format!("arch_f32_to_{tag}"), "{m}");
+        }
+    }
 
     fn parse_and_resolve(src: &str) -> (crate::ast::SourceFile, SymbolTable) {
         let tokens = crate::lexer::tokenize(src).expect("lexer error");

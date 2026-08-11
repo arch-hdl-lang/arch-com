@@ -3077,3 +3077,169 @@ fn case_block<'a>(t: &'a str, name: &str) -> std::collections::HashMap<String, S
     );
     out
 }
+
+// ── MX block-quantization error bounds (phase 4, arch#788 + arch#898) ───────
+
+/// **The phase-4 deliverable**: machine-checked numeric bounds on MX block
+/// quantization error, per element format and per scale policy.
+///
+/// A block's round-trip error is a per-element question once the shared scale
+/// `X` is fixed, and it is scale-invariant — with `u = v/X` (exact, `X` being
+/// a power of two) the error in units of `X` is `|narrow(u) - u|`. Each
+/// property in the fixture bounds one element that way, with the `assume`
+/// range encoding which binade the scale policy put the block maximum in.
+///
+/// **What the certified numbers actually say** — and it is not what "ceil is
+/// more accurate" would suggest. `ceil_pow2`'s bound is half of
+/// `floor_pow2`'s *in units of its own scale*, but `ceil_pow2`'s scale is
+/// twice as large, so **the two policies give the same worst-case error in
+/// real terms**. What separates them is saturation: `floor_pow2` admits block
+/// maxima above the element format's largest representable value, and those
+/// elements clamp. That is why #884 called saturation routine under
+/// `floor_pow2` rather than a corner case.
+///
+/// The last property is the one that must NOT prove. Before #898 it did:
+/// gappa models `float<p,emin,ne>` with no maximum exponent, so it never saw
+/// overflow and certified a rounding-error bound for a saturating region.
+/// z3/gappa-gated.
+#[test]
+fn fp_mx_quant_bounds() {
+    fn have(bin: &str) -> bool {
+        std::process::Command::new("which")
+            .arg(bin)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    let gappa_ok = have("gappa")
+        || std::env::var_os("HOME")
+            .map(|h| std::path::Path::new(&h).join("bin/gappa").exists())
+            .unwrap_or(false);
+    if !have("z3") || !gappa_ok {
+        eprintln!("skipping fp_mx_quant_bounds: z3/gappa not available");
+        return;
+    }
+    let out = arch()
+        .arg("formal")
+        .arg("tests/fp_v1/MxQuantBound.arch")
+        .arg("--solver")
+        .arg("z3")
+        .arg("--bound")
+        .arg("1")
+        .arg("--error-engine")
+        .arg("gappa")
+        .output()
+        .expect("run arch formal");
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The recorded bounds, in units of the block's shared scale. Each is half
+    // the grid spacing of the binade its policy lands in, so a change to the
+    // rounding, the format table, or the policy's range lands here.
+    //
+    //   format  emax  max finite   ceil bound   floor bound
+    //   E2M1     2       6.0          0.5           1.0
+    //   E3M2     4      28.0          1.0           2.0
+    //   E4M3     8     448.0          8.0          16.0
+    for (prop, encl) in [
+        ("e2m1_ceil", "[-1b-1"),
+        ("e2m1_floor", "[-1, 1]"),
+        ("e3m2_ceil", "[-1, 1]"),
+        ("e3m2_floor", "[-2, 2]"),
+        ("e4m3_ceil", "[-8, 8]"),
+        ("e4m3_floor", "[-16, 16]"),
+    ] {
+        let line = all
+            .lines()
+            .find(|l| l.contains(prop))
+            .unwrap_or_else(|| panic!("no report line for `{prop}`:\n{all}"));
+        assert!(
+            line.contains("PROVED"),
+            "`{prop}` must prove:\n{line}\n\nfull report:\n{all}"
+        );
+        assert!(
+            line.contains(encl),
+            "`{prop}` derived a different enclosure than recorded (expected {encl}):\n{line}"
+        );
+    }
+
+    // Saturation must be refused, not certified. This is the arch#898
+    // regression pin: gappa's format model has no maximum exponent, so
+    // without the in-range obligation it proves a rounding bound for a region
+    // where the hardware clamps (or, for fp8 under riscv, returns NaN).
+    let sat = all
+        .lines()
+        .find(|l| l.contains("e2m1_sat"))
+        .unwrap_or_else(|| panic!("no report line for `e2m1_sat`:\n{all}"));
+    assert!(
+        sat.contains("INCONCLUSIVE"),
+        "a bound across E2M1's saturation point must NOT be proved:\n{sat}"
+    );
+    assert!(
+        sat.contains("stays in range") && sat.contains("6"),
+        "the refusal must name the range it could not establish:\n{sat}"
+    );
+}
+
+/// arch#898 regression, stated as the original reproducer: a cone narrowing
+/// `[1000, 2000]` to FP8E4M3 (largest finite 448). `arch sim` returns NaN for
+/// every input in that range, so the bound of 64 the engine used to prove was
+/// simply false. Kept separate from the fixture above because this is the
+/// *bug*, not the feature — it should stay pinned even if the MX bounds are
+/// later reorganized.
+#[test]
+fn fp_bound_err_refuses_overflowing_narrow() {
+    fn have(bin: &str) -> bool {
+        std::process::Command::new("which")
+            .arg(bin)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    let gappa_ok = have("gappa")
+        || std::env::var_os("HOME")
+            .map(|h| std::path::Path::new(&h).join("bin/gappa").exists())
+            .unwrap_or(false);
+    if !have("z3") || !gappa_ok {
+        eprintln!("skipping fp_bound_err_refuses_overflowing_narrow: z3/gappa not available");
+        return;
+    }
+    let src = r#"module SatProbe
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync>;
+  port x: in FP32;
+  port y: out FP32;
+  wire y_w: FP32;
+  comb y_w = x.to_fp8e4m3().to_fp32(); end comb
+  comb y = y_w; end comb
+  assume x_rng: (x >= 1000.0) and (x <= 2000.0);
+  assert<bound_err> y_abs: abs(y_w - exact(y_w)) <= 64.0;
+end module SatProbe
+"#;
+    let td = tempfile::tempdir().expect("tempdir");
+    let path = td.path().join("SatProbe.arch");
+    std::fs::write(&path, src).unwrap();
+    let out = arch()
+        .arg("formal")
+        .arg(&path)
+        .arg("--solver")
+        .arg("z3")
+        .arg("--bound")
+        .arg("1")
+        .arg("--error-engine")
+        .arg("gappa")
+        .output()
+        .expect("run arch formal");
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        all.contains("y_abs") && all.contains("INCONCLUSIVE"),
+        "a bound over a range that overflows FP8E4M3 must not be PROVED:\n{all}"
+    );
+}
