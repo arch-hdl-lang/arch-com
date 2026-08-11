@@ -3118,6 +3118,28 @@ impl<'a> Codegen<'a> {
                 let n = self.emit_expr_str(size);
                 Some(format!("({iw}) * ({n})"))
             }
+            // Packed block: `scale_w + N*elem_w`. Folded to a literal when `N`
+            // is constant (the common case — MXFP4 becomes a plain `136`);
+            // falls back to an expression so a param-sized `N` survives.
+            //
+            // The member types are gated by the same predicates the type
+            // checker uses. Falling back to the generic recursive width walk
+            // here is what let `ScaledVec<UInt<8>,4,E8M0>` emit a 40-bit port
+            // while the sim emitted a `uint8_t`.
+            TypeExpr::ScaledVec(elem, size, scale) => {
+                if !crate::fp_format::is_block_element(elem)
+                    || !crate::fp_format::is_block_scale(scale)
+                {
+                    return None;
+                }
+                if let Some(w) = self.type_expr_width(ty) {
+                    return Some(w.to_string());
+                }
+                let ew = self.type_expr_data_width(elem)?;
+                let sw = self.type_expr_data_width(scale)?;
+                let n = self.emit_expr_str(size);
+                Some(format!("({sw}) + ({ew}) * ({n})"))
+            }
             TypeExpr::Named(ident) => {
                 if let Some((crate::resolve::Symbol::Struct(info), _)) =
                     self.symbols.globals.get(&ident.name)
@@ -6125,6 +6147,9 @@ impl<'a> Codegen<'a> {
                 let n = eval(size)?;
                 Some(iw * n)
             }
+            TypeExpr::ScaledVec(elem, size, scale) => {
+                crate::fp_format::scaled_vec_width(elem, eval(size)?, scale)
+            }
             TypeExpr::Named(ident) => match self.symbols.globals.get(&ident.name) {
                 Some((Symbol::Struct(info), _)) => {
                     let mut total = 0u32;
@@ -7955,6 +7980,33 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Width of the element plane of a `ScaledVec` (`N * elem_w`) as an SV
+    /// expression, folded to a literal when `N` is constant. `"0"` if `ty` is
+    /// not a ScaledVec.
+    pub(crate) fn scaled_vec_elems_width(&self, ty: &TypeExpr) -> String {
+        let TypeExpr::ScaledVec(elem, n, _) = ty else {
+            return "0".to_string();
+        };
+        let ew = self
+            .type_expr_data_width(elem)
+            .unwrap_or_else(|| "0".to_string());
+        let nstr = self.emit_expr_str(n);
+        match (ew.parse::<u64>(), nstr.parse::<u64>()) {
+            (Ok(e), Ok(k)) => (e * k).to_string(),
+            _ => format!("({ew}) * ({nstr})"),
+        }
+    }
+
+    /// Width of the scale field of a `ScaledVec`. `"0"` if not a ScaledVec.
+    pub(crate) fn scaled_vec_scale_width(&self, ty: &TypeExpr) -> String {
+        match ty {
+            TypeExpr::ScaledVec(_, _, scale) => self
+                .type_expr_data_width(scale)
+                .unwrap_or_else(|| "0".to_string()),
+            _ => "0".to_string(),
+        }
+    }
+
     /// Fold a width string (output of emit_expr_str) to a range.
     /// If `s` parses as a decimal integer, emits `"N-1:0"` pre-computed.
     /// Otherwise keeps `"s-1:0"`.
@@ -7986,6 +8038,14 @@ impl<'a> Codegen<'a> {
             TypeExpr::FP4E2M1 => "logic [3:0]".to_string(),
             TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => "logic [5:0]".to_string(),
             TypeExpr::E8M0 => "logic [7:0]".to_string(),
+            // One packed word `{scale, P[N-1], …, P[0]}` — NOT an array, so
+            // there is no dimension suffix to carry (contrast Vec below).
+            TypeExpr::ScaledVec(..) => {
+                let w = self
+                    .type_expr_data_width(ty)
+                    .unwrap_or_else(|| "0".to_string());
+                format!("logic [{}]", Self::fold_width_str(&w))
+            }
             TypeExpr::Clock(_) => "logic".to_string(),
             TypeExpr::Reset(_, _) => "logic".to_string(),
             TypeExpr::Vec(_, _) => {

@@ -2040,6 +2040,12 @@ impl Builder {
                 let rel = self.rel_for_span(n.span);
                 self.walk_expr(owner, &rel, scope, n, ExprUse::Read);
             }
+            TypeExpr::ScaledVec(elem, n, scale) => {
+                self.walk_type(owner, scope, elem, span);
+                self.walk_type(owner, scope, scale, span);
+                let rel = self.rel_for_span(n.span);
+                self.walk_expr(owner, &rel, scope, n, ExprUse::Read);
+            }
             TypeExpr::Named(name) => self.add_uses_type(owner, &name.name, name.span),
         }
     }

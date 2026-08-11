@@ -331,6 +331,17 @@ pub struct PortDecl {
     /// (`name[i]`) is unchanged — `0` is always the first element. Only
     /// legal when `unpacked` is also set.
     pub unpacked_ascending: bool,
+    /// `split` modifier on a `ScaledVec<E,N,S>` port: instead of one packed
+    /// `logic [scale_w+N*elem_w-1:0] name`, emit TWO SV ports —
+    /// `name_scale` (`[scale_w-1:0]`) and `name_elems` (`[N*elem_w-1:0]`) —
+    /// flattened the way `bus` ports already flatten.
+    ///
+    /// This is what real datapaths want (proposal §3.2, decision #8): the
+    /// scale feeds the exponent path and the elements feed the mantissa
+    /// path, so packing and unpacking a 136-bit word per block is pure
+    /// overhead. Purely an SV-boundary shape — ARCH-internal semantics are
+    /// identical either way. Only legal on `ScaledVec` types.
+    pub split: bool,
     /// Per-output combinational-dependency annotation (issue #246
     /// Phase 2). Only legal on output ports without `reg_info` (i.e.
     /// comb-driven outputs). Three states:
@@ -1134,6 +1145,20 @@ pub enum TypeExpr {
     /// wrong — **NO zero**: `0x00` is the MINIMUM SCALE 2^-127, not zero.
     /// `0xFF` is NaN, which at block level marks the whole block NaN.
     E8M0,
+    /// A block-scaled vector: `ScaledVec<Elem, N, Scale>` — `N` narrow
+    /// elements sharing one scale, the unit of meaning in OCP MX / NVFP4.
+    /// Fields: element type, block size `N`, scale type.
+    ///
+    /// Unlike `Vec<T,N>` this is NOT an array: it lowers to a single packed
+    /// word `{ scale, P[N-1], …, P[0] }` of width `scale_w + N*elem_w`
+    /// (proposal §3.2, decision #8), so it flows through the pipeline as a
+    /// wide scalar rather than as an aggregate.
+    ///
+    /// Deliberately has no arithmetic, no comparison, and no element
+    /// indexing: OCP MX defines exactly one operation on blocks (the dot
+    /// product), and inventing element-wise semantics here would diverge
+    /// from every shipping ISA. Read elements via `scaled_dequantize(b)[i]`.
+    ScaledVec(Box<TypeExpr>, Box<Expr>, Box<TypeExpr>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2495,6 +2520,13 @@ pub struct PackageDecl {
     pub structs: Vec<StructDecl>,
     pub buses: Vec<BusDecl>,
     pub functions: Vec<FunctionDecl>,
+    /// `type Name = TypeExpr;` declared in the package body.
+    ///
+    /// Published file-wide, exactly like the package's structs and enums —
+    /// a package is a grouping, not a namespace. This is what lets a shared
+    /// vocabulary of named formats (`MXFP4`, `MXFP8`, …) be written once
+    /// instead of redeclared in every module that mentions one.
+    pub aliases: Vec<TypeAliasDecl>,
     pub span: Span,
     pub doc: Option<String>,
     pub inner_doc: Option<String>,

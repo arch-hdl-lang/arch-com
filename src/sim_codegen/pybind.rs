@@ -659,6 +659,9 @@ PYBIND11_MODULE({pybind_module}, m) {{
             TypeExpr::FP4E2M1 => 4,
             TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => 6,
             TypeExpr::E8M0 => 8,
+            TypeExpr::ScaledVec(elem, n, scale) => {
+                crate::fp_format::scaled_vec_width(elem, eval_width(n), scale).unwrap_or(0)
+            }
             TypeExpr::Named(_) => 32,
             TypeExpr::Vec(_, _) => 32,
         }

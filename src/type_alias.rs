@@ -27,9 +27,44 @@ use crate::diagnostics::CompileError;
 /// (aliases removed) or a list of errors.
 pub fn resolve_type_aliases(mut ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
     let mut errors: Vec<CompileError> = Vec::new();
+
+    // Package-declared aliases are published file-wide, exactly like a
+    // package's structs and enums (`resolve.rs` registers those as globals).
+    // Collect them first so every module starts with them in scope — that is
+    // what lets a shared vocabulary of named formats be declared once.
+    let mut package_aliases: AliasMap = HashMap::new();
+    let mut package_alias_spans: HashMap<String, crate::lexer::Span> = HashMap::new();
+    for item in &ast.items {
+        if let Item::Package(pkg) = item {
+            for a in &pkg.aliases {
+                let name = a.name.name.clone();
+                if PRIMITIVE_TYPE_NAMES.contains(&name.as_str()) {
+                    errors.push(CompileError::general(
+                        &format!("type alias name '{}' shadows a primitive type", name),
+                        a.name.span,
+                    ));
+                    continue;
+                }
+                if package_aliases.contains_key(&name) {
+                    errors.push(CompileError::general(
+                        &format!("duplicate package type alias '{}'", name),
+                        a.name.span,
+                    ));
+                    continue;
+                }
+                // Resolve against aliases already collected, so a package
+                // alias may build on an earlier one.
+                let mut ty = a.ty.clone();
+                substitute_type(&mut ty, &package_aliases, &mut errors);
+                package_aliases.insert(name.clone(), (ty, a.bus_params.clone()));
+                package_alias_spans.insert(name, a.name.span);
+            }
+        }
+    }
+
     for item in ast.items.iter_mut() {
         if let Item::Module(m) = item {
-            if let Err(mut es) = resolve_module(m) {
+            if let Err(mut es) = resolve_module(m, &package_aliases) {
                 errors.append(&mut es);
             }
         }
@@ -46,14 +81,20 @@ type AliasMap = HashMap<String, (TypeExpr, Vec<ParamAssign>)>;
 
 const PRIMITIVE_TYPE_NAMES: &[&str] = &["UInt", "SInt", "Bool", "Bit", "Clock", "Reset", "Vec"];
 
-fn resolve_module(m: &mut ModuleDecl) -> Result<(), Vec<CompileError>> {
+fn resolve_module(m: &mut ModuleDecl, package_aliases: &AliasMap) -> Result<(), Vec<CompileError>> {
     let mut errors: Vec<CompileError> = Vec::new();
 
     // 1. Walk body in source order, collecting aliases. Each alias's RHS
     //    is resolved against the already-collected map, so earlier
     //    aliases can be referenced by later ones (chains). Self-reference
     //    is detected as a cycle.
-    let mut aliases: AliasMap = HashMap::new();
+    //
+    //    Seeded with the file's package-declared aliases, which are in scope
+    //    everywhere. A module-scope alias that reuses a package alias name
+    //    therefore trips the duplicate check below rather than silently
+    //    shadowing it — package contents are global, so a collision is a
+    //    genuine ambiguity, exactly as it already is for a package struct.
+    let mut aliases: AliasMap = package_aliases.clone();
     // Preserve declaration order for diagnostics.
     let mut alias_order: Vec<(String, crate::lexer::Span)> = Vec::new();
 

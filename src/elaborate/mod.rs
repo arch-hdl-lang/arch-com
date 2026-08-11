@@ -1806,6 +1806,7 @@ fn subst_port(p: &PortDecl, var: &str, val: i64) -> PortDecl {
         shared: p.shared,
         unpacked: p.unpacked,
         unpacked_ascending: p.unpacked_ascending,
+        split: false,
         comb_deps: p.comb_deps.clone(),
         span: p.span,
     }

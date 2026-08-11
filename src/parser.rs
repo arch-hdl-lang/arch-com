@@ -477,6 +477,7 @@ impl Parser {
             shared: None,
             unpacked: false,
             unpacked_ascending: false,
+            split: false,
             comb_deps: None,
             span: parent_span.merge(end_span),
         })
@@ -716,6 +717,7 @@ impl Parser {
             shared: None,
             unpacked: false,
             unpacked_ascending: false,
+            split: false,
             comb_deps: None,
             span: sp,
         };
@@ -971,6 +973,7 @@ impl Parser {
             shared: None,
             unpacked: false,
             unpacked_ascending: false,
+            split: false,
             comb_deps: None,
             span: sp,
         };
@@ -1556,6 +1559,7 @@ impl Parser {
                 shared: None,
                 unpacked: false,
                 unpacked_ascending: false,
+                split: false,
                 comb_deps: None,
                 span: start.merge(end_span),
             });
@@ -1601,6 +1605,12 @@ impl Parser {
                 self.peek_span(),
             ));
         }
+        // Optional `split` modifier: `port b: in split ScaledVec<E,N,S>;`
+        // Emits two SV ports (`b_scale` / `b_elems`) instead of one packed
+        // word. Contextual like `unpacked`, so `split` stays usable as an
+        // ordinary identifier. Only legal on ScaledVec — validated below,
+        // after the type is parsed.
+        let split = self.eat_contextual("split");
 
         // `port X: out pipe_reg<T, N> [modifiers];` — same semantics as
         // `port reg X: out T ...` for N=1, N-stage output pipe for N>=2.
@@ -1773,6 +1783,10 @@ impl Parser {
                 start.merge(end_span),
             ));
         }
+        // NOTE: `split`'s "only on ScaledVec" rule is NOT checked here. Type
+        // aliases resolve after parsing, so `port s: in split MXFP4;` still
+        // looks like `TypeExpr::Named` at this point. The check lives in
+        // typecheck, where the alias has been substituted.
         Ok(PortDecl {
             name,
             direction,
@@ -1783,6 +1797,7 @@ impl Parser {
             shared,
             unpacked,
             unpacked_ascending,
+            split,
             comb_deps,
             span: start.merge(end_span),
         })
@@ -4283,6 +4298,24 @@ impl Parser {
                 self.expect(TokenKind::Gt)?;
                 Ok(TypeExpr::Vec(Box::new(elem), Box::new(size)))
             }
+            // `ScaledVec<Elem, N, Scale>` — a block-scaled vector. Three
+            // arguments, unlike Vec's two: the scale type is a parameter
+            // because MX and NVFP4 differ on it (E8M0 vs UE4M3).
+            Some(TokenKind::KwScaledVec) => {
+                self.advance();
+                self.expect(TokenKind::Lt)?;
+                let elem = self.parse_type_expr()?;
+                self.expect(TokenKind::Comma)?;
+                let size = self.parse_type_arg_expr()?;
+                self.expect(TokenKind::Comma)?;
+                let scale = self.parse_type_expr()?;
+                self.expect(TokenKind::Gt)?;
+                Ok(TypeExpr::ScaledVec(
+                    Box::new(elem),
+                    Box::new(size),
+                    Box::new(scale),
+                ))
+            }
             Some(TokenKind::Ident(_)) => {
                 let ident = self.expect_ident()?;
                 Ok(TypeExpr::Named(ident))
@@ -6017,6 +6050,7 @@ impl Parser {
             shared: None,
             unpacked: false,
             unpacked_ascending: false,
+            split: false,
             comb_deps: None,
             span: start.merge(end_span),
         })
@@ -7690,6 +7724,7 @@ impl Parser {
         let mut structs = Vec::new();
         let mut buses = Vec::new();
         let mut functions = Vec::new();
+        let mut aliases = Vec::new();
 
         while !self.check_end_keyword() {
             match self.peek_kind() {
@@ -7699,9 +7734,13 @@ impl Parser {
                 Some(TokenKind::Struct) => structs.push(self.parse_struct()?),
                 Some(TokenKind::Bus) => buses.push(self.parse_bus()?),
                 Some(TokenKind::Function) => functions.push(self.parse_function()?),
+                // `type Name = TypeExpr;` — same declaration form as a
+                // module-scope alias, but published file-wide like the
+                // package's other contents.
+                Some(TokenKind::Type) => aliases.push(self.parse_type_alias_decl()?),
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "param, domain, enum, struct, bus, or function",
+                        "param, domain, enum, struct, bus, function, or type",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -7730,6 +7769,7 @@ impl Parser {
             structs,
             buses,
             functions,
+            aliases,
             doc: None,
             inner_doc,
         })
