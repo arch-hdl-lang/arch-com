@@ -1652,7 +1652,7 @@ fn test_arbiter_custom_hook() {
     let sv = compile_to_sv(source);
     assert!(sv.contains("module QosArbiter"));
     assert!(sv.contains("function automatic"));
-    assert!(sv.contains("QosGrant(request_valid, last_grant_r, qos_in)"));
+    assert!(sv.contains("QosGrant(request_valid, last_grant_r, qos)"));
     assert!(sv.contains("last_grant_r"));
     assert!(sv.contains("grant_onehot"));
     insta::assert_snapshot!(sv);

@@ -1,7 +1,7 @@
 file	frontend	verdict	reason
 examples/TestPkg.arch	-	NO_MODULE	-
-examples/arbiter_custom_hook.arch	iverilog	FAIL	SV:48: error: Unable to bind wire/reg/memory `qos_in' in `QosArbiter'
-examples/arbiter_custom_hook.arch	verilator	FAIL	%Error: SV:48:58: Can't find definition of variable: 'qos_in'
+examples/arbiter_custom_hook.arch	iverilog	OK	-
+examples/arbiter_custom_hook.arch	verilator	OK	-
 examples/arbiter_latency2.arch	iverilog	OK	-
 examples/arbiter_latency2.arch	verilator	OK	-
 examples/async_fifo.arch	iverilog	OK	-
