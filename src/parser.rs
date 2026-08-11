@@ -318,6 +318,9 @@ impl Parser {
             tlm_methods,
             doc: None,
             inner_doc,
+            // Default false; set post-parse for items loaded from `.archi`
+            // by main.rs's tagger, same as every other construct.
+            is_interface: false,
         })
     }
 
