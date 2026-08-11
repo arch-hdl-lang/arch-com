@@ -3875,28 +3875,40 @@ impl<'a> FormalCtx<'a> {
                     Some(self.replay_check(prop, &assignments, min_t, max_t, lhs_future, &fns))
                 };
                 match replay {
-                    Some(ReplayVerdict::Contradicted) => PropertyStatus::EncodingUnsound(
-                        "internal compiler bug: the solver reported this property as violated, \
-                         but independent replay of its model shows no violation at any cycle — \
-                         the BMC query generation is unsound. This is not a design error; \
-                         please report it (attach the --emit-smt output)"
-                            .to_string(),
-                    )
-                    .with_cex(
-                        render_counterexample(
-                            &prop.name,
-                            failing_cycle,
-                            self,
-                            &assignments,
-                            args.bound,
-                        )
-                        .map(|c| {
-                            format!(
-                                "{c}\n  replay: property evaluates un-violated at every cycle \
-                                 in [{min_t}, {max_t}] on this model"
+                    Some(ReplayVerdict::Contradicted) => {
+                        // The solver's claim differs by kind: an assert is
+                        // "violated", a cover is "hit".
+                        let (claim, note) = if matches!(prop.kind, AssertKind::Cover) {
+                            (
+                                "reported this cover as hit, but independent replay of its \
+                                 model shows the cover expression holds at no cycle",
+                                "cover expression holds at no cycle",
                             )
-                        }),
-                    ),
+                        } else {
+                            (
+                                "reported this property as violated, but independent replay \
+                                 of its model shows no violation at any cycle",
+                                "property evaluates un-violated at every cycle",
+                            )
+                        };
+                        PropertyStatus::EncodingUnsound(format!(
+                            "internal compiler bug: the solver {claim} — \
+                             the BMC query generation is unsound. This is not a design error; \
+                             please report it (attach the --emit-smt output)"
+                        ))
+                        .with_cex(
+                            render_counterexample(
+                                &prop.name,
+                                failing_cycle,
+                                self,
+                                &assignments,
+                                args.bound,
+                            )
+                            .map(|c| {
+                                format!("{c}\n  replay: {note} in [{min_t}, {max_t}] on this model")
+                            }),
+                        )
+                    }
                     Some(ReplayVerdict::Confirmed(c)) => {
                         // Replay's earliest independently-confirmed cycle wins
                         // over the solver-bit guess (defense-in-depth against
@@ -6319,6 +6331,131 @@ end module ReplayImpl
         ]);
         assert_eq!(
             ctx.replay_check(prop, &m, 0, 1, 0, &fns),
+            ReplayVerdict::Contradicted
+        );
+    }
+
+    #[test]
+    fn replay_classifies_cover_hits() {
+        // Cover: the solver's sat claim is a HIT, so `violation_truth` flips —
+        // replay must confirm at the earliest cycle where the expression
+        // holds, contradict when it holds nowhere, and stay inconclusive on a
+        // missing model value. No cover property exercised replay before this.
+        let src = r#"
+module ReplayCover
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port x: in UInt<8>;
+  port o: out Bool;
+  comb o = x == 42; end comb
+  cover seen: x == 42;
+end module ReplayCover
+"#;
+        let (ast, symbols) = parse_and_resolve(src);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        assert!(matches!(prop.kind, AssertKind::Cover));
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        // Hit at cycles 1 and 2 — earliest wins.
+        let m = model(&[("x_0", 7), ("x_1", 42), ("x_2", 42)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 2, 0, &fns),
+            ReplayVerdict::Confirmed(1)
+        );
+        // Expression holds at no cycle → a sat (hit) claim contradicts.
+        let m = model(&[("x_0", 7), ("x_1", 8), ("x_2", 9)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 2, 0, &fns),
+            ReplayVerdict::Contradicted
+        );
+        // Missing model value → that cycle undecidable → Inconclusive,
+        // never Contradicted from uncertainty.
+        let m = model(&[("x_0", 7), ("x_2", 9)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 2, 0, &fns),
+            ReplayVerdict::Inconclusive
+        );
+    }
+
+    #[test]
+    fn replay_evaluates_past_across_cycles() {
+        // `past(x, 1)` reads the model one cycle back. The real caller
+        // (run_property) excludes t < past_depth via max_cycle_offsets, so
+        // the realistic range starts at min_t = 1.
+        let src = r#"
+module ReplayPast
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port x: in UInt<8>;
+  port o: out Bool;
+  comb o = x == 3; end comb
+  assert stable: past(x, 1) == x;
+end module ReplayPast
+"#;
+        let (ast, symbols) = parse_and_resolve(src);
+        let ctx = build_ctx(&ast, &symbols);
+        let prop = &ctx.properties[0];
+        let (min_t, _) = max_cycle_offsets(&prop.expr);
+        assert_eq!(min_t, 1, "past(x, 1) must impose past-depth 1");
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        // x changes 3 → 7 at cycle 2: past(x,1)=3 ≠ 7 violates there.
+        let m = model(&[("x_0", 3), ("x_1", 3), ("x_2", 7)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, min_t, 2, 0, &fns),
+            ReplayVerdict::Confirmed(2)
+        );
+        // x constant → property holds at every in-range cycle → contradiction.
+        let m = model(&[("x_0", 3), ("x_1", 3), ("x_2", 3)]);
+        assert_eq!(
+            ctx.replay_check(prop, &m, min_t, 2, 0, &fns),
+            ReplayVerdict::Contradicted
+        );
+        // Conservatism: if the range wrongly includes t=0 (below past depth),
+        // that cycle is undecidable (t < n) and blocks Contradicted.
+        assert_eq!(
+            ctx.replay_check(prop, &m, 0, 2, 0, &fns),
+            ReplayVerdict::Inconclusive
+        );
+    }
+
+    #[test]
+    fn replay_evaluates_rose_and_fell() {
+        // rose(x) ≡ x@t ∧ ¬x@(t-1); fell(x) is the mirror. Both carry
+        // past-depth 1, mirroring the encoder's t≥1 requirement.
+        let src = r#"
+module ReplayEdge
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port x: in Bool;
+  port o: out Bool;
+  comb o = x; end comb
+  assert no_rise: !rose(x);
+  assert no_fall: !fell(x);
+end module ReplayEdge
+"#;
+        let (ast, symbols) = parse_and_resolve(src);
+        let ctx = build_ctx(&ast, &symbols);
+        let no_rise = &ctx.properties[0];
+        let no_fall = &ctx.properties[1];
+        let fns = crate::fp_ops::fp_functions(crate::FpCompat::default());
+        // 0 → 1 at cycle 1: rose fires there, fell never does.
+        let m = model(&[("x_0", 0), ("x_1", 1), ("x_2", 1)]);
+        assert_eq!(
+            ctx.replay_check(no_rise, &m, 1, 2, 0, &fns),
+            ReplayVerdict::Confirmed(1)
+        );
+        assert_eq!(
+            ctx.replay_check(no_fall, &m, 1, 2, 0, &fns),
+            ReplayVerdict::Contradicted
+        );
+        // 1 → 0 at cycle 2: fell fires there, rose never does.
+        let m = model(&[("x_0", 1), ("x_1", 1), ("x_2", 0)]);
+        assert_eq!(
+            ctx.replay_check(no_fall, &m, 1, 2, 0, &fns),
+            ReplayVerdict::Confirmed(2)
+        );
+        assert_eq!(
+            ctx.replay_check(no_rise, &m, 1, 2, 0, &fns),
             ReplayVerdict::Contradicted
         );
     }
