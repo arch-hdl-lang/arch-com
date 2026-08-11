@@ -1,5 +1,6 @@
 //! Block-scaled (`ScaledVec`) operations — the `scaled_quantize` /
-//! `scaled_dequantize` lowering shared by `arch build` and `arch sim`.
+//! `scaled_dequantize` / `scaled_dot` lowering shared by `arch build` and
+//! `arch sim`.
 //!
 //! **Why one module emits both backends.** The numerics here are *not* new:
 //! every float operation used below is an existing helper with an exhaustive
@@ -26,6 +27,13 @@
 //!    A power-of-two multiply is exact in FP32, so the element narrow that
 //!    follows rounds exactly once, from the true `v_i / X`. That single
 //!    rounding is what makes the round-trip error bound provable (arch#884).
+//!
+//! `scaled_dot` (phase 3) rests on the same principle from the other side:
+//! every element-pair product is *exact* in FP32 — machine-checked
+//! exhaustively per format by `fp_smt_proof::MX_DOT` — so all of a block dot's
+//! rounding is in the summation. That is what makes [`dot_schedule`]'s choice
+//! of accumulation order the only implementation freedom left, and therefore
+//! worth defining rather than leaving open.
 //!
 //! Layout is the one fixed in phase 2a (`fp_format::scaled_vec_width`):
 //! `{ scale[SW-1:0], P[N-1], …, P[1], P[0] }` — scale in the high bits,
@@ -78,6 +86,9 @@ pub enum BlockHelper {
     },
     /// Block → `Vec<FP32, N>`.
     Dequantize { shape: BlockShape },
+    /// Block · block → `FP32`. The one operation OCP MX defines normatively
+    /// (§6.2): `X^A · X^B · Σᵢ(Pᵢ^A × Pᵢ^B)`.
+    Dot { shape: BlockShape },
 }
 
 /// Resolve a `ScaledVec<Elem, N, Scale>` surface type to a block shape.
@@ -103,6 +114,28 @@ pub fn shape_of(elem: &TypeExpr, n: u32, scale: &TypeExpr) -> Option<BlockShape>
         _ => return None,
     };
     Some(BlockShape { elem, n, scale })
+}
+
+/// Resolve a `ScaledVec<Elem, N, Scale>` **TypeExpr** to a block shape.
+///
+/// The one resolver both backends use. It was briefly duplicated per emitter,
+/// which is how a block ends up sized one way in the SV and another in the
+/// sim; there is nothing here worth having two copies of.
+///
+/// `None` — never a guess — when the type is not a block, `N` does not fold to
+/// a literal, or a member type is not a legal block member. Callers turn that
+/// into a panic: typecheck has already accepted the type, so a `None` is a
+/// compiler bug rather than a user error.
+pub fn shape_of_type(ty: &TypeExpr) -> Option<BlockShape> {
+    let TypeExpr::ScaledVec(elem, size, scale) = ty else {
+        return None;
+    };
+    let n = match &size.kind {
+        crate::ast::ExprKind::Literal(crate::ast::LitKind::Dec(n))
+        | crate::ast::ExprKind::Literal(crate::ast::LitKind::Hex(n)) => *n as u32,
+        _ => return None,
+    };
+    shape_of(elem, n, scale)
 }
 
 impl BlockShape {
@@ -143,7 +176,9 @@ impl BlockShape {
 impl BlockHelper {
     fn shape(self) -> BlockShape {
         match self {
-            BlockHelper::Quantize { shape, .. } | BlockHelper::Dequantize { shape } => shape,
+            BlockHelper::Quantize { shape, .. }
+            | BlockHelper::Dequantize { shape }
+            | BlockHelper::Dot { shape } => shape,
         }
     }
 
@@ -167,6 +202,9 @@ impl BlockHelper {
                 s.n,
                 s.scale.tag(),
             ),
+            BlockHelper::Dot { .. } => {
+                format!("arch_scaled_dot_{}_{}_{}", s.elem_tag(), s.n, s.scale.tag(),)
+            }
         }
     }
 
@@ -190,6 +228,49 @@ fn round_tag(r: RoundMode) -> &'static str {
     }
 }
 
+/// The summation schedule for a block dot product of `n` elements.
+///
+/// **This is a definition, not a derivation.** OCP MX §6.2 fixes the dot's
+/// *value* as `X^A · X^B · Σᵢ(Pᵢ^A × Pᵢ^B)` but leaves the accumulation
+/// implementation-defined — and FP32 addition is not associative, so an
+/// unstated order is an unstated result. ARCH defines it here, once, and both
+/// backends render this same schedule.
+///
+/// The order is **balanced pairwise**: each round adds adjacent pairs, a lone
+/// trailing value passes through untouched, repeat until one remains. Chosen
+/// over a running serial accumulator because it is what a dot-product datapath
+/// synthesizes to anyway (⌈log₂ N⌉ deep rather than N), and because pairwise
+/// summation has a strictly smaller error bound — `O(log N)` growth against
+/// serial's `O(N)`.
+///
+/// Temps `0..n` are the element-pair products; each returned `(l, r)` defines
+/// the next temp in order, so temp `n + k` is `adds[k]`. Returns the adds and
+/// the index of the final temp (which is `0` when `n == 1`: no adds at all).
+fn dot_schedule(n: u32) -> (Vec<(usize, usize)>, usize) {
+    let mut cur: Vec<usize> = (0..n as usize).collect();
+    let mut adds: Vec<(usize, usize)> = Vec::new();
+    let mut next_id = n as usize;
+    while cur.len() > 1 {
+        let mut nxt = Vec::with_capacity(cur.len().div_ceil(2));
+        let mut i = 0;
+        while i + 1 < cur.len() {
+            adds.push((cur[i], cur[i + 1]));
+            nxt.push(next_id);
+            next_id += 1;
+            i += 2;
+        }
+        if i < cur.len() {
+            // Odd count: the last value skips this round rather than being
+            // paired with an implicit zero. Adding zero is not a no-op in
+            // FP32 (it turns -0.0 into +0.0), so a "harmless" pad would be a
+            // real value change.
+            nxt.push(cur[i]);
+        }
+        cur = nxt;
+    }
+    (adds, cur[0])
+}
+
 /// `[hi:0]` in the `logic [hi:0] ` declaration style `render_sv` uses.
 fn sv_w(bits: u32) -> String {
     if bits == 1 {
@@ -211,7 +292,70 @@ pub fn sv_definition(h: BlockHelper) -> String {
             round,
         } => sv_quantize(shape, policy, round),
         BlockHelper::Dequantize { shape } => sv_dequantize(shape),
+        BlockHelper::Dot { shape } => sv_dot(shape),
     }
+}
+
+/// `scaled_dot` — OCP MX §6.2's `X^A · X^B · Σᵢ(Pᵢ^A × Pᵢ^B)`.
+///
+/// The summation tree is **unrolled at generation time** rather than emitted
+/// as a loop over an array. That is what makes the two backends comparable by
+/// inspection: both print the identical sequence of named temporaries from
+/// the identical [`dot_schedule`], so a reviewer can diff them line for line
+/// and a divergence cannot hide inside differing loop semantics.
+fn sv_dot(s: BlockShape) -> String {
+    let name = BlockHelper::Dot { shape: s }.sv_name();
+    let (bw, ew, sw) = (s.bits(), s.elem_width(), s.scale.width());
+    let (n, tag) = (s.n, s.elem_tag());
+    let (adds, last) = dot_schedule(n);
+    let mut o = String::new();
+    let _ = writeln!(
+        o,
+        "// {name}: OCP MX \u{a7}6.2 block dot, X^A * X^B * sum(P^A_i * P^B_i)."
+    );
+    let _ = writeln!(
+        o,
+        "function automatic logic {}{name}(input logic {}a, input logic {}b);",
+        sv_w(32),
+        sv_w(bw),
+        sv_w(bw)
+    );
+    for t in 0..(n as usize + adds.len()) {
+        let _ = writeln!(o, "  logic {}t{t};", sv_w(32));
+    }
+    // Element-pair products. EXACT in FP32 for every element format — the
+    // widest significand product is E4M3's 4x4 = 8 bits against FP32's 24,
+    // and the widest exponent range is E5M2's 2^-32 .. 2^31.6, comfortably
+    // inside FP32's normals. So every rounding in a block dot happens in the
+    // summation below, none in these multiplies (`fp_block_dot_products_are_exact`).
+    for i in 0..n as usize {
+        let _ = writeln!(
+            o,
+            "  t{i} = arch_f32_mul(arch_{tag}_to_f32(a[{lo} +: {ew}]), \
+             arch_{tag}_to_f32(b[{lo} +: {ew}]));",
+            lo = i * ew as usize
+        );
+    }
+    for (k, (l, r)) in adds.iter().enumerate() {
+        let _ = writeln!(o, "  t{} = arch_f32_add(t{l}, t{r});", n as usize + k);
+    }
+    // Scales applied ONE AT A TIME, not as a pre-formed `X^A * X^B`.
+    // Each is a power of two, so each multiply is exact absent over/underflow
+    // — but forming `X^A * X^B` first can overflow to Inf or flush to zero
+    // (the two E8M0 exponents span 2^-127..2^127, so their product spans
+    // 2^-254..2^254, well outside FP32) even when the final result is
+    // perfectly representable. Applying them separately has a strictly wider
+    // exact domain. A NaN scale (0xFF) widens to NaN and poisons the result
+    // here, which is the block value rule.
+    let _ = writeln!(
+        o,
+        "  {name} = arch_f32_mul(arch_f32_mul(t{last}, arch_e8m0_to_f32(a[{hi}:{lo}])), \
+         arch_e8m0_to_f32(b[{hi}:{lo}]));",
+        hi = bw - 1,
+        lo = bw - sw
+    );
+    let _ = writeln!(o, "endfunction");
+    o
 }
 
 fn sv_quantize(s: BlockShape, policy: ScalePolicy, round: RoundMode) -> String {
@@ -415,7 +559,67 @@ pub fn cpp_definition(h: BlockHelper) -> String {
             round,
         } => cpp_quantize(shape, policy, round),
         BlockHelper::Dequantize { shape } => cpp_dequantize(shape),
+        BlockHelper::Dot { shape } => cpp_dot(shape),
     }
+}
+
+/// C++ twin of [`sv_dot`]. Same schedule, same temp numbering, same order of
+/// scale application — compare the two side by side.
+///
+/// Returns by value (unlike quantize/dequantize): the result is a scalar
+/// `FP32`, so it composes as an ordinary expression on both backends. Both
+/// block operands are template parameters because the same block type has
+/// different C++ storage as a port and as an internal wire, and a dot can mix
+/// the two.
+fn cpp_dot(s: BlockShape) -> String {
+    let name = BlockHelper::Dot { shape: s }.cpp_name();
+    let (bw, ew, sw) = (s.bits(), s.elem_width(), s.scale.width());
+    let (n, tag) = (s.n, s.elem_tag());
+    let nw = cpp_words(bw);
+    let (adds, last) = dot_schedule(n);
+    let mut o = String::new();
+    let _ = writeln!(
+        o,
+        "// {name}: OCP MX §6.2 block dot. Mirrors sv_dot in src/fp_block.rs."
+    );
+    let _ = writeln!(o, "template <typename BA, typename BB>");
+    let _ = writeln!(
+        o,
+        "static inline uint32_t {name}(const BA& a, const BB& b) {{"
+    );
+    let _ = writeln!(o, "  uint32_t _wa[{nw}], _wb[{nw}];");
+    let _ = writeln!(o, "  _arch_blk_get(_wa, {nw}, a);");
+    let _ = writeln!(o, "  _arch_blk_get(_wb, {nw}, b);");
+    // Exact products — see the note in sv_dot.
+    for i in 0..n as usize {
+        let _ = writeln!(
+            o,
+            "  uint32_t t{i} = _arch_f32_mul(_arch_{tag}_to_f32((uint8_t)_arch_blk_ext(_wa, {lo}u, {ew}u)), \
+             _arch_{tag}_to_f32((uint8_t)_arch_blk_ext(_wb, {lo}u, {ew}u)));",
+            lo = i * ew as usize
+        );
+    }
+    for (k, (l, r)) in adds.iter().enumerate() {
+        let _ = writeln!(
+            o,
+            "  uint32_t t{} = _arch_f32_add(t{l}, t{r});",
+            n as usize + k
+        );
+    }
+    // Scales one at a time — see the note in sv_dot.
+    let _ = writeln!(
+        o,
+        "  uint32_t xa = _arch_e8m0_to_f32((uint8_t)_arch_blk_ext(_wa, {lo}u, {sw}u));",
+        lo = bw - sw
+    );
+    let _ = writeln!(
+        o,
+        "  uint32_t xb = _arch_e8m0_to_f32((uint8_t)_arch_blk_ext(_wb, {lo}u, {sw}u));",
+        lo = bw - sw
+    );
+    let _ = writeln!(o, "  return _arch_f32_mul(_arch_f32_mul(t{last}, xa), xb);");
+    let _ = writeln!(o, "}}");
+    o
 }
 
 fn cpp_quantize(s: BlockShape, policy: ScalePolicy, round: RoundMode) -> String {

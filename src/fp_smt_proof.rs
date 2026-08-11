@@ -142,6 +142,41 @@ pub const MX_CONV: &[&str] = &[
 /// (non-finite to `0xFF`, zero/subnormal to the minimum scale `0x00`).
 pub const MX_SCALE_CONV: &[&str] = &["e8m0_widen", "e8m0_narrow"];
 
+/// **The phase-3 gate for `scaled_dot`** (OCP MX §6.2): every element-pair
+/// product in a block dot is *exact* in FP32.
+///
+/// This is the theorem that makes the dot's error story simple enough to
+/// state — **all rounding in a block dot happens in the accumulation, none in
+/// the multiplies**. It is what lets ARCH define an accumulation order and
+/// have that definition mean something: if the products themselves rounded,
+/// the order would not be the only implementation choice left.
+///
+/// It is true for a structural reason, and the proof checks the reason rather
+/// than restating it. The widest element significand is E4M3's 4 bits, so a
+/// product needs at most 8 of FP32's 24; and the widest exponent span is
+/// E5M2's `2^-32 … 2^31.6`, comfortably inside FP32's normal range, so no
+/// subnormal truncation and no overflow either.
+///
+/// Exactness is expressed **without mentioning reals**: a rounded result is
+/// exact iff rounding toward `-∞` and toward `+∞` agree, since an inexact
+/// value falls strictly between two neighbours and the two modes pick
+/// different ones. (`RTZ`/`RTP` would *not* work — both round a negative
+/// value toward `+∞`, so they agree vacuously on every negative product.)
+///
+/// Each query proves two things at once, and needs both to be worth anything:
+/// the mathematical product is representable, *and* `arch_f32_mul` actually
+/// returns it. The second half is normally out of reach — general FP32
+/// multiplier equivalence is SAT-hard — but here both operands are confined
+/// to a widened 4-to-8-bit grid, so the space is 2^8 to 2^16 pairs rather
+/// than 2^64.
+pub const MX_DOT: &[&str] = &[
+    "e2m1_dot_exact",
+    "e2m3_dot_exact",
+    "e3m2_dot_exact",
+    "e4m3_dot_exact",
+    "e5m2_dot_exact",
+];
+
 /// An OCP all-finite storage format, described by constants transcribed from
 /// the OCP spec's value tables rather than recomputed from `(eb, mb)`.
 ///
@@ -393,6 +428,30 @@ pub fn equiv_proof(op: &str, profile: FpCompat) -> String {
             );
         }
         // ── bf16: spec on (_ FloatingPoint 8 8); RTL routes widen->f32->narrow ──
+        // ── Phase 3: block-dot element products are exact (see MX_DOT) ──
+        _ if op.ends_with("_dot_exact") => {
+            let tag = op.trim_end_matches("_dot_exact");
+            let w = crate::fp_format::by_tag(tag)
+                .unwrap_or_else(|| panic!("unknown element format `{tag}` in {op}"))
+                .width;
+            s.push_str(&format!(
+                "(declare-fun pa () (_ BitVec {w}))\n\
+                 (declare-fun pb () (_ BitVec {w}))\n\
+                 (define-fun fa () F ((_ to_fp 8 24) (arch_{tag}_to_f32 pa)))\n\
+                 (define-fun fb () F ((_ to_fp 8 24) (arch_{tag}_to_f32 pb)))\n\
+                 (define-fun down () F (fp.mul RTN fa fb))\n\
+                 (define-fun up   () F (fp.mul RTP fa fb))\n\
+                 (define-fun spec () F (fp.mul RNE fa fb))\n\
+                 (define-fun rr () (_ BitVec 32) (arch_f32_mul (arch_{tag}_to_f32 pa) (arch_{tag}_to_f32 pb)))\n\
+                 (assert (not (and\n\
+                   ; 1. the mathematical product is representable in FP32:\n\
+                   ;    rounding down and rounding up land on the same value.\n\
+                   (= down up)\n\
+                   ; 2. and `arch_f32_mul` actually returns it.\n\
+                   (ite (fp.isNaN spec) (= rr {n32}) (= ((_ to_fp 8 24) rr) spec)))))\n\
+                 (check-sat)\n"
+            ));
+        }
         _ if op.starts_with("bf16_") => {
             let bpre = "(declare-fun a () (_ BitVec 16))\n(declare-fun b () (_ BitVec 16))\n\
                         (define-fun ga () (_ FloatingPoint 8 8) ((_ to_fp 8 8) a))\n\

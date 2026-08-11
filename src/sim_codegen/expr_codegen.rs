@@ -1616,6 +1616,38 @@ pub(super) fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
         }
         ExprKind::FunctionCall(name, args) => {
             let arg_strs: Vec<String> = args.iter().map(|a| cpp_expr(a, ctx)).collect();
+            // `scaled_dot(a, b)` returns a scalar FP32, so unlike quantize /
+            // dequantize (whose aggregate results need a statement form) it
+            // lowers as an ordinary call expression here.
+            if name == "scaled_dot" && args.len() == 2 {
+                let shape = ctx
+                    .decl_types
+                    .and_then(|m| match &args[0].kind {
+                        ExprKind::Ident(n) => m.get(n.as_str()),
+                        _ => None,
+                    })
+                    .and_then(|t| crate::fp_block::shape_of_type(t))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "scaled_dot operand has no resolvable block shape — typecheck \
+                             accepts only matching `ScaledVec` operands, so this means the \
+                             operand is not a plain signal name or its block size did not \
+                             fold to a literal (arch#884 phase 3)"
+                        )
+                    });
+                let h = crate::fp_block::BlockHelper::Dot { shape };
+                match ctx.block_helpers {
+                    Some(reg) => {
+                        reg.borrow_mut().insert(h);
+                    }
+                    None => panic!(
+                        "`{}` is needed here but this sim context has no block-helper \
+                         registry, so its definition would never be emitted (arch#884).",
+                        h.cpp_name()
+                    ),
+                }
+                return format!("{}({}, {})", h.cpp_name(), arg_strs[0], arg_strs[1]);
+            }
             format!("{name}({})", arg_strs.join(", "))
         }
 

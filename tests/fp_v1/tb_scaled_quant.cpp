@@ -121,6 +121,9 @@ int main() {
     print_vec("b4 ", dut.back4, 8);
     print_vec("b6 ", dut.back6, 8);
     print_vec("b8 ", dut.back8, 8);
+    // scaled_dot results are scalar FP32 — print the raw bits, same as any
+    // other word, so the SV twin has nothing format-specific to reproduce.
+    printf("dot %08x %08x %08x %08x\n", dut.dot4, dut.dot6, dut.dot8, dut.dot4x);
   }
   return 0;
 }

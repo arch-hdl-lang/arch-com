@@ -26,21 +26,6 @@ pub(super) enum SimAssignKind {
     Comb,
 }
 
-/// Resolve a `ScaledVec<Elem, N, Scale>` TypeExpr to the block shape the
-/// helper emitters are keyed on. `None` — never a guess — when `N` does not
-/// fold to a literal or a member type is not a legal block member; the caller
-/// turns that into a panic, because typecheck has already accepted the type.
-fn block_shape_of_type(ty: &TypeExpr) -> Option<crate::fp_block::BlockShape> {
-    let TypeExpr::ScaledVec(elem, size, scale) = ty else {
-        return None;
-    };
-    let n = match &size.kind {
-        ExprKind::Literal(LitKind::Dec(n)) | ExprKind::Literal(LitKind::Hex(n)) => *n as u32,
-        _ => return None,
-    };
-    crate::fp_block::shape_of(elem, n, scale)
-}
-
 /// Record `h` as needed by this module and return its C++ name.
 fn use_block_helper(h: crate::fp_block::BlockHelper, ctx: &Ctx) -> String {
     match ctx.block_helpers {
@@ -72,7 +57,7 @@ fn emit_scaled_block_assign(
 ) -> Option<()> {
     match &a.value.kind {
         ExprKind::ScaledQuantize(v, fmt, policy, round) => {
-            let shape = block_shape_of_type(fmt.as_ref()).unwrap_or_else(|| {
+            let shape = crate::fp_block::shape_of_type(fmt.as_ref()).unwrap_or_else(|| {
                 panic!(
                     "scaled_quantize format has no resolvable block shape — typecheck \
                      accepts only `ScaledVec` formats, so this means the block size did \
@@ -99,7 +84,7 @@ fn emit_scaled_block_assign(
                     ExprKind::Ident(n) => m.get(n.as_str()),
                     _ => None,
                 })
-                .and_then(block_shape_of_type)
+                .and_then(|t| crate::fp_block::shape_of_type(t))
                 .unwrap_or_else(|| {
                     panic!(
                         "scaled_dequantize operand has no resolvable block shape — typecheck \

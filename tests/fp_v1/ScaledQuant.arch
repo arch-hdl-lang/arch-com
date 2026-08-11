@@ -31,9 +31,21 @@ module ScaledQuant
   port back6: out Vec<FP32, 8>;
   port back8: out Vec<FP32, 8>;
 
+  // `scaled_dot` (phase 3): the one operation OCP MX §6.2 defines
+  // normatively. `dot4s` dots the block against ITSELF (a sum of squares,
+  // so a sign error anywhere shows up); `dot4x` dots two DIFFERENT blocks,
+  // which is what exercises the two-scale path.
+  port dot4:  out FP32;
+  port dot6:  out FP32;
+  port dot8:  out FP32;
+  port dot4x: out FP32;
+
   wire b4: B4;
   wire b6: B6;
   wire b8: B8;
+  // A second B4 block from a different vector, so `dot4x` has two
+  // independent scales to combine rather than squaring one.
+  wire b4b: B4;
 
   comb
     b4 = scaled_quantize<B4>(v);
@@ -55,5 +67,15 @@ module ScaledQuant
     back4 = scaled_dequantize(b4);
     back6 = scaled_dequantize(b6);
     back8 = scaled_dequantize(b8);
+
+    // The `ceil_pow2` block reuses `v`'s values under a different scale, so
+    // `b4b` differs from `b4` in BOTH the scale and the element codes — the
+    // two-scale path is genuinely exercised rather than squaring one scale.
+    b4b = scaled_quantize<B4, ceil_pow2, rne>(v);
+
+    dot4  = scaled_dot(b4, b4);
+    dot6  = scaled_dot(b6, b6);
+    dot8  = scaled_dot(b8, b8);
+    dot4x = scaled_dot(b4, b4b);
   end comb
 end module ScaledQuant
