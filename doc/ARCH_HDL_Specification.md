@@ -129,6 +129,10 @@ For genuinely library-style reuse that doesn't fit a built-in pattern — custom
   **Reset ports**                           typed Reset\<Sync\|Async, High\|Low\>   rst: in Reset\<Sync\> (polarity defaults High; e.g. Reset\<Sync, Low\> for active-low)
   -------------------------------------------------------------------------------------------------------
 
+The casing conventions above are recommended, not compiler-enforced — but one naming rule *is* a hard compile error, not a style suggestion: **an ARCH identifier must not collide with an IEEE 1800-2017 SystemVerilog reserved word** (`always`, `case`, `class`, `logic`, `priority`, `table`, `wire`, and the rest of LRM Annex B's ~240-word keyword list). Arch performs no identifier renaming pass — a declared name (module, port, `reg`/`wire`/`let`, `param`, instance, struct/enum, function, `arbiter`/`regfile`/`ram` port-group array signal, ...) is emitted verbatim as the SV identifier of the same spelling — so a name that collides is not a style nit, it is SV that no frontend (Verilator, Icarus, or otherwise) can parse. `arch check` rejects the collision at the same declaration site and severity as ARCH's own reserved-keyword check (e.g. `'handshake' is a reserved ARCH keyword and cannot be used as an identifier`): `reg table: Vec<UInt<8>, 4> reset none;` fails with `'table' is a reserved SystemVerilog keyword (IEEE 1800-2017) and cannot be used as an identifier here`, since `table`/`endtable` are the SV user-defined-primitive keywords. Rename the identifier (a trailing underscore, an `s_`/`my_` prefix, or a more descriptive name all work).
+
+Verified against Verilator 5.048 and Icarus Verilog 12.0 (parse/elaborate-only): both reject an SV-keyword-named identifier unconditionally, so this rule needs no per-tool carve-out (arch#827 P4.2).
+
 **2.2 Literals**
 
 +-----------------------------------------------------------------------------------+
