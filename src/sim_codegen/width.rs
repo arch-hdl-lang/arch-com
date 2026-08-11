@@ -367,6 +367,13 @@ pub(super) fn scalar_type_bits_with_params(ty: &TypeExpr, params: &[ParamDecl]) 
         TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 | TypeExpr::E8M0 => Some(8),
         TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Some(6),
         TypeExpr::FP4E2M1 => Some(4),
+        // A block IS a scalar here: one packed word, not an aggregate. `None`
+        // when `N` will not fold or the member types are not block members —
+        // honouring this function's contract of never inventing a width.
+        TypeExpr::ScaledVec(elem, n, scale) => {
+            let n = try_eval_const_expr_with_params(n, params)? as u32;
+            crate::fp_format::scaled_vec_width(elem, n, scale)
+        }
         TypeExpr::Vec(..) | TypeExpr::Named(_) | TypeExpr::Clock(_) | TypeExpr::Reset(..) => None,
     }
 }

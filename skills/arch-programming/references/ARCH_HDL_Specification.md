@@ -321,6 +321,8 @@ The Arch type system enforces four independent safety dimensions simultaneously.
 
   **E8M0**             8 bits               OCP MX block **scale** type — an unsigned biased exponent (bias 127) denoting 2^(e-127). **Not a float**: no sign, no mantissa, no infinity, and **no zero** (`0x00` is the minimum scale 2^-127). `0xFF` is NaN. See §3.10.
 
+  **ScaledVec\<E,N,S\>**  \|S\| + N × \|E\|    Block-scaled vector — N narrow elements sharing one scale, packed as `{scale, P[N-1..0]}` (MXFP4 = 136 bits). **No arithmetic, no compares, no indexing** — OCP MX defines only the block dot product. See §3.11.
+
   **Clock\<D\>**       1 bit                Carries clock-domain tag D. Cannot appear in arithmetic.
 
   **Reset\<Sync, High\|Low\>**    1 bit                Synchronous reset --- deasserted on the clock edge. Polarity defaults High.
@@ -1018,6 +1020,124 @@ A registry row that typechecks but has no codegen binding wired yet (a future
 row landed ahead of its codegen support) still refuses explicitly at `arch
 build` / `arch sim` — "not yet implemented" — rather than silently falling
 back to an un-retimed comb cone; there is no such row today.
+
+**3.11 ScaledVec --- block-scaled vectors (OCP MX / NVFP4)**
+
+```arch
+ScaledVec<Elem, N, Scale>
+```
+
+`N` narrow elements sharing one scale --- the unit of meaning in the OCP
+Microscaling (MX) formats. The scale is a **parameter, not a fixed type**,
+because the two ecosystems genuinely differ --- MX uses `E8M0`, NVFP4 uses a
+`UE4M3` that is *not* our `FP8E4M3` (unsigned, 7 significant bits, NaN
+`0x7F`). `UE4M3` and NVFP4 are not yet implemented.
+
+The three arguments are constrained:
+
+  - **`Elem`** must be `FP4E2M1`, `FP6E2M3`, `FP6E3M2`, `FP8E4M3` or
+    `FP8E5M2`. `FP32`/`BF16` and integer types are rejected --- a shared
+    scale has no meaning over wider or integer elements.
+  - **`N`** is a const expression `>= 1`. A block with no elements is just a
+    bare scale.
+  - **`Scale`** must be `E8M0`. `FP8E4M3` is **not** an accepted stand-in for
+    NVFP4's `UE4M3`; they are different formats.
+
+**A block is one packed word, not an array.** Layout is
+`{ scale[w-1:0], P[N-1], …, P[1], P[0] }` --- scale in the high bits,
+element `0` in the low bits, matching the `Vec` convention above. Width is
+`scale_w + N × elem_w`, so `ScaledVec<FP4E2M1, 32, E8M0>` is
+8 + 128 = **136 bits**.
+
+**No arithmetic, no ordering, no indexing.** OCP MX §6 defines exactly one
+operation on blocks --- the dot product `X^A · X^B · Σᵢ(Pᵢ^A × Pᵢ^B)` --- and
+no add, multiply or ordered compare. ARCH refuses all of them at the type
+checker rather than inventing semantics:
+
+```arch
+y = a + b;    // error: no arithmetic on a block-scaled vector
+y = a < b;    // error: an encoding order is not a value order
+e = a[0];     // error: a block is one packed value, not an array
+```
+
+**`==` and `!=` are available, as an ENCODING compare.** They lower to a
+plain SV `==` on the packed word --- a bit compare, exactly as for `Vec` and
+struct. This is what makes formal properties and testbench checks about
+blocks writable at all.
+
+Read the result carefully, because it differs from `Vec<UInt<N>, K>`, where
+bit equality *is* value equality:
+
+  - equal bits **always** mean equal values;
+  - unequal bits do **not** mean unequal values.
+
+The same numbers can be encoded with a different (scale, element) split ---
+scale `2^1` with element `1.0` denotes the same value as scale `2^0` with
+element `2.0` --- and a NaN block (`scale = 0xFF`) ignores its element bits
+on load, so two semantically identical NaN blocks can differ bitwise. `==` is
+therefore sound but **not complete** as a value test; for a value comparison,
+`scaled_dequantize` both operands and compare the `FP32` results.
+
+An element read only has meaning as `X × Pᵢ`, so reading one goes through the
+whole-block conversion: `scaled_dequantize(b)[i]`. Refusing `a[0]` is
+deliberate --- silently returning the raw code `Pᵢ` without its scale would be
+a numeric bug with no diagnostic.
+
+**`split` ports.** A port may opt into a two-signal SV boundary:
+
+```arch
+port b: in MXFP4;         // one packed `logic [135:0] b`
+port c: in split MXFP4;   // `logic [7:0] c_scale` + `logic [127:0] c_elems`
+```
+
+`split` is an **SV-boundary shape only** --- it changes no ARCH-level
+semantics, and the module body refers to the block by its single name either
+way (the compiler emits the concatenation/part-select glue). It exists
+because a real datapath feeds the scale into the exponent path and the
+elements into the mantissa path, so packing and unpacking a 136-bit word per
+block is pure overhead. Only legal on a `ScaledVec` type. `arch sim` has no
+SV boundary and so keeps the packed member.
+
+**Named formats** are ordinary type aliases; declare them once in a package
+(§3.12):
+
+```arch
+package MxFormats
+  type MXFP4 = ScaledVec<FP4E2M1, 32, E8M0>;
+  type MXFP6 = ScaledVec<FP6E3M2, 32, E8M0>;
+  type MXFP8 = ScaledVec<FP8E4M3, 32, E8M0>;
+end package MxFormats
+```
+
+The MX named formats all fix `N = 32` and an `E8M0` scale. Other `N` values
+are legal in the framework --- `ScaledVec<FP4E2M1, 16, E8M0>` is a well-formed
+type --- they simply may not be called MXFP4.
+
+**Not yet implemented:** `scaled_quantize` / `scaled_dequantize` (with scale
+policy and rounding parameters), `scaled_dot`, and the `UE4M3` scale.
+
+**3.12 Package-scope type aliases**
+
+`type Name = TypeExpr;` may be declared inside a `package` body as well as a
+module body. A package alias is published **file-wide**, exactly like a
+package's structs and enums --- a package is a grouping, not a namespace ---
+so a shared vocabulary of named types is written once instead of being
+redeclared in every module that mentions one:
+
+```arch
+package MxFormats
+  type MXFP4 = ScaledVec<FP4E2M1, 32, E8M0>;
+end package MxFormats
+
+module Consumer
+  port a: in MXFP4;        // no redeclaration needed
+end module Consumer
+```
+
+A later package alias may build on an earlier one. A module-scope alias that
+reuses a package alias name is an **error**, not a silent shadow --- package
+contents are global, so the collision is a genuine ambiguity, exactly as it
+already is for a package struct.
 
 **4. Modules**
 
