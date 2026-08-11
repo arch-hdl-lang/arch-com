@@ -1,0 +1,59 @@
+// `scaled_quantize` / `scaled_dequantize` — the OCP MX block conversion pair
+// (phase 2b, arch#884).
+//
+// This fixture exists to be run through BOTH backends against one testbench
+// vector set and byte-compared: `arch build` emits SystemVerilog helpers and
+// `arch sim` emits C++ helpers, and both are generated from the single
+// descriptor in `src/fp_block.rs`. That is the phase-2 gate (§8), and it is
+// why the ports below deliberately span all three C++ storage buckets a block
+// can land in — 24 bits (`uint32_t`), 40/56 bits (`uint64_t`) and 72 bits
+// (`VlWide<3>`). A bucket that only one backend gets right is exactly the
+// phase-2a divergence this pins shut.
+
+package MxFmt
+  type B4  = ScaledVec<FP4E2M1, 8, E8M0>;   // 8 + 8*4 = 40 bits
+  type B6  = ScaledVec<FP6E3M2, 8, E8M0>;   // 8 + 8*6 = 56 bits
+  type B8  = ScaledVec<FP8E4M3, 8, E8M0>;   // 8 + 8*8 = 72 bits (wide)
+  type B4S = ScaledVec<FP4E2M1, 4, E8M0>;   // 8 + 4*4 = 24 bits
+end package MxFmt
+
+module ScaledQuant
+  port v:  in Vec<FP32, 8>;
+  port v4: in Vec<FP32, 4>;
+
+  port q4_floor: out B4;
+  port q4_ceil:  out B4;                    // same block, ceil_pow2 scale
+  port q6:       out B6;
+  port q8:       out B8;
+  port q4s:      out B4S;
+
+  port back4: out Vec<FP32, 8>;
+  port back6: out Vec<FP32, 8>;
+  port back8: out Vec<FP32, 8>;
+
+  wire b4: B4;
+  wire b6: B6;
+  wire b8: B8;
+
+  comb
+    b4 = scaled_quantize<B4>(v);
+    b6 = scaled_quantize<B6>(v);
+    b8 = scaled_quantize<B8>(v);
+
+    q4_floor = b4;
+    q6       = b6;
+    q8       = b8;
+
+    // `ceil_pow2` rounds the shared scale UP when the block maximum is not
+    // already a power of two, trading the top element codes for fewer
+    // saturations. Same input, same block type — only the policy differs.
+    q4_ceil = scaled_quantize<B4, ceil_pow2, rne>(v);
+
+    q4s = scaled_quantize<B4S>(v4);
+
+    // Dequantize is the only way to read an element: `X * widen(P_i)`.
+    back4 = scaled_dequantize(b4);
+    back6 = scaled_dequantize(b6);
+    back8 = scaled_dequantize(b8);
+  end comb
+end module ScaledQuant

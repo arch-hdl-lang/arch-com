@@ -307,6 +307,13 @@ pub(super) struct Ctx<'a> {
     pub(super) decl_types: Option<&'a HashMap<String, TypeExpr>>,
     /// Struct name -> field list, for FieldAccess float resolution.
     pub(super) struct_defs: Option<&'a HashMap<String, Vec<(String, TypeExpr)>>>,
+    /// `ScaledVec` block helpers this module referenced. The statement
+    /// emitter records each distinct (op, element, N, scale, policy,
+    /// rounding) here; `gen_module` then emits one definition per entry
+    /// ahead of the class methods. Same interior-mutability shape as
+    /// `coverage` above. A `BTreeSet` keeps the emitted order stable.
+    pub(super) block_helpers:
+        Option<&'a std::cell::RefCell<std::collections::BTreeSet<crate::fp_block::BlockHelper>>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -359,6 +366,7 @@ impl<'a> Ctx<'a> {
             vinit_regs: None,
             decl_types: None,
             struct_defs: None,
+            block_helpers: None,
         }
     }
 
@@ -437,6 +445,16 @@ impl<'a> Ctx<'a> {
         reg: Option<&'a std::cell::RefCell<CoverageRegistry>>,
     ) -> Self {
         self.coverage = reg;
+        self
+    }
+
+    pub(super) fn with_block_helpers(
+        mut self,
+        reg: Option<
+            &'a std::cell::RefCell<std::collections::BTreeSet<crate::fp_block::BlockHelper>>,
+        >,
+    ) -> Self {
+        self.block_helpers = reg;
         self
     }
 
@@ -938,6 +956,7 @@ pub(super) fn lower_vec_method_cpp(
             vinit_regs: ctx.vinit_regs,
             decl_types: ctx.decl_types,
             struct_defs: ctx.struct_defs,
+            block_helpers: None,
         };
         // The sub map must outlive the cpp_expr call. We keep `sub` as a
         // stack-local binding whose lifetime covers the call.
@@ -1060,6 +1079,10 @@ pub(super) fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
         // rewrites every codegen-backed `PipelinedCall` into a plain
         // `FunctionCall` before sim codegen starts, so this is a loud
         // backstop, not the primary error path.
+        ExprKind::ScaledQuantize(..) => unreachable!(
+            "scaled_quantize reached sim codegen: typecheck must refuse it \
+             until phase 2b lowering lands (arch#884)"
+        ),
         ExprKind::PipelinedCall(name, _, stages) => unreachable!(
             "sim codegen reached `{name}<pipelined, {stages}>(...)` — this should have been \
              lowered by pipelined_ops::lower_pipelined_calls before codegen started"

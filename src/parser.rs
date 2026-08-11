@@ -4189,14 +4189,14 @@ impl Parser {
                 self.advance();
                 self.expect(TokenKind::Lt)?;
                 let width = self.parse_type_arg_expr()?;
-                self.expect(TokenKind::Gt)?;
+                self.expect_angle_close()?;
                 Ok(TypeExpr::UInt(Box::new(width)))
             }
             Some(TokenKind::SInt) => {
                 self.advance();
                 self.expect(TokenKind::Lt)?;
                 let width = self.parse_type_arg_expr()?;
-                self.expect(TokenKind::Gt)?;
+                self.expect_angle_close()?;
                 Ok(TypeExpr::SInt(Box::new(width)))
             }
             Some(TokenKind::Bool) => {
@@ -4243,7 +4243,7 @@ impl Parser {
                 self.advance();
                 self.expect(TokenKind::Lt)?;
                 let domain = self.expect_ident()?;
-                self.expect(TokenKind::Gt)?;
+                self.expect_angle_close()?;
                 Ok(TypeExpr::Clock(domain))
             }
             Some(TokenKind::Reset) => {
@@ -4289,7 +4289,7 @@ impl Parser {
                 } else {
                     ResetLevel::High // default
                 };
-                self.expect(TokenKind::Gt)?;
+                self.expect_angle_close()?;
                 Ok(TypeExpr::Reset(kind, level))
             }
             Some(TokenKind::KwVec) => {
@@ -4298,7 +4298,7 @@ impl Parser {
                 let elem = self.parse_type_expr()?;
                 self.expect(TokenKind::Comma)?;
                 let size = self.parse_type_arg_expr()?;
-                self.expect(TokenKind::Gt)?;
+                self.expect_angle_close()?;
                 Ok(TypeExpr::Vec(Box::new(elem), Box::new(size)))
             }
             // `ScaledVec<Elem, N, Scale>` — a block-scaled vector. Three
@@ -4312,7 +4312,7 @@ impl Parser {
                 let size = self.parse_type_arg_expr()?;
                 self.expect(TokenKind::Comma)?;
                 let scale = self.parse_type_expr()?;
-                self.expect(TokenKind::Gt)?;
+                self.expect_angle_close()?;
                 Ok(TypeExpr::ScaledVec(
                     Box::new(elem),
                     Box::new(size),
@@ -4877,6 +4877,82 @@ impl Parser {
                     let span = ident.span.merge(end.span);
                     Ok(Expr {
                         kind: ExprKind::PipelinedCall(ident.name, call_args, stages),
+                        span,
+                        parenthesized: false,
+                    })
+                } else if ident.name == "scaled_quantize" && self.check(TokenKind::Lt) {
+                    // `scaled_quantize<policy, rounding>(v)` — the block
+                    // quantizer's optional policy/rounding selectors.
+                    //
+                    // Gated on the callee NAME rather than on a token shape:
+                    // `<` after an identifier is otherwise a comparison, and
+                    // `scaled_quantize` is a reserved builtin, so there is no
+                    // expression this can steal. (`fma<pipelined, N>` gates on
+                    // the `pipelined` keyword instead, which is the same
+                    // narrowness by a different route.)
+                    //
+                    // The selectors ride along as trailing `Ident` args, the
+                    // convention `MethodCall` already documents ("type_args
+                    // encoded as exprs"), so no new ExprKind is needed.
+                    self.advance(); // consume `<`
+                                    // The output format is MANDATORY and comes first; the two
+                                    // selectors are optional and default to the OCP §6.3
+                                    // policy with RNE.
+                    let fmt = self.parse_type_expr()?;
+                    let (policy, rounding) = if self.eat(TokenKind::Comma) {
+                        let p = self.expect_ident()?;
+                        self.expect(TokenKind::Comma)?;
+                        let r = self.expect_ident()?;
+                        let policy = match p.name.as_str() {
+                            "floor_pow2" => ScalePolicy::FloorPow2,
+                            "ceil_pow2" => ScalePolicy::CeilPow2,
+                            other => {
+                                return Err(CompileError::general(
+                                    &format!(
+                                        "unknown scale policy `{other}` — expected `floor_pow2` \
+                                         (OCP §6.3, the default) or `ceil_pow2` (NVIDIA). \
+                                         `exact` is reserved for a non-power-of-two scale \
+                                         (`UE4M3`) and is not implemented"
+                                    ),
+                                    p.span,
+                                ))
+                            }
+                        };
+                        let rounding = match r.name.as_str() {
+                            "rne" => RoundMode::Rne,
+                            "rtz" => RoundMode::Rtz,
+                            "rna" => RoundMode::Rna,
+                            other => {
+                                return Err(CompileError::general(
+                                    &format!(
+                                        "unknown rounding mode `{other}` — expected `rne` (the \
+                                         default), `rtz` or `rna`. `stochastic` is not \
+                                         implemented: it needs an entropy source, which is a \
+                                         datapath question rather than a rounding-mode one"
+                                    ),
+                                    r.span,
+                                ))
+                            }
+                        };
+                        (policy, rounding)
+                    } else {
+                        (ScalePolicy::FloorPow2, RoundMode::Rne)
+                    };
+                    // `expect_angle_close`, not `expect(Gt)`: the format may
+                    // be written inline (`scaled_quantize<ScaledVec<..>>(v)`),
+                    // which the lexer munches into a single `>>`.
+                    self.expect_angle_close()?;
+                    self.expect(TokenKind::LParen)?;
+                    let value = self.parse_expr()?;
+                    let end = self.expect(TokenKind::RParen)?;
+                    let span = ident.span.merge(end.span);
+                    Ok(Expr {
+                        kind: ExprKind::ScaledQuantize(
+                            Box::new(value),
+                            Box::new(fmt),
+                            policy,
+                            rounding,
+                        ),
                         span,
                         parenthesized: false,
                     })
@@ -7045,6 +7121,33 @@ impl Parser {
         let tok = self.tokens[self.pos].clone();
         self.pos += 1;
         tok
+    }
+
+    /// Consume the `>` that closes an angle-bracket list, splitting a `>>`
+    /// token when the list's last element is itself angle-bracketed.
+    ///
+    /// The lexer maximal-munches `>>` into a shift, which no other construct
+    /// ever hits: `Vec<Vec<T,N>,M>` closes with `>` after a `,`, and a type in
+    /// a port declaration is followed by `;`. `scaled_quantize<Fmt>` is the
+    /// first place a *type* can end immediately before a closing `>`, so
+    /// `scaled_quantize<ScaledVec<FP4E2M1, 4, E8M0>>(v)` would otherwise be a
+    /// parse error — and the obvious workaround (declare an alias) must not be
+    /// mandatory just because of a tokenizer artifact. Rewriting the token in
+    /// place, rather than pushing back a synthetic one, keeps spans honest:
+    /// the remaining `>` keeps the second character's position.
+    fn expect_angle_close(&mut self) -> Result<Token, CompileError> {
+        if self.check(TokenKind::Shr) {
+            let tok = self.tokens[self.pos].clone();
+            let mut rest = tok.clone();
+            rest.kind = TokenKind::Gt;
+            rest.span.start += 1;
+            self.tokens[self.pos] = rest;
+            let mut first = tok;
+            first.kind = TokenKind::Gt;
+            first.span.end = first.span.start + 1;
+            return Ok(first);
+        }
+        self.expect(TokenKind::Gt)
     }
 
     fn expect(&mut self, kind: TokenKind) -> Result<Token, CompileError> {

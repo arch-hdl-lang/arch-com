@@ -3803,6 +3803,8 @@ impl<'a> TypeChecker<'a> {
     fn expr_latency_tc(expr: &Expr) -> u32 {
         match &expr.kind {
             ExprKind::PipelinedCall(_, _, n) => *n,
+            // Combinational: the block quantizer adds no pipeline stages.
+            ExprKind::ScaledQuantize(_, _, _, _) => 0,
             ExprKind::LatencyAt(_, n) => *n,
             _ => 0,
         }
@@ -3817,6 +3819,8 @@ impl<'a> TypeChecker<'a> {
     fn expr_contains_pipelined_call(expr: &Expr) -> bool {
         match &expr.kind {
             ExprKind::PipelinedCall(_, _, _) => true,
+            // Not a pipelined call; recurse into the value being quantized.
+            ExprKind::ScaledQuantize(v, _, _, _) => Self::expr_contains_pipelined_call(v),
             ExprKind::Binary(_, a, b) => {
                 Self::expr_contains_pipelined_call(a) || Self::expr_contains_pipelined_call(b)
             }
@@ -4099,6 +4103,75 @@ impl<'a> TypeChecker<'a> {
         local_types: &HashMap<String, Ty>,
     ) -> Ty {
         match &expr.kind {
+            // `scaled_quantize<Fmt, policy, rounding>(v)` — the output format
+            // is named at the call site, never inferred: a `Vec<FP32,N>`
+            // argument says nothing about the element format or scale.
+            ExprKind::ScaledQuantize(v, fmt, _policy, rounding) => {
+                let vt = self.resolve_expr_type(v, module_name, local_types);
+                let n_in = match &vt {
+                    Ty::Vec(elem, n) if **elem == Ty::FP32 => Some(*n),
+                    Ty::Todo | Ty::Error => return Ty::Error,
+                    other => {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "`scaled_quantize` requires a `Vec<FP32, N>` operand, got {}",
+                                other.display()
+                            ),
+                            v.span,
+                        ));
+                        None
+                    }
+                };
+                // The named format must be a block, and its N must match the
+                // input length — quantizing 32 values into a 16-element block
+                // is a silent data loss otherwise.
+                self.check_scaled_vec_members(fmt, expr.span);
+                let out = self.resolve_type_expr(fmt, module_name, local_types);
+                match (&out, n_in) {
+                    (Ty::ScaledVec(_, n_out, _), Some(n_in)) if *n_out != n_in => {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "`scaled_quantize` block size mismatch: operand is \
+                                 `Vec<FP32, {n_in}>` but the named format holds {n_out} elements"
+                            ),
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    (Ty::ScaledVec(..), _) => {}
+                    (Ty::Error, _) => return Ty::Error,
+                    (other, _) => {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "`scaled_quantize<Fmt, ...>` requires a `ScaledVec` format, got {}",
+                                other.display()
+                            ),
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                }
+                // Only RNE narrowing is lowered. `rtz`/`rna` are refused HERE
+                // rather than at parse so the surface stays forward-compatible
+                // and the diagnostic can explain the actual blocker: the
+                // element narrow (`arch_f32_to_e2m1` and its siblings) is a
+                // single round-to-nearest-even rounder in each backend, each
+                // pinned by an exhaustive SMT miter, and the other two modes
+                // are separate rounders with genuinely different overflow
+                // behaviour (RTZ on E5M2 must give max-finite, not Inf). That
+                // is its own piece of work, not glue — see arch#890.
+                if *rounding != crate::ast::RoundMode::Rne {
+                    self.errors.push(CompileError::general(
+                        "`scaled_quantize` supports only `rne` rounding today (arch#890). \
+                         `rtz` and `rna` need their own element rounders in both backends — \
+                         each with its own overflow rule and equivalence proof — rather than \
+                         a flag on the existing one",
+                        expr.span,
+                    ));
+                    return Ty::Error;
+                }
+                out
+            }
             ExprKind::SvaNext(_, inner) => {
                 if !self.in_sva_context {
                     self.errors.push(CompileError::general(
@@ -4513,6 +4586,52 @@ impl<'a> TypeChecker<'a> {
                         return Ty::Error;
                     }
                     return t;
+                }
+                // `scaled_dequantize(b) -> Vec<FP32, N>` — the whole block,
+                // scale already applied (`v_i = X * P_i`). Fully inferable:
+                // N comes from the block type. This is also the ONLY way to
+                // read an element, which is why indexing a block is refused.
+                if name == "scaled_dequantize" {
+                    if call_args.len() != 1 {
+                        self.errors.push(CompileError::general(
+                            "`scaled_dequantize(b)` takes exactly 1 argument (the block)",
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    let bt = self.resolve_expr_type(&call_args[0], module_name, local_types);
+                    return match bt {
+                        Ty::ScaledVec(_, n, _) => Ty::Vec(Box::new(Ty::FP32), n),
+                        Ty::Todo | Ty::Error => Ty::Error,
+                        other => {
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "`scaled_dequantize(b)` requires a `ScaledVec` operand, got {}",
+                                    other.display()
+                                ),
+                                expr.span,
+                            ));
+                            Ty::Error
+                        }
+                    };
+                }
+                // A bare `scaled_quantize(v)` reaches the generic call path
+                // because the parser only builds `ExprKind::ScaledQuantize`
+                // when `<` follows the name. That form has no meaning: the
+                // output format is spelled, never inferred, since a
+                // `Vec<FP32,N>` operand says nothing about which element
+                // format or scale to quantize into — `MXFP4` and `MXFP8` are
+                // equally valid results.
+                if name == "scaled_quantize" {
+                    self.errors.push(CompileError::general(
+                        "`scaled_quantize` needs its output format named: \
+                         `scaled_quantize<MXFP4>(v)`. The format cannot be inferred from a \
+                         `Vec<FP32, N>` operand — every block format holds FP32 inputs. \
+                         Optional selectors follow it: \
+                         `scaled_quantize<MXFP4, ceil_pow2, rne>(v)`",
+                        expr.span,
+                    ));
+                    return Ty::Error;
                 }
                 // Built-in float intrinsics. `fma(a, b, c)` is a single-rounded
                 // fused multiply-add (a*b + c); all three operands must be the

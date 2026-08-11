@@ -321,7 +321,7 @@ The Arch type system enforces four independent safety dimensions simultaneously.
 
   **E8M0**             8 bits               OCP MX block **scale** type — an unsigned biased exponent (bias 127) denoting 2^(e-127). **Not a float**: no sign, no mantissa, no infinity, and **no zero** (`0x00` is the minimum scale 2^-127). `0xFF` is NaN. See §3.10.
 
-  **ScaledVec\<E,N,S\>**  \|S\| + N × \|E\|    Block-scaled vector — N narrow elements sharing one scale, packed as `{scale, P[N-1..0]}` (MXFP4 = 136 bits). **No arithmetic, no compares, no indexing** — OCP MX defines only the block dot product. See §3.11.
+  **ScaledVec\<E,N,S\>**  \|S\| + N × \|E\|    Block-scaled vector — N narrow elements sharing one scale, packed as `{scale, P[N-1..0]}` (MXFP4 = 136 bits). **No arithmetic, no ordered compares, no indexing** — OCP MX defines only the block dot product; `==`/`!=` are an *encoding* compare. Convert with `scaled_quantize<Fmt>` / `scaled_dequantize`. See §3.11.
 
   **Clock\<D\>**       1 bit                Carries clock-domain tag D. Cannot appear in arithmetic.
 
@@ -1113,8 +1113,74 @@ The MX named formats all fix `N = 32` and an `E8M0` scale. Other `N` values
 are legal in the framework --- `ScaledVec<FP4E2M1, 16, E8M0>` is a well-formed
 type --- they simply may not be called MXFP4.
 
-**Not yet implemented:** `scaled_quantize` / `scaled_dequantize` (with scale
-policy and rounding parameters), `scaled_dot`, and the `UE4M3` scale.
+**3.11.1 `scaled_quantize` / `scaled_dequantize`**
+
+The two conversions between a `Vec<FP32, N>` and a block:
+
+```arch
+scaled_quantize<Fmt>(v)                      // Vec<FP32,N> -> Fmt
+scaled_quantize<Fmt, policy, rounding>(v)    // ... with explicit selectors
+scaled_dequantize(b)                         // block -> Vec<FP32,N>
+```
+
+**The output format is spelled, never inferred.** A `Vec<FP32, N>` operand
+says nothing about which element format or scale to quantize into --- MXFP4
+and MXFP8 are equally valid results --- so `Fmt` is a required type argument.
+It may be an alias (`scaled_quantize<MXFP4>(v)`, the normal form) or written
+inline. The operand's length must equal the format's `N`; quantizing 32
+values into a 16-element block is a compile error, not a truncation.
+
+`scaled_dequantize` needs no annotation: `N` and the formats all come from
+the block's own type. It yields `Vec<FP32, N>` with the scale already
+applied, and is the only way to read an element (§3.11).
+
+| Selector | Values | Default |
+|---|---|---|
+| `policy` | `floor_pow2`, `ceil_pow2` | `floor_pow2` |
+| `rounding` | `rne` (`rtz`, `rna` reserved) | `rne` |
+
+`floor_pow2` is the OCP §6.3 rule: the shared scale is the largest power of
+two that normalizes the block maximum into the element format's top binade.
+Because that binade's largest *representable* value is below its top, some
+elements saturate --- routine under this policy, not a corner case.
+`ceil_pow2` rounds the scale up instead when the block maximum is not already
+a power of two, trading the top element codes for fewer saturations.
+
+Semantics, all of which follow from `E8M0` having no zero and reserving
+`0xFF` for NaN:
+
+  - An **all-zero** block gets the *minimum* scale `0x00` (which denotes
+    `2^-127`, not zero) and zero elements.
+  - A block containing **any NaN or infinity** gets the NaN scale `0xFF`; its
+    element bits are then don't-care, and `scaled_dequantize` yields NaN in
+    every lane regardless of them.
+  - Dequantizing a finite element under a finite scale **saturates** to
+    ±`FP32` max rather than overflowing to infinity. An element that is
+    itself Inf or NaN (`FP8E5M2` / `FP8E4M3` can be) keeps its own result.
+  - Element narrowing inherits the element format's own overflow rule and the
+    `--fp-compat` profile --- so an out-of-range value saturates for the
+    all-finite formats (`FP4E2M1`, `FP6E2M3`, `FP6E3M2`) and becomes that
+    format's NaN for `FP8E4M3`.
+
+Scaling by the reciprocal scale is an exact power-of-two multiply in FP32, so
+each element is rounded **once**, from the true `vᵢ / X`.
+
+Both conversions are combinational and must be the whole right-hand side of
+an assignment. To index an element, bind the result first:
+
+```arch
+wire all: Vec<FP32, 32>;
+comb
+  blk = scaled_quantize<MXFP4, ceil_pow2, rne>(v);
+  all = scaled_dequantize(blk);
+  e   = all[3];
+end comb
+```
+
+**Not yet implemented:** `rtz` / `rna` rounding (they need their own element
+rounders in each backend, with their own overflow rules --- arch#890), the `exact` scale
+policy and `stochastic` rounding (see §3.11 for why both are deferred),
+`scaled_dot`, and the `UE4M3` scale.
 
 **3.12 Package-scope type aliases**
 

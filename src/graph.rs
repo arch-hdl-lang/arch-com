@@ -1964,6 +1964,11 @@ impl Builder {
                     self.walk_expr(owner, rel, scope, arg, ExprUse::Read);
                 }
             }
+            // Reads flow through the value being quantized; the format and
+            // selectors are compile-time, not signal reads.
+            ExprKind::ScaledQuantize(v, _, _, _) => {
+                self.walk_expr(owner, rel, scope, v, use_kind);
+            }
             ExprKind::PipelinedCall(_name, args, _stages) => {
                 // Registry-resolved builtin operator (e.g. `fma<pipelined, N>`),
                 // not a user construct — no `calls` edge to a construct, just

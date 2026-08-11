@@ -1387,6 +1387,7 @@ impl<'a> SimCodegen<'a> {
             vinit_regs: None,
             decl_types: None,
             struct_defs: None,
+            block_helpers: None,
         };
         match &expr.kind {
             ExprKind::FieldAccess(base, field) => {

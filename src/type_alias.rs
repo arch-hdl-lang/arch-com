@@ -506,6 +506,15 @@ fn substitute_in_expr(e: &mut Expr, aliases: &AliasMap, errors: &mut Vec<Compile
                 substitute_in_expr(a, aliases, errors);
             }
         }
+        // `scaled_quantize<Fmt, ...>(v)` is the first expression that carries
+        // a TYPE, so it is the first that needs alias substitution inside an
+        // expression. Without this arm `scaled_quantize<MXFP4>(v)` keeps a
+        // dangling `Named("MXFP4")` that no later pass can resolve — the
+        // aliases are substituted and then removed before typecheck runs.
+        ExprKind::ScaledQuantize(value, fmt, _, _) => {
+            substitute_in_expr(value, aliases, errors);
+            substitute_type(fmt.as_mut(), aliases, errors);
+        }
         ExprKind::Index(a, b) => {
             substitute_in_expr(a, aliases, errors);
             substitute_in_expr(b, aliases, errors);
