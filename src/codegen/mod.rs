@@ -7427,8 +7427,35 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::Unary(op, operand) => {
-                // Unary has prec 14 — wrap child only if it's a binary/ternary
-                let o = self.emit_expr_prec(operand, 14);
+                // Unary has prec 14 — wrap child only if it's a binary/ternary.
+                //
+                // A nested unary is the exception (arch#892): two adjacent
+                // prefix operators have equal precedence, so the generic
+                // rule leaves them juxtaposed, and every same-operator pair
+                // is then either a syntax error or a different token:
+                //
+                //   ~~a    Icarus 12.0: syntax error   (Verilator accepts)
+                //   !!a    Icarus 12.0: syntax error   (Verilator accepts)
+                //   ^^a    Icarus 12.0: syntax error   (Verilator accepts)
+                //   - -a   Icarus 12.0: syntax error even with the space
+                //   --a    BOTH reject — lexes as the decrement token
+                //   &&a    BOTH reject — lexes as logical-AND
+                //   ||a    BOTH reject — lexes as logical-OR
+                //
+                // Parenthesizing the operand fixes all of them and is
+                // always legal, so the rule is uniform rather than a list
+                // of unsafe pairs — a new `UnaryOp` can't reintroduce the
+                // bug. (`~&a`/`~^a` do happen to be valid NAND/XNOR
+                // reduction tokens meaning the same thing, but they are
+                // parenthesized too rather than special-cased.)
+                //
+                // Folding `~~x` to `x` would be wrong: the operators are
+                // width- and sign-significant in a self-determined context.
+                let o = if matches!(operand.kind, ExprKind::Unary(..)) {
+                    format!("({})", self.emit_expr_prec(operand, 0))
+                } else {
+                    self.emit_expr_prec(operand, 14)
+                };
                 match op {
                     UnaryOp::Not => format!("!{o}"),
                     UnaryOp::BitNot => format!("~{o}"),

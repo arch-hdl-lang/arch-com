@@ -1,0 +1,46 @@
+// arch#892 regression fixture: adjacent prefix operators.
+//
+// Unary has one precedence level, so the generic "parenthesize only a
+// lower-precedence child" rule left two prefix operators juxtaposed. Every
+// same-operator pair is then either a syntax error or a *different token*:
+//
+//   ~~a    Icarus 12.0: syntax error   (Verilator accepts)
+//   !!a    Icarus 12.0: syntax error   (Verilator accepts)
+//   ^^a    Icarus 12.0: syntax error   (Verilator accepts)
+//   - -a   Icarus 12.0: syntax error even with the space
+//   --a    BOTH reject — lexes as the decrement token
+//   &&a    BOTH reject — lexes as logical-AND
+//   ||a    BOTH reject — lexes as logical-OR
+//
+// The emitter now parenthesizes any nested unary operand, so all of these
+// come out as `op(op x)`.
+//
+// See tests/integration_test.rs's
+// `test_adjacent_unary_behavioral_equivalence_verilator_and_iverilog`.
+module AdjacentUnary
+  port a: in UInt<4>;
+  port p: in Bool;
+  port q: in Bool;
+
+  port y_notnot:   out UInt<4>;
+  port y_negneg:   out SInt<6>;
+  port y_lognot:   out Bool;
+  port y_redand:   out Bool;
+  port y_redor:    out Bool;
+  port y_redxor:   out Bool;
+
+  comb
+    // `~~` — the shape that failed on Icarus.
+    y_notnot = ~(~a);
+    // `- -` — would lex as the decrement token.
+    y_negneg = -(-signed(a).sext<6>());
+    // `!!` on a Bool.
+    y_lognot = not (not p);
+    // `&&` / `||` / `^^` — reduction of a reduction. The inner reduction
+    // yields 1 bit, so the outer one is the identity on it; the point is
+    // the emitted token sequence, not the arithmetic.
+    y_redand = &(&a);
+    y_redor  = |(|a);
+    y_redxor = ^(^a);
+  end comb
+end module AdjacentUnary

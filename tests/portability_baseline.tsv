@@ -1349,7 +1349,7 @@ tests/sdc/sd_tx_fifo.arch	iverilog	OK	-
 tests/sdc/sd_tx_fifo.arch	verilator	OK	-
 tests/sdc/sdc_controller.arch	iverilog	OK	-
 tests/sdc/sdc_controller.arch	verilator	OK	-
-tests/sim_bitnot_compound_regression.arch	iverilog	FAIL	SV:37: syntax error
+tests/sim_bitnot_compound_regression.arch	iverilog	OK	-
 tests/sim_bitnot_compound_regression.arch	verilator	OK	-
 tests/sim_bool_not_regression.arch	iverilog	OK	-
 tests/sim_bool_not_regression.arch	verilator	OK	-
