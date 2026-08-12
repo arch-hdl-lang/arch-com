@@ -1766,7 +1766,11 @@ mod tests {
                 for rg in &rungs {
                     let (x, m) = (xv as f32, f32::from_bits(rg.thr));
                     let p = x * m;
-                    assert!(p.is_finite() && p != 0.0, "{} code {code:#04X}", f.type_name);
+                    assert!(
+                        p.is_finite() && p != 0.0,
+                        "{} code {code:#04X}",
+                        f.type_name
+                    );
                     assert_eq!(
                         p as f64,
                         x as f64 * m as f64,
