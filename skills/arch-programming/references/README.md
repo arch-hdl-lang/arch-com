@@ -332,6 +332,28 @@ so concurrent sessions don't share one working tree. Both are client-side guards
 (bypass `pre-commit` for a one-off with `WORKTREE_ENFORCE_SKIP=1` or
 `git commit --no-verify`).
 
+### New-worktree setup
+
+`.lake/` build output is untracked, so a freshly created worktree has none.
+If you have the Lean toolchain installed, build the construct-proof project
+once per worktree:
+
+```sh
+(cd proofs/lean_thread_lowering && lake build)   # ~4s; needed by cargo test
+```
+
+Skipping it does not fail cleanly — the two `construct_proof_lean_*` tests in
+`tests/formal_test.rs` guard on `lake` being *available*, not on the project
+being *built*, so they run and fail with `unknown module prefix
+'ArchConstructProof'`, which reads like a broken proof rather than a missing
+build. (Machines without `lake` skip these tests entirely and are unaffected;
+CI installs no Lean toolchain by design — see the dependency-policy note in
+`.github/workflows/test.yml`.)
+
+`proofs/lean_fp_equiv` is a standalone proof project — no cargo test depends
+on it, and it takes ~2.5min to build. See `proofs/lean_fp_equiv/README.md` if
+you need it.
+
 Before opening a PR, run a code-review pass against the branch diff, address or
 accept the findings, then record the reviewed HEAD:
 
