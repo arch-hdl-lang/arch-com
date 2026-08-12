@@ -7287,7 +7287,7 @@ impl<'a> Codegen<'a> {
                 });
                 let h = crate::fp_block::BlockHelper::Quantize {
                     shape,
-                    policy: *policy,
+                    policy: policy.unwrap_or_else(|| shape.scale.default_policy()),
                     round: *round,
                 };
                 self.fp_helpers_used.set(true);

@@ -2921,12 +2921,9 @@ impl<'a> TypeChecker<'a> {
         }
         if !crate::fp_format::is_block_scale(scale) {
             self.errors.push(CompileError::general(
-                "`ScaledVec` scale must be `E8M0` — the MX block scale type. \
-                 `UE4M3` exists as a scalar type but is not yet usable as a \
-                 block scale (arch#905): unlike E8M0 its value is not a power \
-                 of two, so dividing by it is inexact and the block ops' \
-                 single-rounding property does not hold. `FP8E4M3` is NOT a \
-                 substitute for either",
+                "`ScaledVec` scale must be `E8M0` (OCP MX) or `UE4M3` (NVFP4). \
+                 `FP8E4M3` is NOT a substitute for `UE4M3` — that one is \
+                 signed and its NaN is sign-agnostic",
                 span,
             ));
         }
@@ -4116,7 +4113,7 @@ impl<'a> TypeChecker<'a> {
             // `scaled_quantize<Fmt, policy, rounding>(v)` — the output format
             // is named at the call site, never inferred: a `Vec<FP32,N>`
             // argument says nothing about the element format or scale.
-            ExprKind::ScaledQuantize(v, fmt, _policy, rounding) => {
+            ExprKind::ScaledQuantize(v, fmt, policy, rounding) => {
                 let vt = self.resolve_expr_type(v, module_name, local_types);
                 let n_in = match &vt {
                     Ty::Vec(elem, n) if **elem == Ty::FP32 => Some(*n),
@@ -4176,6 +4173,27 @@ impl<'a> TypeChecker<'a> {
                          `rtz` and `rna` need their own element rounders in both backends — \
                          each with its own overflow rule and equivalence proof — rather than \
                          a flag on the existing one",
+                        expr.span,
+                    ));
+                    return Ty::Error;
+                }
+                // `exact` divides by the element maximum instead of snapping
+                // the scale to a power of two, so it only means anything for a
+                // scale that CAN hold a non-power-of-two value. Refused rather
+                // than silently treated as `floor_pow2`, which would quietly
+                // give a different block than the one asked for.
+                //
+                // `fmt` is concrete here: `resolve_type_aliases` substitutes
+                // and then removes every alias before typecheck runs, so
+                // `shape_of_type` sees through `type NVFP4 = ScaledVec<…>`.
+                if *policy == Some(crate::ast::ScalePolicy::Exact)
+                    && crate::fp_block::shape_of_type(fmt).is_some_and(|s| s.scale.is_pow2())
+                {
+                    self.errors.push(CompileError::general(
+                        "`exact` scale policy is meaningless for an `E8M0`-scaled block: \
+                         every value of that scale is already a power of two, so there is \
+                         no mantissa for it to use. Use `floor_pow2` (OCP §6.3) or \
+                         `ceil_pow2` here, or a `UE4M3`-scaled block for `exact`",
                         expr.span,
                     ));
                     return Ty::Error;

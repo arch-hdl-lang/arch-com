@@ -838,9 +838,10 @@ to a scale, and `is_nan` tests the single code `0x7F`. Because a scale is
 non-negative, `.to_ue4m3()` takes the **magnitude** of its operand (as
 `.to_e8m0()` does) and always clears the padding bit.
 
-`UE4M3` is a scalar type today. Using it as a `ScaledVec` scale is not yet
-supported --- see §3.11 --- because the block operations depend on the scale
-being a power of two.
+`UE4M3` is also a `ScaledVec` scale --- that is what it exists for --- giving
+NVFP4 as `ScaledVec<FP4E2M1, 16, UE4M3>`. The block operations do not need a
+power-of-two scale: `scaled_quantize` never divides by the scale at all, so
+the single-rounding property survives. See §3.11.1.
 
 
 
@@ -1071,7 +1072,12 @@ ScaledVec<Elem, N, Scale>
 Microscaling (MX) formats. The scale is a **parameter, not a fixed type**,
 because the two ecosystems genuinely differ --- MX uses `E8M0`, NVFP4 uses a
 `UE4M3` that is *not* our `FP8E4M3` (unsigned, 7 significant bits, NaN
-`0x7F`). `UE4M3` and NVFP4 are not yet implemented.
+`0x7F`). Both scales are supported:
+
+```arch
+type MXFP4 = ScaledVec<FP4E2M1, 32, E8M0>;
+type NVFP4 = ScaledVec<FP4E2M1, 16, UE4M3>;
+```
 
 The three arguments are constrained:
 
@@ -1080,11 +1086,13 @@ The three arguments are constrained:
     scale has no meaning over wider or integer elements.
   - **`N`** is a const expression `>= 1`. A block with no elements is just a
     bare scale.
-  - **`Scale`** must be `E8M0`. `UE4M3` (§3.10a) exists as a scalar type but
-    is not yet accepted here: unlike `E8M0` its value is not a power of two,
-    so dividing by it is inexact and the block operations' single-rounding
-    property (§3.11.1) does not hold. `FP8E4M3` is **not** a stand-in for
-    either.
+  - **`Scale`** must be `E8M0` (OCP MX) or `UE4M3` (NVFP4, §3.10a).
+    `FP8E4M3` is **not** a stand-in for `UE4M3` --- that one is signed and
+    its NaN is sign-agnostic. The two scales differ in more than width:
+    `E8M0` is a pure power of two with no zero, `UE4M3` carries three
+    mantissa bits, *has* a zero at `0x00`, and reserves `0x7F` (not `0xFF`)
+    for NaN. Those differences reach the surface, so they are spelled out
+    per operation below rather than left implicit.
 
 **A block is one packed word, not an array.** Layout is
 `{ scale[w-1:0], P[N-1], …, P[1], P[0] }` --- scale in the high bits,
@@ -1179,7 +1187,7 @@ applied, and is the only way to read an element (§3.11).
 
 | Selector | Values | Default |
 |---|---|---|
-| `policy` | `floor_pow2`, `ceil_pow2` | `floor_pow2` |
+| `policy` | `floor_pow2`, `ceil_pow2`, `exact` | **scale-dependent** --- see below |
 | `rounding` | `rne` (`rtz`, `rna` reserved) | `rne` |
 
 `floor_pow2` is the OCP §6.3 rule: the shared scale is the largest power of
@@ -1187,16 +1195,35 @@ two that normalizes the block maximum into the element format's top binade.
 Because that binade's largest *representable* value is below its top, some
 elements saturate --- routine under this policy, not a corner case.
 `ceil_pow2` rounds the scale up instead when the block maximum is not already
-a power of two, trading the top element codes for fewer saturations.
+a power of two, trading the top element codes for fewer saturations. `exact`
+takes `X = RNE(amax / elem_max)`, using the scale's mantissa instead of
+discarding it; it is **refused for `E8M0`**, where every value is already a
+power of two and there is no mantissa to use.
 
-Semantics, all of which follow from `E8M0` having no zero and reserving
-`0xFF` for NaN:
+**The default policy depends on the scale**, because one default cannot serve
+both: `floor_pow2` for `E8M0` (OCP §6.3), `exact` for `UE4M3`. Defaulting a
+UE4M3 block to `floor_pow2` would discard all three of its mantissa bits and
+silently produce a power-of-two-scale block where NVFP4 was asked for ---
+numerically a different format from the one every NVFP4 implementation ships.
+Write the policy explicitly if you want the other behaviour; both remain
+available under either scale.
 
-  - An **all-zero** block gets the *minimum* scale `0x00` (which denotes
-    `2^-127`, not zero) and zero elements.
-  - A block containing **any NaN or infinity** gets the NaN scale `0xFF`; its
-    element bits are then don't-care, and `scaled_dequantize` yields NaN in
-    every lane regardless of them.
+Semantics. The first two differ between the scales, and the difference is not
+cosmetic --- `E8M0` has no zero and reserves `0xFF`, `UE4M3` has a zero and
+reserves `0x7F`:
+
+  - An **all-zero** block gets scale code `0x00` and zero elements. For
+    `E8M0` that code denotes the *minimum scale* `2^-127` (the element plane
+    is what makes the block zero); for `UE4M3` it is a genuine **zero**,
+    which is sound precisely because every element is zero too.
+  - A block containing **any NaN or infinity** gets the NaN scale --- `0xFF`
+    for `E8M0`, `0x7F` for `UE4M3` (`0xFF` would set the padding bit `UE4M3`
+    requires to be zero). Its element bits are then don't-care, and
+    `scaled_dequantize` yields NaN in every lane regardless of them.
+  - Where the block maximum is nonzero but the scale would **underflow**, it
+    clamps to the smallest scale that is not zero: `0x00` for `E8M0`, `0x01`
+    for `UE4M3`. Clamping a `UE4M3` scale to `0x00` would set it to zero and
+    erase a block that has a nonzero maximum.
   - Dequantizing a finite element under a finite scale **saturates** to
     ±`FP32` max rather than overflowing to infinity. An element that is
     itself Inf or NaN (`FP8E5M2` / `FP8E4M3` can be) keeps its own result.
@@ -1205,8 +1232,32 @@ Semantics, all of which follow from `E8M0` having no zero and reserving
     all-finite formats (`FP4E2M1`, `FP6E2M3`, `FP6E3M2`) and becomes that
     format's NaN for `FP8E4M3`.
 
-Scaling by the reciprocal scale is an exact power-of-two multiply in FP32, so
-each element is rounded **once**, from the true `vᵢ / X`.
+**Each element is rounded exactly once, from the true `vᵢ / X`, under both
+scales** --- but for different reasons, and neither involves a division.
+
+  - Under `E8M0` the reciprocal `1/X` is itself a scale code (`2^-(c-127)` is
+    `2^((254-c)-127)`), so the scaling is one exact FP32 multiply and the
+    element narrow is the only rounding.
+  - Under `UE4M3` there is no such identity --- a mantissa-bearing scale has
+    no exactly representable reciprocal, and substituting `vᵢ × fl(1/X)`
+    changes the result on 4.76% of tie-aligned inputs. So the quantizer never
+    forms the quotient at all: it compares `|vᵢ|` against `X × m` for each
+    decision boundary `m` of the element grid, and picks the code the
+    comparisons land in. **Every such product is exact in FP32** --- the
+    scale carries 4 significand bits and a boundary at most 5, so the product
+    needs at most 9 of FP32's 24 --- which makes the comparison a decision
+    rather than an approximation, and the selected code correctly rounded by
+    construction. The scale itself is chosen the same way, against constant
+    thresholds. Ties resolve to even.
+
+A consequence worth stating: the error bounds of §3.11.3 rest on
+single-rounding, so they apply unchanged to `UE4M3` blocks.
+
+The division-free ladder costs one comparison per element-grid boundary: 8
+for `FP4E2M1` (NVFP4's element format), 32 for the `FP6` pair, and 127/124
+for `FP8E4M3`/`FP8E5M2`. A `UE4M3`-scaled block with 8-bit elements is
+therefore legal and correct but comparatively large; the sub-8-bit element
+formats the MX line is actually built on are cheap.
 
 Both conversions are combinational and must be the whole right-hand side of
 an assignment. To index an element, bind the result first:
@@ -1253,16 +1304,34 @@ pairwise summation's error grows as `O(log N)` against a serial accumulator's
 not a no-op in `FP32` (it turns `-0.0` into `+0.0`).
 
 **The two scales are applied one at a time**, as `(Σ ⊗ X^A) ⊗ X^B`, not as a
-pre-formed `X^A · X^B`. Each scale is a power of two, so each multiply is
-exact absent overflow --- but the two E8M0 scales span `2⁻¹²⁷ … 2¹²⁷`, so their
-*product* spans `2⁻²⁵⁴ … 2²⁵⁴` and can overflow to infinity or flush to zero
-even when the final result is perfectly representable. Applying them
+pre-formed `X^A · X^B`. Under `E8M0` each scale is a power of two, so each
+multiply is exact absent overflow --- but the two scales span `2⁻¹²⁷ … 2¹²⁷`,
+so their *product* spans `2⁻²⁵⁴ … 2²⁵⁴` and can overflow to infinity or flush
+to zero even when the final result is perfectly representable. Applying them
 separately has a strictly wider exact domain.
 
-A NaN scale (`0xFF`) on either operand makes the result NaN, which falls out of
-the scale multiply rather than needing a rule. An all-zero block dots to `+0`,
-not NaN --- E8M0 has no zero, so the minimum-scale path multiplies a zero sum
-by the finite `2⁻¹²⁷`.
+Under `UE4M3` the same order is used, and the reason is stronger rather than
+weaker: a `UE4M3` scale is not a power of two, so each scale multiply
+**rounds**. Applying the scales separately means two roundings of a
+correctly-rounded multiply each; pre-forming `X^A · X^B` would round that
+product too and then round again, and the pre-formed product has the narrower
+exact domain besides. The element-pair products stay exact either way --- that
+argument is about the *elements*, which the scale does not touch.
+
+A NaN scale on either operand makes the result NaN, which falls out of the
+scale multiply rather than needing a rule. An all-zero block dots to `+0`, not
+NaN, under both scales: `E8M0`'s minimum-scale path multiplies a zero sum by
+the finite `2⁻¹²⁷`, and `UE4M3`'s zero scale multiplies a zero sum by zero.
+
+**The per-tensor scale of NVFP4 is deliberately not part of the type.** NVFP4
+pairs its per-block `UE4M3` scale with a second, per-*tensor* `FP32` scale. A
+`ScaledVec` is one block, so carrying that value in the block type would
+replicate a per-tensor quantity once per block. Apply it with an ordinary
+`FP32` multiply on the result, or divide it out of the operand before
+quantizing. There is no accuracy lost by keeping it outside: folding it into
+the quantizer would mean comparing against `S × X × m`, and unlike `X × m`
+that product is not exact for an arbitrary `S`, so the fused form would round
+where the split form does not.
 
 **3.11.3 Quantization error bounds**
 
@@ -1306,9 +1375,9 @@ The bound is only claimed where no element saturates; extending a
 than silently wrong (§3.8, in-range side condition).
 
 **Not yet implemented:** `rtz` / `rna` rounding (they need their own element
-rounders in each backend, with their own overflow rules --- arch#890), the `exact` scale
-policy and `stochastic` rounding (see §3.11 for why both are deferred),
-and the `UE4M3` scale.
+rounders in each backend, with their own overflow rules --- arch#890) and
+`stochastic` rounding (it needs an entropy source, which is a datapath
+question rather than a rounding-mode one).
 
 **3.12 Package-scope type aliases**
 

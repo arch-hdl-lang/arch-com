@@ -1188,11 +1188,16 @@ pub enum TypeExpr {
 /// Shared-scale selection policy for `scaled_quantize` (proposal §3.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ScalePolicy {
-    /// OCP §6.3: largest power of two <= amax. The default (decision #1).
+    /// OCP §6.3: largest power of two <= amax. The default for a
+    /// power-of-two scale (`E8M0`; proposal §9 decision #1).
     FloorPow2,
     /// NVIDIA: round the scale UP instead, trading the top element codes
     /// for fewer saturations.
     CeilPow2,
+    /// `X = RNE(amax / elem_max)` — use the scale's mantissa instead of
+    /// discarding it. Meaningful only for a scale that is *not* a power of
+    /// two, so it is the default for `UE4M3` and refused for `E8M0`.
+    Exact,
 }
 
 /// Element rounding mode for `scaled_quantize`.
@@ -1306,7 +1311,12 @@ pub enum ExprKind {
     /// scale, so `MXFP4` and `MXFP8` are equally valid outputs and there is
     /// nothing to infer from. Carrying a `TypeExpr` inside an expression is
     /// why this needs its own variant — it is the first expression that can.
-    ScaledQuantize(Box<Expr>, Box<TypeExpr>, ScalePolicy, RoundMode),
+    /// `scaled_quantize<Fmt[, policy, rounding]>(v)`. The policy is `None`
+    /// when the call site did not write one: the default depends on the
+    /// block's *scale type*, which the parser cannot resolve because `Fmt`
+    /// may be a type alias. `BlockScale::default_policy` settles it once the
+    /// type is known.
+    ScaledQuantize(Box<Expr>, Box<TypeExpr>, Option<ScalePolicy>, RoundMode),
     /// SVA delay-shift: `##N expr`. Inside an `assert`/`cover` body, shifts
     /// the cycle of `expr` forward by `N` (i.e. evaluates `expr` at cycle
     /// `t + N` when the surrounding property is checked at cycle `t`).

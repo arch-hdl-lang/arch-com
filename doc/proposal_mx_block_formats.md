@@ -302,6 +302,10 @@ narrow miters only, no arith/fma/cmp).
 | **4** | `FP6E2M3`/`FP6E3M2`, MXFP6/MXFP8 aliases, `bound_err` quantization analysis | gappa bounds recorded |
 | **5** | NVFP4: `UE4M3` scale + two-level (per-tensor FP32) scaling | vs TransformerEngine vectors |
 
+Phase 5 shipped in two halves: **5a** the `UE4M3` scalar type (arch#908), **5b**
+the block scale, the `exact` policy and the division-free quantizer
+(arch#905). The per-tensor scale is deliberately outside the type — §9.1.
+
 `fp8_round` is already width-generic (its bias/anchor/`fw` formulas compute
 correctly for E2M1/E2M3/E3M2); only `ocp_top: bool` must become a 3-way enum,
 since FP4/FP6 are **all-finite** — a third overflow rule. The machine-proven
@@ -324,7 +328,7 @@ lands with Phase 2.
 
 | # | Decision | Resolution |
 |---|---|---|
-| 1 | Default scale policy | **`floor_pow2`** (OCP §6.3), with `ceil_pow2` and `exact` also offered |
+| 1 | Default scale policy | **scale-dependent** — `floor_pow2` (OCP §6.3) for `E8M0`, `exact` for `UE4M3`; all three offered under both. *Amended 2026-08-12, see below.* |
 | 2 | Scale for an all-zero block | **`0x00`** (= 2⁻¹²⁷), matching microxcaling |
 | 3 | Shared-exponent clamping | underflow → **`0x00`**; overflow → **`0xFF`** (NaN) |
 | 4 | Element field when `X = 0xFF` | **preserve on store, ignore on load**; documented |
@@ -349,6 +353,40 @@ against that specific order, not against a mathematical sum.
 routine (§2.2), and `saturate` is the only representable overflow behavior for
 E2M1/E2M3/E3M2 anyway. Users wanting NVIDIA-equivalent numerics select
 `ceil_pow2` explicitly.
+
+---
+
+### 9.1 Phase 5b amendments (maintainer sign-off 2026-08-12)
+
+Phase 5b (`UE4M3` as a block scale, arch#905) forced two questions the
+original table either got wrong for the non-power-of-two case or left open.
+
+**#1 amended — the default policy is per-scale, not global.** A single
+`floor_pow2` default reads well until it meets `UE4M3`, whose whole point is
+its three mantissa bits: defaulting to `floor_pow2` would discard them and
+emit a power-of-two-scale block under the NVFP4 name, diverging from every
+shipping NVFP4 implementation without saying so. `E8M0` keeps `floor_pow2`;
+`UE4M3` defaults to `exact`. Both remain selectable under either scale, and
+`exact` is *refused* for `E8M0` rather than silently ignored.
+
+**#11 (new) — the per-tensor FP32 scale stays OUT of the type.** NVFP4 pairs
+its per-block `UE4M3` scale with a per-tensor `FP32` one. A `ScaledVec` is one
+block, so a fourth type parameter would replicate a per-tensor quantity per
+block. Users apply it as an ordinary `FP32` multiply. This costs nothing
+numerically: fusing it into the quantizer would mean comparing against
+`S × X × m`, and that product is *not* exact for arbitrary `S` — where `X × m`
+is — so the fused form would round where the split form does not.
+
+**The §2.2 premise that the block ops need a power-of-two scale turned out to
+be false**, which is why 5b is smaller than the issue predicted. The
+`scaled_quantize` lowering does not divide by the scale at all: it compares
+`|v|` against `X × m` for each element-grid decision boundary `m`, and every
+such product is exact in FP32 (scale 4 significand bits, boundary ≤5, so ≤9 of
+FP32's 24, with no exponent-range escape). Verified over all 126 finite UE4M3
+scales × all five element formats: 0 inexact products and 0 disagreements with
+an exact-rational RNE reference. So single-rounding — and with it the §3.11.3
+error bounds — holds under `UE4M3` unchanged, and no `arch_f32_div` was
+needed. The scale is selected the same way, against constant thresholds.
 
 ---
 

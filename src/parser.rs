@@ -4911,13 +4911,14 @@ impl Parser {
                         let policy = match p.name.as_str() {
                             "floor_pow2" => ScalePolicy::FloorPow2,
                             "ceil_pow2" => ScalePolicy::CeilPow2,
+                            "exact" => ScalePolicy::Exact,
                             other => {
                                 return Err(CompileError::general(
                                     &format!(
                                         "unknown scale policy `{other}` — expected `floor_pow2` \
-                                         (OCP §6.3, the default) or `ceil_pow2` (NVIDIA). \
-                                         `exact` is reserved for a non-power-of-two scale \
-                                         (`UE4M3`) and is not implemented"
+                                         (OCP §6.3), `ceil_pow2` (NVIDIA) or `exact` \
+                                         (`RNE(amax / elem_max)`, for a non-power-of-two scale \
+                                         such as `UE4M3`)"
                                     ),
                                     p.span,
                                 ))
@@ -4939,9 +4940,12 @@ impl Parser {
                                 ))
                             }
                         };
-                        (policy, rounding)
+                        (Some(policy), rounding)
                     } else {
-                        (ScalePolicy::FloorPow2, RoundMode::Rne)
+                        // The policy default is scale-dependent and `fmt` may
+                        // be an alias, so leave it unwritten for typecheck to
+                        // settle rather than guessing `floor_pow2` here.
+                        (None, RoundMode::Rne)
                     };
                     // `expect_angle_close`, not `expect(Gt)`: the format may
                     // be written inline (`scaled_quantize<ScaledVec<..>>(v)`),

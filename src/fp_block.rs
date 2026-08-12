@@ -43,8 +43,7 @@ use crate::ast::{RoundMode, ScalePolicy, TypeExpr};
 use crate::fp_format::{by_type_expr, FpFormatId};
 use std::fmt::Write as _;
 
-/// The scale format of a block. One variant today; `UE4M3` (NVFP4) joins it
-/// in phase 5b (arch#905).
+/// The scale format of a block: `E8M0` (OCP MX) or `UE4M3` (NVFP4).
 ///
 /// **Everything the lowering knows about a scale lives behind this enum.**
 /// That is not decoration — it is the mechanism that makes adding a variant
@@ -70,17 +69,23 @@ use std::fmt::Write as _;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BlockScale {
     E8m0,
+    Ue4m3,
 }
 
 impl BlockScale {
     fn tag(self) -> &'static str {
         match self {
             BlockScale::E8m0 => "e8m0",
+            BlockScale::Ue4m3 => "ue4m3",
         }
     }
     fn width(self) -> u32 {
         match self {
             BlockScale::E8m0 => 8,
+            // 7 significant bits, stored in 8 with the MSB padded zero (PTX).
+            // The carrier is 8 bits wide, which is why the padding bit has to
+            // be masked rather than assumed — see `nan_code`.
+            BlockScale::Ue4m3 => 8,
         }
     }
 
@@ -88,6 +93,7 @@ impl BlockScale {
     fn widen_fn(self) -> &'static str {
         match self {
             BlockScale::E8m0 => "arch_e8m0_to_f32",
+            BlockScale::Ue4m3 => "arch_ue4m3_to_f32",
         }
     }
 
@@ -95,6 +101,7 @@ impl BlockScale {
     fn narrow_fn(self) -> &'static str {
         match self {
             BlockScale::E8m0 => "arch_f32_to_e8m0",
+            BlockScale::Ue4m3 => "arch_f32_to_ue4m3",
         }
     }
 
@@ -102,6 +109,9 @@ impl BlockScale {
     fn nan_code(self) -> u32 {
         match self {
             BlockScale::E8m0 => 0xFF,
+            // NOT 0xFF: that would set the padding bit UE4M3 requires to be
+            // zero. Its sole NaN is 0x7F.
+            BlockScale::Ue4m3 => 0x7F,
         }
     }
 
@@ -111,6 +121,10 @@ impl BlockScale {
     fn zero_block_code(self) -> u32 {
         match self {
             BlockScale::E8m0 => 0x00,
+            // UE4M3 *does* have a zero, and `0x00` IS it — so unlike E8M0 this
+            // makes the block's scale genuinely zero. Sound because the branch
+            // is only taken when every element is zero, and `0 * 0 == +0`.
+            BlockScale::Ue4m3 => 0x00,
         }
     }
 
@@ -119,30 +133,121 @@ impl BlockScale {
     fn max_finite_code(self) -> u32 {
         match self {
             BlockScale::E8m0 => 0xFE,
+            BlockScale::Ue4m3 => 0x7E,
+        }
+    }
+
+    /// Is every value of this scale a power of two?
+    ///
+    /// Drives two user-visible rules: the `exact` scale policy is refused for
+    /// a power-of-two scale (there is nothing for it to do), and the
+    /// single-rounding argument in the spec is stated differently for each.
+    pub fn is_pow2(self) -> bool {
+        match self {
+            BlockScale::E8m0 => true,
+            BlockScale::Ue4m3 => false,
+        }
+    }
+
+    /// The scale policy used when the call site does not write one.
+    ///
+    /// Not a single global default: `floor_pow2` (proposal §9 decision #1)
+    /// throws away every mantissa bit of a `UE4M3` scale, which would make an
+    /// NVFP4 block numerically a power-of-two-scale format and diverge from
+    /// every shipping NVFP4 implementation. Maintainer sign-off 2026-08-12.
+    pub fn default_policy(self) -> ScalePolicy {
+        match self {
+            BlockScale::E8m0 => ScalePolicy::FloorPow2,
+            BlockScale::Ue4m3 => ScalePolicy::Exact,
+        }
+    }
+
+    /// Every finite value this scale can hold, ascending, indexed by code.
+    ///
+    /// Lives here rather than being derived from `fp_format::FORMATS` because
+    /// **neither scale type has a row there** — deliberately: a format row is
+    /// what makes the float-shaped paths (`is_float`, the arithmetic surface,
+    /// `is_nan`) pick a type up, and a scale is a carrier for exponent-ish
+    /// codes, not a float. That is the arch#837 hazard, hit five times
+    /// already. So the shape is written out once, here, inside the enum that
+    /// already owns every other scale-specific decision.
+    fn grid(self) -> Vec<f64> {
+        match self {
+            // 2^(c-127) for every code but 0xFF (NaN). No zero, no sign.
+            BlockScale::E8m0 => (0u32..=0xFE).map(|c| 2f64.powi(c as i32 - 127)).collect(),
+            // E4M3-shaped magnitudes: 4 exponent bits, bias 7, 3 mantissa
+            // bits, subnormals at 2^-9 granularity, every code but 0x7F.
+            BlockScale::Ue4m3 => (0u32..=0x7E)
+                .map(|c| {
+                    let (e, m) = ((c >> 3) & 0xF, c & 0x7);
+                    if e == 0 {
+                        m as f64 * 2f64.powi(-9)
+                    } else {
+                        (8 + m) as f64 * 2f64.powi(e as i32 - 10)
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// How elements are divided by the scale — the one decision that differs
+    /// structurally rather than by a constant. See [`QuantKernel`].
+    fn quant_kernel(self) -> QuantKernel {
+        match self {
+            BlockScale::E8m0 => QuantKernel::ExactReciprocal,
+            BlockScale::Ue4m3 => QuantKernel::BoundaryCompare,
         }
     }
 
     /// SystemVerilog expression for the RECIPROCAL of the scale with code
-    /// `code`.
+    /// `code`, or `None` where no exact reciprocal exists.
     ///
     /// Exact for E8M0: `2^-(c-127) == 2^((254-c)-127)`, so the reciprocal is
     /// just another scale code and the element narrow downstream rounds
     /// exactly once. **A mantissa-bearing scale has no such identity** —
     /// arch#905 measured that substituting `v * fl(1/X)` for `fl(v/X)`
     /// changes the quantized code on 4.76% of tie-aligned inputs — so
-    /// `UE4M3` must not reuse this shape.
-    fn sv_reciprocal(self, code: &str) -> String {
+    /// `UE4M3` returns `None` and uses [`QuantKernel::BoundaryCompare`].
+    fn sv_reciprocal(self, code: &str) -> Option<String> {
         match self {
-            BlockScale::E8m0 => format!("{}(8'd254 - {code})", self.widen_fn()),
+            BlockScale::E8m0 => Some(format!("{}(8'd254 - {code})", self.widen_fn())),
+            BlockScale::Ue4m3 => None,
         }
     }
 
     /// C++ twin of [`BlockScale::sv_reciprocal`].
-    fn cpp_reciprocal(self, code: &str) -> String {
+    fn cpp_reciprocal(self, code: &str) -> Option<String> {
         match self {
-            BlockScale::E8m0 => format!("_{}((uint8_t)(254u - {code}))", self.widen_fn()),
+            BlockScale::E8m0 => Some(format!("_{}((uint8_t)(254u - {code}))", self.widen_fn())),
+            BlockScale::Ue4m3 => None,
         }
     }
+}
+
+/// How `scaled_quantize` turns an FP32 element into an element code.
+///
+/// Both kernels are exactly correctly rounded; they differ in *how* they get
+/// there, because only a power-of-two scale has an exact reciprocal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuantKernel {
+    /// Multiply by `1/X`, which is itself exactly representable, then narrow.
+    /// One multiply per element; the narrow is the sole rounding.
+    ExactReciprocal,
+    /// Never divide at all: compare `|v|` against `X × m` for each RNE
+    /// decision boundary `m` of the element grid.
+    ///
+    /// Sound because **every such product is exact in FP32** — the scale
+    /// carries 4 significand bits and a boundary at most 5, so the product
+    /// needs at most 9 of FP32's 24, and the exponent range cannot overflow
+    /// or go subnormal. Verified over all 126 finite `UE4M3` scales × every
+    /// boundary of all five element formats: 0 inexact products, and 0
+    /// mismatches against an exact-rational RNE reference.
+    ///
+    /// Ties-to-even needs no logic: the boundary between codes `k` and `k+1`
+    /// resolves to whichever is even, and since the grid index *is* the code,
+    /// that is a strict `>` at even `k` and a `>=` at odd `k` — decided at
+    /// generation time, per boundary.
+    BoundaryCompare,
 }
 
 /// A block's static shape: what `scaled_dequantize` needs, and the part of
@@ -191,6 +296,7 @@ pub fn shape_of(elem: &TypeExpr, n: u32, scale: &TypeExpr) -> Option<BlockShape>
     }
     let scale = match scale {
         TypeExpr::E8M0 => BlockScale::E8m0,
+        TypeExpr::UE4M3 => BlockScale::Ue4m3,
         _ => return None,
     };
     Some(BlockShape { elem, n, scale })
@@ -297,6 +403,7 @@ fn policy_tag(p: ScalePolicy) -> &'static str {
     match p {
         ScalePolicy::FloorPow2 => "floor",
         ScalePolicy::CeilPow2 => "ceil",
+        ScalePolicy::Exact => "exact",
     }
 }
 
@@ -349,6 +456,182 @@ fn dot_schedule(n: u32) -> (Vec<(usize, usize)>, usize) {
         cur = nxt;
     }
     (adds, cur[0])
+}
+
+// ── Grids and decision boundaries (the division-free kernel) ────────────────
+//
+// Everything here is DERIVED from `fp_format::FORMATS`, never hand-tabled: a
+// hand-written boundary table is a second source of truth for the rounding
+// rule, and the one thing this file exists to prevent is two sources of truth
+// disagreeing silently in both backends at once.
+
+/// Bit pattern of `(sig / 2^mb) * 2^e` as an FP32, asserting the value is
+/// exactly representable. Every grid point and boundary of every block
+/// element format is, by construction — significands are at most `mant+2`
+/// bits and the exponents sit deep inside FP32's range — so a lossy
+/// conversion here means a format row is wrong, not that rounding is needed.
+fn exact_f32(v: f64) -> u32 {
+    let f = v as f32;
+    debug_assert_eq!(
+        f as f64, v,
+        "block grid value {v} is not exactly representable in FP32"
+    );
+    f.to_bits()
+}
+
+/// The positive representable values of `f`, ascending. **The index into this
+/// vector is the element code**: IEEE-style encodings are monotonic over
+/// non-negative values, and every format's reserved Inf/NaN codes sit at the
+/// top, so enumerating `(exp, mant)` in order yields codes `0, 1, 2, …` with
+/// no gaps.
+fn format_grid(f: &crate::fp_format::FpFormat) -> Vec<f64> {
+    let (eb, mb) = (f.exp_bits, f.mant_bits);
+    let bias = (1i32 << (eb - 1)) - 1;
+    let e_top = (1u32 << eb) - 1;
+    let m_top = (1u32 << mb) - 1;
+    let mut out = Vec::new();
+    for e in 0..(1u32 << eb) {
+        for m in 0..(1u32 << mb) {
+            if f.has_inf && e == e_top {
+                continue; // Inf (m == 0) and every NaN payload
+            }
+            if !f.has_inf && f.has_nan && e == e_top && m == m_top {
+                continue; // OCP E4M3-style: the sole NaN is the all-ones code
+            }
+            let v = if e == 0 {
+                (m as f64) * 2f64.powi(1 - bias - mb as i32)
+            } else {
+                ((1u32 << mb) + m) as f64 * 2f64.powi(e as i32 - bias - mb as i32)
+            };
+            out.push(v);
+        }
+    }
+    out
+}
+
+/// One rung of a decision ladder: `|x| > thr` (or `>=`) selects `code`.
+///
+/// `strict` encodes ties-to-even with no runtime logic. The boundary between
+/// codes `k` and `k+1` is a tie only when `|x|` hits it exactly, and exactly
+/// one of the two codes is even — so the choice is fixed at generation time:
+/// strict `>` when `k` is even (the tie stays at `k`), `>=` when `k` is odd
+/// (the tie moves up to the even `k+1`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Rung {
+    /// FP32 bit pattern of the threshold, or of the *multiplier* applied to
+    /// the scale when the ladder is scaled at runtime.
+    thr: u32,
+    strict: bool,
+    code: u32,
+}
+
+/// The element ladder for format `f`, in ascending order. Thresholds are
+/// multipliers: the emitted code compares `|v|` against `X × thr`.
+///
+/// The last rung is the overflow boundary and only exists for a format that
+/// *has* somewhere to overflow to. For the all-finite sub-8-bit formats
+/// (`FP4E2M1`, `FP6E2M3`, `FP6E3M2` — the OCP MX block elements, NVFP4's
+/// included) there is no such code, so the ladder simply saturates at the top
+/// grid entry, which is what OCP §6.3 requires anyway.
+fn elem_ladder(f: &crate::fp_format::FpFormat) -> (Vec<Rung>, Option<u32>) {
+    let g = format_grid(f);
+    let mut rungs = Vec::with_capacity(g.len());
+    for k in 0..g.len() - 1 {
+        rungs.push(Rung {
+            thr: exact_f32((g[k] + g[k + 1]) / 2.0),
+            strict: k % 2 == 0,
+            code: (k + 1) as u32,
+        });
+    }
+    let overflows = f.has_inf || f.has_nan;
+    let ovf_code = if overflows {
+        let k = g.len() - 1;
+        let ulp = g[k] - g[k - 1];
+        rungs.push(Rung {
+            thr: exact_f32(g[k] + ulp / 2.0),
+            strict: k % 2 == 0,
+            code: 0, // filled in by the emitter: it is the rounder's answer
+        });
+        Some(k as u32)
+    } else {
+        None
+    };
+    (rungs, ovf_code)
+}
+
+/// The scale ladder: which scale code a block maximum selects, under `policy`.
+///
+/// Thresholds are **absolute FP32 constants**, not multipliers — both the
+/// element format's maximum and the scale grid are known at compile time, so
+/// `elem_max × scale_value` folds and the whole scale choice becomes a
+/// constant-threshold priority encoder with no arithmetic at all.
+///
+/// Sound because those products are exact: verified over all 126 finite
+/// `UE4M3` scales × all five element formats, 0 inexact and 0 overflowing.
+/// Returns the code the ladder starts at (used when the block maximum is
+/// below every rung) and the rungs themselves.
+fn scale_ladder(scale: BlockScale, elem_max: f64, policy: ScalePolicy) -> (u32, Vec<Rung>) {
+    debug_assert!(!scale.is_pow2(), "ladder is the non-pow2 path");
+    let g = scale.grid();
+    // Code 0 is *zero* for UE4M3, and a zero scale would erase a block whose
+    // maximum is nonzero. Underflow therefore clamps to the smallest nonzero
+    // scale rather than to code 0 — the same rule as proposal §9 decision #3
+    // ("underflow → the minimum scale"), read against a scale format that has
+    // a zero where E8M0 does not.
+    let lo = 1usize;
+    match policy {
+        ScalePolicy::Exact => (
+            lo as u32,
+            (lo..g.len() - 1)
+                .map(|k| Rung {
+                    thr: exact_f32(elem_max * (g[k] + g[k + 1]) / 2.0),
+                    strict: k % 2 == 0,
+                    code: (k + 1) as u32,
+                })
+                .collect(),
+        ),
+        // floor/ceil restrict the choice to the power-of-two members of the
+        // same grid. `floor` takes a value as soon as the block maximum
+        // reaches it; `ceil` steps to the NEXT power of two as soon as the
+        // maximum exceeds one, which is why the two ladders differ in the
+        // code they select and not only in the strictness of the test.
+        //
+        // `ceil` clamps at the largest power of two in the grid (2^8) rather
+        // than at the largest finite code (448): 448 is not a power of two,
+        // so selecting it would break the policy's own contract. Blocks above
+        // that saturate in the element plane instead.
+        ScalePolicy::FloorPow2 | ScalePolicy::CeilPow2 => {
+            let pow2: Vec<(usize, f64)> = g
+                .iter()
+                .copied()
+                .enumerate()
+                .skip(lo)
+                .filter(|(_, v)| v.log2().fract() == 0.0)
+                .collect();
+            let base = pow2[0].0 as u32;
+            if policy == ScalePolicy::FloorPow2 {
+                let r = pow2
+                    .iter()
+                    .map(|&(k, v)| Rung {
+                        thr: exact_f32(elem_max * v),
+                        strict: false,
+                        code: k as u32,
+                    })
+                    .collect();
+                (base, r)
+            } else {
+                let r = pow2
+                    .windows(2)
+                    .map(|w| Rung {
+                        thr: exact_f32(elem_max * w[0].1),
+                        strict: true,
+                        code: w[1].0 as u32,
+                    })
+                    .collect();
+                (base, r)
+            }
+        }
+    }
 }
 
 /// `[hi:0]` in the `logic [hi:0] ` declaration style `render_sv` uses.
@@ -447,6 +730,9 @@ fn sv_quantize(s: BlockShape, policy: ScalePolicy, round: RoundMode) -> String {
          (arch#890) — reaching here means that gate was removed \
          without adding the rounder variants"
     );
+    if s.scale.quant_kernel() == QuantKernel::BoundaryCompare {
+        return sv_quantize_boundary(s, policy);
+    }
     let name = BlockHelper::Quantize {
         shape: s,
         policy,
@@ -524,12 +810,142 @@ fn sv_quantize(s: BlockShape, policy: ScalePolicy, round: RoundMode) -> String {
     );
     // 5. Multiply by the reciprocal scale, itself an E8M0 code, so the
     //    scaling is exact and the narrow below rounds exactly once.
-    let _ = writeln!(o, "    inv = {};", s.scale.sv_reciprocal("code"));
+    let _ = writeln!(
+        o,
+        "    inv = {};",
+        s.scale
+            .sv_reciprocal("code")
+            .expect("ExactReciprocal kernel implies the scale has one")
+    );
     let _ = writeln!(o, "    for (int unsigned i = 0; i < {n}; i = i + 1) begin");
     let _ = writeln!(
         o,
         "      r[i*{ew} +: {ew}] = arch_f32_to_{tag}(arch_f32_mul(v[i*32 +: 32], inv));"
     );
+    let _ = writeln!(o, "    end");
+    let _ = writeln!(o, "    r[{}:{}] = code;", bw - 1, bw - sw);
+    let _ = writeln!(o, "  end");
+    let _ = writeln!(o, "  {name} = r;");
+    let _ = writeln!(o, "endfunction");
+    o
+}
+
+/// `scaled_quantize` for a scale with no exact reciprocal — see
+/// [`QuantKernel::BoundaryCompare`].
+///
+/// Two constant-threshold ladders and not one division. Both compare FP32 bit
+/// patterns as unsigned integers, which is the numeric comparison here because
+/// every operand is non-negative (the block maximum is sign-cleared, and every
+/// threshold is positive by construction) — the same fact the block-maximum
+/// scan above already rests on.
+fn sv_quantize_boundary(s: BlockShape, policy: ScalePolicy) -> String {
+    let name = BlockHelper::Quantize {
+        shape: s,
+        policy,
+        round: RoundMode::Rne,
+    }
+    .sv_name();
+    let (bw, vw, ew, sw) = (s.bits(), s.vec_bits(), s.elem_width(), s.scale.width());
+    let n = s.n;
+    let tag = s.elem_tag();
+    let (scale_base, scale_rungs) = scale_ladder(s.scale, s.desc().max_finite, policy);
+    let (elem_rungs, ovf) = elem_ladder(s.desc());
+    let mut o = String::new();
+    let _ = writeln!(
+        o,
+        "// {name}: Vec<FP32,{n}> -> {{scale, P[{}..0]}}. Division-free: the \
+         scale ladder is",
+        n - 1
+    );
+    let _ = writeln!(
+        o,
+        "// constant thresholds, the element ladder is `X * boundary`, and every such \
+         product"
+    );
+    let _ = writeln!(
+        o,
+        "// is exact in FP32 — so each element rounds exactly once. See src/fp_block.rs."
+    );
+    let _ = writeln!(
+        o,
+        "function automatic logic {}{name}(input logic {}v);",
+        sv_w(bw),
+        sv_w(vw)
+    );
+    let _ = writeln!(o, "  logic {}amax;", sv_w(32));
+    let _ = writeln!(o, "  logic {}mag;", sv_w(32));
+    let _ = writeln!(o, "  logic {}a;", sv_w(32));
+    let _ = writeln!(o, "  logic {}x;", sv_w(32));
+    let _ = writeln!(o, "  logic {}code;", sv_w(sw));
+    let _ = writeln!(o, "  logic {}m;", sv_w(ew));
+    let _ = writeln!(o, "  logic {}p;", sv_w(ew));
+    let _ = writeln!(o, "  logic sgn;");
+    let _ = writeln!(o, "  logic {}r;", sv_w(bw));
+    let _ = writeln!(o, "  amax = 32'h0;");
+    let _ = writeln!(o, "  for (int unsigned i = 0; i < {n}; i = i + 1) begin");
+    let _ = writeln!(o, "    mag = v[i*32 +: 32] & 32'h7FFFFFFF;");
+    let _ = writeln!(o, "    if (mag > amax) amax = mag;");
+    let _ = writeln!(o, "  end");
+    let _ = writeln!(o, "  r = {bw}'h0;");
+    let _ = writeln!(o, "  if (amax >= 32'h7F800000) begin");
+    let _ = writeln!(
+        o,
+        "    r[{}:{}] = {sw}'h{:02X};",
+        bw - 1,
+        bw - sw,
+        s.scale.nan_code()
+    );
+    let _ = writeln!(o, "  end else if (amax == 32'h0) begin");
+    let _ = writeln!(
+        o,
+        "    r[{}:{}] = {sw}'h{:02X};",
+        bw - 1,
+        bw - sw,
+        s.scale.zero_block_code()
+    );
+    let _ = writeln!(o, "  end else begin");
+    let _ = writeln!(o, "    code = {sw}'h{scale_base:02X};");
+    for rg in &scale_rungs {
+        let op = if rg.strict { ">" } else { ">=" };
+        let _ = writeln!(
+            o,
+            "    if (amax {op} 32'h{:08X}) code = {sw}'h{:02X};",
+            rg.thr, rg.code
+        );
+    }
+    let _ = writeln!(o, "    x = {}(code);", s.scale.widen_fn());
+    let _ = writeln!(o, "    for (int unsigned i = 0; i < {n}; i = i + 1) begin");
+    let _ = writeln!(o, "      sgn = v[i*32 + 31];");
+    let _ = writeln!(o, "      a = v[i*32 +: 32] & 32'h7FFFFFFF;");
+    let _ = writeln!(o, "      m = {ew}'h0;");
+    let cmp_rungs = if ovf.is_some() {
+        &elem_rungs[..elem_rungs.len() - 1]
+    } else {
+        &elem_rungs[..]
+    };
+    for rg in cmp_rungs {
+        let op = if rg.strict { ">" } else { ">=" };
+        let _ = writeln!(
+            o,
+            "      if (a {op} arch_f32_mul(x, 32'h{:08X})) m = {ew}'h{:02X};",
+            rg.thr, rg.code
+        );
+    }
+    let _ = writeln!(o, "      p = {{sgn, m[{}:0]}};", ew - 2);
+    if ovf.is_some() {
+        let top = elem_rungs[elem_rungs.len() - 1];
+        let op = if top.strict { ">" } else { ">=" };
+        // Overflow is delegated to the element format's own rounder rather
+        // than re-derived: feeding it a value that unambiguously overflows
+        // reproduces the `--fp-compat` profile's rule (riscv NaN/Inf vs cuda
+        // satfinite) with no second copy of it to drift.
+        let _ = writeln!(
+            o,
+            "      if (a {op} arch_f32_mul(x, 32'h{:08X})) p = arch_f32_to_{tag}({{sgn, 31'h7F7FFFFF}});",
+            top.thr
+        );
+    }
+    let _ = writeln!(o, "      r[i*{ew} +: {ew}] = p;");
     let _ = writeln!(o, "    end");
     let _ = writeln!(o, "    r[{}:{}] = code;", bw - 1, bw - sw);
     let _ = writeln!(o, "  end");
@@ -734,6 +1150,9 @@ fn cpp_quantize(s: BlockShape, policy: ScalePolicy, round: RoundMode) -> String 
          (arch#890) — reaching here means that gate was removed \
          without adding the rounder variants"
     );
+    if s.scale.quant_kernel() == QuantKernel::BoundaryCompare {
+        return cpp_quantize_boundary(s, policy);
+    }
     let name = BlockHelper::Quantize {
         shape: s,
         policy,
@@ -788,12 +1207,119 @@ fn cpp_quantize(s: BlockShape, policy: ScalePolicy, round: RoundMode) -> String 
         o,
         "    uint8_t code = (ecode > {emax}u) ? (uint8_t)(ecode - {emax}u) : (uint8_t)0u;"
     );
-    let _ = writeln!(o, "    uint32_t inv = {};", s.scale.cpp_reciprocal("code"));
+    let _ = writeln!(
+        o,
+        "    uint32_t inv = {};",
+        s.scale
+            .cpp_reciprocal("code")
+            .expect("ExactReciprocal kernel implies the scale has one")
+    );
     let _ = writeln!(o, "    for (unsigned i = 0; i < {n}u; ++i) {{");
     let _ = writeln!(
         o,
         "      uint32_t p = (uint32_t)_arch_f32_to_{tag}(_arch_f32_mul(v[i], inv));"
     );
+    let _ = writeln!(o, "      _arch_blk_ins(_w, i * {ew}u, {ew}u, p);");
+    let _ = writeln!(o, "    }}");
+    let _ = writeln!(
+        o,
+        "    _arch_blk_ins(_w, {}u, {sw}u, (uint32_t)code);",
+        bw - sw
+    );
+    let _ = writeln!(o, "  }}");
+    let _ = writeln!(o, "  _arch_blk_put(out, _w, {nw});");
+    let _ = writeln!(o, "}}");
+    o
+}
+
+/// C++ twin of [`sv_quantize_boundary`]. Same two ladders, same order, same
+/// constants — the two are meant to be diffable line for line.
+fn cpp_quantize_boundary(s: BlockShape, policy: ScalePolicy) -> String {
+    let name = BlockHelper::Quantize {
+        shape: s,
+        policy,
+        round: RoundMode::Rne,
+    }
+    .cpp_name();
+    let (bw, ew, sw) = (s.bits(), s.elem_width(), s.scale.width());
+    let (n, tag) = (s.n, s.elem_tag());
+    let nw = cpp_words(bw);
+    let (scale_base, scale_rungs) = scale_ladder(s.scale, s.desc().max_finite, policy);
+    let (elem_rungs, ovf) = elem_ladder(s.desc());
+    let mut o = String::new();
+    let _ = writeln!(
+        o,
+        "// {name}: Vec<FP32,{n}> -> block ({bw} bits). Mirrors sv_quantize_boundary in src/fp_block.rs."
+    );
+    let _ = writeln!(o, "template <typename BT>");
+    let _ = writeln!(
+        o,
+        "static inline void {name}(const uint32_t* v, BT& out) {{"
+    );
+    let _ = writeln!(o, "  uint32_t _w[{nw}];");
+    let _ = writeln!(o, "  for (int k = 0; k < {nw}; ++k) _w[k] = 0u;");
+    let _ = writeln!(o, "  uint32_t amax = 0u;");
+    let _ = writeln!(o, "  for (unsigned i = 0; i < {n}u; ++i) {{");
+    let _ = writeln!(o, "    uint32_t mag = v[i] & 0x7FFFFFFFu;");
+    let _ = writeln!(o, "    if (mag > amax) amax = mag;");
+    let _ = writeln!(o, "  }}");
+    let _ = writeln!(o, "  if (amax >= 0x7F800000u) {{");
+    let _ = writeln!(
+        o,
+        "    _arch_blk_ins(_w, {}u, {sw}u, 0x{:02X}u);",
+        bw - sw,
+        s.scale.nan_code()
+    );
+    let _ = writeln!(o, "  }} else if (amax == 0u) {{");
+    let _ = writeln!(
+        o,
+        "    _arch_blk_ins(_w, {}u, {sw}u, 0x{:02X}u);",
+        bw - sw,
+        s.scale.zero_block_code()
+    );
+    let _ = writeln!(o, "  }} else {{");
+    let _ = writeln!(o, "    uint8_t code = 0x{scale_base:02X}u;");
+    for rg in &scale_rungs {
+        let op = if rg.strict { ">" } else { ">=" };
+        let _ = writeln!(
+            o,
+            "    if (amax {op} 0x{:08X}u) code = 0x{:02X}u;",
+            rg.thr, rg.code
+        );
+    }
+    let _ = writeln!(o, "    uint32_t x = _{}(code);", s.scale.widen_fn());
+    let _ = writeln!(o, "    for (unsigned i = 0; i < {n}u; ++i) {{");
+    let _ = writeln!(o, "      uint32_t sgn = v[i] >> 31;");
+    let _ = writeln!(o, "      uint32_t a = v[i] & 0x7FFFFFFFu;");
+    let _ = writeln!(o, "      uint32_t m = 0u;");
+    let cmp_rungs = if ovf.is_some() {
+        &elem_rungs[..elem_rungs.len() - 1]
+    } else {
+        &elem_rungs[..]
+    };
+    for rg in cmp_rungs {
+        let op = if rg.strict { ">" } else { ">=" };
+        let _ = writeln!(
+            o,
+            "      if (a {op} _arch_f32_mul(x, 0x{:08X}u)) m = 0x{:02X}u;",
+            rg.thr, rg.code
+        );
+    }
+    let _ = writeln!(
+        o,
+        "      uint32_t p = (sgn << {}) | (m & 0x{:X}u);",
+        ew - 1,
+        (1u32 << (ew - 1)) - 1
+    );
+    if ovf.is_some() {
+        let top = elem_rungs[elem_rungs.len() - 1];
+        let op = if top.strict { ">" } else { ">=" };
+        let _ = writeln!(
+            o,
+            "      if (a {op} _arch_f32_mul(x, 0x{:08X}u)) p = (uint32_t)_arch_f32_to_{tag}((sgn << 31) | 0x7F7FFFFFu);",
+            top.thr
+        );
+    }
     let _ = writeln!(o, "      _arch_blk_ins(_w, i * {ew}u, {ew}u, p);");
     let _ = writeln!(o, "    }}");
     let _ = writeln!(
@@ -850,6 +1376,7 @@ fn cpp_dequantize(s: BlockShape) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fp_format::FORMATS;
 
     fn shape(elem: FpFormatId, n: u32) -> BlockShape {
         BlockShape {
@@ -1111,6 +1638,303 @@ mod tests {
                     let d = BlockHelper::Dequantize { shape: s }.sv_name();
                     assert_eq!(seen.insert(d), policy == ScalePolicy::FloorPow2);
                 }
+            }
+        }
+    }
+
+    // ── UE4M3 / NVFP4 (phase 5b, arch#905) ────────────────────────────────
+
+    /// Run a ladder the way both backends do: ascending, later rungs win.
+    fn run_ladder(rungs: &[Rung], base: u32, x: f32, scaled: bool, a: f32) -> u32 {
+        let mut c = base;
+        for rg in rungs {
+            let thr = if scaled {
+                x * f32::from_bits(rg.thr)
+            } else {
+                f32::from_bits(rg.thr)
+            };
+            let hit = if rg.strict { a > thr } else { a >= thr };
+            if hit {
+                c = rg.code;
+            }
+        }
+        c
+    }
+
+    /// Reference RNE onto an ascending grid, INDEPENDENT of the ladder: it
+    /// divides (in f64, correctly rounded to 53 bits) where the ladder only
+    /// ever compares.
+    ///
+    /// Double rounding 53 → ≤4 significand bits is innocuous everywhere
+    /// except exactly on a tie, so ties are settled separately by an exact
+    /// test — `x * mid` is exact in FP32, hence exact in f64, and `v` is an
+    /// FP32 value, so `v == x * mid` is a decision and not an approximation.
+    fn ref_code(grid: &[f64], v: f32, x: f32) -> usize {
+        let q = v as f64 / x as f64;
+        for k in 0..grid.len() - 1 {
+            let mid = (grid[k] + grid[k + 1]) / 2.0;
+            let exact_tie = (v as f64) == (x as f64) * mid;
+            if exact_tie {
+                return if k % 2 == 0 { k } else { k + 1 };
+            }
+            if q < mid {
+                return k;
+            }
+        }
+        grid.len() - 1
+    }
+
+    /// The heart of arch#905: the division-free element ladder must agree
+    /// with a real division on every scale, for every element format.
+    ///
+    /// Swept over all 126 finite UE4M3 scales × the values that can actually
+    /// disagree — every decision boundary exactly, both neighbours one ULP
+    /// away, and every grid point — which is where the reciprocal shortcut
+    /// this replaces fails 4.76% of the time.
+    #[test]
+    fn fp_block_ue4m3_elem_ladder_matches_a_real_divide() {
+        let scale_grid = BlockScale::Ue4m3.grid();
+        for id in [
+            FpFormatId::E2m1,
+            FpFormatId::E2m3,
+            FpFormatId::E3m2,
+            FpFormatId::E4m3,
+            FpFormatId::E5m2,
+        ] {
+            let f = FORMATS.iter().find(|f| f.id == id).unwrap();
+            let g = format_grid(f);
+            let (rungs, ovf) = elem_ladder(f);
+            // The overflow rung is not a grid code, so it is excluded here
+            // and covered by `..._overflow_rung_matches_the_rounder`.
+            let cmp = if ovf.is_some() {
+                &rungs[..rungs.len() - 1]
+            } else {
+                &rungs[..]
+            };
+            let top = (g.len() - 1) as u32;
+            for (code, &xv) in scale_grid.iter().enumerate().skip(1) {
+                let x = xv as f32;
+                let mut probes: Vec<f32> = Vec::new();
+                for k in 0..g.len() - 1 {
+                    let mid = ((g[k] + g[k + 1]) / 2.0) as f32;
+                    let t = x * mid;
+                    probes.push(t);
+                    probes.push(f32::from_bits(t.to_bits() - 1));
+                    probes.push(f32::from_bits(t.to_bits() + 1));
+                }
+                for &gv in &g {
+                    probes.push(x * gv as f32);
+                }
+                for a in probes {
+                    if !a.is_finite() || a == 0.0 {
+                        continue;
+                    }
+                    let want = ref_code(&g, a, x).min(top as usize) as u32;
+                    // Values past the top grid entry belong to the overflow
+                    // rung, not to this ladder.
+                    if a as f64 > g[g.len() - 1] * x as f64 {
+                        continue;
+                    }
+                    let got = run_ladder(cmp, 0, x, true, a);
+                    assert_eq!(
+                        got, want,
+                        "{} scale code {code:#04X} (x={x}) value {a:e}: ladder {got:#X} \
+                         vs divide {want:#X}",
+                        f.type_name
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every `scale × boundary` product the element ladder compares against
+    /// must be EXACT in FP32 — that is the whole reason the ladder is
+    /// correctly rounded, and it is a property of the format tables rather
+    /// than of the emitted code, so it is worth pinning on its own.
+    #[test]
+    fn fp_block_ue4m3_ladder_products_are_exact() {
+        for id in [
+            FpFormatId::E2m1,
+            FpFormatId::E2m3,
+            FpFormatId::E3m2,
+            FpFormatId::E4m3,
+            FpFormatId::E5m2,
+        ] {
+            let f = FORMATS.iter().find(|f| f.id == id).unwrap();
+            let (rungs, _) = elem_ladder(f);
+            for (code, &xv) in BlockScale::Ue4m3.grid().iter().enumerate().skip(1) {
+                for rg in &rungs {
+                    let (x, m) = (xv as f32, f32::from_bits(rg.thr));
+                    let p = x * m;
+                    assert!(p.is_finite() && p != 0.0, "{} code {code:#04X}", f.type_name);
+                    assert_eq!(
+                        p as f64,
+                        x as f64 * m as f64,
+                        "{} scale code {code:#04X}: {x} * {m} rounds in FP32",
+                        f.type_name
+                    );
+                }
+            }
+        }
+    }
+
+    /// `exact` selects `RNE(amax / elem_max)`. Same construction as the
+    /// element ladder, so the same independent check applies.
+    #[test]
+    fn fp_block_ue4m3_exact_scale_ladder_matches_a_real_divide() {
+        let g = BlockScale::Ue4m3.grid();
+        for id in [
+            FpFormatId::E2m1,
+            FpFormatId::E2m3,
+            FpFormatId::E3m2,
+            FpFormatId::E4m3,
+            FpFormatId::E5m2,
+        ] {
+            let f = FORMATS.iter().find(|f| f.id == id).unwrap();
+            let cmax = f.max_finite;
+            let (base, rungs) = scale_ladder(BlockScale::Ue4m3, cmax, ScalePolicy::Exact);
+            for k in 1..g.len() - 1 {
+                let mid = (g[k] + g[k + 1]) / 2.0;
+                let t = (cmax * mid) as f32;
+                for amax in [
+                    t,
+                    f32::from_bits(t.to_bits() - 1),
+                    f32::from_bits(t.to_bits() + 1),
+                    (cmax * g[k]) as f32,
+                ] {
+                    if !amax.is_finite() || amax <= 0.0 {
+                        continue;
+                    }
+                    let want = ref_code(&g, amax, cmax as f32).max(1) as u32;
+                    let got = run_ladder(&rungs, base, 1.0, false, amax);
+                    assert_eq!(
+                        got, want,
+                        "{} amax {amax:e}: scale ladder {got:#04X} vs divide {want:#04X}",
+                        f.type_name
+                    );
+                }
+            }
+        }
+    }
+
+    /// A UE4M3 block must never select scale code `0x00`. That code is a
+    /// genuine ZERO (unlike E8M0's `0x00`, which is its minimum scale), so
+    /// selecting it for a block whose maximum is nonzero would erase the
+    /// whole block on dequantize.
+    #[test]
+    fn fp_block_ue4m3_scale_ladder_never_selects_zero() {
+        for policy in [
+            ScalePolicy::Exact,
+            ScalePolicy::FloorPow2,
+            ScalePolicy::CeilPow2,
+        ] {
+            for id in [FpFormatId::E2m1, FpFormatId::E4m3] {
+                let f = FORMATS.iter().find(|f| f.id == id).unwrap();
+                let (base, rungs) = scale_ladder(BlockScale::Ue4m3, f.max_finite, policy);
+                assert_ne!(base, 0, "{policy:?}/{} base is the zero code", f.type_name);
+                for rg in &rungs {
+                    assert_ne!(rg.code, 0, "{policy:?}/{} rung selects zero", f.type_name);
+                }
+            }
+        }
+    }
+
+    /// The three special scale codes, pinned per scale with their reasons.
+    ///
+    /// These are constants consumed by BOTH backends from one table, so a
+    /// wrong value is wrong identically in the SystemVerilog and the C++ and
+    /// the cross-backend byte-compare cannot see it — the arch#904 shape.
+    /// This test is the only thing standing between a typo here and a silent
+    /// miscompile, so it states the value AND why it is that value.
+    #[test]
+    fn fp_block_special_scale_codes() {
+        // E8M0: no zero encoding, NaN is the all-ones code, so the largest
+        // finite is one below it.
+        assert_eq!(BlockScale::E8m0.nan_code(), 0xFF);
+        assert_eq!(BlockScale::E8m0.zero_block_code(), 0x00);
+        assert_eq!(BlockScale::E8m0.max_finite_code(), 0xFE);
+
+        // UE4M3: 7 significant bits with the MSB padded zero, so the NaN is
+        // 0x7F and NOT 0xFF — 0xFF would set the padding bit the format
+        // requires to be zero. 0x00 is a genuine zero (E8M0's is 2^-127).
+        assert_eq!(BlockScale::Ue4m3.nan_code(), 0x7F);
+        assert_eq!(BlockScale::Ue4m3.zero_block_code(), 0x00);
+        assert_eq!(BlockScale::Ue4m3.max_finite_code(), 0x7E);
+
+        // Cross-checks against the grid, so the codes cannot drift from the
+        // format they describe: the NaN code is one past the last finite
+        // one, and UE4M3's code 0 really is zero while E8M0's really is not.
+        for s in [BlockScale::E8m0, BlockScale::Ue4m3] {
+            let g = s.grid();
+            assert_eq!(g.len() as u32 - 1, s.max_finite_code(), "{s:?}");
+            assert_eq!(s.max_finite_code() + 1, s.nan_code(), "{s:?}");
+            assert!(g.iter().all(|v| *v > 0.0) == s.is_pow2(), "{s:?}");
+        }
+        assert_eq!(BlockScale::Ue4m3.grid()[0], 0.0);
+        assert_ne!(BlockScale::E8m0.grid()[0], 0.0);
+    }
+
+    /// The scale-dependent default (maintainer sign-off 2026-08-12): a
+    /// `floor_pow2` default under UE4M3 would discard all three mantissa bits
+    /// and quietly emit a power-of-two-scale block where NVFP4 was asked for.
+    #[test]
+    fn fp_block_default_policy_is_scale_dependent() {
+        assert_eq!(BlockScale::E8m0.default_policy(), ScalePolicy::FloorPow2);
+        assert_eq!(BlockScale::Ue4m3.default_policy(), ScalePolicy::Exact);
+        assert!(BlockScale::E8m0.is_pow2());
+        assert!(!BlockScale::Ue4m3.is_pow2());
+    }
+
+    /// Only a scale WITHOUT an exact reciprocal takes the division-free path,
+    /// and only a scale WITH one offers a reciprocal. Pins the two halves
+    /// together so a future variant cannot claim both or neither.
+    #[test]
+    fn fp_block_quant_kernel_agrees_with_reciprocal_availability() {
+        for s in [BlockScale::E8m0, BlockScale::Ue4m3] {
+            let has_recip = s.sv_reciprocal("c").is_some();
+            assert_eq!(has_recip, s.cpp_reciprocal("c").is_some());
+            assert_eq!(
+                has_recip,
+                s.quant_kernel() == QuantKernel::ExactReciprocal,
+                "{s:?}"
+            );
+            assert_eq!(has_recip, s.is_pow2(), "{s:?}");
+        }
+    }
+
+    /// The emitted UE4M3 quantizer must contain no divide and no reciprocal
+    /// helper — the entire point of arch#905's kernel.
+    #[test]
+    fn fp_block_ue4m3_quantize_emits_no_division() {
+        let s = BlockShape {
+            elem: FpFormatId::E2m1,
+            n: 16,
+            scale: BlockScale::Ue4m3,
+        };
+        for policy in [
+            ScalePolicy::Exact,
+            ScalePolicy::FloorPow2,
+            ScalePolicy::CeilPow2,
+        ] {
+            let sv = sv_quantize(s, policy, RoundMode::Rne);
+            let cpp = cpp_quantize(s, policy, RoundMode::Rne);
+            for (what, text) in [("sv", &sv), ("cpp", &cpp)] {
+                // Comments carry `/` in file paths and `->` arrows, so the
+                // check is against code lines only.
+                let code: String = text
+                    .lines()
+                    .filter(|l| !l.trim_start().starts_with("//"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(!code.contains('/'), "{what}/{policy:?} contains a divide");
+                assert!(
+                    !code.contains("254"),
+                    "{what}/{policy:?} reuses E8M0's reciprocal identity"
+                );
+                assert!(
+                    code.contains("arch_f32_mul"),
+                    "{what}/{policy:?} lost the scaled-threshold multiply"
+                );
             }
         }
     }
