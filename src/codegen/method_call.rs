@@ -174,6 +174,16 @@ impl<'a> Codegen<'a> {
             // the generic default below (see `MethodCallHost`).
             // `.to_e8m0()` extracts the binary exponent as an MX block
             // scale. Any float widens to f32 first; FP32 goes straight in.
+            // `.to_ue4m3()` — the NVFP4 block scale. Unlike `.to_e8m0()` this
+            // one rounds a significand (UE4M3 has 3 mantissa bits), which is
+            // exactly why an NVFP4 scale is not a power of two.
+            "to_ue4m3" if host == MethodCallHost::Main => {
+                self.fp_helpers_used.set(true);
+                match self.expr_float_fmt(base) {
+                    Some("f32") | None => format!("arch_f32_to_ue4m3({b})"),
+                    Some(t) => format!("arch_f32_to_ue4m3(arch_{t}_to_f32({b}))"),
+                }
+            }
             "to_e8m0" if host == MethodCallHost::Main => {
                 self.fp_helpers_used.set(true);
                 match self.expr_float_fmt(base) {
@@ -195,8 +205,14 @@ impl<'a> Codegen<'a> {
                     // float tag; dispatch on the declared type or it falls
                     // into the integer path below and widens the raw
                     // exponent code as an unsigned integer.
-                    None if matches!(self.expr_decl_type(base), Some(TypeExpr::E8M0)) => {
+                    None if matches!(self.scale_type_of(base), Some(TypeExpr::E8M0)) => {
                         format!("arch_e8m0_to_f32({b})")
+                    }
+                    // Same trap as E8M0: a scale type carries no float tag, so
+                    // without this arm it falls through to the identity and
+                    // yields the raw 8-bit CODE instead of the scale value.
+                    None if matches!(self.scale_type_of(base), Some(TypeExpr::UE4M3)) => {
+                        format!("arch_ue4m3_to_f32({b})")
                     }
                     _ => {
                         // int -> f32 (RNE) via the synthesizable helper.

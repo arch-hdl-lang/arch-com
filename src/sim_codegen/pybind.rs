@@ -658,7 +658,7 @@ PYBIND11_MODULE({pybind_module}, m) {{
             TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => 8,
             TypeExpr::FP4E2M1 => 4,
             TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => 6,
-            TypeExpr::E8M0 => 8,
+            TypeExpr::E8M0 | TypeExpr::UE4M3 => 8,
             TypeExpr::ScaledVec(elem, n, scale) => {
                 crate::fp_format::scaled_vec_width(elem, eval_width(n), scale).unwrap_or(0)
             }
@@ -1178,6 +1178,16 @@ static inline uint8_t _arch_f32_to_e8m0(uint32_t x){
 }
 static inline uint8_t _arch_f32_to_e5m2(uint32_t x){ return _arch_f32_to_fp8(x,5,2,0,0x7Cu,1,0x7Eu); }
 static inline uint8_t _arch_f32_to_e4m3(uint32_t x){ return _arch_f32_to_fp8(x,4,3,1,0x7Fu,0,0x7Fu); }
+// ── NVFP4 UE4M3 — the NVIDIA block SCALE type ──
+// 7-bit unsigned, MSB padded with zero, sole NaN 0x7F. Numerically E4M3
+// restricted to sign 0, so both directions route through the E4M3 helpers
+// rather than duplicating a rounder. The mask is not cosmetic: a stray high
+// bit would otherwise be read as an E4M3 SIGN and negate the scale. The
+// narrow takes the magnitude, since a scale is non-negative (matching
+// _arch_f32_to_e8m0, which ignores the sign bit).
+static inline uint32_t _arch_ue4m3_to_f32(uint8_t u){ return _arch_e4m3_to_f32(u & 0x7Fu); }
+static inline uint8_t _arch_f32_to_ue4m3(uint32_t x){ return _arch_f32_to_e4m3(x & 0x7FFFFFFFu); }
+static inline uint8_t _arch_ue4m3_isnan(uint8_t u){ return ((u & 0x7Fu) == 0x7Fu) ? 1 : 0; }
 static inline uint8_t _arch_e5m2_add(uint8_t a,uint8_t b){ return _arch_f32_to_e5m2(_arch_b32f(_arch_e5m2f(a)+_arch_e5m2f(b))); }
 static inline uint8_t _arch_e5m2_sub(uint8_t a,uint8_t b){ return _arch_f32_to_e5m2(_arch_b32f(_arch_e5m2f(a)-_arch_e5m2f(b))); }
 static inline uint8_t _arch_e5m2_mul(uint8_t a,uint8_t b){ return _arch_f32_to_e5m2(_arch_b32f(_arch_e5m2f(a)*_arch_e5m2f(b))); }

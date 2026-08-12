@@ -294,7 +294,7 @@ fn type_width_u64(ty: &TypeExpr) -> Result<u64, String> {
         TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Ok(8),
         TypeExpr::FP4E2M1 => Ok(4),
         TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Ok(6),
-        TypeExpr::E8M0 => Ok(8),
+        TypeExpr::E8M0 | TypeExpr::UE4M3 => Ok(8),
         TypeExpr::Vec(elem, len) => {
             let elem_width = type_width_u64(elem)?;
             let len = const_expr_u64(len)?;

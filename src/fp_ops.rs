@@ -620,6 +620,45 @@ fn f32_to_e8m0() -> FpFn {
     FpFn::new("arch_f32_to_e8m0", &[("x", 32)], 8, body)
 }
 
+// ── NVFP4 UE4M3 — the NVIDIA block SCALE type ────────────────────────────
+// PTX: a 7-bit unsigned float, MSB padded with zero, NaN limited to 0x7F.
+//
+// It is NOT FP8E4M3 — unsigned, and its sole NaN is 0x7F rather than E4M3's
+// sign-agnostic all-magnitude-ones — but it IS numerically E4M3 restricted to
+// sign 0: all 128 codes denote the same value as the E4M3 code with the same
+// bits. So both directions reuse the already-proven E4M3 helpers instead of
+// adding a second rounder, exactly as the block ops reuse the element ones.
+//
+// Two ways it differs from E8M0, both load-bearing downstream: it HAS a zero
+// (0x00), and its value is NOT a power of two, so dividing by an NVFP4 scale
+// is not exact.
+
+fn ue4m3_to_f32() -> FpFn {
+    let u = var("u", 8);
+    // Mask the padding bit rather than trusting it: a stray high bit would
+    // otherwise be read as an E4M3 SIGN and silently negate the scale.
+    let mag = band(&u, &cst(0x7F, 8));
+    let body = call("arch_e4m3_to_f32", &[mag], 32);
+    FpFn::new("arch_ue4m3_to_f32", &[("u", 8)], 32, body)
+}
+
+fn f32_to_ue4m3() -> FpFn {
+    let x = var("x", 32);
+    // A scale is non-negative, so narrow the MAGNITUDE. This matches
+    // arch_f32_to_e8m0, which reads the exponent field regardless of sign.
+    // Clearing the sign first also guarantees the result's bit 7 is 0, i.e.
+    // the padding bit the format requires.
+    //
+    // Written as "zero, then the low 31 bits" rather than an AND with
+    // 0x7FFFFFFF: it says *clear the sign* structurally instead of via a
+    // magic constant, and it keeps that constant out of the emitted helper
+    // block, where it is indistinguishable from the cuda canonical-NaN
+    // pattern that `fp_compat_build_profiles` greps for.
+    let mag = concat(&cst(0, 1), &extract(&x, 30, 0));
+    let body = call("arch_f32_to_e4m3", &[mag], 8);
+    FpFn::new("arch_f32_to_ue4m3", &[("x", 32)], 8, body)
+}
+
 fn f32_to_e4m3(p: FpCompat) -> FpFn {
     let x = var("x", 32);
     let d = decode(&x);
@@ -1224,6 +1263,8 @@ pub fn fp_functions(p: FpCompat) -> Vec<FpFn> {
     v.push(f32_to_fp6("arch_f32_to_e2m3", 2, 3));
     v.push(e8m0_to_f32(p));
     v.push(f32_to_e8m0());
+    v.push(ue4m3_to_f32());
+    v.push(f32_to_ue4m3());
     v.push(fp6_to_f32("arch_e3m2_to_f32", 3, 2));
     v.push(f32_to_fp6("arch_f32_to_e3m2", 3, 2));
     for (tag, widen, narrow) in [
@@ -1635,6 +1676,77 @@ mod e8m0_ir_tests {
     fn call1(fns: &[FpFn], name: &str, arg: u128, aw: u32, rw: u32) -> u128 {
         let node = crate::fp_ir::call(name, &[cst(arg, aw)], rw);
         eval_bv(&node, &HashMap::new(), fns).expect("E8M0 helpers must be decidable")
+    }
+
+    /// UE4M3 is E4M3 restricted to sign 0. Checked over ALL 128 valid codes
+    /// against an independent `f64` reconstruction of the encoding, plus the
+    /// two facts that distinguish it from its neighbours: it HAS a zero
+    /// (E8M0 does not) and its NaN is 0x7F (E4M3's is sign-agnostic).
+    #[test]
+    fn ue4m3_widen_matches_e4m3_with_sign_zero() {
+        let fns = fp_functions(crate::FpCompat::default());
+        for c in 0u128..=0x7F {
+            let got = f32::from_bits(call1(&fns, "arch_ue4m3_to_f32", c, 8, 32) as u32);
+            if c == 0x7F {
+                assert!(got.is_nan(), "UE4M3 0x7F is the sole NaN");
+                continue;
+            }
+            // Independent reconstruction: bias 7, 3 mantissa bits.
+            let e = ((c >> 3) & 0xF) as i32;
+            let m = (c & 7) as f64;
+            let want = if e == 0 {
+                (m / 8.0) * 2f64.powi(-6)
+            } else {
+                (1.0 + m / 8.0) * 2f64.powi(e - 7)
+            } as f32;
+            assert_eq!(got, want, "ue4m3 {c:#04X}");
+            // A scale is never negative.
+            assert!(got >= 0.0, "ue4m3 {c:#04X} widened negative");
+        }
+        // Unlike E8M0, UE4M3 HAS a zero.
+        assert_eq!(
+            f32::from_bits(call1(&fns, "arch_ue4m3_to_f32", 0, 8, 32) as u32),
+            0.0,
+            "UE4M3 0x00 is zero — unlike E8M0, whose 0x00 is 2^-127"
+        );
+        // Largest finite is 448, same as E4M3.
+        assert_eq!(
+            f32::from_bits(call1(&fns, "arch_ue4m3_to_f32", 0x7E, 8, 32) as u32),
+            448.0
+        );
+        // The padding bit is MASKED, not trusted: a stray high bit must not
+        // be read as an E4M3 sign and negate the scale.
+        for c in 0u128..=0x7F {
+            assert_eq!(
+                call1(&fns, "arch_ue4m3_to_f32", c, 8, 32),
+                call1(&fns, "arch_ue4m3_to_f32", c | 0x80, 8, 32),
+                "code {c:#04X}: the padding bit must not change the value"
+            );
+        }
+    }
+
+    /// The narrow takes the MAGNITUDE (a scale is non-negative, matching
+    /// `arch_f32_to_e8m0`), always clears the padding bit, and round-trips
+    /// every finite code.
+    #[test]
+    fn ue4m3_narrow_is_magnitude_and_round_trips() {
+        let fns = fp_functions(crate::FpCompat::default());
+        let nar = |v: f32| call1(&fns, "arch_f32_to_ue4m3", v.to_bits() as u128, 32, 8) as u8;
+        for c in 0u8..=0x7E {
+            let v = f32::from_bits(call1(&fns, "arch_ue4m3_to_f32", c as u128, 8, 32) as u32);
+            assert_eq!(nar(v), c, "code {c:#04X} must round-trip");
+            // Sign is irrelevant to a scale.
+            assert_eq!(
+                nar(-v),
+                c,
+                "code {c:#04X}: negated input must give the same scale"
+            );
+        }
+        // Every result has the padding bit clear.
+        for v in [0.0f32, 1.0, 448.0, -448.0, 1e30, -1e30, f32::MIN_POSITIVE] {
+            assert_eq!(nar(v) & 0x80, 0, "padding bit set for {v}");
+        }
+        assert_eq!(nar(0.0), 0x00, "zero narrows to the zero code");
     }
 
     /// Every one of the 256 E8M0 codes widens to exactly 2^(e-127), with

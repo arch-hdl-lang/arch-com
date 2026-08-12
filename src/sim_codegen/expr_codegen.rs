@@ -1608,8 +1608,13 @@ pub(super) fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             let a = cpp_expr(&args[0], ctx);
             // E8M0 is a scale type, not a float, so it has no FpFmt and
             // would otherwise take the f32 helper on an 8-bit value.
-            if matches!(sim_expr_decl_type(&args[0], ctx), Some(TypeExpr::E8M0)) {
+            if matches!(sim_scale_type_of(&args[0], ctx), Some(TypeExpr::E8M0)) {
                 return format!("_arch_e8m0_isnan({a})");
+            }
+            // UE4M3's sole NaN is 0x7F, not E8M0's 0xFF — sharing an arm
+            // would make `is_nan` silently false on every NVFP4 scale.
+            if matches!(sim_scale_type_of(&args[0], ctx), Some(TypeExpr::UE4M3)) {
+                return format!("_arch_ue4m3_isnan({a})");
             }
             let fmt = infer_expr_float(&args[0], ctx).unwrap_or(FpFmt::Fp32);
             format!("_arch_{}_isnan({a})", fmt.helper_tag())
@@ -1908,6 +1913,10 @@ pub(super) fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &
             Some(FpFmt::Fp32) | None => format!("_arch_f32_to_e8m0({b})"),
             Some(f) => format!("_arch_f32_to_e8m0(_arch_{}_to_f32({b}))", f.helper_tag()),
         },
+        "to_ue4m3" => match infer_expr_float(base, ctx) {
+            Some(FpFmt::Fp32) | None => format!("_arch_f32_to_ue4m3({b})"),
+            Some(f) => format!("_arch_f32_to_ue4m3(_arch_{}_to_f32({b}))", f.helper_tag()),
+        },
         "to_fp32" => match infer_expr_float(base, ctx) {
             Some(FpFmt::Bf16) => format!("_arch_bf16_to_f32({b})"),
             Some(FpFmt::E4m3) => format!("_arch_e4m3_to_f32({b})"),
@@ -1918,8 +1927,14 @@ pub(super) fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &
             Some(FpFmt::Fp32) => b, // no-op (typecheck rejects, but stay total)
             // E8M0 carries no float tag (it is a scale type), so route it
             // by declared type.
-            None if matches!(sim_expr_decl_type(base, ctx), Some(TypeExpr::E8M0)) => {
+            None if matches!(sim_scale_type_of(base, ctx), Some(TypeExpr::E8M0)) => {
                 format!("_arch_e8m0_to_f32({b})")
+            }
+            // Same for the NVFP4 scale — without this arm it falls through to
+            // the INTEGER widen below and reinterprets the 8-bit code as a
+            // whole number, which compiles and is silently wrong.
+            None if matches!(sim_scale_type_of(base, ctx), Some(TypeExpr::UE4M3)) => {
+                format!("_arch_ue4m3_to_f32({b})")
             }
             None => {
                 if infer_expr_signed(base, ctx) {
@@ -2176,6 +2191,23 @@ pub(super) fn cpp_concat(parts: &[Expr], ctx: &Ctx) -> String {
 /// Declared TypeExpr of an lvalue-shaped expression (identifier, Vec
 /// element select, struct field access — recursively, so `v[i].f` and
 /// `s.f[i]` both resolve). Mirrors the SV codegen's `expr_decl_type`.
+/// The block-scale type an expression *produces*, if any. Sim twin of
+/// `codegen::Codegen::scale_type_of` — see there for why a declared-type
+/// lookup alone is not enough (arch#904).
+pub(super) fn sim_scale_type_of(e: &Expr, ctx: &Ctx) -> Option<TypeExpr> {
+    if let ExprKind::MethodCall(_, m, _) = &e.kind {
+        match m.name.as_str() {
+            "to_e8m0" => return Some(TypeExpr::E8M0),
+            "to_ue4m3" => return Some(TypeExpr::UE4M3),
+            _ => {}
+        }
+    }
+    match sim_expr_decl_type(e, ctx) {
+        Some(t @ (TypeExpr::E8M0 | TypeExpr::UE4M3)) => Some(t),
+        _ => None,
+    }
+}
+
 pub(super) fn sim_expr_decl_type(e: &Expr, ctx: &Ctx) -> Option<TypeExpr> {
     match &e.kind {
         ExprKind::Ident(name) => ctx.decl_types?.get(name.as_str()).cloned(),

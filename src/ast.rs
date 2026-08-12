@@ -1152,6 +1152,23 @@ pub enum TypeExpr {
     /// wrong — **NO zero**: `0x00` is the MINIMUM SCALE 2^-127, not zero.
     /// `0xFF` is NaN, which at block level marks the whole block NaN.
     E8M0,
+    /// NVFP4 `UE4M3` — the NVIDIA block SCALE type, not a float.
+    ///
+    /// PTX: *"a 7-bit unsigned floating-point format … NaN value is limited to
+    /// `0x7f` … MSB bit padded with zero."* So the carrier is 8 bits with bit
+    /// 7 always zero, and bits `[6:0]` are E4M3's exponent+mantissa fields.
+    ///
+    /// **It is NOT `FP8E4M3`.** Reusing that type here would be a real bug:
+    /// this one is unsigned, and its sole NaN is `0x7F` rather than E4M3's
+    /// sign-agnostic all-magnitude-ones. It is, however, *numerically* E4M3
+    /// restricted to sign 0 — every one of its 128 codes denotes the same
+    /// value as the E4M3 code with the same bits — which is why its
+    /// conversions reuse the proven E4M3 helpers rather than adding numerics.
+    ///
+    /// Unlike [`TypeExpr::E8M0`] it **has a zero** (`0x00`), and its scale is
+    /// **not a power of two** — so dividing by it is not exact, and the
+    /// single-rounding property MX quantization enjoys does not carry over.
+    UE4M3,
     /// A block-scaled vector: `ScaledVec<Elem, N, Scale>` — `N` narrow
     /// elements sharing one scale, the unit of meaning in OCP MX / NVFP4.
     /// Fields: element type, block size `N`, scale type.

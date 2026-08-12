@@ -2692,6 +2692,28 @@ impl<'a> Codegen<'a> {
     /// Vec-element selects, and struct field accesses (recursively, so
     /// `v[i].f` and `s.f[i]` both resolve). Used to give composite float
     /// accesses a float format for operator dispatch.
+    /// The block-scale type an expression *produces*, if any.
+    ///
+    /// Wider than `expr_decl_type` on purpose: a scale type carries no float
+    /// dispatch tag (it is not a float), so any site that routes by tag falls
+    /// through to the INTEGER path on a scale value. That is fine while the
+    /// receiver is a declared signal, and silently wrong the moment it is a
+    /// chained conversion — `v.to_e8m0().to_fp32()` emitted an integer widen
+    /// and reinterpreted the 8-bit code as a whole number (arch#904).
+    fn scale_type_of(&self, e: &Expr) -> Option<TypeExpr> {
+        if let ExprKind::MethodCall(_, m, _) = &e.kind {
+            match m.name.as_str() {
+                "to_e8m0" => return Some(TypeExpr::E8M0),
+                "to_ue4m3" => return Some(TypeExpr::UE4M3),
+                _ => {}
+            }
+        }
+        match self.expr_decl_type(e) {
+            Some(t @ (TypeExpr::E8M0 | TypeExpr::UE4M3)) => Some(t),
+            _ => None,
+        }
+    }
+
     fn expr_decl_type(&self, e: &Expr) -> Option<TypeExpr> {
         match &e.kind {
             ExprKind::Ident(name) => self.ident_decl_type(name),
@@ -3136,7 +3158,7 @@ impl<'a> Codegen<'a> {
             TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Some("8".to_string()),
             TypeExpr::FP4E2M1 => Some("4".to_string()),
             TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Some("6".to_string()),
-            TypeExpr::E8M0 => Some("8".to_string()),
+            TypeExpr::E8M0 | TypeExpr::UE4M3 => Some("8".to_string()),
             TypeExpr::Vec(inner, size) => {
                 let iw = self.type_expr_data_width(inner)?;
                 let n = self.emit_expr_str(size);
@@ -6165,7 +6187,7 @@ impl<'a> Codegen<'a> {
             TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => Some(8),
             TypeExpr::FP4E2M1 => Some(4),
             TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => Some(6),
-            TypeExpr::E8M0 => Some(8),
+            TypeExpr::E8M0 | TypeExpr::UE4M3 => Some(8),
             TypeExpr::Vec(inner, size) => {
                 let iw = self.type_expr_width(inner)?;
                 let n = eval(size)?;
@@ -8013,8 +8035,14 @@ impl<'a> Codegen<'a> {
             // test — reading bits [30:23] of an 8-bit signal, which
             // SV zero-fills into a silent constant false. Its NaN is
             // the single code 0xFF.
-            if matches!(self.expr_decl_type(&args[0]), Some(TypeExpr::E8M0)) {
+            if matches!(self.scale_type_of(&args[0]), Some(TypeExpr::E8M0)) {
                 return format!("({a} == 8'hFF)");
+            }
+            // UE4M3 is the OTHER scale type, and its sole NaN is a DIFFERENT
+            // code: 0x7F, not 0xFF. Sharing E8M0's arm would make `is_nan`
+            // silently constant-false on every NVFP4 scale.
+            if matches!(self.scale_type_of(&args[0]), Some(TypeExpr::UE4M3)) {
+                return format!("({a} == 8'h7F)");
             }
             // The NaN test is DERIVED from the format table rather
             // than tabulated per tag. The old hand-written match
@@ -8150,7 +8178,7 @@ impl<'a> Codegen<'a> {
             TypeExpr::FP8E4M3 | TypeExpr::FP8E5M2 => "logic [7:0]".to_string(),
             TypeExpr::FP4E2M1 => "logic [3:0]".to_string(),
             TypeExpr::FP6E2M3 | TypeExpr::FP6E3M2 => "logic [5:0]".to_string(),
-            TypeExpr::E8M0 => "logic [7:0]".to_string(),
+            TypeExpr::E8M0 | TypeExpr::UE4M3 => "logic [7:0]".to_string(),
             // One packed word `{scale, P[N-1], …, P[0]}` — NOT an array, so
             // there is no dimension suffix to carry (contrast Vec below).
             TypeExpr::ScaledVec(..) => {
