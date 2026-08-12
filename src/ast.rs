@@ -945,6 +945,14 @@ pub struct InstDecl {
     /// `flatten_inst_for_loops` runs, this is empty and downstream
     /// passes see only `connections`.
     pub for_loops: Vec<InstForLoop>,
+    /// Span of an `auto;` directive in the inst body (`None` when absent).
+    /// `auto;` fills every child port left unconnected by the explicit
+    /// connections with the identically-named parent-scope signal. The
+    /// `elaborate::auto_connect` pass expands it into ordinary
+    /// `Connection`s right after `elaborate()`, so every downstream pass
+    /// (resolve, typecheck, all three backends) sees a fully explicit
+    /// connection set and this field is inert.
+    pub auto_connect: Option<Span>,
     pub span: Span,
 }
 
@@ -1501,6 +1509,87 @@ impl Ident {
 impl Item {
     pub fn span(&self) -> Span {
         self.as_construct().span()
+    }
+
+    /// The construct's declared `port` list, or `&[]` for items that have no
+    /// port boundary (`domain`, `struct`, `enum`, `function`, `bus`,
+    /// `package`, `use`, `extern package`).
+    ///
+    /// Note this is the *`port`-declaration* list only: `regfile` / `arbiter`
+    /// / `template` also expose `ports[N] <group>` arrays, which live in
+    /// separate fields and are reachable via [`Item::port_arrays`].
+    pub fn ports(&self) -> &[PortDecl] {
+        match self {
+            // Own `ports` field.
+            Item::Module(m) => &m.ports,
+            Item::Synchronizer(s) => &s.ports,
+            Item::Clkgate(c) => &c.ports,
+            Item::Template(t) => &t.ports,
+            // `ports` via `Deref<Target = ConstructCommon>`.
+            Item::Fsm(f) => &f.ports,
+            Item::Fifo(f) => &f.ports,
+            Item::Ram(r) => &r.ports,
+            Item::Cam(c) => &c.ports,
+            Item::Counter(c) => &c.ports,
+            Item::Arbiter(a) => &a.ports,
+            Item::Regfile(r) => &r.ports,
+            Item::Pipeline(p) => &p.ports,
+            Item::Linklist(l) => &l.ports,
+            Item::Domain(_)
+            | Item::Struct(_)
+            | Item::Enum(_)
+            | Item::Function(_)
+            | Item::Bus(_)
+            | Item::Package(_)
+            | Item::Use(_)
+            | Item::ExternPackage(_) => &[],
+        }
+    }
+
+    /// The construct's declared `param` list, or `&[]` for items that carry
+    /// no params (`domain`, `struct`, `enum`, `function`, `use`, `extern
+    /// package`).
+    pub fn params(&self) -> &[ParamDecl] {
+        match self {
+            Item::Module(m) => &m.params,
+            Item::Fsm(f) => &f.params,
+            Item::Fifo(f) => &f.params,
+            Item::Ram(r) => &r.params,
+            Item::Cam(c) => &c.params,
+            Item::Counter(c) => &c.params,
+            Item::Arbiter(a) => &a.params,
+            Item::Regfile(r) => &r.params,
+            Item::Pipeline(p) => &p.params,
+            Item::Linklist(l) => &l.params,
+            Item::Bus(b) => &b.params,
+            Item::Synchronizer(s) => &s.params,
+            Item::Clkgate(c) => &c.params,
+            Item::Template(t) => &t.params,
+            Item::Package(p) => &p.params,
+            Item::Domain(_)
+            | Item::Struct(_)
+            | Item::Enum(_)
+            | Item::Function(_)
+            | Item::Use(_)
+            | Item::ExternPackage(_) => &[],
+        }
+    }
+
+    /// The construct's `ports[N] <group> ... end ports <group>` arrays.
+    /// Only `regfile` (read/write groups), `arbiter` and `template` have
+    /// them; every other item returns an empty vec.
+    ///
+    /// Connections to these groups are flattened at parse time to
+    /// `<group><i>_<signal>` (or `<group>_<signal>` for a literal count-1
+    /// group — see `elaborate::normalize_count1_portarray_conns`), so the
+    /// rest of the compiler only ever sees the flat names.
+    pub fn port_arrays(&self) -> Vec<&PortArrayDecl> {
+        match self {
+            Item::Regfile(r) => r.read_ports.iter().chain(r.write_ports.iter()).collect(),
+            Item::Arbiter(a) => a.port_arrays.iter().collect(),
+            Item::Template(t) => t.port_arrays.iter().collect(),
+            _ => Vec::new(),
+        }
     }
 
     /// Centralized accessor that converts an `Item` to its trait object —

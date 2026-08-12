@@ -62,6 +62,9 @@ fn compile_to_sv_with_opts(source: &str, opts: &elaborate::ThreadLowerOpts) -> S
     let mut parser = Parser::new(tokens, source);
     let parsed_ast = parser.parse_source_file().expect("parse error");
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let ast = elaborate::expand_auto_connect(ast, false)
+        .expect("auto-connect error")
+        .0;
     let ast = elaborate::lower_tlm_target_threads(ast).expect("tlm_target lowering error");
     let ast = elaborate::lower_tlm_initiator_calls(ast).expect("tlm_initiator lowering error");
     let ast = elaborate::lower_threads_with_opts(ast, opts).expect("lower_threads error");
@@ -79,6 +82,8 @@ fn warnings_after_full_lower(source: &str) -> Vec<String> {
     let mut parser = Parser::new(tokens, source);
     let parsed_ast = parser.parse_source_file().expect("parse error");
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let (ast, _notes, auto_warnings) =
+        elaborate::expand_auto_connect(ast, false).expect("auto-connect error");
     let ast = elaborate::lower_tlm_target_threads(ast).expect("tlm_target lowering error");
     let ast = elaborate::lower_tlm_initiator_calls(ast).expect("tlm_initiator lowering error");
     let ast = elaborate::lower_threads(ast).expect("lower_threads error");
@@ -87,7 +92,11 @@ fn warnings_after_full_lower(source: &str) -> Vec<String> {
     let symbols = resolve::resolve(&ast).expect("resolve error");
     let checker = TypeChecker::new(&symbols, &ast);
     let (warnings, _) = checker.check().expect("type check error");
-    warnings.into_iter().map(|w| w.message).collect()
+    warnings
+        .into_iter()
+        .chain(auto_warnings)
+        .map(|w| w.message)
+        .collect()
 }
 
 fn collect_thread_map(source: &str) -> arch::thread_map::ThreadMap {
@@ -36490,4 +36499,616 @@ fn test_adjacent_unary_behavioral_equivalence_verilator_and_iverilog() {
             String::from_utf8_lossy(&run.stderr)
         );
     }
+}
+
+// ── `auto;` auto-connect (issue #754) ────────────────────────────────────────
+//
+// `auto;` fills every child port the explicit connections left unconnected
+// with the identically-named signal in scope. It is a front-end desugar, so
+// the headline test is byte-equality of emitted SV against the hand-written
+// twin — everything else is diagnostics.
+
+/// Run parse → elaborate → auto-connect and return the auto-connect errors.
+fn auto_connect_errors(source: &str) -> Vec<String> {
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    match elaborate::expand_auto_connect(ast, false) {
+        Ok(_) => Vec::new(),
+        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
+    }
+}
+
+/// The connection lists `--explain-auto` would print, one entry per inst.
+fn auto_connect_notes(source: &str) -> Vec<(String, Vec<String>)> {
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let (_ast, notes, _warnings) =
+        elaborate::expand_auto_connect(ast, false).expect("auto-connect error");
+    notes.into_iter().map(|n| (n.inst_name, n.conns)).collect()
+}
+
+const AC_SUB: &str = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module AcSub
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+
+  reg acc: UInt<8> reset rst => 0;
+  seq on clk rising
+    if en
+      acc <= a;
+    end if
+  end seq
+  comb
+    y = acc;
+  end comb
+end module AcSub
+";
+
+fn ac_top(inst_body: &str) -> String {
+    format!(
+        "{AC_SUB}
+module AcTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port din: in UInt<8>;
+  port dout: out UInt<8>;
+
+  wire a: UInt<8>;
+  wire y: UInt<8>;
+
+  comb
+    a = din;
+    dout = y;
+  end comb
+
+  inst u0: AcSub
+{inst_body}
+  end inst u0
+end module AcTop
+"
+    )
+}
+
+/// The load-bearing property: `auto;` is a pure desugar, so the SV it
+/// produces is byte-identical to the hand-written connection list.
+#[test]
+fn test_auto_connect_sv_identical_to_explicit() {
+    let auto_sv = compile_to_sv(&ac_top("    auto;"));
+    let explicit_sv = compile_to_sv(&ac_top(
+        "    clk <- clk;
+    rst <- rst;
+    en <- en;
+    a <- a;
+    y -> y;",
+    ));
+    assert_eq!(
+        auto_sv, explicit_sv,
+        "`auto;` must emit exactly what the explicit connection list emits"
+    );
+    assert!(auto_sv.contains(".clk(clk)"), "{auto_sv}");
+    assert!(auto_sv.contains(".y(y)"), "{auto_sv}");
+}
+
+/// Explicit connections win; `auto;` only fills the remainder — including
+/// when the explicit connection is written *after* the directive.
+#[test]
+fn test_auto_connect_explicit_takes_precedence() {
+    let sv = compile_to_sv(&ac_top(
+        "    auto;
+    a <- din;",
+    ));
+    assert!(
+        sv.contains(".a(din)"),
+        "explicit `a <- din` must survive, not be overwritten by `a <- a`:\n{sv}"
+    );
+    assert!(!sv.contains(".a(a)"), "{sv}");
+    // The rest still gets filled.
+    assert!(sv.contains(".en(en)"), "{sv}");
+    assert!(sv.contains(".y(y)"), "{sv}");
+}
+
+#[test]
+fn test_auto_connect_unmatched_input_errors() {
+    let src = format!(
+        "{AC_SUB}
+module AcTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port dout: out UInt<8>;
+
+  wire y: UInt<8>;
+  comb
+    dout = y;
+  end comb
+
+  inst u0: AcSub
+    auto;
+  end inst u0
+end module AcTop
+"
+    );
+    let errs = auto_connect_errors(&src);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("no signal `a` in scope for input port `a`")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn test_auto_connect_unmatched_output_errors() {
+    let src = format!(
+        "{AC_SUB}
+module AcTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port din: in UInt<8>;
+
+  wire a: UInt<8>;
+  comb
+    a = din;
+  end comb
+
+  inst u0: AcSub
+    auto;
+  end inst u0
+end module AcTop
+"
+    );
+    let errs = auto_connect_errors(&src);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("no signal `y` in scope for output port `y`")),
+        "{errs:?}"
+    );
+}
+
+/// The type gate: a concrete width mismatch is an error, not a silent
+/// connection (inst connections are otherwise untyped today — see #737).
+#[test]
+fn test_auto_connect_width_mismatch_errors() {
+    let src = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module WSub
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<16>;
+  port y: out UInt<8>;
+  comb
+    y = a.trunc<8>();
+  end comb
+end module WSub
+
+module WTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port din: in UInt<8>;
+  port dout: out UInt<8>;
+
+  wire a: UInt<8>;
+  wire y: UInt<8>;
+  comb
+    a = din;
+    dout = y;
+  end comb
+
+  inst u0: WSub
+    auto;
+  end inst u0
+end module WTop
+";
+    let errs = auto_connect_errors(src);
+    assert!(
+        errs.iter().any(|e| e.contains("type mismatch for port `a`")
+            && e.contains("port is UInt<16>")
+            && e.contains("signal `a` is UInt<8>")),
+        "{errs:?}"
+    );
+}
+
+/// Reset kind/polarity is the classic silent-miscompile shape: the gate
+/// catches it and names the `as Reset<...>` override as the explicit fix.
+#[test]
+fn test_auto_connect_reset_polarity_mismatch_errors() {
+    let src = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module RSub
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+  reg acc: UInt<8> reset rst => 0;
+  seq on clk rising
+    acc <= a;
+  end seq
+  comb
+    y = acc;
+  end comb
+end module RSub
+
+module RTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port din: in UInt<8>;
+  port dout: out UInt<8>;
+
+  wire a: UInt<8>;
+  wire y: UInt<8>;
+  comb
+    a = din;
+    dout = y;
+  end comb
+
+  inst u0: RSub
+    auto;
+  end inst u0
+end module RTop
+";
+    let errs = auto_connect_errors(src);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("type mismatch for port `rst`")
+                && e.contains("Reset<Async, Low>")
+                && e.contains("Reset<Sync, High>")
+                && e.contains("as Reset<Async, Low>")),
+        "{errs:?}"
+    );
+}
+
+/// The gate is deliberately conservative: when a width stays
+/// param-dependent it defers to the ordinary connection checks rather than
+/// guessing.
+#[test]
+fn test_auto_connect_param_dependent_width_defers() {
+    let src = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module PSub
+  param W: const = 8;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<W>;
+  port y: out UInt<W>;
+  comb
+    y = a;
+  end comb
+end module PSub
+
+module PTop
+  param W: const = 8;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port din: in UInt<W>;
+  port dout: out UInt<W>;
+
+  wire a: UInt<W>;
+  wire y: UInt<W>;
+  comb
+    a = din;
+    dout = y;
+  end comb
+
+  inst u0: PSub
+    param W = W;
+    auto;
+  end inst u0
+end module PTop
+";
+    assert!(auto_connect_errors(src).is_empty());
+    let sv = compile_to_sv(src);
+    assert!(sv.contains(".a(a)") && sv.contains(".y(y)"), "{sv}");
+}
+
+/// A whole-bus port fills as one connection and expands to every flattened
+/// bus signal, exactly as an explicit whole-bus connection would.
+#[test]
+fn test_auto_connect_whole_bus_port() {
+    let src = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+bus AcSimple
+  param DATA_W: const = 32;
+  req_valid: out Bool;
+  req_ready: in Bool;
+  req_data:  out UInt<DATA_W>;
+end bus AcSimple
+
+module BLeaf
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port m: initiator AcSimple<DATA_W=32>;
+  reg d: UInt<32> reset rst => 0;
+  comb
+    m.req_valid = 1;
+    m.req_data = d;
+  end comb
+end module BLeaf
+
+module BTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port m: initiator AcSimple<DATA_W=32>;
+
+  inst u0: BLeaf
+    auto;
+  end inst u0
+end module BTop
+";
+    let sv = compile_to_sv(src);
+    for sig in [
+        ".m_req_valid(m_req_valid)",
+        ".m_req_ready(m_req_ready)",
+        ".m_req_data(m_req_data)",
+    ] {
+        assert!(sv.contains(sig), "missing {sig} in:\n{sv}");
+    }
+}
+
+/// `ports[N]` groups on a `regfile` child fill by flattened name, and a
+/// literal count-1 group uses the `<group>_<sig>` spelling that
+/// `normalize_count1_portarray_conns` produces for explicit connections.
+#[test]
+fn test_auto_connect_port_array_groups() {
+    let src = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+regfile AcRegs
+  param NREGS: const = 8;
+  param T: type = UInt<32>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[2] read
+    addr: in UInt<3>;
+    data: out UInt<32>;
+  end ports read
+  ports[1] write
+    en:   in Bool;
+    addr: in UInt<3>;
+    data: in UInt<32>;
+  end ports write
+end regfile AcRegs
+
+module RfTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a0: in UInt<3>;
+  port wen: in Bool;
+  port d0: out UInt<32>;
+
+  wire read0_addr: UInt<3>;
+  wire read1_addr: UInt<3>;
+  wire read0_data: UInt<32>;
+  wire read1_data: UInt<32>;
+  wire write_en: Bool;
+  wire write_addr: UInt<3>;
+  wire write_data: UInt<32>;
+
+  comb
+    read0_addr = a0;
+    read1_addr = a0;
+    write_en = wen;
+    write_addr = a0;
+    write_data = 0;
+    d0 = read0_data;
+  end comb
+
+  inst u0: AcRegs
+    auto;
+  end inst u0
+end module RfTop
+";
+    let notes = auto_connect_notes(src);
+    let (inst, conns) = notes.first().expect("one auto-connected inst");
+    assert_eq!(inst, "u0");
+    // Indexed group → `read0_addr` / `read1_addr`; count-1 group → `write_en`
+    // (NOT `write0_en`).
+    for expected in [
+        "read0_addr <- read0_addr",
+        "read1_data -> read1_data",
+        "write_en <- write_en",
+        "write_data <- write_data",
+    ] {
+        assert!(
+            conns.iter().any(|c| c == expected),
+            "expected `{expected}` in {conns:?}"
+        );
+    }
+    assert!(
+        !conns.iter().any(|c| c.starts_with("write0_")),
+        "count-1 group must not use the indexed spelling: {conns:?}"
+    );
+}
+
+/// `auto;` survives `generate_for` — including the SV-genvar-preserved form,
+/// where the inst stays inside the emitted `for` block.
+#[test]
+fn test_auto_connect_inside_generate_for() {
+    let src = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module GCell
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port y: out UInt<8>;
+  reg acc: UInt<8> reset rst => 0;
+  seq on clk rising
+    if en
+      acc <= (acc + 1).trunc<8>();
+    end if
+  end seq
+  comb
+    y = acc;
+  end comb
+end module GCell
+
+module GTop
+  param N: const = 3;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port dout: out UInt<8>;
+
+  wire y: UInt<8>;
+
+  generate_for i in 0..N-1
+    inst cell_i: GCell
+      y -> y;
+      auto;
+    end inst cell_i
+  end generate_for
+
+  comb
+    dout = y;
+  end comb
+end module GTop
+";
+    let sv = compile_to_sv(src);
+    assert!(
+        sv.contains(".clk(clk)") && sv.contains(".rst(rst)") && sv.contains(".en(en)"),
+        "{sv}"
+    );
+    assert!(sv.contains(".y(y)"), "{sv}");
+}
+
+/// `auto` is a contextual keyword, not a reserved word: a port genuinely
+/// named `auto` still connects, and the directive skips it as already
+/// connected.
+#[test]
+fn test_auto_connect_auto_still_valid_identifier() {
+    let src = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module IdSub
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port auto: in Bool;
+  port y: out Bool;
+  comb
+    y = auto;
+  end comb
+end module IdSub
+
+module IdTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port dout: out Bool;
+
+  wire y: Bool;
+  comb
+    dout = y;
+  end comb
+
+  inst u0: IdSub
+    auto <- en;
+    auto;
+  end inst u0
+end module IdTop
+";
+    let sv = compile_to_sv(src);
+    assert!(sv.contains(".auto(en)"), "{sv}");
+    assert!(sv.contains(".clk(clk)") && sv.contains(".y(y)"), "{sv}");
+}
+
+#[test]
+fn test_auto_connect_duplicate_directive_rejected() {
+    let src = ac_top("    auto;\n    auto;");
+    let tokens = lexer::tokenize(&src).expect("lexer error");
+    let mut parser = Parser::new(tokens, &src);
+    let err = parser
+        .parse_source_file()
+        .expect_err("duplicate `auto;` must not parse");
+    assert!(
+        err.to_string().contains("duplicate `auto;` in inst `u0`"),
+        "{err}"
+    );
+}
+
+#[test]
+fn test_auto_connect_in_inst_for_loop_rejected() {
+    let src = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module LSub
+  port clk: in Clock<SysDomain>;
+  port ins: in Vec<UInt<8>, 2>;
+  port y: out UInt<8>;
+  comb
+    y = ins[0];
+  end comb
+end module LSub
+
+module LTop
+  port clk: in Clock<SysDomain>;
+  port y: out UInt<8>;
+  inst u0: LSub
+    for k in 0..1
+      auto;
+    end for
+  end inst u0
+end module LTop
+";
+    let tokens = lexer::tokenize(src).expect("lexer error");
+    let mut parser = Parser::new(tokens, src);
+    let err = parser
+        .parse_source_file()
+        .expect_err("`auto;` inside an inst-body for loop must not parse");
+    assert!(
+        err.to_string()
+            .contains("`auto;` is not allowed inside an inst-body `for` loop"),
+        "{err}"
+    );
+}
+
+/// A stale `auto;` that fills nothing is a warning, not silence — it means
+/// the connection list drifted past the directive.
+#[test]
+fn test_auto_connect_noop_warns() {
+    let warnings = warnings_after_full_lower(&ac_top(
+        "    clk <- clk;
+    rst <- rst;
+    en <- en;
+    a <- a;
+    y -> y;
+    auto;",
+    ));
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("`auto;` in inst `u0` filled no ports")),
+        "{warnings:?}"
+    );
 }

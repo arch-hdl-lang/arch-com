@@ -61,6 +61,12 @@ pub use threads::{lower_threads, lower_threads_with_opts, ThreadLowerOpts};
 // resolving unchanged; `lower_tlm_connects` has no external caller —
 // bumped `fn` → `pub(super) fn` and re-imported as a plain `use` so this
 // file's existing bare call site is untouched.
+// `auto;` auto-connect expansion — rewrites the directive into ordinary
+// inst connections right after `elaborate()`, so every downstream pass sees
+// a fully explicit connection set. See `auto_connect.rs` for the rules.
+mod auto_connect;
+pub use auto_connect::{expand_auto_connect, AutoConnectNote};
+
 mod tlm;
 use tlm::lower_tlm_connects;
 pub use tlm::{lower_tlm_initiator_calls, lower_tlm_target_threads};
@@ -1932,6 +1938,10 @@ pub(crate) fn subst_inst(inst: &InstDecl, var: &str, val: i64) -> InstDecl {
             .iter()
             .map(|fl| subst_inst_for_loop(fl, var, val))
             .collect(),
+        // `auto;` carries through unrolling: every unrolled copy of the inst
+        // auto-connects against the parent scope independently. The directive
+        // has no loop-var content to substitute.
+        auto_connect: inst.auto_connect,
         span: inst.span,
     }
 }
