@@ -3573,20 +3573,33 @@ int main() {
     );
 }
 
-/// `UE4M3` is a scalar type today; using it as a block scale is refused with
-/// a message that says why (its value is not a power of two) and where the
-/// work is tracked.
+/// A `UE4M3`-scaled block is a first-class type: declarable as a port, and
+/// assignable as one packed word.
+///
+/// This replaces `fp_ue4m3_not_yet_a_block_scale`, which pinned the phase-5a
+/// refusal ("not yet usable as a block scale ... arch#905"). Phase 5b lifted
+/// it — see `fp_nvfp4_scale_accepted_but_fp8e4m3_is_not` for the acceptance
+/// path and the `FP8E4M3` confusion that is still an error.
 #[test]
-fn fp_ue4m3_not_yet_a_block_scale() {
+fn fp_ue4m3_block_scale_is_a_first_class_type() {
     let src = r#"module Nvfp4Blk
   port b: in ScaledVec<FP4E2M1, 16, UE4M3>;
   port o: out ScaledVec<FP4E2M1, 16, UE4M3>;
   comb o = b; end comb
 end module Nvfp4Blk
 "#;
-    let err = check_err(src, "Nvfp4Blk.arch");
+    let td = tempfile::tempdir().expect("tempdir");
+    let path = td.path().join("Nvfp4Blk.arch");
+    std::fs::write(&path, src).unwrap();
+    let out = arch()
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run arch check");
     assert!(
-        err.contains("not yet usable as a block scale") && err.contains("905"),
-        "the refusal must name the follow-up:\n{err}"
+        out.status.success(),
+        "a UE4M3-scaled block must be a usable port type:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
     );
 }
