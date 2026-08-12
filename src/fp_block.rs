@@ -44,9 +44,29 @@ use crate::fp_format::{by_type_expr, FpFormatId};
 use std::fmt::Write as _;
 
 /// The scale format of a block. One variant today; `UE4M3` (NVFP4) joins it
-/// in phase 5. An enum rather than a bool so that addition forces every
-/// `match` here to be revisited — the shared-exponent arithmetic below is
-/// specific to E8M0's "same bias as FP32, no zero, `0xFF` is NaN" shape.
+/// in phase 5b (arch#905).
+///
+/// **Everything the lowering knows about a scale lives behind this enum.**
+/// That is not decoration — it is the mechanism that makes adding a variant
+/// safe. The lowerings below previously named `arch_f32_to_e8m0` and friends
+/// as string literals, so adding `Ue4m3` compiled with **zero errors** and
+/// would have emitted E8M0 scale decoding for an NVFP4 block: no diagnostic,
+/// no compile error, and both backends wrong identically, so the SV↔sim
+/// differential gate would not have caught it either (the same failure mode
+/// as arch#904). Every method here is an exhaustive `match`, so a second
+/// variant now fails to compile at each genuinely scale-specific decision.
+///
+/// The decisions that are E8M0-specific — and therefore each need a real
+/// answer for `UE4M3`, not a copied one:
+///
+/// - **the NaN code** (`0xFF` here; `UE4M3`'s is `0x7F`, and `0xFF` would
+///   additionally set the padding bit the format requires to be zero);
+/// - **the "smallest scale" code** used for an all-zero block (E8M0 has no
+///   zero, so `0x00` is the minimum scale 2^-127; `UE4M3`'s `0x00` IS zero);
+/// - **the reciprocal**, exact here because negating a power-of-two exponent
+///   is exact, with no analogue for a scale carrying a mantissa (arch#905);
+/// - **deriving the scale from the block maximum**, which here is exponent
+///   arithmetic on the code itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BlockScale {
     E8m0,
@@ -61,6 +81,66 @@ impl BlockScale {
     fn width(self) -> u32 {
         match self {
             BlockScale::E8m0 => 8,
+        }
+    }
+
+    /// IR helper widening a scale code to FP32.
+    fn widen_fn(self) -> &'static str {
+        match self {
+            BlockScale::E8m0 => "arch_e8m0_to_f32",
+        }
+    }
+
+    /// IR helper narrowing an FP32 to a scale code.
+    fn narrow_fn(self) -> &'static str {
+        match self {
+            BlockScale::E8m0 => "arch_f32_to_e8m0",
+        }
+    }
+
+    /// The code that marks the whole block NaN.
+    fn nan_code(self) -> u32 {
+        match self {
+            BlockScale::E8m0 => 0xFF,
+        }
+    }
+
+    /// The code an all-zero block gets. E8M0 has no zero encoding, so this is
+    /// its *minimum scale* (2^-127) rather than a zero — the element plane is
+    /// what makes the block zero.
+    fn zero_block_code(self) -> u32 {
+        match self {
+            BlockScale::E8m0 => 0x00,
+        }
+    }
+
+    /// The largest code that is still a finite scale — the clamp for a
+    /// policy that rounds the scale up.
+    fn max_finite_code(self) -> u32 {
+        match self {
+            BlockScale::E8m0 => 0xFE,
+        }
+    }
+
+    /// SystemVerilog expression for the RECIPROCAL of the scale with code
+    /// `code`.
+    ///
+    /// Exact for E8M0: `2^-(c-127) == 2^((254-c)-127)`, so the reciprocal is
+    /// just another scale code and the element narrow downstream rounds
+    /// exactly once. **A mantissa-bearing scale has no such identity** —
+    /// arch#905 measured that substituting `v * fl(1/X)` for `fl(v/X)`
+    /// changes the quantized code on 4.76% of tie-aligned inputs — so
+    /// `UE4M3` must not reuse this shape.
+    fn sv_reciprocal(self, code: &str) -> String {
+        match self {
+            BlockScale::E8m0 => format!("{}(8'd254 - {code})", self.widen_fn()),
+        }
+    }
+
+    /// C++ twin of [`BlockScale::sv_reciprocal`].
+    fn cpp_reciprocal(self, code: &str) -> String {
+        match self {
+            BlockScale::E8m0 => format!("_{}((uint8_t)(254u - {code}))", self.widen_fn()),
         }
     }
 }
@@ -349,8 +429,9 @@ fn sv_dot(s: BlockShape) -> String {
     // here, which is the block value rule.
     let _ = writeln!(
         o,
-        "  {name} = arch_f32_mul(arch_f32_mul(t{last}, arch_e8m0_to_f32(a[{hi}:{lo}])), \
-         arch_e8m0_to_f32(b[{hi}:{lo}]));",
+        "  {name} = arch_f32_mul(arch_f32_mul(t{last}, {w}(a[{hi}:{lo}])), \
+         {w}(b[{hi}:{lo}]));",
+        w = s.scale.widen_fn(),
         hi = bw - 1,
         lo = bw - sw
     );
@@ -403,20 +484,35 @@ fn sv_quantize(s: BlockShape, policy: ScalePolicy, round: RoundMode) -> String {
     // 2. Non-finite anywhere in the block => NaN scale, element bits are
     //    don't-care by the block value rule and are emitted as zero.
     let _ = writeln!(o, "  if (amax >= 32'h7F800000) begin");
-    let _ = writeln!(o, "    r[{}:{}] = 8'hFF;", bw - 1, bw - sw);
+    let _ = writeln!(
+        o,
+        "    r[{}:{}] = 8'h{:02X};",
+        bw - 1,
+        bw - sw,
+        s.scale.nan_code()
+    );
     // 3. All-zero block => minimum scale, zero elements.
     let _ = writeln!(o, "  end else if (amax == 32'h0) begin");
-    let _ = writeln!(o, "    r[{}:{}] = 8'h00;", bw - 1, bw - sw);
+    let _ = writeln!(
+        o,
+        "    r[{}:{}] = 8'h{:02X};",
+        bw - 1,
+        bw - sw,
+        s.scale.zero_block_code()
+    );
     let _ = writeln!(o, "  end else begin");
-    let _ = writeln!(o, "    ecode = arch_f32_to_e8m0(amax);");
+    let _ = writeln!(o, "    ecode = {}(amax);", s.scale.narrow_fn());
     if policy == ScalePolicy::CeilPow2 {
         // Round the scale UP when amax is not already an exact power of two.
-        // `arch_e8m0_to_f32(ecode)` is the floor power of two as an f32 bit
+        // Widening the code gives the floor power of two as an f32 bit
         // pattern; both operands are finite and positive, so the unsigned
-        // compare is the numeric compare. `0xFE` is the largest non-NaN code.
+        // compare is the numeric compare. The clamp is the format's largest
+        // finite code — bumping past it would land on NaN.
         let _ = writeln!(
             o,
-            "    if (amax > arch_e8m0_to_f32(ecode) && ecode != 8'hFE) ecode = ecode + 8'h01;"
+            "    if (amax > {}(ecode) && ecode != 8'h{:02X}) ecode = ecode + 8'h01;",
+            s.scale.widen_fn(),
+            s.scale.max_finite_code()
         );
     }
     // 4. Shift the shared exponent down so the block maximum normalizes into
@@ -428,7 +524,7 @@ fn sv_quantize(s: BlockShape, policy: ScalePolicy, round: RoundMode) -> String {
     );
     // 5. Multiply by the reciprocal scale, itself an E8M0 code, so the
     //    scaling is exact and the narrow below rounds exactly once.
-    let _ = writeln!(o, "    inv = arch_e8m0_to_f32(8'd254 - code);");
+    let _ = writeln!(o, "    inv = {};", s.scale.sv_reciprocal("code"));
     let _ = writeln!(o, "    for (int unsigned i = 0; i < {n}; i = i + 1) begin");
     let _ = writeln!(
         o,
@@ -461,7 +557,13 @@ fn sv_dequantize(s: BlockShape) -> String {
     // A NaN scale (code 0xFF) widens to a NaN f32, so every product below is
     // NaN and the element bits are ignored: the block value rule falls out of
     // the multiply rather than needing a branch.
-    let _ = writeln!(o, "  x = arch_e8m0_to_f32(b[{}:{}]);", bw - 1, bw - sw);
+    let _ = writeln!(
+        o,
+        "  x = {}(b[{}:{}]);",
+        s.scale.widen_fn(),
+        bw - 1,
+        bw - sw
+    );
     let _ = writeln!(o, "  r = {vw}'h0;");
     let _ = writeln!(o, "  for (int unsigned i = 0; i < {n}; i = i + 1) begin");
     let _ = writeln!(o, "    w = arch_{tag}_to_f32(b[i*{ew} +: {ew}]);");
@@ -609,12 +711,14 @@ fn cpp_dot(s: BlockShape) -> String {
     // Scales one at a time — see the note in sv_dot.
     let _ = writeln!(
         o,
-        "  uint32_t xa = _arch_e8m0_to_f32((uint8_t)_arch_blk_ext(_wa, {lo}u, {sw}u));",
+        "  uint32_t xa = _{w}((uint8_t)_arch_blk_ext(_wa, {lo}u, {sw}u));",
+        w = s.scale.widen_fn(),
         lo = bw - sw
     );
     let _ = writeln!(
         o,
-        "  uint32_t xb = _arch_e8m0_to_f32((uint8_t)_arch_blk_ext(_wb, {lo}u, {sw}u));",
+        "  uint32_t xb = _{w}((uint8_t)_arch_blk_ext(_wb, {lo}u, {sw}u));",
+        w = s.scale.widen_fn(),
         lo = bw - sw
     );
     let _ = writeln!(o, "  return _arch_f32_mul(_arch_f32_mul(t{last}, xa), xb);");
@@ -657,25 +761,34 @@ fn cpp_quantize(s: BlockShape, policy: ScalePolicy, round: RoundMode) -> String 
     let _ = writeln!(o, "    if (mag > amax) amax = mag;");
     let _ = writeln!(o, "  }}");
     let _ = writeln!(o, "  if (amax >= 0x7F800000u) {{");
-    let _ = writeln!(o, "    _arch_blk_ins(_w, {}u, {sw}u, 0xFFu);", bw - sw);
+    let _ = writeln!(
+        o,
+        "    _arch_blk_ins(_w, {}u, {sw}u, 0x{:02X}u);",
+        bw - sw,
+        s.scale.nan_code()
+    );
     let _ = writeln!(o, "  }} else if (amax == 0u) {{");
-    let _ = writeln!(o, "    _arch_blk_ins(_w, {}u, {sw}u, 0x00u);", bw - sw);
+    let _ = writeln!(
+        o,
+        "    _arch_blk_ins(_w, {}u, {sw}u, 0x{:02X}u);",
+        bw - sw,
+        s.scale.zero_block_code()
+    );
     let _ = writeln!(o, "  }} else {{");
-    let _ = writeln!(o, "    uint8_t ecode = _arch_f32_to_e8m0(amax);");
+    let _ = writeln!(o, "    uint8_t ecode = _{}(amax);", s.scale.narrow_fn());
     if policy == ScalePolicy::CeilPow2 {
         let _ = writeln!(
             o,
-            "    if (amax > _arch_e8m0_to_f32(ecode) && ecode != 0xFEu) ecode = (uint8_t)(ecode + 1u);"
+            "    if (amax > _{}(ecode) && ecode != 0x{:02X}u) ecode = (uint8_t)(ecode + 1u);",
+            s.scale.widen_fn(),
+            s.scale.max_finite_code()
         );
     }
     let _ = writeln!(
         o,
         "    uint8_t code = (ecode > {emax}u) ? (uint8_t)(ecode - {emax}u) : (uint8_t)0u;"
     );
-    let _ = writeln!(
-        o,
-        "    uint32_t inv = _arch_e8m0_to_f32((uint8_t)(254u - code));"
-    );
+    let _ = writeln!(o, "    uint32_t inv = {};", s.scale.cpp_reciprocal("code"));
     let _ = writeln!(o, "    for (unsigned i = 0; i < {n}u; ++i) {{");
     let _ = writeln!(
         o,
@@ -713,7 +826,8 @@ fn cpp_dequantize(s: BlockShape) -> String {
     let _ = writeln!(o, "  _arch_blk_get(_w, {nw}, b);");
     let _ = writeln!(
         o,
-        "  uint32_t x = _arch_e8m0_to_f32((uint8_t)_arch_blk_ext(_w, {}u, {sw}u));",
+        "  uint32_t x = _{}((uint8_t)_arch_blk_ext(_w, {}u, {sw}u));",
+        s.scale.widen_fn(),
         bw - sw
     );
     let _ = writeln!(o, "  for (unsigned i = 0; i < {n}u; ++i) {{");
@@ -888,6 +1002,82 @@ mod tests {
                 }
                 // …and it must route through the overloaded accessors.
                 assert!(cpp.contains("_arch_blk_get(") || cpp.contains("_arch_blk_put("));
+            }
+        }
+    }
+
+    /// **The invariant this refactor exists to create**: the scale helper
+    /// names appear only inside `impl BlockScale`, never in a lowering.
+    ///
+    /// Before, they were string literals in the emitters, so adding a
+    /// `BlockScale` variant compiled with ZERO errors and would have emitted
+    /// E8M0 scale decoding for an NVFP4 block — no diagnostic, and both
+    /// backends wrong identically, so the SV↔sim differential gate would not
+    /// have caught it either (arch#904's shape). Adding a variant now
+    /// produces nine compile errors, one per scale-specific decision.
+    ///
+    /// This is deliberately a **source** check. The obvious version — strip
+    /// the names the enum supplies from the emitted text and look for
+    /// leftovers — is vacuous, because the stripped string *is* the literal
+    /// a leak would use, so it removes the very thing it is hunting. With one
+    /// variant, only the source can distinguish "came from the enum" from
+    /// "hardcoded the same characters". Verified to fail when a literal is
+    /// reintroduced.
+    #[test]
+    fn fp_block_scale_helpers_named_only_in_the_enum() {
+        let src = include_str!("fp_block.rs");
+        let impl_start = src
+            .find("impl BlockScale {")
+            .expect("impl BlockScale must exist");
+        // Walk to the matching brace so the region is exact rather than
+        // guessed from the next `}` at column 0.
+        let mut depth = 0usize;
+        let mut impl_end = impl_start;
+        for (i, c) in src[impl_start..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        impl_end = impl_start + i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            impl_end > impl_start,
+            "unbalanced braces in impl BlockScale"
+        );
+
+        // Stop at the test module: this test names the helpers in its own
+        // literal, and the lowering is what the invariant is about.
+        let scan_end = src.find("#[cfg(test)]").unwrap_or(src.len());
+        for (line_no, line) in src[..scan_end].lines().enumerate() {
+            let t = line.trim_start();
+            // Prose may name the helpers freely — that is how the reasoning
+            // gets recorded.
+            if t.starts_with("//") {
+                continue;
+            }
+            for helper in ["arch_e8m0_to_f32", "arch_f32_to_e8m0"] {
+                if !line.contains(helper) {
+                    continue;
+                }
+                let off = src[..scan_end]
+                    .lines()
+                    .take(line_no)
+                    .map(|l| l.len() + 1)
+                    .sum::<usize>();
+                assert!(
+                    off > impl_start && off < impl_end,
+                    "src/fp_block.rs:{}: names `{helper}` outside `impl BlockScale`.\n\
+                     Route it through `BlockScale::widen_fn()` / `narrow_fn()`, or a \
+                     second scale variant silently inherits E8M0's helpers (arch#905).\n\
+                     offending line: {line}",
+                    line_no + 1
+                );
             }
         }
     }
