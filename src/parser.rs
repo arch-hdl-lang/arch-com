@@ -3702,10 +3702,30 @@ impl Parser {
         let mut param_assigns = Vec::new();
         let mut connections = Vec::new();
         let mut for_loops = Vec::new();
+        let mut auto_connect: Option<Span> = None;
 
         while !self.check_end_inst() {
             if self.check(TokenKind::For) {
                 for_loops.push(self.parse_inst_for_loop()?);
+                continue;
+            }
+            // `auto;` — auto-connect directive. Recognised contextually
+            // (`auto` is NOT a lexer keyword), so a port genuinely named
+            // `auto` still parses as a connection: the disambiguator is the
+            // token that follows, `;` for the directive vs `<-`/`->` for a
+            // connection.
+            if self.check_ident("auto")
+                && matches!(self.peek_kind_at(self.pos + 1), Some(TokenKind::Semi))
+            {
+                let span = self.advance().span; // consume `auto`
+                self.advance(); // consume `;`
+                if auto_connect.is_some() {
+                    return Err(CompileError::general(
+                        &format!("duplicate `auto;` in inst `{}`", name.name),
+                        span,
+                    ));
+                }
+                auto_connect = Some(span);
                 continue;
             }
             if self.check_param() {
@@ -3885,6 +3905,7 @@ impl Parser {
             param_assigns,
             connections,
             for_loops,
+            auto_connect,
         })
     }
 
@@ -3892,6 +3913,18 @@ impl Parser {
     /// Used inside inst body for-loops.
     fn parse_inst_connection(&mut self) -> Result<Connection, CompileError> {
         let cstart = self.peek_span();
+        // `auto;` is an inst-body directive, not a connection — reject it
+        // inside a wiring `for` loop with a message that says so, instead of
+        // the bare "expected <- or ->" the ident path would produce.
+        if self.check_ident("auto")
+            && matches!(self.peek_kind_at(self.pos + 1), Some(TokenKind::Semi))
+        {
+            return Err(CompileError::general(
+                "`auto;` is not allowed inside an inst-body `for` loop — put it \
+                 directly in the inst body (it applies to the whole inst)",
+                cstart,
+            ));
+        }
         let mut port_name = self.expect_ident()?;
         if self.eat(TokenKind::LBracket) {
             // Inside an inst-body for-loop, the index can be either a literal
