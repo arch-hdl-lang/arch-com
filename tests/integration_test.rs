@@ -36491,3 +36491,406 @@ fn test_adjacent_unary_behavioral_equivalence_verilator_and_iverilog() {
         );
     }
 }
+
+// ---------------------------------------------------------------------
+// arch#827 P4.1 — the compiler's own `.sext<N>()` expansion bypassed the
+// base-hoist that user-written slices get (#811/#813 P1), reintroducing
+// exactly the non-portable forms those fixed: a `Concat` receiver
+// (B2, `signed({a, b}).sext<32>()`) and a non-constant-indexed `Index`
+// receiver (B1, `din[sel].sext<12>()`). `.zext`/`.trunc`/`.resize` never
+// apply a further select to their receiver (just a size-cast wrapper
+// around the whole expression, which composes with anything), so only
+// `sext` needed a fix.
+// ---------------------------------------------------------------------
+
+/// Emitted-shape check (no simulator required, so it runs on the PR gate):
+/// a `.sext<N>()` receiver that is a `Concat`, `FunctionCall`, or
+/// `MethodCall`, or a non-constant-indexed `Index`, must be bound to an
+/// `arch_idx_base_<n>` temp before the sign-bit index / whole-value reuse;
+/// a constant-indexed `Index` must stay bare (hoisting it would be
+/// pointless noise on every ordinary `.sext()` call).
+#[test]
+fn test_sext_receiver_hoists() {
+    let cases: [(&str, &[&str], bool); 5] = [
+        (
+            "module SextIdxRuntimeHoist\n  port sel: in UInt<2>;\n  port din: in Vec<SInt<8>, 4>;\n  port dout: out SInt<12>;\n  comb\n    dout = din[sel].sext<12>();\n  end comb\nend module SextIdxRuntimeHoist\n",
+            &["assign arch_idx_base_0 = din[sel];", "arch_idx_base_0[8-1]", "}, arch_idx_base_0}"],
+            true,
+        ),
+        (
+            "module SextIdxConstNoHoist\n  port din: in Vec<SInt<8>, 4>;\n  port dout: out SInt<12>;\n  comb\n    dout = din[2].sext<12>();\n  end comb\nend module SextIdxConstNoHoist\n",
+            &["din[2][8-1]", "}, din[2]}"],
+            false,
+        ),
+        (
+            "module SextConcatHoistShape\n  port a: in UInt<6>;\n  port b: in UInt<6>;\n  port y: out SInt<32>;\n  comb\n    y = signed({a, b}).sext<32>();\n  end comb\nend module SextConcatHoistShape\n",
+            &["assign arch_idx_base_0 = {a, b};", "arch_idx_base_0[12-1]", "}, arch_idx_base_0}"],
+            true,
+        ),
+        (
+            "function Ident8(v: UInt<8>) -> UInt<8>\n  return v;\nend function Ident8\n\nmodule SextFuncCallHoistShape\n  port a: in UInt<8>;\n  port y: out SInt<12>;\n  comb\n    y = signed(Ident8(a)).sext<12>();\n  end comb\nend module SextFuncCallHoistShape\n",
+            &["assign arch_idx_base_0 = Ident8(a);"],
+            true,
+        ),
+        // A `pipe_reg` `@N` read is atomic: codegen's `LatencyAt` arm
+        // renders it to a bare name, so it needs no hoist. Hoisting it
+        // anyway is not merely redundant — the temp's declared width is
+        // `$bits(<that bare name>)`, and `logic [$bits(x)-1:0] t;`
+        // segfaults Icarus 12.0 outright (verified in isolation, exit
+        // 139; an Icarus `$bits`-in-declaration-width bug, unrelated to
+        // sext). Guards the `_ => false` fallthrough that let it hoist.
+        (
+            "module SextPipeRegNoHoist\n  port clk: in Clock<SysDomain>;\n  port rst: in Reset<Sync, High>;\n  port x:   in  SInt<16>;\n  port y:   out SInt<48>;\n\n  default seq on clk rising;\n\n  pipe_reg x_pipe: x stages 2;\n\n  comb\n    y = x_pipe@1.sext<48>();\n  end comb\nend module SextPipeRegNoHoist\n",
+            &["x_pipe_stg1[$bits(x_pipe_stg1)-1]", "}, x_pipe_stg1}"],
+            false,
+        ),
+    ];
+    for (source, expected_fragments, expect_hoist) in cases {
+        let sv = compile_to_sv(source);
+        if expect_hoist {
+            for frag in expected_fragments {
+                assert!(
+                    sv.contains(frag),
+                    "expected `{frag}` in hoisted sext output, got:\n{sv}"
+                );
+            }
+        } else {
+            assert!(
+                !sv.contains("arch_idx_base"),
+                "constant-indexed sext receiver should not hoist, got:\n{sv}"
+            );
+            for frag in expected_fragments {
+                assert!(
+                    sv.contains(frag),
+                    "expected bare `{frag}` in non-hoisted sext output, got:\n{sv}"
+                );
+            }
+        }
+    }
+}
+
+/// Dual-simulator behavioral check (arch#827 B1): the hoisted `.sext<N>()`
+/// receiver must not just *compile* on both simulators, it must agree
+/// with ARCH's own sign-extension semantics on actual values, for both a
+/// runtime-indexed `Vec` element and a constant-indexed one. Skips
+/// gracefully if neither simulator is installed.
+#[test]
+fn test_sext_index_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#827 B1 sext-index hoist dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("SextIndexHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/SextIndexHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build SextIndexHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("sext_index.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_sext_index_hoist.sv")
+            .output()
+            .expect("iverilog compile SextIndexHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#827 B1 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog SextIndexHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm sext-index semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_sext_index");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("SextIndexHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_sext_index_hoist_verilator.cpp")
+            .output()
+            .expect("verilate SextIndexHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VSextIndexHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator SextIndexHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm sext-index semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+/// Dual-simulator behavioral check (arch#827 B2): the hoisted `.sext<N>()`
+/// `Concat` receiver must not just *compile* on both simulators, it must
+/// agree with ARCH's own sign-extension semantics on actual values. Skips
+/// gracefully if neither simulator is installed.
+#[test]
+fn test_sext_concat_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#827 B2 sext-concat hoist dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("SextConcatHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/SextConcatHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build SextConcatHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("sext_concat.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_sext_concat_hoist.sv")
+            .output()
+            .expect("iverilog compile SextConcatHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#827 B2 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog SextConcatHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm sext-concat semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_sext_concat");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("SextConcatHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_sext_concat_hoist_verilator.cpp")
+            .output()
+            .expect("verilate SextConcatHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VSextConcatHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator SextConcatHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm sext-concat semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+/// Dual-simulator behavioral check (arch#827 P4.1 loop-var residual): a
+/// `.sext<N>()` receiver referencing a live runtime `for`-loop iterator
+/// still hoists — via the same arch#861 in-loop declare/assign split the
+/// `ExprKind::Index` codegen arm and `hoist_slice_base` already use — and
+/// still computes the same values as the non-loop cases. This is *not* a
+/// bail-to-bare-emission fallback: the receiver is never emitted
+/// un-hoisted, just placed differently (declaration at the loop top,
+/// assignment in place) because a module-scope temp can't see the
+/// loop-local iterator. Skips gracefully if neither simulator is
+/// installed.
+#[test]
+fn test_sext_loop_var_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#827 P4.1 sext loop-var hoist dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("SextLoopVarHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/SextLoopVarHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build SextLoopVarHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("sext_loop_var.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-gsupported-assertions")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_sext_loop_var_hoist.sv")
+            .output()
+            .expect("iverilog compile SextLoopVarHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#827 P4.1 loop-var regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog SextLoopVarHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm sext loop-var semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_sext_loop_var");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("SextLoopVarHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_sext_loop_var_hoist_verilator.cpp")
+            .output()
+            .expect("verilate SextLoopVarHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VSextLoopVarHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator SextLoopVarHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm sext loop-var semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}

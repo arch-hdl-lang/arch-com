@@ -117,6 +117,26 @@ impl<'a> Codegen<'a> {
                         // `infer_sv_width_str`; measure the emitted form.
                         MethodCallHost::Pipeline => format!("$bits({rb})"),
                     };
+                    // arch#827 B1/B2: this expansion references the
+                    // receiver twice — once indexed at its own top bit,
+                    // once whole — which does not compose bare for a
+                    // `Concat`/`Repeat`/`FunctionCall`/`MethodCall` base
+                    // (`signed({a, b}).sext<32>()`, B2) or a
+                    // non-constant-indexed `Index` base (`din[sel].sext<12>()`,
+                    // B1). Bind it to a named temp first, the same
+                    // "bind to a `let`" fix `hoist_slice_base` applies to a
+                    // non-portable `BitSlice`/`PartSelect` base — see
+                    // `is_atomic_sext_receiver` for exactly which bases are
+                    // safe bare and why this can't just reuse that helper
+                    // or `is_atomic_index_base`.
+                    let rb = if Self::is_atomic_sext_receiver(recv) {
+                        rb
+                    } else {
+                        let in_loop = self.base_references_live_loop_var(recv);
+                        let tmp = format!("arch_idx_base_{}", self.next_index_hoist_id());
+                        self.push_hoist_temp_in_loop(sw.clone(), tmp.clone(), rb, in_loop);
+                        tmp
+                    };
                     format!("{{{{({w}-{sw}){{{rb}[{sw}-1]}}}}, {rb}}}")
                 } else {
                     b

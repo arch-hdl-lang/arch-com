@@ -6854,6 +6854,72 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// True when `.sext<N>()`'s replicand (`base`, already run through
+    /// `unwrap_reinterpret_cast`) is safe to reference bare — twice, once
+    /// indexed at its own top bit (`base[sw-1]`) and once whole — in the
+    /// hand-emitted `{{(w-sw){base[sw-1]}}, base}` expansion (arch#827
+    /// B1/B2). `sext`'s emitter builds that string directly rather than
+    /// going through `hoist_slice_base`/the `ExprKind::Index` codegen arm,
+    /// so it needs its own atomicity check rather than inheriting theirs
+    /// automatically — see below for why the two existing checks
+    /// (`is_bare_selectable_slice_base`, `is_atomic_index_base`) are each
+    /// close but not quite right here.
+    ///
+    /// `Concat`/`Repeat`/`FunctionCall`/`MethodCall` bases are never atomic
+    /// — same reasoning `hoist_slice_base` documents for `BitSlice`/
+    /// `PartSelect`: none of them compose with a further `[...]` select on
+    /// either frontend.
+    ///
+    /// A non-constant-indexed `Index` (`din[sel]`) is *also* not atomic
+    /// here, even though both `is_bare_selectable_slice_base` and
+    /// `is_atomic_index_base` classify bare `Index` as safe. Verified
+    /// against raw hand-written SV, independent of any ARCH codegen path:
+    /// `din[sel]` (a dynamic/indexed select into a packed multi-dim array,
+    /// which is how a `Vec` element read with a runtime index lowers)
+    /// does not compose with a further select layered on top — Icarus
+    /// 12.0 rejects `din[sel][7]` and `din[sel][7:4]` identically
+    /// ("reference... not allowed in a constant expression"), and binding
+    /// `din[sel]` to a plain temp first (`logic [7:0] t = din[sel]; ...
+    /// t[7] ...`) fixes both. A *constant*-indexed `Index` (`din[2]`) is
+    /// fine bare — it folds to a plain element reference.
+    ///
+    /// This predicate is deliberately scoped to `sext`'s own hand-rolled
+    /// emission rather than folded into `is_bare_selectable_slice_base`/
+    /// `is_atomic_index_base`: those two are also reached from the bare
+    /// `ExprKind::Index` codegen arm and `hoist_slice_base` respectively,
+    /// used far beyond synthesized sext/zext, and widening them to also
+    /// catch a non-const-indexed `Index` base is a separate, wider-blast-
+    /// radius fix — `din[sel][7]`/`din[sel][7:4]` written directly by a
+    /// user hits the identical bug today, tracked as a follow-up rather
+    /// than folded into this one.
+    ///
+    /// `ExprKind::LatencyAt(inner, n)` (`pipe_reg` `@N` read, e.g.
+    /// `x_pipe@1`) is atomic when `inner` is itself a plain identifier:
+    /// codegen's own `LatencyAt` arm (below) renders that shape to a bare
+    /// name — the pipe_reg's source, its final flop, or a synthesized
+    /// `{name}_stg{n}` — never anything requiring a select. Found via a
+    /// real crash: `tests/cvdp/iir_filter.arch`'s `x_pipe@1.sext<48>()`
+    /// has `LatencyAt` fall through this predicate's `_ => false` arm,
+    /// hoisting it into `logic [$bits(x_pipe_stg1)-1:0] arch_idx_base_1;`
+    /// — a `$bits(<plain identifier>)` *declaration* width, which
+    /// segfaults Icarus 12.0 outright (reproduced in isolation with just
+    /// `logic [$bits(x)-1:0] t; assign t = x;`, independent of sext or
+    /// pipe_reg — a `$bits()`-in-declaration-width crash, not a `sext`
+    /// bug). The pre-fix code never hit this because it never hoisted
+    /// `LatencyAt` at all; avoiding the hoist here avoids the crash the
+    /// same way. `n` doesn't need checking — it's already a parsed `u32`,
+    /// not a runtime expression, so there is no non-constant case.
+    fn is_atomic_sext_receiver(base: &Expr) -> bool {
+        match &base.kind {
+            ExprKind::Ident(_) | ExprKind::SynthIdent(_, _) | ExprKind::FieldAccess(_, _) => true,
+            ExprKind::Index(_, idx) => literal_expr_u64(idx).is_some(),
+            ExprKind::LatencyAt(inner, _) => {
+                matches!(inner.kind, ExprKind::Ident(_) | ExprKind::SynthIdent(_, _))
+            }
+            _ => false,
+        }
+    }
+
     /// True if `e` contains a bare `Ident` whose name is in `names`.
     /// Conservative and shallow-recursive (walks every expression kind that
     /// can appear inside an arithmetic/logical sub-expression) — used only to
@@ -6920,12 +6986,16 @@ impl<'a> Codegen<'a> {
     /// `index_hoist_temps` / `HoistScope`). Pushed in generation order,
     /// which is also dependency order: a nested hoist is created while the
     /// outer hoist's RHS is being emitted, so it lands ahead of it.
-    fn push_hoist_temp(&self, width: String, name: String, rhs: String) {
-        self.push_hoist_temp_in_loop(width, name, rhs, false);
-    }
-
-    /// `push_hoist_temp` for a temp whose RHS references a live runtime
-    /// `for`-loop iterator — see `HoistTemp::in_loop` (arch#861).
+    ///
+    /// `in_loop` is `true` when `rhs` references a live runtime `for`-loop
+    /// iterator — see `HoistTemp::in_loop` (arch#861). There used to be a
+    /// `push_hoist_temp` convenience wrapper that hardcoded `in_loop:
+    /// false`; arch#861 retrofitted every existing hoist site (the
+    /// `Index` arm, `hoist_slice_base_in`) to compute a real `in_loop`
+    /// instead, and every hoist site added since (this one included) needs
+    /// the same check, so nothing has called the always-false wrapper in
+    /// a long time — removed as dead code rather than kept around as an
+    /// easy-to-reach-for-but-wrong shortcut for a future hoist site.
     fn push_hoist_temp_in_loop(&self, width: String, name: String, rhs: String, in_loop: bool) {
         self.index_hoist_temps.borrow_mut().push(HoistTemp {
             width,
