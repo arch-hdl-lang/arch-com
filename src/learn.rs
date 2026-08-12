@@ -205,8 +205,8 @@ fn file_age_secs(p: &std::path::Path) -> Option<u64> {
 /// pending record; a false positive costs a user their capture.
 fn is_unmatchable_path(file_path: &str) -> bool {
     const TEMP_MARKERS: [&str; 3] = [
-        "/var/folders/",           // macOS per-user $TMPDIR
-        "/tmp/",                   // POSIX (and macOS /private/tmp)
+        "/var/folders/",            // macOS per-user $TMPDIR
+        "/tmp/",                    // POSIX (and macOS /private/tmp)
         "\\AppData\\Local\\Temp\\", // Windows
     ];
     if TEMP_MARKERS.iter().any(|m| file_path.contains(m)) {
