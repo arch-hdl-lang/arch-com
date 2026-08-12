@@ -159,6 +159,122 @@ pub fn clear_store() -> std::io::Result<()> {
     Ok(())
 }
 
+/// How long an unmatched pending failure stays eligible for pairing, in
+/// seconds. Override with `ARCH_LEARN_PENDING_TTL_DAYS=<n>`; default 7 days.
+/// `0` disables expiry entirely (the pre-fix behaviour — not recommended).
+pub fn pending_ttl_secs() -> u64 {
+    let days = std::env::var("ARCH_LEARN_PENDING_TTL_DAYS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(7);
+    days.saturating_mul(24 * 60 * 60)
+}
+
+/// Age of a file in seconds, from its mtime. `None` if unavailable or if the
+/// mtime is in the future (clock skew — treat as fresh rather than expire it).
+fn file_age_secs(p: &std::path::Path) -> Option<u64> {
+    let modified = fs::metadata(p).ok()?.modified().ok()?;
+    std::time::SystemTime::now()
+        .duration_since(modified)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
+/// True when a pending record for `file_path` could never be matched by a
+/// later success, because the path itself will not exist again.
+///
+/// The failure→fix pairing is keyed on the absolute source path, so it only
+/// works for an edit-retry loop over a persistent file. A path under a
+/// temp dir is unique per run by construction: the record is dead on
+/// arrival, and — before the TTL below — immortal. Batch producers (the
+/// `cargo test` suites, the portability sweep, nightly harnesses, agent
+/// scratch dirs) run almost entirely in such paths; they accounted for
+/// ~100% of a 163 MB / 31,985-file backlog observed in the wild.
+///
+/// Matched against `std::env::temp_dir()` *and* by shape, because neither
+/// alone is sufficient: the two spellings need not agree (on macOS `/tmp` is
+/// a symlink to `/private/tmp`, and `$TMPDIR` is a per-user `/var/folders/...`
+/// path that arrives resolved to `/private/var/folders/...`), while a bare
+/// shape list misses a relocated `$TMPDIR`.
+///
+/// The shape markers are deliberately conservative — anchored, unambiguous
+/// temp roots only. A bare `/temp/` is NOT among them: `~/temp/myproj` is a
+/// plausible persistent working directory, and wrongly skipping it would
+/// silently disable learning for that project, which is the failure mode this
+/// whole subsystem exists to avoid. A false negative here costs one expiring
+/// pending record; a false positive costs a user their capture.
+fn is_unmatchable_path(file_path: &str) -> bool {
+    const TEMP_MARKERS: [&str; 3] = [
+        "/var/folders/",           // macOS per-user $TMPDIR
+        "/tmp/",                   // POSIX (and macOS /private/tmp)
+        "\\AppData\\Local\\Temp\\", // Windows
+    ];
+    if TEMP_MARKERS.iter().any(|m| file_path.contains(m)) {
+        return true;
+    }
+    // Relocated $TMPDIR that matches none of the shapes above.
+    let tmp = std::env::temp_dir();
+    let tmp = tmp.to_string_lossy();
+    !tmp.is_empty() && tmp != "/" && file_path.starts_with(tmp.as_ref())
+}
+
+/// Delete pending records older than the TTL.
+///
+/// A pending record's only non-expiry exit is a successful compile of the
+/// same path, which may never happen — so without this it lives forever.
+/// Rate-limited to once per hour via a marker file, because the sweep is a
+/// full directory walk and `record_failure` is on the compile path.
+///
+/// Uses mtime rather than the record's own `ts` field: same information,
+/// no JSON parse per file, and it stays correct for records written by an
+/// older build.
+fn sweep_pending(dir: &std::path::Path) {
+    let ttl = pending_ttl_secs();
+    if ttl == 0 {
+        return;
+    }
+    let marker = dir.join(".last_pending_sweep");
+    if let Some(age) = file_age_secs(&marker) {
+        if age < 60 * 60 {
+            return;
+        }
+    }
+    let _ = fs::write(&marker, "");
+    let pending_dir = dir.join("pending");
+    if let Ok(rd) = fs::read_dir(&pending_dir) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            if file_age_secs(&p).is_some_and(|age| age > ttl) {
+                let _ = fs::remove_file(&p);
+            }
+        }
+    }
+}
+
+/// Number of pending records and their total size in bytes, for `learn-stats`.
+pub fn pending_stats() -> (usize, u64) {
+    let dir = match learn_dir() {
+        Ok(d) => d,
+        Err(_) => return (0, 0),
+    };
+    let mut count = 0usize;
+    let mut bytes = 0u64;
+    if let Ok(rd) = fs::read_dir(dir.join("pending")) {
+        for entry in rd.flatten() {
+            if let Ok(md) = entry.metadata() {
+                if md.is_file() {
+                    count += 1;
+                    bytes = bytes.saturating_add(md.len());
+                }
+            }
+        }
+    }
+    (count, bytes)
+}
+
 /// Short hash of a file path to name the pending file.
 fn path_hash(s: &str) -> String {
     // FNV-1a 64-bit. Plenty unique for hundreds of project files.
@@ -179,10 +295,20 @@ pub fn record_failure(
     error_message: &str,
     src: &str,
 ) -> std::io::Result<()> {
-    if !check_capacity() {
+    // Dead on arrival: nothing can ever match this path again, so writing
+    // the record only consumes the store's capacity budget.
+    if is_unmatchable_path(file_path) {
         return Ok(());
     }
     let dir = learn_dir()?;
+    // Expire stale records before the capacity check, not after: otherwise a
+    // pending backlog that is already past its TTL can push the store over
+    // cap and block durable event writes that the sweep would have made room
+    // for.
+    sweep_pending(&dir);
+    if !check_capacity() {
+        return Ok(());
+    }
     let pending_file = dir
         .join("pending")
         .join(format!("{}.json", path_hash(file_path)));
@@ -209,6 +335,17 @@ pub fn record_success_if_pending(
         .join("pending")
         .join(format!("{}.json", path_hash(file_path)));
     if !pending_file.exists() {
+        return Ok(None);
+    }
+    // Expired records are dropped, never paired. This is a correctness guard,
+    // not just housekeeping: the failure and the success are matched on path
+    // alone, so an old enough pending record pairs a long-dead error with an
+    // unrelated later success at the same path — emitting an `error_fix`
+    // event whose `src_before`/`src_after`/`diff_summary` describe no real
+    // fix, which then feeds `arch advise`.
+    let ttl = pending_ttl_secs();
+    if ttl > 0 && file_age_secs(&pending_file).is_some_and(|age| age > ttl) {
+        let _ = fs::remove_file(&pending_file);
         return Ok(None);
     }
     let raw = fs::read_to_string(&pending_file)?;
@@ -625,6 +762,18 @@ pub fn print_stats() -> std::io::Result<()> {
         .collect();
     println!("Learning store: {}", dir.display());
     println!("Events:         {}", events.len());
+    // Report the pending backlog too. It counts toward the store cap, so
+    // when it dominates, "store is full" is otherwise unexplainable from
+    // this output alone — the event count looks nowhere near the limit.
+    let (pending_count, pending_bytes) = pending_stats();
+    if pending_count > 0 {
+        println!(
+            "Pending:        {} unmatched failure(s), {} MB (expire after {} day(s))",
+            pending_count,
+            pending_bytes / (1024 * 1024),
+            pending_ttl_secs() / (24 * 60 * 60),
+        );
+    }
     let mut by_code: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for e in &events {
         *by_code.entry(e.error_code.clone()).or_insert(0) += 1;
@@ -1096,6 +1245,86 @@ pub fn classify_error(msg: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Backdate a file's mtime so the TTL logic sees it as old. `sweep_pending`
+    /// and the match-time guard both read mtime, so this is the whole input.
+    fn backdate(p: &std::path::Path) {
+        let ok = std::process::Command::new("touch")
+            .arg("-t")
+            .arg("200001010000")
+            .arg(p)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(ok, "failed to backdate {}", p.display());
+    }
+
+    #[test]
+    fn unmatchable_paths_are_recognized() {
+        // Temp dirs: the path is unique per run, so a later success can never
+        // land on it. macOS `$TMPDIR` arrives resolved to /private/var/folders.
+        assert!(is_unmatchable_path(
+            "/private/var/folders/t9/abc/T/.tmpXYZ/Foo.arch"
+        ));
+        assert!(is_unmatchable_path("/tmp/arch-regression-abc/Foo.arch"));
+        assert!(is_unmatchable_path("/var/folders/xx/yy/T/Foo.arch"));
+        // Real project paths must still be recorded — this is the case the
+        // whole failure→fix pairing exists to serve.
+        assert!(!is_unmatchable_path("/Users/dev/proj/src/Foo.arch"));
+        assert!(!is_unmatchable_path("Foo.arch"));
+        assert!(!is_unmatchable_path("/home/dev/arch-com/tests/Foo.arch"));
+        // A persistent directory merely *named* "temp" is not a temp root.
+        // Skipping it would silently disable capture for that project.
+        assert!(!is_unmatchable_path("/home/dev/temp/myproj/Foo.arch"));
+        assert!(!is_unmatchable_path("/Users/dev/Documents/tempo/Foo.arch"));
+    }
+
+    #[test]
+    fn pending_ttl_defaults_to_seven_days() {
+        // Only assert the default when the env override is absent: tests share
+        // one process, so mutating the env here would race sibling tests.
+        if std::env::var("ARCH_LEARN_PENDING_TTL_DAYS").is_err() {
+            assert_eq!(pending_ttl_secs(), 7 * 24 * 60 * 60);
+        }
+    }
+
+    #[test]
+    fn sweep_pending_expires_old_records_and_keeps_fresh_ones() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let dir = td.path();
+        fs::create_dir_all(dir.join("pending")).expect("mkdir pending");
+
+        let old = dir.join("pending").join("old.json");
+        let fresh = dir.join("pending").join("fresh.json");
+        fs::write(&old, "{}").expect("write old");
+        fs::write(&fresh, "{}").expect("write fresh");
+        backdate(&old);
+
+        sweep_pending(dir);
+
+        assert!(!old.exists(), "expired pending record should be removed");
+        assert!(fresh.exists(), "fresh pending record must be retained");
+    }
+
+    #[test]
+    fn sweep_pending_is_rate_limited_by_its_marker() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let dir = td.path();
+        fs::create_dir_all(dir.join("pending")).expect("mkdir pending");
+
+        // A fresh marker means a sweep already ran within the last hour, so
+        // this call must return without walking the directory. Without the
+        // rate limit this walk lands on every `record_failure`, i.e. on the
+        // compile path.
+        fs::write(dir.join(".last_pending_sweep"), "").expect("write marker");
+        let old = dir.join("pending").join("old.json");
+        fs::write(&old, "{}").expect("write old");
+        backdate(&old);
+
+        sweep_pending(dir);
+
+        assert!(old.exists(), "sweep should have been skipped by the marker");
+    }
 
     #[test]
     fn tokenize_basic() {
