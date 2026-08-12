@@ -12,17 +12,40 @@ impl<'a> Codegen<'a> {
 
         let n = &a.name.name.clone();
 
-        // Find NUM_REQ param
+        // Requester count. The request port array's `[N]` shape is the
+        // source of truth — it is what sizes `request_valid` /
+        // `request_ready` in the port list — and `NUM_REQ` is only the
+        // conventional spelling for it. Looking only for a param literally
+        // named `NUM_REQ` meant an arbiter declared `param N: const = 8;`
+        // + `ports[N] request` fell through to the hardcoded `4`: ports
+        // came out `[N-1:0]` (8 wide) while the grant scan, the
+        // `rr_ptr_r` width and the `grant_requester` cast all used 4, so
+        // requesters 4..7 could never be granted. Resolve the count
+        // expression first, keep the `NUM_REQ` lookup as the fallback for
+        // arbiters declared without a request port array.
         let num_req_default = a
-            .params
-            .iter()
-            .find(|p| p.name.name == "NUM_REQ")
-            .and_then(|p| p.default.as_ref())
-            .map(|e| self.emit_expr_str(e))
+            .port_arrays
+            .first()
+            .map(|pa| self.emit_expr_str(&pa.count_expr))
+            .or_else(|| {
+                a.params
+                    .iter()
+                    .find(|p| p.name.name == "NUM_REQ")
+                    .and_then(|p| p.default.as_ref())
+                    .map(|e| self.emit_expr_str(e))
+            })
             .unwrap_or_else(|| "4".to_string());
 
-        // Parse NUM_REQ as integer for bit width calculations
-        let num_req_int: u64 = num_req_default.parse().unwrap_or(4);
+        // Integer form for bit-width and loop-bound calculations. The
+        // count expression is usually a param reference, so fold it
+        // against the arbiter's params before falling back to parsing.
+        let num_req_int: u64 = a
+            .port_arrays
+            .first()
+            .and_then(|pa| self.eval_const_u32(&pa.count_expr, &a.params))
+            .map(u64::from)
+            .or_else(|| num_req_default.parse().ok())
+            .unwrap_or(4);
         let req_width = crate::width::index_width(num_req_int as u64);
 
         let clk = a
@@ -126,17 +149,9 @@ impl<'a> Codegen<'a> {
         // When latency > 1, grant logic targets intermediate _comb signals
         // which are then pipelined to the actual output ports.
         let (gv_sig, gr_sig, rr_sig) = if latency > 1 {
-            let num_req_str = self.emit_expr_str(
-                &a.params
-                    .iter()
-                    .find(|p| p.name.name == "NUM_REQ")
-                    .and_then(|p| p.default.clone())
-                    .unwrap_or(crate::ast::Expr {
-                        kind: crate::ast::ExprKind::Literal(crate::ast::LitKind::Dec(num_req_int)),
-                        span: a.span,
-                        parenthesized: false,
-                    }),
-            );
+            // Same width expression the port list uses for
+            // `request_ready` — see the `num_req_default` comment above.
+            let num_req_str = &num_req_default;
             self.line(&format!("logic grant_valid_comb;"));
             self.line(&format!(
                 "logic [{}:0] grant_requester_comb;",

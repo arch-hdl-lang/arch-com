@@ -2059,6 +2059,180 @@ fn test_arbiter_round_robin_arch_sim_nonpow2_behavior() {
     );
 }
 
+// ── Custom-policy arbiter: `arch sim` must call the bound hook ────────────────
+//
+// arch-hdl-lang/arch-com#912: `gen_arbiter` (sim_codegen/arbiter.rs) had no
+// `ArbiterPolicy::Custom` arm. A `policy <FnName>` + `hook grant_select(...)`
+// arbiter emitted a fixed lowest-index-wins priority scan into `eval_comb()`,
+// ignoring the hook function, `last_grant`, and any extra bound port — while
+// `arch build` emitted SV that called the function correctly. Divergence was
+// silent: no error, no warning, no `todo!` abort.
+//
+// The same testbench runs under both backends below, so a future divergence
+// trips one leg or the other rather than going unnoticed.
+
+/// Emitted sim C++ must call the hook function, and the resulting grant
+/// sequence must honor the policy (strict rotation + `prio` override).
+#[test]
+fn test_arbiter_custom_policy_arch_sim_calls_hook() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/arbiter_custom_policy/CustomRrArb4.arch")
+        .arg("--tb")
+        .arg("tests/arbiter_custom_policy/tb_custom_rr_arb4.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for CustomRrArb4");
+    assert!(
+        out.status.success(),
+        "arch sim should pass for CustomRrArb4\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("PASS custom_rr_arb4"),
+        "expected `PASS custom_rr_arb4` in arch sim stdout — the grant \
+         sequence the emitted SV produces for the same testbench; got:\n{stdout}"
+    );
+
+    // Pin the mechanism, not just the outcome: the generated `eval_comb()`
+    // must call the policy function and feed back the one-hot last-grant
+    // mask. Pre-fix it contained neither.
+    let cpp = std::fs::read_to_string(td.path().join("VCustomRrArb4.cpp"))
+        .expect("read generated VCustomRrArb4.cpp");
+    assert!(
+        cpp.contains("CustomRrGrant("),
+        "generated sim C++ must call the bound hook function; got:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("_last_grant_onehot"),
+        "generated sim C++ must feed the one-hot last-grant mask back into \
+         the hook; got:\n{cpp}"
+    );
+    // The requester count comes from `ports[N]`, not from a param spelled
+    // `NUM_REQ` — this arbiter has none, and the pre-fix fallback was 2.
+    assert!(
+        cpp.contains("_ci < (int)4"),
+        "grant index scan must cover all 4 requesters; got:\n{cpp}"
+    );
+}
+
+/// Verilator leg: the emitted SV must satisfy the same testbench, so the
+/// two backends are pinned to one another rather than each to itself.
+#[test]
+fn test_arbiter_custom_policy_verilator_matches_arch_sim() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping Verilator custom-policy arbiter cross-check: verilator not found");
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("CustomRrArb4.sv");
+    let obj_dir = td.path().join("obj_dir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/arbiter_custom_policy/CustomRrArb4.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build CustomRrArb4 SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let verilate = std::process::Command::new("verilator")
+        .arg("--cc")
+        .arg("--exe")
+        .arg("--build")
+        .arg("--sv")
+        .arg("--assert")
+        .arg("-Wno-fatal")
+        .arg("-Wno-WIDTH")
+        .arg("-Wno-DECLFILENAME")
+        .arg("--top-module")
+        .arg("CustomRrArb4")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&sv_out)
+        .arg("tests/arbiter_custom_policy/tb_custom_rr_arb4.cpp")
+        .output()
+        .expect("verilate CustomRrArb4");
+    assert!(
+        verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr)
+    );
+
+    let run = std::process::Command::new(obj_dir.join("VCustomRrArb4"))
+        .output()
+        .expect("run Verilator CustomRrArb4");
+    assert!(
+        run.status.success(),
+        "Verilator sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("PASS custom_rr_arb4"),
+        "expected PASS marker in Verilator stdout:\n{}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+}
+
+/// The requester count must track the request port array's `[N]` shape,
+/// not a param that happens to be named `NUM_REQ`. Pre-fix, an arbiter
+/// declared `param N: const = 8;` emitted `[N-1:0]` ports alongside a
+/// scan, an `rr_ptr_r` width and a `grant_requester` cast all hardcoded
+/// to 4 — requesters 4..7 could never be granted.
+#[test]
+fn test_arbiter_requester_count_from_port_array_not_num_req_param() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter N8Arb
+  policy round_robin;
+  param N: const = 8;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[N] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<3>;
+end arbiter N8Arb
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("for (arb_i = 0; arb_i < 8; arb_i++)"),
+        "scan must cover all 8 requesters; got:\n{sv}"
+    );
+    assert!(
+        sv.contains("logic [2:0] rr_ptr_r;"),
+        "round-robin pointer must be wide enough for 8 requesters; got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("% 4"),
+        "no requester-count arithmetic may fall back to the hardcoded 4; got:\n{sv}"
+    );
+}
+
 // ── ARCH_CXX env override selects the C++ compiler for `arch sim` ──────────────
 //
 // `arch sim` compiles the generated C++ testbench/sim with a C++ compiler that
