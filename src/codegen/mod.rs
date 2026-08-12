@@ -6920,12 +6920,9 @@ impl<'a> Codegen<'a> {
     /// `index_hoist_temps` / `HoistScope`). Pushed in generation order,
     /// which is also dependency order: a nested hoist is created while the
     /// outer hoist's RHS is being emitted, so it lands ahead of it.
-    fn push_hoist_temp(&self, width: String, name: String, rhs: String) {
-        self.push_hoist_temp_in_loop(width, name, rhs, false);
-    }
-
-    /// `push_hoist_temp` for a temp whose RHS references a live runtime
-    /// `for`-loop iterator — see `HoistTemp::in_loop` (arch#861).
+    ///
+    /// `in_loop` flags a temp whose RHS references a live runtime `for`-loop
+    /// iterator — see `HoistTemp::in_loop` (arch#861).
     fn push_hoist_temp_in_loop(&self, width: String, name: String, rhs: String, in_loop: bool) {
         self.index_hoist_temps.borrow_mut().push(HoistTemp {
             width,
