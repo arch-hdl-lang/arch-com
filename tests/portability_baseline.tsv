@@ -217,6 +217,8 @@ tests/aes/aes_sbox.arch	iverilog	OK	-
 tests/aes/aes_sbox.arch	verilator	OK	-
 tests/aes/domain.arch	-	NO_MODULE	-
 tests/aes/xtime.arch	-	BUILD_FAIL	Error:   × .trunc<8>() on a 8-bit value is a no-op — remove the cast
+tests/arbiter_custom_policy/CustomRrArb4.arch	iverilog	OK	-
+tests/arbiter_custom_policy/CustomRrArb4.arch	verilator	OK	-
 tests/arbiter_rr_nonpow2/RRArb3.arch	iverilog	OK	-
 tests/arbiter_rr_nonpow2/RRArb3.arch	verilator	OK	-
 tests/assert_cover/counter_check.arch	iverilog	FAIL	SV:20: syntax error
@@ -391,7 +393,7 @@ tests/cam_dual_basic.arch	verilator	OK	-
 tests/cam_lookup.arch	-	BUILD_FAIL	Error:   × 2 errors
 tests/cam_value_basic.arch	iverilog	OK	-
 tests/cam_value_basic.arch	verilator	OK	-
-tests/cvdp/16qam_demapper.arch	iverilog	FAIL	SV:64: error: A reference to a wire or reg (`gi') is not allowed in a constant expression.
+tests/cvdp/16qam_demapper.arch	iverilog	OK	-
 tests/cvdp/16qam_demapper.arch	verilator	OK	-
 tests/cvdp/16qam_mapper.arch	iverilog	FAIL	SV:33: error: A reference to a wire or reg (`j') is not allowed in a constant expression.
 tests/cvdp/16qam_mapper.arch	verilator	OK	-
@@ -702,7 +704,7 @@ tests/cvdp/line_buffer.arch	iverilog	OK	-
 tests/cvdp/line_buffer.arch	verilator	OK	-
 tests/cvdp/load_store_unit.arch	iverilog	OK	-
 tests/cvdp/load_store_unit.arch	verilator	OK	-
-tests/cvdp/low_pass_filter.arch	iverilog	FAIL	SV:63: error: A reference to a wire or reg (`i') is not allowed in a constant expression.
+tests/cvdp/low_pass_filter.arch	iverilog	OK	-
 tests/cvdp/low_pass_filter.arch	verilator	OK	-
 tests/cvdp/lru_counter_policy.arch	iverilog	FAIL	SV:55: error: A reference to a wire or reg (`idx') is not allowed in a constant expression.
 tests/cvdp/lru_counter_policy.arch	verilator	OK	-
@@ -932,7 +934,7 @@ tests/e203/e203_clkgate.arch	iverilog	OK	-
 tests/e203/e203_clkgate.arch	verilator	OK	-
 tests/e203/e203_core.arch	iverilog	OK	-
 tests/e203/e203_core.arch	verilator	OK	-
-tests/e203/e203_core_top.arch	iverilog	FAIL	SV:1175: syntax error
+tests/e203/e203_core_top.arch	iverilog	OK	-
 tests/e203/e203_core_top.arch	verilator	OK	-
 tests/e203/e203_cpu.arch	iverilog	OK	-
 tests/e203/e203_cpu.arch	verilator	OK	-
@@ -948,7 +950,7 @@ tests/e203/e203_dtcm_ram.arch	iverilog	FAIL	SV:36: error: A reference to a wire 
 tests/e203/e203_dtcm_ram.arch	verilator	OK	-
 tests/e203/e203_extend_csr.arch	iverilog	OK	-
 tests/e203/e203_extend_csr.arch	verilator	OK	-
-tests/e203/e203_exu.arch	iverilog	FAIL	SV:443: syntax error
+tests/e203/e203_exu.arch	iverilog	OK	-
 tests/e203/e203_exu.arch	verilator	OK	-
 tests/e203/e203_exu_agu.arch	iverilog	OK	-
 tests/e203/e203_exu_agu.arch	verilator	OK	-
@@ -972,7 +974,7 @@ tests/e203/e203_exu_commit.arch	iverilog	OK	-
 tests/e203/e203_exu_commit.arch	verilator	OK	-
 tests/e203/e203_exu_csr.arch	iverilog	OK	-
 tests/e203/e203_exu_csr.arch	verilator	OK	-
-tests/e203/e203_exu_decode.arch	iverilog	FAIL	SV:443: syntax error
+tests/e203/e203_exu_decode.arch	iverilog	OK	-
 tests/e203/e203_exu_decode.arch	verilator	OK	-
 tests/e203/e203_exu_disp.arch	iverilog	OK	-
 tests/e203/e203_exu_disp.arch	verilator	OK	-
@@ -990,7 +992,7 @@ tests/e203/e203_exu_oitf.arch	iverilog	OK	-
 tests/e203/e203_exu_oitf.arch	verilator	OK	-
 tests/e203/e203_exu_regfile.arch	iverilog	OK	-
 tests/e203/e203_exu_regfile.arch	verilator	OK	-
-tests/e203/e203_exu_top.arch	iverilog	FAIL	SV:443: syntax error
+tests/e203/e203_exu_top.arch	iverilog	OK	-
 tests/e203/e203_exu_top.arch	verilator	OK	-
 tests/e203/e203_exu_wbck.arch	iverilog	OK	-
 tests/e203/e203_exu_wbck.arch	verilator	OK	-
@@ -1002,9 +1004,9 @@ tests/e203/e203_icb2apb.arch	iverilog	OK	-
 tests/e203/e203_icb2apb.arch	verilator	OK	-
 tests/e203/e203_icb_arbt.arch	iverilog	OK	-
 tests/e203/e203_icb_arbt.arch	verilator	OK	-
-tests/e203/e203_ifu.arch	iverilog	FAIL	SV:1015: syntax error
+tests/e203/e203_ifu.arch	iverilog	OK	-
 tests/e203/e203_ifu.arch	verilator	OK	-
-tests/e203/e203_ifu_ifetch.arch	iverilog	FAIL	SV:521: syntax error
+tests/e203/e203_ifu_ifetch.arch	iverilog	OK	-
 tests/e203/e203_ifu_ifetch.arch	verilator	OK	-
 tests/e203/e203_ifu_ift2icb.arch	iverilog	OK	-
 tests/e203/e203_ifu_ift2icb.arch	verilator	OK	-
@@ -1012,9 +1014,9 @@ tests/e203/e203_ifu_litebpu.arch	iverilog	OK	-
 tests/e203/e203_ifu_litebpu.arch	verilator	OK	-
 tests/e203/e203_ifu_litedec.arch	iverilog	OK	-
 tests/e203/e203_ifu_litedec.arch	verilator	OK	-
-tests/e203/e203_ifu_minidec.arch	iverilog	FAIL	SV:443: syntax error
+tests/e203/e203_ifu_minidec.arch	iverilog	OK	-
 tests/e203/e203_ifu_minidec.arch	verilator	OK	-
-tests/e203/e203_ifu_top.arch	iverilog	FAIL	SV:1015: syntax error
+tests/e203/e203_ifu_top.arch	iverilog	OK	-
 tests/e203/e203_ifu_top.arch	verilator	OK	-
 tests/e203/e203_irq_ctrl.arch	iverilog	OK	-
 tests/e203/e203_irq_ctrl.arch	verilator	OK	-
@@ -1035,7 +1037,7 @@ tests/e203/e203_ppi.arch	iverilog	OK	-
 tests/e203/e203_ppi.arch	verilator	OK	-
 tests/e203/e203_reset_ctrl.arch	iverilog	OK	-
 tests/e203/e203_reset_ctrl.arch	verilator	OK	-
-tests/e203/e203_soc_top.arch	iverilog	FAIL	SV:1856: syntax error
+tests/e203/e203_soc_top.arch	iverilog	FAIL	SV:3703: sorry: constant selects in always_* processes are not currently supported (all bits will be included).
 tests/e203/e203_soc_top.arch	verilator	OK	-
 tests/e203/e203_spi.arch	iverilog	OK	-
 tests/e203/e203_spi.arch	verilator	OK	-
@@ -1103,8 +1105,8 @@ tests/fp_v1/E8m0Scale.arch	iverilog	OK	-
 tests/fp_v1/E8m0Scale.arch	verilator	OK	-
 tests/fp_v1/Fp4Convert.arch	iverilog	OK	-
 tests/fp_v1/Fp4Convert.arch	verilator	OK	-
-tests/fp_v1/Fp6Convert.arch	iverilog	FAIL	SV:2716: syntax error
-tests/fp_v1/Fp6Convert.arch	verilator	FAIL	%Error: SV:2716:22: syntax error, unexpected cross
+tests/fp_v1/Fp6Convert.arch	iverilog	FAIL	SV:2727: syntax error
+tests/fp_v1/Fp6Convert.arch	verilator	FAIL	%Error: SV:2727:22: syntax error, unexpected cross
 tests/fp_v1/Fp8Arith.arch	iverilog	OK	-
 tests/fp_v1/Fp8Arith.arch	verilator	OK	-
 tests/fp_v1/Fp8Convert.arch	iverilog	OK	-
@@ -1117,8 +1119,8 @@ tests/fp_v1/FpAcc.arch	iverilog	OK	-
 tests/fp_v1/FpAcc.arch	verilator	OK	-
 tests/fp_v1/FpArith.arch	iverilog	OK	-
 tests/fp_v1/FpArith.arch	verilator	OK	-
-tests/fp_v1/FpBoundErr.arch	iverilog	FAIL	SV:2721: syntax error
-tests/fp_v1/FpBoundErr.arch	verilator	FAIL	%Error: SV:2721:16: syntax error, unexpected STRENGTH keyword (strong1/etc)
+tests/fp_v1/FpBoundErr.arch	iverilog	FAIL	SV:2732: syntax error
+tests/fp_v1/FpBoundErr.arch	verilator	FAIL	%Error: SV:2732:16: syntax error, unexpected STRENGTH keyword (strong1/etc)
 tests/fp_v1/FpBoundErrCancel.arch	iverilog	OK	-
 tests/fp_v1/FpBoundErrCancel.arch	verilator	OK	-
 tests/fp_v1/FpBusMod.arch	iverilog	OK	-
@@ -1127,7 +1129,7 @@ tests/fp_v1/FpComposite.arch	iverilog	OK	-
 tests/fp_v1/FpComposite.arch	verilator	OK	-
 tests/fp_v1/FpFormalBad.arch	iverilog	OK	-
 tests/fp_v1/FpFormalBad.arch	verilator	OK	-
-tests/fp_v1/FpFormalProps.arch	iverilog	FAIL	SV:2741: syntax error
+tests/fp_v1/FpFormalProps.arch	iverilog	FAIL	SV:2752: syntax error
 tests/fp_v1/FpFormalProps.arch	verilator	OK	-
 tests/fp_v1/FpFsm.arch	iverilog	OK	-
 tests/fp_v1/FpFsm.arch	verilator	OK	-
@@ -1174,8 +1176,16 @@ tests/icarus_portability/PipeSliceHoist.arch	iverilog	OK	-
 tests/icarus_portability/PipeSliceHoist.arch	verilator	OK	-
 tests/icarus_portability/SeqSliceHoist.arch	iverilog	OK	-
 tests/icarus_portability/SeqSliceHoist.arch	verilator	OK	-
+tests/icarus_portability/SextConcatHoist.arch	iverilog	OK	-
+tests/icarus_portability/SextConcatHoist.arch	verilator	OK	-
+tests/icarus_portability/SextIndexHoist.arch	iverilog	OK	-
+tests/icarus_portability/SextIndexHoist.arch	verilator	OK	-
+tests/icarus_portability/SextLoopVarHoist.arch	iverilog	OK	-
+tests/icarus_portability/SextLoopVarHoist.arch	verilator	OK	-
 tests/icarus_portability/UniversalSliceHoist.arch	iverilog	OK	-
 tests/icarus_portability/UniversalSliceHoist.arch	verilator	OK	-
+tests/icarus_portability/WidenArithSliceHoist.arch	iverilog	OK	-
+tests/icarus_portability/WidenArithSliceHoist.arch	verilator	OK	-
 tests/if_wait_for_in_then.arch	iverilog	OK	-
 tests/if_wait_for_in_then.arch	verilator	OK	-
 tests/inst_vec_port_regression.arch	iverilog	OK	-
