@@ -288,7 +288,7 @@ def write_sim_smoke_tb(sim_dir: Path) -> Path | None:
     # C++ compile error. VFunctions.h was missing from this set, so every
     # unit whose design declares a top-level/package/module-internal
     # `function` failed `sim_compile` with `unknown type name 'VFunctions'`
-    # regardless of whether its sim model was any good — ~70 units in the
+    # regardless of whether its sim model was any good — 7 units in the
     # tests/ tree, none of them in the enforced baseline, so the noise was
     # invisible. Found while adding tests/arbiter_custom_policy/.
     headers = sorted(
