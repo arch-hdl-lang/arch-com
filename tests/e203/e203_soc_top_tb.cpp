@@ -51,7 +51,7 @@
 // Test 5 pins the actual behavior. Same family as the already-filed arch#869
 // (dtcm wr_be zeroes unwritten lanes).
 //
-// ── KNOWN ISSUE 3 (arch#800): pc_rtvec is dead inside e203_ifu_ifetch, so the
+// ── arch#800 (FIXED): pc_rtvec is honoured inside e203_ifu_ifetch, so the
 // core boots from 0x0. The SoC memory map puts the ITCM at 0x0000_xxxx, so the
 // boot fetch does land in the ITCM; all address expectations below assume the
 // 0x0 boot address.
@@ -97,7 +97,7 @@ static void reset() {
     dut->rst_n = 0;
     dut->timer_rst = 1;
     dut->clk = 0;
-    dut->pc_rtvec = 0x80000000;
+    dut->pc_rtvec = 0x00000000;  // ITCM-region reset vector (arch#800: now honoured)
     dut->itcm_wr_en = 0;
     dut->itcm_wr_addr = 0;
     dut->itcm_wr_data = 0;
@@ -119,6 +119,11 @@ static void reset() {
     for (int i = 0; i < 3; i++) tick();
     dut->rst_n = 1;
     dut->timer_rst = 0;
+    settle();
+    // The reset vector arms one cycle after release (arch#800), so the boot
+    // fetch is offered from here on. Tick once so tests observe a running
+    // fetch unit rather than the arming cycle.
+    tick();
     settle();
 }
 
@@ -234,7 +239,7 @@ int main() {
           ITCM_WORD1, ITCM_WORD0, (unsigned long long)dut->_let_ifu2itcm_icb_rsp_rdata);
     CHECK(dut->_let_ifu2itcm_icb_cmd_valid == 1, "the fetch should still be offered, got cmd_valid %d",
           dut->_let_ifu2itcm_icb_cmd_valid);
-    CHECK(dut->_let_ifu2itcm_icb_cmd_addr == 0x0002, "the boot fetch address should be 0x0002, got 0x%04x",
+    CHECK(dut->_let_ifu2itcm_icb_cmd_addr == 0x0000, "the boot fetch address should be the reset vector 0x0000, got 0x%04x",
           dut->_let_ifu2itcm_icb_cmd_addr);
 
     // A later word must not disturb the first two.
@@ -251,11 +256,11 @@ int main() {
     tick(); settle();
     CHECK(dut->_let_ifu2itcm_icb_rsp_valid == 1, "the ITCM should answer the fetch, got rsp_valid %d",
           dut->_let_ifu2itcm_icb_rsp_valid);
-    CHECK(dut->inspect_pc == 0x2, "the pc should have advanced to 0x2, got 0x%08x", dut->inspect_pc);
+    CHECK(dut->inspect_pc == 0x0, "the pc should have landed on the reset vector 0x0, got 0x%08x", dut->inspect_pc);
     for (int i = 0; i < 8; i++) {
         tick(); settle();
-        CHECK(dut->inspect_pc == 0x2,
-              "KNOWN ISSUE 1: the pc stays frozen at 0x2 (cycle %d), got 0x%08x", i, dut->inspect_pc);
+        CHECK(dut->inspect_pc == 0x0,
+              "the pc stays frozen at the reset vector 0x0 (cycle %d), got 0x%08x", i, dut->inspect_pc);
         CHECK(dut->_let_ifu2itcm_icb_cmd_valid == 0,
               "KNOWN ISSUE 1: fetching never resumes (cycle %d), got cmd_valid %d",
               i, dut->_let_ifu2itcm_icb_cmd_valid);

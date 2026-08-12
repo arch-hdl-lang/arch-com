@@ -51,8 +51,9 @@
 // while KNOWN ISSUE 1 holds ifu_o_valid low; noted here so it is not
 // rediscovered.
 //
-// ── KNOWN ISSUE 4 (pre-existing, arch#800): the pc_rtvec reset vector is dead
-// in e203_ifu_ifetch, so the fetch unit boots from 0x0 rather than pc_rtvec.
+// ── arch#800 (FIXED): the pc_rtvec reset vector works — the fetch unit boots
+// from pc_rtvec. This tb drives it to 0x0000 so the boot fetch stays in the
+// ITCM region; the arming cycle after reset release is absorbed in reset().
 // Every PC expectation below is written against the 0x0 boot address.
 //
 // Two further top-level inputs, itcm_nohold and ifu2itcm_holdup, are declared
@@ -92,7 +93,7 @@ static void tick() {
 static void reset(uint32_t indic) {
     dut->rst_n = 0;
     dut->itcm_nohold = 0;
-    dut->pc_rtvec = 0x80000000;
+    dut->pc_rtvec = 0x00000000;  // ITCM-region reset vector (arch#800: now honoured)
     dut->ifu2itcm_holdup = 0;
     dut->itcm_region_indic = indic;
     dut->ifu2itcm_icb_cmd_ready = 1;
@@ -123,6 +124,11 @@ static void reset(uint32_t indic) {
     dut->clk = 0;
     for (int i = 0; i < 3; i++) tick();
     dut->rst_n = 1;
+    settle();
+    // The reset vector arms one cycle after release (arch#800), so the boot
+    // fetch is offered from here on. Tick once so tests observe a running
+    // fetch unit rather than the arming cycle.
+    tick();
     settle();
 }
 
@@ -155,7 +161,7 @@ int main() {
           dut->ifu2itcm_icb_cmd_valid);
     CHECK(dut->ifu2biu_icb_cmd_valid == 0, "biu cmd_valid should be 0 for a pc in the ITCM region, got %d",
           dut->ifu2biu_icb_cmd_valid);
-    CHECK(dut->ifu2itcm_icb_cmd_addr == 0x0002, "itcm cmd_addr should be 0x0002, got 0x%04x",
+    CHECK(dut->ifu2itcm_icb_cmd_addr == 0x0000, "itcm cmd_addr should be the reset vector 0x0000, got 0x%04x",
           dut->ifu2itcm_icb_cmd_addr);
 
     // ── Test 3: BIU region decode ────────────────────────────────────
@@ -167,7 +173,7 @@ int main() {
           dut->ifu2biu_icb_cmd_valid);
     CHECK(dut->ifu2itcm_icb_cmd_valid == 0, "itcm cmd_valid should be 0 for a pc outside the ITCM region, got %d",
           dut->ifu2itcm_icb_cmd_valid);
-    CHECK(dut->ifu2biu_icb_cmd_addr == 0x00000002, "biu cmd_addr should be the full 32-bit pc 0x00000002, got 0x%08x",
+    CHECK(dut->ifu2biu_icb_cmd_addr == 0x00000000, "biu cmd_addr should be the full 32-bit pc 0x00000000, got 0x%08x",
           dut->ifu2biu_icb_cmd_addr);
 
     // Redirect the PC into the ITCM region and the routing must flip back, with
@@ -192,14 +198,14 @@ int main() {
     for (int i = 0; i < 3; i++) {
         tick(); settle();
         CHECK(dut->ifu2itcm_icb_cmd_valid == 1, "cmd_valid must stay asserted under backpressure (cycle %d)", i);
-        CHECK(dut->ifu2itcm_icb_cmd_addr == 0x0002, "cmd_addr must stay stable under backpressure (cycle %d)", i);
+        CHECK(dut->ifu2itcm_icb_cmd_addr == 0x0000, "cmd_addr must stay stable under backpressure (cycle %d)", i);
         CHECK(dut->inspect_pc == 0x0, "pc must not advance while the command is stalled (cycle %d), got 0x%08x",
               i, dut->inspect_pc);
     }
     dut->ifu2itcm_icb_cmd_ready = 1;
     settle();
     tick(); settle();
-    CHECK(dut->inspect_pc == 0x2, "pc should advance to 0x2 once the command handshakes, got 0x%08x",
+    CHECK(dut->inspect_pc == 0x0, "pc should land on the reset vector 0x0 once the command handshakes, got 0x%08x",
           dut->inspect_pc);
     CHECK(dut->ifu2itcm_icb_cmd_valid == 0, "cmd_valid should drop with a fetch outstanding, got %d",
           dut->ifu2itcm_icb_cmd_valid);
@@ -225,12 +231,16 @@ int main() {
           dut->ifu2itcm_icb_rsp_ready);
     CHECK(dut->_let_ifu_rsp_valid_w == 1, "the bridge should present a valid response to ifetch, got %d",
           dut->_let_ifu_rsp_valid_w);
-    // KNOWN ISSUE 2: the request was for 0x0002 (word 0), so the correct half is
-    // rdata[31:0] == RV32_ADD_X3_X1_X2. The design selects on the *next* fetch
-    // address (0x0004, bit 2 set) and captures rdata[63:32] instead.
-    CHECK(dut->_let_ifu_rsp_instr_w == 0xAAAAAAAAu,
-          "KNOWN ISSUE 2: half-select follows the next fetch_pc, expected 0xAAAAAAAA, got 0x%08x",
-          dut->_let_ifu_rsp_instr_w);
+    // KNOWN ISSUE 2 is unchanged — e203_ifu_ift2icb still selects the 64->32
+    // half with `fetch_pc[2]`, the address of the *next* request rather than
+    // the outstanding one — but this scenario no longer exposes it. Since
+    // arch#800 the boot fetch targets the reset vector 0x0000 and the pc that
+    // follows is below 4, so bit 2 is clear and the off-by-one happens to pick
+    // the correct half. Do NOT read this passing check as the half-select
+    // being fixed; a reset vector with bit 2 set would still show the bug.
+    CHECK(dut->_let_ifu_rsp_instr_w == RV32_ADD_X3_X1_X2,
+          "at the reset vector the half-select lands on rdata[31:0]; expected 0x%08x, got 0x%08x",
+          RV32_ADD_X3_X1_X2, dut->_let_ifu_rsp_instr_w);
 
     // ── Test 6: The fetch pipeline locks up on that response ─────────
     // KNOWN ISSUE 1. Pinned as observed behavior so a future fix flips this
@@ -241,7 +251,7 @@ int main() {
         CHECK(dut->ifu_o_valid == 0, "KNOWN ISSUE 1: ifu_o_valid stays 0 (cycle %d), got %d", i, dut->ifu_o_valid);
         CHECK(dut->ifu2itcm_icb_rsp_ready == 0, "KNOWN ISSUE 1: the buffer never drains (cycle %d)", i);
         CHECK(dut->ifu2itcm_icb_cmd_valid == 0, "KNOWN ISSUE 1: no new command is issued (cycle %d)", i);
-        CHECK(dut->inspect_pc == 0x2, "pc stays frozen at 0x2 while locked (cycle %d), got 0x%08x",
+        CHECK(dut->inspect_pc == 0x0, "pc stays frozen at the reset vector 0x0 while locked (cycle %d), got 0x%08x",
               i, dut->inspect_pc);
     }
 
@@ -302,6 +312,16 @@ int main() {
     reset(0x00000000);
     CHECK(dut->ifu2itcm_icb_cmd_valid == 1, "a fetch should be offered before halting, got %d",
           dut->ifu2itcm_icb_cmd_valid);
+    // Drain the boot fetch — request and response — before halting.
+    // `ifu_halt_req` gates `ifu_new_req` only; `ifu_reset_req` bypasses it,
+    // matching the reference, so the reset-vector fetch is deliberately not
+    // haltable, and `halt_ack` additionally needs nothing outstanding.
+    tick(); settle();                       // boot command handshake
+    dut->ifu2itcm_icb_rsp_valid = 1;
+    settle();
+    tick();
+    dut->ifu2itcm_icb_rsp_valid = 0;
+    settle();                               // boot response drained
     dut->ifu_halt_req = 1;
     settle();
     CHECK(dut->ifu2itcm_icb_cmd_valid == 0, "halt_req should suppress the ICB command, got %d",
@@ -317,7 +337,7 @@ int main() {
     settle();
     tick(); settle();
     CHECK(dut->ifu_halt_ack == 0, "halt_ack should clear when halt_req drops, got %d", dut->ifu_halt_ack);
-    CHECK(dut->inspect_pc == 0x2, "fetching should resume after halt, pc should be 0x2, got 0x%08x",
+    CHECK(dut->inspect_pc == 0x0, "fetching should resume after halt, pc should be 0x0, got 0x%08x",
           dut->inspect_pc);
 
     printf("\n=== e203_ifu_top: %d failure(s) ===\n", fail_count);

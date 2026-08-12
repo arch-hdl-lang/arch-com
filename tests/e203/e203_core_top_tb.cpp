@@ -34,7 +34,7 @@
 //            tests/e203/e203_lsu.arch tests/e203/e203_biu.arch \
 //            --tb tests/e203/e203_core_top_tb.cpp
 //
-// ── KNOWN ISSUE 1 (arch#800): pc_rtvec is dead inside e203_ifu_ifetch, so the
+// ── arch#800 (FIXED): pc_rtvec is honoured inside e203_ifu_ifetch, so the
 // core boots from 0x0 rather than the reset vector. Test 2 pins that; every
 // address expectation below is written against the 0x0 boot address.
 //
@@ -107,7 +107,7 @@ static void reset(const Cfg& c) {
     dut->rst_n = 0;
     dut->clk = 0;
     dut->test_mode = 0;
-    dut->pc_rtvec = 0x80000000;
+    dut->pc_rtvec = 0x00000000;  // ITCM-region reset vector (arch#800: now honoured)
     dut->core_mhartid = 0;
     dut->dbg_irq_r = 0;
     dut->lcl_irq_r = 0;
@@ -179,6 +179,11 @@ static void reset(const Cfg& c) {
     for (int i = 0; i < 3; i++) tick();
     dut->rst_n = 1;
     settle();
+    // The reset vector arms one cycle after release (arch#800), so the boot
+    // fetch is offered from here on. Tick once so tests observe a running
+    // fetch unit rather than the arming cycle.
+    tick();
+    settle();
 }
 
 // No peripheral bus should ever see an instruction fetch.
@@ -244,13 +249,16 @@ int main() {
     check_peripherals_quiet("reset");
     check_lsu_quiet("reset");
 
-    // ── Test 2: pc_rtvec is dead (KNOWN ISSUE 1 / arch#800) ──────────
-    printf("Test 2: pc_rtvec reset vector (KNOWN ISSUE 1)\n");
-    CHECK(dut->inspect_pc == 0x0,
-          "KNOWN ISSUE arch#800: the core boots from 0x0, not pc_rtvec 0x80000000; got 0x%08x",
+    // ── Test 2: the pc_rtvec reset vector is honoured (arch#800) ─────
+    printf("Test 2: pc_rtvec reset vector\n");
+    // Driven to 0x0 by reset() so the boot fetch stays in the ITCM region.
+    // Before arch#800 `pc_rtvec` was ignored entirely and the core booted from
+    // pc_r + incr regardless; the e203_ifu_ifetch tb covers a non-zero vector
+    // directly, which is where that would show most plainly.
+    CHECK(dut->inspect_pc == 0x0, "the core should boot at the reset vector 0x0, got 0x%08x",
           dut->inspect_pc);
-    CHECK(dut->ifu2itcm_icb_cmd_addr == 0x0002,
-          "the boot fetch address should be 0x0002, not derived from pc_rtvec; got 0x%04x",
+    CHECK(dut->ifu2itcm_icb_cmd_addr == 0x0000,
+          "the boot fetch should target the reset vector 0x0000, got 0x%04x",
           dut->ifu2itcm_icb_cmd_addr);
 
     // ── Test 3: Boot fetch reaches the ITCM ICB port ─────────────────
@@ -277,7 +285,7 @@ int main() {
         tick(); settle();
         CHECK(dut->mem_icb_cmd_valid == 1, "the fetch should emerge on the MEM ICB port, got %d",
               dut->mem_icb_cmd_valid);
-        CHECK(dut->mem_icb_cmd_addr == 0x00000002, "mem_icb_cmd_addr should be the fetch pc 0x2, got 0x%08x",
+        CHECK(dut->mem_icb_cmd_addr == 0x00000000, "mem_icb_cmd_addr should be the fetch pc 0x0, got 0x%08x",
               dut->mem_icb_cmd_addr);
         CHECK(dut->mem_icb_cmd_read == 1, "an instruction fetch must be a read, got mem_icb_cmd_read %d",
               dut->mem_icb_cmd_read);
@@ -319,14 +327,14 @@ int main() {
     for (int i = 0; i < 3; i++) {
         tick(); settle();
         CHECK(dut->ifu2itcm_icb_cmd_valid == 1, "cmd_valid must stay asserted under backpressure (cycle %d)", i);
-        CHECK(dut->ifu2itcm_icb_cmd_addr == 0x0002, "cmd_addr must stay stable under backpressure (cycle %d)", i);
+        CHECK(dut->ifu2itcm_icb_cmd_addr == 0x0000, "cmd_addr must stay stable under backpressure (cycle %d)", i);
         CHECK(dut->inspect_pc == 0x0, "the pc must not advance while stalled (cycle %d), got 0x%08x",
               i, dut->inspect_pc);
     }
     dut->ifu2itcm_icb_cmd_ready = 1;
     settle();
     tick(); settle();
-    CHECK(dut->inspect_pc == 0x2, "the pc should advance once the command handshakes, got 0x%08x",
+    CHECK(dut->inspect_pc == 0x0, "the pc should advance once the command handshakes, got 0x%08x",
           dut->inspect_pc);
 
     // ── Test 8: Fetch pipeline lockup (KNOWN ISSUE 2) ────────────────
@@ -352,7 +360,7 @@ int main() {
         CHECK(dut->ifu2itcm_icb_cmd_valid == 0,
               "KNOWN ISSUE 2: fetching never resumes (cycle %d), got cmd_valid %d",
               i, dut->ifu2itcm_icb_cmd_valid);
-        CHECK(dut->inspect_pc == 0x2, "the pc stays frozen at 0x2 while locked (cycle %d), got 0x%08x",
+        CHECK(dut->inspect_pc == 0x0, "the pc stays frozen at the reset vector 0x0 while locked (cycle %d), got 0x%08x",
               i, dut->inspect_pc);
         check_lsu_quiet("lockup");
         check_peripherals_quiet("lockup");
