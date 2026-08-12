@@ -850,6 +850,22 @@ fn check_construct_proof_smt_file(proof_path: &Path, solver: &str) -> miette::Re
     Ok(())
 }
 
+/// A Lean project directory is only usable once `lake build` has produced its
+/// `.olean` output. `.lake/` is gitignored build output, so a fresh clone or
+/// `git worktree add` has none, and the replay then fails deep inside Lean
+/// with `unknown module prefix 'ArchConstructProof'` — which looks like a
+/// broken proof rather than a missing build. Say what to run instead.
+fn check_lean_project_built(dir: &Path) -> miette::Result<()> {
+    if dir.join(".lake/build/lib/lean").is_dir() {
+        return Ok(());
+    }
+    Err(miette::miette!(
+        "Lean proof project at {} is not built (no .lake/build output) — run `lake build` in \
+         that directory first (it has no external dependencies; takes a few seconds)",
+        dir.display()
+    ))
+}
+
 fn thread_proof_lean_project_dir(explicit_project: Option<&Path>) -> miette::Result<PathBuf> {
     let candidate = if let Some(path) = explicit_project {
         path.to_path_buf()
@@ -864,6 +880,7 @@ fn thread_proof_lean_project_dir(explicit_project: Option<&Path>) -> miette::Res
             candidate.display()
         ));
     }
+    check_lean_project_built(&candidate)?;
     Ok(candidate)
 }
 
@@ -883,6 +900,7 @@ fn construct_proof_lean_project_dir(explicit_project: Option<&Path>) -> miette::
             candidate.display()
         ));
     }
+    check_lean_project_built(&candidate)?;
     Ok(candidate)
 }
 
