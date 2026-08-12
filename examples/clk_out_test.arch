@@ -1,4 +1,15 @@
-module ClkDiv2
+// Divide-by-2 clock output with a SYNCHRONOUS reset.
+//
+// Deliberately NOT named `ClkDiv2`: `examples/clk_divider.arch` already
+// defines a `ClkDiv2` in this same directory, with a different port list
+// (`rst_n: Reset<Async, Low>` rather than `rst: Reset<Sync>`). `arch build`
+// writes a `<Module>.archi` interface stub next to its input, so two
+// same-named modules in one directory overwrite each other's stub — and
+// `examples/clk_div_counter.arch`, which instantiates the `clk_divider.arch`
+// version, then resolved against whichever stub happened to be written last.
+// That made its build outcome depend on file ordering (arch#902). Keep these
+// two names distinct.
+module ClkDiv2SyncRst
   port clk_in:  in Clock<SysDomain>;
   port rst:     in Reset<Sync>;
   port clk_out: out Clock<SysDomain>;
@@ -14,4 +25,4 @@ module ClkDiv2
   comb
     clk_out = toggle as Clock<SysDomain>;
   end comb
-end module ClkDiv2
+end module ClkDiv2SyncRst

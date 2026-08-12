@@ -527,18 +527,29 @@ main() {
   # so a pathological corpus can't spin; the cap is reported when hit,
   # because silently measuring a not-yet-converged tree is the failure mode
   # this whole block exists to prevent.
-  local round prev_count archi_count
-  prev_count=-1
-  for round in 1 2 3 4; do
-    archi_count="$(find "$OUT_DIR/corpus" -name '*.archi' | wc -l | tr -d ' ')"
-    [[ "$archi_count" -eq "$prev_count" ]] && break
-    prev_count="$archi_count"
-    echo "sv-portability-sweep: prepass $round (interfaces: $archi_count)" >&2
+  # Convergence is judged on the *set* of interface paths, not a count: two
+  # rounds can produce the same number of files while differing in which
+  # ones, and a count that pauses for one round then grows again would end
+  # the loop early. Requires the set to be identical for two consecutive
+  # samples before measuring.
+  local round archi_now archi_prev
+  # Sentinel, not "": a corpus with no `.archi` at all starts with an empty
+  # set, which would compare equal to an empty "previous" and skip the
+  # prepass entirely — leaving exactly the order-dependent verdicts this
+  # block exists to remove.
+  archi_prev="<unset>"
+  for round in 1 2 3 4 5; do
+    archi_now="$(find "$OUT_DIR/corpus" -name '*.archi' | LC_ALL=C sort | tr '\n' ' ')"
+    if [[ "$archi_now" == "$archi_prev" ]]; then
+      break
+    fi
+    archi_prev="$archi_now"
+    echo "sv-portability-sweep: prepass $round (interfaces: $(printf '%s' "$archi_now" | wc -w | tr -d ' '))" >&2
     xargs -P "$JOBS" -n 1 "$SCRIPT_PATH" __prepass < "$OUT_DIR/files.list"
   done
-  archi_count="$(find "$OUT_DIR/corpus" -name '*.archi' | wc -l | tr -d ' ')"
-  if [[ "$archi_count" -ne "$prev_count" ]]; then
-    echo "sv-portability-sweep: WARNING interface set still growing after 4 prepasses ($prev_count -> $archi_count); verdicts may not be order-stable" >&2
+  archi_now="$(find "$OUT_DIR/corpus" -name '*.archi' | LC_ALL=C sort | tr '\n' ' ')"
+  if [[ "$archi_now" != "$archi_prev" ]]; then
+    echo "sv-portability-sweep: WARNING interface set still changing after 5 prepasses; verdicts may not be order-stable" >&2
   fi
   rm -f "$OUT_DIR"/rows/*.tsv 2>/dev/null || true
 
