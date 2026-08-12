@@ -6680,6 +6680,41 @@ impl<'a> Codegen<'a> {
                     format!("({lw} > {rw} ? {lw} : {rw})")
                 }
             }
+            // Widening arithmetic. The ARCH type system widens `a + b` / `a - b`
+            // to `max(w_a, w_b) + 1` and `a * b` to `w_a + w_b` (typecheck.rs,
+            // `binop_result_ty`), matching IEEE 1800 §11.6 plus the carry/product
+            // bit. SV's *self-determined* width — what `$bits(a + b)` reports —
+            // does NOT include those bits, so the `_ => $bits(...)` fallback
+            // under-sizes a hoist temp. A slice reaching the widened high bit
+            // then drops it: iverilog reads X, Verilator flags the select as
+            // out-of-range — a silent build-vs-sim divergence for code that
+            // `arch check` and `arch sim` both accept and compute correctly.
+            // Only reachable since #813 P1 (#875) let arithmetic bases be
+            // sliced at all. Non-widening ops (Div/Mod → lhs, bitwise/shift →
+            // max/lhs) already agree with `$bits`, so they keep the fallback.
+            ExprKind::Binary(BinOp::Add | BinOp::Sub, lhs, rhs) => {
+                let lw = self.infer_sv_width_str_in(lhs, emit, signal_width);
+                let rw = self.infer_sv_width_str_in(rhs, emit, signal_width);
+                match (lw.parse::<u64>().ok(), rw.parse::<u64>().ok()) {
+                    (Some(l), Some(r)) => (l.max(r) + 1).to_string(),
+                    _ => {
+                        let m = if lw == rw {
+                            lw
+                        } else {
+                            format!("({lw} > {rw} ? {lw} : {rw})")
+                        };
+                        format!("{} + 1", Self::paren_width(&m))
+                    }
+                }
+            }
+            ExprKind::Binary(BinOp::Mul, lhs, rhs) => {
+                let lw = self.infer_sv_width_str_in(lhs, emit, signal_width);
+                let rw = self.infer_sv_width_str_in(rhs, emit, signal_width);
+                match (lw.parse::<u64>().ok(), rw.parse::<u64>().ok()) {
+                    (Some(l), Some(r)) => (l + r).to_string(),
+                    _ => format!("{} + {}", Self::paren_width(&lw), Self::paren_width(&rw)),
+                }
+            }
             // Concat/Repeat width for the arch#807 slice-base hoist temp:
             // sum of part widths / count*value-width. Recurse into parts
             // rather than falling to `$bits({...})` on the whole

@@ -34254,6 +34254,135 @@ fn test_index_arithmetic_hoist_behavioral_equivalence_verilator_and_iverilog() {
     let _ = cases;
 }
 
+/// Regression for the slice-base hoist temp width: a bit-slice/index reaching
+/// the WIDENED high bits of an arithmetic base (`(a + b)[8]`, `(a * b)[15:8]`).
+/// The ARCH type system widens `a + b` to `UInt<9>` and `a * b` to `UInt<16>`,
+/// so those selects are legal and `arch sim` computes them correctly. Codegen
+/// hoists the arithmetic base to a temp (#813 P1); the temp had been sized with
+/// `$bits(a + b)` — SV's self-determined width (8 bits, no carry) — silently
+/// dropping the widened high bit: iverilog read X, Verilator flagged the select
+/// as out-of-range, a build-vs-sim divergence. The fix sizes the temp with
+/// ARCH's widened width (`max(w) + 1` for add/sub, `w_l + w_r` for mul). Only a
+/// real simulation run distinguishes right from wrong, since the pre-fix SV
+/// still *compiled* under iverilog (X-valued). Skips gracefully if neither
+/// simulator is installed, matching this file's convention.
+#[test]
+fn test_widening_arith_slice_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping widening-arith slice-hoist dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("WidenArithSliceHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/WidenArithSliceHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build WidenArithSliceHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    // The hoist temp for `a + b` must be 9 bits and for `a * b` 16 bits —
+    // never a `[($bits(...))-1:0]` declaration (SV self-determined width,
+    // 8 bits, the pre-fix bug). Match the parenthesized declaration shape so
+    // prose in the fixture that mentions the builtin can't false-positive.
+    let sv = std::fs::read_to_string(&sv_out).expect("read SV");
+    assert!(
+        !sv.contains("[($bits(a + b))-1:0]") && !sv.contains("[($bits(a * b))-1:0]"),
+        "arithmetic hoist temp must not be sized by SV self-determined \
+         `$bits(...)` (drops the widened high bit):\n{sv}"
+    );
+    assert!(
+        sv.contains("[9-1:0] arch_idx_base") && sv.contains("[16-1:0] arch_idx_base"),
+        "expected 9-bit (add) and 16-bit (mul) hoist temps:\n{sv}"
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("widen_arith.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_widen_arith_slice_hoist.sv")
+            .output()
+            .expect("iverilog compile WidenArithSliceHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog WidenArithSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm widened-slice values\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_widen");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-UNUSEDSIGNAL")
+            .arg("--top-module")
+            .arg("WidenArithSliceHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_widen_arith_slice_hoist_verilator.cpp")
+            .output()
+            .expect("verilate WidenArithSliceHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VWidenArithSliceHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator WidenArithSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm widened-slice values\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
 /// Follow-on discovery while implementing arch#650: `.trunc()`/`.zext()`/
 /// `.resize()` (SV size-cast) and `.sext()`/plain `{a, b}`/`{N{a}}` (SV
 /// concat/replication) are *also* rejected by Icarus when directly
@@ -35805,8 +35934,11 @@ end module LoopVarHoist861
     let for_open = sv
         .find("for (int i = 0; i <= 3; i++) begin")
         .expect("loop opener");
+    // Width is ARCH's widened `UInt<8> + UInt<8>` → `UInt<9>` (9 bits), not
+    // SV's self-determined `$bits(a + v[i])` (8 bits) — see the slice-hoist
+    // width fix. Bit 3 is in range either way, so this is shape-only here.
     let decl = sv
-        .find("logic [($bits(a + v[i]))-1:0] arch_idx_base_0;")
+        .find("logic [9-1:0] arch_idx_base_0;")
         .unwrap_or_else(|| panic!("hoist temp declaration missing:\n{sv}"));
     let first_stmt = sv.find("arch_idx_base_0 = a + v[i];").expect("assignment");
     assert!(
