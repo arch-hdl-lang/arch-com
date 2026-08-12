@@ -1030,6 +1030,7 @@ fn lower_module_threads(
             name: Ident::new(inst_name, sp),
             module_name: Ident::new(arb_module_name, sp),
             param_assigns: Vec::new(),
+            auto_connect: None,
             connections: vec![
                 Connection {
                     port_name: Ident::new("clk".to_string(), sp),
@@ -2513,6 +2514,7 @@ fn lower_module_threads(
     let inst = InstDecl {
         name: Ident::new("_threads".to_string(), sp),
         module_name: Ident::new(merged_name, sp),
+        auto_connect: None,
         param_assigns: m
             .params
             .iter()

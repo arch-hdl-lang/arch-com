@@ -1511,7 +1511,7 @@ impl Builder {
     }
 
     fn add_params_ports(&mut self, item: &Item, owner: &str, rel: &str, scope: &str) {
-        for p in item_params(item) {
+        for p in item.params() {
             let id = param_id(rel, scope, &p.name.name);
             self.add_node(NodeRecord {
                 id: id.clone(),
@@ -1531,7 +1531,7 @@ impl Builder {
                 self.walk_type(owner, scope, ty, p.span);
             }
         }
-        for p in item_ports(item) {
+        for p in item.ports() {
             let id = port_id(rel, scope, &p.name.name);
             let mut attrs = BTreeMap::new();
             attrs.insert(
@@ -2165,46 +2165,6 @@ impl SourceMap {
 enum ExprUse {
     Read,
     Write,
-}
-
-fn item_params(item: &Item) -> &[ParamDecl] {
-    match item {
-        Item::Module(m) => &m.params,
-        Item::Fsm(f) => &f.params,
-        Item::Fifo(f) => &f.params,
-        Item::Ram(r) => &r.params,
-        Item::Cam(c) => &c.params,
-        Item::Counter(c) => &c.params,
-        Item::Arbiter(a) => &a.params,
-        Item::Regfile(r) => &r.params,
-        Item::Pipeline(p) => &p.params,
-        Item::Linklist(l) => &l.params,
-        Item::Bus(b) => &b.params,
-        Item::Synchronizer(s) => &s.params,
-        Item::Clkgate(c) => &c.params,
-        Item::Template(t) => &t.params,
-        Item::Package(p) => &p.params,
-        _ => &[],
-    }
-}
-
-fn item_ports(item: &Item) -> &[PortDecl] {
-    match item {
-        Item::Module(m) => &m.ports,
-        Item::Fsm(f) => &f.ports,
-        Item::Fifo(f) => &f.ports,
-        Item::Ram(r) => &r.ports,
-        Item::Cam(c) => &c.ports,
-        Item::Counter(c) => &c.ports,
-        Item::Arbiter(a) => &a.ports,
-        Item::Regfile(r) => &r.ports,
-        Item::Pipeline(p) => &p.ports,
-        Item::Linklist(l) => &l.ports,
-        Item::Synchronizer(s) => &s.ports,
-        Item::Clkgate(c) => &c.ports,
-        Item::Template(t) => &t.ports,
-        _ => &[],
-    }
 }
 
 fn line_col(src: &str, byte: usize) -> (usize, usize) {
