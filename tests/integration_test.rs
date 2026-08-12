@@ -2193,6 +2193,193 @@ fn test_arbiter_custom_policy_verilator_matches_arch_sim() {
     );
 }
 
+// ── `latency N` arbiter: `arch sim` must pipeline the grant ──────────────────
+//
+// arch-hdl-lang/arch-com#917: `gen_arbiter` (sim_codegen/arbiter.rs) never
+// read `ArbiterDecl::latency`, while `emit_arbiter` pipelines `grant_valid` /
+// `grant_requester` / `<req>_ready` through `latency - 1` register stages. An
+// arbiter declared `latency 2` therefore presented its grant one cycle early
+// in `arch sim` relative to the SV every downstream tool sees — silently: no
+// error, no warning, no `todo!` abort.
+//
+// Both fixtures below run the *same* testbench under both backends, so a
+// future divergence trips one leg or the other. The testbenches sample the
+// outputs before the rising edge, which is where the latency is observable
+// (after the edge, the same edge that fills stage 1 has already captured the
+// current cycle's combinational grant).
+
+/// `latency 2` — a single register stage between the grant logic and the
+/// output ports.
+#[test]
+fn test_arbiter_latency2_arch_sim_pipelines_grant() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/arbiter_latency/LatArb2.arch")
+        .arg("--tb")
+        .arg("tests/arbiter_latency/tb_lat_arb2.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for LatArb2");
+    assert!(
+        out.status.success(),
+        "arch sim should pass for LatArb2\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("PASS lat_arb2"),
+        "expected `PASS lat_arb2` in arch sim stdout — the grant timing the \
+         emitted SV produces for the same testbench; got:\n{stdout}"
+    );
+
+    // Pin the mechanism, not just the outcome: the grant logic must target
+    // internal `_comb` members that eval_posedge() shifts to the ports.
+    // Pre-fix, eval_comb() drove the output ports directly.
+    let cpp = std::fs::read_to_string(td.path().join("VLatArb2.cpp"))
+        .expect("read generated VLatArb2.cpp");
+    assert!(
+        cpp.contains("_grant_valid_comb = 1;"),
+        "grant logic must drive the combinational stage, not the output \
+         port; got:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("grant_valid = _grant_valid_comb;")
+            && cpp.contains("grant_requester = _grant_requester_comb;")
+            && cpp.contains("request_ready = _request_ready_comb;"),
+        "eval_posedge() must register all three grant outputs; got:\n{cpp}"
+    );
+}
+
+/// `latency 3` — two stages, so the chain runs through an intermediate
+/// `_p1` register. A fix that only handled a single stage passes the
+/// `latency 2` test above and fails this one.
+#[test]
+fn test_arbiter_latency3_arch_sim_pipelines_grant() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/arbiter_latency/LatArb3.arch")
+        .arg("--tb")
+        .arg("tests/arbiter_latency/tb_lat_arb3.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for LatArb3");
+    assert!(
+        out.status.success(),
+        "arch sim should pass for LatArb3\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("PASS lat_arb3"),
+        "expected `PASS lat_arb3` in arch sim stdout; got:\n{stdout}"
+    );
+
+    let cpp = std::fs::read_to_string(td.path().join("VLatArb3.cpp"))
+        .expect("read generated VLatArb3.cpp");
+    // Back-to-front shift order: the output port is written from `_p1`
+    // before `_p1` is overwritten from `_comb`, so each stage samples its
+    // source's pre-edge value the way concurrent always_ff blocks do.
+    let out_from_p1 = cpp
+        .find("grant_valid = _grant_valid_p1;")
+        .expect("output stage must be fed from the intermediate reg");
+    let p1_from_comb = cpp
+        .find("_grant_valid_p1 = _grant_valid_comb;")
+        .expect("intermediate reg must be fed from the combinational grant");
+    assert!(
+        out_from_p1 < p1_from_comb,
+        "pipeline stages must shift back-to-front; got:\n{cpp}"
+    );
+}
+
+/// Verilator leg: the emitted SV must satisfy the same two testbenches,
+/// so the backends are pinned to one another rather than each to itself.
+#[test]
+fn test_arbiter_latency_verilator_matches_arch_sim() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping Verilator arbiter-latency cross-check: verilator not found");
+        return;
+    }
+
+    for (name, tb, marker) in [
+        (
+            "LatArb2",
+            "tests/arbiter_latency/tb_lat_arb2.cpp",
+            "PASS lat_arb2",
+        ),
+        (
+            "LatArb3",
+            "tests/arbiter_latency/tb_lat_arb3.cpp",
+            "PASS lat_arb3",
+        ),
+    ] {
+        let td = tempfile::tempdir().expect("tempdir");
+        let sv_out = td.path().join(format!("{name}.sv"));
+        let obj_dir = td.path().join("obj_dir");
+        let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+        let build = std::process::Command::new(arch_bin)
+            .arg("build")
+            .arg(format!("tests/arbiter_latency/{name}.arch"))
+            .arg("-o")
+            .arg(&sv_out)
+            .output()
+            .expect("build latency arbiter SV");
+        assert!(
+            build.status.success(),
+            "arch build should pass for {name}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&build.stdout),
+            String::from_utf8_lossy(&build.stderr)
+        );
+
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("--sv")
+            .arg("--assert")
+            .arg("-Wno-fatal")
+            .arg("-Wno-WIDTH")
+            .arg("-Wno-DECLFILENAME")
+            .arg("--top-module")
+            .arg(name)
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg(tb)
+            .output()
+            .expect("verilate latency arbiter");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass for {name}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+
+        let run = std::process::Command::new(obj_dir.join(format!("V{name}")))
+            .output()
+            .expect("run Verilator latency arbiter");
+        let vl_stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && vl_stdout.contains(marker),
+            "Verilator sim should pass for {name} — arch sim passes the same \
+             testbench\nstdout:\n{vl_stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
 /// The requester count must track the request port array's `[N]` shape,
 /// not a param that happens to be named `NUM_REQ`. Pre-fix, an arbiter
 /// declared `param N: const = 8;` emitted `[N-1:0]` ports alongside a

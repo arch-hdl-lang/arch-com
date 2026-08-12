@@ -71,6 +71,63 @@ impl<'a> SimCodegen<'a> {
             rst_name.clone()
         };
 
+        let req_pa_name = a
+            .port_arrays
+            .first()
+            .map(|pa| pa.name.name.as_str())
+            .unwrap_or("request");
+
+        // `latency N` pipelines the grant through `N - 1` register stages
+        // before it reaches the output ports — see the `if latency > 1`
+        // block in codegen/arbiter.rs. Mirror that here: the grant logic
+        // targets internal `_comb` members and eval_posedge() shifts them
+        // out. Pre-fix the sim ignored `latency` entirely and presented
+        // the grant `N - 1` cycles early relative to the emitted SV
+        // (arch#917). `latency 1` (the default) takes none of these
+        // branches, so its emission is unchanged.
+        let latency = a.latency;
+        let pipe = latency > 1;
+        // Chain of signal names the grant walks through, comb → outputs.
+        // node[0] is the combinational grant; node[latency-1] are the
+        // output ports; anything between is an intermediate stage reg.
+        let stage_names = |out: &str| -> Vec<String> {
+            if !pipe {
+                return vec![out.to_string()];
+            }
+            let mut v = vec![format!("_{out}_comb")];
+            for s in 1..(latency - 1) {
+                v.push(format!("_{out}_p{s}"));
+            }
+            v.push(out.to_string());
+            v
+        };
+        let gv_chain = stage_names("grant_valid");
+        let gr_chain = stage_names("grant_requester");
+        let rr_chain = stage_names(&format!("{req_pa_name}_ready"));
+        // What the grant logic drives, and what the registered state
+        // (lock hold, round-robin pointer, custom last-grant) samples —
+        // the pre-pipeline signals in both cases, matching the SV
+        // emitter's `gv_sig` / `gr_sig` / `rr_sig`.
+        let gv_sig = gv_chain[0].clone();
+        let gr_sig = gr_chain[0].clone();
+        let rr_sig = rr_chain[0].clone();
+
+        // C++ type for each pipelined signal, taken from the port it
+        // eventually drives so a stage reg can never be narrower than
+        // its destination.
+        let port_cpp_ty = |pname: &str, dflt: &str| -> String {
+            a.ports
+                .iter()
+                .find(|p| p.name.name == pname)
+                .map(|p| cpp_port_type_with_params(&p.ty, &a.params))
+                .unwrap_or_else(|| dflt.to_string())
+        };
+        let gv_ty = port_cpp_ty("grant_valid", "uint8_t");
+        let gr_ty = port_cpp_ty("grant_requester", "uint64_t");
+        // Request-array members are `uint64_t` bit vectors (see the
+        // `{name}_ready` declaration below).
+        let rr_ty = "uint64_t".to_string();
+
         let mut h = String::new();
         if self.debug {
             h.push_str(
@@ -131,6 +188,16 @@ impl<'a> SimCodegen<'a> {
             all_port_inits.push("_last_grant_onehot(0)".to_string());
             all_port_inits.push("_grant_onehot(0)".to_string());
         }
+        if pipe {
+            // Combinational grant + one member per intermediate pipeline
+            // stage. The final stage is the output port itself, so it is
+            // already in the port init list above.
+            for c in [&gv_chain, &gr_chain, &rr_chain] {
+                for nm in &c[..c.len() - 1] {
+                    all_port_inits.push(format!("{nm}(0)"));
+                }
+            }
+        }
         if needs_rr_state {
             // Initialize `_last_grant` to N-1 so the first-cycle scan
             // formula `(_last_grant + 1 + _i) % N` starts at index 0,
@@ -169,6 +236,20 @@ impl<'a> SimCodegen<'a> {
             h.push_str("  uint64_t _last_grant_onehot;\n");
             h.push_str("  uint64_t _grant_onehot;\n");
         }
+        if pipe {
+            // `latency N`: combinational grant plus `N - 2` intermediate
+            // stage regs (the last stage is the output port). Mirrors the
+            // SV `grant_valid_comb` / `grant_valid_p1` / … chain.
+            for (ty, c) in [
+                (&gv_ty, &gv_chain),
+                (&gr_ty, &gr_chain),
+                (&rr_ty, &rr_chain),
+            ] {
+                for nm in &c[..c.len() - 1] {
+                    h.push_str(&format!("  {ty} {nm};\n"));
+                }
+            }
+        }
         if needs_rr_state {
             h.push_str("  uint8_t _last_grant;\n");
         }
@@ -191,12 +272,6 @@ impl<'a> SimCodegen<'a> {
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.as_str())
             .unwrap_or("clk");
-
-        let req_pa_name = a
-            .port_arrays
-            .first()
-            .map(|pa| pa.name.name.as_str())
-            .unwrap_or("request");
 
         // eval(): edge detection lives inside eval_posedge() so a parent
         // module's unconditional `_inst_arb.eval_posedge()` call only
@@ -228,9 +303,9 @@ impl<'a> SimCodegen<'a> {
                 "  if ({rst_cond}) {{\n    _hold_valid = 0;\n    _hold_owner = 0;\n  }} else {{\n"
             ));
             cpp.push_str(&format!(
-                "    _hold_valid = grant_valid && !(({req_pa_name}_release >> grant_requester) & 1);\n"
+                "    _hold_valid = {gv_sig} && !(({req_pa_name}_release >> {gr_sig}) & 1);\n"
             ));
-            cpp.push_str("    if (grant_valid) _hold_owner = grant_requester;\n");
+            cpp.push_str(&format!("    if ({gv_sig}) _hold_owner = {gr_sig};\n"));
             cpp.push_str("  }\n");
         }
         if custom_fn.is_some() {
@@ -239,7 +314,9 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str(&format!(
                 "  if ({rst_cond}) {{\n    _last_grant_onehot = 0;\n  }} else {{\n"
             ));
-            cpp.push_str("    if (grant_valid) _last_grant_onehot = _grant_onehot;\n");
+            cpp.push_str(&format!(
+                "    if ({gv_sig}) _last_grant_onehot = _grant_onehot;\n"
+            ));
             cpp.push_str("  }\n");
         }
         if needs_rr_state {
@@ -251,7 +328,27 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str(&format!(
                 "  if ({rst_cond}) {{\n    _last_grant = {rst_val};\n  }} else {{\n"
             ));
-            cpp.push_str("    if (grant_valid) _last_grant = grant_requester;\n");
+            cpp.push_str(&format!("    if ({gv_sig}) _last_grant = {gr_sig};\n"));
+            cpp.push_str("  }\n");
+        }
+        if pipe {
+            // Grant pipeline: `_..._comb` → `_..._p1` → … → output port,
+            // one stage per `latency - 1`. Shifted back-to-front so every
+            // stage samples its source's pre-edge value (the SV
+            // always_ff blocks all fire concurrently). Reset clears the
+            // whole chain, output ports included, matching the SV.
+            cpp.push_str(&format!("  if ({rst_cond}) {{\n"));
+            for c in [&gv_chain, &gr_chain, &rr_chain] {
+                for nm in &c[1..] {
+                    cpp.push_str(&format!("    {nm} = 0;\n"));
+                }
+            }
+            cpp.push_str("  } else {\n");
+            for c in [&gv_chain, &gr_chain, &rr_chain] {
+                for s in (0..c.len() - 1).rev() {
+                    cpp.push_str(&format!("    {} = {};\n", c[s + 1], c[s]));
+                }
+            }
             cpp.push_str("  }\n");
         }
         cpp.push_str("}\n\n");
@@ -260,9 +357,18 @@ impl<'a> SimCodegen<'a> {
         //               priority scans from 0 (index 0 = highest priority);
         //               round_robin / lru rotate starting after the last grant.
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
-        cpp.push_str("  grant_valid = 0;\n  grant_requester = 0;\n");
+        cpp.push_str(&format!("  {gv_sig} = 0;\n  {gr_sig} = 0;\n"));
         if let Some(fn_ident) = custom_fn {
-            self.emit_arbiter_custom_comb(&mut cpp, a, fn_ident, num_req, req_pa_name);
+            self.emit_arbiter_custom_comb(
+                &mut cpp,
+                a,
+                fn_ident,
+                num_req,
+                req_pa_name,
+                &gv_sig,
+                &gr_sig,
+                &rr_sig,
+            );
         } else {
             if a.lock_hold {
                 // Current owner keeps the grant while its request stays
@@ -272,7 +378,9 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str(&format!(
                     "  if (_hold_valid && (({req_pa_name}_valid >> _hold_owner) & 1) && !(({req_pa_name}_release >> _hold_owner) & 1)) {{\n"
                 ));
-                cpp.push_str("    grant_valid = 1;\n    grant_requester = _hold_owner;\n  }\n");
+                cpp.push_str(&format!(
+                    "    {gv_sig} = 1;\n    {gr_sig} = _hold_owner;\n  }}\n"
+                ));
             }
             cpp.push_str(&format!(
                 "  for (int _i = 0; _i < (int){num_req}; _i++) {{\n"
@@ -285,13 +393,13 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str("    int _idx = _i;\n");
             }
             cpp.push_str(&format!(
-                "    if (!grant_valid && (({req_pa_name}_valid >> _idx) & 1)) {{\n"
+                "    if (!{gv_sig} && (({req_pa_name}_valid >> _idx) & 1)) {{\n"
             ));
-            cpp.push_str(
-                "      grant_valid = 1;\n      grant_requester = _idx;\n      break;\n    }\n  }\n",
-            );
             cpp.push_str(&format!(
-                "  {req_pa_name}_ready = grant_valid ? (1ULL << grant_requester) : 0;\n"
+                "      {gv_sig} = 1;\n      {gr_sig} = _idx;\n      break;\n    }}\n  }}\n"
+            ));
+            cpp.push_str(&format!(
+                "  {rr_sig} = {gv_sig} ? (1ULL << {gr_sig}) : 0;\n"
             ));
         }
         cpp.push_str("}\n\n");
@@ -372,6 +480,7 @@ impl<'a> SimCodegen<'a> {
     /// truncates to the next-larger integer type, so a hook returning
     /// stray high bits would otherwise light up `grant_valid` in sim but
     /// not in SV.
+    #[allow(clippy::too_many_arguments)]
     fn emit_arbiter_custom_comb(
         &self,
         cpp: &mut String,
@@ -379,6 +488,9 @@ impl<'a> SimCodegen<'a> {
         fn_ident: &Ident,
         num_req: u64,
         req_pa_name: &str,
+        gv_sig: &str,
+        gr_sig: &str,
+        rr_sig: &str,
     ) {
         // `custom_fn.is_some() && hook.is_none()` already exited above.
         let hook = a.hook.as_ref().expect("custom policy without hook");
@@ -448,15 +560,17 @@ impl<'a> SimCodegen<'a> {
                 "  _grant_onehot = (uint64_t){fn_name}({args_str}) & {mask};\n"
             ));
         }
-        cpp.push_str("  grant_valid = (_grant_onehot != 0);\n");
-        cpp.push_str(&format!("  {req_pa_name}_ready = _grant_onehot;\n"));
+        cpp.push_str(&format!("  {gv_sig} = (_grant_onehot != 0);\n"));
+        cpp.push_str(&format!("  {rr_sig} = _grant_onehot;\n"));
         // Index of the grantee. SV's loop has no early exit, so on a
         // non-one-hot return the highest set bit wins — reproduce that
         // rather than breaking on the lowest.
         cpp.push_str(&format!(
             "  for (int _ci = 0; _ci < (int){num_req}; _ci++) {{\n"
         ));
-        cpp.push_str("    if ((_grant_onehot >> _ci) & 1) grant_requester = _ci;\n  }\n");
+        cpp.push_str(&format!(
+            "    if ((_grant_onehot >> _ci) & 1) {gr_sig} = _ci;\n  }}\n"
+        ));
     }
 }
 
