@@ -67,7 +67,7 @@ fn emit_scaled_block_assign(
             let name = use_block_helper(
                 crate::fp_block::BlockHelper::Quantize {
                     shape,
-                    policy: *policy,
+                    policy: policy.unwrap_or_else(|| shape.scale.default_policy()),
                     round: *round,
                 },
                 ctx,

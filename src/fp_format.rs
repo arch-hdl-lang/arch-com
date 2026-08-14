@@ -284,12 +284,22 @@ pub fn width_of_tag(tag: &str) -> Option<u32> {
 
 /// Storage width of a type usable as a `ScaledVec` element or scale.
 ///
-/// This is `by_type_expr` plus `E8M0`, which is deliberately **not** a float
-/// (no sign, no mantissa, no zero) and therefore has no row in the table —
-/// but is the MX block scale, so it must be measurable here.
+/// This is `by_type_expr` plus the two SCALE types, which are deliberately
+/// **not** floats and therefore have no row in the table — but are what a
+/// block's scale field is, so they must be measurable here.
+///
+/// **Keep this arm in step with [`is_block_scale`].** A scale that is legal
+/// but unmeasurable makes `scaled_vec_width` return `None`, which the sim
+/// turns into a `uint8_t` while the SV emitter's own width walk keeps the
+/// full width — a wide port against a byte-wide variable, silently. That is
+/// how `ScaledVec<UInt<8>,4,E8M0>` failed in phase 2a and how `UE4M3` failed
+/// again in 5b; the `block_member_width_covers_every_legal_scale` test exists
+/// to make the third time a test failure instead.
 pub fn block_member_width(ty: &TypeExpr) -> Option<u32> {
     match ty {
-        TypeExpr::E8M0 => Some(8),
+        // Both scales are 8-bit carriers. UE4M3 has 7 significant bits with
+        // the MSB padded zero (PTX), so the CARRIER is still a byte.
+        TypeExpr::E8M0 | TypeExpr::UE4M3 => Some(8),
         other => by_type_expr(other).map(|f| f.width),
     }
 }
@@ -317,7 +327,7 @@ pub fn is_block_element(ty: &TypeExpr) -> bool {
 /// 7 significant bits, NaN `0x7F`), so reusing our E4M3 here would be a real
 /// bug rather than an approximation.
 pub fn is_block_scale(ty: &TypeExpr) -> bool {
-    matches!(ty, TypeExpr::E8M0)
+    matches!(ty, TypeExpr::E8M0 | TypeExpr::UE4M3)
 }
 
 /// Packed width of `ScaledVec<Elem, N, Scale>` = `scale_w + N * elem_w`.
@@ -529,5 +539,47 @@ mod tests {
         assert_eq!(e2m1.nan_rule, NanRule::NoNan);
         // Every 8-bit-or-wider format still carries full arithmetic.
         assert!(FORMATS.iter().filter(|f| f.width >= 8).all(|f| f.arith));
+    }
+
+    /// Every type `is_block_scale` accepts must also be measurable, and every
+    /// legal (element, scale) pair must yield a width.
+    ///
+    /// This is the structural gate for the failure that has now happened
+    /// twice: `is_block_scale` was widened to admit a new scale while
+    /// `block_member_width` was not, so `scaled_vec_width` returned `None`
+    /// and the sim's fallback sized a 72-bit block as a `uint8_t` — with the
+    /// SV emitter still using the full width. It is invisible to a
+    /// single-backend test and to `arch check`.
+    #[test]
+    fn block_member_width_covers_every_legal_scale() {
+        let scales = [TypeExpr::E8M0, TypeExpr::UE4M3];
+        let elems = [
+            TypeExpr::FP4E2M1,
+            TypeExpr::FP6E2M3,
+            TypeExpr::FP6E3M2,
+            TypeExpr::FP8E4M3,
+            TypeExpr::FP8E5M2,
+        ];
+        for s in &scales {
+            assert!(
+                is_block_scale(s),
+                "test's own scale list is out of date: {s:?}"
+            );
+            assert!(
+                block_member_width(s).is_some(),
+                "{s:?} is a legal block scale but has no width — \
+                 scaled_vec_width will return None and the sim will size the \
+                 block as a byte"
+            );
+            for e in &elems {
+                assert!(
+                    is_block_element(e),
+                    "test's own element list is out of date: {e:?}"
+                );
+                let w = scaled_vec_width(e, 16, s)
+                    .unwrap_or_else(|| panic!("ScaledVec<{e:?}, 16, {s:?}> has no width"));
+                assert_eq!(w, 8 + 16 * block_member_width(e).unwrap());
+            }
+        }
     }
 }

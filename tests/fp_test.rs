@@ -2979,6 +2979,205 @@ fn fp_scaled_quant_sv_matches_sim() {
     }
 }
 
+/// **The phase-5b gate (§8), arch#905.** Same construction as
+/// `fp_scaled_quant_sv_matches_sim`, aimed at the `UE4M3` scale.
+///
+/// This is the comparison that matters most for phase 5b, because the failure
+/// mode it guards is one no structural test can see: the two ladders are
+/// emitted from one table, so a wrong constant or a wrong `>` / `>=` would be
+/// wrong IDENTICALLY in SystemVerilog and in C++ — the shape of arch#904.
+/// Only running both and comparing values catches a table that is
+/// self-consistently wrong, and the `..._matches_a_real_divide` unit tests in
+/// `src/fp_block.rs` are what catch that half.
+#[test]
+fn fp_nvfp4_sv_matches_sim() {
+    fn verilator_available() -> bool {
+        std::process::Command::new("verilator")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    if !verilator_available() {
+        eprintln!("skipping fp_nvfp4_sv_matches_sim: verilator not in PATH");
+        return;
+    }
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let td = tempfile::tempdir().expect("tempdir");
+
+    let sim = arch()
+        .arg("sim")
+        .arg(format!("{manifest}/tests/fp_v1/Nvfp4Quant.arch"))
+        .arg("--tb")
+        .arg(format!("{manifest}/tests/fp_v1/tb_nvfp4.cpp"))
+        .arg("--outdir")
+        .arg(td.path().join("sim"))
+        .output()
+        .expect("run arch sim");
+    assert!(
+        sim.status.success(),
+        "arch sim failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&sim.stdout),
+        String::from_utf8_lossy(&sim.stderr)
+    );
+    let sim_txt = transcript(&String::from_utf8_lossy(&sim.stdout));
+
+    let sv = td.path().join("Nvfp4Quant.sv");
+    let build = arch()
+        .arg("build")
+        .arg(format!("{manifest}/tests/fp_v1/Nvfp4Quant.arch"))
+        .arg("-o")
+        .arg(&sv)
+        .output()
+        .expect("run arch build");
+    assert!(
+        build.status.success(),
+        "arch build failed:\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let obj = td.path().join("obj");
+    let tb = format!("{manifest}/tests/fp_v1/rtl_diff/tb_nvfp4.sv");
+    let vout = std::process::Command::new("verilator")
+        .args([
+            "--binary",
+            "--timing",
+            "-Wno-WIDTH",
+            "-Wno-UNOPTFLAT",
+            "-Wno-WIDTHTRUNC",
+            "-Wno-WIDTHEXPAND",
+            "-Wno-UNUSEDSIGNAL",
+            "-Wno-MULTITOP",
+            "-Wno-DECLFILENAME",
+            "-Wno-TIMESCALEMOD",
+            "--top-module",
+            "tb",
+            "-o",
+            "sim_nv",
+        ])
+        .arg("-Mdir")
+        .arg(&obj)
+        .arg(&sv)
+        .arg(&tb)
+        .output()
+        .expect("run verilator");
+    assert!(
+        vout.status.success(),
+        "verilator build failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&vout.stdout),
+        String::from_utf8_lossy(&vout.stderr)
+    );
+    let run = std::process::Command::new(obj.join("sim_nv"))
+        .output()
+        .expect("run verilated sim");
+    let sv_txt = transcript(&String::from_utf8_lossy(&run.stdout));
+
+    assert!(
+        !sim_txt.is_empty() && sim_txt.lines().count() > 40,
+        "sim transcript is suspiciously short — a passing comparison of two \
+         empty transcripts would be vacuous:\n{sim_txt}"
+    );
+    if sim_txt != sv_txt {
+        let first = sim_txt
+            .lines()
+            .zip(sv_txt.lines())
+            .enumerate()
+            .find(|(_, (a, b))| a != b)
+            .map(|(i, (a, b))| format!("line {}:\n  sim: {a}\n  sv : {b}", i + 1))
+            .unwrap_or_else(|| "transcripts differ in length".to_string());
+        panic!(
+            "arch build and arch sim disagree on the NVFP4 block conversion.\n{first}\n\n\
+             --- sim ---\n{sim_txt}\n--- sv ---\n{sv_txt}"
+        );
+    }
+
+    // The default policy for a UE4M3 block is `exact`, so the un-annotated
+    // call and the explicit one must be bit-identical — and on a block whose
+    // maximum is not a power of two, `floor_pow2` must NOT be.
+    let sect = |name: &str| -> std::collections::HashMap<String, String> {
+        let mut out = std::collections::HashMap::new();
+        let mut in_sect = false;
+        for l in sim_txt.lines() {
+            if let Some(rest) = l.strip_prefix("== ") {
+                in_sect = rest.trim() == name;
+                continue;
+            }
+            if in_sect {
+                if let Some((k, v)) = l.split_once(' ') {
+                    out.insert(k.trim().to_string(), v.trim().to_string());
+                }
+            }
+        }
+        out
+    };
+    let np = sect("nonpow2");
+    assert_eq!(
+        np.get("qd"),
+        np.get("qe"),
+        "a UE4M3 block must default to the `exact` scale policy:\n{sim_txt}"
+    );
+    assert_ne!(
+        np.get("qe"),
+        np.get("qf"),
+        "on a non-power-of-two maximum `exact` must differ from `floor_pow2` — \
+         that difference IS the scale's mantissa:\n{sim_txt}"
+    );
+}
+
+/// `exact` is refused where it cannot mean anything. Silently treating it as
+/// `floor_pow2` would hand back a different block than the one asked for.
+#[test]
+fn fp_scaled_quant_exact_on_pow2_scale_errors() {
+    let src = r#"module ExactE8
+  port v: in Vec<FP32, 4>;
+  port o: out ScaledVec<FP4E2M1, 4, E8M0>;
+  comb o = scaled_quantize<ScaledVec<FP4E2M1, 4, E8M0>, exact, rne>(v); end comb
+end module ExactE8
+"#;
+    let err = check_err(src, "ExactE8.arch");
+    assert!(
+        err.contains("meaningless") && err.contains("power of two"),
+        "`exact` on an E8M0 block must say why it cannot apply:\n{err}"
+    );
+}
+
+/// The `UE4M3` scale is accepted as a block scale, and `FP8E4M3` still is
+/// not — they are different formats and confusing them is a real bug.
+#[test]
+fn fp_nvfp4_scale_accepted_but_fp8e4m3_is_not() {
+    let ok = r#"module NvOk
+  port v: in Vec<FP32, 16>;
+  port o: out ScaledVec<FP4E2M1, 16, UE4M3>;
+  comb o = scaled_quantize<ScaledVec<FP4E2M1, 16, UE4M3>>(v); end comb
+end module NvOk
+"#;
+    let td = tempfile::tempdir().expect("tempdir");
+    let path = td.path().join("NvOk.arch");
+    std::fs::write(&path, ok).unwrap();
+    let out = arch()
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run arch check");
+    assert!(
+        out.status.success(),
+        "a UE4M3-scaled block must type-check:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let bad = r#"module NvBad
+  port v: in Vec<FP32, 16>;
+  port o: out ScaledVec<FP4E2M1, 16, FP8E4M3>;
+  comb o = scaled_quantize<ScaledVec<FP4E2M1, 16, FP8E4M3>>(v); end comb
+end module NvBad
+"#;
+    let err = check_err(bad, "NvBad.arch");
+    assert!(
+        err.contains("E8M0") && err.contains("UE4M3"),
+        "the scale error must name both legal scales:\n{err}"
+    );
+}
+
 /// `scaled_quantize` needs its output format spelled — it cannot be inferred
 /// from a `Vec<FP32,N>`, since every block format takes FP32 inputs.
 #[test]
@@ -3374,20 +3573,33 @@ int main() {
     );
 }
 
-/// `UE4M3` is a scalar type today; using it as a block scale is refused with
-/// a message that says why (its value is not a power of two) and where the
-/// work is tracked.
+/// A `UE4M3`-scaled block is a first-class type: declarable as a port, and
+/// assignable as one packed word.
+///
+/// This replaces `fp_ue4m3_not_yet_a_block_scale`, which pinned the phase-5a
+/// refusal ("not yet usable as a block scale ... arch#905"). Phase 5b lifted
+/// it — see `fp_nvfp4_scale_accepted_but_fp8e4m3_is_not` for the acceptance
+/// path and the `FP8E4M3` confusion that is still an error.
 #[test]
-fn fp_ue4m3_not_yet_a_block_scale() {
+fn fp_ue4m3_block_scale_is_a_first_class_type() {
     let src = r#"module Nvfp4Blk
   port b: in ScaledVec<FP4E2M1, 16, UE4M3>;
   port o: out ScaledVec<FP4E2M1, 16, UE4M3>;
   comb o = b; end comb
 end module Nvfp4Blk
 "#;
-    let err = check_err(src, "Nvfp4Blk.arch");
+    let td = tempfile::tempdir().expect("tempdir");
+    let path = td.path().join("Nvfp4Blk.arch");
+    std::fs::write(&path, src).unwrap();
+    let out = arch()
+        .arg("check")
+        .arg(&path)
+        .output()
+        .expect("run arch check");
     assert!(
-        err.contains("not yet usable as a block scale") && err.contains("905"),
-        "the refusal must name the follow-up:\n{err}"
+        out.status.success(),
+        "a UE4M3-scaled block must be a usable port type:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
     );
 }
