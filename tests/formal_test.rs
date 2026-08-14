@@ -13,6 +13,88 @@ fn z3_available() -> bool {
         .unwrap_or(false)
 }
 
+/// The in-repo Lean proof project (`ArchConstructProof` + `ArchThreadLoweringProof`).
+const LEAN_PROJECT_DIR: &str = "proofs/lean_thread_lowering";
+
+/// Locate `lake`: PATH first, then the standard elan install location.
+fn find_lake() -> Option<std::path::PathBuf> {
+    if Command::new("lake")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return Some(std::path::PathBuf::from("lake"));
+    }
+    let home = std::env::var_os("HOME")?;
+    let home_lake = std::path::PathBuf::from(home).join(".elan/bin/lake");
+    home_lake.exists().then_some(home_lake)
+}
+
+/// Make sure the in-repo Lean proof library is built before any replay test
+/// runs, and report whether Lean testing is possible at all.
+///
+/// Why this exists: `proofs/lean_thread_lowering/.lake/` is build output and
+/// is gitignored, so a fresh clone — or, far more often, a fresh
+/// `git worktree add`, which is the standard way to work this repo — has
+/// none. Every Lean replay test then fails with
+///
+/// ```text
+/// error: unknown module prefix 'ArchConstructProof'
+/// No directory 'ArchConstructProof' or file 'ArchConstructProof.olean' ...
+/// ```
+///
+/// which reads exactly like a proof regression but is only a missing build.
+/// The project has no external dependencies (no Mathlib), so a cold build is
+/// ~5s — cheap enough to just do here, once per test binary, instead of
+/// leaving a phantom failure for whoever runs `cargo test` next.
+///
+/// Returns `false` when `lake` is not installed at all — callers then skip,
+/// matching the repo-wide "skip cleanly when the external tool is absent"
+/// convention CI depends on (`.github/workflows/test.yml` installs no Lean
+/// toolchain, so these tests skip there and run on dev machines).
+fn lean_project_ready() -> bool {
+    static READY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *READY.get_or_init(|| {
+        let Some(lake) = find_lake() else {
+            eprintln!("skipping Lean replay tests: `lake` not found on PATH or in ~/.elan/bin");
+            return false;
+        };
+        // Already built? `lake build` is a fast no-op, but skipping the
+        // process spawn keeps the warm path free.
+        if std::path::Path::new(LEAN_PROJECT_DIR)
+            .join(".lake/build/lib/lean/ArchConstructProof.olean")
+            .exists()
+        {
+            return true;
+        }
+        eprintln!(
+            "building the Lean proof library in {LEAN_PROJECT_DIR} \
+             (first run in this checkout; ~5s, no external deps)"
+        );
+        match Command::new(&lake)
+            .arg("build")
+            .current_dir(LEAN_PROJECT_DIR)
+            .output()
+        {
+            Ok(o) if o.status.success() => true,
+            Ok(o) => {
+                eprintln!(
+                    "skipping Lean replay tests: `lake build` failed in {LEAN_PROJECT_DIR}\n\
+                     stdout:\n{}\nstderr:\n{}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                );
+                false
+            }
+            Err(e) => {
+                eprintln!("skipping Lean replay tests: could not run `lake build`: {e}");
+                false
+            }
+        }
+    })
+}
+
 fn solver_available(name: &str) -> bool {
     Command::new(name)
         .arg("--help")
@@ -390,6 +472,11 @@ end arbiter BusArbiter
 
 #[test]
 fn construct_proof_lean_finds_home_elan_when_lake_not_on_path() {
+    if !lean_project_ready() {
+        return;
+    }
+    // This test is specifically about the ~/.elan fallback, so it needs lake
+    // installed *there* — a PATH-only lake would not exercise it.
     let Some(home) = std::env::var_os("HOME") else {
         eprintln!("skipping: HOME not set");
         return;
@@ -444,15 +531,10 @@ end fifo TxQueue
 
 #[test]
 fn construct_proof_lean_non_power_two_fifo_catches_depth_wrap_bug() {
-    let Some(home) = std::env::var_os("HOME") else {
-        eprintln!("skipping: HOME not set");
-        return;
-    };
-    let home_lake = std::path::PathBuf::from(home).join(".elan/bin/lake");
-    if !home_lake.exists() {
-        eprintln!("skipping: ~/.elan/bin/lake not installed");
+    if !lean_project_ready() {
         return;
     }
+    let lake = find_lake().expect("lean_project_ready() already found lake");
 
     let td = tempfile::tempdir().expect("tempdir");
     let arch_path = td.path().join("NonPow2Fifo.arch");
@@ -516,7 +598,7 @@ end fifo NonPow2Queue
     );
     std::fs::write(&bad_proof_path, bad_proof).expect("write bad proof");
 
-    let output = Command::new(&home_lake)
+    let output = Command::new(&lake)
         .arg("env")
         .arg("lean")
         .arg(&bad_proof_path)
