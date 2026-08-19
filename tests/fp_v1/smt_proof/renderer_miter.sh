@@ -17,7 +17,8 @@
 # cancels under bit-blasting).
 #
 # Requires: yosys, z3, python3, a release `arch` binary (built fresh by
-# default; set ARCH_BIN to override). Not run in CI (yosys/z3 not in the
+# default; set ARCH_BIN to override). Set DUMP_FP_BIN as well when the
+# override does not have its sibling `examples/dump_fp`. Not run in CI (yosys/z3 not in the
 # sandbox); run manually:
 #
 #   tests/fp_v1/smt_proof/renderer_miter.sh [outdir]
@@ -39,7 +40,8 @@ if [[ -z "${ARCH_BIN:-}" ]]; then
   ( cd "$repo" && cargo build --release --bin arch --example dump_fp >&2 )
   ARCH_BIN="$repo/target/release/arch"
 fi
-"$repo/target/release/examples/dump_fp" smt > "$outdir/arch_defs.smt2"
+DUMP_FP_BIN="${DUMP_FP_BIN:-$(dirname "$ARCH_BIN")/examples/dump_fp}"
+"$DUMP_FP_BIN" smt > "$outdir/arch_defs.smt2"
 
 # MODULE | arch define-fun | port list (space-sep in-ports) | in type | out type
 ops=(
