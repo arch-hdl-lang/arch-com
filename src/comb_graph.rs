@@ -1980,9 +1980,10 @@ impl GraphBuilder {
     /// Walk a comb-block's statements and add edges from RHS identifiers to
     /// LHS base names. Conditions count as reads of every then/else target.
     fn scan_assignments(&mut self, stmts: &[Stmt], path: &InstPath, bus_ports: &HashSet<String>) {
-        let mut cond_stack: Vec<HashSet<String>> = Vec::new();
+        let mut cond_stack: Vec<HashMap<String, bool>> = Vec::new();
         let mut written: HashSet<String> = HashSet::new();
         let mut ever_written: HashSet<String> = HashSet::new();
+        let mut condition_grounded: HashSet<String> = HashSet::new();
         self.scan_assignments_inner(
             stmts,
             path,
@@ -1990,6 +1991,7 @@ impl GraphBuilder {
             &mut cond_stack,
             &mut written,
             &mut ever_written,
+            &mut condition_grounded,
         );
     }
 
@@ -2022,17 +2024,27 @@ impl GraphBuilder {
     /// wrote it. Writes inside a `for` body are treated as branch-local
     /// (never promoted to the enclosing scope) for the same reason.
     ///
+    /// `condition_grounded` tracks names whose current value is established
+    /// before evaluating a control condition. Unlike `written`, it is
+    /// propagated out of `for` bodies because the graph walk treats the body
+    /// as executing once and existing fold-artifact handling relies on that
+    /// same assumption. Each condition snapshots this set at entry so later
+    /// writes in its body cannot retroactively ground the condition read.
+    ///
     /// `ever_written` (issue #780) tracks a STRICTLY MORE PERMISSIVE
-    /// question, used ONLY to compute the per-edge "grounded" flag (see
-    /// `add_edge_grounded` / `GraphBuilder::is_fold_artifact`) — NEVER to
-    /// decide whether to add an edge at all, which remains governed
-    /// exclusively by `written` as above, unchanged. Where `written` asks
-    /// "is this name DEFINITELY assigned no matter which path got us
-    /// here" (intersection across branches, branch-local across `for`),
-    /// `ever_written` asks "could this name's current value already be
-    /// FIXED by something reachable before this point" (union across
-    /// `if`/`else`/`match` arms, and — unlike `written` — propagated back
-    /// out of a `for` body). Both directions are sound:
+    /// question for ordinary RHS data reads, used ONLY to compute their
+    /// per-edge "grounded" flag (see `add_edge_grounded` /
+    /// `GraphBuilder::is_fold_artifact`) — NEVER to decide whether to add an
+    /// edge at all, which remains governed exclusively by `written` as
+    /// above, unchanged. Where `written` asks "is this name DEFINITELY
+    /// assigned no matter which path got us here" (intersection across
+    /// branches, branch-local across `for`), `ever_written` asks "could this
+    /// name's current value already be FIXED by something reachable before
+    /// this point" (union across `if`/`else`/`match` arms, and — unlike
+    /// `written` — propagated back out of a `for` body). Condition reads use
+    /// the stricter, entry-snapshotted `condition_grounded` set because a
+    /// control dependency is only grounded when its value is established
+    /// before the condition executes. Both directions are sound:
     ///   * Union-not-intersection across mutually exclusive branches is
     ///     safe because whichever branch actually ran, the name's value at
     ///     this point is either that branch's fresh write (fixed) or
@@ -2056,9 +2068,10 @@ impl GraphBuilder {
         stmts: &[Stmt],
         path: &InstPath,
         bus_ports: &HashSet<String>,
-        cond_stack: &mut Vec<HashSet<String>>,
+        cond_stack: &mut Vec<HashMap<String, bool>>,
         written: &mut HashSet<String>,
         ever_written: &mut HashSet<String>,
+        condition_grounded: &mut HashSet<String>,
     ) {
         for stmt in stmts {
             match stmt {
@@ -2097,7 +2110,7 @@ impl GraphBuilder {
                         self.add_edge_grounded(from, to, grounded);
                     }
                     for conds in cond_stack.iter() {
-                        for id in conds {
+                        for (id, grounded) in conds {
                             if already_written && id.as_str() == lhs.as_str() {
                                 continue;
                             }
@@ -2105,19 +2118,27 @@ impl GraphBuilder {
                                 path: path.clone(),
                                 signal: id.clone(),
                             });
-                            let grounded = ever_written.contains(id.as_str());
-                            self.add_edge_grounded(from, to, grounded);
+                            self.add_edge_grounded(from, to, *grounded);
                         }
                     }
                     written.insert(lhs.clone());
+                    condition_grounded.insert(lhs.clone());
                     ever_written.insert(lhs);
                 }
                 Stmt::IfElse(ife) => {
                     let mut cond_ids = HashSet::new();
                     collect_expr_idents_bus(&ife.cond, bus_ports, &mut cond_ids);
-                    cond_stack.push(cond_ids);
+                    let cond_frame: HashMap<String, bool> = cond_ids
+                        .into_iter()
+                        .map(|id| {
+                            let grounded = condition_grounded.contains(&id);
+                            (id, grounded)
+                        })
+                        .collect();
+                    cond_stack.push(cond_frame);
                     let mut then_written = written.clone();
                     let mut then_ever = ever_written.clone();
+                    let mut then_condition_grounded = condition_grounded.clone();
                     self.scan_assignments_inner(
                         &ife.then_stmts,
                         path,
@@ -2125,9 +2146,11 @@ impl GraphBuilder {
                         cond_stack,
                         &mut then_written,
                         &mut then_ever,
+                        &mut then_condition_grounded,
                     );
                     let mut else_written = written.clone();
                     let mut else_ever = ever_written.clone();
+                    let mut else_condition_grounded = condition_grounded.clone();
                     self.scan_assignments_inner(
                         &ife.else_stmts,
                         path,
@@ -2135,6 +2158,7 @@ impl GraphBuilder {
                         cond_stack,
                         &mut else_written,
                         &mut else_ever,
+                        &mut else_condition_grounded,
                     );
                     cond_stack.pop();
                     // Only promote names written on BOTH arms — mutually
@@ -2142,18 +2166,31 @@ impl GraphBuilder {
                     *written = then_written.intersection(&else_written).cloned().collect();
                     // `ever_written`: union — see the doc comment above.
                     *ever_written = then_ever.union(&else_ever).cloned().collect();
+                    *condition_grounded = then_condition_grounded
+                        .intersection(&else_condition_grounded)
+                        .cloned()
+                        .collect();
                 }
                 Stmt::Match(m) => {
                     let mut scrut_ids = HashSet::new();
                     collect_expr_idents_bus(&m.scrutinee, bus_ports, &mut scrut_ids);
-                    cond_stack.push(scrut_ids);
+                    let cond_frame: HashMap<String, bool> = scrut_ids
+                        .into_iter()
+                        .map(|id| {
+                            let grounded = condition_grounded.contains(&id);
+                            (id, grounded)
+                        })
+                        .collect();
+                    cond_stack.push(cond_frame);
                     let mut arm_written: Option<HashSet<String>> = None;
                     let mut arm_ever: Option<HashSet<String>> = None;
+                    let mut arm_condition_grounded: Option<HashSet<String>> = None;
                     for arm in &m.arms {
                         let mut aw = written.clone();
                         let mut ae = ever_written.clone();
+                        let mut acg = condition_grounded.clone();
                         self.scan_assignments_inner(
-                            &arm.body, path, bus_ports, cond_stack, &mut aw, &mut ae,
+                            &arm.body, path, bus_ports, cond_stack, &mut aw, &mut ae, &mut acg,
                         );
                         arm_written = Some(match arm_written {
                             Some(acc) => acc.intersection(&aw).cloned().collect(),
@@ -2163,6 +2200,10 @@ impl GraphBuilder {
                             Some(acc) => acc.union(&ae).cloned().collect(),
                             None => ae,
                         });
+                        arm_condition_grounded = Some(match arm_condition_grounded {
+                            Some(acc) => acc.intersection(&acg).cloned().collect(),
+                            None => acg,
+                        });
                     }
                     cond_stack.pop();
                     if let Some(merged) = arm_written {
@@ -2171,6 +2212,9 @@ impl GraphBuilder {
                     if let Some(merged) = arm_ever {
                         *ever_written = merged;
                     }
+                    if let Some(merged) = arm_condition_grounded {
+                        *condition_grounded = merged;
+                    }
                 }
                 Stmt::For(f) => {
                     // Loop trip count isn't evaluated here; treat the body as
@@ -2178,6 +2222,7 @@ impl GraphBuilder {
                     // into `written` (unchanged from before issue #780).
                     let mut body_written = written.clone();
                     let mut body_ever = ever_written.clone();
+                    let mut body_condition_grounded = condition_grounded.clone();
                     self.scan_assignments_inner(
                         &f.body,
                         path,
@@ -2185,6 +2230,7 @@ impl GraphBuilder {
                         cond_stack,
                         &mut body_written,
                         &mut body_ever,
+                        &mut body_condition_grounded,
                     );
                     // `ever_written` DOES propagate out — see the doc
                     // comment above (issue #780: needed so a LATER, sibling
@@ -2192,6 +2238,7 @@ impl GraphBuilder {
                     // — e.g. `onebit_ecc`'s two-phase parity computation —
                     // sees it as grounded).
                     *ever_written = body_ever;
+                    *condition_grounded = body_condition_grounded;
                 }
                 _ => {}
             }

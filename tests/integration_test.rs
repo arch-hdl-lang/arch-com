@@ -27560,6 +27560,110 @@ fn test_comb_loop_mutually_exclusive_branch_write_not_promoted() {
 }
 
 #[test]
+fn test_comb_loop_branch_condition_does_not_use_union_grounding() {
+    // A write to x in one branch must not ground a later condition that reads
+    // x: when that branch is skipped, the condition reads x's unresolved
+    // pre-block value. The two later assignments then form a real cycle
+    // (x -> y through the condition, y -> x through the final assignment).
+    // This must coexist with the union grounding used for ordinary
+    // post-branch sequential folds (arch#780).
+    let source = r#"
+        module M
+          port c: in Bool;
+          port o: out Bool;
+          wire x: Bool;
+          wire y: Bool;
+          comb
+            if c
+              x = false;
+            else
+            end if
+            if x
+              y = false;
+            else
+              y = true;
+            end if
+            x = y;
+            o = x;
+          end comb
+        end module M
+    "#;
+    let ws = errors_from(source);
+    assert!(
+        ws.iter()
+            .any(|m| m.contains("combinational feedback cycle (")),
+        "branch-only x write must not ground the later condition; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_comb_loop_condition_grounding_is_snapshotted_at_entry() {
+    // The outer condition is evaluated before its body writes x. That write
+    // must not retroactively ground the outer condition's dependency on x.
+    // Otherwise the later y -> x edge can make the real x -> y -> x cycle
+    // look like a fold artifact.
+    let source = r#"
+        module M
+          port o: out Bool;
+          wire x: Bool;
+          wire y: Bool;
+          comb
+            if x
+              x = false;
+              y = true;
+            else
+              y = false;
+            end if
+            x = y;
+            o = x;
+          end comb
+        end module M
+    "#;
+    let ws = errors_from(source);
+    assert!(
+        ws.iter()
+            .any(|m| m.contains("combinational feedback cycle (")),
+        "outer condition must retain its pre-body grounding state; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_comb_loop_completed_for_grounding_reaches_later_condition() {
+    // A for body is walked once for fold analysis. An unconditional write in
+    // that body fully establishes x, so a later condition may use x as a
+    // grounded control dependency without fabricating x <-> y feedback.
+    let source = r#"
+        module M
+          port a: in Bool;
+          port o: out Bool;
+          wire x: Bool;
+          wire y: Bool;
+          comb
+            for i in 0..0
+              x = a;
+            end for
+            if x
+              y = false;
+            else
+              y = true;
+            end if
+            x = y;
+            o = x;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    assert!(
+        !ws.iter()
+            .any(|m| m.contains("combinational feedback cycle (")),
+        "completed for-loop write must ground the later condition; got: {:?}",
+        ws
+    );
+}
+
+#[test]
 fn test_cond_only_grounded_fold_not_flagged_and_verilator_confirms_acyclic() {
     // arch#780, NEGATIVE direction: a self-fold (`p = q +% p;`) whose ONLY
     // prior establishment of `p` is a CONDITIONAL, single-arm write
