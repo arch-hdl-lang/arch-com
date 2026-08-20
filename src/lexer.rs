@@ -217,6 +217,8 @@ pub enum TokenKind {
     False,
     #[token("assert")]
     Assert,
+    #[token("assume")]
+    Assume,
     #[token("cover")]
     Cover,
     #[token("implies")]
@@ -275,6 +277,22 @@ pub enum TokenKind {
     FP32,
     #[token("BF16")]
     BF16,
+    #[token("FP8E4M3")]
+    FP8E4M3,
+    #[token("FP8E5M2")]
+    FP8E5M2,
+    #[token("FP4E2M1")]
+    FP4E2M1,
+    #[token("FP6E2M3")]
+    FP6E2M3,
+    #[token("FP6E3M2")]
+    FP6E3M2,
+    #[token("E8M0")]
+    E8M0,
+    #[token("UE4M3")]
+    UE4M3,
+    #[token("ScaledVec")]
+    KwScaledVec,
 
     // Operators and punctuation
     #[token("+:")]
@@ -445,6 +463,7 @@ impl fmt::Display for TokenKind {
             TokenKind::True => write!(f, "true"),
             TokenKind::False => write!(f, "false"),
             TokenKind::Assert => write!(f, "assert"),
+            TokenKind::Assume => write!(f, "assume"),
             TokenKind::Cover => write!(f, "cover"),
             TokenKind::Implies => write!(f, "implies"),
             TokenKind::Guard => write!(f, "guard"),
@@ -510,6 +529,14 @@ impl fmt::Display for TokenKind {
             TokenKind::KwVec => write!(f, "Vec"),
             TokenKind::FP32 => write!(f, "FP32"),
             TokenKind::BF16 => write!(f, "BF16"),
+            TokenKind::FP8E4M3 => write!(f, "FP8E4M3"),
+            TokenKind::FP8E5M2 => write!(f, "FP8E5M2"),
+            TokenKind::FP4E2M1 => write!(f, "FP4E2M1"),
+            TokenKind::FP6E2M3 => write!(f, "FP6E2M3"),
+            TokenKind::FP6E3M2 => write!(f, "FP6E3M2"),
+            TokenKind::E8M0 => write!(f, "E8M0"),
+            TokenKind::UE4M3 => write!(f, "UE4M3"),
+            TokenKind::KwScaledVec => write!(f, "ScaledVec"),
             TokenKind::Plus => write!(f, "+"),
             TokenKind::Minus => write!(f, "-"),
             TokenKind::Star => write!(f, "*"),

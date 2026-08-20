@@ -26,20 +26,19 @@ impl<'a> Codegen<'a> {
         // by bare name with no `import`, and Verilator can't resolve them.
         // (Showed up in arch-ibex B5: `IbexController.arch` is an `fsm`
         // that `use IbexPkg;` for shared `ExcCause` / `Irqs` types.)
-        for item in &self.source.items {
-            if let Item::Use(u) = item {
-                let is_package = self
-                    .source
-                    .items
-                    .iter()
-                    .any(|i| matches!(i, Item::Package(p) if p.name.name == u.name.name));
-                let is_extern =
-                    self.source.items.iter().any(
-                        |i| matches!(i, Item::ExternPackage(ep) if ep.name.name == u.name.name),
-                    );
-                if is_package || is_extern {
-                    self.out.push_str(&format!("import {}::*;\n", u.name.name));
-                }
+        for package_name in self.active_uses(f.span) {
+            let is_package = self
+                .source
+                .items
+                .iter()
+                .any(|i| matches!(i, Item::Package(p) if p.name.name == package_name));
+            let is_extern = self
+                .source
+                .items
+                .iter()
+                .any(|i| matches!(i, Item::ExternPackage(ep) if ep.name.name == package_name));
+            if is_package || is_extern {
+                self.out.push_str(&format!("import {package_name}::*;\n"));
             }
         }
         // Built-in `state` identifier inside fsm scope: read of the current
@@ -122,6 +121,12 @@ impl<'a> Codegen<'a> {
         self.line(");");
         self.line("");
         self.indent += 1;
+
+        // Emit any functions defined in the same file as local `function
+        // automatic` declarations (arch#852) — a state's `comb`/`seq` body,
+        // a transition guard or an `assert` may call one, and SV has no
+        // free functions.
+        self.emit_pending_functions();
 
         // ── State type ───────────────────────────────────────────────────────
         self.line(&format!(
@@ -384,8 +389,11 @@ impl<'a> Codegen<'a> {
             self.line("end");
         }
 
-        // Auto-generated FSM safety assertions and coverage
-        {
+        // Auto-generated FSM safety assertions and coverage. Suppressed
+        // under `--no-auto-asserts` (issue #649) — compiler-generated
+        // SVA only, the user-written `assert`/`cover` block below is
+        // unaffected.
+        if !self.suppress_auto_sva {
             let clk_port = f.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)));
             let clk = clk_port
                 .map(|p| p.name.name.clone())

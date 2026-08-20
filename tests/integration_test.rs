@@ -198,7 +198,13 @@ end module Placeholder
 // ── Operators ─────────────────────────────────────────────────────────────────
 
 #[test]
-fn test_bit_slice_arithmetic_expression_errors_with_wrapping_hint() {
+fn test_bit_slice_arithmetic_base_hoists_to_named_temp() {
+    // Was `test_bit_slice_arithmetic_expression_errors_with_wrapping_hint`,
+    // which pinned the arch#653 rejection. arch#813 P1 retired the
+    // `is_portable_bit_slice_base` allowlist: an arithmetic base is no
+    // longer a compile error, it is bound to a named temp and sliced
+    // through that — the same automatic hoist the single-bit `Index` form
+    // has used since arch#650. Both frontends accept the result.
     let source = r#"
 module SliceArithmeticExpr
   port a: in SInt<4>;
@@ -208,21 +214,19 @@ module SliceArithmeticExpr
   let y = signed((a + one_s)[3:0]);
 end module SliceArithmeticExpr
 "#;
-    let tokens = lexer::tokenize(source).expect("lexer error");
-    let mut parser = Parser::new(tokens, source);
-    let parsed_ast = parser.parse_source_file().expect("parse error");
-    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
-    let symbols = resolve::resolve(&ast).expect("resolve error");
-    let checker = TypeChecker::new(&symbols, &ast);
-    let errors = checker
-        .check()
-        .expect_err("arithmetic expression bit-slice should error");
-    let rendered = format!("{errors:?}");
-    assert!(rendered.contains("cannot bit-slice this expression directly"));
-    assert!(rendered.contains("+%"));
-    assert!(rendered.contains("-%"));
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign arch_idx_base_0 = a + one_s;"),
+        "expected the arithmetic base bound to a temp, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("arch_idx_base_0[3:0]"),
+        "expected the slice to go through the temp, got:\n{sv}"
+    );
 
-    let fixed = r#"
+    // The wrapping-operator form remains the idiomatic spelling for
+    // same-width modular arithmetic and still emits with no temp at all.
+    let wrapping = r#"
 module SliceArithmeticExpr
   port a: in SInt<4>;
   port y: out SInt<4>;
@@ -231,18 +235,26 @@ module SliceArithmeticExpr
   let y = a +% one_s;
 end module SliceArithmeticExpr
 "#;
-    let sv = compile_to_sv(fixed);
+    let sv = compile_to_sv(wrapping);
     assert!(sv.contains("assign y = 4'(a + one_s);"), "got:\n{sv}");
+    assert!(!sv.contains("arch_idx_base"), "no hoist needed, got:\n{sv}");
 }
 
 #[test]
-fn test_repeat_base_bit_slice_emits_bare_no_parens() {
-    // arch#653 item 2: a replication `{N{a}}` as a bit-slice base is classified
-    // portable by typecheck's `is_portable_bit_slice_base`, but codegen used to
-    // wrap it in parens — `({2{a}})[3:0]` — which Verilator/iverilog reject as a
-    // syntax error (the guardrail's own Icarus-portability goal defeated). Repeat
-    // is the same grammar class as Concat, so the bare form `{2{a}}[3:0]` is
-    // legal SV and must be emitted without the enclosing parens.
+fn test_repeat_base_bit_slice_hoists_to_named_temp() {
+    // Supersedes the old `test_repeat_base_bit_slice_emits_bare_no_parens`
+    // (arch#653 item 2 / PR #656). That test pinned bare emission —
+    // `{2{a}}[3:0]`, no enclosing parens — because parenthesizing produces
+    // `({2{a}})[3:0]`, which Verilator rejects. PR #656's verification
+    // table only ever ran Verilator 5.048, though; arch#807 found (while
+    // verifying arch#650 against a *real* iverilog binary) that Icarus
+    // Verilog 12.0 rejects `{2{a}}[3:0]` bare too — the "bare form is
+    // portable" half of the claim was never actually checked against
+    // iverilog. Neither bare nor parenthesized SV shape is legal on
+    // Icarus, so codegen now hoists the `Repeat` base to a named
+    // module-scope temp instead — the same fix arch#650 uses for a
+    // non-atomic `Index` base, and the same "bind to a named `let`"
+    // strategy spec §3.2.1 already recommends at the source level.
     let source = r#"
 module RepeatSlice
   port a: in UInt<4>;
@@ -252,70 +264,331 @@ end module RepeatSlice
 "#;
     let sv = compile_to_sv(source);
     assert!(
-        sv.contains("assign y = {2{a}}[3:0];"),
-        "expected bare repeat-slice, got:\n{sv}"
+        sv.contains("logic [8-1:0] arch_idx_base_0;"),
+        "expected a declared 8-bit hoist temp ({{2{{a}}}} on a 4-bit `a`), got:\n{sv}"
     );
     assert!(
-        !sv.contains("({2{a}})[3:0]"),
-        "repeat-slice base must not be parenthesized (Verilator syntax error), got:\n{sv}"
+        sv.contains("assign arch_idx_base_0 = {2{a}};"),
+        "expected the hoist temp assigned the replication value, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign y = arch_idx_base_0[3:0];"),
+        "expected the bit-slice applied to the hoist temp, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("{2{a}}[3:0]") && !sv.contains("({2{a}})[3:0]"),
+        "must not regress to either the old bare or parenthesized \
+         Repeat-base shape (both are illegal SV on Icarus 12.0), got:\n{sv}"
     );
 }
 
 #[test]
-fn test_part_select_additive_base_rejected() {
-    // arch#653 item 1: `ExprKind::PartSelect` (`[start +: w]` / `[start -: w]`)
-    // was not guarded at typecheck, so a low-precedence base like `a + b`
-    // silently emitted precedence-wrong SV (`a + b[s +: 4]`). Must now be
-    // rejected the same way BitSlice already is, for both `+:` and `-:`.
-    let plus_source = r#"
-module PsAddPlus
-  port a: in UInt<8>;
-  port b: in UInt<8>;
-  port s: in UInt<3>;
+fn test_concat_base_bit_slice_hoists_to_named_temp() {
+    // arch#807: a `Concat` base (`{a, c}[hi:lo]`) is the same finding as
+    // the `Repeat` case above — portable per `is_portable_bit_slice_base`
+    // and previously emitted bare, but Icarus 12.0 rejects `{a, c}[5:2]`
+    // with a syntax error regardless of parenthesization. Hoist to a named
+    // temp, same as `Repeat`.
+    let source = r#"
+module ConcatSlice
+  port a: in UInt<4>;
+  port c: in UInt<4>;
   port y: out UInt<4>;
-  let y = (a + b)[s +: 4];
-end module PsAddPlus
+  let y = {a, c}[5:2];
+end module ConcatSlice
 "#;
-    let tokens = lexer::tokenize(plus_source).expect("lexer error");
-    let mut parser = Parser::new(tokens, plus_source);
-    let parsed_ast = parser.parse_source_file().expect("parse error");
-    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
-    let symbols = resolve::resolve(&ast).expect("resolve error");
-    let checker = TypeChecker::new(&symbols, &ast);
-    let errors = checker
-        .check()
-        .expect_err("part-select on additive base (+:) should error");
-    let rendered = format!("{errors:?}");
-    assert!(rendered.contains("cannot part-select this expression directly"));
-    assert!(rendered.contains("+%"));
-    assert!(rendered.contains("-%"));
-
-    let minus_source = r#"
-module PsAddMinus
-  port a: in UInt<8>;
-  port b: in UInt<8>;
-  port s: in UInt<3>;
-  port y: out UInt<4>;
-  let y = (a + b)[s -: 4];
-end module PsAddMinus
-"#;
-    let tokens = lexer::tokenize(minus_source).expect("lexer error");
-    let mut parser = Parser::new(tokens, minus_source);
-    let parsed_ast = parser.parse_source_file().expect("parse error");
-    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
-    let symbols = resolve::resolve(&ast).expect("resolve error");
-    let checker = TypeChecker::new(&symbols, &ast);
-    let errors = checker
-        .check()
-        .expect_err("part-select on additive base (-:) should error");
-    let rendered = format!("{errors:?}");
-    assert!(rendered.contains("cannot part-select this expression directly"));
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("logic [8-1:0] arch_idx_base_0;"),
+        "expected a declared 8-bit hoist temp ({{a, c}} on two 4-bit ports), got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign arch_idx_base_0 = {a, c};"),
+        "expected the hoist temp assigned the concatenation value, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign y = arch_idx_base_0[5:2];"),
+        "expected the bit-slice applied to the hoist temp, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("{a, c}[5:2]") && !sv.contains("({a, c})[5:2]"),
+        "must not regress to either the old bare or parenthesized \
+         Concat-base shape (both are illegal SV on Icarus 12.0), got:\n{sv}"
+    );
 }
 
 #[test]
-fn test_part_select_shift_base_rejected() {
-    // Same guardrail, shift-expression base — another low-precedence
-    // operator class that would otherwise silently miscompile.
+fn test_concat_repeat_base_part_select_hoists_to_named_temp() {
+    // arch#807, `PartSelect` (`[start +: w]`) half: unlike `BitSlice`,
+    // codegen's `PartSelect` arm had *no* base-kind handling at all before
+    // this fix — it always emitted the base bare, for every base kind.
+    // That happened to already be wrong for `Concat`/`Repeat` on Icarus
+    // (same rejection as `BitSlice`), just undetected because no prior
+    // issue tested `[start +: w]` specifically against a real iverilog
+    // binary. Hoist the same way `BitSlice` does.
+    let concat_source = r#"
+module ConcatPartSelect
+  port a: in UInt<4>;
+  port c: in UInt<4>;
+  port y: out UInt<4>;
+  let y = {a, c}[2 +: 4];
+end module ConcatPartSelect
+"#;
+    let sv = compile_to_sv(concat_source);
+    assert!(
+        sv.contains("logic [8-1:0] arch_idx_base_0;")
+            && sv.contains("assign arch_idx_base_0 = {a, c};"),
+        "expected a declared+assigned hoist temp for the Concat base, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign y = arch_idx_base_0[2 +: 4];"),
+        "expected the part-select applied to the hoist temp, got:\n{sv}"
+    );
+
+    let repeat_source = r#"
+module RepeatPartSelect
+  port a: in UInt<4>;
+  port y: out UInt<4>;
+  let y = {2{a}}[2 +: 4];
+end module RepeatPartSelect
+"#;
+    let sv = compile_to_sv(repeat_source);
+    assert!(
+        sv.contains("logic [8-1:0] arch_idx_base_0;")
+            && sv.contains("assign arch_idx_base_0 = {2{a}};"),
+        "expected a declared+assigned hoist temp for the Repeat base, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign y = arch_idx_base_0[2 +: 4];"),
+        "expected the part-select applied to the hoist temp, got:\n{sv}"
+    );
+}
+
+// ── arch#808: `.reverse<C>()` portable chunked-concat lowering ──────────────
+//
+// Icarus Verilog (12.0) rejects the SV streaming-concat operator
+// (`{<<C{x}}`) in every context — `assign y = {<<1{a}};` alone is a syntax
+// error — while Verilator accepts it. Typecheck guarantees the chunk size
+// and receiver width are compile-time constants with width % chunk == 0, so
+// codegen lowers `.reverse<C>()` to an ordinary concatenation of the
+// receiver's C-bit chunks in reversed order (the receiver's lowest chunk
+// lands most-significant — verified bit-identical to `{<<C{x}}` against
+// Verilator across all 256 8-bit inputs for chunks 1/2/4/8). These tests
+// pin every emission shape; none of them may contain a streaming operator.
+
+#[test]
+fn test_reverse_bit_emits_chunked_concat() {
+    let source = r#"
+module RevBit
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+  let y = a.reverse<1>();
+end module RevBit
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign y = {a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]};"),
+        "expected per-bit reversed concat, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("{<<"),
+        "streaming operator must not appear:\n{sv}"
+    );
+}
+
+#[test]
+fn test_reverse_chunked_emits_part_selects() {
+    let source = r#"
+module RevChunk
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+  let y = a.reverse<4>();
+end module RevChunk
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign y = {a[0 +: 4], a[4 +: 4]};"),
+        "expected reversed 4-bit chunk part-selects, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("{<<"),
+        "streaming operator must not appear:\n{sv}"
+    );
+}
+
+#[test]
+fn test_reverse_full_width_emits_singleton_concat() {
+    // Chunk == full width is the identity; emitted as a singleton concat
+    // `{a}` (not bare `a`) so the result stays an unsigned self-determined
+    // vector, exactly like the streaming form it replaces.
+    let source = r#"
+module RevFull
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+  let y = a.reverse<8>();
+end module RevFull
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign y = {a};"),
+        "expected singleton-concat identity, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("{<<"),
+        "streaming operator must not appear:\n{sv}"
+    );
+}
+
+#[test]
+fn test_reverse_param_width_receiver_resolves() {
+    // The receiver's declared width is a const param — codegen must
+    // const-resolve it (same rules typecheck used to admit the call) and
+    // still emit the portable form, not fall back to the streaming operator.
+    let source = r#"
+module RevParam
+  param W: const = 8;
+  port p: in UInt<W>;
+  port y: out UInt<8>;
+  let y = p.reverse<2>();
+end module RevParam
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign y = {p[0 +: 2], p[2 +: 2], p[4 +: 2], p[6 +: 2]};"),
+        "expected param-width receiver chunked, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("{<<"),
+        "streaming operator must not appear:\n{sv}"
+    );
+}
+
+#[test]
+fn test_reverse_computed_receiver_hoists_to_named_temp() {
+    // A computation receiver can't take a part-select — it is hoisted to a
+    // named module-scope temp (same mechanism as the arch#650/#807 hoists),
+    // then chunk-selected. Width of `a ^ b` mirrors typecheck's
+    // max-width rule.
+    let source = r#"
+module RevXor
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port y: out UInt<8>;
+  let y = (a ^ b).reverse<2>();
+end module RevXor
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("logic [8-1:0] arch_idx_base_0;")
+            && sv.contains("assign arch_idx_base_0 = a ^ b;"),
+        "expected an 8-bit hoist temp for the xor receiver, got:\n{sv}"
+    );
+    assert!(
+        sv.contains(
+            "assign y = {arch_idx_base_0[0 +: 2], arch_idx_base_0[2 +: 2], \
+             arch_idx_base_0[4 +: 2], arch_idx_base_0[6 +: 2]};"
+        ),
+        "expected chunk part-selects on the hoist temp, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("{<<"),
+        "streaming operator must not appear:\n{sv}"
+    );
+}
+
+#[test]
+fn test_reverse_in_pipeline_stage_emits_chunked_concat() {
+    // The two pipeline expression emitters have their own `.reverse()`
+    // arms (pipelines get no `module_scopes` entry, so widths resolve
+    // through the pipeline AST: ports + stage regs/lets). Covers both a
+    // port receiver and a cross-stage `Stage.field` receiver.
+    let source = r#"
+domain SysDomain
+end domain SysDomain
+
+pipeline RevPipe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port din: in UInt<8>;
+  port dout: out UInt<8>;
+
+  stage S1
+    reg r1: UInt<8> init 0 reset rst => 0;
+    seq on clk rising
+      r1 <= din.reverse<2>();
+    end seq
+  end stage S1
+
+  stage S2
+    reg r2: UInt<8> init 0 reset rst => 0;
+    seq on clk rising
+      r2 <= S1.r1.reverse<1>();
+    end seq
+    comb
+      dout = r2;
+    end comb
+  end stage S2
+end pipeline RevPipe
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("{din[0 +: 2], din[2 +: 2], din[4 +: 2], din[6 +: 2]}"),
+        "expected port receiver chunked in stage seq, got:\n{sv}"
+    );
+    assert!(
+        sv.contains(
+            "{s1_r1[0], s1_r1[1], s1_r1[2], s1_r1[3], s1_r1[4], s1_r1[5], s1_r1[6], s1_r1[7]}"
+        ),
+        "expected cross-stage reg receiver bit-reversed, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("{<<"),
+        "streaming operator must not appear:\n{sv}"
+    );
+}
+
+#[test]
+fn test_part_select_additive_base_hoists_to_named_temp() {
+    // Was `test_part_select_additive_base_rejected` (arch#653 item 1).
+    // The original defect was that `(a + b)[s +: 4]` emitted
+    // precedence-wrong SV (`a + b[s +: 4]`); arch#653 fixed that by
+    // rejecting it, arch#813 P1 fixes it by hoisting instead. Both `+:`
+    // and `-:` covered.
+    for (name, src, op) in [
+        ("PsAddPlus", "(a + b)[s +: 4]", "[s +: 4]"),
+        ("PsAddMinus", "(a + b)[s -: 4]", "[s -: 4]"),
+    ] {
+        let source = format!(
+            r#"
+module {name}
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port s: in UInt<3>;
+  port y: out UInt<4>;
+  let y = {src};
+end module {name}
+"#
+        );
+        let sv = compile_to_sv(&source);
+        assert!(
+            sv.contains("assign arch_idx_base_0 = a + b;"),
+            "{name}: expected additive base bound to a temp, got:\n{sv}"
+        );
+        assert!(
+            sv.contains(&format!("arch_idx_base_0{op}")),
+            "{name}: expected the part-select to go through the temp, got:\n{sv}"
+        );
+        assert!(
+            !sv.contains(&format!("a + b{op}")),
+            "{name}: precedence-wrong bare emission returned, got:\n{sv}"
+        );
+    }
+}
+
+#[test]
+fn test_part_select_shift_base_hoists_to_named_temp() {
+    // Was `test_part_select_shift_base_rejected`. Same arch#813 P1
+    // change: a shift base is hoisted rather than refused.
     let source = r#"
 module PsShift
   port a: in UInt<8>;
@@ -324,17 +597,15 @@ module PsShift
   let y = (a >> 1)[s +: 2];
 end module PsShift
 "#;
-    let tokens = lexer::tokenize(source).expect("lexer error");
-    let mut parser = Parser::new(tokens, source);
-    let parsed_ast = parser.parse_source_file().expect("parse error");
-    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
-    let symbols = resolve::resolve(&ast).expect("resolve error");
-    let checker = TypeChecker::new(&symbols, &ast);
-    let errors = checker
-        .check()
-        .expect_err("part-select on shift base should error");
-    let rendered = format!("{errors:?}");
-    assert!(rendered.contains("cannot part-select this expression directly"));
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign arch_idx_base_0 = a >> 1;"),
+        "expected shift base bound to a temp, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("arch_idx_base_0[s +: 2]"),
+        "expected the part-select to go through the temp, got:\n{sv}"
+    );
 }
 
 #[test]
@@ -367,11 +638,10 @@ end module PsPortableBases
 }
 
 #[test]
-fn test_chained_bit_slice_rejected() {
-    // arch#653 item 2: `BitSlice` was previously in `is_portable_bit_slice_base`,
-    // so a chained bit-select `a[7:4][1:0]` typechecked, but codegen wraps the
-    // inner slice in parens (`(a[7:4])[1:0]`) which Verilator/iverilog reject —
-    // chained bit-select isn't legal SV even bare. Now rejected at typecheck.
+fn test_chained_bit_slice_hoists_to_named_temp() {
+    // Was `test_chained_bit_slice_rejected`. `a[7:4][1:0]` is ordinary,
+    // unambiguous ARCH; arch#653 refused it because `(a[7:4])[1:0]` is
+    // illegal SV, arch#813 P1 binds the inner slice to a temp instead.
     let source = r#"
 module ChainedSlice
   port a: in UInt<8>;
@@ -379,22 +649,25 @@ module ChainedSlice
   let y = a[7:4][1:0];
 end module ChainedSlice
 "#;
-    let tokens = lexer::tokenize(source).expect("lexer error");
-    let mut parser = Parser::new(tokens, source);
-    let parsed_ast = parser.parse_source_file().expect("parse error");
-    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
-    let symbols = resolve::resolve(&ast).expect("resolve error");
-    let checker = TypeChecker::new(&symbols, &ast);
-    let errors = checker.check().expect_err("chained bit-slice should error");
-    let rendered = format!("{errors:?}");
-    assert!(rendered.contains("cannot bit-slice this expression directly"));
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign arch_idx_base_0 = a[7:4];"),
+        "expected the inner slice bound to a temp, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("arch_idx_base_0[1:0]"),
+        "expected the outer slice through the temp, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("a[7:4][1:0]"),
+        "chained slice emitted bare, got:\n{sv}"
+    );
 }
 
 #[test]
-fn test_slice_on_part_select_base_rejected() {
-    // `PartSelect` was also previously in `is_portable_bit_slice_base`, so a
-    // bit-slice of a part-select result (`a[s +: 4][1:0]`) typechecked, but
-    // codegen paren's the base (`(a[s +: 4])[1:0]`) which is not legal SV.
+fn test_slice_on_part_select_base_hoists_to_named_temp() {
+    // Was `test_slice_on_part_select_base_rejected`. Bit-slice of a
+    // part-select result — the `PartSelect` mirror of the chained case.
     let source = r#"
 module SliceOfPartSelect
   port a: in UInt<8>;
@@ -403,17 +676,15 @@ module SliceOfPartSelect
   let y = a[s +: 4][1:0];
 end module SliceOfPartSelect
 "#;
-    let tokens = lexer::tokenize(source).expect("lexer error");
-    let mut parser = Parser::new(tokens, source);
-    let parsed_ast = parser.parse_source_file().expect("parse error");
-    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
-    let symbols = resolve::resolve(&ast).expect("resolve error");
-    let checker = TypeChecker::new(&symbols, &ast);
-    let errors = checker
-        .check()
-        .expect_err("bit-slice on part-select base should error");
-    let rendered = format!("{errors:?}");
-    assert!(rendered.contains("cannot bit-slice this expression directly"));
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign arch_idx_base_0 = a[s +: 4];"),
+        "expected the part-select bound to a temp, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("arch_idx_base_0[1:0]"),
+        "expected the outer slice through the temp, got:\n{sv}"
+    );
 }
 
 #[test]
@@ -1381,7 +1652,7 @@ fn test_arbiter_custom_hook() {
     let sv = compile_to_sv(source);
     assert!(sv.contains("module QosArbiter"));
     assert!(sv.contains("function automatic"));
-    assert!(sv.contains("QosGrant(request_valid, last_grant_r, qos_in)"));
+    assert!(sv.contains("QosGrant(request_valid, last_grant_r, qos)"));
     assert!(sv.contains("last_grant_r"));
     assert!(sv.contains("grant_onehot"));
     insta::assert_snapshot!(sv);
@@ -1785,6 +2056,367 @@ fn test_arbiter_round_robin_arch_sim_nonpow2_behavior() {
         stdout.contains("PASS rr_arb3"),
         "expected `PASS rr_arb3` (strict round-robin, idx-fair) in arch \
          sim stdout — the same fairness contract Verilator verifies; got:\n{stdout}"
+    );
+}
+
+// ── Custom-policy arbiter: `arch sim` must call the bound hook ────────────────
+//
+// arch-hdl-lang/arch-com#912: `gen_arbiter` (sim_codegen/arbiter.rs) had no
+// `ArbiterPolicy::Custom` arm. A `policy <FnName>` + `hook grant_select(...)`
+// arbiter emitted a fixed lowest-index-wins priority scan into `eval_comb()`,
+// ignoring the hook function, `last_grant`, and any extra bound port — while
+// `arch build` emitted SV that called the function correctly. Divergence was
+// silent: no error, no warning, no `todo!` abort.
+//
+// The same testbench runs under both backends below, so a future divergence
+// trips one leg or the other rather than going unnoticed.
+
+/// Emitted sim C++ must call the hook function, and the resulting grant
+/// sequence must honor the policy (strict rotation + `prio` override).
+#[test]
+fn test_arbiter_custom_policy_arch_sim_calls_hook() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/arbiter_custom_policy/CustomRrArb4.arch")
+        .arg("--tb")
+        .arg("tests/arbiter_custom_policy/tb_custom_rr_arb4.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for CustomRrArb4");
+    assert!(
+        out.status.success(),
+        "arch sim should pass for CustomRrArb4\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("PASS custom_rr_arb4"),
+        "expected `PASS custom_rr_arb4` in arch sim stdout — the grant \
+         sequence the emitted SV produces for the same testbench; got:\n{stdout}"
+    );
+
+    // Pin the mechanism, not just the outcome: the generated `eval_comb()`
+    // must call the policy function and feed back the one-hot last-grant
+    // mask. Pre-fix it contained neither.
+    let cpp = std::fs::read_to_string(td.path().join("VCustomRrArb4.cpp"))
+        .expect("read generated VCustomRrArb4.cpp");
+    assert!(
+        cpp.contains("CustomRrGrant("),
+        "generated sim C++ must call the bound hook function; got:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("_last_grant_onehot"),
+        "generated sim C++ must feed the one-hot last-grant mask back into \
+         the hook; got:\n{cpp}"
+    );
+    // The requester count comes from `ports[N]`, not from a param spelled
+    // `NUM_REQ` — this arbiter has none, and the pre-fix fallback was 2.
+    assert!(
+        cpp.contains("_ci < (int)4"),
+        "grant index scan must cover all 4 requesters; got:\n{cpp}"
+    );
+}
+
+/// Verilator leg: the emitted SV must satisfy the same testbench, so the
+/// two backends are pinned to one another rather than each to itself.
+#[test]
+fn test_arbiter_custom_policy_verilator_matches_arch_sim() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping Verilator custom-policy arbiter cross-check: verilator not found");
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("CustomRrArb4.sv");
+    let obj_dir = td.path().join("obj_dir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/arbiter_custom_policy/CustomRrArb4.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build CustomRrArb4 SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let verilate = std::process::Command::new("verilator")
+        .arg("--cc")
+        .arg("--exe")
+        .arg("--build")
+        .arg("--sv")
+        .arg("--assert")
+        .arg("-Wno-fatal")
+        .arg("-Wno-WIDTH")
+        .arg("-Wno-DECLFILENAME")
+        .arg("--top-module")
+        .arg("CustomRrArb4")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&sv_out)
+        .arg("tests/arbiter_custom_policy/tb_custom_rr_arb4.cpp")
+        .output()
+        .expect("verilate CustomRrArb4");
+    assert!(
+        verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr)
+    );
+
+    let run = std::process::Command::new(obj_dir.join("VCustomRrArb4"))
+        .output()
+        .expect("run Verilator CustomRrArb4");
+    assert!(
+        run.status.success(),
+        "Verilator sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("PASS custom_rr_arb4"),
+        "expected PASS marker in Verilator stdout:\n{}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+}
+
+// ── `latency N` arbiter: `arch sim` must pipeline the grant ──────────────────
+//
+// arch-hdl-lang/arch-com#917: `gen_arbiter` (sim_codegen/arbiter.rs) never
+// read `ArbiterDecl::latency`, while `emit_arbiter` pipelines `grant_valid` /
+// `grant_requester` / `<req>_ready` through `latency - 1` register stages. An
+// arbiter declared `latency 2` therefore presented its grant one cycle early
+// in `arch sim` relative to the SV every downstream tool sees — silently: no
+// error, no warning, no `todo!` abort.
+//
+// Both fixtures below run the *same* testbench under both backends, so a
+// future divergence trips one leg or the other. The testbenches sample the
+// outputs before the rising edge, which is where the latency is observable
+// (after the edge, the same edge that fills stage 1 has already captured the
+// current cycle's combinational grant).
+
+/// `latency 2` — a single register stage between the grant logic and the
+/// output ports.
+#[test]
+fn test_arbiter_latency2_arch_sim_pipelines_grant() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/arbiter_latency/LatArb2.arch")
+        .arg("--tb")
+        .arg("tests/arbiter_latency/tb_lat_arb2.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for LatArb2");
+    assert!(
+        out.status.success(),
+        "arch sim should pass for LatArb2\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("PASS lat_arb2"),
+        "expected `PASS lat_arb2` in arch sim stdout — the grant timing the \
+         emitted SV produces for the same testbench; got:\n{stdout}"
+    );
+
+    // Pin the mechanism, not just the outcome: the grant logic must target
+    // internal `_comb` members that eval_posedge() shifts to the ports.
+    // Pre-fix, eval_comb() drove the output ports directly.
+    let cpp = std::fs::read_to_string(td.path().join("VLatArb2.cpp"))
+        .expect("read generated VLatArb2.cpp");
+    assert!(
+        cpp.contains("_grant_valid_comb = 1;"),
+        "grant logic must drive the combinational stage, not the output \
+         port; got:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("grant_valid = _grant_valid_comb;")
+            && cpp.contains("grant_requester = _grant_requester_comb;")
+            && cpp.contains("request_ready = _request_ready_comb;"),
+        "eval_posedge() must register all three grant outputs; got:\n{cpp}"
+    );
+}
+
+/// `latency 3` — two stages, so the chain runs through an intermediate
+/// `_p1` register. A fix that only handled a single stage passes the
+/// `latency 2` test above and fails this one.
+#[test]
+fn test_arbiter_latency3_arch_sim_pipelines_grant() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/arbiter_latency/LatArb3.arch")
+        .arg("--tb")
+        .arg("tests/arbiter_latency/tb_lat_arb3.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for LatArb3");
+    assert!(
+        out.status.success(),
+        "arch sim should pass for LatArb3\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("PASS lat_arb3"),
+        "expected `PASS lat_arb3` in arch sim stdout; got:\n{stdout}"
+    );
+
+    let cpp = std::fs::read_to_string(td.path().join("VLatArb3.cpp"))
+        .expect("read generated VLatArb3.cpp");
+    // Back-to-front shift order: the output port is written from `_p1`
+    // before `_p1` is overwritten from `_comb`, so each stage samples its
+    // source's pre-edge value the way concurrent always_ff blocks do.
+    let out_from_p1 = cpp
+        .find("grant_valid = _grant_valid_p1;")
+        .expect("output stage must be fed from the intermediate reg");
+    let p1_from_comb = cpp
+        .find("_grant_valid_p1 = _grant_valid_comb;")
+        .expect("intermediate reg must be fed from the combinational grant");
+    assert!(
+        out_from_p1 < p1_from_comb,
+        "pipeline stages must shift back-to-front; got:\n{cpp}"
+    );
+}
+
+/// Verilator leg: the emitted SV must satisfy the same two testbenches,
+/// so the backends are pinned to one another rather than each to itself.
+#[test]
+fn test_arbiter_latency_verilator_matches_arch_sim() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping Verilator arbiter-latency cross-check: verilator not found");
+        return;
+    }
+
+    for (name, tb, marker) in [
+        (
+            "LatArb2",
+            "tests/arbiter_latency/tb_lat_arb2.cpp",
+            "PASS lat_arb2",
+        ),
+        (
+            "LatArb3",
+            "tests/arbiter_latency/tb_lat_arb3.cpp",
+            "PASS lat_arb3",
+        ),
+    ] {
+        let td = tempfile::tempdir().expect("tempdir");
+        let sv_out = td.path().join(format!("{name}.sv"));
+        let obj_dir = td.path().join("obj_dir");
+        let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+        let build = std::process::Command::new(arch_bin)
+            .arg("build")
+            .arg(format!("tests/arbiter_latency/{name}.arch"))
+            .arg("-o")
+            .arg(&sv_out)
+            .output()
+            .expect("build latency arbiter SV");
+        assert!(
+            build.status.success(),
+            "arch build should pass for {name}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&build.stdout),
+            String::from_utf8_lossy(&build.stderr)
+        );
+
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("--sv")
+            .arg("--assert")
+            .arg("-Wno-fatal")
+            .arg("-Wno-WIDTH")
+            .arg("-Wno-DECLFILENAME")
+            .arg("--top-module")
+            .arg(name)
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg(tb)
+            .output()
+            .expect("verilate latency arbiter");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass for {name}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+
+        let run = std::process::Command::new(obj_dir.join(format!("V{name}")))
+            .output()
+            .expect("run Verilator latency arbiter");
+        let vl_stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && vl_stdout.contains(marker),
+            "Verilator sim should pass for {name} — arch sim passes the same \
+             testbench\nstdout:\n{vl_stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+/// The requester count must track the request port array's `[N]` shape,
+/// not a param that happens to be named `NUM_REQ`. Pre-fix, an arbiter
+/// declared `param N: const = 8;` emitted `[N-1:0]` ports alongside a
+/// scan, an `rr_ptr_r` width and a `grant_requester` cast all hardcoded
+/// to 4 — requesters 4..7 could never be granted.
+#[test]
+fn test_arbiter_requester_count_from_port_array_not_num_req_param() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter N8Arb
+  policy round_robin;
+  param N: const = 8;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[N] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<3>;
+end arbiter N8Arb
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("for (arb_i = 0; arb_i < 8; arb_i++)"),
+        "scan must cover all 8 requesters; got:\n{sv}"
+    );
+    assert!(
+        sv.contains("logic [2:0] rr_ptr_r;"),
+        "round-robin pointer must be wide enough for 8 requesters; got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("% 4"),
+        "no requester-count arithmetic may fall back to the hardcoded 4; got:\n{sv}"
     );
 }
 
@@ -3884,6 +4516,84 @@ end pipeline SextPipe
             && sim.contains("~((uint16_t)0) << 8")
             && sim.contains("(uint16_t)(a)"),
         "pipeline simulator .sext<16>() should sign-extend from bit 7:\n{sim}"
+    );
+}
+
+/// `.resize<N>()` in a pipeline stage expression must emit a bare `N'(expr)`
+/// size cast, never `N'($unsigned(expr))` / `N'($signed(expr))`: the wrapper
+/// evaluates its argument in self-determined context (LRM §11.6.1, §20.5),
+/// truncating a multiply to operand width BEFORE the cast widens — silently
+/// dropping the product's upper bits (native sim keeps them, so the SV
+/// diverged). Mirrors the canonical emission in codegen/mod.rs.
+#[test]
+fn test_pipeline_stage_resize_of_mul_is_bare_size_cast() {
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline ResizeMulPipe
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<16>;
+  port b: in UInt<16>;
+  port y: out UInt<32>;
+  stage S
+    reg prod: UInt<32> reset rst => 0;
+    seq on clk rising
+      prod <= (a * b).resize<32>();
+    end seq
+    comb
+      y = prod;
+    end comb
+  end stage S
+end pipeline ResizeMulPipe
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("32'((a * b))"),
+        "pipeline stage .resize<32>() of a multiply must emit a bare size cast:\n{sv}"
+    );
+    assert!(
+        !sv.contains("$unsigned") && !sv.contains("$signed"),
+        "pipeline .resize must not wrap in $signed/$unsigned (self-determined \
+         context truncates the product before the cast widens):\n{sv}"
+    );
+}
+
+/// Same guarantee for the pipeline's module-level expression emitter, which
+/// handles `stall when` / `flush` / `forward` conditions.
+#[test]
+fn test_pipeline_stall_cond_resize_of_mul_is_bare_size_cast() {
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+pipeline StallResizePipe
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<16>;
+  port b: in UInt<16>;
+  port y: out UInt<32>;
+  stage S
+    stall when ((a * b).resize<32>() > 100)
+    reg prod: UInt<32> reset rst => 0;
+    seq on clk rising
+      prod <= (a * b).resize<32>();
+    end seq
+    comb
+      y = prod;
+    end comb
+  end stage S
+end pipeline StallResizePipe
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign s_stall = (32'((a * b)) > 100);"),
+        "stall-when .resize<32>() of a multiply must emit a bare size cast:\n{sv}"
+    );
+    assert!(
+        !sv.contains("$unsigned") && !sv.contains("$signed"),
+        "pipeline .resize must not wrap in $signed/$unsigned:\n{sv}"
     );
 }
 
@@ -6641,6 +7351,348 @@ fn test_use_package_still_emits_sv_import() {
     );
 }
 
+#[test]
+fn test_duplicate_use_emits_one_package_import_per_module() {
+    let source = "
+        package PkgA
+          enum Op
+            ADD,
+            SUB,
+          end enum Op
+        end package PkgA
+
+        use PkgA;
+        use PkgA;
+
+        module M
+          port o: out Op;
+          comb
+            o = Op::ADD;
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    assert_eq!(
+        sv.matches("import PkgA::*;").count(),
+        1,
+        "duplicate `use` declarations must not duplicate the SV import:\n{sv}"
+    );
+}
+
+#[test]
+fn test_multifile_package_member_requires_use_in_own_file() {
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let td = tempfile::tempdir().expect("tempdir");
+    let pkg = td.path().join("Pkg.arch");
+    let consumer = td.path().join("Consumer.arch");
+    let missing_use = td.path().join("MissingUse.arch");
+    let missing_function_use = td.path().join("MissingFunctionUse.arch");
+    let missing_param_use = td.path().join("MissingParamUse.arch");
+    let missing_alias_use = td.path().join("MissingAliasUse.arch");
+    let missing_domain_use = td.path().join("MissingDomainUse.arch");
+    std::fs::write(
+        &pkg,
+        r#"package Pkg
+  param WIDTH: const = 8;
+  type Word = UInt<WIDTH>;
+
+  domain PkgDomain
+    freq_mhz: 100
+  end domain PkgDomain
+
+  struct Payload
+    data: UInt<8>;
+  end struct Payload
+
+  function pass(value: UInt<8>) -> UInt<8>
+    return value;
+  end function pass
+end package Pkg
+
+module SameFileMissingUse
+  port payload: in Payload;
+  port data: out UInt<8>;
+  let data = payload.data;
+end module SameFileMissingUse
+"#,
+    )
+    .expect("write Pkg.arch");
+    std::fs::write(
+        &consumer,
+        r#"use Pkg;
+
+module Consumer
+  port payload: in Payload;
+  port data: out UInt<8>;
+  let data = payload.data;
+end module Consumer
+"#,
+    )
+    .expect("write Consumer.arch");
+    std::fs::write(
+        &missing_use,
+        r#"module MissingUse
+  port payload: in Payload;
+  port data: out UInt<8>;
+  let data = payload.data;
+end module MissingUse
+"#,
+    )
+    .expect("write MissingUse.arch");
+    std::fs::write(
+        &missing_function_use,
+        r#"module MissingFunctionUse
+  port input_data: in UInt<8>;
+  port output_data: out UInt<8>;
+  let output_data = pass(input_data);
+end module MissingFunctionUse
+"#,
+    )
+    .expect("write MissingFunctionUse.arch");
+    std::fs::write(
+        &missing_param_use,
+        r#"module MissingParamUse
+  port input_data: in UInt<WIDTH>;
+  port output_data: out UInt<WIDTH>;
+  let output_data = input_data;
+end module MissingParamUse
+"#,
+    )
+    .expect("write MissingParamUse.arch");
+    std::fs::write(
+        &missing_alias_use,
+        r#"module MissingAliasUse
+  port input_data: in Word;
+  port output_data: out Word;
+  let output_data = input_data;
+end module MissingAliasUse
+"#,
+    )
+    .expect("write MissingAliasUse.arch");
+    std::fs::write(
+        &missing_domain_use,
+        r#"module MissingDomainUse
+  port clk: in Clock<PkgDomain>;
+  port output_data: out UInt<8>;
+  let output_data = 0;
+end module MissingDomainUse
+"#,
+    )
+    .expect("write MissingDomainUse.arch");
+
+    let check = std::process::Command::new(arch_bin)
+        .arg("check")
+        .args([
+            &pkg,
+            &consumer,
+            &missing_use,
+            &missing_function_use,
+            &missing_param_use,
+            &missing_alias_use,
+            &missing_domain_use,
+        ])
+        .current_dir(td.path())
+        .output()
+        .expect("run multi-file check");
+    assert!(
+        !check.status.success(),
+        "a package member must not be visible through another file's `use`"
+    );
+    let stderr = String::from_utf8_lossy(&check.stderr);
+    assert!(
+        stderr.contains("undefined") && stderr.contains("Payload"),
+        "expected missing package import to reject `Payload`:\n{stderr}"
+    );
+    assert!(
+        stderr.matches("Payload").count() >= 2,
+        "expected both same-file and cross-file consumers without `use` to reject `Payload`:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("unknown function `pass`"),
+        "expected missing package import to reject `pass`:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("undefined") && stderr.contains("WIDTH"),
+        "expected missing package import to reject `WIDTH`:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("undefined") && stderr.contains("Word"),
+        "expected missing package import to reject `Word`:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("undefined") && stderr.contains("PkgDomain"),
+        "expected missing package import to reject `PkgDomain`:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_multifile_package_imports_stay_with_owning_source_file() {
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let td = tempfile::tempdir().expect("tempdir");
+    let pkg = td.path().join("Pkg.arch");
+    let consumer_a = td.path().join("ConsumerA.arch");
+    let consumer_b = td.path().join("ConsumerB.arch");
+    let unrelated = td.path().join("Unrelated.arch");
+    let param_consumer = td.path().join("ParamConsumer.arch");
+    let top = td.path().join("Top.arch");
+    std::fs::write(
+        &pkg,
+        r#"package Pkg
+  struct Payload
+    data: UInt<8>;
+  end struct Payload
+
+  function pass(value: UInt<8>) -> UInt<8>
+    return value;
+  end function pass
+end package Pkg
+"#,
+    )
+    .expect("write Pkg.arch");
+    std::fs::write(
+        &consumer_a,
+        r#"use Pkg;
+
+module ConsumerA
+  port payload: in Payload;
+  port data: out UInt<8>;
+  let data = payload.data;
+end module ConsumerA
+"#,
+    )
+    .expect("write ConsumerA.arch");
+    std::fs::write(
+        &consumer_b,
+        r#"use Pkg;
+
+module ConsumerB
+  port payload: in Payload;
+  port data: out UInt<8>;
+  let data = payload.data;
+end module ConsumerB
+"#,
+    )
+    .expect("write ConsumerB.arch");
+    std::fs::write(
+        &unrelated,
+        r#"module Unrelated
+  port input_data: in UInt<8>;
+  port output_data: out UInt<8>;
+  let output_data = input_data;
+end module Unrelated
+"#,
+    )
+    .expect("write Unrelated.arch");
+    std::fs::write(
+        &param_consumer,
+        r#"use Pkg;
+
+module ParamConsumer
+  param MODE: const = 0;
+  port input_data: in UInt<8>;
+  port output_data: out UInt<8>;
+  let output_data = pass(input_data);
+end module ParamConsumer
+"#,
+    )
+    .expect("write ParamConsumer.arch");
+    std::fs::write(
+        &top,
+        r#"module Top
+  port input_data: in UInt<8>;
+  port output_data: out UInt<8>;
+  wire mode0_data: UInt<8>;
+  wire mode1_data: UInt<8>;
+
+  inst mode0: ParamConsumer
+    param MODE = 0;
+    input_data <- input_data;
+    output_data -> mode0_data;
+  end inst mode0
+
+  inst mode1: ParamConsumer
+    param MODE = 1;
+    input_data <- input_data;
+    output_data -> mode1_data;
+  end inst mode1
+
+  let output_data = mode0_data ^ mode1_data;
+end module Top
+"#,
+    )
+    .expect("write Top.arch");
+
+    let files = [
+        &pkg,
+        &consumer_a,
+        &consumer_b,
+        &unrelated,
+        &param_consumer,
+        &top,
+    ];
+    let split = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("--no-inline-deps")
+        .args(files)
+        .current_dir(td.path())
+        .output()
+        .expect("run split multi-file build");
+    assert!(
+        split.status.success(),
+        "split multi-file build failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&split.stdout),
+        String::from_utf8_lossy(&split.stderr)
+    );
+
+    let consumer_a_sv =
+        std::fs::read_to_string(td.path().join("ConsumerA.sv")).expect("read ConsumerA.sv");
+    let consumer_b_sv =
+        std::fs::read_to_string(td.path().join("ConsumerB.sv")).expect("read ConsumerB.sv");
+    let unrelated_sv =
+        std::fs::read_to_string(td.path().join("Unrelated.sv")).expect("read Unrelated.sv");
+    let param_consumer_sv =
+        std::fs::read_to_string(td.path().join("ParamConsumer.sv")).expect("read ParamConsumer.sv");
+    let top_sv = std::fs::read_to_string(td.path().join("Top.sv")).expect("read Top.sv");
+    assert_eq!(consumer_a_sv.matches("import Pkg::*;").count(), 1);
+    assert_eq!(consumer_b_sv.matches("import Pkg::*;").count(), 1);
+    assert_eq!(unrelated_sv.matches("import Pkg::*;").count(), 0);
+    assert_eq!(param_consumer_sv.matches("import Pkg::*;").count(), 2);
+    assert!(
+        param_consumer_sv.contains("import Pkg::*;\nmodule ParamConsumer__MODE_0"),
+        "first specialization lost its source file's import:\n{param_consumer_sv}"
+    );
+    assert!(
+        param_consumer_sv.contains("import Pkg::*;\nmodule ParamConsumer__MODE_1"),
+        "second specialization lost its source file's import:\n{param_consumer_sv}"
+    );
+    assert_eq!(top_sv.matches("import Pkg::*;").count(), 0);
+
+    let combined_path = td.path().join("combined.sv");
+    let combined = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("--no-inline-deps")
+        .args(files)
+        .arg("-o")
+        .arg(&combined_path)
+        .current_dir(td.path())
+        .output()
+        .expect("run combined multi-file build");
+    assert!(
+        combined.status.success(),
+        "combined multi-file build failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&combined.stdout),
+        String::from_utf8_lossy(&combined.stderr)
+    );
+    let combined_sv = std::fs::read_to_string(&combined_path).expect("read combined.sv");
+    assert_eq!(combined_sv.matches("import Pkg::*;").count(), 4);
+    assert!(combined_sv.contains("import Pkg::*;\nmodule ConsumerA"));
+    assert!(combined_sv.contains("import Pkg::*;\nmodule ConsumerB"));
+    assert!(combined_sv.contains("import Pkg::*;\nmodule ParamConsumer__MODE_0"));
+    assert!(combined_sv.contains("import Pkg::*;\nmodule ParamConsumer__MODE_1"));
+    assert!(!combined_sv.contains("import Pkg::*;\nmodule Unrelated"));
+    assert!(!combined_sv.contains("import Pkg::*;\nmodule Top"));
+}
+
 /// `extern package` declares opaque types from an SV-side package.
 /// `use Pkg;` with an extern package emits `import Pkg::*;` and codegen
 /// drops the `Pkg::` qualifier from enum variant references.
@@ -7099,6 +8151,28 @@ fn warnings_from(source: &str) -> Vec<String> {
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     let (warnings, _) = checker.check().expect("type check error");
     warnings.into_iter().map(|w| w.message).collect()
+}
+
+/// Like `warnings_from`, but for sources where `check()` is expected to
+/// FAIL (severity promotion, 2026-08: whole-design comb-SCC diagnostic is
+/// now a `CompileError`, not a `CompileWarning`). Panics if `check()`
+/// unexpectedly succeeds — callers use this specifically to assert the
+/// fatal path, mirroring `warnings_from`'s shape so existing message-text
+/// assertions (cycle nodes, module list, etc.) carry over unchanged.
+fn errors_from(source: &str) -> Vec<String> {
+    let tokens = arch::lexer::tokenize(source).expect("lexer error");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve error");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    match checker.check() {
+        Ok(_) => panic!(
+            "expected type check to FAIL with a comb-loop error (severity \
+             promotion, 2026-08), but it succeeded"
+        ),
+        Err(errs) => errs.into_iter().map(|e| e.to_string()).collect(),
+    }
 }
 
 #[test]
@@ -9628,6 +10702,159 @@ fn test_pybind_struct_bindings_transitive_closure() {
     );
 }
 
+/// Closes arch-com#759: `arch sim --pybind` used to fail to *compile* for
+/// any struct with a `Vec<T,N>` field, because the generated binding did
+/// `.def_readwrite("<field>", &S::<field>)` on a raw C array member, and
+/// raw C arrays aren't assignable in C++ (pybind11 rejects it at compile
+/// time — "array type ... is not assignable"). Option B's std::array
+/// carrier (`cpp_field_decl` / `cpp_std_array_type` in
+/// `src/sim_codegen/mod.rs`) fixes this as a direct consequence: a
+/// `std::array<T,N>` field IS copy-assignable, and pybind11's
+/// `<pybind11/stl.h>` (already included by every generated `*_pybind.cpp`)
+/// binds it to/from a Python list automatically — no special-case pybind
+/// codegen was needed.
+///
+/// This is an end-to-end regression, not just a codegen-text check: it
+/// really runs `arch sim --pybind`, really compiles the resulting `.so`
+/// with the system's pybind11/Python, and really reads/writes the Vec
+/// field from Python through the compiled extension. Reproduces both of
+/// doc/proposal_vec_payload_interop.md §2.3's fixtures — a plain struct
+/// port (`PlainPortVecStruct.arch`, inlined here since the memo's copy was
+/// characterization-only and never committed) and the in-tree TLM
+/// `rsp_data` fixture (`tests/axi_dma_tlm/TlmIndexedBurstTarget.arch`, no
+/// new struct shape needed).
+#[test]
+fn test_pybind_vec_field_struct_compiles_and_field_access_works() {
+    if std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping --pybind Vec-field struct regression (#759): python3 not found");
+        return;
+    }
+    // `arch sim --pybind` shells out to `python3 -m pybind11 --includes` to
+    // locate headers; skip cleanly if pybind11 isn't installed rather than
+    // failing on an environment gap unrelated to the fix under test.
+    let pybind11_available = std::process::Command::new("python3")
+        .args(["-c", "import pybind11"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !pybind11_available {
+        eprintln!("skipping --pybind Vec-field struct regression (#759): pybind11 not importable");
+        return;
+    }
+
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let td = tempfile::tempdir().expect("tempdir");
+
+    // (a) Plain struct port — doc/proposal_vec_payload_interop.md §2.3's
+    // `PlainPortVecStruct.arch` repro shape.
+    let arch_src = td.path().join("PlainPortVecStruct.arch");
+    std::fs::write(
+        &arch_src,
+        "
+        struct BoundedVecResp32x4
+          data: Vec<UInt<32>, 4>;
+          len: UInt<3>;
+          resp: UInt<2>;
+        end struct BoundedVecResp32x4
+
+        module PlainPortVecStruct
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port sel: in UInt<2>;
+          port out_val: out BoundedVecResp32x4;
+
+          reg lane: Vec<BoundedVecResp32x4, 4> reset rst => 0;
+
+          comb
+            out_val = lane[sel];
+          end comb
+        end module PlainPortVecStruct
+        ",
+    )
+    .expect("write PlainPortVecStruct.arch fixture");
+
+    let outdir = td.path().join("out_plain");
+    std::fs::create_dir_all(&outdir).expect("mkdir out_plain");
+    let build = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("--pybind")
+        .arg(&arch_src)
+        .arg("--outdir")
+        .arg(&outdir)
+        .output()
+        .expect("run arch sim --pybind for plain struct port");
+    assert!(
+        build.status.success(),
+        "arch sim --pybind should compile a Vec-field struct (closes arch-com#759)\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let has_so = std::fs::read_dir(&outdir)
+        .expect("read outdir")
+        .filter_map(|e| e.ok())
+        .any(|e| e.path().extension().map(|e| e == "so").unwrap_or(false));
+    assert!(has_so, "expected a compiled pybind .so in {outdir:?}");
+
+    let py_script = format!(
+        "import sys\n\
+         sys.path.insert(0, {:?})\n\
+         import VPlainPortVecStruct_pybind as m\n\
+         s = m.BoundedVecResp32x4()\n\
+         s.data = [1, 2, 3, 4]\n\
+         s.len = 2\n\
+         s.resp = 1\n\
+         assert list(s.data) == [1, 2, 3, 4], list(s.data)\n\
+         assert s.len == 2\n\
+         assert s.resp == 1\n\
+         d = m.VPlainPortVecStruct()\n\
+         assert d is not None\n\
+         print('PYBIND_VEC_FIELD_OK')\n",
+        outdir.to_str().expect("utf8 outdir path")
+    );
+    let run = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(&py_script)
+        .output()
+        .expect("run python3 against the compiled pybind extension");
+    assert!(
+        run.status.success(),
+        "Python-side Vec-field struct access should work through the \
+         compiled extension\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("PYBIND_VEC_FIELD_OK"),
+        "expected PYBIND_VEC_FIELD_OK marker:\n{}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+
+    // (b) TLM rsp_data struct — reuse the in-tree fixture verbatim, no new
+    // struct shape (matches the memo's own touch-list recommendation).
+    let outdir2 = td.path().join("out_tlm");
+    std::fs::create_dir_all(&outdir2).expect("mkdir out_tlm");
+    let build2 = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("--pybind")
+        .arg("tests/axi_dma_tlm/TlmIndexedBurstTarget.arch")
+        .arg("--outdir")
+        .arg(&outdir2)
+        .output()
+        .expect("run arch sim --pybind for TLM rsp_data struct");
+    assert!(
+        build2.status.success(),
+        "arch sim --pybind should compile a TLM struct+Vec rsp_data payload \
+         (closes arch-com#759)\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build2.stdout),
+        String::from_utf8_lossy(&build2.stderr)
+    );
+}
+
 #[test]
 fn test_trace_skips_struct_typed_let_and_wire() {
     // Struct-typed `let` and `wire` decls must NOT appear in the VCD trace
@@ -11724,7 +12951,7 @@ fn test_thread_loop_vec_bounds_assertion_is_state_guarded() {
 }
 
 #[test]
-fn test_struct_vec_field_sim_mirror_uses_array_field() {
+fn test_struct_vec_field_sim_mirror_uses_std_array_field() {
     let source = "
         struct BoundedVecResp32x4
           data: Vec<UInt<32>, 4>;
@@ -11753,9 +12980,16 @@ fn test_struct_vec_field_sim_mirror_uses_array_field() {
         end module StructVecFieldsSmoke
     ";
     let out = compile_to_sim_h(source, false);
+    // Option B (arch-com#500 Gap 3 / #759): struct Vec fields carry as
+    // `std::array<T,N>` (harc-style carrier), not a raw C array — raw
+    // arrays aren't copy-assignable and break pybind11 `.def_readwrite`.
     assert!(
-        out.contains("uint32_t data[4];"),
-        "struct Vec field should emit as a C++ array:\n{out}"
+        out.contains("std::array<uint32_t, 4> data;"),
+        "struct Vec field should emit as a std::array carrier:\n{out}"
+    );
+    assert!(
+        out.contains("#include <array>"),
+        "VStructs.h should include <array> for the std::array carrier:\n{out}"
     );
     assert!(
         out.contains("out0  = _r.data[0];"),
@@ -11816,6 +13050,195 @@ fn test_tlm_struct_vec_response_sim_mirror_compiles_shape() {
     assert!(
         !out.contains("m_read_burst_rsp_data >>"),
         "struct response should not be emitted as a scalar trace expression:\n{out}"
+    );
+}
+
+/// Ratifies Option A/C of `doc/proposal_vec_payload_interop.md`: the
+/// struct+Vec SV-boundary bit layout ARCH already emits (declaration-first
+/// field = MSB, and within a `Vec<T,N>` field element `N-1` = local MSB /
+/// element `0` = local LSB) is now the documented, normative convention
+/// (`doc/ARCH_HDL_Specification.md` §3.1), matching harc-com spec.md's
+/// "HARC/ARCH Interop ABI". This test pins it two ways:
+///   1. The emitted `typedef struct packed { ... }` is byte-identical
+///      whether the struct backs a plain `out` port or a TLM `rsp_data`
+///      port — no divergent flatten path for TLM (memo §2.1).
+///   2. Feeding that exact typedef through a real SV elaborator
+///      (Verilator) with the memo's worked-example values lands every
+///      field/element at the exact bit range the memo verified against
+///      two independent toolchains: `flat[132:101]=data[3]`,
+///      `flat[100:69]=data[2]`, `flat[68:37]=data[1]`, `flat[36:5]=data[0]`,
+///      `flat[4:2]=len`, `flat[1:0]=resp`.
+#[test]
+fn test_struct_vec_field_sv_bit_layout_plain_and_tlm_pin() {
+    const STRUCT_DECL: &str = "
+        struct BoundedVecResp32x4
+          data: Vec<UInt<32>, 4>;
+          len: UInt<3>;
+          resp: UInt<2>;
+        end struct BoundedVecResp32x4
+    ";
+
+    // (a) Plain struct port — same struct type, no TLM involved.
+    let plain_source = format!(
+        "{STRUCT_DECL}
+        module PlainPortVecStruct
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port sel: in UInt<2>;
+          port out_val: out BoundedVecResp32x4;
+
+          reg lane: Vec<BoundedVecResp32x4, 4> reset rst => 0;
+
+          comb
+            out_val = lane[sel];
+          end comb
+        end module PlainPortVecStruct
+        "
+    );
+    let plain_sv = compile_to_sv(&plain_source);
+
+    // (b) TLM rsp_data port — reuse the in-tree fixture verbatim, no new
+    // struct shape (matches the memo's own touch-list recommendation).
+    let tlm_source = include_str!("axi_dma_tlm/TlmIndexedBurstTarget.arch");
+    let tlm_sv = compile_to_sv(tlm_source);
+
+    fn extract_typedef<'a>(sv: &'a str, struct_name: &str) -> &'a str {
+        let start = sv
+            .find("typedef struct packed {")
+            .unwrap_or_else(|| panic!("no struct typedef found in emitted SV:\n{sv}"));
+        let close_marker = format!("}} {struct_name};");
+        let close_rel = sv[start..]
+            .find(&close_marker)
+            .unwrap_or_else(|| panic!("no closing `{close_marker}` in emitted SV:\n{sv}"));
+        &sv[start..start + close_rel + close_marker.len()]
+    }
+
+    let plain_typedef = extract_typedef(&plain_sv, "BoundedVecResp32x4");
+    let tlm_typedef = extract_typedef(&tlm_sv, "BoundedVecResp32x4");
+    assert_eq!(
+        plain_typedef, tlm_typedef,
+        "struct+Vec typedef must be byte-identical whether the struct backs \
+         a plain port or a TLM rsp_data port — a divergent flatten path \
+         would silently break the ARCH<->HARC interop ABI:\nplain:\n{plain_typedef}\ntlm:\n{tlm_typedef}"
+    );
+    assert!(
+        plain_typedef.contains("logic [3:0] [31:0] data;"),
+        "Vec<UInt<32>,4> field must emit as a packed multi-dim array \
+         (element N-1 at the field's own MSB):\n{plain_typedef}"
+    );
+    assert!(
+        plain_sv.contains("output BoundedVecResp32x4 out_val"),
+        "plain struct port should use the struct type directly, not a \
+         flattened bit vector:\n{plain_sv}"
+    );
+    assert!(
+        tlm_sv.contains("BoundedVecResp32x4 s_read_burst_rsp_data"),
+        "TLM rsp_data port should use the same struct type directly:\n{tlm_sv}"
+    );
+
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping struct+Vec bit-layout Verilator probe: verilator not found");
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let probe_sv = td.path().join("struct_vec_layout_probe.sv");
+    // Mirrors doc/proposal_vec_payload_interop.md §2.1's `layout_probe.sv`
+    // experiment exactly (same struct shape, same assigned values, same
+    // expected FULL_FLAT hex), but built from the typedef ARCH's *current*
+    // codegen actually emits (extracted above) rather than a hand-copied
+    // literal, and with per-range `assert`-style checks instead of just a
+    // printed hex string, so a future codegen change that silently
+    // reorders fields or flips the Vec sub-layout fails this test instead
+    // of only being catchable by eyeballing a hex dump.
+    let probe_src = format!(
+        r#"{plain_typedef}
+
+module struct_vec_layout_probe;
+  BoundedVecResp32x4 x;
+  logic [132:0] flat;
+  initial begin
+    x.data[0] = 32'h1111_1111;
+    x.data[1] = 32'h2222_2222;
+    x.data[2] = 32'h3333_3333;
+    x.data[3] = 32'h4444_4444;
+    x.len     = 3'h5;
+    x.resp    = 2'h1;
+    flat = x;
+
+    if (flat[132:101] !== x.data[3]) begin
+      $display("FAIL data[3] range: got %h want %h", flat[132:101], x.data[3]);
+      $fatal(1);
+    end
+    if (flat[100:69] !== x.data[2]) begin
+      $display("FAIL data[2] range: got %h want %h", flat[100:69], x.data[2]);
+      $fatal(1);
+    end
+    if (flat[68:37] !== x.data[1]) begin
+      $display("FAIL data[1] range: got %h want %h", flat[68:37], x.data[1]);
+      $fatal(1);
+    end
+    if (flat[36:5] !== x.data[0]) begin
+      $display("FAIL data[0] range: got %h want %h", flat[36:5], x.data[0]);
+      $fatal(1);
+    end
+    if (flat[4:2] !== x.len) begin
+      $display("FAIL len range: got %h want %h", flat[4:2], x.len);
+      $fatal(1);
+    end
+    if (flat[1:0] !== x.resp) begin
+      $display("FAIL resp range: got %h want %h", flat[1:0], x.resp);
+      $fatal(1);
+    end
+    if (flat !== 133'h0888888886666666644444444222222235) begin
+      $display("FAIL full flat mismatch: got %h", flat);
+      $fatal(1);
+    end
+    $display("PASS struct_vec_layout_probe");
+    $finish;
+  end
+endmodule
+"#
+    );
+    std::fs::write(&probe_sv, probe_src).expect("write struct_vec_layout_probe.sv");
+
+    let obj_dir = td.path().join("obj_dir");
+    let verilate = std::process::Command::new("verilator")
+        .arg("--binary")
+        .arg("--sv")
+        .arg("-Wno-fatal")
+        .arg("--top-module")
+        .arg("struct_vec_layout_probe")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&probe_sv)
+        .output()
+        .expect("verilate struct_vec_layout_probe");
+    assert!(
+        verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr)
+    );
+
+    let exe = obj_dir.join("Vstruct_vec_layout_probe");
+    let run = std::process::Command::new(&exe)
+        .output()
+        .expect("run struct_vec_layout_probe");
+    assert!(
+        run.status.success(),
+        "struct+Vec bit-layout probe should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("PASS struct_vec_layout_probe"),
+        "expected PASS marker in Verilator stdout:\n{}",
+        String::from_utf8_lossy(&run.stdout)
     );
 }
 
@@ -13376,6 +14799,198 @@ fn test_tlm_fork_join_workers_share_method() {
     );
 }
 
+/// Lower a source string through the same pipeline stages as
+/// `compile_to_sv` up to (and including) TLM initiator lowering, without
+/// panicking on error. Used by the mixed-class `fork ... and ... join`
+/// rejection tests below (arch-com #500 Gap 1), where the point under test
+/// is the `Err` returned by `lower_tlm_initiator_calls` itself.
+fn lower_tlm_initiator_calls_result(
+    source: &str,
+) -> Result<arch::ast::SourceFile, Vec<arch::diagnostics::CompileError>> {
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let ast = elaborate::lower_tlm_target_threads(ast).expect("tlm_target lowering error");
+    elaborate::lower_tlm_initiator_calls(ast)
+}
+
+// arch-com #500 Gap 1: a `fork ... and ... join` direct-call TLM issue group
+// that mixes a `blocking` call and an `out_of_order tags N` call must be
+// rejected with a clean diagnostic naming both classes, not silently lowered
+// or partially dropped. See doc/ARCH_HDL_Specification.md §22.2.2.
+//
+// Before the fix, the balanced 1-blocking/1-out_of_order shape below hit a
+// confusing internal message ("v1 TLM initiator thread body only supports
+// SeqAssign statements ... (found Discriminant(7))") because neither call
+// repeated its `(port, method)` key often enough to be recognized as a
+// same-method cohort. The unbalanced 2-blocking/1-out_of_order shape
+// (`test_tlm_fork_join_mixed_class_partial_cohort_rejected` below) was worse:
+// the 2 blocking calls *did* form a valid same-method cohort, so the
+// `out_of_order` branch was silently dropped from the lowered thread instead
+// of erroring at the TLM lowering stage at all (it later fell through to an
+// unrelated "output port not driven" diagnostic with no mention of the
+// mixed-class root cause).
+
+#[test]
+fn test_tlm_fork_join_mixed_class_blocking_then_ooo_rejected() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+          tlm_method read_ooo(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
+        end bus Mem
+
+        use Mem;
+
+        module MixedBlockingThenOoo
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   addr: Vec<UInt<32>, 2> reset rst => 0;
+          reg   data: Vec<UInt<64>, 2> reset rst => 0;
+          thread workers on clk rising, rst high
+            fork
+              data[0] <= m.read(addr[0]);
+            and
+              data[1] <= m.read_ooo(addr[1]);
+            join
+          end thread workers
+        end module MixedBlockingThenOoo
+    ";
+    let errs = lower_tlm_initiator_calls_result(source)
+        .expect_err("mixed blocking/out_of_order fork group must be rejected");
+    assert!(!errs.is_empty(), "expected at least one error");
+    let msg = errs[0].to_string();
+    assert!(
+        msg.contains("fork issue group mixes blocking and out_of_order calls"),
+        "error should name the mixed-class fork group: {msg}"
+    );
+    assert!(
+        msg.contains("split into separate fork groups or make the classes uniform"),
+        "error should suggest the fix: {msg}"
+    );
+}
+
+#[test]
+fn test_tlm_fork_join_mixed_class_ooo_then_blocking_rejected() {
+    // Same defect, opposite branch order — the diagnostic must not depend
+    // on which class appears first in the fork group.
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+          tlm_method read_ooo(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
+        end bus Mem
+
+        use Mem;
+
+        module MixedOooThenBlocking
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   addr: Vec<UInt<32>, 2> reset rst => 0;
+          reg   data: Vec<UInt<64>, 2> reset rst => 0;
+          thread workers on clk rising, rst high
+            fork
+              data[0] <= m.read_ooo(addr[0]);
+            and
+              data[1] <= m.read(addr[1]);
+            join
+          end thread workers
+        end module MixedOooThenBlocking
+    ";
+    let errs = lower_tlm_initiator_calls_result(source)
+        .expect_err("mixed out_of_order/blocking fork group must be rejected");
+    assert!(!errs.is_empty(), "expected at least one error");
+    let msg = errs[0].to_string();
+    assert!(
+        msg.contains("fork issue group mixes blocking and out_of_order calls"),
+        "error should name the mixed-class fork group: {msg}"
+    );
+}
+
+#[test]
+fn test_tlm_fork_join_mixed_class_partial_cohort_rejected() {
+    // 2 blocking branches on `read` (which alone would form a valid
+    // same-method cohort) plus 1 `out_of_order` branch on `read_ooo`. Before
+    // the fix, this silently dropped the `read_ooo` branch from the lowered
+    // thread entirely instead of erroring during TLM lowering.
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+          tlm_method read_ooo(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
+        end bus Mem
+
+        use Mem;
+
+        module Mixed3Way
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   addr: Vec<UInt<32>, 3> reset rst => 0;
+          reg   data: Vec<UInt<64>, 3> reset rst => 0;
+          thread workers on clk rising, rst high
+            fork
+              data[0] <= m.read(addr[0]);
+            and
+              data[1] <= m.read(addr[1]);
+            and
+              data[2] <= m.read_ooo(addr[2]);
+            join
+          end thread workers
+        end module Mixed3Way
+    ";
+    let errs = lower_tlm_initiator_calls_result(source)
+        .expect_err("partial-cohort mixed-class fork group must be rejected");
+    assert!(!errs.is_empty(), "expected at least one error");
+    let msg = errs[0].to_string();
+    assert!(
+        msg.contains("fork issue group mixes blocking and out_of_order calls"),
+        "error should name the mixed-class fork group, not silently drop the \
+         out_of_order branch: {msg}"
+    );
+}
+
+#[test]
+fn test_tlm_rhs_fork_mixed_methods_already_rejected() {
+    // RHS-fork groups (`dst <= fork port.method(args); ... join all;`) are
+    // separately restricted to a single method per group (see
+    // `inline_lower_tlm_fork_join_all`), so mixing `blocking` and
+    // `out_of_order` methods there was already rejected before this change.
+    // Locked here as a control alongside the direct-call fork/join fix so
+    // the two related restrictions don't drift apart undocumented.
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+          tlm_method read_ooo(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
+        end bus Mem
+
+        use Mem;
+
+        module RhsForkMixedMethods
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   d0: UInt<64> reset rst => 0;
+          reg   d1: UInt<64> reset rst => 0;
+
+          thread driver on clk rising, rst high
+            d0 <= fork m.read(32'h1000);
+            wait 1 cycle;
+            d1 <= fork m.read_ooo(32'h2000);
+            join all;
+          end thread driver
+        end module RhsForkMixedMethods
+    ";
+    let errs = lower_tlm_initiator_calls_result(source)
+        .expect_err("RHS-fork group spanning two methods must be rejected");
+    assert!(!errs.is_empty(), "expected at least one error");
+    let msg = errs[0].to_string();
+    assert!(
+        msg.contains("v1 forked TLM groups must target one method"),
+        "error should mention the one-method restriction: {msg}"
+    );
+}
+
 #[test]
 fn test_tlm_rhs_fork_join_all_workers_share_method() {
     let source = "
@@ -13793,10 +15408,20 @@ fn test_axi_dma_tlm_burst_vec_bfm_connect_compiles() {
     );
 
     let sim = compile_to_sim_h(source, false);
+    // Option B (arch-com#500 Gap 3 / #759): the bus-as-wire struct's Vec
+    // payload field goes through the same `cpp_field_decl` path as ARCH
+    // `struct` fields, so it carries as `std::array<T,N>` too.
     assert!(
-        sim.contains("uint32_t read_burst_rsp_data[4];"),
-        "sim bus-as-wire struct should keep Vec payload fields as arrays:\n{sim}"
+        sim.contains("std::array<uint32_t, 4> read_burst_rsp_data;"),
+        "sim bus-as-wire struct should carry Vec payload fields as std::array:\n{sim}"
     );
+    assert!(
+        sim.contains("std::memset(read_burst_rsp_data.data(), 0, sizeof(read_burst_rsp_data))"),
+        "bus-as-wire struct ctor should zero the std::array via .data(), not decay-to-pointer:\n{sim}"
+    );
+    // Module-level Vec-typed TLM ports (not struct fields) are a separate,
+    // out-of-scope code path and must remain raw C arrays with flat lane
+    // aliases, unchanged by the std::array carrier work above.
     assert!(
         sim.contains("uint32_t mem_read_burst_rsp_data[4];")
             && sim.contains("uint32_t& mem_read_burst_rsp_data_0;")
@@ -15472,6 +17097,221 @@ fn test_vec_of_const_param_emits_packed_and_indexes() {
     assert!(
         sv.contains("coeffs[(0) * (8) +: (8)]"),
         "expected coeffs[0] → coeffs[(0) * (8) +: (8)]:\n{sv}"
+    );
+}
+
+#[test]
+fn test_vec_sint_index_reads_preserve_signedness() {
+    let source = r#"
+        bus SignedSamples
+          values: out Vec<SInt<8>, 4>;
+        end bus SignedSamples
+
+        module SignedVecOps
+          param coeffs: Vec<SInt<8>, 2> = {1, 2};
+          port values: in Vec<SInt<8>, 4>;
+          port nested: in Vec<Vec<SInt<8>, 2>, 2>;
+          port samples: target SignedSamples;
+          port idx: in UInt<2>;
+          port outer: in UInt<1>;
+          port inner: in UInt<1>;
+          port coeff: in SInt<8>;
+          port product: out SInt<16>;
+          port bus_product: out SInt<16>;
+          port less: out Bool;
+          port shifted: out SInt<8>;
+          port low_bit: out Bool;
+          port nested_value: out SInt<8>;
+          port param_value: out SInt<8>;
+          port copied: out Vec<SInt<8>, 4>;
+          port any_less: out Bool;
+
+          function pick(v: Vec<SInt<8>, 4>, i: UInt<2>) -> SInt<8>
+            return v[i];
+          end function pick
+
+          comb
+            product = values[idx] * coeff;
+            bus_product = samples.values[idx] * coeff;
+            less = values[idx] < coeff;
+            shifted = values[idx] >> 1;
+            low_bit = values[idx][0];
+            nested_value = nested[outer][inner];
+            param_value = coeffs[0];
+            any_less = values.any(item < coeff);
+            for i in 0..3
+              copied[i] = values[i];
+            end for
+          end comb
+        end module SignedVecOps
+    "#;
+    let sv = compile_to_sv(source);
+
+    assert!(sv.contains("$signed(values[idx]) * coeff"), "{sv}");
+    assert!(
+        sv.contains("$signed(samples_values[idx]) * coeff"),
+        "bus Vec fields must preserve signed element reads:\n{sv}"
+    );
+    assert!(sv.contains("$signed(values[idx]) < coeff"), "{sv}");
+    assert!(sv.contains("$signed(values[idx]) >>> 1"), "{sv}");
+    assert!(sv.contains("values[idx][0]"), "{sv}");
+    assert!(!sv.contains("$signed(values[idx])[0]"), "{sv}");
+    assert!(sv.contains("$signed(nested[outer][inner])"), "{sv}");
+    assert!(sv.contains("$signed(coeffs[(0) * (8) +: (8)])"), "{sv}");
+    assert!(
+        sv.contains("$signed(values[0]) < coeff") && sv.contains("$signed(values[3]) < coeff"),
+        "{sv}"
+    );
+    assert!(
+        sv.contains("function automatic logic signed [7:0] pick")
+            && sv.contains("return $signed(v[i]);"),
+        "{sv}"
+    );
+    assert!(sv.contains("copied[i] = $signed(values[i]);"), "{sv}");
+    assert!(!sv.contains("$signed(copied[i]) ="), "{sv}");
+}
+
+#[test]
+fn test_pipeline_vec_sint_index_reads_use_stage_local_type() {
+    let source = r#"
+        domain D
+          freq_mhz: 100
+        end domain D
+
+        pipeline SignedVecPipe
+          port clk: in Clock<D>;
+          port rst: in Reset<Sync>;
+          port signed_values: in Vec<SInt<8>, 4>;
+          port unsigned_values: in Vec<UInt<8>, 4>;
+          port idx: in UInt<2>;
+          port coeff: in SInt<8>;
+          port signed_product: out SInt<16>;
+          port unsigned_product: out UInt<16>;
+
+          stage Signed stall when signed_values[idx] < coeff
+            let samples: Vec<SInt<8>, 4> = signed_values;
+            reg result: SInt<16> reset rst => 0;
+            reg direct_result: SInt<16> reset rst => 0;
+            seq on clk rising
+              result <= samples[idx] * coeff;
+              direct_result <= signed_values[idx] * coeff;
+            end seq
+            comb
+              signed_product = result;
+            end comb
+          end stage Signed
+
+          stage Unsigned
+            let samples: Vec<UInt<8>, 4> = unsigned_values;
+            reg result: UInt<16> reset rst => 0;
+            seq on clk rising
+              result <= samples[idx] * unsigned_values[0];
+            end seq
+            comb
+              unsigned_product = result;
+            end comb
+          end stage Unsigned
+        end pipeline SignedVecPipe
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("$signed(signed_samples[idx]) * coeff"),
+        "the signed stage-local Vec must be cast despite a same-named unsigned local:\n{sv}"
+    );
+    assert!(sv.contains("$signed(signed_values[idx]) * coeff"), "{sv}");
+    assert!(sv.contains("$signed(signed_values[idx]) < coeff"), "{sv}");
+    assert!(
+        sv.contains("unsigned_samples[idx] * unsigned_values[0]"),
+        "the unsigned same-named stage local must remain unsigned:\n{sv}"
+    );
+    assert!(!sv.contains("$signed(unsigned_samples[idx])"), "{sv}");
+}
+
+#[test]
+fn test_vec_sint_index_verilator_behavior() {
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping signed Vec index regression: verilator not found");
+        return;
+    }
+
+    let source = r#"
+        module SignedVecRuntime
+          port values: in Vec<SInt<8>, 4>;
+          port idx: in UInt<2>;
+          port coeff: in SInt<8>;
+          port product: out SInt<16>;
+          port less: out Bool;
+          port shifted: out SInt<8>;
+          comb
+            product = values[idx] * coeff;
+            less = values[idx] < coeff;
+            shifted = values[idx] >> 1;
+          end comb
+        end module SignedVecRuntime
+    "#;
+    let generated = compile_to_sv(source);
+    let tb = r#"
+module tb;
+  logic signed [3:0][7:0] values;
+  logic [1:0] idx;
+  logic signed [7:0] coeff;
+  logic signed [15:0] product;
+  logic less;
+  logic signed [7:0] shifted;
+
+  SignedVecRuntime dut (.*);
+
+  initial begin
+    values = '0;
+    values[0] = -8'sd2;
+    idx = 0;
+    coeff = 8'sd3;
+    #1;
+    if (product !== -16'sd6) $fatal(1, "multiply was %0d", product);
+    if (less !== 1'b1) $fatal(1, "comparison treated -2 as unsigned");
+    if (shifted !== -8'sd1) $fatal(1, "shift was %0d", shifted);
+    $finish;
+  end
+endmodule
+"#;
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_path = td.path().join("signed_vec_runtime.sv");
+    let obj_dir = td.path().join("obj_dir");
+    std::fs::write(&sv_path, format!("{generated}\n{tb}"))
+        .expect("write signed Vec Verilator fixture");
+
+    let verilate = std::process::Command::new("verilator")
+        .arg("--binary")
+        .arg("--timing")
+        .arg("--top-module")
+        .arg("tb")
+        .arg("-Wno-fatal")
+        .arg("-Wno-DECLFILENAME")
+        .arg("-Mdir")
+        .arg(&obj_dir)
+        .arg(&sv_path)
+        .output()
+        .expect("build signed Vec Verilator fixture");
+    assert!(
+        verilate.status.success(),
+        "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&verilate.stdout),
+        String::from_utf8_lossy(&verilate.stderr)
+    );
+
+    let run = std::process::Command::new(obj_dir.join("Vtb"))
+        .output()
+        .expect("run signed Vec Verilator fixture");
+    assert!(
+        run.status.success(),
+        "signed Vec Verilator behavior should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
     );
 }
 
@@ -18276,6 +20116,149 @@ fn test_tight_relock_release_event_is_registered_709() {
         comb_loop_warnings(source).is_empty(),
         "tight re-lock lowering must not report a combinational SCC"
     );
+}
+
+/// Extract the body of each `always_comb` block in `sv`, in source order.
+fn always_comb_bodies(sv: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur: Option<String> = None;
+    let mut depth = 0usize;
+    for line in sv.lines() {
+        let t = line.trim();
+        if cur.is_none() {
+            if t == "always_comb begin" {
+                cur = Some(String::new());
+                depth = 1;
+            }
+            continue;
+        }
+        depth += t.matches("begin").count();
+        depth -= t.matches("end").count().min(depth);
+        if depth == 0 {
+            out.push(cur.take().unwrap());
+        } else {
+            cur.as_mut().unwrap().push_str(line);
+            cur.as_mut().unwrap().push('\n');
+        }
+    }
+    out
+}
+
+#[test]
+fn test_lock_request_comb_block_is_isolated_709() {
+    // arch#709: the merged thread `always_comb` used to write the lock request
+    // wires *and* the grant-gated lock-body outputs. Verilator treats an
+    // always block as one dependency-graph vertex, so that bundling fabricates
+    // a grant -> req edge, closing the arbiter's req -> grant path into a
+    // reported combinational loop (UNOPTFLAT) even though the bit-level graph
+    // is acyclic. The request wires must be emitted from a block of their own
+    // that reads no grant.
+    let source = r#"
+        module LockReqSplit709
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync, High>;
+          port ready: in Bool;
+          port bus_valid: out Bool;
+          resource pool: mutex<round_robin>;
+
+          thread T0 on clk rising, rst high
+            lock pool
+              bus_valid = 1;
+              wait until ready;
+            end lock pool
+          end thread T0
+
+          thread T1 on clk rising, rst high
+            lock pool
+              bus_valid = 1;
+              wait until ready;
+            end lock pool
+          end thread T1
+        end module LockReqSplit709
+    "#;
+    let sv = compile_to_sv(source);
+    let blocks = always_comb_bodies(&sv);
+    let req_blocks: Vec<&String> = blocks
+        .iter()
+        .filter(|b| b.contains("_pool_req_0"))
+        .collect();
+    assert_eq!(
+        req_blocks.len(),
+        1,
+        "lock requests must be driven from exactly one always_comb:\n{sv}"
+    );
+    assert!(
+        !req_blocks[0].contains("_pool_grant_"),
+        "the lock-request always_comb must not read any grant wire \
+         (that read is what Verilator turns into a false grant -> req edge):\n{}",
+        req_blocks[0]
+    );
+    // The lock-body outputs are still grant-gated — in a different block.
+    assert!(
+        sv.contains("if (_pool_grant_0) begin"),
+        "lock-body outputs must still be gated on the grant:\n{sv}"
+    );
+    assert!(
+        comb_loop_warnings(source).is_empty(),
+        "lock lowering must not report a combinational SCC"
+    );
+}
+
+#[test]
+fn test_lock_lowering_is_unoptflat_clean_709() {
+    // The end-to-end gate for arch#709: Verilator must not report circular
+    // combinational logic for lock-using designs. `resource_lock.arch` (a
+    // `mutex<priority>` whose lock bodies drive a shared bus) and
+    // `semaphore_relock_rr.arch` (the tight re-lock idiom from the issue) both
+    // tripped UNOPTFLAT before the request block was split out.
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping lock UNOPTFLAT check: verilator not found");
+        return;
+    }
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    for (src, top) in [
+        ("tests/thread/resource_lock.arch", "SharedBus"),
+        ("tests/thread/semaphore_relock_rr.arch", "SemaphoreRelock"),
+        ("tests/thread/mutex_release_rr.arch", "MutexRel"),
+    ] {
+        let td = tempfile::tempdir().expect("tempdir");
+        let sv_out = td.path().join(format!("{top}.sv"));
+        let build = std::process::Command::new(arch_bin)
+            .arg("build")
+            .arg(src)
+            .arg("-o")
+            .arg(&sv_out)
+            .output()
+            .expect("build lock fixture SV");
+        assert!(
+            build.status.success(),
+            "arch build {src} should pass\nstderr:\n{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("-Wno-fatal")
+            .arg("--top-module")
+            .arg(top)
+            .arg("-Mdir")
+            .arg(td.path().join("obj_dir"))
+            .arg(&sv_out)
+            .output()
+            .expect("run verilator");
+        let log = format!(
+            "{}{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        assert!(
+            !log.contains("UNOPTFLAT"),
+            "{src} must lint free of circular combinational logic:\n{log}"
+        );
+    }
 }
 
 #[test]
@@ -23221,6 +25204,59 @@ fn test_emit_bound_asserts_elides_for_loop_iterator_index() {
 }
 
 #[test]
+fn test_emit_bound_asserts_elides_loop_iterator_in_guard() {
+    // Regression: the sibling elision above only covers an index that IS a
+    // bare loop iterator. The iterator also reaches the predicate through an
+    // enclosing `if` inside the loop body, whose condition is folded in as
+    // the `|->` antecedent. Here the indexed access is `mem[addr]` — `addr`
+    // is not an iterator, so the site was emitted — but the guard carried
+    // `wem[i +: 1]`, producing a module-scope assertion referencing `i`:
+    //
+    //   _auto_bound_vec_0: assert property (@(posedge clk) disable iff (!rst_n)
+    //     (((cs & we) && (wem[i +: 1])) |-> (int'(addr) < (8192))))
+    //
+    // Verilator rejected the file with "Can't find definition of variable:
+    // 'i'", so `arch build` emitted SV that would not elaborate at all.
+    //
+    // Origin: tests/e203 SRAM fixtures (e203_itcm_ram, e203_dtcm_ram,
+    // e203_srams), all three of which failed Verilator lint this way.
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        module M
+          port clk:   in Clock<SysDomain>;
+          port rst_n: in Reset<Async, Low>;
+          port we:    in Bool;
+          port addr:  in UInt<2>;
+          port wem:   in UInt<4>;
+          port din:   in UInt<8>;
+          reg mem: Vec<UInt<8>, 4> reset rst_n => 8'd0;
+          seq on clk rising
+            for i in 0..3
+              if wem[i:i]
+                mem[addr] <= din;
+              end if
+            end for
+          end seq
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    assert!(
+        !sv.contains("_auto_bound_"),
+        "a bound assertion whose guard references for-loop iterator `i` must be \
+         skipped — it cannot be hoisted to module scope:\n{sv}"
+    );
+    // The iterator must not leak into module scope by any route.
+    for line in sv.lines().filter(|l| l.contains("assert property")) {
+        assert!(
+            !line.contains("wem[i"),
+            "loop iterator leaked into a module-scope assertion: {line}"
+        );
+    }
+}
+
+#[test]
 fn test_codegen_vec_uint1_collapses_inner_zero_dim() {
     // Regression: pre-fix, `Vec<UInt<1>, N>` ports emitted as
     // `logic [N-1:0] [0:0] x` (multi-dim packed). When such a port
@@ -24213,7 +26249,9 @@ fn test_thread_state_names_distinguish_wait_until_vs_wait_cycles() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Issue #246: whole-design combinational feedback-loop detection (MVP).
+// Issue #246: whole-design combinational feedback-loop detection (MVP;
+// promoted warning -> error 2026-08, see `errors_from`/`comb_loop_errors`
+// below).
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn comb_loop_warnings(source: &str) -> Vec<String> {
@@ -24223,11 +26261,21 @@ fn comb_loop_warnings(source: &str) -> Vec<String> {
         .collect()
 }
 
+/// `comb_loop_warnings`'s counterpart for sources with a genuine unblessed
+/// SCC: `check()` now fails, so this reads the message text out of the
+/// `Err` list instead of the (now unreachable in that case) `Ok` warnings.
+fn comb_loop_errors(source: &str) -> Vec<String> {
+    errors_from(source)
+        .into_iter()
+        .filter(|m| m.contains("combinational feedback cycle") || m.starts_with("arch check:"))
+        .collect()
+}
+
 #[test]
 fn test_comb_loop_within_module_detected() {
     // Self-driving comb cycle inside a single module: a depends on b,
     // b depends on a. The whole-design check should surface it as a
-    // warning.
+    // compile error (severity promotion, 2026-08 — was a warning).
     let source = r#"
         module M
           port i: in UInt<1>;
@@ -24241,11 +26289,11 @@ fn test_comb_loop_within_module_detected() {
           end comb
         end module M
     "#;
-    let ws = comb_loop_warnings(source);
+    let ws = comb_loop_errors(source);
     assert!(
         ws.iter()
             .any(|m| m.contains("combinational feedback cycle")),
-        "expected a comb-loop warning, got: {:?}",
+        "expected a comb-loop error, got: {:?}",
         ws
     );
 }
@@ -24254,7 +26302,8 @@ fn test_comb_loop_within_module_detected() {
 fn test_comb_loop_across_two_instances_detected() {
     // Cross-instance loop: A.out -> B.in -> B.out -> A.in.
     // The current per-module analyzer silently absorbs this as
-    // settle_depth=2; the new whole-design analyzer should warn.
+    // settle_depth=2; the whole-design analyzer must flag it as a
+    // compile error (severity promotion, 2026-08 — was a warning).
     let source = r#"
         module Cell
           port i: in UInt<1>;
@@ -24285,11 +26334,11 @@ fn test_comb_loop_across_two_instances_detected() {
           end comb
         end module Top
     "#;
-    let ws = comb_loop_warnings(source);
+    let ws = comb_loop_errors(source);
     assert!(
         ws.iter()
             .any(|m| m.contains("combinational feedback cycle")),
-        "expected a comb-loop warning, got: {:?}",
+        "expected a comb-loop error, got: {:?}",
         ws
     );
 }
@@ -24392,6 +26441,107 @@ fn test_comb_loop_through_register_not_flagged() {
 }
 
 #[test]
+fn test_sibling_top_modules_sharing_signal_names_is_not_a_cycle() {
+    // Two INDEPENDENT top-level modules, each individually acyclic, that
+    // happen to use the same signal names. ModA: q -> p. ModB: p -> q.
+    // Neither has a loop; they are not connected to each other at all.
+    //
+    // Every top-level module used to be expanded into one shared graph at
+    // the same root path (`vec![]`), so `ModA.p` and `ModB.p` interned to
+    // a single node and the two acyclic chains stitched into a fabricated
+    // `p -> q -> p` cycle. Reproduced from the CLI as
+    // `arch check ModA.arch ModB.arch` warning while each file alone was
+    // clean — common signal names (`valid`, `ready`, `cnt`) make this easy
+    // to hit on any multi-file design.
+    let source = r#"
+        module ModA
+          port i: in UInt<8>;
+          port o: out UInt<8>;
+          wire p: UInt<8>;
+          wire q: UInt<8>;
+          comb
+            q = i;
+            p = q +% 1;
+            o = p;
+          end comb
+        end module ModA
+
+        module ModB
+          port i: in UInt<8>;
+          port o: out UInt<8>;
+          wire p: UInt<8>;
+          wire q: UInt<8>;
+          comb
+            p = i;
+            q = p +% 1;
+            o = q;
+          end comb
+        end module ModB
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        cycle_msgs.is_empty(),
+        "two unconnected acyclic top modules must not fabricate a cycle, but got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_comb_loop_attributed_to_the_owning_top_module() {
+    // The cycle lives in `Loop2`, which is declared SECOND. `path_owner`
+    // was keyed on the shared root path `vec![]`, so whichever top was
+    // expanded last overwrote the entry and the diagnostic named the wrong
+    // module — here it blamed the acyclic `Filler`. (Severity promotion,
+    // 2026-08: this is now a compile error, not a warning.)
+    let source = r#"
+        module Filler
+          port x: in UInt<8>;
+          port y: out UInt<8>;
+          comb
+            y = x;
+          end comb
+        end module Filler
+
+        module Loop2
+          port i: in UInt<8>;
+          port o: out UInt<8>;
+          wire a: UInt<8>;
+          wire b: UInt<8>;
+          comb
+            a = b +% i;
+            b = a +% 1;
+            o = a;
+          end comb
+        end module Loop2
+    "#;
+    let ws = comb_loop_errors(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert_eq!(
+        cycle_msgs.len(),
+        1,
+        "expected exactly one cycle error, got: {:?}",
+        ws
+    );
+    assert!(
+        cycle_msgs[0].contains("[Loop2]"),
+        "cycle is in Loop2 and must be attributed to it, got: {:?}",
+        cycle_msgs[0]
+    );
+    assert!(
+        !cycle_msgs[0].contains("Filler"),
+        "acyclic Filler must not be blamed, got: {:?}",
+        cycle_msgs[0]
+    );
+}
+
+#[test]
 fn test_interface_module_treated_as_opaque() {
     // A module loaded purely as an `.archi` interface stub (no body) is
     // treated as opaque: every output assumed to depend on every input.
@@ -24452,12 +26602,17 @@ fn test_interface_module_treated_as_opaque() {
     }
     let symbols = arch::resolve::resolve(&ast).expect("resolve error");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
-    let (warnings, _) = checker.check().expect("type check error");
-    let ws: Vec<String> = warnings.into_iter().map(|w| w.message).collect();
+    // Severity promotion, 2026-08: the whole-design comb-SCC diagnostic is
+    // now a compile error, so `check()` fails instead of returning Ok with
+    // a warning attached.
+    let errs = checker
+        .check()
+        .expect_err("expected type check to fail with a comb-loop error");
+    let ws: Vec<String> = errs.into_iter().map(|e| e.to_string()).collect();
     assert!(
         ws.iter()
             .any(|m| m.contains("combinational feedback cycle")),
-        "expected opaque-interface module to participate in a detected cycle; warnings: {:?}",
+        "expected opaque-interface module to participate in a detected cycle; errors: {:?}",
         ws
     );
 }
@@ -25145,8 +27300,9 @@ fn test_archi_comb_dep_empty_marks_output_pure() {
 fn test_archi_comb_dep_absent_falls_back_to_opaque() {
     // A stub WITHOUT the annotation must keep today's opaque "every
     // output depends on every input" behavior. Two such stubs cross-
-    // wired should fire the cycle warning (regression guard for the
-    // pre-annotation behavior).
+    // wired should fire the cycle diagnostic (regression guard for the
+    // pre-annotation behavior). Severity promotion, 2026-08: this is now
+    // a compile error, not a warning.
     let source = r#"
         module Stub
           port i: in  UInt<1>;
@@ -25194,8 +27350,10 @@ fn test_archi_comb_dep_absent_falls_back_to_opaque() {
     }
     let symbols = arch::resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
-    let (warnings, _) = checker.check().expect("type check");
-    let ws: Vec<String> = warnings.into_iter().map(|w| w.message).collect();
+    let errs = checker
+        .check()
+        .expect_err("expected type check to fail with a comb-loop error");
+    let ws: Vec<String> = errs.into_iter().map(|e| e.to_string()).collect();
     assert!(
         ws.iter()
             .any(|m| m.contains("combinational feedback cycle")),
@@ -25367,7 +27525,7 @@ fn test_comb_loop_bodied_real_cycle_still_detected() {
           end comb
         end module Top
     "#;
-    let ws = comb_loop_warnings(source);
+    let ws = comb_loop_errors(source);
     let cycle_msgs: Vec<_> = ws
         .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
@@ -25375,7 +27533,7 @@ fn test_comb_loop_bodied_real_cycle_still_detected() {
     assert!(
         !cycle_msgs.is_empty(),
         "real cycle (u1.out_a ← w2; u2.out_b ← w1) must still fire; \
-         warnings: {:?}",
+         errors: {:?}",
         ws
     );
 }
@@ -25649,7 +27807,7 @@ fn test_comb_loop_fsm_real_cycle_still_detected() {
           end comb
         end module Top
     "#;
-    let ws = comb_loop_warnings(source);
+    let ws = comb_loop_errors(source);
     let cycle_msgs: Vec<_> = ws
         .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
@@ -25657,7 +27815,7 @@ fn test_comb_loop_fsm_real_cycle_still_detected() {
     assert!(
         !cycle_msgs.is_empty(),
         "real cycle (u1.out_a ← w2; u2.out_b ← w1) through fsm \
-         must still fire; warnings: {:?}",
+         must still fire; errors: {:?}",
         ws
     );
 }
@@ -25761,7 +27919,7 @@ fn test_comb_loop_fsm_default_comb_deps_included() {
     "#;
     // The cross-wire w1 → in_z → out_a → w1 is a legitimate cycle.
     // Per-output FSM walker must include in_z in out_a's dep set.
-    let ws = comb_loop_warnings(source);
+    let ws = comb_loop_errors(source);
     let cycle_msgs: Vec<_> = ws
         .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
@@ -25769,7 +27927,7 @@ fn test_comb_loop_fsm_default_comb_deps_included() {
     assert!(
         !cycle_msgs.is_empty(),
         "default_comb reads in_z driving out_a; w1 → in_z → out_a → w1 \
-         must fire as a comb cycle; warnings: {:?}",
+         must fire as a comb cycle; errors: {:?}",
         ws
     );
 }
@@ -25818,7 +27976,7 @@ fn test_comb_loop_fsm_output_default_expr_deps_included() {
           end comb
         end module Top
     "#;
-    let ws = comb_loop_warnings(source);
+    let ws = comb_loop_errors(source);
     let cycle_msgs: Vec<_> = ws
         .iter()
         .filter(|m| m.contains("combinational feedback cycle ("))
@@ -25826,11 +27984,13 @@ fn test_comb_loop_fsm_output_default_expr_deps_included() {
     assert!(
         !cycle_msgs.is_empty(),
         "out_a's default expression reads in_y; w1 → in_y → out_a → w1 \
-         must fire as a comb cycle; warnings: {:?}",
+         must fire as a comb cycle; errors: {:?}",
         ws
     );
 
     // And the dual: with cross-wire through in_a (NOT a dep), no cycle.
+    // Acyclic, so `check()` still succeeds — the warning-based helper is
+    // correct here and stays unchanged.
     let source2 = r#"
         fsm Cell
           port clk: in Clock<SysDomain>;
@@ -25875,6 +28035,894 @@ fn test_comb_loop_fsm_output_default_expr_deps_included() {
         "out_a's default reads only in_x; w1 → in_y is NOT a dep, \
          so no cycle should fire; got: {:?}",
         cycle_msgs2
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pre-req for arch#709 follow-up (promotion of the whole-design comb-loop
+// warning to an error): a same-comb-block sequential-fold reduction
+// (`x = <identity>; x = x <op> t0; x = x <op> t1; …`, the exact shape the
+// `shared(or)`/`shared(and)` thread lowering emits into one `always_comb`)
+// is last-write-wins blocking-assignment dataflow, NOT hardware feedback —
+// `scan_assignments_inner` must not fabricate a self-edge for an in-block
+// read-after-write. A read-BEFORE-any-in-block-write of the same signal is
+// still a genuine self-dependency and must still be flagged.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_comb_loop_inblock_read_after_write_fold_not_flagged() {
+    // Minimal hand-written repro of the fold shape (identity default, then
+    // two guarded `x = x <op> in;` re-assignments to the SAME wire, nested
+    // in independent `if` blocks — exactly what the shared(or) thread
+    // lowering emits). No earlier version of this check should warn; this
+    // pins the fix.
+    let source = r#"
+        module M
+          port c0: in UInt<1>;
+          port c1: in UInt<1>;
+          port i0: in UInt<1>;
+          port i1: in UInt<1>;
+          port o: out UInt<1>;
+          wire x: UInt<1>;
+          comb
+            x = 0;
+            if c0
+              x = x or i0;
+            end if
+            if c1
+              x = x or i1;
+            end if
+            o = x;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        cycle_msgs.is_empty(),
+        "sequential in-block fold (x = 0; x = x or i0; x = x or i1;) is \
+         blocking-assignment dataflow, not feedback — must not warn; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_comb_loop_read_before_first_inblock_write_still_flagged() {
+    // Dual of the above: `x` is read on the RHS of its OWN first (and only)
+    // assignment in the block, with no earlier write establishing an
+    // in-block value. There is no register to break this dependency on
+    // itself — a genuine combinational self-loop that must still be
+    // flagged (compile error, severity promotion 2026-08 — was a warning).
+    let source = r#"
+        module M
+          port i: in UInt<1>;
+          port o: out UInt<1>;
+          wire x: UInt<1>;
+          comb
+            x = x and i;
+            o = x;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_errors(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        !cycle_msgs.is_empty(),
+        "x = x and i; with no earlier in-block write of x is a genuine \
+         self-loop and must still be flagged; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_comb_loop_mutually_exclusive_branch_write_not_promoted() {
+    // A write to `x` in ONE arm of an if/else must NOT be treated as
+    // "already written" for a self-read of `x` in the OTHER (mutually
+    // exclusive) arm — that read sees x's pre-block value on the path
+    // where the write-arm did not execute, which is a genuine self-loop.
+    // Guards against an unsound over-generalization of the fold fix.
+    let source = r#"
+        module M
+          port c: in UInt<1>;
+          port i: in UInt<1>;
+          port o: out UInt<1>;
+          wire x: UInt<1>;
+          comb
+            if c
+              x = i;
+            else
+              x = x and i;
+            end if
+            o = x;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_errors(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        !cycle_msgs.is_empty(),
+        "else-arm reads x with no write on that path (the then-arm's write \
+         is on a mutually exclusive path) — must still be flagged; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_comb_loop_branch_condition_does_not_use_union_grounding() {
+    // A write to x in one branch must not ground a later condition that reads
+    // x: when that branch is skipped, the condition reads x's unresolved
+    // pre-block value. The two later assignments then form a real cycle
+    // (x -> y through the condition, y -> x through the final assignment).
+    // This must coexist with the union grounding used for ordinary
+    // post-branch sequential folds (arch#780).
+    let source = r#"
+        module M
+          port c: in Bool;
+          port o: out Bool;
+          wire x: Bool;
+          wire y: Bool;
+          comb
+            if c
+              x = false;
+            else
+            end if
+            if x
+              y = false;
+            else
+              y = true;
+            end if
+            x = y;
+            o = x;
+          end comb
+        end module M
+    "#;
+    let ws = errors_from(source);
+    assert!(
+        ws.iter()
+            .any(|m| m.contains("combinational feedback cycle (")),
+        "branch-only x write must not ground the later condition; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_comb_loop_condition_grounding_is_snapshotted_at_entry() {
+    // The outer condition is evaluated before its body writes x. That write
+    // must not retroactively ground the outer condition's dependency on x.
+    // Otherwise the later y -> x edge can make the real x -> y -> x cycle
+    // look like a fold artifact.
+    let source = r#"
+        module M
+          port o: out Bool;
+          wire x: Bool;
+          wire y: Bool;
+          comb
+            if x
+              x = false;
+              y = true;
+            else
+              y = false;
+            end if
+            x = y;
+            o = x;
+          end comb
+        end module M
+    "#;
+    let ws = errors_from(source);
+    assert!(
+        ws.iter()
+            .any(|m| m.contains("combinational feedback cycle (")),
+        "outer condition must retain its pre-body grounding state; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_comb_loop_completed_for_grounding_reaches_later_condition() {
+    // A for body is walked once for fold analysis. An unconditional write in
+    // that body fully establishes x, so a later condition may use x as a
+    // grounded control dependency without fabricating x <-> y feedback.
+    let source = r#"
+        module M
+          port a: in Bool;
+          port o: out Bool;
+          wire x: Bool;
+          wire y: Bool;
+          comb
+            for i in 0..0
+              x = a;
+            end for
+            if x
+              y = false;
+            else
+              y = true;
+            end if
+            x = y;
+            o = x;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    assert!(
+        !ws.iter()
+            .any(|m| m.contains("combinational feedback cycle (")),
+        "completed for-loop write must ground the later condition; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_cond_only_grounded_fold_not_flagged_and_verilator_confirms_acyclic() {
+    // arch#780, NEGATIVE direction: a self-fold (`p = q +% p;`) whose ONLY
+    // prior establishment of `p` is a CONDITIONAL, single-arm write
+    // (`if c: p = 8; end if`) read AFTER the `if` must NOT be flagged. The
+    // grounding here flows solely through `ever_written`'s UNION across the
+    // if/else arms (src/comb_graph.rs); it is the one #780 shape that
+    // distinguishes union grounding from intersection — every other
+    // "not flagged" fold fixture grounds its accumulator with an
+    // UNCONDITIONAL init (`x = 0;`) that would survive an intersection
+    // merge too. This is the load-bearing companion to
+    // `test_comb_loop_mutually_exclusive_branch_write_not_promoted` (which
+    // pins the read-INSIDE-a-branch case as still flagged): here the read
+    // is AFTER the branch, where the union-merged grounding legitimately
+    // applies. If `ever_written` were ever "hardened" to intersect across
+    // arms, `p` would stop being grounded and this acyclic fold would
+    // regress to a FALSE POSITIVE — this test is the tripwire.
+    //
+    // Independently attested (not just an `arch check` self-opinion): the
+    // generated SV draws zero `UNOPTFLAT` from Verilator, because a
+    // blocking-assigned-before-read variable inside one `always_comb` is a
+    // local sequential value, not a module-net self-dependency — exactly
+    // the semantics the fold-artifact filter models.
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let src = "tests/regression/issues/cond_fold_grounded_780/CondFoldGrounded.arch";
+
+    let check = std::process::Command::new(arch_bin)
+        .arg("check")
+        .arg(src)
+        .output()
+        .expect("run arch check");
+    let check_stderr = String::from_utf8_lossy(&check.stderr);
+    assert!(
+        !check_stderr.contains("combinational feedback cycle ("),
+        "conditional-only grounded fold must NOT be flagged as a comb \
+         cycle (union grounding); stderr:\n{check_stderr}"
+    );
+
+    if std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!(
+            "skipping Verilator acyclic cross-check for \
+             CondFoldGrounded: verilator not found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("CondFoldGrounded.sv");
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg(src)
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build CondFoldGrounded SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let lint = std::process::Command::new("verilator")
+        .arg("--lint-only")
+        .arg("--assert")
+        .arg("-Wno-fatal")
+        .arg("-Wno-DECLFILENAME")
+        .arg("--top-module")
+        .arg("CondFoldGrounded")
+        .arg(&sv_out)
+        .output()
+        .expect("verilate CondFoldGrounded");
+    let lint_stderr = String::from_utf8_lossy(&lint.stderr);
+    assert!(
+        !lint_stderr.contains("UNOPTFLAT"),
+        "Verilator must NOT report UNOPTFLAT — this fold is genuinely \
+         acyclic, confirming `arch check`'s silence is correct and not a \
+         missed real loop; stderr:\n{lint_stderr}"
+    );
+}
+
+#[test]
+fn test_shared_reduction_fixtures_have_no_comb_loop_false_positive() {
+    // End-to-end regression on the two real fixtures that surfaced this
+    // false positive in the pre-#775 full-corpus warning sweep: threads
+    // driving a `shared(or)`/`shared(and)` port lower to a sequential fold
+    // inside one always_comb block in the synthesized `_threads` submodule
+    // ("_threads.r_ready -> _threads.r_ready" / "...all_ready -> ..."),
+    // which is not real hardware feedback.
+    for source in [
+        include_str!("thread/shared_reduction.arch"),
+        include_str!("thread/shared_and_reduction.arch"),
+    ] {
+        let ws = comb_loop_warnings(source);
+        let cycle_msgs: Vec<_> = ws
+            .iter()
+            .filter(|m| m.contains("combinational feedback cycle ("))
+            .collect();
+        assert!(
+            cycle_msgs.is_empty(),
+            "shared-reduction thread lowering must not fabricate a comb-loop \
+             warning from its in-block fold; got: {:?}",
+            ws
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #780: comb-graph granularity over-approximation.
+//
+// `scan_assignments_inner`'s base-name collapsing (bus-of-Vec field access
+// falling back to whole-port granularity, and `for`-loop bodies walked once
+// — textually — to represent every iteration) fabricated false 2-node
+// feedback cycles for several real, acyclic fixtures. The fix has two parts:
+//
+//   1. Class 1 (bus-of-Vec field granularity): `collect_expr_idents_bus` /
+//      `lhs_base_name_bus` now unwrap a `FieldAccess` base through `Index`
+//      wrappers (`peel_index_to_ident`), so `m[i].ready` resolves to the
+//      field-qualified node `m.ready` — same granularity as a bare bus
+//      port's `s.aw_ready` — instead of collapsing to the whole-Vec `m`.
+//
+//   2. Classes 2-6 (Vec-index / bit-slice / `for`-loop-iteration / cond_stack
+//      collapsing): `add_edge_grounded` + `GraphBuilder::is_fold_artifact`
+//      classify an SCC as a same-execution sequential-fold artifact — NOT a
+//      real cycle — when EVERY edge internal to it was added from a source
+//      identifier already assigned earlier in the same linear (program-
+//      order) walk of one comb block. Blocking-assignment code is
+//      inherently acyclic unless some identifier is read before EVER being
+//      established anywhere reachable in program order; a base-name-
+//      collapsed node can still *look* cyclic purely from conflating
+//      multiple sequential (re-)assignments, or several `for`-loop
+//      iterations walked once, into one graph node. This applies uniformly
+//      regardless of whether the false edge came from a direct RHS read
+//      (`gf_mul8`, `cvdp_prbs_gen`, `onebit_ecc`, `t_hamming_tx`) or a
+//      shared `if`-condition read (`prim_max_find`,
+//      `programmable_interrupt_controller`) — no per-class node-key
+//      refinement (Vec-element / bit-position keys) was needed once the
+//      fold-artifact filter is in place.
+//
+// Both mechanisms are edge-local or SCC-local refinements — never a change
+// to which edges represent genuine cross-instance / `let`-binding
+// dependencies (those are always "not grounded", see `add_edge` — so a real
+// cross-instance loop, e.g. the #781 E203 bug, is untouched) — and a
+// same-name read genuinely BEFORE any establishing write (the classic
+// `x = x + 1;`, or an overlapping bit-slice self-read like `x[3:0] = f(x[2])`
+// on first touch) still produces an ungrounded edge and stays flagged.
+//
+// Each class below is tested in BOTH directions: a reduced false-positive
+// shape (must NOT warn) and a true-cycle shape in the SAME family (must
+// still warn), followed by end-to-end coverage on the 7 real fixtures the
+// issue's full-corpus sweep found.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_vec_of_bus_field_through_index_not_flagged() {
+    // Class 1 false positive: a per-lane `Vec<Bus,N>` passthrough — each
+    // lane forwards `m[i]` straight to `o[i]` field-by-field (the
+    // Fx9MiniFabric shape). `m[i].ready`/`o[i].ready` etc. must resolve to
+    // field-qualified nodes (`m.ready`, `o.ready`, …), not collapse to the
+    // whole-Vec `m`/`o` — six genuinely distinct flattened SV signals, a
+    // straight-line dependency with no real feedback.
+    let source = r#"
+        bus BusVr
+          valid: out Bool;
+          ready: in  Bool;
+          data:  out UInt<8>;
+        end bus BusVr
+
+        module M
+          port m: target    Vec<BusVr, 2>;
+          port o: initiator Vec<BusVr, 2>;
+          comb
+            m[0].ready = o[0].ready;
+            o[0].valid = m[0].valid;
+            o[0].data  = m[0].data;
+            m[1].ready = o[1].ready;
+            o[1].valid = m[1].valid;
+            o[1].data  = m[1].data;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        cycle_msgs.is_empty(),
+        "Vec<Bus,N> per-lane field passthrough must not collapse to a \
+         whole-Vec false cycle; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_vec_of_bus_field_through_index_real_cycle_still_flagged() {
+    // Dual of the above: a GENUINE mutual dependency between two DIFFERENT
+    // bus-field nodes on the SAME lane (`m[0].ready` and `o[0].valid`,
+    // neither ever established beforehand) must still be flagged — field
+    // granularity must not blind the detector to a real cross-field loop.
+    let source = r#"
+        bus BusVr
+          valid: out Bool;
+          ready: in  Bool;
+        end bus BusVr
+
+        module M
+          port m: target    Vec<BusVr, 1>;
+          port o: initiator Vec<BusVr, 1>;
+          comb
+            m[0].ready = o[0].valid;
+            o[0].valid = m[0].ready;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_errors(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        !cycle_msgs.is_empty(),
+        "m[0].ready <-> o[0].valid is a genuine, never-grounded mutual \
+         dependency and must still be flagged; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_for_loop_vec_index_fold_chain_not_flagged() {
+    // Class 2 false positive: the gf_mul8 shape — a `for`-loop unrolls to N
+    // combinational stages threading a running value through TWO Vec
+    // wires (`sh[i]` feeds `a[i+1]`, `a[i]` feeds `sh[i]`). Walked once
+    // (not per-iteration), this collapses to a naive `sh -> a -> sh`
+    // 2-node cycle; it is really a linear a[0]->sh[0]->a[1]->sh[1]->...
+    // chain with zero real feedback.
+    let source = r#"
+        module M
+          port a_in: in UInt<8>;
+          port o: out UInt<8>;
+          wire p: Vec<UInt<8>, 3>;
+          wire a: Vec<UInt<8>, 3>;
+          wire sh: Vec<UInt<8>, 2>;
+          comb
+            p[0] = 0;
+            a[0] = a_in;
+            for i in 0..1
+              p[i + 1] = p[i] ^ a[i];
+              sh[i]    = a[i];
+              a[i + 1] = sh[i];
+            end for
+            o = p[2];
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        cycle_msgs.is_empty(),
+        "sh[i]/a[i+1] running-fold chain through a for-loop must not \
+         fabricate a sh <-> a cycle; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_direct_rhs_mutual_read_before_write_still_flagged() {
+    // Dual of the above, minimal form (no for-loop needed): `p = q and i;
+    // q = p and i;` — `q` is read on the RHS of `p`'s assignment BEFORE `q`
+    // is EVER written anywhere in the block. This is the genuine 2-hop
+    // generalization of `x = x + 1;` (arch#780's grounded-edge filter must
+    // not suppress it: at least one internal edge of the {p,q} SCC — the
+    // q -> p edge — has an ungrounded source).
+    let source = r#"
+        module M
+          port i: in UInt<1>;
+          port o: out UInt<1>;
+          wire p: UInt<1>;
+          wire q: UInt<1>;
+          comb
+            p = q and i;
+            q = p and i;
+            o = q;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_errors(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        !cycle_msgs.is_empty(),
+        "q is read while never-yet-written — a genuine self-referential \
+         2-hop loop — and must still be flagged; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_two_phase_bitslice_relay_through_for_loops_not_flagged() {
+    // Class 2/3 false positive: the onebit_ecc/t_hamming_tx shape — a
+    // `for`-loop FULLY establishes `x` bit-by-bit, a second (nested)
+    // `for`-loop reduces `x`'s bits into `y`, and a THIRD `for`-loop writes
+    // `y`'s bits back into (disjoint) positions of `x`. Naively this looks
+    // like `x -> y -> x`; it is really a one-way relay
+    // (a_in -> x_v1 -> y -> x_v2), acyclic. Exercises `ever_written`
+    // propagating out of a `for`-loop body so the SECOND loop sees `x` (and
+    // the third loop sees `y`) as already grounded.
+    let source = r#"
+        module M
+          port a_in: in UInt<4>;
+          port o: out UInt<4>;
+          wire x: UInt<4>;
+          wire y: UInt<2>;
+          comb
+            x = 0;
+            for i in 0..3
+              x[i:i] = a_in[i:i];
+            end for
+            for j in 0..1
+              y[j:j] = 0;
+              for k in 0..3
+                y[j:j] = y[j:j] ^ x[k:k];
+              end for
+            end for
+            for l in 0..1
+              x[l:l] = y[l:l];
+            end for
+            o = x;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        cycle_msgs.is_empty(),
+        "two-phase bit-slice relay (x fully established, then y computed \
+         from x, then written back to disjoint bits of x) must not \
+         fabricate an x <-> y cycle; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_for_loop_cond_stack_running_fold_not_flagged() {
+    // Class 5/6 false positive: the prim_max_find /
+    // programmable_interrupt_controller shape — a `for`-loop body has ONE
+    // `if` condition reading BOTH `m_val` and `m_has` (a running-max
+    // comparison), with a then-only body writing both. Both accumulators
+    // are grounded by an unconditional init BEFORE the loop, so the
+    // apparent `m_has <-> m_val` mutual dependency is a same-execution
+    // running fold across iterations, not real feedback.
+    let source = r#"
+        module M
+          port vals: in Vec<UInt<8>, 4>;
+          port valid: in UInt<4>;
+          port max_val: out UInt<8>;
+          port has_max: out Bool;
+          wire m_val: UInt<8>;
+          wire m_has: Bool;
+          comb
+            m_val = 0;
+            m_has = false;
+            for i in 0..3
+              if valid[i:i] == 1
+                if (~m_has) | (vals[i] > m_val)
+                  m_val = vals[i];
+                  m_has = true;
+                end if
+              end if
+            end for
+            max_val = m_val;
+            has_max = m_has;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        cycle_msgs.is_empty(),
+        "grounded running-max fold (m_val/m_has initialized before the \
+         loop) must not fabricate an m_has <-> m_val cycle; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_for_loop_cond_stack_ungrounded_fold_still_flagged() {
+    // Dual of the above: remove the pre-loop `m_val`/`m_has` initializers.
+    // The FIRST read of `m_has` (in the inner if's condition, feeding
+    // `m_val`'s write) now has no earlier establishing write anywhere — a
+    // genuine unresolved mutual dependency — and must still be flagged.
+    let source = r#"
+        module M
+          port vals: in Vec<UInt<8>, 4>;
+          port valid: in UInt<4>;
+          port max_val: out UInt<8>;
+          port has_max: out Bool;
+          wire m_val: UInt<8>;
+          wire m_has: Bool;
+          comb
+            for i in 0..3
+              if valid[i:i] == 1
+                if (~m_has) | (vals[i] > m_val)
+                  m_val = vals[i];
+                  m_has = true;
+                end if
+              end if
+            end for
+            max_val = m_val;
+            has_max = m_has;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_errors(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        !cycle_msgs.is_empty(),
+        "without the pre-loop grounding init, m_has/m_val's mutual \
+         condition-read IS a genuine unresolved loop and must still be \
+         flagged; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_overlapping_bitslice_self_read_on_first_touch_still_flagged() {
+    // Acceptance-criteria regression pin: "write x[3:0], read x[2]" — a
+    // bit-slice write whose own condition reads an OVERLAPPING bit
+    // position of the SAME never-yet-written signal — is a genuine
+    // self-loop (equivalent to `x = x + 1;` on first touch) and must stay
+    // flagged. This exercises the pre-existing (`#783`, unmodified by
+    // #780) same-name self-check directly — arch#780 deliberately does
+    // NOT add bit-position-level node keys (would need full interval-
+    // overlap merging for wide ranges to stay sound — see
+    // `GraphBuilder::is_fold_artifact`'s doc comment); base-name collapse
+    // here is exactly what keeps this case correctly conservative.
+    let source = r#"
+        module M
+          port o: out UInt<4>;
+          wire x: UInt<4>;
+          comb
+            x[3:0] = (x[2:2] == 1) ? 4'hF : 4'h0;
+            o = x;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_errors(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        !cycle_msgs.is_empty(),
+        "x[3:0] read via x[2:2] with no earlier establishing write is a \
+         genuine self-loop and must still be flagged; got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_disjoint_bitslice_sequential_write_not_flagged() {
+    // Dual of the above: `x[7:4]` is derived from `x[3:0]` AFTER `x[3:0]`
+    // is already established — disjoint bit positions of the same coarse
+    // signal, sequential blocking-assignment fold (the pre-existing #783
+    // in-block read-after-write mechanism), not a cycle.
+    let source = r#"
+        module M
+          port a_in: in UInt<4>;
+          port o: out UInt<8>;
+          wire x: UInt<8>;
+          comb
+            x[3:0] = a_in;
+            x[7:4] = x[3:0];
+            o = x;
+          end comb
+        end module M
+    "#;
+    let ws = comb_loop_warnings(source);
+    let cycle_msgs: Vec<_> = ws
+        .iter()
+        .filter(|m| m.contains("combinational feedback cycle ("))
+        .collect();
+    assert!(
+        cycle_msgs.is_empty(),
+        "x[7:4] built from the already-established x[3:0] must not warn; \
+         got: {:?}",
+        ws
+    );
+}
+
+#[test]
+fn test_780_fixtures_have_no_comb_loop_false_positive() {
+    // End-to-end regression on all 7 real fixtures the arch#780 full-corpus
+    // sweep found (cataloged in PR #783's promotion-blast-radius table):
+    // Fx9MiniFabric (Vec-of-Bus field, class 1), gf_mul8 (Vec-index fold,
+    // class 2), cvdp_prbs_gen (bit-slice fold, class 2/3), onebit_ecc +
+    // t_hamming_tx (nested-for bit-slice relay, class 2/3), prim_max_find +
+    // programmable_interrupt_controller (for-loop + cond_stack running
+    // fold, class 5/6). All confirmed 0 Verilator UNOPTFLAT warnings in the
+    // issue — real acyclic designs, not real feedback.
+    // Fx9MiniFabric.arch references the `BusVr` bus type declared in a
+    // sibling file (`backend_equiv/BusVr.arch`, "one construct per file"
+    // convention) — concatenate it, mirroring how `tools/run_arch_regression.py`
+    // and the CLI's directory-grouping compile the whole directory together.
+    let fx9_mini_fabric = format!(
+        "{}\n{}",
+        include_str!("backend_equiv/BusVr.arch"),
+        include_str!("backend_equiv/Fx9MiniFabric.arch"),
+    );
+    for source in [
+        fx9_mini_fabric.as_str(),
+        include_str!("cvdp/gf_mul8.arch"),
+        include_str!("cvdp/cvdp_prbs_gen.arch"),
+        include_str!("cvdp/onebit_ecc.arch"),
+        include_str!("cvdp/t_hamming_tx.arch"),
+        include_str!("cvdp/prim_max_find.arch"),
+        include_str!("cvdp/programmable_interrupt_controller.arch"),
+    ] {
+        let ws = comb_loop_warnings(source);
+        let cycle_msgs: Vec<_> = ws
+            .iter()
+            .filter(|m| m.contains("combinational feedback cycle ("))
+            .collect();
+        assert!(
+            cycle_msgs.is_empty(),
+            "arch#780 fixture must produce zero comb-loop warnings; got: {:?}",
+            ws
+        );
+    }
+}
+
+#[test]
+fn test_e203_ifu_group_has_no_comb_loop_false_positive() {
+    // arch#781 was the GENUINE cross-instance combinational loop between
+    // `e203_ifu_ifetch` and `e203_ifu_ift2icb` that the #780 investigation
+    // found alongside the 7 false positives above (Verilator's own
+    // UNOPTFLAT fired on the generated SV — a real design bug, not a
+    // checker artifact). It has SINCE been independently fixed and closed
+    // by PR #785 (`6bb9e7d0`, "break ifu_req_ready<->ifu_rsp_ready comb
+    // loop in Ift2Icb"), landed on `main` while this PR was in flight — so
+    // the e203_ifu group is now expected to be fully clean too, same as
+    // the 7 fixtures above. This regression pin locks that in: the full
+    // corpus sweep after rebasing onto that fix shows ZERO remaining
+    // `combinational feedback` warnings anywhere in the tree (see PR body).
+    //
+    // (Cross-instance real-loop detection ITSELF remains covered
+    // independently by `test_comb_loop_across_two_instances_detected` —
+    // that synthetic case is unaffected by either #785 or this fix.)
+    //
+    // Shells out to the real `arch` CLI binary (rather than hand-
+    // concatenating `include_str!` sources through the library entry
+    // points) so this test exercises the EXACT same multi-file discovery
+    // path as the manual verification in the issue/PR: the CLI auto-
+    // discovers sibling `.arch` files in the same directory (here,
+    // `e203_exu_decode.arch`, instantiated transitively via
+    // `e203_ifu_minidec`) rather than requiring every transitive
+    // dependency to be listed explicitly.
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("check")
+        .args([
+            "tests/e203/e203_ifu.arch",
+            "tests/e203/e203_ifu_ifetch.arch",
+            "tests/e203/e203_ifu_ift2icb.arch",
+            "tests/e203/e203_ifu_litebpu.arch",
+            "tests/e203/e203_ifu_litedec.arch",
+            "tests/e203/e203_ifu_minidec.arch",
+        ])
+        .output()
+        .expect("run arch check");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("combinational feedback cycle ("),
+        "e203_ifu group should be comb-loop-clean post arch#785 (#781 \
+         fixed); got stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_cross_instance_comb_loop_780_still_flagged_and_verilator_confirms_real() {
+    // Dedicated, independently-attested real-cycle anchor for arch#780
+    // (the e203_ifu fixture that used to serve this role was itself fixed
+    // and closed as #781 by an unrelated PR — see the test above — so it
+    // no longer demonstrates a real cycle). `CrossInstanceLoop` (in
+    // tests/regression/issues/cross_instance_comb_loop_780/) instantiates
+    // two child modules whose comb outputs feed each other's inputs with
+    // no register anywhere on the path — a genuine cross-instance
+    // combinational feedback loop. `arch check` must still flag it (the
+    // #780 fold-artifact filter is scoped to same-comb-block sequential
+    // collapsing only; cross-instance edges are always "not grounded",
+    // see `GraphBuilder::add_edge`).
+    //
+    // Severity change (2026-08): the whole-design comb-SCC diagnostic was
+    // promoted from warning to error once the prerequisite false-positive
+    // fixes (#783, #785, #789) drove the corpus blast radius to zero real
+    // designs. `arch check` now EXITS NONZERO on this fixture instead of
+    // succeeding with a warning on stderr. `arch build` fails the same way
+    // (typecheck runs before codegen), so no SV is ever emitted for this
+    // fixture anymore — the old second half of this test, which built the
+    // SV and independently cross-checked Verilator's `UNOPTFLAT` lint on
+    // it, is no longer reachable and has been dropped. The Verilator
+    // cross-check served its purpose during the warning era (proving the
+    // diagnostic wasn't merely a self-consistent checker artifact); now
+    // that the same condition is a hard compile error, the compiler
+    // refusing to build the design at all is the stronger guarantee.
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let src = "tests/regression/issues/cross_instance_comb_loop_780/CrossInstanceLoop.arch";
+
+    let check = std::process::Command::new(arch_bin)
+        .arg("check")
+        .arg(src)
+        .output()
+        .expect("run arch check");
+    let check_stderr = String::from_utf8_lossy(&check.stderr);
+    assert!(
+        !check.status.success(),
+        "expected the synthetic cross-instance loop to fail `arch check` \
+         now that the diagnostic is an error, not a warning; stderr:\n{check_stderr}"
+    );
+    assert!(
+        check_stderr.contains("combinational feedback cycle ("),
+        "expected the synthetic cross-instance loop to still be flagged \
+         after the #780 fold-artifact filter; stderr:\n{check_stderr}"
+    );
+
+    // `arch build` must fail the same way — same typecheck pass runs first.
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("CrossInstanceLoop.sv");
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg(src)
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("run arch build");
+    let build_stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(
+        !build.status.success(),
+        "expected `arch build` to also fail on the unblessed comb loop\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        build_stderr
+    );
+    assert!(
+        build_stderr.contains("combinational feedback cycle ("),
+        "expected `arch build`'s failure to be the comb-loop error; stderr:\n{build_stderr}"
     );
 }
 
@@ -31021,7 +34069,19 @@ fn test_comb_graph_cycles_with_parent_intermediates_need_four_settle_passes() {
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
     let symbols = resolve::resolve(&ast).expect("resolve error");
     let checker = TypeChecker::new(&symbols, &ast);
-    let _ = checker.check().expect("type check error");
+    // NOTE: this fixture's A<->B cross-instance cycle (wa/wb) is a genuine
+    // whole-design comb-SCC, so `checker.check()` now returns `Err` here
+    // (severity promotion, 2026-08 — see `test_comb_loop_across_two_
+    // instances_detected` for the dedicated detection-assertion coverage
+    // of exactly this shape). That's unrelated to what THIS test actually
+    // exercises: `analyze_module`'s settle_depth calculation below, run
+    // directly against `ast`/`symbols` and independent of
+    // `TypeChecker::check`'s Ok/Err. The result was already discarded
+    // (`let _ = ...`) before this change — it was only ever a
+    // well-typedness smoke gate, not an assertion under test — so it's
+    // left unconsumed rather than `.expect()`-ing an outcome this test
+    // doesn't care about.
+    let _ = checker.check();
     let top = ast
         .items
         .iter()
@@ -31738,5 +34798,2987 @@ end module SharedBus
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------
+// arch#650 — Icarus-portable emission for indexed casts and sliced
+// arithmetic.
+//
+// `unsigned(x)[i]` / `signed(x)[i]` / `x.sext<N>()` are all *portable*
+// bases per typecheck's `is_portable_bit_slice_base` (spec §3.2.1) — but
+// only for the `[hi:lo]` / `[start +: w]` forms typecheck actually gates.
+// The single-bit `Index` form (`expr[i]`) also serves ordinary `Vec`
+// element access (portable for any base), so typecheck never restricts
+// it — meaning codegen alone was responsible for the emitted SV being
+// Icarus-clean, and it wasn't: `unsigned(x)[i]` emitted bare
+// `$unsigned(x)[i]` (Icarus rejects an indexed system-function-call
+// result even though Verilator accepts it), and an arithmetic base like
+// `(a - b)[i]` — with no base handling at all in the `Index` arm — used
+// to concatenate straight to `a - b[i]`, silently reparsing as
+// `a - (b[i])`: a precedence miscompile, not merely nonportable SV.
+// `.sext()` on a cast receiver (`signed(raw).sext<16>()`) hit a related
+// but separate bug: its own codegen computed the receiver's width via
+// `$bits($signed(raw))`, and Icarus does not reliably accept a
+// system-function call nested inside `$bits`.
+// ---------------------------------------------------------------------
+
+#[test]
+fn test_index_unsigned_cast_base_unwraps() {
+    // `unsigned(...)`/`signed(...)` never change width — they're pure bit
+    // reinterpretations — so indexing the cast reads the identical bit as
+    // indexing the inner expression. Unwrap instead of emitting
+    // `$unsigned(a)[b]`, which Icarus rejects (Verilator accepts it).
+    let source = r#"
+module IdxUnsignedCast
+  port a: in UInt<8>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = unsigned(a)[b];
+end module IdxUnsignedCast
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign y = a[b];"),
+        "expected unwrapped `a[b]`, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("$unsigned(a)["),
+        "must not index a cast result directly (Icarus rejects it), got:\n{sv}"
+    );
+}
+
+#[test]
+fn test_index_signed_cast_base_unwraps() {
+    let source = r#"
+module IdxSignedCast
+  port a: in SInt<8>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = signed(a)[b];
+end module IdxSignedCast
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign y = a[b];"),
+        "expected unwrapped `a[b]`, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("$signed(a)["),
+        "must not index a cast result directly (Icarus rejects it), got:\n{sv}"
+    );
+}
+
+#[test]
+fn test_index_as_cast_base_unwraps() {
+    // `(a as SInt<8>)[b]` — an explicit `as T` cast is also a same-width
+    // reinterpretation (typecheck rejects `as` casts that change width),
+    // so it unwraps the same way as `signed(...)`/`unsigned(...)`.
+    let source = r#"
+module IdxAsCast
+  port a: in UInt<8>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = (a as SInt<8>)[b];
+end module IdxAsCast
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("assign y = a[b];"),
+        "expected unwrapped `a[b]`, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("$signed(a)["),
+        "must not index a cast result directly (Icarus rejects it), got:\n{sv}"
+    );
+}
+
+#[test]
+fn test_index_arithmetic_base_hoists_to_named_temp() {
+    // `(a - b)[i]` — an arithmetic base can't be unwrapped (it's a real
+    // computation, not a reinterpretation), and can't be parenthesized
+    // either (`(a - b)[i]` is illegal SV on both Verilator and Icarus —
+    // bit-select doesn't compose with a parenthesized non-selectable
+    // expression, spec §3.2.1). Must hoist to a named module-scope temp
+    // instead — the same "bind to a let" fix the spec recommends at the
+    // ARCH source level for `BitSlice`/`PartSelect`.
+    let source = r#"
+module IdxArithHoist
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port i: in UInt<3>;
+  port y: out Bool;
+  let y = (a - b)[i];
+end module IdxArithHoist
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("logic [") && sv.contains("arch_idx_base_0;"),
+        "expected a declared hoist temp, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign arch_idx_base_0 = a - b;"),
+        "expected the hoist temp assigned the arithmetic value, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign y = arch_idx_base_0[i];"),
+        "expected the index applied to the hoist temp, got:\n{sv}"
+    );
+    // The pre-fix shape: no base handling at all, so `(a - b)[i]` was
+    // literally concatenated to `a - b[i]` — a silent precedence
+    // miscompile (subtracts a single bit of `b` from all of `a`, instead
+    // of indexing a bit out of `a - b`). Must never come back.
+    assert!(
+        !sv.contains("a - b[i]"),
+        "must not regress to the precedence-miscompiled bare form, got:\n{sv}"
+    );
+    // Hoist temp names must not start with `_`: Icarus 12.0 segfaults
+    // elaborating `logic [$bits(...)-1:0] _name;` when `_name` has a
+    // leading underscore (reproduced in isolation while implementing this
+    // fix) — every other synthesized name in this file uses that
+    // convention, but this one deliberately does not.
+    assert!(
+        !sv.contains("_arch_idx_base_0"),
+        "hoist temp must not be underscore-prefixed (Icarus segfault), got:\n{sv}"
+    );
+}
+
+#[test]
+fn test_index_arithmetic_base_referencing_loop_var_skips_hoist() {
+    // Guard case: when the arithmetic base references a live runtime
+    // `for`-loop variable, a module-scope hoist temp can't see it (and
+    // Icarus doesn't support `logic` declarations inside `always_*`
+    // blocks either — see `emit_for_loop_sv`'s `ValueList` comment). The
+    // hoist must be skipped rather than emit a temp whose initializer
+    // references an out-of-scope identifier. This is a known, narrower
+    // residual gap (falls back to the prior bare-emission shape) rather
+    // than a fix — the test pins that the compiler still produces valid,
+    // self-consistent SV (no dangling reference to the loop variable
+    // outside its loop) instead of a broken hoist.
+    let source = r#"
+module IdxArithLoopVar
+  port a: in Vec<UInt<8>, 4>;
+  port b: in UInt<8>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port y: out Vec<Bool, 4>;
+  reg y_r: Vec<Bool, 4> reset rst => 0;
+  seq on clk rising
+    for i in 0..3
+      y_r[i] <= (a[i] - b)[i];
+    end for
+  end seq
+  comb y = y_r; end comb
+end module IdxArithLoopVar
+"#;
+    let sv = compile_to_sv(source);
+    // No hoist temp should reference `i` from outside the for-loop body —
+    // i.e. no top-level (module-scope) `assign arch_idx_base_N = ...i...;`
+    // line sitting outside a `for (int i = ...` block.
+    let mut inside_for = 0usize;
+    for line in sv.lines() {
+        let t = line.trim_start();
+        if t.starts_with("for (int i = ") {
+            inside_for += 1;
+        }
+        if t == "end" && inside_for > 0 {
+            inside_for -= 1;
+        }
+        if inside_for == 0 && t.starts_with("assign arch_idx_base_") && t.contains('i') {
+            panic!("hoisted temp assignment references `i` outside the for-loop scope: `{t}`\nfull SV:\n{sv}");
+        }
+    }
+}
+
+#[test]
+fn test_sext_of_signed_cast_avoids_nested_bits_and_indexed_cast() {
+    // `signed(raw).sext<16>()` — arch#650's "nested" mitigation example
+    // (`unsigned(signed(raw).sext<N>())` in the issue, minus the outer
+    // `unsigned` which isn't needed to reproduce this half of the bug).
+    // `.sext()` is indifferent to a `signed`/`unsigned`/`as T` wrapper on
+    // its receiver (it always treats the receiver's own MSB as the sign
+    // bit), so the wrapper must be unwrapped rather than carried into
+    // `$bits(...)` (nesting a system-function call, which Icarus does not
+    // reliably accept) or indexed directly (`$signed(raw)[...]`, the same
+    // "indexed cast" pattern the issue flags).
+    let source = r#"
+module SextOfSignedCast
+  port raw: in UInt<8>;
+  port y: out SInt<16>;
+  let y = signed(raw).sext<16>();
+end module SextOfSignedCast
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        !sv.contains("$bits($signed"),
+        "must not nest a system-function call inside $bits (Icarus rejects it), got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("$signed(raw)["),
+        "must not index a cast result directly (Icarus rejects it), got:\n{sv}"
+    );
+    assert!(
+        sv.contains("raw[8-1]") || sv.contains("raw[7]"),
+        "expected the sign-bit index on the unwrapped receiver, got:\n{sv}"
+    );
+}
+
+/// Dual-simulator behavioral check for the arithmetic-index hoist
+/// (arch#650): the miscompiled pre-fix shape (`a - b[i]`) and the fixed
+/// shape (`(a - b)[i]` via a hoisted temp) both *compile* under Verilator
+/// (and, before the fix, even under Icarus — the bug was silent, not a
+/// rejection) — only a real simulation run distinguishes right from
+/// wrong. Confirms both Verilator and Icarus agree with ARCH's own
+/// semantics: `y = (a - b)[i]`, not `y = a - b[i]`. Skips gracefully if
+/// either simulator isn't installed (matching this file's existing
+/// Verilator-smoke-test convention).
+#[test]
+fn test_index_arithmetic_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#650 arithmetic-index dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("IdxArithHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/IdxArithHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build IdxArithHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    // Test vectors: (a, b, i, expected y = bit `i` of (a - b), 8-bit wrap).
+    let cases: [(u32, u32, u32, u32); 3] = [(5, 3, 1, 1), (200, 7, 0, 1), (10, 10, 0, 0)];
+
+    if has_iverilog {
+        let vvp_out = td.path().join("idx_arith.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_idx_arith_hoist.sv")
+            .output()
+            .expect("iverilog compile IdxArithHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#650 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog IdxArithHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm (a - b)[i] semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_arith");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("IdxArithHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_idx_arith_hoist_verilator.cpp")
+            .output()
+            .expect("verilate IdxArithHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VIdxArithHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator IdxArithHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm (a - b)[i] semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    // Keep the vectors above in sync with the fixture testbenches (used
+    // for readability of intent in this test; the actual checks run
+    // inside the .sv/.cpp fixtures).
+    let _ = cases;
+}
+
+/// Regression for the slice-base hoist temp width: a bit-slice/index reaching
+/// the WIDENED high bits of an arithmetic base (`(a + b)[8]`, `(a * b)[15:8]`).
+/// The ARCH type system widens `a + b` to `UInt<9>` and `a * b` to `UInt<16>`,
+/// so those selects are legal and `arch sim` computes them correctly. Codegen
+/// hoists the arithmetic base to a temp (#813 P1); the temp had been sized with
+/// `$bits(a + b)` — SV's self-determined width (8 bits, no carry) — silently
+/// dropping the widened high bit: iverilog read X, Verilator flagged the select
+/// as out-of-range, a build-vs-sim divergence. The fix sizes the temp with
+/// ARCH's widened width (`max(w) + 1` for add/sub, `w_l + w_r` for mul). Only a
+/// real simulation run distinguishes right from wrong, since the pre-fix SV
+/// still *compiled* under iverilog (X-valued). Skips gracefully if neither
+/// simulator is installed, matching this file's convention.
+#[test]
+fn test_widening_arith_slice_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping widening-arith slice-hoist dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("WidenArithSliceHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/WidenArithSliceHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build WidenArithSliceHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    // The hoist temp for `a + b` must be 9 bits and for `a * b` 16 bits —
+    // never a `[($bits(...))-1:0]` declaration (SV self-determined width,
+    // 8 bits, the pre-fix bug). Match the parenthesized declaration shape so
+    // prose in the fixture that mentions the builtin can't false-positive.
+    let sv = std::fs::read_to_string(&sv_out).expect("read SV");
+    assert!(
+        !sv.contains("[($bits(a + b))-1:0]") && !sv.contains("[($bits(a * b))-1:0]"),
+        "arithmetic hoist temp must not be sized by SV self-determined \
+         `$bits(...)` (drops the widened high bit):\n{sv}"
+    );
+    assert!(
+        sv.contains("[9-1:0] arch_idx_base") && sv.contains("[16-1:0] arch_idx_base"),
+        "expected 9-bit (add) and 16-bit (mul) hoist temps:\n{sv}"
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("widen_arith.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_widen_arith_slice_hoist.sv")
+            .output()
+            .expect("iverilog compile WidenArithSliceHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog WidenArithSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm widened-slice values\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_widen");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-UNUSEDSIGNAL")
+            .arg("--top-module")
+            .arg("WidenArithSliceHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_widen_arith_slice_hoist_verilator.cpp")
+            .output()
+            .expect("verilate WidenArithSliceHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VWidenArithSliceHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator WidenArithSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm widened-slice values\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+/// Follow-on discovery while implementing arch#650: `.trunc()`/`.zext()`/
+/// `.resize()` (SV size-cast) and `.sext()`/plain `{a, b}`/`{N{a}}` (SV
+/// concat/replication) are *also* rejected by Icarus when directly
+/// indexed — `N'(x)[i]` and `{...}[i]` are both "Syntax error in
+/// continuous assignment" on Icarus 12.0, confirmed with standalone
+/// hand-written `.sv` (not just ARCH-generated) repros. These are the
+/// same "indexed casts"/"bit-selects...directly on conversion/method-call
+/// results" failure class the issue names, just reached through more of
+/// ARCH's conversion surface than the `unsigned`/`signed` examples in the
+/// issue body. Must hoist the same way the arithmetic case does.
+#[test]
+fn test_index_method_call_cast_bases_hoist() {
+    let cases: [(&str, &str); 3] = [
+        (
+            r#"
+module IdxTruncHoist
+  port a: in UInt<8>;
+  port b: in UInt<2>;
+  port y: out Bool;
+  let y = a.trunc<4>()[b];
+end module IdxTruncHoist
+"#,
+            "assign arch_idx_base_0 = 4'(a);",
+        ),
+        (
+            r#"
+module IdxZextHoist
+  port a: in UInt<4>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = a.zext<8>()[b];
+end module IdxZextHoist
+"#,
+            "assign arch_idx_base_0 = 8'($unsigned(a));",
+        ),
+        (
+            r#"
+module IdxResizeHoist
+  port a: in UInt<8>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = a.resize<8>()[b];
+end module IdxResizeHoist
+"#,
+            "assign arch_idx_base_0 = 8'(a);",
+        ),
+    ];
+    for (source, expected_assign) in cases {
+        let sv = compile_to_sv(source);
+        assert!(
+            sv.contains(expected_assign),
+            "expected hoisted assign `{expected_assign}`, got:\n{sv}"
+        );
+        assert!(
+            sv.contains("assign y = arch_idx_base_0[b];"),
+            "expected the index applied to the hoist temp, got:\n{sv}"
+        );
+    }
+}
+
+#[test]
+fn test_index_concat_and_repeat_literal_bases_hoist() {
+    // `{a, c}[b]` / `{2{a}}[b]` — Concat/Repeat are portable `BitSlice`/
+    // `PartSelect` bases (spec §3.2.1, unaffected by this fix) but not
+    // safe as a bare single-bit `Index` base on Icarus (confirmed with a
+    // standalone hand-written `.sv` repro, independent of ARCH codegen).
+    let concat_source = r#"
+module IdxConcatLiteral
+  port a: in UInt<4>;
+  port c: in UInt<4>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = {a, c}[b];
+end module IdxConcatLiteral
+"#;
+    let sv = compile_to_sv(concat_source);
+    assert!(
+        sv.contains("assign arch_idx_base_0 = {a, c};"),
+        "expected hoisted concat, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign y = arch_idx_base_0[b];"),
+        "expected the index applied to the hoist temp, got:\n{sv}"
+    );
+
+    let repeat_source = r#"
+module IdxRepeatLiteral
+  port a: in UInt<4>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = {2{a}}[b];
+end module IdxRepeatLiteral
+"#;
+    let sv = compile_to_sv(repeat_source);
+    assert!(
+        sv.contains("assign arch_idx_base_0 = {2{a}};"),
+        "expected hoisted repeat, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("assign y = arch_idx_base_0[b];"),
+        "expected the index applied to the hoist temp, got:\n{sv}"
+    );
+}
+
+/// Icarus-acceptance check (not just string-shape) for the newly
+/// discovered method-call-cast and concat/repeat hoist cases above.
+/// Skips gracefully if iverilog isn't installed.
+#[test]
+fn test_index_method_call_and_concat_bases_iverilog_accepts() {
+    if std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping arch#650 method-call/concat index iverilog check: iverilog not found");
+        return;
+    }
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let cases: [(&str, &str, &str); 5] = [
+        (
+            "IdxTruncHoist2",
+            r#"
+module IdxTruncHoist2
+  port a: in UInt<8>;
+  port b: in UInt<2>;
+  port y: out Bool;
+  let y = a.trunc<4>()[b];
+end module IdxTruncHoist2
+"#,
+            "IdxTruncHoist2",
+        ),
+        (
+            "IdxZextHoist2",
+            r#"
+module IdxZextHoist2
+  port a: in UInt<4>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = a.zext<8>()[b];
+end module IdxZextHoist2
+"#,
+            "IdxZextHoist2",
+        ),
+        (
+            "IdxSextPlainHoist",
+            r#"
+module IdxSextPlainHoist
+  port a: in SInt<4>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = a.sext<8>()[b];
+end module IdxSextPlainHoist
+"#,
+            "IdxSextPlainHoist",
+        ),
+        (
+            "IdxConcatLiteral2",
+            r#"
+module IdxConcatLiteral2
+  port a: in UInt<4>;
+  port c: in UInt<4>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = {a, c}[b];
+end module IdxConcatLiteral2
+"#,
+            "IdxConcatLiteral2",
+        ),
+        (
+            "IdxRepeatLiteral2",
+            r#"
+module IdxRepeatLiteral2
+  port a: in UInt<4>;
+  port b: in UInt<3>;
+  port y: out Bool;
+  let y = {2{a}}[b];
+end module IdxRepeatLiteral2
+"#,
+            "IdxRepeatLiteral2",
+        ),
+    ];
+    let td = tempfile::tempdir().expect("tempdir");
+    for (name, source, top) in cases {
+        let arch_path = td.path().join(format!("{name}.arch"));
+        std::fs::write(&arch_path, source).expect("write fixture");
+        let sv_out = td.path().join(format!("{name}.sv"));
+        let build = std::process::Command::new(arch_bin)
+            .arg("build")
+            .arg(&arch_path)
+            .arg("-o")
+            .arg(&sv_out)
+            .output()
+            .expect("arch build");
+        assert!(
+            build.status.success(),
+            "arch build should pass for {name}\nstderr:\n{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let vvp_out = td.path().join(format!("{name}.vvp"));
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .output()
+            .expect("iverilog compile");
+        assert!(
+            compile.status.success(),
+            "iverilog should accept {top} (arch#650 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+    }
+}
+
+// ---------------------------------------------------------------------
+// arch#807 — Concat/Repeat `BitSlice`/`PartSelect` base is not actually
+// Icarus-portable (found verifying arch#650 against a real iverilog
+// binary; the shipped arch#653/#656/#659 claim and spec §3.2.1 footnote
+// were only ever checked against Verilator 5.048).
+// ---------------------------------------------------------------------
+
+/// Icarus-acceptance check (compile only) for the four `Concat`/`Repeat`
+/// x `BitSlice`/`PartSelect` combinations, using real `arch build` output.
+/// Skips gracefully if iverilog isn't installed (matches this file's
+/// existing Verilator/iverilog-smoke-test convention).
+#[test]
+fn test_concat_repeat_slice_bases_iverilog_accepts() {
+    if std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping arch#807 Concat/Repeat slice-base iverilog check: iverilog not found");
+        return;
+    }
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let cases: [(&str, &str); 4] = [
+        (
+            "ConcatBitSlice807",
+            r#"
+module ConcatBitSlice807
+  port a: in UInt<4>;
+  port c: in UInt<4>;
+  port y: out UInt<4>;
+  let y = {a, c}[5:2];
+end module ConcatBitSlice807
+"#,
+        ),
+        (
+            "ConcatPartSelect807",
+            r#"
+module ConcatPartSelect807
+  port a: in UInt<4>;
+  port c: in UInt<4>;
+  port y: out UInt<4>;
+  let y = {a, c}[2 +: 4];
+end module ConcatPartSelect807
+"#,
+        ),
+        (
+            "RepeatBitSlice807",
+            r#"
+module RepeatBitSlice807
+  port a: in UInt<4>;
+  port y: out UInt<4>;
+  let y = {2{a}}[5:2];
+end module RepeatBitSlice807
+"#,
+        ),
+        (
+            "RepeatPartSelect807",
+            r#"
+module RepeatPartSelect807
+  port a: in UInt<4>;
+  port y: out UInt<4>;
+  let y = {2{a}}[2 +: 4];
+end module RepeatPartSelect807
+"#,
+        ),
+    ];
+    let td = tempfile::tempdir().expect("tempdir");
+    for (name, source) in cases {
+        let arch_path = td.path().join(format!("{name}.arch"));
+        std::fs::write(&arch_path, source).expect("write fixture");
+        let sv_out = td.path().join(format!("{name}.sv"));
+        let build = std::process::Command::new(arch_bin)
+            .arg("build")
+            .arg(&arch_path)
+            .arg("-o")
+            .arg(&sv_out)
+            .output()
+            .expect("arch build");
+        assert!(
+            build.status.success(),
+            "arch build should pass for {name}\nstderr:\n{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let vvp_out = td.path().join(format!("{name}.vvp"));
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .output()
+            .expect("iverilog compile");
+        assert!(
+            compile.status.success(),
+            "iverilog should accept {name} (arch#807 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+    }
+}
+
+/// Dual-simulator behavioral check (arch#807): the hoisted-temp emission
+/// must not just *compile* on both simulators, it must agree with ARCH's
+/// own semantics on actual values, for all four Concat/Repeat x
+/// BitSlice/PartSelect combinations. Skips gracefully if neither simulator
+/// is installed.
+#[test]
+fn test_concat_repeat_slice_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#807 Concat/Repeat slice-base dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("ConcatRepeatSliceHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/ConcatRepeatSliceHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build ConcatRepeatSliceHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("concat_repeat_slice.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_concat_repeat_slice_hoist.sv")
+            .output()
+            .expect("iverilog compile ConcatRepeatSliceHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#807 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog ConcatRepeatSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm Concat/Repeat slice-base semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_concat_repeat_slice");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("ConcatRepeatSliceHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_concat_repeat_slice_hoist_verilator.cpp")
+            .output()
+            .expect("verilate ConcatRepeatSliceHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VConcatRepeatSliceHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator ConcatRepeatSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm Concat/Repeat slice-base semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+// ---------------------------------------------------------------------
+// arch#810 — `FunctionCall`/`MethodCall` `BitSlice`/`PartSelect` base is
+// not portable either (found while building arch#807's empirical test
+// matrix). Same failure class as arch#807, different base kinds: both are
+// on typecheck's `is_portable_bit_slice_base` allowlist (spec §3.2.1) and
+// were emitted bare, but Icarus 12.0 rejects `f(x)[hi:lo]` and *both*
+// frontends reject the `MethodCall` size-cast shape `8'(x)[hi:lo]`
+// (`x.trunc<8>()`), so this one produced SV that Verilator refused to
+// compile at all.
+// ---------------------------------------------------------------------
+
+/// Emitted-shape check (no simulator required, so it runs on the PR gate
+/// where neither Verilator nor iverilog is installed): every
+/// `FunctionCall`/`MethodCall` slice base must be bound to an
+/// `arch_idx_base_<n>` temp and sliced through that temp, never emitted
+/// bare. `.reverse<C>()` is included because PR #834 lowers it to an
+/// ordinary chunked concatenation — its result as a slice base
+/// reintroduced the exact bare `{...}[hi:lo]` shape arch#807 fixed, since
+/// the hoist guard keys on the ARCH `ExprKind`, not the emitted SV shape.
+#[test]
+fn test_call_slice_bases_hoist() {
+    let cases: [(&str, &str, &str); 5] = [
+        (
+            "function Ident8(v: UInt<8>) -> UInt<8>\n  return v;\nend function Ident8\n\nmodule FuncBitSliceHoist\n  port a: in UInt<8>;\n  port y: out UInt<4>;\n  let y = Ident8(a)[5:2];\nend module FuncBitSliceHoist\n",
+            "assign arch_idx_base_0 = Ident8(a);",
+            "arch_idx_base_0[5:2]",
+        ),
+        (
+            "function Ident8(v: UInt<8>) -> UInt<8>\n  return v;\nend function Ident8\n\nmodule FuncPartSelectHoist\n  port a: in UInt<8>;\n  port y: out UInt<4>;\n  let y = Ident8(a)[2 +: 4];\nend module FuncPartSelectHoist\n",
+            "assign arch_idx_base_0 = Ident8(a);",
+            "arch_idx_base_0[2 +: 4]",
+        ),
+        (
+            "module TruncBitSliceHoist\n  port w: in UInt<16>;\n  port y: out UInt<4>;\n  let y = w.trunc<8>()[5:2];\nend module TruncBitSliceHoist\n",
+            "assign arch_idx_base_0 = 8'(w);",
+            "arch_idx_base_0[5:2]",
+        ),
+        (
+            "module ZextPartSelectHoist\n  port b: in UInt<4>;\n  port y: out UInt<4>;\n  let y = b.zext<8>()[2 +: 4];\nend module ZextPartSelectHoist\n",
+            "assign arch_idx_base_0 = 8'($unsigned(b));",
+            "arch_idx_base_0[2 +: 4]",
+        ),
+        (
+            "module ReverseBitSliceHoist\n  port a: in UInt<8>;\n  port y: out UInt<4>;\n  let y = a.reverse<1>()[5:2];\nend module ReverseBitSliceHoist\n",
+            "assign arch_idx_base_0 = {a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]};",
+            "arch_idx_base_0[5:2]",
+        ),
+    ];
+    for (source, expected_assign, expected_use) in cases {
+        let sv = compile_to_sv(source);
+        assert!(
+            sv.contains(expected_assign),
+            "expected hoisted assign `{expected_assign}`, got:\n{sv}"
+        );
+        assert!(
+            sv.contains(expected_use),
+            "expected slice through hoist temp `{expected_use}`, got:\n{sv}"
+        );
+    }
+}
+
+/// Dual-simulator behavioral check (arch#810): the hoisted-temp emission
+/// must not just *compile* on both simulators, it must agree with ARCH's
+/// own semantics on actual values, across `FunctionCall`, the size-cast
+/// `MethodCall`s (`.trunc`/`.zext`) and the concat-lowered `.reverse`, in
+/// both the `[hi:lo]` and `[start +: w]` forms. Skips gracefully if
+/// neither simulator is installed.
+#[test]
+fn test_call_slice_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#810 call slice-base dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("CallSliceHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/CallSliceHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build CallSliceHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("call_slice.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_call_slice_hoist.sv")
+            .output()
+            .expect("iverilog compile CallSliceHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#810 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog CallSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm call slice-base semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_call_slice");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("CallSliceHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_call_slice_hoist_verilator.cpp")
+            .output()
+            .expect("verilate CallSliceHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass (arch#810 regression: `8'(x)[hi:lo]` \
+             was rejected by Verilator too, not just Icarus)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VCallSliceHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator CallSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm call slice-base semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+// ---------------------------------------------------------------------
+// arch#846 — a hoist temp synthesized from *inside* a procedural scope
+// had its `logic` declaration and `assign` drained at whatever scope
+// `line()` happened to be emitting, so they landed inside the enclosing
+// `always_ff`/`always_comb` (a procedural continuous assignment, which
+// Icarus refuses to synthesize — and a hard syntax error on BOTH
+// frontends as soon as a second hoist put the declaration after a
+// statement) or inside a `function automatic` body (a continuous assign
+// to an automatic-lifetime variable, rejected outright by both).
+// ---------------------------------------------------------------------
+
+/// Lines of the `begin`/`end` block opened by the first line whose
+/// trimmed text starts with `opener`, excluding the opener line itself.
+/// Deliberately simple `begin`/`end` word counting — it matches what the
+/// emitter produces (`endcase`/`endfunction` are distinct tokens).
+fn arch846_block_body<'a>(sv: &'a str, opener: &str) -> Vec<&'a str> {
+    let lines: Vec<&str> = sv.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with(opener))
+        .unwrap_or_else(|| panic!("no `{opener}` block in:\n{sv}"));
+    let word_delta = |l: &str| -> i32 {
+        l.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .map(|t| match t {
+                "begin" => 1,
+                "end" => -1,
+                _ => 0,
+            })
+            .sum()
+    };
+    let mut depth = word_delta(lines[start]);
+    assert!(depth > 0, "`{opener}` block did not open a begin:\n{sv}");
+    let mut body = Vec::new();
+    for l in &lines[start + 1..] {
+        depth += word_delta(l);
+        if depth <= 0 {
+            break;
+        }
+        body.push(*l);
+    }
+    body
+}
+
+/// Emitted-shape check (no simulator required, so it runs on the PR gate
+/// where neither Verilator nor iverilog is installed): a hoist temp fed
+/// by an expression inside a `seq` block must be declared and
+/// continuously assigned at module scope, *above* the `always_ff`, never
+/// inside it. Covers all three hoist paths — `Concat` and `MethodCall`
+/// bases go through `hoist_slice_base`, an arithmetic base goes through
+/// the `Index` emitter.
+#[test]
+fn test_seq_hoist_temps_land_at_module_scope() {
+    let cases: [(&str, &str); 3] = [
+        (
+            "module SeqConcatHoist\n  port clk: in Clock<SysDomain>;\n  port rst: in Reset<Sync>;\n  port w: in UInt<16>;\n  port y: out UInt<4>;\n  reg r: UInt<4> reset rst => 0;\n  seq on clk rising\n    r <= {w, w}[5:2];\n  end seq\n  comb\n    y = r;\n  end comb\nend module SeqConcatHoist\n",
+            "assign arch_idx_base_0 = {w, w};",
+        ),
+        (
+            "module SeqTruncHoist\n  port clk: in Clock<SysDomain>;\n  port rst: in Reset<Sync>;\n  port w: in UInt<16>;\n  port y: out UInt<4>;\n  reg r: UInt<4> reset rst => 0;\n  seq on clk rising\n    r <= w.trunc<8>()[5:2];\n  end seq\n  comb\n    y = r;\n  end comb\nend module SeqTruncHoist\n",
+            "assign arch_idx_base_0 = 8'(w);",
+        ),
+        (
+            "module SeqIdxHoist\n  port clk: in Clock<SysDomain>;\n  port rst: in Reset<Sync>;\n  port w: in UInt<16>;\n  port y: out Bit;\n  reg r: Bit reset rst => 0;\n  seq on clk rising\n    r <= (w - 1)[3];\n  end seq\n  comb\n    y = r;\n  end comb\nend module SeqIdxHoist\n",
+            "assign arch_idx_base_0 = w - 1;",
+        ),
+    ];
+    for (source, expected_assign) in cases {
+        let sv = compile_to_sv(source);
+        assert!(
+            sv.contains(expected_assign),
+            "expected hoisted assign `{expected_assign}`, got:\n{sv}"
+        );
+        assert!(
+            sv.contains("arch_idx_base_0;"),
+            "expected a hoist temp declaration, got:\n{sv}"
+        );
+        // The declaration + assign must precede the `always_ff` ...
+        let decl_at = sv.find("arch_idx_base_0;").expect("decl");
+        let assign_at = sv.find(expected_assign).expect("assign");
+        let ff_at = sv.find("always_ff").expect("always_ff");
+        assert!(
+            decl_at < ff_at && assign_at < ff_at,
+            "hoist temp must be declared/assigned above the always_ff (arch#846), got:\n{sv}"
+        );
+        // ... and must not appear anywhere inside it.
+        for l in arch846_block_body(&sv, "always_ff") {
+            assert!(
+                !l.trim_start().starts_with("logic ") && !l.trim_start().starts_with("assign "),
+                "no declaration or continuous assign may sit inside an always_ff \
+                 (arch#846), found `{}` in:\n{sv}",
+                l.trim()
+            );
+        }
+    }
+}
+
+/// Same placement rule for an `always_comb`, with the hoist one
+/// `begin`/`end` deeper than the block opener (inside an `if` arm) — the
+/// splice point is the block's opening line, not the reading statement's.
+#[test]
+fn test_comb_block_hoist_temps_land_at_module_scope() {
+    let source = "module CombIfHoist\n  port a: in UInt<8>;\n  port sel: in Bool;\n  port y: out UInt<4>;\n  wire cw: UInt<4>;\n  comb\n    if sel\n      cw = {a, a}[9:6];\n    else\n      cw = 0;\n    end if\n  end comb\n  comb\n    y = cw;\n  end comb\nend module CombIfHoist\n";
+    let sv = compile_to_sv(source);
+    let assign = "assign arch_idx_base_0 = {a, a};";
+    assert!(
+        sv.contains(assign),
+        "expected hoisted assign `{assign}`, got:\n{sv}"
+    );
+    let assign_at = sv.find(assign).expect("assign");
+    let comb_at = sv.find("always_comb").expect("always_comb");
+    assert!(
+        assign_at < comb_at,
+        "hoist temp must be assigned above the always_comb (arch#846), got:\n{sv}"
+    );
+    for l in arch846_block_body(&sv, "always_comb") {
+        assert!(
+            !l.trim_start().starts_with("logic ") && !l.trim_start().starts_with("assign "),
+            "no declaration or continuous assign may sit inside an always_comb \
+             (arch#846), found `{}` in:\n{sv}",
+            l.trim()
+        );
+    }
+}
+
+/// A `function automatic` body is the one scope where module scope would
+/// be *wrong* (the base may reference the function's own arguments), so
+/// only the declaration moves — to the top of the body, the sole place SV
+/// permits it — and the assignment stays put as a *blocking* assignment.
+/// A continuous `assign` to an automatic-lifetime variable is illegal and
+/// is rejected by both Icarus 12.0 and Verilator 5.048.
+///
+/// The declaration width must also be a concrete number: Icarus computes
+/// a bogus width for `$bits(<function argument>)` in a declaration, which
+/// made the temp read back all-X.
+#[test]
+fn test_function_body_hoist_declares_locally_and_assigns_blocking() {
+    let source = "function PickHi(x: UInt<8>, q: UInt<8>) -> UInt<4>\n  return {x, q}[9:6];\nend function PickHi\n\nmodule FnBodyHoist\n  port a: in UInt<8>;\n  port y: out UInt<4>;\n  let y = PickHi(a, a);\nend module FnBodyHoist\n";
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("logic [16-1:0] arch_idx_base_0;"),
+        "function-body hoist temp needs a concrete (non-`$bits(<arg>)`) width, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("arch_idx_base_0 = {x, q};"),
+        "expected a blocking assignment in the function body, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("assign arch_idx_base_0"),
+        "a continuous assign to an automatic-lifetime variable is illegal SV \
+         (arch#846), got:\n{sv}"
+    );
+    // The declaration must sit between the header and the assignment.
+    let hdr_at = sv.find("function automatic").expect("function header");
+    let decl_at = sv.find("logic [16-1:0] arch_idx_base_0;").expect("decl");
+    let asg_at = sv
+        .find("arch_idx_base_0 = {x, q};")
+        .expect("blocking assign");
+    let endfn_at = sv.find("endfunction").expect("endfunction");
+    assert!(
+        hdr_at < decl_at && decl_at < asg_at && asg_at < endfn_at,
+        "declaration must precede the assignment inside the function body, got:\n{sv}"
+    );
+}
+
+/// Dual-simulator behavioral check (arch#846): relocating the temp must
+/// not change what the design computes — in particular a module-scope
+/// continuous `assign` must still present the right value at the clock
+/// edge for a `seq` context. The fixture puts three hoists in one
+/// `always_ff` (the shape that was a hard syntax error on both frontends,
+/// not merely an Icarus warning), one inside an `always_comb` `if` arm,
+/// and one inside a `function` body. Skips gracefully if neither
+/// simulator is installed.
+#[test]
+fn test_seq_slice_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#846 procedural-scope hoist dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("SeqSliceHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/SeqSliceHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build SeqSliceHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("seq_slice.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_seq_slice_hoist.sv")
+            .output()
+            .expect("iverilog compile SeqSliceHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#846 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        // The reported symptom *is* this diagnostic — the old output still
+        // "compiled" in the single-hoist case, so its absence is the
+        // assertion, not the exit status.
+        let diag = format!(
+            "{}{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        assert!(
+            !diag.contains("procedural assign") && !diag.contains("procedural continuous"),
+            "iverilog must not see a procedural continuous assignment (arch#846):\n{diag}"
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog SeqSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm procedural-scope hoist semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_seq_slice");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("SeqSliceHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_seq_slice_hoist_verilator.cpp")
+            .output()
+            .expect("verilate SeqSliceHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass (arch#846 regression: a declaration \
+             after a statement inside always_ff is a syntax error on Verilator \
+             too)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VSeqSliceHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator SeqSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm procedural-scope hoist semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+// ---------------------------------------------------------------------
+// arch#845 — the `pipeline` construct has its own expression emitters, and
+// they never called the `BitSlice`/`PartSelect` base hoist. So arch#807's
+// `Concat`/`Repeat` fix (PR #811) and arch#810's `FunctionCall`/
+// `MethodCall` fix (PR #844) were both inert inside a pipeline stage: the
+// base was still emitted bare, e.g. `s0_cap <= 8'(w)[5:2];`, which
+// Verilator *and* Icarus reject outright.
+//
+// A pipeline emits expressions into three positions, and all three are
+// covered below. Two of them are procedural blocks (`always_ff` for the
+// stage updates, `always_comb` for a branching stage `comb`), where the
+// hoisted temp — a variable declaration plus a continuous `assign`, i.e. a
+// module item — must land *ahead* of the block: a variable declaration is
+// legal only at the top of a procedural block, and the pipeline interleaves
+// the reading statements with other `<=`/`=` statements.
+// ---------------------------------------------------------------------
+
+/// Emitted-shape check (no simulator required, so it runs on the PR gate
+/// where neither Verilator nor iverilog is installed): inside a pipeline,
+/// every `Concat`/`Repeat`/`FunctionCall`/`MethodCall` slice base must be
+/// bound to an `arch_idx_base_<n>` temp and sliced through that temp, with
+/// the temp declared at module scope — before the procedural block that
+/// reads it, when there is one.
+#[test]
+fn test_pipeline_slice_bases_hoist() {
+    // (source, hoisted assign, slice through the temp, block the temp must
+    //  precede — `None` for a module-scope `assign` position)
+    let cases: [(&str, &str, &str, Option<&str>); 6] = [
+        // stage `seq` -> the stage-update `always_ff`. This is the issue's
+        // own repro: `8'(w)[5:2]` is rejected by both frontends.
+        (
+            "pipeline PipeTruncSeq\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync>;\n  port w: in UInt<16>;\n  port y: out UInt<4>;\n  stage S0\n    reg cap: UInt<4> reset rst => 0;\n    seq on clk rising\n      cap <= w.trunc<8>()[5:2];\n    end seq\n    comb\n      y = cap;\n    end comb\n  end stage S0\nend pipeline PipeTruncSeq\n",
+            "assign arch_idx_base_0 = 8'(w);",
+            "arch_idx_base_0[5:2]",
+            Some("always_ff"),
+        ),
+        (
+            "pipeline PipeConcatSeq\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync>;\n  port a: in UInt<8>;\n  port b: in UInt<4>;\n  port y: out UInt<4>;\n  stage S0\n    reg cap: UInt<4> reset rst => 0;\n    seq on clk rising\n      cap <= {a, b}[7:4];\n    end seq\n    comb\n      y = cap;\n    end comb\n  end stage S0\nend pipeline PipeConcatSeq\n",
+            "assign arch_idx_base_0 = {a, b};",
+            "arch_idx_base_0[7:4]",
+            Some("always_ff"),
+        ),
+        (
+            "pipeline PipeRepeatSeq\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync>;\n  port b: in UInt<4>;\n  port y: out UInt<4>;\n  stage S0\n    reg cap: UInt<4> reset rst => 0;\n    seq on clk rising\n      cap <= {3{b}}[8 +: 4];\n    end seq\n    comb\n      y = cap;\n    end comb\n  end stage S0\nend pipeline PipeRepeatSeq\n",
+            "assign arch_idx_base_0 = {3{b}};",
+            "arch_idx_base_0[8 +: 4]",
+            Some("always_ff"),
+        ),
+        // stage `let` -> a module-scope `assign`; no block to precede.
+        // `.reverse<C>()` lowers to a chunked concatenation (PR #834), so
+        // its result as a slice base is the bare-`{...}[hi:lo]` shape
+        // arch#807 fixed — the guard keys on the ARCH `ExprKind`, not the
+        // emitted SV shape.
+        (
+            "pipeline PipeRevLet\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync>;\n  port a: in UInt<8>;\n  port y: out UInt<4>;\n  stage S0\n    let f: UInt<4> = a.reverse<1>()[7:4];\n    reg cap: UInt<4> reset rst => 0;\n    seq on clk rising\n      cap <= f;\n    end seq\n    comb\n      y = cap;\n    end comb\n  end stage S0\nend pipeline PipeRevLet\n",
+            "assign arch_idx_base_0 = {a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]};",
+            "assign s0_f = arch_idx_base_0[7:4];",
+            None,
+        ),
+        // `FunctionCall` base. Shape-only: a top-level `function` is not
+        // emitted into a `pipeline`'s SV module at all (unrelated
+        // pre-existing gap), so this form can't be simulated — hence its
+        // absence from the dual-simulator fixture.
+        (
+            "function Ident8(v: UInt<8>) -> UInt<8>\n  return v;\nend function Ident8\n\npipeline PipeFuncLet\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync>;\n  port a: in UInt<8>;\n  port y: out UInt<4>;\n  stage S0\n    let f: UInt<4> = Ident8(a)[5:2];\n    reg cap: UInt<4> reset rst => 0;\n    seq on clk rising\n      cap <= f;\n    end seq\n    comb\n      y = cap;\n    end comb\n  end stage S0\nend pipeline PipeFuncLet\n",
+            "assign arch_idx_base_0 = Ident8(a);",
+            "assign s0_f = arch_idx_base_0[5:2];",
+            None,
+        ),
+        // branching stage `comb` -> an `always_comb`.
+        (
+            "pipeline PipeMuxComb\n  port clk: in Clock<Sys>;\n  port rst: in Reset<Sync>;\n  port a: in UInt<8>;\n  port sel: in Bool;\n  port y: out UInt<4>;\n  stage S0\n    reg sel_r: Bool reset rst => false;\n    reg m: UInt<8> reset rst => 0;\n    seq on clk rising\n      sel_r <= sel;\n      m <= a;\n    end seq\n    comb\n      if sel_r\n        y = m.trunc<6>()[5:2];\n      else\n        y = 0;\n      end if\n    end comb\n  end stage S0\nend pipeline PipeMuxComb\n",
+            "assign arch_idx_base_0 = 6'(s0_m);",
+            "arch_idx_base_0[5:2]",
+            Some("always_comb"),
+        ),
+    ];
+    for (source, expected_assign, expected_use, precedes) in cases {
+        let sv = compile_to_sv(source);
+        assert!(
+            sv.contains(expected_assign),
+            "expected hoisted assign `{expected_assign}`, got:\n{sv}"
+        );
+        assert!(
+            sv.contains(expected_use),
+            "expected slice through hoist temp `{expected_use}`, got:\n{sv}"
+        );
+        if let Some(block) = precedes {
+            let decl = sv
+                .find("] arch_idx_base_0;")
+                .unwrap_or_else(|| panic!("no `arch_idx_base_0` declaration, got:\n{sv}"));
+            let blk = sv
+                .find(block)
+                .unwrap_or_else(|| panic!("no `{block}` in emitted SV, got:\n{sv}"));
+            assert!(
+                decl < blk,
+                "hoisted temp must be declared at module scope, before the \
+                 `{block}` that reads it (a variable declaration is legal only \
+                 at the top of a procedural block), got:\n{sv}"
+            );
+        }
+    }
+}
+
+/// Dual-simulator behavioral check (arch#845): the pipeline hoist must not
+/// just *compile* on both simulators, it must agree with ARCH's own
+/// semantics on actual values, across `Concat`/`Repeat` and the size-cast
+/// (`.trunc`/`.zext`) and concat-lowered (`.reverse`) `MethodCall`s, in both
+/// the `[hi:lo]` and `[start +: w]` forms, and in all three positions a
+/// pipeline emits expressions into (`always_ff`, module-scope `assign`,
+/// `always_comb`). Skips gracefully if neither simulator is installed.
+#[test]
+fn test_pipe_slice_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#845 pipeline slice-base dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("PipeSliceHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/PipeSliceHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build PipeSliceHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("pipe_slice.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_pipe_slice_hoist.sv")
+            .output()
+            .expect("iverilog compile PipeSliceHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#845 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog PipeSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm pipeline slice-base semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_pipe_slice");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("PipeSliceHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_pipe_slice_hoist_verilator.cpp")
+            .output()
+            .expect("verilate PipeSliceHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass (arch#845 regression: the pipeline \
+             emitters sliced `8'(w)` bare, which Verilator rejects)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VPipeSliceHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator PipeSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm pipeline slice-base semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+// ---------------------------------------------------------------------
+// arch#852 — a top-level `function` was emitted into the SV of a `module`
+// that called it but not into any other construct's, because only
+// `emit_module` ran the emission step. SystemVerilog has no free
+// functions, so `arch build` emitted a call to a function that was nowhere
+// declared: `arch check` and `arch build` both passed and every frontend
+// then rejected the output. Reported for `pipeline`; the `assert`/`cover`
+// surface every construct shares means `fsm` / `fifo` / `ram` / `cam` /
+// `counter` / `regfile` / `linklist` all had it too.
+// ---------------------------------------------------------------------
+
+/// Emitted-shape check (no simulator required, so it runs on the PR gate
+/// where neither Verilator nor iverilog is installed): a top-level
+/// `function` must be emitted as a local `function automatic` inside the
+/// module of every construct that can call it, not just `module`.
+#[test]
+fn test_top_level_function_emitted_into_every_construct() {
+    const PRELUDE: &str = r#"
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+
+        function Ident8(v: UInt<8>) -> UInt<8>
+          return v;
+        end function Ident8
+    "#;
+    // (construct keyword, construct source). `pipeline` and `fsm` call the
+    // function from a real statement body; the remaining constructs have no
+    // statement bodies, so they call it through the `assert`/`cover`
+    // surface that every construct shares (emitted into its module as SVA).
+    let cases: [(&str, &str); 8] = [
+        // The reported case (arch#852): a stage `seq` block.
+        (
+            "pipeline",
+            r#"
+            pipeline FnPipe
+              port clk: in Clock<SysDomain>;
+              port rst: in Reset<Sync>;
+              port a: in UInt<8>;
+              port y: out UInt<8>;
+              stage S0
+                reg r: UInt<8> reset rst => 0;
+                seq on clk rising
+                  r <= Ident8(a);
+                end seq
+                comb
+                  y = r;
+                end comb
+              end stage S0
+            end pipeline FnPipe
+            "#,
+        ),
+        (
+            "fsm",
+            r#"
+            fsm FnFsm
+              port clk: in Clock<SysDomain>;
+              port rst: in Reset<Sync, High>;
+              port a: in UInt<8>;
+              port y: out UInt<8> default 0;
+              reg r: UInt<8> reset rst => 0;
+              state [Idle, Run]
+              default state Idle;
+              state Idle
+                comb
+                  y = r;
+                end comb
+                seq on clk rising
+                  r <= Ident8(a);
+                end seq
+                -> Run when a == 8'd1;
+              end state Idle
+              state Run
+                comb
+                  y = Ident8(r);
+                end comb
+                -> Idle when true;
+              end state Run
+            end fsm FnFsm
+            "#,
+        ),
+        (
+            "fifo",
+            r#"
+            fifo FnFifo
+              param DEPTH: const = 4;
+              param T: type = UInt<8>;
+              port clk: in Clock<SysDomain>;
+              port rst: in Reset<Sync, High>;
+              port push_valid: in Bool;
+              port push_ready: out Bool;
+              port push_data: in T;
+              port pop_valid: out Bool;
+              port pop_ready: in Bool;
+              port pop_data: out T;
+              assert data_ident: Ident8(push_data) == push_data;
+            end fifo FnFifo
+            "#,
+        ),
+        (
+            "ram",
+            r#"
+            ram FnRam
+              kind single;
+              latency 1;
+              param DEPTH: const = 8;
+              param T: type = UInt<8>;
+              port clk: in Clock<SysDomain>;
+              ports p
+                addr: in UInt<3>;
+                en: in Bool;
+                wen: in Bool;
+                wdata: in T;
+                rdata: out T;
+              end ports p
+              assert fn_decl_reachable: Ident8(8'd1) == 8'd1;
+            end ram FnRam
+            "#,
+        ),
+        (
+            "cam",
+            r#"
+            cam FnCam
+              param DEPTH: const = 32;
+              param KEY_W: const = 10;
+              port clk: in Clock<SysDomain>;
+              port rst: in Reset<Sync, High>;
+              port write_valid: in Bool;
+              port write_idx: in UInt<5>;
+              port write_key: in UInt<10>;
+              port write_set: in Bool;
+              port search_key: in UInt<10>;
+              port search_mask: out UInt<32>;
+              port search_any: out Bool;
+              port search_first: out UInt<5>;
+              assert fn_decl_reachable: Ident8(8'd1) == 8'd1;
+            end cam FnCam
+            "#,
+        ),
+        (
+            "counter",
+            r#"
+            counter FnCounter
+              kind wrap;
+              direction: up;
+              init: 0;
+              port clk: in Clock<SysDomain>;
+              port rst: in Reset<Sync>;
+              port inc: in Bool;
+              port clear: in Bool;
+              port max: in UInt<8>;
+              port value: out UInt<8>;
+              port at_max: out Bool;
+              assert fn_decl_reachable: Ident8(8'd1) == 8'd1;
+            end counter FnCounter
+            "#,
+        ),
+        (
+            "regfile",
+            r#"
+            regfile FnRegfile
+              param NREGS: const = 4;
+              param T: type = UInt<8>;
+              port clk: in Clock<SysDomain>;
+              port rst: in Reset<Sync>;
+              ports[1] read
+                addr: in UInt<2>;
+                data: out UInt<8>;
+              end ports read
+              ports[1] write
+                en: in Bool;
+                addr: in UInt<2>;
+                data: in UInt<8>;
+              end ports write
+              assert fn_decl_reachable: Ident8(8'd1) == 8'd1;
+            end regfile FnRegfile
+            "#,
+        ),
+        (
+            "linklist",
+            r#"
+            linklist FnLinklist
+              param DEPTH: const = 8;
+              param DATA: type = UInt<8>;
+              port clk: in Clock<SysDomain>;
+              port rst: in Reset<Sync>;
+              kind singly;
+              op alloc
+                latency: 1;
+                port req_valid: in Bool;
+                port req_ready: out Bool;
+                port resp_valid: out Bool;
+                port resp_handle: out UInt<3>;
+              end op alloc
+              assert fn_decl_reachable: Ident8(8'd1) == 8'd1;
+            end linklist FnLinklist
+            "#,
+        ),
+    ];
+    for (keyword, construct) in cases {
+        let sv = compile_to_sv(&format!("{PRELUDE}{construct}"));
+        assert!(
+            sv.contains("function automatic logic [7:0] Ident8(input logic [7:0] v);")
+                && sv.contains("endfunction"),
+            "arch#852: a top-level `function` called from a `{keyword}` must be \
+             emitted as a local `function automatic` in its SV module (SV has \
+             no free functions), got:\n{sv}"
+        );
+    }
+}
+
+/// `arbiter` emitted only the `policy <FnName>` hook function, so the fix
+/// (emit the whole set, as `emit_module` does) must not lose the hook. The
+/// call in the grant logic is the thing that has to stay declared.
+#[test]
+fn test_arbiter_custom_policy_hook_function_still_emitted() {
+    let source = r#"
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+
+        function PickLowest(req_mask: UInt<4>, last_grant: UInt<4>) -> UInt<4>
+          let pick_neg: UInt<5> = (req_mask ^ 0xF).zext<5>() + 1;
+          return req_mask & pick_neg.trunc<4>();
+        end function PickLowest
+
+        arbiter FnArbiter
+          policy PickLowest;
+          param NUM_REQ: const = 4;
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          ports[NUM_REQ] request
+            valid: in Bool;
+            ready: out Bool;
+          end ports request
+          port grant_valid: out Bool;
+          port grant_requester: out UInt<2>;
+          hook grant_select(req_mask: UInt<4>, last_grant: UInt<4>) -> UInt<4>
+            = PickLowest(req_mask, last_grant);
+        end arbiter FnArbiter
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("function automatic logic [3:0] PickLowest("),
+        "the custom-policy hook function must stay declared in the arbiter's \
+         SV module, got:\n{sv}"
+    );
+}
+
+/// arch#852 (second half): the pipeline stage emitter had no `FunctionCall`
+/// arm, so a call fell through to the module-level `emit_expr_str`, which
+/// does not apply the `<stage>_<signal>` prefix rewriting — `Ident8(r1)`
+/// referenced a name that does not exist in the emitted SV. Invisible
+/// before the function itself was emitted (the SV failed on the missing
+/// declaration first), so it is fixed and tested here.
+#[test]
+fn test_pipeline_function_call_args_get_stage_prefix() {
+    let source = "domain SysDomain\n  freq_mhz: 100\nend domain SysDomain\n\n\
+        function Ident8(v: UInt<8>) -> UInt<8>\n  return v;\nend function Ident8\n\n\
+        pipeline FnArgPipe\n\
+        \x20 port clk: in Clock<SysDomain>;\n\
+        \x20 port rst: in Reset<Sync>;\n\
+        \x20 port a: in UInt<8>;\n\
+        \x20 port y: out UInt<8>;\n\
+        \x20 stage S0\n\
+        \x20   reg r1: UInt<8> reset rst => 0;\n\
+        \x20   reg r2: UInt<8> reset rst => 0;\n\
+        \x20   seq on clk rising\n\
+        \x20     r1 <= a;\n\
+        \x20     r2 <= Ident8(r1);\n\
+        \x20   end seq\n\
+        \x20   comb\n\
+        \x20     y = Ident8(r2);\n\
+        \x20   end comb\n\
+        \x20 end stage S0\n\
+        end pipeline FnArgPipe\n";
+    let sv = compile_to_sv(source);
+    for expected in ["Ident8(s0_r1)", "Ident8(s0_r2)"] {
+        assert!(
+            sv.contains(expected),
+            "expected stage-prefixed call argument `{expected}`, got:\n{sv}"
+        );
+    }
+    for unexpected in ["Ident8(r1)", "Ident8(r2)"] {
+        assert!(
+            !sv.contains(unexpected),
+            "call argument `{unexpected}` names a signal that does not exist \
+             in the emitted SV (missing stage prefix), got:\n{sv}"
+        );
+    }
+}
+
+/// Dual-simulator behavioral check (arch#852): a `pipeline` calling a
+/// top-level `function` must not just *compile* on both simulators, it must
+/// agree with ARCH's own semantics on actual values, in all three positions
+/// a pipeline emits expressions into (`always_ff`, module-scope `assign`,
+/// `always_comb`), both as a direct call and as a hoisted `BitSlice` base
+/// (the shape whose `logic [$bits(Ident8(a))-1:0]` segfaulted Icarus while
+/// the function was undeclared). Skips gracefully if neither simulator is
+/// installed.
+#[test]
+fn test_pipe_fn_call_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#852 pipeline function-call dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("PipeFnCall.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/PipeFnCall.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build PipeFnCall SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("pipe_fn.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_pipe_fn_call.sv")
+            .output()
+            .expect("iverilog compile PipeFnCall");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#852 regression: the called \
+             function was not declared anywhere in the emitted SV, and the \
+             `$bits(Ident8(a))` hoist width segfaulted Icarus)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog PipeFnCall");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm pipeline function-call semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_pipe_fn");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("PipeFnCall")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_pipe_fn_call_verilator.cpp")
+            .output()
+            .expect("verilate PipeFnCall");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass (arch#852 regression: `Can't find \
+             definition of task/function`)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VPipeFnCall");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator PipeFnCall");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm pipeline function-call semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+// ---------------------------------------------------------------------
+// arch#861 — a non-atomic base referencing a live runtime `for`-loop
+// iterator used to skip the hoist entirely and fall back to concatenating
+// base and `[idx]` as raw text, dropping the parens. `(a + v[i])[3]`
+// became `a + v[i][3]`, which Verilator compiles *silently* and evaluates
+// as `a + (v[i][3])` — a wrong-values miscompile, not a portability gap.
+// The fix declares such a temp at the top of the loop body (where the
+// iterator is in scope, and where a declaration is still legal) and
+// assigns it there.
+// ---------------------------------------------------------------------
+
+/// Emitted-shape check (no simulator required, so it runs on the PR gate).
+/// The bare `a + v[i][3]` shape must be gone, the temp must be declared
+/// *inside* the loop body rather than at module scope (module scope cannot
+/// see the iterator — neither the RHS nor the `$bits(...)` width could
+/// resolve there), and the assignment must be a blocking one.
+#[test]
+fn test_loop_var_index_base_hoists_into_loop_body() {
+    let sv = compile_to_sv(
+        r#"
+module LoopVarHoist861
+  port a: in UInt<8>;
+  port v: in Vec<UInt<8>, 4>;
+  port y: out UInt<4>;
+  wire w: Vec<Bool, 4>;
+  comb
+    for i in 0..3
+      w[i] = (a + v[i])[3];
+    end for
+    y = w;
+  end comb
+end module LoopVarHoist861
+"#,
+    );
+    assert!(
+        !sv.contains("a + v[i][3]"),
+        "arch#861 regression: parens dropped, emitted the precedence miscompile:\n{sv}"
+    );
+    assert!(
+        sv.contains("arch_idx_base_0 = a + v[i];"),
+        "expected a blocking assignment inside the loop body, got:\n{sv}"
+    );
+    assert!(
+        sv.contains("w[i] = arch_idx_base_0[3];"),
+        "expected the select to go through the hoist temp, got:\n{sv}"
+    );
+    // The declaration must sit between the loop's `begin` and the first
+    // statement of the body — not at module scope, and not after a
+    // statement (which is the arch#846 hard syntax error).
+    let for_open = sv
+        .find("for (int i = 0; i <= 3; i++) begin")
+        .expect("loop opener");
+    // Width is ARCH's widened `UInt<8> + UInt<8>` → `UInt<9>` (9 bits), not
+    // SV's self-determined `$bits(a + v[i])` (8 bits) — see the slice-hoist
+    // width fix. Bit 3 is in range either way, so this is shape-only here.
+    let decl = sv
+        .find("logic [9-1:0] arch_idx_base_0;")
+        .unwrap_or_else(|| panic!("hoist temp declaration missing:\n{sv}"));
+    let first_stmt = sv.find("arch_idx_base_0 = a + v[i];").expect("assignment");
+    assert!(
+        decl > for_open && decl < first_stmt,
+        "declaration must be at the top of the loop body (after `begin`, before the \
+         first statement), got decl={decl} for_open={for_open} first_stmt={first_stmt}:\n{sv}"
+    );
+}
+
+/// The same hoist must fire for `BitSlice`/`PartSelect` bases (handled by
+/// `hoist_slice_base`, not the `Index` arm) when they reference the
+/// iterator.
+#[test]
+fn test_loop_var_slice_bases_hoist_into_loop_body() {
+    let sv = compile_to_sv(
+        r#"
+module LoopVarSlice861
+  port a: in UInt<8>;
+  port v: in Vec<UInt<8>, 4>;
+  port yb: out Vec<UInt<4>, 4>;
+  port yp: out Vec<UInt<4>, 4>;
+  port ym: out Vec<UInt<4>, 4>;
+  comb
+    for i in 0..3
+      yb[i] = {a, v[i]}[5:2];
+      yp[i] = {a, v[i]}[2 +: 4];
+      ym[i] = v[i].trunc<4>()[3:0];
+    end for
+  end comb
+end module LoopVarSlice861
+"#,
+    );
+    for expected in [
+        "arch_idx_base_0 = {a, v[i]};",
+        "yb[i] = arch_idx_base_0[5:2];",
+        "arch_idx_base_1 = {a, v[i]};",
+        "yp[i] = arch_idx_base_1[2 +: 4];",
+        "arch_idx_base_2 = 4'(v[i]);",
+        "ym[i] = arch_idx_base_2[3:0];",
+    ] {
+        assert!(
+            sv.contains(expected),
+            "expected `{expected}` in emitted SV, got:\n{sv}"
+        );
+    }
+    // No bare base survived next to a select.
+    assert!(
+        !sv.contains("{a, v[i]}[5:2]") && !sv.contains("4'(v[i])[3:0]"),
+        "a slice base was emitted bare:\n{sv}"
+    );
+}
+
+/// Dual-simulator behavioral check (arch#861). Compiling is not enough
+/// here: the pre-fix emission *compiled clean on Verilator* and returned
+/// the wrong value, so this asserts values, with vectors chosen to
+/// separate the correct result from the miscompiled one. Skips gracefully
+/// if neither simulator is installed.
+#[test]
+fn test_loop_var_slice_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#861 loop-var slice-base dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("LoopVarSliceHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/LoopVarSliceHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build LoopVarSliceHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("loop_var_slice.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_loop_var_slice_hoist.sv")
+            .output()
+            .expect("iverilog compile LoopVarSliceHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#861 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog LoopVarSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm loop-var hoist values\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_loop_var_slice");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("LoopVarSliceHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_loop_var_slice_hoist_verilator.cpp")
+            .output()
+            .expect("verilate LoopVarSliceHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VLoopVarSliceHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator LoopVarSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm loop-var hoist values — the pre-fix emission \
+             compiled clean here and returned the wrong value\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+// ---------------------------------------------------------------------
+// arch#813 P1 — `is_portable_bit_slice_base` retired. The type checker no
+// longer refuses any bit-slice/part-select base; codegen binds whatever SV
+// can't select from directly to a named temp. The six tests that pinned
+// the old rejection messages became the positive hoist tests above.
+// ---------------------------------------------------------------------
+
+/// Dual-simulator behavioral check for the base kinds that used to be a
+/// compile error. Skips gracefully if neither simulator is installed.
+#[test]
+fn test_universal_slice_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#813 P1 universal slice-hoist dual-sim check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("UniversalSliceHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/UniversalSliceHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build UniversalSliceHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass — these bases are no longer rejected\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("universal_slice.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_universal_slice_hoist.sv")
+            .output()
+            .expect("iverilog compile UniversalSliceHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#813 P1)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog UniversalSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm hoisted-base semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_universal_slice");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("UniversalSliceHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_universal_slice_hoist_verilator.cpp")
+            .output()
+            .expect("verilate UniversalSliceHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VUniversalSliceHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator UniversalSliceHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm hoisted-base semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+/// A literal base was *on* the retired allowlist and emitted bare, but
+/// `8'hff[s +: 2]` is rejected by both Icarus 12.0 and Verilator 5.048 —
+/// a sixth instance of the bug class, fixed as a side effect of P1.
+#[test]
+fn test_literal_part_select_base_hoists_to_named_temp() {
+    let sv = compile_to_sv(
+        r#"
+module LitPartSelect813
+  port s: in UInt<3>;
+  port y: out UInt<2>;
+  let y = 0xFF[s +: 2];
+end module LitPartSelect813
+"#,
+    );
+    assert!(
+        sv.contains("arch_idx_base_0"),
+        "literal part-select base should hoist, got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("'hFF[s +: 2]"),
+        "literal base emitted bare, got:\n{sv}"
+    );
+}
+
+// ---------------------------------------------------------------------
+// arch#887 — `arch build` was not idempotent. It emits a `<Bus>.archi`
+// stub next to the input for every bus a design references; a second
+// build in the same directory auto-discovered that stub *in addition to*
+// the real definition and reported `duplicate definition`.
+//
+// `resolve` already drops an interface stub superseded by a real
+// definition in the same unit — but `Item::is_interface()` returned false
+// for `Item::Bus`, so a bus stub was indistinguishable from a real bus
+// and the drop never fired. `BusDecl` now carries its own `is_interface`
+// flag (it has no `ConstructCommon` to hang one on).
+// ---------------------------------------------------------------------
+
+/// Building the same design twice in the same directory must succeed both
+/// times and emit byte-identical SV.
+///
+/// The bus must come from a *library* path while the design lives
+/// elsewhere: that is the shape that broke. `arch build` writes the
+/// discovered bus's stub (`LibBus.archi`) next to the **design**, so a
+/// second build finds the real `bus` via `ARCH_LIB_PATH` *and* the stub in
+/// the input directory — two items, same name. Passing both files
+/// explicitly on one command line does NOT reproduce it (verified: an
+/// earlier version of this test did that and passed against the unfixed
+/// compiler).
+#[test]
+fn test_arch_build_is_idempotent_with_emitted_bus_archi() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let lib = td.path().join("lib");
+    let design = td.path().join("design");
+    std::fs::create_dir_all(&lib).expect("mkdir lib");
+    std::fs::create_dir_all(&design).expect("mkdir design");
+
+    std::fs::write(
+        lib.join("LibBus.arch"),
+        r#"
+bus LibBus
+  valid: out Bool;
+  data:  out UInt<8>;
+end bus LibBus
+"#,
+    )
+    .expect("write bus");
+    std::fs::write(
+        design.join("BusUser.arch"),
+        r#"
+module BusUser
+  port out_bus: initiator LibBus;
+  port v: in Bool;
+  port d: in UInt<8>;
+  comb
+    out_bus.valid = v;
+    out_bus.data = d;
+  end comb
+end module BusUser
+"#,
+    )
+    .expect("write design");
+
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let mut outputs = Vec::new();
+    for pass in 1..=3 {
+        let out = design.join(format!("BusUser_{pass}.sv"));
+        let res = std::process::Command::new(arch_bin)
+            .arg("build")
+            .arg(design.join("BusUser.arch"))
+            .arg("-o")
+            .arg(&out)
+            .arg("--no-auto-asserts")
+            .env("ARCH_LIB_PATH", &lib)
+            .output()
+            .expect("run arch build");
+        let stderr = String::from_utf8_lossy(&res.stderr);
+        assert!(
+            res.status.success(),
+            "arch#887: build pass {pass} failed — a re-build must not trip over the \
+             `.archi` the previous build emitted\nstdout:\n{}\nstderr:\n{stderr}",
+            String::from_utf8_lossy(&res.stdout)
+        );
+        assert!(
+            !stderr.contains("duplicate definition"),
+            "arch#887: build pass {pass} reported a duplicate definition:\n{stderr}"
+        );
+        outputs.push(std::fs::read_to_string(&out).expect("read emitted SV"));
+    }
+    // Confirms the test exercises the path it claims to rather than
+    // passing vacuously: the stub really was emitted next to the design.
+    assert!(
+        design.join("LibBus.archi").exists(),
+        "expected arch build to emit LibBus.archi next to the design"
+    );
+    assert_eq!(
+        outputs[0], outputs[1],
+        "arch#887: rebuild changed the emitted SV"
+    );
+    assert_eq!(
+        outputs[1], outputs[2],
+        "arch#887: third build changed the emitted SV"
+    );
+}
+
+// ---------------------------------------------------------------------
+// arch#892 — adjacent prefix operators were emitted juxtaposed. Unary is
+// one precedence level, so `emit_expr_prec(operand, 14)` never
+// parenthesized a nested unary, and every same-operator pair is then
+// either a syntax error or a *different token*: `~~`/`!!`/`^^`/`- -` are
+// rejected by Icarus 12.0, and `--`/`&&`/`||` are rejected by BOTH
+// frontends because they lex as decrement / logical-AND / logical-OR.
+// ---------------------------------------------------------------------
+
+/// Emitted-shape check (no simulator required, so it runs on the PR gate).
+#[test]
+fn test_adjacent_unary_operators_are_parenthesized() {
+    let sv = compile_to_sv(
+        r#"
+module AdjUnary892
+  port a: in UInt<4>;
+  port p: in Bool;
+  port y_notnot: out UInt<4>;
+  port y_lognot: out Bool;
+  port y_redand: out Bool;
+  port y_redor:  out Bool;
+  port y_redxor: out Bool;
+  comb
+    y_notnot = ~(~a);
+    y_lognot = not (not p);
+    y_redand = &(&a);
+    y_redor  = |(|a);
+    y_redxor = ^(^a);
+  end comb
+end module AdjUnary892
+"#,
+    );
+    for good in [
+        "assign y_notnot = ~(~a);",
+        "assign y_lognot = !(!p);",
+        "assign y_redand = &(&a);",
+        "assign y_redor = |(|a);",
+        "assign y_redxor = ^(^a);",
+    ] {
+        assert!(sv.contains(good), "expected `{good}`, got:\n{sv}");
+    }
+    // The juxtaposed forms must not appear anywhere. `&&`/`||` would not
+    // merely fail to parse — they lex as binary operators.
+    for bad in ["~~", "!!", "&&", "||", "^^"] {
+        assert!(
+            !sv.contains(bad),
+            "arch#892 regression: emitted juxtaposed `{bad}`:\n{sv}"
+        );
+    }
+}
+
+/// Dual-simulator behavioral check (arch#892): the parenthesized emission
+/// must compile on both frontends *and* preserve values. Skips gracefully
+/// if neither simulator is installed.
+#[test]
+fn test_adjacent_unary_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#892 adjacent-unary dual-sim check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("AdjacentUnary.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/AdjacentUnary.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .arg("--no-auto-asserts")
+        .output()
+        .expect("build AdjacentUnary SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("adjacent_unary.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_adjacent_unary.sv")
+            .output()
+            .expect("iverilog compile AdjacentUnary");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#892 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog AdjacentUnary");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm adjacent-unary semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_adjacent_unary");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("AdjacentUnary")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_adjacent_unary_verilator.cpp")
+            .output()
+            .expect("verilate AdjacentUnary");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass — `--`/`&&`/`||` are rejected by Verilator \
+             too, not just Icarus\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VAdjacentUnary");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator AdjacentUnary");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm adjacent-unary semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+// ---------------------------------------------------------------------
+// arch#827 P4.1 — the compiler's own `.sext<N>()` expansion bypassed the
+// base-hoist that user-written slices get (#811/#813 P1), reintroducing
+// exactly the non-portable forms those fixed: a `Concat` receiver
+// (B2, `signed({a, b}).sext<32>()`) and a non-constant-indexed `Index`
+// receiver (B1, `din[sel].sext<12>()`). `.zext`/`.trunc`/`.resize` never
+// apply a further select to their receiver (just a size-cast wrapper
+// around the whole expression, which composes with anything), so only
+// `sext` needed a fix.
+// ---------------------------------------------------------------------
+
+/// Emitted-shape check (no simulator required, so it runs on the PR gate):
+/// a `.sext<N>()` receiver that is a `Concat`, `FunctionCall`, or
+/// `MethodCall`, or a non-constant-indexed `Index`, must be bound to an
+/// `arch_idx_base_<n>` temp before the sign-bit index / whole-value reuse;
+/// a constant-indexed `Index` must stay bare (hoisting it would be
+/// pointless noise on every ordinary `.sext()` call).
+#[test]
+fn test_sext_receiver_hoists() {
+    let cases: [(&str, &[&str], bool); 5] = [
+        (
+            "module SextIdxRuntimeHoist\n  port sel: in UInt<2>;\n  port din: in Vec<SInt<8>, 4>;\n  port dout: out SInt<12>;\n  comb\n    dout = din[sel].sext<12>();\n  end comb\nend module SextIdxRuntimeHoist\n",
+            &["assign arch_idx_base_0 = din[sel];", "arch_idx_base_0[8-1]", "}, arch_idx_base_0}"],
+            true,
+        ),
+        (
+            "module SextIdxConstNoHoist\n  port din: in Vec<SInt<8>, 4>;\n  port dout: out SInt<12>;\n  comb\n    dout = din[2].sext<12>();\n  end comb\nend module SextIdxConstNoHoist\n",
+            &["din[2][8-1]", "}, din[2]}"],
+            false,
+        ),
+        (
+            "module SextConcatHoistShape\n  port a: in UInt<6>;\n  port b: in UInt<6>;\n  port y: out SInt<32>;\n  comb\n    y = signed({a, b}).sext<32>();\n  end comb\nend module SextConcatHoistShape\n",
+            &["assign arch_idx_base_0 = {a, b};", "arch_idx_base_0[12-1]", "}, arch_idx_base_0}"],
+            true,
+        ),
+        (
+            "function Ident8(v: UInt<8>) -> UInt<8>\n  return v;\nend function Ident8\n\nmodule SextFuncCallHoistShape\n  port a: in UInt<8>;\n  port y: out SInt<12>;\n  comb\n    y = signed(Ident8(a)).sext<12>();\n  end comb\nend module SextFuncCallHoistShape\n",
+            &["assign arch_idx_base_0 = Ident8(a);"],
+            true,
+        ),
+        // A `pipe_reg` `@N` read is atomic: codegen's `LatencyAt` arm
+        // renders it to a bare name, so it needs no hoist. Hoisting it
+        // anyway is not merely redundant — the temp's declared width is
+        // `$bits(<that bare name>)`, and `logic [$bits(x)-1:0] t;`
+        // segfaults Icarus 12.0 outright (verified in isolation, exit
+        // 139; an Icarus `$bits`-in-declaration-width bug, unrelated to
+        // sext). Guards the `_ => false` fallthrough that let it hoist.
+        (
+            "module SextPipeRegNoHoist\n  port clk: in Clock<SysDomain>;\n  port rst: in Reset<Sync, High>;\n  port x:   in  SInt<16>;\n  port y:   out SInt<48>;\n\n  default seq on clk rising;\n\n  pipe_reg x_pipe: x stages 2;\n\n  comb\n    y = x_pipe@1.sext<48>();\n  end comb\nend module SextPipeRegNoHoist\n",
+            &["x_pipe_stg1[$bits(x_pipe_stg1)-1]", "}, x_pipe_stg1}"],
+            false,
+        ),
+    ];
+    for (source, expected_fragments, expect_hoist) in cases {
+        let sv = compile_to_sv(source);
+        if expect_hoist {
+            for frag in expected_fragments {
+                assert!(
+                    sv.contains(frag),
+                    "expected `{frag}` in hoisted sext output, got:\n{sv}"
+                );
+            }
+        } else {
+            assert!(
+                !sv.contains("arch_idx_base"),
+                "constant-indexed sext receiver should not hoist, got:\n{sv}"
+            );
+            for frag in expected_fragments {
+                assert!(
+                    sv.contains(frag),
+                    "expected bare `{frag}` in non-hoisted sext output, got:\n{sv}"
+                );
+            }
+        }
+    }
+}
+
+/// Dual-simulator behavioral check (arch#827 B1): the hoisted `.sext<N>()`
+/// receiver must not just *compile* on both simulators, it must agree
+/// with ARCH's own sign-extension semantics on actual values, for both a
+/// runtime-indexed `Vec` element and a constant-indexed one. Skips
+/// gracefully if neither simulator is installed.
+#[test]
+fn test_sext_index_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#827 B1 sext-index hoist dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("SextIndexHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/SextIndexHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build SextIndexHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("sext_index.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_sext_index_hoist.sv")
+            .output()
+            .expect("iverilog compile SextIndexHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#827 B1 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog SextIndexHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm sext-index semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_sext_index");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("SextIndexHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_sext_index_hoist_verilator.cpp")
+            .output()
+            .expect("verilate SextIndexHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VSextIndexHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator SextIndexHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm sext-index semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+/// Dual-simulator behavioral check (arch#827 B2): the hoisted `.sext<N>()`
+/// `Concat` receiver must not just *compile* on both simulators, it must
+/// agree with ARCH's own sign-extension semantics on actual values. Skips
+/// gracefully if neither simulator is installed.
+#[test]
+fn test_sext_concat_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#827 B2 sext-concat hoist dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("SextConcatHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/SextConcatHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build SextConcatHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("sext_concat.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_sext_concat_hoist.sv")
+            .output()
+            .expect("iverilog compile SextConcatHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#827 B2 regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog SextConcatHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm sext-concat semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_sext_concat");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("SextConcatHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_sext_concat_hoist_verilator.cpp")
+            .output()
+            .expect("verilate SextConcatHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VSextConcatHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator SextConcatHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm sext-concat semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+/// Dual-simulator behavioral check (arch#827 P4.1 loop-var residual): a
+/// `.sext<N>()` receiver referencing a live runtime `for`-loop iterator
+/// still hoists — via the same arch#861 in-loop declare/assign split the
+/// `ExprKind::Index` codegen arm and `hoist_slice_base` already use — and
+/// still computes the same values as the non-loop cases. This is *not* a
+/// bail-to-bare-emission fallback: the receiver is never emitted
+/// un-hoisted, just placed differently (declaration at the loop top,
+/// assignment in place) because a module-scope temp can't see the
+/// loop-local iterator. Skips gracefully if neither simulator is
+/// installed.
+#[test]
+fn test_sext_loop_var_hoist_behavioral_equivalence_verilator_and_iverilog() {
+    let has_verilator = std::process::Command::new("verilator")
+        .arg("--version")
+        .output()
+        .is_ok();
+    let has_iverilog = std::process::Command::new("iverilog")
+        .arg("-V")
+        .output()
+        .is_ok();
+    if !has_verilator && !has_iverilog {
+        eprintln!(
+            "skipping arch#827 P4.1 sext loop-var hoist dual-sim behavioral check: \
+             neither verilator nor iverilog found"
+        );
+        return;
+    }
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let sv_out = td.path().join("SextLoopVarHoist.sv");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+
+    let build = std::process::Command::new(arch_bin)
+        .arg("build")
+        .arg("tests/icarus_portability/SextLoopVarHoist.arch")
+        .arg("-o")
+        .arg(&sv_out)
+        .output()
+        .expect("build SextLoopVarHoist SV");
+    assert!(
+        build.status.success(),
+        "arch build should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    if has_iverilog {
+        let vvp_out = td.path().join("sext_loop_var.vvp");
+        let compile = std::process::Command::new("iverilog")
+            .arg("-g2012")
+            .arg("-gsupported-assertions")
+            .arg("-s")
+            .arg("tb")
+            .arg("-o")
+            .arg(&vvp_out)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_sext_loop_var_hoist.sv")
+            .output()
+            .expect("iverilog compile SextLoopVarHoist");
+        assert!(
+            compile.status.success(),
+            "iverilog compile should pass (arch#827 P4.1 loop-var regression)\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new("vvp")
+            .arg(&vvp_out)
+            .output()
+            .expect("run iverilog SextLoopVarHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "iverilog sim should confirm sext loop-var semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    if has_verilator {
+        let obj_dir = td.path().join("obj_dir_sext_loop_var");
+        let verilate = std::process::Command::new("verilator")
+            .arg("--cc")
+            .arg("--exe")
+            .arg("--build")
+            .arg("-Wno-fatal")
+            .arg("-Wno-DECLFILENAME")
+            .arg("-Wno-WIDTHTRUNC")
+            .arg("--top-module")
+            .arg("SextLoopVarHoist")
+            .arg("-Mdir")
+            .arg(&obj_dir)
+            .arg(&sv_out)
+            .arg("tests/icarus_portability/tb_sext_loop_var_hoist_verilator.cpp")
+            .output()
+            .expect("verilate SextLoopVarHoist");
+        assert!(
+            verilate.status.success(),
+            "Verilator build should pass\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&verilate.stdout),
+            String::from_utf8_lossy(&verilate.stderr)
+        );
+        let exe = obj_dir.join("VSextLoopVarHoist");
+        let run = std::process::Command::new(&exe)
+            .output()
+            .expect("run Verilator SextLoopVarHoist");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS"),
+            "Verilator sim should confirm sext loop-var semantics\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
     }
 }

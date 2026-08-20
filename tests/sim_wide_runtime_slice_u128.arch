@@ -1,0 +1,12 @@
+// arch#868 regression: a runtime-bound bit-slice whose derivable width
+// exceeds 64 bits, taken from a 65..128-bit base, must NOT be truncated
+// to 64 bits in the native sim model. `v[(i + 79) : i]` has runtime lo
+// `i` and derivable width 80; pre-fix the sim emitter masked with a
+// 64-bit constant and cast the result to `uint64_t`, silently zeroing
+// slice bits 64..79.
+module WideRuntimeSlice
+  port v: in UInt<128>;
+  port i: in UInt<7>;
+  port o: out UInt<80>;
+  comb o = v[(i + 79) : i]; end comb
+end module WideRuntimeSlice

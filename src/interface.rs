@@ -19,7 +19,17 @@ pub fn emit_interface(item: &Item) -> Option<String> {
 /// params + ports). Wrapper kept here so the trait impl can take a
 /// uniform `fn(&RegfileDecl) -> String`.
 pub(crate) fn emit_regfile_interface(r: &RegfileDecl) -> String {
-    emit_generic("regfile", &r.name.name, &r.params, &r.ports)
+    let name = &r.name.name;
+    let mut s = format!("regfile {name}\n");
+    emit_params(&mut s, &r.params);
+    emit_ports(&mut s, &r.ports);
+    // `ports[N] read` / `ports[M] write` carry the whole access surface; the
+    // generic emitter dropped them, so a consumer saw only the scalar ports.
+    for pa in [&r.read_ports, &r.write_ports].into_iter().flatten() {
+        emit_port_array(&mut s, pa);
+    }
+    s.push_str(&format!("end regfile {name}\n"));
+    s
 }
 
 pub(crate) fn emit_module_interface(m: &ModuleDecl) -> String {
@@ -159,8 +169,56 @@ pub(crate) fn emit_ram_interface(r: &RamDecl) -> String {
     s.push_str(&format!("  latency {};\n", r.latency));
     emit_params(&mut s, &r.params);
     emit_ports(&mut s, &r.ports);
+    // Access-port groups (`ports rd { addr; en; data; }`). These are the ram's
+    // real signal surface — omitting them left a stub the compiler rejects
+    // outright ("ram `X` has no port groups"), so no ram could be consumed
+    // through separate compilation at all. Mirrors the arbiter port-array emit
+    // below.
+    emit_port_group(&mut s, &r.port_groups);
     s.push_str(&format!("end ram {name}\n"));
     s
+}
+
+/// Emit `ports <name> … end ports <name>` blocks for constructs whose signal
+/// surface lives in a group rather than in `ConstructCommon.ports`.
+fn emit_port_group(s: &mut String, groups: &[RamPortGroup]) {
+    for pg in groups {
+        s.push_str(&format!("  ports {}\n", pg.name.name));
+        for sig in &pg.signals {
+            let dir = match sig.direction {
+                Direction::In => "in",
+                Direction::Out => "out",
+            };
+            s.push_str(&format!(
+                "    {}: {dir} {};\n",
+                sig.name.name,
+                type_str(&sig.ty)
+            ));
+        }
+        s.push_str(&format!("  end ports {}\n", pg.name.name));
+    }
+}
+
+/// Emit an indexed `ports[N] <name> … end ports <name>` array, as used by
+/// arbiter requesters and regfile read/write ports.
+fn emit_port_array(s: &mut String, pa: &PortArrayDecl) {
+    s.push_str(&format!(
+        "  ports[{}] {}\n",
+        expr_str(&pa.count_expr),
+        pa.name.name
+    ));
+    for sig in &pa.signals {
+        let dir = match sig.direction {
+            Direction::In => "in",
+            Direction::Out => "out",
+        };
+        s.push_str(&format!(
+            "    {}: {dir} {};\n",
+            sig.name.name,
+            type_str(&sig.ty)
+        ));
+    }
+    s.push_str(&format!("  end ports {}\n", pa.name.name));
 }
 
 pub(crate) fn emit_arbiter_interface(a: &ArbiterDecl) -> String {
@@ -170,7 +228,9 @@ pub(crate) fn emit_arbiter_interface(a: &ArbiterDecl) -> String {
         ArbiterPolicy::Priority => "priority".to_string(),
         ArbiterPolicy::Lru => "lru".to_string(),
         ArbiterPolicy::Weighted(w) => format!("weighted<{}>", expr_str(w)),
-        ArbiterPolicy::Custom(fn_name) => format!("custom {}", fn_name.name),
+        // Source syntax is a bare `policy <FnName>;` — there is no `custom`
+        // keyword, and emitting one produced a stub the parser rejects.
+        ArbiterPolicy::Custom(fn_name) => fn_name.name.clone(),
     };
     let mut s = format!("arbiter {name}\n");
     s.push_str(&format!("  policy {policy};\n"));
@@ -185,20 +245,7 @@ pub(crate) fn emit_arbiter_interface(a: &ArbiterDecl) -> String {
     // an array of per-requester valid/ready signals — which is
     // information the inst-site connection writer needs.
     for pa in &a.port_arrays {
-        let count = expr_str(&pa.count_expr);
-        s.push_str(&format!("  ports[{count}] {}\n", pa.name.name));
-        for sig in &pa.signals {
-            let dir = match sig.direction {
-                Direction::In => "in",
-                Direction::Out => "out",
-            };
-            s.push_str(&format!(
-                "    {}: {dir} {};\n",
-                sig.name.name,
-                type_str(&sig.ty)
-            ));
-        }
-        s.push_str(&format!("  end ports {}\n", pa.name.name));
+        emit_port_array(&mut s, pa);
     }
     s.push_str(&format!("end arbiter {name}\n"));
     s
@@ -236,6 +283,28 @@ pub(crate) fn emit_linklist_interface(l: &LinklistDecl) -> String {
     }
     emit_params(&mut s, &l.params);
     emit_ports(&mut s, &l.ports);
+    // `op` blocks are most of a linklist's surface — each contributes flattened
+    // `<op>_<port>` pins at the inst site. Dropping them left consumers unable
+    // to see (or connect) any of them.
+    for op in &l.ops {
+        s.push_str(&format!("  op {}\n", op.name.name));
+        s.push_str(&format!("    latency: {};\n", op.latency));
+        if op.pipelined {
+            s.push_str("    pipelined: true;\n");
+        }
+        for p in &op.ports {
+            let dir = match p.direction {
+                Direction::In => "in",
+                Direction::Out => "out",
+            };
+            s.push_str(&format!(
+                "    port {}: {dir} {};\n",
+                p.name.name,
+                type_str(&p.ty)
+            ));
+        }
+        s.push_str(&format!("  end op {}\n", op.name.name));
+    }
     s.push_str(&format!("end linklist {name}\n"));
     s
 }
@@ -253,51 +322,19 @@ pub(crate) fn emit_struct(s: &StructDecl) -> String {
 pub(crate) fn emit_enum(e: &EnumDecl) -> String {
     let name = &e.name.name;
     let mut out = format!("enum {name}\n");
+    // Variants are comma-separated with no trailing comma — `;` terminators
+    // produced a stub the parser rejects, which also made every `package`
+    // containing an enum unreadable.
     for (i, v) in e.variants.iter().enumerate() {
+        let sep = if i + 1 == e.variants.len() { "" } else { "," };
         if let Some(Some(ref val)) = e.values.get(i) {
-            out.push_str(&format!("  {} = {};\n", v.name, expr_str(val)));
+            out.push_str(&format!("  {} = {}{sep}\n", v.name, expr_str(val)));
         } else {
-            out.push_str(&format!("  {};\n", v.name));
+            out.push_str(&format!("  {}{sep}\n", v.name));
         }
     }
     out.push_str(&format!("end enum {name}\n"));
     out
-}
-
-pub(crate) fn emit_package_interface(p: &PackageDecl) -> String {
-    let name = &p.name.name;
-    let mut out = format!("package {name}\n");
-    // Params
-    emit_params(&mut out, &p.params);
-    // Enums
-    for e in &p.enums {
-        out.push_str(&indent(&emit_enum(e)));
-    }
-    // Structs
-    for s in &p.structs {
-        out.push_str(&indent(&emit_struct(s)));
-    }
-    // Function signatures (no body)
-    for f in &p.functions {
-        let fname = &f.name.name;
-        let params: Vec<String> = f
-            .args
-            .iter()
-            .map(|fp| format!("{}: {}", fp.name.name, type_str(&fp.ty)))
-            .collect();
-        out.push_str(&format!(
-            "  function {fname}({}) -> {};\n",
-            params.join(", "),
-            type_str(&f.ret_ty)
-        ));
-    }
-    out.push_str(&format!("end package {name}\n"));
-    out
-}
-
-/// Indent each line by 2 spaces (for nesting structs/enums inside packages).
-fn indent(s: &str) -> String {
-    s.lines().map(|l| format!("  {l}\n")).collect()
 }
 
 pub(crate) fn emit_params(s: &mut String, params: &[ParamDecl]) {
@@ -538,6 +575,13 @@ fn type_str(ty: &TypeExpr) -> String {
         TypeExpr::Bit => "Bit".to_string(),
         TypeExpr::FP32 => "FP32".to_string(),
         TypeExpr::BF16 => "BF16".to_string(),
+        TypeExpr::FP8E4M3 => "FP8E4M3".to_string(),
+        TypeExpr::FP8E5M2 => "FP8E5M2".to_string(),
+        TypeExpr::FP4E2M1 => "FP4E2M1".to_string(),
+        TypeExpr::FP6E2M3 => "FP6E2M3".to_string(),
+        TypeExpr::FP6E3M2 => "FP6E3M2".to_string(),
+        TypeExpr::E8M0 => "E8M0".to_string(),
+        TypeExpr::UE4M3 => "UE4M3".to_string(),
         TypeExpr::Clock(domain) => format!("Clock<{}>", domain.name),
         TypeExpr::Reset(kind, level) => {
             let k = match kind {
@@ -551,6 +595,12 @@ fn type_str(ty: &TypeExpr) -> String {
             format!("Reset<{k}{l}>")
         }
         TypeExpr::Vec(elem, count) => format!("Vec<{}, {}>", type_str(elem), expr_str(count)),
+        TypeExpr::ScaledVec(elem, count, scale) => format!(
+            "ScaledVec<{}, {}, {}>",
+            type_str(elem),
+            expr_str(count),
+            type_str(scale)
+        ),
         TypeExpr::Named(n) => n.name.clone(),
     }
 }
@@ -582,6 +632,11 @@ pub(crate) fn expr_str(expr: &Expr) -> String {
                     FloatLitFmt::Fp32 => f32::from_bits(*bits as u32) as f64,
                     // bf16 is the top 16 bits of the equivalent f32 pattern.
                     FloatLitFmt::Bf16 => f32::from_bits((*bits as u32) << 16) as f64,
+                    FloatLitFmt::E4m3 => crate::fp_lit::e4m3_bits_to_f64(*bits as u8),
+                    FloatLitFmt::E5m2 => crate::fp_lit::e5m2_bits_to_f64(*bits as u8),
+                    FloatLitFmt::E2m1 => crate::fp_lit::e2m1_bits_to_f64(*bits as u8),
+                    FloatLitFmt::E2m3 => crate::fp_lit::e2m3_bits_to_f64(*bits as u8),
+                    FloatLitFmt::E3m2 => crate::fp_lit::e3m2_bits_to_f64(*bits as u8),
                 };
                 if v.fract() == 0.0 {
                     format!("{v:.1}")

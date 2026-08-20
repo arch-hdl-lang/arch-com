@@ -31,6 +31,12 @@ cargo run -- check mymodule.arch
 # Emit SystemVerilog
 cargo run -- build mymodule.arch [-o mymodule.sv]
 
+# -o auto: name the .sv after each top-level construct's declared name
+# instead of the source filename (one .sv per construct if the file
+# declares more than one) — e.g. IbexAlu.arch's `module ibex_alu` writes
+# ibex_alu.sv
+cargo run -- build mymodule.arch -o auto
+
 # Simulate with C++ testbench
 cargo run -- sim mymodule.arch --tb mymodule_tb.cpp
 
@@ -79,7 +85,7 @@ arch sim --debug+fsm --depth 2 MyModule.arch --tb tb.cpp # + FSM transitions, 2 
 
 Additional flags: `--wave out.vcd` (VCD waveform), `--check-uninit` (uninitialized `reset none` reg / `pipe_reg` reads), `--inputs-start-uninit` (warn when the TB forgets to drive an input), `--check-uninit-ram` (warn on reads of RAM cells never written), `--cdc-random` (CDC metastability modeling).
 
-Always-on runtime checks: out-of-range `Vec<T,N>` indexing, bit-selects `val[i]` on `UInt<W>`/`SInt<W>`, variable part-selects `val[start +: W]` / `val[start -: W]`, and divide-by-zero on `/` / `%` are a hard abort (`ARCH-ERROR: ...`). Compile-time constant indices/divisors are verified by the type checker; only runtime values carry the check. `arch build` also auto-emits matching SVA (concurrent `assert property`, wrapped in `translate_off/on`) so Verilator, iverilog, and formal tools (EBMC, SymbiYosys) see the same invariants.
+Always-on runtime checks: out-of-range `Vec<T,N>` indexing, bit-selects `val[i]` on `UInt<W>`/`SInt<W>`, variable part-selects `val[start +: W]` / `val[start -: W]`, and divide-by-zero on `/` / `%` are a hard abort (`ARCH-ERROR: ...`). Compile-time constant indices/divisors are verified by the type checker; only runtime values carry the check. `arch build` also auto-emits matching SVA (concurrent `assert property`, wrapped in `translate_off/on`) so Verilator, iverilog, and formal tools (EBMC, SymbiYosys) see the same invariants. Pass `arch build --no-auto-asserts` to drop every compiler-generated SVA (bounds, divide-by-zero, FSM legal-state/reachability/transition, FIFO overflow/underflow, guard contracts, handshake/credit_channel/TLM protocol, and `--auto-thread-asserts` output) from the emitted SV — useful for Icarus-targeted flows that reject SVA syntax even under `-gno-assertions`. User-written `assert`/`cover` items are never affected by this flag; synthesizable RTL is identical either way.
 
 ## Formal verification
 
@@ -325,6 +331,28 @@ from your own linked worktree (`git worktree add ../arch-wt-<name> -b <branch>`)
 so concurrent sessions don't share one working tree. Both are client-side guards
 (bypass `pre-commit` for a one-off with `WORKTREE_ENFORCE_SKIP=1` or
 `git commit --no-verify`).
+
+### New-worktree setup
+
+`.lake/` build output is untracked, so a freshly created worktree has none.
+If you have the Lean toolchain installed, build the construct-proof project
+once per worktree:
+
+```sh
+(cd proofs/lean_thread_lowering && lake build)   # ~4s; needed by cargo test
+```
+
+Skipping it does not fail cleanly — the two `construct_proof_lean_*` tests in
+`tests/formal_test.rs` guard on `lake` being *available*, not on the project
+being *built*, so they run and fail with `unknown module prefix
+'ArchConstructProof'`, which reads like a broken proof rather than a missing
+build. (Machines without `lake` skip these tests entirely and are unaffected;
+CI installs no Lean toolchain by design — see the dependency-policy note in
+`.github/workflows/test.yml`.)
+
+`proofs/lean_fp_equiv` is a standalone proof project — no cargo test depends
+on it, and it takes ~2.5min to build. See `proofs/lean_fp_equiv/README.md` if
+you need it.
 
 Before opening a PR, run a code-review pass against the branch diff, address or
 accept the findings, then record the reviewed HEAD:

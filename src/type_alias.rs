@@ -25,11 +25,81 @@ use crate::diagnostics::CompileError;
 /// Top-level entry point — substitute all module-scope type aliases in
 /// every `Item::Module` of the source file. Returns the rewritten AST
 /// (aliases removed) or a list of errors.
-pub fn resolve_type_aliases(mut ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
+pub fn resolve_type_aliases(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
+    resolve_type_aliases_with_file_scopes(ast, &[])
+}
+
+/// Multi-file variant: package aliases are visible only in the source file
+/// that declares the package or explicitly imports it with `use`.
+pub fn resolve_type_aliases_with_file_scopes(
+    mut ast: SourceFile,
+    file_scopes: &[std::ops::Range<usize>],
+) -> Result<SourceFile, Vec<CompileError>> {
     let mut errors: Vec<CompileError> = Vec::new();
+
+    // Package-declared aliases are published file-wide, exactly like a
+    // package's structs and enums (`resolve.rs` registers those as globals).
+    // Collect them first so every module starts with them in scope — that is
+    // what lets a shared vocabulary of named formats be declared once.
+    let mut package_aliases: AliasMap = HashMap::new();
+    let mut package_alias_owners: HashMap<String, String> = HashMap::new();
+    let mut package_alias_spans: HashMap<String, crate::lexer::Span> = HashMap::new();
+    for item in &ast.items {
+        if let Item::Package(pkg) = item {
+            for a in &pkg.aliases {
+                let name = a.name.name.clone();
+                if PRIMITIVE_TYPE_NAMES.contains(&name.as_str()) {
+                    errors.push(CompileError::general(
+                        &format!("type alias name '{}' shadows a primitive type", name),
+                        a.name.span,
+                    ));
+                    continue;
+                }
+                if package_aliases.contains_key(&name) {
+                    errors.push(CompileError::general(
+                        &format!("duplicate package type alias '{}'", name),
+                        a.name.span,
+                    ));
+                    continue;
+                }
+                // Resolve against aliases already collected, so a package
+                // alias may build on an earlier one.
+                let mut ty = a.ty.clone();
+                substitute_type(&mut ty, &package_aliases, &mut errors);
+                package_aliases.insert(name.clone(), (ty, a.bus_params.clone()));
+                package_alias_owners.insert(name.clone(), pkg.name.name.clone());
+                package_alias_spans.insert(name, a.name.span);
+            }
+        }
+    }
+
+    let module_packages: HashMap<usize, HashSet<String>> = ast
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Module(module) => Some((
+                module.span.start,
+                packages_for_span(&ast.items, file_scopes, module.span),
+            )),
+            _ => None,
+        })
+        .collect();
     for item in ast.items.iter_mut() {
         if let Item::Module(m) = item {
-            if let Err(mut es) = resolve_module(m) {
+            let active_packages = module_packages
+                .get(&m.span.start)
+                .cloned()
+                .unwrap_or_default();
+            let visible_aliases: AliasMap = package_aliases
+                .iter()
+                .filter(|(name, _)| {
+                    package_alias_owners
+                        .get(*name)
+                        .is_some_and(|owner| active_packages.contains(owner))
+                })
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect();
+            if let Err(mut es) = resolve_module(m, &visible_aliases) {
                 errors.append(&mut es);
             }
         }
@@ -41,19 +111,51 @@ pub fn resolve_type_aliases(mut ast: SourceFile) -> Result<SourceFile, Vec<Compi
     }
 }
 
+fn packages_for_span(
+    items: &[Item],
+    file_scopes: &[std::ops::Range<usize>],
+    span: crate::lexer::Span,
+) -> HashSet<String> {
+    let scope = if file_scopes.is_empty() {
+        None
+    } else {
+        file_scopes.iter().find(|range| range.contains(&span.start))
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let in_scope = scope
+                .map(|range| range.contains(&item.span().start))
+                .unwrap_or(file_scopes.is_empty());
+            match item {
+                Item::Use(u) if in_scope => Some(u.name.name.clone()),
+                Item::Package(package) if in_scope => Some(package.name.name.clone()),
+                Item::ExternPackage(package) if in_scope => Some(package.name.name.clone()),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 /// Resolved alias table: `name -> (TypeExpr, bus_params)`.
 type AliasMap = HashMap<String, (TypeExpr, Vec<ParamAssign>)>;
 
 const PRIMITIVE_TYPE_NAMES: &[&str] = &["UInt", "SInt", "Bool", "Bit", "Clock", "Reset", "Vec"];
 
-fn resolve_module(m: &mut ModuleDecl) -> Result<(), Vec<CompileError>> {
+fn resolve_module(m: &mut ModuleDecl, package_aliases: &AliasMap) -> Result<(), Vec<CompileError>> {
     let mut errors: Vec<CompileError> = Vec::new();
 
     // 1. Walk body in source order, collecting aliases. Each alias's RHS
     //    is resolved against the already-collected map, so earlier
     //    aliases can be referenced by later ones (chains). Self-reference
     //    is detected as a cycle.
-    let mut aliases: AliasMap = HashMap::new();
+    //
+    //    Seeded with the file's package-declared aliases, which are in scope
+    //    everywhere. A module-scope alias that reuses a package alias name
+    //    therefore trips the duplicate check below rather than silently
+    //    shadowing it — package contents are global, so a collision is a
+    //    genuine ambiguity, exactly as it already is for a package struct.
+    let mut aliases: AliasMap = package_aliases.clone();
     // Preserve declaration order for diagnostics.
     let mut alias_order: Vec<(String, crate::lexer::Span)> = Vec::new();
 
@@ -464,6 +566,15 @@ fn substitute_in_expr(e: &mut Expr, aliases: &AliasMap, errors: &mut Vec<Compile
             for a in args.iter_mut() {
                 substitute_in_expr(a, aliases, errors);
             }
+        }
+        // `scaled_quantize<Fmt, ...>(v)` is the first expression that carries
+        // a TYPE, so it is the first that needs alias substitution inside an
+        // expression. Without this arm `scaled_quantize<MXFP4>(v)` keeps a
+        // dangling `Named("MXFP4")` that no later pass can resolve — the
+        // aliases are substituted and then removed before typecheck runs.
+        ExprKind::ScaledQuantize(value, fmt, _, _) => {
+            substitute_in_expr(value, aliases, errors);
+            substitute_type(fmt.as_mut(), aliases, errors);
         }
         ExprKind::Index(a, b) => {
             substitute_in_expr(a, aliases, errors);

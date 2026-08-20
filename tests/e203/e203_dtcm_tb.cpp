@@ -1,137 +1,153 @@
-#include "VDtcm.h"
+// ARCH sim testbench for e203_dtcm — 64KB data TCM: simple_dual latency-1
+// SRAM wrapper with byte-strobe write-data masking. Tests: full-word
+// write-then-read across the address range, the byte-lane masking of write
+// data, 1-cycle registered read latency, output hold with rd_en low, wr_en
+// gating, and same-cycle read+write on the two ports.
+//
+// NOTE: this replaces a stale tb (VDtcm.h) that targeted the pre-2026-04
+// PascalCase fixture naming. The construct is now `e203_dtcm`, so the sim
+// class is Ve203_dtcm.
+//
+// KNOWN ISSUE — wr_be is a write-DATA mask, not a true byte enable. The
+// fixture computes `masked_wdata = wr_din & full_mask` and writes the full
+// word, so byte lanes with be=0 are stored as ZERO instead of being
+// preserved (a real byte-strobe SRAM keeps the old bytes; that needs
+// per-lane write enables or read-modify-write, which this fixture does not
+// implement). The reference E203 DTCM preserves unwritten lanes. Tests 2 and
+// 3 below assert the actual clobber-to-zero behavior rather than the
+// preserve behavior, so a future fixture fix will flip them intentionally.
+//
+// Run with:
+//   arch sim tests/e203/e203_dtcm.arch --tb tests/e203/e203_dtcm_tb.cpp
+
+#include "Ve203_dtcm.h"
 #include <cstdio>
-#include <cstdlib>
+#include <cstdint>
 
-int main(int argc, char** argv) {
-    VDtcm* dut = new VDtcm;
-    int errors = 0;
+static int fail_count = 0;
 
-    auto posedge = [&]() {
-        dut->clk = 0; dut->eval();
-        dut->clk = 1; dut->eval();
-    };
+#define CHECK(cond, fmt, ...) do { \
+    if (!(cond)) { \
+        printf("  FAIL: " fmt "\n", ##__VA_ARGS__); \
+        fail_count++; \
+    } \
+} while(0)
 
-    // ── Reset ──
+static Ve203_dtcm* dut;
+
+static void tick() {
+    dut->clk = 0; dut->eval();
+    dut->clk = 1; dut->eval();
+}
+
+static void reset() {
     dut->rst_n = 0;
-    dut->rd_en = 0; dut->wr_en = 0;
-    dut->rd_addr = 0; dut->wr_addr = 0;
-    dut->wr_din = 0; dut->wr_be = 0;
-    for (int i = 0; i < 5; i++) posedge();
+    dut->rd_en = 0;
+    dut->rd_addr = 0;
+    dut->wr_en = 0;
+    dut->wr_be = 0xF;
+    dut->wr_addr = 0;
+    dut->wr_din = 0;
+    for (int i = 0; i < 3; i++) tick();
     dut->rst_n = 1;
-    posedge();
+    dut->eval();
+}
 
-    // ── Test 1: Write then Read ──
-    printf("Test 1: Write 0xDEADBEEF to addr 0, read back\n");
+static void write_word(uint32_t addr, uint32_t data, uint32_t be) {
     dut->wr_en = 1;
-    dut->wr_be = 0xF;  // all bytes
-    dut->wr_addr = 0;
-    dut->wr_din = 0xDEADBEEF;
-    dut->rd_en = 0;
-    posedge();
+    dut->wr_be = be;
+    dut->wr_addr = addr;
+    dut->wr_din = data;
+    tick();
     dut->wr_en = 0;
+    dut->eval();
+}
 
-    // Read back (latency 1 -> need one cycle for data to appear)
+static uint32_t read_word(uint32_t addr) {
     dut->rd_en = 1;
-    dut->rd_addr = 0;
-    posedge();  // issue read
+    dut->rd_addr = addr;
+    tick();
     dut->rd_en = 0;
-    posedge();  // data available after one cycle
-    if (dut->rd_dout != 0xDEADBEEF) {
-        printf("  FAIL: expected 0xDEADBEEF, got 0x%08X\n", dut->rd_dout);
-        errors++;
-    } else {
-        printf("  PASS\n");
-    }
+    dut->eval();
+    return dut->rd_dout;
+}
 
-    // ── Test 2: Byte-strobe write ──
-    printf("Test 2: Byte-strobe write byte1 only to addr 0\n");
-    dut->wr_en = 1;
-    dut->wr_be = 0x2;  // only byte 1
-    dut->wr_addr = 0;
-    dut->wr_din = 0x0000FF00;  // write 0xFF to byte1
-    posedge();
+int main() {
+    dut = new Ve203_dtcm;
+
+    // ── Test 1: Full-word write/readback ─────────────────────────────
+    printf("Test 1: Full-word write/readback\n");
+    reset();
+    write_word(0x0000, 0x11223344u, 0xF);
+    write_word(0x1555, 0x55667788u, 0xF);
+    write_word(0x3FFF, 0x99AABBCCu, 0xF);
+    uint32_t v = read_word(0x0000);
+    CHECK(v == 0x11223344u, "word 0 should be 0x11223344, got 0x%08x", v);
+    v = read_word(0x1555);
+    CHECK(v == 0x55667788u, "word 0x1555 should be 0x55667788, got 0x%08x", v);
+    v = read_word(0x3FFF);
+    CHECK(v == 0x99AABBCCu, "last word should be 0x99AABBCC, got 0x%08x", v);
+
+    // ── Test 2: Byte-strobe masking of the write data ────────────────
+    printf("Test 2: Byte-lane masking\n");
+    // be=0x3 keeps only the low two byte lanes of wr_din.
+    // KNOWN ISSUE (see header): the unselected lanes are stored as zero,
+    // not preserved from the old word 0x11223344.
+    write_word(0x0000, 0xAABBCCDDu, 0x3);
+    v = read_word(0x0000);
+    CHECK(v == 0x0000CCDDu, "be=0x3 write should store 0x0000CCDD (lanes cleared), got 0x%08x", v);
+    // be=0xC keeps only the high two lanes.
+    write_word(0x0000, 0xAABBCCDDu, 0xC);
+    v = read_word(0x0000);
+    CHECK(v == 0xAABB0000u, "be=0xC write should store 0xAABB0000, got 0x%08x", v);
+    // Single lane.
+    write_word(0x0000, 0xFFFFFFFFu, 0x2);
+    v = read_word(0x0000);
+    CHECK(v == 0x0000FF00u, "be=0x2 write should store 0x0000FF00, got 0x%08x", v);
+
+    // ── Test 3: be=0 write stores zero ───────────────────────────────
+    printf("Test 3: be=0 write\n");
+    // KNOWN ISSUE (see header): wr_en=1 with be=0 clobbers the word to 0.
+    write_word(0x1555, 0xFFFFFFFFu, 0x0);
+    v = read_word(0x1555);
+    CHECK(v == 0x00000000u, "be=0 write stores 0 in this fixture, got 0x%08x", v);
+
+    // ── Test 4: Output holds when rd_en=0 ────────────────────────────
+    printf("Test 4: Output hold\n");
+    v = read_word(0x3FFF);                // rd_dout = 0x99AABBCC
+    dut->rd_en = 0;
+    dut->rd_addr = 0x0000;
+    tick(); tick();
+    dut->eval();
+    CHECK(dut->rd_dout == 0x99AABBCCu, "rd_dout must hold with rd_en=0, got 0x%08x", dut->rd_dout);
+
+    // ── Test 5: wr_en gating ─────────────────────────────────────────
+    printf("Test 5: wr_en gating\n");
     dut->wr_en = 0;
+    dut->wr_be = 0xF;
+    dut->wr_addr = 0x3FFF;
+    dut->wr_din = 0x12345678u;
+    tick();
+    v = read_word(0x3FFF);
+    CHECK(v == 0x99AABBCCu, "write without wr_en must not land, got 0x%08x", v);
 
-    // Read back
+    // ── Test 6: Same-cycle read + write on the two ports ─────────────
+    printf("Test 6: Dual-port concurrency\n");
     dut->rd_en = 1;
-    dut->rd_addr = 0;
-    posedge();
-    dut->rd_en = 0;
-    posedge();
-    // Byte-strobe masking only applies to write data; the RAM sees masked_wdata.
-    // wr_be=0x2 means only byte1 is written. The RAM overwrites the full word
-    // with masked_wdata = 0x0000FF00 & {8'hFF, 8'h00, 8'h00, 8'h00...}
-    // Actually: wr_be=0x2 -> mask = {0x00, 0x00, 0xFF, 0x00} -> masked = 0x0000FF00
-    // But simple_dual RAM writes the full word, so addr[0] becomes 0x0000FF00
-    // (the masking zeroes out the other bytes in the write data).
-    // So the final value is 0x0000FF00, not the merged 0xDEADFF00.
-    if (dut->rd_dout != 0x0000FF00) {
-        printf("  FAIL: expected 0x0000FF00, got 0x%08X\n", dut->rd_dout);
-        errors++;
-    } else {
-        printf("  PASS\n");
-    }
-
-    // ── Test 3: Multiple sequential accesses ──
-    printf("Test 3: Write to 4 different addresses, read all back\n");
-    uint32_t test_data[4] = {0x11111111, 0x22222222, 0x33333333, 0x44444444};
-    for (int i = 0; i < 4; i++) {
-        dut->wr_en = 1;
-        dut->wr_be = 0xF;
-        dut->wr_addr = i + 10;
-        dut->wr_din = test_data[i];
-        posedge();
-    }
-    dut->wr_en = 0;
-
-    // Read back all 4
-    for (int i = 0; i < 4; i++) {
-        dut->rd_en = 1;
-        dut->rd_addr = i + 10;
-        posedge();
-        dut->rd_en = 0;
-        posedge();
-        if (dut->rd_dout != test_data[i]) {
-            printf("  FAIL addr %d: expected 0x%08X, got 0x%08X\n",
-                   i + 10, test_data[i], dut->rd_dout);
-            errors++;
-        }
-    }
-    if (errors == 0) printf("  PASS\n");
-
-    // ── Test 4: Simultaneous read and write ──
-    printf("Test 4: Simultaneous read and write to different addresses\n");
-    // Write 0xCAFEBABE to addr 20
+    dut->rd_addr = 0x3FFF;
     dut->wr_en = 1;
     dut->wr_be = 0xF;
-    dut->wr_addr = 20;
-    dut->wr_din = 0xCAFEBABE;
-    // Simultaneously read addr 10 (should still be 0x11111111)
-    dut->rd_en = 1;
-    dut->rd_addr = 10;
-    posedge();
+    dut->wr_addr = 0x0200;
+    dut->wr_din = 0x5A5A5A5Au;
+    tick();
+    dut->rd_en = 0;
     dut->wr_en = 0;
-    dut->rd_en = 0;
-    posedge();
-    if (dut->rd_dout != 0x11111111) {
-        printf("  FAIL: expected 0x11111111, got 0x%08X\n", dut->rd_dout);
-        errors++;
-    } else {
-        printf("  PASS\n");
-    }
+    dut->eval();
+    CHECK(dut->rd_dout == 0x99AABBCCu, "concurrent read should return 0x99AABBCC, got 0x%08x",
+          dut->rd_dout);
+    v = read_word(0x0200);
+    CHECK(v == 0x5A5A5A5Au, "concurrent write should land, got 0x%08x", v);
 
-    // Verify the write to addr 20 also succeeded
-    dut->rd_en = 1;
-    dut->rd_addr = 20;
-    posedge();
-    dut->rd_en = 0;
-    posedge();
-    if (dut->rd_dout != 0xCAFEBABE) {
-        printf("  Verify write FAIL: expected 0xCAFEBABE, got 0x%08X\n", dut->rd_dout);
-        errors++;
-    }
-
-    printf("\n%s: %d error(s)\n", errors ? "FAIL" : "PASS", errors);
-    delete dut;
-    return errors ? 1 : 0;
+    printf("\n=== e203_dtcm: %d failure(s) ===\n", fail_count);
+    return fail_count ? 1 : 0;
 }

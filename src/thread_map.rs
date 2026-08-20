@@ -205,6 +205,9 @@ pub fn expr_label(expr: &Expr) -> String {
             let args = args.iter().map(expr_label).collect::<Vec<_>>().join(", ");
             format!("{}({})", name, args)
         }
+        ExprKind::ScaledQuantize(v, _, _, _) => {
+            format!("scaled_quantize({})", expr_label(v))
+        }
         ExprKind::PipelinedCall(name, args, stages) => {
             let args = args.iter().map(expr_label).collect::<Vec<_>>().join(", ");
             format!("{}<pipelined, {}>({})", name, stages, args)
@@ -976,6 +979,11 @@ fn lit_label(lit: &LitKind) -> String {
             let v = match fmt {
                 FloatLitFmt::Fp32 => f32::from_bits(*bits as u32) as f64,
                 FloatLitFmt::Bf16 => f32::from_bits((*bits as u32) << 16) as f64,
+                FloatLitFmt::E4m3 => crate::fp_lit::e4m3_bits_to_f64(*bits as u8),
+                FloatLitFmt::E5m2
+                | crate::ast::FloatLitFmt::E2m1
+                | crate::ast::FloatLitFmt::E2m3
+                | crate::ast::FloatLitFmt::E3m2 => crate::fp_lit::e5m2_bits_to_f64(*bits as u8),
             };
             v.to_string()
         }

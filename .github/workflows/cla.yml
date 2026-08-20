@@ -26,7 +26,9 @@ jobs:
         with:
           path-to-signatures: 'signatures/cla.json'
           path-to-document: 'https://github.com/arch-hdl-lang/arch-com/blob/main/CLA.md'
-          branch: 'main'
+          # Signatures are append-only bot data. Keeping them on a dedicated
+          # branch avoids bypassing the required checks on protected `main`.
+          branch: 'cla-signatures'
           allowlist: dependabot[bot],github-actions[bot]
           custom-notsigned-prcomment: |
             Thank you for your contribution! Before we can merge this PR, we need you to agree to our [Contributor License Agreement](https://github.com/arch-hdl-lang/arch-com/blob/main/CLA.md).

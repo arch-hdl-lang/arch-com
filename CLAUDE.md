@@ -26,6 +26,15 @@ Better patterns:
 - Use `todo!()` or `unreachable!()` for *intentionally* unreachable code (with
   appropriate runtime panic semantics).
 
+### Proving a refactor changed nothing observable
+
+For a MOVE-ONLY refactor (e.g. splitting a large codegen file into sibling
+modules) that must not change emitted output, run
+`scripts/refactor_diff.sh <base-ref>` before opening the PR — it builds `arch`
+at both `<base-ref>` and HEAD and byte-diffs every emitted `.sv`/`.archi`/sim
+`.h`/`.cpp` file across the full regression corpus; zero diffs is the gate,
+not "tests still pass". See the script header for usage and caveats.
+
 ## Never invoke a stale compiler binary
 
 A long-lived `target/release/arch` only changes when someone runs `cargo build`.
@@ -107,6 +116,19 @@ never said so. Rules:
   with pointers to the relevant spec docs. Pure internal refactors of a
   surface file with no user-facing syntax/semantics change (e.g. the planned
   parser/elaborate splits) can use the `no-doc-needed` PR label to skip it.
+- **A version bump must update `doc/COMPILER_STATUS.md` in the same PR.** The
+  release PR is where the package `version` in `Cargo.toml` bumps, and the
+  convention is that it also updates the status doc's `> Compiler version:`
+  banner and adds a `> **<version> release highlights:**` block. Release PRs
+  kept landing as Cargo-only (0.71.0 shipped with the banner stuck at 0.70.8),
+  stranding the status doc a release behind. CI now enforces the coupling
+  (`scripts/check_release_doc.sh`, workflow `release-doc`, check name `release
+  doc`): if a PR changes the Cargo version, `doc/COMPILER_STATUS.md` must carry
+  a matching banner and highlights block, or the check fails with the exact
+  lines to add. Remember to re-sync the skill snapshot
+  (`scripts/sync_skill_snapshots.sh refresh`) after editing the status doc. A
+  rare bare re-publish bump with no user-facing change can use the
+  `release-doc-exempt` PR label to skip it.
 - **Sweep for stranded PRs**: `scripts/green_pr_sweep.sh` lists open PRs that
   are green, mergeable, and ≥1 day old across arch-com + harc-com — finished
   work nobody landed. The mirror image of `claim_check.sh` (duplicate work at
@@ -216,7 +238,7 @@ _auto_bound_vec_0: assert property (@(posedge clk) disable iff (rst) (idx) < (4)
   else $fatal(1, "BOUNDS VIOLATION: Mod._auto_bound_vec_0");
 ```
 
-Consumed by Verilator (`--assert`), iverilog (`-gsupported-assertions`), and formal tools (EBMC, SymbiYosys). **Scope**: seq and latch contexts only. Accesses in `comb` blocks or `let` bindings are not mirrored to SV in v1 — concurrent assertions can't catch sub-cycle glitches, and wrapping `always_comb` with immediate assertions is deferred. The arch-sim runtime check still fires for those paths. Reset polarity is inferred from the module's `Reset<Kind,Polarity>` port. Modules with no clock emit no SV assertion (assertion would have no evaluation context).
+Consumed by Verilator (`--assert`), iverilog (`-gsupported-assertions`), and formal tools (EBMC, SymbiYosys). **Scope**: seq and latch contexts only. Accesses in `comb` blocks or `let` bindings are not mirrored to SV in v1 — concurrent assertions can't catch sub-cycle glitches, and wrapping `always_comb` with immediate assertions is deferred. Accesses whose predicate would reference a `for`-loop iterator are also skipped: the concurrent assertion is emitted at module scope, where the iterator does not exist, so the SV would not elaborate. That covers both a bare iterator index (`vec[i]`) and the two indirect routes — an enclosing `if` inside the loop body, whose condition is folded in as the `|->` antecedent, and a compound index such as `mem[i + 1]`. The arch-sim runtime check still fires for all these paths. Reset polarity is inferred from the module's `Reset<Kind,Polarity>` port. Modules with no clock emit no SV assertion (assertion would have no evaluation context).
 
 **Verified end-to-end (2026-04-17):**
 - *Verilator 5.034 + `--assert`*: in-bounds runs silently; OOB trips `$fatal(1, "BOUNDS VIOLATION: ...")`.
@@ -356,6 +378,8 @@ end bus Mem
 Initiators call as a direct RHS inside a thread: `d <= m.read(addr);`. Targets implement with a dotted-name thread: `thread s.read(addr) on clk rising, rst high ... return data; end thread s.read`.
 
 Concurrency is structural: multiple direct worker threads, `generate_for` workers, or one direct-call `fork ... and ... join` thread lower to a request arbiter and response router. Blocking routes by issue-order FIFO; `out_of_order tags N` routes by hidden tag wires. Do not generate `Future<T>`, `await`, `Token<T>`, `pipelined`, or `burst` syntax.
+
+A `fork ... and ... join` group must be class-uniform (all `blocking` or all `out_of_order`) — mixing classes in one group is a compile-time error, not a warning. `out_of_order tags N` sets the `req_tag`/`rsp_tag` carrier's bit width directly (not a tag count via `$clog2`); keep `N <= 8` even though the compiler doesn't enforce it (see spec §22.2.3a/§22.2.3b).
 
 ---
 

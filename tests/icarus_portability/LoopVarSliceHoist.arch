@@ -1,0 +1,45 @@
+// arch#861 regression fixture: hoisted bases that reference a live runtime
+// `for`-loop iterator.
+//
+// Such a temp cannot be declared at module scope (the iterator is a
+// loop-local `int`, invisible there — and so is its `$bits(...)` width
+// expression), and cannot be declared immediately before the reading
+// statement either (a declaration may not follow a statement inside
+// `begin`/`end` — the arch#846 hard error). It is declared at the *top of
+// the loop body*, where the iterator is in scope, and assigned there with a
+// blocking assignment.
+//
+// Before the fix the `Index` arm bailed out of the hoist entirely and fell
+// back to concatenating base and `[idx]` as raw text, dropping the parens:
+// `(a + v[i])[3]` became `a + v[i][3]`, which Verilator compiles silently
+// and evaluates as `a + (v[i][3])`. The vectors in the two testbenches are
+// chosen to separate that wrong value from the right one.
+//
+// See tests/integration_test.rs's
+// `test_loop_var_slice_hoist_behavioral_equivalence_verilator_and_iverilog`.
+module LoopVarSliceHoist
+  port a: in UInt<8>;
+  port v: in Vec<UInt<8>, 4>;
+  port y_index: out UInt<4>;
+  port y_concat_bitslice: out Vec<UInt<4>, 4>;
+  port y_concat_partselect: out Vec<UInt<4>, 4>;
+  port y_method_bitslice: out Vec<UInt<4>, 4>;
+
+  wire wi: Vec<Bool, 4>;
+
+  comb
+    for i in 0..3
+      // Index form: arithmetic base referencing the iterator. This is the
+      // shape that silently miscompiled.
+      wi[i] = (a + v[i])[3];
+      // BitSlice / PartSelect with a `Concat` base referencing the
+      // iterator — hoisted by `hoist_slice_base` rather than the `Index`
+      // arm, same in-loop placement.
+      y_concat_bitslice[i] = {a, v[i]}[5:2];
+      y_concat_partselect[i] = {a, v[i]}[2 +: 4];
+      // MethodCall (SV size-cast) base referencing the iterator.
+      y_method_bitslice[i] = v[i].trunc<4>()[3:0];
+    end for
+    y_index = wi;
+  end comb
+end module LoopVarSliceHoist

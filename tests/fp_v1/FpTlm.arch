@@ -1,0 +1,51 @@
+// Float args/return through a TLM method: initiator thread calls
+// m.scale(2.5, 3.0) (FP32 args), target thread computes x * k and returns
+// it through the req/rsp protocol. Pre-fix hazard: the TLM target lowering
+// synthesized the arg-latch regs (_tlm_*_latched) with INTEGER 0 resets,
+// which the float-reset guard rejects for float-typed args — float TLM
+// methods failed to compile at all. Locks both backends end-to-end (7.5).
+bus FpMem
+  tlm_method scale(x: FP32, k: FP32) -> FP32: blocking;
+end bus FpMem
+
+use FpMem;
+
+module FpTlmTarget
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port s: target FpMem;
+  thread s.scale(x, k) on clk rising, rst high
+    return x * k;
+  end thread s.scale
+end module FpTlmTarget
+
+module FpTlmInit
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port m: initiator FpMem;
+  port go: in Bool;
+  port y: out FP32;
+  reg d: FP32 reset rst => 0.0;
+  thread main on clk rising, rst high
+    d <= m.scale(2.5, 3.0);
+  end thread main
+  comb y = d; end comb
+end module FpTlmInit
+
+module FpTlmTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port go: in Bool;
+  port y: out FP32;
+  inst t: FpTlmTarget
+    clk <- clk;
+    rst <- rst;
+  end inst t
+  inst i: FpTlmInit
+    clk <- clk;
+    rst <- rst;
+    go <- go;
+    y -> y;
+  end inst i
+  connect i.m -> t.s;
+end module FpTlmTop

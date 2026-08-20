@@ -41,28 +41,26 @@ impl<'a> Codegen<'a> {
         //     identically-named locals.
         // Both kinds emit at file scope so module-header parameter
         // types like `parameter rv32m_e RV32M` resolve.
-        for item in &self.source.items {
-            if let Item::Use(u) = item {
-                let arch_pkg = self
-                    .source
-                    .items
-                    .iter()
-                    .any(|i| matches!(i, Item::Package(p) if p.name.name == u.name.name));
-                let extern_pkg = self.source.items.iter().find_map(|i| {
-                    if let Item::ExternPackage(ep) = i {
-                        if ep.name.name == u.name.name {
-                            return Some(ep);
-                        }
+        for package_name in self.active_uses(m.span) {
+            let arch_pkg = self
+                .source
+                .items
+                .iter()
+                .any(|i| matches!(i, Item::Package(p) if p.name.name == package_name));
+            let extern_pkg = self.source.items.iter().find_map(|i| {
+                if let Item::ExternPackage(ep) = i {
+                    if ep.name.name == package_name {
+                        return Some(ep);
                     }
-                    None
-                });
-                if arch_pkg {
-                    self.out.push_str(&format!("import {}::*;\n", u.name.name));
-                } else if let Some(ep) = extern_pkg {
-                    for ty in &ep.types {
-                        self.out
-                            .push_str(&format!("import {}::{};\n", u.name.name, ty.name));
-                    }
+                }
+                None
+            });
+            if arch_pkg {
+                self.out.push_str(&format!("import {package_name}::*;\n"));
+            } else if let Some(ep) = extern_pkg {
+                for ty in &ep.types {
+                    self.out
+                        .push_str(&format!("import {package_name}::{};\n", ty.name));
                 }
             }
         }
@@ -298,6 +296,26 @@ impl<'a> Codegen<'a> {
                             dir, base_ty, p.name.name, suffix, init_str
                         ));
                     }
+                } else if let (TypeExpr::ScaledVec(..), true) = (&p.ty, p.split) {
+                    // `split` block port: two SV ports instead of one packed
+                    // word, flattened `<name>_scale` / `<name>_elems` the way
+                    // bus ports already flatten. The scale feeds the exponent
+                    // path and the elements feed the mantissa path, so a real
+                    // datapath never wants them concatenated (proposal §3.2).
+                    let sw = self.scaled_vec_scale_width(&p.ty);
+                    let elems_w = self.scaled_vec_elems_width(&p.ty);
+                    port_lines.push(format!(
+                        "{} logic [{}] {}_scale",
+                        dir,
+                        Self::fold_width_str(&sw),
+                        p.name.name
+                    ));
+                    port_lines.push(format!(
+                        "{} logic [{}] {}_elems",
+                        dir,
+                        Self::fold_width_str(&elems_w),
+                        p.name.name
+                    ));
                 } else {
                     let ty_str = self.emit_port_type_str(&p.ty);
                     let init_str = p
@@ -321,12 +339,56 @@ impl<'a> Codegen<'a> {
 
         self.indent += 1;
 
-        // Emit any functions defined in the same file as local `function automatic` declarations.
-        let fns = std::mem::take(&mut self.pending_functions);
-        for f in &fns {
-            self.emit_function(f);
+        // `split` ScaledVec ports are a BOUNDARY shape only: the SV module has
+        // `<p>_scale` / `<p>_elems`, but everything inside still refers to the
+        // block by its single ARCH name. Bridge the two here so the body is
+        // emission-identical to the packed form — otherwise every internal use
+        // would reference a name that does not exist in the SV.
+        let split_ports: Vec<&crate::ast::PortDecl> = m
+            .ports
+            .iter()
+            .filter(|p| p.split && matches!(p.ty, TypeExpr::ScaledVec(..)))
+            .collect();
+        if !split_ports.is_empty() {
+            self.line("// `split` block ports: SV boundary is {scale, elems}; the body");
+            self.line("// sees one packed block value.");
+            for p in &split_ports {
+                let n = &p.name.name;
+                let w = self
+                    .type_expr_width(&p.ty)
+                    .map(|w| format!("{}:0", w.saturating_sub(1)))
+                    .unwrap_or_else(|| {
+                        Self::fold_width_str(
+                            &self
+                                .type_expr_data_width(&p.ty)
+                                .unwrap_or_else(|| "0".to_string()),
+                        )
+                    });
+                match p.direction {
+                    Direction::In => {
+                        self.line(&format!("logic [{w}] {n};"));
+                        self.line(&format!("assign {n} = {{{n}_scale, {n}_elems}};"));
+                    }
+                    Direction::Out => {
+                        let elems_w = self.scaled_vec_elems_width(&p.ty);
+                        self.line(&format!("logic [{w}] {n};"));
+                        self.line(&format!(
+                            "assign {n}_elems = {n}[{}];",
+                            Self::fold_width_str(&elems_w)
+                        ));
+                        self.line(&format!(
+                            "assign {n}_scale = {n}[{}+:{}];",
+                            elems_w,
+                            self.scaled_vec_scale_width(&p.ty)
+                        ));
+                    }
+                }
+            }
+            self.line("");
         }
-        self.pending_functions = fns;
+
+        // Emit any functions defined in the same file as local `function automatic` declarations.
+        self.emit_pending_functions();
 
         // If any log() statements exist in this module, emit the per-module verbosity variable.
         // Override at simulation: +arch_verbosity=N on the simulator command line.
@@ -1005,30 +1067,41 @@ impl<'a> Codegen<'a> {
         // Emit guard-contract SVA: for each `reg ... guard <sig>`, prove that
         // whenever `<sig>` is high, the reg has been written at least once.
         // Uses a shadow `_<reg>_written` set on any seq-block commit (over-approx).
-        self.emit_guard_contracts(&m_clone);
+        //
+        // Guarded by `--no-auto-asserts` (issue #649) — all of the
+        // following emit only compiler-generated SVA, never user RTL, so
+        // they are safe to skip wholesale.
+        if !self.suppress_auto_sva {
+            self.emit_guard_contracts(&m_clone);
 
-        // Emit bounds-check SVA for runtime-indexed Vec / bit-select /
-        // part-select accesses in seq/latch blocks. Mirrors arch sim's
-        // _ARCH_BCHK so iverilog/Verilator/formal tools see the invariant.
-        self.emit_bound_asserts(&m_clone);
+            // Emit bounds-check SVA for runtime-indexed Vec / bit-select /
+            // part-select accesses in seq/latch blocks. Mirrors arch sim's
+            // _ARCH_BCHK so iverilog/Verilator/formal tools see the invariant.
+            self.emit_bound_asserts(&m_clone);
 
-        // Emit per-variant handshake protocol SVA for each bus port whose
-        // bus definition contains one or more `handshake` channels.
-        self.emit_handshake_asserts(&m_clone);
+            // Emit per-variant handshake protocol SVA for each bus port whose
+            // bus definition contains one or more `handshake` channels.
+            self.emit_handshake_asserts(&m_clone);
+        }
 
         // Emit the synthesized credit counter + can_send wire for each
         // `send`-role credit_channel bus port on the module (PR #3b-ii).
+        // Not gated — this is functional RTL (a real counter register),
+        // not an assertion.
         self.emit_credit_channel_state(&m_clone);
 
         // Emit the target-side FIFO for each credit_channel bus port on
-        // the module where this side is the receiver (PR #3b-iii).
+        // the module where this side is the receiver (PR #3b-iii). Also
+        // functional RTL, not gated.
         self.emit_credit_channel_receiver_state(&m_clone);
 
-        // Emit the Tier-2 credit_channel protocol assertions (PR #4).
-        self.emit_credit_channel_asserts(&m_clone);
+        if !self.suppress_auto_sva {
+            // Emit the Tier-2 credit_channel protocol assertions (PR #4).
+            self.emit_credit_channel_asserts(&m_clone);
 
-        // Emit TLM method request/response stability assertions.
-        self.emit_tlm_method_asserts(&m_clone);
+            // Emit TLM method request/response stability assertions.
+            self.emit_tlm_method_asserts(&m_clone);
+        }
 
         // Emit log file descriptors: initial $fopen / final $fclose
         let log_files = Self::collect_log_files(&m_clone.body);
@@ -1241,7 +1314,7 @@ impl<'a> Codegen<'a> {
             for stmt in &cb.stmts {
                 if let Stmt::Assign(a) = stmt {
                     let val = self.emit_expr_str(&a.value);
-                    let tgt = self.emit_expr_str(&a.target);
+                    let tgt = self.emit_lvalue_str(&a.target);
                     self.line(&format!("assign {} = {};", tgt, val));
                 }
             }

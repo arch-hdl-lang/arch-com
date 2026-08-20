@@ -170,6 +170,11 @@ impl<'a> Codegen<'a> {
         self.line("");
         self.indent += 1;
 
+        // Emit any functions defined in the same file as local `function
+        // automatic` declarations (arch#852) — an `assert`/`cover` on this
+        // ram may call one, and SV has no free functions.
+        self.emit_pending_functions();
+
         // ── Memory array ─────────────────────────────────────────────────────
         self.line("logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];");
 

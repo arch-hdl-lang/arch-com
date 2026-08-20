@@ -82,10 +82,18 @@ fn collect_idents_impl(
         Unary(_, a) => rec(a, out),
         FieldAccess(base, field) => {
             // Bus member → field-qualified node; otherwise recurse into base.
-            if let (Some(bp), Ident(b)) = (bus, &base.kind) {
-                if bp.contains(b) {
-                    out.insert(format!("{b}.{}", field.name));
-                    return;
+            // The bus base may be a bare bus port (`s.aw_valid`) OR a
+            // `Vec<Bus,N>` ELEMENT access (`m[i].ready`) — peel through any
+            // `Index` wrapper to find the bus-port root (issue #780 class 1:
+            // Vec-of-Bus field granularity). Index subscript expressions
+            // (`i`) are still collected as ordinary reads.
+            if let Some(bp) = bus {
+                if let Some(b) = peel_index_to_ident(base) {
+                    if bp.contains(b) {
+                        out.insert(format!("{b}.{}", field.name));
+                        collect_index_subscript_reads(base, bus, out);
+                        return;
+                    }
                 }
             }
             rec(base, out);
@@ -162,6 +170,39 @@ fn collect_idents_impl(
     }
 }
 
+/// Peel through `Index` wrappers to find the root `Ident`, so a `Vec<Bus,N>`
+/// ELEMENT's bus-field access (`m[i].ready`, or multi-dimensional
+/// `m[i][j].ready`) resolves to the SAME bus-port root as a bare bus port's
+/// field access (`s.aw_ready`), instead of the base-resolution failing and
+/// falling back to whole-Vec granularity (issue #780 class 1). Returns
+/// `None` for any other expression shape (the base isn't a plain indexed
+/// identifier chain, e.g. a nested field or method call — falls back to the
+/// existing coarse behavior at the call site).
+fn peel_index_to_ident(expr: &crate::ast::Expr) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.as_str()),
+        ExprKind::Index(base, _) => peel_index_to_ident(base),
+        _ => None,
+    }
+}
+
+/// Companion to `peel_index_to_ident`: collect identifier reads from the
+/// Index SUBSCRIPT expressions along an `Index(Index(...Ident...))` chain
+/// (e.g. the `i` in `m[i].ready`), WITHOUT inserting the root identifier
+/// itself — that identity is already captured as the bus-field node by the
+/// caller. Mirrors `collect_lhs_index_reads`'s treatment of subscripts, but
+/// for the bus-aware expression-read path.
+fn collect_index_subscript_reads(
+    expr: &crate::ast::Expr,
+    bus: Option<&HashSet<String>>,
+    out: &mut HashSet<String>,
+) {
+    if let ExprKind::Index(base, idx) = &expr.kind {
+        collect_idents_impl(idx, bus, out);
+        collect_index_subscript_reads(base, bus, out);
+    }
+}
+
 /// Extract the base identifier name from an LHS expression
 /// (strips bit-slices, part-selects, array indexing, field access).
 fn lhs_base_name(expr: &crate::ast::Expr) -> Option<String> {
@@ -172,7 +213,8 @@ fn lhs_base_name(expr: &crate::ast::Expr) -> Option<String> {
 /// the field-qualified target `s.aw_ready` when `s` ∈ `bus_ports`, matching
 /// `collect_expr_idents_bus` on the read side so the two never conflate into a
 /// single `s` node. See `collect_expr_idents_bus` for why per-member
-/// granularity is sound.
+/// granularity is sound. The bus base may also be a `Vec<Bus,N>` ELEMENT
+/// access (`m[i].ready = …`) — see `peel_index_to_ident` (issue #780 class 1).
 fn lhs_base_name_bus(
     expr: &crate::ast::Expr,
     bus_ports: Option<&HashSet<String>>,
@@ -184,9 +226,11 @@ fn lhs_base_name_bus(
         PartSelect(base, _, _, _) => lhs_base_name_bus(base, bus_ports),
         Index(base, _) => lhs_base_name_bus(base, bus_ports),
         FieldAccess(base, field) => {
-            if let (Some(bp), Ident(b)) = (bus_ports, &base.kind) {
-                if bp.contains(b) {
-                    return Some(format!("{b}.{}", field.name));
+            if let Some(bp) = bus_ports {
+                if let Some(b) = peel_index_to_ident(base) {
+                    if bp.contains(b) {
+                        return Some(format!("{b}.{}", field.name));
+                    }
                 }
             }
             lhs_base_name_bus(base, bus_ports)
@@ -1121,7 +1165,7 @@ pub fn analyze_module(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Whole-design comb-loop analysis (issue #246, MVP)
+// Whole-design comb-loop analysis (issue #246; promoted warning -> error 2026-08)
 //
 // Builds ONE directed combinational-dependency graph that spans the entire
 // elaborated design starting from each top-level module (modules that are
@@ -1130,8 +1174,11 @@ pub fn analyze_module(
 //
 // Tarjan's SCC is then run over the graph and any SCC with size > 1 (or a
 // single-node SCC with a self-loop) is reported as a combinational feedback
-// cycle. SCCs that pass through any instance OWNED by a module with
-// `pragma comb_loops_allowed;` are suppressed.
+// cycle — a hard compile error (`arch check`/`build`/`sim`/`formal` all fail
+// with a nonzero exit). SCCs that pass through any instance OWNED by a
+// module with `pragma comb_loops_allowed;` are suppressed and stay
+// non-fatal; that pragma is the documented escape hatch for intentional
+// cycles (see `doc/ARCH_HDL_Specification.md`).
 //
 // Limitations of this MVP (deferred to a follow-up PR):
 //   - Extern / interface-only modules (`.archi` stubs) are treated as
@@ -1198,7 +1245,10 @@ pub struct WholeDesignAnalysis {
 /// 1. Identify top-level modules (modules not instantiated anywhere).
 /// 2. For each top-level, recursively flatten the instance hierarchy into
 ///    a directed node-and-edge set, where each node is `(inst_path, signal)`.
-/// 3. Run Tarjan's SCC.
+///    Each top gets its own graph — tops are mutually unconnected, so a
+///    namespace shared across them can only fabricate cycles out of
+///    same-named signals in unrelated modules.
+/// 3. Run Tarjan's SCC per top.
 /// 4. Tag each non-trivial SCC with the set of owning-parent paths;
 ///    classify as suppressed if any owning module has the pragma.
 pub fn analyze_whole_design(source: &SourceFile, symbols: &SymbolTable) -> WholeDesignAnalysis {
@@ -1220,60 +1270,89 @@ pub fn analyze_whole_design(source: &SourceFile, symbols: &SymbolTable) -> Whole
         }
     }
 
-    let top_levels: Vec<&ModuleDecl> = module_by_name
+    // Source declaration order, not `module_by_name` iteration order: the
+    // latter is a `HashMap`, so which top-level module got analyzed (and
+    // blamed) first was nondeterministic across runs.
+    let top_levels: Vec<&ModuleDecl> = source
+        .items
         .iter()
-        .filter(|(name, _)| inst_count.get(**name).copied().unwrap_or(0) == 0)
-        .map(|(_, m)| *m)
+        .filter_map(|it| match it {
+            Item::Module(m) if inst_count.get(m.name.name.as_str()).copied().unwrap_or(0) == 0 => {
+                Some(m)
+            }
+            _ => None,
+        })
         .collect();
 
-    // ── Step 2: build the flat graph ──────────────────────────────────────
-    let mut builder = GraphBuilder::default();
-    for top in &top_levels {
-        builder.expand_module(top, vec![], symbols, source);
-    }
-
-    // ── Step 3: Tarjan SCC ────────────────────────────────────────────────
-    let sccs_raw = tarjan_scc(&builder.adj, builder.next_id);
-
-    // ── Step 4: classify SCCs ─────────────────────────────────────────────
     let mut out_sccs: Vec<CombScc> = Vec::new();
     let mut suppressed = 0usize;
     let mut total = 0usize;
-    for scc in sccs_raw {
-        // Filter: size > 1 OR (size == 1 with self-loop)
-        let is_cycle = scc.len() > 1 || (scc.len() == 1 && builder.adj[scc[0]].contains(&scc[0]));
-        if !is_cycle {
-            continue;
-        }
-        total += 1;
 
-        let mut owning_paths: HashSet<InstPath> = HashSet::new();
-        let mut owning_modules: HashSet<String> = HashSet::new();
-        let mut nodes: Vec<NodeKey> = Vec::with_capacity(scc.len());
-        for nid in &scc {
-            let key = builder.node_by_id[*nid].clone();
-            owning_paths.insert(key.path.clone());
-            if let Some(mname) = builder.owning_module(&key.path) {
-                owning_modules.insert(mname);
+    // ── Steps 2-4, once per top-level module ──────────────────────────────
+    //
+    // Each top-level module gets its OWN graph. Every top used to be
+    // expanded into one shared builder at the same root path (`vec![]`), so
+    // all tops shared a single `(inst_path, signal)` namespace: `ModA`'s `p`
+    // and `ModB`'s `p` interned to the same node. Distinct top-level modules
+    // are by definition unconnected — no combinational path can run between
+    // them — so the only thing a shared namespace could produce was a
+    // fabricated cycle stitched out of same-named signals in unrelated
+    // modules (`arch check A.arch B.arch` warning where `A` alone and `B`
+    // alone are both clean), plus misattribution via `path_owner[vec![]]`,
+    // which the last-expanded top overwrote.
+    for top in &top_levels {
+        let mut builder = GraphBuilder::default();
+        builder.expand_module(top, vec![], symbols, source);
+        let sccs_raw = tarjan_scc(&builder.adj, builder.next_id);
+
+        for scc in sccs_raw {
+            // Filter: size > 1 OR (size == 1 with self-loop)
+            let is_cycle =
+                scc.len() > 1 || (scc.len() == 1 && builder.adj[scc[0]].contains(&scc[0]));
+            if !is_cycle {
+                continue;
             }
-            nodes.push(key);
+            // Issue #780: a same-execution sequential-fold artifact (base-
+            // name collapsing of multiple blocking-assignment writes, or
+            // several conceptual `for`-loop iterations walked as one
+            // textual pass) is not a real combinational cycle — see
+            // `GraphBuilder::is_fold_artifact`. Filtered BEFORE the
+            // pragma-suppression accounting below: it was never a genuine
+            // SCC to begin with, so it must not count toward `total_sccs`
+            // either.
+            if builder.is_fold_artifact(&scc) {
+                continue;
+            }
+            total += 1;
+
+            let mut owning_paths: HashSet<InstPath> = HashSet::new();
+            let mut owning_modules: HashSet<String> = HashSet::new();
+            let mut nodes: Vec<NodeKey> = Vec::with_capacity(scc.len());
+            for nid in &scc {
+                let key = builder.node_by_id[*nid].clone();
+                owning_paths.insert(key.path.clone());
+                if let Some(mname) = builder.owning_module(&key.path) {
+                    owning_modules.insert(mname);
+                }
+                nodes.push(key);
+            }
+            // Suppression: any owning module has `pragma comb_loops_allowed;`.
+            let blessed = owning_modules.iter().any(|mn| {
+                module_by_name
+                    .get(mn.as_str())
+                    .map(|m| m.comb_loops_allowed)
+                    .unwrap_or(false)
+            });
+            if blessed {
+                suppressed += 1;
+                continue;
+            }
+            out_sccs.push(CombScc {
+                nodes,
+                owning_paths,
+                owning_modules,
+            });
         }
-        // Suppression: any owning module has `pragma comb_loops_allowed;`.
-        let blessed = owning_modules.iter().any(|mn| {
-            module_by_name
-                .get(mn.as_str())
-                .map(|m| m.comb_loops_allowed)
-                .unwrap_or(false)
-        });
-        if blessed {
-            suppressed += 1;
-            continue;
-        }
-        out_sccs.push(CombScc {
-            nodes,
-            owning_paths,
-            owning_modules,
-        });
     }
 
     WholeDesignAnalysis {
@@ -1299,6 +1378,10 @@ struct GraphBuilder {
     /// O(body) walk in `per_output_comb_deps` runs once per module. Issue
     /// #246 Phase 3.
     per_output_cache: HashMap<String, HashMap<String, HashSet<String>>>,
+    /// Per-edge "grounded" flag (issue #780). Every edge, however it was
+    /// added, has an entry here. See `add_edge_grounded` and
+    /// `is_fold_artifact`.
+    edge_grounded: HashMap<(usize, usize), bool>,
 }
 
 impl GraphBuilder {
@@ -1314,11 +1397,91 @@ impl GraphBuilder {
         id
     }
 
+    /// Add an edge with the default (conservative) "not grounded"
+    /// classification. Used by every call site OTHER than the intra-
+    /// comb-block statement walker (`scan_assignments_inner`) — `let`-
+    /// binding edges and cross-instance boundary edges. Those are never
+    /// eligible for the issue #780 fold-artifact filter: the "grounded"
+    /// reasoning is specific to same-comb-block, program-order blocking-
+    /// assignment semantics and does not apply across module/instance
+    /// boundaries or `let` bindings.
     fn add_edge(&mut self, from: usize, to: usize) {
-        // Tarjan tolerates parallel edges, but dedupe for cleaner display.
+        self.add_edge_grounded(from, to, false);
+    }
+
+    /// Add an edge, recording whether its SOURCE identifier had already
+    /// been assigned earlier in the same linear (program-order) walk of
+    /// one comb block at the time this edge was discovered ("grounded").
+    /// See `is_fold_artifact` for how this distinguishes a real
+    /// combinational cycle from a same-execution sequential-fold artifact
+    /// (issue #780).
+    ///
+    /// Tarjan tolerates parallel edges, but edges are deduped for cleaner
+    /// display — same as before. If the (from, to) edge already exists
+    /// (e.g. a `for`-loop body walked once "conflates" several guarded
+    /// writes), the recorded groundedness is AND-combined: an edge is
+    /// only ever "grounded" if EVERY contributing occurrence was grounded.
+    /// One ungrounded (genuinely-could-be-real) contributing read is
+    /// enough to keep the edge ineligible for suppression.
+    fn add_edge_grounded(&mut self, from: usize, to: usize, grounded: bool) {
         if !self.adj[from].contains(&to) {
             self.adj[from].push(to);
+            self.edge_grounded.insert((from, to), grounded);
+        } else {
+            let entry = self.edge_grounded.entry((from, to)).or_insert(true);
+            *entry = *entry && grounded;
         }
+    }
+
+    /// Issue #780: is this SCC a same-execution sequential-fold artifact
+    /// rather than a real combinational cycle?
+    ///
+    /// Within ONE comb block, blocking-assignment (sequential) semantics
+    /// make straight-line code inherently acyclic UNLESS some identifier
+    /// is read before it has EVER been established anywhere reachable in
+    /// program order — the classic `x = x + 1;` self-loop (already
+    /// handled directly in `scan_assignments_inner`, never even reaches
+    /// this filter as an edge), or its N-hop generalization through
+    /// intermediate names, e.g. `p = q + 1; q = p + 1;` where `q` is read
+    /// while still undriven. A base-name-collapsed graph node can still
+    /// *look* cyclic purely because MULTIPLE sequential (re-)assignments
+    /// to the same name — or several conceptual `for`-loop iterations
+    /// walked once as a single textual pass — share one graph node (see
+    /// arch#780; fixtures `gf_mul8`, `cvdp_prbs_gen`, `onebit_ecc`,
+    /// `t_hamming_tx`, `prim_max_find`, `programmable_interrupt_controller`).
+    ///
+    /// `add_edge_grounded` records, per edge, whether its source was
+    /// already-written (hence a fixed, resolved value) at the point the
+    /// edge was discovered. An SCC is a fold artifact — and therefore NOT
+    /// a real cycle — exactly when EVERY edge *internal* to the SCC (both
+    /// endpoints inside it) is grounded: every dependency closing the loop
+    /// was, at the moment it was read, already a settled prior value,
+    /// never an unresolved back-reference. If even one internal edge is
+    /// NOT grounded, the SCC is reported as a real (candidate) cycle,
+    /// exactly as before this fix.
+    ///
+    /// Cross-instance and `let`-binding edges are always "not grounded"
+    /// (see `add_edge`), so an SCC that touches ANY such edge internally
+    /// is never misclassified as an artifact here — this filter is scoped
+    /// exactly to same-comb-block sequential collapsing, never to
+    /// cross-instance wiring (e.g. a real arbiter/ready-valid handshake
+    /// loop, or the #781 E203 cross-instance bug, stay fully caught).
+    fn is_fold_artifact(&self, scc: &[usize]) -> bool {
+        let scc_set: HashSet<usize> = scc.iter().copied().collect();
+        let mut found_internal_edge = false;
+        for &u in scc {
+            for &v in &self.adj[u] {
+                if !scc_set.contains(&v) {
+                    continue;
+                }
+                found_internal_edge = true;
+                let grounded = self.edge_grounded.get(&(u, v)).copied().unwrap_or(false);
+                if !grounded {
+                    return false;
+                }
+            }
+        }
+        found_internal_edge
     }
 
     fn owning_module(&self, path: &InstPath) -> Option<String> {
@@ -1817,16 +1980,98 @@ impl GraphBuilder {
     /// Walk a comb-block's statements and add edges from RHS identifiers to
     /// LHS base names. Conditions count as reads of every then/else target.
     fn scan_assignments(&mut self, stmts: &[Stmt], path: &InstPath, bus_ports: &HashSet<String>) {
-        let mut cond_stack: Vec<HashSet<String>> = Vec::new();
-        self.scan_assignments_inner(stmts, path, bus_ports, &mut cond_stack);
+        let mut cond_stack: Vec<HashMap<String, bool>> = Vec::new();
+        let mut written: HashSet<String> = HashSet::new();
+        let mut ever_written: HashSet<String> = HashSet::new();
+        let mut condition_grounded: HashSet<String> = HashSet::new();
+        self.scan_assignments_inner(
+            stmts,
+            path,
+            bus_ports,
+            &mut cond_stack,
+            &mut written,
+            &mut ever_written,
+            &mut condition_grounded,
+        );
     }
 
+    /// `written` tracks, in the block's sequential (blocking-assignment)
+    /// order, which LHS base names are DEFINITELY assigned by some earlier
+    /// statement reached so far in this same comb-block scope. It is used
+    /// to distinguish two shapes that both read a signal on the RHS of its
+    /// own assignment:
+    ///
+    ///   * `x = x <op> t0;` where an EARLIER statement in the same block
+    ///     already assigned `x` (e.g. a sequential-fold reduction:
+    ///     `x = <identity>; x = x <op> t0; x = x <op> t1; …`, the SV shape
+    ///     `shared(or)`/`shared(and)` thread lowering emits into one
+    ///     `always_comb`). Blocking-assignment semantics mean this read
+    ///     sees the in-block value just established by the earlier write —
+    ///     NOT a dependency on `x`'s own value from outside/before this
+    ///     block. No graph edge (arch#709 follow-up false positive).
+    ///   * `x = x <op> y;` as the FIRST assignment to `x` in the block (or
+    ///     on a control-flow path where no earlier write is guaranteed —
+    ///     see the `IfElse`/`Match` handling below). This reads `x`'s
+    ///     pre-block value with nothing to break the cycle: a genuine
+    ///     combinational self-dependency. Still produces the edge.
+    ///
+    /// Promotion to "definitely written" across control flow must stay
+    /// conservative (favor still emitting the edge over silently dropping
+    /// a real one): a name is only promoted out of an `if`/`else` when
+    /// BOTH arms wrote it (a bare `if` with no `else` promotes nothing —
+    /// same as the empty-else case falling out of the intersection with
+    /// the untouched clone), and only out of a `match` when EVERY arm
+    /// wrote it. Writes inside a `for` body are treated as branch-local
+    /// (never promoted to the enclosing scope) for the same reason.
+    ///
+    /// `condition_grounded` tracks names whose current value is established
+    /// before evaluating a control condition. Unlike `written`, it is
+    /// propagated out of `for` bodies because the graph walk treats the body
+    /// as executing once and existing fold-artifact handling relies on that
+    /// same assumption. Each condition snapshots this set at entry so later
+    /// writes in its body cannot retroactively ground the condition read.
+    ///
+    /// `ever_written` (issue #780) tracks a STRICTLY MORE PERMISSIVE
+    /// question for ordinary RHS data reads, used ONLY to compute their
+    /// per-edge "grounded" flag (see `add_edge_grounded` /
+    /// `GraphBuilder::is_fold_artifact`) — NEVER to decide whether to add an
+    /// edge at all, which remains governed exclusively by `written` as
+    /// above, unchanged. Where `written` asks "is this name DEFINITELY
+    /// assigned no matter which path got us here" (intersection across
+    /// branches, branch-local across `for`), `ever_written` asks "could this
+    /// name's current value already be FIXED by something reachable before
+    /// this point" (union across `if`/`else`/`match` arms, and — unlike
+    /// `written` — propagated back out of a `for` body). Condition reads use
+    /// the stricter, entry-snapshotted `condition_grounded` set because a
+    /// control dependency is only grounded when its value is established
+    /// before the condition executes. Both directions are sound:
+    ///   * Union-not-intersection across mutually exclusive branches is
+    ///     safe because whichever branch actually ran, the name's value at
+    ///     this point is either that branch's fresh write (fixed) or
+    ///     whatever it was before the `if` (already accounted for, since
+    ///     each arm's `ever_written` clone starts from the pre-`if` set) —
+    ///     never a read of a not-yet-computed value.
+    ///   * Propagating out of `for` is safe because graph construction
+    ///     already treats the loop body as executing (it walks it once,
+    ///     unconditionally, for edge collection) — optimistically treating
+    ///     whatever it establishes as grounded afterward is consistent
+    ///     with that existing assumption, and is needed for e.g. a second,
+    ///     later `for` loop reading a name a prior loop fully computes
+    ///     (`onebit_ecc`'s `parity_enc` computed in one loop, consumed in
+    ///     the next).
+    ///
+    /// Since every update is additive (union / propagate, never remove)
+    /// and both sets start equal (empty) at the top of one comb block,
+    /// `ever_written` is always a superset of `written`.
     fn scan_assignments_inner(
         &mut self,
         stmts: &[Stmt],
         path: &InstPath,
         bus_ports: &HashSet<String>,
-        cond_stack: &mut Vec<HashSet<String>>,
+        cond_stack: &mut Vec<HashMap<String, bool>>,
+        written: &mut HashSet<String>,
+        ever_written: &mut HashSet<String>,
+        condition_grounded: &mut HashSet<String>,
     ) {
         for stmt in stmts {
             match stmt {
@@ -1839,46 +2084,161 @@ impl GraphBuilder {
                     collect_expr_idents_bus(&a.value, bus_ports, &mut rhs);
                     // RHS for index/bit-slice on LHS also contributes to deps.
                     collect_lhs_index_reads(&a.target, &mut rhs);
+                    let already_written = written.contains(&lhs);
                     let to = self.intern(NodeKey {
                         path: path.clone(),
-                        signal: lhs,
+                        signal: lhs.clone(),
                     });
                     for id in &rhs {
+                        // Self-read of a signal already assigned earlier in
+                        // this block: in-block value, not a feedback edge.
+                        if already_written && id.as_str() == lhs.as_str() {
+                            continue;
+                        }
                         let from = self.intern(NodeKey {
                             path: path.clone(),
                             signal: id.clone(),
                         });
-                        self.add_edge(from, to);
+                        // Issue #780: a source identifier already
+                        // (possibly) assigned earlier — see `ever_written`
+                        // above — is "grounded": a fixed, resolved value
+                        // from strictly earlier code, so this edge can
+                        // never be the unresolved back-reference that
+                        // makes a cycle real. See
+                        // `GraphBuilder::is_fold_artifact`.
+                        let grounded = ever_written.contains(id.as_str());
+                        self.add_edge_grounded(from, to, grounded);
                     }
                     for conds in cond_stack.iter() {
-                        for id in conds {
+                        for (id, grounded) in conds {
+                            if already_written && id.as_str() == lhs.as_str() {
+                                continue;
+                            }
                             let from = self.intern(NodeKey {
                                 path: path.clone(),
                                 signal: id.clone(),
                             });
-                            self.add_edge(from, to);
+                            self.add_edge_grounded(from, to, *grounded);
                         }
                     }
+                    written.insert(lhs.clone());
+                    condition_grounded.insert(lhs.clone());
+                    ever_written.insert(lhs);
                 }
                 Stmt::IfElse(ife) => {
                     let mut cond_ids = HashSet::new();
                     collect_expr_idents_bus(&ife.cond, bus_ports, &mut cond_ids);
-                    cond_stack.push(cond_ids);
-                    self.scan_assignments_inner(&ife.then_stmts, path, bus_ports, cond_stack);
-                    self.scan_assignments_inner(&ife.else_stmts, path, bus_ports, cond_stack);
+                    let cond_frame: HashMap<String, bool> = cond_ids
+                        .into_iter()
+                        .map(|id| {
+                            let grounded = condition_grounded.contains(&id);
+                            (id, grounded)
+                        })
+                        .collect();
+                    cond_stack.push(cond_frame);
+                    let mut then_written = written.clone();
+                    let mut then_ever = ever_written.clone();
+                    let mut then_condition_grounded = condition_grounded.clone();
+                    self.scan_assignments_inner(
+                        &ife.then_stmts,
+                        path,
+                        bus_ports,
+                        cond_stack,
+                        &mut then_written,
+                        &mut then_ever,
+                        &mut then_condition_grounded,
+                    );
+                    let mut else_written = written.clone();
+                    let mut else_ever = ever_written.clone();
+                    let mut else_condition_grounded = condition_grounded.clone();
+                    self.scan_assignments_inner(
+                        &ife.else_stmts,
+                        path,
+                        bus_ports,
+                        cond_stack,
+                        &mut else_written,
+                        &mut else_ever,
+                        &mut else_condition_grounded,
+                    );
                     cond_stack.pop();
+                    // Only promote names written on BOTH arms — mutually
+                    // exclusive paths don't guarantee each other's writes.
+                    *written = then_written.intersection(&else_written).cloned().collect();
+                    // `ever_written`: union — see the doc comment above.
+                    *ever_written = then_ever.union(&else_ever).cloned().collect();
+                    *condition_grounded = then_condition_grounded
+                        .intersection(&else_condition_grounded)
+                        .cloned()
+                        .collect();
                 }
                 Stmt::Match(m) => {
                     let mut scrut_ids = HashSet::new();
                     collect_expr_idents_bus(&m.scrutinee, bus_ports, &mut scrut_ids);
-                    cond_stack.push(scrut_ids);
+                    let cond_frame: HashMap<String, bool> = scrut_ids
+                        .into_iter()
+                        .map(|id| {
+                            let grounded = condition_grounded.contains(&id);
+                            (id, grounded)
+                        })
+                        .collect();
+                    cond_stack.push(cond_frame);
+                    let mut arm_written: Option<HashSet<String>> = None;
+                    let mut arm_ever: Option<HashSet<String>> = None;
+                    let mut arm_condition_grounded: Option<HashSet<String>> = None;
                     for arm in &m.arms {
-                        self.scan_assignments_inner(&arm.body, path, bus_ports, cond_stack);
+                        let mut aw = written.clone();
+                        let mut ae = ever_written.clone();
+                        let mut acg = condition_grounded.clone();
+                        self.scan_assignments_inner(
+                            &arm.body, path, bus_ports, cond_stack, &mut aw, &mut ae, &mut acg,
+                        );
+                        arm_written = Some(match arm_written {
+                            Some(acc) => acc.intersection(&aw).cloned().collect(),
+                            None => aw,
+                        });
+                        arm_ever = Some(match arm_ever {
+                            Some(acc) => acc.union(&ae).cloned().collect(),
+                            None => ae,
+                        });
+                        arm_condition_grounded = Some(match arm_condition_grounded {
+                            Some(acc) => acc.intersection(&acg).cloned().collect(),
+                            None => acg,
+                        });
                     }
                     cond_stack.pop();
+                    if let Some(merged) = arm_written {
+                        *written = merged;
+                    }
+                    if let Some(merged) = arm_ever {
+                        *ever_written = merged;
+                    }
+                    if let Some(merged) = arm_condition_grounded {
+                        *condition_grounded = merged;
+                    }
                 }
                 Stmt::For(f) => {
-                    self.scan_assignments_inner(&f.body, path, bus_ports, cond_stack);
+                    // Loop trip count isn't evaluated here; treat the body as
+                    // branch-local so a write inside it never gets promoted
+                    // into `written` (unchanged from before issue #780).
+                    let mut body_written = written.clone();
+                    let mut body_ever = ever_written.clone();
+                    let mut body_condition_grounded = condition_grounded.clone();
+                    self.scan_assignments_inner(
+                        &f.body,
+                        path,
+                        bus_ports,
+                        cond_stack,
+                        &mut body_written,
+                        &mut body_ever,
+                        &mut body_condition_grounded,
+                    );
+                    // `ever_written` DOES propagate out — see the doc
+                    // comment above (issue #780: needed so a LATER, sibling
+                    // `for` loop reading a name this loop fully establishes
+                    // — e.g. `onebit_ecc`'s two-phase parity computation —
+                    // sees it as grounded).
+                    *ever_written = body_ever;
+                    *condition_grounded = body_condition_grounded;
                 }
                 _ => {}
             }
